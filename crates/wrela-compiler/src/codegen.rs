@@ -10259,33 +10259,27 @@ pub fn emit_boot_init_call(slot: &BootInitSlotSpec) -> CodegenFn {
     }
 }
 
-// --- plans/M10.md item G: checkpoint + deadline specialized emitters -----
+// --- plans/M11.md item I: checkpoint section floor trampoline -------------
 //
-// Materialized into the checkpoint section (not force-rooted into `code`):
-// `Reloc::CheckpointService`, the entry driver's `bl_to(deadline_poll)`,
-// and the VMM HVF suite's `build_checkpoint_and_vector_stub` all need a
-// self-contained word block. Specialization is on `arena_capacity` and
-// `turn_areas` (fully unrolled). Floor cat2 save/restore (5 words) stays
-// inside the checkpoint service body — counted in the ImageStatic row,
-// not pretended migrated (decision 673).
+// M10 G specialized the full checkpoint/vector body into this section
+// (decision 670). M11 I migrates the algorithm to force-rooted wrela
+// (`__wrela_vector0` / `__wrela_rt_checkpoint`); the section keeps only
+// floor-cat2 LR save/restore around `BL __wrela_rt_checkpoint` (decision
+// 821 / 673 extraction — same honesty as H's SP install). IRQ/wake Call
+// stubs are inject-only NON_INVENTORY (decision 823), like boot_init_call.
 
-/// Group-arena facts for deadline scan/poll (plans/M10.md item G).
-///
-/// After M11 item E the specialized word emitters are gone — this spec
-/// only carries the `arena_capacity > 0` predicate so the checkpoint
-/// stub knows whether to `BL __wrela_deadline_scan` (and the entry
-/// driver whether to `BL __wrela_deadline_poll`). Addresses live in the
-/// force-rooted wrela bodies via `@placed` RT/GROUPS.
+/// Group-arena facts retained for the shape/real double-build call sites.
+/// After M11 I the checkpoint trampoline ignores addresses — only
+/// `arena_capacity > 0` feeds `has_deadline_poll` for the entry driver.
 #[derive(Debug, Clone)]
 pub struct DeadlineGroupSpec {
     pub arena_base: u64,
     pub arena_capacity: u64,
-    /// `(turn_area_addr, TurnId::get())` — retained for the shape/real
-    /// double-build call sites; ignored by the checkpoint stub after E.
+    /// `(turn_area_addr, TurnId::get())` — retained for call-site shape.
     pub turn_areas: Vec<(u64, u32)>,
 }
 
-/// One sealed `IrqCap.bind` site for the checkpoint dispatch loop.
+/// One sealed `IrqCap.bind` site (inject overwrites `__irq_call_*`).
 #[derive(Debug, Clone)]
 pub struct CheckpointIrqSpec {
     pub vector: u64,
@@ -10301,251 +10295,158 @@ pub struct CheckpointWakeSpec {
     pub task_key: String,
 }
 
-/// Inputs `emit_checkpoint_and_vector_stub` specializes on.
-#[derive(Debug, Clone)]
-pub struct CheckpointEmitSpec {
-    pub group: Option<DeadlineGroupSpec>,
-    pub irq_vectors: Vec<CheckpointIrqSpec>,
-    pub wake_drains: Vec<CheckpointWakeSpec>,
-}
-
-/// Result of `emit_checkpoint_and_vector_stub` — words plus entry offsets.
+/// Result of the checkpoint-section trampoline builder.
 pub struct CheckpointEmitResult {
     pub words: Vec<u32>,
     pub checkpoint_service_word: usize,
-    /// Always `None` after M11 item E: `__wrela_deadline_poll` lives in
-    /// `code` as a force-rooted key; the entry driver `bl_call_key`s it.
+    /// Always `None` after M11 item E: poll lives in `code`.
     pub deadline_poll_word: Option<usize>,
-    /// True when the image has a group arena — entry driver should
-    /// `bl_call_key("__wrela_deadline_poll")` each scheduler tick.
+    /// Entry driver should `bl_call_key("__wrela_deadline_poll")`.
     pub has_deadline_poll: bool,
     pub relocs: Vec<Reloc>,
 }
 
-/// Tiny word-list builder for the checkpoint block (layout::Asm shape,
-/// start always 0 so reloc word indices are block-relative).
-struct CpAsm {
-    words: Vec<u32>,
-    relocs: Vec<Reloc>,
+/// M11 I / decision 821: floor-cat2 LR save/restore (5 words).
+/// Contiguous halves used by [`emit_checkpoint_service_trampoline`]:
+/// `sub`/`str` then (after the BL) `ldr`/`add`/`ret`.
+pub fn emit_checkpoint_lr_frame() -> Vec<(u32, String)> {
+    vec![
+        (
+            encode::enc_sub_imm(31, 31, 16, true),
+            "sub sp, sp, #16  ; floor cat2".into(),
+        ),
+        (
+            encode::enc_str_x_imm(30, 31, 0),
+            "str x30, [sp]  ; floor cat2".into(),
+        ),
+        (
+            encode::enc_ldr_x_imm(30, 31, 0),
+            "ldr x30, [sp]  ; floor cat2".into(),
+        ),
+        (
+            encode::enc_add_imm(31, 31, 16, true),
+            "add sp, sp, #16  ; floor cat2".into(),
+        ),
+        (encode::enc_ret(30), "ret  ; floor cat2".into()),
+    ]
 }
 
-impl CpAsm {
-    fn new() -> Self {
-        Self {
-            words: Vec::new(),
-            relocs: Vec::new(),
-        }
+/// M11 I: checkpoint section = floor LR frame around `BL __wrela_rt_checkpoint`.
+/// Service entry is at word 0 (vector0 body lives in `code` as `__wrela_vector0`).
+/// When `link_body` is false, emit a bare `ret` (no runtime wiring).
+pub fn emit_checkpoint_service_trampoline(
+    has_deadline_poll: bool,
+    link_body: bool,
+) -> CheckpointEmitResult {
+    if !link_body {
+        return CheckpointEmitResult {
+            words: vec![encode::enc_ret(30)],
+            checkpoint_service_word: 0,
+            deadline_poll_word: None,
+            has_deadline_poll,
+            relocs: vec![],
+        };
     }
-    fn abs(&self) -> usize {
-        self.words.len()
+    let frame = emit_checkpoint_lr_frame();
+    debug_assert_eq!(frame.len(), 5);
+    let mut words = Vec::new();
+    let mut relocs = Vec::new();
+    // save (2)
+    words.push(frame[0].0);
+    words.push(frame[1].0);
+    let bl_word = words.len();
+    words.push(encode::enc_bl(0));
+    relocs.push(Reloc::Call {
+        word: bl_word,
+        key: "__wrela_rt_checkpoint".into(),
+    });
+    // restore (3)
+    words.push(frame[2].0);
+    words.push(frame[3].0);
+    words.push(frame[4].0);
+    CheckpointEmitResult {
+        words,
+        checkpoint_service_word: 0,
+        deadline_poll_word: None,
+        has_deadline_poll,
+        relocs,
     }
-    fn push(&mut self, w: u32) {
-        self.words.push(w);
+}
+
+/// M11 I / decision 823: specialized IRQ handler stub (`x0 = driver_state`).
+pub fn emit_checkpoint_irq_call(spec: &CheckpointIrqSpec) -> CodegenFn {
+    emit_driver_state_call(&spec.handler_key, spec.driver_state)
+}
+
+/// M11 I / decision 823: specialized `@task` wake stub (`x0 = driver_state`).
+pub fn emit_checkpoint_wake_call(spec: &CheckpointWakeSpec) -> CodegenFn {
+    emit_driver_state_call(&spec.task_key, spec.driver_state)
+}
+
+fn emit_driver_state_call(key: &str, driver_state: u64) -> CodegenFn {
+    fn push(words: &mut Vec<(u32, String)>, w: u32, text: String) {
+        words.push((w, text));
     }
-    fn load_imm(&mut self, reg: u8, value: u64) {
+    fn load_imm(words: &mut Vec<(u32, String)>, reg: u8, value: u64, label: &str) {
         let h0 = (value & 0xFFFF) as u16;
         let h1 = ((value >> 16) & 0xFFFF) as u16;
         let h2 = ((value >> 32) & 0xFFFF) as u16;
         let h3 = ((value >> 48) & 0xFFFF) as u16;
-        self.push(encode::enc_movz(reg, h0, 0, true));
-        self.push(encode::enc_movk(reg, h1, 16, true));
-        self.push(encode::enc_movk(reg, h2, 32, true));
-        self.push(encode::enc_movk(reg, h3, 48, true));
+        push(
+            words,
+            encode::enc_movz(reg, h0, 0, true),
+            format!("movz {}, #{:#x}  ; {label}", reg_name(reg), value),
+        );
+        push(
+            words,
+            encode::enc_movk(reg, h1, 16, true),
+            format!("movk {}, #{:#x}, lsl #16", reg_name(reg), h1),
+        );
+        push(
+            words,
+            encode::enc_movk(reg, h2, 32, true),
+            format!("movk {}, #{:#x}, lsl #32", reg_name(reg), h2),
+        );
+        push(
+            words,
+            encode::enc_movk(reg, h3, 48, true),
+            format!("movk {}, #{:#x}, lsl #48", reg_name(reg), h3),
+        );
     }
-    fn bl_to(&mut self, target_abs: usize) {
-        let this = self.abs();
-        let delta = (target_abs as i64 - this as i64) * 4;
-        self.push(encode::enc_bl(delta as i32));
-    }
-    fn b_to(&mut self, target_abs: usize) {
-        let this = self.abs();
-        let delta = (target_abs as i64 - this as i64) * 4;
-        self.push(encode::enc_b(delta as i32));
-    }
-    fn bl_call_key(&mut self, key: &str) {
-        let w = self.abs();
-        self.push(encode::enc_bl(0));
-        self.relocs.push(Reloc::Call {
-            word: w,
-            key: key.to_string(),
-        });
-    }
-    fn skip_placeholder(&mut self) -> usize {
-        let w = self.words.len();
-        self.push(0);
-        w
-    }
-    #[allow(dead_code)] // kept for IRQ/wake multi-path patching symmetry
-    fn patch_cond(&mut self, marker: usize, cond: Cond) {
-        let target = self.abs();
-        let delta = (target as i64 - marker as i64) * 4;
-        self.words[marker] = encode::enc_b_cond(cond, delta as i32);
-    }
-    fn patch_cbz(&mut self, marker: usize, reg: u8) {
-        let target = self.abs();
-        let delta = (target as i64 - marker as i64) * 4;
-        self.words[marker] = encode::enc_cbz(reg, delta as i32, true);
-    }
-    #[allow(dead_code)] // kept for IRQ/wake multi-path patching symmetry
-    fn patch_cbnz(&mut self, marker: usize, reg: u8) {
-        let target = self.abs();
-        let delta = (target as i64 - marker as i64) * 4;
-        self.words[marker] = encode::enc_cbnz(reg, delta as i32, true);
-    }
-}
-
-const CP_X_SP: u8 = 31;
-const CP_SCRATCH_A: u8 = 9;
-const CP_SCRATCH_B: u8 = 10;
-const CP_SCRATCH_C: u8 = 11;
-const CP_X_ZR: u8 = 31;
-
-/// plans/M10.md item G / decision 670; M11 item E deleted the specialized
-/// deadline scan/poll word emitters — those algorithms live in
-/// `stdlib/core/runtime.wr` as force-rooted `__wrela_deadline_scan` /
-/// `__wrela_deadline_poll`.
-
-/// plans/M10.md item G / decision 670: full checkpoint + vector0 block.
-/// Contains 5 floor-cat2 save/restore words around the pending loop
-/// (decision 673). M11 item E: vector0 `BL`s `__wrela_deadline_scan`
-/// when a group arena exists; deadline poll is not embedded (lives in
-/// `code`).
-pub fn emit_checkpoint_and_vector_stub(spec: &CheckpointEmitSpec) -> CheckpointEmitResult {
-    let mut a = CpAsm::new();
-
-    let vector0_start = a.abs();
-    debug_assert_eq!(vector0_start, 0);
-    let observed_addr = wrela_machine::layout::MACHINE_INFO_BASE
-        + wrela_machine::machine_info::OFF_VECTOR0_OBSERVED;
-    a.load_imm(CP_SCRATCH_A, observed_addr);
-    a.push(encode::enc_ldr_x_imm(CP_SCRATCH_B, CP_SCRATCH_A, 0));
-    a.push(encode::enc_add_imm(CP_SCRATCH_B, CP_SCRATCH_B, 1, true));
-    a.push(encode::enc_str_x_imm(CP_SCRATCH_B, CP_SCRATCH_A, 0));
-    let has_deadline = spec.group.as_ref().is_some_and(|g| g.arena_capacity > 0);
-    if has_deadline {
-        // Save LR (and x28 per vector0 contract) before BL — a bare
-        // `bl …; ret` leaves LR at the `ret` and spins forever.
-        a.push(encode::enc_sub_imm(CP_X_SP, CP_X_SP, 16, true));
-        a.push(encode::enc_str_x_imm(30, CP_X_SP, 0));
-        a.push(encode::enc_str_x_imm(28, CP_X_SP, 8));
-        a.bl_call_key("__wrela_deadline_scan");
-        a.push(encode::enc_ldr_x_imm(28, CP_X_SP, 8));
-        a.push(encode::enc_ldr_x_imm(30, CP_X_SP, 0));
-        a.push(encode::enc_add_imm(CP_X_SP, CP_X_SP, 16, true));
-    }
-    a.push(encode::enc_ret(30));
-
-    let checkpoint_service_word = a.abs();
-    // Floor cat2 save/restore (5 words): sub/str … ldr/add/ret.
-    a.push(encode::enc_sub_imm(CP_X_SP, CP_X_SP, 16, true));
-    a.push(encode::enc_str_x_imm(30, CP_X_SP, 0));
-    let pending_addr = wrela_machine::pending::core_word_addr(0);
-    let multi = !spec.irq_vectors.is_empty() || !spec.wake_drains.is_empty();
-    if !multi {
-        let loop_top = a.abs();
-        a.load_imm(CP_SCRATCH_A, pending_addr);
-        a.push(encode::enc_ldr_x_imm(CP_SCRATCH_B, CP_SCRATCH_A, 0));
-        let skip_done = a.skip_placeholder();
-        a.bl_to(vector0_start);
-        a.load_imm(CP_SCRATCH_A, pending_addr);
-        a.push(encode::enc_str_x_imm(CP_X_ZR, CP_SCRATCH_A, 0));
-        a.b_to(loop_top);
-        let done = a.abs();
-        a.patch_cbz(skip_done, CP_SCRATCH_B);
-        debug_assert_eq!(done, a.abs());
-    } else {
-        let loop_top = a.abs();
-        a.push(encode::enc_movz(CP_SCRATCH_C, 0, 0, true));
-        a.load_imm(CP_SCRATCH_A, pending_addr);
-        a.push(encode::enc_ldr_x_imm(CP_SCRATCH_B, CP_SCRATCH_A, 0));
-        let skip_pending = a.skip_placeholder();
-        a.push(encode::enc_movz(CP_SCRATCH_C, 0, 0, true));
-        a.push(encode::enc_movz(9, 1, 0, true));
-        a.push(encode::enc_and_reg(12, CP_SCRATCH_B, 9, true));
-        let skip_v0 = a.skip_placeholder();
-        a.push(encode::enc_sub_imm(CP_X_SP, CP_X_SP, 16, true));
-        a.push(encode::enc_str_x_imm(CP_SCRATCH_B, CP_X_SP, 0));
-        a.push(encode::enc_str_x_imm(CP_SCRATCH_C, CP_X_SP, 8));
-        a.bl_to(vector0_start);
-        a.push(encode::enc_ldr_x_imm(CP_SCRATCH_B, CP_X_SP, 0));
-        a.push(encode::enc_ldr_x_imm(CP_SCRATCH_C, CP_X_SP, 8));
-        a.push(encode::enc_add_imm(CP_X_SP, CP_X_SP, 16, true));
-        a.push(encode::enc_movz(9, 1, 0, true));
-        a.push(encode::enc_orr_reg(CP_SCRATCH_C, CP_SCRATCH_C, 9, true));
-        a.patch_cbz(skip_v0, 12);
-
-        for entry in &spec.irq_vectors {
-            let mask = 1u64 << (entry.vector & 63);
-            a.load_imm(9, mask);
-            a.push(encode::enc_and_reg(12, CP_SCRATCH_B, 9, true));
-            let skip = a.skip_placeholder();
-            a.push(encode::enc_sub_imm(CP_X_SP, CP_X_SP, 32, true));
-            a.push(encode::enc_str_x_imm(CP_SCRATCH_B, CP_X_SP, 0));
-            a.push(encode::enc_str_x_imm(CP_SCRATCH_C, CP_X_SP, 8));
-            a.push(encode::enc_str_x_imm(9, CP_X_SP, 16));
-            a.load_imm(0, entry.driver_state);
-            a.bl_call_key(&entry.handler_key);
-            a.push(encode::enc_ldr_x_imm(CP_SCRATCH_B, CP_X_SP, 0));
-            a.push(encode::enc_ldr_x_imm(CP_SCRATCH_C, CP_X_SP, 8));
-            a.push(encode::enc_ldr_x_imm(9, CP_X_SP, 16));
-            a.push(encode::enc_add_imm(CP_X_SP, CP_X_SP, 32, true));
-            a.push(encode::enc_orr_reg(CP_SCRATCH_C, CP_SCRATCH_C, 9, true));
-            a.patch_cbz(skip, 12);
-        }
-
-        a.load_imm(CP_SCRATCH_A, pending_addr);
-        a.push(encode::enc_ldr_x_imm(CP_SCRATCH_B, CP_SCRATCH_A, 0));
-        a.push(encode::enc_bic_reg(
-            CP_SCRATCH_B,
-            CP_SCRATCH_B,
-            CP_SCRATCH_C,
-            true,
-        ));
-        a.push(encode::enc_str_x_imm(CP_SCRATCH_B, CP_SCRATCH_A, 0));
-        a.push(encode::enc_movz(CP_SCRATCH_C, 1, 0, true));
-        a.patch_cbz(skip_pending, CP_SCRATCH_B);
-
-        let wake_top = a.abs();
-        a.push(encode::enc_movz(12, 0, 0, true));
-        for w in &spec.wake_drains {
-            let pending_word = w.driver_state + w.wake_pending_off;
-            a.load_imm(CP_SCRATCH_A, pending_word);
-            a.push(encode::enc_ldr_x_imm(CP_SCRATCH_B, CP_SCRATCH_A, 0));
-            let skip_w = a.skip_placeholder();
-            a.push(encode::enc_str_x_imm(CP_X_ZR, CP_SCRATCH_A, 0));
-            a.push(encode::enc_sub_imm(CP_X_SP, CP_X_SP, 16, true));
-            a.push(encode::enc_str_x_imm(12, CP_X_SP, 0));
-            a.push(encode::enc_str_x_imm(CP_SCRATCH_C, CP_X_SP, 8));
-            a.load_imm(0, w.driver_state);
-            a.bl_call_key(&w.task_key);
-            a.push(encode::enc_ldr_x_imm(12, CP_X_SP, 0));
-            a.push(encode::enc_ldr_x_imm(CP_SCRATCH_C, CP_X_SP, 8));
-            a.push(encode::enc_add_imm(CP_X_SP, CP_X_SP, 16, true));
-            a.push(encode::enc_movz(12, 1, 0, true));
-            a.push(encode::enc_movz(CP_SCRATCH_C, 1, 0, true));
-            a.patch_cbz(skip_w, CP_SCRATCH_B);
-        }
-        a.push(encode::enc_cbnz(
-            12,
-            ((wake_top as i64 - a.abs() as i64) * 4) as i32,
-            true,
-        ));
-        a.push(encode::enc_cbnz(
-            CP_SCRATCH_C,
-            ((loop_top as i64 - a.abs() as i64) * 4) as i32,
-            true,
-        ));
-    }
-    a.push(encode::enc_ldr_x_imm(30, CP_X_SP, 0));
-    a.push(encode::enc_add_imm(CP_X_SP, CP_X_SP, 16, true));
-    a.push(encode::enc_ret(30));
-
-    CheckpointEmitResult {
-        words: a.words,
-        checkpoint_service_word,
-        deadline_poll_word: None,
-        has_deadline_poll: has_deadline,
-        relocs: a.relocs,
+    let mut words: Vec<(u32, String)> = Vec::new();
+    let mut relocs: Vec<Reloc> = Vec::new();
+    push(
+        &mut words,
+        encode::enc_sub_imm(31, 31, 16, true),
+        "sub sp, sp, #16".into(),
+    );
+    push(
+        &mut words,
+        encode::enc_str_x_imm(30, 31, 0),
+        "str x30, [sp]".into(),
+    );
+    load_imm(&mut words, 0, driver_state, "driver_state");
+    let bl = words.len();
+    push(&mut words, encode::enc_bl(0), format!("bl <{key}>"));
+    relocs.push(Reloc::Call {
+        word: bl,
+        key: key.to_string(),
+    });
+    push(
+        &mut words,
+        encode::enc_ldr_x_imm(30, 31, 0),
+        "ldr x30, [sp]".into(),
+    );
+    push(
+        &mut words,
+        encode::enc_add_imm(31, 31, 16, true),
+        "add sp, sp, #16".into(),
+    );
+    push(&mut words, encode::enc_ret(30), "ret".into());
+    CodegenFn {
+        frame_size: 16,
+        code: words,
+        relocs,
     }
 }
 
@@ -10763,7 +10664,9 @@ pub fn validate(program: &CodegenProgram) -> Result<(), String> {
                         || rt_select_and_run_glue_target(target)
                         || target == "__wrela_rt_run_one"
                         || target == "__wrela_deadline_poll"
-                        || target == "__wrela_deadline_scan";
+                        || target == "__wrela_deadline_scan"
+                        || target == "__wrela_rt_checkpoint"
+                        || target == "__wrela_vector0";
                     if !resolvable {
                         return Err(format!(
                             "fn `{key}`: Reloc::Call targets `{target}`, which this \
@@ -10967,16 +10870,8 @@ pub(crate) fn emitted_a64_census_specialization_live_counts()
     );
     // emit_boot_init deleted (force-rooted __wrela_rt_boot_init); call
     // stubs are inject-only (decision 812) — not a census REF row.
-    // M10 G / decision 670: REF empty group/irq/wake = 26 (incl. 5 floor-cat2).
-    // M11 E: deadline scan/poll deleted (force-rooted wrela); checkpoint
-    // still BL `__wrela_deadline_scan` when a group arena exists — REF
-    // empty keeps the empty-path word count.
-    let cp = emit_checkpoint_and_vector_stub(&CheckpointEmitSpec {
-        group: None,
-        irq_vectors: vec![],
-        wake_drains: vec![],
-    });
-    out.insert("emit_checkpoint_and_vector_stub", cp.words.len());
+    // M11 I: checkpoint algorithm → wrela; floor-cat2 LR frame measured here.
+    out.insert("emit_checkpoint_lr_frame", emit_checkpoint_lr_frame().len());
     out
 }
 

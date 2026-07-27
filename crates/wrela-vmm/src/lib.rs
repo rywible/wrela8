@@ -3143,6 +3143,47 @@ mod tests {
         ]
     }
 
+    /// Pre-M11-I empty irq/wake checkpoint block (vector0 observed++ /
+    /// pending whole-word clear), frozen for the HVF conformance guest.
+    /// Production images use the floor trampoline + wrela body instead.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn hand_built_simple_checkpoint() -> (Vec<u32>, usize) {
+        use wrela_compiler::encode;
+        use wrela_machine::{layout as machine_layout, machine_info, pending};
+        let mut w = Vec::new();
+        let observed = machine_layout::MACHINE_INFO_BASE + machine_info::OFF_VECTOR0_OBSERVED;
+        let pending_addr = pending::core_word_addr(0);
+        // vector0 @ 0
+        w.extend(load_imm_words(9, observed));
+        w.push(encode::enc_ldr_x_imm(10, 9, 0));
+        w.push(encode::enc_add_imm(10, 10, 1, true));
+        w.push(encode::enc_str_x_imm(10, 9, 0));
+        w.push(encode::enc_ret(30));
+        let service = w.len();
+        // floor cat2 save
+        w.push(encode::enc_sub_imm(31, 31, 16, true));
+        w.push(encode::enc_str_x_imm(30, 31, 0));
+        let loop_top = w.len();
+        w.extend(load_imm_words(9, pending_addr));
+        w.push(encode::enc_ldr_x_imm(10, 9, 0));
+        let cbz_at = w.len();
+        w.push(0); // cbz placeholder
+        let bl_at = w.len();
+        w.push(encode::enc_bl(((0isize - bl_at as isize) * 4) as i32)); // → vector0
+        w.extend(load_imm_words(9, pending_addr));
+        w.push(encode::enc_str_x_imm(31, 9, 0)); // str xzr — x31 encodes zr in ldr/str
+        // Actually str xzr uses rt=31; enc_str_x_imm(31, ...) is xz. Good.
+        let b_at = w.len();
+        w.push(encode::enc_b(((loop_top as i64 - b_at as i64) * 4) as i32));
+        let done = w.len();
+        w[cbz_at] = encode::enc_cbz(10, ((done as i64 - cbz_at as i64) * 4) as i32, true);
+        // floor cat2 restore
+        w.push(encode::enc_ldr_x_imm(30, 31, 0));
+        w.push(encode::enc_add_imm(31, 31, 16, true));
+        w.push(encode::enc_ret(30));
+        (w, service)
+    }
+
     /// `x_reg` already holds an actual value; compares against `expect`,
     /// sets `scratch` to `1` if they differ, shifts it into `bit` (a power
     /// of two, `1 << shift`), and ORs it into `acc` — a branch-free
@@ -4199,15 +4240,14 @@ pub fn build() -> Image:
     }
 
     /// (a) Vector raise observed at a checkpoint: a hand-assembled,
-    /// bounded spinning loop (never parks) calls
-    /// `__wrela_checkpoint_service` — the real production routine,
-    /// embedded verbatim via `build_checkpoint_and_vector_stub` — at
-    /// every back-edge, exactly like a compiled loop's own checkpoint
-    /// (`codegen::FnCtx::checkpoint`). A background host thread (this
-    /// crate's own `test_delayed_raise` conformance seam — module doc on
-    /// `boot_image_core`) raises vector 0 mid-run, entirely independently
-    /// of the park protocol (the guest is actively running, never
-    /// parked) — modeling "the VMM raises a vector while the guest is
+    /// bounded spinning loop (never parks) calls a self-contained
+    /// checkpoint fixture (`hand_built_simple_checkpoint` — the pre-I
+    /// empty irq/wake shape) at every back-edge, exactly like a compiled
+    /// loop's own checkpoint (`codegen::FnCtx::checkpoint`). A background
+    /// host thread (this crate's own `test_delayed_raise` conformance seam
+    /// — module doc on `boot_image_core`) raises vector 0 mid-run, entirely
+    /// independently of the park protocol (the guest is actively running,
+    /// never parked) — modeling "the VMM raises a vector while the guest is
     /// somewhere in a bounded loop" (06 §4) honestly, since M6-E's only
     /// *real* producer of a mid-run raise (an expired group's deadline)
     /// is item F's own job. The loop's own bound is large enough that the
@@ -4225,17 +4265,15 @@ pub fn build() -> Image:
     #[test]
     fn vector_raise_observed_at_a_checkpoint_over_hvf() {
         use wrela_compiler::encode;
-        use wrela_compiler::layout::build_checkpoint_and_vector_stub;
         use wrela_machine::{layout as machine_layout, machine_info, pending};
 
         const LOOP_BOUND: u64 = 200_000_000;
         let sp_top = machine_layout::core_stack_base(0) + machine_layout::CORE_STACK_SIZE;
-        // `None`: this hand-built conformance guest has no group arena at
-        // all (plans/M6.md item F's own `GroupServiceCtx`), so the
-        // vector-0 body stays exactly the observation counter this test
-        // asserts on.
-        let cp = build_checkpoint_and_vector_stub(None);
-        let (cp_words, cp_entry_offset) = (cp.words, cp.checkpoint_service_word);
+        // M11 I: production checkpoint section is a floor trampoline + wrela
+        // body in `code`. This conformance guest is hand-built, so embed a
+        // self-contained simple-path clone (observed++ / pending clear) —
+        // the pre-I empty irq/wake shape, frozen here as a VMM fixture.
+        let (cp_words, cp_entry_offset) = hand_built_simple_checkpoint();
 
         let mut w = Vec::new();
         w.extend(load_imm_words(9, sp_top));

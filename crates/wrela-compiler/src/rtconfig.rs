@@ -1,6 +1,7 @@
 //! Image runtime config generator (plans/M11.md item D, decisions 700–702 /
 //! 709 / 760–769; item E, decisions 780–786; item F, decisions 790–796;
-//! item G, decisions 800–809; item H, decisions 810–815).
+//! item G, decisions 800–809; item H, decisions 810–815; item I, decisions
+//! 820–829).
 //!
 //! After `@image` evaluation + placement, the compiler pretty-prints a
 //! hidden facts-only module (`core.__image_runtime`) as source text and
@@ -66,6 +67,10 @@ pub struct RtconfigExtras {
     pub init_slots: Vec<(u64, u64)>,
     /// M11 H: number of boot `init` calls (drivers then actors).
     pub n_boot_calls: usize,
+    /// M11 I: pending-vector bit indices for sealed IRQ binds.
+    pub irq_vector_bits: Vec<u64>,
+    /// M11 I: absolute wake-pending word addresses.
+    pub wake_pending_addrs: Vec<u64>,
 }
 
 /// Hidden module address (decision 701). Loader key is `["core", "__image_runtime"]`;
@@ -92,6 +97,9 @@ pub const RING_POOL_COUNT: usize = 8;
 pub const ENQUEUE_STUB_COUNT: usize = 32;
 /// Boot `init` call stub pool (decision 812).
 pub const BOOT_CALL_POOL_COUNT: usize = 32;
+/// IRQ handler / wake `@task` stub pools (decision 823).
+pub const IRQ_CALL_POOL_COUNT: usize = 8;
+pub const WAKE_CALL_POOL_COUNT: usize = 8;
 /// Sentinel edge index from match ladders when no ring matches (decision 801).
 pub const NO_EDGE: usize = 255;
 
@@ -202,6 +210,8 @@ pub fn extras_from_tables(tables: &RuntimeTables) -> RtconfigExtras {
         enqueue_actors: tables.enqueue_actors.clone(),
         init_slots,
         n_boot_calls: tables.n_boot_calls,
+        irq_vector_bits: tables.irq_vector_bits.clone(),
+        wake_pending_addrs: tables.wake_pending_addrs.clone(),
     }
 }
 
@@ -281,6 +291,16 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
         "image needs {} boot calls; pool is {BOOT_CALL_POOL_COUNT} (decision 812)",
         extras.n_boot_calls
     );
+    assert!(
+        extras.irq_vector_bits.len() <= IRQ_CALL_POOL_COUNT,
+        "image needs {} IRQ stubs; pool is {IRQ_CALL_POOL_COUNT} (decision 823)",
+        extras.irq_vector_bits.len()
+    );
+    assert!(
+        extras.wake_pending_addrs.len() <= WAKE_CALL_POOL_COUNT,
+        "image needs {} wake stubs; pool is {WAKE_CALL_POOL_COUNT} (decision 823)",
+        extras.wake_pending_addrs.len()
+    );
 
     let mut out = String::new();
     out.push_str("module __image_runtime\n");
@@ -307,6 +327,16 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     push_const(&mut out, "N_INIT_SLOTS", extras.init_slots.len());
     push_const(&mut out, "N_BOOT_CALLS", extras.n_boot_calls);
     push_const(&mut out, "BOOT_CALL_POOL_COUNT", BOOT_CALL_POOL_COUNT);
+    push_const(&mut out, "N_IRQ_VECTORS", extras.irq_vector_bits.len());
+    push_const(&mut out, "IRQ_CALL_POOL_COUNT", IRQ_CALL_POOL_COUNT);
+    push_const(&mut out, "N_WAKE_DRAINS", extras.wake_pending_addrs.len());
+    push_const(&mut out, "WAKE_CALL_POOL_COUNT", WAKE_CALL_POOL_COUNT);
+    let checkpoint_simple =
+        extras.irq_vector_bits.is_empty() && extras.wake_pending_addrs.is_empty();
+    out.push_str(&format!(
+        "pub const CHECKPOINT_SIMPLE: bool = {}\n",
+        if checkpoint_simple { "true" } else { "false" }
+    ));
     push_const(&mut out, "NO_EDGE", NO_EDGE);
     out.push('\n');
 
@@ -364,6 +394,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
             - (RING_POOL_COUNT as u64) * 64
             - 96
             - (BOOT_CALL_POOL_COUNT as u64) * 8
+            - (WAKE_CALL_POOL_COUNT as u64) * 8
             - (n_turns_len as u64) * (turn_stride as u64)
     } else {
         RTDATA_BASE
@@ -456,6 +487,18 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
         out.push_str("    return\n");
         out.push('\n');
     }
+    // IRQ / wake stubs (decision 823): overwritten at inject with
+    // `x0 = driver_state; bl handler/task`.
+    for i in 0..IRQ_CALL_POOL_COUNT {
+        out.push_str(&format!("pub fn __irq_call_{i}():\n"));
+        out.push_str("    return\n");
+        out.push('\n');
+    }
+    for i in 0..WAKE_CALL_POOL_COUNT {
+        out.push_str(&format!("pub fn __wake_call_{i}():\n"));
+        out.push_str("    return\n");
+        out.push('\n');
+    }
 
     // Init-slot overlays (decision 813): fixed pool so `runtime.wr` can
     // import every INIT_SLOT* (same rule as RING*_DATA — decision 800).
@@ -464,7 +507,8 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     let init_placeholder_base = RTDATA_BASE + wrela_machine::layout::RTDATA_SIZE_MAX
         - (RING_POOL_COUNT as u64) * 64
         - 96
-        - (BOOT_CALL_POOL_COUNT as u64) * 8;
+        - (BOOT_CALL_POOL_COUNT as u64) * 8
+        - (WAKE_CALL_POOL_COUNT as u64) * 8;
     for i in 0..BOOT_CALL_POOL_COUNT {
         let (addr, nwords) = extras
             .init_slots
@@ -478,6 +522,24 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
         out.push('\n');
         out.push_str(&format!("@placed({addr:#x})\n"));
         out.push_str(&format!("pub static INIT_SLOT{i}: InitSlot{i}Words\n"));
+        out.push('\n');
+    }
+
+    // Wake-pending word overlays (decision 823): live addrs overlay driver
+    // state; unused slots get non-colliding placeholders.
+    let wake_placeholder_base = init_placeholder_base + (BOOT_CALL_POOL_COUNT as u64) * 8;
+    for i in 0..WAKE_CALL_POOL_COUNT {
+        let addr = extras
+            .wake_pending_addrs
+            .get(i)
+            .copied()
+            .unwrap_or(wake_placeholder_base + (i as u64) * 8);
+        out.push_str("@layout(runtime, endian=little)\n");
+        out.push_str(&format!("struct WakePend{i}Word:\n"));
+        out.push_str("    word: u64\n");
+        out.push('\n');
+        out.push_str(&format!("@placed({addr:#x})\n"));
+        out.push_str(&format!("pub static WAKE_PEND{i}: WakePend{i}Word\n"));
         out.push('\n');
     }
 
@@ -809,6 +871,61 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     for i in 0..extras.n_boot_calls {
         out.push_str(&format!("        case {i}:\n"));
         out.push_str(&format!("            __boot_call_{i}()\n"));
+        out.push_str("            return\n");
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return\n");
+    out.push('\n');
+
+    // IRQ / wake ladders (decision 823).
+    out.push_str("pub fn __wrela_irq_mask(i: usize) -> u64:\n");
+    out.push_str("    match i:\n");
+    for (i, &bit) in extras.irq_vector_bits.iter().enumerate() {
+        let mask = 1u64 << (bit & 63);
+        out.push_str(&format!("        case {i}:\n"));
+        out.push_str(&format!("            return {mask}\n"));
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return 0\n");
+    out.push('\n');
+
+    out.push_str("pub fn __wrela_irq_invoke(i: usize):\n");
+    out.push_str("    match i:\n");
+    for i in 0..extras.irq_vector_bits.len() {
+        out.push_str(&format!("        case {i}:\n"));
+        out.push_str(&format!("            __irq_call_{i}()\n"));
+        out.push_str("            return\n");
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return\n");
+    out.push('\n');
+
+    out.push_str("pub fn __wrela_wake_pending_load(i: usize) -> u64:\n");
+    out.push_str("    match i:\n");
+    for i in 0..WAKE_CALL_POOL_COUNT {
+        out.push_str(&format!("        case {i}:\n"));
+        out.push_str(&format!("            return WAKE_PEND{i}.word\n"));
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return 0\n");
+    out.push('\n');
+
+    out.push_str("pub fn __wrela_wake_pending_store(i: usize, v: u64):\n");
+    out.push_str("    match i:\n");
+    for i in 0..WAKE_CALL_POOL_COUNT {
+        out.push_str(&format!("        case {i}:\n"));
+        out.push_str(&format!("            WAKE_PEND{i}.word = v\n"));
+        out.push_str("            return\n");
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return\n");
+    out.push('\n');
+
+    out.push_str("pub fn __wrela_wake_invoke(i: usize):\n");
+    out.push_str("    match i:\n");
+    for i in 0..extras.wake_pending_addrs.len() {
+        out.push_str(&format!("        case {i}:\n"));
+        out.push_str(&format!("            __wake_call_{i}()\n"));
         out.push_str("            return\n");
     }
     out.push_str("        case _:\n");
