@@ -6591,7 +6591,8 @@ pub fn is_mmio_access_intrinsic(key: &str) -> bool {
 // --- plans/M7.md item H2a / plans/M9.md item G1: `Untrusted[T]` --------
 //
 // One marked-value mechanism, three policies (03-hardware.md §8 /
-// 05-library.md §6). `Untrusted[T]` is live; `Validated` / `Secret` are
+// 05-library.md §6). `Untrusted[T]` is live; `Secret` is refuse-by-name;
+// `Validated` is demoted to the `resource(manual)` idiom (plans/M13.md item P). Legacy note: `Validated` / `Secret` are
 // refused by name at resolve time (`types::resolve_named`) — M9 G2/G3
 // deferrals (decisions 353–355), not unknown-type misses. The wrapper is
 // sealed: no source-visible constructor, no ordinary use as an index /

@@ -1,1 +1,1 @@
-error[type]: the marked-value mechanism refuses policy `Validated[F, T]` — plans/M9.md item G2 defers it (decision 353): needs `FormatValidator[F, T].validate` and `into_value(take self)` (05-library.md §6); only `Untrusted[T]` is live (03-hardware.md §8) at 7:11
+error[name]: unknown name `Validated` at 8:11

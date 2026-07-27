@@ -5501,7 +5501,8 @@ pub fn is_builtin_type_name(name: &str) -> bool {
             | "ReadOnly"
             | "WriteOnly"
             | "Untrusted"
-            | "Validated"
+            // plans/M13.md item P: `Validated` demoted — ordinary name for
+            // the `resource(manual)` idiom; not a prelude type.
             | "Secret"
             | "InterruptCell"
             // Time types stay annotation-resolvable without an import
@@ -5749,31 +5750,16 @@ fn resolve_named(
             let inner = resolve_type(args[0], shapes, module_pools, local_pools, generics, false)?;
             return Ok(Type::Named(n.name.clone(), vec![TypeArg::Type(inner)]));
         }
-        // plans/M7.md item H2a, 03-hardware.md §8: one marked-value
-        // mechanism, three policies. `Untrusted[T]` is the only one M7's
-        // honest-scope line keeps IN; `Validated[F, T]` and `Secret[T]`
-        // are recognized here so the refusal is the mechanism rejecting
-        // an unimplemented policy by name, not an unknown-type miss.
+        // plans/M7.md item H2a, 03-hardware.md §8: marked-value mechanism.
+        // `Untrusted[T]` is live; `Secret[T]` remains refuse-by-name.
+        // plans/M13.md item P: `Validated` is demoted — not recognized
+        // here; a module may declare `resource(manual) struct Validated`.
         "Untrusted" => {
             let args = expect_type_args(n, 1)?;
             let inner = resolve_type(args[0], shapes, module_pools, local_pools, generics, false)?;
             return Ok(Type::Named(
                 "Untrusted".to_string(),
                 vec![TypeArg::Type(inner)],
-            ));
-        }
-        "Validated" => {
-            // Arity is still checked so a wrong-shape spell reports that
-            // first; the policy refusal is what a well-shaped name gets.
-            let _args = expect_type_args(n, 2)?;
-            return Err(SemaError::at(
-                "type",
-                "the marked-value mechanism refuses policy `Validated[F, T]` — plans/M9.md \
-                 item G2 defers it (decision 353): needs `FormatValidator[F, T].validate` and \
-                 `into_value(take self)` (05-library.md §6); only `Untrusted[T]` is live \
-                 (03-hardware.md §8)"
-                    .to_string(),
-                n.span,
             ));
         }
         "Secret" => {

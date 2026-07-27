@@ -1006,6 +1006,30 @@ fn walk_expr<'a>(
             walk_place_subexprs(inner, state, fctx, wctx, dstack, loop_marker)?;
             check_takeable(&path, state, wctx, *span)?;
             set_state(&path, state, PathState::Moved);
+            // plans/M13.md item O/P: taking a field out of a
+            // `resource(manual)` consumes the wrapper — the Validated
+            // idiom's `into_value(take self) -> T` via `take self.value`.
+            // Prelude sealed leaves have no source-visible fields, so
+            // this arm is unreachable for them.
+            if !path.steps.is_empty() {
+                if let Some(Type::Named(n, _)) = fctx.lookup_local(&path.root) {
+                    if wctx
+                        .mctx
+                        .structs
+                        .get(n.as_str())
+                        .is_some_and(|s| s.decl.is_manual_resource)
+                    {
+                        set_state(
+                            &StoragePath {
+                                root: path.root.clone(),
+                                steps: Vec::new(),
+                            },
+                            state,
+                            PathState::Moved,
+                        );
+                    }
+                }
+            }
             Ok(())
         }
         // plans/M7.md item E4 / 03-hardware.md §5: `completion = await

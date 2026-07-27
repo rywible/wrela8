@@ -261,15 +261,15 @@ Hybrid policies are library code.
 ## 8. Untrusted device data
 
 wrela has one **marked value** mechanism — a sealed wrapper that gates use
-of a payload until an explicit, typed transition — with three instances:
-`Untrusted[T]` (must be checked before use as a bound), `Validated[F, T]`
-(proof a declared parser ran), and `Secret[T]` (must never leak into the
-image, logs, or control flow; [02 §12](02-language.md)). One mechanism,
-three policies; no other gating wrappers exist. User typestate that needs
-the same sealing without a prelude name uses `resource(manual) struct`
-plus private fields ([02 §3.1](02-language.md)) — declining the derived
-reclaim action so every path must consume the value, with only the
-declaring module able to mint it.
+of a payload until an explicit, typed transition — with two policies:
+`Untrusted[T]` (must be checked before use as a bound) and `Secret[T]`
+(must never leak into the image, logs, or control flow;
+[02 §12](02-language.md)). One mechanism, two policies; no other gating
+wrappers exist. Proof that a declared parser ran is not a third prelude
+type: it is the `resource(manual)` + private-fields idiom
+([02 §3.1](02-language.md), [05 §6](05-library.md)) — the same sealing
+mechanism under a consume-on-every-path policy rather than a checked-
+narrowing policy.
 
 Device **control** values that can influence an index, length, allocation, or
 bound arrive as `Untrusted[T]` and cannot be used until checked-narrowed:
@@ -282,9 +282,8 @@ written = reported.checked_le(buffer.capacity())?
 Device-written **payload** bytes become ordinary data once the protocol
 validates the reported extent — but their format still needs its own
 validation (a filesystem checks magic numbers and extents; parsers return
-checked values). `Validated[F, T]` ([05 §6](05-library.md)) is the wrapper an
-API can require as proof that a declared parser ran. This applies even to
-hypervisor-backed virtio: devices can also be hardware.
+checked values). This applies even to hypervisor-backed virtio: devices
+can also be hardware.
 
 ## 9. Protocol states, cancellation, reset
 
