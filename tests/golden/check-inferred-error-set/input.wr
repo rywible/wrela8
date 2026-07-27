@@ -1,0 +1,30 @@
+module examples.check_inferred_error_set
+
+# plans/M13.md item K / 02-language.md §5: private `-> Result[T]` infers
+# the error set from Err construction and ?-propagation; typed dump prints it.
+
+enum LoadError:
+    Bad
+    Missing
+
+fn parse(raw: u32) -> Result[u32]:
+    if raw == 0:
+        return Err(LoadError.Missing)
+    if raw > 100:
+        return Err(LoadError.Bad)
+    return Ok(raw)
+
+fn twice(raw: u32) -> Result[u32]:
+    x = parse(raw)?
+    return Ok(x + x)
+
+enum IoFault:
+    Timeout
+
+enum ParseFault:
+    Truncated
+
+fn either(flag: bool) -> Result[u32]:
+    if flag:
+        return Err(IoFault.Timeout)
+    return Err(ParseFault.Truncated)

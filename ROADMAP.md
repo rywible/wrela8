@@ -807,15 +807,15 @@ Plan when activated.
 ### Recorded language intentions (not yet scheduled)
 
 - **Inferred error sets** — *scheduled 2026-07-26: M13 (plans/M13.md
-  item K)*, its normative doc revision still human-reviewed in its own
-  commit and rejectable without downstream effect. The intention as
-  recorded: extend "pub declares, private infers" — the doctrine
-  receiver effects, pool names, generic contracts, and comptime
-  legality already follow — to error types; a private `fn` writes
-  `-> Result[T]` and the compiler infers the exact set from the closed
-  world (it already computes this to erase impossible `CallError`
-  variants, 02 §9.4); `pub` boundaries still demand a declared nominal
-  enum.
+  item K)*; normative doc revision landed (02 §5 / §6.2 / §7.4, 04 §7,
+  05 §1) and remains human-reviewed / rejectable without downstream
+  effect. The intention as recorded: extend "pub declares, private
+  infers" — the doctrine receiver effects, pool names, generic
+  contracts, and comptime legality already follow — to error types; a
+  private `fn` writes `-> Result[T]` and the compiler infers the exact
+  set from the closed world (it already computes this to erase
+  impossible `CallError` variants, 02 §9.4); `pub` boundaries still
+  demand a declared nominal enum.
 - **Cost proofs** (deliberately not M15). M15's proxy ranks compiler
   alternatives; it does not discharge `@budget`, make
   `sema.bounds.loops` sound in cycles, or prove elapsed latency. Those need

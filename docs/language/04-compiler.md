@@ -240,8 +240,9 @@ Tooling (hover, expanded views) must display inferred facts wherever source
 omits them: receiver effects, pool names, reclaim classification, copy vs
 move at each binding, actor edge vs internal call, suspension points and
 frame fields, the ambient group lineage of every `async fn`, the inferred
-requirement set of every generic, which driver methods carry the handoff
-convention, and DMA state around protocol calls. Inference reduces
+requirement set of every generic, the inferred error set of every private
+`-> Result[T]` ([02 §5](02-language.md)), which driver methods carry the
+handoff convention, and DMA state around protocol calls. Inference reduces
 annotations; it must not hide causality.
 
 Diagnostics carry a stable category, a primary span, the inferred fact that

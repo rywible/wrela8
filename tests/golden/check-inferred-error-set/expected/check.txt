@@ -1,0 +1,11 @@
+Module path=examples.check_inferred_error_set
+  Enum LoadError data
+    variant Bad
+    variant Missing
+  Fn parse(raw: read u32) -> Result[u32, LoadError]
+  Fn twice(raw: read u32) -> Result[u32, LoadError]
+  Enum IoFault data
+    variant Timeout
+  Enum ParseFault data
+    variant Truncated
+  Fn either(flag: read bool) -> Result[u32, IoFault | ParseFault]

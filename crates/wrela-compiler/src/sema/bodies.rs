@@ -321,6 +321,11 @@ pub(crate) struct ModuleCtx {
     /// plans/M13.md item N: sync loops that omit `@budget`, pending the
     /// observation-discharge check after bodies are typed.
     pub(crate) unbounded_sync_loops: RefCell<Vec<crate::sema::typed::UnboundedSyncLoop>>,
+    /// plans/M13.md item K: finalized return types for private
+    /// `-> Result[T]` fns (and methods, keyed `Owner.method`), filled
+    /// after each body is checked so a later caller sees the concrete
+    /// error set rather than the declare-time marker.
+    pub(crate) inferred_rets: RefCell<BTreeMap<String, Type>>,
 }
 
 /// One placed static's resolved type (plans/M10.md item A2c). Address lives
@@ -536,6 +541,7 @@ pub(crate) fn build_module_ctx(
         current_chain: RefCell::new(Vec::new()),
         virtqueue_configures: RefCell::new(Vec::new()),
         unbounded_sync_loops: RefCell::new(Vec::new()),
+        inferred_rets: RefCell::new(BTreeMap::new()),
     }
 }
 
@@ -691,10 +697,19 @@ pub(crate) struct FnCtx {
     /// the map into that push/pop is the one place a future construct
     /// cannot forget.
     quarantined_by_queue: BTreeMap<String, (String, String)>,
+    /// plans/M13.md item K: when `ret_ty` is private `Result[T]` (error
+    /// set still the declare-time marker), accumulate every `Err` /
+    /// `?` error source reaching `return`. `None` for ordinary signatures.
+    inferred_errors: Option<Vec<Type>>,
 }
 
 impl FnCtx {
     pub(crate) fn new(ret_ty: Type, local_pools: BTreeSet<String>) -> FnCtx {
+        let inferred_errors = if types::is_inferred_result(&ret_ty) {
+            Some(Vec::new())
+        } else {
+            None
+        };
         FnCtx {
             ret_ty,
             locals: vec![BTreeMap::new()],
@@ -704,7 +719,39 @@ impl FnCtx {
             fn_name: String::new(),
             unknown_outcome_arms: 0,
             quarantined_by_queue: BTreeMap::new(),
+            inferred_errors,
         }
+    }
+
+    fn record_inferred_error(&mut self, ty: Type) {
+        if self.inferred_errors.is_none() {
+            return;
+        }
+        if types::is_inferred_error_set(&ty) {
+            return;
+        }
+        if matches!(ty, Type::Never) {
+            return;
+        }
+        // Flatten a previously-inferred multi-member set so `?` on a
+        // callee whose set is `A | B` contributes `A` and `B` separately.
+        if let Type::Named(n, args) = &ty {
+            if n == types::ERROR_SET_NAME {
+                for a in args {
+                    if let types::TypeArg::Type(t) = a {
+                        self.record_inferred_error(t.clone());
+                    }
+                }
+                return;
+            }
+        }
+        let Some(v) = &mut self.inferred_errors else {
+            return;
+        };
+        if v.iter().any(|e| types_eq(e, &ty)) {
+            return;
+        }
+        v.push(ty);
     }
 
     /// Is the current position inside a `CompletionOutcome.Unknown` arm?
@@ -1419,16 +1466,58 @@ pub(crate) fn check_top_fn(
             f.span,
         ));
     }
+    let ret = finalize_inferred_ret(&d.ret, fctx.inferred_errors, &f.name, None, mctx);
     Ok(Some(TypedFn {
         receiver: None,
         params,
-        ret: d.ret.clone(),
+        ret,
         body,
         is_async: f.is_async,
         is_task: false,
         is_layout_assert: is_layout_assert_fn(f),
         is_pub: f.is_pub,
     }))
+}
+
+/// plans/M13.md item K: replace the declare-time `Result[T, <inferred>]`
+/// marker with the union of collected `Err`/`?` sources, and publish the
+/// concrete return type for later callers in the same module.
+fn finalize_inferred_ret(
+    declared: &Type,
+    inferred_errors: Option<Vec<Type>>,
+    fn_name: &str,
+    owner: Option<&str>,
+    mctx: &ModuleCtx,
+) -> Type {
+    let Some(errs) = inferred_errors else {
+        return declared.clone();
+    };
+    let Type::Result(ok, err) = declared else {
+        return declared.clone();
+    };
+    if !types::is_inferred_error_set(err) {
+        return declared.clone();
+    }
+    let err_ty = types::finalize_error_set(errs);
+    let ret = Type::Result(ok.clone(), Box::new(err_ty));
+    let key = inferred_ret_key(owner, fn_name);
+    mctx.inferred_rets.borrow_mut().insert(key, ret.clone());
+    ret
+}
+
+fn inferred_ret_key(owner: Option<&str>, fn_name: &str) -> String {
+    match owner {
+        Some(o) => format!("{o}.{fn_name}"),
+        None => fn_name.to_string(),
+    }
+}
+
+fn resolved_ret(declared: &Type, owner: Option<&str>, fn_name: &str, mctx: &ModuleCtx) -> Type {
+    mctx.inferred_rets
+        .borrow()
+        .get(&inferred_ret_key(owner, fn_name))
+        .cloned()
+        .unwrap_or_else(|| declared.clone())
 }
 
 pub(crate) fn check_params_with_defaults(
@@ -1513,10 +1602,12 @@ fn check_enum_bodies(e: &ast::EnumItem, mctx: &ModuleCtx) -> Result<Option<Typed
             ));
         }
         let receiver = f.receiver.as_ref().map(|r| (r.mode, self_ty.clone()));
+        let ret =
+            finalize_inferred_ret(&fd.ret, fctx.inferred_errors, &f.name, Some(&e.name), mctx);
         let tf = TypedFn {
             receiver,
             params,
-            ret: fd.ret.clone(),
+            ret,
             body,
             is_async: f.is_async,
             is_task: fd.is_task,
@@ -1660,10 +1751,17 @@ pub(crate) fn check_struct_members(
                     }
                 }
                 let receiver = f.receiver.as_ref().map(|r| (r.mode, self_ty.clone()));
+                let ret = finalize_inferred_ret(
+                    &fd.ret,
+                    fctx.inferred_errors,
+                    &f.name,
+                    Some(&struct_name),
+                    mctx,
+                );
                 let tf = TypedFn {
                     receiver,
                     params,
-                    ret: fd.ret.clone(),
+                    ret,
                     body,
                     is_async: f.is_async,
                     is_task: fd.is_task,
@@ -1681,10 +1779,17 @@ pub(crate) fn check_struct_members(
                 fctx.insert_local("self".to_string(), self_ty.clone());
                 let params = check_params_with_defaults(&i.params, &fd.params, &mut fctx, mctx)?;
                 let body = check_stmts(&i.body, &mut fctx, mctx)?;
+                let ret = finalize_inferred_ret(
+                    &fd.ret,
+                    fctx.inferred_errors,
+                    "init",
+                    Some(&struct_name),
+                    mctx,
+                );
                 init = Some(TypedFn {
                     receiver: Some((i.receiver.mode, self_ty.clone())),
                     params,
-                    ret: fd.ret.clone(),
+                    ret,
                     body,
                     is_async: false,
                     is_task: false,
@@ -3054,6 +3159,16 @@ pub(crate) fn check_expr(
     let actual = synth_expr(expr, expected, fctx, mctx)?;
     if let Some(exp) = expected {
         if !types_eq(&actual.ty, exp) {
+            // plans/M13.md item K: private `Result[T]` accepts any
+            // `Result[T, E]` and records `E` into the inferred set.
+            if let (Type::Result(exp_ok, exp_err), Type::Result(act_ok, act_err)) =
+                (exp, &actual.ty)
+            {
+                if types::is_inferred_error_set(exp_err) && types_eq(exp_ok, act_ok) {
+                    fctx.record_inferred_error((**act_err).clone());
+                    return Ok(actual);
+                }
+            }
             // plans/M7.md item H2a: an `Untrusted[T]` is never silently
             // coerced to a plain `T`. Prefer the mechanism's own wording
             // over a bare expected/found mismatch whenever the found
@@ -4587,6 +4702,22 @@ fn check_try(
     let inner_t = check_expr(inner, None, fctx, mctx)?;
     match inner_t.ty.clone() {
         Type::Result(t_ok, t_err) => match fctx.ret_ty.clone() {
+            Type::Result(_, ret_err) if types::is_inferred_error_set(&ret_err) => {
+                // plans/M13.md item K: `?` widens the inferred set; no `from`.
+                if types::is_inferred_error_set(&t_err) {
+                    return Err(type_error(
+                        "`?` on a function whose error set is not yet inferred — declare \
+                         that function above this one (02-language.md §5)"
+                            .to_string(),
+                        span,
+                    ));
+                }
+                fctx.record_inferred_error(*t_err);
+                Ok(TypedExpr {
+                    ty: *t_ok,
+                    kind: TypedExprKind::Try(Box::new(inner_t), None),
+                })
+            }
             Type::Result(_, ret_err) => {
                 if types_eq(&t_err, &ret_err) {
                     Ok(TypedExpr {
@@ -5362,7 +5493,7 @@ fn check_call_by_name(
         let typed_args =
             check_call_args(&f.ast.params, &f.decl.params, args, call_span, fctx, mctx)?;
         return Ok(TypedExpr {
-            ty: f.decl.ret.clone(),
+            ty: resolved_ret(&f.decl.ret, None, name, mctx),
             kind: TypedExprKind::Call {
                 callee: CalleeKey::Fn(name.to_string()),
                 receiver: None,
@@ -5408,6 +5539,11 @@ fn check_call_by_name(
                 return Err(arity_error(1, args.len(), call_span));
             }
             let (t_expected, e_ty) = match expected {
+                Some(Type::Result(t, e)) if types::is_inferred_error_set(e) => {
+                    // plans/M13.md item K: Ok does not contribute an error;
+                    // use `never` so return-gate recording skips it.
+                    (Some((**t).clone()), Some(Type::Never))
+                }
                 Some(Type::Result(t, e)) => (Some((**t).clone()), Some((**e).clone())),
                 _ => (None, None),
             };
@@ -5433,6 +5569,10 @@ fn check_call_by_name(
                 return Err(arity_error(1, args.len(), call_span));
             }
             let (t_ty_opt, e_expected) = match expected {
+                Some(Type::Result(t, e)) if types::is_inferred_error_set(e) => {
+                    // Open error side — any constructed error joins the set.
+                    (Some((**t).clone()), None)
+                }
                 Some(Type::Result(t, e)) => (Some((**t).clone()), Some((**e).clone())),
                 _ => (None, None),
             };
@@ -5443,6 +5583,7 @@ fn check_call_by_name(
                     call_span,
                 )
             })?;
+            fctx.record_inferred_error(e_typed.ty.clone());
             let ty = Type::Result(Box::new(t_ty), Box::new(e_typed.ty.clone()));
             Ok(TypedExpr {
                 ty,
@@ -5648,7 +5789,7 @@ fn check_call_by_field(
                         check_call_args(&af.params, &d.params, args, call_span, fctx, mctx)?;
                     let key = CalleeKey::Method(bname.clone(), name.to_string());
                     return Ok(TypedExpr {
-                        ty: d.ret.clone(),
+                        ty: resolved_ret(&d.ret, Some(bname), name, mctx),
                         kind: TypedExprKind::Call {
                             callee: key,
                             receiver: None,
@@ -5691,7 +5832,7 @@ fn check_call_by_field(
                         check_call_args(&af.params, &d.params, args, call_span, fctx, mctx)?;
                     let key = CalleeKey::Method(bname.clone(), name.to_string());
                     return Ok(TypedExpr {
-                        ty: d.ret.clone(),
+                        ty: resolved_ret(&d.ret, Some(bname), name, mctx),
                         kind: TypedExprKind::Call {
                             callee: key,
                             receiver: None,
@@ -5945,7 +6086,7 @@ fn check_call_by_field(
                     )
                 };
                 return Ok(TypedExpr {
-                    ty: d.ret.clone(),
+                    ty: resolved_ret(&d.ret, Some(sname), name, mctx),
                     kind: TypedExprKind::Call {
                         callee: key,
                         receiver: Some(Box::new(base_t)),
@@ -5982,7 +6123,7 @@ fn check_call_by_field(
                     let typed_args =
                         check_call_args(&mf.params, &d.params, args, call_span, fctx, mctx)?;
                     return Ok(TypedExpr {
-                        ty: d.ret.clone(),
+                        ty: resolved_ret(&d.ret, Some(sname), name, mctx),
                         kind: TypedExprKind::Call {
                             callee: CalleeKey::Method(sname.clone(), name.to_string()),
                             receiver: Some(Box::new(base_t)),

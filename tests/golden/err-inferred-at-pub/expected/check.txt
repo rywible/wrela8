@@ -1,0 +1,1 @@
+error[type]: a `pub` signature must declare a nominal error type — write `Result[T, E]`, not `Result[T]` (02-language.md §5) at 5:17
