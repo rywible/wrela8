@@ -851,6 +851,9 @@ fn subst_decl_struct(d: &DeclStruct, subst: &Subst, mctx: &ModuleCtx) -> DeclStr
         layout_kind: d.layout_kind,
         component_types,
         span: d.span,
+        is_manual_resource: d.is_manual_resource,
+        classes: d.classes,
+        classes_assigned: d.classes_assigned,
     }
 }
 
@@ -897,6 +900,8 @@ fn subst_decl_enum(d: &DeclEnum, subst: &Subst, mctx: &ModuleCtx) -> DeclEnum {
         members,
         component_types,
         span: d.span,
+        classes: d.classes,
+        classes_assigned: d.classes_assigned,
     }
 }
 
@@ -1634,6 +1639,9 @@ fn method_instantiation_struct_info(
                 layout_kind: None,
                 component_types: Vec::new(),
                 span: e.span,
+                is_manual_resource: false,
+                classes: e.classes,
+                classes_assigned: e.classes_assigned,
             },
             ast_members: vec![Member::Fn(ast.clone())],
             deferred_comptime_members: Vec::new(),

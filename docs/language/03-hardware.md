@@ -265,7 +265,11 @@ of a payload until an explicit, typed transition — with three instances:
 `Untrusted[T]` (must be checked before use as a bound), `Validated[F, T]`
 (proof a declared parser ran), and `Secret[T]` (must never leak into the
 image, logs, or control flow; [02 §12](02-language.md)). One mechanism,
-three policies; no other gating wrappers exist.
+three policies; no other gating wrappers exist. User typestate that needs
+the same sealing without a prelude name uses `resource(manual) struct`
+plus private fields ([02 §3.1](02-language.md)) — declining the derived
+reclaim action so every path must consume the value, with only the
+declaring module able to mint it.
 
 Device **control** values that can influence an index, length, allocation, or
 bound arrive as `Untrusted[T]` and cannot be used until checked-narrowed:

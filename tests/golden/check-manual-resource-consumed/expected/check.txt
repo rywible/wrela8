@@ -1,0 +1,7 @@
+Module path=examples.check_manual_resource_consumed
+  Struct Token resource manual
+    classes copy=false must_consume=true crosses_actor=true holds_authority=false
+    field bits: u64
+    fn mint(bits: read u64) -> Token
+  Fn use_it() -> Token
+  Fn forward(t: take Token) -> Token

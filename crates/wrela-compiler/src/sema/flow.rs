@@ -653,12 +653,13 @@ fn check_exit_obligations(
 /// had. The diagnostic names the *carried* type so a wrapper's spelling
 /// still says why (`golden/err-cap-drop-option`, `err-cap-drop-wrapped`).
 fn protocol_resource_carried(ty: &Type, mctx: &ModuleCtx) -> Option<String> {
+    // plans/M13.md item O: re-derive from `must_consume` (dual-run against
+    // `is_protocol_consuming_type_name` for prelude leaves; `resource(manual)`
+    // is the new fiat leaf).
     fn walk(ty: &Type, mctx: &ModuleCtx, seen: &mut BTreeSet<String>) -> Option<String> {
         use crate::sema::types::TypeArg;
         match ty {
-            Type::Named(name, _)
-                if crate::eval::image_checks::is_protocol_consuming_type_name(name) =>
-            {
+            Type::Named(name, _) if crate::sema::classes::name_must_consume(name, false) => {
                 Some(types::render_type(ty))
             }
             Type::Named(name, _) if name == "Actor" => None,
@@ -675,6 +676,15 @@ fn protocol_resource_carried(ty: &Type, mctx: &ModuleCtx) -> Option<String> {
             Type::Named(name, targs) => {
                 if !seen.insert(name.clone()) {
                     return None;
+                }
+                // `resource(manual)` fiat: the named type itself must_consume.
+                if mctx
+                    .structs
+                    .get(name.as_str())
+                    .is_some_and(|s| s.decl.is_manual_resource)
+                {
+                    seen.remove(name);
+                    return Some(types::render_type(ty));
                 }
                 let via_fields = mctx
                     .structs
@@ -703,7 +713,19 @@ fn protocol_resource_carried(ty: &Type, mctx: &ModuleCtx) -> Option<String> {
             _ => None,
         }
     }
-    walk(ty, mctx, &mut BTreeSet::new())
+    let found = walk(ty, mctx, &mut BTreeSet::new());
+    // Dual-run over the root leaf: old name list ≡ new must_consume.
+    if let Type::Named(name, _) = ty {
+        if crate::sema::classes::leaf_classes(name).is_some() {
+            let old = crate::eval::image_checks::is_protocol_consuming_type(ty);
+            let new = found.as_ref().is_some_and(|f| f.starts_with(name));
+            assert_eq!(
+                new, old,
+                "type-class dual-run: protocol_resource_carried mismatch for `{name}`"
+            );
+        }
+    }
+    found
 }
 
 /// 02-language.md §3.1: "If its only consumers are protocol operations
@@ -877,8 +899,12 @@ fn apply_pattern_move(
     span: Span,
     scrutinee_ty: &Type,
 ) -> Result<(), SemaError> {
-    let move_protocol_wrapper = protocol_resource_carried(scrutinee_ty, wctx.mctx).is_some()
-        && !crate::eval::image_checks::is_protocol_consuming_type(scrutinee_ty);
+    let root_must_consume = matches!(
+        scrutinee_ty,
+        Type::Named(n, _) if crate::sema::classes::name_must_consume(n, false)
+    );
+    let move_protocol_wrapper =
+        protocol_resource_carried(scrutinee_ty, wctx.mctx).is_some() && !root_must_consume;
     if !pattern_has_take(pattern) && !move_protocol_wrapper {
         return Ok(());
     }
@@ -1003,8 +1029,11 @@ fn walk_expr<'a>(
         Expr::Unary(span, UnaryOp::Await, inner) => {
             if let Some(path) = as_path(inner, fctx, wctx.mctx) {
                 if let Some(ty) = place_type(inner, fctx, wctx.mctx) {
-                    // Bare `Receipt[P]` only — wrappers do not await.
-                    if crate::eval::image_checks::is_protocol_consuming_type(&ty) {
+                    // Bare protocol-consuming leaf only — wrappers do not await.
+                    if matches!(
+                        &ty,
+                        Type::Named(n, _) if crate::sema::classes::name_must_consume(n, false)
+                    ) {
                         walk_place_subexprs(inner, state, fctx, wctx, dstack, loop_marker)?;
                         check_takeable(&path, state, wctx, *span)?;
                         set_state(&path, state, PathState::Moved);
