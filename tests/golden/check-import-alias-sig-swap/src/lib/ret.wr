@@ -1,10 +1,10 @@
 module lib.ret
 
 pub struct Inner:
-    n: u32
+    pub n: u32
 
 pub struct Outer:
-    n: u32
+    pub n: u32
 
     pub fn peel(read self) -> Inner:
         return Inner(n=self.n)
