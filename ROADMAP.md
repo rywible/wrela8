@@ -72,9 +72,11 @@ beyond the active milestone. A milestone's *first deliverable* is its plan
 code exists, the shape decisions that milestone freezes, and explicit
 non-goals. Plans are written when a milestone activates, never earlier
 (each milestone manufactures the facts the next plan needs), and become
-history when it completes. Active plan: [plans/M13.md](plans/M13.md)
-(vocabulary milestone). M12 is COMPLETE ([plans/M12.md](plans/M12.md)).
-M11 is COMPLETE ([plans/M11.md](plans/M11.md)).
+history when it completes. Active plan: none — M13 is COMPLETE
+([plans/M13.md](plans/M13.md)); next is M14 (progress, constructively)
+and **not activated** (no `plans/M14.md` yet). M12 is COMPLETE
+([plans/M12.md](plans/M12.md)). M11 is COMPLETE
+([plans/M11.md](plans/M11.md)).
 
 ### M1 — Parse everything
 Full grammar → stable AST dumps (`wrela dump --stage=ast`). Includes
