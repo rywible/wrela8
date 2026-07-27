@@ -19,3 +19,8 @@ Module path=lib.pair
     field a: u32
     field b: u32
     fn sum(read self) -> u32
+FieldVisibilityCensus constructs=8 reads=2 writes=0 patterns=0 fields=2
+  construct use=app.main decl=lib.pair struct=Pair field=a
+  construct use=app.main decl=lib.pair struct=Pair field=b
+  read use=app.main decl=lib.pair struct=Pair field=a
+  read use=app.main decl=lib.pair struct=Pair field=b

@@ -453,6 +453,8 @@ fn dump_with_imports(
 struct CheckDumpTables {
     decl_items_map: BTreeMap<Vec<String>, Vec<types::DeclItem>>,
     imported_types: BTreeMap<Vec<String>, types::ImportedTypes>,
+    /// plans/M13.md item G1: warn-only cross-module private-field uses.
+    field_visibility: crate::field_visibility_census::Census,
 }
 
 fn render_check_dump(
@@ -497,6 +499,12 @@ fn render_check_dump(
             &tables.imported_types[key],
             Some(&tables.decl_items_map[key]),
         )?);
+    }
+    // plans/M13.md item G1: pin the census shape on multi-module check
+    // dumps that have violations. Empty censuses stay silent so
+    // single-module / clean packages do not churn.
+    if !tables.field_visibility.is_empty() {
+        out.push_str(&tables.field_visibility.render());
     }
     Ok(out)
 }
@@ -952,13 +960,70 @@ fn check_program_typed_tables(
     // plans/M7.md item E2: whole-closure half of the reserve proof.
     reserve_proof::check(&by_name)?;
 
+    // plans/M13.md item G1: warn-only field-visibility census (never a
+    // diagnostic — G3 flips these sites to error[sema]). Skip the same
+    // auto-injected modules `render_check_dump` omits, so the census is
+    // the G2 worklist rather than generated-runtime field traffic.
+    let skip_modules = field_visibility_skip_modules(modules);
+    let field_visibility = crate::field_visibility_census::census_programs(
+        &programs,
+        &decl_items_map,
+        &bindings,
+        &skip_modules,
+    );
+
     Ok((
         programs,
         CheckDumpTables {
             decl_items_map,
             imported_types,
+            field_visibility,
         },
     ))
+}
+
+/// Modules omitted from the field-visibility census — same set
+/// `render_check_dump` hides from `--stage=check` output.
+fn field_visibility_skip_modules(modules: &BTreeMap<Vec<String>, Module>) -> BTreeSet<Vec<String>> {
+    let time_key: Vec<String> = crate::loader::TIME_MODULE_KEY
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    let runtime_key: Vec<String> = crate::loader::RUNTIME_MODULE_KEY
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    let time_explicit = modules
+        .values()
+        .any(|m| m.imports.iter().any(|imp| imp.path == time_key));
+    let runtime_explicit = modules
+        .values()
+        .any(|m| m.imports.iter().any(|imp| imp.path == runtime_key));
+    let mut skip = BTreeSet::new();
+    if !time_explicit {
+        skip.insert(time_key);
+    }
+    if !runtime_explicit {
+        skip.insert(runtime_key);
+    }
+    skip.insert(
+        crate::loader::IMAGE_RUNTIME_MODULE_KEY
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect(),
+    );
+    skip
+}
+
+/// plans/M13.md item G1: run check and return the field-visibility census
+/// for a whole-program closure. Public so `xtask check` can warn-only
+/// aggregate across goldens without failing the build.
+pub fn census_field_visibility(
+    modules: &BTreeMap<Vec<String>, Module>,
+    paths: &BTreeMap<Vec<String>, String>,
+) -> Result<crate::field_visibility_census::Census, SemaError> {
+    let (_programs, tables) = check_program_typed_tables(modules, paths)?;
+    Ok(tables.field_visibility)
 }
 
 /// plans/M9.md item A1b: fills every module's `TypedProgram::imported`
@@ -1668,6 +1733,7 @@ pub fn dump_program(modules: &BTreeMap<Vec<String>, Module>) -> Result<String, S
         &CheckDumpTables {
             decl_items_map,
             imported_types,
+            field_visibility: crate::field_visibility_census::Census::default(),
         },
     )
 }

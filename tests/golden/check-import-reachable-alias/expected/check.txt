@@ -13,3 +13,6 @@ Module path=lib.g
   Struct Maker data
     field seed: u32
     fn build(read self) -> Box
+FieldVisibilityCensus constructs=1 reads=1 writes=0 patterns=0 fields=2
+  construct use=app.main decl=lib.g struct=Builder field=seed
+  read use=app.main decl=lib.g struct=Box field=n

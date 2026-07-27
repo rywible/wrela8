@@ -14,3 +14,5 @@ Module path=lib.g
     variant Good(Payload)
     variant Bad
   Fn make(n: read u32) -> Res
+FieldVisibilityCensus constructs=0 reads=1 writes=0 patterns=0 fields=1
+  read use=app.main decl=lib.g struct=Payload field=n

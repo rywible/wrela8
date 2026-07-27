@@ -273,6 +273,9 @@ fn check() -> Result<(), String> {
     )?;
     test_wrela_vmm_signed()?;
     golden(false)?;
+    // plans/M13.md item G1: warn-only field-visibility census across
+    // multi-module goldens. Never fails the build (G3 flips to fail).
+    field_visibility_census_warn()?;
     report_determinism()?;
     diff_eval_smoke()?;
     // plans/M9.md item J3: bare `corpus` always sema-classifies and
@@ -5190,6 +5193,69 @@ fn test_wrela_vmm_signed() -> Result<(), String> {
             &format!("run {}", exe.display()),
         )?;
     }
+    Ok(())
+}
+
+/// plans/M13.md item G1: aggregate the field-visibility census across
+/// every multi-module golden (`root` present) and print a warn-only
+/// summary. Never returns `Err` for a non-zero census — G3 flips that.
+///
+/// Site counts sum per package (many goldens reuse `app.main` /
+/// `lib.pair` spellings, so a global violation-row dedup would
+/// undercount). `fields_needing_pub` is the union of
+/// `(decl_module, decl_struct, field)` across packages.
+fn field_visibility_census_warn() -> Result<(), String> {
+    use std::collections::BTreeSet;
+    use wrela_compiler::field_visibility_census::census_root;
+    let golden_dir = root().join("tests/golden");
+    let mut constructs = 0usize;
+    let mut reads = 0usize;
+    let mut writes = 0usize;
+    let mut patterns = 0usize;
+    let mut fields: BTreeSet<(String, String, String)> = BTreeSet::new();
+    let mut packages = 0usize;
+    let mut skipped = 0usize;
+    for case in golden_case_dirs(&golden_dir)? {
+        // Multi-module packages carry a `root` file; single-file goldens
+        // cannot host a cross-module field use.
+        if !case.join("root").is_file() {
+            continue;
+        }
+        let Some(target) = golden_case_target(&case)? else {
+            continue;
+        };
+        if !target.exists() {
+            continue;
+        }
+        match census_root(&target) {
+            Ok(c) => {
+                if c.is_empty() {
+                    continue;
+                }
+                packages += 1;
+                let counts = c.counts();
+                constructs += counts.constructs;
+                reads += counts.reads;
+                writes += counts.writes;
+                patterns += counts.patterns;
+                fields.extend(c.fields_needing_pub());
+            }
+            Err(e) => {
+                // A package that fails to check is already a golden
+                // failure elsewhere; don't fail the warn-only pass on it.
+                skipped += 1;
+                eprintln!(
+                    "field-visibility census: skip {}: {e}",
+                    case.file_name().and_then(|n| n.to_str()).unwrap_or("?")
+                );
+            }
+        }
+    }
+    eprintln!(
+        "field-visibility census: constructs={constructs} reads={reads} writes={writes} \
+         patterns={patterns} fields_needing_pub={} packages_hit={packages} skipped={skipped}",
+        fields.len()
+    );
     Ok(())
 }
 

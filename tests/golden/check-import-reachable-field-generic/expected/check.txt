@@ -18,3 +18,8 @@ Module path=lib.g
     field seed: u32
     fn hold(read self) -> Holder
     fn wrap(read self) -> Box[Cell]
+FieldVisibilityCensus constructs=1 reads=4 writes=0 patterns=0 fields=4
+  construct use=app.main decl=lib.g struct=Maker field=seed
+  read use=app.main decl=lib.g struct=Box field=v
+  read use=app.main decl=lib.g struct=Cell field=n
+  read use=app.main decl=lib.g struct=Holder field=cell

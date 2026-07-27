@@ -64,6 +64,8 @@ and run no code, so import cycles between modules are legal; cycles through
 constants, layouts, or image construction are errors.
 
 Declarations are module-private unless `pub`.
+Struct fields are module-private unless `pub`; only the declaring module may
+construct, read, write, or pattern-bind a non-`pub` field.
 
 A fixed prelude is always in scope: `Option`, `Some`, `None`, `Result`, `Ok`,
 `Err`, `panic`. Scalar type names are builtin. Everything else is imported.

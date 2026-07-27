@@ -18,3 +18,8 @@ Module path=lib.b
 Module path=lib.c
   Struct C data
     field n: u32
+FieldVisibilityCensus constructs=3 reads=1 writes=0 patterns=0 fields=3
+  construct use=app.main decl=lib.a struct=A field=seed
+  construct use=lib.a decl=lib.b struct=B field=seed
+  construct use=lib.b decl=lib.c struct=C field=n
+  read use=app.main decl=lib.c struct=C field=n

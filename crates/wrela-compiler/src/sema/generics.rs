@@ -709,6 +709,7 @@ fn subst_decl_field(f: &DeclField, subst: &Subst) -> DeclField {
     DeclField {
         name: f.name.clone(),
         ty: subst_type(&f.ty, subst),
+        is_pub: f.is_pub,
     }
 }
 
