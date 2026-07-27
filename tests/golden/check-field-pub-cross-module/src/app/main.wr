@@ -1,0 +1,16 @@
+module app.main
+
+from lib.open import Open
+
+# plans/M13.md item G3: `pub` fields may be constructed, read, and written
+# outside the declaring module.
+fn probe() -> u32:
+    o = Open(value=1)
+    o.value = 2
+    return o.value
+
+const N: u32 = probe()
+
+@test
+pub fn t():
+    assert N == 2, "pub field cross-module"

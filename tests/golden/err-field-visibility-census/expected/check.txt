@@ -1,0 +1,1 @@
+error[sema]: field `hidden` of `Sealed` is private to module `lib.sealed`; only that module may construct, read, write, or pattern-bind it (02-language.md §2) at 10:19

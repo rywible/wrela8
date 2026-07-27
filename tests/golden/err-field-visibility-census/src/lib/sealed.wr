@@ -1,0 +1,7 @@
+module lib.sealed
+
+# plans/M13.md item G3: non-`pub` field (foreign construct is error[sema])
+# plus a `pub` field (legal cross-module — check-field-pub-cross-module).
+pub struct Sealed:
+    hidden: u32
+    pub visible: u32

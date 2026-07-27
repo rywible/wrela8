@@ -1,0 +1,8 @@
+module lib.sealed
+
+pub struct Sealed:
+    hidden: u32
+    pub visible: u32
+
+pub fn mint() -> Sealed:
+    return Sealed(hidden=7, visible=8)

@@ -1,15 +1,16 @@
-//! **Field-visibility violations census** (plans/M13.md item G1 / decision 7).
+//! **Field-visibility violations census** (plans/M13.md item G3 / decision 7).
 //!
 //! 02-language.md §2: struct fields are module-private unless `pub`; only
 //! the declaring module may construct, read, write, or pattern-bind a
-//! non-`pub` field. G1 carries `DeclField.is_pub` and ships this census;
-//! G3 flips the same sites to `error[sema]`. Until then the census is
-//! **warn-only** — it never fails the build.
+//! non-`pub` field. G1 shipped this census warn-only; G3 enforces the same
+//! sites as `error[sema]` in `sema/bodies.rs`. The census remains as a
+//! belt-and-suspenders aggregate: `xtask check` fails if any still-
+//! typechecking package has a non-empty census (intentional `err-field-*`
+//! goldens fail check and are skipped).
 //!
-//! Counts are re-measured live (do not trust the M9-OO 26/44/30/27
-//! snapshot). Pattern-bind stays a column even though revision 0.1 has
-//! no struct-field patterns — the normative sentence names the four
-//! sites together, and G3 will refuse them uniformly when they exist.
+//! Pattern-bind stays a column even though revision 0.1 has no
+//! struct-field patterns — the normative sentence names the four sites
+//! together.
 
 use crate::sema::imports::ImportBindings;
 use crate::sema::typed::{
@@ -127,7 +128,8 @@ impl Census {
             .collect()
     }
 
-    /// Stable dump / report text pinned by `golden/check-field-visibility-census`.
+    /// Stable dump / report text (G1 pinned the shape; G3 enforcement makes
+    /// successful dumps empty — residual demos are `err-field-*` goldens).
     /// Summary counts are per-site; detail lines are unique shapes.
     pub fn render(&self) -> String {
         let c = self.counts();

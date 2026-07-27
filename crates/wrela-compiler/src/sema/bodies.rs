@@ -171,6 +171,14 @@ impl StructInfo {
         })
     }
 
+    /// Source `pub` on a field (02-language.md §2 / plans/M13.md item G3).
+    pub(crate) fn field_is_pub(&self, name: &str) -> Option<bool> {
+        self.decl.members.iter().find_map(|m| match m {
+            DeclMember::Field(d) if d.name == name => Some(d.is_pub),
+            _ => None,
+        })
+    }
+
     pub(crate) fn has_member_named(&self, name: &str) -> bool {
         self.ast_members.iter().any(|m| match m {
             Member::Fn(f) => f.name == name,
@@ -326,6 +334,20 @@ pub(crate) struct ModuleCtx {
     /// after each body is checked so a later caller sees the concrete
     /// error set rather than the declare-time marker.
     pub(crate) inferred_rets: RefCell<BTreeMap<String, Type>>,
+    /// Dotted module path this `ModuleCtx` was built for (plans/M13.md
+    /// item G3): field visibility compares the use-site module against
+    /// each struct's declaring module.
+    pub(crate) module_path: String,
+    /// Local spelling → dotted declaring module for every struct in
+    /// `structs` (own declarations + spliced / HH-reachable imports).
+    pub(crate) struct_decl_module: BTreeMap<String, String>,
+    /// Local spelling → dotted declaring module for free fns (generics
+    /// re-check of an imported body needs the exporter as use-site).
+    pub(crate) fn_decl_module: BTreeMap<String, String>,
+    /// When `generics::check` re-types an exporter's body under an
+    /// importer's tables, the exporter's dotted path — field visibility
+    /// uses this instead of `module_path` while set.
+    pub(crate) visibility_home: RefCell<Option<String>>,
 }
 
 /// One placed static's resolved type (plans/M10.md item A2c). Address lives
@@ -373,6 +395,7 @@ pub(crate) fn build_module_ctx(
     decl_items: &[types::DeclItem],
     imported: &types::ImportedTypes,
 ) -> ModuleCtx {
+    let module_path = module.path.join(".");
     let mut shapes: BTreeMap<String, usize> = imported.clone();
     let mut module_pools = BTreeSet::new();
     let mut structs = BTreeMap::new();
@@ -381,6 +404,8 @@ pub(crate) fn build_module_ctx(
     let mut consts = BTreeMap::new();
     let mut statics = BTreeMap::new();
     let mut const_values = BTreeMap::new();
+    let mut struct_decl_module = BTreeMap::new();
+    let mut fn_decl_module = BTreeMap::new();
 
     let ast_items: Vec<&Item> = module
         .items
@@ -442,6 +467,7 @@ pub(crate) fn build_module_ctx(
                         )));
                     }
                 }
+                struct_decl_module.insert(s.name.clone(), module_path.clone());
                 structs.insert(
                     s.name.clone(),
                     StructInfo {
@@ -488,6 +514,7 @@ pub(crate) fn build_module_ctx(
                 );
             }
             (Item::Fn(f), types::DeclItem::Fn(d)) => {
+                fn_decl_module.insert(f.name.clone(), module_path.clone());
                 fns.insert(
                     f.name.clone(),
                     FnInfo {
@@ -542,6 +569,10 @@ pub(crate) fn build_module_ctx(
         virtqueue_configures: RefCell::new(Vec::new()),
         unbounded_sync_loops: RefCell::new(Vec::new()),
         inferred_rets: RefCell::new(BTreeMap::new()),
+        module_path,
+        struct_decl_module,
+        fn_decl_module,
+        visibility_home: RefCell::new(None),
     }
 }
 
@@ -3712,6 +3743,7 @@ fn check_field_expr(
                 std::borrow::Cow::Owned(generics::instantiate_struct(mctx, sname, targs, span)?)
             };
             if let Some(ty) = s.field_ty(name) {
+                check_field_privacy(sname, name, &s, span, mctx)?;
                 return Ok(TypedExpr {
                     ty,
                     kind: TypedExprKind::Field(Box::new(base_t), name.to_string()),
@@ -3733,6 +3765,52 @@ fn check_field_expr(
             span,
         )),
     }
+}
+
+/// plans/M13.md item G3 / 02-language.md §2: a non-`pub` field is usable
+/// only inside its declaring module (construct / read / write /
+/// pattern-bind). Generated `core.__image_runtime` tables stay exempt —
+/// handwritten `core.runtime` indexes them by design (same carve-out the
+/// G1 census used).
+fn check_field_privacy(
+    type_name: &str,
+    field: &str,
+    s: &StructInfo,
+    span: Span,
+    mctx: &ModuleCtx,
+) -> Result<(), SemaError> {
+    let Some(is_pub) = s.field_is_pub(field) else {
+        return Ok(());
+    };
+    if is_pub {
+        return Ok(());
+    }
+    let decl_mod = mctx
+        .struct_decl_module
+        .get(type_name)
+        .cloned()
+        .unwrap_or_else(|| mctx.module_path.clone());
+    let decl_parts: Vec<&str> = decl_mod.split('.').collect();
+    if decl_parts.as_slice() == crate::loader::IMAGE_RUNTIME_MODULE_KEY {
+        return Ok(());
+    }
+    let use_mod = mctx
+        .visibility_home
+        .borrow()
+        .clone()
+        .unwrap_or_else(|| mctx.module_path.clone());
+    if use_mod == decl_mod {
+        return Ok(());
+    }
+    Err(SemaError::at(
+        "sema",
+        format!(
+            "field `{field}` of `{type_name}` is private to module `{decl_mod}`; \
+             only that module may construct, read, write, or pattern-bind it \
+             (02-language.md §2)"
+        ),
+        span,
+    ))
 }
 
 fn synth_index(
@@ -11314,7 +11392,7 @@ fn check_struct_construction(
             },
         });
     }
-    let fields = check_struct_literal(s, args, call_span, fctx, mctx)?;
+    let fields = check_struct_literal(local_name, s, args, call_span, fctx, mctx)?;
     Ok(TypedExpr {
         ty: self_ty,
         kind: TypedExprKind::StructLiteral {
@@ -11331,6 +11409,7 @@ fn check_struct_construction(
 /// defaulted field is elided; its default lives once on
 /// `typed::TypedStruct::field_defaults`.
 fn check_struct_literal(
+    local_name: &str,
     s: &StructInfo,
     args: &[Arg],
     call_span: Span,
@@ -11347,6 +11426,7 @@ fn check_struct_literal(
         })
         .collect();
     if fields.len() == 1 && args.len() == 1 && args[0].label.is_none() {
+        check_field_privacy(local_name, &fields[0].0, s, args[0].span, mctx)?;
         let vt = check_expr(&args[0].value, Some(&fields[0].1), fctx, mctx)?;
         return Ok(vec![(fields[0].0.clone(), vt)]);
     }
@@ -11369,6 +11449,7 @@ fn check_struct_literal(
             ));
         }
         bound[idx] = true;
+        check_field_privacy(local_name, label, s, a.span, mctx)?;
         let fty = fields[idx].1.clone();
         let vt = check_expr(&a.value, Some(&fty), fctx, mctx)?;
         slots[idx] = Some(vt);
