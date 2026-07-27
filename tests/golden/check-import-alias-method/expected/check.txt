@@ -18,10 +18,8 @@ Module path=app.main
   Fn build() -> Image
 Module path=lib.counter
   Struct Counter data
-    field n: u32
+    pub field n: u32
     fn zero() -> Counter
     fn get(read self) -> u32
     fn bump(mut self) -> unit
     fn into_n(take self) -> u32
-FieldVisibilityCensus constructs=4 reads=0 writes=0 patterns=0 fields=1
-  construct use=app.main decl=lib.counter struct=Cnt field=n

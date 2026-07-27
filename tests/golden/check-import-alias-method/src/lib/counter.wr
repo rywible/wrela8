@@ -5,7 +5,7 @@ module lib.counter
 # Nothing here is special — the point is entirely on the importer's alias.
 
 pub struct Counter:
-    n: u32
+    pub n: u32
 
     pub fn zero() -> Counter:
         return Counter(n=0)
