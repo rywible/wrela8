@@ -56,9 +56,11 @@ pub struct CorpusSemaPin {
 /// Measured 2026-07-25 through J2d: **18 ok, 5 disagreements** out of 23
 /// parseable-for-sema blocks; **+1 ok** at plans/M10.md item A2c (03 §3.1
 /// example fence is now ```wrela) → **19 ok, 5 disagreements** out of 24.
-/// The five disagreements are deliberate gaps (J2b rulings / decision 523);
-/// J3 gates on this pin, not on zero. Re-keyed by content 2026-07-26
-/// (item A3); classifications unchanged except the new A2c row.
+/// plans/M13.md item Q (2026-07-27): §8.3 method-owned generics
+/// (`276e58180606`) flipped disagreement → ok → **20 ok, 4 disagreements**.
+/// The remaining four disagreements are deliberate gaps (J2b rulings /
+/// decision 523); J3 gates on this pin, not on zero. Re-keyed by content
+/// 2026-07-26 (item A3).
 pub const CORPUS_SEMA_CENSUS: &[CorpusSemaPin] = &[
     CorpusSemaPin {
         key: "8949ad8e2912",
@@ -140,9 +142,9 @@ pub const CORPUS_SEMA_CENSUS: &[CorpusSemaPin] = &[
     },
     CorpusSemaPin {
         key: "276e58180606",
-        loc: "docs/language/02-language.md:530",
-        kind: "disagreement",
-        gap: Some("sema.generics.method-params"),
+        loc: "docs/language/02-language.md:556",
+        kind: "ok",
+        gap: None,
     },
     CorpusSemaPin {
         key: "f56a6f9b7f60",
