@@ -1,8 +1,16 @@
-//! The `reserve_proven` proof (plans/M7.md item E2, decision 6;
-//! 03-hardware.md §4): "`reserve_proven` exists only when whole-image
-//! analysis proves every admitted handler a complete unit (three direct
-//! descriptors in a 128-deep queue means at most 42 in flight — the
-//! compiler computes it)."
+//! The `reserve` proof (plans/M7.md item E2, decision 6;
+//! plans/M13.md item M / decision 1; 03-hardware.md §4).
+//!
+//! ## Proof-conditioned collapse (M13 decision 1)
+//!
+//! `VirtQueue.reserve` is spelled once. Its declared type is
+//! `Result[QueuePermit, CapacityError]`. Where whole-image analysis
+//! proves every admitted handler a complete unit against the queue's
+//! descriptor capacity, use sites that expect `QueuePermit` may collapse
+//! to that success type. Where the proof fails, those collapsed use
+//! sites are refused with a why-chain (04-compiler.md §7 causality);
+//! sites that keep the `Result` stay legal (and item L refuses silent
+//! `Err` discard).
 //!
 //! ## Shape (decision 6)
 //!
@@ -21,7 +29,7 @@
 //! with no image-configured queue can still be judged from the
 //! receiver's own type (the Bound the checker resolved to a literal).
 //! Returns immediately unless the closure contains a
-//! `VirtQueue.reserve_proven` intrinsic.
+//! `VirtQueue.reserve` intrinsic.
 //!
 //! Runtime backpressure (03 §4's generated proxy) is **not** this pass
 //! (plans/M7.md decision 6 / decision 15: item G).
@@ -70,13 +78,21 @@ pub(crate) fn check(programs: &BTreeMap<String, &TypedProgram>) -> Result<(), Se
         return Ok(());
     }
 
+    let mut demands: Vec<Span> = Vec::new();
+    for p in programs.values() {
+        demands.extend(p.reserve_permit_demands.iter().copied());
+    }
+    // Ill-formed images (disagreeing descriptors / depths, wrong
+    // descriptor count) stay hard errors even when every site keeps the
+    // Result — they invent a second occupancy arithmetic, not a capacity
+    // failure mode.
     let descriptors = facts.sites[0].descriptors;
     for site in &facts.sites {
         if site.descriptors != descriptors {
-            return Err(rejection(
+            return Err(hard_rejection(
                 site.span,
                 format!(
-                    "this image's `reserve_proven` sites disagree on `descriptors=` \
+                    "this image's `reserve` sites disagree on `descriptors=` \
                      ({descriptors} vs {}); machine v1's occupancy bound is \
                      `floor(queue_depth / descriptors_per_op)` for one descriptor \
                      count (03-hardware.md §4)",
@@ -85,10 +101,10 @@ pub(crate) fn check(programs: &BTreeMap<String, &TypedProgram>) -> Result<(), Se
             ));
         }
         if site.descriptors != virtqueue::DESCRIPTORS_PER_BLK_OP {
-            return Err(rejection(
+            return Err(hard_rejection(
                 site.span,
                 format!(
-                    "`reserve_proven(descriptors={})`: machine v1's virtio-blk operation \
+                    "`reserve(descriptors={})`: machine v1's virtio-blk operation \
                      uses exactly {} descriptors (header + data + status); a different \
                      count would invent a second occupancy arithmetic",
                     site.descriptors,
@@ -101,10 +117,10 @@ pub(crate) fn check(programs: &BTreeMap<String, &TypedProgram>) -> Result<(), Se
     let depth = facts.sites[0].depth;
     for site in &facts.sites {
         if site.depth != depth {
-            return Err(rejection(
+            return Err(hard_rejection(
                 site.span,
                 format!(
-                    "this image's `reserve_proven` sites disagree on queue depth \
+                    "this image's `reserve` sites disagree on queue depth \
                      ({depth} vs {}); machine v1's `blk` has exactly one queue",
                     site.depth
                 ),
@@ -113,87 +129,135 @@ pub(crate) fn check(programs: &BTreeMap<String, &TypedProgram>) -> Result<(), Se
     }
 
     let occupancy = virtqueue::occupancy_bound(depth, descriptors);
+    let count = facts.sites.len() as u16;
+    let in_child = group_child_closure(&facts);
+    let mut memo: BTreeMap<String, bool> = BTreeMap::new();
+
+    let mut why: Option<(Span, String)> = None;
     if occupancy == 0 {
-        return Err(rejection(
+        why = Some((
             facts.sites[0].span,
             format!(
                 "queue depth {depth} cannot hold even one {descriptors}-descriptor \
                  operation (occupancy bound is floor({depth}/{descriptors}) = 0)"
             ),
         ));
-    }
-
-    let count = facts.sites.len() as u16;
-    if count > occupancy {
-        return Err(rejection(
+    } else if count > occupancy {
+        why = Some((
             facts.sites[0].span,
             format!(
                 "queue depth {depth} admits at most {occupancy} concurrent \
                  {descriptors}-descriptor operations \
                  (floor({depth}/{descriptors})), but this image has {count} static \
-                 `reserve_proven` site(s)"
+                 `reserve` site(s)"
             ),
         ));
+    } else {
+        for site in &facts.sites {
+            if !site.once_locally {
+                why = Some((
+                    site.span,
+                    format!(
+                        "a `reserve` site in `{}` sits inside a loop or a closure \
+                         body, so it can execute more than once per root turn",
+                        site.holder
+                    ),
+                ));
+                break;
+            }
+            if in_child.contains(&site.holder) {
+                why = Some((
+                    site.span,
+                    format!(
+                        "a `reserve` site in `{}` sits inside a `g.start` child, \
+                         which the at-most-once proof excludes (plans/M7.md decision 6: \
+                         same shape as `sema::send_proof`)",
+                        site.holder
+                    ),
+                ));
+                break;
+            }
+            if !at_most_once(
+                &site.holder,
+                &facts,
+                &in_child,
+                &mut memo,
+                &mut BTreeSet::new(),
+            ) {
+                why = Some((
+                    site.span,
+                    format!(
+                        "a `reserve` site in `{}` is not provably executed at most \
+                         once per root turn — `{}` is reachable from more than one static \
+                         call site, from a loop, or through a recursive cycle",
+                        site.holder, site.holder
+                    ),
+                ));
+                break;
+            }
+        }
     }
 
-    let in_child = group_child_closure(&facts);
-    let mut memo: BTreeMap<String, bool> = BTreeMap::new();
-    for site in &facts.sites {
-        if !site.once_locally {
-            return Err(rejection(
-                site.span,
-                format!(
-                    "a `reserve_proven` site in `{}` sits inside a loop or a closure \
-                     body, so it can execute more than once per root turn",
-                    site.holder
-                ),
-            ));
+    if let Some((fact_span, reason)) = why {
+        // No QueuePermit collapse demanded → Result typing is fine;
+        // item L covers silent discard of CapacityError.
+        if demands.is_empty() {
+            return Ok(());
         }
-        if in_child.contains(&site.holder) {
-            return Err(rejection(
-                site.span,
-                format!(
-                    "a `reserve_proven` site in `{}` sits inside a `g.start` child, \
-                     which the at-most-once proof excludes (plans/M7.md decision 6: \
-                     same shape as `sema::send_proof`)",
-                    site.holder
-                ),
-            ));
-        }
-        if !at_most_once(
-            &site.holder,
-            &facts,
-            &in_child,
-            &mut memo,
-            &mut BTreeSet::new(),
-        ) {
-            return Err(rejection(
-                site.span,
-                format!(
-                    "a `reserve_proven` site in `{}` is not provably executed at most \
-                     once per root turn — `{}` is reachable from more than one static \
-                     call site, from a loop, or through a recursive cycle",
-                    site.holder, site.holder
-                ),
-            ));
-        }
+        let demand_span = demands[0];
+        return Err(collapse_rejection(
+            demand_span,
+            fact_span,
+            depth,
+            descriptors,
+            occupancy,
+            count,
+            reason,
+        ));
     }
     Ok(())
 }
 
-fn rejection(span: Span, reason: String) -> SemaError {
+fn hard_rejection(span: Span, reason: String) -> SemaError {
+    let mut e = SemaError::at("type", reason, span);
+    e.extra_lines = vec![
+        "  plans/M7.md decision 6 / plans/M13.md item M: occupancy arithmetic \
+         is one image fact (03-hardware.md §4)"
+            .to_string(),
+    ];
+    e
+}
+
+/// Failed proof at a use site that demanded `QueuePermit` — why-chain
+/// per 04-compiler.md §7 (queue, depth, in-flight bound, image fact).
+fn collapse_rejection(
+    demand_span: Span,
+    fact_span: Span,
+    depth: u16,
+    descriptors: u16,
+    occupancy: u16,
+    site_count: u16,
+    reason: String,
+) -> SemaError {
+    let _ = fact_span;
     let mut e = SemaError::at(
         "type",
-        "`reserve_proven` is not proven infallible for this image — every admitted \
+        "`reserve` is not proven infallible for this image — every admitted \
          handler must be a complete unit against the queue's descriptor capacity \
-         (03-hardware.md §4)"
+         (03-hardware.md §4); the use site demanded `QueuePermit` (plans/M13.md \
+         decision 1)"
             .to_string(),
-        span,
+        demand_span,
     );
     e.extra_lines = vec![
-        format!("  {reason}"),
-        "  plans/M7.md decision 6: same analysis shape as `sema::send_proof`; \
-         runtime backpressure is item G"
+        format!("  queue: VirtQueue[..{depth}]"),
+        format!("  descriptors_per_op: {descriptors}"),
+        format!("  in-flight bound: floor({depth}/{descriptors}) = {occupancy}"),
+        format!("  static `reserve` sites in image: {site_count}"),
+        format!("  image fact: {reason}"),
+        "  04-compiler.md §7: diagnostics carry a why-chain for whole-image analyses".to_string(),
+        "  plans/M13.md item M / decision 1: keep `Result[QueuePermit, CapacityError]` \
+         at the use site, or shrink the image until the proof holds"
             .to_string(),
     ];
     e
@@ -520,7 +584,7 @@ impl Cx<'_> {
                 type_arg,
                 args,
             } => {
-                if key == "VirtQueue.reserve_proven" {
+                if key == "VirtQueue.reserve" {
                     if let Some(site) = reserve_site_of(type_arg, args, &self.holder, self.once) {
                         self.facts.sites.push(site);
                     }
@@ -564,7 +628,7 @@ impl Cx<'_> {
     }
 }
 
-/// `bodies::check_virtqueue_reserve_proven` stores the resolved depth in
+/// `bodies::check_virtqueue_reserve` stores the resolved depth in
 /// `type_arg` as `VirtQueue[..<literal>]` (always an `Int` Bound, even when
 /// the field's own annotation named a const), so the proof never has to
 /// re-resolve a const.

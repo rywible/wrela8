@@ -19,6 +19,7 @@ pub struct Counter:
 
 async fn fetch(d: Actor[Doubler]) -> u64:
     v = await d.double(n=10)
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match v:
         case .Ok(x):
             return x

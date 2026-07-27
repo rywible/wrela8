@@ -23,6 +23,7 @@ pub struct Blk:
 
 async fn ask(b: Actor[Blk]) -> u64:
     v = await b.depth()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match v:
         case .Ok(x):
             return x

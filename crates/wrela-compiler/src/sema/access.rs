@@ -1988,7 +1988,7 @@ fn check_call_by_field(
         // (they update queue bookkeeping); drain stays deferred in bodies.
         if n == "VirtQueue" {
             match name {
-                "reserve_proven" => {
+                "reserve" => {
                     if !allows_mut_receiver(root_mode) {
                         return Err(receiver_mutability_error(
                             AccessMode::Mut,
@@ -1997,7 +1997,13 @@ fn check_call_by_field(
                             fspan,
                         ));
                     }
-                    return Ok(Some(Type::Named("QueuePermit".to_string(), vec![])));
+                    // plans/M13.md item M: declared type is
+                    // `Result[QueuePermit, CapacityError]`; collapse to
+                    // `QueuePermit` is bodies/`reserve_proof`.
+                    return Ok(Some(Type::Result(
+                        Box::new(Type::Named("QueuePermit".to_string(), vec![])),
+                        Box::new(Type::Named("CapacityError".to_string(), vec![])),
+                    )));
                 }
                 "prepare_block" | "publish" | "reject" => {
                     if !allows_mut_receiver(root_mode) {

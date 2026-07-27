@@ -49,9 +49,11 @@ consumed them. `Admission.Quarantined` is reserved for the device-quarantine
 path ([03 §9](03-hardware.md)) and is not a live variant in revision 0.1.
 Admission and reply resolution are deterministic record/replay events.
 
-`send actor.method(...)` has type `Result[unit, Rejected[...]]`, an ordinary
-owned value whose error carries the moved payloads back; where admission is
-build-proven the error type is `never` and the send stands as a statement.
+`send actor.method(...)` has type `Result[unit, CallError[never]]` — the
+same failure vocabulary as an awaited call, with `NotAdmitted` the one
+reachable variant and the moved payloads handed back inside it; where
+admission is build-proven the error type is `never` and the send stands as
+a statement.
 
 A `@driver` is an actor root ([02 §9.1](02-language.md)) and is messageable
 exactly when its declaration carries `mailbox=n` (§9): it then owns a bounded
@@ -239,8 +241,8 @@ compiler-recognized intrinsics even when a package supplies their surface:
 
 ## 10. Naming
 
-Enum variants are CamelCase; functions are snake_case. A statically-proved
-variant of a possibly-failing operation is named `*_proven`
-(`reserve_proven`, `get_proven`) — never an unrelated name, never a silent
-change of failure mode. Bounded-occupancy parameters are spelled `..N` in
-public signatures; exact extents stay `N`.
+Enum variants are CamelCase; functions are snake_case. Bounded-occupancy
+parameters are spelled `..N` in public signatures; exact extents stay `N`.
+Proof-conditioned collapse of a possibly-failing operation (same spelling;
+success type where proved, declared `Result` otherwise) is the language
+rule in [02 §9.4](02-language.md#94-messages--async) — not a second name.

@@ -2732,6 +2732,35 @@ fn lower_from_conversion(
     Ok(dst)
 }
 
+/// plans/M13.md item M: when a use site coerced
+/// `Result[QueuePermit, CapacityError]` to `QueuePermit`, the typed
+/// node carries the success type but the temp still holds a Result —
+/// project the Ok payload.
+fn collapse_reserve_permit_if_needed(
+    expr_ty: &Type,
+    src: Temp,
+    b: &mut FnBuilder<'_, '_>,
+) -> Result<Temp, LowerError> {
+    let is_permit = matches!(expr_ty, Type::Named(n, t) if n == "QueuePermit" && t.is_empty());
+    if !is_permit {
+        return Ok(src);
+    }
+    let src_ty = &b.temp_types[src.0];
+    let is_reserve_result = match src_ty {
+        Type::Result(ok, err) => {
+            matches!(&**ok, Type::Named(n, t) if n == "QueuePermit" && t.is_empty())
+                && matches!(&**err, Type::Named(n, t) if n == "CapacityError" && t.is_empty())
+        }
+        _ => false,
+    };
+    if !is_reserve_result {
+        return Ok(src);
+    }
+    let dst = b.fresh(expr_ty.clone());
+    b.emit(Inst::EnumPayload { dst, src, index: 0 });
+    Ok(dst)
+}
+
 fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Temp, LowerError> {
     match &expr.kind {
         TypedExprKind::Int(text) => {
@@ -2827,8 +2856,13 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
             b.emit(Inst::ConstUnit { dst });
             Ok(dst)
         }
-        TypedExprKind::Local(name) => env_lookup(env, name)
-            .ok_or_else(|| LowerError::internal(format!("unbound local `{name}`"))),
+        TypedExprKind::Local(name) => {
+            let t = env_lookup(env, name)
+                .ok_or_else(|| LowerError::internal(format!("unbound local `{name}`")))?;
+            // plans/M13.md item M: a Local coerced from reserve's Result
+            // to `QueuePermit` still names a Result temp — unwrap Ok.
+            collapse_reserve_permit_if_needed(&expr.ty, t, b)
+        }
         TypedExprKind::Const(name) => {
             let v = crate::eval::interp::eval_const(b.prog(), name).map_err(|e| {
                 LowerError::internal(format!(
@@ -3071,7 +3105,14 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
         // (a `Let`'s own destination temp, a call argument slot, an
         // aggregate element) already gets its own distinct copy at *that*
         // point, so nothing extra happens here.
-        TypedExprKind::Take(inner) => lower_expr(inner, b, env),
+        TypedExprKind::Take(inner) => {
+            let t = lower_expr(inner, b, env)?;
+            // plans/M13.md item M: `take permit` after
+            // `permit = queue.reserve(...)` coerces
+            // `Result[QueuePermit, CapacityError]` → `QueuePermit`; extract
+            // the Ok payload (tag stays at the Result temp).
+            collapse_reserve_permit_if_needed(&expr.ty, t, b)
+        }
         TypedExprKind::Try(inner, conv) => {
             // plans/M7.md item E1 / plans/M9.md item B: sync `?`
             // (02-language.md §7.4). A driver's fallible `init` is a plain
@@ -3647,27 +3688,40 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
                     });
                     Ok(dst)
                 }
-                "VirtQueue.reserve_proven" => {
+                "VirtQueue.reserve" => {
                     // plans/M7.md item E4 / decision 20: the permit word is
                     // the descriptor-table head (single-flight: always 0).
                     // The `descriptors=` argument is proof-only.
+                    // plans/M13.md item M: collapsed sites have ty
+                    // `QueuePermit`; Result-typed sites wrap `Ok(permit)`.
+                    // Runtime Exhausted is item G (backpressure); until
+                    // then a Result site still emits Ok(0).
                     let _ = args
                         .iter()
                         .find(|(l, _)| l == "descriptors")
                         .ok_or_else(|| {
                             LowerError::internal(
-                                "`reserve_proven` reached lowering without `descriptors=`"
-                                    .to_string(),
+                                "`reserve` reached lowering without `descriptors=`".to_string(),
                             )
                         })?;
                     let _ = receiver;
-                    let dst = b.fresh(expr.ty.clone());
+                    let permit = b.fresh(Type::Named("QueuePermit".to_string(), vec![]));
                     b.emit(Inst::ConstInt {
-                        dst,
+                        dst: permit,
                         ty: Type::U64,
                         value: 0,
                     });
-                    Ok(dst)
+                    if matches!(&expr.ty, Type::Result(_, _)) {
+                        let dst = b.fresh(expr.ty.clone());
+                        b.emit(Inst::MakeEnum {
+                            dst,
+                            tag: value::RESULT_OK,
+                            payload: vec![permit],
+                        });
+                        Ok(dst)
+                    } else {
+                        Ok(permit)
+                    }
                 }
                 "VirtQueue.publish" => {
                     let op = args.iter().find(|(l, _)| l == "operation").ok_or_else(|| {

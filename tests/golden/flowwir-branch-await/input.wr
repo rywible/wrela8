@@ -11,6 +11,7 @@ async fn maybe_fetch(target: Actor[Store], use_remote: bool) -> u64:
     result: u64 = 0
     if use_remote:
         outcome = await target.load()
+        @discard(reason="migrated: deliberate Err discard (M13 item L)")
         match outcome:
             case .Ok(v):
                 result = v

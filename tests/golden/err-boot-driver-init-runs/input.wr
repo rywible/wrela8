@@ -108,18 +108,21 @@ async fn device_claimed_image(led: Actor[Ledger]):
     # conversation is here so the image has a runtime test to report at
     # all, and so a green line means "the boot survived the driver".
     a = await led.mark(n=4)
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match a:
         case .Ok(_):
             pass
         case .Err(_):
             assert false, "mark rejected"
     b = await led.mark(n=2)
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match b:
         case .Ok(_):
             pass
         case .Err(_):
             assert false, "mark rejected"
     m = await led.read_marks()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match m:
         case .Ok(v):
             assert v == 42, "two marks in admission order, over an image whose driver claimed a device"

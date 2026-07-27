@@ -4,17 +4,17 @@ Program
     Param name=c mode=read ty=Actor[Counter]
     Body
       Match
-        Send ty=Result[unit, Rejected]
+        Send ty=Result[unit, CallError[never]]
           Call key=Counter.bump ty=unit
             Receiver
               Local name=c ty=Actor[Counter]
         Case
-          VariantPattern enum=Result variant=Ok ty=Result[unit, Rejected]
+          VariantPattern enum=Result variant=Ok ty=Result[unit, CallError[never]]
             Wildcard ty=unit
           Pass
         Case
-          VariantPattern enum=Result variant=Err ty=Result[unit, Rejected]
-            Wildcard ty=Rejected
+          VariantPattern enum=Result variant=Err ty=Result[unit, CallError[never]]
+            Wildcard ty=CallError[never]
           Assert
             Bool value=false ty=bool
             Str text="send must admit" ty=Static[Str]

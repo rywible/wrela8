@@ -205,8 +205,8 @@ await nic.transmit(payload=take packet)
 - Reclaiming a handle returns its slot to the pool that minted it, wherever
   the handle traveled.
 - If the compiler proves an allocation cannot exceed pool capacity, the
-  operation is infallible (the `*_proven` API family); otherwise it returns
-  `CapacityError`.
+  operation's result collapses to its success type (the proof-conditioned
+  rule, §9.4); otherwise it returns `Result[..., CapacityError]`.
 
 A scoped pool is the bulk-region form of the same concept:
 
@@ -693,8 +693,10 @@ a `Receipt` ([03 §5](03-hardware.md)). Under crash-only failure
 it — `PeerFailed` is not in the vocabulary.
 
 One-way messages have a single form. `send actor.method(...)` enqueues a
-unit-returning method; its type is `Result[unit, Rejected[...]]` with the
-moved payloads handed back in the error — an ordinary storable value. When
+unit-returning method; its type is `Result[unit, CallError[never]]` — the
+same vocabulary as an awaited call, with whole-image erasure leaving
+`NotAdmitted` as the one reachable variant. Moved payloads are handed back
+inside `NotAdmitted` (declaration order) — an ordinary storable value. When
 mailbox analysis proves admission cannot fail, the error type is `never` and
 `send` stands as a bare statement; otherwise the result must be consumed:
 
@@ -704,13 +706,34 @@ send audit.record(event=take event)          # capacity proven at build time
 match send logger.record(event=take event):
     case .Ok(_):
         pass                                  # event was moved
-    case .Err(rejected):
-        stash(take rejected.event)            # handed back in the error
+    case .Err(e):
+        match e:
+            case .NotAdmitted(_, args):
+                match args:
+                    case (event,):
+                        stash(take event)     # handed back in the error
 ```
 
-This is the language's one proof-conditioned form: the same spelling is
-infallible exactly where the compiler has proved it, mirroring the library's
-`*_proven` convention.
+This is the language's one proof-conditioned form: where the compiler proves
+an operation's failure impossible, the operation's result is its success
+type; otherwise it is the declared `Result`. The spelling never changes; the
+proof is displayed, and a failed proof surfaces at the use site with the
+why-chain (which bound, which image fact, what changed). Two instances:
+`send` (mailbox admission) and `VirtQueue.reserve` (descriptor capacity).
+
+At an `await` / `send` / `?` boundary, a wildcard or unused binding that
+discards an `Err` is an error — **no silent `Err` discard without
+`@discard(reason=)`**. Annotate the consuming `match` when the discard is
+deliberate:
+
+```wrela
+@discard(reason="probe send; mailbox may be full under load")
+match send logger.record(code=1):
+    case .Ok(_):
+        pass
+    case .Err(_):
+        pass
+```
 
 ### 9.5 Groups
 
@@ -933,11 +956,13 @@ declared non-semantic tool namespace. The revision 0.1 built-ins:
 | `@layout_assert` | Post-layout build assertion over `ImageReport`. |
 | `@test` / `@test(runtime)` / `@test(exhaustive)` | Test declaration (§12.2). |
 | `@budget(...)` | Statement attribute: `@budget(bound=N)` with comptime-known integer `N` ≥ 1 (an integer literal or the name of a module-level `const` whose comptime value is one or more) must immediately precede a `for` or `while` (§8.1). |
+| `@discard(...)` | Statement attribute: `@discard(reason="...")` with a non-empty string reason must immediately precede a `match` that deliberately discards an `Err` at an `await` / `send` / `?` boundary (§9.4). |
 
-Of the built-ins, only `@budget(...)` may be a statement attribute, and in
-that position it must immediately precede `for` or `while` at the same
-indentation. Other statement attributes, and a loop-position `@budget` on a
-non-loop, are errors.
+Of the built-ins, only `@budget(...)` and `@discard(...)` may be statement
+attributes. `@budget` must immediately precede `for` or `while` at the same
+indentation; `@discard` must immediately precede `match`. Other statement
+attributes, a loop-position `@budget` on a non-loop, and a `@discard` not
+on a `match`, are errors.
 
 A module-level `static NAME: Type` is the construct
 [03 §3.1](03-hardware.md) binds with `@placed(addr)`; `@placed` is legal

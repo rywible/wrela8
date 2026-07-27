@@ -16,6 +16,7 @@ pub struct Chain:
     pub async fn run(mut self) -> u64:
         ra = await self.a.step()
         x: u64 = 0
+        @discard(reason="migrated: deliberate Err discard (M13 item L)")
         match ra:
             case .Ok(v):
                 x = v
@@ -23,6 +24,7 @@ pub struct Chain:
                 pass
         rb = await self.b.step()
         y: u64 = 0
+        @discard(reason="migrated: deliberate Err discard (M13 item L)")
         match rb:
             case .Ok(v):
                 y = v
@@ -30,6 +32,7 @@ pub struct Chain:
                 pass
         rc = await self.c.step()
         z: u64 = 0
+        @discard(reason="migrated: deliberate Err discard (M13 item L)")
         match rc:
             case .Ok(v):
                 z = v

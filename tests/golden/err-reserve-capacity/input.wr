@@ -1,7 +1,7 @@
 module examples.err_reserve_capacity
 
 # plans/M7.md item E2: depth 8 admits floor(8/3)=2 concurrent 3-descriptor
-# operations; three at-most-once `reserve_proven` sites exceed that bound.
+# operations; three at-most-once `reserve` sites exceed that bound.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:
@@ -48,13 +48,13 @@ pub struct BlkDriver:
         return Ok(unit)
 
     fn a(mut self) -> QueuePermit:
-        return self.queue.reserve_proven(descriptors=3)
+        return self.queue.reserve(descriptors=3)
 
     fn b(mut self) -> QueuePermit:
-        return self.queue.reserve_proven(descriptors=3)
+        return self.queue.reserve(descriptors=3)
 
     fn c(mut self) -> QueuePermit:
-        return self.queue.reserve_proven(descriptors=3)
+        return self.queue.reserve(descriptors=3)
 
 @image
 pub fn build() -> Image:

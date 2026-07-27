@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=core/io_error.wr sha256=c30f35780ff1d174d74787ddd4d3f51a3b8a0bd76c68e5036ec4bf76a511af81
-  Input path=examples/boot_receipt_handoff.wr sha256=04d929401b41a15512357468434c6a6fc526aa35410f4da8e4c5d0a686cb411b
+  Input path=examples/boot_receipt_handoff.wr sha256=7b4a721735047624f93871f4f4afdfacfadbb2ee29aeb27199e7e644ca055b40
   Input path=<generated> sha256=a747307d8f50ba3baf3fc3f62f349fdfc5cd9f95ae68358fa1274028c786e522
   Name value=boot-receipt-handoff
   Target value=Target.wrela_machine_v1
@@ -83,10 +83,10 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=107808
-  Section name=rodata base=0x4051a570 size=1314
-  Section name=abort base=0x4051aa94 size=120
-  Section name=checkpoint base=0x4051ab0c size=28
+  Section name=code base=0x40500050 size=107896
+  Section name=rodata base=0x4051a5c8 size=1314
+  Section name=abort base=0x4051aaec size=120
+  Section name=checkpoint base=0x4051ab64 size=28
   Section name=rtdata base=0x40540000 size=6664
   Section name=devregs base=0x40541a08 size=104
   Section name=pooldata base=0x40541a70 size=1024

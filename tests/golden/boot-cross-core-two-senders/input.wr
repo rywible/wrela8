@@ -50,6 +50,7 @@ pub struct Alpha:
 
     pub async fn go(read self) -> u64:
         v = await self.sink.bump(by=1)
+        @discard(reason="migrated: deliberate Err discard (M13 item L)")
         match v:
             case .Ok(n):
                 return n
@@ -62,6 +63,7 @@ pub struct Beta:
 
     pub async fn go(read self) -> u64:
         v = await self.sink.bump(by=10)
+        @discard(reason="migrated: deliberate Err discard (M13 item L)")
         match v:
             case .Ok(n):
                 return n
@@ -71,12 +73,14 @@ pub struct Beta:
 @test(runtime)
 async fn two_senders_one_ring(a: Actor[Alpha], b: Actor[Beta]):
     x = await a.go()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match x:
         case .Ok(n):
             assert n == 6, "Alpha's +1 landed on Sink's own core"
         case .Err(_):
             assert false, "Alpha rejected"
     y = await b.go()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match y:
         case .Ok(n):
             assert n == 16, "Beta's +10 landed on the same Sink, after Alpha's"

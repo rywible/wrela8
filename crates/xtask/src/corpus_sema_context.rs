@@ -356,21 +356,15 @@ struct Codec:
     },
     // 02 §9.4 — send / match send. take of a non-own resource in a message.
     // The fence uses `event` twice as parallel illustrations; one binding.
+    // plans/M13.md item J: Err arm is CallError.NotAdmitted (Rejected gone).
     CorpusSemaContext {
         doc: "docs/language/02-language.md",
-        key: "e18a87c8f714",
-        line: 656,
+        key: "ca57644b1058",
+        line: 698,
         section: "9.4 Calls, errors, and admission",
         preamble: r#"
 resource struct Event:
     init(mut self):
-        return unit
-
-resource struct Rejected:
-    event: Event
-
-    init(mut self, take event: Event):
-        self.event = event
         return unit
 
 @actor
@@ -380,8 +374,8 @@ struct Audit:
 
 @actor
 struct Logger:
-    pub fn record(self, take event: Event) -> Result[unit, Rejected]:
-        return Ok(unit)
+    pub fn record(self, take event: Event):
+        return unit
 
 fn stash(take event: Event):
     return unit
@@ -393,13 +387,32 @@ fn stash(take event: Event):
         async_wrapper: true,
         nest_items_into: "",
     },
+    // 02 §9.4 — @discard annotated match send (plans/M13.md item L).
+    CorpusSemaContext {
+        doc: "docs/language/02-language.md",
+        key: "7c68d809d413",
+        line: 721,
+        section: "9.4 Calls, errors, and admission",
+        preamble: r#"
+@actor
+struct Logger:
+    pub fn record(self, code: u64):
+        return unit
+"#,
+        postamble: "",
+        params: "logger: Actor[Logger]",
+        ret: "",
+        ret_ok: "",
+        async_wrapper: true,
+        nest_items_into: "",
+    },
     // 02 §9.5 — with group. Method is `read_file` (not `read`: `read` is a
     // keyword and cannot be a declared method name — decision 517).
     // plans/M13.md item I: CallError is nameable; `?` converts.
     CorpusSemaContext {
         doc: "docs/language/02-language.md",
         key: "84c332141ae2",
-        line: 699,
+        line: 734,
         section: "9.5 Groups",
         preamble: r#"
 @actor

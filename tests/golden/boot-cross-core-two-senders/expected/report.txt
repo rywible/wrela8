@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/boot_cross_core_two_senders.wr sha256=60216fd540bfdacc6ff49eba1ab8317b9ecc4745ec1469527a70a64df61ebb4e
+  Input path=examples/boot_cross_core_two_senders.wr sha256=f8caf27114091fa8ef02bdc63dc0bce9e376b4463bebccd72a8ebf37e4ac2bf1
   Input path=<generated> sha256=312a54e2697bc84a50fb33aa6a6455b9cc45f1e3f31b31c132b73dea656e0a47
   Name value=cross-core-two-senders
   Target value=Target.wrela_machine_v1

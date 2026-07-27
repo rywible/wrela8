@@ -17,9 +17,11 @@ pub struct Coordinator:
 
     pub async fn run(mut self) -> u64:
         first = await self.counter.bump(by=1)
+        @discard(reason="migrated: deliberate Err discard (M13 item L)")
         match first:
             case .Ok(v):
                 second = await self.counter.get()
+                @discard(reason="migrated: deliberate Err discard (M13 item L)")
                 match second:
                     case .Ok(v2):
                         return v + v2

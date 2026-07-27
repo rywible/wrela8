@@ -55,6 +55,7 @@ pub struct Idle:
 @test(runtime)
 async fn cross_core(store: Actor[Store]):
     v = await store.get()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match v:
         case .Ok(n):
             assert n == 7, "expected 7 from Store on core 0"

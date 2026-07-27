@@ -4,22 +4,22 @@ Program
       Receiver mode=mut ty=Auditor
       Param name=code mode=read ty=u64
       Body
-        Let name=outcome ty=Result[unit, Rejected]
-          Send ty=Result[unit, Rejected]
+        Let name=outcome ty=Result[unit, CallError[never]]
+          Send ty=Result[unit, CallError[never]]
             Call key=Logger.record ty=unit
               Receiver
                 Field name=logger ty=Actor[Logger]
                   Local name=self ty=Auditor
               Local name=code ty=u64
         Match
-          Local name=outcome ty=Result[unit, Rejected]
+          Local name=outcome ty=Result[unit, CallError[never]]
           Case
-            VariantPattern enum=Result variant=Ok ty=Result[unit, Rejected]
+            VariantPattern enum=Result variant=Ok ty=Result[unit, CallError[never]]
               Wildcard ty=unit
             Pass
           Case
-            VariantPattern enum=Result variant=Err ty=Result[unit, Rejected]
-              Binding name=_rejected ty=Rejected
+            VariantPattern enum=Result variant=Err ty=Result[unit, CallError[never]]
+              Binding name=_e ty=CallError[never]
             Pass
         Return
           Local name=code ty=u64

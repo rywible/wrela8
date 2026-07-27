@@ -1061,7 +1061,7 @@ pub fn size_of(ty: &Type, ctx: &LayoutCtx) -> Result<usize, String> {
         }
         Type::Str => Err("sizing a bare `Str` (unbounded) has no static size".to_string()),
         // plans/M6.md item D: the M6 builtin-pseudo-type vehicle (`Actor`/
-        // `Group`/`Instant`/`Duration`/`Admission`/`Peer`/`Rejected` —
+        // `Group`/`Instant`/`Duration`/`Admission`/`Peer` —
         // `sema::types::resolve_named`'s own recognized names, none of
         // which is ever a real `DeclStruct`/`DeclEnum` entry in this
         // `LayoutCtx`, so the general `Named` path below can never size
@@ -1071,16 +1071,12 @@ pub fn size_of(ty: &Type, ctx: &LayoutCtx) -> Result<usize, String> {
         // constant index per 04-compiler.md §6's "Actor as-if" license;
         // `Instant`/`Duration` are opaque `u64` tick counts,
         // `flowwir::FlowInst::Now`/`Duration`'s own doc comments;
-        // `Admission`/`Peer`/`Rejected` are opaque builtin payload types
-        // not yet grown real fields, `sema::bodies`'s own doc comment on
-        // `CallError`'s `NotAdmitted`/`PeerFailed` variants). `CallError[E]`
-        // (the one non-empty-`targs` pseudo-type, 02 §9.4's own five-variant
-        // composition, `sema::bodies::compose_call_error`) sizes like any
+        // `Admission` is a fieldless auto-visible enum). `CallError[E]`
+        // (the one non-empty-`targs` pseudo-type, 02 §9.4) sizes like any
         // other builtin sum: one tag slot plus the widest variant's own
-        // payload — `Op(E)` (up to `size_of(E)`) vs. every other variant's
-        // own opaque-handle-or-nothing payload (at most one `SLOT`), so
-        // `SLOT + size_of(E).max(SLOT)` is exact for the whole real
-        // variant set without re-deriving it here a second time.
+        // payload — see the dedicated `CallError` arm below (item H
+        // widens `NotAdmitted`; item J deleted the bare `Rejected`
+        // marker).
         // plans/M7.md item H1, decision 11: 03-hardware.md §1's
         // capabilities and §9's seven bring-up states join the same
         // vehicle, for the same reason and with the same width — every one
@@ -1101,7 +1097,6 @@ pub fn size_of(ty: &Type, ctx: &LayoutCtx) -> Result<usize, String> {
                     | "Duration"
                     | "Admission"
                     | "Peer"
-                    | "Rejected"
                     // plans/M7.md item G, decision 17: one 64-bit word in
                     // driver state (the cell's value; ops address the live
                     // word at `self_ptr + field_off`, never a side table).
@@ -1115,10 +1110,9 @@ pub fn size_of(ty: &Type, ctx: &LayoutCtx) -> Result<usize, String> {
                     | "GroupId"
             ) || crate::eval::image_checks::is_sealed_authority_type_name(name) =>
         {
-            // `Actor[T]`/`Rejected[T]` (if ever instantiated) carry their
-            // own type argument purely for the type-checker's sake — the
-            // argument itself never contributes a byte here (module doc
-            // above).
+            // `Actor[T]` carries its type argument purely for the
+            // type-checker's sake — the argument itself never contributes
+            // a byte here (module doc above).
             Ok(SLOT)
         }
         // plans/M7.md item H2a, 03-hardware.md §8: `Untrusted[T]` is a
@@ -1179,6 +1173,8 @@ pub fn size_of(ty: &Type, ctx: &LayoutCtx) -> Result<usize, String> {
                         | "CompletionOutcome"
                         // plans/M13.md item I: auto-visible fieldless enum.
                         | "Admission"
+                        // plans/M13.md item M: auto-visible fieldless enum.
+                        | "CapacityError"
                 ) =>
         {
             Ok(SLOT)

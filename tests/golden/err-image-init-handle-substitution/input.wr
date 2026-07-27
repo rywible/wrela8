@@ -44,6 +44,7 @@ pub struct Sink:
 @test(runtime)
 async fn boots(s: Actor[Sink]):
     d = await s.read_depth()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match d:
         case .Ok(v):
             assert v == 7, "unreachable: this image never lays out"

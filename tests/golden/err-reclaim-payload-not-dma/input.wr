@@ -110,7 +110,7 @@ pub struct BlkDriver:
         self.device = negotiated.start()
         b = take buffer
         b.word = MAGIC
-        permit = self.queue.reserve_proven(descriptors=3)
+        permit = self.queue.reserve(descriptors=3)
         op = self.queue.prepare_block(
             permit=take permit,
             header=BlkReqHeader(kind=BLK_T_OUT, reserved=0, sector=0),
@@ -162,7 +162,7 @@ pub struct BlkDriver:
                     b = self.queue.reclaim(pool=BlockPayloads, payload=WireBlock)
                     self.reclaimed_word = b.word
                     b.word = REUSED
-                    permit = self.queue.reserve_proven(descriptors=3)
+                    permit = self.queue.reserve(descriptors=3)
                     op = self.queue.prepare_block(
                         permit=take permit,
                         header=BlkReqHeader(kind=BLK_T_OUT, reserved=0, sector=1),

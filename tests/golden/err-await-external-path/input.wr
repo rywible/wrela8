@@ -16,6 +16,7 @@ pub struct Store:
 
     pub async fn combine(mut self, input: Payload) -> u64:
         fetched = await self.upstream.get()
+        @discard(reason="migrated: deliberate Err discard (M13 item L)")
         match fetched:
             case .Ok(v):
                 return input.value + v

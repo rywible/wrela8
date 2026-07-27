@@ -216,16 +216,17 @@ pub enum FlowInst {
     Duration { dst: Temp, n: Temp },
     /// `send target.method(args...)` (02-language.md §9.4): enqueues a
     /// one-way message — non-suspending (never a state split, unlike
-    /// `await`). `dst` always gets the `Result[unit, Rejected]` value
-    /// (item A's own floor: every bare `send` statement is rejected at
-    /// sema time, so this op is reachable only through the expression
-    /// form today, mirroring `sema::typed::TypedExprKind::Send`'s own
-    /// doc comment).
+    /// `await`). `dst` always gets the `Result[unit, CallError[never]]`
+    /// value (plans/M13.md item J / decision 5). `take_arg_temps` are the
+    /// take-mode argument temps handed back inside `NotAdmitted` when
+    /// enqueue refuses — same construction as an awaited call's reject
+    /// arm (item H).
     Send {
         dst: Temp,
         target: Temp,
         method_key: String,
         arg_temps: Vec<Temp>,
+        take_arg_temps: Vec<Temp>,
     },
     /// `with group(capacity=.., deadline=..) [as g]:`'s own opening
     /// bracket (02-language.md §9.5) — `group_temp` is always allocated
@@ -414,10 +415,21 @@ fn fmt_flow_inst(op: &FlowInst) -> String {
             target,
             method_key,
             arg_temps,
-        } => format!(
-            "Send dst={dst} target={target} method={method_key} args=[{}]",
-            join_temps(arg_temps)
-        ),
+            take_arg_temps,
+        } => {
+            if take_arg_temps.is_empty() {
+                format!(
+                    "Send dst={dst} target={target} method={method_key} args=[{}]",
+                    join_temps(arg_temps)
+                )
+            } else {
+                format!(
+                    "Send dst={dst} target={target} method={method_key} args=[{}] take=[{}]",
+                    join_temps(arg_temps),
+                    join_temps(take_arg_temps)
+                )
+            }
+        }
         FlowInst::GroupCreate {
             group_temp,
             capacity,

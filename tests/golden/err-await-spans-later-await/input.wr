@@ -23,6 +23,7 @@ pub struct Store:
 
     pub async fn spans_second(mut self) -> u64:
         first = await self.upstream.get()
+        @discard(reason="migrated: deliberate Err discard (M13 item L)")
         match first:
             case .Ok(completion):
                 second = await self.upstream.get()

@@ -114,7 +114,7 @@ pub struct BlkDriver:
                 payload=take buffer,
                 error=IoError.OutOfRange,
             )
-        permit = self.queue.reserve_proven(descriptors=3)
+        permit = self.queue.reserve(descriptors=3)
         operation = self.queue.prepare_block(
             permit=take permit,
             header=BlkReqHeader(kind=BLK_T_OUT, reserved=0, sector=lba),
@@ -133,7 +133,7 @@ pub struct BlkDriver:
                 payload=take buffer,
                 error=IoError.OutOfRange,
             )
-        permit = self.queue.reserve_proven(descriptors=3)
+        permit = self.queue.reserve(descriptors=3)
         operation = self.queue.prepare_block(
             permit=take permit,
             header=BlkReqHeader(kind=BLK_T_IN, reserved=0, sector=lba),
@@ -244,6 +244,7 @@ pub struct Client:
         # `Ledger`'s own running mark, which only a turn on a *different*
         # actor can produce, so observing it proves this turn suspended.
         m = await self.led.mark(n=7)
+        @discard(reason="migrated: deliberate Err discard (M13 item L)")
         match m:
             case .Ok(v):
                 self.witness = v

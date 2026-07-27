@@ -27,6 +27,7 @@ pub struct Outer:
 
     pub async fn relay(read self) -> u64:
         v = await self.inner.get()
+        @discard(reason="migrated: deliberate Err discard (M13 item L)")
         match v:
             case .Ok(n):
                 return n + 1
@@ -36,6 +37,7 @@ pub struct Outer:
 @test(runtime)
 async fn chain(outer: Actor[Outer]):
     v = await outer.relay()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match v:
         case .Ok(n):
             assert n == 42, "expected 42 through the two-hop chain"

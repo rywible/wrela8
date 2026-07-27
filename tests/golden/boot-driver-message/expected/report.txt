@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/boot_driver_message.wr sha256=fa4feaf13a3a9a2dfd49b362cdb4864fd51dfe8a6a638dcff96c5c209ab1d48e
+  Input path=examples/boot_driver_message.wr sha256=ee4e29b01369d3dbc8316c0ade4af61029f78a59146739c813c7358362df7ed1
   Input path=<generated> sha256=bff1d56f7245da76de25cf2c601d75b765574a336ad399b80b0dadcab6eaa1d9
   Name value=boot-driver-message
   Target value=Target.wrela_machine_v1

@@ -1,3 +1,8 @@
-error[type]: `reserve_proven` is not proven infallible for this image — every admitted handler must be a complete unit against the queue's descriptor capacity (03-hardware.md §4) at 54:42
-  a `reserve_proven` site in `BlkDriver.many` sits inside a loop or a closure body, so it can execute more than once per root turn
-  plans/M7.md decision 6: same analysis shape as `sema::send_proof`; runtime backpressure is item G
+error[type]: `reserve` is not proven infallible for this image — every admitted handler must be a complete unit against the queue's descriptor capacity (03-hardware.md §4); the use site demanded `QueuePermit` (plans/M13.md decision 1) at 57:38
+  queue: VirtQueue[..8]
+  descriptors_per_op: 3
+  in-flight bound: floor(8/3) = 2
+  static `reserve` sites in image: 1
+  image fact: a `reserve` site in `BlkDriver.many` sits inside a loop or a closure body, so it can execute more than once per root turn
+  04-compiler.md §7: diagnostics carry a why-chain for whole-image analyses
+  plans/M13.md item M / decision 1: keep `Result[QueuePermit, CapacityError]` at the use site, or shrink the image until the proof holds

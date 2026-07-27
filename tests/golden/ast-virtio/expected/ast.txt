@@ -415,12 +415,12 @@ Module @12:1 path=examples.virtio_storage
                     Name @190:23 name=IoError
         Assign @195:9 op==
           Name @195:9 name=permit
-          Call @195:43
-            Field @195:29 name=reserve_proven
+          Call @195:36
+            Field @195:29 name=reserve
               Field @195:23 name=queue
                 Name @195:18 name=self
-            Arg @195:44 label=descriptors
-              Int @195:56 text=3
+            Arg @195:37 label=descriptors
+              Int @195:49 text=3
         Assign @197:9 op==
           Name @197:9 name=operation
           Call @197:45
@@ -485,12 +485,12 @@ Module @12:1 path=examples.virtio_storage
                     Name @217:23 name=IoError
         Assign @220:9 op==
           Name @220:9 name=permit
-          Call @220:43
-            Field @220:29 name=reserve_proven
+          Call @220:36
+            Field @220:29 name=reserve
               Field @220:23 name=queue
                 Name @220:18 name=self
-            Arg @220:44 label=descriptors
-              Int @220:56 text=3
+            Arg @220:37 label=descriptors
+              Int @220:49 text=3
         Assign @221:9 op==
           Name @221:9 name=operation
           Call @221:45
@@ -1843,8 +1843,8 @@ Module @12:1 path=examples.virtio_storage
           Body
             Assign @561:13 op==
               Name @561:13 name=body
-              Call @561:48
-                Field @561:33 name=from_str_proven
+              Call @561:41
+                Field @561:33 name=from_str
                   Field @561:25 name=buffers
                     Name @561:20 name=self
                 Arg @562:17
@@ -1862,12 +1862,12 @@ Module @12:1 path=examples.virtio_storage
                       Name @564:60 name=body
             Assign @566:13 op==
               Name @566:13 name=output
-              Call @566:45
-                Field @566:35 name=get_proven
+              Call @566:38
+                Field @566:35 name=get
                   Field @566:27 name=buffers
                     Name @566:22 name=self
-                Arg @566:46 label=capacity
-                  Int @566:55 text=4096
+                Arg @566:39 label=capacity
+                  Int @566:48 text=4096
             Assign @567:13 op==
               Name @567:13 name=output
               Try @567:74

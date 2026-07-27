@@ -25,6 +25,7 @@ pub struct C:
 
 async fn child(c: Actor[C]) -> u64:
     r = await c.bump()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match r:
         case .Ok(v):
             return v

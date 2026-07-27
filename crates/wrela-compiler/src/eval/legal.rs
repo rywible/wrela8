@@ -605,7 +605,7 @@ fn expr_hardware_reason(e: &TypedExpr, authority: &Authority) -> Option<String> 
         // plans/M7.md item E2: reserving / preparing a queue operation is
         // a hardware touch (descriptor capacity / DMA payload handoff).
         TypedExprKind::Intrinsic { key, .. } if crate::sema::bodies::is_queue_op_intrinsic(key) => {
-            Some(if key == "VirtQueue.reserve_proven" {
+            Some(if key == "VirtQueue.reserve" {
                 "a proven queue reservation (03-hardware.md §4)".to_string()
             } else {
                 "a prepared block operation (03-hardware.md §4)".to_string()

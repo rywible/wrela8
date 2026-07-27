@@ -4,7 +4,7 @@ module examples.err_dma_pool_mint_bound
 # device-reachable pool". `BlockControl` reserves 16 slots of 16 bytes =
 # 256 bytes; a `DmaPool[BlockControl, 64]` claims authority bounded at 64.
 # A bound smaller than the memory it admits authority over is not a bound,
-# and every later capacity argument (03 §4's `reserve_proven`, item E)
+# and every later capacity argument (03 §4's `reserve`, item E)
 # would be proved against a number the image contradicts.
 #
 # `golden/check-dma-shared` is this file with a bound that covers the

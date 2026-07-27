@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/boot_receipt_recover.wr sha256=879b32597a9fd6c9cbcdd8a68806d6a6a64b5b30b45a7f807ce0e21a1b6df307
+  Input path=examples/boot_receipt_recover.wr sha256=5ebd0f2dd0b9de5b1c6a936cbc6bfdf59473d42fe255c04733b2a947ad545ed0
   Input path=<generated> sha256=587c4134b4a0982f3f686bef9cbc40a1cfaca40de308f1bcb31bec27c5591b06
   Name value=boot-receipt-recover
   Target value=Target.wrela_machine_v1
@@ -80,10 +80,10 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=102512
-  Section name=rodata base=0x405190c0 size=1261
-  Section name=abort base=0x405195b0 size=120
-  Section name=checkpoint base=0x40519628 size=28
+  Section name=code base=0x40500050 size=102600
+  Section name=rodata base=0x40519118 size=1261
+  Section name=abort base=0x40519608 size=120
+  Section name=checkpoint base=0x40519680 size=28
   Section name=rtdata base=0x40540000 size=2408
   Section name=devregs base=0x40540968 size=104
   Section name=pooldata base=0x405409d0 size=1536

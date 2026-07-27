@@ -60,9 +60,11 @@ pub struct CorpusSemaPin {
 /// (`276e58180606`) flipped disagreement → ok → **20 ok, 4 disagreements**.
 /// plans/M13.md item I (2026-07-27): `CallError`/`Admission` nameable —
 /// `:604`/`f56a6f9b7f60` and `:674`/`84c332141ae2` flipped disagreement →
-/// ok → **22 ok, 2 disagreements**. The remaining two disagreements are
-/// deliberate gaps (J2b rulings / decision 523); J3 gates on this pin,
-/// not on zero. Re-keyed by content 2026-07-26 (item A3).
+/// ok → **22 ok, 2 disagreements**. plans/M13.md item L (2026-07-27):
+/// `@discard` fence `7c68d809d413` added → **23 ok, 2 disagreements**.
+/// The remaining two disagreements are deliberate gaps (J2b rulings /
+/// decision 523); J3 gates on this pin, not on zero. Re-keyed by content
+/// 2026-07-26 (item A3).
 pub const CORPUS_SEMA_CENSUS: &[CorpusSemaPin] = &[
     CorpusSemaPin {
         key: "8949ad8e2912",
@@ -155,14 +157,20 @@ pub const CORPUS_SEMA_CENSUS: &[CorpusSemaPin] = &[
         gap: None,
     },
     CorpusSemaPin {
-        key: "e18a87c8f714",
-        loc: "docs/language/02-language.md:656",
+        key: "ca57644b1058",
+        loc: "docs/language/02-language.md:698",
         kind: "disagreement",
         gap: Some("actors.messages.take-non-own-resource"),
     },
     CorpusSemaPin {
+        key: "7c68d809d413",
+        loc: "docs/language/02-language.md:721",
+        kind: "ok",
+        gap: None,
+    },
+    CorpusSemaPin {
         key: "84c332141ae2",
-        loc: "docs/language/02-language.md:674",
+        loc: "docs/language/02-language.md:734",
         kind: "ok",
         gap: None,
     },

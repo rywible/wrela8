@@ -71,6 +71,7 @@ pub struct Adder:
 
 async fn child_a(a: Actor[Adder]) -> u64:
     r = await a.add(n=10)
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match r:
         case .Ok(v):
             return v
@@ -79,6 +80,7 @@ async fn child_a(a: Actor[Adder]) -> u64:
 
 async fn child_b(a: Actor[Adder]) -> u64:
     r = await a.add(n=20)
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match r:
         case .Ok(v):
             return v
@@ -99,6 +101,7 @@ async fn run_both(a: Actor[Adder], take part: own[Parts] u32) -> u64:
         g.start(child_b, a=a)
         results = await g.join_all()
         for r in results:
+            @discard(reason="migrated: deliberate Err discard (M13 item L)")
             match r:
                 case .Ok(v):
                     total = total + v

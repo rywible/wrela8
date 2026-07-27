@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/check_regions_two_disciplines.wr sha256=1111493e55059360274ce460edfd7ec45693773aa55e1229e7804508a71bd90d
+  Input path=examples/check_regions_two_disciplines.wr sha256=9ca0719288e1cdbfc1becbddae368574f001138e203ddabb3356c215f51d9c5d
   Input path=<generated> sha256=37f2afda2120cfa4822e666816dfdeb4da0f0426d57298378d796c412d476db8
   Name value=check-regions-two-disciplines
   Target value=Target.wrela_machine_v1

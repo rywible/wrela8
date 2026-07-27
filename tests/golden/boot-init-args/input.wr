@@ -101,6 +101,7 @@ pub struct Relay:
     # The `Actor[Meter]` init argument, used for what a handle is for.
     pub async fn relay_span(read self) -> u64:
         s = await self.meter.read_span()
+        @discard(reason="migrated: deliberate Err discard (M13 item L)")
         match s:
             case .Ok(v):
                 return v
@@ -130,24 +131,28 @@ pub struct Gauge:
 @test(runtime)
 async fn scalar_init_args(m: Actor[Meter]):
     a = await m.read_scale()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match a:
         case .Ok(v):
             assert v == 200, "Meter.scale is the wired 200"
         case .Err(_):
             assert false, "read_scale rejected"
     b = await m.read_offset()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match b:
         case .Ok(v):
             assert v == 40000, "Meter.offset is the wired 40000"
         case .Err(_):
             assert false, "read_offset rejected"
     c = await m.read_span()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match c:
         case .Ok(v):
             assert v == 1234567890123456789, "Meter.span is the wired 1234567890123456789"
         case .Err(_):
             assert false, "read_span rejected"
     d = await m.bias_is_wired()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match d:
         case .Ok(v):
             assert v == 4242, "Meter.bias is the wired -3, sign-extended"
@@ -157,36 +162,42 @@ async fn scalar_init_args(m: Actor[Meter]):
 @test(runtime)
 async fn handle_init_args(r: Actor[Relay], g: Actor[Gauge]):
     w = await r.read_window()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match w:
         case .Ok(v):
             assert v == 4096, "Relay.window is the wired 4096"
         case .Err(_):
             assert false, "read_window rejected"
     t = await r.read_tag()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match t:
         case .Ok(v):
             assert v == 9, "Relay.tag is the wired 9"
         case .Err(_):
             assert false, "read_tag rejected"
     s = await r.relay_span()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match s:
         case .Ok(v):
             assert v == 1234567890123456789, "Relay reaches Meter through its wired Actor[Meter]"
         case .Err(_):
             assert false, "relay_span rejected"
     p = await g.read_peer()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match p:
         case .Ok(v):
             assert v == 1, "Gauge.peer is relay.handle(), actor#1 — not the zero a stale boot left"
         case .Err(_):
             assert false, "read_peer rejected"
     l = await g.read_limit()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match l:
         case .Ok(v):
             assert v == 30000, "Gauge.limit is the wired 30000"
         case .Err(_):
             assert false, "read_limit rejected"
     k = await g.read_armed()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match k:
         case .Ok(v):
             assert v, "Gauge.armed is the wired true"

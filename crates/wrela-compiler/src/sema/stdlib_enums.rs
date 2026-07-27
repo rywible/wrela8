@@ -38,7 +38,8 @@ use crate::syntax::{lexer, parser};
 
 /// Auto-visible enum names whose definitions live in `stdlib/core/`.
 /// plans/M13.md item I / decision 6: `Admission` joins the set (fieldless;
-/// live variants `Full | DeadlineUnmeetable`).
+/// live variants `Full | DeadlineUnmeetable`). plans/M13.md item M:
+/// `CapacityError` joins (fieldless; live variant `Exhausted`).
 pub const AUTO_VISIBLE: &[&str] = &[
     "Target",
     "Failure",
@@ -46,6 +47,7 @@ pub const AUTO_VISIBLE: &[&str] = &[
     "DriverMode",
     "CompletionOutcome",
     "Admission",
+    "CapacityError",
 ];
 
 /// `(enum name, file stem under stdlib/core/)`.
@@ -56,6 +58,7 @@ const ENUM_FILES: &[(&str, &str)] = &[
     ("DriverMode", "driver_mode"),
     ("CompletionOutcome", "completion_outcome"),
     ("Admission", "admission"),
+    ("CapacityError", "capacity_error"),
 ];
 
 #[derive(Debug)]
@@ -295,6 +298,16 @@ mod tests {
         assert_eq!(vs, &["Full", "DeadlineUnmeetable"]);
     }
 
+    /// plans/M13.md item M: `CapacityError` is fieldless with one live
+    /// variant (`Exhausted`).
+    #[test]
+    fn capacity_error_live_variant_is_exhausted() {
+        let vs = variant_strs("CapacityError")
+            .expect("load")
+            .expect("loaded");
+        assert_eq!(vs, &["Exhausted"]);
+    }
+
     /// plans/M9.md item QQ: a corrupt stdlib enum file is `error[build]`,
     /// not a panic. Calls [`load_table`] on a temp tree so the process-wide
     /// cache (already warm from other tests) is not involved — the golden
@@ -315,6 +328,7 @@ mod tests {
             "driver_mode",
             "completion_outcome",
             "admission",
+            "capacity_error",
         ] {
             let src = crate::loader::toolchain_stdlib_core().join(format!("{stem}.wr"));
             fs::copy(&src, core.join(format!("{stem}.wr"))).expect("copy");
@@ -356,6 +370,7 @@ mod tests {
             "driver_mode",
             "completion_outcome",
             "admission",
+            "capacity_error",
         ] {
             let src = crate::loader::toolchain_stdlib_core().join(format!("{stem}.wr"));
             fs::copy(&src, core.join(format!("{stem}.wr"))).expect("copy");
@@ -407,6 +422,7 @@ mod tests {
                 "driver_mode",
                 "completion_outcome",
                 "admission",
+                "capacity_error",
             ] {
                 let src = crate::loader::toolchain_stdlib_core().join(format!("{stem}.wr"));
                 fs::copy(&src, core.join(format!("{stem}.wr"))).expect("copy");
@@ -455,6 +471,7 @@ mod tests {
             "driver_mode",
             "completion_outcome",
             "admission",
+            "capacity_error",
         ] {
             let src = crate::loader::toolchain_stdlib_core().join(format!("{stem}.wr"));
             fs::copy(&src, core.join(format!("{stem}.wr"))).expect("copy");

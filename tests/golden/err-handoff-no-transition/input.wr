@@ -58,7 +58,7 @@ pub struct BlkDriver:
 
     pub fn submit_read(mut self, take buffer: own[BlockPayloads] DmaBlock)
         -> Receipt[own[BlockPayloads] DmaBlock]:
-        permit = self.queue.reserve_proven(descriptors=3)
+        permit = self.queue.reserve(descriptors=3)
         operation = self.queue.prepare_block(
             permit=take permit,
             header=BlkReqHeader(kind=0, reserved=0, sector=0),

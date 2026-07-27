@@ -38,7 +38,7 @@ Program
     Temp t1 ty=u64
     Temp t2 ty=Actor[Probe]
     Temp t3 ty=Actor[Counter]
-    Temp t4 ty=Result[unit, Rejected]
+    Temp t4 ty=Result[unit, CallError[never]]
     Temp t5 ty=u64
     Temp t6 ty=u64
     Temp t7 ty=bool
@@ -48,7 +48,7 @@ Program
     Temp t11 ty=u64
     Temp t12 ty=u64
     Temp t13 ty=bool
-    Temp t14 ty=Rejected
+    Temp t14 ty=CallError[never]
     Temp t15 ty=bool
     Temp t16 ty=bool
     Temp t17 ty=bool

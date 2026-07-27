@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/boot_cross_core_ring_full.wr sha256=4aed386ba379f43a26a9f6559fb76c83be87006bf434b72f3143011a6081038d
+  Input path=examples/boot_cross_core_ring_full.wr sha256=92bdbac83d58103724b98f49397212c598a75cdfd73d69d70209e78adc525088
   Input path=<generated> sha256=25bd43eb28c8eae6ab074abf00bcc91b7bf6eebffdd2b2803bab2905bf4e3363
   Name value=cross-core-ring-full
   Target value=Target.wrela_machine_v1
@@ -47,14 +47,14 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=94452
-  Section name=rodata base=0x40517148 size=505
-  Section name=abort base=0x40517344 size=120
-  Section name=checkpoint base=0x405173bc size=28
+  Section name=code base=0x40500050 size=94604
+  Section name=rodata base=0x405171e0 size=505
+  Section name=abort base=0x405173dc size=120
+  Section name=checkpoint base=0x40517454 size=28
   Section name=rtdata base=0x40540000 size=1248
   Entry base=0x40500000
-  CoreEntry core=1 base=0x405170a4
-  CoreEntry core=2 base=0x405170f4
+  CoreEntry core=1 base=0x4051713c
+  CoreEntry core=2 base=0x4051718c
   PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
@@ -144,7 +144,7 @@ ImageReport v0
   PlacedStatic name=WAKE type=WakeTables addr=0x4057ffd8 size=8
   PlacedStatics count=80 fixed=CLOCK,CONSOLE_DATA,CONSOLE_RING,EXIT,GROUPS,MACHINE_INFO,MB0_CTL,MB0_DATA,MB10_CTL,MB10_DATA,MB11_CTL,MB11_DATA,MB12_CTL,MB12_DATA,MB13_CTL,MB13_DATA,MB14_CTL,MB14_DATA,MB15_CTL,MB15_DATA,MB16_CTL,MB16_DATA,MB17_CTL,MB17_DATA,MB18_CTL,MB18_DATA,MB19_CTL,MB19_DATA,MB1_CTL,MB1_DATA,MB20_CTL,MB20_DATA,MB21_CTL,MB21_DATA,MB22_CTL,MB22_DATA,MB23_CTL,MB23_DATA,MB24_CTL,MB24_DATA,MB25_CTL,MB25_DATA,MB26_CTL,MB26_DATA,MB27_CTL,MB27_DATA,MB28_CTL,MB28_DATA,MB29_CTL,MB29_DATA,MB2_CTL,MB2_DATA,MB30_CTL,MB30_DATA,MB31_CTL,MB31_DATA,MB3_CTL,MB3_DATA,MB4_CTL,MB4_DATA,MB5_CTL,MB5_DATA,MB6_CTL,MB6_DATA,MB7_CTL,MB7_DATA,MB8_CTL,MB8_DATA,MB9_CTL,MB9_DATA,PARK,PENDING,RELEASE,RINGS_CTL,RINGS_DATA,RT,SCHED,TEST_LINE_BUF,WAKE spans=1
   Actor name=Tally mailbox=1 slot=24 frame=64 state=8
-  Turn fn=ring_full_rejects frame=480
+  Turn fn=ring_full_rejects frame=512
   Ring kind=request src=0 dst=1 target=Tally cap=1 slot=24 bytes=48 base=0x405404b0
   Ring kind=reply src=1 dst=0 target=- cap=1 slot=16 bytes=40 base=0x405404c8
   Turns count=2 stride=512 bytes=1024

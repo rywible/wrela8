@@ -140,6 +140,7 @@ pub struct Store:
     # than the composed temp's whole payload area.
     pub async fn wide(mut self, key: u64) -> Result[Triple, FsError]:
         s = await self.clerk.stamp()
+        @discard(reason="migrated: deliberate Err discard (M13 item L)")
         match s:
             case .Ok(v):
                 self.seen = v
@@ -179,12 +180,14 @@ pub struct Probe:
 
     pub async fn run(mut self) -> unit:
         p = await self.store.prime()
+        @discard(reason="migrated: deliberate Err discard (M13 item L)")
         match p:
             case .Ok(_):
                 pass
             case .Err(_):
                 pass
         a = await self.store.load(key=1)
+        @discard(reason="migrated: deliberate Err discard (M13 item L)")
         match a:
             case .Ok(v):
                 self.narrow_ok = v
@@ -203,6 +206,7 @@ pub struct Probe:
                     case _:
                         pass
         c = await self.store.wide(key=1)
+        @discard(reason="migrated: deliberate Err discard (M13 item L)")
         match c:
             case .Ok(t):
                 self.trip = t
@@ -243,48 +247,56 @@ pub struct Probe:
 @test(runtime)
 async fn result_replies(pr: Actor[Probe], st: Actor[Store]):
     f = await pr.run()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match f:
         case .Ok(_):
             pass
         case .Err(_):
             assert false, "run rejected"
     v1 = await pr.narrow_ok()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match v1:
         case .Ok(v):
             assert v == 42, "sync Result reply, Ok arm: Ok(42)"
         case .Err(_):
             assert false, "narrow_ok rejected"
     v2 = await pr.narrow_err()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match v2:
         case .Ok(v):
             assert v == 107, "sync Result reply, Err arm: CallError.Op(FsError.Bad(key + 100))"
         case .Err(_):
             assert false, "narrow_err rejected"
     v3 = await pr.trip_a()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match v3:
         case .Ok(v):
             assert v == 1001, "async wide Result reply, Ok arm: a is n + 1"
         case .Err(_):
             assert false, "trip_a rejected"
     v4 = await pr.trip_b()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match v4:
         case .Ok(v):
             assert v == 2002, "async wide Result reply, Ok arm: b is n * 2 + 2"
         case .Err(_):
             assert false, "trip_b rejected"
     v5 = await pr.trip_c()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match v5:
         case .Ok(v):
             assert v == 3003, "async wide Result reply, Ok arm: c is n * 3 + 3"
         case .Err(_):
             assert false, "trip_c rejected"
     v6 = await pr.wide_err()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match v6:
         case .Ok(v):
             assert v == 4004, "async wide Result reply, Err arm: CallError.Op(FsError.Bad(n * 4 + 4))"
         case .Err(_):
             assert false, "wide_err rejected"
     v7 = await st.seen()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match v7:
         case .Ok(v):
             assert v == 707, "the M6 scalar reply path is untouched: stamp() is n + 7"

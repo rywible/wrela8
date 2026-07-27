@@ -62,8 +62,8 @@ use crate::sema::types::{
 use crate::sema::{SemaError, unimplemented_at};
 use crate::syntax::ast::{
     self, AccessMode, Arg, AssertStmt, AssignOp, AssignStmt, BinOp, ClosureBody, ClosureExpr,
-    DeferBody, DeferStmt, Expr, ForStmt, IfStmt, Item, MatchStmt, Member, Module, NamedType,
-    Pattern, Span, Stmt, UnaryOp, VariantPayload, WhileStmt, WithStmt,
+    DeferBody, DeferStmt, Expr, ForStmt, IfStmt, Item, MatchArm, MatchStmt, Member, Module,
+    NamedType, Pattern, Span, Stmt, UnaryOp, VariantPayload, WhileStmt, WithStmt,
 };
 
 // --- item H: the generic-instantiation queue ------------------------------
@@ -326,6 +326,12 @@ pub(crate) struct ModuleCtx {
     /// depth)`. Layout/report read this from `TypedProgram` (copied at
     /// the end of `check`) so the ring geometry has one source of truth.
     pub(crate) virtqueue_configures: RefCell<Vec<(String, u16)>>,
+    /// plans/M13.md item M / decision 1: spans where
+    /// `Result[QueuePermit, CapacityError]` from `VirtQueue.reserve` was
+    /// coerced to `QueuePermit`. `reserve_proof` must succeed whenever
+    /// this is non-empty; otherwise the site may keep the Result (and
+    /// item L refuses silent `Err` discard).
+    pub(crate) reserve_permit_demands: RefCell<Vec<Span>>,
     /// plans/M13.md item N: sync loops that omit `@budget`, pending the
     /// observation-discharge check after bodies are typed.
     pub(crate) unbounded_sync_loops: RefCell<Vec<crate::sema::typed::UnboundedSyncLoop>>,
@@ -567,6 +573,7 @@ pub(crate) fn build_module_ctx(
         generics_queue: RefCell::new(BTreeMap::new()),
         current_chain: RefCell::new(Vec::new()),
         virtqueue_configures: RefCell::new(Vec::new()),
+        reserve_permit_demands: RefCell::new(Vec::new()),
         unbounded_sync_loops: RefCell::new(Vec::new()),
         inferred_rets: RefCell::new(BTreeMap::new()),
         module_path,
@@ -1086,6 +1093,9 @@ pub(crate) fn check(
     }
     // plans/M7.md item E1: hand the configure sites to layout/report.
     program.virtqueue_configures = mctx.virtqueue_configures.borrow().clone();
+    // plans/M13.md item M: hand QueuePermit collapse demands to
+    // `reserve_proof`.
+    program.reserve_permit_demands = mctx.reserve_permit_demands.borrow().clone();
     // plans/M13.md item N: hand unbounded sync-loop sites to the
     // observation-discharge check in `sema::mod`.
     program.unbounded_sync_loops = mctx.unbounded_sync_loops.borrow().clone();
@@ -2241,6 +2251,13 @@ fn check_while(w: &WhileStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<Type
 }
 
 fn check_match(m: &MatchStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedStmt, SemaError> {
+    let discard_ok = match &m.discard {
+        Some(attr) => {
+            check_discard_attr(attr)?;
+            true
+        }
+        None => false,
+    };
     let scrutinee = check_expr(&m.scrutinee, None, fctx, mctx)?;
     let sty = scrutinee.ty.clone();
     // plans/M8.md item G, decision 18: matching 03-hardware.md §9's
@@ -2279,9 +2296,369 @@ fn check_match(m: &MatchStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<Type
             body,
         });
     }
+    // plans/M13.md item L / decision 9 (extended by item M): no silent
+    // `Err` discard of a CallError- or CapacityError-bearing Result
+    // without `@discard(reason="...")` on this match.
+    if !discard_ok {
+        check_no_silent_err_discard(&sty, &arms, &m.arms, m.span)?;
+    }
     Ok(TypedStmt {
         kind: TypedStmtKind::Match { scrutinee, arms },
     })
+}
+
+/// `@discard(reason="...")` — plans/M13.md decision 9 / 02 §13.
+fn check_discard_attr(attr: &crate::syntax::ast::Attr) -> Result<(), SemaError> {
+    debug_assert_eq!(attr.name, "discard");
+    if attr.args.len() != 1 {
+        return Err(SemaError::at(
+            "sema",
+            "`@discard` takes exactly one argument `reason=\"...\"` (02-language.md §13)"
+                .to_string(),
+            attr.span,
+        ));
+    }
+    let a = &attr.args[0];
+    let Some(label) = a.label.as_deref() else {
+        return Err(SemaError::at(
+            "sema",
+            "`@discard` takes `reason=\"...\"` (labeled); a positional argument is not the \
+             deliberate-discard spelling (02-language.md §13)"
+                .to_string(),
+            a.span,
+        ));
+    };
+    if label != "reason" {
+        return Err(SemaError::at(
+            "sema",
+            format!("`@discard` takes `reason=\"...\"`; found `{label}=` (02-language.md §13)"),
+            a.span,
+        ));
+    }
+    if a.mode != AccessMode::Read {
+        return Err(SemaError::at(
+            "sema",
+            "`@discard`'s `reason=` is a string literal, not a `mut`/`take` place".to_string(),
+            a.span,
+        ));
+    }
+    match &a.value {
+        Expr::Str(_, text) if !text.is_empty() => Ok(()),
+        Expr::Str(_, _) => Err(SemaError::at(
+            "sema",
+            "`@discard(reason=\"...\")` requires a non-empty reason string".to_string(),
+            a.span,
+        )),
+        _ => Err(SemaError::at(
+            "sema",
+            "`@discard(reason=\"...\")` requires a string literal reason".to_string(),
+            a.span,
+        )),
+    }
+}
+
+/// True when `ty` is `Result[_, CallError[...]]` (the await/send/`?`
+/// failure vocabulary after plans/M13.md items I/J).
+fn result_err_is_call_error(ty: &Type) -> bool {
+    match ty {
+        Type::Result(_, err) => matches!(&**err, Type::Named(n, _) if n == "CallError"),
+        _ => false,
+    }
+}
+
+/// True when `ty` is `Result[_, CapacityError]` (proof-conditioned
+/// `VirtQueue.reserve` after plans/M13.md item M).
+fn result_err_is_capacity_error(ty: &Type) -> bool {
+    match ty {
+        Type::Result(_, err) => {
+            matches!(&**err, Type::Named(n, targs) if n == "CapacityError" && targs.is_empty())
+        }
+        _ => false,
+    }
+}
+
+/// plans/M13.md item L (+ M): a match arm that binds `Result.Err` of a
+/// CallError- or CapacityError-bearing Result via wildcard or an unused
+/// binding is a silent discard unless the match carries `@discard`.
+fn check_no_silent_err_discard(
+    sty: &Type,
+    arms: &[TypedMatchArm],
+    ast_arms: &[MatchArm],
+    match_span: Span,
+) -> Result<(), SemaError> {
+    let err_name = if result_err_is_call_error(sty) {
+        "CallError"
+    } else if result_err_is_capacity_error(sty) {
+        "CapacityError"
+    } else {
+        return Ok(());
+    };
+    for (arm, ast_arm) in arms.iter().zip(ast_arms.iter()) {
+        if err_arm_is_silent_discard(&arm.pattern, &arm.body) {
+            let mut e = SemaError::at(
+                "sema",
+                format!(
+                    "silent `Err` discard of `{err_name}` — consume the error, or annotate the \
+                     `match` with `@discard(reason=\"...\")` (02-language.md §9.4)"
+                ),
+                ast_arm.span,
+            );
+            e.extra_lines = vec![
+                "  ROADMAP.md: no silent `Err` discard without `@discard(reason=)`".to_string(),
+                "  plans/M13.md item L / decision 9".to_string(),
+            ];
+            let _ = match_span;
+            return Err(e);
+        }
+    }
+    Ok(())
+}
+
+/// True when this pattern is a `Result.Err` arm (or a whole-Result
+/// wildcard/binding covering Err) that discards its payload.
+fn err_arm_is_silent_discard(pattern: &TypedPattern, body: &[TypedStmt]) -> bool {
+    match &pattern.kind {
+        TypedPatternKind::Variant {
+            enum_name,
+            variant,
+            payload,
+        } if (enum_name == "Result" || enum_name.is_empty()) && variant == "Err" => {
+            match payload.first() {
+                Some(inner) => pattern_is_silent_discard(inner, body),
+                // Fieldless Err — still a discard of the error value.
+                None => true,
+            }
+        }
+        TypedPatternKind::Or(alts) => alts.iter().any(|a| err_arm_is_silent_discard(a, body)),
+        // A bare wildcard / binding against the whole Result covers Err.
+        TypedPatternKind::Wildcard | TypedPatternKind::Binding(_) => {
+            pattern_is_silent_discard(pattern, body)
+        }
+        TypedPatternKind::Take(inner) => err_arm_is_silent_discard(inner, body),
+        _ => false,
+    }
+}
+
+fn pattern_is_silent_discard(pattern: &TypedPattern, body: &[TypedStmt]) -> bool {
+    match &pattern.kind {
+        TypedPatternKind::Wildcard => true,
+        TypedPatternKind::Binding(name) => !typed_stmts_use_local(body, name),
+        TypedPatternKind::Take(inner) => pattern_is_silent_discard(inner, body),
+        TypedPatternKind::Tuple(items) | TypedPatternKind::Array(items) => {
+            !items.is_empty() && items.iter().all(|i| pattern_is_silent_discard(i, body))
+        }
+        TypedPatternKind::Variant { payload, .. } => {
+            payload.is_empty() || payload.iter().all(|p| pattern_is_silent_discard(p, body))
+        }
+        TypedPatternKind::Or(alts) => {
+            !alts.is_empty() && alts.iter().all(|a| pattern_is_silent_discard(a, body))
+        }
+        TypedPatternKind::Literal(_) => false,
+    }
+}
+
+fn typed_stmts_use_local(stmts: &[TypedStmt], name: &str) -> bool {
+    let mut found = false;
+    for s in stmts {
+        walk_typed_stmt_locals(s, &mut |n| {
+            if n == name {
+                found = true;
+            }
+        });
+        if found {
+            return true;
+        }
+    }
+    false
+}
+
+fn walk_typed_stmt_locals(s: &TypedStmt, f: &mut dyn FnMut(&str)) {
+    // Deliberately walks every subexpression that can name a local — used
+    // only to decide whether an Err binding is read (item L). New typed
+    // stmt kinds must get a real arm (exhaustive match).
+    match &s.kind {
+        TypedStmtKind::Let { value, .. } => walk_typed_expr_locals(value, f),
+        TypedStmtKind::Assign { target, value } => {
+            walk_typed_expr_locals(target, f);
+            walk_typed_expr_locals(value, f);
+        }
+        TypedStmtKind::If {
+            cond,
+            then_branch,
+            elifs,
+            else_branch,
+        } => {
+            walk_typed_expr_locals(cond, f);
+            for s in then_branch {
+                walk_typed_stmt_locals(s, f);
+            }
+            for e in elifs {
+                walk_typed_expr_locals(&e.cond, f);
+                for s in &e.body {
+                    walk_typed_stmt_locals(s, f);
+                }
+            }
+            if let Some(b) = else_branch {
+                for s in b {
+                    walk_typed_stmt_locals(s, f);
+                }
+            }
+        }
+        TypedStmtKind::Match { scrutinee, arms } => {
+            walk_typed_expr_locals(scrutinee, f);
+            for arm in arms {
+                for s in &arm.body {
+                    walk_typed_stmt_locals(s, f);
+                }
+                if let Some(g) = &arm.guard {
+                    walk_typed_expr_locals(g, f);
+                }
+            }
+        }
+        TypedStmtKind::For { iter, body, .. } => {
+            match iter {
+                TypedForIter::Range(start, end, _) => {
+                    walk_typed_expr_locals(start, f);
+                    walk_typed_expr_locals(end, f);
+                }
+                TypedForIter::Expr(e) => walk_typed_expr_locals(e, f),
+            }
+            for s in body {
+                walk_typed_stmt_locals(s, f);
+            }
+        }
+        TypedStmtKind::While { cond, body, .. } => {
+            walk_typed_expr_locals(cond, f);
+            for s in body {
+                walk_typed_stmt_locals(s, f);
+            }
+        }
+        TypedStmtKind::Return(Some(e))
+        | TypedStmtKind::ExprStmt(e)
+        | TypedStmtKind::BareSend { expr: e, .. } => walk_typed_expr_locals(e, f),
+        TypedStmtKind::Assert { cond, message }
+        | TypedStmtKind::ComptimeAssert { cond, message, .. } => {
+            walk_typed_expr_locals(cond, f);
+            if let Some(m) = message {
+                walk_typed_expr_locals(m, f);
+            }
+        }
+        TypedStmtKind::Defer(body) => match body {
+            TypedDeferBody::Expr(e) => walk_typed_expr_locals(e, f),
+            TypedDeferBody::Suite(stmts) => {
+                for s in stmts {
+                    walk_typed_stmt_locals(s, f);
+                }
+            }
+        },
+        TypedStmtKind::WithGroup {
+            capacity,
+            deadline,
+            body,
+            ..
+        } => {
+            if let Some(c) = capacity {
+                walk_typed_expr_locals(c, f);
+            }
+            if let Some(d) = deadline {
+                walk_typed_expr_locals(d, f);
+            }
+            for s in body {
+                walk_typed_stmt_locals(s, f);
+            }
+        }
+        TypedStmtKind::Break
+        | TypedStmtKind::Continue
+        | TypedStmtKind::Pass
+        | TypedStmtKind::Return(None) => {}
+    }
+}
+
+fn walk_typed_expr_locals(e: &TypedExpr, f: &mut dyn FnMut(&str)) {
+    match &e.kind {
+        TypedExprKind::Local(name) => f(name),
+        TypedExprKind::Field(base, _)
+        | TypedExprKind::Await(base)
+        | TypedExprKind::Send(base)
+        | TypedExprKind::Try(base, _)
+        | TypedExprKind::Neg(base)
+        | TypedExprKind::BitNot(base)
+        | TypedExprKind::Take(base)
+        | TypedExprKind::ToScalar(base)
+        | TypedExprKind::Not(base)
+        | TypedExprKind::Panic(base) => walk_typed_expr_locals(base, f),
+        TypedExprKind::Index(base, idx) => {
+            walk_typed_expr_locals(base, f);
+            walk_typed_expr_locals(idx, f);
+        }
+        TypedExprKind::Binary(_, l, r)
+        | TypedExprKind::OpCall(_, l, r)
+        | TypedExprKind::And(l, r)
+        | TypedExprKind::Or(l, r) => {
+            walk_typed_expr_locals(l, f);
+            walk_typed_expr_locals(r, f);
+        }
+        TypedExprKind::Call { receiver, args, .. } => {
+            if let Some(r) = receiver {
+                walk_typed_expr_locals(r, f);
+            }
+            for a in args {
+                if let Some(t) = a {
+                    walk_typed_expr_locals(t, f);
+                }
+            }
+        }
+        TypedExprKind::CallValue(callee, args) => {
+            walk_typed_expr_locals(callee, f);
+            for a in args {
+                walk_typed_expr_locals(a, f);
+            }
+        }
+        TypedExprKind::Intrinsic { receiver, args, .. } => {
+            if let Some(r) = receiver {
+                walk_typed_expr_locals(r, f);
+            }
+            for (_, a) in args {
+                walk_typed_expr_locals(a, f);
+            }
+        }
+        TypedExprKind::StructLiteral { fields, .. } => {
+            for (_, v) in fields {
+                walk_typed_expr_locals(v, f);
+            }
+        }
+        TypedExprKind::Tuple(items) | TypedExprKind::List(items) => {
+            for i in items {
+                walk_typed_expr_locals(i, f);
+            }
+        }
+        TypedExprKind::EnumConstruct { args, .. } => {
+            for a in args {
+                walk_typed_expr_locals(a, f);
+            }
+        }
+        TypedExprKind::Is(scrut, _) => walk_typed_expr_locals(scrut, f),
+        TypedExprKind::Closure { body, .. } => match body {
+            TypedClosureBody::Expr(e) => walk_typed_expr_locals(e, f),
+            TypedClosureBody::Suite(stmts) => {
+                for s in stmts {
+                    walk_typed_stmt_locals(s, f);
+                }
+            }
+        },
+        TypedExprKind::Int(_)
+        | TypedExprKind::Float(_)
+        | TypedExprKind::Bool(_)
+        | TypedExprKind::Char(_)
+        | TypedExprKind::Str(_)
+        | TypedExprKind::BStr(_)
+        | TypedExprKind::Const(_)
+        | TypedExprKind::Unit
+        | TypedExprKind::GroupChild(_)
+        | TypedExprKind::PoolName(_)
+        | TypedExprKind::FnRef(_)
+        | TypedExprKind::Static(_) => {}
+    }
 }
 
 /// plans/M8.md item G, decision 18: can this arm's pattern match
@@ -3207,6 +3584,19 @@ pub(crate) fn check_expr(
                     return Ok(actual);
                 }
             }
+            // plans/M13.md item M / decision 1: proof-conditioned collapse
+            // for `VirtQueue.reserve` — a use site that expects
+            // `QueuePermit` may take `Result[QueuePermit, CapacityError]`
+            // from `reserve`; the whole-image proof must then succeed
+            // (`reserve_proof`), or the site must instead consume the
+            // Result (item L refuses silent discard).
+            if is_queue_permit(exp) && is_reserve_capacity_result(&actual.ty) {
+                mctx.reserve_permit_demands.borrow_mut().push(expr.span());
+                return Ok(TypedExpr {
+                    ty: exp.clone(),
+                    kind: actual.kind,
+                });
+            }
             // plans/M7.md item H2a: an `Untrusted[T]` is never silently
             // coerced to a plain `T`. Prefer the mechanism's own wording
             // over a bare expected/found mismatch whenever the found
@@ -3225,6 +3615,20 @@ pub(crate) fn check_expr(
         }
     }
     Ok(actual)
+}
+
+fn is_queue_permit(ty: &Type) -> bool {
+    matches!(ty, Type::Named(n, targs) if n == "QueuePermit" && targs.is_empty())
+}
+
+fn is_reserve_capacity_result(ty: &Type) -> bool {
+    match ty {
+        Type::Result(ok, err) => {
+            is_queue_permit(ok)
+                && matches!(&**err, Type::Named(n, targs) if n == "CapacityError" && targs.is_empty())
+        }
+        _ => false,
+    }
 }
 
 fn synth_expr(
@@ -7460,7 +7864,7 @@ pub fn is_queue_op_deferred(key: &str) -> Option<&'static str> {
 pub fn is_queue_op_intrinsic(key: &str) -> bool {
     matches!(
         key,
-        "VirtQueue.reserve_proven"
+        "VirtQueue.reserve"
             | "VirtQueue.prepare_block"
             | "VirtQueue.publish"
             | "VirtQueue.reject"
@@ -7483,8 +7887,8 @@ fn check_virtqueue_method(
     mctx: &ModuleCtx,
 ) -> Result<TypedExpr, SemaError> {
     match name {
-        "reserve_proven" => {
-            check_virtqueue_reserve_proven(queue, args, fspan, call_span, fctx, mctx)
+        "reserve" => {
+            check_virtqueue_reserve(queue, args, fspan, call_span, fctx, mctx)
         }
         "prepare_block" => check_virtqueue_prepare_block(queue, args, fspan, call_span, fctx, mctx),
         "publish" => check_virtqueue_publish(queue, args, fspan, call_span, fctx, mctx),
@@ -7511,7 +7915,7 @@ fn check_virtqueue_method(
         other => Err(type_error(
             format!(
                 "`VirtQueue[..N]` has no method `{other}`; 03-hardware.md §4/§5/§9 give \
-                 `reserve_proven`, `prepare_block`, `publish`, `reject`, `drain`, \
+                 `reserve`, `prepare_block`, `publish`, `reject`, `drain`, \
                  `suppress_interrupts`, `claim`, `recover`, and `reclaim`"
             ),
             fspan,
@@ -7519,9 +7923,10 @@ fn check_virtqueue_method(
     }
 }
 
-/// `queue.reserve_proven(descriptors=3)` — yields a `QueuePermit` when
-/// the whole-image proof (`sema::reserve_proof`) admits the site.
-fn check_virtqueue_reserve_proven(
+/// `queue.reserve(descriptors=3)` — declared
+/// `Result[QueuePermit, CapacityError]`; collapses to `QueuePermit` at
+/// use sites when `sema::reserve_proof` admits the image (item M).
+fn check_virtqueue_reserve(
     queue: TypedExpr,
     args: &[Arg],
     fspan: Span,
@@ -7531,7 +7936,7 @@ fn check_virtqueue_reserve_proven(
 ) -> Result<TypedExpr, SemaError> {
     let depth = virtqueue_type_depth(&queue.ty, mctx).ok_or_else(|| {
         type_error(
-            "`reserve_proven` needs a `VirtQueue[..N]` whose depth is a comptime-known \
+            "`reserve` needs a `VirtQueue[..N]` whose depth is a comptime-known \
              nonzero power of two (03-hardware.md §4)"
                 .to_string(),
             call_span,
@@ -7539,16 +7944,14 @@ fn check_virtqueue_reserve_proven(
     })?;
     if depth == 0 || !depth.is_power_of_two() {
         return Err(type_error(
-            format!(
-                "`reserve_proven` on `VirtQueue[..{depth}]`: depth must be a nonzero power of two"
-            ),
+            format!("`reserve` on `VirtQueue[..{depth}]`: depth must be a nonzero power of two"),
             call_span,
         ));
     }
     if args.len() != 1 {
         return Err(type_error(
             format!(
-                "`VirtQueue.reserve_proven(descriptors=N)` takes exactly one labelled argument; \
+                "`VirtQueue.reserve(descriptors=N)` takes exactly one labelled argument; \
                  found {}",
                 args.len()
             ),
@@ -7558,7 +7961,7 @@ fn check_virtqueue_reserve_proven(
     let arg = &args[0];
     if arg.label.as_deref() != Some("descriptors") {
         return Err(type_error(
-            "`VirtQueue.reserve_proven`'s own argument is labelled `descriptors=` \
+            "`VirtQueue.reserve`'s own argument is labelled `descriptors=` \
              (03-hardware.md §4)"
                 .to_string(),
             arg.span,
@@ -7567,7 +7970,7 @@ fn check_virtqueue_reserve_proven(
     if arg.mode != AccessMode::Read {
         return Err(type_error(
             format!(
-                "`reserve_proven`'s `descriptors=` is a count, not a moved value: drop the `{}`",
+                "`reserve`'s `descriptors=` is a count, not a moved value: drop the `{}`",
                 arg.mode.as_str()
             ),
             arg.span,
@@ -7576,7 +7979,7 @@ fn check_virtqueue_reserve_proven(
     let desc_expr = check_expr(&arg.value, Some(&Type::Usize), fctx, mctx)?;
     let desc_val = virtqueue_depth_value(&desc_expr, mctx).ok_or_else(|| {
         type_error(
-            "`reserve_proven`'s `descriptors=` must be a comptime-known integer \
+            "`reserve`'s `descriptors=` must be a comptime-known integer \
              (03-hardware.md §4)"
                 .to_string(),
             arg.span,
@@ -7584,14 +7987,14 @@ fn check_virtqueue_reserve_proven(
     })?;
     if desc_val == 0 || desc_val > u64::from(u16::MAX) {
         return Err(type_error(
-            format!("`reserve_proven(descriptors={desc_val})` is not a usable descriptor count"),
+            format!("`reserve(descriptors={desc_val})` is not a usable descriptor count"),
             arg.span,
         ));
     }
     if desc_val != u64::from(crate::virtqueue::DESCRIPTORS_PER_BLK_OP) {
         return Err(type_error(
             format!(
-                "`reserve_proven(descriptors={desc_val})`: machine v1's virtio-blk operation \
+                "`reserve(descriptors={desc_val})`: machine v1's virtio-blk operation \
                  uses exactly {} descriptors (header + data + status)",
                 crate::virtqueue::DESCRIPTORS_PER_BLK_OP
             ),
@@ -7599,12 +8002,20 @@ fn check_virtqueue_reserve_proven(
         ));
     }
     let _ = fspan;
+    // plans/M13.md item M / decision 1: `reserve`'s declared type is
+    // `Result[QueuePermit, CapacityError]`. Whole-image proof success
+    // collapses it to `QueuePermit` at use sites that expect a permit
+    // (`check_expr` coercion + `reserve_proof`); failure leaves the
+    // Result and item L refuses silent `Err` discard.
     // Encode the resolved depth as a literal Bound on `type_arg` so
     // `sema::reserve_proof` never has to re-resolve a const name.
     Ok(TypedExpr {
-        ty: Type::Named("QueuePermit".to_string(), vec![]),
+        ty: Type::Result(
+            Box::new(Type::Named("QueuePermit".to_string(), vec![])),
+            Box::new(Type::Named("CapacityError".to_string(), vec![])),
+        ),
         kind: TypedExprKind::Intrinsic {
-            key: "VirtQueue.reserve_proven".to_string(),
+            key: "VirtQueue.reserve".to_string(),
             receiver: Some(Box::new(queue)),
             type_arg: Some(Type::Named(
                 "VirtQueue".to_string(),
@@ -10144,6 +10555,18 @@ fn check_send_call(
         return Err(unimplemented_at("generic instantiation is", call_span));
     }
     let typed_args = check_message_args(&mf.params, &d.params, args, call_span, fctx, mctx)?;
+    // plans/M13.md item J / decision 5: `send` is `Result[unit, CallError[never]]`
+    // (with take-args as CallError's optional second type argument, same
+    // shape as an awaited unit-returning call). Whole-image erasure leaves
+    // `NotAdmitted` as the one reachable variant; the bare `Rejected` type
+    // is deleted.
+    let take_arg_tys: Vec<Type> = d
+        .params
+        .iter()
+        .zip(typed_args.iter())
+        .filter(|(p, _)| p.mode == AccessMode::Take)
+        .filter_map(|(_, slot)| slot.as_ref().map(|t| t.ty.clone()))
+        .collect();
     let call = TypedExpr {
         ty: Type::Unit,
         kind: TypedExprKind::Call {
@@ -10154,7 +10577,7 @@ fn check_send_call(
     };
     let ty = Type::Result(
         Box::new(Type::Unit),
-        Box::new(Type::Named("Rejected".to_string(), vec![])),
+        Box::new(call_error_type(Type::Never, &take_arg_tys)),
     );
     Ok(TypedExpr {
         ty,

@@ -29,6 +29,7 @@ async fn proven_sends(lg: Actor[Logger]):
     send lg.record(code=7)
     send lg.record(code=5)
     t = await lg.read_total()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match t:
         case .Ok(v):
             assert v == 12, "both proven sends were delivered"

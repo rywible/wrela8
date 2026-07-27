@@ -20,13 +20,13 @@ Program
     Param name=lg mode=read ty=Actor[Logger]
     Body
       BareSend
-        Send ty=Result[unit, Rejected]
+        Send ty=Result[unit, CallError[never]]
           Call key=Logger.record ty=unit
             Receiver
               Local name=lg ty=Actor[Logger]
             Int text=7 ty=u64
       BareSend
-        Send ty=Result[unit, Rejected]
+        Send ty=Result[unit, CallError[never]]
           Call key=Logger.record ty=unit
             Receiver
               Local name=lg ty=Actor[Logger]

@@ -1,0 +1,25 @@
+module examples.check_discard_annotated
+
+# plans/M13.md item L — deliberate Err discard is legal only with
+# `@discard(reason="...")` on the match (02 §13 / decision 9).
+
+@actor
+pub struct Logger:
+    count: u64
+
+    pub fn record(mut self, code: u64):
+        self.count = self.count + code
+
+@actor
+pub struct Probe:
+    logger: Actor[Logger]
+
+    pub async fn observe(mut self, code: u64) -> u64:
+        outcome = send self.logger.record(code=code)
+        @discard(reason="probe; admission failure is ignored here")
+        match outcome:
+            case .Ok(_):
+                pass
+            case .Err(_):
+                pass
+        return code

@@ -49,6 +49,7 @@ pub struct Slow:
 async fn lost_wake(q: Actor[Quick], s: Actor[Slow]):
     send s.churn()
     v = await q.get()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match v:
         case .Ok(n):
             assert n == 5, "expected 5 from Quick"

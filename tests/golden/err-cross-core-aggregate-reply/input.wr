@@ -63,6 +63,7 @@ async fn calls_far(f: Actor[Far]):
     # turn has no `self` to store it into, and 02 §9.2 lets only a
     # self-rooted path span an `await`. Binding it would make this file a
     # golden for *that* rule instead of for the cross-core refusal.
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match p:
         case .Ok(_):
             assert false, "unreachable: this image must not build"

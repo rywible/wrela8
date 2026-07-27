@@ -43,12 +43,14 @@ pub struct Holder:
 @test(runtime)
 async fn own_handle_addresses_pool_slot(h: Actor[Holder]):
     s = await h.read_seen()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match s:
         case .Ok(v):
             assert v == 0xA11CE, "init wrote 0xA11CE through the image-bound own handle"
         case .Err(_):
             assert false, "read_seen rejected"
     w = await h.read_word()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match w:
         case .Ok(v):
             assert v == 0xA11CE, "read-back through the same own still sees the pool slot"

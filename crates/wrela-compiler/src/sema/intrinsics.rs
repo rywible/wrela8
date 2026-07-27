@@ -205,7 +205,7 @@ pub const EXCEPTIONS: &[(&str, &str)] = &[
     (
         "VirtQueue.prepare_block",
         "03 §4: writes descriptors into a permit's reserved slots — the slots exist only \
-         because `reserve_proven` proved them.",
+         because `reserve` proved them.",
     ),
     (
         "VirtQueue.publish",
@@ -225,9 +225,10 @@ pub const EXCEPTIONS: &[(&str, &str)] = &[
          protocol, and the reason the protocol can be proven at all.",
     ),
     (
-        "VirtQueue.reserve_proven",
-        "03 §4 / 05 §10's `*_proven` naming rule: the statically-proved reservation. \
-         `sema::reserve_proof` is the proof; the intrinsic is where it attaches.",
+        "VirtQueue.reserve",
+        "03 §4 / plans/M13.md item M: proof-conditioned reservation — \
+         `Result[QueuePermit, CapacityError]` collapses to `QueuePermit` where \
+         `sema::reserve_proof` holds; the intrinsic is where the proof attaches.",
     ),
     (
         "VirtQueue.suppress_interrupts",

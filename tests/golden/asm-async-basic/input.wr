@@ -13,6 +13,7 @@ pub struct Caller:
 
     pub async fn run(mut self) -> u64:
         v = await self.counter.get()
+        @discard(reason="migrated: deliberate Err discard (M13 item L)")
         match v:
             case .Ok(n):
                 return n

@@ -913,7 +913,7 @@ impl Parser {
             if self.looks_like_item_start() {
                 entries.push(FragmentEntry::Item(self.parse_item(doc, attrs)?));
             } else if !attrs.is_empty() {
-                // 02 §13: only `@budget` may precede a statement, and only a loop.
+                // 02 §13: `@budget` before a loop, `@discard` before a match.
                 if doc.is_some() {
                     return Err(self.error_here(
                         "a `##` doc comment attaches to the immediately following declaration \
@@ -922,12 +922,12 @@ impl Parser {
                 }
                 if attrs.len() != 1 {
                     return Err(self.error_here(
-                        "only one `@budget(...)` statement attribute may precede a loop \
+                        "only one statement attribute may precede a statement \
                          (02-language.md §13)",
                     ));
                 }
                 let attr = attrs.into_iter().next().expect("len == 1");
-                entries.push(FragmentEntry::Stmt(self.parse_loop_after_budget(attr)?));
+                entries.push(FragmentEntry::Stmt(self.parse_stmt_after_attr(attr)?));
             } else {
                 if doc.is_some() {
                     return Err(self.error_here(
@@ -2616,13 +2616,14 @@ impl Parser {
         Ok(stmts)
     }
 
-    /// A body statement, optionally preceded by `@budget(bound=N)`
-    /// (02-language.md §8.1 / §13 — the only statement attribute).
+    /// A body statement, optionally preceded by a statement attribute
+    /// (02-language.md §13): `@budget(bound=N)` before a loop, or
+    /// `@discard(reason="...")` before a `match` (plans/M13.md item L).
     fn parse_stmt_maybe_budget(&mut self) -> Result<Stmt, ParseError> {
         if self.at_op("@") {
             let attr = self.parse_attr()?;
             self.skip_newlines();
-            return self.parse_loop_after_budget(attr);
+            return self.parse_stmt_after_attr(attr);
         }
         self.parse_stmt()
     }
@@ -2633,17 +2634,21 @@ impl Parser {
         }
     }
 
-    fn parse_loop_after_budget(&mut self, attr: Attr) -> Result<Stmt, ParseError> {
-        if attr.name != "budget" {
-            return Err(self.error_at(
+    fn parse_stmt_after_attr(&mut self, attr: Attr) -> Result<Stmt, ParseError> {
+        match attr.name.as_str() {
+            "budget" => self.parse_loop_after_budget(attr),
+            "discard" => self.parse_match_after_discard(attr),
+            other => Err(self.error_at(
                 attr.span,
                 format!(
-                    "only `@budget(...)` may be a statement attribute (02-language.md §13); \
-                     found `@{name}`",
-                    name = attr.name
+                    "only `@budget(...)` or `@discard(...)` may be a statement attribute \
+                     (02-language.md §13); found `@{other}`"
                 ),
-            ));
+            )),
         }
+    }
+
+    fn parse_loop_after_budget(&mut self, attr: Attr) -> Result<Stmt, ParseError> {
         if self.at_keyword("for") {
             let mut f = self.parse_for_stmt()?;
             f.budget = Some(attr);
@@ -2658,6 +2663,20 @@ impl Parser {
             attr.span,
             "`@budget(...)` in statement position must immediately precede `for` or `while` \
              (02-language.md §13)"
+                .to_string(),
+        ))
+    }
+
+    fn parse_match_after_discard(&mut self, attr: Attr) -> Result<Stmt, ParseError> {
+        if self.at_keyword("match") {
+            let mut m = self.parse_match_stmt()?;
+            m.discard = Some(attr);
+            return Ok(Stmt::Match(m));
+        }
+        Err(self.error_at(
+            attr.span,
+            "`@discard(...)` in statement position must immediately precede `match` \
+             (02-language.md §13 / plans/M13.md item L)"
                 .to_string(),
         ))
     }
@@ -3030,6 +3049,7 @@ impl Parser {
             span,
             scrutinee,
             arms,
+            discard: None,
         })
     }
 

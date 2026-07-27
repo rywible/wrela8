@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/boot_irq_isr.wr sha256=241dfaf97e14097ae7ac16d47daa95a1ae21ac5fbd7bbf5a7bf39c8c9b68c9b1
+  Input path=examples/boot_irq_isr.wr sha256=ff39f83f96d47755e37c60a710cecd080ce245c40459a2d08e50f3df7dc0347f
   Input path=<generated> sha256=cfe527cf4d5aeee73812eec07058482201a56f32dd5c9ec32247be214ef9edf6
   Name value=boot-irq-isr
   Target value=Target.wrela_machine_v1

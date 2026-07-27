@@ -24,6 +24,7 @@ async fn too_many(lg: Actor[Logger]):
     send lg.record(code=1)
     send lg.record(code=2)
     t = await lg.read_total()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match t:
         case .Ok(v):
             assert v == 3, "delivered"

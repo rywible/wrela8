@@ -1,0 +1,7 @@
+# plans/M13.md item M / decision 1: capacity-exhaustion error for
+# proof-conditioned operations (`VirtQueue.reserve`, pool get).
+# Fieldless; declaration order is load-bearing (Exhausted = 0).
+module capacity_error
+
+pub enum CapacityError:
+    Exhausted

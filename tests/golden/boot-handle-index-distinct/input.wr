@@ -77,12 +77,14 @@ async fn handle_words_are_distinct(t: Actor[Tags]):
     #   Hw     device#0 → 3
     # A wrong shift or a kind-local collision fails one of these by name.
     a = await t.actor_word()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match a:
         case .Ok(n):
             assert n == 0, "Marker is actor#0"
         case .Err(_):
             assert false, "actor_word rejected"
     d = await t.driver_word()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match d:
         case .Ok(n):
             assert n == 2, "Stub is driver#0 after two actors"
@@ -90,6 +92,7 @@ async fn handle_words_are_distinct(t: Actor[Tags]):
         case .Err(_):
             assert false, "driver_word rejected"
     v = await t.device_word()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match v:
         case .Ok(n):
             assert n == 3, "Hw is device#0 after two actors and one driver"

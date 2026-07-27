@@ -1427,7 +1427,7 @@ pub(crate) fn is_sealed_authority_type_name(name: &str) -> bool {
         // bring-up state, but every structural rule asks the same
         // question of it.
         || name == "VirtQueue"
-        // plans/M7.md item E2: the permit `reserve_proven` yields and the
+        // plans/M7.md item E2: the permit `reserve` yields and the
         // operation `prepare_block` yields (03-hardware.md §4) — sealed
         // resources, one opaque word each, never constructible from source.
         || name == "QueuePermit"

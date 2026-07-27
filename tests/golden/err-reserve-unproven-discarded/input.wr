@@ -1,0 +1,86 @@
+module examples.err_reserve_unproven_discarded
+
+# plans/M13.md item M + L: three static sites exceed floor(8/3)=2 so the
+# proof fails; sites keep `Result[QueuePermit, CapacityError]`; silent
+# Err discard is error[sema].
+
+@layout(mmio, endian=little)
+struct VirtioIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+
+@layout(dma, endian=little)
+struct BlkReqHeader:
+    kind: u32
+    reserved: u32
+    sector: u64
+
+struct VirtioBlock:
+    id: u32
+
+enum Feature:
+    Flush
+
+pool BlockControl
+
+@driver
+pub struct BlkDriver:
+    irq_regs: Mmio[VirtioIrqMmio]
+    queue: VirtQueue[..8]
+    device: RunningDevice[VirtioBlock]
+
+    init(mut self,
+         take cap: DeviceCap[VirtioBlock],
+         take control_pool: DmaPool[BlockControl, 512])
+        -> Result[unit, BootError]:
+        claimed = VirtioBlock.claim(cap=take cap)
+        self.irq_regs = claimed.map_partition(VirtioIrqMmio)
+        negotiated = claimed.negotiate(
+            required=[Feature.Flush],
+            optional=[Feature.Flush],
+        )?
+        self.queue = VirtQueue.configure(
+            pool=take control_pool,
+            device=mut negotiated,
+            index=0,
+            depth=8,
+        )?
+        _cap = negotiated.read_capacity_sectors()?
+        self.device = negotiated.start()
+        return Ok(unit)
+
+    fn a(mut self) -> unit:
+        match self.queue.reserve(descriptors=3):
+            case .Ok(_):
+                pass
+            case .Err(_):
+                pass
+        return unit
+
+    fn b(mut self) -> unit:
+        match self.queue.reserve(descriptors=3):
+            case .Ok(_):
+                pass
+            case .Err(_):
+                pass
+        return unit
+
+    fn c(mut self) -> unit:
+        match self.queue.reserve(descriptors=3):
+            case .Ok(_):
+                pass
+            case .Err(_):
+                pass
+        return unit
+
+@image
+pub fn build() -> Image:
+    img = Image(name="err-reserve-unproven-discarded", target=Target.wrela_machine_v1)
+    blk = img.device[VirtioBlock](
+        transport=0x2000,
+        capacity_sectors=16,
+        required_features=[Feature.Flush],
+    )
+    control = img.dma_pool[BlkReqHeader](name=BlockControl, device=blk, count=32)
+    disk = img.driver(BlkDriver, device=blk)
+    img.on_failure(policy=Failure.Halt)
+    return img.seal()

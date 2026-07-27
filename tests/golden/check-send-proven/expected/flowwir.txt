@@ -4,9 +4,9 @@ Program
     Temp t1 ty=u64
     Temp t2 ty=Actor[Logger]
     Temp t3 ty=u64
-    Temp t4 ty=Result[unit, Rejected]
+    Temp t4 ty=Result[unit, CallError[never]]
     Temp t5 ty=u64
-    Temp t6 ty=Result[unit, Rejected]
+    Temp t6 ty=Result[unit, CallError[never]]
     Temp t7 ty=Result[u64, CallError[never]]
     Temp t8 ty=Result[u64, CallError[never]]
     Temp t9 ty=u64
