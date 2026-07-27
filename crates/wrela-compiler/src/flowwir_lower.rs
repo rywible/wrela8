@@ -3104,6 +3104,7 @@ pub struct Caller:
 
     pub async fn run(mut self) -> u64:
         v = await self.counter.get()
+        @discard(reason=\"migrated: deliberate Err discard (M13 item L)\")
         match v:
             case .Ok(n):
                 return n
@@ -3133,6 +3134,7 @@ pub struct Chain:
     pub async fn run(mut self) -> u64:
         ra = await self.a.step()
         x: u64 = 0
+        @discard(reason=\"migrated: deliberate Err discard (M13 item L)\")
         match ra:
             case .Ok(v):
                 x = v
@@ -3140,6 +3142,7 @@ pub struct Chain:
                 pass
         rb = await self.b.step()
         y: u64 = 0
+        @discard(reason=\"migrated: deliberate Err discard (M13 item L)\")
         match rb:
             case .Ok(v):
                 y = v
@@ -3147,6 +3150,7 @@ pub struct Chain:
                 pass
         rc = await self.c.step()
         z: u64 = 0
+        @discard(reason=\"migrated: deliberate Err discard (M13 item L)\")
         match rc:
             case .Ok(v):
                 z = v
@@ -3171,6 +3175,7 @@ async fn run_group() -> u64:
         g.start(fetch_part, index=1)
         results = await g.join_all()
         for r in results:
+            @discard(reason=\"migrated: deliberate Err discard (M13 item L)\")
             match r:
                 case .Ok(v):
                     total = total + v
@@ -3196,6 +3201,7 @@ async fn bounded_read(storage: Actor[Storage]) -> u64:
     result: u64 = 0
     with group(deadline=now() + ms(50)):
         outcome = await storage.load()
+        @discard(reason=\"migrated: deliberate Err discard (M13 item L)\")
         match outcome:
             case .Ok(v):
                 result = v
@@ -3223,6 +3229,7 @@ async fn helper(target: Actor[Store]) -> u64:
         defer:
             result = result + 1
         outcome = await target.load()
+        @discard(reason=\"migrated: deliberate Err discard (M13 item L)\")
         match outcome:
             case .Ok(v):
                 result = v
@@ -3248,6 +3255,7 @@ async fn maybe_fetch(target: Actor[Store], use_remote: bool) -> u64:
     result: u64 = 0
     if use_remote:
         outcome = await target.load()
+        @discard(reason=\"migrated: deliberate Err discard (M13 item L)\")
         match outcome:
             case .Ok(v):
                 result = v
@@ -3276,6 +3284,7 @@ async fn poll_until(target: Actor[Store], tries: u64) -> u64:
     i: u64 = 0
     while i < tries:
         outcome = await target.load()
+        @discard(reason=\"migrated: deliberate Err discard (M13 item L)\")
         match outcome:
             case .Ok(v):
                 total = total + v
@@ -3311,6 +3320,7 @@ pub struct Store:
     pub async fn refresh(mut self) -> u64:
         before = self.cache.value
         fetched = await self.upstream.get()
+        @discard(reason=\"migrated: deliberate Err discard (M13 item L)\")
         match fetched:
             case .Ok(v):
                 after = self.cache.value

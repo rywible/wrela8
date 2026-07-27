@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/err_boot_dma_reclaim_early.wr sha256=9605ab39d4b0c5f9c002d5ba37aa51ef5f0a0c5cfa599ea79a28ec32b5a1a3f0
+  Input path=examples/err_boot_dma_reclaim_early.wr sha256=adf529ab2d2fe66efbe4fcd1b1928fd5bfb35195acda4dd260f50cd0e67408c2
   Input path=<generated> sha256=ca8674c0959f84c2571971f8b48d42b39b75a58f02e6d7f022803a9ff43d5150
   Name value=err-boot-dma-reclaim-early
   Target value=Target.wrela_machine_v1

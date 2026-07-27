@@ -2051,6 +2051,16 @@ tests = [
 ]
 note = """plans/M13.md item J / decision 5 (2026-07-27): `send`'s type is `Result[unit, CallError[never]]` (take-args as CallError's optional second type argument, same shape as an awaited unit-returning call). The bare `Type::Named(\"Rejected\")` mint is deleted; enqueue-fail reuses item H's caller-side `Err(CallError.NotAdmitted(Admission.Full, args))` construction (`codegen::emit_not_admitted_local`). Doc: 02 §9.4 and 05 §2 delete `Rejected[...]`; the \"whole failure vocabulary\" sentence is literally true for send. Unproven-send diagnostic names `Result[unit, CallError[never]]`. Corpus §9.4 send fence re-pinned (`ca57644b1058`, still cites `actors.messages.take-non-own-resource`)."""
 
+[[clause]]
+id = "sema.errors.no-silent-discard"
+doc = "02-language.md#9.4"
+status = "test"
+tests = [
+  "golden/err-discarded-callerror",
+  "golden/check-discard-annotated",
+]
+note = """plans/M13.md item L / decision 9 (2026-07-27): at an await/send/`?` boundary, a wildcard or unused binding that discards `Err` of a `Result[_, CallError[...]]` is `error[sema]` unless the consuming `match` carries `@discard(reason=\"...\")` (non-empty string; 02 §13 table). ROADMAP doctrine sentence lands verbatim in 02 §9.4: \"no silent `Err` discard without `@discard(reason=)`\". Goldens: `err-discarded-callerror` (refuse), `check-discard-annotated` (accept); existing pass-on-failure CallError goldens migrated with `@discard` — the golden diff is the review surface."""
+
 # --- M10: the runtime in wrela -----------------------------------------------
 
 [[clause]]

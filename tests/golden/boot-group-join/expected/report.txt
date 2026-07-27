@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/boot_group_join.wr sha256=a7e1d6b30578341053c414de43afb593c9cf098c5c8deabf7dbe3ec22764aebd
+  Input path=examples/boot_group_join.wr sha256=b93214d1506d4fc5110dbddc0779060e02c66faf36660e7e2819c85d31847826
   Input path=<generated> sha256=7519a724e45892e25d32a1b9bc380870e8f5da8f1c1855f49e1df90a95e8215c
   Name value=boot-group-join
   Target value=Target.wrela_machine_v1

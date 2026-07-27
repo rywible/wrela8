@@ -217,18 +217,21 @@ async fn a_quarantined_block_comes_back_after_quiescence(led: Actor[Ledger]):
     # Two checkpoints: the phase-1 IRQ+drain (recover, quiesce, reclaim,
     # republish) and the phase-2 IRQ+drain (claim).
     a = await led.mark(n=7)
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match a:
         case .Ok(_):
             pass
         case .Err(_):
             assert false, "mark rejected"
     b = await led.mark(n=3)
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match b:
         case .Ok(_):
             pass
         case .Err(_):
             assert false, "mark rejected"
     m = await led.read_marks()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match m:
         case .Ok(v):
             assert v == 73, "two marks after the reclaim and the reuse"

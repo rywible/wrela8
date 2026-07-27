@@ -37,6 +37,7 @@ pub struct Store:
 @test(runtime)
 async fn guest_list(store: Actor[Store]):
     v = await store.fill()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match v:
         case .Ok(n):
             assert n == 2, "list filled to N"

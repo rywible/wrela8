@@ -706,6 +706,10 @@ pub struct MatchStmt {
     pub span: Span,
     pub scrutinee: Expr,
     pub arms: Vec<MatchArm>,
+    /// Optional `@discard(reason="...")` statement attribute
+    /// (02-language.md §13 / plans/M13.md item L / decision 9) — permits
+    /// a deliberate `Err` discard on an await/send/`?` `Result`.
+    pub discard: Option<Attr>,
 }
 
 /// `for [take] name in iterable: body` (02-language.md §8.1).

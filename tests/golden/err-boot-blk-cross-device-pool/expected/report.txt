@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/err_boot_blk_cross_device_pool.wr sha256=649fb149ead1bd314b67f52f4acf16321975fd37840c298506d67ec243b5d9c7
+  Input path=examples/err_boot_blk_cross_device_pool.wr sha256=9cfcb26f03e1b891efe791c308c034742522bb41eb1c47c70544c549af8e63c9
   Input path=<generated> sha256=3d6c62e7f11b8da0e60f94a703f37620c58b7a84601e8656f6a184eae2f5a8b4
   Name value=err-boot-blk-cross-device-pool
   Target value=Target.wrela_machine_v1

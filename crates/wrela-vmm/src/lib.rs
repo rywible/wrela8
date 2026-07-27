@@ -3671,6 +3671,7 @@ pub struct Outer:
 
     pub async fn relay(read self) -> u64:
         v = await self.inner.get()
+        @discard(reason="migrated: deliberate Err discard (M13 item L)")
         match v:
             case .Ok(n):
                 return n + 1
@@ -3680,6 +3681,7 @@ pub struct Outer:
 @test(runtime)
 async fn chain(outer: Actor[Outer]):
     v = await outer.relay()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match v:
         case .Ok(n):
             assert n == 42, "expected 42 through the two-hop chain"
@@ -3730,6 +3732,7 @@ pub struct Worker:
 
     pub async fn job(mut self, v: u64):
         r = await self.stamps.stamp(v=v)
+        @discard(reason="migrated: deliberate Err discard (M13 item L)")
         match r:
             case .Ok(n):
                 self.log = self.log * 10 + n
@@ -3742,18 +3745,21 @@ pub struct Worker:
 @test(runtime)
 async fn fifo(worker: Actor[Worker]):
     r1 = send worker.job(v=1)
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match r1:
         case .Ok(_):
             pass
         case .Err(_):
             assert false, "send 1 rejected"
     r2 = send worker.job(v=2)
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match r2:
         case .Ok(_):
             pass
         case .Err(_):
             assert false, "send 2 rejected"
     wl = await worker.log_value()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match wl:
         case .Ok(n):
             assert n == 12, "worker turns must complete in FIFO admission order"
@@ -3806,12 +3812,14 @@ pub struct ChainActor:
 
     pub async fn chain(read self) -> u64:
         a = await self.log.mark(v=10)
+        @discard(reason="migrated: deliberate Err discard (M13 item L)")
         match a:
             case .Ok(_):
                 pass
             case .Err(_):
                 return 0
         b = await self.log.mark(v=20)
+        @discard(reason="migrated: deliberate Err discard (M13 item L)")
         match b:
             case .Ok(n):
                 return n
@@ -3824,6 +3832,7 @@ pub struct Third:
 
     pub async fn poke(read self):
         r = await self.log.mark(v=99)
+        @discard(reason="migrated: deliberate Err discard (M13 item L)")
         match r:
             case .Ok(_):
                 pass
@@ -3833,18 +3842,21 @@ pub struct Third:
 @test(runtime)
 async fn interleave(chain: Actor[ChainActor], third: Actor[Third], log: Actor[Log]):
     s = send third.poke()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match s:
         case .Ok(_):
             pass
         case .Err(_):
             assert false, "send rejected"
     r = await chain.chain()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match r:
         case .Ok(_):
             pass
         case .Err(_):
             assert false, "chain rejected"
     v = await log.value()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match v:
         case .Ok(n):
             assert n == 109920, "the third actor's stamp must interleave between the chain's two"
@@ -3900,6 +3912,7 @@ pub struct Stuck:
 @test(runtime)
 async fn stuck(target: Actor[Stuck]):
     v = await target.nudge()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match v:
         case .Ok(_):
             pass
@@ -5134,6 +5147,7 @@ pub struct Away:
 @test(runtime)
 async fn boots(home: Actor[Home]):
     v = await home.get()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match v:
         case .Ok(n):
             assert n == 5, "expected 5"

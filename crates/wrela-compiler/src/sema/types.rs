@@ -4841,6 +4841,7 @@ pub(crate) fn derived_format_fn_item_enum(variants: &[String], bound: u64, span:
             span,
             scrutinee: Expr::Name(span, "self".to_string()),
             arms,
+            discard: None,
         })]),
     }
 }

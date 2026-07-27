@@ -12,6 +12,7 @@ async fn poll_until(target: Actor[Store], tries: u64) -> u64:
     i: u64 = 0
     while i < tries:
         outcome = await target.load()
+        @discard(reason="migrated: deliberate Err discard (M13 item L)")
         match outcome:
             case .Ok(v):
                 total = total + v

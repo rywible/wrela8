@@ -1,0 +1,37 @@
+Program
+  Struct name=Logger
+    Method name=record ret=unit
+      Receiver mode=mut ty=Logger
+      Param name=code mode=read ty=u64
+      Body
+        Assign
+          Field name=count ty=u64
+            Local name=self ty=Logger
+          Binary op=+ ty=u64
+            Field name=count ty=u64
+              Local name=self ty=Logger
+            Local name=code ty=u64
+  Struct name=Probe
+    Method name=observe ret=u64
+      Receiver mode=mut ty=Probe
+      Param name=code mode=read ty=u64
+      Body
+        Let name=outcome ty=Result[unit, CallError[never]]
+          Send ty=Result[unit, CallError[never]]
+            Call key=Logger.record ty=unit
+              Receiver
+                Field name=logger ty=Actor[Logger]
+                  Local name=self ty=Probe
+              Local name=code ty=u64
+        Match
+          Local name=outcome ty=Result[unit, CallError[never]]
+          Case
+            VariantPattern enum=Result variant=Ok ty=Result[unit, CallError[never]]
+              Wildcard ty=unit
+            Pass
+          Case
+            VariantPattern enum=Result variant=Err ty=Result[unit, CallError[never]]
+              Wildcard ty=CallError[never]
+            Pass
+        Return
+          Local name=code ty=u64

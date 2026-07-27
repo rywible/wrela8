@@ -78,30 +78,35 @@ pub struct Tags:
 @test(runtime)
 async fn every_kind_gets_its_own_word(t: Actor[Tags]):
     a = await t.wa()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match a:
         case .Ok(n):
             assert n == 0, "Marker is actor#0"
         case .Err(_):
             assert false, "wa rejected"
     d0 = await t.wd0()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match d0:
         case .Ok(n):
             assert n == 2, "S0 is driver#0 after two actors"
         case .Err(_):
             assert false, "wd0 rejected"
     d1 = await t.wd1()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match d1:
         case .Ok(n):
             assert n == 3, "S1 is driver#1"
         case .Err(_):
             assert false, "wd1 rejected"
     v0 = await t.wv0()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match v0:
         case .Ok(n):
             assert n == 4, "HwA is device#0 after two actors and two drivers"
         case .Err(_):
             assert false, "wv0 rejected"
     v1 = await t.wv1()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match v1:
         case .Ok(n):
             assert n == 5, "HwB is device#1"

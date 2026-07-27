@@ -1,0 +1,7 @@
+Module path=examples.check_discard_annotated
+  Struct Logger resource
+    field count: u64
+    fn record(mut self, code: read u64) -> unit
+  Struct Probe resource
+    field logger: Actor[Logger]
+    async fn observe(mut self, code: read u64) -> u64

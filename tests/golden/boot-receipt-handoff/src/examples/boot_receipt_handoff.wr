@@ -269,6 +269,7 @@ pub struct Client:
         # `Ledger`'s own running mark, which only a turn on a *different*
         # actor can produce, so observing it proves this turn suspended.
         m = await self.led.mark(n=7)
+        @discard(reason="migrated: deliberate Err discard (M13 item L)")
         match m:
             case .Ok(v):
                 self.witness = v
@@ -283,6 +284,7 @@ pub struct Client:
 @test(runtime)
 async fn a_caller_owned_receipt_resolves_with_the_device_word(cl: Actor[Client]):
     v = await cl.round_trip()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match v:
         case .Ok(n):
             assert n == 0xD15EA5E0C0FFEE11, "the sector word read back through a caller-owned receipt"
@@ -295,6 +297,7 @@ async fn the_parked_turn_really_left_and_re_entered(cl: Actor[Client]):
     # its first receipt resolved and *before* its second handoff. A turn
     # that never suspended could not have run a `Ledger` turn at all.
     w = await cl.read_witness()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match w:
         case .Ok(n):
             assert n == 7, "a Ledger turn ran between the two halves of one parked caller turn"
@@ -312,6 +315,7 @@ async fn the_bottom_half_is_what_resolved_them(disk: Actor[BlkDriver]):
     # that it is nonzero and that deleting `queue.drain` from the `@task`
     # hangs the boot, which is the mutation this row is verified by.
     d = await disk.drain_count()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match d:
         case .Ok(n):
             assert n == 3, "the bottom half woke for every handoff"

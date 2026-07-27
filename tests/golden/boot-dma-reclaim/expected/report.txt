@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/boot_dma_reclaim.wr sha256=219c06b8f814dc88d5888f379f4e5e28aa5828868ce3b782383ef5e28f330c37
+  Input path=examples/boot_dma_reclaim.wr sha256=0f8d23564db7cad7d0ab16a31616881bc8de47809f75704749d4f2e8ee6a8f25
   Input path=<generated> sha256=ca8674c0959f84c2571971f8b48d42b39b75a58f02e6d7f022803a9ff43d5150
   Name value=boot-dma-reclaim
   Target value=Target.wrela_machine_v1

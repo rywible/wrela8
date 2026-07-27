@@ -718,6 +718,20 @@ This is the language's one proof-conditioned form: the same spelling is
 infallible exactly where the compiler has proved it, mirroring the library's
 `*_proven` convention.
 
+At an `await` / `send` / `?` boundary, a wildcard or unused binding that
+discards an `Err` is an error — **no silent `Err` discard without
+`@discard(reason=)`**. Annotate the consuming `match` when the discard is
+deliberate:
+
+```wrela
+@discard(reason="probe send; mailbox may be full under load")
+match send logger.record(code=1):
+    case .Ok(_):
+        pass
+    case .Err(_):
+        pass
+```
+
 ### 9.5 Groups
 
 One construct is the unit of deadline, cancellation, and child concurrency:
@@ -939,11 +953,13 @@ declared non-semantic tool namespace. The revision 0.1 built-ins:
 | `@layout_assert` | Post-layout build assertion over `ImageReport`. |
 | `@test` / `@test(runtime)` / `@test(exhaustive)` | Test declaration (§12.2). |
 | `@budget(...)` | Statement attribute: `@budget(bound=N)` with comptime-known integer `N` ≥ 1 (an integer literal or the name of a module-level `const` whose comptime value is one or more) must immediately precede a `for` or `while` (§8.1). |
+| `@discard(...)` | Statement attribute: `@discard(reason="...")` with a non-empty string reason must immediately precede a `match` that deliberately discards an `Err` at an `await` / `send` / `?` boundary (§9.4). |
 
-Of the built-ins, only `@budget(...)` may be a statement attribute, and in
-that position it must immediately precede `for` or `while` at the same
-indentation. Other statement attributes, and a loop-position `@budget` on a
-non-loop, are errors.
+Of the built-ins, only `@budget(...)` and `@discard(...)` may be statement
+attributes. `@budget` must immediately precede `for` or `while` at the same
+indentation; `@discard` must immediately precede `match`. Other statement
+attributes, a loop-position `@budget` on a non-loop, and a `@discard` not
+on a `match`, are errors.
 
 A module-level `static NAME: Type` is the construct
 [03 §3.1](03-hardware.md) binds with `@placed(addr)`; `@placed` is legal

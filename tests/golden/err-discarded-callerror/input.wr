@@ -1,0 +1,24 @@
+module examples.err_discarded_callerror
+
+# plans/M13.md item L — silent Err discard of CallError is error[sema]
+# unless the match carries `@discard(reason="...")`.
+
+@actor
+pub struct Logger:
+    count: u64
+
+    pub fn record(mut self, code: u64):
+        self.count = self.count + code
+
+@actor
+pub struct Probe:
+    logger: Actor[Logger]
+
+    pub async fn observe(mut self, code: u64) -> u64:
+        outcome = send self.logger.record(code=code)
+        match outcome:
+            case .Ok(_):
+                pass
+            case .Err(_):
+                pass
+        return code

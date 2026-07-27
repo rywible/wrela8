@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/err_boot_epoch_stale.wr sha256=290dae3248ffdf2f1c8b4eb433dbd7d80976d62d1b7b95dbbe88964df11e004f
+  Input path=examples/err_boot_epoch_stale.wr sha256=1af1c82b423bf3973ee606cf7ea6e9d0e0de7d8ad71db43dab1546505d922997
   Input path=<generated> sha256=444bc88b30cfd5d5f20e59e0245f1fca94131d7c56a58b98d91d98646889e107
   Name value=err-boot-epoch-stale
   Target value=Target.wrela_machine_v1

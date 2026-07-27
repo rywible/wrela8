@@ -28,6 +28,7 @@ pub struct Store:
 @test(runtime)
 async fn guest_slotmap(store: Actor[Store]):
     v = await store.insert_one()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match v:
         case .Ok(n):
             assert n == 1, "insert+contains"

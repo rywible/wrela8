@@ -67,6 +67,7 @@ pub struct Near:
 
     pub async fn go(read self) -> u64:
         v = await self.sink.add(by=1)
+        @discard(reason="migrated: deliberate Err discard (M13 item L)")
         match v:
             case .Ok(n):
                 return n
@@ -84,12 +85,14 @@ pub struct Far:
 @test(runtime)
 async fn admission_order_across_two_cores(near: Actor[Near], far: Actor[Far]):
     k = await far.kick()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match k:
         case .Ok(n):
             assert n == 7, "Far ran its turn on core 2"
         case .Err(_):
             assert false, "Far rejected"
     x = await near.go()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match x:
         case .Ok(n):
             assert n == 1, "core 0's +1 was admitted at Sink before core 2's earlier-published +10"

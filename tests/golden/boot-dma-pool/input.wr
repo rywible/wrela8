@@ -67,12 +67,14 @@ pub struct Worker:
 
     pub async fn run(mut self) -> unit:
         m1 = await self.led.mark(n=4)
+        @discard(reason="migrated: deliberate Err discard (M13 item L)")
         match m1:
             case .Ok(_):
                 pass
             case .Err(_):
                 pass
         m2 = await self.led.mark(n=2)
+        @discard(reason="migrated: deliberate Err discard (M13 item L)")
         match m2:
             case .Ok(_):
                 pass
@@ -87,18 +89,21 @@ pub struct Worker:
 @test(runtime)
 async fn pool_backed_image(w: Actor[Worker], led: Actor[Ledger]):
     r = await w.run()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match r:
         case .Ok(_):
             pass
         case .Err(_):
             assert false, "run rejected"
     m = await led.read_marks()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match m:
         case .Ok(v):
             assert v == 42, "two marks in admission order, over an image carrying 384 bytes of pool backing"
         case .Err(_):
             assert false, "read_marks rejected"
     s = await w.seen()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match s:
         case .Ok(v):
             assert v == 1, "the worker's own state survived the pooldata reservation placed after it"

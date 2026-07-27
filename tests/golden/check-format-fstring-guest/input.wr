@@ -26,6 +26,7 @@ pub struct Store:
 @test(runtime)
 async fn guest_fmt(store: Actor[Store]):
     v = await store.fmt_len()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match v:
         case .Ok(n):
             assert n == 19, "pt=Pt(x=3, y=7) n=0 is 19 bytes"

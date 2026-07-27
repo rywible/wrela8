@@ -13,6 +13,7 @@ pub struct Auditor:
 
     pub async fn observe(mut self, code: u64) -> u64:
         outcome = send self.logger.record(code=code)
+        @discard(reason="migrated: deliberate Err discard (M13 item L)")
         match outcome:
             case .Ok(_):
                 pass

@@ -50,6 +50,7 @@ pub struct Near:
 
     pub async fn go(read self) -> u64:
         v = await self.sink.add(by=1)
+        @discard(reason="migrated: deliberate Err discard (M13 item L)")
         match v:
             case .Ok(n):
                 return n
@@ -61,6 +62,7 @@ pub struct Far:
     sink: Actor[Sink]
 
     pub async fn kick(read self) -> u64:
+        @discard(reason="migrated: deliberate Err discard (M13 item L)")
         match send self.sink.bump(by=10):
             case .Ok(_):
                 return 7
@@ -72,12 +74,14 @@ async fn mailbox_depth_backpressures_under_three_cores(
     near: Actor[Near], far: Actor[Far], sink: Actor[Sink]
 ):
     k = await far.kick()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match k:
         case .Ok(n):
             assert n == 7, "Far ran its turn on core 2"
         case .Err(_):
             assert false, "Far rejected"
     x = await near.go()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match x:
         case .Ok(n):
             assert n == 1, "Near's +1 admitted first into the depth-1 mailbox"
@@ -86,6 +90,7 @@ async fn mailbox_depth_backpressures_under_three_cores(
     # Far's held +10 must have been admitted after the mailbox freed —
     # otherwise back-pressure silently dropped it and total stays 1.
     t = await sink.total()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match t:
         case .Ok(n):
             assert n == 11, "Far's back-pressured +10 was admitted later, not dropped"

@@ -37,6 +37,7 @@ async fn worker(c: Actor[Counter]) -> u64:
     i: u64 = 0
     while i < 8:
         r = await c.bump()
+        @discard(reason="migrated: deliberate Err discard (M13 item L)")
         match r:
             case .Ok(_):
                 pass
@@ -51,12 +52,14 @@ async fn deadline_cancels(c: Actor[Counter]):
         g.start(worker, c=c)
         results = await g.join_all()
         for r in results:
+            @discard(reason="migrated: deliberate Err discard (M13 item L)")
             match r:
                 case .Ok(_):
                     assert false, "the child must not complete: its group expired"
                 case .Err(_):
                     pass
     n = await c.total()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match n:
         case .Ok(v):
             assert v == 1, "cancellation landed at the child's first checkpoint past the deadline"

@@ -27,6 +27,7 @@ pub struct Store:
 @test(runtime)
 async fn smoke(store: Actor[Store]):
     v = await store.get()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match v:
         case .Ok(n):
             assert n == 0, "a zero-initialized Store reads 0"

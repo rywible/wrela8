@@ -28,6 +28,7 @@ pub struct ClockProbe:
 @test(runtime)
 async fn monotonic(c: Actor[ClockProbe]):
     r = await c.sample()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match r:
         case .Ok(v):
             assert v == 1, "sample returned 1"

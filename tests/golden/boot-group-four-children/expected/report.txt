@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/boot_group_four_children.wr sha256=6bc5c72adb01a42eb0d5fa356da90fb496a2698525ad4c2d6859af41a6f57567
+  Input path=examples/boot_group_four_children.wr sha256=02635376d931bbe320ea39a60e55c5b007044358e3a92812525466abbff9742b
   Input path=<generated> sha256=f271cb5eecbb7f992e23d336741e7b48594f477df14c83007804d1214edaefab
   Name value=boot-group-four-children
   Target value=Target.wrela_machine_v1

@@ -1,1 +1,1 @@
-error[actor]: this `with group` starts 1 child activation(s) but declares no `capacity=`, and a group's default capacity is zero (02-language.md §9.5) — add `capacity=1` at 38:5
+error[actor]: this `with group` starts 1 child activation(s) but declares no `capacity=`, and a group's default capacity is zero (02-language.md §9.5) — add `capacity=1` at 39:5

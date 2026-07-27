@@ -138,6 +138,7 @@ pub struct BlkDriver:
     # fn`, resolved into the driver's own turn area (not a free turn).
     pub async fn scaled_capacity(read self) -> u64:
         v = await self.scale.times(n=self.capacity_sectors)
+        @discard(reason="migrated: deliberate Err discard (M13 item L)")
         match v:
             case .Ok(n):
                 return n
@@ -164,6 +165,7 @@ pub struct Storage:
 
     pub async fn blocks(read self) -> u64:
         c = await self.disk.capacity()
+        @discard(reason="migrated: deliberate Err discard (M13 item L)")
         match c:
             case .Ok(n):
                 return n
@@ -173,6 +175,7 @@ pub struct Storage:
 @test(runtime)
 async fn actor_relays_a_driver_reply(st: Actor[Storage]):
     v = await st.blocks()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match v:
         case .Ok(n):
             assert n == 16, "the driver's own capacity, relayed through an actor turn"
@@ -182,6 +185,7 @@ async fn actor_relays_a_driver_reply(st: Actor[Storage]):
 @test(runtime)
 async fn root_messages_the_driver_directly(disk: Actor[BlkDriver]):
     v = await disk.sector_bytes(count=3)
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match v:
         case .Ok(n):
             assert n == 1536, "3 * 512 computed inside a driver turn"
@@ -191,6 +195,7 @@ async fn root_messages_the_driver_directly(disk: Actor[BlkDriver]):
 @test(runtime)
 async fn a_driver_turn_parks_and_resumes(disk: Actor[BlkDriver]):
     v = await disk.scaled_capacity()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match v:
         case .Ok(n):
             assert n == 160, "16 sectors * factor 10, computed across a parked driver turn"
@@ -205,6 +210,7 @@ async fn root_never_reenters_bring_up(disk: Actor[BlkDriver]):
     # before the scheduler runs a single turn, so the first admissible
     # message already sees `Running`. Asserted, not assumed.
     v = await disk.ready()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match v:
         case .Ok(n):
             assert n == 1, "no turn is admitted before the driver finished bring-up"

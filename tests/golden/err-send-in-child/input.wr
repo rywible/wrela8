@@ -24,6 +24,7 @@ async fn in_child(lg: Actor[Logger]):
         g.start(child, lg=lg)
         results = await g.join_all()
         for r in results:
+            @discard(reason="migrated: deliberate Err discard (M13 item L)")
             match r:
                 case .Ok(_):
                     pass

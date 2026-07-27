@@ -95,6 +95,7 @@ pub struct Store:
     # itself received over the same transport.
     pub async fn tally(read self) -> Pair:
         t = await self.led.origin()
+        @discard(reason="migrated: deliberate Err discard (M13 item L)")
         match t:
             case .Ok(p):
                 return p
@@ -123,12 +124,14 @@ pub struct Probe:
 
     pub async fn fetch(mut self) -> unit:
         a = await self.store.snapshot(key=41)
+        @discard(reason="migrated: deliberate Err discard (M13 item L)")
         match a:
             case .Ok(p):
                 self.from_sync = p
             case .Err(_):
                 pass
         b = await self.store.tally()
+        @discard(reason="migrated: deliberate Err discard (M13 item L)")
         match b:
             case .Ok(q):
                 self.from_async = q
@@ -151,30 +154,35 @@ pub struct Probe:
 @test(runtime)
 async fn struct_replies(pr: Actor[Probe]):
     f = await pr.fetch()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match f:
         case .Ok(_):
             pass
         case .Err(_):
             assert false, "fetch rejected"
     a_lo = await pr.sync_lo()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match a_lo:
         case .Ok(v):
             assert v == 42, "sync struct reply: lo is key + 1"
         case .Err(_):
             assert false, "sync_lo rejected"
     a_hi = await pr.sync_hi()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match a_hi:
         case .Ok(v):
             assert v == 4103, "sync struct reply: hi is key * 100 + 3"
         case .Err(_):
             assert false, "sync_hi rejected"
     b_lo = await pr.async_lo()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match b_lo:
         case .Ok(v):
             assert v == 507, "async struct reply: lo is n + 7, relayed"
         case .Err(_):
             assert false, "async_lo rejected"
     b_hi = await pr.async_hi()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match b_hi:
         case .Ok(v):
             assert v == 1007, "async struct reply: hi is n * 2 + 7, relayed"

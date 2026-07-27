@@ -31,6 +31,7 @@ async fn worker(c: Actor[Counter]) -> u64:
     i: u64 = 0
     while i < 8:
         r = await c.bump()
+        @discard(reason="migrated: deliberate Err discard (M13 item L)")
         match r:
             case .Ok(_):
                 pass
@@ -47,6 +48,7 @@ async fn inner_cancels_at_the_outer_deadline(c: Actor[Counter]):
             g.start(worker, c=c)
             results = await g.join_all()
             for r in results:
+                @discard(reason="migrated: deliberate Err discard (M13 item L)")
                 match r:
                     case .Ok(_):
                         pass
@@ -54,6 +56,7 @@ async fn inner_cancels_at_the_outer_deadline(c: Actor[Counter]):
                         cancelled = cancelled + 1
     assert cancelled == 1, "the inner group expired at the outer's earlier deadline"
     n = await c.total()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match n:
         case .Ok(v):
             assert v == 1, "the child stopped at its first checkpoint past the inherited deadline"

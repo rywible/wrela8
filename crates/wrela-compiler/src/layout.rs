@@ -7575,6 +7575,7 @@ pub struct BlkDriver:
 @test(runtime)
 async fn asks_actor(s: Actor[Scale]):
     v = await s.get()
+    @discard(reason=\"migrated: deliberate Err discard (M13 item L)\")
     match v:
         case .Ok(_):
             pass
@@ -7584,6 +7585,7 @@ async fn asks_actor(s: Actor[Scale]):
 @test(runtime)
 async fn asks_driver(d: Actor[BlkDriver]):
     v = await d.get()
+    @discard(reason=\"migrated: deliberate Err discard (M13 item L)\")
     match v:
         case .Ok(_):
             pass

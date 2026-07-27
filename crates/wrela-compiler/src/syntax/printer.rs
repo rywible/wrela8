@@ -851,6 +851,9 @@ fn print_stmt(stmt: &Stmt, indent: usize, out: &mut String) {
             }
         }
         Stmt::Match(m) => {
+            if let Some(attr) = &m.discard {
+                print_attrs(std::slice::from_ref(attr), indent, out);
+            }
             push_line(
                 out,
                 indent,

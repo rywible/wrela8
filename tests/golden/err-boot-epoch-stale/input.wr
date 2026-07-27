@@ -139,6 +139,7 @@ async fn epoch_stale_aborts(led: Actor[Ledger]):
     # One checkpoint delivers the write IRQ; the drain task must abort
     # before this mark can complete a second time.
     a = await led.mark(n=1)
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match a:
         case .Ok(_):
             pass

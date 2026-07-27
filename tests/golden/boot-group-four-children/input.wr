@@ -11,6 +11,7 @@ pub struct Doubler:
 
 async fn fetch_a(d: Actor[Doubler]) -> u64:
     v = await d.double(n=10)
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match v:
         case .Ok(x):
             return x
@@ -19,6 +20,7 @@ async fn fetch_a(d: Actor[Doubler]) -> u64:
 
 async fn fetch_b(d: Actor[Doubler]) -> u64:
     v = await d.double(n=20)
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match v:
         case .Ok(x):
             return x
@@ -27,6 +29,7 @@ async fn fetch_b(d: Actor[Doubler]) -> u64:
 
 async fn fetch_c(d: Actor[Doubler]) -> u64:
     v = await d.double(n=30)
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match v:
         case .Ok(x):
             return x
@@ -35,6 +38,7 @@ async fn fetch_c(d: Actor[Doubler]) -> u64:
 
 async fn fetch_d(d: Actor[Doubler]) -> u64:
     v = await d.double(n=40)
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match v:
         case .Ok(x):
             return x
@@ -51,6 +55,7 @@ async fn test_join_four(d: Actor[Doubler]):
         g.start(fetch_d, d=d)
         results = await g.join_all()
         for r in results:
+            @discard(reason="migrated: deliberate Err discard (M13 item L)")
             match r:
                 case .Ok(v):
                     total = total + v

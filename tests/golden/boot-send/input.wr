@@ -31,12 +31,14 @@ async fn proven_send_delivers(lg: Actor[Logger]):
     send lg.record(code=2)
     # The consumed form still works, in the same body, targeting the same
     # mailbox — item A's `check-actor-send` shape, executed for real.
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match send lg.record(code=4):
         case .Ok(_):
             pass
         case .Err(_):
             assert false, "the consumed-Result send was not admitted"
     t = await lg.read_total()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match t:
         case .Ok(v):
             assert v == 7, "every send delivered its message (1 + 2 + 4)"

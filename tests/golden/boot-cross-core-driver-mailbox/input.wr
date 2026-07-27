@@ -56,6 +56,7 @@ pub struct Probe:
     # `send` to a driver is never proven infallible today.
     pub async fn fire(read self) -> unit:
         r = send self.disk.note()
+        @discard(reason="migrated: deliberate Err discard (M13 item L)")
         match r:
             case .Ok(_):
                 return unit
@@ -67,6 +68,7 @@ async fn cross_core_send_into_driver_mailbox(p: Actor[Probe], d: Actor[Stub]):
     # Cross-core call to Probe on core 1; Probe's body one-way-sends into
     # Stub on core 0 over the request ring.
     r = await p.fire()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match r:
         case .Ok(_):
             pass
@@ -75,6 +77,7 @@ async fn cross_core_send_into_driver_mailbox(p: Actor[Probe], d: Actor[Stub]):
     # Same-core await of the driver: the counter can only be 1 if the ring
     # delivered Probe's send into Stub's mailbox and the turn ran.
     v = await d.count()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match v:
         case .Ok(n):
             assert n == 1, "Stub.note must have run on core 0 after Probe's cross-core send"

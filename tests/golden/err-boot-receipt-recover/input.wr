@@ -212,18 +212,21 @@ async fn recover_reports_completed_then_unknown(led: Actor[Ledger]):
     # Two checkpoints: the phase-1 IRQ+drain, then the phase-2 IRQ+drain.
     # Surviving with marks 51 means every assert in both phases held.
     a = await led.mark(n=5)
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match a:
         case .Ok(_):
             pass
         case .Err(_):
             assert false, "mark rejected"
     b = await led.mark(n=1)
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match b:
         case .Ok(_):
             pass
         case .Err(_):
             assert false, "mark rejected"
     m = await led.read_marks()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match m:
         case .Ok(v):
             assert v == 51, "two marks after the Completed and Unknown recoveries"

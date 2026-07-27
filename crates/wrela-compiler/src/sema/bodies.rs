@@ -62,8 +62,8 @@ use crate::sema::types::{
 use crate::sema::{SemaError, unimplemented_at};
 use crate::syntax::ast::{
     self, AccessMode, Arg, AssertStmt, AssignOp, AssignStmt, BinOp, ClosureBody, ClosureExpr,
-    DeferBody, DeferStmt, Expr, ForStmt, IfStmt, Item, MatchStmt, Member, Module, NamedType,
-    Pattern, Span, Stmt, UnaryOp, VariantPayload, WhileStmt, WithStmt,
+    DeferBody, DeferStmt, Expr, ForStmt, IfStmt, Item, MatchArm, MatchStmt, Member, Module,
+    NamedType, Pattern, Span, Stmt, UnaryOp, VariantPayload, WhileStmt, WithStmt,
 };
 
 // --- item H: the generic-instantiation queue ------------------------------
@@ -2241,6 +2241,13 @@ fn check_while(w: &WhileStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<Type
 }
 
 fn check_match(m: &MatchStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedStmt, SemaError> {
+    let discard_ok = match &m.discard {
+        Some(attr) => {
+            check_discard_attr(attr)?;
+            true
+        }
+        None => false,
+    };
     let scrutinee = check_expr(&m.scrutinee, None, fctx, mctx)?;
     let sty = scrutinee.ty.clone();
     // plans/M8.md item G, decision 18: matching 03-hardware.md §9's
@@ -2279,9 +2286,353 @@ fn check_match(m: &MatchStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<Type
             body,
         });
     }
+    // plans/M13.md item L / decision 9: no silent `Err` discard of a
+    // CallError-bearing Result at an await/send/`?` boundary without
+    // `@discard(reason="...")` on this match.
+    if !discard_ok {
+        check_no_silent_callerror_err_discard(&sty, &arms, &m.arms, m.span)?;
+    }
     Ok(TypedStmt {
         kind: TypedStmtKind::Match { scrutinee, arms },
     })
+}
+
+/// `@discard(reason="...")` — plans/M13.md decision 9 / 02 §13.
+fn check_discard_attr(attr: &crate::syntax::ast::Attr) -> Result<(), SemaError> {
+    debug_assert_eq!(attr.name, "discard");
+    if attr.args.len() != 1 {
+        return Err(SemaError::at(
+            "sema",
+            "`@discard` takes exactly one argument `reason=\"...\"` (02-language.md §13)"
+                .to_string(),
+            attr.span,
+        ));
+    }
+    let a = &attr.args[0];
+    let Some(label) = a.label.as_deref() else {
+        return Err(SemaError::at(
+            "sema",
+            "`@discard` takes `reason=\"...\"` (labeled); a positional argument is not the \
+             deliberate-discard spelling (02-language.md §13)"
+                .to_string(),
+            a.span,
+        ));
+    };
+    if label != "reason" {
+        return Err(SemaError::at(
+            "sema",
+            format!("`@discard` takes `reason=\"...\"`; found `{label}=` (02-language.md §13)"),
+            a.span,
+        ));
+    }
+    if a.mode != AccessMode::Read {
+        return Err(SemaError::at(
+            "sema",
+            "`@discard`'s `reason=` is a string literal, not a `mut`/`take` place".to_string(),
+            a.span,
+        ));
+    }
+    match &a.value {
+        Expr::Str(_, text) if !text.is_empty() => Ok(()),
+        Expr::Str(_, _) => Err(SemaError::at(
+            "sema",
+            "`@discard(reason=\"...\")` requires a non-empty reason string".to_string(),
+            a.span,
+        )),
+        _ => Err(SemaError::at(
+            "sema",
+            "`@discard(reason=\"...\")` requires a string literal reason".to_string(),
+            a.span,
+        )),
+    }
+}
+
+/// True when `ty` is `Result[_, CallError[...]]` (the await/send/`?`
+/// failure vocabulary after plans/M13.md items I/J).
+fn result_err_is_call_error(ty: &Type) -> bool {
+    match ty {
+        Type::Result(_, err) => matches!(&**err, Type::Named(n, _) if n == "CallError"),
+        _ => false,
+    }
+}
+
+/// plans/M13.md item L: a match arm that binds `Result.Err` of a
+/// CallError-bearing Result via wildcard or an unused binding is a silent
+/// discard unless the match carries `@discard`.
+fn check_no_silent_callerror_err_discard(
+    sty: &Type,
+    arms: &[TypedMatchArm],
+    ast_arms: &[MatchArm],
+    match_span: Span,
+) -> Result<(), SemaError> {
+    if !result_err_is_call_error(sty) {
+        return Ok(());
+    }
+    for (arm, ast_arm) in arms.iter().zip(ast_arms.iter()) {
+        if err_arm_is_silent_discard(&arm.pattern, &arm.body) {
+            let mut e = SemaError::at(
+                "sema",
+                "silent `Err` discard of `CallError` — consume the error, or annotate the \
+                 `match` with `@discard(reason=\"...\")` (02-language.md §9.4)"
+                    .to_string(),
+                ast_arm.span,
+            );
+            e.extra_lines = vec![
+                "  ROADMAP.md: no silent `Err` discard without `@discard(reason=)`".to_string(),
+                "  plans/M13.md item L / decision 9".to_string(),
+            ];
+            let _ = match_span;
+            return Err(e);
+        }
+    }
+    Ok(())
+}
+
+/// True when this pattern is a `Result.Err` arm (or a whole-Result
+/// wildcard/binding covering Err) that discards its payload.
+fn err_arm_is_silent_discard(pattern: &TypedPattern, body: &[TypedStmt]) -> bool {
+    match &pattern.kind {
+        TypedPatternKind::Variant {
+            enum_name,
+            variant,
+            payload,
+        } if (enum_name == "Result" || enum_name.is_empty()) && variant == "Err" => {
+            match payload.first() {
+                Some(inner) => pattern_is_silent_discard(inner, body),
+                // Fieldless Err — still a discard of the error value.
+                None => true,
+            }
+        }
+        TypedPatternKind::Or(alts) => alts.iter().any(|a| err_arm_is_silent_discard(a, body)),
+        // A bare wildcard / binding against the whole Result covers Err.
+        TypedPatternKind::Wildcard | TypedPatternKind::Binding(_) => {
+            pattern_is_silent_discard(pattern, body)
+        }
+        TypedPatternKind::Take(inner) => err_arm_is_silent_discard(inner, body),
+        _ => false,
+    }
+}
+
+fn pattern_is_silent_discard(pattern: &TypedPattern, body: &[TypedStmt]) -> bool {
+    match &pattern.kind {
+        TypedPatternKind::Wildcard => true,
+        TypedPatternKind::Binding(name) => !typed_stmts_use_local(body, name),
+        TypedPatternKind::Take(inner) => pattern_is_silent_discard(inner, body),
+        TypedPatternKind::Tuple(items) | TypedPatternKind::Array(items) => {
+            !items.is_empty() && items.iter().all(|i| pattern_is_silent_discard(i, body))
+        }
+        TypedPatternKind::Variant { payload, .. } => {
+            payload.is_empty() || payload.iter().all(|p| pattern_is_silent_discard(p, body))
+        }
+        TypedPatternKind::Or(alts) => {
+            !alts.is_empty() && alts.iter().all(|a| pattern_is_silent_discard(a, body))
+        }
+        TypedPatternKind::Literal(_) => false,
+    }
+}
+
+fn typed_stmts_use_local(stmts: &[TypedStmt], name: &str) -> bool {
+    let mut found = false;
+    for s in stmts {
+        walk_typed_stmt_locals(s, &mut |n| {
+            if n == name {
+                found = true;
+            }
+        });
+        if found {
+            return true;
+        }
+    }
+    false
+}
+
+fn walk_typed_stmt_locals(s: &TypedStmt, f: &mut dyn FnMut(&str)) {
+    // Deliberately walks every subexpression that can name a local — used
+    // only to decide whether an Err binding is read (item L). New typed
+    // stmt kinds must get a real arm (exhaustive match).
+    match &s.kind {
+        TypedStmtKind::Let { value, .. } => walk_typed_expr_locals(value, f),
+        TypedStmtKind::Assign { target, value } => {
+            walk_typed_expr_locals(target, f);
+            walk_typed_expr_locals(value, f);
+        }
+        TypedStmtKind::If {
+            cond,
+            then_branch,
+            elifs,
+            else_branch,
+        } => {
+            walk_typed_expr_locals(cond, f);
+            for s in then_branch {
+                walk_typed_stmt_locals(s, f);
+            }
+            for e in elifs {
+                walk_typed_expr_locals(&e.cond, f);
+                for s in &e.body {
+                    walk_typed_stmt_locals(s, f);
+                }
+            }
+            if let Some(b) = else_branch {
+                for s in b {
+                    walk_typed_stmt_locals(s, f);
+                }
+            }
+        }
+        TypedStmtKind::Match { scrutinee, arms } => {
+            walk_typed_expr_locals(scrutinee, f);
+            for arm in arms {
+                for s in &arm.body {
+                    walk_typed_stmt_locals(s, f);
+                }
+                if let Some(g) = &arm.guard {
+                    walk_typed_expr_locals(g, f);
+                }
+            }
+        }
+        TypedStmtKind::For { iter, body, .. } => {
+            match iter {
+                TypedForIter::Range(start, end, _) => {
+                    walk_typed_expr_locals(start, f);
+                    walk_typed_expr_locals(end, f);
+                }
+                TypedForIter::Expr(e) => walk_typed_expr_locals(e, f),
+            }
+            for s in body {
+                walk_typed_stmt_locals(s, f);
+            }
+        }
+        TypedStmtKind::While { cond, body, .. } => {
+            walk_typed_expr_locals(cond, f);
+            for s in body {
+                walk_typed_stmt_locals(s, f);
+            }
+        }
+        TypedStmtKind::Return(Some(e))
+        | TypedStmtKind::ExprStmt(e)
+        | TypedStmtKind::BareSend { expr: e, .. } => walk_typed_expr_locals(e, f),
+        TypedStmtKind::Assert { cond, message }
+        | TypedStmtKind::ComptimeAssert { cond, message, .. } => {
+            walk_typed_expr_locals(cond, f);
+            if let Some(m) = message {
+                walk_typed_expr_locals(m, f);
+            }
+        }
+        TypedStmtKind::Defer(body) => match body {
+            TypedDeferBody::Expr(e) => walk_typed_expr_locals(e, f),
+            TypedDeferBody::Suite(stmts) => {
+                for s in stmts {
+                    walk_typed_stmt_locals(s, f);
+                }
+            }
+        },
+        TypedStmtKind::WithGroup {
+            capacity,
+            deadline,
+            body,
+            ..
+        } => {
+            if let Some(c) = capacity {
+                walk_typed_expr_locals(c, f);
+            }
+            if let Some(d) = deadline {
+                walk_typed_expr_locals(d, f);
+            }
+            for s in body {
+                walk_typed_stmt_locals(s, f);
+            }
+        }
+        TypedStmtKind::Break
+        | TypedStmtKind::Continue
+        | TypedStmtKind::Pass
+        | TypedStmtKind::Return(None) => {}
+    }
+}
+
+fn walk_typed_expr_locals(e: &TypedExpr, f: &mut dyn FnMut(&str)) {
+    match &e.kind {
+        TypedExprKind::Local(name) => f(name),
+        TypedExprKind::Field(base, _)
+        | TypedExprKind::Await(base)
+        | TypedExprKind::Send(base)
+        | TypedExprKind::Try(base, _)
+        | TypedExprKind::Neg(base)
+        | TypedExprKind::BitNot(base)
+        | TypedExprKind::Take(base)
+        | TypedExprKind::ToScalar(base)
+        | TypedExprKind::Not(base)
+        | TypedExprKind::Panic(base) => walk_typed_expr_locals(base, f),
+        TypedExprKind::Index(base, idx) => {
+            walk_typed_expr_locals(base, f);
+            walk_typed_expr_locals(idx, f);
+        }
+        TypedExprKind::Binary(_, l, r)
+        | TypedExprKind::OpCall(_, l, r)
+        | TypedExprKind::And(l, r)
+        | TypedExprKind::Or(l, r) => {
+            walk_typed_expr_locals(l, f);
+            walk_typed_expr_locals(r, f);
+        }
+        TypedExprKind::Call { receiver, args, .. } => {
+            if let Some(r) = receiver {
+                walk_typed_expr_locals(r, f);
+            }
+            for a in args {
+                if let Some(t) = a {
+                    walk_typed_expr_locals(t, f);
+                }
+            }
+        }
+        TypedExprKind::CallValue(callee, args) => {
+            walk_typed_expr_locals(callee, f);
+            for a in args {
+                walk_typed_expr_locals(a, f);
+            }
+        }
+        TypedExprKind::Intrinsic { receiver, args, .. } => {
+            if let Some(r) = receiver {
+                walk_typed_expr_locals(r, f);
+            }
+            for (_, a) in args {
+                walk_typed_expr_locals(a, f);
+            }
+        }
+        TypedExprKind::StructLiteral { fields, .. } => {
+            for (_, v) in fields {
+                walk_typed_expr_locals(v, f);
+            }
+        }
+        TypedExprKind::Tuple(items) | TypedExprKind::List(items) => {
+            for i in items {
+                walk_typed_expr_locals(i, f);
+            }
+        }
+        TypedExprKind::EnumConstruct { args, .. } => {
+            for a in args {
+                walk_typed_expr_locals(a, f);
+            }
+        }
+        TypedExprKind::Is(scrut, _) => walk_typed_expr_locals(scrut, f),
+        TypedExprKind::Closure { body, .. } => match body {
+            TypedClosureBody::Expr(e) => walk_typed_expr_locals(e, f),
+            TypedClosureBody::Suite(stmts) => {
+                for s in stmts {
+                    walk_typed_stmt_locals(s, f);
+                }
+            }
+        },
+        TypedExprKind::Int(_)
+        | TypedExprKind::Float(_)
+        | TypedExprKind::Bool(_)
+        | TypedExprKind::Char(_)
+        | TypedExprKind::Str(_)
+        | TypedExprKind::BStr(_)
+        | TypedExprKind::Const(_)
+        | TypedExprKind::Unit
+        | TypedExprKind::GroupChild(_)
+        | TypedExprKind::PoolName(_)
+        | TypedExprKind::FnRef(_)
+        | TypedExprKind::Static(_) => {}
+    }
 }
 
 /// plans/M8.md item G, decision 18: can this arm's pattern match

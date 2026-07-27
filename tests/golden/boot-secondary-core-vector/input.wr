@@ -25,6 +25,7 @@ pub struct Off:
 @test(runtime)
 async fn secondary_vector(o: Actor[Off]):
     v = await o.get()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match v:
         case .Ok(n):
             assert n == 77, "expected 77 from Off on core 1 via per-core checkpoint"

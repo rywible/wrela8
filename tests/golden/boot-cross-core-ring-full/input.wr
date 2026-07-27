@@ -47,11 +47,13 @@ pub struct Tally:
 async fn ring_full_rejects(t: Actor[Tally]):
     admitted: u64 = 0
     rejected: u64 = 0
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match send t.note(v=1):
         case .Ok(_):
             admitted = admitted + 1
         case .Err(_):
             rejected = rejected + 1
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match send t.note(v=2):
         case .Ok(_):
             admitted = admitted + 1

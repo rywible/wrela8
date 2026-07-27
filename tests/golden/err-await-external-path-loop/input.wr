@@ -29,6 +29,7 @@ pub struct Store:
         while i < 2:
             total = total + input.value
             fetched = await self.upstream.get()
+            @discard(reason="migrated: deliberate Err discard (M13 item L)")
             match fetched:
                 case .Ok(v):
                     total = total + v
