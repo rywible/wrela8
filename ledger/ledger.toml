@@ -1728,7 +1728,9 @@ note = """02-language.md §2: \"Struct fields are module-private unless `pub`; o
 
 **G1 re-measure (multi-module goldens that typecheck, excluding auto-injected `core.runtime` / generated `core.__image_runtime`):** constructs=41, reads=32, writes=1, patterns=0, fields_needing_pub=29, packages_hit=24. (M9-OO's 44/30/27/26 was a static grep; this is the typed-tree census G2 migrates against.)
 
-**Not yet.** G2 migrates packages against the census; G3 flips the same sites to `error[sema]` and this clause (plus `library.time.instant-opaque`) to `test`."""
+**G2 (landed).** Migratable packages against the G1 census gained `pub` on the fields foreign modules construct/read/write. Aggregate census after migration: constructs=1 reads=1 writes=1 patterns=0 fields_needing_pub=1 packages_hit=1 — residual is solely `golden/check-field-visibility-census` (`Sealed.hidden`), the intentional G1 shape pin. `stdlib/core/time.wr` `Instant.nanos` stays private (no foreign Instant sites in the census).
+
+**Not yet.** G3 flips the same sites to `error[sema]` and this clause (plus `library.time.instant-opaque`) to `test`."""
 
 [[clause]]
 id = "library.time"

@@ -4,6 +4,7 @@
 //!
 //!   check      fmt + tests + golden + corpus + fuzz(smoke) + ledger (the gate)
 //!   golden     run golden tests; `--update` rewrites expectations
+//!   field-visibility-census  warn-only aggregate (plans/M13.md G1/G2)
 //!   corpus     extract every ```wrela block from docs/ and lex it
 //!              (from M1, also parse). Always sema-checks every parseable
 //!              block (plans/M9.md item J3; per-block stubs / nest from
