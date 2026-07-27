@@ -29,7 +29,7 @@ fn under_budget(size: u64, cap: u64) -> bool:
 
 @layout_assert
 fn budget(report: ImageReport):
-    assert under_budget(size=report.code_size, cap=65000), "code budget is 65000 bytes"
+    assert under_budget(size=report.code_size, cap=85000), "code budget is 85000 bytes"
 
 @image
 pub fn build() -> Image:

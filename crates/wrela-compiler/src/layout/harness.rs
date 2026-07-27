@@ -98,93 +98,26 @@ pub(super) fn build_entry_stub() -> Vec<u32> {
 }
 /// plans/M6.md item E, decision 7/06 §4: `__wrela_checkpoint_service` is
 /// now real — the shared target every `codegen::Reloc::CheckpointService`
-/// `BL` resolves to, in every image flavor (ordinary `wrela build`/
-/// `--stage=report` and `wrela test`'s runtime harness alike; also the
-/// entry driver's own park-resume path, below, calls it directly). Item
-/// D's own bare `ret` is replaced by the real mask-arm-recheck loop over
-/// the per-core pending word (`wrela_machine::pending::core_word_addr(0)`
-/// — M6 is core-0-only, exactly like `codegen::FnCtx::checkpoint`'s own
-/// identical address choice, which is the load-test half of this same
-/// sequence: this fn is only ever reached once that test already found
-/// the word nonzero).
-///
-/// **The vector table**: 06 §4 calls for a static vector table so a set
-/// bit dispatches to its registered service. Bit 0 is always
-/// `__wrela_vector0_service` (deadline/cancel). Device-owned bits
-/// (`1..=63`, decision 12) dispatch by a compile-time-unrolled per-bit
-/// test-and-`BL` against each `IrqCap.bind` site the sealed graph
-/// recorded — still not an rtdata-loaded table (CLAUDE.md: no layers for
-/// their own sake); the targets are `Reloc::Call` into the `code`
-/// section, patched once bases are known. An image with no device
-/// vectors keeps the M6 byte-identical single-`BL` / whole-word-clear
-/// loop (pinned by every pre-G checkpoint golden).
-///
-/// **Mask-arm-recheck**: loop { read pending; if work, dispatch set bits
-/// and AND-clear only those bits (`BIC`); drain every driver's sticky
-/// wake-pending bit into its `@task` (fixed-point until quiet); reread }.
-/// A raise landing between read and clear is serviced on the next
-/// iteration. Single-core / no nesting (03 §6 rev 0.1) keeps a plain
-/// load/store sufficient; multi-core would need an atomic RMW clear.
-///
-/// Returns words plus `__wrela_checkpoint_service`'s word offset within
-/// them (not `0` — vector0 is placed first). Callers resolve
-/// `Reloc::CheckpointService` against
-/// `section_base + checkpoint_service_word * 4`. `relocs` carries every
-/// ISR/`@task` `BL` (word offsets relative to the block start).
-///
-/// **Vector-0 / ISR / `@task` contract**: called via `BL` with the
-/// caller's `x30` already saved — may clobber `x0..x14`, must preserve
-/// `x28`/`sp`, returns via ordinary `ret`. ISR and `@task` bodies take
-/// `x0 = driver_state` (the ordinary method receiver). Pending-bit
-/// clear is this service's job after dispatch, never the routine's.
+/// `BL` resolves to. M11 I: the checkpoint section holds only the
+/// floor-cat2 LR trampoline around `BL __wrela_rt_checkpoint` (decision
+/// 821); vector0 / pending / IRQ / wake algorithms live in force-rooted
+/// wrela. When `link_body` is false (no runtime wiring), the section is a
+/// bare `ret` so images without the wrela body still link.
 pub fn build_checkpoint_and_vector_stub(group: Option<&GroupServiceCtx>) -> CheckpointBlock {
-    build_checkpoint_and_vector_stub_ex(group, &[], &[])
+    build_checkpoint_and_vector_stub_ex(group, &[], &[], true)
 }
 
-/// plans/M7.md item G: full checkpoint builder. `irq_vectors` / `wake_drains`
-/// empty ⇒ byte-identical to the M6 single-vector loop.
+/// plans/M11.md item I: checkpoint section trampoline. `irq_vectors` /
+/// `wake_drains` no longer change section words — kept for call-site
+/// stability. `link_body` false ⇒ bare `ret` (no wrela body in `code`).
 pub fn build_checkpoint_and_vector_stub_ex(
     group: Option<&GroupServiceCtx>,
-    irq_vectors: &[IrqVectorEntry],
-    wake_drains: &[WakeDrainEntry],
+    _irq_vectors: &[IrqVectorEntry],
+    _wake_drains: &[WakeDrainEntry],
+    link_body: bool,
 ) -> CheckpointBlock {
-    // plans/M10.md item G / decision 670: specialized emitters in codegen,
-    // materialized here into the checkpoint section (VMM + Reloc::CheckpointService
-    // need a self-contained word block).
-    use crate::codegen::{
-        CheckpointEmitSpec, CheckpointIrqSpec, CheckpointWakeSpec, DeadlineGroupSpec,
-        emit_checkpoint_and_vector_stub,
-    };
-    let group_spec = group.map(|g| DeadlineGroupSpec {
-        arena_base: g.arena_base,
-        arena_capacity: g.arena_capacity,
-        turn_areas: g
-            .turn_areas
-            .iter()
-            .map(|(addr, id)| (*addr, id.get()))
-            .collect(),
-    });
-    let irq = irq_vectors
-        .iter()
-        .map(|e| CheckpointIrqSpec {
-            vector: e.vector,
-            handler_key: e.handler_key.clone(),
-            driver_state: e.driver_state,
-        })
-        .collect();
-    let wake = wake_drains
-        .iter()
-        .map(|e| CheckpointWakeSpec {
-            driver_state: e.driver_state,
-            wake_pending_off: e.wake_pending_off,
-            task_key: e.task_key.clone(),
-        })
-        .collect();
-    let emitted = emit_checkpoint_and_vector_stub(&CheckpointEmitSpec {
-        group: group_spec,
-        irq_vectors: irq,
-        wake_drains: wake,
-    });
+    let has_deadline = group.is_some_and(|g| g.arena_capacity > 0);
+    let emitted = crate::codegen::emit_checkpoint_service_trampoline(has_deadline, link_body);
     CheckpointBlock {
         words: emitted.words,
         checkpoint_service_word: emitted.checkpoint_service_word,
@@ -392,6 +325,41 @@ pub(super) fn inject_boot_init_fn(program: &mut CodegenProgram, wiring: &Runtime
         program.fns.insert(crate::codegen::rt_boot_init_symbol(), f);
     }
 }
+
+/// M11 I / decision 823: overwrite `__irq_call_*` / `__wake_call_*` with
+/// specialized `x0 = driver_state; bl handler/task` bodies.
+pub(super) fn inject_checkpoint_irq_fns(program: &mut CodegenProgram, wiring: &RuntimeWiring) {
+    for (i, (handler_key, driver_state)) in wiring.irq_calls.iter().enumerate() {
+        let key = format!("__irq_call_{i}");
+        let spec = crate::codegen::CheckpointIrqSpec {
+            vector: wiring.tables.irq_vector_bits.get(i).copied().unwrap_or(0),
+            handler_key: handler_key.clone(),
+            driver_state: *driver_state,
+        };
+        program
+            .fns
+            .insert(key, crate::codegen::emit_checkpoint_irq_call(&spec));
+    }
+    for (i, (task_key, driver_state)) in wiring.wake_calls.iter().enumerate() {
+        let key = format!("__wake_call_{i}");
+        let off = wiring
+            .tables
+            .wake_pending_addrs
+            .get(i)
+            .copied()
+            .unwrap_or(0)
+            .saturating_sub(*driver_state);
+        let spec = crate::codegen::CheckpointWakeSpec {
+            driver_state: *driver_state,
+            wake_pending_off: off,
+            task_key: task_key.clone(),
+        };
+        program
+            .fns
+            .insert(key, crate::codegen::emit_checkpoint_wake_call(&spec));
+    }
+}
+
 /// `rt_enqueue_actor(x0=method_idx, x1=arg0, x2=arg1, x3=waker_turn,
 /// x4=waker_core) -> x0 (0=admitted, 1=rejected — the `send`/call admission
 /// outcome, 02 §9.4's `NotAdmitted`/`Rejected` path, the minimal
@@ -1707,6 +1675,13 @@ pub(super) fn codegen_runtime_force_roots_with(
         "__wrela_init_nwords",
         "__wrela_init_store_word",
         "__wrela_boot_call",
+        "__wrela_vector0",
+        "__wrela_rt_checkpoint",
+        "__wrela_irq_mask",
+        "__wrela_irq_invoke",
+        "__wrela_wake_pending_load",
+        "__wrela_wake_pending_store",
+        "__wrela_wake_invoke",
     ] {
         only.insert(key.to_string());
     }
@@ -1723,6 +1698,8 @@ pub(super) fn codegen_runtime_force_roots_with(
                 || name.starts_with("__enqueue_")
                 || name.starts_with("__wrela_xsend_")
                 || name.starts_with("__wrela_xreply_")
+                || name.starts_with("__irq_call_")
+                || name.starts_with("__wake_call_")
             {
                 only.insert(name.clone());
             }
@@ -1732,6 +1709,8 @@ pub(super) fn codegen_runtime_force_roots_with(
                 || name.starts_with("__resume_")
                 || name.starts_with("__enqueue_")
                 || name.starts_with("__wrela_")
+                || name.starts_with("__irq_call_")
+                || name.starts_with("__wake_call_")
             {
                 only.insert(name.clone());
             }
@@ -1789,11 +1768,12 @@ pub(super) fn reinject_runtime_with_rtconfig(
     // Console/abort helpers already bind MACHINE_INFO / CONSOLE_* and must
     // not be duplicated into rodata.
     let mut keys: Vec<String> = Vec::new();
-    // Deadline helpers need ambient_group at 0x40 and a live group arena.
-    if tables.group_arena_capacity > 0 && tables.turn_stride >= 0x48 {
-        keys.push("__wrela_deadline_poll".into());
-        keys.push("__wrela_deadline_scan".into());
-    }
+    // M11 I: vector0 may Call deadline_scan whenever GROUP_ARENA_CAPACITY
+    // is nonzero at runtime — always reinject both so the Call resolves
+    // (empty arena ⇒ scan loops are no-ops). Poll stays entry-driver-only
+    // via has_deadline_poll, but reinjecting it is cheap next to scan.
+    keys.push("__wrela_deadline_poll".into());
+    keys.push("__wrela_deadline_scan".into());
     // Scheduler tick + child poll (item F) — always when wiring exists.
     keys.push("__wrela_rt_run_one".into());
     keys.push("__wrela_child_poll".into());
@@ -1836,6 +1816,13 @@ pub(super) fn reinject_runtime_with_rtconfig(
         "__wrela_init_nwords",
         "__wrela_init_store_word",
         "__wrela_boot_call",
+        "__wrela_vector0",
+        "__wrela_rt_checkpoint",
+        "__wrela_irq_mask",
+        "__wrela_irq_invoke",
+        "__wrela_wake_pending_load",
+        "__wrela_wake_pending_store",
+        "__wrela_wake_invoke",
     ] {
         keys.push(k.into());
     }
@@ -1847,6 +1834,13 @@ pub(super) fn reinject_runtime_with_rtconfig(
     // Boot call stubs (decision 812) — only live ones; overwritten after.
     for i in 0..tables.n_boot_calls {
         keys.push(format!("__boot_call_{i}"));
+    }
+    // IRQ / wake stubs (decision 823) — only live ones; overwritten after.
+    for i in 0..tables.irq_vector_bits.len() {
+        keys.push(format!("__irq_call_{i}"));
+    }
+    for i in 0..tables.wake_pending_addrs.len() {
+        keys.push(format!("__wake_call_{i}"));
     }
 
     for key in &keys {
@@ -1922,6 +1916,7 @@ pub fn layout_test_image(
         inject_rt_select_and_run_fns(&mut program, w);
         inject_rt_cross_core_fns(&mut program, w);
         inject_boot_init_fn(&mut program, w);
+        inject_checkpoint_irq_fns(&mut program, w);
     }
     let program = &program;
 
@@ -1962,8 +1957,13 @@ pub fn layout_test_image(
     let checkpoint_shape = group_service_shape(runtime_tables.as_ref());
     let (irq_shape, wake_shape) =
         checkpoint_irq_shape(boot.as_ref(), None, runtime_tables.as_ref());
-    let checkpoint_block =
-        build_checkpoint_and_vector_stub_ex(checkpoint_shape.as_ref(), &irq_shape, &wake_shape);
+    let link_cp_body = wiring.is_some();
+    let checkpoint_block = build_checkpoint_and_vector_stub_ex(
+        checkpoint_shape.as_ref(),
+        &irq_shape,
+        &wake_shape,
+        link_cp_body,
+    );
     let checkpoint_service_offset = checkpoint_block.checkpoint_service_word;
     let has_deadline_poll = checkpoint_block.has_deadline_poll;
     let checkpoint_words_len = checkpoint_block.words.len();
@@ -2108,6 +2108,7 @@ pub fn layout_test_image(
                     group_service_ctx(&placement, tables).as_ref(),
                     &irq_real,
                     &wake_real,
+                    true,
                 );
                 if real_cp.words.len() != checkpoint_words_len {
                     return Err(LayoutError::new(

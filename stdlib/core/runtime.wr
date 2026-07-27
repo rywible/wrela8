@@ -16,10 +16,18 @@ from core.__image_runtime import (
     N_RINGS,
     N_INIT_SLOTS,
     N_BOOT_CALLS,
+    N_IRQ_VECTORS,
+    N_WAKE_DRAINS,
+    CHECKPOINT_SIMPLE,
     NO_EDGE,
     __wrela_init_nwords,
     __wrela_init_store_word,
     __wrela_boot_call,
+    __wrela_irq_mask,
+    __wrela_irq_invoke,
+    __wrela_wake_pending_load,
+    __wrela_wake_pending_store,
+    __wrela_wake_invoke,
     GROUP_ARENA_CAPACITY,
     GROUP_SLOTS,
     RT,
@@ -81,6 +89,14 @@ from core.__image_runtime import (
     INIT_SLOT29,
     INIT_SLOT30,
     INIT_SLOT31,
+    WAKE_PEND0,
+    WAKE_PEND1,
+    WAKE_PEND2,
+    WAKE_PEND3,
+    WAKE_PEND4,
+    WAKE_PEND5,
+    WAKE_PEND6,
+    WAKE_PEND7,
     __wrela_select_count,
     __wrela_try_select,
     __wrela_resume_child,
@@ -218,6 +234,22 @@ from core.__image_runtime import (
     __boot_call_29,
     __boot_call_30,
     __boot_call_31,
+    __irq_call_0,
+    __irq_call_1,
+    __irq_call_2,
+    __irq_call_3,
+    __irq_call_4,
+    __irq_call_5,
+    __irq_call_6,
+    __irq_call_7,
+    __wake_call_0,
+    __wake_call_1,
+    __wake_call_2,
+    __wake_call_3,
+    __wake_call_4,
+    __wake_call_5,
+    __wake_call_6,
+    __wake_call_7,
 )
 
 # M10 B2: machine pages the console formatter speaks to (decision 593).
@@ -245,6 +277,7 @@ struct MachineInfoPage:
     @offset(0x58) ring_desc_bump: u64
     @offset(0x60) line_start: u64
     @offset(0x68) core_marks: [u64; VCPUS]
+    @offset(0x200) vector0_observed: u64
     @offset(0x208) abort_latch: u64
 
 @placed(0x40000000)
@@ -910,4 +943,66 @@ pub fn __wrela_secondary_entry_1():
 
 pub fn __wrela_secondary_entry_2():
     __wrela_rt_secondary_entry(2)
+    return
+
+# ---------------------------------------------------------------------------
+# M11 item I: checkpoint / vector0 (decisions 820–825). Floor-cat2 LR frame
+# stays in the checkpoint section (decision 821); algorithms here are
+# force-rooted. Vector0 may call deadline_scan only when a group arena
+# exists (`comptime if` — decision 784 reinject rule). IRQ/wake use generated
+# stubs overwritten at inject (decision 823).
+# ---------------------------------------------------------------------------
+
+pub fn __wrela_vector0():
+    MACHINE_INFO.vector0_observed = MACHINE_INFO.vector0_observed +% 1
+    if GROUP_ARENA_CAPACITY != 0:
+        __wrela_deadline_scan()
+    return
+
+pub fn __wrela_rt_checkpoint():
+    if CHECKPOINT_SIMPLE:
+        @budget(bound=64)
+        while true:
+            p = PENDING.words[0]
+            if p == 0:
+                return
+            __wrela_vector0()
+            PENDING.words[0] = 0
+        return
+    @budget(bound=64)
+    while true:
+        did: u64 = 0
+        p = PENDING.words[0]
+        if p != 0:
+            serviced: u64 = 0
+            if (p & 1) != 0:
+                __wrela_vector0()
+                serviced = serviced | 1
+            i: usize = 0
+            @budget(bound=8)
+            while i < N_IRQ_VECTORS:
+                bit = __wrela_irq_mask(i)
+                if (p & bit) != 0:
+                    __wrela_irq_invoke(i)
+                    serviced = serviced | bit
+                i = i +% 1
+            PENDING.words[0] = PENDING.words[0] & ~serviced
+            did = 1
+        @budget(bound=64)
+        while true:
+            any: u64 = 0
+            wi: usize = 0
+            @budget(bound=8)
+            while wi < N_WAKE_DRAINS:
+                wp = __wrela_wake_pending_load(wi)
+                if wp != 0:
+                    __wrela_wake_pending_store(wi, 0)
+                    __wrela_wake_invoke(wi)
+                    any = 1
+                    did = 1
+                wi = wi +% 1
+            if any == 0:
+                break
+        if did == 0:
+            return
     return

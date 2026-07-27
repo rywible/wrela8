@@ -167,8 +167,9 @@ pub use harness::{
 pub(crate) use harness::emitted_a64_census_live_counts;
 
 use harness::{
-    append_rodata, build_entry_stub, inject_boot_init_fn, inject_rt_cross_core_fns,
-    inject_rt_select_and_run_fns, push_halt, reinject_runtime_with_rtconfig,
+    append_rodata, build_entry_stub, inject_boot_init_fn, inject_checkpoint_irq_fns,
+    inject_rt_cross_core_fns, inject_rt_select_and_run_fns, push_halt,
+    reinject_runtime_with_rtconfig,
 };
 
 #[cfg(test)]
@@ -402,10 +403,11 @@ pub struct GroupServiceCtx {
 }
 
 /// `build_checkpoint_and_vector_stub`'s own result: the block's words plus
-/// the two entry points a caller must resolve against `section_base`.
+/// the service entry point a caller must resolve against `section_base`.
 pub struct CheckpointBlock {
     pub words: Vec<u32>,
     /// `__wrela_checkpoint_service`'s own word offset within `words`.
+    /// After M11 I this is `0` (floor trampoline; vector0 lives in `code`).
     pub checkpoint_service_word: usize,
     /// Always `None` after M11 item E — poll lives in `code`.
     pub deadline_poll_word: Option<usize>,
@@ -2512,6 +2514,7 @@ pub fn layout_program(
         inject_rt_select_and_run_fns(&mut program_owned, w);
         inject_rt_cross_core_fns(&mut program_owned, w);
         inject_boot_init_fn(&mut program_owned, w);
+        inject_checkpoint_irq_fns(&mut program_owned, w);
         &program_owned
     } else {
         program
@@ -2550,8 +2553,13 @@ pub fn layout_program(
     // again with the real addresses once `rtdata_base` exists.
     let checkpoint_shape = group_service_shape(runtime);
     let (irq_shape, wake_shape) = checkpoint_irq_shape(boot.as_ref(), None, runtime);
-    let checkpoint_block =
-        build_checkpoint_and_vector_stub_ex(checkpoint_shape.as_ref(), &irq_shape, &wake_shape);
+    let link_cp_body = runtime.is_some();
+    let checkpoint_block = build_checkpoint_and_vector_stub_ex(
+        checkpoint_shape.as_ref(),
+        &irq_shape,
+        &wake_shape,
+        link_cp_body,
+    );
     let checkpoint_words = checkpoint_block.words;
     let checkpoint_service_word = checkpoint_block.checkpoint_service_word;
     let checkpoint_relocs_shape = checkpoint_block.relocs;
@@ -2737,6 +2745,7 @@ pub fn layout_program(
                 group_service_ctx(pl, tables).as_ref(),
                 &irq_real,
                 &wake_real,
+                true,
             );
             if real.words.len() != checkpoint_words.len() {
                 return Err(LayoutError::new(
@@ -3771,6 +3780,10 @@ pub struct RuntimeTables {
     pub enqueue_actors: Vec<String>,
     /// M11 H: count of boot `init` calls (drivers then actors with `init`).
     pub n_boot_calls: usize,
+    /// M11 I: pending-vector bit indices for sealed IRQ binds (decision 823).
+    pub irq_vector_bits: Vec<u64>,
+    /// M11 I: absolute wake-pending word addresses (decision 823).
+    pub wake_pending_addrs: Vec<u64>,
 }
 
 impl RuntimeTables {
@@ -6317,6 +6330,10 @@ struct RuntimeWiring {
     /// The whole placement table, kept for the cross-core edge check both
     /// image flavors run during reloc resolution.
     placement: crate::placement::PlacementTable,
+    /// M11 I: IRQ handler stubs to overwrite (`handler_key`, `driver_state`).
+    irq_calls: Vec<(String, u64)>,
+    /// M11 I: wake `@task` stubs (`task_key`, `driver_state`).
+    wake_calls: Vec<(String, u64)>,
 }
 
 impl RuntimeWiring {
@@ -6468,6 +6485,8 @@ impl RuntimeWiring {
             group_child_index: boot.group_child_index.clone(),
             actor_cores,
             placement,
+            irq_calls: Vec::new(),
+            wake_calls: Vec::new(),
         };
         // plans/M8.md item C2: the ring set, last — it is derived from the
         // finished placement plus the compiled call sites, and it grows
@@ -6478,6 +6497,8 @@ impl RuntimeWiring {
         // M11 F: stamp select/drain/child facts onto tables so dump and
         // reinject share one `rtconfig::generate` input (decision 790).
         fill_rtconfig_facts(&mut wiring);
+        // M11 I: IRQ/wake facts for checkpoint body (decision 823).
+        fill_checkpoint_irq_facts(&mut wiring, boot);
         Ok(Some(wiring))
     }
 }
@@ -6569,6 +6590,38 @@ fn fill_rtconfig_facts(wiring: &mut RuntimeWiring) {
         crate::rtconfig::BOOT_CALL_POOL_COUNT
     );
     wiring.tables.n_boot_calls = n_boot_calls;
+}
+
+/// M11 I / decision 823: stamp IRQ vector bits + wake-pending addresses
+/// onto `tables`, and handler/task keys onto `wiring` for inject.
+fn fill_checkpoint_irq_facts(wiring: &mut RuntimeWiring, boot: &BootCtx) {
+    let rtdata = place_runtime_tables(wrela_machine::layout::RTDATA_BASE, &wiring.tables);
+    let (irq, wake) = checkpoint_irq_shape(Some(boot), Some(&rtdata), Some(&wiring.tables));
+    assert!(
+        irq.len() <= crate::rtconfig::IRQ_CALL_POOL_COUNT,
+        "image needs {} IRQ stubs; pool is {}",
+        irq.len(),
+        crate::rtconfig::IRQ_CALL_POOL_COUNT
+    );
+    assert!(
+        wake.len() <= crate::rtconfig::WAKE_CALL_POOL_COUNT,
+        "image needs {} wake stubs; pool is {}",
+        wake.len(),
+        crate::rtconfig::WAKE_CALL_POOL_COUNT
+    );
+    wiring.tables.irq_vector_bits = irq.iter().map(|e| e.vector).collect();
+    wiring.tables.wake_pending_addrs = wake
+        .iter()
+        .map(|e| e.driver_state + e.wake_pending_off)
+        .collect();
+    wiring.irq_calls = irq
+        .into_iter()
+        .map(|e| (e.handler_key, e.driver_state))
+        .collect();
+    wiring.wake_calls = wake
+        .into_iter()
+        .map(|e| (e.task_key, e.driver_state))
+        .collect();
 }
 
 pub struct BootCtx<'a> {
@@ -6765,18 +6818,17 @@ pub fn t():
         assert!(!laid.sections.is_empty());
     }
 
-    /// plans/M7.md item G self-audit: empty irq/wake lists keep the M6
-    /// single-vector / whole-word-clear loop byte-identical; a non-empty
-    /// list takes the multi-vector path (BIC + per-bit BL) and is longer.
+    /// plans/M11.md item I: checkpoint section is the floor trampoline;
+    /// irq/wake lists no longer change its words (algorithms are wrela).
     #[test]
-    fn checkpoint_empty_irq_wake_is_byte_identical_to_m6_path() {
-        let m6 = build_checkpoint_and_vector_stub(None);
-        let empty = build_checkpoint_and_vector_stub_ex(None, &[], &[]);
+    fn checkpoint_section_ignores_irq_wake_lists() {
+        let linked = build_checkpoint_and_vector_stub(None);
+        let empty = build_checkpoint_and_vector_stub_ex(None, &[], &[], true);
         assert_eq!(
-            m6.words, empty.words,
-            "empty irq/wake must stay byte-identical to the M6 builder"
+            linked.words, empty.words,
+            "empty irq/wake must match the linked trampoline"
         );
-        assert_eq!(m6.relocs, empty.relocs);
+        assert_eq!(linked.relocs, empty.relocs);
         let multi = build_checkpoint_and_vector_stub_ex(
             None,
             &[IrqVectorEntry {
@@ -6789,19 +6841,16 @@ pub fn t():
                 wake_pending_off: 24,
                 task_key: "struct:BlkDriver.drain".into(),
             }],
+            true,
         );
-        assert!(
-            multi.words.len() > m6.words.len(),
-            "multi-vector path must emit more words than the M6 loop"
+        assert_eq!(
+            multi.words, linked.words,
+            "irq/wake must not change checkpoint section words after item I"
         );
-        assert!(
-            multi
-                .words
-                .iter()
-                .any(|w| *w == encode::enc_bic_reg(10, 10, 11, true)),
-            "multi-vector path must emit BIC to clear only serviced bits"
-        );
-        assert_eq!(multi.relocs.len(), 2, "one ISR BL + one @task BL");
+        assert_eq!(linked.words.len(), 6, "floor 5 + BL");
+        assert_eq!(linked.relocs.len(), 1, "one BL to __wrela_rt_checkpoint");
+        let bare = build_checkpoint_and_vector_stub_ex(None, &[], &[], false);
+        assert_eq!(bare.words.len(), 1, "unlinked section is bare ret");
     }
 
     // --- plans/M6.md item C: RuntimeTables sizing -------------------------
