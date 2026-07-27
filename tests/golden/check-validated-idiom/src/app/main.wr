@@ -1,0 +1,14 @@
+module app.main
+
+from lib.validated import Validated
+
+# plans/M13.md item P: the idiom compiles (mint + into_value), then a
+# forged foreign construct is refused by G3 — fail-fast lands on forge
+# only if use_validated typed cleanly above.
+
+fn use_validated() -> u64:
+    v = Validated.validate(raw=9)
+    return v.into_value()
+
+fn forge() -> Validated:
+    return Validated(value=1)

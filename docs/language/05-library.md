@@ -123,14 +123,15 @@ fit is a build error.
 
 `Bytes.read_wire[W](offset)` decodes only `@layout(wire)` types, checking the full
 encoded extent, and returns `Result[W, WireError]`. `Untrusted[T]` (taint
-in), `Validated[F, T]` (proof out), and `Secret[T]` (never out) are the
-three instances of the one marked-value mechanism ([03 §8](03-hardware.md)):
-`Untrusted` gates device/external control values until checked-narrowed;
-`Validated[F, T]` is minted only by the declared
-`FormatValidator[F, T].validate(data) -> Result[Validated[F, T], F.Error]`
-and unwrapped with `into_value(take self)`; `Secret` admits only
-secret-preserving transforms. The compiler enforces a wrapper where an API
-requires it; it does not claim the validator matches a prose format.
+in) and `Secret[T]` (never out) are the two policies of the one marked-value
+mechanism ([03 §8](03-hardware.md)): `Untrusted` gates device/external
+control values until checked-narrowed; `Secret` admits only secret-preserving
+transforms. Proof-out validation is not a third prelude type — a module
+declares `resource(manual) struct Validated { value: T }` with private
+fields, mints only from its validator, and unwraps with `take self`
+([02 §3.1](02-language.md)); the name is non-normative, the mechanism is
+normative. The compiler enforces a wrapper where an API requires it; it
+does not claim the validator matches a prose format.
 
 ## 7. Collections and iteration
 

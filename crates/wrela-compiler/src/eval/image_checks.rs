@@ -1457,45 +1457,10 @@ pub(crate) fn sealed_authority_kind(name: &str) -> &'static str {
     }
 }
 
-/// 02-language.md §3.1's second bullet: protocol resources whose only
-/// consumers are protocol operations — every control-flow path must
-/// explicitly consume, return, or transfer them (or cover with `defer`).
-/// plans/M7.md item E3 flips `values.resource.protocol-consumption`.
-///
-/// **In:** `DeviceCap` / `Mmio` / `IrqCap` (capability types whose only
-/// consumers are protocol ops); every §9 bring-up state; `VirtQueue` /
-/// `QueuePermit` / `QueueOp` / `Receipt`.
-///
-/// **Out — and why that is not an exception:**
-/// - `DmaPool[P, N]`: §3.1's *first* bullet names "pool handles" as the
-///   compiler-known non-failing reclaim case. A `DmaPool` is that handle;
-///   putting it in bullet two would invent a consume-on-every-path
-///   obligation the first bullet already answers.
-/// - `DmaShared[P, L]`: permanently shared control memory (03 §3). Its
-///   field-wise ops do not consume the handle, and the language has no
-///   terminal sink for a bare `DmaShared` value (returning one is refused;
-///   `VirtQueue.configure` keeps the shared memory inside the queue).
-///   Forcing bullet two here would require a laundering holder or a
-///   vacuous drop. When a real sink exists, add the name.
-pub(crate) fn is_protocol_consuming_type_name(name: &str) -> bool {
-    matches!(
-        name,
-        "DeviceCap" | "Mmio" | "IrqCap" | "VirtQueue" | "QueuePermit" | "QueueOp" | "Receipt"
-    ) || is_protocol_state_type_name(name)
-}
-
-/// Name-only leaf of the protocol-consumption predicate. Composites and
-/// plain wrapper structs are answered by `sema::flow`'s
-/// `protocol_resource_carried`, which walks Option/array/tuple/`Result`/
-/// named fields the same way `type_contains_capability` does — item I's
-/// sweep found `Option[DeviceCap]` / `CapBundle { cap: DeviceCap }` drops
-/// silently accepted when this leaf was used alone.
-pub(crate) fn is_protocol_consuming_type(ty: &Type) -> bool {
-    match ty {
-        Type::Named(name, _) => is_protocol_consuming_type_name(name),
-        _ => false,
-    }
-}
+// plans/M13.md item O follow-up: the protocol-consumption name list is
+// deleted. Leaf answers live in `sema::classes::name_must_consume`
+// (independent leaf table + `resource(manual)` fiat); composites stay in
+// `sema::flow::protocol_resource_carried`.
 
 pub(crate) fn is_handle_type_name(name: &str) -> bool {
     name == "Actor"

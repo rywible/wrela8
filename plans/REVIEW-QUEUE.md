@@ -73,3 +73,10 @@ one-line summary, commit sha. Newest last.
 - 02-language.md §5/§6.2/§7.4 — M13 item K **doc half** (decision 10): private `fn` may write `-> Result[T]`; compiler infers error set from `Err` / `?` reaching `return`; typed dumps display it; `pub` / cross-module still require declared nominal enum + explicit `from`. Rejectable without downstream effect. Impl commit follows. — (this commit)
 - 04-compiler.md §7 — M13 item K doc: tooling-visible inferred facts gain private `-> Result[T]` error sets. — (this commit)
 - 05-library.md §1 — M13 item K doc: `Result[T]` private spelling + inferred-set `?` (no `from` inside the set; `pub` still nominal). — (this commit)
+
+- 02-language.md §3.1 — M13 item O: third bullet `resource(manual) struct` declines derived reclaim; every path must consume/return/transfer (same rule as protocol resources); with private fields seals minting. — (this commit)
+- 03-hardware.md §8 — M13 item O: xref user typestate via `resource(manual)` + private fields. — (this commit)
+- 04-compiler.md §7 — M13 item O: tooling-visible inferred facts gain computed per-type classes (`copy`/`must_consume`/`crosses_actor`/`holds_authority`). — (this commit)
+
+- 03-hardware.md §8 — M13 item P: marked-value mechanism restated as one mechanism, two policies (`Untrusted` / `Secret`); Validated demoted to the `resource(manual)` idiom (non-normative naming). Ledger `values.marked.validated` deleted (was gap for FormatValidator/into_value). — (this commit)
+- 05-library.md §6 — M13 item P: Validated paragraph → two-sentence idiom over resource(manual)+private fields+take self. — (this commit)

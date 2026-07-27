@@ -222,14 +222,17 @@ pub enum Member {
     ComptimeIf(ComptimeIfMember),
 }
 
-/// `[pub] [resource] struct NAME[generics] [deriving(...)]:` body
-/// (02-language.md §7.1, §7.5).
+/// `[pub] [resource[(manual)]] struct NAME[generics] [deriving(...)]:` body
+/// (02-language.md §7.1, §7.5; §3.1 `resource(manual)` — plans/M13.md item O).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructItem {
     pub span: Span,
     pub name: String,
     pub is_pub: bool,
     pub is_resource: bool,
+    /// `resource(manual) struct` — withholds the derived reclaim action
+    /// (02-language.md §3.1 third bullet). Implies `is_resource`.
+    pub is_manual_resource: bool,
     pub doc: Option<Doc>,
     pub attrs: Vec<Attr>,
     pub generics: Vec<GenericParam>,

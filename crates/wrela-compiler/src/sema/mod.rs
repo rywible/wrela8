@@ -24,6 +24,9 @@
 
 pub mod access;
 pub mod bodies;
+/// plans/M13.md item O: computed type classes (copy / must_consume /
+/// crosses_actor / holds_authority).
+pub mod classes;
 pub mod flow;
 /// plans/M9.md item D: f-string desugar onto Format + `String` concat.
 pub mod fstring;

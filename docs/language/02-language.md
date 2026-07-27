@@ -146,6 +146,11 @@ How a resource may end is derived from its type, not declared by a taxonomy:
   receipts), every control-flow path must explicitly consume, return, or
   transfer it, or cover it with a `defer` that does (§10). Forgetting one is
   a compile error naming the path.
+- `resource(manual) struct` declines the derived reclaim action: no generated
+  reclaim exists, so every path must consume, return, or transfer the value
+  under the same rule as the previous bullet. Combined with module-private
+  fields (§2), a manual resource is a sealed typestate the declaring module
+  alone can mint ([03 §8](03-hardware.md)).
 
 Overwriting a live resource is always an error: move it or finish it first.
 

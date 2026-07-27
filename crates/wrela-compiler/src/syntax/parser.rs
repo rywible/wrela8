@@ -287,6 +287,11 @@ impl Parser {
         t.kind == TokenKind::Keyword && t.text == kw
     }
 
+    fn peek_is_op_at(&self, offset: usize, op: &str) -> bool {
+        let t = self.peek_at(offset);
+        t.kind == TokenKind::Op && t.text == op
+    }
+
     fn error_here(&self, message: impl Into<String>) -> ParseError {
         let t = self.peek();
         ParseError {
@@ -745,17 +750,18 @@ impl Parser {
                 .parse_fn_item(start, is_pub, false, doc, attrs)
                 .map(Item::Fn);
         }
-        if self.at_keyword("resource") && self.peek_is_keyword_at(1, "struct") {
-            self.bump(); // resource
-            self.bump(); // struct
+        if self.at_keyword("resource")
+            && (self.peek_is_keyword_at(1, "struct") || self.peek_is_op_at(1, "("))
+        {
+            let is_manual = self.parse_resource_prefix()?;
             return self
-                .parse_struct_item(start, is_pub, true, doc, attrs)
+                .parse_struct_item(start, is_pub, true, is_manual, doc, attrs)
                 .map(Item::Struct);
         }
         if self.at_keyword("struct") {
             self.bump();
             return self
-                .parse_struct_item(start, is_pub, false, doc, attrs)
+                .parse_struct_item(start, is_pub, false, false, doc, attrs)
                 .map(Item::Struct);
         }
         if self.at_keyword("enum") {
@@ -946,7 +952,9 @@ impl Parser {
         if self.at_keyword("fn") {
             return true;
         }
-        if self.at_keyword("resource") && self.peek_is_keyword_at(1, "struct") {
+        if self.at_keyword("resource")
+            && (self.peek_is_keyword_at(1, "struct") || self.peek_is_op_at(1, "("))
+        {
             return true;
         }
         if self.at_keyword("struct") {
@@ -1206,11 +1214,38 @@ impl Parser {
         Ok(names)
     }
 
+    /// Consumes `resource` or `resource(manual)` and the following `struct`.
+    /// Returns whether the resource withholds reclaim (`manual`).
+    /// plans/M13.md item O / decision 8.
+    fn parse_resource_prefix(&mut self) -> Result<bool, ParseError> {
+        self.expect_keyword("resource")?;
+        let is_manual = if self.at_op("(") {
+            self.bump();
+            let (span, mode) = self.expect_ident("a resource mode (`manual`)")?;
+            if mode != "manual" {
+                return Err(self.error_at(
+                    span,
+                    format!(
+                        "unknown resource mode `{mode}` — revision 0.1 admits only \
+                         `resource(manual)` (02-language.md §3.1)"
+                    ),
+                ));
+            }
+            self.expect_op(")")?;
+            true
+        } else {
+            false
+        };
+        self.expect_keyword("struct")?;
+        Ok(is_manual)
+    }
+
     fn parse_struct_item(
         &mut self,
         start: Span,
         is_pub: bool,
         is_resource: bool,
+        is_manual_resource: bool,
         doc: Option<Doc>,
         attrs: Vec<Attr>,
     ) -> Result<StructItem, ParseError> {
@@ -1224,6 +1259,7 @@ impl Parser {
             name,
             is_pub,
             is_resource,
+            is_manual_resource,
             doc,
             attrs,
             generics,
@@ -3360,6 +3396,9 @@ fn dump_item(item: &Item, depth: usize, strip: bool, out: &mut String) {
             }
             if s.is_resource {
                 header.push_str(" resource=true");
+            }
+            if s.is_manual_resource {
+                header.push_str(" manual=true");
             }
             if !s.deriving.is_empty() {
                 header.push_str(&format!(" deriving={}", s.deriving.join(",")));

@@ -255,7 +255,9 @@ fn print_item(item: &Item, indent: usize, out: &mut String) {
             if s.is_pub {
                 line.push_str("pub ");
             }
-            if s.is_resource {
+            if s.is_manual_resource {
+                line.push_str("resource(manual) ");
+            } else if s.is_resource {
                 line.push_str("resource ");
             }
             line.push_str("struct ");

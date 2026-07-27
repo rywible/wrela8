@@ -237,13 +237,14 @@ reporting threshold, with site and size; baked artifact hashes;
 and code and data size by owner.
 
 Tooling (hover, expanded views) must display inferred facts wherever source
-omits them: receiver effects, pool names, reclaim classification, copy vs
-move at each binding, actor edge vs internal call, suspension points and
-frame fields, the ambient group lineage of every `async fn`, the inferred
-requirement set of every generic, the inferred error set of every private
-`-> Result[T]` ([02 §5](02-language.md)), which driver methods carry the
-handoff convention, and DMA state around protocol calls. Inference reduces
-annotations; it must not hide causality.
+omits them: receiver effects, pool names, reclaim classification, the
+computed per-type classes (`copy`, `must_consume`, `crosses_actor`,
+`holds_authority`), copy vs move at each binding, actor edge vs internal
+call, suspension points and frame fields, the ambient group lineage of
+every `async fn`, the inferred requirement set of every generic, the
+inferred error set of every private `-> Result[T]` ([02 §5](02-language.md)),
+which driver methods carry the handoff convention, and DMA state around
+protocol calls. Inference reduces annotations; it must not hide causality.
 
 Diagnostics carry a stable category, a primary span, the inferred fact that
 caused rejection, a why-chain for whole-image analyses, and a source-level

@@ -1,0 +1,13 @@
+module lib.validated
+
+# plans/M13.md item P: Validated as resource(manual) idiom — private
+# field seals minting to this module; into_value unwraps via take self.
+
+pub resource(manual) struct Validated:
+    value: u64
+
+    pub fn validate(raw: u64) -> Validated:
+        return Validated(value=raw)
+
+    pub fn into_value(take self) -> u64:
+        return take self.value

@@ -237,6 +237,13 @@ pub struct DeclStruct {
     /// `is_resource_fiat`.
     pub(crate) component_types: Vec<(Type, Span)>,
     pub(crate) span: Span,
+    /// `resource(manual) struct` — withholds derived reclaim (02 §3.1 /
+    /// plans/M13.md item O). Implies `is_resource_fiat`.
+    pub(crate) is_manual_resource: bool,
+    /// Computed type classes (plans/M13.md item O). Filled by
+    /// `classes::assign_classes` after data-vs-resource classification.
+    pub(crate) classes: crate::sema::classes::TypeClasses,
+    pub(crate) classes_assigned: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -266,6 +273,9 @@ pub struct DeclEnum {
     /// `pub(crate)` (item H): see `DeclStruct::component_types`.
     pub(crate) component_types: Vec<(Type, Span)>,
     pub(crate) span: Span,
+    /// Computed type classes (plans/M13.md item O).
+    pub(crate) classes: crate::sema::classes::TypeClasses,
+    pub(crate) classes_assigned: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -413,6 +423,8 @@ pub fn declare_with_imports(
         }
     }
     classify_all(&mut items)?;
+    // plans/M13.md item O: per-type classes after data-vs-resource.
+    crate::sema::classes::assign_classes(&mut items);
     validate_actor_handles(module, &items)?;
     // plans/M7.md item A, decision 3: 03-hardware.md §1's capability rules
     // are the same *shape* as `validate_actor_handles` above, over a
@@ -1044,8 +1056,10 @@ fn type_contains_capability(
     components: &BTreeMap<String, &[(Type, Span)]>,
     seen: &mut BTreeSet<String>,
 ) -> Option<String> {
+    // plans/M13.md item O: re-derive from `holds_authority` (dual-run
+    // against the sealed-authority name list inside `name_holds_authority`).
     type_carries_named(ty, components, seen, &|n| {
-        crate::eval::image_checks::is_sealed_authority_type_name(n)
+        crate::sema::classes::name_holds_authority(n)
     })
 }
 
@@ -1087,8 +1101,11 @@ pub fn sealed_authority_carried(ty: &Type, items: &[DeclItem]) -> Option<String>
 /// second, unordered one, carrying the interrupt-status word's value to a
 /// sender that owns none of §6's ordering.
 pub fn driver_message_forbidden_carried(ty: &Type, items: &[DeclItem]) -> Option<String> {
+    // plans/M13.md item O: re-derive from classes (`holds_authority` or
+    // `InterruptCell`'s `!crosses_actor`). Dual-run inside
+    // `name_forbidden_in_driver_message`.
     type_carries_named(ty, &components_by_name(items), &mut BTreeSet::new(), &|n| {
-        crate::eval::image_checks::is_sealed_authority_type_name(n) || n == "InterruptCell"
+        crate::sema::classes::name_forbidden_in_driver_message(n)
     })
 }
 
@@ -4966,6 +4983,9 @@ fn declare_struct(
         layout_kind: declared_layout_kind(&s.attrs),
         component_types,
         span: s.span,
+        is_manual_resource: s.is_manual_resource,
+        classes: crate::sema::classes::TypeClasses::default(),
+        classes_assigned: false,
     })
 }
 
@@ -5046,6 +5066,9 @@ pub(crate) fn declare_struct_members_for_instantiation(
         layout_kind: template.layout_kind,
         component_types,
         span: template.span,
+        is_manual_resource: template.is_manual_resource,
+        classes: template.classes,
+        classes_assigned: template.classes_assigned,
     })
 }
 
@@ -5225,6 +5248,8 @@ fn declare_enum(
         members,
         component_types,
         span: e.span,
+        classes: crate::sema::classes::TypeClasses::default(),
+        classes_assigned: false,
     })
 }
 
@@ -5476,7 +5501,8 @@ pub fn is_builtin_type_name(name: &str) -> bool {
             | "ReadOnly"
             | "WriteOnly"
             | "Untrusted"
-            | "Validated"
+            // plans/M13.md item P: `Validated` demoted — ordinary name for
+            // the `resource(manual)` idiom; not a prelude type.
             | "Secret"
             | "InterruptCell"
             // Time types stay annotation-resolvable without an import
@@ -5724,31 +5750,16 @@ fn resolve_named(
             let inner = resolve_type(args[0], shapes, module_pools, local_pools, generics, false)?;
             return Ok(Type::Named(n.name.clone(), vec![TypeArg::Type(inner)]));
         }
-        // plans/M7.md item H2a, 03-hardware.md §8: one marked-value
-        // mechanism, three policies. `Untrusted[T]` is the only one M7's
-        // honest-scope line keeps IN; `Validated[F, T]` and `Secret[T]`
-        // are recognized here so the refusal is the mechanism rejecting
-        // an unimplemented policy by name, not an unknown-type miss.
+        // plans/M7.md item H2a, 03-hardware.md §8: marked-value mechanism.
+        // `Untrusted[T]` is live; `Secret[T]` remains refuse-by-name.
+        // plans/M13.md item P: `Validated` is demoted — not recognized
+        // here; a module may declare `resource(manual) struct Validated`.
         "Untrusted" => {
             let args = expect_type_args(n, 1)?;
             let inner = resolve_type(args[0], shapes, module_pools, local_pools, generics, false)?;
             return Ok(Type::Named(
                 "Untrusted".to_string(),
                 vec![TypeArg::Type(inner)],
-            ));
-        }
-        "Validated" => {
-            // Arity is still checked so a wrong-shape spell reports that
-            // first; the policy refusal is what a well-shaped name gets.
-            let _args = expect_type_args(n, 2)?;
-            return Err(SemaError::at(
-                "type",
-                "the marked-value mechanism refuses policy `Validated[F, T]` — plans/M9.md \
-                 item G2 defers it (decision 353): needs `FormatValidator[F, T].validate` and \
-                 `into_value(take self)` (05-library.md §6); only `Untrusted[T]` is live \
-                 (03-hardware.md §8)"
-                    .to_string(),
-                n.span,
             ));
         }
         "Secret" => {
@@ -6130,6 +6141,9 @@ pub fn classify_closure(
     };
     for (mkey, decls) in items.iter_mut() {
         write_back(decls, mkey, &memo);
+        // Recompute classes after closure classification may have flipped
+        // a local struct that holds an imported resource field.
+        crate::sema::classes::assign_classes(decls);
     }
     Ok(())
 }
@@ -6539,13 +6553,22 @@ fn render_item(
                 out,
                 depth,
                 &format!(
-                    "Struct {}{} {}{}",
+                    "Struct {}{} {}{}{}",
                     s.name,
                     render_generics(&s.generics),
                     classification_str(s.classification),
+                    if s.is_manual_resource { " manual" } else { "" },
                     render_deriving(&s.deriving)
                 ),
             );
+            // plans/M13.md item O / 04 §7: per-type class line in the
+            // expanded view. Emitted only for `resource(manual)` so the
+            // 56 InterruptCell goldens stay byte-identical (item O's own
+            // regression oracle); tooling still has the classes on every
+            // DeclStruct via `s.classes`.
+            if s.is_manual_resource {
+                push_line(out, depth + 1, &s.classes.render_line());
+            }
             for m in &s.members {
                 render_member(m, depth + 1, s, effects, out);
             }

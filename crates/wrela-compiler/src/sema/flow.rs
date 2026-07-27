@@ -653,12 +653,12 @@ fn check_exit_obligations(
 /// had. The diagnostic names the *carried* type so a wrapper's spelling
 /// still says why (`golden/err-cap-drop-option`, `err-cap-drop-wrapped`).
 fn protocol_resource_carried(ty: &Type, mctx: &ModuleCtx) -> Option<String> {
+    // plans/M13.md item O: re-derive from `must_consume` (`resource(manual)`
+    // is must_consume by fiat).
     fn walk(ty: &Type, mctx: &ModuleCtx, seen: &mut BTreeSet<String>) -> Option<String> {
         use crate::sema::types::TypeArg;
         match ty {
-            Type::Named(name, _)
-                if crate::eval::image_checks::is_protocol_consuming_type_name(name) =>
-            {
+            Type::Named(name, _) if crate::sema::classes::name_must_consume(name, false) => {
                 Some(types::render_type(ty))
             }
             Type::Named(name, _) if name == "Actor" => None,
@@ -675,6 +675,15 @@ fn protocol_resource_carried(ty: &Type, mctx: &ModuleCtx) -> Option<String> {
             Type::Named(name, targs) => {
                 if !seen.insert(name.clone()) {
                     return None;
+                }
+                // `resource(manual)` fiat: the named type itself must_consume.
+                if mctx
+                    .structs
+                    .get(name.as_str())
+                    .is_some_and(|s| s.decl.is_manual_resource)
+                {
+                    seen.remove(name);
+                    return Some(types::render_type(ty));
                 }
                 let via_fields = mctx
                     .structs
@@ -877,8 +886,12 @@ fn apply_pattern_move(
     span: Span,
     scrutinee_ty: &Type,
 ) -> Result<(), SemaError> {
-    let move_protocol_wrapper = protocol_resource_carried(scrutinee_ty, wctx.mctx).is_some()
-        && !crate::eval::image_checks::is_protocol_consuming_type(scrutinee_ty);
+    let root_must_consume = matches!(
+        scrutinee_ty,
+        Type::Named(n, _) if crate::sema::classes::name_must_consume(n, false)
+    );
+    let move_protocol_wrapper =
+        protocol_resource_carried(scrutinee_ty, wctx.mctx).is_some() && !root_must_consume;
     if !pattern_has_take(pattern) && !move_protocol_wrapper {
         return Ok(());
     }
@@ -993,6 +1006,30 @@ fn walk_expr<'a>(
             walk_place_subexprs(inner, state, fctx, wctx, dstack, loop_marker)?;
             check_takeable(&path, state, wctx, *span)?;
             set_state(&path, state, PathState::Moved);
+            // plans/M13.md item O/P: taking a field out of a
+            // `resource(manual)` consumes the wrapper — the Validated
+            // idiom's `into_value(take self) -> T` via `take self.value`.
+            // Prelude sealed leaves have no source-visible fields, so
+            // this arm is unreachable for them.
+            if !path.steps.is_empty() {
+                if let Some(Type::Named(n, _)) = fctx.lookup_local(&path.root) {
+                    if wctx
+                        .mctx
+                        .structs
+                        .get(n.as_str())
+                        .is_some_and(|s| s.decl.is_manual_resource)
+                    {
+                        set_state(
+                            &StoragePath {
+                                root: path.root.clone(),
+                                steps: Vec::new(),
+                            },
+                            state,
+                            PathState::Moved,
+                        );
+                    }
+                }
+            }
             Ok(())
         }
         // plans/M7.md item E4 / 03-hardware.md §5: `completion = await
@@ -1003,8 +1040,11 @@ fn walk_expr<'a>(
         Expr::Unary(span, UnaryOp::Await, inner) => {
             if let Some(path) = as_path(inner, fctx, wctx.mctx) {
                 if let Some(ty) = place_type(inner, fctx, wctx.mctx) {
-                    // Bare `Receipt[P]` only — wrappers do not await.
-                    if crate::eval::image_checks::is_protocol_consuming_type(&ty) {
+                    // Bare protocol-consuming leaf only — wrappers do not await.
+                    if matches!(
+                        &ty,
+                        Type::Named(n, _) if crate::sema::classes::name_must_consume(n, false)
+                    ) {
                         walk_place_subexprs(inner, state, fctx, wctx, dstack, loop_marker)?;
                         check_takeable(&path, state, wctx, *span)?;
                         set_state(&path, state, PathState::Moved);
