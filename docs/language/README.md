@@ -45,7 +45,7 @@ The project targets one designed machine, front to back:
   identical across cores; cross-core parallelism is ownership transfer.
 - **Own toolchain**: no LLVM, no external linker — an in-house
   MachineWir→A76 backend emits the bootable image directly, under the
-  proof-tracing discipline of [04 §6](04-compiler.md).
+  proof-tracing discipline of [04 §5](04-compiler.md).
 
 ## Relation to the earlier draft
 
@@ -76,7 +76,7 @@ the draft's. The deliberate language changes:
 | `send` / `try send` pair with lazy-argument rules | One `send`: a statement exactly where admission is proven, otherwise a `Result` with payloads returned in the error | 02 §9.4 |
 | Three closure flavors (sync, `async \|`, escaping `take \|`) | One: synchronous and non-escaping; work that outlives a call is a named function | 02 §8.3 |
 | `@receipt_handoff(input=...)` annotation | Inferred from the signature shape (one `take p: P`, result `Receipt[P]`) | 03 §5 |
-| Protocol bring-up `with` scopes | Fallible transitions consume their state and route capabilities to restart provisions internally | 03 §9 |
+| Protocol bring-up `with` scopes | Fallible transitions consume their state; generated cleanup reclaims the capability on failure | 03 §9 |
 | Arenas as a separate construct | The scoped lifetime of the one pool concept (`with pool(...)`) | 02 §4 |
 | `Untrusted` / `Validated` / `Secret` as three features | Three instances of one marked-value mechanism | 03 §8 |
 | `shadow`, `loop`, membership `in`/`not in` | Deleted (rename, `while true`, `contains`) | 02 §8 |
@@ -98,8 +98,8 @@ Unchanged and load-bearing: `read`/`mut`/`take` with call-site mirroring,
 checked arithmetic, actors and non-reentrant turns, bounded mailboxes,
 `Receipt` and the handoff convention, ambient group lineage and structured
 cancellation, typed MMIO / DMA ownership / marked values, comptime and the
-`@image` constructor, supervision and restart provisions, the image report,
-and deterministic record/replay.
+`@image` constructor, image failure policy (`img.on_failure`), the image
+report, and deterministic record/replay.
 
 The draft's normative EBNF, conformance-test catalogue, build-phase detail,
 and scenario schemas remain available in the archive; they are implementer

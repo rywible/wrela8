@@ -39,12 +39,11 @@ declared R            -> Result[R, CallError[never]]
 declared Result[T, E] -> Result[T, CallError[E]]
 ```
 
-`NotAdmitted` carries the reason (`Full | Restarting | StaleRequest |
-DeadlineUnmeetable`) and hands back the call's `take` arguments in
-declaration order; every other outcome consumed them. `PeerFailed` carries a
-static actor identity, non-wrapping supervision epoch, and a bounded failure
-category — never frame references, secrets, or unbounded text. Admission and
-reply resolution are deterministic record/replay events.
+`NotAdmitted` carries the reason (`Full | DeadlineUnmeetable`) and hands back
+the call's `take` arguments in declaration order; every other outcome
+consumed them. `Admission.Quarantined` is reserved for the device-quarantine
+path ([03 §9](03-hardware.md)) and is not a live variant in revision 0.1.
+Admission and reply resolution are deterministic record/replay events.
 
 `send actor.method(...)` has type `Result[unit, Rejected[...]]`, an ordinary
 owned value whose error carries the moved payloads back; where admission is
@@ -199,7 +198,7 @@ faulting lane); shuffles, saturating and widening ops, lane insert/extract,
 masks, and loads/stores from `Bytes` are named methods. Because the machine
 has one ISA, every operation lowers to a fixed NEON sequence with no
 portability fallback — the mapping is part of the backend contract
-([04 §6](04-compiler.md)) and the compositor's inner loops are its
+([04 §5](04-compiler.md)) and the compositor's inner loops are its
 benchmark. SIMD types are forbidden in ISR-bound code like floats, and
 permitted everywhere else data is.
 
@@ -227,10 +226,10 @@ compiler-recognized intrinsics even when a package supplies their surface:
   initial handles; the DMA form requires a `@layout(dma)` `T` and device
   reachability. Binding a name twice, or constructing it as a value, is a
   build error.
-- `img.supervise(children=..., strategy=..., intensity=...)` — exactly one
-  parent per actor/task. Restart provisions are derived from the wiring and
-  shown by tooling; a resource `init` argument without one recovery source
-  is a build error.
+- `img.on_failure(policy=...)` — exactly once per image; `policy` is
+  `Failure.Reboot` or `Failure.Halt`. Required-explicit, no default; omitting
+  it is a build error. There is no per-actor supervision tree and no
+  restart-provision derivation.
 - `img.check_layout(f)` registers a `@layout_assert`.
 
 ## 10. Naming

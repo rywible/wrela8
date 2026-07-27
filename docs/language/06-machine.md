@@ -166,7 +166,7 @@ and entropy read, per-mailbox cross-core admission order (the machine's
 only scheduling nondeterminism), and digests of every output (block writes,
 packets, frames, audio periods). Replay feeds the log from virtual device
 models, suppresses real outputs, and diagnoses any divergence. This
-implements chapter [04 §10](04-compiler.md) natively rather than as an
+implements chapter [04 §9](04-compiler.md) natively rather than as an
 optional profile.
 
 ## 9. Hosts, packaging, trust

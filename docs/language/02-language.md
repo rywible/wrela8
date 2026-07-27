@@ -89,7 +89,7 @@ Revision 0.1 has no build configuration file of any kind: comptime
 quotas and reporting thresholds are language-defined constants, and
 every build-affecting input — compiler revision, target, quotas, input
 digests — is recorded in the report's build identity
-([04 §7–8](04-compiler.md)). Non-image tools point at files the same
+([04 §6–7](04-compiler.md)). Non-image tools point at files the same
 way (`wrela test file.wr`, stage dumps); their imports resolve by the
 same closure rule.
 
@@ -101,7 +101,7 @@ ownership model is two sentences:
 - **Data copies.** Scalars, and any enum, array, tuple, or struct built only
   from data, behave like integers: assignment, construction, and messages
   duplicate them. The compiler tracks every copy's cost and reports the
-  expensive ones ([04 §7](04-compiler.md)). Cost lives in the report, not
+  expensive ones ([04 §6](04-compiler.md)). Cost lives in the report, not
   the syntax; a hard budget on copies is a future cost-proof intention.
 - **Resources move.** A `resource struct`, a pool handle `own[P] T`, a
   capability, a receipt — and any composite containing one — has exactly one
@@ -360,9 +360,8 @@ into its destination is guaranteed, never best-effort, so no aggregate is
 ever moved by being built.
 
 A struct marked `@actor` or `@driver` is an actor root and implicitly a
-resource (§9); the image wiring invokes its `init` (or literal), and
-supervised restart re-runs the same `init` from declared restart
-provisions. A method without `self` is associated: `Type.method(...)`.
+resource (§9); the image wiring invokes its `init` (or literal). A method
+without `self` is associated: `Type.method(...)`.
 
 ### 7.2 Enums and matching
 
@@ -644,9 +643,11 @@ CallError[E] =
     Op(E)                     # the callee's declared error
   | Cancelled                 # the enclosing group was cancelled
   | DeadlineExceeded          # admitted, then the deadline passed
-  | NotAdmitted(Admission)    # never ran: mailbox full, deadline
-                              # unmeetable, callee restarting, lineage stale
-  | PeerFailed(Peer)          # callee abandoned or restarted first
+  | NotAdmitted(Admission)    # never ran: mailbox full or deadline
+                              # unmeetable (`Admission` is `Full |
+                              # DeadlineUnmeetable`; `Quarantined` is
+                              # reserved for the quarantine path and is
+                              # not a live variant in revision 0.1)
 ```
 
 One signature is exempt from that composition, and its own chapter names it:
@@ -667,16 +668,15 @@ hands them back inside the error.** `NotAdmitted` carries the `take`
 arguments (in declaration order) back to the caller as an owned value; every
 other outcome means the message was committed and a `take` argument is gone —
 an API that promises to return an input says so in its reply type or returns
-a `Receipt` ([03 §5](03-hardware.md)). A caller can never hang on a dead
-epoch: abandonment resolves every outstanding reply with `PeerFailed`
-exactly once.
+a `Receipt` ([03 §5](03-hardware.md)). Under crash-only failure
+([01 §7](01-model.md)), no caller survives a peer's abandonment to observe
+it — `PeerFailed` is not in the vocabulary.
 
 One-way messages have a single form. `send actor.method(...)` enqueues a
 unit-returning method; its type is `Result[unit, Rejected[...]]` with the
 moved payloads handed back in the error — an ordinary storable value. When
-mailbox analysis proves admission cannot fail (including during a restart
-window), the error type is `never` and `send` stands as a bare statement;
-otherwise the result must be consumed:
+mailbox analysis proves admission cannot fail, the error type is `never` and
+`send` stands as a bare statement; otherwise the result must be consumed:
 
 ```wrela
 send audit.record(event=take event)          # capacity proven at build time
@@ -729,9 +729,10 @@ loser still owns memory or a device request. The mechanics are the
 compiler's ([04 §4](04-compiler.md)); source sees only `CallError` and its
 own `defer`s running.
 
-Long-running roots are installed by the image as `@task(...)` entries with a
-declared failure policy; a task returning `Result[unit, E]` delivers `Err`
-to its supervisor action, never silently.
+Long-running roots are installed by the image as `@task(...)` entries. A
+root `@task` returning `Err` formats the error to the console diagnostic and
+applies the image's declared failure policy (§11); there is no separate
+task-failure vocabulary.
 
 ### 9.7 Non-blocking services
 
@@ -747,7 +748,7 @@ repair when a turn blocks queued senders.
 
 `defer` is the one user-facing cleanup construct. It registers a statement or
 suite against the enclosing block, to run on **every** exit — fallthrough,
-`return`/`break`/`continue`, `?`, cancellation, and supervisor cleanup after
+`return`/`break`/`continue`, `?`, cancellation, and generated cleanup after
 abandonment — in reverse registration order:
 
 ```wrela
@@ -788,24 +789,24 @@ the release itself.
 | Build error | Compiler diagnostic; no artifact. |
 | Recoverable fault | `Result[T, E]`, propagated with `?`. |
 | Failed call | `CallError[E]` (§9.4). |
-| Abandonment | Uncatchable; the actor stops and its supervisor decides. |
-| Target-fatal | Failed recovery; the target halts or reboots by policy. |
+| Abandonment | Uncatchable; generated cleanup runs, the failure is attributed, and the image applies its failure policy. |
+| Target-fatal | The image's declared policy: `Failure.Halt` or `Failure.Reboot`. |
 
 `panic(message)`, failed `assert`, checked-arithmetic failure, out-of-bounds
 access, and violated invariants **abandon** the actor: the turn stops,
-generated cleanup runs (it can never skip resource teardown), and the
-supervisor applies its declared policy. Abandonment is not catchable; a
-boundary must not disguise hostile input as a bug (a bad superblock is an
-`Err`, an impossible internal state is abandonment).
+generated cleanup runs (it can never skip resource teardown), the failure is
+attributed (actor, fault category, faulting site), and the image applies its
+declared failure policy. Abandonment is not catchable; a boundary must not
+disguise hostile input as a bug (a bad superblock is an `Err`, an impossible
+internal state is abandonment).
 
-The image graph is also the supervision tree: every actor and task has a
-parent policy (`OneForOne`, `OneForAll`, `RestForOne`) with a restart
-intensity bound; exceeding it escalates. Restart re-runs the actor's `init`
-from declared **restart provisions** (re-minted device capability, re-drawn
-pool handles, a retained immutable dependency) — every resource `init`
-argument must have exactly one recovery source in the image, checked at
-build time. Restart mechanics, epochs, and recovery ordering are specified
-in [04 §5](04-compiler.md).
+The image declares its failure policy exactly once with
+`img.on_failure(policy = Failure.Reboot | Failure.Halt)` — required-explicit,
+no default ([05 §9](05-library.md)). `Failure.Reboot` *presumes* application
+durability ([01 §7](01-model.md)); conformance pins `Failure.Halt` until that
+idiom exists. There is no per-actor restart: an abandonment is a defect event
+for the whole image. Device quarantine ([03 §9](03-hardware.md)) remains the
+degraded-mode story for device failure without abandoning the image.
 
 ## 12. Comptime
 
@@ -840,7 +841,7 @@ emitted.
 
 Exactly one reachable `@image fn` returns the `Image`. It is evaluated only
 by the compiler and declares the whole runtime graph: devices, drivers,
-actors, pools, mailbox capacities, supervision, baked artifacts, and
+actors, pools, mailbox capacities, failure policy, baked artifacts, and
 post-layout checks. See the worked example
 ([virtio_storage.wr](examples/virtio_storage.wr)) and the builder contracts
 in [05 §9](05-library.md).
@@ -851,8 +852,7 @@ pub fn build() -> Image:
     img = Image(name="appliance", target=Target.wrela_machine_v1)
     disk = img.driver(BlkDriver[DriverMode.Irq], device=blk_device, ...)
     storage = img.actor(Storage, disk=disk.handle(), mailbox=16, ...)
-    img.supervise(children=[disk, storage], strategy=Restart.OneForOne,
-                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    img.on_failure(policy=Failure.Halt)
     return img.seal()
 ```
 

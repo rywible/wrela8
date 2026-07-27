@@ -195,8 +195,9 @@ verified by the compiler and displayed by tooling. Admission commit
 atomically moves `P` into the message *and* installs the caller-owned
 receipt, before the handler runs. The handler's `return queue.publish(...)`
 or `return queue.reject(payload=take p, ...)` transitions that pre-existing
-pair; abandonment before either transition routes payload and producer
-through supervised recovery. The driver can therefore accept the next
+pair; abandonment before either transition reclaims payload and producer
+through generated cleanup before the image applies its failure policy. The
+driver can therefore accept the next
 submission while hardware completes the first — its bottom-half turn drains
 completions and resolves receipts without re-entering anyone.
 
@@ -287,10 +288,10 @@ Device bring-up is a typed state chain (for virtio: `Reset -> Acknowledged ->
 DriverClaimed -> FeaturesNegotiated -> FeaturesAccepted -> QueuesConfigured ->
 Running`); publication requires `Running`, and reset consumes it, producing a
 new epoch that invalidates all prior receipts. Each fallible transition
-**consumes** its input state and, on failure, routes the underlying
-capability to its restart provision internally — so a driver `init` is a
-straight line of `?`-propagating consuming calls with no cleanup
-choreography of its own. The image declares required features
+**consumes** its input state and, on failure, generated cleanup reclaims the
+underlying capability — so a driver `init` is a straight line of
+`?`-propagating consuming calls with no cleanup choreography of its own.
+The image declares required features
 (`img.device`, [05 §9](05-library.md)); boot still negotiates the real
 device.
 

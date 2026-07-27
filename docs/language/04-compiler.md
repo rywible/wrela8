@@ -138,8 +138,8 @@ hide two semantics behind one keyword.
 
 Frame layout is state-sensitive: values live in mutually exclusive
 suspension states may share storage, and cheap pure values may be recomputed,
-only where completion, cancellation, abandonment, and restart paths are all
-proved disjoint. Every forced promotion to image lifetime is a diagnostic
+only where completion, cancellation, and abandonment paths are all proved
+disjoint. Every forced promotion to image lifetime is a diagnostic
 with a why-chain (allocation site, escape path, footprint contribution);
 silent promotion of an unbounded allocation is forbidden — if no finite bound
 exists, the build fails.
@@ -161,7 +161,7 @@ compiler-generated bounded SPSC rings in guest memory with sealed
 publish/acquire ordering — no app-visible atomics or fences exist. A
 `@driver`'s vectors, pools, permits, and recovery lanes live on its core;
 there is no cross-core hardware state. Same-core edges keep every as-if
-fast path of §6.
+fast path of §5.
 
 ## 4. Cancellation and recovery mechanics
 
@@ -177,23 +177,7 @@ and every child is consumed. The cancelled frame never resumes; recovery
 work runs on that `@task`, not in source destructors, and is included in
 actor, budget, and wait-for analyses.
 
-## 5. Restart mechanics
-
-Restart allocates nothing: frames, mailboxes, and regions are already
-reserved. Generated restart stops turn selection (the bounded mailbox may
-keep accepting within the proven restart window), closes the failed epoch,
-runs cleanup graphs and device quiescence, returns or invalidates every pool
-handle per its owner contract, resolves outstanding replies with
-`PeerFailed`, clears frames only once they own nothing external, re-obtains
-each resource constructor argument from its declared restart provision
-(re-minted capability in a new device epoch, re-drawn pool handles, retained
-immutable dependency), re-runs the actor's `init` — whose error paths are
-ordinary local cleanup, nothing restart-specific — and resumes FIFO
-selection. Supervision epochs, group
-IDs, slot generations, and reset epochs never wrap; exhaustion escalates to
-the target-fatal policy rather than reusing an identity.
-
-## 6. Optimization: the as-if rules
+## 5. Optimization: the as-if rules
 
 The emitted image may use any representation preserving source semantics,
 proofs, and observable scheduling. Performance is never a license to weaken
@@ -237,15 +221,15 @@ alias proof never erases a hardware observation or barrier. An optimization
 used to satisfy a hard layout or timing assertion becomes a required,
 verified part of that build.
 
-## 7. The image report
+## 6. The image report
 
 Every successful build emits a machine-readable report and a summary. At
 minimum: build identity (compiler, revision, target, the build-affecting
 constants — quotas, thresholds — and digests of every input); memory by owner and site with peak ceiling; every promotion
 with its why-chain; per-actor mailbox logical capacity and physical bytes;
 frame slot counts, sizes, and overlays; stack bounds (executor, ISR, fault);
-pool capacities (image and scoped) with reclaim destinations and restart
-provisions;
+pool capacities (image and scoped) with reclaim destinations; the image
+failure policy;
 queue shapes and maximum in-flight operations; every logical actor edge and
 its physical lowering (queued / direct / forwarded / fused); checkpoint
 sites and proven elisions; maximum interrupt-masked interval; receipt
@@ -276,7 +260,7 @@ warning[performance]: loop may perform 4096 cross-actor turns per request
   help: batch, compose into one actor, or move a bounded group through a pool handle
 ```
 
-## 8. Reproducibility and phases
+## 7. Reproducibility and phases
 
 Identical declared inputs, compiler revision, machine revision, and
 quotas produce a byte-for-byte identical unsigned image and report. No
@@ -295,7 +279,7 @@ FlowWir/MachineWir, lay out the image, and produce the report; run
 `@layout_assert` (read-only — failure is a build error, never a second
 layout pass); emit and link, verifying section sizes against the report.
 
-## 9. Boot
+## 8. Boot
 
 The single target is the wrela machine ([06 §3](06-machine.md)): the VMM
 consumes the image report, preconfigures every declared device and
@@ -308,7 +292,7 @@ the per-core event loops. Comptime moves deterministic construction out of
 boot; device reset, feature verification, and secret provisioning remain
 runtime boot work.
 
-## 10. Record/replay
+## 9. Record/replay
 
 Determinism is a machine property, not an optional profile: the VMM injects
 vectors only at compiler-emitted checkpoints and records at the virtio
@@ -327,7 +311,7 @@ profile must also expose cleanup-graph states (quarantine, pending nodes,
 receipt transfers, mailbox reopening) as first-class replay events, so a
 replay viewer can answer "why is my request not resolving."
 
-## 11. Conformance
+## 10. Conformance
 
 A toolchain conforms only if it implements every normative rule in chapters
 01–06 for the machine revision it advertises. The digest-pinned test runner
