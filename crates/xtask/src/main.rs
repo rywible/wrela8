@@ -228,9 +228,13 @@ fn main() -> ExitCode {
         Some("profile") => profile(),
         Some("fuzz") => fuzz(&args[1..]),
         Some("bench") => bench(&args[1..]),
+        // plans/M13.md item G2: print the warn-only field-visibility
+        // census without running the full gate (commit messages record
+        // before/after counts per package migration).
+        Some("field-visibility-census") => field_visibility_census_warn(),
         _ => {
             eprintln!(
-                "usage: cargo xtask <check|golden [--update]|corpus [--sema]|fuzz [lexer|parser|sema|eval|lower|async|imports] [--iters N] [--seed S]|roundtrip|report-determinism|ledger|repro|diff-eval|diff-blk|profile|bench <compiler|build|guest>>"
+                "usage: cargo xtask <check|golden [--update]|corpus [--sema]|fuzz [lexer|parser|sema|eval|lower|async|imports] [--iters N] [--seed S]|roundtrip|report-determinism|ledger|repro|diff-eval|diff-blk|profile|bench <compiler|build|guest>|field-visibility-census>"
             );
             return ExitCode::FAILURE;
         }
