@@ -9,8 +9,6 @@ Module path=app.main
   Fn build() -> Image
 Module path=lib.tag
   Struct Tag data deriving(Format)
-    field n: u32
+    pub field n: u32
     fn max_formatted_len() -> usize
     fn format(read self) -> String[..17]
-FieldVisibilityCensus constructs=2 reads=0 writes=0 patterns=0 fields=1
-  construct use=app.main decl=lib.tag struct=Tag field=n
