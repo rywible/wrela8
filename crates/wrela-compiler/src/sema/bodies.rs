@@ -611,6 +611,10 @@ pub(crate) struct FnCtx {
     /// §9.2, not about whether `await` may textually appear there at all
     /// — out of scope to refine further at M6).
     pub(crate) in_async: bool,
+    /// Bare function / method name for sync-loop `@budget` discharge
+    /// (plans/M11.md decision 810). Empty for const/field-default contexts.
+    /// Exact-name allowlist only — not module membership.
+    pub(crate) fn_name: String,
     /// plans/M8.md item G, decision 18: is the statement being checked
     /// inside a `match` arm that can match 03-hardware.md §9's
     /// `CompletionOutcome.Unknown`? Set by `check_match` for the duration
@@ -646,6 +650,7 @@ impl FnCtx {
             local_pools,
             group_children: BTreeMap::new(),
             in_async: false,
+            fn_name: String::new(),
             unknown_outcome_arms: 0,
             quarantined_by_queue: BTreeMap::new(),
         }
@@ -1337,6 +1342,7 @@ pub(crate) fn check_top_fn(
     }
     let mut fctx = FnCtx::new(d.ret.clone(), mctx.module_pools.clone());
     fctx.in_async = f.is_async;
+    fctx.fn_name = f.name.clone();
     let params = check_params_with_defaults(&f.params, &d.params, &mut fctx, mctx)?;
     let body = match &f.body {
         Some(body) => check_stmts(body, &mut fctx, mctx)?,
@@ -1432,6 +1438,7 @@ fn check_enum_bodies(e: &ast::EnumItem, mctx: &ModuleCtx) -> Result<Option<Typed
         }
         let mut fctx = FnCtx::new(fd.ret.clone(), mctx.module_pools.clone());
         fctx.in_async = f.is_async;
+        fctx.fn_name = f.name.clone();
         fctx.insert_local("self".to_string(), self_ty.clone());
         let params = check_params_with_defaults(&f.params, &fd.params, &mut fctx, mctx)?;
         let body = match &f.body {
@@ -1552,6 +1559,7 @@ pub(crate) fn check_struct_members(
                 }
                 let mut fctx = FnCtx::new(fd.ret.clone(), local_pools.clone());
                 fctx.in_async = f.is_async;
+                fctx.fn_name = f.name.clone();
                 fctx.insert_local("self".to_string(), self_ty.clone());
                 let params = check_params_with_defaults(&f.params, &fd.params, &mut fctx, mctx)?;
                 let body = match &f.body {
@@ -2228,13 +2236,21 @@ fn check_for(f: &ForStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedStm
     })
 }
 
-/// Sync-loop `@budget(bound=N)` discharge (02 §8.1, plans/M11.md decision 721).
+/// Sync-loop `@budget(bound=N)` discharge (02 §8.1, plans/M11.md decision 721 /
+/// decision 810).
 ///
 /// - Sync (`!in_async`): attribute required; `N` a positive integer literal;
-///   returns `Some(N)` for the hidden trip counter.
+///   returns `Some(N)` for the hidden trip counter — except force-rooted
+///   runtime event-loop entries (decision 810), which may omit `@budget`.
 /// - Async: attribute optional (checkpoint path unchanged); returns `None`
 ///   so no trip counter is emitted. A present attribute is still shape-
 ///   checked so a typo fails closed.
+fn is_runtime_event_loop_entry(fn_name: &str) -> bool {
+    // Exact-name allowlist (02 §8.1 / decision 810). Not module membership.
+    // Item K will add the primary entry-driver key here.
+    matches!(fn_name, "__wrela_rt_secondary_entry")
+}
+
 fn resolve_loop_budget(
     budget: Option<&ast::Attr>,
     loop_span: Span,
@@ -2242,7 +2258,7 @@ fn resolve_loop_budget(
 ) -> Result<Option<u64>, SemaError> {
     match budget {
         None => {
-            if fctx.in_async {
+            if fctx.in_async || is_runtime_event_loop_entry(&fctx.fn_name) {
                 Ok(None)
             } else {
                 Err(SemaError::at(

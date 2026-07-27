@@ -1,6 +1,6 @@
 //! Image runtime config generator (plans/M11.md item D, decisions 700–702 /
 //! 709 / 760–769; item E, decisions 780–786; item F, decisions 790–796;
-//! item G, decisions 800–809).
+//! item G, decisions 800–809; item H, decisions 810–815).
 //!
 //! After `@image` evaluation + placement, the compiler pretty-prints a
 //! hidden facts-only module (`core.__image_runtime`) as source text and
@@ -61,6 +61,11 @@ pub struct RtconfigExtras {
     pub enqueue_handles: Vec<u64>,
     /// Mailbox-root names parallel to `enqueue_handles` (remap targets).
     pub enqueue_actors: Vec<String>,
+    /// M11 H: `(state_addr, nwords)` zero-fill slots — actors then drivers
+    /// (decision 813), matching former `emit_boot_init` order.
+    pub init_slots: Vec<(u64, u64)>,
+    /// M11 H: number of boot `init` calls (drivers then actors).
+    pub n_boot_calls: usize,
 }
 
 /// Hidden module address (decision 701). Loader key is `["core", "__image_runtime"]`;
@@ -85,6 +90,8 @@ pub const RESUME_STUB_COUNT: usize = 16;
 /// handwritten trampoline pools in `runtime.wr`.
 pub const RING_POOL_COUNT: usize = 8;
 pub const ENQUEUE_STUB_COUNT: usize = 32;
+/// Boot `init` call stub pool (decision 812).
+pub const BOOT_CALL_POOL_COUNT: usize = 32;
 /// Sentinel edge index from match ladders when no ring matches (decision 801).
 pub const NO_EDGE: usize = 255;
 
@@ -122,9 +129,16 @@ pub fn generate(tables: &RuntimeTables) -> String {
 }
 
 /// Build [`RtconfigExtras`] from stamped `RuntimeTables` fields (shared by
-/// dump `generate` and live reinject — decision 800).
+/// dump `generate` and live reinject — decision 800 / 813).
 pub fn extras_from_tables(tables: &RuntimeTables) -> RtconfigExtras {
     let placement = place_runtime_tables(RTDATA_BASE, tables);
+    let mut init_slots: Vec<(u64, u64)> = Vec::new();
+    for (a, addrs) in tables.actors.iter().zip(placement.actors.iter()) {
+        init_slots.push((addrs.state, a.state_size / 8));
+    }
+    for (d, &state) in tables.drivers.iter().zip(placement.drivers.iter()) {
+        init_slots.push((state, d.state_size / 8));
+    }
     let mut rings = Vec::new();
     for (i, r) in tables.rings.iter().enumerate() {
         let addrs = placement
@@ -186,6 +200,8 @@ pub fn extras_from_tables(tables: &RuntimeTables) -> RtconfigExtras {
         rings,
         enqueue_handles: tables.enqueue_handles.clone(),
         enqueue_actors: tables.enqueue_actors.clone(),
+        init_slots,
+        n_boot_calls: tables.n_boot_calls,
     }
 }
 
@@ -255,6 +271,16 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
         "image needs {} enqueue stubs; pool is {ENQUEUE_STUB_COUNT} (decision 802)",
         extras.enqueue_actors.len()
     );
+    assert!(
+        extras.init_slots.len() <= BOOT_CALL_POOL_COUNT,
+        "image needs {} init slots; pool is {BOOT_CALL_POOL_COUNT} (decision 813)",
+        extras.init_slots.len()
+    );
+    assert!(
+        extras.n_boot_calls <= BOOT_CALL_POOL_COUNT,
+        "image needs {} boot calls; pool is {BOOT_CALL_POOL_COUNT} (decision 812)",
+        extras.n_boot_calls
+    );
 
     let mut out = String::new();
     out.push_str("module __image_runtime\n");
@@ -278,6 +304,9 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     push_const(&mut out, "N_RINGS", n_rings);
     push_const(&mut out, "RING_POOL_COUNT", RING_POOL_COUNT);
     push_const(&mut out, "ENQUEUE_STUB_COUNT", ENQUEUE_STUB_COUNT);
+    push_const(&mut out, "N_INIT_SLOTS", extras.init_slots.len());
+    push_const(&mut out, "N_BOOT_CALLS", extras.n_boot_calls);
+    push_const(&mut out, "BOOT_CALL_POOL_COUNT", BOOT_CALL_POOL_COUNT);
     push_const(&mut out, "NO_EDGE", NO_EDGE);
     out.push('\n');
 
@@ -326,7 +355,20 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     out.push_str("struct RuntimeTables:\n");
     out.push_str("    turns: [TurnArea; N_TURNS_LEN]\n");
     out.push('\n');
-    out.push_str(&format!("@placed({RTDATA_BASE:#x})\n"));
+    // When `n_turns == 0`, `place_runtime_tables` packs driver/actor state at
+    // `RTDATA_BASE`. Keep the RT overlay off that cursor so INIT_SLOT* can
+    // own the live state addresses (decision 813) — same empty-arena move as
+    // GROUPS (decision 800). Placeholder sits just below the INIT pool.
+    let rt_addr = if tables.n_turns == 0 {
+        RTDATA_BASE + wrela_machine::layout::RTDATA_SIZE_MAX
+            - (RING_POOL_COUNT as u64) * 64
+            - 96
+            - (BOOT_CALL_POOL_COUNT as u64) * 8
+            - (n_turns_len as u64) * (turn_stride as u64)
+    } else {
+        RTDATA_BASE
+    };
+    out.push_str(&format!("@placed({rt_addr:#x})\n"));
     out.push_str("pub static RT: RuntimeTables\n");
     out.push('\n');
 
@@ -405,6 +447,37 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
             "pub fn __enqueue_{i}(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:\n"
         ));
         out.push_str("    return 0\n");
+        out.push('\n');
+    }
+    // Boot init call stubs (decision 812): placeholder bodies overwritten at
+    // inject with specialized A64 (Relocs for DeviceRegs/Pool/Own*).
+    for i in 0..BOOT_CALL_POOL_COUNT {
+        out.push_str(&format!("pub fn __boot_call_{i}():\n"));
+        out.push_str("    return\n");
+        out.push('\n');
+    }
+
+    // Init-slot overlays (decision 813): fixed pool so `runtime.wr` can
+    // import every INIT_SLOT* (same rule as RING*_DATA — decision 800).
+    // Live slots use place_runtime_tables state addresses; unused / 0-word
+    // slots get a 1-word non-colliding placeholder.
+    let init_placeholder_base = RTDATA_BASE + wrela_machine::layout::RTDATA_SIZE_MAX
+        - (RING_POOL_COUNT as u64) * 64
+        - 96
+        - (BOOT_CALL_POOL_COUNT as u64) * 8;
+    for i in 0..BOOT_CALL_POOL_COUNT {
+        let (addr, nwords) = extras
+            .init_slots
+            .get(i)
+            .copied()
+            .filter(|&(_, n)| n > 0)
+            .unwrap_or((init_placeholder_base + (i as u64) * 8, 1));
+        out.push_str("@layout(runtime, endian=little)\n");
+        out.push_str(&format!("struct InitSlot{i}Words:\n"));
+        out.push_str(&format!("    words: [u64; {nwords}]\n"));
+        out.push('\n');
+        out.push_str(&format!("@placed({addr:#x})\n"));
+        out.push_str(&format!("pub static INIT_SLOT{i}: InitSlot{i}Words\n"));
         out.push('\n');
     }
 
@@ -705,6 +778,41 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     }
     out.push_str("        case _:\n");
     out.push_str("            return 1\n");
+    out.push('\n');
+
+    // Init zero-fill accessors (decision 813).
+    out.push_str("pub fn __wrela_init_nwords(slot: usize) -> usize:\n");
+    out.push_str("    match slot:\n");
+    for (i, &(_, nwords)) in extras.init_slots.iter().enumerate() {
+        out.push_str(&format!("        case {i}:\n"));
+        out.push_str(&format!("            return {nwords}\n"));
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return 0\n");
+    out.push('\n');
+
+    out.push_str("pub fn __wrela_init_store_word(slot: usize, wi: usize, v: u64):\n");
+    out.push_str("    match slot:\n");
+    for i in 0..BOOT_CALL_POOL_COUNT {
+        out.push_str(&format!("        case {i}:\n"));
+        out.push_str(&format!("            INIT_SLOT{i}.words[wi] = v\n"));
+        out.push_str("            return\n");
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return\n");
+    out.push('\n');
+
+    // Boot call dispatch (decision 812) — only live arms so unused stubs
+    // stay unreachable (code must pack below RTDATA_BASE).
+    out.push_str("pub fn __wrela_boot_call(i: usize):\n");
+    out.push_str("    match i:\n");
+    for i in 0..extras.n_boot_calls {
+        out.push_str(&format!("        case {i}:\n"));
+        out.push_str(&format!("            __boot_call_{i}()\n"));
+        out.push_str("            return\n");
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return\n");
 
     out
 }
@@ -931,15 +1039,24 @@ mod tests {
 
     #[test]
     fn placed_uses_rtdata_base_literal() {
+        // Empty-turn sample: RT moves to a placeholder so state/INIT_SLOT can
+        // own RTDATA_BASE (decision 813); SCHED still uses a numeric literal.
         let text = generate(&sample_tables(1));
-        assert!(
-            text.contains(&format!("@placed({RTDATA_BASE:#x})\n")),
-            "expected @placed at RTDATA_BASE; got:\n{text}"
-        );
         assert!(!text.contains("@placed(RTDATA_BASE)"));
         assert!(
             text.contains("pub static RT: RuntimeTables\n"),
             "expected RT static; got:\n{text}"
+        );
+        assert!(
+            !text.contains(&format!("@placed({RTDATA_BASE:#x})\npub static RT:")),
+            "empty-turn RT must not claim RTDATA_BASE; got:\n{text}"
+        );
+        assert!(
+            text.contains(&format!(
+                "@placed({:#x})\npub static SCHED:",
+                RTDATA_BASE + 128
+            )),
+            "expected empty-turn SCHED numeric place; got:\n{text}"
         );
         assert!(
             text.contains("pub static GROUPS: GroupArena\n"),

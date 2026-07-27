@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_actor_smoke.wr sha256=e0b2fa7b243ea503bb71343ed33a946312b9fd228e073efa7bc6023f1ad3c55b
-  Input path=<generated> sha256=f1b473de6c9e456c5952c40b8e60e19a10324425fad48a0a04feb0320051af1f
+  Input path=<generated> sha256=e8d3adbfb698e0180c3f193c1c9ce2fb567f6c1a9ad46e6ef23ad4bf29daabdf
   Name value=boot-actor-smoke
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Store
@@ -15,7 +15,7 @@ ImageReport v0
   Supervise index=0 strategy=Restart.OneForOne intensity=(3, 10000000000)
     Child value=actor#0
   Placement id=actor#0 type=Store core=0 source=inferred work=0 work_source=unproved bytes=96 bytes_state=8 bytes_mailbox=88 bytes_pool=0
-  Layout name=MachineInfoPage kind=runtime endian=little size=528 padding=480
+  Layout name=MachineInfoPage kind=runtime endian=little size=528 padding=456
     Padding offset=0x0 size=40
     Field name=next_deadline type=u64 offset=0x28 size=8
     Padding offset=0x30 size=24
@@ -23,10 +23,13 @@ ImageReport v0
     Field name=ring_data_bump type=u64 offset=0x50 size=8
     Field name=ring_desc_bump type=u64 offset=0x58 size=8
     Field name=line_start type=u64 offset=0x60 size=8
-    Padding offset=0x68 size=416
+    Field name=core_marks type=[u64; VCPUS] offset=0x68 size=24
+    Padding offset=0x80 size=392
     Field name=abort_latch type=u64 offset=0x208 size=8
   Layout name=ClockMmio kind=runtime endian=little size=8 padding=0
     Field name=now_ns type=u64 offset=0x0 size=8
+  Layout name=ParkMmio kind=runtime endian=little size=8 padding=0
+    Field name=word type=u64 offset=0x0 size=8
   Layout name=PendingPage kind=runtime endian=little size=24 padding=0
     Field name=words type=[u64; PENDING_WORD_COUNT] offset=0x0 size=24
   Layout name=ConsoleRingPage kind=runtime endian=little size=6672 padding=2564
@@ -41,36 +44,69 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=35284
-  Section name=rodata base=0x40508a28 size=423
-  Section name=abort base=0x40508bd0 size=120
-  Section name=checkpoint base=0x40508c48 size=104
-  Section name=rtdata base=0x40510000 size=1144
+  Section name=code base=0x40500050 size=44784
+  Section name=rodata base=0x4050af40 size=423
+  Section name=abort base=0x4050b0e8 size=120
+  Section name=checkpoint base=0x4050b160 size=104
+  Section name=rtdata base=0x40520000 size=1144
   Entry base=0x40500000
   PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
-  PlacedStatic name=GROUPS type=GroupArena addr=0x4054fda0 size=96
+  PlacedStatic name=GROUPS type=GroupArena addr=0x4055fda0 size=96
+  PlacedStatic name=INIT_SLOT0 type=InitSlot0Words addr=0x4055fca0 size=8
+  PlacedStatic name=INIT_SLOT1 type=InitSlot1Words addr=0x4055fca8 size=8
+  PlacedStatic name=INIT_SLOT10 type=InitSlot10Words addr=0x4055fcf0 size=8
+  PlacedStatic name=INIT_SLOT11 type=InitSlot11Words addr=0x4055fcf8 size=8
+  PlacedStatic name=INIT_SLOT12 type=InitSlot12Words addr=0x4055fd00 size=8
+  PlacedStatic name=INIT_SLOT13 type=InitSlot13Words addr=0x4055fd08 size=8
+  PlacedStatic name=INIT_SLOT14 type=InitSlot14Words addr=0x4055fd10 size=8
+  PlacedStatic name=INIT_SLOT15 type=InitSlot15Words addr=0x4055fd18 size=8
+  PlacedStatic name=INIT_SLOT16 type=InitSlot16Words addr=0x4055fd20 size=8
+  PlacedStatic name=INIT_SLOT17 type=InitSlot17Words addr=0x4055fd28 size=8
+  PlacedStatic name=INIT_SLOT18 type=InitSlot18Words addr=0x4055fd30 size=8
+  PlacedStatic name=INIT_SLOT19 type=InitSlot19Words addr=0x4055fd38 size=8
+  PlacedStatic name=INIT_SLOT2 type=InitSlot2Words addr=0x4055fcb0 size=8
+  PlacedStatic name=INIT_SLOT20 type=InitSlot20Words addr=0x4055fd40 size=8
+  PlacedStatic name=INIT_SLOT21 type=InitSlot21Words addr=0x4055fd48 size=8
+  PlacedStatic name=INIT_SLOT22 type=InitSlot22Words addr=0x4055fd50 size=8
+  PlacedStatic name=INIT_SLOT23 type=InitSlot23Words addr=0x4055fd58 size=8
+  PlacedStatic name=INIT_SLOT24 type=InitSlot24Words addr=0x4055fd60 size=8
+  PlacedStatic name=INIT_SLOT25 type=InitSlot25Words addr=0x4055fd68 size=8
+  PlacedStatic name=INIT_SLOT26 type=InitSlot26Words addr=0x4055fd70 size=8
+  PlacedStatic name=INIT_SLOT27 type=InitSlot27Words addr=0x4055fd78 size=8
+  PlacedStatic name=INIT_SLOT28 type=InitSlot28Words addr=0x4055fd80 size=8
+  PlacedStatic name=INIT_SLOT29 type=InitSlot29Words addr=0x4055fd88 size=8
+  PlacedStatic name=INIT_SLOT3 type=InitSlot3Words addr=0x4055fcb8 size=8
+  PlacedStatic name=INIT_SLOT30 type=InitSlot30Words addr=0x4055fd90 size=8
+  PlacedStatic name=INIT_SLOT31 type=InitSlot31Words addr=0x4055fd98 size=8
+  PlacedStatic name=INIT_SLOT4 type=InitSlot4Words addr=0x4055fcc0 size=8
+  PlacedStatic name=INIT_SLOT5 type=InitSlot5Words addr=0x4055fcc8 size=8
+  PlacedStatic name=INIT_SLOT6 type=InitSlot6Words addr=0x4055fcd0 size=8
+  PlacedStatic name=INIT_SLOT7 type=InitSlot7Words addr=0x4055fcd8 size=8
+  PlacedStatic name=INIT_SLOT8 type=InitSlot8Words addr=0x4055fce0 size=8
+  PlacedStatic name=INIT_SLOT9 type=InitSlot9Words addr=0x4055fce8 size=8
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=528
+  PlacedStatic name=PARK type=ParkMmio addr=0x8002000 size=8
   PlacedStatic name=PENDING type=PendingPage addr=0x40007000 size=24
-  PlacedStatic name=RING0_CTL type=RingCtl addr=0x4054fe20 size=24
-  PlacedStatic name=RING0_DATA type=Ring0Data addr=0x4054fe00 size=8
-  PlacedStatic name=RING1_CTL type=RingCtl addr=0x4054fe60 size=24
-  PlacedStatic name=RING1_DATA type=Ring1Data addr=0x4054fe40 size=8
-  PlacedStatic name=RING2_CTL type=RingCtl addr=0x4054fea0 size=24
-  PlacedStatic name=RING2_DATA type=Ring2Data addr=0x4054fe80 size=8
-  PlacedStatic name=RING3_CTL type=RingCtl addr=0x4054fee0 size=24
-  PlacedStatic name=RING3_DATA type=Ring3Data addr=0x4054fec0 size=8
-  PlacedStatic name=RING4_CTL type=RingCtl addr=0x4054ff20 size=24
-  PlacedStatic name=RING4_DATA type=Ring4Data addr=0x4054ff00 size=8
-  PlacedStatic name=RING5_CTL type=RingCtl addr=0x4054ff60 size=24
-  PlacedStatic name=RING5_DATA type=Ring5Data addr=0x4054ff40 size=8
-  PlacedStatic name=RING6_CTL type=RingCtl addr=0x4054ffa0 size=24
-  PlacedStatic name=RING6_DATA type=Ring6Data addr=0x4054ff80 size=8
-  PlacedStatic name=RING7_CTL type=RingCtl addr=0x4054ffe0 size=24
-  PlacedStatic name=RING7_DATA type=Ring7Data addr=0x4054ffc0 size=8
-  PlacedStatic name=RT type=RuntimeTables addr=0x40510000 size=128
-  PlacedStatic name=SCHED type=SchedStripe addr=0x40510080 size=16
+  PlacedStatic name=RING0_CTL type=RingCtl addr=0x4055fe20 size=24
+  PlacedStatic name=RING0_DATA type=Ring0Data addr=0x4055fe00 size=8
+  PlacedStatic name=RING1_CTL type=RingCtl addr=0x4055fe60 size=24
+  PlacedStatic name=RING1_DATA type=Ring1Data addr=0x4055fe40 size=8
+  PlacedStatic name=RING2_CTL type=RingCtl addr=0x4055fea0 size=24
+  PlacedStatic name=RING2_DATA type=Ring2Data addr=0x4055fe80 size=8
+  PlacedStatic name=RING3_CTL type=RingCtl addr=0x4055fee0 size=24
+  PlacedStatic name=RING3_DATA type=Ring3Data addr=0x4055fec0 size=8
+  PlacedStatic name=RING4_CTL type=RingCtl addr=0x4055ff20 size=24
+  PlacedStatic name=RING4_DATA type=Ring4Data addr=0x4055ff00 size=8
+  PlacedStatic name=RING5_CTL type=RingCtl addr=0x4055ff60 size=24
+  PlacedStatic name=RING5_DATA type=Ring5Data addr=0x4055ff40 size=8
+  PlacedStatic name=RING6_CTL type=RingCtl addr=0x4055ffa0 size=24
+  PlacedStatic name=RING6_DATA type=Ring6Data addr=0x4055ff80 size=8
+  PlacedStatic name=RING7_CTL type=RingCtl addr=0x4055ffe0 size=24
+  PlacedStatic name=RING7_DATA type=Ring7Data addr=0x4055ffc0 size=8
+  PlacedStatic name=RT type=RuntimeTables addr=0x4055fc20 size=128
+  PlacedStatic name=SCHED type=SchedStripe addr=0x40520080 size=16
   PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000100 size=21
   Actor name=Store mailbox=4 slot=16 frame=64 state=8
   Turn fn=smoke frame=288

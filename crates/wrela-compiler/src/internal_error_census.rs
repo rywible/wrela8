@@ -52,7 +52,9 @@ pub const INTERNAL_ERROR_SITES_BY_FILE: &[(&str, usize)] = &[
     ("layout.rs", 71),
     // 27 -> 29, plans/M11.md item E: reinject_runtime_with_rtconfig
     // (live rtconfig codegen failure / missing deadline key).
-    ("layout/harness.rs", 29),
+    // 29 -> 30, plans/M11.md item H: missing secondary trampoline after
+    // runtime reinject (`inject_rt_cross_core_fns`).
+    ("layout/harness.rs", 30),
     // 78 -> 79, plans/M10.md item A2c: placed static has no comptime value.
     ("eval/interp.rs", 79),
     ("lower.rs", 5),
@@ -160,7 +162,7 @@ mod tests {
             "INTERNAL_ERROR_SITE_COUNT ({INTERNAL_ERROR_SITE_COUNT}) != sum of per-file counts ({total})"
         );
         assert_eq!(
-            INTERNAL_ERROR_SITE_COUNT, 201,
+            INTERNAL_ERROR_SITE_COUNT, 202,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }

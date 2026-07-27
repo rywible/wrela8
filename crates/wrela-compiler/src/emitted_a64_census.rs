@@ -185,14 +185,13 @@ pub const EMITTED_A64_ENTRIES: &[EmitterEntry] = &[
     },
     // emit_rt_xsend / emit_rt_xreply / emit_rt_drain deleted in M11 G
     // (force-rooted __wrela_rt_xsend / xreply / drain); −69/−58/−126.
-    // REF: core 1. Includes 5 floor-cat1 SP-install words inside the body.
-    // M11 F: +1 movz x0,#core before BL __wrela_rt_run_one (26→27).
+    // M11 H: secondary algorithm → wrela; 5 floor-cat1 SP extracted here.
     EmitterEntry {
-        name: "emit_secondary_core_entry",
+        name: "emit_secondary_sp_install",
         file: "codegen.rs",
-        words: 27,
-        category: Category::ImageStatic,
-        note: "decision 633; per-core secondary entry (item F2); 5 floor-cat1 SP; F +1 core arg",
+        words: 5,
+        category: Category::Floor,
+        note: "decision 811; floor-cat1 SP prepended onto secondary trampoline",
     },
     // REF: empty group/irq/wake. Includes 5 floor-cat2 save/restore words
     // inside the body (decision 673) — counted here until a later floor
@@ -206,14 +205,9 @@ pub const EMITTED_A64_ENTRIES: &[EmitterEntry] = &[
     },
     // emit_deadline_scan_and_delivery / emit_deadline_poll deleted in M11 E
     // (force-rooted __wrela_deadline_scan / __wrela_deadline_poll); −57/−38.
-    // REF: one actor, state_size=8, no init calls (memset loop).
-    EmitterEntry {
-        name: "emit_boot_init",
-        file: "codegen.rs",
-        words: 14, // measured; bump if live count differs
-        category: Category::ImageStatic,
-        note: "decision 680; memset zero-fill (681); was layout build_boot_init",
-    },
+    // emit_boot_init deleted in M11 H (force-rooted __wrela_rt_boot_init);
+    // per-call stubs are inject-only (decision 812, NON_INVENTORY).
+
     // --- not yet migrated ------------------------------------------------
     // Empty since item M (sweep find L-11): the last row, harness
     // `push_turn_addr_from_id`, was dead production code (only caller was
@@ -258,20 +252,19 @@ pub const EMITTED_A64_ENTRIES: &[EmitterEntry] = &[
 
 /// Sum of `words` over floor rows (includes `push_halt`∩`build_entry_stub`
 /// overlap). Prefer [`FLOOR_WORDS`] for the exit-criterion comparison.
-pub const FLOOR_SUM_OF_ROWS: usize = 41; // 15 + 20 + 6
+pub const FLOOR_SUM_OF_ROWS: usize = 46; // 15 + 20 + 6 + 5
 
 /// Floor total after removing the `push_halt` / `build_entry_stub` overlap:
-/// `push_halt` (15) + entry-stub-only SP prefix (5) + abort tail (6) = 26.
+/// `push_halt` (15) + entry-stub-only SP prefix (5) + abort tail (6) +
+/// secondary SP install (5) = 31.
 ///
 /// Compared against the exit criterion's ≤ 30 and ROADMAP's "roughly twenty
-/// instructions". This count is the pure-floor *functions* only — it does
-/// **not** include floor-category instructions still embedded inside
-/// not-yet-migrated functions (checkpoint's 5-word save/restore, secondary
-/// core / entry-driver SP installs, remaining `brk`s in F/F2). Those sit
-/// in the not-yet-migrated total until their owning item extracts them.
-pub const FLOOR_WORDS: usize = 26;
+/// instructions" — exit criterion allows growth only by extracted formerly-
+/// embedded floor words (plans/M11.md). Checkpoint save/restore and
+/// entry-driver SP remain embedded until items I / K.
+pub const FLOOR_WORDS: usize = 31;
 
-pub const IMAGE_STATIC_SUM_OF_ROWS: usize = 246; // was 499; M11 G −69/−58/−126
+pub const IMAGE_STATIC_SUM_OF_ROWS: usize = 205; // was 246; M11 H −14/−27
 
 pub const NOT_YET_MIGRATED_SUM_OF_ROWS: usize = 0; // was 7; M (L-11) deleted dead harness push_turn_addr_from_id
 
@@ -281,7 +274,7 @@ pub const UNCLASSIFIED_SUM_OF_ROWS: usize = 117; // 4 + 19 + 94 (I stated residu
 /// `build_entry_stub` embeds `push_halt`; the JIT-only `build_rt_*`
 /// materializers are NON_INVENTORY, not rows). Useful as a ratchet total;
 /// not "unique words in one image".
-pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 404; // was 657; M11 G −253
+pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 368; // was 404; M11 H −14/−27 +5 floor
 
 /// Per-file counts of the contiguous `encode::enc_` substring under
 /// `crates/wrela-compiler/src/`, excluding `#[cfg(test)]` /
@@ -295,8 +288,9 @@ pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 404; // was 657; M11 G −253
 /// M11 F: run_one/child_poll emitters deleted (codegen 787→728); harness
 /// +1 movz before BL __wrela_rt_run_one (64→65).
 /// M11 G: xsend/xreply/drain emitters deleted (codegen 728→605).
+/// M11 H: secondary/boot_init emitters → SP install + call stubs (605→594).
 pub const ENCODE_ENC_SITES_BY_FILE: &[(&str, usize)] = &[
-    ("codegen.rs", 605), // was 728; G −123 from deleted emitters
+    ("codegen.rs", 594), // was 605; H −11 from deleted secondary/boot bodies
     ("layout.rs", 8),
     ("layout/harness.rs", 65), // was 64; F +1 core-arg movz
 ];
@@ -448,7 +442,7 @@ mod tests {
             "ENCODE_ENC_SITE_COUNT ({ENCODE_ENC_SITE_COUNT}) != sum of per-file counts ({total})"
         );
         assert_eq!(
-            ENCODE_ENC_SITE_COUNT, 678,
+            ENCODE_ENC_SITE_COUNT, 667,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }
@@ -594,6 +588,11 @@ mod tests {
         // M10 G: thin materialize of `emit_checkpoint_and_vector_stub`.
         "layout/harness.rs::build_checkpoint_and_vector_stub_ex",
         "layout/harness.rs::install_abort_tail_floor",
+        // M11 H: per-image boot init call stubs (decision 812); REF empty.
+        "codegen.rs::emit_boot_init_call",
+        "layout/harness.rs::inject_boot_init_fn",
+        "layout/harness.rs::inject_rt_cross_core_fns",
+        "layout/harness.rs::shift_reloc_words",
     ];
 
     /// Census rows that are real emitters (measured word count) but whose
@@ -666,11 +665,11 @@ mod tests {
         );
         assert_eq!(grand, GRAND_TOTAL_SUM_OF_ROWS, "GRAND_TOTAL_SUM_OF_ROWS");
         assert_eq!(
-            FLOOR_WORDS, 26,
+            FLOOR_WORDS, 31,
             "adjusted floor total is part of the ratchet"
         );
         // Sanity: FLOOR_WORDS == push_halt + SP prefix + abort tail.
-        assert_eq!(15 + 5 + 6, FLOOR_WORDS);
+        assert_eq!(15 + 5 + 6 + 5, FLOOR_WORDS);
     }
 
     #[test]
