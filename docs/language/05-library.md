@@ -78,20 +78,14 @@ is level-triggered and idempotent.
 `IoCompletion[P]` — owned `payload: P` returned before
 `status: Result[unit, IoError]` is inspected.
 
-## 4. Groups, race, slots
+## 4. Groups and slots
 
-`group(deadline=..., budget=..., capacity=...)` is the one suspend-safe
+`group(deadline=..., capacity=...)` is the one suspend-safe
 structured-concurrency scope ([02 §9.5](02-language.md)): it mints a
 lineage every call in its dynamic extent inherits ambiently, owns up to
 `capacity` child slots, and joins or cancels every child on exit. `start`
 launches a named function as a child under the ambient lineage; `join_all`
 returns results in start order.
-
-`race(a, b, ...)` is a sealed contract, not grammar: it build-proves and
-reserves all child slots before evaluating any alternative, returns a
-generated closed sum naming the winner, and cancels and fully tears down
-every loser (including in-flight device work, via receipts) before
-returning. Simultaneous readiness resolves by argument order.
 
 A service in-flight slot from `SlotMap.reserve()` exposes
 `slot.resolve(take receipt) -> Result[Outcome, E]`: it parks the enclosing

@@ -99,8 +99,8 @@ ownership model is two sentences:
 - **Data copies.** Scalars, and any enum, array, tuple, or struct built only
   from data, behave like integers: assignment, construction, and messages
   duplicate them. The compiler tracks every copy's cost and reports the
-  expensive ones ([04 §7](04-compiler.md)); a `@budget` turns a hot-path
-  copy into an error. Cost lives in the report, not the syntax.
+  expensive ones ([04 §7](04-compiler.md)). Cost lives in the report, not
+  the syntax; a hard budget on copies is a future cost-proof intention.
 - **Resources move.** A `resource struct`, a pool handle `own[P] T`, a
   capability, a receipt — and any composite containing one — has exactly one
   owner and cannot be copied. A named resource leaves its place only through
@@ -210,8 +210,9 @@ with pool(capacity=256.KiB) as frame:
 ```
 
 Locals, task frames, and request-scoped values need no pool: the compiler
-places them, and reports (or, under `@no_promote` or a hard `@budget`,
-rejects) any allocation it must promote to image lifetime.
+places them, and reports any allocation it must promote to image lifetime.
+A hard refusal of promotion is spelled with the worked example's idiom,
+`@layout_assert(region_promotions == 0)`.
 [04 §3](04-compiler.md) specifies placement and promotion reporting.
 
 ## 5. Functions
@@ -699,20 +700,18 @@ with group(capacity=4) as g:                  # bounded child work
     results = await g.join_all()
 ```
 
-A group owns an optional deadline and budget, up to `capacity` child
-activations (default zero), a cancellation domain, and a cleanup graph.
-There is no detached spawn: a child is started into a group and cannot
-outlive it. What earlier drafts called a *request* is a group without
-children; a *nursery* is a group without a deadline. `race(a, b, ...)` is a
-sealed contract over the same machinery: it reserves every child slot before
-evaluating an alternative, returns a closed sum naming the winner, and fully
-tears down every loser — including in-flight device work — before returning.
+A group owns an optional deadline, up to `capacity` child activations
+(default zero), a cancellation domain, and a cleanup graph. There is no
+detached spawn: a child is started into a group and cannot outlive it.
+What earlier drafts called a *request* is a group without children; a
+*nursery* is a group without a deadline. Fire-and-forget work uses `send`;
+long-running independent work is an installed `@task`.
 
 Every `async fn` implicitly carries the **ambient lineage** of its enclosing
 group (or its task root); admission, `start`, and deadline/cancellation
 propagation read it, signatures never thread a context parameter, and
-tooling displays the inference. Rare escapes: an explicit `group=` argument
-on a call, and `@detached` for work independent of any enclosing group.
+tooling displays the inference. A rare escape is an explicit `group=`
+argument on a call.
 
 Deadlines are inherited and can only narrow. Cancellation becomes observable
 at `await` and checkpoints, never between arbitrary instructions. When a
@@ -725,8 +724,8 @@ compiler's ([04 §4](04-compiler.md)); source sees only `CallError` and its
 own `defer`s running.
 
 Long-running roots are installed by the image as `@task(...)` entries with a
-priority, budget, and declared failure policy; a task returning
-`Result[unit, E]` delivers `Err` to its supervisor action, never silently.
+declared failure policy; a task returning `Result[unit, E]` delivers `Err`
+to its supervisor action, never silently.
 
 ### 9.7 Non-blocking services
 
@@ -901,21 +900,18 @@ declared non-semantic tool namespace. The revision 0.1 built-ins:
 |---|---|
 | `@image` | The unique build-time image constructor. |
 | `@actor` / `@driver` | Actor root; drivers alone may hold hardware authority. |
-| `@task(...)` | Statically bounded task entry: trigger, priority, budget, failure policy. |
+| `@task(...)` | Task entry. Optional `trigger=` / `poll=` encode wake plumbing and `DriverMode` (ISR gate); `priority=` / `budget=` are refused. |
 | `@layout(kind, ...)` | Exact byte layout, `kind` one of `dma`, `mmio`, `wire`, `runtime` ([03 §3](03-hardware.md)). |
 | `@offset(n)` | Field offset inside a `@layout` declaration. |
 | `@placed(addr)` | Binds a module-level `static` of a `@layout(runtime)` type to a fixed address ([03 §3.1](03-hardware.md)). |
 | `@layout_assert` | Post-layout build assertion over `ImageReport`. |
 | `@test` / `@test(runtime)` / `@test(exhaustive)` | Test declaration (§12.2). |
-| `@budget(...)` | Proven work/memory bound on a function or the loop it precedes. In statement position, `@budget(bound=N)` with comptime-known integer `N` ≥ 1 (an integer literal or the name of a module-level `const` whose comptime value is one or more) must immediately precede a `for` or `while` (§8.1). |
-| `@no_promote` | Reject image-lifetime promotion in the annotated scope. |
-| `@detached` | Work independent of any enclosing group (§9.5). |
+| `@budget(...)` | Statement attribute: `@budget(bound=N)` with comptime-known integer `N` ≥ 1 (an integer literal or the name of a module-level `const` whose comptime value is one or more) must immediately precede a `for` or `while` (§8.1). |
 
 Of the built-ins, only `@budget(...)` may be a statement attribute, and in
 that position it must immediately precede `for` or `while` at the same
 indentation. Other statement attributes, and a loop-position `@budget` on a
-non-loop, are errors. Function-level `@budget` (call-graph / memory bound)
-is named here but is not the §8.1 sync-loop discharge.
+non-loop, are errors.
 
 A module-level `static NAME: Type` is the construct
 [03 §3.1](03-hardware.md) binds with `@placed(addr)`; `@placed` is legal

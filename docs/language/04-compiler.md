@@ -22,15 +22,15 @@ rooted at the current actor turn. Nothing lent crosses an actor boundary.
 **Memory.** Every allocation has a placement (§3) with a finite capacity
 contribution; task frames, stacks, pools (image and scoped), and mailboxes
 have proven bounds; unbounded recursion in either the sync or async call
-graph is
-rejected; forced promotions to image lifetime are reported, and rejected
-under `@no_promote` or an unaccounted hard `@budget`. Every data copy is
-priced by the target cost model — copies above the reporting threshold (a
-language-defined constant in revision 0.1) are reported, and a hard
-`@budget` makes them errors; cost visibility is this
-chapter's obligation, not a syntax rule. A returned literal or an `init`
-body constructs in place: elision into the destination is guaranteed, never
-best-effort, so no aggregate is moved by being built.
+graph is rejected; forced promotions to image lifetime are reported (a hard
+refusal of promotion is `@layout_assert(region_promotions == 0)`). Every
+data copy is priced by the target cost model — copies above the reporting
+threshold (a language-defined constant in revision 0.1) are reported; the
+report prices copies, and a hard budget on copies is a future cost-proof
+intention. Cost visibility is this chapter's obligation, not a syntax rule.
+A returned literal or an `init` body constructs in place: elision into the
+destination is guaranteed, never best-effort, so no aggregate is moved by
+being built.
 
 **Resources.** Every auto-reclaimable resource has one generated reclaim
 destination; every protocol resource has an explicit consume/return path on
@@ -55,17 +55,17 @@ acquiring anything in the cycle. Diagnostics print the full cycle. Every
 async loop back edge is a checkpoint or carries a proven
 `@budget(bound=...)`; every synchronous and ISR-bound loop has a proven
 finite cost; a checkpoint is rejected while a non-suspend-safe access is
-live. Priority and deadline inheritance are derived from the same
-graph, and hard deadlines without sufficient inheritance are rejected.
-Revision 0.1's synchronous discharge of the loop half is the statement
+live. Revision 0.1's synchronous discharge of the loop half is the statement
 attribute `@budget(bound=N)` of [02 §8.1](02-language.md): a comptime-known
 integer trip bound with a fail-closed runtime counter — not a predicted
 cost model. The force-rooted runtime event-loop entries named in
 [02 §8.1](02-language.md) (the per-core park/run loops that *are* this
 section's cooperative scheduler) are exempt from that sync `@budget`
 requirement — a trip counter is not a discharge for an intentional
-unbounded park→wake loop. Async checkpoint elision under a proven budget,
-ISR-bound discharge, and cycle/latency proofs remain later.
+unbounded park→wake loop. When a proven `@budget` makes an async loop's
+checkpoints elidable, the report discloses that optimization; it is not a
+semantic — the legality rule (budget or suspension) is unchanged.
+ISR-bound discharge and cycle/latency proofs remain later.
 
 **Hardware.** Capability provenance and roles match on every hardware
 operation; device and vector ownership is exclusive; MMIO partitions never
@@ -80,19 +80,20 @@ report.
 
 ## 2. Scheduling semantics
 
-The reference executor is a cooperative, priority-banded event loop (device
-bottom halves; normal turns; background) — **one per core**, over the
-actors placed there. There is no cross-core work stealing and no migration;
-cross-core edges are the generated bounded rings of §3, and the only
-scheduling nondeterminism in the whole machine is cross-core admission
-order at each mailbox, which record/replay logs. These behaviors are
-semantic and survive every lowering:
+The reference executor is a cooperative event loop — **one per core**, over
+the actors placed there. Scheduling is FIFO per mailbox and round-robin
+across ready actors: there are no priority bands. There is no cross-core
+work stealing and no migration; cross-core edges are the generated bounded
+rings of §3, and the only scheduling nondeterminism in the whole machine is
+cross-core admission order at each mailbox, which record/replay logs.
+Admission order is total per core. These behaviors are semantic and survive
+every lowering:
 
 - admission occupies one logical mailbox slot until selection; selection is
   FIFO per mailbox by admission order;
 - one external turn owns an actor until it completes, errors, or abandons;
-- a ready actor's scheduling key is the priority and effective deadline of
-  its FIFO head; ties break by a deterministic round-robin cursor;
+- ready actors are selected by a deterministic round-robin cursor across
+  actors with a non-empty mailbox;
 - cancellation is observed at awaits and checkpoints; and
 - record/replay observes the same logical admissions, turns, replies, and
   faults.
@@ -105,11 +106,6 @@ Async functions lower ahead of time to state machines in statically reserved
 frame slots — no boxed futures, no runtime frame allocation. `await` on a
 resource awaitable consumes it. Wakes are idempotent; the runtime park
 primitive has mask–arm–recheck semantics so level events cannot be lost.
-
-Starvation across bands is not silently promised: a hard
-`must_service_within` bound requires either proven arrival/work bounds or an
-explicit replenishment policy, else the build is rejected or the report
-declares best-effort.
 
 ## 3. Placement and promotion
 
@@ -171,16 +167,15 @@ fast path of §6.
 
 When a group is cancelled or expires, generated teardown, in order:
 atomically closes admission (later attempts get `NotAdmitted` with payloads
-returned); cancels child registrations recursively; transfers each in-flight
-device receipt to a generated highest-band recovery turn on the owning
-driver; quarantines affected regions and pool slots; runs every ready
-cleanup node in deterministic reverse source order, leaving
-dependency-blocked nodes pending; lets unrelated work run while the driver
-establishes quiescence; and resolves `Cancelled` to the parent only when the
-cleanup graph is empty and every child is consumed. The cancelled frame
-never resumes; recovery work belongs to generated nodes, not source
-destructors. Recovery turns are included in actor, budget, and wait-for
-analyses.
+returned); cancels child registrations recursively; delivers each in-flight
+device receipt to the owning driver's existing bottom-half `@task`;
+quarantines affected regions and pool slots; runs every ready cleanup node
+in deterministic reverse source order, leaving dependency-blocked nodes
+pending; lets unrelated work run while the driver establishes quiescence;
+and resolves `Cancelled` to the parent only when the cleanup graph is empty
+and every child is consumed. The cancelled frame never resumes; recovery
+work runs on that `@task`, not in source destructors, and is included in
+actor, budget, and wait-for analyses.
 
 ## 5. Restart mechanics
 
