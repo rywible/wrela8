@@ -168,8 +168,16 @@ pub fn place(
     check_annotations(graph)?;
 
     let empty_frames = BTreeMap::new();
-    let tables = crate::layout::compute_runtime_tables(graph, modules, layout_ctx, &empty_frames)?
-        .unwrap_or_default();
+    // Placement only needs actor/driver byte weights; group child census is
+    // a later BootCtx fact — floor 2 is enough here (plans/M12.md item F).
+    let tables = crate::layout::compute_runtime_tables(
+        graph,
+        modules,
+        layout_ctx,
+        &empty_frames,
+        crate::codegen::GROUP_MAX_CHILDREN_FLOOR,
+    )?
+    .unwrap_or_default();
 
     let pool_by_driver = dma_pool_bytes_by_driver(graph, layout_ctx)?;
 

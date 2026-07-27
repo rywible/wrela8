@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_driver_message.wr sha256=8ef966def12344169efcdf5f1c9beabddef7b0b676ed5523e85a13c180b78411
-  Input path=<generated> sha256=c5577c6aad5cd020826bad23ef36dbb6755276391112115edcf54d0a8e1cf679
+  Input path=<generated> sha256=bff1d56f7245da76de25cf2c601d75b765574a336ad399b80b0dadcab6eaa1d9
   Name value=boot-driver-message
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock
@@ -76,10 +76,10 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=102144
-  Section name=rodata base=0x40518f50 size=782
-  Section name=abort base=0x40519260 size=120
-  Section name=checkpoint base=0x405192d8 size=24
+  Section name=code base=0x40500050 size=102424
+  Section name=rodata base=0x40519068 size=782
+  Section name=abort base=0x40519378 size=120
+  Section name=checkpoint base=0x405193f0 size=24
   Section name=rtdata base=0x40540000 size=4048
   Section name=devregs base=0x40540fd0 size=104
   Section name=pooldata base=0x40541038 size=512

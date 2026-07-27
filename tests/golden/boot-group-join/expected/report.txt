@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_group_join.wr sha256=e495a8ca4119006c24ab631351570d232864b00ff853c2b5c0b6d231c0c92fab
-  Input path=<generated> sha256=ee1211b803f95bb052266ac4c606b022f9b1610d079b8f90771cd8f46dd257e0
+  Input path=<generated> sha256=7519a724e45892e25d32a1b9bc380870e8f5da8f1c1855f49e1df90a95e8215c
   Name value=boot-group-join
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Doubler
@@ -48,10 +48,10 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=94556
-  Section name=rodata base=0x405171b0 size=553
-  Section name=abort base=0x405173dc size=120
-  Section name=checkpoint base=0x40517454 size=24
+  Section name=code base=0x40500050 size=94836
+  Section name=rodata base=0x405172c8 size=553
+  Section name=abort base=0x405174f4 size=120
+  Section name=checkpoint base=0x4051756c size=24
   Section name=rtdata base=0x40540000 size=2288
   Entry base=0x40500000
   PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8

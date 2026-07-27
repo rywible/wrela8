@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/image_field_wired_accept.wr sha256=6dbfe7a0a44640e9c2abae467db78937a6035e6fb3bc4697356ea2a19100a7e3
-  Input path=<generated> sha256=5c7373e8bef042863f993bf2dab7cc146e368bce26978eb42ca7c5cb69bf4108
+  Input path=<generated> sha256=4d863bcc2518e3d8a01d235174b753264e2c12a8f5c334ff73cb603c690cc238
   Name value=field-wired
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Ledger
@@ -53,10 +53,10 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=90748
-  Section name=rodata base=0x405162d0 size=289
-  Section name=abort base=0x405163f4 size=120
-  Section name=checkpoint base=0x4051646c size=24
+  Section name=code base=0x40500050 size=91028
+  Section name=rodata base=0x405163e8 size=289
+  Section name=abort base=0x4051650c size=120
+  Section name=checkpoint base=0x40516584 size=24
   Section name=rtdata base=0x40540000 size=552
   Entry base=0x40500000
   PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8

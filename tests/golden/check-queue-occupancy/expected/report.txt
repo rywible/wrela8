@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/check_queue_occupancy.wr sha256=22087a821967c1b2286c5e53746941e4bb9c34697753cd97ecd948ef0af923e4
-  Input path=<generated> sha256=4a263b25b3bf699318b976a9f59aa5f18d75e7a9b2402c0495785723427df4db
+  Input path=<generated> sha256=f4ca6e5d06e0f5b0fb35199746f4abf49f8e2b4680e19bd332d9483de64fda4b
   Name value=check-queue-occupancy
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock
@@ -62,10 +62,10 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=88592
-  Section name=rodata base=0x40515a60 size=290
-  Section name=abort base=0x40515b84 size=120
-  Section name=checkpoint base=0x40515bfc size=24
+  Section name=code base=0x40500050 size=88872
+  Section name=rodata base=0x40515b78 size=290
+  Section name=abort base=0x40515c9c size=120
+  Section name=checkpoint base=0x40515d14 size=24
   Section name=rtdata base=0x40540000 size=48
   Section name=devregs base=0x40540030 size=104
   Section name=pooldata base=0x40540098 size=4096

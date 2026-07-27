@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_own_handles.wr sha256=32d671797005fb84cd59806588eb0ae69a610d8d92927c877357f4eb3519b36c
-  Input path=<generated> sha256=0ded75bc2e96d1e94c8300838985c9ed88751a1645a17382574a2dbefbb0f70f
+  Input path=<generated> sha256=1b629514dba95a48696da35382d508634093e0a569fafab6586a2a1c1eba3c05
   Name value=boot-own-handles
   Target value=Target.wrela_machine_v1
   Device index=0 type=BlockHw
@@ -57,10 +57,10 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=91608
-  Section name=rodata base=0x40516628 size=569
-  Section name=abort base=0x40516864 size=120
-  Section name=checkpoint base=0x405168dc size=24
+  Section name=code base=0x40500050 size=91888
+  Section name=rodata base=0x40516740 size=569
+  Section name=abort base=0x4051697c size=120
+  Section name=checkpoint base=0x405169f4 size=24
   Section name=rtdata base=0x40540000 size=1216
   Section name=pooldata base=0x405404c0 size=16
   Entry base=0x40500000

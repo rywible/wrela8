@@ -19,7 +19,7 @@ use wrela_machine::layout::RTDATA_BASE;
 pub struct ChildSiteFact {
     /// Free-async / group-child callee key (`program.fns` spelling).
     pub callee_key: String,
-    /// Slot ordinal within the group (`GROUP_MAX_CHILDREN` bound).
+    /// Slot ordinal within the group (image `GROUP_MAX_CHILDREN` fact).
     pub child_index: usize,
     /// Index into `RT.turns` for this child's free-turn area.
     pub turn_index: usize,
@@ -170,6 +170,7 @@ pub fn stub_text() -> String {
         turn_stride: 0,
         ready_queue_capacity: 1,
         group_arena_capacity: 0,
+        group_max_children: crate::codegen::GROUP_MAX_CHILDREN_FLOOR,
         total_bytes: 128,
         cores: 1,
         ..RuntimeTables::default()
@@ -420,11 +421,17 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     };
     let group_cap = tables.group_arena_capacity as usize;
     let group_slots = group_cap.max(1);
+    // plans/M12.md item F: image GROUP_MAX_CHILDREN / GROUP_SLOT_SIZE facts.
+    let max_children = tables
+        .group_max_children
+        .max(crate::codegen::GROUP_MAX_CHILDREN_FLOOR);
+    let group_slot_size = crate::codegen::group_slot_size(max_children);
     // When the arena is empty, `place_runtime_tables` still returns a
     // `group_arena` cursor equal to the first ring's base (0-byte arena).
     // Overlay GROUPS at a non-colliding placeholder so RINGS_CTL/DATA can
     // own the real ring addresses (decision 800 / M12 item C) — same move
-    // as empty-sched.
+    // as empty-sched. Placeholder width tracks the image GROUP_SLOT_SIZE
+    // fact (floor 2 → 96 when the arena is empty).
     let n_rings = extras.rings.len();
     let n_wake = extras.wake_pending_addrs.len();
     // High-zone reserve for the empty-ring placeholder overlays only
@@ -439,7 +446,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
             - rings_high_reserve
             - wake_high_reserve
             - (MB_POOL_COUNT as u64) * 64
-            - 96
+            - group_slot_size
     } else {
         placement.group_arena
     };
@@ -516,6 +523,9 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     push_const(&mut out, "READY_QUEUE_CAPACITY", ready_cap);
     push_const(&mut out, "GROUP_ARENA_CAPACITY", group_cap);
     push_const(&mut out, "GROUP_SLOTS", group_slots);
+    // plans/M12.md item F (decisions 886–889): image facts, not Rust consts.
+    push_const(&mut out, "GROUP_MAX_CHILDREN", max_children);
+    push_const(&mut out, "GROUP_SLOT_SIZE", group_slot_size as usize);
     push_const(&mut out, "TURN_STRIDE", turn_stride);
     push_const(&mut out, "RTDATA_BYTES", tables.total_bytes as usize);
     push_const(&mut out, "N_CHILD_SITES", n_child);
@@ -574,8 +584,9 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     }
     out.push('\n');
 
-    // Group arena slot (GROUP_SLOT_SIZE == 96). join_waiter / owner_turn are
-    // TurnIds (u32); children occupy +64..+96.
+    // Group arena slot (plans/M12.md item F): header through +56, then
+    // `GROUP_MAX_CHILDREN` (tag, payload) pairs from +64. Slot size is the
+    // image fact `GROUP_SLOT_SIZE` (2→96, 4→128).
     out.push_str("@layout(runtime, endian=little)\n");
     out.push_str("struct GroupSlot:\n");
     out.push_str("    in_use: u64\n");
@@ -586,10 +597,15 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     out.push_str("    parent: u64\n");
     out.push_str("    @offset(0x30) join_waiter: u32\n");
     out.push_str("    @offset(0x38) owner_turn: u32\n");
-    out.push_str("    @offset(0x40) child0_tag: u64\n");
-    out.push_str("    child0_payload: u64\n");
-    out.push_str("    child1_tag: u64\n");
-    out.push_str("    child1_payload: u64\n");
+    for c in 0..max_children {
+        if c == 0 {
+            out.push_str("    @offset(0x40) child0_tag: u64\n");
+            out.push_str("    child0_payload: u64\n");
+        } else {
+            out.push_str(&format!("    child{c}_tag: u64\n"));
+            out.push_str(&format!("    child{c}_payload: u64\n"));
+        }
+    }
     out.push('\n');
 
     // Per-core ready queue + RR cursor, matching `place_runtime_tables`
@@ -614,7 +630,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
             - rings_high_reserve
             - wake_high_reserve
             - (MB_POOL_COUNT as u64) * 64
-            - 96
+            - group_slot_size
             - (INIT_SPAN_POOL_COUNT as u64) * 8
             - (n_turns_len as u64) * (turn_stride as u64)
     } else {
@@ -781,7 +797,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
         - rings_high_reserve
         - wake_high_reserve
         - (MB_POOL_COUNT as u64) * 64
-        - 96
+        - group_slot_size
         - (INIT_SPAN_POOL_COUNT as u64) * 8;
     for i in 0..INIT_SPAN_POOL_COUNT {
         let (addr, nwords) = init_spans
@@ -878,6 +894,27 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     for (i, site) in extras.child_sites.iter().enumerate() {
         out.push_str(&format!("        case {i}:\n"));
         out.push_str(&format!("            return {}\n", site.child_index));
+    }
+    out.push_str("        case _:\n");
+    out.push_str("            return 0\n");
+    out.push('\n');
+
+    // plans/M12.md item F: store a harvested child result into the image's
+    // GroupSlot childN_* fields. Covers `GROUP_MAX_CHILDREN`; fail-closed
+    // above (returns 0 — `__wrela_child_poll` treats that as no progress).
+    out.push_str(
+        "pub fn __wrela_child_store_result(gi: usize, slot: usize, tag: u64, payload: u64) -> u64:\n",
+    );
+    out.push_str("    match slot:\n");
+    for c in 0..max_children {
+        out.push_str(&format!("        case {c}:\n"));
+        out.push_str(&format!(
+            "            GROUPS.slots[gi].child{c}_tag = tag\n"
+        ));
+        out.push_str(&format!(
+            "            GROUPS.slots[gi].child{c}_payload = payload\n"
+        ));
+        out.push_str("            return 1\n");
     }
     out.push_str("        case _:\n");
     out.push_str("            return 0\n");
@@ -1653,11 +1690,16 @@ mod tests {
         assert!(text.contains("struct SchedCore:\n"));
         assert!(text.contains("struct SchedStripe:\n"));
         assert!(text.contains("pub const GROUP_SLOTS: usize = 1\n"));
+        assert!(text.contains("pub const GROUP_MAX_CHILDREN: usize = 2\n"));
+        assert!(text.contains("pub const GROUP_SLOT_SIZE: usize = 96\n"));
         assert!(text.contains("turns: [TurnArea; N_TURNS_LEN]\n"));
         assert!(text.contains("cores: [SchedCore; N_CORES]\n"));
         assert!(text.contains("pub static SCHED: SchedStripe\n"));
         assert!(text.contains("slots: [GroupSlot; GROUP_SLOTS]\n"));
         assert!(text.contains("pub const N_CHILD_SITES: usize = 0\n"));
+        assert!(text.contains("child0_tag: u64\n"));
+        assert!(text.contains("child1_tag: u64\n"));
+        assert!(text.contains("__wrela_child_store_result"));
     }
 }
 

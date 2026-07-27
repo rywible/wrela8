@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_deadline_driver_turn.wr sha256=25cfa324db8b114f1235393ff499e23804c9c382f3f7f21e8ef34f00b71d25f6
-  Input path=<generated> sha256=74e533a65d3e402c985ec7d71bc5e7576211dc193ff229663e04590a6d07eb0b
+  Input path=<generated> sha256=bf5faa31ae5372d5361c520c2f87d9c38663c99d2708cdb963c3bac2804e8bfa
   Name value=boot-deadline-driver-turn
   Target value=Target.wrela_machine_v1
   Device index=0 type=Hw
@@ -56,10 +56,10 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=97000
-  Section name=rodata base=0x40517b38 size=669
-  Section name=abort base=0x40517dd8 size=120
-  Section name=checkpoint base=0x40517e50 size=24
+  Section name=code base=0x40500050 size=97280
+  Section name=rodata base=0x40517c50 size=669
+  Section name=abort base=0x40517ef0 size=120
+  Section name=checkpoint base=0x40517f68 size=24
   Section name=rtdata base=0x40540000 size=4480
   Section name=devregs base=0x40541180 size=8
   Entry base=0x40500000

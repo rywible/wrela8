@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/err_boot_blk_roundtrip.wr sha256=c84253557018beef4638acd2b04c2225a54031358f5607ba65576e8bfd57fc41
-  Input path=<generated> sha256=6c5738a1ac1923ebb986e13543ea4883c7aec6031585ed45dc520cda215890e6
+  Input path=<generated> sha256=1019b80ff2b80fae34565d9465dac525683f40411b9923c7ee254c5ffe41e9b6
   Name value=err-boot-blk-roundtrip
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock
@@ -78,10 +78,10 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=100928
-  Section name=rodata base=0x40518a90 size=1385
-  Section name=abort base=0x40518ffc size=120
-  Section name=checkpoint base=0x40519074 size=24
+  Section name=code base=0x40500050 size=101208
+  Section name=rodata base=0x40518ba8 size=1385
+  Section name=abort base=0x40519114 size=120
+  Section name=checkpoint base=0x4051918c size=24
   Section name=rtdata base=0x40540000 size=2400
   Section name=devregs base=0x40540960 size=104
   Section name=pooldata base=0x405409c8 size=1024

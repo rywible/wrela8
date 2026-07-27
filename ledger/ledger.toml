@@ -482,9 +482,9 @@ note = "plans/M6.md item F (2026-07-24), decision 8: the cancellation/teardown s
 [[clause]]
 id = "actors.groups.child-capacity"
 doc = "02-language.md#9.5"
-status = "gap"
-tests = []
-note = """plans/M12.md item A (decision 870): 02-language.md §9.5's normative example writes `with group(capacity=4) as g:`, but codegen hard-caps children at `GROUP_MAX_CHILDREN = 2` (`codegen.rs:6001`), enforced fail-closed at `codegen.rs:6096` (more than two `g.start` children in one group scope) and `codegen.rs:8069` (`g.join_all()` over more than that many children). The example compiles today only because it starts two children — the declared `capacity=4` is not what the arena admits. That is a Rust const contradicting a normative example, distinct from the honest generator-cap scaffolding recorded on `compiler.rtconfig.facts-only`. No code change in this item; the fix is plans/M12.md item F (not done here)."""
+status = "test"
+tests = ["golden/boot-group-four-children"]
+note = """plans/M12.md item F (decisions 886–889): `GROUP_MAX_CHILDREN` / `GROUP_SLOT_SIZE` are image facts — `max(FLOOR=2, max g.start children over the image's group sites)` and `64 + N*16` — generated into rtconfig (`GroupSlot` childN_* fields, `__wrela_child_store_result` ladder) and consumed by codegen/layout. Floor 2 preserved for empty-arena images. 02 §9.5's `capacity=4` example is runnable via `golden/boot-group-four-children` (four distinct callees, join_all, transcript pinned). Item A's gap closed here."""
 
 [[clause]]
 id = "actors.runtime.static-tables"

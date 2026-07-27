@@ -9,7 +9,7 @@ ImageReport v0
   Input path=core/io_error.wr sha256=c30f35780ff1d174d74787ddd4d3f51a3b8a0bd76c68e5036ec4bf76a511af81
   Input path=core/time.wr sha256=b792144162b9b90bd62d0f663d7d087d04dde813874eb25cbd89547fe1d11234
   Input path=examples/boot_receipt_handoff.wr sha256=9929c4ff996066e364d14bb1e3377ecd6f9b5bab38e9b9c2e2e44729e196fd0c
-  Input path=<generated> sha256=b3c5283f339919dc1c54fa9e4ec63c95727fbcae23fcaff4d60ba7de00c34ea8
+  Input path=<generated> sha256=a747307d8f50ba3baf3fc3f62f349fdfc5cd9f95ae68358fa1274028c786e522
   Name value=boot-receipt-handoff
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock
@@ -87,10 +87,10 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=106948
-  Section name=rodata base=0x4051a218 size=1314
-  Section name=abort base=0x4051a73c size=120
-  Section name=checkpoint base=0x4051a7b4 size=24
+  Section name=code base=0x40500050 size=107228
+  Section name=rodata base=0x4051a330 size=1314
+  Section name=abort base=0x4051a854 size=120
+  Section name=checkpoint base=0x4051a8cc size=24
   Section name=rtdata base=0x40540000 size=6664
   Section name=devregs base=0x40541a08 size=104
   Section name=pooldata base=0x40541a70 size=1024

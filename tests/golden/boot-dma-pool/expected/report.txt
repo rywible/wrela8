@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_dma_pool.wr sha256=37b728d1798277ddde4310ffa68a62c06b81a885c9c05db71f9756fc2fdfd05d
-  Input path=<generated> sha256=c4f6a30fe54a62cf0ed4f34a148f30bf8f57642521819b1d36ddfc2b868f02ce
+  Input path=<generated> sha256=423bdd0507267dda2d2ab1250a1ba1160c8a7e0a5f88b0c5b184a23333618f08
   Name value=boot-dma-pool
   Target value=Target.wrela_machine_v1
   Device index=0 type=BlockHw
@@ -65,10 +65,10 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=96016
-  Section name=rodata base=0x40517760 size=689
-  Section name=abort base=0x40517a14 size=120
-  Section name=checkpoint base=0x40517a8c size=24
+  Section name=code base=0x40500050 size=96296
+  Section name=rodata base=0x40517878 size=689
+  Section name=abort base=0x40517b2c size=120
+  Section name=checkpoint base=0x40517ba4 size=24
   Section name=rtdata base=0x40540000 size=3496
   Section name=pooldata base=0x40540da8 size=384
   Entry base=0x40500000

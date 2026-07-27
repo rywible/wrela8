@@ -10,6 +10,8 @@ pub const N_DRIVERS: usize = 0
 pub const READY_QUEUE_CAPACITY: usize = 3
 pub const GROUP_ARENA_CAPACITY: usize = 0
 pub const GROUP_SLOTS: usize = 1
+pub const GROUP_MAX_CHILDREN: usize = 2
+pub const GROUP_SLOT_SIZE: usize = 96
 pub const TURN_STRIDE: usize = 512
 pub const RTDATA_BYTES: usize = 1792
 pub const N_CHILD_SITES: usize = 0
@@ -1155,6 +1157,19 @@ pub fn __wrela_child_turn_index(site: usize) -> usize:
 
 pub fn __wrela_child_slot(site: usize) -> usize:
     match site:
+        case _:
+            return 0
+
+pub fn __wrela_child_store_result(gi: usize, slot: usize, tag: u64, payload: u64) -> u64:
+    match slot:
+        case 0:
+            GROUPS.slots[gi].child0_tag = tag
+            GROUPS.slots[gi].child0_payload = payload
+            return 1
+        case 1:
+            GROUPS.slots[gi].child1_tag = tag
+            GROUPS.slots[gi].child1_payload = payload
+            return 1
         case _:
             return 0
 

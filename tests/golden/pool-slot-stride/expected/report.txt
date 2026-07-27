@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/pool_slot_stride.wr sha256=c1a30407cf983d3deb7ca8c2b0753b7f6b902b4a741a2056a90ee5bf818acadd
-  Input path=<generated> sha256=0bf5e93202aa5042a5c08a03c25aa47415feb6184eb1330bdbef6084d8ad89fc
+  Input path=<generated> sha256=a499c7b9e3e915a3d8f6b103cb689ae1e800a4d2f407039026becaa2e564c1bf
   Name value=pool-slot-stride
   Target value=Target.wrela_machine_v1
   Device index=0 type=BlockHw
@@ -62,10 +62,10 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=87884
-  Section name=rodata base=0x405157a0 size=263
-  Section name=abort base=0x405158a8 size=120
-  Section name=checkpoint base=0x40515920 size=24
+  Section name=code base=0x40500050 size=88164
+  Section name=rodata base=0x405158b8 size=263
+  Section name=abort base=0x405159c0 size=120
+  Section name=checkpoint base=0x40515a38 size=24
   Section name=rtdata base=0x40540000 size=24
   Section name=devregs base=0x40540018 size=8
   Section name=pooldata base=0x40540020 size=37

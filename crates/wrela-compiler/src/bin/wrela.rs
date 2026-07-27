@@ -1882,7 +1882,7 @@ fn test_cmd(args: &[String]) -> ExitCode {
         .cloned()
         .collect();
     let group_child_index = match codegen::compute_group_child_indices(&flow_program) {
-        Ok(m) => m,
+        Ok((m, _)) => m,
         Err(e) => {
             for l in &comptime_lines {
                 println!("{l}");

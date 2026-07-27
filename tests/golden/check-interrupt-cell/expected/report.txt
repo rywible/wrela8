@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/check_interrupt_cell.wr sha256=e0dea045cacafa8058cb61dd1bb4cf4aa6f5dc561da91c29eb10eb9281dceccd
-  Input path=<generated> sha256=bc9a3ed858da2dd72908f9fdb8319c183b0b754a66f6d480648a726bcf273e35
+  Input path=<generated> sha256=c088b97c2720e8c0932d451a634f3fd73aa07f7b34c5b5fa37e4dac6c3531bac
   Name value=check-interrupt-cell
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock
@@ -55,10 +55,10 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=88828
-  Section name=rodata base=0x40515b50 size=263
-  Section name=abort base=0x40515c58 size=120
-  Section name=checkpoint base=0x40515cd0 size=24
+  Section name=code base=0x40500050 size=89108
+  Section name=rodata base=0x40515c68 size=263
+  Section name=abort base=0x40515d70 size=120
+  Section name=checkpoint base=0x40515de8 size=24
   Section name=rtdata base=0x40540000 size=48
   Section name=devregs base=0x40540030 size=104
   Entry base=0x40500000

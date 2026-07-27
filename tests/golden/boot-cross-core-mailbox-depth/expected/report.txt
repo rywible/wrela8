@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_cross_core_mailbox_depth.wr sha256=b0209c37d80cba3fe2c872e0e4ea0a912f040b788d777ced8a16c7d85a9b1fed
-  Input path=<generated> sha256=dd8316d2535c526f4f296932b0b22050266ec3330fa9be70fe4c217946fea519
+  Input path=<generated> sha256=0825c37acdaa78ad19df1cc852d94c47e2b0cefec2a5dd06f2e9f97857dac2ee
   Name value=cross-core-mailbox-depth
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Sink
@@ -58,14 +58,14 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=103136
-  Section name=rodata base=0x40519330 size=662
-  Section name=abort base=0x405195c8 size=120
-  Section name=checkpoint base=0x40519640 size=24
+  Section name=code base=0x40500050 size=103416
+  Section name=rodata base=0x40519448 size=662
+  Section name=abort base=0x405196e0 size=120
+  Section name=checkpoint base=0x40519758 size=24
   Section name=rtdata base=0x40540000 size=4992
   Entry base=0x40500000
-  CoreEntry core=1 base=0x40519290
-  CoreEntry core=2 base=0x405192e0
+  CoreEntry core=1 base=0x405193a8
+  CoreEntry core=2 base=0x405193f8
   PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672

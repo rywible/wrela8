@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/check_regions_two_disciplines.wr sha256=1af016ae04df4306b8db8a62d94a44c6f4726f5db7fc327c6f93e2a787e53aa1
-  Input path=<generated> sha256=34a2666e8715ff3738227c8aad516867b216a8674649d89d2d1d4daac2b45d3b
+  Input path=<generated> sha256=37f2afda2120cfa4822e666816dfdeb4da0f0426d57298378d796c412d476db8
   Name value=check-regions-two-disciplines
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Adder
@@ -51,10 +51,10 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=95044
-  Section name=rodata base=0x40517398 size=460
-  Section name=abort base=0x40517564 size=120
-  Section name=checkpoint base=0x405175dc size=24
+  Section name=code base=0x40500050 size=95324
+  Section name=rodata base=0x405174b0 size=460
+  Section name=abort base=0x4051767c size=120
+  Section name=checkpoint base=0x405176f4 size=24
   Section name=rtdata base=0x40540000 size=2296
   Section name=pooldata base=0x405408f8 size=32
   Entry base=0x40500000

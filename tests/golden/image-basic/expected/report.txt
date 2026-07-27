@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/image_basic.wr sha256=5ade76bddcdb88c460aa74e9523a154c7ffdd4e486504fc7dedf9ca3dc9052bd
-  Input path=<generated> sha256=8eb3e1cb4cbcb764a97379b4fe2372ff5672f5c6c9c09892a182d61a6c61e131
+  Input path=<generated> sha256=ff70278a280f2a805668c2d35d5fbf32aab826c534bcb718df6e37ff9046fd5a
   Name value=basic-appliance
   Target value=Target.wrela_machine_v1
   Device index=0 type=NicHw
@@ -60,10 +60,10 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=90108
-  Section name=rodata base=0x40516050 size=263
-  Section name=abort base=0x40516158 size=120
-  Section name=checkpoint base=0x405161d0 size=24
+  Section name=code base=0x40500050 size=90388
+  Section name=rodata base=0x40516168 size=263
+  Section name=abort base=0x40516270 size=120
+  Section name=checkpoint base=0x405162e8 size=24
   Section name=rtdata base=0x40540000 size=400
   Section name=devregs base=0x40540190 size=8
   Section name=pooldata base=0x40540198 size=256

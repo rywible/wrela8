@@ -1161,6 +1161,7 @@ pub(super) fn codegen_runtime_force_roots_with(
         "__wrela_resume_child",
         "__wrela_child_turn_index",
         "__wrela_child_slot",
+        "__wrela_child_store_result",
         "__wrela_try_enqueue",
         "__wrela_enqueue_root",
         "__wrela_rt_enqueue",
@@ -1374,6 +1375,7 @@ pub(super) fn reinject_runtime_with_test_facts(
     keys.push("__wrela_resume_child".into());
     keys.push("__wrela_child_turn_index".into());
     keys.push("__wrela_child_slot".into());
+    keys.push("__wrela_child_store_result".into());
     keys.push("__wrela_enqueue_root".into());
     keys.push("__wrela_try_enqueue".into());
     keys.push("__wrela_rt_enqueue".into());

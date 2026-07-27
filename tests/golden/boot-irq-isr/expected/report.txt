@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_irq_isr.wr sha256=d431394efe516577be4598ebd4d65c895b7e0cd784b76bc3c6c99c6ee2b058c8
-  Input path=<generated> sha256=c6d4668c55798c32e4af4fe7d8f7f89eb99570e1c6e9f68367955c9f43fe4a7e
+  Input path=<generated> sha256=cfe527cf4d5aeee73812eec07058482201a56f32dd5c9ec32247be214ef9edf6
   Name value=boot-irq-isr
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock
@@ -59,10 +59,10 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=93696
-  Section name=rodata base=0x40516e50 size=739
-  Section name=abort base=0x40517134 size=120
-  Section name=checkpoint base=0x405171ac size=24
+  Section name=code base=0x40500050 size=93976
+  Section name=rodata base=0x40516f68 size=739
+  Section name=abort base=0x4051724c size=120
+  Section name=checkpoint base=0x405172c4 size=24
   Section name=rtdata base=0x40540000 size=2336
   Section name=devregs base=0x40540920 size=104
   Entry base=0x40500000

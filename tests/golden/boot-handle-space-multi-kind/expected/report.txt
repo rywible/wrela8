@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_handle_space_multi_kind.wr sha256=53cdc641a34ff2b8a573c0952b2d86ec65740b56f972b5ff66e60571395ca22d
-  Input path=<generated> sha256=007d34c50efc32c91d52eb29de67071da9c6e84379d0967171094341aa9e7dac
+  Input path=<generated> sha256=f723b64a45b14ece0adcacdb6d5c958c97b147d3ef4ec62f99a28fa9cae5b43c
   Name value=probe7-multi-kind
   Target value=Target.wrela_machine_v1
   Device index=0 type=HwA
@@ -73,10 +73,10 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=97924
-  Section name=rodata base=0x40517ed8 size=717
-  Section name=abort base=0x405181a8 size=120
-  Section name=checkpoint base=0x40518220 size=24
+  Section name=code base=0x40500050 size=98204
+  Section name=rodata base=0x40517ff0 size=717
+  Section name=abort base=0x405182c0 size=120
+  Section name=checkpoint base=0x40518338 size=24
   Section name=rtdata base=0x40540000 size=3344
   Section name=devregs base=0x40540d10 size=16
   Entry base=0x40500000

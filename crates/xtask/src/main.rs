@@ -4048,6 +4048,7 @@ const ASYNC_SEED_CASES: &[&str] = &[
     "boot-deadline-cancel",
     "boot-deadline-inherit",
     "boot-group-join",
+    "boot-group-four-children",
     "boot-send",
     // Accept-shaped sema cases over the same surface — no runtime test, so
     // they mutate toward "async fns that lower and codegen but never lay
@@ -4424,7 +4425,7 @@ fn run_async_pipeline_once(input: &str) -> (AsyncFuzzOutcome, AsyncReach) {
                 reach,
             );
         }
-        Ok(m) => m,
+        Ok((m, _)) => m,
     };
 
     // `test_cmd`'s runtime tier only ever lays out an image when the file
@@ -7300,7 +7301,7 @@ fn build_runtime_test_image(
         .filter(|name| program.fns.get(*name).is_some_and(|f| f.is_async))
         .cloned()
         .collect();
-    let group_child_index =
+    let (group_child_index, _) =
         codegen::compute_group_child_indices(&flow_program).map_err(|e| e.message)?;
     let boot = layout::BootCtx {
         graph: &graph,

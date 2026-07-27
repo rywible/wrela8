@@ -3545,7 +3545,7 @@ pub fn try_layout_program(
     // succeed here — the `Err` arm keeps this fn's own "all or nothing"
     // rule rather than introducing a second, differently-shaped outcome.)
     let group_child_index = match crate::codegen::compute_group_child_indices(&flow) {
-        Ok(m) => m,
+        Ok((m, _)) => m,
         Err(_) => return Ok(None),
     };
     layout_program(
@@ -3765,6 +3765,11 @@ pub struct RuntimeTables {
     /// wires it). Always `0` in today's report-bearing corpus (no
     /// existing actor-bearing golden uses `with group` yet).
     pub group_arena_capacity: u64,
+    /// plans/M12.md item F (decisions 886–889): image
+    /// `GROUP_MAX_CHILDREN` fact — `max(FLOOR=2, max g.start children
+    /// over group sites)`. Drives `GROUP_SLOT_SIZE = 64 + N*16` and the
+    /// generated `GroupSlot` child fields. Floor 2 for empty-arena images.
+    pub group_max_children: usize,
     /// plans/M8.md item C2: this image's own cross-core SPSC rings, in
     /// `cross_core_rings`'s canonical order. Empty for every single-core
     /// image and for a cross-core image whose graph has no cross-core
@@ -5277,6 +5282,8 @@ pub fn compute_runtime_tables(
     modules: &BTreeMap<String, Module>,
     layout_ctx: &LayoutCtx,
     async_frames: &BTreeMap<String, u64>,
+    // plans/M12.md item F: image `GROUP_MAX_CHILDREN` fact (floor 2).
+    group_max_children: usize,
 ) -> Result<Option<RuntimeTables>, String> {
     if graph.actors.is_empty() && graph.drivers.is_empty() && async_frames.is_empty() {
         return Ok(None);
@@ -5453,9 +5460,9 @@ pub fn compute_runtime_tables(
     // identical stride at the identical three sites; `verify_section_sizes`'
     // blob-length check is what catches the two ever disagreeing.
     total_bytes += n_turns * turn_stride;
-    total_bytes += ready_queue_capacity * 8
-        + RR_CURSOR_SIZE
-        + group_arena_capacity * crate::codegen::GROUP_SLOT_SIZE;
+    let group_max_children = group_max_children.max(crate::codegen::GROUP_MAX_CHILDREN_FLOOR);
+    let group_slot = crate::codegen::group_slot_size(group_max_children);
+    total_bytes += ready_queue_capacity * 8 + RR_CURSOR_SIZE + group_arena_capacity * group_slot;
 
     Ok(Some(RuntimeTables {
         actors,
@@ -5465,6 +5472,7 @@ pub fn compute_runtime_tables(
         turn_stride,
         ready_queue_capacity,
         group_arena_capacity,
+        group_max_children,
         // Single-core until placement says otherwise (`stripe_for_cores`),
         // and ringless until `add_cross_core_rings` says otherwise.
         // select/drain/child facts filled later by `fill_rtconfig_facts`.
@@ -6201,7 +6209,12 @@ pub fn place_runtime_tables(base: u64, tables: &RuntimeTables) -> RuntimePlaceme
     }
     cursor = sched_base + (tables.cores as u64) * per_core;
     let group_arena = cursor;
-    cursor += tables.group_arena_capacity * crate::codegen::GROUP_SLOT_SIZE;
+    let group_slot = crate::codegen::group_slot_size(
+        tables
+            .group_max_children
+            .max(crate::codegen::GROUP_MAX_CHILDREN_FLOOR),
+    );
+    cursor += tables.group_arena_capacity * group_slot;
     // plans/M8.md item C2 / M12 item C (decision 875): cross-core rings
     // last — all CTL records contiguously, then uniformly-strided DATA.
     // Every address above this point is unchanged for an image with none.
@@ -6456,11 +6469,16 @@ impl RuntimeWiring {
         // with a ring set the other does not have.
         program: &CodegenProgram,
     ) -> Result<Option<RuntimeWiring>, LayoutError> {
-        let Some(mut tables) =
-            compute_runtime_tables(boot.graph, boot.modules, boot.layout_ctx, boot.async_frames)
-                .map_err(LayoutError::new)?
-                .filter(|t| t.total_bytes > 0)
-        else {
+        let group_max_children = crate::codegen::group_max_children_of(boot.group_child_index);
+        let Some(mut tables) = compute_runtime_tables(
+            boot.graph,
+            boot.modules,
+            boot.layout_ctx,
+            boot.async_frames,
+            group_max_children,
+        )
+        .map_err(LayoutError::new)?
+        .filter(|t| t.total_bytes > 0) else {
             return Ok(None);
         };
         // plans/M8.md item C1: placement first — it decides how many cores
@@ -7087,7 +7105,14 @@ fn use(d: Duo, h: Hue):
         let modules = one_module("m", "module m\n\nfn f():\n    pass\n");
         let graph = ImageGraph::default();
         let ctx = merge_layout_ctx(&modules).unwrap();
-        let out = compute_runtime_tables(&graph, &modules, &ctx, &BTreeMap::new()).unwrap();
+        let out = compute_runtime_tables(
+            &graph,
+            &modules,
+            &ctx,
+            &BTreeMap::new(),
+            crate::codegen::GROUP_MAX_CHILDREN_FLOOR,
+        )
+        .unwrap();
         assert!(
             out.is_none(),
             "no actors and no async fns -> no runtime tables at all"
@@ -7119,9 +7144,15 @@ pub struct Store:
         let mut graph = ImageGraph::default();
         graph.actors.push(actor_decl("Store", Some(4)));
         let ctx = merge_layout_ctx(&modules).unwrap();
-        let tables = compute_runtime_tables(&graph, &modules, &ctx, &BTreeMap::new())
-            .unwrap()
-            .expect("one actor -> Some");
+        let tables = compute_runtime_tables(
+            &graph,
+            &modules,
+            &ctx,
+            &BTreeMap::new(),
+            crate::codegen::GROUP_MAX_CHILDREN_FLOOR,
+        )
+        .unwrap()
+        .expect("one actor -> Some");
         assert_eq!(tables.actors.len(), 1);
         let a = &tables.actors[0];
         assert_eq!(a.name, "Store");
@@ -7283,7 +7314,14 @@ pub struct Store:
         let mut graph = ImageGraph::default();
         graph.actors.push(actor_decl("Store", None));
         let ctx = merge_layout_ctx(&modules).unwrap();
-        let err = compute_runtime_tables(&graph, &modules, &ctx, &BTreeMap::new()).unwrap_err();
+        let err = compute_runtime_tables(
+            &graph,
+            &modules,
+            &ctx,
+            &BTreeMap::new(),
+            crate::codegen::GROUP_MAX_CHILDREN_FLOOR,
+        )
+        .unwrap_err();
         assert!(err.contains("mailbox"));
     }
 
@@ -7309,9 +7347,15 @@ pub struct Store:
         let mut graph = ImageGraph::default();
         graph.actors.push(actor_decl("Store", Some(2)));
         let ctx = merge_layout_ctx(&modules).unwrap();
-        let tables = compute_runtime_tables(&graph, &modules, &ctx, &BTreeMap::new())
-            .unwrap()
-            .unwrap();
+        let tables = compute_runtime_tables(
+            &graph,
+            &modules,
+            &ctx,
+            &BTreeMap::new(),
+            crate::codegen::GROUP_MAX_CHILDREN_FLOOR,
+        )
+        .unwrap()
+        .unwrap();
         // `get` (pub, no params) is the only message shape; the private
         // `helper`'s own three-`u64`-param body never widens the slot
         // past the 16-byte idx+waker floor.

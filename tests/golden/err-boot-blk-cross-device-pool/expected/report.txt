@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/err_boot_blk_cross_device_pool.wr sha256=3089f815cd3c1f01cb52cd02591d4d6a347dd822f5326ce5422d5771f54210c1
-  Input path=<generated> sha256=b5dd81afe9ce829c62bb2bfe94327b6d3d1dce9614643c9e7c1e710d8f9a3428
+  Input path=<generated> sha256=3d6c62e7f11b8da0e60f94a703f37620c58b7a84601e8656f6a184eae2f5a8b4
   Name value=err-boot-blk-cross-device-pool
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock
@@ -88,10 +88,10 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=101160
-  Section name=rodata base=0x40518b78 size=1381
-  Section name=abort base=0x405190e0 size=120
-  Section name=checkpoint base=0x40519158 size=24
+  Section name=code base=0x40500050 size=101440
+  Section name=rodata base=0x40518c90 size=1381
+  Section name=abort base=0x405191f8 size=120
+  Section name=checkpoint base=0x40519270 size=24
   Section name=rtdata base=0x40540000 size=2408
   Section name=devregs base=0x40540968 size=112
   Section name=pooldata base=0x405409d8 size=1536

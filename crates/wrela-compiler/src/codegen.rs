@@ -5993,13 +5993,20 @@ pub const OFF_GROUP_PARENT: u64 = 40;
 pub const OFF_GROUP_JOIN_WAITER: u64 = 48;
 pub const OFF_GROUP_OWNER_TURN: u64 = 56;
 pub const OFF_GROUP_CHILDREN_BASE: u64 = 64;
-/// A fixed, small bound on children per group (a disclosed floor, not a
-/// hidden narrowing — plans/M6.md item F's own recorded reading of
-/// decision 1's "starts may sit in loops": every required M6 golden opens
-/// at most two `g.start` children in any one group; a third fails closed,
-/// named, at `codegen::compute_group_child_indices`).
-pub const GROUP_MAX_CHILDREN: usize = 2;
-pub const GROUP_SLOT_SIZE: u64 = OFF_GROUP_CHILDREN_BASE + (GROUP_MAX_CHILDREN as u64) * 16;
+/// Floor for empty-arena images (plans/M12.md item F / decisions 886–889):
+/// `GROUP_MAX_CHILDREN` is an image fact — `max(FLOOR, max g.start children
+/// over the image's group sites)` — not a hard Rust cap. Kept as the
+/// empty-arena / stub default so placeholder overlays stay 96 bytes.
+pub const GROUP_MAX_CHILDREN_FLOOR: usize = 2;
+/// Floor slot size (`64 + FLOOR * 16` = 96). Prefer
+/// [`group_slot_size`] with the image's `max_children`.
+pub const GROUP_SLOT_SIZE: u64 = OFF_GROUP_CHILDREN_BASE + (GROUP_MAX_CHILDREN_FLOOR as u64) * 16;
+
+/// `GROUP_SLOT_SIZE` for an image whose widest group has `max_children`
+/// `g.start` sites: `64 + max_children * 16` (2→96, 4→128).
+pub fn group_slot_size(max_children: usize) -> u64 {
+    OFF_GROUP_CHILDREN_BASE + (max_children as u64) * 16
+}
 /// `parent_group`'s own "no parent" sentinel — distinct from the
 /// lineage-slot encoding (`Temp(0)`'s own "0 = no ambient group, else
 /// arena-index+1" scheme) since this field is never read as a lineage
@@ -6058,29 +6065,38 @@ pub type ActorMethodIndex = BTreeMap<String, BTreeMap<String, usize>>;
 /// The whole-build facts `GroupCreate`/`GroupStart`/the group-child poll
 /// routines (`layout.rs`) need, threaded alongside `ActorMethodIndex`
 /// everywhere that already threads it: the static arena's own slot count
-/// (`arena_capacity`, `layout::RuntimeTables::group_arena_capacity`) and
-/// each `g.start`-able callee's own fixed child-slot ordinal
+/// (`arena_capacity`, `layout::RuntimeTables::group_arena_capacity`), the
+/// image-wide `max_children` fact (plans/M12.md item F), and each
+/// `g.start`-able callee's own fixed child-slot ordinal
 /// (`compute_group_child_indices`, below).
 pub struct GroupCtx {
     pub arena_capacity: u64,
+    /// Image fact: `max(FLOOR, max g.start children over group sites)`.
+    pub max_children: usize,
     pub child_index: BTreeMap<String, usize>,
+}
+
+impl GroupCtx {
+    pub fn slot_size(&self) -> u64 {
+        group_slot_size(self.max_children)
+    }
 }
 
 /// `callee_key -> its own fixed child-slot ordinal` (0-based, within
 /// whichever group starts it) — computed once, whole-program, by counting
 /// each `FlowInst::GroupStart` in program order per `(owner fn,
-/// group_temp)` pair. Two disclosed floors enforced here, named rather
-/// than silently narrowed (module doc on `GROUP_MAX_CHILDREN`): more than
-/// `GROUP_MAX_CHILDREN` children in one group scope, or the identical
-/// callee named from more than one static `g.start` site anywhere in the
-/// build (M6's one-free-turn-area-per-fn floor, `layout::RuntimeTables::
-/// free_turns` — two concurrent instances of the same callee have nowhere
-/// to live).
+/// group_temp)` pair. Returns the map plus the image
+/// `GROUP_MAX_CHILDREN` fact (`max(FLOOR, max per-site count)`).
+///
+/// Duplicate-callee floor still enforced here (M6's one-free-turn-area-
+/// per-fn rule). Per-site child counts are no longer hard-capped at 2 —
+/// the arena slot grows with the image fact (plans/M12.md item F).
 pub fn compute_group_child_indices(
     flow: &FlowWirProgram,
-) -> Result<BTreeMap<String, usize>, CodegenError> {
+) -> Result<(BTreeMap<String, usize>, usize), CodegenError> {
     let mut out = BTreeMap::new();
-    for (fn_key, f) in &flow.fns {
+    let mut max_children = GROUP_MAX_CHILDREN_FLOOR;
+    for (_fn_key, f) in &flow.fns {
         let mut counters: BTreeMap<Temp, usize> = BTreeMap::new();
         for state in &f.states {
             for op in &state.ops {
@@ -6093,12 +6109,6 @@ pub fn compute_group_child_indices(
                     let counter = counters.entry(*group_temp).or_insert(0);
                     let this_idx = *counter;
                     *counter += 1;
-                    if this_idx >= GROUP_MAX_CHILDREN {
-                        return Err(CodegenError::unimplemented(&format!(
-                            "more than {GROUP_MAX_CHILDREN} `g.start` children in one group \
-                             scope (fn `{fn_key}`, plans/M6.md item F's own disclosed floor)"
-                        )));
-                    }
                     if out.insert(callee_key.clone(), this_idx).is_some() {
                         return Err(CodegenError::unimplemented(&format!(
                             "async fn `{callee_key}` is `g.start`ed from more than one static \
@@ -6109,8 +6119,26 @@ pub fn compute_group_child_indices(
                 }
             }
         }
+        for &count in counters.values() {
+            if count > max_children {
+                max_children = count;
+            }
+        }
     }
-    Ok(out)
+    Ok((out, max_children))
+}
+
+/// Image `GROUP_MAX_CHILDREN` from an already-computed child-index map
+/// (`max(FLOOR, max ordinal + 1)`). Same value
+/// [`compute_group_child_indices`] returns as its second element.
+pub fn group_max_children_of(child_index: &BTreeMap<String, usize>) -> usize {
+    child_index
+        .values()
+        .copied()
+        .max()
+        .map(|i| i + 1)
+        .unwrap_or(0)
+        .max(GROUP_MAX_CHILDREN_FLOOR)
 }
 
 /// One flattened position: a state's own straight-line op (`FlowInst`,
@@ -6867,7 +6895,7 @@ fn emit_group_create(
                 format!("add {}, {}, #0", reg_name(X_CAND), reg_name(X_ARENA)),
             );
         } else {
-            ctx.load_imm(X_D, (i * GROUP_SLOT_SIZE) as i64);
+            ctx.load_imm(X_D, (i * gctx.slot_size()) as i64);
             ctx.push(
                 encode::enc_add_reg(X_CAND, X_ARENA, X_D, true),
                 format!(
@@ -6928,7 +6956,7 @@ fn emit_group_create(
             encode::enc_str_w_imm(X_ZR, X_CAND, OFF_GROUP_JOIN_WAITER as u16),
             format!("str wzr, [{}, #{OFF_GROUP_JOIN_WAITER}]", reg_name(X_CAND)),
         );
-        for c in 0..GROUP_MAX_CHILDREN {
+        for c in 0..gctx.max_children {
             for off in [group_child_tag_off(c), group_child_payload_off(c)] {
                 ctx.push(
                     encode::enc_str_x_imm(X_ZR, X_CAND, off as u16),
@@ -7060,7 +7088,7 @@ fn emit_group_start(
     // has exactly one non-`Ok` variant (`emit_compose_group_join_result`'s
     // own doc), so it resolves `Cancelled` here, and `g.start`'s arguments
     // are plain scalars with nothing to hand back.
-    emit_group_addr_from_temp(ctx, group_temp, X_B, X_A);
+    emit_group_addr_from_temp(ctx, group_temp, X_B, X_A, gctx);
     ctx.push(
         encode::enc_ldr_x_imm(X_C, X_B, OFF_GROUP_CANCELLED as u16),
         format!(
@@ -7155,7 +7183,7 @@ fn emit_group_start(
         encode::enc_sub_imm(X_E, X_E, 1, true),
         format!("sub {}, {}, #1", reg_name(X_E), reg_name(X_E)),
     );
-    ctx.load_imm(X_F, GROUP_SLOT_SIZE as i64);
+    ctx.load_imm(X_F, gctx.slot_size() as i64);
     ctx.push(
         encode::enc_mul(X_E, X_E, X_F, true),
         format!(
@@ -7242,7 +7270,7 @@ fn emit_group_start(
         encode::enc_sub_imm(X_E, X_E, 1, true),
         format!("sub {}, {}, #1", reg_name(X_E), reg_name(X_E)),
     );
-    ctx.load_imm(X_F, GROUP_SLOT_SIZE as i64);
+    ctx.load_imm(X_F, gctx.slot_size() as i64);
     ctx.push(
         encode::enc_mul(X_E, X_E, X_F, true),
         format!(
@@ -7364,7 +7392,11 @@ fn emit_group_start(
 /// group's own natural close, regardless of whether any child/await inside
 /// it ever observed cancellation (02-language.md §10: a `defer` runs on
 /// every exit).
-fn emit_group_close(group_temp: Temp, ctx: &mut FnCtx) -> Result<(), CodegenError> {
+fn emit_group_close(
+    group_temp: Temp,
+    ctx: &mut FnCtx,
+    gctx: &GroupCtx,
+) -> Result<(), CodegenError> {
     let word = ctx.cur_word();
     ctx.load_imm(X_A, 0);
     for w in ctx.words[word..word + 4].iter_mut() {
@@ -7376,7 +7408,7 @@ fn emit_group_close(group_temp: Temp, ctx: &mut FnCtx) -> Result<(), CodegenErro
         encode::enc_sub_imm(X_B, X_B, 1, true),
         format!("sub {}, {}, #1", reg_name(X_B), reg_name(X_B)),
     );
-    ctx.load_imm(X_C, GROUP_SLOT_SIZE as i64);
+    ctx.load_imm(X_C, gctx.slot_size() as i64);
     ctx.push(
         encode::enc_mul(X_B, X_B, X_C, true),
         format!(
@@ -7422,7 +7454,7 @@ fn emit_group_close(group_temp: Temp, ctx: &mut FnCtx) -> Result<(), CodegenErro
         encode::enc_sub_imm(X_C, X_B, 1, true),
         format!("sub {}, {}, #1", reg_name(X_C), reg_name(X_B)),
     );
-    ctx.load_imm(X_D, GROUP_SLOT_SIZE as i64);
+    ctx.load_imm(X_D, gctx.slot_size() as i64);
     ctx.push(
         encode::enc_mul(X_C, X_C, X_D, true),
         format!(
@@ -7534,7 +7566,7 @@ fn emit_flow_op(
             callee_key,
             arg_temps,
         } => emit_group_start(*group_temp, callee_key, arg_temps, ctx, gctx, fn_key),
-        FlowInst::GroupClose { group_temp, .. } => emit_group_close(*group_temp, ctx),
+        FlowInst::GroupClose { group_temp, .. } => emit_group_close(*group_temp, ctx, gctx),
     }
 }
 
@@ -7566,7 +7598,7 @@ fn emit_flow_op(
 /// whole build has no group arena at all, which is what keeps every
 /// pre-item-F async golden byte-identical (`emit_checkpoint_cancellation_test`
 /// below has the full reasoning); callers must not emit it in that case.
-fn emit_group_cancelled_flags(ctx: &mut FnCtx, fn_key: &str) {
+fn emit_group_cancelled_flags(ctx: &mut FnCtx, fn_key: &str, gctx: &GroupCtx) {
     ctx.push(
         encode::enc_movz(X_C, 0, 0, true),
         format!("movz {}, #0", reg_name(X_C)),
@@ -7587,7 +7619,7 @@ fn emit_group_cancelled_flags(ctx: &mut FnCtx, fn_key: &str) {
         encode::enc_sub_imm(X_A, X_A, 1, true),
         format!("sub {}, {}, #1", reg_name(X_A), reg_name(X_A)),
     );
-    ctx.load_imm(X_E, GROUP_SLOT_SIZE as i64);
+    ctx.load_imm(X_E, gctx.slot_size() as i64);
     ctx.push(
         encode::enc_mul(X_A, X_A, X_E, true),
         format!(
@@ -7673,7 +7705,7 @@ fn emit_checkpoint_cancellation_test(ctx: &mut FnCtx, gctx: &GroupCtx, fn_key: &
     // `TURN_STATUS_COMPLETED` with a garbage reply and its group's own
     // child slot harvested as `Ok`, exactly as if it had finished.
     let cancelled_tail = ctx.word_offsets.len() - 1;
-    emit_group_cancelled_flags(ctx, fn_key);
+    emit_group_cancelled_flags(ctx, fn_key, gctx);
     // Terminate this activation iff the ambient group is cancelled AND
     // this turn is not that group's own owner (`OFF_GROUP_OWNER_TURN`'s
     // own doc comment): a `g.start`ed child's frame never resumes
@@ -7840,7 +7872,13 @@ fn emit_compose_group_join_result(
 /// Computes this group's own arena address (`group_temp`'s own encoded
 /// `arena_index + 1` value) into `dst_reg` — the shared address-from-
 /// group-temp shape `GroupJoin`'s suspend/resume/immediate paths all need.
-fn emit_group_addr_from_temp(ctx: &mut FnCtx, group_temp: Temp, dst_reg: u8, scratch_reg: u8) {
+fn emit_group_addr_from_temp(
+    ctx: &mut FnCtx,
+    group_temp: Temp,
+    dst_reg: u8,
+    scratch_reg: u8,
+    gctx: &GroupCtx,
+) {
     let word = ctx.cur_word();
     ctx.load_imm(dst_reg, 0);
     for w in ctx.words[word..word + 4].iter_mut() {
@@ -7858,9 +7896,9 @@ fn emit_group_addr_from_temp(ctx: &mut FnCtx, group_temp: Temp, dst_reg: u8, scr
     );
     // arena index -> byte offset (a real bug this golden's first real boot
     // caught: an earlier draft added the raw index to the arena base
-    // instead of `index * GROUP_SLOT_SIZE`, invisible for arena index 0
+    // instead of `index * slot_size`, invisible for arena index 0
     // alone since `0 * anything == 0`, wrong for any other slot).
-    ctx.load_imm(X_D, GROUP_SLOT_SIZE as i64);
+    ctx.load_imm(X_D, gctx.slot_size() as i64);
     ctx.push(
         encode::enc_mul(scratch_reg, scratch_reg, X_D, true),
         format!(
@@ -8066,13 +8104,14 @@ fn emit_await_suspend(
             group_temp,
             child_count,
         } => {
-            if *child_count > GROUP_MAX_CHILDREN {
+            if *child_count > gctx.max_children {
                 return Err(CodegenError::unimplemented(&format!(
-                    "`g.join_all()` over more than {GROUP_MAX_CHILDREN} children (plans/M6.md \
-                     item F's own disclosed floor)"
+                    "`g.join_all()` over more than {} children (image GROUP_MAX_CHILDREN fact, \
+                     plans/M12.md item F)",
+                    gctx.max_children
                 )));
             }
-            emit_group_addr_from_temp(ctx, *group_temp, X_B, X_A);
+            emit_group_addr_from_temp(ctx, *group_temp, X_B, X_A, gctx);
             ctx.push(
                 encode::enc_ldr_x_imm(X_C, X_B, OFF_GROUP_ACTIVE_CHILDREN as u16),
                 format!(
@@ -8632,7 +8671,7 @@ fn emit_await_resume(
                         result_off + enum_payload_offset(composed_ty, 0, ctx.layout)?;
                     let op_payload_off =
                         call_error_off + enum_payload_offset(composed_err_ty, 0, ctx.layout)?;
-                    emit_group_cancelled_flags(ctx, fn_key);
+                    emit_group_cancelled_flags(ctx, fn_key, gctx);
                     ctx.load_imm(X_A, CALL_ERROR_TAG_CANCELLED as i64);
                     ctx.store_slot(X_A, call_error_off);
                     let mut w = op_payload_off;
@@ -8658,7 +8697,7 @@ fn emit_await_resume(
                 // Ambient group cancel still wins over a delivered `Ok`
                 // (02 §9.5 — the owner's only observation of cancel).
                 if gctx.arena_capacity != 0 {
-                    emit_group_cancelled_flags(ctx, fn_key);
+                    emit_group_cancelled_flags(ctx, fn_key, gctx);
                 }
                 ctx.push(
                     encode::enc_ldr_x_imm(X_A, X_FRAME, OFF_TURN_REPLY as u16),
@@ -8701,7 +8740,7 @@ fn emit_await_resume(
             group_temp,
             child_count,
         } => {
-            emit_group_addr_from_temp(ctx, *group_temp, X_B, X_A);
+            emit_group_addr_from_temp(ctx, *group_temp, X_B, X_A, gctx);
             emit_compose_group_join_result(ctx, X_B, result_temp, *child_count)?;
             ctx.checkpoint();
             emit_checkpoint_cancellation_test(ctx, gctx, fn_key);
@@ -9850,9 +9889,11 @@ pub fn codegen_program_with_async(
 ) -> Result<CodegenProgram, CodegenError> {
     let mut rodata = RodataPool::new();
     rodata.seed(&mwir.rodata);
+    let (child_index, max_children) = compute_group_child_indices(flow)?;
     let gctx = GroupCtx {
         arena_capacity: group_arena_capacity,
-        child_index: compute_group_child_indices(flow)?,
+        max_children,
+        child_index,
     };
     let mut fns = BTreeMap::new();
     for (key, f) in &mwir.fns {

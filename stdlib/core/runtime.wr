@@ -45,6 +45,7 @@ from core.__image_runtime import (
     __wrela_wake_invoke,
     GROUP_ARENA_CAPACITY,
     GROUP_SLOTS,
+    GROUP_MAX_CHILDREN,
     RT,
     GROUPS,
     SCHED,
@@ -63,6 +64,7 @@ from core.__image_runtime import (
     __wrela_resume_child,
     __wrela_child_turn_index,
     __wrela_child_slot,
+    __wrela_child_store_result,
     __wrela_ring_capacity,
     __wrela_ring_slot_words,
     __wrela_ring_dst_core,
@@ -875,15 +877,12 @@ pub fn __wrela_child_poll(site: usize) -> u64:
     ag = RT.turns[ti].ambient_group
     gi: usize = (ag -% 1).to[usize]()
     slot = __wrela_child_slot(site)
-    match slot:
-        case 0:
-            GROUPS.slots[gi].child0_tag = tag
-            GROUPS.slots[gi].child0_payload = payload
-        case 1:
-            GROUPS.slots[gi].child1_tag = tag
-            GROUPS.slots[gi].child1_payload = payload
-        case _:
-            return 0
+    # plans/M12.md item F: fail closed above the image GROUP_MAX_CHILDREN fact
+    # (store ladder covers 0..N-1 and also returns 0 for slot >= N).
+    if slot >= GROUP_MAX_CHILDREN:
+        return 0
+    if __wrela_child_store_result(gi, slot, tag, payload) == 0:
+        return 0
     active = GROUPS.slots[gi].active_children -% 1
     GROUPS.slots[gi].active_children = active
     RT.turns[ti].busy = 0

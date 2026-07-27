@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/check_irq_bind.wr sha256=d656aa7ac7552af124c6444ed7d0e3db614b36c87fb94d74c3dc9f93bfdf39ff
-  Input path=<generated> sha256=a0ed4a973a4e1a2f69fcec88baec7085d01d742ad15e5d82eb682d0956f90b62
+  Input path=<generated> sha256=c5a99cbe73c717bad5e3179fa6767f788e5577d567a64c38e5ce90dc907598c6
   Name value=check-irq-bind
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock
@@ -55,10 +55,10 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=88296
-  Section name=rodata base=0x40515938 size=263
-  Section name=abort base=0x40515a40 size=120
-  Section name=checkpoint base=0x40515ab8 size=24
+  Section name=code base=0x40500050 size=88576
+  Section name=rodata base=0x40515a50 size=263
+  Section name=abort base=0x40515b58 size=120
+  Section name=checkpoint base=0x40515bd0 size=24
   Section name=rtdata base=0x40540000 size=32
   Section name=devregs base=0x40540020 size=104
   Entry base=0x40500000

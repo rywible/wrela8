@@ -3512,7 +3512,7 @@ mod tests {
             }
             test_args.insert(name.clone(), args);
         }
-        let group_child_index =
+        let (group_child_index, _) =
             codegen::compute_group_child_indices(&flow_program).expect("group child index");
         let boot = layout::BootCtx {
             graph: &graph,
@@ -3597,7 +3597,7 @@ mod tests {
         .expect("codegen");
         let async_frames =
             codegen::async_frame_sizes(&flow_program, &layout_ctx).expect("async frames");
-        let group_child_index =
+        let (group_child_index, _) =
             codegen::compute_group_child_indices(&flow_program).expect("group child index");
         let boot = layout::BootCtx {
             graph: &graph,

@@ -1,0 +1,67 @@
+module examples.boot_group_four_children
+
+# plans/M12.md item F: `with group(capacity=4)`, four distinct `g.start`
+# children (duplicate callee_key is rejected — one free-turn area per fn),
+# `g.join_all()`, sum asserted. Pins 02 §9.5's capacity=4 example as runnable.
+
+@actor
+pub struct Doubler:
+    pub fn double(read self, n: u64) -> u64:
+        return n * 2
+
+async fn fetch_a(d: Actor[Doubler]) -> u64:
+    v = await d.double(n=10)
+    match v:
+        case .Ok(x):
+            return x
+        case .Err(_):
+            return 0
+
+async fn fetch_b(d: Actor[Doubler]) -> u64:
+    v = await d.double(n=20)
+    match v:
+        case .Ok(x):
+            return x
+        case .Err(_):
+            return 0
+
+async fn fetch_c(d: Actor[Doubler]) -> u64:
+    v = await d.double(n=30)
+    match v:
+        case .Ok(x):
+            return x
+        case .Err(_):
+            return 0
+
+async fn fetch_d(d: Actor[Doubler]) -> u64:
+    v = await d.double(n=40)
+    match v:
+        case .Ok(x):
+            return x
+        case .Err(_):
+            return 0
+
+@test(runtime)
+async fn test_join_four(d: Actor[Doubler]):
+    total: u64 = 0
+    with group(capacity=4) as g:
+        g.start(fetch_a, d=d)
+        g.start(fetch_b, d=d)
+        g.start(fetch_c, d=d)
+        g.start(fetch_d, d=d)
+        results = await g.join_all()
+        for r in results:
+            match r:
+                case .Ok(v):
+                    total = total + v
+                case .Err(_):
+                    pass
+    assert total == 200, "four children's doubled replies (10+20+30+40)*2"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="boot-group-four-children", target=Target.wrela_machine_v1)
+    d = img.actor(Doubler, mailbox=8)
+    img.supervise(children=[d], strategy=Restart.OneForOne,
+                  intensity=RestartIntensity(max=3, within=seconds(10)))
+    return img.seal()

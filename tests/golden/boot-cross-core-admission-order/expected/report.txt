@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_cross_core_admission_order.wr sha256=3449664d139c8e99095986d5f97a355490dd4a279330ce785090cbf2d986dd0c
-  Input path=<generated> sha256=264da1109edd41eb94f1d2fe02494cbc851b95655eafa1ccbfe403c39a07b672
+  Input path=<generated> sha256=3786fbb0c1194386820d2a829405dc3abc492618eb1a963e30e6f9f2d60e4ce0
   Name value=cross-core-admission-order
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Sink
@@ -58,14 +58,14 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=101764
-  Section name=rodata base=0x40518dd8 size=572
-  Section name=abort base=0x40519014 size=120
-  Section name=checkpoint base=0x4051908c size=24
+  Section name=code base=0x40500050 size=102044
+  Section name=rodata base=0x40518ef0 size=572
+  Section name=abort base=0x4051912c size=120
+  Section name=checkpoint base=0x405191a4 size=24
   Section name=rtdata base=0x40540000 size=3880
   Entry base=0x40500000
-  CoreEntry core=1 base=0x40518d34
-  CoreEntry core=2 base=0x40518d84
+  CoreEntry core=1 base=0x40518e4c
+  CoreEntry core=2 base=0x40518e9c
   PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
