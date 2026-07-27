@@ -1853,6 +1853,13 @@ note = """02-language.md §7.4 desugars `Err(e)?` needing conversion to `TargetE
 **Retired.** `err-try-from-underived` (BB decision 61). Decision 106's structural wrap (B3)."""
 
 [[clause]]
+id = "library.methods.scalar-order"
+doc = "02-language.md#7.4, 05-library.md#8"
+status = "test"
+tests = ["golden/check-generic-order-f64"]
+note = """plans/M13.md item A: the strict-total-order contract on `less_than` binds user-declared methods; core scalars keep builtin operator semantics (floats IEEE 754, NaN incomparable). A generic instantiated at a scalar uses the builtin `<` (typed as `Binary`, never `OpCall`) and inherits those semantics. `golden/check-generic-order-f64` pins `fn:min[f64]`'s typed dump on the builtin path and a NaN-input `@test` on the IEEE outcomes (`NaN < x` / `x < NaN` false; `min(NaN, 1.0) == 1.0`; `min(1.0, NaN)` is NaN)."""
+
+[[clause]]
 id = "sema.types.enum-methods"
 doc = "02-language.md#5, 02-language.md#7.5, 05-library.md#6"
 status = "test"

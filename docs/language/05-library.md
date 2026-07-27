@@ -185,10 +185,13 @@ fn from(take source: Source) -> Self            # consumed by `?`
 Operands are `read`; operator expressions never move or mutate; `a += b` is
 `a = a.add(b)` with the destination evaluated once. Structural `==`/`!=` on
 every data type are compiler-generated; core scalar operators never desugar.
-`deriving(Format)` generates the bounded formatting contract of §6;
-`deriving(From)` requires exactly one variant/field and generates the `from`
-that `?` consumes. `Duration` declares `add`/`subtract`/`less_than` with
-ordinary checked overflow.
+The strict-total-order contract binds user-declared `less_than`; core scalars
+keep builtin semantics (floats IEEE, NaN incomparable), and a generic
+instantiated at a scalar uses the builtin operator and inherits those
+semantics. `deriving(Format)` generates the bounded formatting contract of
+§6; `deriving(From)` requires exactly one variant/field and generates the
+`from` that `?` consumes. `Duration` declares `add`/`subtract`/`less_than`
+with ordinary checked overflow.
 
 ### 8.1 SIMD vectors
 

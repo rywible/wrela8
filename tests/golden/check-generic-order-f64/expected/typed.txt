@@ -1,0 +1,59 @@
+Program
+  Fn name=nan_order ret=unit
+    Body
+      Let name=nan ty=f64
+        Binary op=/ ty=f64
+          Float text=0.0 ty=f64
+          Float text=0.0 ty=f64
+      Assert
+        Binary op=== ty=bool
+          Binary op=< ty=bool
+            Local name=nan ty=f64
+            Float text=1.0 ty=f64
+          Bool value=false ty=bool
+        Str text="NaN < 1 is false" ty=Static[Str]
+      Assert
+        Binary op=== ty=bool
+          Binary op=< ty=bool
+            Float text=1.0 ty=f64
+            Local name=nan ty=f64
+          Bool value=false ty=bool
+        Str text="1 < NaN is false" ty=Static[Str]
+      Assert
+        Binary op=== ty=bool
+          Call key=fn:min[f64] ty=f64
+            Local name=nan ty=f64
+            Float text=1.0 ty=f64
+          Float text=1.0 ty=f64
+        Str text="min(NaN, 1) -> 1" ty=Static[Str]
+      Let name=r ty=f64
+        Call key=fn:min[f64] ty=f64
+          Float text=1.0 ty=f64
+          Local name=nan ty=f64
+      Assert
+        Binary op=!= ty=bool
+          Local name=r ty=f64
+          Local name=r ty=f64
+        Str text="min(1, NaN) is NaN" ty=Static[Str]
+  Fn name=use_min ret=f64
+    Param name=x mode=read ty=f64
+    Param name=y mode=read ty=f64
+    Body
+      Return
+        Call key=fn:min[f64] ty=f64
+          Local name=x ty=f64
+          Local name=y ty=f64
+  Instantiation key=fn:min[f64]
+    Fn ret=f64
+      Param name=a mode=read ty=f64
+      Param name=b mode=read ty=f64
+      Body
+        If
+          Binary op=< ty=bool
+            Local name=a ty=f64
+            Local name=b ty=f64
+          Then
+            Return
+              Local name=a ty=f64
+        Return
+          Local name=b ty=f64

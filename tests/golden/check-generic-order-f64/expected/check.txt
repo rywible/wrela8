@@ -1,0 +1,4 @@
+Module path=examples.check_generic_order_f64
+  Fn min[T](a: read T, b: read T) -> T
+  Fn use_min(x: read f64, y: read f64) -> f64
+  Fn nan_order() -> unit
