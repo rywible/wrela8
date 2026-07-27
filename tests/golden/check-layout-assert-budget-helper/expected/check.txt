@@ -1,13 +1,13 @@
 Module path=image_report
   Struct ImageReport data
-    field machine_revision: u32
-    field entry: u64
-    field pages_base: u64
-    field pages_size: u64
-    field stacks_base: u64
-    field stacks_size: u64
-    field code_base: u64
-    field code_size: u64
+    pub field machine_revision: u32
+    pub field entry: u64
+    pub field pages_base: u64
+    pub field pages_size: u64
+    pub field stacks_base: u64
+    pub field stacks_size: u64
+    pub field code_base: u64
+    pub field code_size: u64
 Module path=examples.check_layout_assert_budget_helper
   Struct Store resource
     field n: u32

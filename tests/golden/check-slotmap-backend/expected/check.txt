@@ -4,9 +4,9 @@ Module path=slotmap
   Enum SlotMapFull data
     variant SlotMapFull
   Struct Key data
-    field map_id: u64
-    field index: usize
-    field generation: u8
+    pub field map_id: u64
+    pub field index: usize
+    pub field generation: u8
   Struct SlotMap[T, const N: usize] data
     field map_id: u64
     field len: usize

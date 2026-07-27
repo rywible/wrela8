@@ -24,3 +24,9 @@ Module path=lib.ret
   Struct Outer data
     field n: u32
     fn peel(read self) -> Inner
+FieldVisibilityCensus constructs=2 reads=3 writes=0 patterns=0 fields=4
+  construct use=app.main decl=lib.pk struct=In field=n
+  construct use=app.main decl=lib.ret struct=Out field=n
+  read use=app.main decl=lib.pk struct=Grip field=inner
+  read use=app.main decl=lib.pk struct=In field=n
+  read use=app.main decl=lib.ret struct=Item field=n

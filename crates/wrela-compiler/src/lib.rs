@@ -32,6 +32,7 @@ pub mod codegen;
 pub mod emitted_a64_census;
 pub mod encode;
 pub mod eval;
+pub mod field_visibility_census;
 pub mod flowwir;
 pub mod flowwir_lower;
 pub mod guest_fn_key_census;

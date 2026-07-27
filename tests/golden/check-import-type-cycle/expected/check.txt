@@ -6,3 +6,6 @@ Module path=b
   Struct Bee data
     field m: u32
   Fn use_ay(x: read Ay) -> u32
+FieldVisibilityCensus constructs=0 reads=2 writes=0 patterns=0 fields=2
+  read use=a decl=b struct=Bee field=m
+  read use=b decl=a struct=Ay field=n

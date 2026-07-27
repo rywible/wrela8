@@ -177,6 +177,10 @@ pub struct DeclFn {
 pub struct DeclField {
     pub name: String,
     pub ty: Type,
+    /// Source `pub` on the field (02-language.md §2 / plans/M13.md item G1).
+    /// Carried through declare + subst; enforcement is G3 — G1 only censuses
+    /// cross-module uses of `!is_pub` fields.
+    pub is_pub: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -4813,6 +4817,7 @@ fn declare_struct(
                 members.push(DeclMember::Field(DeclField {
                     name: f.name.clone(),
                     ty,
+                    is_pub: f.is_pub,
                 }));
             }
             Member::Fn(f) => members.push(DeclMember::Fn(declare_fn(
@@ -4932,6 +4937,7 @@ pub(crate) fn declare_struct_members_for_instantiation(
                 members.push(DeclMember::Field(DeclField {
                     name: f.name.clone(),
                     ty,
+                    is_pub: f.is_pub,
                 }));
             }
             Member::Fn(f) => members.push(DeclMember::Fn(declare_fn(
@@ -6503,11 +6509,14 @@ fn render_member(
     out: &mut String,
 ) {
     match m {
-        DeclMember::Field(f) => push_line(
-            out,
-            depth,
-            &format!("field {}: {}", f.name, render_type(&f.ty)),
-        ),
+        DeclMember::Field(f) => {
+            let prefix = if f.is_pub { "pub field" } else { "field" };
+            push_line(
+                out,
+                depth,
+                &format!("{prefix} {}: {}", f.name, render_type(&f.ty)),
+            );
+        }
         DeclMember::Fn(f) => {
             let prefix = if f.is_async { "async fn " } else { "fn " };
             // Only a private (`!is_pub`) plain-`self` (`Read`, not `init`)

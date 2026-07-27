@@ -1,0 +1,7 @@
+module lib.sealed
+
+# plans/M13.md item G1: non-`pub` field (census violation from app.user)
+# plus a `pub` field (must NOT appear in the census).
+pub struct Sealed:
+    hidden: u32
+    pub visible: u32

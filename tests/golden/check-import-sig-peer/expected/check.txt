@@ -12,3 +12,7 @@ Module path=lib.pk
   Struct Hand data
     field inner: Src
     fn make(source: take Src) -> Hand
+FieldVisibilityCensus constructs=1 reads=2 writes=0 patterns=0 fields=2
+  construct use=app.main decl=lib.pk struct=Src field=n
+  read use=app.main decl=lib.pk struct=Hand field=inner
+  read use=app.main decl=lib.pk struct=Src field=n

@@ -12,3 +12,7 @@ Module path=lib.boxy
   Struct Box[T] data
     field v: T
   Fn peel_box(b: take Box[Src]) -> Src
+FieldVisibilityCensus constructs=2 reads=1 writes=0 patterns=0 fields=2
+  construct use=app.main decl=lib.boxy struct=Box field=v
+  construct use=app.main decl=lib.boxy struct=Item field=n
+  read use=app.main decl=lib.boxy struct=Item field=n
