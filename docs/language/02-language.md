@@ -68,7 +68,8 @@ Struct fields are module-private unless `pub`; only the declaring module may
 construct, read, write, or pattern-bind a non-`pub` field.
 
 A fixed prelude is always in scope: `Option`, `Some`, `None`, `Result`, `Ok`,
-`Err`, `panic`. Scalar type names are builtin. Everything else is imported.
+`Err`, `panic`, `CallError`, `Admission`. Scalar type names are builtin.
+Everything else is imported.
 
 ### 2.1 The build root
 
@@ -656,11 +657,12 @@ CallError[E] =
     Op(E)                     # the callee's declared error
   | Cancelled                 # the enclosing group was cancelled
   | DeadlineExceeded          # admitted, then the deadline passed
-  | NotAdmitted(Admission)    # never ran: mailbox full or deadline
-                              # unmeetable (`Admission` is `Full |
-                              # DeadlineUnmeetable`; `Quarantined` is
-                              # reserved for the quarantine path and is
-                              # not a live variant in revision 0.1)
+  | NotAdmitted(Admission, args)  # never ran: mailbox full or deadline
+                              # unmeetable; `args` is the call's `take`
+                              # arguments as a tuple (`Admission` is
+                              # `Full | DeadlineUnmeetable`; `Quarantined`
+                              # is reserved for the quarantine path and
+                              # is not a live variant in revision 0.1)
 ```
 
 One signature is exempt from that composition, and its own chapter names it:

@@ -3080,11 +3080,12 @@ fn variant_payload_types_for(
                 "Op" => Ok(vec![e_ty.clone()]),
                 "Cancelled" => Ok(vec![]),
                 "DeadlineExceeded" => Ok(vec![]),
+                // plans/M13.md item I / decision 6: `PeerFailed` deleted
+                // (unobservable under crash-only).
                 "NotAdmitted" => Ok(vec![
                     Type::Named("Admission".to_string(), vec![]),
                     not_admitted_args_type(targs),
                 ]),
-                "PeerFailed" => Ok(vec![Type::Named("Peer".to_string(), vec![])]),
                 other => Err(type_error(
                     format!("`CallError` has no variant `{other}`"),
                     span,
@@ -9618,7 +9619,10 @@ pub(crate) fn compose_call_error(raw: &Type, take_arg_tys: &[Type]) -> Type {
         Type::Result(t, _) => (**t).clone(),
         other => other.clone(),
     };
-    Type::Result(Box::new(ok_ty), Box::new(call_error_type(e_ty, take_arg_tys)))
+    Type::Result(
+        Box::new(ok_ty),
+        Box::new(call_error_type(e_ty, take_arg_tys)),
+    )
 }
 
 /// `CallError[E]` or `CallError[E, Args]` (item H) for a composed await.
@@ -9732,7 +9736,6 @@ pub(crate) fn call_error_variant_index(variant: &str) -> Option<usize> {
         "Cancelled" => Some(1),
         "DeadlineExceeded" => Some(2),
         "NotAdmitted" => Some(3),
-        "PeerFailed" => Some(4),
         _ => None,
     }
 }
@@ -10035,7 +10038,10 @@ fn check_await_group_join(
             args: vec![],
         },
     };
-    let composed = Type::Array(Box::new(compose_call_error(&child_ty, &[])), Box::new(len_expr));
+    let composed = Type::Array(
+        Box::new(compose_call_error(&child_ty, &[])),
+        Box::new(len_expr),
+    );
     Ok(TypedExpr {
         ty: composed,
         kind: TypedExprKind::Await(Box::new(intrinsic)),

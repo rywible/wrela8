@@ -1,0 +1,8 @@
+Module path=examples.check_callerror_annotation
+  Enum AppErr data
+    variant Busy
+  Struct Wrap data
+    field tag: u64
+    fn from(e: take CallError[AppErr]) -> Wrap
+  Fn annotated(r: read Result[u64, CallError[AppErr]]) -> Result[u64, Wrap]
+  Fn admission_nameable(a: read Admission) -> u64

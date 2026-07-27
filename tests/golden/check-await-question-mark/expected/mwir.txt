@@ -1,0 +1,103 @@
+Program
+  Fn key=AppErr.from ret=AppErr temps=26 params=[t0:take]
+    Temp t0 ty=CallError[never]
+    Temp t1 ty=u64
+    Temp t2 ty=u64
+    Temp t3 ty=bool
+    Temp t4 ty=AppErr
+    Temp t5 ty=u64
+    Temp t6 ty=u64
+    Temp t7 ty=bool
+    Temp t8 ty=AppErr
+    Temp t9 ty=u64
+    Temp t10 ty=u64
+    Temp t11 ty=bool
+    Temp t12 ty=Admission
+    Temp t13 ty=bool
+    Temp t14 ty=bool
+    Temp t15 ty=()
+    Temp t16 ty=bool
+    Temp t17 ty=bool
+    Temp t18 ty=AppErr
+    Temp t19 ty=u64
+    Temp t20 ty=u64
+    Temp t21 ty=bool
+    Temp t22 ty=never
+    Temp t23 ty=bool
+    Temp t24 ty=bool
+    Temp t25 ty=AppErr
+    Body
+      0000: EnumTag dst=t1 src=t0
+      0001: ConstInt dst=t2 ty=u64 value=1
+      0002: Compare op=== ty=u64 dst=t3 lhs=t1 rhs=t2
+      0003: JumpIfFalse cond=t3 target=0007
+      0004: MakeEnum dst=t4 tag=1 payload=[]
+      0005: Return value=t4
+      0006: Jump target=0038
+      0007: EnumTag dst=t5 src=t0
+      0008: ConstInt dst=t6 ty=u64 value=2
+      0009: Compare op=== ty=u64 dst=t7 lhs=t5 rhs=t6
+      0010: JumpIfFalse cond=t7 target=0014
+      0011: MakeEnum dst=t8 tag=0 payload=[]
+      0012: Return value=t8
+      0013: Jump target=0038
+      0014: EnumTag dst=t9 src=t0
+      0015: ConstInt dst=t10 ty=u64 value=3
+      0016: Compare op=== ty=u64 dst=t11 lhs=t9 rhs=t10
+      0017: EnumPayload dst=t12 src=t0 index=0
+      0018: ConstBool dst=t13 value=true
+      0019: BoolAnd dst=t14 lhs=t11 rhs=t13
+      0020: EnumPayload dst=t15 src=t0 index=1
+      0021: ConstBool dst=t16 value=true
+      0022: BoolAnd dst=t17 lhs=t14 rhs=t16
+      0023: JumpIfFalse cond=t17 target=0027
+      0024: MakeEnum dst=t18 tag=0 payload=[]
+      0025: Return value=t18
+      0026: Jump target=0038
+      0027: EnumTag dst=t19 src=t0
+      0028: ConstInt dst=t20 ty=u64 value=0
+      0029: Compare op=== ty=u64 dst=t21 lhs=t19 rhs=t20
+      0030: EnumPayload dst=t22 src=t0 index=0
+      0031: ConstBool dst=t23 value=true
+      0032: BoolAnd dst=t24 lhs=t21 rhs=t23
+      0033: JumpIfFalse cond=t24 target=0037
+      0034: MakeEnum dst=t25 tag=0 payload=[]
+      0035: Return value=t25
+      0036: Jump target=0038
+      0037: AssertFail message="match: no arm matched (exhaustiveness already proved this cannot happen)"
+      0038: Return
+  Fn key=Counter.bump ret=unit temps=5 receiver=t0:mut
+    Temp t0 ty=Counter
+    Temp t1 ty=u64
+    Temp t2 ty=u64
+    Temp t3 ty=u64
+    Temp t4 ty=unit
+    Body
+      0000: Project dst=t1 base=t0 index=0
+      0001: ConstInt dst=t2 ty=u64 value=1
+      0002: ArithChecked op=+ ty=u64 dst=t3 lhs=t1 rhs=t2 abort="arithmetic overflow in `+`"
+      0003: SetField base=t0 index=0 value=t3
+      0004: ConstUnit dst=t4
+      0005: Return value=t4
+      0006: Return
+  Fn key=Counter.get ret=u64 temps=2 receiver=t0:read
+    Temp t0 ty=Counter
+    Temp t1 ty=u64
+    Body
+      0000: Project dst=t1 base=t0 index=0
+      0001: Return value=t1
+      0002: Return
+  Fn key=Probe.last ret=u64 temps=2 receiver=t0:read
+    Temp t0 ty=Probe
+    Temp t1 ty=u64
+    Body
+      0000: Project dst=t1 base=t0 index=1
+      0001: Return value=t1
+      0002: Return
+  Fn key=wrap_ok ret=Result[u64, AppErr] temps=2 params=[t0]
+    Temp t0 ty=u64
+    Temp t1 ty=Result[u64, AppErr]
+    Body
+      0000: MakeEnum dst=t1 tag=0 payload=[t0]
+      0001: Return value=t1
+      0002: Return

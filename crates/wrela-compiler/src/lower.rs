@@ -4485,6 +4485,13 @@ fn variant_index(prog: &TypedProgram, enum_name: &str, variant: &str) -> Result<
                 "unknown Result variant `{other}`"
             ))),
         },
+        // plans/M13.md item I: `CallError[E]` is source-nameable, so a
+        // sync `from(take e: CallError[E])` match must resolve tags here
+        // (flowwir_lower already had the arm for async awaits; this is
+        // the sync twin — `bodies::call_error_variant_index` is the
+        // single table).
+        "CallError" => crate::sema::bodies::call_error_variant_index(variant)
+            .ok_or_else(|| LowerError::internal(format!("unknown CallError variant `{variant}`"))),
         _ => {
             // plans/M9.md item A1b / A2: this module's own enums, else the
             // ones it imports. Before this an *imported* enum (A2's

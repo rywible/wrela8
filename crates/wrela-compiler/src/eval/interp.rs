@@ -571,6 +571,12 @@ fn variant_index(program: &TypedProgram, enum_name: &str, variant: &str, ctx: &I
                 );
             }
         }),
+        // plans/M13.md item I: sync `from(take e: CallError[E])` match.
+        "CallError" => crate::sema::bodies::call_error_variant_index(variant).ok_or_else(|| {
+            ctx.abandon(format!(
+                "internal error: unknown CallError variant `{variant}`"
+            ))
+        }),
         _ => {
             // plans/M9.md item A1b: this module's own enums, else the
             // ones it imports. Before A1b an *imported* enum landed in

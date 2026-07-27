@@ -1158,8 +1158,9 @@ pub fn size_of(ty: &Type, ctx: &LayoutCtx) -> Result<usize, String> {
             };
             let args_ty = crate::sema::bodies::not_admitted_args_type(targs);
             let not_admitted = SLOT + size_of(&args_ty, ctx)?; // Admission + args
-            let peer = SLOT;
-            Ok(SLOT + size_of(e_ty, ctx)?.max(not_admitted).max(peer))
+            // plans/M13.md item I: PeerFailed gone — widest non-Op payload
+            // is NotAdmitted alone.
+            Ok(SLOT + size_of(e_ty, ctx)?.max(not_admitted))
         }
         // plans/M7.md item E1: `BootError` is a prelude enum (one unit
         // variant), never a DeclEnum in this LayoutCtx — same vehicle as
@@ -1171,7 +1172,13 @@ pub fn size_of(ty: &Type, ctx: &LayoutCtx) -> Result<usize, String> {
                     // plans/M8.md item G: 03-hardware.md §9's
                     // `CompletionOutcome` — three fieldless variants, so
                     // the tag word is the whole value.
-                    "BootError" | "Target" | "Failure" | "IoError" | "CompletionOutcome"
+                    "BootError"
+                        | "Target"
+                        | "Failure"
+                        | "IoError"
+                        | "CompletionOutcome"
+                        // plans/M13.md item I: auto-visible fieldless enum.
+                        | "Admission"
                 ) =>
         {
             Ok(SLOT)

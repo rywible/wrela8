@@ -277,7 +277,8 @@ pub const GRAND_TOTAL_SUM_OF_ROWS: usize = 90; // was 168; M11 K −94 entry dri
 /// M11 K: build_entry_driver deleted (−23 harness sites); test call/prefix
 /// stubs added (+22 codegen).
 pub const ENCODE_ENC_SITES_BY_FILE: &[(&str, usize)] = &[
-    ("codegen.rs", 471), // was 470; M13 item N: movz x0,#0 before BL checkpoint
+    // was 471; M13 item H retired BRK_AWAIT_ACTOR_REJECTED (−2 str stores).
+    ("codegen.rs", 469),
     ("layout.rs", 8),
     ("layout/harness.rs", 41), // was 64; K deleted build_entry_driver
 ];
@@ -429,7 +430,7 @@ mod tests {
             "ENCODE_ENC_SITE_COUNT ({ENCODE_ENC_SITE_COUNT}) != sum of per-file counts ({total})"
         );
         assert_eq!(
-            ENCODE_ENC_SITE_COUNT, 520,
+            ENCODE_ENC_SITE_COUNT, 518,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }

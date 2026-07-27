@@ -326,12 +326,12 @@ struct Table:
         async_wrapper: false,
         nest_items_into: "Table",
     },
-    // 02 §9.3 — await codec.compress with take. CallError is not
-    // source-nameable, so `?` on the await cannot convert.
+    // 02 §9.3 — await codec.compress with take. plans/M13.md item I:
+    // CallError is nameable; `?` converts through Result[..., CallError[E]].
     CorpusSemaContext {
         doc: "docs/language/02-language.md",
         key: "f56a6f9b7f60",
-        line: 604,
+        line: 628,
         section: "9.3 Messages",
         preamble: r#"
 pool Bufs
@@ -343,12 +343,14 @@ resource struct Data:
 @actor
 struct Codec:
     pub async fn compress(self, take input: own[Bufs] Data) -> own[Bufs] Data:
-        return input
+        return take input
 "#,
         postamble: "",
-        params: "codec: Actor[Codec], data: own[Bufs] Data",
-        ret: "Result[unit, unit]",
-        ret_ok: "Ok(unit)",
+        // `take`: the fence moves `data` into the call (`input=take data`)
+        // and rebinds the reply (`data = await ...`).
+        params: "codec: Actor[Codec], take data: own[Bufs] Data",
+        ret: "Result[own[Bufs] Data, CallError[never]]",
+        ret_ok: "Ok(take data)",
         async_wrapper: true,
         nest_items_into: "",
     },
@@ -392,13 +394,12 @@ fn stash(take event: Event):
         nest_items_into: "",
     },
     // 02 §9.5 — with group. Method is `read_file` (not `read`: `read` is a
-    // keyword and cannot be a declared method name — decision 517). Bare
-    // `await` (no `?`): CallError is not source-nameable, so `?` on a
-    // composed await cannot convert (same residual as §9.3 `:604`).
+    // keyword and cannot be a declared method name — decision 517).
+    // plans/M13.md item I: CallError is nameable; `?` converts.
     CorpusSemaContext {
         doc: "docs/language/02-language.md",
         key: "84c332141ae2",
-        line: 674,
+        line: 699,
         section: "9.5 Groups",
         preamble: r#"
 @actor
@@ -413,8 +414,10 @@ async fn fetch_part(index: u32) -> u32:
 "#,
         postamble: "",
         params: "storage: Actor[Storage], path: u32",
-        ret: "Result[unit, unit]",
-        ret_ok: "Ok(unit)",
+        ret: "Result[u32, CallError[never]]",
+        // `result` is scoped inside the fence's `with group` block; the
+        // mechanical fall-through uses `path` (still in the wrapper).
+        ret_ok: "Ok(path)",
         async_wrapper: true,
         nest_items_into: "",
     },

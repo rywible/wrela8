@@ -1,0 +1,39 @@
+module examples.check_callerror_annotation
+
+# plans/M13.md item I — `CallError[E]` and `Admission` are source-nameable.
+# Annotation `Result[_, CallError[E]]` and `from(take e: CallError[E])`
+# type-check (02 §2 prelude / decision 6). Construction of CallError values
+# is still only via await composition; this golden pins the annotation
+# surface and Admission's auto-visible variants.
+
+pub enum AppErr:
+    Busy
+
+pub struct Wrap:
+    tag: u64
+
+    pub fn from(take e: CallError[AppErr]) -> Wrap:
+        match e:
+            case .Op(_):
+                return Wrap(tag=1)
+            case .Cancelled:
+                return Wrap(tag=2)
+            case .DeadlineExceeded:
+                return Wrap(tag=3)
+            case .NotAdmitted(reason, _):
+                match reason:
+                    case .Full:
+                        return Wrap(tag=4)
+                    case .DeadlineUnmeetable:
+                        return Wrap(tag=5)
+
+pub fn annotated(r: Result[u64, CallError[AppErr]]) -> Result[u64, Wrap]:
+    v = r?
+    return Ok(v)
+
+pub fn admission_nameable(a: Admission) -> u64:
+    match a:
+        case .Full:
+            return 0
+        case .DeadlineUnmeetable:
+            return 1

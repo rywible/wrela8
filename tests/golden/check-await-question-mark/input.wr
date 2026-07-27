@@ -1,0 +1,72 @@
+module examples.check_await_question_mark
+
+# plans/M13.md item I — 02 §9.4's `await actor.m(...)?` through a declared
+# `from(take e: CallError[E])`. CallError is prelude-nameable, so `?` can
+# convert the composed error into a user error type.
+#
+# `return Ok(v)` is not lowered inside an async body (flowwir_lower); the
+# Ok wrap is a sync helper — the same shape boot-actor-reply-result uses.
+
+pub enum AppErr:
+    Busy
+    Cancelled
+
+    pub fn from(take e: CallError[never]) -> AppErr:
+        match e:
+            case .Cancelled:
+                return AppErr.Cancelled
+            case .DeadlineExceeded:
+                return AppErr.Busy
+            case .NotAdmitted(_, _):
+                return AppErr.Busy
+            case .Op(_):
+                return AppErr.Busy
+
+fn wrap_ok(v: u64) -> Result[u64, AppErr]:
+    return Ok(v)
+
+@actor
+pub struct Counter:
+    value: u64
+
+    pub fn get(read self) -> u64:
+        return self.value
+
+    pub fn bump(mut self) -> unit:
+        self.value = self.value + 1
+        return unit
+
+@actor
+pub struct Probe:
+    counter: Actor[Counter]
+    last: u64
+
+    pub async fn fetch(mut self) -> Result[u64, AppErr]:
+        v = await self.counter.get()?
+        self.last = v
+        return wrap_ok(v)
+
+    pub fn last(read self) -> u64:
+        return self.last
+
+@test(runtime)
+async fn await_question_mark(p: Actor[Probe], c: Actor[Counter]):
+    match send c.bump():
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "send must admit"
+    r = await p.fetch()
+    match r:
+        case .Ok(v):
+            assert v == 1, "fetch through ? must return the counter"
+        case .Err(_):
+            assert false, "fetch must succeed"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="check-await-question-mark", target=Target.wrela_machine_v1)
+    c = img.actor(Counter, mailbox=4)
+    p = img.actor(Probe, counter=c, mailbox=4)
+    img.on_failure(policy=Failure.Halt)
+    return img.seal()

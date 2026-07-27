@@ -1,0 +1,17 @@
+Module path=examples.check_await_question_mark
+  Enum AppErr data
+    variant Busy
+    variant Cancelled
+    fn from(e: take CallError[never]) -> AppErr
+  Fn wrap_ok(v: read u64) -> Result[u64, AppErr]
+  Struct Counter resource
+    field value: u64
+    fn get(read self) -> u64
+    fn bump(mut self) -> unit
+  Struct Probe resource
+    field counter: Actor[Counter]
+    field last: u64
+    async fn fetch(mut self) -> Result[u64, AppErr]
+    fn last(read self) -> u64
+  AsyncFn await_question_mark(p: read Actor[Probe], c: read Actor[Counter]) -> unit
+  Fn build() -> Image

@@ -408,20 +408,14 @@ fn shape_of(ty: &Type, mctx: &ModuleCtx) -> TyShape {
                 _ => Type::Never,
             };
             let args_ty = bodies::not_admitted_args_type(targs);
+            // plans/M13.md item I / decision 6: four variants — `PeerFailed` gone.
             TyShape::Sum(vec![
                 ("Op".to_string(), vec![e_ty]),
                 ("Cancelled".to_string(), vec![]),
                 ("DeadlineExceeded".to_string(), vec![]),
                 (
                     "NotAdmitted".to_string(),
-                    vec![
-                        Type::Named("Admission".to_string(), vec![]),
-                        args_ty,
-                    ],
-                ),
-                (
-                    "PeerFailed".to_string(),
-                    vec![Type::Named("Peer".to_string(), vec![])],
+                    vec![Type::Named("Admission".to_string(), vec![]), args_ty],
                 ),
             ])
         }

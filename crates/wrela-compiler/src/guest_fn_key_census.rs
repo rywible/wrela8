@@ -253,6 +253,17 @@ pub const REQUIRED_FN_KEYS: &[(&str, &[&str])] = &[
         "check-format-fstring-guest/expected/mwir.txt",
         &["Pt.format", "Store.fmt_len"],
     ),
+    // plans/M13.md item I: `from(take e: CallError[E])` + await `?`.
+    (
+        "check-await-question-mark/expected/mwir.txt",
+        &[
+            "AppErr.from",
+            "Counter.bump",
+            "Counter.get",
+            "Probe.last",
+            "wrap_ok",
+        ],
+    ),
     (
         "check-from-explicit/expected/mwir.txt",
         &[

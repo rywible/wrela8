@@ -1107,16 +1107,13 @@ fn enum_payload_offset(
                 ));
             };
             // plans/M13.md item H / decision 4: NotAdmitted(Admission, args).
+            // Item I / decision 6: PeerFailed deleted.
             let args_ty = crate::sema::bodies::not_admitted_args_type(targs);
             vec![
-                vec![e_ty.clone()], // Op(E)
-                Vec::new(),         // Cancelled
-                Vec::new(),         // DeadlineExceeded
-                vec![
-                    Type::Named("Admission".to_string(), Vec::new()),
-                    args_ty,
-                ], // NotAdmitted
-                vec![Type::Named("Peer".to_string(), Vec::new())], // PeerFailed
+                vec![e_ty.clone()],                                              // Op(E)
+                Vec::new(),                                                      // Cancelled
+                Vec::new(),                                                      // DeadlineExceeded
+                vec![Type::Named("Admission".to_string(), Vec::new()), args_ty], // NotAdmitted
             ]
         }
         Type::Named(name, targs) => {

@@ -60,7 +60,8 @@ pub const INTERNAL_ERROR_SITES_BY_FILE: &[(&str, usize)] = &[
     // 78 -> 79, plans/M10.md item A2c: placed static has no comptime value.
     // 79 -> 77, plans/M13.md item F: Restart / intensity eval arms deleted
     // with Image.supervise → on_failure (recount confirmed at item N).
-    ("eval/interp.rs", 77),
+    // 77 -> 78, plans/M13.md item I: unknown CallError variant arm.
+    ("eval/interp.rs", 78),
     ("lower.rs", 5),
     ("codegen.rs", 4),
     ("eval/mod.rs", 2),
@@ -166,7 +167,7 @@ mod tests {
             "INTERNAL_ERROR_SITE_COUNT ({INTERNAL_ERROR_SITE_COUNT}) != sum of per-file counts ({total})"
         );
         assert_eq!(
-            INTERNAL_ERROR_SITE_COUNT, 203,
+            INTERNAL_ERROR_SITE_COUNT, 204,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }
