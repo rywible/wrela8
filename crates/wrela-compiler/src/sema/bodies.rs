@@ -5643,15 +5643,7 @@ fn check_call_by_field(
                     if !d.generics.is_empty() {
                         let recv_ty = Type::Named(bname.clone(), vec![]);
                         return check_method_generic_call(
-                            &recv_ty,
-                            name,
-                            d,
-                            args,
-                            None,
-                            call_span,
-                            None,
-                            fctx,
-                            mctx,
+                            &recv_ty, name, d, args, None, call_span, None, fctx, mctx,
                         );
                     }
                     let typed_args =
@@ -5694,15 +5686,7 @@ fn check_call_by_field(
                     if !d.generics.is_empty() {
                         let recv_ty = Type::Named(bname.clone(), vec![]);
                         return check_method_generic_call(
-                            &recv_ty,
-                            name,
-                            d,
-                            args,
-                            None,
-                            call_span,
-                            None,
-                            fctx,
-                            mctx,
+                            &recv_ty, name, d, args, None, call_span, None, fctx, mctx,
                         );
                     }
                     let typed_args =
