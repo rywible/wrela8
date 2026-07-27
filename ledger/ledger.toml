@@ -2174,3 +2174,39 @@ tests = [
   "golden/boot-cross-core",
 ]
 note = """plans/M11.md item D / decisions 701 / 764: `wrela dump --stage=rtconfig` prints the generated module text; the image report records `Input path=<generated> sha256=…` (sha256 of that UTF-8 text) after the last file input. Goldens: `boot-actors`/`boot-cross-core` `expected/rtconfig.txt`, plus every actor-bearing `expected/report.txt` that gained the digest line. `const N_CORES: usize = <PlacementTable.cores>` spelling frozen (decision 709 / 761)."""
+
+# --- M13 item E: coverage audits (all four → honest gaps, 2026-07-27) ------
+
+[[clause]]
+id = "compiler.diagnostics.actor-chatter"
+doc = "04-compiler.md#7"
+status = "gap"
+note = """04-compiler.md §7 names `warning[performance]` for the actor-chatter lint (cross-actor turns inside a hot loop). plans/M13.md item E audit 1: `rg 'warning\\[performance\\]' crates/` — **absent**. No emitter, no category string, no golden.
+
+**Owner:** report work, not this milestone. Flips to `test` when the diagnostic exists and a golden pins the category + site."""
+
+[[clause]]
+id = "compiler.report.copy-pricing"
+doc = "04-compiler.md#7"
+status = "gap"
+note = """04-compiler.md §1 / §7: every data copy is priced by the target cost model; the image report lists every copy above the reporting threshold with site and size. plans/M13.md item E audit 2: `rg -i 'copy' crates/wrela-compiler/src/report*` — **absent** (`report.rs` has no copy-pricing lines).
+
+**Owner:** report work, not this milestone. Flips to `test` when the report publishes thresholded copy sites and a golden pins them."""
+
+[[clause]]
+id = "library.simd.vector-set"
+doc = "05-library.md#8.1"
+status = "gap"
+note = """05-library.md §8.1 (and 04 §6's as-if): the closed vector set `u8x16`/`i8x16`/`u16x8`/`i16x8`/`u32x4`/`i32x4`/`f32x4`/`u64x2`/`i64x2`/`f64x2` is a first-class backend target. **Known unimplemented** — no vector types in the compiler or stdlib.
+
+**Not cut:** the display rung consumes it, and 06-machine.md's AArch64 + NEON/ASIMD baseline is VMM-side and already true (ISA selection, not guest vector lowering).
+
+**Owner:** the pixels/display rung (first consumer). Flips to `test` when the closed set lowers and a golden exercises a vector op."""
+
+[[clause]]
+id = "library.async.completion-type"
+doc = "05-library.md#3"
+status = "gap"
+note = """05-library.md §3: `Completion[T]` is a sealed single-resolution awaitable resource. Only `IoCompletion[P]` exists today; the user-facing generic is unclaused without this row (2026-07-26 census survivor).
+
+**Disposition (plans/M13.md item E.4 / non-goals):** item R names the underlying single-resolution cell; shipping the user-facing type is consumer-gated. Flips to `test` when a consumer needs `Completion[T]` and a golden pins mint + single resolve."""
