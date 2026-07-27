@@ -7,9 +7,6 @@ Module path=image
   Fn build() -> Image
 Module path=shapes
   Struct Pair data
-    field a: u32
-    field b: u32
+    pub field a: u32
+    pub field b: u32
     fn sum(read self) -> u32
-FieldVisibilityCensus constructs=2 reads=0 writes=0 patterns=0 fields=2
-  construct use=image decl=shapes struct=Pair field=a
-  construct use=image decl=shapes struct=Pair field=b
