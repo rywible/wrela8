@@ -175,6 +175,25 @@ nominal interface/trait declarations (generics are structural); async and
 escaping closures; UEFI and any firmware boot path; non-ASCII identifiers;
 and a general user-defined iteration protocol.
 
+M13's revision-boundary cuts (plans/M13.md item C / decisions 2 and 13)
+add, each with its surviving replacement named:
+
+- `race(...)` — replacement: selection with a loser-cancellation witness
+  (ROADMAP recorded intention; cheap once the resolution cell exists);
+- `@detached` — replacement: `send` (fire-and-forget) or an installed
+  `@task`;
+- `@no_promote` — replacement: the worked example's
+  `@layout_assert(region_promotions == 0)`;
+- `group(budget=)` — replacement: `deadline=` / `capacity=` only
+  ([02 §9.5](02-language.md));
+- function-level `@budget` — replacement: report-priced copies; a hard
+  budget on copies is a future cost-proof intention (ROADMAP);
+- priority bands, `must_service_within`, `@task(priority=)`,
+  `@task(budget=)`, and priority/deadline inheritance — replacement:
+  FIFO-per-mailbox + round-robin across ready actors
+  ([04 §2](04-compiler.md)); bands return only under the cleverness
+  budget (ROADMAP recorded intention).
+
 Each exclusion is reversible in a later revision without breaking the
 model; a new device or core count is a machine revision, never an ambient
 environment change.

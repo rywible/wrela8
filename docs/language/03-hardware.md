@@ -244,9 +244,9 @@ publication is never lost. Revision 0.1 masks the current vector on entry and
 forbids nesting; the compiler reports the maximum interrupt-masked interval.
 
 All substantive work happens in the driver's **bottom half** — a
-high-priority `@task` turn that consumes the level signal, drains a bounded
-number of completions, validates IDs/generations/epochs/lengths, resolves
-receipts, and re-wakes itself if work remains.
+`@task` turn that consumes the level signal, drains a bounded number of
+completions, validates IDs/generations/epochs/lengths, resolves receipts,
+and re-wakes itself if work remains.
 
 ## 7. IRQ, poll, and hybrid modes
 
@@ -295,11 +295,11 @@ choreography of its own. The image declares required features
 device.
 
 Once published, a virtio request cannot generally be retracted, so cancelling
-in-flight work is a driver protocol, not a dropped future: the receipt moves
-to a generated high-priority recovery turn on the owning driver, affected
-regions and DMA slots are quarantined, per-queue reset (when negotiated) or
-full reset establishes quiescence, and only then is memory reclaimed and the
-cancellation resolved. A reset may fail sibling requests; every affected
+in-flight work is a driver protocol, not a dropped future: each in-flight
+receipt is delivered to the owning driver's existing bottom-half `@task`,
+affected regions and DMA slots are quarantined, per-queue reset (when
+negotiated) or full reset establishes quiescence, and only then is memory
+reclaimed and the cancellation resolved. A reset may fail sibling requests; every affected
 owner gets the same epoch-carrying reset error. After a reset, a write may
 have happened:
 

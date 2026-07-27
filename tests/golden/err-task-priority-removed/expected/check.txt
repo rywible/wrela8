@@ -1,0 +1,1 @@
+error[type]: `@task(priority=...)` was cut at the revision boundary (plans/M13.md item C / decision 13); scheduling is FIFO-per-mailbox + round-robin (04-compiler.md §2) — see ROADMAP recorded intentions for bands at 24:11
