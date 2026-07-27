@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_receipt_recover.wr sha256=b6654dcc34165d92fd104ba9ec160ed259f1d7896ea3321783de57cd26dad005
-  Input path=<generated> sha256=fc5bd91628a84c54b1c90de48969921e321af3a5235432de2322594745c6cdcf
+  Input path=<generated> sha256=7f6c50347f8f1758b6ec67c163b0704a30d05a7bdaaf85898081057ae5f3717c
   Name value=boot-receipt-recover
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock
@@ -82,10 +82,10 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=107996
-  Section name=rodata base=0x4051a630 size=1261
-  Section name=abort base=0x4051ab20 size=120
-  Section name=checkpoint base=0x4051ab98 size=24
+  Section name=code base=0x40500050 size=101636
+  Section name=rodata base=0x40518d58 size=1261
+  Section name=abort base=0x40519248 size=120
+  Section name=checkpoint base=0x405192c0 size=24
   Section name=rtdata base=0x40540000 size=2408
   Section name=devregs base=0x40540968 size=104
   Section name=pooldata base=0x405409d0 size=1536
@@ -95,38 +95,14 @@ ImageReport v0
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
   PlacedStatic name=EXIT type=ParkMmio addr=0x8001000 size=8
   PlacedStatic name=GROUPS type=GroupArena addr=0x4057f778 size=96
-  PlacedStatic name=INIT_SLOT0 type=InitSlot0Words addr=0x4057f678 size=8
-  PlacedStatic name=INIT_SLOT1 type=InitSlot1Words addr=0x4057f680 size=8
-  PlacedStatic name=INIT_SLOT10 type=InitSlot10Words addr=0x4057f6c8 size=8
-  PlacedStatic name=INIT_SLOT11 type=InitSlot11Words addr=0x4057f6d0 size=8
-  PlacedStatic name=INIT_SLOT12 type=InitSlot12Words addr=0x4057f6d8 size=8
-  PlacedStatic name=INIT_SLOT13 type=InitSlot13Words addr=0x4057f6e0 size=8
-  PlacedStatic name=INIT_SLOT14 type=InitSlot14Words addr=0x4057f6e8 size=8
-  PlacedStatic name=INIT_SLOT15 type=InitSlot15Words addr=0x4057f6f0 size=8
-  PlacedStatic name=INIT_SLOT16 type=InitSlot16Words addr=0x4057f6f8 size=8
-  PlacedStatic name=INIT_SLOT17 type=InitSlot17Words addr=0x4057f700 size=8
-  PlacedStatic name=INIT_SLOT18 type=InitSlot18Words addr=0x4057f708 size=8
-  PlacedStatic name=INIT_SLOT19 type=InitSlot19Words addr=0x4057f710 size=8
-  PlacedStatic name=INIT_SLOT2 type=InitSlot2Words addr=0x4057f688 size=8
-  PlacedStatic name=INIT_SLOT20 type=InitSlot20Words addr=0x4057f718 size=8
-  PlacedStatic name=INIT_SLOT21 type=InitSlot21Words addr=0x4057f720 size=8
-  PlacedStatic name=INIT_SLOT22 type=InitSlot22Words addr=0x4057f728 size=8
-  PlacedStatic name=INIT_SLOT23 type=InitSlot23Words addr=0x4057f730 size=8
-  PlacedStatic name=INIT_SLOT24 type=InitSlot24Words addr=0x4057f738 size=8
-  PlacedStatic name=INIT_SLOT25 type=InitSlot25Words addr=0x4057f740 size=8
-  PlacedStatic name=INIT_SLOT26 type=InitSlot26Words addr=0x4057f748 size=8
-  PlacedStatic name=INIT_SLOT27 type=InitSlot27Words addr=0x4057f750 size=8
-  PlacedStatic name=INIT_SLOT28 type=InitSlot28Words addr=0x4057f758 size=8
-  PlacedStatic name=INIT_SLOT29 type=InitSlot29Words addr=0x4057f760 size=8
-  PlacedStatic name=INIT_SLOT3 type=InitSlot3Words addr=0x4057f690 size=8
-  PlacedStatic name=INIT_SLOT30 type=InitSlot30Words addr=0x4057f768 size=8
-  PlacedStatic name=INIT_SLOT31 type=InitSlot31Words addr=0x4057f770 size=8
-  PlacedStatic name=INIT_SLOT4 type=InitSlot4Words addr=0x4057f698 size=8
-  PlacedStatic name=INIT_SLOT5 type=InitSlot5Words addr=0x4057f6a0 size=8
-  PlacedStatic name=INIT_SLOT6 type=InitSlot6Words addr=0x4057f6a8 size=8
-  PlacedStatic name=INIT_SLOT7 type=InitSlot7Words addr=0x4057f6b0 size=8
-  PlacedStatic name=INIT_SLOT8 type=InitSlot8Words addr=0x4057f6b8 size=8
-  PlacedStatic name=INIT_SLOT9 type=InitSlot9Words addr=0x4057f6c0 size=8
+  PlacedStatic name=INIT_SPAN0 type=InitSpan0Words addr=0x4057f738 size=8
+  PlacedStatic name=INIT_SPAN1 type=InitSpan1Words addr=0x4057f740 size=8
+  PlacedStatic name=INIT_SPAN2 type=InitSpan2Words addr=0x4057f748 size=8
+  PlacedStatic name=INIT_SPAN3 type=InitSpan3Words addr=0x4057f750 size=8
+  PlacedStatic name=INIT_SPAN4 type=InitSpan4Words addr=0x4057f758 size=8
+  PlacedStatic name=INIT_SPAN5 type=InitSpan5Words addr=0x4057f760 size=8
+  PlacedStatic name=INIT_SPAN6 type=InitSpan6Words addr=0x4057f768 size=8
+  PlacedStatic name=INIT_SPAN7 type=InitSpan7Words addr=0x4057f770 size=8
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=536
   PlacedStatic name=MB0_CTL type=MbCtl addr=0x4057f7f8 size=24
   PlacedStatic name=MB0_DATA type=Mb0Data addr=0x4057f7d8 size=8
@@ -197,7 +173,7 @@ ImageReport v0
   PlacedStatic name=RELEASE type=ParkMmio addr=0x8003000 size=8
   PlacedStatic name=RINGS_CTL type=RingsCtl addr=0x4057ffe0 size=24
   PlacedStatic name=RINGS_DATA type=RingsData addr=0x4057fff8 size=8
-  PlacedStatic name=RT type=RuntimeTables addr=0x4057f5f8 size=128
+  PlacedStatic name=RT type=RuntimeTables addr=0x4057f6b8 size=128
   PlacedStatic name=SCHED type=SchedStripe addr=0x40540080 size=16
   PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000100 size=21
   PlacedStatic name=WAKE type=WakeTables addr=0x4057ffd8 size=8

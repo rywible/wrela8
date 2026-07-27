@@ -8,6 +8,8 @@ module runtime
 # replace it with `rtconfig::generate_with` before force-rooting runtime keys.
 # Fixed stub pools (decision 791 / 802 / 812) are always imported so spliced
 # match ladders can Call them (sema forbids reaching non-imported helpers).
+# M12 item E: INIT_SPAN0..INIT_SPAN_POOL_COUNT-1 are always imported (span
+# pool); boot_init zeros live spans via __wrela_init_* (`N_INIT_SLOTS`).
 from core.__image_runtime import (
     N_CORES,
     N_TURNS,
@@ -19,6 +21,7 @@ from core.__image_runtime import (
     RINGS_DATA_WORDS,
     RING_POOL_COUNT,
     N_INIT_SLOTS,
+    INIT_SPAN_POOL_COUNT,
     N_BOOT_CALLS,
     BOOT_CALL_POOL_COUNT,
     N_IRQ_VECTORS,
@@ -48,38 +51,14 @@ from core.__image_runtime import (
     RINGS_CTL,
     RINGS_DATA,
     WAKE,
-    INIT_SLOT0,
-    INIT_SLOT1,
-    INIT_SLOT2,
-    INIT_SLOT3,
-    INIT_SLOT4,
-    INIT_SLOT5,
-    INIT_SLOT6,
-    INIT_SLOT7,
-    INIT_SLOT8,
-    INIT_SLOT9,
-    INIT_SLOT10,
-    INIT_SLOT11,
-    INIT_SLOT12,
-    INIT_SLOT13,
-    INIT_SLOT14,
-    INIT_SLOT15,
-    INIT_SLOT16,
-    INIT_SLOT17,
-    INIT_SLOT18,
-    INIT_SLOT19,
-    INIT_SLOT20,
-    INIT_SLOT21,
-    INIT_SLOT22,
-    INIT_SLOT23,
-    INIT_SLOT24,
-    INIT_SLOT25,
-    INIT_SLOT26,
-    INIT_SLOT27,
-    INIT_SLOT28,
-    INIT_SLOT29,
-    INIT_SLOT30,
-    INIT_SLOT31,
+    INIT_SPAN0,
+    INIT_SPAN1,
+    INIT_SPAN2,
+    INIT_SPAN3,
+    INIT_SPAN4,
+    INIT_SPAN5,
+    INIT_SPAN6,
+    INIT_SPAN7,
     __wrela_select_count,
     __wrela_resume_child,
     __wrela_child_turn_index,
@@ -1365,9 +1344,10 @@ pub fn __wrela_try_select(core: usize, slot: usize) -> u64:
 
 # ---------------------------------------------------------------------------
 # M11 item H: boot_init + secondary_core_entry (decisions 810–815).
-# `__wrela_rt_boot_init` zeros actor/driver state via generated INIT overlays
-# then Calls `__boot_call_*` stubs (specialized A64 with Relocs, overwritten
-# at inject — decision 812). Secondary park/run loop omits sync `@budget`
+# `__wrela_rt_boot_init` zeros actor/driver state via coalesced INIT_SPAN*
+# overlays (M12 item E / decisions 883–885; `N_INIT_SLOTS` = span count) then
+# Calls `__boot_call_*` stubs (specialized A64 with Relocs, overwritten at
+# inject — decision 812). Secondary park/run loop omits sync `@budget`
 # (decision 810); floor-cat1 SP install is prepended at inject (decision 811).
 # ---------------------------------------------------------------------------
 

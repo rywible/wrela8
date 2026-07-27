@@ -87,8 +87,10 @@ pub struct RtconfigExtras {
     pub enqueue_actors: Vec<String>,
     /// M11 J: per-root mailbox overlays + method facts (enqueue_actors order).
     pub mailboxes: Vec<MailboxFact>,
-    /// M11 H: `(state_addr, nwords)` zero-fill slots — actors then drivers
-    /// (decision 813), matching former `emit_boot_init` order.
+    /// M11 H / M12 item E: `(state_addr, nwords)` zero-fill slots — actors
+    /// then drivers (decision 813). Generator coalesces adjacent ranges into
+    /// maximal `INIT_SPAN{k}` overlays (decisions 883–885); `N_INIT_SLOTS` is
+    /// the span count.
     pub init_slots: Vec<(u64, u64)>,
     /// M11 H: number of boot `init` calls (drivers then actors).
     pub n_boot_calls: usize,
@@ -145,6 +147,11 @@ pub const MB_POOL_COUNT: usize = 32;
 pub const METHOD_CALL_POOL_COUNT: usize = 128;
 /// Boot `init` call stub pool (decision 812).
 pub const BOOT_CALL_POOL_COUNT: usize = 32;
+/// Coalesced init-span overlay pool (M12 item E / decisions 883–885).
+/// `runtime.wr` imports every `INIT_SPAN*` so reinject can lower store
+/// ladders; unused slots are 1-word high-zone placeholders. Live span
+/// count (`N_INIT_SLOTS`) is at most this ceiling.
+pub const INIT_SPAN_POOL_COUNT: usize = 8;
 /// IRQ handler / wake `@task` stub pools (decision 823).
 pub const IRQ_CALL_POOL_COUNT: usize = 8;
 pub const WAKE_CALL_POOL_COUNT: usize = 8;
@@ -361,6 +368,30 @@ pub fn extras_from_tables(tables: &RuntimeTables) -> RtconfigExtras {
     }
 }
 
+/// Sort live `(addr, nwords)` init slots and merge adjacent ranges into
+/// maximal spans (M12 item E / decisions 883–885). Adjacency is
+/// `addr_i + nwords_i*8 == addr_{i+1}` — mailboxes between actor states
+/// break the predicate, so spans never bridge them.
+fn coalesce_init_spans(slots: &[(u64, u64)]) -> Vec<(u64, u64)> {
+    let mut live: Vec<(u64, u64)> = slots
+        .iter()
+        .copied()
+        .filter(|&(_, nwords)| nwords > 0)
+        .collect();
+    live.sort_by_key(|&(addr, _)| addr);
+    let mut spans: Vec<(u64, u64)> = Vec::new();
+    for (addr, nwords) in live {
+        if let Some(last) = spans.last_mut() {
+            if last.0 + last.1 * 8 == addr {
+                last.1 += nwords;
+                continue;
+            }
+        }
+        spans.push((addr, nwords));
+    }
+    spans
+}
+
 /// Pretty-print the facts-only config module for `tables` + item-F/G extras.
 ///
 /// `tables.cores` must already reflect `PlacementTable.cores` (call
@@ -375,6 +406,7 @@ pub fn extras_from_tables(tables: &RuntimeTables) -> RtconfigExtras {
 /// lane ladders; enqueue stubs remapped to `rt_enqueue` until item J.
 pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String {
     let placement = place_runtime_tables(RTDATA_BASE, tables);
+    let init_spans = coalesce_init_spans(&extras.init_slots);
     let n_turns_len = (tables.n_turns as usize).max(1);
     // Overlay stride is at least 0x48 so `ambient_group` at TURN_RECORD_SIZE
     // (0x40) always fits for batch-2 typecheck of deadline helpers. Live
@@ -451,9 +483,9 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
         "image needs {n_methods} method stubs; pool is {METHOD_CALL_POOL_COUNT} (decision 831)"
     );
     assert!(
-        extras.init_slots.len() <= BOOT_CALL_POOL_COUNT,
-        "image needs {} init slots; pool is {BOOT_CALL_POOL_COUNT} (decision 813)",
-        extras.init_slots.len()
+        init_spans.len() <= INIT_SPAN_POOL_COUNT,
+        "image needs {} init spans; pool is {INIT_SPAN_POOL_COUNT} (decision 883)",
+        init_spans.len()
     );
     assert!(
         extras.n_boot_calls <= BOOT_CALL_POOL_COUNT,
@@ -498,7 +530,10 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     push_const(&mut out, "METHOD_CALL_POOL_COUNT", METHOD_CALL_POOL_COUNT);
     push_const(&mut out, "N_METHODS", n_methods);
     push_const(&mut out, "TURNS_BASE", RTDATA_BASE as usize);
-    push_const(&mut out, "N_INIT_SLOTS", extras.init_slots.len());
+    // M12 item E: `N_INIT_SLOTS` names the coalesced live span count
+    // (runtime.wr already imports this const; keep the spelling).
+    push_const(&mut out, "N_INIT_SLOTS", init_spans.len());
+    push_const(&mut out, "INIT_SPAN_POOL_COUNT", INIT_SPAN_POOL_COUNT);
     push_const(&mut out, "N_BOOT_CALLS", extras.n_boot_calls);
     push_const(&mut out, "BOOT_CALL_POOL_COUNT", BOOT_CALL_POOL_COUNT);
     push_const(&mut out, "N_IRQ_VECTORS", extras.irq_vector_bits.len());
@@ -570,16 +605,17 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     out.push_str("    turns: [TurnArea; N_TURNS_LEN]\n");
     out.push('\n');
     // When `n_turns == 0`, `place_runtime_tables` packs driver/actor state at
-    // `RTDATA_BASE`. Keep the RT overlay off that cursor so INIT_SLOT* can
-    // own the live state addresses (decision 813) — same empty-arena move as
-    // GROUPS (decision 800). Placeholder sits just below the INIT pool.
+    // `RTDATA_BASE`. Keep the RT overlay off that cursor so INIT_SPAN* can
+    // own the live state addresses (decision 813 / 883) — same empty-arena
+    // move as GROUPS (decision 800). Placeholder sits just below the INIT
+    // span pool.
     let rt_addr = if tables.n_turns == 0 {
         RTDATA_BASE + wrela_machine::layout::RTDATA_SIZE_MAX
             - rings_high_reserve
             - wake_high_reserve
             - (MB_POOL_COUNT as u64) * 64
             - 96
-            - (BOOT_CALL_POOL_COUNT as u64) * 8
+            - (INIT_SPAN_POOL_COUNT as u64) * 8
             - (n_turns_len as u64) * (turn_stride as u64)
     } else {
         RTDATA_BASE
@@ -736,29 +772,28 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
         out.push('\n');
     }
 
-    // Init-slot overlays (decision 813): fixed pool so `runtime.wr` can
-    // import every INIT_SLOT* (same rule as RINGS_DATA — decision 800 /
-    // M12 item C). Live slots use place_runtime_tables state addresses;
-    // unused / 0-word slots get a 1-word non-colliding placeholder.
+    // Init-span overlays (M12 item E / decisions 883–885): maximal adjacent
+    // `(addr, nwords)` ranges after sort+merge. Fixed pool so `runtime.wr`
+    // can import every INIT_SPAN* (report PlacedStatic walks the stub's
+    // imported statics). Live spans use place_runtime_tables state
+    // addresses; unused slots get a 1-word non-colliding placeholder.
     let init_placeholder_base = RTDATA_BASE + wrela_machine::layout::RTDATA_SIZE_MAX
         - rings_high_reserve
         - wake_high_reserve
         - (MB_POOL_COUNT as u64) * 64
         - 96
-        - (BOOT_CALL_POOL_COUNT as u64) * 8;
-    for i in 0..BOOT_CALL_POOL_COUNT {
-        let (addr, nwords) = extras
-            .init_slots
+        - (INIT_SPAN_POOL_COUNT as u64) * 8;
+    for i in 0..INIT_SPAN_POOL_COUNT {
+        let (addr, nwords) = init_spans
             .get(i)
             .copied()
-            .filter(|&(_, n)| n > 0)
             .unwrap_or((init_placeholder_base + (i as u64) * 8, 1));
         out.push_str("@layout(runtime, endian=little)\n");
-        out.push_str(&format!("struct InitSlot{i}Words:\n"));
+        out.push_str(&format!("struct InitSpan{i}Words:\n"));
         out.push_str(&format!("    words: [u64; {nwords}]\n"));
         out.push('\n');
         out.push_str(&format!("@placed({addr:#x})\n"));
-        out.push_str(&format!("pub static INIT_SLOT{i}: InitSlot{i}Words\n"));
+        out.push_str(&format!("pub static INIT_SPAN{i}: InitSpan{i}Words\n"));
         out.push('\n');
     }
 
@@ -1170,10 +1205,12 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
     out.push_str(&format!("            return {NO_EDGE}\n"));
     out.push('\n');
 
-    // Init zero-fill accessors (decision 813).
+    // Init zero-fill accessors (decision 813 / 883): one arm per live
+    // coalesced span — pool placeholders stay unreachable from boot_init
+    // (`N_INIT_SLOTS` is the live count).
     out.push_str("pub fn __wrela_init_nwords(slot: usize) -> usize:\n");
     out.push_str("    match slot:\n");
-    for (i, &(_, nwords)) in extras.init_slots.iter().enumerate() {
+    for (i, &(_, nwords)) in init_spans.iter().enumerate() {
         out.push_str(&format!("        case {i}:\n"));
         out.push_str(&format!("            return {nwords}\n"));
     }
@@ -1183,9 +1220,9 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> String 
 
     out.push_str("pub fn __wrela_init_store_word(slot: usize, wi: usize, v: u64):\n");
     out.push_str("    match slot:\n");
-    for i in 0..BOOT_CALL_POOL_COUNT {
+    for i in 0..init_spans.len() {
         out.push_str(&format!("        case {i}:\n"));
-        out.push_str(&format!("            INIT_SLOT{i}.words[wi] = v\n"));
+        out.push_str(&format!("            INIT_SPAN{i}.words[wi] = v\n"));
         out.push_str("            return\n");
     }
     out.push_str("        case _:\n");
@@ -1550,8 +1587,8 @@ mod tests {
 
     #[test]
     fn placed_uses_rtdata_base_literal() {
-        // Empty-turn sample: RT moves to a placeholder so state/INIT_SLOT can
-        // own RTDATA_BASE (decision 813); SCHED still uses a numeric literal.
+        // Empty-turn sample: RT moves to a placeholder so state/INIT_SPAN can
+        // own RTDATA_BASE (decision 813 / 883); SCHED still uses a numeric literal.
         let text = generate(&sample_tables(1));
         assert!(!text.contains("@placed(RTDATA_BASE)"));
         assert!(

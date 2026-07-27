@@ -25,6 +25,7 @@ pub const METHOD_CALL_POOL_COUNT: usize = 128
 pub const N_METHODS: usize = 5
 pub const TURNS_BASE: usize = 1079246848
 pub const N_INIT_SLOTS: usize = 2
+pub const INIT_SPAN_POOL_COUNT: usize = 8
 pub const N_BOOT_CALLS: usize = 0
 pub const BOOT_CALL_POOL_COUNT: usize = 32
 pub const N_IRQ_VECTORS: usize = 0
@@ -1050,228 +1051,60 @@ pub fn __wake_call_7():
     return
 
 @layout(runtime, endian=little)
-struct InitSlot0Words:
+struct InitSpan0Words:
     words: [u64; 1]
 
 @placed(0x40540c00)
-pub static INIT_SLOT0: InitSlot0Words
+pub static INIT_SPAN0: InitSpan0Words
 
 @layout(runtime, endian=little)
-struct InitSlot1Words:
+struct InitSpan1Words:
     words: [u64; 1]
 
 @placed(0x40540ce0)
-pub static INIT_SLOT1: InitSlot1Words
+pub static INIT_SPAN1: InitSpan1Words
 
 @layout(runtime, endian=little)
-struct InitSlot2Words:
-    words: [u64; 1]
-
-@placed(0x4057f688)
-pub static INIT_SLOT2: InitSlot2Words
-
-@layout(runtime, endian=little)
-struct InitSlot3Words:
-    words: [u64; 1]
-
-@placed(0x4057f690)
-pub static INIT_SLOT3: InitSlot3Words
-
-@layout(runtime, endian=little)
-struct InitSlot4Words:
-    words: [u64; 1]
-
-@placed(0x4057f698)
-pub static INIT_SLOT4: InitSlot4Words
-
-@layout(runtime, endian=little)
-struct InitSlot5Words:
-    words: [u64; 1]
-
-@placed(0x4057f6a0)
-pub static INIT_SLOT5: InitSlot5Words
-
-@layout(runtime, endian=little)
-struct InitSlot6Words:
-    words: [u64; 1]
-
-@placed(0x4057f6a8)
-pub static INIT_SLOT6: InitSlot6Words
-
-@layout(runtime, endian=little)
-struct InitSlot7Words:
-    words: [u64; 1]
-
-@placed(0x4057f6b0)
-pub static INIT_SLOT7: InitSlot7Words
-
-@layout(runtime, endian=little)
-struct InitSlot8Words:
-    words: [u64; 1]
-
-@placed(0x4057f6b8)
-pub static INIT_SLOT8: InitSlot8Words
-
-@layout(runtime, endian=little)
-struct InitSlot9Words:
-    words: [u64; 1]
-
-@placed(0x4057f6c0)
-pub static INIT_SLOT9: InitSlot9Words
-
-@layout(runtime, endian=little)
-struct InitSlot10Words:
-    words: [u64; 1]
-
-@placed(0x4057f6c8)
-pub static INIT_SLOT10: InitSlot10Words
-
-@layout(runtime, endian=little)
-struct InitSlot11Words:
-    words: [u64; 1]
-
-@placed(0x4057f6d0)
-pub static INIT_SLOT11: InitSlot11Words
-
-@layout(runtime, endian=little)
-struct InitSlot12Words:
-    words: [u64; 1]
-
-@placed(0x4057f6d8)
-pub static INIT_SLOT12: InitSlot12Words
-
-@layout(runtime, endian=little)
-struct InitSlot13Words:
-    words: [u64; 1]
-
-@placed(0x4057f6e0)
-pub static INIT_SLOT13: InitSlot13Words
-
-@layout(runtime, endian=little)
-struct InitSlot14Words:
-    words: [u64; 1]
-
-@placed(0x4057f6e8)
-pub static INIT_SLOT14: InitSlot14Words
-
-@layout(runtime, endian=little)
-struct InitSlot15Words:
-    words: [u64; 1]
-
-@placed(0x4057f6f0)
-pub static INIT_SLOT15: InitSlot15Words
-
-@layout(runtime, endian=little)
-struct InitSlot16Words:
-    words: [u64; 1]
-
-@placed(0x4057f6f8)
-pub static INIT_SLOT16: InitSlot16Words
-
-@layout(runtime, endian=little)
-struct InitSlot17Words:
-    words: [u64; 1]
-
-@placed(0x4057f700)
-pub static INIT_SLOT17: InitSlot17Words
-
-@layout(runtime, endian=little)
-struct InitSlot18Words:
-    words: [u64; 1]
-
-@placed(0x4057f708)
-pub static INIT_SLOT18: InitSlot18Words
-
-@layout(runtime, endian=little)
-struct InitSlot19Words:
-    words: [u64; 1]
-
-@placed(0x4057f710)
-pub static INIT_SLOT19: InitSlot19Words
-
-@layout(runtime, endian=little)
-struct InitSlot20Words:
-    words: [u64; 1]
-
-@placed(0x4057f718)
-pub static INIT_SLOT20: InitSlot20Words
-
-@layout(runtime, endian=little)
-struct InitSlot21Words:
-    words: [u64; 1]
-
-@placed(0x4057f720)
-pub static INIT_SLOT21: InitSlot21Words
-
-@layout(runtime, endian=little)
-struct InitSlot22Words:
-    words: [u64; 1]
-
-@placed(0x4057f728)
-pub static INIT_SLOT22: InitSlot22Words
-
-@layout(runtime, endian=little)
-struct InitSlot23Words:
-    words: [u64; 1]
-
-@placed(0x4057f730)
-pub static INIT_SLOT23: InitSlot23Words
-
-@layout(runtime, endian=little)
-struct InitSlot24Words:
-    words: [u64; 1]
-
-@placed(0x4057f738)
-pub static INIT_SLOT24: InitSlot24Words
-
-@layout(runtime, endian=little)
-struct InitSlot25Words:
-    words: [u64; 1]
-
-@placed(0x4057f740)
-pub static INIT_SLOT25: InitSlot25Words
-
-@layout(runtime, endian=little)
-struct InitSlot26Words:
+struct InitSpan2Words:
     words: [u64; 1]
 
 @placed(0x4057f748)
-pub static INIT_SLOT26: InitSlot26Words
+pub static INIT_SPAN2: InitSpan2Words
 
 @layout(runtime, endian=little)
-struct InitSlot27Words:
+struct InitSpan3Words:
     words: [u64; 1]
 
 @placed(0x4057f750)
-pub static INIT_SLOT27: InitSlot27Words
+pub static INIT_SPAN3: InitSpan3Words
 
 @layout(runtime, endian=little)
-struct InitSlot28Words:
+struct InitSpan4Words:
     words: [u64; 1]
 
 @placed(0x4057f758)
-pub static INIT_SLOT28: InitSlot28Words
+pub static INIT_SPAN4: InitSpan4Words
 
 @layout(runtime, endian=little)
-struct InitSlot29Words:
+struct InitSpan5Words:
     words: [u64; 1]
 
 @placed(0x4057f760)
-pub static INIT_SLOT29: InitSlot29Words
+pub static INIT_SPAN5: InitSpan5Words
 
 @layout(runtime, endian=little)
-struct InitSlot30Words:
+struct InitSpan6Words:
     words: [u64; 1]
 
 @placed(0x4057f768)
-pub static INIT_SLOT30: InitSlot30Words
+pub static INIT_SPAN6: InitSpan6Words
 
 @layout(runtime, endian=little)
-struct InitSlot31Words:
+struct InitSpan7Words:
     words: [u64; 1]
 
 @placed(0x4057f770)
-pub static INIT_SLOT31: InitSlot31Words
+pub static INIT_SPAN7: InitSpan7Words
 
 @layout(runtime, endian=little)
 struct WakeTables:
@@ -2216,100 +2049,10 @@ pub fn __wrela_init_nwords(slot: usize) -> usize:
 pub fn __wrela_init_store_word(slot: usize, wi: usize, v: u64):
     match slot:
         case 0:
-            INIT_SLOT0.words[wi] = v
+            INIT_SPAN0.words[wi] = v
             return
         case 1:
-            INIT_SLOT1.words[wi] = v
-            return
-        case 2:
-            INIT_SLOT2.words[wi] = v
-            return
-        case 3:
-            INIT_SLOT3.words[wi] = v
-            return
-        case 4:
-            INIT_SLOT4.words[wi] = v
-            return
-        case 5:
-            INIT_SLOT5.words[wi] = v
-            return
-        case 6:
-            INIT_SLOT6.words[wi] = v
-            return
-        case 7:
-            INIT_SLOT7.words[wi] = v
-            return
-        case 8:
-            INIT_SLOT8.words[wi] = v
-            return
-        case 9:
-            INIT_SLOT9.words[wi] = v
-            return
-        case 10:
-            INIT_SLOT10.words[wi] = v
-            return
-        case 11:
-            INIT_SLOT11.words[wi] = v
-            return
-        case 12:
-            INIT_SLOT12.words[wi] = v
-            return
-        case 13:
-            INIT_SLOT13.words[wi] = v
-            return
-        case 14:
-            INIT_SLOT14.words[wi] = v
-            return
-        case 15:
-            INIT_SLOT15.words[wi] = v
-            return
-        case 16:
-            INIT_SLOT16.words[wi] = v
-            return
-        case 17:
-            INIT_SLOT17.words[wi] = v
-            return
-        case 18:
-            INIT_SLOT18.words[wi] = v
-            return
-        case 19:
-            INIT_SLOT19.words[wi] = v
-            return
-        case 20:
-            INIT_SLOT20.words[wi] = v
-            return
-        case 21:
-            INIT_SLOT21.words[wi] = v
-            return
-        case 22:
-            INIT_SLOT22.words[wi] = v
-            return
-        case 23:
-            INIT_SLOT23.words[wi] = v
-            return
-        case 24:
-            INIT_SLOT24.words[wi] = v
-            return
-        case 25:
-            INIT_SLOT25.words[wi] = v
-            return
-        case 26:
-            INIT_SLOT26.words[wi] = v
-            return
-        case 27:
-            INIT_SLOT27.words[wi] = v
-            return
-        case 28:
-            INIT_SLOT28.words[wi] = v
-            return
-        case 29:
-            INIT_SLOT29.words[wi] = v
-            return
-        case 30:
-            INIT_SLOT30.words[wi] = v
-            return
-        case 31:
-            INIT_SLOT31.words[wi] = v
+            INIT_SPAN1.words[wi] = v
             return
         case _:
             return
