@@ -1,8 +1,8 @@
 module lib.pair
 
 pub struct Pair:
-    a: u32
-    b: u32
+    pub a: u32
+    pub b: u32
 
     pub fn sum(read self) -> u32:
         return self.a + self.b
