@@ -1,0 +1,18 @@
+module examples.cost_arith
+
+# Cost-stage golden (plans/M18.md item F) — same shapes as asm-arith
+# (checked add/div, wrapping add, mixed).
+
+pub fn checked_add(a: u32, b: u32) -> u32:
+    return a + b
+
+pub fn wrapping_add(a: u8, b: u8) -> u8:
+    return a +% b
+
+pub fn checked_div(a: i32, b: i32) -> i32:
+    return a / b
+
+pub fn mixed(a: u16, b: u16, c: u16) -> u16:
+    x: u16 = a +% b
+    y: u16 = x + c
+    return y
