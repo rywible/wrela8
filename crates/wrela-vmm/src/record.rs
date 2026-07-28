@@ -122,6 +122,12 @@ pub enum ChoiceEntry {
     /// hand-off target). Recorded under Progress-serialized execution;
     /// under replay that core is forced.
     Progress { core: u32 },
+    /// plans/M17.md item C / freeze 6: bytes the VMM filled for a guest
+    /// `entropy[N]()` call. Text form is `EntropyRead len=N hex=...`
+    /// (lowercase, exactly `2*N` hex chars). Live path reads
+    /// `/dev/urandom`; underrun / tag-mismatch fallback is `N` zero
+    /// bytes (clock's `value: 0` precedent). Additive ChoiceLog v1 tag.
+    EntropyRead { bytes: Vec<u8> },
 }
 
 impl ChoiceEntry {
@@ -133,6 +139,7 @@ impl ChoiceEntry {
             ChoiceEntry::Admission { .. } => "Admission",
             ChoiceEntry::DeviceCompletion { .. } => "DeviceCompletion",
             ChoiceEntry::Progress { .. } => "Progress",
+            ChoiceEntry::EntropyRead { .. } => "EntropyRead",
         }
     }
 
@@ -161,6 +168,13 @@ impl ChoiceEntry {
                 "DeviceCompletion device={device} queue={queue} head={head} status={status} len={len} digest={digest}"
             ),
             ChoiceEntry::Progress { core } => format!("Progress core={core}"),
+            ChoiceEntry::EntropyRead { bytes } => {
+                format!(
+                    "EntropyRead len={} hex={}",
+                    bytes.len(),
+                    bytes_to_lowercase_hex(bytes)
+                )
+            }
         }
     }
 
@@ -227,8 +241,65 @@ impl ChoiceEntry {
                     .parse()
                     .map_err(|e| format!("bad Progress core: {e}"))?,
             }),
+            "EntropyRead" => {
+                let len: u64 = field("len")?
+                    .parse()
+                    .map_err(|e| format!("bad EntropyRead len: {e}"))?;
+                let hex = field("hex")?;
+                let expected_hex_len = len
+                    .checked_mul(2)
+                    .ok_or_else(|| format!("bad EntropyRead len {len}: hex length overflow"))?;
+                if hex.len() as u64 != expected_hex_len {
+                    return Err(format!(
+                        "bad EntropyRead hex length: got {} chars, want {} (2*len={len})",
+                        hex.len(),
+                        expected_hex_len
+                    ));
+                }
+                let bytes = lowercase_hex_to_bytes(hex)
+                    .map_err(|e| format!("bad EntropyRead hex: {e}"))?;
+                Ok(ChoiceEntry::EntropyRead { bytes })
+            }
             other => Err(format!("unknown choice tag `{other}`")),
         }
+    }
+}
+
+/// Lowercase hex encoding for `ChoiceEntry::EntropyRead` (plans/M17.md
+/// freeze 6). No dependency — two nybbles per byte, `0-9a-f` only.
+fn bytes_to_lowercase_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0xf) as usize] as char);
+    }
+    out
+}
+
+/// Inverse of [`bytes_to_lowercase_hex`]. Fails closed on non-lowercase
+/// hex digits (uppercase and non-hex alike) so a tampered log cannot
+/// quietly normalize into a different byte string.
+fn lowercase_hex_to_bytes(hex: &str) -> Result<Vec<u8>, String> {
+    if hex.len() % 2 != 0 {
+        return Err(format!("odd hex length {}", hex.len()));
+    }
+    let mut out = Vec::with_capacity(hex.len() / 2);
+    let mut chars = hex.chars();
+    while let Some(hi) = chars.next() {
+        let lo = chars.next().expect("even length checked above");
+        let hi_n = lowercase_hex_nibble(hi)?;
+        let lo_n = lowercase_hex_nibble(lo)?;
+        out.push((hi_n << 4) | lo_n);
+    }
+    Ok(out)
+}
+
+fn lowercase_hex_nibble(c: char) -> Result<u8, String> {
+    match c {
+        '0'..='9' => Ok((c as u8) - b'0'),
+        'a'..='f' => Ok((c as u8) - b'a' + 10),
+        _ => Err(format!("non-lowercase-hex digit {c:?}")),
     }
 }
 
@@ -278,6 +349,13 @@ pub enum ChoiceRequest {
     Progress {
         core: u32,
     },
+    /// plans/M17.md item C: guest asked for `len` entropy bytes. Live
+    /// closure fills from `/dev/urandom`; replay yields the logged
+    /// `EntropyRead` bytes. `fallback` zero-fills `len` (assert
+    /// `len <= ENTROPY_LEN_MAX`).
+    EntropyRead {
+        len: u64,
+    },
 }
 
 impl ChoiceRequest {
@@ -289,6 +367,7 @@ impl ChoiceRequest {
             ChoiceRequest::DeviceCompletion { .. } => "DeviceCompletion",
             ChoiceRequest::Admission { .. } => "Admission",
             ChoiceRequest::Progress { .. } => "Progress",
+            ChoiceRequest::EntropyRead { .. } => "EntropyRead",
         }
     }
 
@@ -325,6 +404,15 @@ impl ChoiceRequest {
                 sender: sender.clone(),
             },
             ChoiceRequest::Progress { core } => ChoiceEntry::Progress { core: *core },
+            ChoiceRequest::EntropyRead { len } => {
+                assert!(
+                    *len <= wrela_machine::machine_info::ENTROPY_LEN_MAX,
+                    "EntropyRead fallback len {len} exceeds ENTROPY_LEN_MAX"
+                );
+                ChoiceEntry::EntropyRead {
+                    bytes: vec![0; *len as usize],
+                }
+            }
         }
     }
 }
@@ -1126,19 +1214,23 @@ mod tests {
                     len: 513,
                     digest: "fedcba9876543210".to_string(),
                 },
+                ChoiceEntry::EntropyRead {
+                    bytes: vec![0xde, 0xad, 0xbe, 0xef],
+                },
             ],
             transcript_digest: "0123456789abcdef".to_string(),
             exit_code: 0,
             exits: 3,
         };
         let expected = "ChoiceLog v1\n\
-             choice_count=6\n\
+             choice_count=7\n\
              choice[0]=ClockRead value=12345\n\
              choice[1]=DeadlineWake deadline_ns=500000\n\
              choice[2]=VectorRaise vector=0\n\
              choice[3]=Admission mailbox=Store sender=root\n\
              choice[4]=Progress core=1\n\
              choice[5]=DeviceCompletion device=blk queue=0 head=3 status=0 len=513 digest=fedcba9876543210\n\
+             choice[6]=EntropyRead len=4 hex=deadbeef\n\
              transcript_digest=0123456789abcdef\n\
              exit_code=0\n\
              exits=3\n";
@@ -1162,6 +1254,52 @@ mod tests {
             exits: 1,
         };
         assert_eq!(RecordFile::parse(&rec.to_text()).expect("round-trip"), rec);
+    }
+
+    /// plans/M17.md item C: `EntropyRead` tag parse / round-trip / fail-closed.
+    #[test]
+    fn entropy_read_choice_parses_and_round_trips() {
+        let entry = ChoiceEntry::EntropyRead {
+            bytes: vec![0xab, 0xcd, 0xef, 0x01],
+        };
+        assert_eq!(entry.tag(), "EntropyRead");
+        assert_eq!(
+            ChoiceRequest::EntropyRead { len: 4 }.tag(),
+            "EntropyRead"
+        );
+        assert_eq!(entry.to_text_fields(), "EntropyRead len=4 hex=abcdef01");
+        assert_eq!(
+            ChoiceEntry::parse_fields("EntropyRead len=4 hex=abcdef01").expect("parses"),
+            entry
+        );
+        let rec = RecordFile {
+            choices: vec![entry.clone()],
+            transcript_digest: digest_hex(b"e"),
+            exit_code: 0,
+            exits: 1,
+        };
+        assert_eq!(RecordFile::parse(&rec.to_text()).expect("round-trip"), rec);
+
+        assert!(
+            ChoiceEntry::parse_fields("EntropyRead len=4 hex=abcd").is_err(),
+            "hex shorter than 2*len must refuse"
+        );
+        assert!(
+            ChoiceEntry::parse_fields("EntropyRead len=2 hex=abcdef").is_err(),
+            "hex longer than 2*len must refuse"
+        );
+        assert!(
+            ChoiceEntry::parse_fields("EntropyRead len=2 hex=ABCD").is_err(),
+            "uppercase hex must refuse"
+        );
+
+        let fb = ChoiceRequest::EntropyRead { len: 8 }.fallback();
+        assert_eq!(
+            fb,
+            ChoiceEntry::EntropyRead {
+                bytes: vec![0; 8]
+            }
+        );
     }
 
     #[test]
