@@ -376,8 +376,9 @@ pub const RUNTIME_WIRING_FORCE_ROOT_KEYS: &[&str] = &[
     "__wrela_xreply_edge",
     "__wrela_rt_boot_init",
     "__wrela_rt_secondary_entry",
-    "__wrela_secondary_entry_1",
-    "__wrela_secondary_entry_2",
+    // Secondary trampolines `__wrela_secondary_entry_k` are seeded from
+    // `ImageForceRootOpts::n_cores` (plans/M15.md item E / decision 1055) —
+    // exactly N_CORES-1, not a hardcoded 1/2 pool.
     "__wrela_init_nwords",
     "__wrela_init_store_word",
     "__wrela_boot_call",
@@ -415,6 +416,9 @@ pub struct ImageForceRootOpts {
     pub n_boot_calls: usize,
     pub n_irq_calls: usize,
     pub n_wake_calls: usize,
+    /// Live core count (`PlacementTable.cores`). Seeds
+    /// `__wrela_secondary_entry_k` for `k in 1..n_cores` (decision 1055).
+    pub n_cores: usize,
 }
 
 /// Extend `only` with wiring-conditional / test-runner force-root seeds
@@ -436,6 +440,14 @@ pub fn seed_image_force_roots(
         }
         for i in 0..crate::rtconfig::ENQUEUE_STUB_COUNT {
             only.insert(format!("__enqueue_{i}"));
+        }
+        // plans/M15.md item E / decision 1055: exactly N_CORES-1 trampolines.
+        let n_cores = opts.n_cores.max(1);
+        for core in 1..n_cores {
+            only.insert(format!("__wrela_secondary_entry_{core}"));
+        }
+        if n_cores > 1 {
+            only.insert("__wrela_secondary_entry_body".to_string());
         }
     }
     if opts.with_wiring {
@@ -473,6 +485,7 @@ pub fn seed_image_force_roots(
                 || name.starts_with("__wake_call_")
                 || name.starts_with("__boot_call_")
                 || name.starts_with("__select_")
+                || name.starts_with("__wrela_secondary_entry_")
                 || (opts.with_test_runner
                     && (name.starts_with("__test_call_") || name.starts_with("__test_prefix_")))
             {

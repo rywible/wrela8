@@ -3504,6 +3504,7 @@ fn generate_live_rtconfig(
                 n_boot_calls: w.tables.n_boot_calls,
                 n_irq_calls: w.tables.irq_vector_bits.len(),
                 n_wake_calls: w.tables.wake_pending_addrs.len(),
+                n_cores: w.tables.cores,
             };
             Ok((text, opts))
         }
@@ -3529,6 +3530,7 @@ fn generate_live_rtconfig(
                 n_boot_calls: 0,
                 n_irq_calls: 0,
                 n_wake_calls: 0,
+                n_cores: 1,
             };
             Ok((text, opts))
         }
@@ -3633,7 +3635,7 @@ pub(super) fn apply_resume_remaps(program: &mut CodegenProgram, wiring: &Runtime
     let Ok(extras) = crate::rtconfig::extras_from_tables(&wiring.tables) else {
         return;
     };
-    let remaps = crate::rtconfig::stub_call_remaps(&extras);
+    let remaps = crate::rtconfig::stub_call_remaps(&extras, wiring.tables.cores);
     if remaps.is_empty() {
         return;
     }

@@ -167,9 +167,11 @@ pub(super) fn inject_rt_enqueue_and_dispatch_fns(
     Ok(())
 }
 
-/// M11 H (decisions 811 / 814): prepend floor-cat1 SP install onto each
-/// `__wrela_secondary_entry_<core>` trampoline and republish under
-/// `rt_secondary_core_entry <core>` for VMM `core_entries`.
+/// M11 H (decisions 811 / 814) / M15 E (1053–1054): prepend floor-cat1 SP
+/// install onto each generated `__wrela_secondary_entry_<core>` trampoline
+/// (`core in 1..N_CORES`) and republish under `rt_secondary_core_entry <core>`
+/// for VMM `core_entries`. Parameterized on `wiring.tables.cores` — no spare
+/// pool to `CORE_SLOTS-1`.
 pub(super) fn inject_rt_cross_core_fns(
     program: &mut CodegenProgram,
     wiring: &RuntimeWiring,
