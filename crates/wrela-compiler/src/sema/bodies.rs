@@ -3399,14 +3399,26 @@ pub(crate) fn literal_array_len(e: &Expr) -> Option<i128> {
     }
 }
 
+/// The largest fixed-array length / `Bytes[N]` length / `String[..N]`
+/// capacity a build accepts. Shared across the three surfaces so a
+/// declared `[T; N]` cannot sneak past the limit that `[elem; N]`
+/// expressions and `String[..N]` already enforce — without it,
+/// `mwir::size_of` multiplies by a guest-chosen `N` and panics under
+/// `[profile.release] overflow-checks = true` (adversarial audit, 2026-07-27).
+pub(crate) const MAX_ARRAY_LEN: i128 = 65_536;
+
 /// The largest `String[..N]` capacity a build accepts — the same bound
-/// `[elem; N]` already carries (`check_array_len`'s 65536-element build
-/// limit), for the same reason and with the same number: a `String[..N]`
-/// is one length word plus `N` byte slots, so `N` is an element count in
-/// exactly the sense an array's is. At the limit the aggregate is
-/// `8 * (1 + 65536)` = 512 KiB, which is already far past anything a
-/// 1 GiB guest image should hold in one value.
-pub(crate) const MAX_STRING_CAPACITY: i128 = 65_536;
+/// `[elem; N]` already carries, for the same reason and with the same
+/// number: a `String[..N]` is one length word plus `N` byte slots, so
+/// `N` is an element count in exactly the sense an array's is. At the
+/// limit the aggregate is `8 * (1 + 65536)` = 512 KiB, which is already
+/// far past anything a 1 GiB guest image should hold in one value.
+pub(crate) const MAX_STRING_CAPACITY: i128 = MAX_ARRAY_LEN;
+
+/// Whether a literal array / `Bytes[N]` length is within the build limit.
+pub(crate) fn array_len_fits(n: i128) -> bool {
+    (0..=MAX_ARRAY_LEN).contains(&n)
+}
 
 /// Whether `n` is a layout-representable `String[..N]` capacity
 /// (plans/M9.md item K1, corrected 2026-07-26 by a `fuzz lower` find).
@@ -4422,9 +4434,9 @@ fn synth_array_repeat(
             count.span(),
         ));
     }
-    if n > 65_536 {
+    if !array_len_fits(n) {
         return Err(type_error(
-            format!("`[elem; N]` count {n} exceeds the 65536-element build limit"),
+            format!("`[elem; N]` count {n} exceeds the {MAX_ARRAY_LEN}-element build limit"),
             count.span(),
         ));
     }

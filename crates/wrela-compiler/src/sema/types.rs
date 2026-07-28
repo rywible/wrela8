@@ -3016,6 +3016,22 @@ pub(crate) fn resolve_type(
         ),
         ast::Type::Array(a) => {
             let elem = resolve_type(&a.elem, shapes, module_pools, local_pools, generics, false)?;
+            // Same 65536-element build limit `[elem; N]` expressions and
+            // `String[..N]` already carry. Declared array types used to
+            // skip it, so `mwir::size_of` panicked on overflow multiply
+            // during placement (adversarial audit, 2026-07-27).
+            if let Some(n) = crate::sema::bodies::literal_array_len(&a.len) {
+                if !crate::sema::bodies::array_len_fits(n) {
+                    return Err(SemaError::at(
+                        "type",
+                        format!(
+                            "array length {n} exceeds the {}-element build limit",
+                            crate::sema::bodies::MAX_ARRAY_LEN
+                        ),
+                        a.span,
+                    ));
+                }
+            }
             Ok(Type::Array(Box::new(elem), Box::new(a.len.clone())))
         }
         ast::Type::Tuple(t) => {
@@ -3120,7 +3136,21 @@ fn resolve_bytes(n: &NamedType, param_position: bool) -> Result<Type, SemaError>
     }
     expect_arity(n, 1)?;
     match &n.args[0] {
-        GenericArg::Expr(e) => Ok(Type::Bytes(Some(Box::new(e.clone())))),
+        GenericArg::Expr(e) => {
+            if let Some(len) = crate::sema::bodies::literal_array_len(e) {
+                if !crate::sema::bodies::array_len_fits(len) {
+                    return Err(SemaError::at(
+                        "type",
+                        format!(
+                            "`Bytes[N]` length {len} exceeds the {}-element build limit",
+                            crate::sema::bodies::MAX_ARRAY_LEN
+                        ),
+                        n.span,
+                    ));
+                }
+            }
+            Ok(Type::Bytes(Some(Box::new(e.clone()))))
+        }
         // A bare identifier (a const generic parameter or a `const`
         // item) parses as a type-shaped argument — the grammar cannot
         // tell a value name from a type name — so it is unwrapped back

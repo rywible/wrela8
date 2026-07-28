@@ -334,6 +334,18 @@ mod tests {
     }
 
     #[test]
+    fn mmio_protocol_words_are_eight_bytes_only() {
+        // boot.rs rejects anything but size_bytes == 8 at every MMIO
+        // address; pin the decode side so a 1/2/4-byte LDRB/LDRH/LDR
+        // is distinguishable from an 8-byte LDR (adversarial audit).
+        for (sas, bytes) in [(0b00u32, 1u32), (0b01, 2), (0b10, 4), (0b11, 8)] {
+            let esr = build_esr_data_abort(EC_DATA_ABORT_LOWER_EL, false, 1, sas);
+            let da = decode_data_abort(esr).unwrap();
+            assert_eq!(da.size_bytes == 8, bytes == 8, "sas={sas}");
+        }
+    }
+
+    #[test]
     fn isv_zero_is_not_decodable() {
         // ISV bit cleared: the same word as a valid store, but with bit 24
         // masked off.

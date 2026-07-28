@@ -1,0 +1,10 @@
+module examples.err_array_type_build_limit
+
+# Declared array types must honor the same 65536-element build limit as
+# `[elem; N]` expressions. Without it, `mwir::size_of` multiplies element
+# size by a guest-chosen length and panics under
+# `[profile.release] overflow-checks = true` (adversarial audit find).
+
+@actor
+pub struct A:
+    a: [[u8; 2147483648]; 2147483648]

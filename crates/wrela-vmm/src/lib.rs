@@ -27,8 +27,19 @@ pub mod hv;
 /// stuck with no exits at all (an infinite loop between checkpoints) is
 /// force-exited via `hv_vcpus_exit` from a watchdog thread — a hang is
 /// reported as `VmmError::Timeout`, transcript-so-far included, never a
-/// silent stall.
+/// silent stall. The same cap bounds a park deadline sleep: a guest-
+/// writable `OFF_NEXT_DEADLINE` of `u64::MAX` must not sleep the host
+/// for centuries with the scheduler mutex held (adversarial audit,
+/// 2026-07-27).
 pub const WALL_CAP: Duration = Duration::from_secs(30);
+
+/// Absolute nanosecond deadline the host will wait until for a park:
+/// `min(deadline_ns, now_ns + WALL_CAP)`. Over-long guest deadlines are
+/// not protocol facts worth honouring past the wall cap.
+pub(crate) fn capped_park_deadline_ns(now_ns: u64, deadline_ns: u64) -> u64 {
+    let wall_cap_ns = WALL_CAP.as_nanos() as u64;
+    deadline_ns.min(now_ns.saturating_add(wall_cap_ns))
+}
 
 #[derive(Debug)]
 pub enum VmmError {
@@ -256,6 +267,27 @@ pub mod record;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn park_deadline_is_clamped_to_wall_cap() {
+        let now = 1_000_000_000u64;
+        let wall_ns = WALL_CAP.as_nanos() as u64;
+        assert_eq!(
+            capped_park_deadline_ns(now, now + 1_000),
+            now + 1_000,
+            "short deadlines are honoured"
+        );
+        assert_eq!(
+            capped_park_deadline_ns(now, u64::MAX),
+            now.saturating_add(wall_ns),
+            "u64::MAX must not sleep past WALL_CAP"
+        );
+        assert_eq!(
+            capped_park_deadline_ns(now, now.saturating_add(wall_ns).saturating_add(1)),
+            now.saturating_add(wall_ns),
+            "anything past WALL_CAP is capped"
+        );
+    }
 
     /// VMM-facing report identity lines for unit fixtures. `Image sha256=`
     /// hashes `img` when provided; parse-only fixtures pass `&[]` and get
@@ -1414,6 +1446,36 @@ pub fn build() -> Image:
         assert_eq!(
             outcome.exit_code, 0,
             "the pending word must read 1 after the park's own resume (the VMM's raise)"
+        );
+    }
+
+    /// Sub-word MMIO (LDRB against CLOCK) is a named guest fault — never a
+    /// silent zero-extend of the full 64-bit clock word into the
+    /// destination register (adversarial audit, 2026-07-27).
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn subword_mmio_access_is_a_named_guest_fault_over_hvf() {
+        use wrela_compiler::encode;
+        use wrela_machine::mmio;
+
+        let mut w = Vec::new();
+        w.extend(load_imm_words(9, mmio::CLOCK_MMIO_ADDR));
+        w.push(encode::enc_ldrb_imm(1, 9, 0)); // LDRB — 1-byte, not 8
+        w.push(encode::enc_brk(0));
+
+        let img_bytes: Vec<u8> = w.iter().flat_map(|word| word.to_le_bytes()).collect();
+        let (report_path, img_path) = write_hand_built_image(&img_bytes, "mmio-subword");
+        let err = boot_image(&report_path, &img_path)
+            .expect_err("a 1-byte CLOCK load must fault, never approximate");
+        let _ = std::fs::remove_dir_all(report_path.parent().unwrap());
+        let msg = err.to_string();
+        assert!(
+            msg.contains("8-byte access") && msg.contains("1-byte"),
+            "must name the width rule: {msg}"
+        );
+        assert!(
+            msg.contains("CLOCK_MMIO_ADDR"),
+            "must name the MMIO address: {msg}"
         );
     }
 

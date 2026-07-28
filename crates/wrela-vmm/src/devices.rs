@@ -118,6 +118,14 @@ pub const SECTOR_SIZE: u64 = 512;
 /// enough that the failure is unmistakable.
 pub const MAX_DISK_BYTES: u64 = 64 << 20;
 
+/// Largest virtio-blk queue depth this VMM will instantiate. VIRTIO allows
+/// up to 32768, but one doorbell ring walks every available chain and each
+/// chain may copy up to [`MAX_DISK_BYTES`] — a forged `size=32768` is
+/// ~2 TiB of host memcpy while the scheduler mutex is held. 1024 matches
+/// anything the compiler emits and keeps one poll bounded
+/// (adversarial audit, 2026-07-27).
+pub const MAX_BLK_QUEUE_SIZE: u16 = 1024;
+
 // --- declared pool windows and checked guest memory -------------------------
 
 /// Guest DRAM as **one device** may reach it: every declared pool window
@@ -593,6 +601,13 @@ impl BlkDevice {
         if q.size == 0 || !q.size.is_power_of_two() {
             return Err(format!(
                 "blk queue size {} must be a nonzero power of two (VIRTIO 1.2 §2.6)",
+                q.size
+            ));
+        }
+        if q.size > MAX_BLK_QUEUE_SIZE {
+            return Err(format!(
+                "blk queue size {} exceeds this VMM's own {MAX_BLK_QUEUE_SIZE}-deep ceiling \
+                 (a forged report must not force unbounded memcpy per doorbell poll)",
                 q.size
             ));
         }
@@ -1198,6 +1213,19 @@ mod tests {
         );
         h.cfg.queue.size = 0;
         assert!(BlkDevice::new(h.cfg.clone()).is_err());
+    }
+
+    #[test]
+    fn a_queue_size_above_the_vmm_ceiling_is_refused() {
+        let mut h = Harness::new();
+        // Power of two and VIRTIO-legal, but past MAX_BLK_QUEUE_SIZE — the
+        // availability cap, not the geometry rule.
+        h.cfg.queue.size = 32768;
+        let err = BlkDevice::new(h.cfg.clone()).expect_err("32768 exceeds the VMM ceiling");
+        assert!(
+            err.contains(&MAX_BLK_QUEUE_SIZE.to_string()),
+            "must name the ceiling: {err}"
+        );
     }
 
     /// The last case is plans/M8.md item P's own: a ring placed inside a

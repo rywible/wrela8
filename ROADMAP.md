@@ -72,12 +72,13 @@ beyond the active milestone. A milestone's *first deliverable* is its plan
 code exists, the shape decisions that milestone freezes, and explicit
 non-goals. Plans are written when a milestone activates, never earlier
 (each milestone manufactures the facts the next plan needs), and become
-history when it completes. Active plan: none — M14 is COMPLETE (doc cut:
+history when it completes. Active plan: [plans/M15.md](plans/M15.md) — M15 (variable cores + true
+concurrent vCPUs) **ACTIVE** (2026-07-27). M14 is COMPLETE (doc cut:
 constructive progress theorem; no `plans/M14.md` — capability cut, not a
 build-out; forward-ref golden still `image.graph.handle-dag` gap). M13 is
-COMPLETE ([plans/M13.md](plans/M13.md)). Next is M15 (cycle proxy) and
-**not activated**. M12 is COMPLETE ([plans/M12.md](plans/M12.md)). M11 is
-COMPLETE ([plans/M11.md](plans/M11.md)).
+COMPLETE ([plans/M13.md](plans/M13.md)). Cycle proxy is M16; optimization
+playground is M17 — neither activated. M12 is COMPLETE
+([plans/M12.md](plans/M12.md)). M11 is COMPLETE ([plans/M11.md](plans/M11.md)).
 
 ### M1 — Parse everything
 Full grammar → stable AST dumps (`wrela dump --stage=ast`). Includes
@@ -165,7 +166,10 @@ Placement inference, cross-core rings, **3 vCPUs**, per-mailbox admission
 recording. Flips: `actors.placement.deterministic`.
 
 Settled (2026-07-24, human decision): the machine is **3 vCPUs, always** —
-down from 4. The flagship host runs a thin Linux underneath the VMM (core
+down from 4. **Revised by M15 (2026-07-27):** N becomes a sealed image
+fact (`Image(..., cores=N?)`), not a machine-revision constant; M8's
+number and baton remain the historical bring-up. The flagship host runs a
+thin Linux underneath the VMM (core
 isolation plus VFIO for devices), and one core is pinned to it permanently:
 Linux housekeeping (timers, RCU, unoffloadable kthreads), the VMM's polling
 I/O threads, and the recorder. The trade is deliberate — one core buys the
@@ -524,7 +528,7 @@ immediates). The `bench guest` lock on `boot-actors` (700000us threshold;
 dodge it. The payoff is structural: today's hand specialization becomes
 *derivable* by ordinary passes — const-prop of the placed base and
 constant indices, `TurnId` bounds-proof elision, dense-match jump tables
-— each a future cleverness-budget purchase scored by **M15's** proxy,
+— each a future cleverness-budget purchase scored by **M16's** proxy,
 acting on runtime and user code alike. M11 makes the runtime reachable by
 the budget; it does not spend it.
 
@@ -547,7 +551,7 @@ entry-driver residue. Detail: [plans/M11.md](plans/M11.md).
 
 Opens: facts-only / generator-determinism / rtconfig-dump clauses (named
 in the plan). Narrows: `sema.bounds.loops` (the `@budget` half for sync
-loops). Non-goals: optimizing the scheduler (M15-proxy-gated); fusion;
+loops). Non-goals: optimizing the scheduler (M16-proxy-gated); fusion;
 `@naked`; comptime metaprogramming; config-as-data; register allocation.
 
 ### M12 — The representation rung (placed statics back to O(1))
@@ -614,7 +618,7 @@ Detail: [plans/M13.md](plans/M13.md). The load-bearing pieces:
   parameters land (02 §8.3's flagship idiom compiles); inferred error
   sets for private fns (promoted from the intention below; its doc
   revision stays human-gated).
-- **The ISR gate** is prepared here and decided before M15's plan is
+- **The ISR gate** is prepared here and decided before M16's plan is
   written: delete the user-visible ISR (vector → bottom-half wake,
   pending-word consumption as the ack) or keep it — evidence package
   with measured latency numbers, golden inventory, the 06 §5 MMIO
@@ -696,7 +700,108 @@ a fail-closed refusal naming this rung. Retargets
 history preserved. Follows M13 because M13 lands its ingredients
 (loop discharge, fail-fast admission, the `Actor[T]` class).
 
-### M15 — The cycle proxy
+### M15 — Variable cores + true concurrent vCPUs
+Settled 2026-07-27 (human decision). Multicore today is affinity and
+messaging under M8 decision 11's **baton** — exactly one vCPU inside
+`hv_vcpu_run` at a time — with a machine-revision constant of **3 vCPUs,
+always**. That buys sealed placement and cross-core rings without host
+scheduler interleaving, and without parallel throughput; 04 §3's sealed
+publish/acquire barriers are unobservable under the baton
+(`machine.cross-core.publish-acquire-barrier` stays a gap). M11 deferred
+`cores=N` authoring once `N_CORES` became a generated fact. This rung
+owns both: **the image names how many cores it wants**, and **those cores
+actually run together**.
+
+**Doctrine revise (same-commit normative edit when the rung activates).**
+Core count is **not** a machine revision and not ambient discovery. The
+machine revision stays ISA baseline, memory-map *rules*, and the closed
+device set (01's "new device or core count is a machine revision" narrows
+to devices / map rules; 06 §1's "3 vCPUs, always" is deleted). N is a
+**sealed image fact**: authored, placed into the report, digested into
+build identity. The flagship housekeeping arithmetic
+(`host cores − 1`) remains advice for choosing N on a Pi 5, not a
+contract constant the image must equal.
+
+**Authoring.** `Image(name=..., target=..., cores=N?)` — optional
+`cores`, default **1** (today's single-core floor; existing goldens stay
+quiet). `seal()` unchanged. Placement domain is `0 .. N-1`: explicit
+`core=` pins first (`core ≥ N` → build error), then deterministic packing
+(work → bytes → identity) as today. Virtio-blk and any other pin rules
+keep their pins; out-of-range fails closed. Message APIs, handles, and
+"no work stealing / no migration" do not change — parallelism is still
+actors plus moved ownership, now with a real overlapping schedule in
+stage 2.
+
+**No compile-time max.** The contract does not name `VCPUS_MAX`. Layout
+and the report grow with N. The VMM **refuses at boot** if the host
+cannot provide N vCPUs (short host is a VMM error, never a guest probe —
+06 §3). Pathological N is bounded the same way pathological mailbox
+depths already are: fail closed when a concrete layout/reservation
+ceiling is exceeded, not by pretending a machine-wide core max.
+
+**Layout: report-owned stacks, fixed `IMAGE_BASE`.** Demote/delete
+`wrela-machine::VCPUS` as a hard constant. Per-core stacks become report
+lines (base/size), packed from **high DRAM** (or after the image) so
+`IMAGE_BASE` / `RTDATA_BASE` stay put. Secondary `CoreEntry` lines,
+release doorbell value, pending words, and ring topology all size to the
+sealed N. Guest runtime keeps indexing M11's generated `N_CORES` — the
+thin follow-up M11 decision 708–709 named. Cross-core images with
+`cores=1` are a build error when any pin or edge demands another core.
+
+**Two stages inside one milestone** (do not close after stage 1 alone).
+
+1. **`cores=N` under the baton.** Normative + ledger first. Authoring,
+   placement domain, report/layout parameterization, VMM creates N vCPU
+   threads but still serializes `hv_vcpu_run` through the baton. Boot
+   goldens for `cores=1` (byte-identical to today), `cores=2`, and
+   `cores=3` (or higher on a capable host); host-too-small refusal pinned.
+   Stage 1 is reviewable without rewriting the recorder — and must not
+   claim "parallel throughput" while the baton remains.
+
+2. **Delete the baton.** True overlapping `hv_vcpu_run` on ≥2 host
+   threads. Emit inlined publish/acquire DMBs (`DMB ISHST` after ring
+   payload/`count` stores and before the pending-word raise; `DMB ISHLD`
+   after occupancy load and before payload reads in drain) via a
+   runtime-only intrinsic — one word, no BL. Record Yield order as
+   enumerable `ChoiceEntry::Progress` (park/release only) so replay
+   serializes from the log; exhaustive schedule enumeration stays the
+   M6 later intention (not this rung). Pin a boot golden whose
+   transcript **fails under concurrent execution when those barriers are
+   omitted**. Delete the `HV_VCPU_RUN_DEPTH` baton assert (overlap
+   required on the concurrent golden).
+
+**Ordered spine (coarse; plan freezes the walk).**
+(0) Normative cut: 06 §1, 01 model sentence, 02/04/05 `Image`/`cores=`
+surface, ledger opens. (1) Report `Cores` + high-DRAM stack lines.
+(2) Compiler/layout/VMM parameterized on N; **delete `VCPUS`**.
+(3) Authoring + placement goldens. (4) Stage-1 multicore boots under
+baton. (5) Inline `@dmb` in publish/drain. (6) Baton deletion +
+Yield-Progress replay. (7) Barrier-deletion golden; flip
+`machine.cross-core.publish-acquire-barrier`.
+
+Flips: `machine.cross-core.publish-acquire-barrier`. Opens: image-cores
+authoring / report-N / host-refuse clauses (named in the plan). Touches:
+`actors.placement.deterministic` (domain is N, not the constant 3).
+Normative edits as above. Detail: [plans/M15.md](plans/M15.md).
+
+**Non-goals.** Work stealing; actor migration; app-visible atomics or
+fences; changing the placement *algorithm* beyond the N domain (work
+proofs remain M-whatever lands them); cycle proxy / optimizer shelf
+(M16/M17); exhaustive schedule enumeration / POR (M6 later intention —
+M15 only needs Yield-`Progress` replay); KVM bring-up (still the
+flagship-host intention); pixels; raising the flagship housekeeping
+story into a second guest-visible contract.
+
+**Rejected here (do not relitigate).** (a) Core count as machine revision
+strings (`…_3cpu`) — explodes revisions for an image fact. (b) Compile-time
+`VCPUS_MAX` in the contract — a soft host/layout ceiling may still fail
+closed in code, but the docs do not publish a max. (c) Growing the low
+stack slab and moving `IMAGE_BASE` with N — golden churn for no guest
+benefit. (d) Closing the rung after `cores=N` while the baton remains —
+that would repeat M8's "three cores, no throughput" claim under a new
+name.
+
+### M16 — The cycle proxy
 Perf without chasing hardware. Today `compiler.costs.predicted-vs-measured`
 is a gap: `report::render` predicts no costs, so `profile` has nothing to
 put beside its measurements. This milestone builds a deterministic
@@ -720,7 +825,7 @@ build-affecting constant.
 not pre-layout asm, not an IR op count. Stable `wrela dump --stage=cost`
 with totals by function (and coarser owners). Every term names an
 instruction and the profile rule that priced it; a bare number is not a
-review surface. Full IR why-chains can deepen later; M15's floor is
+review surface. Full IR why-chains can deepen later; M16's floor is
 "which word, which rule."
 
 **A/B through ordinary lowering.** Clone the input, flip one change, lower
@@ -743,7 +848,7 @@ fix or mark unscored — never nudge until quiet.
 **Semantic counts stay exact.** Choice entries, exits, transcript bytes,
 exit status: exact match or bug. Checkpoint crossings only after the
 recorder exposes them. Exit-rate *predictions* in the report (06 §5) are
-**not** M15 — useful, but a separate report feature; rewrite the stale
+**not** M16 — useful, but a separate report feature; rewrite the stale
 ledger note so this clause flips on proxy A/B + semantic exact-matches,
 not on device exit-rate lines.
 
@@ -763,7 +868,7 @@ misrankings. (8) Capstone below.
 FlowWir rewrite; unproved sites untouched. Amplify with unrolling or many
 straight-line sites — not async loops (checkpoints drown the delta) and
 not sync loops (`sema.bounds.loops` is out of scope for this capstone —
-M11 narrows that gap for authoring; M15's held-out case stays
+M11 narrows that gap for authoring; M16's held-out case stays
 straight-line). Held out of calibration. Outcomes: (a) measurable
 physical win and proxy agrees → land under the budget; (b) measurable
 disagree → pin and fix the model; (c) still unmeasurable → do not land
@@ -776,8 +881,8 @@ Non-goals: anything beyond the capstone; `@budget` proofs; WCET; exit-rate
 report lines; trace/cache modeling; multicore contention; DVFS/thermal;
 in-compiler ML (offline search may emit tables later).
 
-### M16 — The optimization playground
-M15 is the ruler. M16 is the shelf where purchases sit — not the purchases.
+### M17 — The optimization playground
+M16 is the ruler. M17 is the shelf where purchases sit — not the purchases.
 
 **What lands (three things).**
 
@@ -798,16 +903,16 @@ M15 is the ruler. M16 is the shelf where purchases sit — not the purchases.
    semantics, it is a bug fix or a doc rule — not an optimization.
 
 Done when a later spend can add a function + a table row without inventing
-process. M15's capstone is the smoke test if it landed; do not invent a
+process. M16's capstone is the smoke test if it landed; do not invent a
 second toy opt to prove the shelf.
 
 **Non-goals.** Register allocation, isel catalogs, fusion, weighted
 search, recipe frameworks, SelectionDAG, "host all future lanes,"
 world's-fastest exit criteria, cost proofs. Those are budget spends that
 use this shelf. Three spend lanes (floor / search / specialization) live
-in the cleverness-budget section below — doctrine, not M16 deliverables.
+in the cleverness-budget section below — doctrine, not M17 deliverables.
 
-Depends on M15's score + A/B. Opens: evidence-table and opts-off clauses.
+Depends on M16's score + A/B. Opens: evidence-table and opts-off clauses.
 Plan when activated.
 
 ### Recorded language intentions (not yet scheduled)
@@ -822,7 +927,7 @@ Plan when activated.
   set from the closed world (it already computes this to erase
   impossible `CallError` variants, 02 §9.4); `pub` boundaries still
   demand a declared nominal enum.
-- **Cost proofs** (deliberately not M15). M15's proxy ranks compiler
+- **Cost proofs** (deliberately not M16). M16's proxy ranks compiler
   alternatives; it does not discharge `@budget`, make
   `sema.bounds.loops` sound in cycles, or prove elapsed latency. Those need
   a separate static upper-bound model with explicit path, memory and
@@ -843,7 +948,7 @@ Plan when activated.
   human-gated like cost proofs — and M13's crash-only decision leans the
   other way on purpose (an overflow is a recorded, replayable, fatal bug,
   not a value).
-- **Report expected exit rates** (06 §5; deliberately not M15). The report
+- **Report expected exit rates** (06 §5; deliberately not M16). The report
   "states expected exit rates per device" is a semantic prediction with an
   exact `profile`/`repro` comparison — valuable and dumb, but it is report
   work, not the cycle proxy. Schedule when a named device recording needs
@@ -874,23 +979,16 @@ Plan when activated.
   Separately, the **durable-checkpoint idiom + storage stack** is the
   named dependency of crash-only's `Failure.Reboot` viability
   (currently unbuilt; conformance goldens pin `Halt` until it exists).
-- **True concurrent vCPUs + the cross-core publish/acquire barrier**
-  (`machine.cross-core.publish-acquire-barrier`; recorded pointer
-  2026-07-26, note expanded 2026-07-27). Multicore images are real today
-  (placement, per-core loops, cross-core rings, admission order) but M8
-  decision 11's **baton** deliberately runs only one vCPU inside
-  `hv_vcpu_run` at a time so 06 §8's choice log stays an enumerable
-  sequence — affinity and messaging without host-scheduler interleaving,
-  and without parallel throughput. 04 §3's sealed publish/acquire
-  barriers are therefore unobservable (store order + the baton discharge
-  them under serial execution). **This needs its own future milestone**,
-  not a drive-by inside M14/M15: retire the baton (true overlapping
-  `hv_vcpu_run`), grow the recorder into an interleaving enumerator so
-  `xtask repro` still means something, emit the `DMB ISHST`/acquire pair
-  around ring enqueue/drain, and pin a golden that fails when those
-  barriers are deleted under concurrency. The ledger clause's three-part
-  flip condition is that milestone's acceptance test; no activated rung
-  owns it yet.
+- **True concurrent vCPUs + variable image core count** — *scheduled
+  2026-07-27: M15* ([plans/M15.md](plans/M15.md)). Was an unscheduled
+  intention (pointer 2026-07-26, note expanded 2026-07-27). Owns
+  `cores=N` on `Image` (default 1; not a machine revision; no contract
+  max; VMM refuses a short host), report-owned high-DRAM stacks with
+  fixed `IMAGE_BASE`, staged baton **deletion**, runtime-only inlined
+  `@dmb`, Yield-`Progress` replay (exhaustive schedule enumeration
+  remains a later intention), and the flip of
+  `machine.cross-core.publish-acquire-barrier`. Do not relitigate
+  inside M16/M17.
 - **Report/diagnostics coverage** (owner: report work, no rung): the
   actor-chatter lint (04 §7's `warning[performance]`) and the copy
   pricing threshold line (04 §1/§7) — M13 item E audits both and opens
@@ -1054,7 +1152,7 @@ lands only with all three, no matter how obviously fast it is:
 3. a **lock** — a bench threshold or `@budget`/layout assertion — so the
    win cannot silently regress.
 
-After M16, landings also need an **evidence row** in the optimization
+After M17, landings also need an **evidence row** in the optimization
 table (proxy Δ, physical Δ, module, off-switch) — no row, no enablement.
 
 Measurement has two lanes, and the budget governs both equally. The
@@ -1092,7 +1190,7 @@ Rules that follow:
   is unreachable by this budget until ImageStatic specialization is
   dissolved into ordinary wrela) wait their turn like everything else: the
   profile says when, and until then dumb code calling stdlib SIMD ops is
-  the answer. After M16 they land as table rows, not as silent pipeline
+  the answer. After M17 they land as table rows, not as silent pipeline
   edits.
 - **Where I/O effort is worth spending, and where it is not.** For
   storage, the software path is already below the device's noise floor — a
@@ -1103,7 +1201,7 @@ Rules that follow:
   wins actually are — **note (2026-07-26): `net` is outside machine-v1
   conformance after M13 item D** (future machine revision); this bullet
   and the M8 bandwidth arithmetic (~2M descriptors/sec/core, VFIO/vDPA)
-  reason about that future revision, not the v1 contract M15/M16 will
+  reason about that future revision, not the v1 contract M16/M17 will
   first measure against. Check which regime a workload is in *before*
   profiling it, or the profile will faithfully measure something that
   does not matter.
@@ -1113,7 +1211,7 @@ Rules that follow:
   flat p99.9: its tail is dominated by scheduling, interference, page
   faults, and allocator behavior, and wrela has none of those by
   construction. That win is not earned by optimization; it is already true,
-  and it is the claim to defend. M15 makes tuning that path repeatable, but
+  and it is the claim to defend. M16 makes tuning that path repeatable, but
   its proxy does **not** prove the tail at build time — that claim waits for
   the separate cost-proof work recorded above. Measure tails, not averages;
   a benchmark reporting only a mean is measuring the half of the story
@@ -1128,7 +1226,7 @@ Rules that follow:
   representation rung (data ladders die, the census ratchets) and the
   vocabulary milestone (discarded `CallError` is refused in runtime and
   app code alike); (4) **measure** — `bench guest` over byte-identical
-  transcripts gives the exact before/after, and M15 adds a zero-variance
+  transcripts gives the exact before/after, and M16 adds a zero-variance
   proxy-score diff **beside**, never instead of, the physical timing run;
   (5) the two dumb wins, if and only if the profile asks for them —
   populate the already-reserved ready-queue table (O(actors) scan → O(1)

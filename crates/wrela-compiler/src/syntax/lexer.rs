@@ -349,75 +349,80 @@ impl<'s> Lexer<'s> {
     /// spaces, skip blank/comment-only lines, and emit INDENT/DEDENT per the
     /// exactly-four-spaces rule.
     fn handle_indentation(&mut self) -> Result<(), LexError> {
-        let mut width: u32 = 0;
+        // Blank lines used to recurse per `\n`; a ~10⁵-blank-line file
+        // could overflow the native stack outside the parser's depth
+        // guards. Loop instead (adversarial audit, 2026-07-27).
         loop {
+            let mut width: u32 = 0;
+            loop {
+                match self.peek() {
+                    Some(b' ') => {
+                        width += 1;
+                        self.bump();
+                    }
+                    Some(b'\t') => return Err(self.error("tab in leading indentation")),
+                    _ => break,
+                }
+            }
             match self.peek() {
-                Some(b' ') => {
-                    width += 1;
+                // Blank and comment-only lines emit no layout tokens.
+                None => return Ok(()),
+                Some(b'\n') => {
                     self.bump();
+                    continue;
                 }
-                Some(b'\t') => return Err(self.error("tab in leading indentation")),
-                _ => break,
-            }
-        }
-        match self.peek() {
-            // Blank and comment-only lines emit no layout tokens.
-            None => return Ok(()),
-            Some(b'\n') => {
-                self.bump();
-                return self.handle_indentation();
-            }
-            // `##` at line start is a doc comment: it emits a DocComment
-            // token carrying the raw text after `##` (trailing newline
-            // excluded), and its line **participates in layout exactly
-            // like a code line** — the INDENT/DEDENTs its own indentation
-            // implies are emitted first, before the token. 02-language.md
-            // §1: "`##` begins a documentation comment attached to the
-            // immediately following declaration", so a doc comment sits
-            // where its declaration sits. It used to be layout-transparent
-            // like a plain comment, which put it on the wrong side of every
-            // block boundary and made both natural shapes unparseable: as
-            // a block's first line the DocComment preceded the INDENT
-            // (`expected an indented block`), and at the outer level after
-            // a block it preceded the DEDENT, so the enclosing suite's own
-            // member loop swallowed it (`expected a member after doc
-            // comment/attribute`). Found by `xtask fuzz sema` (seed 9101).
-            //
-            // A doc comment still emits no NEWLINE of its own (see
-            // `last_is_content`), and attaching it to a declaration remains
-            // the parser's job. Plain `#` attaches to nothing and stays
-            // silently skipped, layout-transparent as before.
-            Some(b'#') => {
-                let (line, col) = (self.line, self.col);
-                if self.peek2() == Some(b'#') {
-                    self.dispatch_indent(width)?;
-                    self.bump();
-                    self.bump();
-                    let start = self.pos;
-                    while let Some(b) = self.peek() {
-                        if b == b'\n' {
-                            break;
-                        }
+                // `##` at line start is a doc comment: it emits a DocComment
+                // token carrying the raw text after `##` (trailing newline
+                // excluded), and its line **participates in layout exactly
+                // like a code line** — the INDENT/DEDENTs its own indentation
+                // implies are emitted first, before the token. 02-language.md
+                // §1: "`##` begins a documentation comment attached to the
+                // immediately following declaration", so a doc comment sits
+                // where its declaration sits. It used to be layout-transparent
+                // like a plain comment, which put it on the wrong side of every
+                // block boundary and made both natural shapes unparseable: as
+                // a block's first line the DocComment preceded the INDENT
+                // (`expected an indented block`), and at the outer level after
+                // a block it preceded the DEDENT, so the enclosing suite's own
+                // member loop swallowed it (`expected a member after doc
+                // comment/attribute`). Found by `xtask fuzz sema` (seed 9101).
+                //
+                // A doc comment still emits no NEWLINE of its own (see
+                // `last_is_content`), and attaching it to a declaration remains
+                // the parser's job. Plain `#` attaches to nothing and stays
+                // silently skipped, layout-transparent as before.
+                Some(b'#') => {
+                    let (line, col) = (self.line, self.col);
+                    if self.peek2() == Some(b'#') {
+                        self.dispatch_indent(width)?;
                         self.bump();
-                    }
-                    let text = std::str::from_utf8(&self.src[start..self.pos])
-                        .map_err(|_| self.error("doc comment is not valid UTF-8"))?
-                        .to_string();
-                    self.push(TokenKind::DocComment, text, line, col);
-                } else {
-                    self.bump();
-                    while let Some(b) = self.peek() {
-                        if b == b'\n' {
-                            break;
-                        }
                         self.bump();
+                        let start = self.pos;
+                        while let Some(b) = self.peek() {
+                            if b == b'\n' {
+                                break;
+                            }
+                            self.bump();
+                        }
+                        let text = std::str::from_utf8(&self.src[start..self.pos])
+                            .map_err(|_| self.error("doc comment is not valid UTF-8"))?
+                            .to_string();
+                        self.push(TokenKind::DocComment, text, line, col);
+                    } else {
+                        self.bump();
+                        while let Some(b) = self.peek() {
+                            if b == b'\n' {
+                                break;
+                            }
+                            self.bump();
+                        }
                     }
+                    return Ok(());
                 }
-                return Ok(());
+                _ => {}
             }
-            _ => {}
+            return self.dispatch_indent(width);
         }
-        self.dispatch_indent(width)
     }
 
     /// Dispatch to whichever indent stack is active at this depth: the
@@ -547,16 +552,21 @@ impl<'s> Lexer<'s> {
     }
 
     /// Consumes a run of bytes from `allowed` (a digit set plus `_`),
-    /// enforcing that `_` never leads or trails the run — i.e. it never
-    /// sits anywhere but between two digits already accepted by the
-    /// surrounding calls. Assumes the caller has confirmed at least one
-    /// digit follows before calling (radix-prefix bodies are the one
-    /// exception, and keep their historical, more permissive behavior).
+    /// enforcing that `_` sits only between two digits — never leading,
+    /// trailing, or repeated (02-language.md §1.1).
     fn lex_digit_run(&mut self, allowed: &[u8]) -> Result<(), LexError> {
         let mut prev = 0u8;
+        let mut saw_digit = false;
         while let Some(b) = self.peek() {
             if !allowed.contains(&b) {
                 break;
+            }
+            if b == b'_' {
+                if !saw_digit || prev == b'_' {
+                    return Err(self.error("underscore must sit between two digits"));
+                }
+            } else {
+                saw_digit = true;
             }
             prev = b;
             self.bump();
@@ -581,9 +591,34 @@ impl<'s> Lexer<'s> {
         const DECIMAL: &[u8] = b"0123456789_";
         if self.peek() == Some(b'0') && matches!(self.peek2(), Some(b'x') | Some(b'o') | Some(b'b'))
         {
+            let radix = self.peek2().expect("checked above");
             self.bump();
             self.bump();
-            self.lex_digit_run(b"0123456789abcdefABCDEF_")?;
+            // Digits are radix-specific (02 §1.1). Sharing the hex set
+            // used to accept `0b102` / `0o9` as Int tokens and only fail
+            // two passes later in sema (adversarial audit, 2026-07-27).
+            let digits: &[u8] = match radix {
+                b'x' => b"0123456789abcdefABCDEF_",
+                b'o' => b"01234567_",
+                b'b' => b"01_",
+                _ => unreachable!("checked by matches! above"),
+            };
+            let digits_start = self.pos;
+            self.lex_digit_run(digits)?;
+            if self.pos == digits_start {
+                return Err(
+                    self.error("integer literal needs at least one digit after the radix prefix")
+                );
+            }
+            // A digit/letter that is not in this radix's set but still
+            // looks like a literal continuation is a lex error, not a
+            // second token glued on (`0o9` must not become `0o` + `9`).
+            if self
+                .peek()
+                .is_some_and(|b| b.is_ascii_alphanumeric() || b == b'_')
+            {
+                return Err(self.error("invalid digit for this integer literal's radix"));
+            }
             let text = std::str::from_utf8(&self.src[start..self.pos])
                 .expect("ASCII number bytes are valid UTF-8")
                 .to_string();
@@ -1096,6 +1131,50 @@ mod tests {
         assert!(
             !toks.contains(&TokenKind::Indent) && !toks.contains(&TokenKind::Dedent),
             "no layout tokens for a same-line inline suite: {toks:?}"
+        );
+    }
+
+    // --- radix / underscore digit rules (02 §1.1) ---------------------------
+
+    #[test]
+    fn radix_literals_reject_digits_outside_their_set() {
+        for src in ["0b102", "0o9", "0b2", "0o8"] {
+            let err = lex(src).expect_err(&format!("{src} must be a lex error"));
+            assert!(
+                err.message.contains("invalid digit") || err.message.contains("radix"),
+                "{src}: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn radix_prefix_with_no_digits_is_a_lex_error() {
+        // Lex only recognizes lowercase prefixes (`0x`/`0o`/`0b`); uppercase
+        // `0X` is historically `0` + Ident(`X`) and stays that way.
+        for src in ["0x", "0o", "0b"] {
+            let err = lex(src).expect_err(&format!("{src} must be a lex error"));
+            assert!(err.message.contains("at least one digit"), "{src}: {err:?}");
+        }
+    }
+
+    #[test]
+    fn underscores_must_sit_between_digits() {
+        for src in ["1__0", "0x_1", "0b_0", "0o_7", "1_", "0x1_"] {
+            let err = lex(src).expect_err(&format!("{src} must be a lex error"));
+            assert!(err.message.contains("underscore"), "{src}: {err:?}");
+        }
+    }
+
+    #[test]
+    fn many_blank_lines_lex_without_stack_overflow() {
+        // ~100k blank lines: the pre-fix recursive skip overflowed the
+        // native stack on deep blank runs.
+        let src = "\n".repeat(100_000) + "x\n";
+        let toks = lex(&src).expect("blank-line loop must not overflow");
+        assert!(
+            toks.iter()
+                .any(|t| t.kind == TokenKind::Ident && t.text == "x"),
+            "identifier after the blank run must still lex"
         );
     }
 }

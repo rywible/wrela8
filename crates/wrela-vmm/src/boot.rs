@@ -16,7 +16,8 @@ use crate::exit_loop::{
 use crate::hv;
 use crate::record;
 use crate::{
-    BootOutcome, VmmError, WALL_CAP, guest_dram_offset, parse_report, validate_report_digests,
+    BootOutcome, VmmError, WALL_CAP, capped_park_deadline_ns, guest_dram_offset, parse_report,
+    validate_report_digests,
 };
 
 /// Raise report-declared executable sections to RX (page-granular). The
@@ -482,6 +483,48 @@ fn boot_image_core_inner(
     /// One vCPU exit, decoded and serviced on the core that took it. Every
     /// diagnostic here names its core: with three of them, "unhandled
     /// exception" without a core is a bug report missing its first fact.
+    /// Sleep until `deadline_ns` (clamped to [`WALL_CAP`] past now), or
+    /// until the watchdog/`sched.done` wakes us — **never** while holding
+    /// `lock`. Uses `baton.wait_timeout` so the mutex is released for the
+    /// whole wait slice and the watchdog can still force-exit.
+    fn sleep_until_park_deadline(
+        lock: &std::sync::Mutex<Shared>,
+        baton: &std::sync::Condvar,
+        deadline_ns: u64,
+    ) {
+        const SLICE: Duration = Duration::from_millis(100);
+        loop {
+            let g = lock.lock().unwrap_or_else(|e| e.into_inner());
+            if g.sched.done {
+                return;
+            }
+            let now = monotonic_ns();
+            let capped = capped_park_deadline_ns(now, deadline_ns);
+            if now >= capped {
+                return;
+            }
+            let remaining = Duration::from_nanos(capped - now);
+            let slice = if remaining < SLICE { remaining } else { SLICE };
+            let (g2, _) = baton
+                .wait_timeout(g, slice)
+                .unwrap_or_else(|e| e.into_inner());
+            drop(g2);
+        }
+    }
+
+    /// MMIO protocol words are 64-bit only. A sub-word LDRB/LDRH/STRH
+    /// against a doorbell or clock is a guest fault, never a silent
+    /// truncation/zero-extend (adversarial audit, 2026-07-27).
+    fn require_mmword(da: &DataAbort, core: usize, what: &str) -> Result<(), VmmError> {
+        if da.size_bytes != 8 {
+            return Err(VmmError::GuestFault(format!(
+                "core {core}: {what} requires an 8-byte access, got a {}-byte access",
+                da.size_bytes
+            )));
+        }
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn handle_exit(
         core: usize,
@@ -490,6 +533,7 @@ fn boot_image_core_inner(
         host_ram: *mut u8,
         cores_declared: usize,
         lock: &std::sync::Mutex<Shared>,
+        baton: &std::sync::Condvar,
     ) -> Result<Step, VmmError> {
         use wrela_machine::mmio;
         let deadline_off = (machine_layout::MACHINE_INFO_BASE - machine_layout::DRAM_BASE) as usize
@@ -505,6 +549,7 @@ fn boot_image_core_inner(
                             "core {core}: unhandled access shape at EXIT_MMIO_ADDR (esr={esr:#x})"
                         )));
                     };
+                    require_mmword(&da, core, "EXIT_MMIO_ADDR")?;
                     if !da.write {
                         return Err(VmmError::GuestFault(format!(
                             "core {core}: a load from EXIT_MMIO_ADDR is not part of the exit \
@@ -532,6 +577,7 @@ fn boot_image_core_inner(
                             "core {core}: unhandled access shape at CLOCK_MMIO_ADDR (esr={esr:#x})"
                         )));
                     };
+                    require_mmword(&da, core, "CLOCK_MMIO_ADDR")?;
                     if da.write {
                         return Err(VmmError::GuestFault(format!(
                             "core {core}: a store to CLOCK_MMIO_ADDR is not part of the clock \
@@ -580,6 +626,7 @@ fn boot_image_core_inner(
                              (esr={esr:#x})"
                         )));
                     };
+                    require_mmword(&da, core, "RELEASE_MMIO_ADDR")?;
                     if !da.write {
                         return Err(VmmError::GuestFault(format!(
                             "core {core}: a load from RELEASE_MMIO_ADDR is not part of the \
@@ -644,6 +691,7 @@ fn boot_image_core_inner(
                              (esr={esr:#x})"
                         )));
                     };
+                    require_mmword(&da, core, "QUIESCE_MMIO_ADDR")?;
                     if !da.write {
                         return Err(VmmError::GuestFault(format!(
                             "core {core}: a load from QUIESCE_MMIO_ADDR is not part of the \
@@ -692,6 +740,7 @@ fn boot_image_core_inner(
                             "core {core}: unhandled access shape at PARK_MMIO_ADDR (esr={esr:#x})"
                         )));
                     };
+                    require_mmword(&da, core, "PARK_MMIO_ADDR")?;
                     if !da.write {
                         return Err(VmmError::GuestFault(format!(
                             "core {core}: a load from PARK_MMIO_ADDR is not part of the park \
@@ -803,20 +852,44 @@ fn boot_image_core_inner(
                     // not sleep at all, so it is never lost.
                     let already_pending = pending_word(host_ram, core) != 0;
                     if !already_pending && !blk_completed {
+                        // Sleep OUTSIDE the scheduler mutex. Holding the
+                        // lock across `thread::sleep(deadline - now)` let a
+                        // guest-written `u64::MAX` deadline defeat the
+                        // WALL_CAP watchdog (mutex never releasable) —
+                        // adversarial audit, 2026-07-27. Replay still skips
+                        // the sleep (decision 9): only record mode calls
+                        // `live`, and we sleep before recording so the
+                        // choice log stays sleep-free under replay.
+                        let should_sleep = {
+                            let g = lock.lock().unwrap_or_else(|e| e.into_inner());
+                            g.chooser.is_recording()
+                        };
+                        if should_sleep {
+                            sleep_until_park_deadline(lock, baton, deadline_ns);
+                        }
                         {
                             let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
+                            if g.sched.done {
+                                // Watchdog fired during the park sleep.
+                                // This core is not inside `hv_vcpu_run`
+                                // (it is servicing the park trap), so
+                                // `hv_vcpus_exit` cannot deliver
+                                // `HV_EXIT_REASON_CANCELED` here — name
+                                // the timeout ourselves rather than
+                                // falling through to "no core reported
+                                // the guest exit protocol".
+                                if g.error.is_none() && g.exit_code.is_none() {
+                                    let transcript_so_far = drain_console(host_ram);
+                                    return Err(VmmError::Timeout {
+                                        core,
+                                        transcript_so_far,
+                                    });
+                                }
+                                return Ok(Step::Keep);
+                            }
                             g.chooser.choose_checked(
                                 record::ChoiceRequest::DeadlineWake { deadline_ns },
-                                || {
-                                    // The real, host-side sleep — never
-                                    // invoked in replay mode (decision 9:
-                                    // "sleep skipped under replay").
-                                    let now = monotonic_ns();
-                                    if deadline_ns > now {
-                                        std::thread::sleep(Duration::from_nanos(deadline_ns - now));
-                                    }
-                                    record::ChoiceEntry::DeadlineWake { deadline_ns }
-                                },
+                                || record::ChoiceEntry::DeadlineWake { deadline_ns },
                             )?;
                             g.chooser.choose_checked(
                                 record::ChoiceRequest::VectorRaise { vector: 0 },
@@ -941,7 +1014,7 @@ fn boot_image_core_inner(
                     return;
                 }
             }
-            match handle_exit(core, vcpu, exit_ptr, host_ram, cores_declared, lock) {
+            match handle_exit(core, vcpu, exit_ptr, host_ram, cores_declared, lock, baton) {
                 Ok(Step::Keep) => {}
                 Ok(Step::Yield) => {
                     let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -1116,6 +1189,7 @@ fn boot_image_core_inner(
         // number.
         let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
         let watchdog_shared = &shared;
+        let watchdog_baton = &baton;
         let watchdog = scope.spawn(move || {
             if done_rx.recv_timeout(WALL_CAP).is_err() {
                 let mut g = watchdog_shared.lock().unwrap_or_else(|e| e.into_inner());
@@ -1126,6 +1200,11 @@ fn boot_image_core_inner(
                     }
                 }
                 g.sched.done = true;
+                drop(g);
+                // Wake any core parked in `sleep_until_park_deadline`'s
+                // Condvar wait — without this, a force-exit alone leaves
+                // the sleeper waiting out its current slice.
+                watchdog_baton.notify_all();
             }
         });
         for t in threads {

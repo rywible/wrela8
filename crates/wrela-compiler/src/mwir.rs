@@ -941,13 +941,23 @@ pub fn size_of(ty: &Type, ctx: &LayoutCtx) -> Result<usize, String> {
             let n = crate::sema::bodies::literal_array_len(len_expr).ok_or_else(|| {
                 "array length is not a literal (unsupported by the layout fn)".to_string()
             })?;
+            if !crate::sema::bodies::array_len_fits(n) {
+                return Err(format!(
+                    "array length {n} exceeds the {}-element build limit",
+                    crate::sema::bodies::MAX_ARRAY_LEN
+                ));
+            }
             let n = usize::try_from(n).map_err(|_| "array length out of range".to_string())?;
-            Ok(size_of(elem, ctx)? * n)
+            size_of(elem, ctx)?
+                .checked_mul(n)
+                .ok_or_else(|| "array size overflows usize".to_string())
         }
         Type::Tuple(elems) => {
-            let mut total = 0;
+            let mut total = 0usize;
             for e in elems {
-                total += size_of(e, ctx)?;
+                total = total
+                    .checked_add(size_of(e, ctx)?)
+                    .ok_or_else(|| "tuple size overflows usize".to_string())?;
             }
             Ok(total)
         }
@@ -979,7 +989,15 @@ pub fn size_of(ty: &Type, ctx: &LayoutCtx) -> Result<usize, String> {
             let n = crate::sema::bodies::literal_array_len(len_expr).ok_or_else(|| {
                 "Bytes length is not a literal (unsupported by the layout fn)".to_string()
             })?;
-            Ok(SLOT * usize::try_from(n).map_err(|_| "Bytes length out of range".to_string())?)
+            if !crate::sema::bodies::array_len_fits(n) {
+                return Err(format!(
+                    "`Bytes[N]` length {n} exceeds the {}-element build limit",
+                    crate::sema::bodies::MAX_ARRAY_LEN
+                ));
+            }
+            let n = usize::try_from(n).map_err(|_| "Bytes length out of range".to_string())?;
+            SLOT.checked_mul(n)
+                .ok_or_else(|| "Bytes size overflows usize".to_string())
         }
         // plans/M10.md item B4 / decisions 595–596: an unbounded `Bytes`
         // parameter is a two-word packed-byte handle `(base, len)` — not a

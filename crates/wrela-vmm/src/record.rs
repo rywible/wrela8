@@ -159,7 +159,12 @@ impl ChoiceEntry {
             let (k, v) = part
                 .split_once('=')
                 .ok_or_else(|| format!("malformed choice field {part:?} (no `=`)"))?;
-            fields.insert(k, v);
+            // Same strictness as `wrela_machine::report::parse_report_fields`:
+            // a repeated key in a file replay trusts is refuse-closed, never
+            // a silent last-wins overwrite (adversarial audit, 2026-07-27).
+            if fields.insert(k, v).is_some() {
+                return Err(format!("choice entry `{tag}` repeats field `{k}`"));
+            }
         }
         let field = |k: &str| -> Result<&str, String> {
             fields
@@ -496,6 +501,12 @@ impl Chooser {
             // Live boots opt in via [`Chooser::strict`].
             strict: false,
         }
+    }
+
+    /// `true` in record mode — the arm that actually calls `live` (and so
+    /// the only mode that must perform a real host-side park sleep).
+    pub fn is_recording(&self) -> bool {
+        matches!(self.mode, ChooserMode::Record)
     }
 
     /// Fail closed on the first divergence (live replay boots).
@@ -906,6 +917,16 @@ mod tests {
         let text = rec.to_text();
         let parsed = RecordFile::parse(&text).expect("parses");
         assert_eq!(parsed, rec);
+    }
+
+    #[test]
+    fn choice_entry_rejects_a_repeated_field() {
+        let err = ChoiceEntry::parse_fields("ClockRead value=1 value=2")
+            .expect_err("repeated keys must refuse");
+        assert!(
+            err.contains("repeats field `value`"),
+            "must name the duplicate key: {err}"
+        );
     }
 
     #[test]

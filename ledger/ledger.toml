@@ -18,7 +18,28 @@ tests = ["golden/lex-tab-error"]
 id = "source.literals.integer-underscores"
 doc = "02-language.md#1.1"
 status = "test"
-tests = ["golden/lex-basic"]
+tests = [
+  "golden/lex-basic",
+  "golden/err-lex-double-underscore",
+]
+note = """02 §1.1: underscores sit between digits. `1__0` (repeated) and a leading/trailing `_` in a digit run are lex errors — not deferred to sema's `parse_int_literal` (adversarial audit, 2026-07-27)."""
+
+[[clause]]
+id = "source.literals.integer-radix-digits"
+doc = "02-language.md#1.1"
+status = "test"
+tests = [
+  "golden/err-lex-radix-digit",
+  "golden/err-lex-hex-empty",
+]
+note = """02 §1.1: `0x`/`0o`/`0b` each consume their own digit set. Sharing the hex set used to accept `0b102`/`0o9` as Int tokens and only fail in sema; an empty body (`0x`) is also a lex error (adversarial audit, 2026-07-27)."""
+
+[[clause]]
+id = "sema.types.array-build-limit"
+doc = "02-language.md#6"
+status = "test"
+tests = ["golden/err-array-type-build-limit"]
+note = """Declared `[T; N]` / `Bytes[N]` lengths share the 65536-element build limit `[elem; N]` expressions and `String[..N]` already carry. Without it, `mwir::size_of` panicked on overflow multiply during placement under `[profile.release] overflow-checks = true` (adversarial audit, 2026-07-27). Resolve-time gate + checked arithmetic in `size_of`."""
 
 [[clause]]
 id = "source.identifiers.ascii-only"
