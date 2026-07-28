@@ -1137,13 +1137,10 @@ impl<'a> FnCtx<'a> {
             &[base]);
     }
 
-    /// Materializes a 64-bit constant into `reg`.
-    ///
-    /// NarrowImm off (`dev`): always `MOVZ` + three `MOVK`s (four words).
-    /// NarrowImm on: `MOVZ` at the first non-zero halfword's shift, then
-    /// `MOVK` only for remaining non-zero halfwords; `0` → one `movz #0`
-    /// (plans/M19.md item I / decision 1486).
-    fn load_imm(&mut self, reg: u8, value: i64) {
+    /// Always `MOVZ` + three `MOVK`s (four words). Reloc sites that
+    /// layout patches via `patch_load_imm_words` must use this — NarrowImm
+    /// must not shrink them (plans/M19.md decision 1485 / item F).
+    fn load_imm_naive(&mut self, reg: u8, value: i64) {
         let bits = value as u64;
         let halves: [(u16, u8); 4] = [
             ((bits & 0xFFFF) as u16, 0),
@@ -1151,26 +1148,44 @@ impl<'a> FnCtx<'a> {
             (((bits >> 32) & 0xFFFF) as u16, 32),
             (((bits >> 48) & 0xFFFF) as u16, 48),
         ];
-        if !narrow_imm() {
-            let (h0, _) = halves[0];
+        let (h0, _) = halves[0];
+        self.push(
+            encode::enc_movz(reg, h0, 0, true),
+            format!("movz {}, #{h0:#x}", reg_name(reg)),
+            CostRule::MovWide,
+            Some(reg),
+            &[],
+        );
+        for &(imm, shift) in &halves[1..] {
             self.push(
-                encode::enc_movz(reg, h0, 0, true),
-                format!("movz {}, #{h0:#x}", reg_name(reg)),
+                encode::enc_movk(reg, imm, shift, true),
+                format!("movk {}, #{imm:#x}, lsl #{shift}", reg_name(reg)),
                 CostRule::MovWide,
                 Some(reg),
                 &[],
             );
-            for &(imm, shift) in &halves[1..] {
-                self.push(
-                    encode::enc_movk(reg, imm, shift, true),
-                    format!("movk {}, #{imm:#x}, lsl #{shift}", reg_name(reg)),
-                    CostRule::MovWide,
-                    Some(reg),
-                    &[],
-                );
-            }
+        }
+    }
+
+    /// Materializes a 64-bit constant into `reg`.
+    ///
+    /// NarrowImm off (`dev`): always `MOVZ` + three `MOVK`s (four words).
+    /// NarrowImm on: `MOVZ` at the first non-zero halfword's shift, then
+    /// `MOVK` only for remaining non-zero halfwords; `0` → one `movz #0`
+    /// (plans/M19.md item I / decision 1486). Reloc placeholders use
+    /// [`Self::load_imm_naive`] instead (decision 1485).
+    fn load_imm(&mut self, reg: u8, value: i64) {
+        if !narrow_imm() {
+            self.load_imm_naive(reg, value);
             return;
         }
+        let bits = value as u64;
+        let halves: [(u16, u8); 4] = [
+            ((bits & 0xFFFF) as u16, 0),
+            (((bits >> 16) & 0xFFFF) as u16, 16),
+            (((bits >> 32) & 0xFFFF) as u16, 32),
+            (((bits >> 48) & 0xFFFF) as u16, 48),
+        ];
         // Narrow path: value 0 → single movz #0; otherwise movz at the
         // first non-zero half, movk for each later non-zero half.
         if bits == 0 {
@@ -2203,7 +2218,7 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
         // `Reloc::TurnFrameAddr`/`GroupArenaBase`.
         Inst::LoadIrqVector { dst, driver } => {
             let word = ctx.words.len();
-            ctx.load_imm(X_A, 0);
+            ctx.load_imm_naive(X_A, 0);
             if let Some(ew) = ctx.words.get_mut(word) {
                 ew.text = format!("irq-vector[{}] {}", driver, reg_name(X_A));
             }
@@ -2325,7 +2340,7 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
         // on recheck (HVF commit wires that loop).
         Inst::Wake { driver } => {
             let word = ctx.words.len();
-            ctx.load_imm(X_A, 0);
+            ctx.load_imm_naive(X_A, 0);
             if let Some(ew) = ctx.words.get_mut(word) {
                 ew.text = format!("wake-pending[{}] {}", driver, reg_name(X_A));
             }
@@ -2427,7 +2442,7 @@ fn push_turn_addr_from_id(ctx: &mut FnCtx, id_reg: u8, scratch: u8) {
         Some(id_reg),
         &[id_reg]);
     let word = ctx.cur_word();
-    ctx.load_imm(scratch, 0);
+    ctx.load_imm_naive(scratch, 0);
     for w in ctx.words[word..word + 4].iter_mut() {
         w.text = format!("turn-stride {}", reg_name(scratch));
     }
@@ -2443,7 +2458,7 @@ fn push_turn_addr_from_id(ctx: &mut FnCtx, id_reg: u8, scratch: u8) {
         Some(id_reg),
         &[id_reg, scratch]);
     let word = ctx.cur_word();
-    ctx.load_imm(scratch, 0);
+    ctx.load_imm_naive(scratch, 0);
     for w in ctx.words[word..word + 4].iter_mut() {
         w.text = format!("turns-base {}", reg_name(scratch));
     }
@@ -5154,7 +5169,7 @@ fn emit_async_entry(
 ) -> Result<(), CodegenError> {
     // X_FRAME = &turn area (4 words, patched by layout via TurnFrameAddr).
     let word = ctx.cur_word();
-    ctx.load_imm(X_FRAME, 0);
+    ctx.load_imm_naive(X_FRAME, 0);
     // Overwrite the rendered text so the dump names the symbolic target
     // (the raw words stay the placeholder zeros layout patches).
     for (i, w) in ctx.words[word..word + 4].iter_mut().enumerate() {
@@ -5415,7 +5430,7 @@ fn emit_marshal_and_call(
     match waker_self_key {
         Some(fn_key) => {
             let word = ctx.cur_word();
-            ctx.load_imm(3, 0);
+            ctx.load_imm_naive(3, 0);
             for (i, w) in ctx.words[word..word + 4].iter_mut().enumerate() {
                 w.text = format!("turn-id[{i}] x3 <{fn_key}>");
             }
@@ -5672,7 +5687,7 @@ fn emit_group_create(
     const X_TAG: u8 = 17;
 
     let word = ctx.cur_word();
-    ctx.load_imm(X_ARENA, 0);
+    ctx.load_imm_naive(X_ARENA, 0);
     for w in ctx.words[word..word + 4].iter_mut() {
         w.text = format!("group-arena-base {}", reg_name(X_ARENA));
     }
@@ -5904,7 +5919,7 @@ fn emit_group_create(
         // activation (a child started into the group) or merely hands it a
         // `CallError` (the `with`-block's own body).
         let word = ctx.cur_word();
-        ctx.load_imm(X_D, 0);
+        ctx.load_imm_naive(X_D, 0);
         for (i, w) in ctx.words[word..word + 4].iter_mut().enumerate() {
             w.text = format!("turn-id[{i}] {} <{fn_key}>", reg_name(X_D));
         }
@@ -6039,7 +6054,7 @@ fn emit_group_start(
     // (Temp(0)/Temp(1) — always the first two slots past the child's own
     // turn record header) before ever calling it.
     let word = ctx.cur_word();
-    ctx.load_imm(X_C, 0);
+    ctx.load_imm_naive(X_C, 0);
     for w in ctx.words[word..word + 4].iter_mut() {
         w.text = format!("turn-frame[{}] {} <{callee_key}>", 0, reg_name(X_C));
     }
@@ -6115,7 +6130,7 @@ fn emit_group_start(
         Some(X_E),
         &[X_E, X_F]);
     let word = ctx.cur_word();
-    ctx.load_imm(group_addr_reg, 0);
+    ctx.load_imm_naive(group_addr_reg, 0);
     for w in ctx.words[word..word + 4].iter_mut() {
         w.text = "group-arena-base (g.start)".to_string();
     }
@@ -6179,7 +6194,7 @@ fn emit_group_start(
     // reload this fn's own frame address fresh before touching any slot
     // again, exactly like `emit_async_entry`'s own initial load.
     let word = ctx.cur_word();
-    ctx.load_imm(X_FRAME, 0);
+    ctx.load_imm_naive(X_FRAME, 0);
     for w in ctx.words[word..word + 4].iter_mut() {
         w.text = format!("turn-frame[{}] {} <{fn_key}>", 0, reg_name(X_FRAME));
     }
@@ -6208,7 +6223,7 @@ fn emit_group_start(
         Some(X_E),
         &[X_E, X_F]);
     let word = ctx.cur_word();
-    ctx.load_imm(group_addr_reg, 0);
+    ctx.load_imm_naive(group_addr_reg, 0);
     for w in ctx.words[word..word + 4].iter_mut() {
         w.text = "group-arena-base (g.start harvest)".to_string();
     }
@@ -6297,7 +6312,7 @@ fn emit_group_start(
         None,
         &[X_A, group_addr_reg]);
     let word = ctx.cur_word();
-    ctx.load_imm(X_A, 0);
+    ctx.load_imm_naive(X_A, 0);
     for w in ctx.words[word..word + 4].iter_mut() {
         w.text = format!("turn-frame[{}] {} <{callee_key}>", 0, reg_name(X_A));
     }
@@ -6335,7 +6350,7 @@ fn emit_group_close(
     gctx: &GroupCtx,
 ) -> Result<(), CodegenError> {
     let word = ctx.cur_word();
-    ctx.load_imm(X_A, 0);
+    ctx.load_imm_naive(X_A, 0);
     for w in ctx.words[word..word + 4].iter_mut() {
         w.text = "group-arena-base (GroupClose)".to_string();
     }
@@ -6410,7 +6425,7 @@ fn emit_group_close(
         Some(X_C),
         &[X_C, X_D]);
     let word2 = ctx.cur_word();
-    ctx.load_imm(X_D, 0);
+    ctx.load_imm_naive(X_D, 0);
     for w in ctx.words[word2..word2 + 4].iter_mut() {
         w.text = "group-arena-base (GroupClose parent deadline)".to_string();
     }
@@ -6570,7 +6585,7 @@ fn emit_group_cancelled_flags(ctx: &mut FnCtx, fn_key: &str, gctx: &GroupCtx) {
     ctx.load_slot(X_A, ctx.frame.off(LINEAGE_GROUP_SLOT));
     let skip_no_group = ctx.emit_skip(SkipKind::Cbz(X_A));
     let word = ctx.cur_word();
-    ctx.load_imm(X_B, 0);
+    ctx.load_imm_naive(X_B, 0);
     for w in ctx.words[word..word + 4].iter_mut() {
         w.text = "group-arena-base (cancel flags)".to_string();
     }
@@ -6632,7 +6647,7 @@ fn emit_group_cancelled_flags(ctx: &mut FnCtx, fn_key: &str, gctx: &GroupCtx) {
         Some(X_A),
         &[X_B]);
     let word = ctx.cur_word();
-    ctx.load_imm(X_E, 0);
+    ctx.load_imm_naive(X_E, 0);
     for (i, w) in ctx.words[word..word + 4].iter_mut().enumerate() {
         w.text = format!("turn-id[{i}] {} <{fn_key}>", reg_name(X_E));
     }
@@ -6854,7 +6869,7 @@ fn emit_group_addr_from_temp(
     gctx: &GroupCtx,
 ) {
     let word = ctx.cur_word();
-    ctx.load_imm(dst_reg, 0);
+    ctx.load_imm_naive(dst_reg, 0);
     for w in ctx.words[word..word + 4].iter_mut() {
         w.text = "group-arena-base (join_all)".to_string();
     }
@@ -6983,7 +6998,7 @@ fn emit_await_suspend(
                 // and the byte offset *within that turn area* at +4.
                 // `TURN_RECORD_SIZE` and every frame offset are unchanged.
                 let word = ctx.cur_word();
-                ctx.load_imm(X_A, 0);
+                ctx.load_imm_naive(X_A, 0);
                 for (i, w) in ctx.words[word..word + 4].iter_mut().enumerate() {
                     w.text = format!("turn-id[{i}] {} <{fn_key}>", reg_name(X_A));
                 }
@@ -7102,7 +7117,7 @@ fn emit_await_suspend(
             // through `TurnsBase`/`TurnStride`, the single index→address
             // rule.
             let word = ctx.cur_word();
-            ctx.load_imm(X_A, 0);
+            ctx.load_imm_naive(X_A, 0);
             for (i, w) in ctx.words[word..word + 4].iter_mut().enumerate() {
                 w.text = format!("turn-id[{i}] {} <{fn_key}>", reg_name(X_A));
             }
@@ -7159,7 +7174,7 @@ fn emit_await_suspend(
             // 64, so nothing in the DMA pool moves.
             ctx.load_slot(X_D, ctx.frame.off(*receipt_temp)); // meta
             let word = ctx.cur_word();
-            ctx.load_imm(X_A, 0);
+            ctx.load_imm_naive(X_A, 0);
             for (i, w) in ctx.words[word..word + 4].iter_mut().enumerate() {
                 w.text = format!("turn-id[{i}] {} <{fn_key}>", reg_name(X_A));
             }

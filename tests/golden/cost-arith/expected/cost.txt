@@ -1,33 +1,33 @@
 Cost version=1 digest=46282f52bdf2ba37 issue_width=4
   Assumptions ignore_cache=1 ignore_mispredict=1 target=isa_baseline
   Composition sum_of_fn_schedules=1
-  Total proxy_cycles=94
-  Owner name=app proxy_cycles=94
+  Total proxy_cycles=85
+  Owner name=app proxy_cycles=85
   Owner name=runtime proxy_cycles=0
   Owner name=driver proxy_cycles=0
-  Fn key=checked_add owner=app proxy_cycles=24
+  Fn key=checked_add owner=app proxy_cycles=21
     Term rule=abort count=2
     Term rule=adrp count=2
     Term rule=alu count=11
     Term rule=branch count=5
     Term rule=load count=4
-    Term rule=mov_wide count=16
+    Term rule=mov_wide count=5
     Term rule=store count=8
-  Fn key=checked_div owner=app proxy_cycles=25
+  Fn key=checked_div owner=app proxy_cycles=23
     Term rule=abort count=2
     Term rule=adrp count=2
     Term rule=alu count=12
     Term rule=branch count=6
     Term rule=load count=4
-    Term rule=mov_wide count=16
+    Term rule=mov_wide count=9
     Term rule=store count=8
-  Fn key=mixed owner=app proxy_cycles=35
+  Fn key=mixed owner=app proxy_cycles=31
     Term rule=abort count=2
     Term rule=adrp count=2
     Term rule=alu count=14
     Term rule=branch count=5
     Term rule=load count=8
-    Term rule=mov_wide count=16
+    Term rule=mov_wide count=4
     Term rule=store count=12
   Fn key=wrapping_add owner=app proxy_cycles=10
     Term rule=alu count=5

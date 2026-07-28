@@ -55,10 +55,10 @@ ImageReport v0
   Cores count=1
   CoreStack core=0 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=107152
-  Section name=rodata base=0x4051a2e0 size=456
-  Section name=abort base=0x4051a4a8 size=120
-  Section name=checkpoint base=0x4051a520 size=28
+  Section name=code base=0x40500050 size=77952
+  Section name=rodata base=0x405130d0 size=456
+  Section name=abort base=0x40513298 size=120
+  Section name=checkpoint base=0x40513310 size=28
   Section name=rtdata base=0x40540000 size=32
   Section name=devregs base=0x40540020 size=104
   Entry base=0x40500000
@@ -155,7 +155,7 @@ ImageReport v0
   Totals actors=0 drivers=1 ready_queue=1 group_arena=0 bytes=32
   DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40540020 size=104
   IrqHostInject base=0x40540020 offset=0x60 status=0xa501 vector=1
-  Cost version=1 digest=46282f52bdf2ba37 total=17944
-    Owner name=app proxy_cycles=1003
-    Owner name=runtime proxy_cycles=16886
-    Owner name=driver proxy_cycles=55
+  Cost version=1 digest=46282f52bdf2ba37 total=15991
+    Owner name=app proxy_cycles=898
+    Owner name=runtime proxy_cycles=15040
+    Owner name=driver proxy_cycles=53

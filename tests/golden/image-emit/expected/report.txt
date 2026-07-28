@@ -14,12 +14,12 @@ ImageReport v0
   Cores count=1
   CoreStack core=0 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=412
-  Section name=rodata base=0x405001f0 size=26
-  Section name=abort base=0x4050020c size=120
-  Section name=checkpoint base=0x40500284 size=4
+  Section name=code base=0x40500050 size=312
+  Section name=rodata base=0x40500188 size=26
+  Section name=abort base=0x405001a4 size=120
+  Section name=checkpoint base=0x4050021c size=4
   Entry base=0x40500000
-  Cost version=1 digest=46282f52bdf2ba37 total=52
-    Owner name=app proxy_cycles=52
+  Cost version=1 digest=46282f52bdf2ba37 total=45
+    Owner name=app proxy_cycles=45
     Owner name=runtime proxy_cycles=0
     Owner name=driver proxy_cycles=0
