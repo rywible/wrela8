@@ -78,9 +78,28 @@ pub(crate) fn check(programs: &BTreeMap<String, &TypedProgram>) -> Result<(), Se
         return Ok(());
     }
 
+    // Same live-driver filter as `collect`: QueuePermit demands from an
+    // unused exporter `@driver` (loaded only because a layout was
+    // imported) must not force a collapse failure on Tier 2 images.
+    let mut imported_driver_names: BTreeSet<String> = BTreeSet::new();
+    for program in programs.values() {
+        for (name, s) in &program.imported.structs {
+            if s.is_driver {
+                imported_driver_names.insert(name.clone());
+            }
+        }
+    }
     let mut demands: Vec<Span> = Vec::new();
-    for p in programs.values() {
-        demands.extend(p.reserve_permit_demands.iter().copied());
+    for program in programs.values() {
+        let is_image_module = program.image_fn.is_some();
+        let has_imported_driver = program
+            .structs
+            .iter()
+            .any(|(n, s)| s.is_driver && imported_driver_names.contains(n));
+        if !is_image_module && !has_imported_driver {
+            continue;
+        }
+        demands.extend(program.reserve_permit_demands.iter().copied());
     }
     // Ill-formed images (disagreeing descriptors / depths, wrong
     // descriptor count) stay hard errors even when every site keeps the
@@ -314,12 +333,37 @@ fn group_child_closure(facts: &Facts) -> BTreeSet<String> {
 // --- scan (send_proof's own walk, collecting reserve sites) ----------------
 
 fn collect(programs: &BTreeMap<String, &TypedProgram>) -> Facts {
+    // plans/M16.md Wave D Tier 2: importing a *layout/type* from
+    // `drivers.blk` loads the whole exporter, including an unused
+    // `@driver BlkDriver`. Do not count that driver's `reserve` sites
+    // against an image that keeps its own specialized local driver of
+    // the same bare name. Count a `@driver` when:
+    //   - it is declared in a module that has `@image`, or
+    //   - some module imports it by name (Tier 1 `import BlkDriver`).
+    let imported_driver_names: BTreeSet<String> = programs
+        .values()
+        .flat_map(|p| {
+            p.imported
+                .structs
+                .iter()
+                .filter(|(_, s)| s.is_driver)
+                .map(|(n, _)| n.clone())
+        })
+        .collect();
+
     let mut facts = Facts::default();
     for program in programs.values() {
         for (name, f) in &program.fns {
             scan_fn(name.clone(), f, &mut facts);
         }
         for (struct_name, s) in &program.structs {
+            if s.is_driver {
+                let live = program.image_fn.is_some()
+                    || imported_driver_names.contains(struct_name);
+                if !live {
+                    continue;
+                }
+            }
             for (member, f) in &s.methods {
                 scan_fn(format!("{struct_name}.{member}"), f, &mut facts);
             }

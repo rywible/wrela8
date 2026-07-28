@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/boot_receipt_recover.wr sha256=5ebd0f2dd0b9de5b1c6a936cbc6bfdf59473d42fe255c04733b2a947ad545ed0
+  Input path=examples/boot_receipt_recover.wr sha256=aa4c309b19ff346eb04ccc9641d5e7fb693e4d7523d09f8cec76010d974581b9
   Input path=<generated> sha256=8027450dd8db0760545c6695547195f7b46735cd8e343a70d879f7a28442544f
   Name value=boot-receipt-recover
   Target value=Target.wrela_machine_v1

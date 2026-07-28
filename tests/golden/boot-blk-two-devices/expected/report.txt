@@ -6,7 +6,8 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/boot_blk_two_devices.wr sha256=ab963647545b521b1e9ae7d4d104d0726876c0275522718b45c3f448175f67d5
+  Input path=drivers/blk.wr sha256=7c0c0c16c444c96f75084a3daa26955557f52d115421048fdd538200e29c8f37
+  Input path=examples/boot_blk_two_devices.wr sha256=255e22b892a1a9355edd915becfe64ca69f5debdeb979c5d2340a4477ff40525
   Input path=<generated> sha256=4f6d7675ef26bed9f631b340bf68b12a02d686d12d815bf1ce0d78bd093aaeaa
   Name value=boot-blk-two-devices
   Target value=Target.wrela_machine_v1

@@ -27,6 +27,12 @@ module examples.boot_dma_reclaim
 # the one `reset` line deleted. Nothing else changes, and the boot must
 # abort with "reclaim before quiescence" — that is the whole rule.
 
+# M16 Wave D2: project-shape conversion. Layout/`@driver` bodies stay
+# local — any `from drivers.blk import …` is refused by A1b while this
+# module also declares `BlkDriver` / shared layout names that `drivers.blk`
+# exports (plans/M9.md item A1b). Full layout import also needs same-module
+# `Mmio[L]` + pub layout fields. Specialized local `@driver` kept.
+
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:
     @offset(0x060) interrupt_status: ReadOnly[u32]
