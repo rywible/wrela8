@@ -25,15 +25,17 @@
 //! harmless, not double-counted.
 //!
 //! Every compile-time integer constant (bounds, tag values, shift
-//! widths, array lengths, element strides, ...) is always materialized
-//! via `load_imm` — `MOVZ` + three unconditional `MOVK`s, exactly four
-//! words, regardless of the value's own magnitude. This is deliberately
-//! *not* optimized to skip zero halfwords or to use an immediate-form
-//! instruction when the constant happens to be small: a per-instruction
-//! word count that depended on the constant's own bit pattern would
-//! still be perfectly *sound* (compile-time constants are known in both
-//! passes identically) but the uniform form is simply dumber, and dumb
-//! is the point (decision 4).
+//! widths, array lengths, element strides, ...) is materialized via
+//! `FnCtx::load_imm`. With NarrowImm off (`dev` / default TLS): always
+//! `MOVZ` + three unconditional `MOVK`s, exactly four words — the locked
+//! naive form (`compiler.codegen.naive-locked`). With NarrowImm on
+//! (`opts::apply_mode(Release)`): `MOVZ` at the first non-zero halfword's
+//! shift, then `MOVK` only for remaining non-zero halfwords; value `0`
+//! is a single `movz #0` (plans/M19.md item I / decision 1486). A
+//! per-instruction word count that depends on the constant's bit pattern
+//! is still sound under two-pass emit (constants are identical in both
+//! passes). Reloc trampoline helpers keep the fixed four-word form
+//! (decision 1485) and do not consult the TLS.
 //!
 //! Two things are *not* resolved at this stage, staying symbolic
 //! (plans/M5.md item C, "Text/rodata" — the dump shows `rodata+0xNN`):
@@ -365,22 +367,20 @@ fn omit_dmb() -> bool {
     OMIT_DMB.with(|c| c.get())
 }
 
-// plans/M19.md item B / decision 1421: TLS knob for narrow-immediate
-// materialization. Default **off**; `opts::apply_mode(Release)` turns
-// it on when `OptId::NarrowImm` is in `RELEASE_OPTS`. Item I fills
-// `load_imm` behavior later — this stub only owns the flag.
+// plans/M19.md item B / decision 1421 + item I / 1485–1486: TLS knob for
+// narrow-immediate materialization. Default **off**; `opts::apply_mode
+// (Release)` turns it on when `OptId::NarrowImm` is in `RELEASE_OPTS`.
+// `FnCtx::load_imm` consults this; trampoline/reloc 4-word helpers do not.
 thread_local! {
     static NARROW_IMM: Cell<bool> = const { Cell::new(false) };
 }
 
-/// plans/M19.md item B: enable/disable narrow-imm for the current thread.
+/// plans/M19.md item B/I: enable/disable narrow-imm for the current thread.
 pub fn set_narrow_imm(enabled: bool) {
     NARROW_IMM.with(|c| c.set(enabled));
 }
 
 /// Whether narrow-imm materialization is enabled (default false).
-/// Item I will read this from `load_imm`; until then only `opts` tests do.
-#[allow(dead_code)] // consumed by item I / opts unit tests
 pub(crate) fn narrow_imm() -> bool {
     NARROW_IMM.with(|c| c.get())
 }
@@ -1137,35 +1137,86 @@ impl<'a> FnCtx<'a> {
             &[base]);
     }
 
-    /// Materializes a 64-bit constant, always exactly four words
-    /// (`MOVZ` + three unconditional `MOVK`s — module doc's own
-    /// "deliberately not optimized" note).
+    /// Materializes a 64-bit constant into `reg`.
+    ///
+    /// NarrowImm off (`dev`): always `MOVZ` + three `MOVK`s (four words).
+    /// NarrowImm on: `MOVZ` at the first non-zero halfword's shift, then
+    /// `MOVK` only for remaining non-zero halfwords; `0` → one `movz #0`
+    /// (plans/M19.md item I / decision 1486).
     fn load_imm(&mut self, reg: u8, value: i64) {
         let bits = value as u64;
-        let h0 = (bits & 0xFFFF) as u16;
-        let h1 = ((bits >> 16) & 0xFFFF) as u16;
-        let h2 = ((bits >> 32) & 0xFFFF) as u16;
-        let h3 = ((bits >> 48) & 0xFFFF) as u16;
-        self.push(encode::enc_movz(reg, h0, 0, true),
-            format!("movz {}, #{h0:#x}", reg_name(reg)),
-            CostRule::MovWide,
-            Some(reg),
-            &[]);
-        self.push(encode::enc_movk(reg, h1, 16, true),
-            format!("movk {}, #{h1:#x}, lsl #16", reg_name(reg)),
-            CostRule::MovWide,
-            Some(reg),
-            &[]);
-        self.push(encode::enc_movk(reg, h2, 32, true),
-            format!("movk {}, #{h2:#x}, lsl #32", reg_name(reg)),
-            CostRule::MovWide,
-            Some(reg),
-            &[]);
-        self.push(encode::enc_movk(reg, h3, 48, true),
-            format!("movk {}, #{h3:#x}, lsl #48", reg_name(reg)),
-            CostRule::MovWide,
-            Some(reg),
-            &[]);
+        let halves: [(u16, u8); 4] = [
+            ((bits & 0xFFFF) as u16, 0),
+            (((bits >> 16) & 0xFFFF) as u16, 16),
+            (((bits >> 32) & 0xFFFF) as u16, 32),
+            (((bits >> 48) & 0xFFFF) as u16, 48),
+        ];
+        if !narrow_imm() {
+            let (h0, _) = halves[0];
+            self.push(
+                encode::enc_movz(reg, h0, 0, true),
+                format!("movz {}, #{h0:#x}", reg_name(reg)),
+                CostRule::MovWide,
+                Some(reg),
+                &[],
+            );
+            for &(imm, shift) in &halves[1..] {
+                self.push(
+                    encode::enc_movk(reg, imm, shift, true),
+                    format!("movk {}, #{imm:#x}, lsl #{shift}", reg_name(reg)),
+                    CostRule::MovWide,
+                    Some(reg),
+                    &[],
+                );
+            }
+            return;
+        }
+        // Narrow path: value 0 → single movz #0; otherwise movz at the
+        // first non-zero half, movk for each later non-zero half.
+        if bits == 0 {
+            self.push(
+                encode::enc_movz(reg, 0, 0, true),
+                format!("movz {}, #0x0", reg_name(reg)),
+                CostRule::MovWide,
+                Some(reg),
+                &[],
+            );
+            return;
+        }
+        let first = halves
+            .iter()
+            .position(|&(imm, _)| imm != 0)
+            .expect("bits != 0 implies a non-zero halfword");
+        let (imm0, shift0) = halves[first];
+        if shift0 == 0 {
+            self.push(
+                encode::enc_movz(reg, imm0, 0, true),
+                format!("movz {}, #{imm0:#x}", reg_name(reg)),
+                CostRule::MovWide,
+                Some(reg),
+                &[],
+            );
+        } else {
+            self.push(
+                encode::enc_movz(reg, imm0, shift0, true),
+                format!("movz {}, #{imm0:#x}, lsl #{shift0}", reg_name(reg)),
+                CostRule::MovWide,
+                Some(reg),
+                &[],
+            );
+        }
+        for &(imm, shift) in &halves[first + 1..] {
+            if imm == 0 {
+                continue;
+            }
+            self.push(
+                encode::enc_movk(reg, imm, shift, true),
+                format!("movk {}, #{imm:#x}, lsl #{shift}", reg_name(reg)),
+                CostRule::MovWide,
+                Some(reg),
+                &[],
+            );
+        }
     }
 
     /// Copies `size` bytes (always a multiple of 8) from `[sp,
@@ -9538,6 +9589,208 @@ mod tests {
         };
         let ok = build_frame(&smaller, &layout, 0, 0, bias).expect("fits under 4031 with the bias");
         assert!(ok.size + bias <= 4095);
+    }
+
+    /// plans/M19.md item I / decision 1486: small imm under NarrowImm is
+    /// one `movz` word (naive path stays four).
+    #[test]
+    fn narrow_imm_small_constant_emits_one_word() {
+        let mwir = const_return_mwir(42);
+        let layout = LayoutCtx::default();
+
+        set_narrow_imm(false);
+        let naive = codegen_program(&mwir, &layout).expect("naive");
+        set_narrow_imm(true);
+        let narrow = codegen_program(&mwir, &layout).expect("narrow");
+        set_narrow_imm(false);
+
+        let naive_mov = mov_wide_words(&naive.fns["c"]);
+        let narrow_mov = mov_wide_words(&narrow.fns["c"]);
+        assert_eq!(naive_mov.len(), 4, "naive must stay four words: {naive_mov:?}");
+        assert_eq!(narrow_mov.len(), 1, "small imm must be one movz: {narrow_mov:?}");
+        assert_eq!(narrow_mov[0], encode::enc_movz(X_A, 42, 0, true));
+        assert_eq!(materialize_mov_wide(&narrow_mov), 42);
+        assert_eq!(
+            materialize_mov_wide(&naive_mov),
+            materialize_mov_wide(&narrow_mov)
+        );
+    }
+
+    /// Sparse high halfword: NarrowImm skips the zero movks.
+    #[test]
+    fn narrow_imm_sparse_skips_zero_movks() {
+        // bit 48 set only → movz at lsl #48; no movk for the zero halves.
+        let value: u64 = 1u64 << 48;
+        let mwir = const_return_mwir(value as i64);
+        let layout = LayoutCtx::default();
+
+        set_narrow_imm(true);
+        let narrow = codegen_program(&mwir, &layout).expect("narrow");
+        set_narrow_imm(false);
+
+        let narrow_mov = mov_wide_words(&narrow.fns["c"]);
+        assert_eq!(
+            narrow_mov,
+            vec![encode::enc_movz(X_A, 1, 48, true)],
+            "sparse high half must be a single movz lsl #48"
+        );
+        assert_eq!(materialize_mov_wide(&narrow_mov), value);
+
+        // Two non-zero halves with a zero gap: movz + one movk, not four.
+        let value2: u64 = (0xAAu64 << 32) | 0x11;
+        let mwir2 = const_return_mwir(value2 as i64);
+        set_narrow_imm(true);
+        let narrow2 = codegen_program(&mwir2, &layout).expect("narrow2");
+        set_narrow_imm(false);
+        let mov2 = mov_wide_words(&narrow2.fns["c"]);
+        assert_eq!(
+            mov2,
+            vec![
+                encode::enc_movz(X_A, 0x11, 0, true),
+                encode::enc_movk(X_A, 0xAA, 32, true),
+            ],
+            "zero middle half must be skipped"
+        );
+        assert_eq!(materialize_mov_wide(&mov2), value2);
+    }
+
+    /// Narrow and naive materializations yield identical register bits.
+    #[test]
+    fn narrow_imm_bits_match_naive() {
+        let layout = LayoutCtx::default();
+        let samples: &[i64] = &[
+            0,
+            1,
+            -1,
+            0xFFFF,
+            0x1_0000,
+            0x1_0000_0000,
+            (1i64 << 48) | 0x42,
+            i64::MIN,
+            i64::MAX,
+        ];
+        for &v in samples {
+            let mwir = const_return_mwir(v);
+            set_narrow_imm(false);
+            let naive = codegen_program(&mwir, &layout).expect("naive");
+            set_narrow_imm(true);
+            let narrow = codegen_program(&mwir, &layout).expect("narrow");
+            set_narrow_imm(false);
+            let naive_bits = materialize_mov_wide(&mov_wide_words(&naive.fns["c"]));
+            let narrow_bits = materialize_mov_wide(&mov_wide_words(&narrow.fns["c"]));
+            assert_eq!(
+                naive_bits, narrow_bits,
+                "value {v:#x}: naive {naive_bits:#x} != narrow {narrow_bits:#x}"
+            );
+            assert_eq!(naive_bits, v as u64, "naive must recover {v:#x}");
+        }
+    }
+
+    fn const_return_mwir(value: i64) -> MwirProgram {
+        MwirProgram {
+            fns: BTreeMap::from([(
+                "c".to_string(),
+                MwirFn {
+                    receiver: None,
+                    params: vec![],
+                    ret: Type::U64,
+                    temp_types: vec![Type::U64],
+                    body: vec![
+                        Inst::ConstInt {
+                            dst: Temp(0),
+                            ty: Type::U64,
+                            value: value as i128,
+                        },
+                        Inst::Return {
+                            value: Some(Temp(0)),
+                        },
+                    ],
+                },
+            )]),
+            rodata: vec![],
+        }
+    }
+
+    fn mov_wide_words(f: &CodegenFn) -> Vec<u32> {
+        f.code
+            .iter()
+            .filter(|ew| ew.rule == CostRule::MovWide)
+            .map(|ew| ew.word)
+            .collect()
+    }
+
+    /// Reconstruct the 64-bit value a MOVZ/MOVK sequence leaves in the Rd.
+    fn materialize_mov_wide(words: &[u32]) -> u64 {
+        let mut val = 0u64;
+        for &w in words {
+            let imm16 = ((w >> 5) & 0xFFFF) as u64;
+            let hw = (w >> 21) & 0b11;
+            let shift = hw * 16;
+            let opc = (w >> 29) & 0b11;
+            match opc {
+                0b10 => {
+                    // MOVZ: set selected half, zero the rest.
+                    val = imm16 << shift;
+                }
+                0b11 => {
+                    // MOVK: set selected half, leave others.
+                    let mask = !(0xFFFFu64 << shift);
+                    val = (val & mask) | (imm16 << shift);
+                }
+                other => panic!("unexpected move-wide opc {other:#x} in word {w:#x}"),
+            }
+        }
+        val
+    }
+
+    /// plans/M19.md item I Cheap: cost-calls proxy rank drops with NarrowImm
+    /// on vs off while BoundsElide stays fixed (many small immediates).
+    #[test]
+    fn narrow_imm_lowers_cost_calls_proxy_rank() {
+        use crate::cost::score::score_program;
+        use crate::cost::table::load_default;
+        use crate::lower::set_bounds_elide;
+
+        let src = include_str!("../../../tests/golden/cost-calls/input.wr");
+        let tokens = lexer::lex(src).expect("lex");
+        let module = parser::parse(tokens).expect("parse");
+        let typed = sema::check_typed(&module, "<test>").expect("check");
+        let layout = mwir::build_layout_ctx(&module, &Default::default()).expect("layout");
+        let table = load_default().expect("wrela-cost-v1");
+
+        // Hold BoundsElide fixed on (golden/default path).
+        set_bounds_elide(true);
+        let mwir_program = crate::lower::lower_program(&typed).expect("lower");
+
+        set_narrow_imm(false);
+        let off_prog = codegen_program(&mwir_program, &layout).expect("codegen off");
+        let off = score_program(&off_prog, &table).expect("score off");
+
+        set_narrow_imm(true);
+        let on_prog = codegen_program(&mwir_program, &layout).expect("codegen on");
+        let on = score_program(&on_prog, &table).expect("score on");
+        set_narrow_imm(false);
+
+        assert!(
+            on.total_proxy_cycles < off.total_proxy_cycles,
+            "NarrowImm-on {} must rank strictly below NarrowImm-off {} on cost-calls",
+            on.total_proxy_cycles,
+            off.total_proxy_cycles
+        );
+        let off_mov: usize = off_prog
+            .fns
+            .values()
+            .map(|f| f.code.iter().filter(|ew| ew.rule == CostRule::MovWide).count())
+            .sum();
+        let on_mov: usize = on_prog
+            .fns
+            .values()
+            .map(|f| f.code.iter().filter(|ew| ew.rule == CostRule::MovWide).count())
+            .sum();
+        assert!(
+            on_mov < off_mov,
+            "NarrowImm must emit fewer mov_wide words ({on_mov} vs {off_mov})"
+        );
     }
 
     /// plans/M15.md item K / decision 1098: `--omit-dmb` strips every
