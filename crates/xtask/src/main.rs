@@ -1230,23 +1230,25 @@ fn repro_cross_core_mailbox_depth_admissions(vmm: &Path) -> Result<(), String> {
         .filter_map(|l| l.split_once("]=").map(|(_, rhs)| rhs))
         .filter(|rhs| rhs.starts_with("Admission "))
         .collect();
-    // Far is messaged first (kick), Near second (go); Sink admits Near
-    // (core0) first then Far (core2) — and both must appear, or the held
-    // message was dropped rather than back-pressured.
-    let expected = [
+    // Multiset under overlap (plans/M15.md decision 8): Far←core0 (kick),
+    // Sink←core0 (Near), Sink←core2 (Far's held +10), Sink←core0 (total).
+    // Order is not fixed under concurrent record.
+    let mut got = admissions.clone();
+    got.sort();
+    let mut want = vec![
         "Admission mailbox=Far sender=core0",
         "Admission mailbox=Sink sender=core0",
         "Admission mailbox=Sink sender=core2",
-        // root's final `await sink.total()` — also cross-core into Sink.
         "Admission mailbox=Sink sender=core0",
     ];
-    if admissions != expected {
+    want.sort();
+    if got != want {
         let _ = std::fs::remove_dir_all(&tmp_dir);
         return Err(format!(
-            "repro: {CASE} recorded {:?}, expected {:?} — Sink must admit Near (core0), then \
-             Far's held +10 (core2), then the root's total() read (core0); omitting Sink/core2 \
-             would mean the drain dropped the back-pressured message",
-            admissions, expected
+            "repro: {CASE} recorded {:?}, expected the multiset {:?} — Sink must admit Near \
+             (core0), Far's held +10 (core2), and the root's total() read (core0); omitting \
+             Sink/core2 would mean the drain dropped the back-pressured message",
+            admissions, want
         ));
     }
     let replay_out = Command::new(vmm)
@@ -1401,7 +1403,10 @@ fn repro_cross_core_admission_replay(vmm: &Path) -> Result<(), String> {
     }
     let tampers: &[Tamper] = &[
         Tamper {
-            name: "invert Sink admission order (sender)",
+            // plans/M15.md item I / decision 8: under overlap, Admission
+            // replay is a multiset bag — order inversion is not a witness.
+            // A sender-identity flip still must be caught by name.
+            name: "flip every Sink admission sender",
             expect: "admission mismatch (sender)",
             apply: |text| {
                 let sink_prefix = "Admission mailbox=Sink sender=";
@@ -1470,9 +1475,9 @@ fn repro_cross_core_admission_replay(vmm: &Path) -> Result<(), String> {
         },
         Tamper {
             name: "drop last Admission",
-            // With Progress in the log, deleting an Admission shifts a
-            // Progress into that slot → tag mismatch (still named).
-            expect: "tag mismatch",
+            // Deleted Admission is absent from the multiset bag → count
+            // mismatch (or tag mismatch if a Progress shifts into place).
+            expect: "mismatch",
             apply: |text| {
                 // Delete the last Admission line and renumber + recount so
                 // the file still parses — otherwise parse fails before
@@ -1508,7 +1513,7 @@ fn repro_cross_core_admission_replay(vmm: &Path) -> Result<(), String> {
         },
         Tamper {
             name: "add spurious Admission",
-            // Extra Admission before a Progress → tag or count mismatch.
+            // Extra Admission in the bag → count mismatch at finish.
             expect: "mismatch",
             apply: |text| {
                 let mut choice_lines: Vec<String> = Vec::new();
@@ -1536,32 +1541,15 @@ fn repro_cross_core_admission_replay(vmm: &Path) -> Result<(), String> {
             },
         },
         Tamper {
-            name: "reorder across different mailboxes",
-            expect: "admission mismatch (mailbox)",
+            // Multiset still distinguishes mailboxes: replace Far with a
+            // duplicate Sink so the bag loses Far and gains an extra Sink.
+            name: "replace Far admission with extra Sink",
+            expect: "admission mismatch",
             apply: |text| {
-                // Swap Far/core0 with the first Sink entry — two different
-                // mailboxes change place. Caught as a mailbox field mismatch
-                // at the first swapped position.
-                let mut lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
-                let far_i = lines
-                    .iter()
-                    .position(|l| l.contains("]=Admission mailbox=Far "))
-                    .expect("Far admission");
-                let sink_i = lines
-                    .iter()
-                    .position(|l| l.contains("]=Admission mailbox=Sink "))
-                    .expect("Sink admission");
-                // Swap only the RHS (keep choice[N]= indices stable).
-                let rhs = |l: &str| l.split_once("]=").map(|(_, r)| r.to_string());
-                let far_rhs = rhs(&lines[far_i]).unwrap();
-                let sink_rhs = rhs(&lines[sink_i]).unwrap();
-                let far_head = lines[far_i].split_once("]=").unwrap().0.to_string();
-                let sink_head = lines[sink_i].split_once("]=").unwrap().0.to_string();
-                lines[far_i] = format!("{far_head}]={sink_rhs}");
-                lines[sink_i] = format!("{sink_head}]={far_rhs}");
-                let mut out = lines.join("\n");
-                out.push('\n');
-                out
+                text.replace(
+                    "Admission mailbox=Far sender=core0",
+                    "Admission mailbox=Sink sender=core0",
+                )
             },
         },
     ];

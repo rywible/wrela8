@@ -285,18 +285,6 @@ impl AdmissionWitness {
         }
         Ok(admitted)
     }
-
-    /// Align witness baselines to the live ring words without emitting
-    /// Admissions — used when ending the bring-up overlap window so entry
-    /// parks that ran un-witnessed do not create a false head delta later.
-    pub(crate) fn sync_baselines(&mut self, counts: &[u64], heads: &[u64]) {
-        debug_assert_eq!(counts.len(), self.rings.len());
-        debug_assert_eq!(heads.len(), self.rings.len());
-        self.last_count.clear();
-        self.last_count.extend_from_slice(counts);
-        self.last_head.clear();
-        self.last_head.extend_from_slice(heads);
-    }
 }
 
 /// Reads every request ring's occupancy word and head out of guest memory
@@ -329,32 +317,6 @@ pub(crate) fn observe_admissions(
     witness
         .observe(&counts, &heads, core)
         .map_err(VmmError::GuestFault)
-}
-
-/// Snap witness baselines to the live ring without emitting Admissions.
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-pub(crate) fn sync_admission_baselines(
-    witness: &mut AdmissionWitness,
-    host_ram: *const u8,
-) -> Result<(), VmmError> {
-    if witness.rings.is_empty() {
-        return Ok(());
-    }
-    let mut counts = Vec::with_capacity(witness.rings.len());
-    let mut heads = Vec::with_capacity(witness.rings.len());
-    for r in &witness.rings {
-        let off = guest_dram_offset(r.count_addr, 8, "admission count_addr")?;
-        let mut b = [0u8; 8];
-        unsafe { std::ptr::copy_nonoverlapping(host_ram.add(off), b.as_mut_ptr(), 8) };
-        counts.push(u64::from_le_bytes(b));
-        let head_addr = r.count_addr.saturating_sub(16);
-        let hoff = guest_dram_offset(head_addr, 8, "admission head_addr")?;
-        let mut hb = [0u8; 8];
-        unsafe { std::ptr::copy_nonoverlapping(host_ram.add(hoff), hb.as_mut_ptr(), 8) };
-        heads.push(u64::from_le_bytes(hb));
-    }
-    witness.sync_baselines(&counts, &heads);
-    Ok(())
 }
 
 /// Appends buffered `(mailbox, sender)` pairs as `Admission` choices and

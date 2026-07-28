@@ -11,7 +11,6 @@ use crate::exit_loop::{
     AdmissionWitness, BlkState, advance_pc, check_core_marks, check_vector_in_range,
     commit_admissions, commit_completions, drain_console, el1_exception_note, monotonic_ns,
     observe_admissions, raise_vector, read_core_mark, read_pc, service_blk,
-    sync_admission_baselines,
 };
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use crate::hv;
@@ -417,10 +416,13 @@ fn boot_image_core_inner(
     // vCPUs". Hypervisor.framework binds a vCPU to the thread that created
     // it, so there are N host threads. plans/M15.md item I deleted the
     // baton: every released Runnable core may enter `hv_vcpu_run`
-    // concurrently. Host `Shared` bookkeeping stays behind one mutex
-    // (dumb); park/release/watchdog stay. Replay alone re-serializes via
-    // Yield-`Progress` (decision 7): `next_core` is forced from the next
-    // Progress entry.
+    // concurrently under record **and** replay. Host `Shared` bookkeeping
+    // stays behind one mutex (dumb); park/release/watchdog stay.
+    // Yield-`Progress` forces the choice-log cursor (`sched.current`) at
+    // park/release (decision 7) — that is the serial hand-off. Enter itself
+    // is not gated on the cursor: enter-serializing replay of a concurrent-
+    // record Progress tape deadlocks cross-core awaits. Admission replay
+    // checks a multiset bag (decision 8).
     //
     // Progress is appended at exactly the two guest actions that used to
     // move the baton: the release doorbell and a park (Yield). Every other
@@ -446,9 +448,10 @@ fn boot_image_core_inner(
     }
 
     struct Sched {
-        /// Replay serial hand-off / record log-serializer cursor: whose
-        /// buffered Admissions+Progress may flush into the choice log next.
-        /// Under record, Runnable cores still overlap in `hv_vcpu_run`.
+        /// Log-serializer cursor: whose buffered Admissions+Progress may
+        /// flush next. Progress at Yield forces this under record and
+        /// replay (decision 7). Enter does not wait on it — Runnable cores
+        /// overlap in `hv_vcpu_run` under both modes.
         current: usize,
         state: [CoreState; CORE_SLOTS],
         /// The boot is over (halt, fault, or timeout); every core returns.
@@ -479,12 +482,8 @@ fn boot_image_core_inner(
         /// their choice sequences byte-identical to their pre-C3 ones.
         admission: AdmissionWitness,
         /// plans/M15.md item I: Admissions buffered until Yield-`Progress`.
+        /// Choice-log flush waits on `sched.current`; enter does not.
         admission_buf: [Vec<(String, String)>; CORE_SLOTS],
-        /// Record-only bring-up window: after release until every core has
-        /// entered `hv_vcpu_run` once — proves depth > 1. Parks in this
-        /// window are silent (no Progress); the choice log starts after.
-        overlap_phase: bool,
-        started: [bool; CORE_SLOTS],
     }
     // Every field above is touched only under this mutex (dumb host
     // bookkeeping — plans/M15.md item I). Guest rings stay SPSC + DMB.
@@ -501,10 +500,12 @@ fn boot_image_core_inner(
         u64::from_le_bytes(b)
     }
 
-    /// Guest-visible next-core pick: the next core after `from`, in
-    /// ascending core order among the sealed N (wrapping), that state says
-    /// can run. Under record this feeds the Progress log; under replay
-    /// Progress forces the hand-off and a mismatch is a named divergence.
+    /// Guest-visible next-core pick: prefer a parked core whose pending
+    /// word is already set (a delivered wake — unblocks cross-core await
+    /// under Progress-serial replay), then an idle Runnable, wrapping in
+    /// ascending core order among the sealed N. Under record this feeds
+    /// the Progress log; under replay Progress forces the hand-off and a
+    /// mismatch is a named divergence.
     fn next_core(
         sched: &mut Sched,
         from: usize,
@@ -513,13 +514,15 @@ fn boot_image_core_inner(
     ) -> Option<usize> {
         for step in 1..=cores_declared {
             let c = (from + step) % cores_declared;
-            match sched.state[c] {
-                CoreState::Runnable => return Some(c),
-                CoreState::Parked if pending_word(host_ram, c) != 0 => {
-                    sched.state[c] = CoreState::Runnable;
-                    return Some(c);
-                }
-                _ => {}
+            if sched.state[c] == CoreState::Parked && pending_word(host_ram, c) != 0 {
+                sched.state[c] = CoreState::Runnable;
+                return Some(c);
+            }
+        }
+        for step in 1..=cores_declared {
+            let c = (from + step) % cores_declared;
+            if sched.state[c] == CoreState::Runnable {
+                return Some(c);
             }
         }
         None
@@ -570,8 +573,6 @@ fn boot_image_core_inner(
         vcpus: [0; CORE_SLOTS],
         admission: AdmissionWitness::new(parsed.request_rings.clone()),
         admission_buf: std::array::from_fn(|_| Vec::new()),
-        overlap_phase: false,
-        started: [false; CORE_SLOTS],
     });
     // Park-sleep / eligibility / replay-wait / watchdog wake — not a baton.
     let wake = std::sync::Condvar::new();
@@ -768,9 +769,6 @@ fn boot_image_core_inner(
                         g.sched.state[c] = CoreState::Runnable;
                     }
                     g.released = true;
-                    if cores_declared > 1 && !g.chooser.is_replaying() {
-                        g.overlap_phase = true;
-                    }
                     drop(g);
                     Ok(Step::Yield {
                         release: true,
@@ -1051,9 +1049,9 @@ fn boot_image_core_inner(
     }
 
     /// One core's whole life: create nothing (its vCPU is already made on
-    /// this thread). plans/M15.md item I: record overlaps — every Runnable
-    /// core may enter `hv_vcpu_run` concurrently. Replay alone serializes
-    /// via Yield-`Progress` (`next_core` forced from the log).
+    /// this thread). plans/M15.md item I: overlapping `hv_vcpu_run` for
+    /// every Runnable core; Yield-`Progress` serializes the choice-log
+    /// cursor only (`next_core` forced from the log under replay).
     fn run_core(
         core: usize,
         vcpu: u64,
@@ -1075,19 +1073,16 @@ fn boot_image_core_inner(
                     {
                         g.sched.state[core] = CoreState::Runnable;
                     }
-                    // Barrier note: overlap_phase means "first post-release
-                    // enter may race"; entry wait is skipped only for that
-                    // one synchronized enter (see pre-hv_vcpu_run below).
-                    // After the barrier fires, Progress cursor serializes.
-                    let skip_cursor = g.overlap_phase && !g.chooser.is_replaying();
+                    // Decision 7: every Runnable core may enter `hv_vcpu_run`
+                    // without waiting on `sched.current` (record and replay).
+                    // Progress forces `next_core` for the Yield choice-log
+                    // cursor only — enter-serializing replay of a concurrent-
+                    // record Progress tape deadlocks cross-core awaits.
+                    // Admission replay is a multiset bag (decision 8);
+                    // leftover Progress at finish is tolerated (park count
+                    // under overlap is host-schedule-dependent).
                     match g.sched.state[core] {
-                        CoreState::Runnable => {
-                            if !skip_cursor && g.sched.current != core {
-                                g = wake.wait(g).unwrap_or_else(|e| e.into_inner());
-                                continue;
-                            }
-                            break;
-                        }
+                        CoreState::Runnable => break,
                         CoreState::Unreleased | CoreState::Parked => {
                             let (g2, _) = wake
                                 .wait_timeout(g, Duration::from_millis(1))
@@ -1107,40 +1102,6 @@ fn boot_image_core_inner(
                         wake.notify_all();
                         return;
                     }
-                }
-            }
-            {
-                let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
-                if g.overlap_phase && !g.chooser.is_replaying() {
-                    g.started[core] = true;
-                    // Wait until every live core is at this barrier so the
-                    // next hv_vcpu_run calls overlap (depth > 1), then end
-                    // the window before any guest-visible drain is witnessed.
-                    while g.overlap_phase
-                        && !(0..cores_declared).all(|c| g.started[c])
-                    {
-                        g = wake.wait(g).unwrap_or_else(|e| e.into_inner());
-                        if g.sched.done {
-                            g.sched.state[core] = CoreState::Finished;
-                            drop(g);
-                            wake.notify_all();
-                            return;
-                        }
-                    }
-                    if g.overlap_phase {
-                        g.overlap_phase = false;
-                        if let Err(e) = sync_admission_baselines(&mut g.admission, host_ram) {
-                            g.error.get_or_insert(e);
-                            g.sched.done = true;
-                            g.sched.state[core] = CoreState::Finished;
-                            drop(g);
-                            wake.notify_all();
-                            return;
-                        }
-                        wake.notify_all();
-                    }
-                } else {
-                    g.started[core] = true;
                 }
             }
             let r = unsafe { hv_vcpu_run(vcpu) };
@@ -1178,9 +1139,9 @@ fn boot_image_core_inner(
                 }
                 Ok(Step::Yield { release, park }) => {
                     let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
-                    // Decision 7: Progress is a single global tape. After
-                    // the bring-up overlap window (and always under replay),
-                    // a Yield holds the log cursor before Admissions+Progress.
+                    // Decision 7: Progress is a single global tape. Yield
+                    // holds the log cursor before Admissions+Progress flush
+                    // (record and replay). Enter under record does not.
                     loop {
                         if guard.sched.done {
                             guard.sched.state[core] = CoreState::Finished;
@@ -1191,9 +1152,6 @@ fn boot_image_core_inner(
                         if guard.sched.current == core {
                             break;
                         }
-                        // If overlap just ended while we waited, silent-park
-                        // secondaries may need the cursor fixup above on
-                        // another core's loop; keep waiting.
                         guard = wake.wait(guard).unwrap_or_else(|e| e.into_inner());
                     }
                     let g = &mut *guard;

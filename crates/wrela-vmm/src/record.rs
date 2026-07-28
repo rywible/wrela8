@@ -34,16 +34,18 @@
 //! **It is a witness, not an injection, and the distinction is the whole
 //! honest claim of the item.** The drain is guest code and the mailbox is
 //! guest memory; the VMM never writes either, so replay does not *feed*
-//! the recorded order back — under plans/M15.md item I's Yield-`Progress`
-//! replay the concurrent record schedule is re-serialized from Progress
-//! entries, and Admission remains a witness checked under that serial
-//! hand-off. What replay does is **check**: the same witness runs, and
-//! an entry that disagrees with the recording is
-//! `Divergence::AdmissionMismatch`, named exactly like a device
-//! completion's. Divergence detection is therefore the entire enforcement
+//! the recorded order back — under plans/M15.md item I / decision 7,
+//! record overlaps `hv_vcpu_run` while replay re-serializes enter from
+//! Yield-`Progress` only. That serial hand-off does not reproduce
+//! concurrent drain interleaving, so Admission replay checks a **multiset
+//! bag** of `(mailbox, sender)` pairs (decision 8: retire positional /
+//! exact-one-core Δcount assumptions under overlap). Progress / Clock /
+//! Device / Deadline stay strictly positional on the choice tape.
+//! Divergence detection is therefore still the entire enforcement
 //! (`xtask repro`'s own cross-core admission lane is its oracle), and this
 //! comment says so rather than implying the stronger property.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use crate::{BootOutcome, VmmError, boot_image_core};
@@ -488,7 +490,15 @@ fn admission_mismatch_fields(recorded: &str, actual: &str) -> String {
 
 enum ChooserMode {
     Record,
-    Replay { log: Vec<ChoiceEntry>, idx: usize },
+    /// Replay walks non-Admission choices positionally (`idx`). Admissions
+    /// are consumed from `admission_bag` (plans/M15.md decision 8):
+    /// overlapping record and Progress-serial replay need not agree on
+    /// drain order, only on the `(mailbox, sender)` multiset.
+    Replay {
+        log: Vec<ChoiceEntry>,
+        idx: usize,
+        admission_bag: BTreeMap<(String, String), usize>,
+    },
 }
 
 /// The single-point-of-choice structure decision 9 explicitly buys
@@ -529,10 +539,19 @@ impl Chooser {
     }
 
     pub fn replayer(recorded: Vec<ChoiceEntry>) -> Chooser {
+        let mut admission_bag: BTreeMap<(String, String), usize> = BTreeMap::new();
+        for e in &recorded {
+            if let ChoiceEntry::Admission { mailbox, sender } = e {
+                *admission_bag
+                    .entry((mailbox.clone(), sender.clone()))
+                    .or_insert(0) += 1;
+            }
+        }
         Chooser {
             mode: ChooserMode::Replay {
                 log: recorded,
                 idx: 0,
+                admission_bag,
             },
             log: Vec::new(),
             divergences: Vec::new(),
@@ -552,12 +571,17 @@ impl Chooser {
         matches!(self.mode, ChooserMode::Replay { .. })
     }
 
-    /// Peek at the next recorded choice without consuming it (replay only).
-    /// Used so Yield-`Progress` can force the next core from the following
-    /// Progress entry (plans/M15.md item I).
+    /// Peek at the next recorded non-Admission choice without consuming it
+    /// (replay only). Admissions live in the bag, not the positional cursor.
     pub fn peek_replay(&self) -> Option<&ChoiceEntry> {
         match &self.mode {
-            ChooserMode::Replay { log, idx } => log.get(*idx),
+            ChooserMode::Replay { log, idx, .. } => {
+                let mut i = *idx;
+                while i < log.len() && matches!(log[i], ChoiceEntry::Admission { .. }) {
+                    i += 1;
+                }
+                log.get(i)
+            }
             ChooserMode::Record => None,
         }
     }
@@ -602,22 +626,82 @@ impl Chooser {
                 self.log.push(entry.clone());
                 entry
             }
-            ChooserMode::Replay { log, idx } => {
+            ChooserMode::Replay {
+                log,
+                idx,
+                admission_bag,
+            } => {
+                // Admissions: multiset bag (overlap record vs Progress-serial
+                // replay). Everything else stays positional on the tape.
+                if let ChoiceRequest::Admission { mailbox, sender } = &request {
+                    let key = (mailbox.clone(), sender.clone());
+                    match admission_bag.get_mut(&key) {
+                        Some(n) if *n > 0 => {
+                            *n -= 1;
+                            if *n == 0 {
+                                admission_bag.remove(&key);
+                            }
+                            let entry = ChoiceEntry::Admission {
+                                mailbox: mailbox.clone(),
+                                sender: sender.clone(),
+                            };
+                            self.log.push(entry.clone());
+                            return entry;
+                        }
+                        _ => {
+                            let index = self.log.len();
+                            // Prefer a same-mailbox leftover (sender field),
+                            // else same-sender (mailbox field), else any bag
+                            // entry — so identity tampers stay named.
+                            let alt = admission_bag
+                                .keys()
+                                .find(|(m, _)| m == mailbox)
+                                .or_else(|| admission_bag.keys().find(|(_, s)| s == sender))
+                                .or_else(|| admission_bag.keys().next())
+                                .cloned();
+                            if let Some((m, s)) = alt {
+                                self.divergences.push(Divergence::AdmissionMismatch {
+                                    index,
+                                    recorded: format!("Admission mailbox={m} sender={s}"),
+                                    actual: format!(
+                                        "Admission mailbox={mailbox} sender={sender}"
+                                    ),
+                                });
+                            } else {
+                                self.divergences.push(Divergence::AdmissionCountMismatch {
+                                    index,
+                                    detail: format!(
+                                        "this boot admitted an entry the recording does not have \
+                                         (Admission mailbox={mailbox} sender={sender})"
+                                    ),
+                                });
+                            }
+                            let fallback = request.fallback();
+                            self.log.push(fallback.clone());
+                            return fallback;
+                        }
+                    }
+                }
+
+                // Skip recorded Admissions on the positional cursor — they
+                // were already loaded into the bag at replayer construction.
+                while *idx < log.len() && matches!(log[*idx], ChoiceEntry::Admission { .. }) {
+                    *idx += 1;
+                }
                 let Some(entry) = log.get(*idx).cloned() else {
                     let index = *idx;
                     let recorded = log.len();
-                    if matches!(request, ChoiceRequest::Admission { .. }) {
-                        self.divergences.push(Divergence::AdmissionCountMismatch {
-                            index,
-                            detail: format!(
-                                "this boot admitted an entry the recording does not have \
-                                 (recorded {recorded} choice(s); guest asked for Admission)"
-                            ),
-                        });
-                    } else {
-                        self.divergences
-                            .push(Divergence::ChoiceLogUnderrun { index, recorded });
+                    // Overlap park-count drift: extra Progress the guest asks
+                    // for beyond the recording is answered from the request
+                    // (live next_core) without diverging. Any other underrun
+                    // is still a real control-flow break.
+                    if matches!(request, ChoiceRequest::Progress { .. }) {
+                        let fallback = request.fallback();
+                        self.log.push(fallback.clone());
+                        return fallback;
                     }
+                    self.divergences
+                        .push(Divergence::ChoiceLogUnderrun { index, recorded });
                     let fallback = request.fallback();
                     self.log.push(fallback.clone());
                     return fallback;
@@ -703,28 +787,38 @@ impl Chooser {
     /// divergence found along the way.
     fn finish(self) -> (Vec<ChoiceEntry>, Vec<Divergence>) {
         let mut divergences = self.divergences;
-        if let ChooserMode::Replay { log, idx } = &self.mode {
-            if *idx < log.len() {
-                let leftover = &log[*idx..];
-                let admission_leftovers = leftover
-                    .iter()
-                    .filter(|e| matches!(e, ChoiceEntry::Admission { .. }))
-                    .count();
-                if admission_leftovers > 0 {
-                    divergences.push(Divergence::AdmissionCountMismatch {
-                        index: *idx,
-                        detail: format!(
-                            "recording has {admission_leftovers} unconsumed Admission choice(s) \
-                             this boot never performed (consumed {idx} of {} recorded)",
-                            log.len()
-                        ),
-                    });
-                } else {
-                    divergences.push(Divergence::ChoiceLogOverrun {
-                        consumed: *idx,
-                        recorded: log.len(),
-                    });
-                }
+        if let ChooserMode::Replay {
+            log,
+            mut idx,
+            admission_bag,
+        } = self.mode
+        {
+            // Admissions live in the bag; Progress park-count under overlap
+            // is host-schedule-dependent — leftover Progress alone is not
+            // a divergence (decision 7/8). Any other leftover tag is.
+            while idx < log.len()
+                && matches!(
+                    log[idx],
+                    ChoiceEntry::Admission { .. } | ChoiceEntry::Progress { .. }
+                )
+            {
+                idx += 1;
+            }
+            let bag_left: usize = admission_bag.values().sum();
+            if bag_left > 0 {
+                divergences.push(Divergence::AdmissionCountMismatch {
+                    index: idx,
+                    detail: format!(
+                        "recording has {bag_left} unconsumed Admission choice(s) \
+                         this boot never performed (consumed positional cursor at {idx} of {} recorded)",
+                        log.len()
+                    ),
+                });
+            } else if idx < log.len() {
+                divergences.push(Divergence::ChoiceLogOverrun {
+                    consumed: idx,
+                    recorded: log.len(),
+                });
             }
         }
         (self.log, divergences)
