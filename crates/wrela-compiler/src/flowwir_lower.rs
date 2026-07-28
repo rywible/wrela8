@@ -581,8 +581,10 @@ fn resolve_callee_fn<'p>(
     }
 }
 
-/// plans/M18.md item I: proved literal index on `[T; N]` → elide to
-/// Project/SetField when `crate::lower::bounds_elide()` is on.
+/// plans/M18.md item I / M19 item D: proved literal index on `[T; N]` →
+/// elide to Project/SetField when `crate::lower::bounds_elide()` is on
+/// (`apply_mode(Release)`; off under `Dev`). Cost instrumentation is
+/// always-on (freeze 1408) — this gate flips emission only.
 fn literal_array_index_elide(idx_expr: &TypedExpr, len: usize) -> Result<Option<usize>, FlowError> {
     if !crate::lower::bounds_elide() {
         return Ok(None);

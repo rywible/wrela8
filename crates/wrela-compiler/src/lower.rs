@@ -190,22 +190,26 @@ use crate::sema::typed::{
 use crate::sema::types::{Type, TypeArg};
 use crate::syntax::ast::{self, AccessMode, BinOp};
 
-// plans/M18.md item I / freeze 1307: proved literal-index bounds elision
-// for `[T; N]`. Default **on** (correctness-preserving). Test-only off
-// switch `--no-bounds-elide` / `set_bounds_elide(false)` for proxy A/B.
-// Cleared to `true` at the start of every CLI dump/test/build, mirroring
-// codegen's `--omit-dmb` TLS discipline.
+// plans/M18.md item I / freeze 1307 + plans/M19.md item D / 1440–1449:
+// proved literal-index bounds elision for `[T; N]`. Product default =
+// `CompileMode::Release` = elide **on** (byte-compatible with today's
+// release-shaped goldens). `opts::apply_mode` is the front door
+// (decision 1422); this TLS is the knob it drives. Surgical A/B may
+// still call `set_bounds_elide` directly. Cost tags / scoreboard stay
+// always-on regardless of mode (freeze 1408) — modes flip emission only.
 thread_local! {
     static BOUNDS_ELIDE: Cell<bool> = const { Cell::new(true) };
 }
 
-/// plans/M18.md item I: enable/disable literal `[T; N]` index → Project
-/// / SetField elision for the current thread.
+/// plans/M19.md item D: enable/disable literal `[T; N]` index → Project
+/// / SetField elision for the current thread. Prefer
+/// `opts::apply_mode(Release|Dev)`; this is the TLS primitive it sets.
 pub fn set_bounds_elide(enabled: bool) {
     BOUNDS_ELIDE.with(|c| c.set(enabled));
 }
 
-/// Whether literal `[T; N]` index bounds elision is enabled (default true).
+/// Whether literal `[T; N]` index bounds elision is enabled.
+/// Default `true` matches `apply_mode(Release)` / product default path.
 pub(crate) fn bounds_elide() -> bool {
     BOUNDS_ELIDE.with(|c| c.get())
 }
@@ -5088,6 +5092,7 @@ mod builder_tests {
 #[cfg(test)]
 mod integration_tests {
     use super::*;
+    use crate::opts::{CompileMode, apply_mode};
     use crate::sema;
     use crate::syntax::ast::Span;
     use crate::syntax::{lexer, parser};
@@ -5200,8 +5205,9 @@ pub fn add_one(x: u64) -> u64:
         assert!(matches!(f.body.last(), Some(Inst::Return { .. })));
     }
 
-    /// plans/M18.md item I / freeze 1307: literal `[T; N]` index → Project
-    /// when bounds elision is on (default); IndexGet when off.
+    /// plans/M18.md item I / M19 item D: literal `[T; N]` index → Project
+    /// when BoundsElide is on (`apply_mode(Release)`); IndexGet when off
+    /// (`Dev`).
     #[test]
     fn literal_fixed_array_index_elides_to_project() {
         let program = typed_program(
@@ -5211,7 +5217,7 @@ pub fn at_zero(a: [u64; 4]) -> u64:
     return a[0]
 ",
         );
-        set_bounds_elide(true);
+        apply_mode(CompileMode::Release);
         let mwir = lower_program(&program).expect("must lower cleanly");
         let f = mwir.fns.get("at_zero").expect("fn lowered");
         assert!(
@@ -5227,7 +5233,7 @@ pub fn at_zero(a: [u64; 4]) -> u64:
             f.body
         );
 
-        set_bounds_elide(false);
+        apply_mode(CompileMode::Dev);
         let mwir_off = lower_program(&program).expect("must lower cleanly");
         let f_off = mwir_off.fns.get("at_zero").expect("fn lowered");
         assert!(
@@ -5246,10 +5252,11 @@ pub fn at_zero(a: [u64; 4]) -> u64:
             "disabled: must not emit Project, got {:?}",
             f_off.body
         );
-        set_bounds_elide(true);
+        apply_mode(CompileMode::Release);
     }
 
-    /// plans/M18.md item I: literal IndexSet → SetField when elision on.
+    /// plans/M18.md item I / M19 item D: literal IndexSet → SetField when
+    /// BoundsElide is on (`Release`); IndexSet when off (`Dev`).
     #[test]
     fn literal_fixed_array_index_set_elides_to_set_field() {
         let program = typed_program(
@@ -5259,7 +5266,7 @@ pub fn write_zero(mut a: [u64; 4], v: u64):
     a[0] = v
 ",
         );
-        set_bounds_elide(true);
+        apply_mode(CompileMode::Release);
         let mwir = lower_program(&program).expect("must lower cleanly");
         let f = mwir.fns.get("write_zero").expect("fn lowered");
         assert!(
@@ -5275,7 +5282,7 @@ pub fn write_zero(mut a: [u64; 4], v: u64):
             f.body
         );
 
-        set_bounds_elide(false);
+        apply_mode(CompileMode::Dev);
         let mwir_off = lower_program(&program).expect("must lower cleanly");
         let f_off = mwir_off.fns.get("write_zero").expect("fn lowered");
         assert!(
@@ -5286,7 +5293,7 @@ pub fn write_zero(mut a: [u64; 4], v: u64):
             "disabled: expected IndexSet len=4, got {:?}",
             f_off.body
         );
-        set_bounds_elide(true);
+        apply_mode(CompileMode::Release);
     }
 
     /// plans/M17.md item Es: sync MWIR lowers `now()` / `entropy[N]()`
