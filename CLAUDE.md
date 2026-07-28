@@ -23,7 +23,8 @@ wrela machine. Flagship: wrela OS on Raspberry Pi 5 / 1 GiB.
 ## Commands (no CI — these run locally, always)
 
 - `cargo xtask check` — the gate: fmt, tests, golden, ledger. Run before
-  calling anything done.
+  calling a milestone (or any multi-item body of work) done — **not**
+  after every plan item (see Verification below).
 - `cargo xtask golden [--update]` — golden tests; `--update` rewrites
   expectations, then you review the diff and cite a ledger clause id in
   the commit.
@@ -57,6 +58,58 @@ wrela machine. Flagship: wrela OS on Raspberry Pi 5 / 1 GiB.
   into `check`) and guest speed (`bench guest`, replay-based, alive at
   M5 — still fails closed, like bare `bench` and `profile`). The only
   path to cleverness — in the compiler too — runs through them.
+
+## Verification (cheap per item; expensive at close)
+
+`cargo xtask check` is the gate — fmt, all tests, **all** goldens
+(including HVF boots), corpus, fuzz smoke, ledger, repro lanes. It is
+**too expensive to run after every plan item.** Active milestone plans
+split verification; agents follow that split (or this default when the
+plan is silent):
+
+| Lane | When | What |
+| --- | --- | --- |
+| **Cheap (required per item)** | Before that item's commit | Unit tests + dumps for **new/changed** behavior only; no full golden suite; no deep fuzz; no `bench guest` |
+| **Focused boot (only if the item claims HVF)** | Before that item's commit | Run **the one or two boot goldens the item names**, via `wrela` + `wrela-vmm` on those paths alone — not the whole `boot-*` corpus |
+| **Expensive (close item only)** | Milestone close | Full `cargo xtask check`; deep fuzz when the plan requires it; `bench guest` deltas when the plan records them |
+
+**Cheap recipes (use these, not `xtask check`, between items):**
+
+```bash
+# Unit filter (pick the crate the item touched)
+cargo test -p wrela-machine --lib <filter>
+cargo test -p wrela-compiler --lib <filter>
+cargo test -p wrela-vmm --lib <filter>
+
+# One non-boot golden: build wrela, dump/build the case, diff expected/
+cargo build -q -p wrela-compiler --bin wrela
+./target/debug/wrela dump --stage=<image|check|rtconfig|report|asm> \
+  tests/golden/<case>/input.wr | diff -u tests/golden/<case>/expected/<stage>.txt -
+
+# Docs-only items
+cargo xtask corpus          # or corpus --sema when relevant
+cargo xtask ledger
+
+# Focused boot (only named cases the item claims)
+cargo build -q -p wrela-compiler --bin wrela
+# build image + boot with wrela-vmm for that case only (same shape the
+# golden runner uses; do not loop every boot-*)
+```
+
+**Rules:**
+
+1. Every item's **Cheap** oracle must fail if the new behavior is wrong
+   and pass when it is right — a green unit filter that never touches
+   the new code is not an oracle.
+2. Do **not** run full `cargo xtask check` or deep fuzz on ordinary
+   items. Drift in untouched goldens is the close item's job.
+3. Items that **move** a large golden surface update the expected files
+   in that commit and cheap-verify with dump/report on a representative
+   sample plus unit tests; the full corpus is re-checked at close.
+4. Claims of byte-identical transcripts are verified on the **named**
+   control case in Cheap/Focused, not by replaying the entire suite.
+5. The close item is not optional. A milestone is not COMPLETE until
+   the expensive lane is green.
 
 ## Layout
 
