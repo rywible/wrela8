@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 
 use crate::codegen::{CodegenFn, CodegenProgram};
 
+use super::owner::classify_owner;
 use super::rule::{CostRule, EmittedWord};
 use super::table::CostTable;
 
@@ -13,7 +14,7 @@ use super::table::CostTable;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FnCost {
     pub key: String,
-    /// Owner bucket. Hardcoded `"app"` until item G.
+    /// Owner bucket: `app` / `runtime` / `driver` (item G).
     pub owner: String,
     pub proxy_cycles: u64,
     /// `CostRule::as_str()` → count of words with that rule.
@@ -28,6 +29,8 @@ pub struct CostReport {
     pub issue_width: u64,
     /// Sum of per-fn schedule lengths (compositionality; dump header states it).
     pub total_proxy_cycles: u64,
+    /// Sum of fn `proxy_cycles` per owner bucket (`app` / `runtime` / `driver`).
+    pub owner_totals: BTreeMap<String, u64>,
     /// Stable order: `BTreeMap` key order of `program.fns`.
     pub fns: Vec<FnCost>,
 }
@@ -44,13 +47,20 @@ pub fn score_program(
 ) -> Result<CostReport, String> {
     let mut fns = Vec::with_capacity(program.fns.len());
     let mut total_proxy_cycles = 0u64;
+    let mut owner_totals = BTreeMap::from([
+        ("app".to_string(), 0u64),
+        ("runtime".to_string(), 0u64),
+        ("driver".to_string(), 0u64),
+    ]);
 
     for (key, f) in &program.fns {
         let (proxy_cycles, terms) = score_fn(f, table)?;
         total_proxy_cycles = total_proxy_cycles.saturating_add(proxy_cycles);
+        let owner = classify_owner(key).to_string();
+        *owner_totals.entry(owner.clone()).or_insert(0) += proxy_cycles;
         fns.push(FnCost {
             key: key.clone(),
-            owner: "app".to_string(),
+            owner,
             proxy_cycles,
             terms,
         });
@@ -61,6 +71,7 @@ pub fn score_program(
         digest: table.table_digest(),
         issue_width: table.issue_width,
         total_proxy_cycles,
+        owner_totals,
         fns,
     })
 }
@@ -238,5 +249,54 @@ neon = 1
         assert_eq!(r.fns.len(), 1);
         assert_eq!(r.fns[0].proxy_cycles, 0);
         assert!(r.fns[0].terms.is_empty());
+    }
+
+    #[test]
+    fn score_sets_owner_from_classify() {
+        let table = parse(TABLE).expect("table");
+        let code = vec![word(CostRule::Alu, Some(1), &[0, 0])];
+        let mut fns = BTreeMap::new();
+        fns.insert(
+            "checked_add".to_string(),
+            CodegenFn {
+                frame_size: 0,
+                code: code.clone(),
+                relocs: Vec::new(),
+            },
+        );
+        fns.insert(
+            "__wrela_abort".to_string(),
+            CodegenFn {
+                frame_size: 0,
+                code: code.clone(),
+                relocs: Vec::new(),
+            },
+        );
+        fns.insert(
+            "BlkDriver.on_turn".to_string(),
+            CodegenFn {
+                frame_size: 0,
+                code,
+                relocs: Vec::new(),
+            },
+        );
+        let p = CodegenProgram {
+            fns,
+            rodata: Vec::new(),
+        };
+        let r = score_program(&p, &table).expect("score");
+        let by_key: BTreeMap<_, _> = r.fns.iter().map(|f| (f.key.as_str(), f)).collect();
+        assert_eq!(by_key["checked_add"].owner, "app");
+        assert_eq!(by_key["__wrela_abort"].owner, "runtime");
+        assert_eq!(by_key["BlkDriver.on_turn"].owner, "driver");
+        assert_eq!(r.owner_totals["app"], by_key["checked_add"].proxy_cycles);
+        assert_eq!(
+            r.owner_totals["runtime"],
+            by_key["__wrela_abort"].proxy_cycles
+        );
+        assert_eq!(
+            r.owner_totals["driver"],
+            by_key["BlkDriver.on_turn"].proxy_cycles
+        );
     }
 }

@@ -32,6 +32,14 @@ fn format_report(report: &CostReport) -> String {
         1,
         &format!("Total proxy_cycles={}", report.total_proxy_cycles),
     );
+    for name in ["app", "runtime", "driver"] {
+        let cycles = report.owner_totals.get(name).copied().unwrap_or(0);
+        push_line(
+            &mut out,
+            1,
+            &format!("Owner name={name} proxy_cycles={cycles}"),
+        );
+    }
     for f in &report.fns {
         push_line(
             &mut out,
