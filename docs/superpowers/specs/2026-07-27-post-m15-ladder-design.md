@@ -1,14 +1,16 @@
 # Post-M15 ladder: stdlib maturity, entropy, perf deferred
 
-**Status:** design approved in conversation (2026-07-27); not an activated
-milestone plan. `plans/M16.md` / `plans/M17.md` are written only when those
-rungs activate, per ROADMAP planning convention.
+**Status:** design approved 2026-07-27; **activated 2026-07-28** as
+[plans/M16.md](../../../plans/M16.md) (stdlib maturity). M17 (entropy)
+remains unactivated — no `plans/M17.md` until that rung activates. ROADMAP
+ladder: M16 stdlib maturity → M17 entropy → M18 cycle proxy → M19 opt
+shelf → pixels (intention).
 
-**Context:** M15 (variable cores + true concurrent vCPUs) is ACTIVE. Today's
-ROADMAP places the cycle proxy at M16 and the optimization playground at
-M17. This design inserts two rungs before that perf track and renumbers
-accordingly. Pixels (input + display + compositor) stays an unscheduled
-intention after the renumbered perf rungs.
+**Context (historical):** at design time M15 was ACTIVE and ROADMAP placed
+the cycle proxy at M16 / playground at M17. This design inserted two rungs
+before that perf track and renumbered accordingly. Pixels (input + display
++ compositor) stays an unscheduled intention after the renumbered perf
+rungs.
 
 ## Goal
 
@@ -78,7 +80,7 @@ a later design says otherwise.
 
 **Blk transport:** keep virtio-blk for now (M7 paid for it; vDPA / unchanged
 guest under alternate backings remains plausible). A trimmed `wrela-blk` is
-a separate machine-revision conversation — not M16/M17. Thin devices cheat
+a separate machine-revision conversation — not M16–M19. Thin devices cheat
 freely on transport because both sides are owned; queue devices still need
 shared rings + doorbells for the zero-exit hot path (06 §5), whether branded
 virtio or not.
@@ -86,14 +88,14 @@ virtio or not.
 ## Ladder
 
 ```text
-M15 (ACTIVE) → M16 Stdlib maturity → M17 Entropy
-             → M18 Cycle proxy → M19 Opt shelf
-             → pixels (intention)
+M15 (COMPLETE) → M16 Stdlib maturity (ACTIVE) → M17 Entropy
+               → M18 Cycle proxy → M19 Opt shelf
+               → pixels (intention)
 ```
 
-ROADMAP and ledger owner strings that today say M16/M17 for proxy/shelf are
-renumbered to M18/M19 in the same doc commit family that inserts the new
-rungs. Plans for M16/M17 are **not** written until activation.
+ROADMAP and ledger owner strings that said M16/M17 for proxy/shelf were
+renumbered to M18/M19 at M16 activation. `plans/M17.md` is still written
+only when that rung activates.
 
 ### M16 — Stdlib maturity
 
@@ -156,7 +158,8 @@ entropy is truly tiny — default is split.
 
 ### M18 — Cycle proxy / M19 — Optimization playground
 
-Substance unchanged from today's ROADMAP M16/M17. Renumbered only.
+Substance unchanged from the pre-insert ROADMAP M16/M17. Renumbered only
+at M16 activation (2026-07-28).
 
 ### Pixels (intention, after M19)
 
@@ -210,7 +213,8 @@ needed.
 - A plugin/generic device framework.
 - Cleverness-budget optimizations (proxy/shelf come after).
 - KVM / flagship-host bring-up.
-- Writing `plans/M16.md` / `plans/M17.md` before those rungs activate.
+- Writing `plans/M17.md` before M17 activates (`plans/M16.md` landed at
+  activation).
 
 ## Rejected alternatives (do not relitigate)
 

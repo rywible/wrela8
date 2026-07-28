@@ -72,15 +72,18 @@ beyond the active milestone. A milestone's *first deliverable* is its plan
 code exists, the shape decisions that milestone freezes, and explicit
 non-goals. Plans are written when a milestone activates, never earlier
 (each milestone manufactures the facts the next plan needs), and become
-history when it completes. Active plan: **none**. M15 is COMPLETE
+history when it completes. Active plan:
+[plans/M16.md](plans/M16.md) (stdlib maturity). M15 is COMPLETE
 ([plans/M15.md](plans/M15.md); variable cores + true concurrent vCPUs;
 barrier clause remains gap per [plans/BLOCKED.md](plans/BLOCKED.md)).
 M14 is COMPLETE (doc cut:
 constructive progress theorem; no `plans/M14.md` — capability cut, not a
 build-out; forward-ref golden still `image.graph.handle-dag` gap). M13 is
-COMPLETE ([plans/M13.md](plans/M13.md)). Cycle proxy is M16; optimization
-playground is M17 — neither activated. M12 is COMPLETE
-([plans/M12.md](plans/M12.md)). M11 is COMPLETE ([plans/M11.md](plans/M11.md)).
+COMPLETE ([plans/M13.md](plans/M13.md)). Entropy is M17 (not activated).
+Cycle proxy is M18; optimization playground is M19 — neither activated.
+M12 is COMPLETE ([plans/M12.md](plans/M12.md)). M11 is COMPLETE
+([plans/M11.md](plans/M11.md)). Ladder design:
+[docs/superpowers/specs/2026-07-27-post-m15-ladder-design.md](docs/superpowers/specs/2026-07-27-post-m15-ladder-design.md).
 
 ### M1 — Parse everything
 Full grammar → stable AST dumps (`wrela dump --stage=ast`). Includes
@@ -530,7 +533,7 @@ immediates). The `bench guest` lock on `boot-actors` (700000us threshold;
 dodge it. The payoff is structural: today's hand specialization becomes
 *derivable* by ordinary passes — const-prop of the placed base and
 constant indices, `TurnId` bounds-proof elision, dense-match jump tables
-— each a future cleverness-budget purchase scored by **M16's** proxy,
+— each a future cleverness-budget purchase scored by **M18's** proxy,
 acting on runtime and user code alike. M11 makes the runtime reachable by
 the budget; it does not spend it.
 
@@ -553,7 +556,7 @@ entry-driver residue. Detail: [plans/M11.md](plans/M11.md).
 
 Opens: facts-only / generator-determinism / rtconfig-dump clauses (named
 in the plan). Narrows: `sema.bounds.loops` (the `@budget` half for sync
-loops). Non-goals: optimizing the scheduler (M16-proxy-gated); fusion;
+loops). Non-goals: optimizing the scheduler (M18-proxy-gated); fusion;
 `@naked`; comptime metaprogramming; config-as-data; register allocation.
 
 ### M12 — The representation rung (placed statics back to O(1))
@@ -620,12 +623,12 @@ Detail: [plans/M13.md](plans/M13.md). The load-bearing pieces:
   parameters land (02 §8.3's flagship idiom compiles); inferred error
   sets for private fns (promoted from the intention below; its doc
   revision stays human-gated).
-- **The ISR gate** is prepared here and decided before M16's plan is
-  written: delete the user-visible ISR (vector → bottom-half wake,
-  pending-word consumption as the ack) or keep it — evidence package
-  with measured latency numbers, golden inventory, the 06 §5 MMIO
-  tension, and **M14's upward-edge sentence** (preserve or replace),
-  accept/reject spaces.
+- **The ISR gate** is prepared here and decided before the cycle-proxy
+  plan (M18) is written: delete the user-visible ISR (vector →
+  bottom-half wake, pending-word consumption as the ack) or keep it —
+  evidence package with measured latency numbers, golden inventory, the
+  06 §5 MMIO tension, and **M14's upward-edge sentence** (preserve or
+  replace), accept/reject spaces.
 
 ### M14 — Progress, constructively (no graph analyzer) — COMPLETE
 **Done (2026-07-27).** Normative cut landed (04 §1 Progress rewrite;
@@ -792,7 +795,7 @@ Normative edits as above. Detail: [plans/M15.md](plans/M15.md).
 **Non-goals.** Work stealing; actor migration; app-visible atomics or
 fences; changing the placement *algorithm* beyond the N domain (work
 proofs remain M-whatever lands them); cycle proxy / optimizer shelf
-(M16/M17); exhaustive schedule enumeration / POR (M6 later intention —
+(M18/M19); exhaustive schedule enumeration / POR (M6 later intention —
 M15 only needs Yield-`Progress` replay); KVM bring-up (still the
 flagship-host intention); pixels; raising the flagship housekeeping
 story into a second guest-visible contract.
@@ -806,7 +809,76 @@ benefit. (d) Closing the rung after `cores=N` while the baton remains —
 that would repeat M8's "three cores, no throughput" claim under a new
 name.
 
-### M16 — The cycle proxy
+### M16 — Stdlib maturity
+Make the stdlib and machine device story honest and testable before
+spending the cleverness budget. Detail: [plans/M16.md](plans/M16.md).
+
+**Owns:**
+
+1. **06 honesty rewrite** — split thin device contracts (clock, console,
+   entropy) from queue/`@driver` contracts (blk now; input/display at
+   pixels); say **virtio** only where the shipped contract is virtio.
+   Stdlib README / ROADMAP echo in the same commit family.
+2. **`stdlib/drivers/`** as sibling of `stdlib/core/`, imported via a
+   reserved alias `drivers` mirroring `core` (e.g.
+   `from drivers.blk import …`). Package tree contains **only**
+   `@driver` modules.
+3. **Relocate blk** out of inlined golden `@driver` bodies into
+   `drivers.blk`. Move, don't redesign; existing boot transcripts remain
+   the oracle (byte-identical or deliberately re-pinned with a ledger
+   cite).
+4. **Dual-tier in-wrela suite:**
+   - *Comptime:* `@test` / `@test(exhaustive)` under `stdlib/tests/`
+     over pure `core` (List, time constructors, Format helpers, …). No
+     VMM.
+   - *Runtime:* owned blk boot goldens import `drivers.blk` and pin
+     transcripts.
+5. Wire the suite into `cargo xtask check` as lane **`stdlib-test`**.
+   Empty suite root fails closed.
+6. **Console / clock:** name them as thin contracts; floor cleanup only
+   if required for honesty. No console `@driver`. No clock `@driver`.
+
+**Vocabulary (settled).** *Device* = VMM model + report/conformance.
+*`@driver`* = guest actor root owning a multiphasic device protocol.
+*Thin guest surface* = sealed API for devices that do not earn a
+`@driver` (`now()`, console ring helpers, entropy effect). All
+machine-v1 rows are devices; only some necessitate a full `@driver`.
+
+**Explicit non-goals:** entropy (M17); input/display; cleverness-budget
+spends; KVM; replacing virtio-blk; inventing a general device framework;
+console/clock/entropy as `@driver`s.
+
+**Exit criteria (coarse; plan freezes the walk):** no inlined virtio-blk
+`@driver` bodies left in the blk boot goldens M16 owns; comptime suite
+green under `check`; at least one runtime golden imports `drivers.blk`
+and matches its pin; 06/README/ROADMAP no longer claim every device has
+a stdlib `@driver` or that console/entropy are virtio; ledger clauses
+for packaging + suite opened/flipped as the plan names.
+
+### M17 — Entropy
+Thin entropy **device** — not a `@driver`, not virtio-rng rings.
+
+**Owns:**
+
+1. Thin entropy device in the VMM: recorded-source model (live host
+   entropy; replay from the choice log; fail closed on underrun — clock
+   underrun is the precedent).
+2. Sealed guest runtime effect (name/API frozen in the activation plan;
+   roughly `entropy(n) -> Bytes`), illegal at comptime/ISR like
+   `now()`, lowered to a small fixed machine contract (trapping MMIO or
+   equally small path — **no** virtqueues required for v1).
+3. Boot + replay golden that diverges if bytes are not logged/replayed.
+4. Normative row under thin device contracts (if not already placed by
+   M16's 06 split with entropy marked "lands M17").
+
+Does not add modules under `stdlib/drivers/`. Why its own rung: new VMM
+model + guest intrinsic + recorder path + conformance golden is still a
+real surface; M16's packaging/test exit must not wait on it. Folding
+into M16 remains a human call at activation if entropy is truly tiny —
+default is split. Plan when activated. Non-goals: input/display;
+net/sound; virtio-rng rings; `stdlib/drivers/` changes.
+
+### M18 — The cycle proxy
 Perf without chasing hardware. Today `compiler.costs.predicted-vs-measured`
 is a gap: `report::render` predicts no costs, so `profile` has nothing to
 put beside its measurements. This milestone builds a deterministic
@@ -830,7 +902,7 @@ build-affecting constant.
 not pre-layout asm, not an IR op count. Stable `wrela dump --stage=cost`
 with totals by function (and coarser owners). Every term names an
 instruction and the profile rule that priced it; a bare number is not a
-review surface. Full IR why-chains can deepen later; M16's floor is
+review surface. Full IR why-chains can deepen later; M18's floor is
 "which word, which rule."
 
 **A/B through ordinary lowering.** Clone the input, flip one change, lower
@@ -853,7 +925,7 @@ fix or mark unscored — never nudge until quiet.
 **Semantic counts stay exact.** Choice entries, exits, transcript bytes,
 exit status: exact match or bug. Checkpoint crossings only after the
 recorder exposes them. Exit-rate *predictions* in the report (06 §5) are
-**not** M16 — useful, but a separate report feature; rewrite the stale
+**not** M18 — useful, but a separate report feature; rewrite the stale
 ledger note so this clause flips on proxy A/B + semantic exact-matches,
 not on device exit-rate lines.
 
@@ -873,7 +945,7 @@ misrankings. (8) Capstone below.
 FlowWir rewrite; unproved sites untouched. Amplify with unrolling or many
 straight-line sites — not async loops (checkpoints drown the delta) and
 not sync loops (`sema.bounds.loops` is out of scope for this capstone —
-M11 narrows that gap for authoring; M16's held-out case stays
+M11 narrows that gap for authoring; M18's held-out case stays
 straight-line). Held out of calibration. Outcomes: (a) measurable
 physical win and proxy agrees → land under the budget; (b) measurable
 disagree → pin and fix the model; (c) still unmeasurable → do not land
@@ -886,8 +958,8 @@ Non-goals: anything beyond the capstone; `@budget` proofs; WCET; exit-rate
 report lines; trace/cache modeling; multicore contention; DVFS/thermal;
 in-compiler ML (offline search may emit tables later).
 
-### M17 — The optimization playground
-M16 is the ruler. M17 is the shelf where purchases sit — not the purchases.
+### M19 — The optimization playground
+M18 is the ruler. M19 is the shelf where purchases sit — not the purchases.
 
 **What lands (three things).**
 
@@ -908,16 +980,16 @@ M16 is the ruler. M17 is the shelf where purchases sit — not the purchases.
    semantics, it is a bug fix or a doc rule — not an optimization.
 
 Done when a later spend can add a function + a table row without inventing
-process. M16's capstone is the smoke test if it landed; do not invent a
+process. M18's capstone is the smoke test if it landed; do not invent a
 second toy opt to prove the shelf.
 
 **Non-goals.** Register allocation, isel catalogs, fusion, weighted
 search, recipe frameworks, SelectionDAG, "host all future lanes,"
 world's-fastest exit criteria, cost proofs. Those are budget spends that
 use this shelf. Three spend lanes (floor / search / specialization) live
-in the cleverness-budget section below — doctrine, not M17 deliverables.
+in the cleverness-budget section below — doctrine, not M19 deliverables.
 
-Depends on M16's score + A/B. Opens: evidence-table and opts-off clauses.
+Depends on M18's score + A/B. Opens: evidence-table and opts-off clauses.
 Plan when activated.
 
 ### Recorded language intentions (not yet scheduled)
@@ -932,7 +1004,7 @@ Plan when activated.
   set from the closed world (it already computes this to erase
   impossible `CallError` variants, 02 §9.4); `pub` boundaries still
   demand a declared nominal enum.
-- **Cost proofs** (deliberately not M16). M16's proxy ranks compiler
+- **Cost proofs** (deliberately not M18). M18's proxy ranks compiler
   alternatives; it does not discharge `@budget`, make
   `sema.bounds.loops` sound in cycles, or prove elapsed latency. Those need
   a separate static upper-bound model with explicit path, memory and
@@ -953,7 +1025,7 @@ Plan when activated.
   human-gated like cost proofs — and M13's crash-only decision leans the
   other way on purpose (an overflow is a recorded, replayable, fatal bug,
   not a value).
-- **Report expected exit rates** (06 §5; deliberately not M16). The report
+- **Report expected exit rates** (06 §5; deliberately not M18). The report
   "states expected exit rates per device" is a semantic prediction with an
   exact `profile`/`repro` comparison — valuable and dumb, but it is report
   work, not the cycle proxy. Schedule when a named device recording needs
@@ -989,7 +1061,7 @@ Plan when activated.
   on `Image`, report-owned high-DRAM stacks, baton deletion, inline
   `@dmb`, Yield-`Progress` replay. **`machine.cross-core.publish-acquire-barrier`
   remains `gap`** (mutation not observed on HVF — plans/BLOCKED.md).
-  Do not relitigate inside M16/M17.
+  Do not relitigate inside M16–M19.
 - **Report/diagnostics coverage** (owner: report work, no rung): the
   actor-chatter lint (04 §7's `warning[performance]`) and the copy
   pricing threshold line (04 §1/§7) — M13 item E audits both and opens
@@ -1106,10 +1178,9 @@ Plan when activated.
   human-gated like everything else in this section). Display and input
   devices, a dumb scalar tile compositor, and golden frame digests were
   rung 9 of the ladder. They are now off it, and the reason is not that
-  the work is hard: it is that nothing else needs it. Every remaining rung
-  — the stdlib, the runtime in wrela, the generated image runtime, authoring
-  hardening, the cycle proxy, the optimization playground — is compiler and
-  machine work, and a compositor would
+  the work is hard: it is that nothing else needs it.   Every remaining rung
+  — stdlib maturity, entropy, the cycle proxy, the optimization
+  playground — is compiler and machine work, and a compositor would
   interrupt that rather than inform it. Pixels is the one item whose
   dependencies all point *backwards* with nothing pointing back: the
   compositor is guest wrela source, so it wants the stdlib's closed SIMD
@@ -1128,9 +1199,10 @@ Plan when activated.
   constructive theorem; this one still waits here). 06 §10 lists the golden-image display tests in the machine
   conformance suite, so machine v1 is not conformant until this lands —
   a set M13 item D narrows: `net` and `sound` move to future machine
-  revisions, leaving display and input (this bullet's own subjects) and
-  `entropy` — a small recorded-source model that lands with whichever
-  rung first needs it — as the unowned v1 contracts. The stdlib's closed SIMD
+  revisions, leaving display and input (this bullet's own subjects) —
+  and **entropy**, which **M17** owns as a thin recorded-source device
+  (not virtio-rng; not a `@driver`) — as the remaining v1 contracts.
+  The stdlib's closed SIMD
   vector set gets its honest clause the same way (`library.simd.
   vector-set`, opened by M13 item E, owner: this bullet). And the VMM's
   cross-device pool oracle stays half a unit test:
@@ -1153,7 +1225,7 @@ lands only with all three, no matter how obviously fast it is:
 3. a **lock** — a bench threshold or `@budget`/layout assertion — so the
    win cannot silently regress.
 
-After M17, landings also need an **evidence row** in the optimization
+After M19, landings also need an **evidence row** in the optimization
 table (proxy Δ, physical Δ, module, off-switch) — no row, no enablement.
 
 Measurement has two lanes, and the budget governs both equally. The
@@ -1191,7 +1263,7 @@ Rules that follow:
   is unreachable by this budget until ImageStatic specialization is
   dissolved into ordinary wrela) wait their turn like everything else: the
   profile says when, and until then dumb code calling stdlib SIMD ops is
-  the answer. After M17 they land as table rows, not as silent pipeline
+  the answer. After M19 they land as table rows, not as silent pipeline
   edits.
 - **Where I/O effort is worth spending, and where it is not.** For
   storage, the software path is already below the device's noise floor — a
@@ -1202,7 +1274,7 @@ Rules that follow:
   wins actually are — **note (2026-07-26): `net` is outside machine-v1
   conformance after M13 item D** (future machine revision); this bullet
   and the M8 bandwidth arithmetic (~2M descriptors/sec/core, VFIO/vDPA)
-  reason about that future revision, not the v1 contract M16/M17 will
+  reason about that future revision, not the v1 contract M18/M19 will
   first measure against. Check which regime a workload is in *before*
   profiling it, or the profile will faithfully measure something that
   does not matter.
@@ -1212,7 +1284,7 @@ Rules that follow:
   flat p99.9: its tail is dominated by scheduling, interference, page
   faults, and allocator behavior, and wrela has none of those by
   construction. That win is not earned by optimization; it is already true,
-  and it is the claim to defend. M16 makes tuning that path repeatable, but
+  and it is the claim to defend. M18 makes tuning that path repeatable, but
   its proxy does **not** prove the tail at build time — that claim waits for
   the separate cost-proof work recorded above. Measure tails, not averages;
   a benchmark reporting only a mean is measuring the half of the story
@@ -1227,7 +1299,7 @@ Rules that follow:
   representation rung (data ladders die, the census ratchets) and the
   vocabulary milestone (discarded `CallError` is refused in runtime and
   app code alike); (4) **measure** — `bench guest` over byte-identical
-  transcripts gives the exact before/after, and M16 adds a zero-variance
+  transcripts gives the exact before/after, and M18 adds a zero-variance
   proxy-score diff **beside**, never instead of, the physical timing run;
   (5) the two dumb wins, if and only if the profile asks for them —
   populate the already-reserved ready-queue table (O(actors) scan → O(1)
