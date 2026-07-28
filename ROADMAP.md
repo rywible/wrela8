@@ -72,18 +72,19 @@ beyond the active milestone. A milestone's *first deliverable* is its plan
 code exists, the shape decisions that milestone freezes, and explicit
 non-goals. Plans are written when a milestone activates, never earlier
 (each milestone manufactures the facts the next plan needs), and become
-history when it completes. Active plan: **none**. M18 is COMPLETE
-([plans/M18.md](plans/M18.md); cycle proxy — differential ISA ranking
-only). M17 is COMPLETE ([plans/M17.md](plans/M17.md); thin entropy
-device + sync MWIR floor). M16 is COMPLETE ([plans/M16.md](plans/M16.md);
-stdlib maturity). M15 is COMPLETE ([plans/M15.md](plans/M15.md);
-variable cores + true concurrent vCPUs; barrier clause remains gap per
+history when it completes. Active plan:
+[plans/M19.md](plans/M19.md) (optimization harness; proxy-only modes).
+M18 is COMPLETE ([plans/M18.md](plans/M18.md); cycle proxy — differential
+ISA ranking only). M17 is COMPLETE ([plans/M17.md](plans/M17.md); thin
+entropy device + sync MWIR floor). M16 is COMPLETE
+([plans/M16.md](plans/M16.md); stdlib maturity). M15 is COMPLETE
+([plans/M15.md](plans/M15.md); variable cores + true concurrent vCPUs;
+barrier clause remains gap per
 [plans/BLOCKED.md](plans/BLOCKED.md)). M14 is COMPLETE (doc cut:
 constructive progress theorem; no `plans/M14.md` — capability cut, not a
 build-out; forward-ref golden still `image.graph.handle-dag` gap). M13 is
-COMPLETE ([plans/M13.md](plans/M13.md)). Next is M19 (optimization
-harness) — draft [plans/M19.md](plans/M19.md), not activated. M12 is
-COMPLETE ([plans/M12.md](plans/M12.md)). M11 is COMPLETE
+COMPLETE ([plans/M13.md](plans/M13.md)). M12 is COMPLETE
+([plans/M12.md](plans/M12.md)). M11 is COMPLETE
 ([plans/M11.md](plans/M11.md)). Ladder design:
 [docs/superpowers/specs/2026-07-27-post-m15-ladder-design.md](docs/superpowers/specs/2026-07-27-post-m15-ladder-design.md).
 
@@ -998,11 +999,10 @@ cache/L2/L3/branch-mispredict models; `profile` juxtaposition; `@budget`
 proofs; WCET; exit-rate report lines; multicore contention; DVFS/thermal;
 in-compiler ML; anything beyond the capstone smoke.
 
-### M19 — The optimization harness — not activated
-**Detail (draft for review):** [plans/M19.md](plans/M19.md). Activates
-with that plan's item 0. M18 is the ruler (COMPLETE); M19 is the
-**in-code harness** that uses it — not an evidence table, not purchases,
-not a physical-measurement loop.
+### M19 — The optimization harness — ACTIVE
+**Activated 2026-07-28.** Detail: [plans/M19.md](plans/M19.md). M18 is
+the ruler (COMPLETE); M19 is the **in-code harness** that uses it — not
+an evidence table, not purchases, not a physical-measurement loop.
 
 **What lands.**
 
