@@ -581,6 +581,23 @@ fn resolve_callee_fn<'p>(
     }
 }
 
+/// plans/M18.md item I: proved literal index on `[T; N]` → elide to
+/// Project/SetField when `crate::lower::bounds_elide()` is on.
+fn literal_array_index_elide(idx_expr: &TypedExpr, len: usize) -> Result<Option<usize>, FlowError> {
+    if !crate::lower::bounds_elide() {
+        return Ok(None);
+    }
+    let TypedExprKind::Int(text) = &idx_expr.kind else {
+        return Ok(None);
+    };
+    let raw = value::parse_int_literal(text)
+        .ok_or_else(|| FlowError::internal("invalid integer literal text"))?;
+    let Ok(i) = usize::try_from(raw) else {
+        return Ok(None);
+    };
+    if i < len { Ok(Some(i)) } else { Ok(None) }
+}
+
 fn eval_array_len(ty: &Type) -> Result<usize, FlowError> {
     match ty {
         Type::Array(_, len_expr) => {
@@ -2248,14 +2265,23 @@ fn lower_place_write(
                 return Ok(());
             }
             let (base_temp, needs_writeback) = materialize_place_mut(base, b, env)?;
-            let idx_temp = lower_expr_flat(idx_expr, b, env)?;
             let len = eval_array_len(&base.ty)?;
-            b.emit_mwir(Inst::IndexSet {
-                base: base_temp,
-                index: idx_temp,
-                value,
-                len,
-            });
+            // plans/M18.md item I / freeze 1307: literal index → SetField.
+            if let Some(i) = literal_array_index_elide(idx_expr, len)? {
+                b.emit_mwir(Inst::SetField {
+                    base: base_temp,
+                    index: i,
+                    value,
+                });
+            } else {
+                let idx_temp = lower_expr_flat(idx_expr, b, env)?;
+                b.emit_mwir(Inst::IndexSet {
+                    base: base_temp,
+                    index: idx_temp,
+                    value,
+                    len,
+                });
+            }
             if needs_writeback {
                 lower_place_write(base, base_temp, b, env)?;
             }
@@ -2664,8 +2690,19 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
                 });
                 return Ok(dst);
             }
-            let idx_temp = lower_expr_flat(idx_expr, b, env)?;
+            // plans/M18.md item I / freeze 1307: `[T; N]` literal index →
+            // Project (mirrors sync `lower.rs`).
             let len = eval_array_len(&base.ty)?;
+            if let Some(i) = literal_array_index_elide(idx_expr, len)? {
+                let dst = b.fresh(e.ty.clone());
+                b.emit_mwir(Inst::Project {
+                    dst,
+                    base: base_temp,
+                    index: i,
+                });
+                return Ok(dst);
+            }
+            let idx_temp = lower_expr_flat(idx_expr, b, env)?;
             let dst = b.fresh(e.ty.clone());
             b.emit_mwir(Inst::IndexGet {
                 dst,
