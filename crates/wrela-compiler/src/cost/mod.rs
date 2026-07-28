@@ -22,6 +22,5 @@ pub use stage::{
     CostStageClosure, codegen_cost_stage, load_cost_stage_closure, score_cost_stage_path,
 };
 pub use table::{
-    CostTable, DEFAULT_ISSUE_WIDTH, EXPECTED_VERSION, default_table_path, load_default,
-    load_from_path, parse,
+    CostTable, EXPECTED_VERSION, MemCosts, default_table_path, load_default, load_from_path, parse,
 };

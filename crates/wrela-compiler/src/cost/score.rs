@@ -66,7 +66,9 @@ pub fn score_program(program: &CodegenProgram, table: &CostTable) -> Result<Cost
     Ok(CostReport {
         version: table.version,
         digest: table.table_digest(),
-        issue_width: table.issue_width,
+        // Interim: CostReport still exposes issue_width until dump/scorer
+        // hard-cut (items C/D). Map from max_issue_per_cycle.
+        issue_width: table.max_issue_per_cycle,
         total_proxy_cycles,
         owner_totals,
         fns,
@@ -80,7 +82,7 @@ fn score_fn(f: &CodegenFn, table: &CostTable) -> Result<(u64, BTreeMap<String, u
     }
 
     let mut ready = [0u64; 32];
-    let iw = table.issue_width.max(1);
+    let iw = table.max_issue_per_cycle.max(1);
     // Current issue cycle and how many slots already used in it.
     let mut cycle = 0u64;
     let mut slots_used = 0u64;
