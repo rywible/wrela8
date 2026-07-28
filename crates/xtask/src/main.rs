@@ -1524,8 +1524,7 @@ fn repro_cross_core_admission_replay(vmm: &Path) -> Result<(), String> {
                         trailer.push(line.to_string());
                     }
                 }
-                non_admission
-                    .push("choice[N]=Admission mailbox=Spurious sender=core0".to_string());
+                non_admission.push("choice[N]=Admission mailbox=Spurious sender=core0".to_string());
                 let mut out = String::from("ChoiceLog v1\n");
                 out.push_str(&format!("choice_count={}\n", non_admission.len()));
                 for (i, line) in non_admission.iter().enumerate() {

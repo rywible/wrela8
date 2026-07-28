@@ -675,9 +675,7 @@ impl Chooser {
                                 self.divergences.push(Divergence::AdmissionMismatch {
                                     index,
                                     recorded: format!("Admission mailbox={m} sender={s}"),
-                                    actual: format!(
-                                        "Admission mailbox={mailbox} sender={sender}"
-                                    ),
+                                    actual: format!("Admission mailbox={mailbox} sender={sender}"),
                                 });
                                 let fallback = request.fallback();
                                 self.log.push(fallback.clone());
@@ -1324,7 +1322,10 @@ mod tests {
             || panic!("replay must never call live"),
         );
         let (_, divs) = finish_chooser(c).expect("non-strict finish");
-        assert!(divs.is_empty(), "cap-1 under-count extras must not diverge: {divs:?}");
+        assert!(
+            divs.is_empty(),
+            "cap-1 under-count extras must not diverge: {divs:?}"
+        );
 
         // Leftover bag entries: also tolerated.
         let mut c = Chooser::replayer(vec![
