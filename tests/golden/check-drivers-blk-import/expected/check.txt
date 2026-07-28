@@ -1,0 +1,43 @@
+Module path=app.main
+  Fn sample() -> Feature
+Module path=blk
+  Struct VirtioIrqMmio data
+    field interrupt_status: ReadOnly[u32]
+    field interrupt_ack: WriteOnly[u32]
+  Struct BlkReqHeader data
+    field kind: u32
+    field reserved: u32
+    field sector: u64
+  Struct BlkReqStatus data
+    field status: u8
+  Struct DmaBlock data
+    field word: u64
+    field pad_end: u64
+  Struct VirtioBlock data
+    field id: u32
+  Enum Feature data
+    variant Flush
+  Const QDEPTH: usize
+  Const SECTOR: usize
+  Const BLK_T_IN: u32
+  Const BLK_T_OUT: u32
+  Const MAGIC: u64
+  Const PHASE_WRITE: u32
+  Const PHASE_READ: u32
+  Const PHASE_DONE: u32
+  Pool BlockControl
+  Pool BlockPayloads
+  Struct BlkDriver resource
+    field irq_regs: Mmio[VirtioIrqMmio]
+    field device: RunningDevice[VirtioBlock]
+    field queue: VirtQueue[..8]
+    field capacity_sectors: u64
+    field pending: InterruptCell[u32]
+    field irq: IrqCap[u32]
+    field buffer: Option[own[BlockPayloads] DmaBlock]
+    field inflight: Option[Receipt[own[BlockPayloads] DmaBlock]]
+    field phase: u32
+    field seen: u32
+    init(mut self, cap: take DeviceCap[VirtioBlock], control_pool: take DmaPool[BlockControl, 512], buffer: take own[BlockPayloads] DmaBlock) -> Result[unit, BootError]
+    fn on_queue_irq(read self) -> unit
+    fn drain(mut self) -> unit

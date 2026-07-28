@@ -1,0 +1,15 @@
+module app.main
+
+# plans/M16.md item C: `from drivers.blk import …` typechecks.
+from drivers.blk import (
+    BlkDriver,
+    VirtioIrqMmio,
+    BlkReqHeader,
+    BlkReqStatus,
+    DmaBlock,
+    VirtioBlock,
+    Feature,
+)
+
+pub fn sample() -> Feature:
+    return Feature.Flush
