@@ -72,18 +72,18 @@ beyond the active milestone. A milestone's *first deliverable* is its plan
 code exists, the shape decisions that milestone freezes, and explicit
 non-goals. Plans are written when a milestone activates, never earlier
 (each milestone manufactures the facts the next plan needs), and become
-history when it completes. Active plan: **none**. M17 is COMPLETE
-([plans/M17.md](plans/M17.md); thin entropy device + sync MWIR floor).
-M16 is COMPLETE ([plans/M16.md](plans/M16.md); stdlib maturity). M15 is
-COMPLETE ([plans/M15.md](plans/M15.md); variable cores + true concurrent
-vCPUs; barrier clause remains gap per
+history when it completes. Active plan:
+[plans/M18.md](plans/M18.md) (cycle proxy; differential only). M17 is
+COMPLETE ([plans/M17.md](plans/M17.md); thin entropy device + sync MWIR
+floor). M16 is COMPLETE ([plans/M16.md](plans/M16.md); stdlib maturity).
+M15 is COMPLETE ([plans/M15.md](plans/M15.md); variable cores + true
+concurrent vCPUs; barrier clause remains gap per
 [plans/BLOCKED.md](plans/BLOCKED.md)). M14 is COMPLETE (doc cut:
 constructive progress theorem; no `plans/M14.md` — capability cut, not a
 build-out; forward-ref golden still `image.graph.handle-dag` gap). M13 is
-COMPLETE ([plans/M13.md](plans/M13.md)). Next is M18 (cycle proxy) —
-not activated; optimization playground is M19 — neither activated.
-M12 is COMPLETE ([plans/M12.md](plans/M12.md)). M11 is COMPLETE
-([plans/M11.md](plans/M11.md)). Ladder design:
+COMPLETE ([plans/M13.md](plans/M13.md)). Optimization playground is M19 —
+not activated. M12 is COMPLETE ([plans/M12.md](plans/M12.md)). M11 is
+COMPLETE ([plans/M11.md](plans/M11.md)). Ladder design:
 [docs/superpowers/specs/2026-07-27-post-m15-ladder-design.md](docs/superpowers/specs/2026-07-27-post-m15-ladder-design.md).
 
 ### M1 — Parse everything
@@ -193,7 +193,8 @@ in its own commit.
 Rejected alternative (recorded once): keeping 4 vCPUs and moving the
 flagship to an 8-core RK3588-class board, where the A76 cluster would be
 the machine and the A55 cluster the housekeeping — a good fit on paper
-(the ISA baseline and `wrela-cost-v1` are both A76-defined) and rejected
+(the ISA baseline is shared; `wrela-cost-v1` ranks that ISA stream
+differentially — it is not an A76 absolute model) and rejected
 because the board is a product decision, not a contract-driven one.
 
 The blast radius is small and belongs to this milestone's own plan, not to
@@ -885,101 +886,116 @@ into M16 remains a human call at activation if entropy is truly tiny —
 default is split. Plan when activated. Non-goals: input/display;
 net/sound; virtio-rng rings; `stdlib/drivers/` changes.
 
-### M18 — The cycle proxy
+### M18 — The cycle proxy — ACTIVE
+**Activated 2026-07-28.** Detail: [plans/M18.md](plans/M18.md).
+
 **Prerequisite discharged (2026-07-28):** the M13 ISR gate chose **keep**
 — ISR / `InterruptCell` paths are not scheduled to vanish. **Shape
-frozen 2026-07-28 (human):** differential proxy only — **no physical
-calibration**, no `profile` / `bench guest` work in this milestone.
+frozen 2026-07-28 (human):** differential **ISA** proxy only — **no
+physical calibration**, no `profile` / `bench guest` work, **not an A76
+(or Apple) microarchitecture model**.
 
 Today `compiler.costs.predicted-vs-measured` is a gap: nothing emits a
 stable predicted cost artifact to golden or A/B. This milestone builds a
-deterministic **proxy-cycle** score for ranking emitted code. One
+deterministic **proxy-cycle** score for **ranking** emitted code. One
 question only:
 
 > Given two semantically equivalent emitted programs, which ranks lower
 > under `wrela-cost-v1`?
 
-Not absolute cycles, not WCET, not host conformance, not “faster on this
-HVF box.” Physical disposal stays with the cleverness budget / M19
-evidence rows when a spend lands — never with ruler construction. Hosts
-are Apple Silicon; the named ISA story is A76; calibrating the table
-against wall time here would bake the wrong chip and noise into the
-ruler.
+**The value is differential, not absolute.** Proxy-cycles are not claimed
+wall-clock on Pi 5, Mac, or anything else. Cache sizes, predictors, and
+µarch details change real time; they must not be required to preserve
+**rank direction** for the emissions we care about (fewer / cheaper ops,
+shorter true data deps → lower proxy on every conforming host). Absolute
+accuracy vs silicon is out of scope; physical disposal stays with the
+cleverness budget / M19 when a spend lands.
+
+**Target the sealed ISA stream, not a chip.** The machine’s guest ISA is
+the ARMv8.2-A + NEON baseline (06 §1 — intersection of A76 and Apple
+Silicon). `wrela-cost-v1` ranks that **emission**, the same bytes whether
+the VMM is HVF or a Pi. Do **not** paste A76 Software Optimization Guide
+port maps into the proxy; do **not** calibrate against HVF timings. 06 §1
+and 04 §5 **split** the flagship A76 product/backend / `@budget` story
+from this **ISA ranking proxy** (landed M18 item A).
 
 **`wrela-cost-v1`.** A versioned parameter file beside the machine
-constants (`bench/thresholds.toml`'s precedent): instruction costs and
-only those further rules a pinned proxy misrank has earned. Unit: the
-**v1 proxy-cycle** — cycle-shaped, defined by the file. Cost-table digest
-seals the **cost dump / report side** (and `--stage=cost` goldens); it
-does not reseal the unsigned image unless a later rule says so. A
-constant change moves cost goldens through `golden --update`. This file
-is the **ranking proxy**, not `@budget` discharge and not (yet) the
-report’s copy-price surface (04 §1) — those stay separate intentions.
+constants (`bench/thresholds.toml`'s precedent): per-`CostRule` **latency**
+(and optional coarse throughput / a single model `issue_width`) for the
+baseline ISA op classes. Unit: the **v1 proxy-cycle** — defined by the
+file’s scheduler, not by a host. Digest seals the **cost dump / report
+side** (and goldens); it does not reseal the unsigned image unless a
+later rule says so. Refine rows only when a pinned **proxy** misrank
+demands it — never by fitting wall time. This file is the **ranking
+proxy**, not `@budget` discharge and not (yet) the report’s copy-price
+surface (04 §1).
 
 **Score the final stream.** After codegen, runtime insertion, and layout
-— not pre-layout asm, not an IR op count. Stable `wrela dump --stage=cost`
-with totals by function and coarser owners (**app / generated-runtime /
-driver** buckets at minimum). Every term names an instruction and the
-rule that priced it; a bare number is not a review surface. Full IR
-why-chains can deepen later; M18's floor is "which word, which rule."
+— not pre-layout asm, not an IR op count. Every emitted word carries
+emit-time **`CostRule` + dest/src regs** (always on; no cost-profile
+toggle; never parse mnemonics). Scorer: a dumb **register scoreboard**
+over the stream (`start = max(ready[srcs], issue_constraint)`;
+`ready[dst] = start + latency(rule)`; fn total = time the last insn
+retires). Optional fixed `issue_width` in the file is a **model
+parameter**, not “A76’s real decode.” Assumptions stated in the dump
+header (e.g. ignore cache hierarchy; no mispredict model — ChoiceLog has
+no addresses/path weights). Stable `wrela dump --stage=cost` with Terms
+(rule counts) + schedule totals by function and owners (**app /
+generated-runtime / driver**). The image report prints a **short
+summary** by default (version, digest, totals by owner) — not per-Term
+lines. Floor: "which rule, which count, what schedule total."
 
 **A/B through ordinary lowering.** Clone the input, flip one change, lower
 both the usual way, compare final proxy scores. No second "FlowWir cycle"
-formula. No candidate-search API — off/on is enough to validate the ruler
-and the capstone; bounded search is a later budget spend that reuses the
-same score function.
-
-**Dumb model first.** Ship an additive scorer over the final instruction
-stream (per-op costs, simple dependence/issue only if a pinned *proxy*
-pair proves addition ranks wrong). Ports, ROB, cache, prefetch, and
-recording weights wait on proxy misrankings. `ChoiceLog v1` has no
-branches or addresses; do not pretend a replay address trace exists.
+formula. No candidate-search API — off/on validates the ruler and the
+capstone; bounded search is a later budget spend on the same score
+function.
 
 **No physical calibration.** Do not amplify cases until wall-time deltas
-beat noise; do not tune `wrela-cost-v1` against `bench guest` / `profile`;
-do not teach the table from HVF timings. Proxy regressions are golden
-diffs. Proxy wins have no minimum size and are **not** physical evidence.
-If a later budget spend’s physical Δ disagrees with proxy order, that is
-an M19 / spend event (pin, fix the model, or mark unscored) — not an M18
-calibration loop. Leave `profile` untouched.
+beat noise; do not tune `wrela-cost-v1` against `bench guest` / `profile`
+on any host. Proxy regressions are golden diffs. Proxy wins have no
+minimum size and are **not** physical evidence. If a later budget spend’s
+physical Δ **disagrees in direction** with proxy order, that is an M19 /
+spend event (pin, fix the ISA model, or mark unscored) — not an M18
+host-calibration loop. Leave `profile` untouched.
 
 **Semantic counts stay exact.** Choice entries, exits, transcript bytes,
-exit status: exact match or bug (correctness oracles beside the proxy,
-not cost calibration). Checkpoint crossings only after the recorder
-exposes them. Exit-rate *predictions* in the report (06 §5) are **not**
-M18. Rewrite the stale ledger note so this clause flips on `--stage=cost`
-goldens + proxy off/on A/B + semantic exact-matches — **not** on device
-exit-rate lines and **not** on predicted-vs-physical pairing.
+exit status: exact match or bug (correctness oracles beside the proxy).
+Checkpoint crossings only after the recorder exposes them. Exit-rate
+*predictions* in the report (06 §5) are **not** M18. Rewrite the stale
+ledger note so this clause flips on `--stage=cost` / report summary +
+proxy off/on A/B + semantic exact-matches — **not** on exit-rate lines
+and **not** on predicted-vs-physical pairing.
 
-**Ordered spine.** (0) Normative fix: proxy ≠ `@budget` discharge;
-rewrite the `predicted-vs-measured` ledger note for proxy-only flip
-conditions. (1) Final-stream inventory + `--stage=cost`. (2)
-`wrela-cost-v1` + additive scorer. (3) Determinism / golden dumps. (4)
-Pass off/on proxy A/B. (5) Small differential corpus (proxy order only).
-(6) Capstone below. Detail passes only for pinned *proxy* misrankings.
+**Ordered spine.** (0) Normative fix landed: ISA ranking proxy ≠ A76
+absolute model ≠ `@budget` discharge; ledger opens + flip note. (1) Emit
+tags+regs + `--stage=cost`. (2) `wrela-cost-v1` + scoreboard scorer. (3)
+Determinism / golden dumps + report summary. (4) Pass off/on proxy A/B.
+(5) Small differential corpus (rank order only). (6) Capstone below.
+Detail only for pinned *proxy* misranks.
 
-**Done when** the dump, scorer, differential A/B oracles, and ledger flip
-are green — independent of whether any opt lands under the budget.
+**Done when** the dump, scoreboard, differential A/B oracles, report
+summary, and ledger flip are green — independent of whether any opt lands
+under the budget.
 
 **Capstone: proven constant-index bounds-check elimination.** One
 FlowWir rewrite; unproved sites untouched. Score with many straight-line
 sites — not async loops (checkpoints drown the delta) and not sync loops
 (`sema.bounds.loops` out of scope; M11 narrows that gap for authoring).
 Held out of the differential corpus used to sanity-check the scorer.
-**Proxy smoke:** off/on must move the proxy score in the expected
-direction or the model is wrong. **Landing** the rewrite still pays the
-cleverness budget (physical before/after + lock) and may wait for M19’s
-shelf; unmeasurable or disagreeing physical Δ does not block M18 close.
+**Proxy smoke:** off/on must improve **rank** (lower schedule total) or
+the model is wrong. **Landing** still pays the cleverness budget and may
+wait for M19; physical disagree/unmeasurable does not block M18 close.
 Never tune `wrela-cost-v1` against the held-out case.
 
 Flips: `compiler.costs.predicted-vs-measured`. Opens only what the dump
 and scorer need. **Does not depend on `sema.bounds.loops`.** Normative
-edits to 04 §6 and 06 §1 (proxy ranking metric, not "the real
-microarchitecture"). Non-goals: physical calibration; `profile` /
-juxtaposition work; `@budget` proofs; WCET; exit-rate report lines;
-trace/cache modeling; multicore contention; DVFS/thermal; in-compiler ML
-(offline search may emit tables later); anything beyond the capstone
-smoke.
+edits to 04 and 06 §1 (ISA ranking proxy vs flagship A76 wording) —
+**done** with M18 item A.
+Non-goals: physical / host calibration; A76 SOG port maps as the proxy;
+cache/L2/L3/branch-mispredict models; `profile` juxtaposition; `@budget`
+proofs; WCET; exit-rate report lines; multicore contention; DVFS/thermal;
+in-compiler ML; anything beyond the capstone smoke.
 
 ### M19 — The optimization playground
 M18 is the ruler. M19 is the shelf where purchases sit — not the purchases.
@@ -1029,8 +1045,9 @@ Plan when activated.
   impossible `CallError` variants, 02 §9.4); `pub` boundaries still
   demand a declared nominal enum.
 - **Cost proofs** (deliberately not M18). M18's proxy ranks compiler
-  alternatives under `wrela-cost-v1` (differential only; no physical
-  calibration); it does not discharge `@budget`, make
+  alternatives under an **ISA-level** `wrela-cost-v1` scoreboard
+  (differential direction only; not A76 absolute; no host calibration);
+  it does not discharge `@budget`, make
   `sema.bounds.loops` sound in cycles, or prove elapsed latency. Those need
   a separate static upper-bound model with explicit path, memory and
   interference assumptions, plus a normative decision about the existing
