@@ -33,8 +33,13 @@ machine only needs to be what the stdlib drivers speak.
   The flagship housekeeping arithmetic (`host cores − 1`) remains advice
   for choosing N on a Pi 5, not a contract constant the image must equal.
 - ISA baseline: **AArch64 ARMv8.2-A + NEON/ASIMD**, the intersection of
-  Cortex-A76 and Apple Silicon. The compiler's one cost model is the A76;
-  images simply run faster on M-series.
+  Cortex-A76 and Apple Silicon. Conforming hosts run the same sealed
+  words; images often run faster on M-series. The flagship **A76** is the
+  product/backend microarchitecture story for proofs and schedules that
+  need one. Separately, the compiler's **proxy-cycle ranking** model
+  (`wrela-cost-v1`, [04 §5](04-compiler.md)) scores that baseline ISA
+  **emission** differentially — rank direction only, not absolute wall
+  time on any host, and not an A76 Software Optimization Guide port map.
 - No firmware-visible feature discovery: the baseline is the contract, and
   boot asserts it.
 

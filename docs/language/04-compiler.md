@@ -24,10 +24,13 @@ contribution; task frames, stacks, pools (image and scoped), and mailboxes
 have proven bounds; unbounded recursion in either the sync or async call
 graph is rejected; forced promotions to image lifetime are reported (a hard
 refusal of promotion is `@layout_assert(region_promotions == 0)`). Every
-data copy is priced by the target cost model — copies above the reporting
-threshold (a language-defined constant in revision 0.1) are reported; the
-report prices copies, and a hard budget on copies is a future cost-proof
-intention. Cost visibility is this chapter's obligation, not a syntax rule.
+data copy is priced for the report by the language's copy-pricing rules —
+copies above the reporting threshold (a language-defined constant in
+revision 0.1) are reported; a hard budget on copies is a future cost-proof
+intention. Separately, emitted instruction streams are ranked under a
+versioned ISA proxy-cycle model ([§5](#5)); that ranking is not copy
+pricing and does not discharge `@budget`. Cost visibility is this
+chapter's obligation, not a syntax rule.
 A returned literal or an `init` body constructs in place: elision into the
 destination is guaranteed, never best-effort, so no aggregate is moved by
 being built.
@@ -224,19 +227,35 @@ The compiler maintains three verified whole-image representations:
 (typed SSA retaining ownership, capacity, progress, and checkpoint facts —
 the only serialized IR, where ordinary optimization happens), and
 `MachineWir` (AArch64 ABI, layout, and every machine-level fact). The
-toolchain's **own backend** lowers MachineWir to Cortex-A76-tuned machine
-code and emits the bootable image directly at the machine spec's fixed
-addresses — there is no LLVM and no external linker anywhere in the output
-path (rustc's own build of the toolchain is the only place LLVM exists,
-outside every artifact this contract covers). One CPU means the cost model
-that discharges `@budget`, checkpoint, and frame proofs is the real
-microarchitecture, not an abstraction. NEON code generation for the stdlib
-vector types ([05 §8.1](05-library.md)) is a first-class backend
-obligation — the flagship's compositor is its hottest loop. Safety
-validation runs on SemanticWir and FlowWir; every backend fact (aliasing,
-ranges, alignment) must trace to a semantic proof — never be invented from
-naming or optimism. That proof-tracing discipline is what substitutes for
-a third-party backend's soak time.
+toolchain's **own backend** lowers MachineWir to AArch64 machine code
+(tuned for the flagship Cortex-A76 schedule story) and emits the bootable
+image directly at the machine spec's fixed addresses — there is no LLVM
+and no external linker anywhere in the output path (rustc's own build of
+the toolchain is the only place LLVM exists, outside every artifact this
+contract covers). One sealed ISA baseline means every conforming host runs
+the same words; the flagship A76 is the microarchitecture story for proofs
+that need one (`@budget`, checkpoint, frame) — not an abstraction and not
+the ranking ruler below. NEON code generation for the stdlib vector types
+([05 §8.1](05-library.md)) is a first-class backend obligation — the
+flagship's compositor is its hottest loop. Safety validation runs on
+SemanticWir and FlowWir; every backend fact (aliasing, ranges, alignment)
+must trace to a semantic proof — never be invented from naming or optimism.
+That proof-tracing discipline is what substitutes for a third-party
+backend's soak time.
+
+**Proxy-cycle ranking.** After codegen (runtime included), every emitted
+word carries an emit-time op-class tag (`CostRule`) and its dest/src
+registers. A versioned parameter file (`wrela-cost-v1`) gives per-rule
+latencies and an optional model `issue_width`. A dumb register scoreboard
+over the final stream yields a **schedule length** per function — the
+proxy total. The value is **differential**: given two semantically
+equivalent emissions, which ranks lower? Absolute cycles on Apple vs Pi
+(or any host) may differ with cache and µarch; rank for fewer/cheaper ops
+and shorter true data deps must not require those. The model is not an
+A76 SOG port map, is not calibrated to host wall clocks, and does not
+discharge `@budget` or cost proofs. Stable dump: `wrela dump --stage=cost`
+(Terms = rule counts, plus schedule totals and owners). The image report
+carries only a short summary ([§6](#6)).
 
 **Actor as-if.** A call through an actor handle is always a logical admission
 under capacity and FIFO rules. Subject to that, the compiler may use direct
@@ -270,8 +289,11 @@ queue shapes and maximum in-flight operations; every logical actor edge and
 its physical lowering (queued / direct / forwarded / fused); checkpoint
 sites and proven elisions; maximum interrupt-masked interval; receipt
 handoff edges with their recovery nodes; every data copy above the
-reporting threshold, with site and size; baked artifact hashes;
-and code and data size by owner.
+reporting threshold, with site and size; a short proxy-cycle summary
+(model version, digest, schedule totals by owner — not per-Term lines;
+those live on `wrela dump --stage=cost`); baked artifact hashes;
+and code and data size by owner. Expected device exit rates remain a
+separate report intention ([06 §5](06-machine.md)), not this summary.
 
 Tooling (hover, expanded views) must display inferred facts wherever source
 omits them: receiver effects, pool names, reclaim classification, the

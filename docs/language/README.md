@@ -30,7 +30,8 @@ The project targets one designed machine, front to back:
 
 - **One machine** ([06](06-machine.md)): N vCPUs sealed by the image
   (`Image(..., cores=N?)`, default 1) at an ARMv8.2-A/NEON baseline
-  (Cortex-A76 cost model), one memory map, a closed virtio device set
+  (flagship A76 schedule story; separate ISA proxy-cycle **ranking** in
+  [04 §5](04-compiler.md)), one memory map, a closed virtio device set
   whose drivers ship with the stdlib. New devices or map-rule changes are
   a machine revision, never a discovered environment; core count is an
   image fact.
@@ -46,8 +47,9 @@ The project targets one designed machine, front to back:
 - **Multicore is normative**: every actor has a build-time core; APIs are
   identical across cores; cross-core parallelism is ownership transfer.
 - **Own toolchain**: no LLVM, no external linker — an in-house
-  MachineWir→A76 backend emits the bootable image directly, under the
-  proof-tracing discipline of [04 §5](04-compiler.md).
+  MachineWir→AArch64 backend (flagship A76 schedule) emits the bootable
+  image directly, under the proof-tracing discipline of
+  [04 §5](04-compiler.md).
 
 ## Relation to the earlier draft
 
