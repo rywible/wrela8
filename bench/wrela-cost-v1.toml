@@ -1,0 +1,36 @@
+# bench/wrela-cost-v1.toml — ISA ranking model (not A76 absolute).
+#
+# Coarse ISA op-class latencies for **differential** proxy-cycle ranking
+# only (plans/M18.md). Not an A76 SOG port map, not host wall time, not a
+# physical calibration table.
+#
+# Explicit non-models for M18:
+#   - no cache / L1 / L2 / L3
+#   - no branch mispredict
+#   - no chip-specific decode width (issue_width is a model parameter)
+#
+# Absolute cycle numbers may differ across conforming hosts; rank direction
+# for "fewer/cheaper ops, shorter true deps" must not require those.
+
+version = 1
+# Optional model parameter (not "real decode width of chip X"). Default 4.
+issue_width = 4
+
+# CostRule key → latency in proxy-cycles (u64). Every CostRule::ALL key
+# must be present; the parser rejects missing keys.
+[latency]
+alu = 1
+load = 4          # architectural "load use" style; not L1 size
+store = 1
+branch = 1
+call = 1
+abort = 1
+abort_val = 1
+mov_wide = 1
+mul = 3
+sdiv = 12
+udiv = 12
+adrp = 1
+barrier = 1
+system = 1
+neon = 1
