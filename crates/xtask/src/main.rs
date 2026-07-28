@@ -1184,6 +1184,157 @@ fn repro_deadline_cancel_replay_is_clock_log_driven(vmm: &Path) -> Result<(), St
     Ok(())
 }
 
+/// plans/M17.md item H / decisions 1285–1291: entropy replay is choice-log
+/// driven. Peer of `repro_deadline_cancel_replay_is_clock_log_driven`:
+/// 1. `boot-entropy-hex` records ≥1 `EntropyRead` (sync MWIR fill);
+/// 2. clean `--replay` matches the recording's exit (0) — transcript
+///    digest agrees because the guest prints a byte-dependent encoding
+///    of the entropy fill;
+/// 3. tampering the *first* `EntropyRead` hex to a different equal-length
+///    value changes the guest transcript → `EXIT_REPLAY_DIVERGENCE`.
+fn repro_entropy_replay_is_choice_log_driven(vmm: &Path) -> Result<(), String> {
+    use wrela_machine::vmm_process::EXIT_REPLAY_DIVERGENCE;
+    let (img_bytes, report_text) = golden_test_image("boot-entropy-hex")?;
+    let tmp_dir = root().join("target/repro-entropy-tmp");
+    if tmp_dir.exists() {
+        std::fs::remove_dir_all(&tmp_dir)
+            .map_err(|e| format!("remove {}: {e}", tmp_dir.display()))?;
+    }
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("create {}: {e}", tmp_dir.display()))?;
+    let img_path = tmp_dir.join("boot.img");
+    let report_path = tmp_dir.join("boot.report.txt");
+    let record_path = tmp_dir.join("boot.record.txt");
+    std::fs::write(&img_path, &img_bytes).map_err(|e| format!("write img: {e}"))?;
+    std::fs::write(&report_path, &report_text).map_err(|e| format!("write report: {e}"))?;
+
+    let record_out = Command::new(vmm)
+        .arg(&report_path)
+        .arg(&img_path)
+        .arg("--record")
+        .arg(&record_path)
+        .output()
+        .map_err(|e| format!("run wrela-vmm --record: {e}"))?;
+    let record_exit = record_out.status.code().unwrap_or(-1);
+    if record_exit != 0 {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        return Err(format!(
+            "repro: boot-entropy-hex's own recording boot did not pass (exit {record_exit}):\n{}",
+            String::from_utf8_lossy(&record_out.stdout)
+        ));
+    }
+    let record_text = std::fs::read_to_string(&record_path)
+        .map_err(|e| format!("read {}: {e}", record_path.display()))?;
+    let entropy_reads = record_text.matches("=EntropyRead ").count();
+    if entropy_reads < 1 {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        return Err(format!(
+            "repro: boot-entropy-hex recorded {entropy_reads} EntropyRead choice(s) — this boot \
+             is supposed to issue entropy[8]() (one park-shaped fill → one EntropyRead)"
+        ));
+    }
+
+    let replay_out = Command::new(vmm)
+        .arg(&report_path)
+        .arg(&img_path)
+        .arg("--replay")
+        .arg(&record_path)
+        .output()
+        .map_err(|e| format!("run wrela-vmm --replay: {e}"))?;
+    let replay_exit = replay_out.status.code().unwrap_or(-1);
+    if replay_exit != record_exit {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        return Err(format!(
+            "repro: boot-entropy-hex replayed with exit {replay_exit}, expected \
+             {record_exit}:\n{}",
+            String::from_utf8_lossy(&replay_out.stderr)
+        ));
+    }
+
+    // Tamper the FIRST EntropyRead hex to a different equal-length value.
+    // Everything else in the log is left exactly as recorded.
+    let mut tampered = String::new();
+    let mut done = false;
+    for line in record_text.lines() {
+        if !done && line.contains("=EntropyRead ") && line.contains(" hex=") {
+            let Some(hex_at) = line.find(" hex=") else {
+                tampered.push_str(line);
+                tampered.push('\n');
+                continue;
+            };
+            let head = &line[..hex_at + " hex=".len()];
+            let old_hex = &line[hex_at + " hex=".len()..];
+            if old_hex.is_empty() || old_hex.len() % 2 != 0 {
+                let _ = std::fs::remove_dir_all(&tmp_dir);
+                return Err(format!(
+                    "repro: EntropyRead hex field looks malformed: {old_hex:?}"
+                ));
+            }
+            // Flip every nibble by XOR 0x1 so length is preserved and the
+            // value is guaranteed different (hex digits stay lowercase).
+            let mut new_hex = String::with_capacity(old_hex.len());
+            for c in old_hex.chars() {
+                let n = match c {
+                    '0'..='9' => c as u8 - b'0',
+                    'a'..='f' => c as u8 - b'a' + 10,
+                    _ => {
+                        let _ = std::fs::remove_dir_all(&tmp_dir);
+                        return Err(format!(
+                            "repro: non-lowercase-hex digit {c:?} in EntropyRead hex"
+                        ));
+                    }
+                };
+                let flipped = n ^ 1;
+                new_hex.push(char::from(if flipped < 10 {
+                    b'0' + flipped
+                } else {
+                    b'a' + (flipped - 10)
+                }));
+            }
+            if new_hex == old_hex {
+                let _ = std::fs::remove_dir_all(&tmp_dir);
+                return Err("repro: EntropyRead hex tamper produced an identical value".into());
+            }
+            tampered.push_str(head);
+            tampered.push_str(&new_hex);
+            tampered.push('\n');
+            done = true;
+            continue;
+        }
+        tampered.push_str(line);
+        tampered.push('\n');
+    }
+    if !done {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        return Err("repro: no EntropyRead line to tamper in the recording".to_string());
+    }
+    let tampered_path = tmp_dir.join("boot.tampered.txt");
+    std::fs::write(&tampered_path, &tampered).map_err(|e| format!("write tampered: {e}"))?;
+    let tampered_out = Command::new(vmm)
+        .arg(&report_path)
+        .arg(&img_path)
+        .arg("--replay")
+        .arg(&tampered_path)
+        .output()
+        .map_err(|e| format!("run wrela-vmm --replay (tampered): {e}"))?;
+    let tampered_exit = tampered_out.status.code().unwrap_or(-1);
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    if tampered_exit != EXIT_REPLAY_DIVERGENCE {
+        return Err(format!(
+            "repro: a replay whose first logged EntropyRead hex was flipped exited \
+             {tampered_exit}, expected {EXIT_REPLAY_DIVERGENCE} — the replayed guest's own \
+             entropy fill must come from the log, so this tamper has to change its \
+             transcript and diverge\nstderr:\n{}",
+            String::from_utf8_lossy(&tampered_out.stderr)
+        ));
+    }
+    println!(
+        "repro: tests/golden/boot-entropy-hex ({entropy_reads} recorded EntropyRead choice(s)) \
+         replays clean with zero divergence, and a tampered entropy hex diverges \
+         (exit {EXIT_REPLAY_DIVERGENCE}) — replay's entropy comes from the log"
+    );
+    Ok(())
+}
+
 /// `cargo xtask repro` (plans/M5.md decision 10, item F; plans/M6.md item
 /// E): the standalone, full-corpus form — `report_determinism`'s own
 /// `@image`/`wrela build` population, `repro_test_image`'s runtime-test-
@@ -1197,6 +1348,7 @@ fn repro() -> Result<(), String> {
     let vmm = build_and_sign_vmm()?;
     repro_choice_log_roundtrip(&vmm)?;
     repro_deadline_cancel_replay_is_clock_log_driven(&vmm)?;
+    repro_entropy_replay_is_choice_log_driven(&vmm)?;
     repro_blk_completion_replay(&vmm)?;
     repro_cross_core_admission_replay(&vmm)?;
     repro_cross_core_mailbox_depth_admissions(&vmm)?;

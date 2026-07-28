@@ -1244,6 +1244,27 @@ fn splice_imported_decls(
         } else {
             Vec::new()
         };
+        // plans/M17.md item H: importing a runtime helper whose body
+        // touches placed statics / module consts (`MACHINE_INFO`,
+        // `TEST_LINE_BUF`, `DATA_SIZE`, …) must land those on the
+        // importer — lower resolves them against the importer's
+        // `TypedProgram`.
+        let companion_statics: Vec<(String, _)> = if fn_entry.is_some() {
+            src.statics
+                .iter()
+                .map(|(n, s)| (n.clone(), s.clone()))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let companion_consts: Vec<(String, _)> = if fn_entry.is_some() {
+            src.consts
+                .iter()
+                .map(|(n, c)| (n.clone(), c.clone()))
+                .collect()
+        } else {
+            Vec::new()
+        };
         // The exporter's own instantiations come across under the
         // *importer-facing* canonical-key spelling (plans/M9.md item II):
         // bodies are re-keyed under `subs`, and so are the map keys, so a
@@ -1303,6 +1324,12 @@ fn splice_imported_decls(
                 // map so lower's `placed_static_addr` resolves them
                 // (plans/M11.md item E / decision 785).
                 dst.statics.insert(local.clone(), s);
+            }
+            for (name, s) in companion_statics {
+                dst.statics.entry(name).or_insert(s);
+            }
+            for (name, c) in companion_consts {
+                dst.consts.entry(name).or_insert(c);
             }
             // Layouts are copied after `complete_layouts` (see
             // `splice_imported_static_layouts`) so sizes are real.
@@ -1683,9 +1710,17 @@ fn splice_imported_static_layouts(
         let Some(src) = programs.get(&exporter) else {
             continue;
         };
-        let layouts: Vec<_> = if src.statics.contains_key(&target_name) {
-            // Placed-static import: bring the exporter's whole layout
-            // table (overlay structs the static's type mentions).
+        // Placed-static import: whole layout table (overlay structs the
+        // static's type mentions). Function import from a module that
+        // owns placed statics (e.g. `core.runtime`'s `__wrela_fmt_dec` /
+        // console append helpers): same whole-table splice — those bodies
+        // lower placed-field access against the *importer's* layouts
+        // (plans/M17.md item H / boot-entropy-hex). Importing the fn name
+        // alone left `prog.layouts` empty and failed closed with
+        // "placed-static field access through `MachineInfoPage`…".
+        let layouts: Vec<_> = if src.statics.contains_key(&target_name)
+            || src.fns.contains_key(&target_name)
+        {
             src.layouts.clone()
         } else {
             src.layouts

@@ -649,6 +649,67 @@ fn copy_bytes_range(src: Bytes, bump: usize, n: usize):
         i = i +% 1
     return
 
+# plans/M17.md item H: guest-importable u64 → one console transcript line
+# (`"<decimal>\n"`). Self-contained (no calls to other fns) so an importer
+# that pulls only this name does not hit the "private helper not imported"
+# wall. Digit / append / commit logic mirrors `__wrela_fmt_dec` +
+# append_line_buf + line_commit — keep in lockstep if those change.
+pub fn __wrela_trace_u64(value: u64):
+    mag = value
+    pos: usize = 0
+    if mag == 0:
+        TEST_LINE_BUF.bytes[0] = 48
+        pos = 1
+    else:
+        @budget(bound=20)
+        while mag != 0:
+            d = mag % 10
+            TEST_LINE_BUF.bytes[pos] = (48 +% d).to[u8]()
+            mag = mag / 10
+            pos = pos +% 1
+        lo: usize = 0
+        hi = pos -% 1
+        @budget(bound=10)
+        while lo < hi:
+            t = TEST_LINE_BUF.bytes[lo]
+            TEST_LINE_BUF.bytes[lo] = TEST_LINE_BUF.bytes[hi]
+            TEST_LINE_BUF.bytes[hi] = t
+            lo = lo +% 1
+            hi = hi -% 1
+    # Trailing newline so the test harness's next "ok" starts a fresh line.
+    TEST_LINE_BUF.bytes[pos] = 10
+    pos = pos +% 1
+    # line_begin
+    MACHINE_INFO.line_start = MACHINE_INFO.ring_data_bump
+    bump: usize = MACHINE_INFO.ring_data_bump.to[usize]()
+    end: usize = bump +% pos
+    if end < bump:
+        return
+    if end > DATA_SIZE:
+        return
+    i: usize = 0
+    @budget(bound=21)
+    while i < pos:
+        CONSOLE_DATA.bytes[bump +% i] = TEST_LINE_BUF.bytes[i]
+        i = i +% 1
+    MACHINE_INFO.ring_data_bump = end.to[u64]()
+    # line_commit
+    desc_bump = MACHINE_INFO.ring_desc_bump
+    if desc_bump >= QUEUE_SIZE:
+        return
+    line_start = MACHINE_INFO.line_start
+    data_bump = MACHINE_INFO.ring_data_bump
+    len = data_bump -% line_start
+    data_addr = CONSOLE_DATA_BASE.to[u64]() +% line_start
+    wi = (desc_bump *% 2).to[usize]()
+    CONSOLE_RING.desc_words[wi] = data_addr
+    CONSOLE_RING.desc_words[(desc_bump *% 2 +% 1).to[usize]()] = len
+    new_idx = desc_bump +% 1
+    CONSOLE_RING.avail_flags_idx = (new_idx *% 65536).to[u32]()
+    MACHINE_INFO.ring_desc_bump = new_idx
+    CONSOLE_RING.doorbell = 1
+    return
+
 # M10 B4: append from OFF_TEST_LINE_BUF. No pointer — the buffer address
 # is a placed-static fact. Returns 0 on success, 1 on overflow
 # (decision 592: status, not BRK / abort).

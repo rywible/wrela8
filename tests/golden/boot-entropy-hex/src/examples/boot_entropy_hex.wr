@@ -1,0 +1,50 @@
+module examples.boot_entropy_hex
+
+# plans/M17.md item H / freeze 10: hex-printing sibling of boot-entropy.
+# Sync actor method so entropy reaches MWIR Inst::Entropy → EntropyRead
+# (same MWIR-floor reason as G). Packs the 8 entropy bytes big-endian and
+# prints that u64 via `__wrela_trace_u64` into the console transcript so
+# record/replay depends on the logged EntropyRead: clean replay is
+# byte-identical; tampering the first EntropyRead hex diverges the
+# transcript digest (EXIT_REPLAY_DIVERGENCE).
+#
+# NO expected/test.txt live pin — this case is exercised only by
+# `xtask repro`'s `repro_entropy_replay_is_choice_log_driven` lane.
+# Package shape (root + src/) is required so `from core.runtime import …`
+# can anchor; flat input.wr cannot import.
+
+from core.runtime import __wrela_trace_u64
+
+@actor
+pub struct EntropyHexProbe:
+    pad: u64
+
+    pub fn sample(mut self) -> u64:
+        b = entropy[8]()
+        v: u64 = b[0].to[u64]()
+        v = (v << 8) | b[1].to[u64]()
+        v = (v << 8) | b[2].to[u64]()
+        v = (v << 8) | b[3].to[u64]()
+        v = (v << 8) | b[4].to[u64]()
+        v = (v << 8) | b[5].to[u64]()
+        v = (v << 8) | b[6].to[u64]()
+        v = (v << 8) | b[7].to[u64]()
+        __wrela_trace_u64(v)
+        return 1
+
+@test(runtime)
+async fn entropy_hex(c: Actor[EntropyHexProbe]):
+    r = await c.sample()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
+    match r:
+        case .Ok(v):
+            assert v == 1, "sample returned 1"
+        case .Err(_):
+            assert false, "sample rejected"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="boot-entropy-hex", target=Target.wrela_machine_v1)
+    c = img.actor(EntropyHexProbe, mailbox=8)
+    img.on_failure(policy=Failure.Halt)
+    return img.seal()

@@ -1,0 +1,141 @@
+Module path=runtime
+  Const QUEUE_SIZE: u64
+  Const DESC_WORD_COUNT: usize
+  Const DATA_SIZE: usize
+  Struct MachineInfoPage data
+    field next_deadline: u64
+    field exit_code: u64
+    field test_passed: u64
+    field test_failed: u64
+    field ring_data_bump: u64
+    field ring_desc_bump: u64
+    field line_start: u64
+    field core_marks: [u64; CORE_SLOTS]
+    field vector0_observed: u64
+    field abort_latch: u64
+    field test_next: u64
+  Static MACHINE_INFO: MachineInfoPage placed=0x40000000
+  Struct ClockMmio data
+    field now_ns: u64
+  Static CLOCK: ClockMmio placed=0x8000000
+  Struct ParkMmio data
+    field word: u64
+  Static PARK: ParkMmio placed=0x8002000
+  Static EXIT: ParkMmio placed=0x8001000
+  Static RELEASE: ParkMmio placed=0x8003000
+  Struct PendingPage data
+    field words: [u64; CORE_SLOTS]
+  Static PENDING: PendingPage placed=0x40007000
+  Struct ConsoleRingPage data
+    field desc_words: [u64; DESC_WORD_COUNT]
+    field avail_flags_idx: u32
+    field doorbell: u64
+  Static CONSOLE_RING: ConsoleRingPage placed=0x40001000
+  Struct ConsoleDataPage data
+    field bytes: [u8; DATA_SIZE]
+  Static CONSOLE_DATA: ConsoleDataPage placed=0x40003000
+  Fn __wrela_runtime_probe() -> unit
+  Fn __wrela_line_begin() -> unit
+  Fn __wrela_line_commit() -> u64
+  Const LINE_BUF_SIZE: usize
+  Struct TestLineBuf data
+    field bytes: [u8; LINE_BUF_SIZE]
+  Static TEST_LINE_BUF: TestLineBuf placed=0x40000218
+  Fn ascii_digit(d: read u64) -> u8
+  Fn __wrela_fmt_dec(value: read u64, is_signed: read u64) -> u64
+  Fn copy_line_buf_range(bump: read usize, n: read usize) -> unit
+  Fn copy_bytes_range(src: read Bytes, bump: read usize, n: read usize) -> unit
+  Fn __wrela_trace_u64(value: read u64) -> unit
+  Fn __wrela_console_append_line_buf(len: read usize) -> u64
+  Fn __wrela_console_append_bytes(src: read Bytes, len: read usize) -> u64
+  Fn __wrela_abort_tail() -> unit
+  Fn finish_abort() -> unit
+  Fn append_failed_literal() -> u64
+  Fn append_newline_literal() -> u64
+  Fn __wrela_abort(msg: read Bytes) -> unit
+  Fn __wrela_abort_val(prefix: read Bytes, value: read u64, value_signed: read u64, suffix: read Bytes) -> unit
+  Fn __wrela_deadline_poll() -> unit
+  Fn __wrela_deadline_scan() -> unit
+  Const TURN_STATUS_COMPLETED: u64
+  Const TURN_STATUS_SUSPENDED: u64
+  Const TURN_STATUS_CANCELLED: u64
+  Fn __wrela_rt_run_one(core: read usize) -> u64
+  Fn __wrela_child_poll(site: read usize) -> u64
+  Fn __wrela_rt_xsend(edge: read usize, method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __wrela_rt_xreply(edge: read usize, turn_and_tag: read u64, reply: read u64) -> unit
+  Fn __wrela_rt_drain(core: read usize) -> u64
+  Fn __wrela_try_drain(core: read usize) -> u64
+  Fn __wrela_xsend_0(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __wrela_xsend_1(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __wrela_xsend_2(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __wrela_xsend_3(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __wrela_xsend_4(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __wrela_xsend_5(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __wrela_xsend_6(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __wrela_xsend_7(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __wrela_xreply_0(turn_and_tag: read u64, reply: read u64) -> unit
+  Fn __wrela_xreply_1(turn_and_tag: read u64, reply: read u64) -> unit
+  Fn __wrela_xreply_2(turn_and_tag: read u64, reply: read u64) -> unit
+  Fn __wrela_xreply_3(turn_and_tag: read u64, reply: read u64) -> unit
+  Fn __wrela_xreply_4(turn_and_tag: read u64, reply: read u64) -> unit
+  Fn __wrela_xreply_5(turn_and_tag: read u64, reply: read u64) -> unit
+  Fn __wrela_xreply_6(turn_and_tag: read u64, reply: read u64) -> unit
+  Fn __wrela_xreply_7(turn_and_tag: read u64, reply: read u64) -> unit
+  Const REPLY_TAG_OK: u64
+  Const CALL_ERROR_TAG_CANCELLED: u64
+  Fn __wrela_rt_enqueue(root: read usize, method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __wrela_try_enqueue(handle: read usize, method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_0(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_1(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_2(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_3(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_4(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_5(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_6(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_7(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_8(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_9(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_10(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_11(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_12(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_13(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_14(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_15(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_16(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_17(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_18(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_19(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_20(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_21(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_22(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_23(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_24(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_25(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_26(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_27(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_28(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_29(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_30(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __enqueue_31(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __wrela_invoke_xreply(edge: read usize, turn_and_tag: read u64, reply: read u64) -> unit
+  Fn __wrela_deliver_reply(root: read usize, ti: read usize, reply: read u64, tag: read u64) -> unit
+  Fn __wrela_rt_select(root: read usize) -> u64
+  Fn __wrela_try_select(core: read usize, slot: read usize) -> u64
+  Fn __wrela_rt_boot_init() -> unit
+  Fn __wrela_rt_secondary_entry(core: read usize) -> unit
+  Fn __wrela_vector0() -> unit
+  Fn __wrela_rt_checkpoint(core: read usize) -> unit
+  Fn __wrela_append_ok_literal() -> u64
+  Fn __wrela_append_passed_comma_literal() -> u64
+  Fn __wrela_append_failed_tail_literal() -> u64
+  Fn __wrela_append_deadlock_literal() -> u64
+  Fn __wrela_abort_deadlock() -> unit
+  Fn __wrela_rt_summary_and_halt() -> unit
+  Fn __wrela_rt_primary_boot() -> unit
+  Fn __wrela_rt_primary_entry() -> unit
+Module path=examples.boot_entropy_hex
+  Struct EntropyHexProbe resource
+    field pad: u64
+    fn sample(mut self) -> u64
+  AsyncFn entropy_hex(c: read Actor[EntropyHexProbe]) -> unit
+  Fn build() -> Image
