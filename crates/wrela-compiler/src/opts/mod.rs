@@ -1,9 +1,13 @@
 //! Compile modes and the fixed in-code release opt list
 //! (plans/M19.md item B / decisions 1420–1423).
 //!
-//! `apply_mode` is the single front door for all opt TLS knobs. The
-//! release order is a dumb `const` slice — not a plugin registry
-//! (freeze 1402 / 1406). Edit + re-rank here; nowhere else.
+//! `apply_mode` is the single front door for product modes. `apply_opts`
+//! sets the same TLS knobs from an explicit list so item E can A/B a
+//! candidate order offline (decision 1452). The release order is a dumb
+//! `const` slice — not a plugin registry (freeze 1402 / 1406). Edit +
+//! re-rank here; nowhere else.
+
+pub mod win;
 
 /// Compile mode: `Dev` leaves opts off; `Release` runs `RELEASE_OPTS`
 /// in fixed order.
@@ -27,11 +31,19 @@ pub enum OptId {
 /// NarrowImm.
 pub const RELEASE_OPTS: &[OptId] = &[OptId::BoundsElide, OptId::NarrowImm];
 
-/// Single front door for all opt TLS knobs (decision 1422).
+/// Enable exactly the named opts (decision 1452). Product modes go
+/// through [`apply_mode`]; tests and candidate A/B use this directly.
+pub fn apply_opts(opts: &[OptId]) {
+    crate::lower::set_bounds_elide(opts.contains(&OptId::BoundsElide));
+    crate::codegen::set_narrow_imm(opts.contains(&OptId::NarrowImm));
+}
+
+/// Single front door for product-mode TLS knobs (decision 1422).
 pub fn apply_mode(mode: CompileMode) {
-    let on = matches!(mode, CompileMode::Release);
-    crate::lower::set_bounds_elide(on && RELEASE_OPTS.contains(&OptId::BoundsElide));
-    crate::codegen::set_narrow_imm(on && RELEASE_OPTS.contains(&OptId::NarrowImm));
+    match mode {
+        CompileMode::Dev => apply_opts(&[]),
+        CompileMode::Release => apply_opts(RELEASE_OPTS),
+    }
 }
 
 #[cfg(test)]
@@ -68,5 +80,18 @@ mod tests {
             RELEASE_OPTS,
             &[OptId::BoundsElide, OptId::NarrowImm]
         );
+    }
+
+    #[test]
+    fn apply_opts_enables_only_named() {
+        apply_opts(&[OptId::NarrowImm]);
+        assert!(!bounds_elide());
+        assert!(narrow_imm());
+
+        apply_opts(&[OptId::BoundsElide]);
+        assert!(bounds_elide());
+        assert!(!narrow_imm());
+
+        apply_mode(CompileMode::Release);
     }
 }
