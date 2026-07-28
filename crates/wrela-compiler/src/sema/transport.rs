@@ -181,6 +181,7 @@ pub(crate) fn check_device_claim(
             key: "Device.claim".to_string(),
             receiver: None,
             type_arg: Some(Type::Named(device.to_string(), vec![])),
+            const_arg: None,
             args: vec![("cap".to_string(), cap)],
         },
     })
@@ -244,6 +245,7 @@ pub(crate) fn check_device_state_call(
                     key: "Device.take_irq".to_string(),
                     receiver: Some(Box::new(state_expr)),
                     type_arg: None,
+                    const_arg: None,
                     args: Vec::new(),
                 },
             })
@@ -402,6 +404,7 @@ pub(crate) fn check_device_negotiate(
             key: "Device.negotiate".to_string(),
             receiver: Some(Box::new(take_place(state_expr, call_span))),
             type_arg: Some(Type::Named(device.to_string(), vec![])),
+            const_arg: None,
             args: vec![
                 ("required".to_string(), required),
                 ("optional".to_string(), optional),
@@ -447,6 +450,7 @@ pub(crate) fn check_device_start(
             key: "Device.start".to_string(),
             receiver: Some(Box::new(take_place(state_expr, call_span))),
             type_arg: Some(Type::Named(device.to_string(), vec![])),
+            const_arg: None,
             args: Vec::new(),
         },
     })
@@ -531,6 +535,7 @@ pub(crate) fn check_device_reset(
             key: "Device.reset".to_string(),
             receiver: Some(Box::new(take_place(state_expr, call_span))),
             type_arg: Some(Type::Named(device.to_string(), vec![])),
+            const_arg: None,
             args: vec![("queue".to_string(), queue)],
         },
     })
@@ -575,6 +580,7 @@ pub(crate) fn check_device_read_capacity(
             key: "Device.read_capacity_sectors".to_string(),
             receiver: Some(Box::new(state_expr)),
             type_arg: None,
+            const_arg: None,
             args: Vec::new(),
         },
     })
@@ -716,6 +722,7 @@ pub(crate) fn check_map_partition(
             key: "Device.map_partition".to_string(),
             receiver: Some(Box::new(state_expr)),
             type_arg: Some(Type::Named(layout_name.clone(), vec![])),
+            const_arg: None,
             args: Vec::new(),
         },
     })
@@ -930,6 +937,7 @@ pub(crate) fn check_virtqueue_reserve(
                     depth.to_string(),
                 ))],
             )),
+            const_arg: None,
             args: vec![("descriptors".to_string(), desc_expr)],
         },
     })
@@ -1194,6 +1202,7 @@ pub(crate) fn check_virtqueue_prepare_block(
             key: "VirtQueue.prepare_block".to_string(),
             receiver: Some(Box::new(queue)),
             type_arg: None,
+            const_arg: None,
             args: vec![
                 ("permit".to_string(), permit),
                 ("header".to_string(), header),
@@ -1324,6 +1333,7 @@ pub(crate) fn check_virtqueue_publish(
             key: "VirtQueue.publish".to_string(),
             receiver: Some(Box::new(queue)),
             type_arg: None,
+            const_arg: None,
             args: vec![("operation".to_string(), op)],
         },
     })
@@ -1428,6 +1438,7 @@ pub(crate) fn check_virtqueue_reject(
             key: "VirtQueue.reject".to_string(),
             receiver: Some(Box::new(queue)),
             type_arg: None,
+            const_arg: None,
             args: vec![
                 ("payload".to_string(), payload),
                 ("error".to_string(), error),
@@ -1504,6 +1515,7 @@ pub(crate) fn check_virtqueue_drain(
                     max_val.to_string(),
                 ))],
             )),
+            const_arg: None,
             args: vec![("max".to_string(), max_expr)],
         },
     })
@@ -1582,6 +1594,7 @@ pub(crate) fn check_virtqueue_claim(
             key: "VirtQueue.claim".to_string(),
             receiver: Some(Box::new(queue)),
             type_arg: None,
+            const_arg: None,
             args: vec![("receipt".to_string(), receipt)],
         },
     })
@@ -1666,6 +1679,7 @@ pub(crate) fn check_virtqueue_recover(
             key: "VirtQueue.recover".to_string(),
             receiver: Some(Box::new(queue)),
             type_arg: None,
+            const_arg: None,
             args: vec![("receipt".to_string(), receipt)],
         },
     })
@@ -1784,6 +1798,7 @@ pub(crate) fn check_virtqueue_reclaim(
             key: "VirtQueue.reclaim".to_string(),
             receiver: Some(Box::new(queue)),
             type_arg: None,
+            const_arg: None,
             args: Vec::new(),
         },
     })
@@ -1910,6 +1925,7 @@ pub(crate) fn check_virtqueue_suppress_interrupts(
             key: "VirtQueue.suppress_interrupts".to_string(),
             receiver: Some(Box::new(queue)),
             type_arg: None,
+            const_arg: None,
             args: Vec::new(),
         },
     })
@@ -2198,6 +2214,7 @@ pub(crate) fn check_virtqueue_configure(
             key: "VirtQueue.configure".to_string(),
             receiver: None,
             type_arg: Some(Type::Named(device_name, vec![])),
+            const_arg: None,
             args: vec![
                 ("pool".to_string(), pool),
                 ("device".to_string(), device_expr),

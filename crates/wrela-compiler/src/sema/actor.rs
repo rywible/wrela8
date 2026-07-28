@@ -502,6 +502,7 @@ pub(crate) fn check_await_group_join(
             key: "Group.join_all".to_string(),
             receiver: Some(receiver),
             type_arg: None,
+            const_arg: None,
             args: vec![],
         },
     };
@@ -812,6 +813,7 @@ pub(crate) fn check_group_start(
             key: "Group.start".to_string(),
             receiver: Some(Box::new(base_t)),
             type_arg: None,
+            const_arg: None,
             args: iargs,
         },
     })

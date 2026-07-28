@@ -252,6 +252,11 @@ pub enum TypedExprKind {
         key: String,
         receiver: Option<Box<TypedExpr>>,
         type_arg: Option<Type>,
+        /// Comptime integer carried beside the key (plans/M17.md freeze 9 /
+        /// decision 1258): `Some(n)` only for `entropy[N]()`; `None`
+        /// everywhere else. Rejected alternatives: encoding `N` in the key
+        /// string, or abusing `type_arg`.
+        const_arg: Option<u64>,
         args: Vec<(String, TypedExpr)>,
     },
     /// A bare `pool` name used as `img.pool[T](name=P, ...)`/
@@ -1338,11 +1343,15 @@ fn dump_expr(e: &TypedExpr, depth: usize, out: &mut String) {
             key,
             receiver,
             type_arg,
+            const_arg,
             args,
         } => {
             let mut header = format!("Intrinsic key={key}");
             if let Some(ta) = type_arg {
                 header.push_str(&format!(" type_arg={}", ty(ta)));
+            }
+            if let Some(n) = const_arg {
+                header.push_str(&format!(" const_arg={n}"));
             }
             header.push_str(&format!(" ty={t}"));
             push_line(out, depth, &header);

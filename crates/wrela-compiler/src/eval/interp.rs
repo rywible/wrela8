@@ -2043,6 +2043,7 @@ fn eval_expr<'a, 'p>(
             receiver,
             type_arg,
             args,
+            ..
         } => eval_intrinsic(key, receiver, type_arg, args, env, dstack, loop_marker, ctx),
         TypedExprKind::PoolName(name) => Ok(Value::Str(name.clone().into_bytes())),
         // Plans/M6.md item A: `await`/`send`/a group-child reference are

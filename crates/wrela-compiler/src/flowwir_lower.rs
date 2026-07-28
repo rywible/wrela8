@@ -2532,6 +2532,18 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
             b.emit(FlowInst::Now { dst });
             Ok(dst)
         }
+        TypedExprKind::Intrinsic {
+            key,
+            const_arg,
+            ..
+        } if key.as_str() == "entropy" => {
+            let n = const_arg.ok_or_else(|| {
+                FlowError::internal("`entropy` Intrinsic missing const_arg (sema bug)")
+            })?;
+            let dst = b.fresh(e.ty.clone());
+            b.emit(FlowInst::Entropy { dst, n });
+            Ok(dst)
+        }
         // plans/M9.md item E: `ms` is an ordinary Call into
         // `stdlib/core/time.wr` (no FlowInst::Duration). The Call arm
         // above handles it.
@@ -2576,6 +2588,7 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
             receiver,
             type_arg,
             args,
+            ..
         } if crate::sema::bodies::is_queue_op_intrinsic(key) => {
             lower_flow_queue_op(key, receiver, type_arg, args, e, b, env)
         }

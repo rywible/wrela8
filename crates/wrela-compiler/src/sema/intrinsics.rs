@@ -118,6 +118,14 @@ pub const EXCEPTIONS: &[(&str, &str)] = &[
          recorded/replayed through the recorder's `ClockRead` choice entry — wrela source can \
          express neither the prohibition nor the choice-point binding.",
     ),
+    // --- 05 §5 / plans/M17.md item E: entropy ------------------------
+    (
+        "entropy",
+        "05 §5 / plans/M17.md: a sealed effect `entropy[N]() -> Bytes[N]`. Forbidden in \
+         comptime and ISR like `now()`, and recorded/replayed through the recorder's \
+         `EntropyRead` choice entry — wrela source can express neither the prohibition nor \
+         the choice-point binding.",
+    ),
     // --- plans/M15.md item H: runtime-only cross-core barriers ---------
     (
         "dmb.ishld",
@@ -373,7 +381,7 @@ pub const UNPRODUCED_CONSUMER_KEYS: &[(&str, &str)] = &[
 /// bijection with the key surface: `group` / `pool` are `with`-
 /// constructors, not intrinsic keys.
 pub fn is_bare_resolvable(name: &str) -> bool {
-    matches!(name, "Image" | "now" | "wake" | "group" | "pool")
+    matches!(name, "Image" | "now" | "entropy" | "wake" | "group" | "pool")
 }
 
 /// The whole written-down surface: 05 §9's builder names plus the

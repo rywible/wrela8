@@ -847,6 +847,15 @@ struct Frame {
     /// `ret_ptr_off` is where this fn spills the address its own caller
     /// handed it.
     reply_stage_off: Option<usize>,
+    /// plans/M17.md item E / freeze 5: packed scratch for `entropy[N]()` —
+    /// contiguous `n` bytes the VMM fills, then expanded into the
+    /// slot-per-byte `Bytes[N]` destination. `None` when the fn never
+    /// emits `FlowInst::Entropy` (sync MWIR `Inst::Entropy` will pass a
+    /// size through the same slot once Es lands).
+    entropy_scratch_off: Option<usize>,
+    /// Reserved packed size at `entropy_scratch_off` (max `n` over Entropy
+    /// ops in this fn).
+    entropy_scratch_size: usize,
     lr_off: usize,
     size: usize,
 }
@@ -869,6 +878,7 @@ fn build_frame(
     f: &MwirFn,
     layout: &LayoutCtx,
     reply_stage_size: usize,
+    entropy_scratch_size: usize,
     slot_bias: usize,
 ) -> Result<Frame, CodegenError> {
     let mut offset = 0usize;
@@ -908,6 +918,15 @@ fn build_frame(
     } else {
         None
     };
+    // Packed entropy scratch (plans/M17.md freeze 5): round the end up to
+    // an 8-byte boundary so the following lr slot stays slot-aligned.
+    let (entropy_scratch_off, entropy_scratch_size) = if entropy_scratch_size > 0 {
+        let o = offset;
+        offset += (entropy_scratch_size + 7) & !7;
+        (Some(o), entropy_scratch_size)
+    } else {
+        (None, 0)
+    };
     let lr_off = offset;
     offset += 8;
     let size = round_up_16(offset);
@@ -935,6 +954,8 @@ fn build_frame(
         mut_param_ptr_offs,
         ret_ptr_off,
         reply_stage_off,
+        entropy_scratch_off,
+        entropy_scratch_size,
         lr_off,
         size,
     })
@@ -1061,6 +1082,19 @@ impl<'a> FnCtx<'a> {
                 reg_name(reg),
                 reg_name(base_reg)
             ),
+        );
+    }
+
+    /// Unsigned byte load `ldrb Wt, [Xn, #imm]`. Shared by
+    /// `Inst::BytesIndexGet` and `emit_entropy`'s packed-scratch expand
+    /// (plans/M17.md item E / freeze 5) so both reuse one LDRB encoder
+    /// call site — an FnCtx method, not a free fn, so the A64
+    /// closed-emitter scan (plans/M10.md item F0) does not grow a new
+    /// top-level emitter row.
+    fn load_byte_imm(&mut self, rt: u8, rn: u8, byte_off: u16) {
+        self.push(
+            encode::enc_ldrb_imm(rt, rn, byte_off),
+            format!("ldrb w{rt}, [{}, #{byte_off}]", reg_name(rn)),
         );
     }
 
@@ -1695,10 +1729,7 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
         // through an unbounded `Bytes` (base, len) handle.
         Inst::BytesIndexGet { dst, base, index } => {
             emit_bytes_index_addr(ctx, ctx.frame.off(*base), ctx.frame.off(*index), X_C)?;
-            ctx.push(
-                encode::enc_ldrb_imm(X_B, X_C, 0),
-                format!("ldrb w{}, [{}, #0]", X_B, reg_name(X_C)),
-            );
+            ctx.load_byte_imm(X_B, X_C, 0);
             ctx.store_slot(X_B, ctx.frame.off(*dst));
         }
         Inst::MakeEnum { dst, tag, payload } => {
@@ -3976,7 +4007,7 @@ fn emit_fn(
     rodata: &mut RodataPool,
 ) -> Result<CodegenFn, CodegenError> {
     // A sync fn never awaits, so it never stages a reply (0).
-    let frame = build_frame(f, layout, 0, 0)?;
+    let frame = build_frame(f, layout, 0, 0, 0)?;
 
     let empty: [usize; 0] = [];
     let mut probe_pro = FnCtx {
@@ -4780,9 +4811,24 @@ fn build_frame_flow(f: &FlowWirFn, layout: &LayoutCtx) -> Result<(Frame, Temp), 
         &synthetic,
         layout,
         flow_reply_stage_size(f, layout)?,
+        flow_entropy_scratch_size(f),
         TURN_RECORD_SIZE as usize,
     )?;
     Ok((frame, state_temp))
+}
+
+/// plans/M17.md item E / freeze 5: max packed scratch bytes across every
+/// `FlowInst::Entropy` in this fn (shared region; ops run one at a time).
+fn flow_entropy_scratch_size(f: &FlowWirFn) -> usize {
+    f.states
+        .iter()
+        .flat_map(|s| s.ops.iter())
+        .filter_map(|op| match op {
+            FlowInst::Entropy { n, .. } => Some(*n as usize),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 /// plans/M7.md item Z1 (decision 9b): how many bytes this fn's own reply
@@ -5247,10 +5293,74 @@ fn emit_self_path(
 /// §5/decision 13's own clock-read protocol already names; the VMM's own
 /// exit handler (item E) is what actually returns monotonic ns and logs
 /// the read (`machine.clock.trap-logged`), this fn only issues the load.
+///
+/// Shared by FlowWir (`FlowInst::Now`) and — once plans/M17.md item Es
+/// lands — sync MWIR (`Inst::Now` via `emit_one`). Do not duplicate the
+/// load sequence at either call site.
 fn emit_now(dst: Temp, ctx: &mut FnCtx) {
     ctx.load_imm(X_A, wrela_machine::mmio::CLOCK_MMIO_ADDR as i64);
     ctx.load_ptr(X_B, X_A, 0);
     ctx.store_slot(X_B, ctx.frame.off(dst));
+}
+
+/// `entropy[N]()` (plans/M17.md item E / freeze 5): park-shaped fill.
+/// 1. Packed scratch of `n` bytes (reserved on the frame).
+/// 2. Store scratch GPA → `OFF_ENTROPY_DEST`; store `n` → `OFF_ENTROPY_LEN`.
+/// 3. Trapping store to `ENTROPY_MMIO_ADDR`.
+/// 4. Expand scratch bytes into `Bytes[N]` slot-per-byte `dst`.
+///
+/// Shared by FlowWir (`FlowInst::Entropy`) and — once item Es lands —
+/// sync MWIR (`Inst::Entropy` via `emit_one`). Do not duplicate this
+/// sequence at either call site.
+fn emit_entropy(dst: Temp, n: u64, ctx: &mut FnCtx) -> Result<(), CodegenError> {
+    let scratch_off = ctx.frame.entropy_scratch_off.ok_or_else(|| {
+        CodegenError::internal("entropy scratch not reserved in frame (codegen bug)")
+    })?;
+    if n == 0 || n as usize > ctx.frame.entropy_scratch_size {
+        return Err(CodegenError::internal(format!(
+            "entropy n={n} outside reserved scratch size {}",
+            ctx.frame.entropy_scratch_size
+        )));
+    }
+    let max = wrela_machine::machine_info::ENTROPY_LEN_MAX;
+    if n > max {
+        return Err(CodegenError::internal(format!(
+            "entropy n={n} exceeds ENTROPY_LEN_MAX={max}"
+        )));
+    }
+
+    // Scratch GPA → OFF_ENTROPY_DEST.
+    ctx.addr_of_slot(X_A, scratch_off);
+    ctx.load_imm(
+        X_B,
+        (wrela_machine::layout::MACHINE_INFO_BASE
+            + wrela_machine::machine_info::OFF_ENTROPY_DEST) as i64,
+    );
+    ctx.store_ptr(X_A, X_B, 0);
+
+    // n → OFF_ENTROPY_LEN.
+    ctx.load_imm(X_A, n as i64);
+    ctx.load_imm(
+        X_B,
+        (wrela_machine::layout::MACHINE_INFO_BASE + wrela_machine::machine_info::OFF_ENTROPY_LEN)
+            as i64,
+    );
+    ctx.store_ptr(X_A, X_B, 0);
+
+    // Trapping store (any value) to ENTROPY_MMIO_ADDR.
+    // Rt=31 encodes as XZR in STR (store_ptr's dump text says `sp` because
+    // `reg_name(31)` is shared with SP — same as other X_ZR store_ptr sites).
+    ctx.load_imm(X_A, wrela_machine::mmio::ENTROPY_MMIO_ADDR as i64);
+    ctx.store_ptr(X_ZR, X_A, 0);
+
+    // Expand packed scratch → Bytes[N] slot-per-byte dst.
+    let dst_off = ctx.frame.off(dst);
+    ctx.addr_of_slot(X_C, scratch_off);
+    for i in 0..n as usize {
+        ctx.load_byte_imm(X_B, X_C, i as u16);
+        ctx.store_slot(X_B, dst_off + i * 8);
+    }
+    Ok(())
 }
 
 /// The two dedicated lineage frame slots every `FlowWirFn` reserves
@@ -6043,6 +6153,7 @@ fn emit_flow_op(
             emit_now(*dst, ctx);
             Ok(())
         }
+        FlowInst::Entropy { dst, n } => emit_entropy(*dst, *n, ctx),
         FlowInst::Duration { dst, n } => {
             // `ms(n)` -> nanoseconds. plans/M6.md item F: item B/D left
             // this an opaque passthrough ("a real tick-scale conversion
@@ -8896,7 +9007,7 @@ mod tests {
             body: vec![Inst::Return { value: None }],
         };
         let layout = LayoutCtx::default();
-        let frame = build_frame(&f, &layout, 0, 0).expect("build_frame");
+        let frame = build_frame(&f, &layout, 0, 0, 0).expect("build_frame");
         // Every scalar is one 8-byte slot regardless of its own declared
         // width (mwir's own "no packing, ever" rule) — offsets are a
         // plain running sum, never sub-word-aligned.
@@ -8923,7 +9034,7 @@ mod tests {
         layout
             .structs
             .insert("Point".to_string(), vec![Type::U64, Type::U64]);
-        let frame = build_frame(&f, &layout, 0, 0).expect("build_frame");
+        let frame = build_frame(&f, &layout, 0, 0, 0).expect("build_frame");
         // temps: t0 (Point, 16 bytes) at [0,16); self_ptr at 16; ret_ptr
         // at 24 (the receiver's own aggregate type is also the return
         // type here, but the two slots are still distinct — self_write_
@@ -8951,11 +9062,11 @@ mod tests {
             body: vec![Inst::Return { value: None }],
         };
         let layout = LayoutCtx::default();
-        let none = build_frame(&f, &layout, 0, 0).expect("build_frame");
+        let none = build_frame(&f, &layout, 0, 0, 0).expect("build_frame");
         assert_eq!(none.reply_stage_off, None);
         assert_eq!(none.lr_off, 8);
         assert_eq!(none.size, 16);
-        let staged = build_frame(&f, &layout, 24, 0).expect("build_frame");
+        let staged = build_frame(&f, &layout, 24, 0, 0).expect("build_frame");
         assert_eq!(staged.reply_stage_off, Some(8));
         assert_eq!(staged.lr_off, 32);
         assert_eq!(staged.size, 48);
@@ -8974,7 +9085,7 @@ mod tests {
             body: vec![Inst::Return { value: None }],
         };
         let layout = LayoutCtx::default();
-        assert!(build_frame(&f, &layout, 0, 0).is_err());
+        assert!(build_frame(&f, &layout, 0, 0, 0).is_err());
     }
 
     /// plans/M9.md item RR: the imm12 ceiling is on `off + slot_bias`, the
@@ -9003,7 +9114,7 @@ mod tests {
         };
         let layout = LayoutCtx::default();
 
-        let sync = build_frame(&f, &layout, 0, 0).expect("legal for a sync frame");
+        let sync = build_frame(&f, &layout, 0, 0, 0).expect("legal for a sync frame");
         assert_eq!(sync.size, 4048);
 
         let bias = TURN_RECORD_SIZE as usize;
@@ -9011,7 +9122,7 @@ mod tests {
             sync.size + bias > 4095,
             "this fixture must straddle the boundary to be a regression lock"
         );
-        let Err(err) = build_frame(&f, &layout, 0, bias) else {
+        let Err(err) = build_frame(&f, &layout, 0, 0, bias) else {
             panic!("the same frame must be refused once biased past the turn record");
         };
         assert!(
@@ -9029,7 +9140,7 @@ mod tests {
             )],
             ..f
         };
-        let ok = build_frame(&smaller, &layout, 0, bias).expect("fits under 4031 with the bias");
+        let ok = build_frame(&smaller, &layout, 0, 0, bias).expect("fits under 4031 with the bias");
         assert!(ok.size + bias <= 4095);
     }
 

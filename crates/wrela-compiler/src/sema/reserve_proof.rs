@@ -627,6 +627,7 @@ impl Cx<'_> {
                 receiver,
                 type_arg,
                 args,
+                ..
             } => {
                 if key == "VirtQueue.reserve" {
                     if let Some(site) = reserve_site_of(type_arg, args, &self.holder, self.once) {

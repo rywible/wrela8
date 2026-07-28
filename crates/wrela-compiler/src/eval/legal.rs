@@ -855,6 +855,9 @@ enum EffectClass {
     IrqCapOp,
     RestrictedIntrinsic,
     Now,
+    /// plans/M17.md item E: `entropy[N]()` — sealed runtime entropy fill,
+    /// illegal in comptime + ISR exactly like [`Now`].
+    Entropy,
     GroupOp,
     Float,
     Format,
@@ -899,6 +902,11 @@ fn effect_reason(effect: EffectClass, ctx: EffectContext) -> Option<&'static str
         (Now, Comptime) => Some("`now()` (a runtime-only clock read)"),
         (Now, Isr) => Some("a runtime clock read (`now()` — not in the ISR effect set)"),
         (Now, BottomHalf) => None,
+        (Entropy, Comptime) => Some("`entropy[N]()` (a runtime-only entropy fill)"),
+        (Entropy, Isr) => {
+            Some("a runtime entropy fill (`entropy[N]()` — not in the ISR effect set)")
+        }
+        (Entropy, BottomHalf) => None,
         (GroupOp, Comptime) => Some("a `group` construct"),
         (GroupOp, Isr) => Some("a `group` construct (call another actor / block)"),
         (GroupOp, BottomHalf) => None,
@@ -991,6 +999,8 @@ fn expr_effects(e: &TypedExpr) -> Vec<EffectClass> {
                 out.push(EffectClass::RestrictedIntrinsic);
             } else if key == "now" {
                 out.push(EffectClass::Now);
+            } else if key == "entropy" {
+                out.push(EffectClass::Entropy);
             } else if key.starts_with("Group.") {
                 out.push(EffectClass::GroupOp);
             }
@@ -2179,10 +2189,38 @@ pub fn double(x: u64) -> u64:
                 key: "wake".into(),
                 receiver: None,
                 type_arg: None,
+                const_arg: None,
                 args: vec![],
             },
         };
         assert_eq!(expr_isr_forbidden_reason(&wake_expr), None);
+        // plans/M17.md item E: entropy mirrors now() — ISR-forbidden.
+        let entropy_expr = TypedExpr {
+            span: Span::default(),
+            ty: Type::Bytes(Some(Box::new(crate::syntax::ast::Expr::Int(
+                Span::default(),
+                "8".into(),
+            )))),
+            kind: TypedExprKind::Intrinsic {
+                key: "entropy".into(),
+                receiver: None,
+                type_arg: None,
+                const_arg: Some(8),
+                args: vec![],
+            },
+        };
+        assert_eq!(
+            expr_isr_forbidden_reason(&entropy_expr),
+            Some("a runtime entropy fill (`entropy[N]()` — not in the ISR effect set)")
+        );
+        assert_eq!(
+            effect_reason(EffectClass::Entropy, EffectContext::Comptime),
+            Some("`entropy[N]()` (a runtime-only entropy fill)")
+        );
+        assert_eq!(
+            effect_reason(EffectClass::Entropy, EffectContext::BottomHalf),
+            None
+        );
         assert!(type_mentions_receipt(&Type::Named(
             "Receipt".into(),
             vec![crate::sema::types::TypeArg::Type(Type::U32)]

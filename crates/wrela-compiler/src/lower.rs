@@ -3623,6 +3623,7 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
             receiver,
             type_arg,
             args,
+            ..
         } if crate::sema::bodies::is_mmio_access_intrinsic(key) => {
             let Some(mmio) = receiver else {
                 return Err(LowerError::internal(
@@ -3674,6 +3675,7 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
             receiver,
             type_arg,
             args,
+            ..
         } if crate::sema::bodies::is_untrusted_narrowing_intrinsic(key) => {
             lower_untrusted_checked_le(expr, receiver, type_arg, args, b, env)
         }
@@ -3686,6 +3688,7 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
             receiver,
             type_arg,
             args,
+            ..
         } if crate::sema::bodies::is_queue_op_intrinsic(key) => {
             match key.as_str() {
                 "VirtQueue.prepare_block" => {

@@ -209,6 +209,11 @@ pub enum FlowInst {
     /// non-suspending. The real MMIO lowering is item D/E's job; this op
     /// just names the read.
     Now { dst: Temp },
+    /// `entropy[N]()` (plans/M17.md item E / freeze 1): sealed runtime
+    /// entropy fill — non-suspending. `n` is the comptime length
+    /// (`1..=ENTROPY_LEN_MAX`); codegen expands a packed scratch into the
+    /// slot-per-byte `Bytes[N]` `dst`.
+    Entropy { dst: Temp, n: u64 },
     /// `ms(n)`: constructs a duration value from `n` — comptime-legal,
     /// non-suspending. The real tick-scale conversion is item D's job
     /// (`sema::bodies`'s own doc comment on the `"ms"` intrinsic); this
@@ -415,6 +420,7 @@ fn fmt_flow_inst(op: &FlowInst) -> String {
             format!("SelfPath dst={dst} path=self.{}", path.join("."))
         }
         FlowInst::Now { dst } => format!("Now dst={dst}"),
+        FlowInst::Entropy { dst, n } => format!("Entropy dst={dst} n={n}"),
         FlowInst::Duration { dst, n } => format!("Duration dst={dst} n={n}"),
         FlowInst::Send {
             dst,

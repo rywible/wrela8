@@ -2241,12 +2241,14 @@ fn check_dmb(attr: &ast::Attr, mctx: &ModuleCtx) -> Result<TypedStmt, SemaError>
             key: "dmb.ishst".to_string(),
             receiver: None,
             type_arg: None,
+            const_arg: None,
             args: Vec::new(),
         },
         "dmb.ishld" => TypedExprKind::Intrinsic {
             key: "dmb.ishld".to_string(),
             receiver: None,
             type_arg: None,
+            const_arg: None,
             args: Vec::new(),
         },
         _ => unreachable!("option gated above"),
@@ -5573,6 +5575,13 @@ fn check_call_index(
     // anything else here, since no other arm can produce a capability.
     if let Expr::Name(_, name) = inner {
         capability_forgery_check(name, "constructed", call_span)?;
+        // plans/M17.md item E / freeze 1 (decision 1250): `entropy[N]()` —
+        // bare Name + one bracket length + zero call args. Same
+        // Index-then-Call shape as `img.pool[T](...)`. Checked before the
+        // generic-instantiation fallthrough.
+        if name == "entropy" {
+            return check_entropy_call(targs, args, ispan, call_span);
+        }
     }
     if let Expr::Field(base, fspan, mname) = inner {
         if mname == "device" || mname == "pool" || mname == "dma_pool" {
@@ -5779,6 +5788,67 @@ fn check_call_index(
         }
     }
     Err(unimplemented_at("generic instantiation is", call_span))
+}
+
+/// plans/M17.md item E / freeze 1: `entropy[N]() -> Bytes[N]` with
+/// comptime integer literal `N` in `1..=ENTROPY_LEN_MAX` (64). Zero call
+/// arguments inside `()`.
+fn check_entropy_call(
+    targs: &[Expr],
+    args: &[Arg],
+    ispan: Span,
+    call_span: Span,
+) -> Result<TypedExpr, SemaError> {
+    if targs.len() != 1 {
+        return Err(type_error(
+            "`entropy` needs exactly one length argument (`entropy[N]()`)".to_string(),
+            ispan,
+        ));
+    }
+    if !args.is_empty() {
+        return Err(type_error(
+            "`entropy[...]()` takes no arguments".to_string(),
+            call_span,
+        ));
+    }
+    let n_expr = &targs[0];
+    let n = match n_expr {
+        Expr::Int(_, text) => {
+            let raw = parse_int_literal(text).ok_or_else(|| {
+                type_error(
+                    format!("`entropy[N]` length `{text}` is not an integer literal"),
+                    ispan,
+                )
+            })?;
+            let max = wrela_machine::machine_info::ENTROPY_LEN_MAX as i128;
+            if raw < 1 || raw > max {
+                return Err(type_error(
+                    format!(
+                        "`entropy[N]` length must be in 1..={max} (plans/M17.md freeze 1), found {raw}"
+                    ),
+                    ispan,
+                ));
+            }
+            raw as u64
+        }
+        _ => {
+            return Err(type_error(
+                "`entropy[N]` needs an integer literal length".to_string(),
+                ispan,
+            ));
+        }
+    };
+    Ok(TypedExpr {
+        span: call_span,
+        ty: Type::Bytes(Some(Box::new(n_expr.clone()))),
+        kind: TypedExprKind::Intrinsic {
+            key: "entropy".to_string(),
+            receiver: None,
+            type_arg: None,
+            const_arg: Some(n),
+            args: vec![],
+        },
+    })
 }
 
 // --- plans/M4.md item B: the `@image` builder surface (05-library.md §9) --
@@ -5989,6 +6059,7 @@ fn check_image_bracket_intrinsic(
             key: format!("Image.{mname}"),
             receiver: None,
             type_arg: Some(type_arg),
+            const_arg: None,
             args: iargs,
         },
     })
@@ -6232,6 +6303,7 @@ fn check_call_by_name(
                     key: "Image".to_string(),
                     receiver: None,
                     type_arg: None,
+                    const_arg: None,
                     args: iargs,
                 },
             })
@@ -6261,6 +6333,7 @@ fn check_call_by_name(
                     key: "now".to_string(),
                     receiver: None,
                     type_arg: None,
+                    const_arg: None,
                     args: vec![],
                 },
             })
@@ -7101,6 +7174,7 @@ fn check_mmio_access(
             key: format!("Mmio.{op}"),
             receiver: Some(Box::new(mmio)),
             type_arg: Some(scalar),
+            const_arg: None,
             args: intrinsic_args,
         },
     })
@@ -7283,6 +7357,7 @@ fn check_untrusted_narrowing(
             key: "Untrusted.checked_le".to_string(),
             receiver: Some(Box::new(receiver)),
             type_arg: Some(inner.clone()),
+            const_arg: None,
             args: vec![("bound".to_string(), bound)],
         },
     })
@@ -7341,6 +7416,7 @@ fn check_irq_cap_call(
                     key: "IrqCap.unmask".to_string(),
                     receiver: Some(Box::new(irq)),
                     type_arg: None,
+                    const_arg: None,
                     args: Vec::new(),
                 },
             })
@@ -7398,6 +7474,7 @@ fn check_irq_bind(
             key: "IrqCap.bind".to_string(),
             receiver: Some(Box::new(irq)),
             type_arg: None,
+            const_arg: None,
             args: vec![("handler".to_string(), handler)],
         },
     })
@@ -7644,6 +7721,7 @@ fn check_interrupt_cell_new(
             key: "InterruptCell.new".to_string(),
             receiver: None,
             type_arg: None,
+            const_arg: None,
             args: vec![("value".to_string(), value)],
         },
     })
@@ -7680,6 +7758,7 @@ fn check_interrupt_cell_call(
                     key: "InterruptCell.load_acquire".to_string(),
                     receiver: Some(Box::new(cell)),
                     type_arg: None,
+                    const_arg: None,
                     args: Vec::new(),
                 },
             })
@@ -7724,6 +7803,7 @@ fn check_interrupt_cell_call(
                     key: format!("InterruptCell.{method}"),
                     receiver: Some(Box::new(cell)),
                     type_arg: None,
+                    const_arg: None,
                     args: vec![("value".to_string(), value)],
                 },
             })
@@ -7807,6 +7887,7 @@ fn check_array_map_take(
                 key: "Array.map_take".to_string(),
                 receiver: Some(Box::new(base_t)),
                 type_arg: None,
+                const_arg: None,
                 args: vec![("mapper".to_string(), mapper)],
             },
         }),
@@ -7841,6 +7922,7 @@ fn check_array_map_take(
                     key: "Array.try_map_take".to_string(),
                     receiver: Some(Box::new(base_t)),
                     type_arg: None,
+                    const_arg: None,
                     args: vec![("mapper".to_string(), mapper)],
                 },
             })
@@ -7895,6 +7977,7 @@ fn check_wake_call(
             key: "wake".to_string(),
             receiver: None,
             type_arg: None,
+            const_arg: None,
             args: vec![("task".to_string(), target)],
         },
     })
@@ -8017,6 +8100,7 @@ pub(crate) fn check_image_method_intrinsic(
                     key: format!("Image.{name}"),
                     receiver: None,
                     type_arg: Some(type_arg),
+                    const_arg: None,
                     args: iargs,
                 },
             })
@@ -8036,6 +8120,7 @@ pub(crate) fn check_image_method_intrinsic(
                     key: "Image.on_failure".to_string(),
                     receiver: None,
                     type_arg: None,
+                    const_arg: None,
                     args: iargs,
                 },
             })
@@ -8089,6 +8174,7 @@ pub(crate) fn check_image_method_intrinsic(
                     key: "Image.check_layout".to_string(),
                     receiver: None,
                     type_arg: None,
+                    const_arg: None,
                     args: vec![("f".to_string(), f)],
                 },
             })
@@ -8107,6 +8193,7 @@ pub(crate) fn check_image_method_intrinsic(
                     key: "Image.seal".to_string(),
                     receiver: None,
                     type_arg: None,
+                    const_arg: None,
                     args: vec![],
                 },
             })
@@ -8155,6 +8242,7 @@ pub(crate) fn check_image_decl_method_intrinsic(
             key: "ImageDecl.handle".to_string(),
             receiver: Some(Box::new(receiver)),
             type_arg: None,
+            const_arg: None,
             args: vec![],
         },
     })
@@ -8925,5 +9013,62 @@ mod tests {
             !types_eq(&shared_a, &shared_other),
             "DmaShared with distinct Pool args must not compare equal"
         );
+    }
+
+    /// plans/M17.md item E / freeze 1: `entropy[N]()` types as `Bytes[N]`
+    /// with `const_arg = Some(n)` for literal `N` in `1..=64`.
+    #[test]
+    fn entropy_intrinsic_types_bytes_n_with_const_arg() {
+        let src = "module examples.entropy_sema
+
+pub fn sample() -> Bytes[8]:
+    return entropy[8]()
+";
+        let tokens = crate::syntax::lexer::lex(src).expect("lex");
+        let module = crate::syntax::parser::parse(tokens).expect("parse");
+        let prog = crate::sema::check_typed(&module, "test.wr").expect("check");
+        let f = prog.fns.get("sample").expect("sample");
+        let TypedStmtKind::Return(Some(e)) = &f.body.last().expect("ret").kind else {
+            panic!("expected return");
+        };
+        assert!(
+            matches!(&e.ty, Type::Bytes(Some(len)) if literal_array_len(len) == Some(8)),
+            "expected Bytes[8], got {:?}",
+            e.ty
+        );
+        match &e.kind {
+            TypedExprKind::Intrinsic {
+                key,
+                const_arg,
+                args,
+                ..
+            } => {
+                assert_eq!(key, "entropy");
+                assert_eq!(*const_arg, Some(8));
+                assert!(args.is_empty());
+            }
+            other => panic!("expected Intrinsic, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn entropy_rejects_zero_and_over_max() {
+        for (n, _) in [(0u64, "zero"), (65u64, "over max")] {
+            let src = format!(
+                "module examples.entropy_bad_{n}
+
+pub fn sample() -> Bytes[{n}]:
+    return entropy[{n}]()
+"
+            );
+            let tokens = crate::syntax::lexer::lex(&src).expect("lex");
+            let module = crate::syntax::parser::parse(tokens).expect("parse");
+            let err = crate::sema::check_typed(&module, "test.wr").expect_err("must reject");
+            assert!(
+                err.message.contains("1..=") || err.message.contains("length"),
+                "n={n}: {}",
+                err.message
+            );
+        }
     }
 }
