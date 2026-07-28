@@ -2421,7 +2421,7 @@ note = """05-library.md §3: `Completion[T]` is a sealed single-resolution await
 id = "stdlib.drivers.package"
 doc = "02-language.md#2.1"
 status = "gap"
-note = """plans/M16.md item A / decisions 1110–1116: reserved alias `drivers` → `stdlib/drivers/` beside `core` (02 §2.1; stdlib layout). Package tree holds **only** `@driver` modules. Opened as gap; flips toward `test` as loader+path land (item B) and owned boot goldens import `drivers.blk` (item D)."""
+note = """plans/M16.md item A / decisions 1110–1116: reserved alias `drivers` → `stdlib/drivers/` beside `core` (02 §2.1; stdlib layout). Package tree holds **only** `@driver` modules. Opened as gap; item B landed loader+path (`stdlib_drivers_root`, `err-stdlib-drivers-missing`); full flip to `test` waits on D's import-from-boot."""
 
 [[clause]]
 id = "stdlib.suite.comptime"

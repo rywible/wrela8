@@ -616,7 +616,10 @@ fn prepare_stdlib_enums_for_closure(
     paths: &BTreeMap<Vec<String>, String>,
 ) -> Result<(), SemaError> {
     for (key, module) in modules {
-        if key.first().map(|s| s.as_str()) == Some("core") {
+        if matches!(
+            key.first().map(|s| s.as_str()),
+            Some("core") | Some("drivers")
+        ) {
             continue;
         }
         let Some(path) = paths.get(key) else {

@@ -66,6 +66,12 @@
 //! to the closure and is left for `sema::imports::resolve_imports` to
 //! reject once names are in scope.
 //!
+//! **The `drivers` alias**: same two-candidate rule as `core`, over
+//! `stdlib/drivers/` (plans/M16.md item B / decisions 1120–1125;
+//! golden/err-stdlib-drivers-missing). Address keys stay
+//! `["drivers", ...]`. Bare `from drivers import <name>` is skipped
+//! here and rejected in `sema::imports`, mirroring bare `core`.
+//!
 //! Every diagnostic this file itself raises (root disagreement, a
 //! missing module file) uses the new `build` category (plans/M4.md
 //! decision 1), rendered exactly like every other sema diagnostic
@@ -100,7 +106,8 @@ pub struct LoadedModule {
 /// The whole build's module graph (plans/M4.md decisions 1-2): every
 /// module the root's transitive import closure reaches, keyed by its
 /// own *address* — a plain module's declared dotted path unchanged, or
-/// `["core", ...]` for a module reached through the `core` alias.
+/// `["core", ...]` / `["drivers", ...]` for a module reached through a
+/// reserved stdlib alias.
 /// `BTreeMap` gives the whole-program BTree-order-by-module-path walk
 /// decision 2 asks for, free of any extra sorting step.
 pub struct LoadedProgram {
@@ -289,11 +296,54 @@ fn core_root(pkgroot: &Path, span: Span) -> Result<PathBuf, LoadError> {
     stdlib_core_root(pkgroot, span)
 }
 
+/// The toolchain's baked-in `stdlib/drivers/` (plans/M16.md item B).
+/// Used when no package root is available and as the second candidate of
+/// [`stdlib_drivers_root`].
+pub fn toolchain_stdlib_drivers() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../stdlib/drivers")
+}
+
+/// Locates `stdlib/drivers/` — same two-candidate priority as
+/// [`stdlib_core_root`]. Returns a named `error[build]` when the chosen
+/// candidate is missing (plans/M16.md item B: golden/err-stdlib-drivers-missing).
+pub fn stdlib_drivers_root(pkgroot: &Path, span: Span) -> Result<PathBuf, LoadError> {
+    if let Some(parent) = pkgroot.parent() {
+        let sibling_stdlib = parent.join("stdlib");
+        if sibling_stdlib.is_dir() {
+            let drivers = sibling_stdlib.join("drivers");
+            if drivers.is_dir() {
+                return Ok(drivers);
+            }
+            // Sibling `stdlib/` shadows the toolchain tree, so a missing
+            // `drivers/` here is not "fall through to CARGO_MANIFEST_DIR" —
+            // it is the fail-closed "stdlib not found" case B pins.
+            return Err(build_error(
+                "stdlib not found: sibling `stdlib/` exists but has no `drivers/` directory"
+                    .to_string(),
+                span,
+            ));
+        }
+    }
+    let toolchain = toolchain_stdlib_drivers();
+    if !toolchain.is_dir() {
+        return Err(build_error(
+            "stdlib not found: toolchain `stdlib/drivers/` is missing".to_string(),
+            span,
+        ));
+    }
+    Ok(toolchain)
+}
+
+/// Locates the toolchain's `stdlib/drivers/` tree — see [`stdlib_drivers_root`].
+fn drivers_root(pkgroot: &Path, span: Span) -> Result<PathBuf, LoadError> {
+    stdlib_drivers_root(pkgroot, span)
+}
+
 /// Resolves one `from path import ...` statement's `path` to the module
 /// address it loads under, the file it lives at, and the package root
 /// that file must itself agree with. Never called for a bare `["core"]`
-/// path (the submodule-import shape) — callers filter that out first,
-/// see `load_closure`.
+/// or `["drivers"]` path (the submodule-import shape) — callers filter
+/// that out first, see `load_closure`.
 fn import_target(
     pkgroot: &Path,
     import_path: &[String],
@@ -301,6 +351,11 @@ fn import_target(
 ) -> Result<(Vec<String>, PathBuf, PathBuf), LoadError> {
     if import_path[0] == "core" {
         let root = core_root(pkgroot, span)?;
+        let rest = &import_path[1..];
+        let file = module_file_path(&root, rest);
+        Ok((import_path.to_vec(), file, root))
+    } else if import_path[0] == "drivers" {
+        let root = drivers_root(pkgroot, span)?;
         let rest = &import_path[1..];
         let file = module_file_path(&root, rest);
         Ok((import_path.to_vec(), file, root))
@@ -341,9 +396,11 @@ pub fn load_closure(root_file: &Path) -> Result<LoadedProgram, LoadError> {
         head += 1;
         let imports = modules[&current].module.imports.clone();
         for import in &imports {
-            if import.path.len() == 1 && import.path[0] == "core" {
-                // Bare `from core import <name>` — nothing to load; see
-                // the module doc comment's own note on this shape.
+            if import.path.len() == 1
+                && (import.path[0] == "core" || import.path[0] == "drivers")
+            {
+                // Bare `from core|drivers import <name>` — nothing to load;
+                // see the module doc comment's own note on this shape.
                 continue;
             }
             // plans/M11.md item D / decision 765: generated config module
@@ -841,6 +898,69 @@ mod tests {
             LoadError::Build(e) => {
                 assert!(e.message.contains("stdlib not found"));
                 assert!(e.message.contains("no `core/` directory"));
+            }
+            LoadError::Lex(_) | LoadError::Parse(_) => {
+                panic!("expected Build error, got Lex/Parse")
+            }
+        }
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn drivers_root_prefers_a_sibling_stdlib_drivers_directory() {
+        let tmp = std::env::temp_dir().join(format!(
+            "wrela-loader-test-{}-{}",
+            std::process::id(),
+            "sibling-drivers"
+        ));
+        let pkgroot = tmp.join("proj/src");
+        let sibling_drivers = tmp.join("proj/stdlib/drivers");
+        std::fs::create_dir_all(&pkgroot).expect("create pkgroot");
+        std::fs::create_dir_all(&sibling_drivers).expect("create sibling stdlib/drivers");
+        let root = drivers_root(&pkgroot, Span::default())
+            .ok()
+            .expect("sibling stdlib/drivers exists");
+        assert_eq!(root, sibling_drivers);
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn drivers_root_falls_back_to_the_toolchain_stdlib_drivers() {
+        let tmp = std::env::temp_dir().join(format!(
+            "wrela-loader-test-{}-{}",
+            std::process::id(),
+            "fallback-drivers"
+        ));
+        let pkgroot = tmp.join("proj/src");
+        std::fs::create_dir_all(&pkgroot).expect("create pkgroot");
+        let root = drivers_root(&pkgroot, Span::default())
+            .ok()
+            .expect("toolchain stdlib/drivers exists");
+        assert_eq!(
+            root,
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../stdlib/drivers")
+        );
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn drivers_root_rejects_a_sibling_stdlib_without_drivers() {
+        let tmp = std::env::temp_dir().join(format!(
+            "wrela-loader-test-{}-{}",
+            std::process::id(),
+            "missing-drivers"
+        ));
+        let pkgroot = tmp.join("proj/src");
+        let sibling_stdlib = tmp.join("proj/stdlib");
+        std::fs::create_dir_all(&pkgroot).expect("create pkgroot");
+        std::fs::create_dir_all(&sibling_stdlib).expect("create empty sibling stdlib");
+        let err = drivers_root(&pkgroot, Span::default())
+            .err()
+            .expect("missing drivers");
+        match err {
+            LoadError::Build(e) => {
+                assert!(e.message.contains("stdlib not found"));
+                assert!(e.message.contains("no `drivers/` directory"));
             }
             LoadError::Lex(_) | LoadError::Parse(_) => {
                 panic!("expected Build error, got Lex/Parse")

@@ -13,10 +13,11 @@
 //! name always denotes a *submodule*, and binding a name to a whole
 //! module (rather than a declaration) is a different kind of binding
 //! this item does not build (`ImportBinding` only ever names a
-//! declaration, never a module). Fails closed citing this plan rather
-//! than approximating (plans/M4.md item A's own carve-out; see
-//! `crate::loader`'s module doc for the loader-side half of this same
-//! note).
+//! declaration, never a module). Bare `from drivers import <name>` is
+//! the same carve-out for the `drivers` reserved alias (plans/M16.md
+//! item B). Fails closed citing this plan rather than approximating
+//! (plans/M4.md item A's own carve-out; see `crate::loader`'s module
+//! doc for the loader-side half of this same note).
 //!
 //! A module's own public surface (`public_names`) is exactly its own
 //! `pub const`/`fn`/`struct`/`enum` declarations — `pool` is
@@ -227,6 +228,12 @@ pub fn resolve_imports(
         if import.path.len() == 1 && import.path[0] == "core" {
             return Err(unimplemented_at(
                 "a submodule import (`from core import <name>` names a module, not a declaration)",
+                import.span,
+            ));
+        }
+        if import.path.len() == 1 && import.path[0] == "drivers" {
+            return Err(unimplemented_at(
+                "a submodule import (`from drivers import <name>` names a module, not a declaration)",
                 import.span,
             ));
         }

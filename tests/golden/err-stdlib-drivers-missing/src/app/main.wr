@@ -1,0 +1,6 @@
+module app.main
+
+from drivers.blk import BlkDriver
+
+pub fn sample() -> u64:
+    return 0
