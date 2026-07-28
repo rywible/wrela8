@@ -12,6 +12,7 @@ module runtime
 # pool); boot_init zeros live spans via __wrela_init_* (`N_INIT_SLOTS`).
 from core.__image_runtime import (
     N_CORES,
+    CORE_SLOTS,
     CONSOLE_DATA_BASE,
     N_TURNS,
     N_TURNS_LEN,
@@ -436,9 +437,9 @@ const DESC_WORD_COUNT: usize = 512
 # CONSOLE_DATA_BASE imported from core.__image_runtime (wrela-machine).
 const DATA_SIZE: usize = 16384
 
-# VCPU count is a machine constant (wrela_machine::VCPUS); algorithms still
-# index live cores with N_CORES (decision 709).
-const VCPUS: usize = 3
+# Soft packing ceiling (rtconfig CORE_SLOTS == wrela_machine::CORE_SLOTS;
+# plans/M15.md item E / decisions 1050–1051). Arrays are slot-sized;
+# every live loop / release / mark path indexes N_CORES only (1052).
 
 @layout(runtime, endian=little)
 struct MachineInfoPage:
@@ -449,7 +450,7 @@ struct MachineInfoPage:
     @offset(0x50) ring_data_bump: u64
     @offset(0x58) ring_desc_bump: u64
     @offset(0x60) line_start: u64
-    @offset(0x68) core_marks: [u64; VCPUS]
+    @offset(0x68) core_marks: [u64; CORE_SLOTS]
     @offset(0x200) vector0_observed: u64
     @offset(0x208) abort_latch: u64
     # M11 K: next `@test(runtime)` index; advanced before each invoke so an
@@ -483,13 +484,11 @@ static EXIT: ParkMmio
 @placed(0x08003000)
 static RELEASE: ParkMmio
 
-# Per-core pending-vector page (pending::BASE). Array length is the machine
-# VCPU count (3); algorithms index with N_CORES (decision 709).
-const PENDING_WORD_COUNT: usize = 3
-
+# Per-core pending-vector page (pending::BASE). Capacity is CORE_SLOTS;
+# algorithms index with N_CORES only (decisions 1051–1052).
 @layout(runtime, endian=little)
 struct PendingPage:
-    words: [u64; PENDING_WORD_COUNT]
+    words: [u64; CORE_SLOTS]
 
 @placed(0x40007000)
 static PENDING: PendingPage
@@ -1389,15 +1388,10 @@ pub fn __wrela_rt_secondary_entry(core: usize):
             PARK.word = 0
     return
 
-# Machine-VCPUS trampoline pool (not N_CORES — decision 709). Inject prepends
-# SP and republishes under `rt_secondary_core_entry <core>`.
-pub fn __wrela_secondary_entry_1():
-    __wrela_rt_secondary_entry(1)
-    return
-
-pub fn __wrela_secondary_entry_2():
-    __wrela_rt_secondary_entry(2)
-    return
+# Secondary trampolines `__wrela_secondary_entry_k` (k in 1..N_CORES) live in
+# generated rtconfig (plans/M15.md item E / decisions 1053–1054) — facts-only
+# BL targets remapped onto `__wrela_rt_secondary_entry`; inject prepends SP
+# and republishes under `rt_secondary_core_entry <core>`.
 
 # ---------------------------------------------------------------------------
 # M11 item I: checkpoint / vector0 (decisions 820–825). Floor-cat2 LR frame
