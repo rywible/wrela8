@@ -1,0 +1,190 @@
+# M16 item E / decisions 1150–1155: comptime suite for List[T, ..N].
+# Pure push/pop/bounds — no drivers, no runtime tier.
+module list_test
+
+from core.list import List, ListFull
+
+@test
+fn empty_is_empty():
+    xs = List[u64, 4]()
+    assert xs.is_empty(), "fresh list is empty"
+
+@test
+fn empty_len_zero():
+    xs = List[u64, 4]()
+    assert xs.len() == 0, "fresh list len is 0"
+
+@test
+fn empty_pop_none():
+    xs = List[u64, 4]()
+    match xs.pop():
+        case .None:
+            pass
+        case .Some(_):
+            assert false, "pop empty must be None"
+
+@test
+fn empty_get_value_oob():
+    xs = List[u64, 4]()
+    match xs.get_value(0):
+        case .None:
+            pass
+        case .Some(_):
+            assert false, "get_value on empty is OOB"
+
+@test
+fn push_one_ok():
+    xs = List[u64, 4]()
+    a: u64 = 7
+    match xs.push(take a):
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "push into capacity must Ok"
+    assert xs.len() == 1, "len after one push"
+    assert xs.is_empty() == false, "not empty after push"
+
+@test
+fn push_then_get_value():
+    xs = List[u64, 4]()
+    a: u64 = 11
+    match xs.push(take a):
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "push"
+    match xs.get_value(0):
+        case .Some(v):
+            assert v == 11, "get_value returns pushed"
+        case .None:
+            assert false, "in-bounds get_value"
+
+@test
+fn get_value_oob_past_len():
+    xs = List[u64, 4]()
+    a: u64 = 1
+    match xs.push(take a):
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "push"
+    match xs.get_value(1):
+        case .None:
+            pass
+        case .Some(_):
+            assert false, "index >= len is OOB"
+
+@test
+fn push_fills_to_n():
+    xs = List[u64, 2]()
+    a: u64 = 1
+    b: u64 = 2
+    match xs.push(take a):
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "first"
+    match xs.push(take b):
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "second"
+    assert xs.len() == 2, "full len equals N"
+
+@test
+fn push_past_n_list_full():
+    xs = List[u64, 2]()
+    a: u64 = 1
+    b: u64 = 2
+    c: u64 = 3
+    match xs.push(take a):
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "first"
+    match xs.push(take b):
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "second"
+    match xs.push(take c):
+        case .Err(.ListFull):
+            pass
+        case .Ok(_):
+            assert false, "exceeded N must ListFull"
+    assert xs.len() == 2, "len stays at N after ListFull"
+
+@test
+fn pop_returns_last():
+    xs = List[u64, 2]()
+    a: u64 = 10
+    b: u64 = 20
+    match xs.push(take a):
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "first"
+    match xs.push(take b):
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "second"
+    match xs.pop():
+        case .Some(v):
+            assert v == 20, "LIFO last"
+        case .None:
+            assert false, "pop non-empty"
+    assert xs.len() == 1, "len after pop"
+
+@test
+fn pop_then_empty():
+    xs = List[u64, 1]()
+    a: u64 = 42
+    match xs.push(take a):
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "push"
+    match xs.pop():
+        case .Some(v):
+            assert v == 42, "popped value"
+        case .None:
+            assert false, "pop"
+    assert xs.is_empty(), "empty after last pop"
+    match xs.pop():
+        case .None:
+            pass
+        case .Some(_):
+            assert false, "second pop empty"
+
+@test
+fn bound_annot_matches_const():
+    ys: List[u64, ..2] = List[u64, 2]()
+    assert ys.is_empty(), "bound annot List[T, ..N]"
+    assert ys.len() == 0, "bound annot len"
+
+@test
+fn push_after_pop_reuses_slot():
+    xs = List[u64, 1]()
+    a: u64 = 1
+    b: u64 = 2
+    match xs.push(take a):
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "first push"
+    match xs.pop():
+        case .Some(_):
+            pass
+        case .None:
+            assert false, "pop"
+    match xs.push(take b):
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "reuse after pop"
+    match xs.get_value(0):
+        case .Some(v):
+            assert v == 2, "reused slot holds new value"
+        case .None:
+            assert false, "in bounds after reuse"

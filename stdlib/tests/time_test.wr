@@ -1,0 +1,69 @@
+# M16 item E / decisions 1150–1155: comptime suite for Duration only.
+# Constructors + Duration methods — no Instant, no now(), no drivers.
+module time_test
+
+@test
+fn ns_zero():
+    assert ns(0) == ns(0), "ns(0) identity"
+
+@test
+fn us_is_1000_ns():
+    assert us(1) == ns(1000), "1 us = 1000 ns"
+
+@test
+fn ms_is_1000_us():
+    assert ms(1) == us(1000), "1 ms = 1000 us"
+
+@test
+fn seconds_is_1000_ms():
+    assert seconds(1) == ms(1000), "1 s = 1000 ms"
+
+@test
+fn minutes_is_60_seconds():
+    assert minutes(1) == seconds(60), "1 min = 60 s"
+
+@test
+fn hours_is_60_minutes():
+    assert hours(1) == minutes(60), "1 h = 60 min"
+
+@test
+fn ns_scales():
+    assert ns(5) == ns(5), "ns scale identity"
+    assert ns(2).add(ns(3)) == ns(5), "ns add"
+
+@test
+fn duration_add():
+    assert ms(1).add(ms(2)) == ms(3), "1ms + 2ms = 3ms"
+    assert seconds(1).add(ms(500)) == ms(1500), "1s + 500ms"
+
+@test
+fn duration_subtract():
+    assert ms(5).subtract(ms(2)) == ms(3), "5ms - 2ms = 3ms"
+    assert seconds(1).subtract(ms(250)) == ms(750), "1s - 250ms"
+
+@test
+fn duration_subtract_to_zero():
+    assert ms(10).subtract(ms(10)) == ns(0), "equal subtract is zero"
+
+@test
+fn less_than_true():
+    assert ms(1).less_than(ms(2)), "1ms < 2ms"
+    assert us(1).less_than(ms(1)), "1us < 1ms"
+
+@test
+fn less_than_false_equal():
+    assert ms(1).less_than(ms(1)) == false, "equal is not less_than"
+
+@test
+fn less_than_false_greater():
+    assert seconds(1).less_than(ms(500)) == false, "1s is not < 500ms"
+
+@test
+fn constructor_chain_eq():
+    assert hours(1) == seconds(3600), "1h = 3600s"
+    assert minutes(2) == ms(120000), "2min = 120000ms"
+
+@test
+fn type_annot_local():
+    d: Duration = ms(10)
+    assert d.less_than(seconds(1)), "annotated Duration local"
