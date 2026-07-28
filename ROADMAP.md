@@ -72,8 +72,8 @@ beyond the active milestone. A milestone's *first deliverable* is its plan
 code exists, the shape decisions that milestone freezes, and explicit
 non-goals. Plans are written when a milestone activates, never earlier
 (each milestone manufactures the facts the next plan needs), and become
-history when it completes. Active plan:
-[plans/M16.md](plans/M16.md) (stdlib maturity). M15 is COMPLETE
+history when it completes. Active plan: **none**. M16 is COMPLETE
+([plans/M16.md](plans/M16.md); stdlib maturity). M15 is COMPLETE
 ([plans/M15.md](plans/M15.md); variable cores + true concurrent vCPUs;
 barrier clause remains gap per [plans/BLOCKED.md](plans/BLOCKED.md)).
 M14 is COMPLETE (doc cut:
@@ -809,9 +809,10 @@ benefit. (d) Closing the rung after `cores=N` while the baton remains —
 that would repeat M8's "three cores, no throughput" claim under a new
 name.
 
-### M16 — Stdlib maturity
-Make the stdlib and machine device story honest and testable before
-spending the cleverness budget. Detail: [plans/M16.md](plans/M16.md).
+### M16 — Stdlib maturity — COMPLETE
+Closed 2026-07-28. Make the stdlib and machine device story honest and
+testable before spending the cleverness budget. Detail:
+[plans/M16.md](plans/M16.md).
 
 **Owns:**
 
