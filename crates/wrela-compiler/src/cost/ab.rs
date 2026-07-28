@@ -1,29 +1,45 @@
 //! Proxy A/B harness (plans/M18.md items H+J, decisions 1370–1374 /
-//! 1385–1389).
+//! 1385–1389; plans/M19.md item D / 1440–1449).
 //!
 //! Rank two emissions by scoreboard total only — no wall time, no host
-//! calibration. Capstone smoke: lower with `set_bounds_elide` on vs off,
-//! then score — on must rank strictly below off.
+//! calibration. Capstone smoke: lower under `CompileMode::Release`
+//! (BoundsElide on) vs `Dev` (elide off) via `opts::apply_mode`, then
+//! score — release must rank strictly below dev.
+//!
+//! Cost tags / scoreboard stay always-on in both modes (freeze 1408);
+//! modes flip emission, not instrumentation.
 
 use std::cmp::Ordering;
 
 use crate::codegen::CodegenProgram;
+use crate::opts::CompileMode;
 
 use super::score::{CostReport, score_program};
 use super::table::CostTable;
 
-/// Options that select which emission to score (mirrors lower TLS / CLI
-/// off-switches such as `--omit-dmb` / `--no-bounds-elide`).
-#[derive(Debug, Clone, Copy, Default)]
+/// Options that label which emission was scored (mirrors
+/// `opts::apply_mode` / `CompileMode`). Scoring itself ignores this —
+/// cost instrumentation is always-on (freeze 1408); callers use it to
+/// name which program they passed in.
+#[derive(Debug, Clone, Copy)]
 pub struct CostOpts {
-    /// When true, bounds-elide was enabled for the emission being scored
-    /// (mirrors `lower::set_bounds_elide`). Scoring itself ignores this;
-    /// callers use it to label which program they passed in.
-    pub bounds_elide: bool,
+    /// Mode used to produce the emission (`Release` ⇒ BoundsElide on;
+    /// `Dev` ⇒ elide off).
+    pub mode: CompileMode,
 }
 
-/// Score a program under opts. For M18, scoring ignores opts except that
-/// callers use opts to choose which program/emission to score.
+impl Default for CostOpts {
+    fn default() -> Self {
+        // Product default path = release (plans/M19.md item D).
+        Self {
+            mode: CompileMode::Release,
+        }
+    }
+}
+
+/// Score a program under opts. Scoring ignores opts except that
+/// callers use opts to choose which program/emission to score;
+/// instrumentation remains always-on (freeze 1408).
 pub fn score_with_opts(
     program: &CodegenProgram,
     table: &CostTable,
@@ -45,6 +61,7 @@ mod tests {
     use crate::codegen::CodegenFn;
     use crate::cost::rule::{CostRule, EmittedWord};
     use crate::cost::table::{load_default, parse};
+    use crate::opts::{CompileMode, apply_mode};
 
     const TABLE: &str = r#"
 version = 1
@@ -87,6 +104,67 @@ neon = 1
         }
     }
 
+    /// Shared fixture: many literal `[T; N]` indices → cmp/abort_val
+    /// words when BoundsElide is off.
+    const BOUNDS_ELIDE_AB_SRC: &str = r#"
+module examples.cost_bounds_elide_ab
+
+pub fn hot(a: [u64; 32]) -> u64:
+    s0: u64 = a[0] +% a[1]
+    s1: u64 = a[2] +% a[3]
+    s2: u64 = a[4] +% a[5]
+    s3: u64 = a[6] +% a[7]
+    s4: u64 = a[8] +% a[9]
+    s5: u64 = a[10] +% a[11]
+    s6: u64 = a[12] +% a[13]
+    s7: u64 = a[14] +% a[15]
+    s8: u64 = a[16] +% a[17]
+    s9: u64 = a[18] +% a[19]
+    s10: u64 = a[20] +% a[21]
+    s11: u64 = a[22] +% a[23]
+    s12: u64 = a[24] +% a[25]
+    s13: u64 = a[26] +% a[27]
+    s14: u64 = a[28] +% a[29]
+    s15: u64 = a[30] +% a[31]
+    t0: u64 = s0 +% s1
+    t1: u64 = s2 +% s3
+    t2: u64 = s4 +% s5
+    t3: u64 = s6 +% s7
+    t4: u64 = s8 +% s9
+    t5: u64 = s10 +% s11
+    t6: u64 = s12 +% s13
+    t7: u64 = s14 +% s15
+    u0: u64 = t0 +% t1
+    u1: u64 = t2 +% t3
+    u2: u64 = t4 +% t5
+    u3: u64 = t6 +% t7
+    v0: u64 = u0 +% u1
+    v1: u64 = u2 +% u3
+    return v0 +% v1
+"#;
+
+    fn lower_codegen_score(
+        src: &str,
+        mode: CompileMode,
+    ) -> CostReport {
+        use crate::codegen::codegen_program;
+        use crate::lower::lower_program;
+        use crate::mwir;
+        use crate::sema;
+        use crate::syntax::{lexer, parser};
+
+        let tokens = lexer::lex(src).expect("lex");
+        let module = parser::parse(tokens).expect("parse");
+        let typed = sema::check_typed(&module, "<test>").expect("check");
+        let layout = mwir::build_layout_ctx(&module, &Default::default()).expect("layout");
+        let table = load_default().expect("wrela-cost-v1");
+
+        apply_mode(mode);
+        let mwir = lower_program(&typed).expect("lower");
+        let prog = codegen_program(&mwir, &layout).expect("codegen");
+        score_with_opts(&prog, &table, CostOpts { mode }).expect("score")
+    }
+
     #[test]
     fn identical_program_scored_twice_equal_totals() {
         let table = parse(TABLE).expect("table");
@@ -97,7 +175,9 @@ neon = 1
                 word(CostRule::Alu, Some(2), &[1, 1]),
             ],
         );
-        let opts = CostOpts { bounds_elide: true };
+        let opts = CostOpts {
+            mode: CompileMode::Release,
+        };
         let a = score_with_opts(&p, &table, opts).expect("first");
         let b = score_with_opts(&p, &table, opts).expect("second");
         assert_eq!(a.total_proxy_cycles, b.total_proxy_cycles);
@@ -136,77 +216,14 @@ neon = 1
         assert_eq!(rank_cmp(&b, &a), Ordering::Greater);
     }
 
-    /// plans/M18.md item J: elide-on ranks strictly below elide-off for a
-    /// fixture with many literal `[T; N]` indices (cmp/abort_val words).
+    /// plans/M18.md item J / M19 item D: elide-on (Release) ranks
+    /// strictly below elide-off (Dev). Driven via `apply_mode`.
     #[test]
     fn bounds_elide_on_ranks_strictly_below_off() {
-        use crate::codegen::codegen_program;
-        use crate::lower::{lower_program, set_bounds_elide};
-        use crate::mwir;
-        use crate::sema;
-        use crate::syntax::{lexer, parser};
-
-        let src = r#"
-module examples.cost_bounds_elide_ab
-
-pub fn hot(a: [u64; 32]) -> u64:
-    s0: u64 = a[0] +% a[1]
-    s1: u64 = a[2] +% a[3]
-    s2: u64 = a[4] +% a[5]
-    s3: u64 = a[6] +% a[7]
-    s4: u64 = a[8] +% a[9]
-    s5: u64 = a[10] +% a[11]
-    s6: u64 = a[12] +% a[13]
-    s7: u64 = a[14] +% a[15]
-    s8: u64 = a[16] +% a[17]
-    s9: u64 = a[18] +% a[19]
-    s10: u64 = a[20] +% a[21]
-    s11: u64 = a[22] +% a[23]
-    s12: u64 = a[24] +% a[25]
-    s13: u64 = a[26] +% a[27]
-    s14: u64 = a[28] +% a[29]
-    s15: u64 = a[30] +% a[31]
-    t0: u64 = s0 +% s1
-    t1: u64 = s2 +% s3
-    t2: u64 = s4 +% s5
-    t3: u64 = s6 +% s7
-    t4: u64 = s8 +% s9
-    t5: u64 = s10 +% s11
-    t6: u64 = s12 +% s13
-    t7: u64 = s14 +% s15
-    u0: u64 = t0 +% t1
-    u1: u64 = t2 +% t3
-    u2: u64 = t4 +% t5
-    u3: u64 = t6 +% t7
-    v0: u64 = u0 +% u1
-    v1: u64 = u2 +% u3
-    return v0 +% v1
-"#;
-        let tokens = lexer::lex(src).expect("lex");
-        let module = parser::parse(tokens).expect("parse");
-        let typed = sema::check_typed(&module, "<test>").expect("check");
-        let layout = mwir::build_layout_ctx(&module, &Default::default()).expect("layout");
-        let table = load_default().expect("wrela-cost-v1");
-
-        set_bounds_elide(true);
-        let mwir_on = lower_program(&typed).expect("lower on");
-        let prog_on = codegen_program(&mwir_on, &layout).expect("codegen on");
-        let on =
-            score_with_opts(&prog_on, &table, CostOpts { bounds_elide: true }).expect("score on");
-
-        set_bounds_elide(false);
-        let mwir_off = lower_program(&typed).expect("lower off");
-        let prog_off = codegen_program(&mwir_off, &layout).expect("codegen off");
-        let off = score_with_opts(
-            &prog_off,
-            &table,
-            CostOpts {
-                bounds_elide: false,
-            },
-        )
-        .expect("score off");
-
-        set_bounds_elide(true);
+        let on = lower_codegen_score(BOUNDS_ELIDE_AB_SRC, CompileMode::Release);
+        let off = lower_codegen_score(BOUNDS_ELIDE_AB_SRC, CompileMode::Dev);
+        // Restore product default.
+        apply_mode(CompileMode::Release);
 
         assert!(
             on.total_proxy_cycles < off.total_proxy_cycles,
@@ -215,5 +232,23 @@ pub fn hot(a: [u64; 32]) -> u64:
             off.total_proxy_cycles
         );
         assert_eq!(rank_cmp(&on, &off), Ordering::Less);
+    }
+
+    /// plans/M19.md item D: mode-named twin of the BoundsElide A/B
+    /// oracle — `Release` ranks strictly below `Dev` on the same fixture.
+    /// Cost instrumentation runs in both modes (freeze 1408).
+    #[test]
+    fn release_ranks_strictly_below_dev_on_bounds_elide_fixture() {
+        let release = lower_codegen_score(BOUNDS_ELIDE_AB_SRC, CompileMode::Release);
+        let dev = lower_codegen_score(BOUNDS_ELIDE_AB_SRC, CompileMode::Dev);
+        apply_mode(CompileMode::Release);
+
+        assert!(
+            release.total_proxy_cycles < dev.total_proxy_cycles,
+            "release {} must rank strictly below dev {}",
+            release.total_proxy_cycles,
+            dev.total_proxy_cycles
+        );
+        assert_eq!(rank_cmp(&release, &dev), Ordering::Less);
     }
 }
