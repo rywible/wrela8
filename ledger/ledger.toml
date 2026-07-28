@@ -587,7 +587,7 @@ note = "plans/M5.md item F, decision 9: FLIPPED from `gap` to `test` — `cargo 
 id = "compiler.costs.predicted-vs-measured"
 doc = "04-compiler.md#7"
 status = "gap"
-note = "Stays a gap: `cargo xtask profile` (plans/M5.md item F, live as of this session) prints the compiler's own per-phase wall time building `tests/golden/boot-hello` plus one real boot's own guest counts (wall time, vCPU exits, transcript bytes, clock reads) — a *measurement* report, not a *predicted-vs-measured* one. The report itself (`report::render`) predicts no costs anywhere yet, so there is nothing for `profile` to diff its measurements against.\n\n**Owner (ladder renumber 2026-07-26):** ROADMAP **M13** (the cycle proxy; was M12 before authoring-hardening was inserted as M12, and M11 before the generated-image-runtime milestone). Flips to `test` on proxy A/B ranking oracles + semantic exact-matches (choice entries, exits, transcript bytes, exit status) — **not** on device exit-rate report lines (06 §5), which remain a separate unscheduled report feature. Until M13 activates, the flip condition above is the standing rewrite of this note's earlier \"future device milestone\" wording."
+note = "Stays a gap: `cargo xtask profile` (plans/M5.md item F, live as of this session) prints the compiler's own per-phase wall time building `tests/golden/boot-hello` plus one real boot's own guest counts (wall time, vCPU exits, transcript bytes, clock reads) — a *measurement* report, not a *predicted-vs-measured* one. The report itself (`report::render`) predicts no costs anywhere yet, so there is nothing for `profile` to diff its measurements against.\n\n**Owner (ladder renumber 2026-07-27 / M15 item A):** ROADMAP **M16** (the cycle proxy; was M15 before variable-cores became M15, M14 before the wait-for capability cut, M13 before that day's ladder rewrite, and earlier still M12/M11 under prior insertions). Flips to `test` on proxy A/B ranking oracles + semantic exact-matches (choice entries, exits, transcript bytes, exit status) — **not** on device exit-rate report lines (06 §5), which remain a separate unscheduled report feature. Until M16 activates, the flip condition above is the standing rewrite of this note's earlier owner wording."
 
 [[clause]]
 id = "compiler.bench.compiler-lane-locked"
@@ -1687,7 +1687,28 @@ tests = [
   "golden/image-project",
   "golden/image-helper-accept",
 ]
-note = "plans/M8.md item A / ROADMAP M8 (2026-07-24 human decision): the machine is **3 vCPUs, always** — `vCPUs = flagship core count − 1 housekeeping core` (Pi 5: 4 − 1 = 3). Opened and flipped in the same commit as the normative edit: 06 §1, README's summary line, 01-model / 04-compiler core-count sentences, and `wrela_machine::VCPUS` (was 4). The report's layout surface is one combined `Section name=stacks` fact whose size is `VCPUS * CORE_STACK_SIZE` (not four separate `core_stack_N` lines — those names live only in `wrela-machine`'s non-overlap unit-test region table, which dropped `core_stack_3` with the constant). Pinned size moved 4194304 (4 MiB) → 3145728 (3 MiB) across every layout-carrying golden; `IMAGE_BASE` and every image-section address are unchanged (the freed MiB becomes reserved padding below `0x4050_0000`). No behavior change beyond the constant."
+note = "plans/M8.md item A / ROADMAP M8 (2026-07-24 human decision): the machine is **3 vCPUs, always** — `vCPUs = flagship core count − 1 housekeeping core` (Pi 5: 4 − 1 = 3). Opened and flipped in the same commit as the normative edit: 06 §1, README's summary line, 01-model / 04-compiler core-count sentences, and `wrela_machine::VCPUS` (was 4). The report's layout surface is one combined `Section name=stacks` fact whose size is `VCPUS * CORE_STACK_SIZE` (not four separate `core_stack_N` lines — those names live only in `wrela-machine`'s non-overlap unit-test region table, which dropped `core_stack_3` with the constant). Pinned size moved 4194304 (4 MiB) → 3145728 (3 MiB) across every layout-carrying golden; `IMAGE_BASE` and every image-section address are unchanged (the freed MiB becomes reserved padding below `0x4050_0000`). No behavior change beyond the constant.\n\n**History (plans/M15.md item A, 2026-07-27):** 06 §1's \"3 vCPUs, always\" sentence is deleted; live contract is sealed image `cores=N` (see `image.cores.authoring` / `image.report.cores-and-stacks` / `machine.vmm.host-cores-refuse`). This clause remains the pin of the still-shipped `VCPUS = 3` layout constant until item D deletes `VCPUS`."
+
+[[clause]]
+id = "image.cores.authoring"
+doc = "05-library.md#9"
+status = "gap"
+tests = []
+note = """05-library.md §9 / plans/M15.md item A (decisions 1010–1014): `Image(name=..., target=..., cores=N?)` — optional comptime `usize` N ≥ 1, default 1; unknown `Image(...)` labels are a build error; N is a sealed image fact, not a machine revision. Flip at items B/G when authoring + goldens land."""
+
+[[clause]]
+id = "image.report.cores-and-stacks"
+doc = "06-machine.md#1"
+status = "gap"
+tests = []
+note = """06-machine.md §1 / plans/M15.md item A: the report publishes sealed `Cores count=N` and per-core `CoreStack` lines (high-DRAM stacks; `IMAGE_BASE` stays fixed). Soft packing ceiling is not a published machine max. Flip at items D/G when report/layout parameterization + goldens land."""
+
+[[clause]]
+id = "machine.vmm.host-cores-refuse"
+doc = "06-machine.md#1"
+status = "gap"
+tests = []
+note = """06-machine.md §1 / plans/M15.md item A: the VMM refuses at boot when the host cannot create the sealed N vCPUs (short host is a VMM error, never a guest probe). Flip at items F/G when host-refuse + goldens land."""
 
 
 [[clause]]
@@ -1757,7 +1778,9 @@ note = """04-compiler.md §3: "Cross-core actor edges keep identical message sem
 
 plans/M8.md item H attack 4 (2026-07-25). Item C2 discharged the sentence by *ordering the stores* (publish into the ring, then raise the pending word) and by never letting one core write another's turn record, and emitted **no** AArch64 barrier. Under decision 11's baton exactly one vCPU is inside `hv_vcpu_run` at a time, so a missing barrier is unobservable on this machine — recorded as a claim not yet tested rather than as one satisfied.
 
-**Satisfiable flip condition (all required).** (1) True concurrent `hv_vcpu_run` on ≥2 host threads under Hypervisor.framework (the baton retired; 06 §8's choice sequence grown to an interleaving enumerator). (2) The encoder emits a `DMB ISHST` (or stronger) after ring payload/`count` stores and before the pending-word raise in enqueue/`xsend`, and a matching acquire barrier after the occupancy/pending load and before payload reads in the drain. (3) A boot golden whose transcript can fail under concurrent execution when those barriers are deleted (store-store / load-load reordering across occupancy and payload) and cannot fail under the baton alone.
+**Owner (plans/M15.md items H–K, 2026-07-27):** inline runtime-only `@dmb`, baton deletion + Yield-`Progress` replay, barrier-deletion golden. Publish/acquire remains promised in 04 §3 through the normative cut (item A); the barriers land when H–K flip this clause.
+
+**Satisfiable flip condition (all required).** (1) True concurrent `hv_vcpu_run` on ≥2 host threads under Hypervisor.framework (the baton retired; Yield-`Progress` makes the concurrent schedule enumerable for replay; exhaustive schedule exploration remains a later intention). (2) The encoder emits a `DMB ISHST` (or stronger) after ring payload/`count` stores and before the pending-word raise in enqueue/`xsend`, and a matching acquire barrier after the occupancy/pending load and before payload reads in the drain. (3) A boot golden whose transcript can fail under concurrent execution when those barriers are deleted (store-store / load-load reordering across occupancy and payload) and cannot fail under the baton alone.
 
 **Pinned now, so the assumption is not merely believed.** `hv::hv_vcpu_run` asserts that no two host threads overlap inside the call (`HV_VCPU_RUN_DEPTH`); `baton_run_depth_starts_at_zero` pins the quiescent half. That is the baton invariant, not the barrier — the barrier stays a gap until (1)–(3)."""
 

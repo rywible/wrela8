@@ -200,8 +200,9 @@ add, each with its surviving replacement named:
   budget (ROADMAP recorded intention).
 
 Each exclusion is reversible in a later revision without breaking the
-model; a new device or core count is a machine revision, never an ambient
-environment change.
+model; a new device or a change to the memory-map rules is a machine
+revision, never an ambient environment change. Core count is a sealed
+image fact (`Image(..., cores=N?)`), not a machine revision.
 
 **Crash-only failure (plans/M13.md item F / decision 3).** Revision 0.1 is
 crash-only: the image is sealed, every run is recorded, and boot is instant,

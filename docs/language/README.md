@@ -28,10 +28,12 @@ stays small.** If a concept appears in 04, source code never spells it.
 
 The project targets one designed machine, front to back:
 
-- **One machine** ([06](06-machine.md)): 3 vCPUs at an ARMv8.2-A/NEON
-  baseline (Cortex-A76 cost model), one memory map, a closed virtio device
-  set whose drivers ship with the stdlib. New hardware is a machine
-  revision, never a discovered environment.
+- **One machine** ([06](06-machine.md)): N vCPUs sealed by the image
+  (`Image(..., cores=N?)`, default 1) at an ARMv8.2-A/NEON baseline
+  (Cortex-A76 cost model), one memory map, a closed virtio device set
+  whose drivers ship with the stdlib. New devices or map-rule changes are
+  a machine revision, never a discovered environment; core count is an
+  image fact.
 - **Hosted, not bare metal**: a Firecracker-class Rust VMM on Linux/KVM
   (the Pi 5 flagship host) and macOS/Hypervisor.framework (development and
   Mac hosts). QEMU is bootstrap-only, then retired.

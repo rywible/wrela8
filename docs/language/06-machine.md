@@ -19,10 +19,19 @@ machine only needs to be what the stdlib drivers speak.
 
 ## 1. CPU
 
-- **3 vCPUs**, always. The image assigns every actor to one of them at
-  build time ([04 §3](04-compiler.md)); hosts with more cores run VMM
-  threads on the surplus. The count is derived, not arbitrary:
-  `vCPUs = flagship core count − 1 housekeeping core` (Pi 5: 4 − 1 = 3).
+- **N vCPUs**, sealed by the image. The image authors
+  `Image(name=..., target=..., cores=N?)` with optional comptime `usize`
+  `N` ≥ 1 (default **1**); the compiler assigns every actor to one of
+  cores `0 .. N-1` at build time ([04 §3](04-compiler.md),
+  [05 §9](05-library.md)); the report digests N into build identity; the
+  VMM creates exactly those N vCPUs. Core count is an image fact, not a
+  machine revision and not ambient discovery. The contract publishes no
+  core-count maximum; a soft page-packing ceiling may refuse pathological
+  N the same way other layout ceilings fail closed, but that is not "the
+  machine has K cores." The VMM refuses at boot if the host cannot
+  provide N vCPUs (short host is a VMM error, never a guest probe — §3).
+  The flagship housekeeping arithmetic (`host cores − 1`) remains advice
+  for choosing N on a Pi 5, not a contract constant the image must equal.
 - ISA baseline: **AArch64 ARMv8.2-A + NEON/ASIMD**, the intersection of
   Cortex-A76 and Apple Silicon. The compiler's one cost model is the A76;
   images simply run faster on M-series.

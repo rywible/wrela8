@@ -225,7 +225,10 @@ permitted everywhere else data is.
 `Image`, `group`, actor admission, and pool construction are
 compiler-recognized intrinsics even when a package supplies their surface:
 
-- `Image(name, target)` — comptime-only, produces one resource builder;
+- `Image(name, target, cores=N?)` — comptime-only, produces one resource
+  builder; optional `cores` is a comptime `usize` ≥ 1 (default **1**),
+  sealing the image's core count as an image fact rather than a machine
+  revision; unknown labels on `Image(...)` are a build error;
   `img.seal()` consumes the builder and succeeds only when every
   declaration is fully bound.
 - `img.device[D](transport=..., required_features=...)` — a build contract;

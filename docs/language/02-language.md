@@ -610,9 +610,10 @@ image — every possible call edge is a build-time fact. Handles are
 replies, runtime collections, or any mutable place that could replace the
 image-minted binding.
 
-Every actor also has exactly one build-time **core** on the machine's three
-cores — inferred deterministically ([04 §3](04-compiler.md)) or set with
-`core=` in the image wiring. Nothing in this chapter changes across cores:
+Every actor also has exactly one build-time **core** among the image's N
+cores (`0 .. N-1`) — inferred deterministically ([04 §3](04-compiler.md))
+or set with `core=` in the image wiring. Nothing in this chapter changes
+across cores:
 a cross-core call is the same typed call. Cross-core parallelism is
 therefore actors plus moved ownership — the flagship's compositor fans
 tile buffers out to worker actors on other cores and gathers them for

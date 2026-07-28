@@ -179,17 +179,18 @@ with a why-chain (allocation site, escape path, footprint contribution);
 silent promotion of an unbounded allocation is forbidden — if no finite bound
 exists, the build fails.
 
-Placement generalizes to the machine's three cores. Every actor gets exactly
-one build-time core assignment; explicit image assignments (`core=`) are
-fixed first, then the compiler places the rest deterministically from
-published facts only — proved maximum uninterrupted turn work, owned image
-and mailbox bytes, and reserved pool bytes — sorting by descending work,
-then bytes, then canonical identity, and assigning each actor to the core
-whose resulting (work, bytes) pair is lexicographically smallest. The
-inputs, the inference, and the final table are published in the report and
-sealed into the build identity, so placement is reproducible and load
-imbalance is a build-time diagnostic, not a runtime discovery. There is no
-migration and no work stealing.
+Placement generalizes to the image's N cores (`0 .. N-1`, sealed by
+`Image(..., cores=N?)`; default N = 1). Every actor gets exactly one
+build-time core assignment; explicit image assignments (`core=`) are fixed
+first (`core ≥ N` is a build error), then the compiler places the rest
+deterministically from published facts only — proved maximum uninterrupted
+turn work, owned image and mailbox bytes, and reserved pool bytes —
+sorting by descending work, then bytes, then canonical identity, and
+assigning each actor to the core whose resulting (work, bytes) pair is
+lexicographically smallest. The inputs, the inference, and the final table
+are published in the report and sealed into the build identity, so
+placement is reproducible and load imbalance is a build-time diagnostic,
+not a runtime discovery. There is no migration and no work stealing.
 
 Cross-core actor edges keep identical message semantics, lowered to
 compiler-generated bounded SPSC rings in guest memory with sealed
