@@ -1765,7 +1765,7 @@ fn blk_conformance_image() -> (Vec<u8>, String) {
     let payload: Vec<u8> = (0..512u32).map(|i| ((i * 7 + 3) % 256) as u8).collect();
     let expect_first = u64::from_le_bytes(payload[0..8].try_into().expect("8 bytes"));
     let expect_last = u64::from_le_bytes(payload[504..512].try_into().expect("8 bytes"));
-    let sp_top = machine_layout::core_stack_base(0) + machine_layout::CORE_STACK_SIZE;
+    let sp_top = machine_layout::core_stack_base_n(0, 1) + machine_layout::CORE_STACK_SIZE;
 
     let build_entry = |data_base: u64| -> Vec<u32> {
         let avail = data_base + OFF_AVAIL;

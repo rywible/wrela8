@@ -93,6 +93,16 @@ pub enum VmmError {
         core: usize,
         transcript_so_far: Vec<u8>,
     },
+    /// The host could not create the sealed `Cores count=N` vCPUs
+    /// (06-machine.md §1 / plans/M15.md item F, decision 1062): short
+    /// host is a VMM error, never a guest probe. `requested` is the
+    /// report's N; `failed_at` is the first core index whose
+    /// `hv_vcpu_create` failed; `code` is the raw `hv_return_t`.
+    HostCoresRefuse {
+        requested: usize,
+        failed_at: usize,
+        code: i32,
+    },
 }
 
 impl std::fmt::Display for VmmError {
@@ -128,6 +138,29 @@ impl std::fmt::Display for VmmError {
                 WALL_CAP,
                 transcript_so_far.len()
             ),
+            VmmError::HostCoresRefuse {
+                requested,
+                failed_at,
+                code,
+            } => {
+                #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                {
+                    write!(
+                        f,
+                        "host refused Cores count={requested}: hv_vcpu_create failed for core \
+                         {failed_at}: {}",
+                        hv::describe_hv_return(*code)
+                    )
+                }
+                #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+                {
+                    write!(
+                        f,
+                        "host refused Cores count={requested}: hv_vcpu_create failed for core \
+                         {failed_at}: code {code}"
+                    )
+                }
+            }
         }
     }
 }
@@ -153,14 +186,15 @@ pub struct BootOutcome {
     /// `ChoiceEntry::ClockRead` subsequence of this, now generalized.
     pub choices: Vec<record::ChoiceEntry>,
     pub exits: u64,
-    /// plans/M8.md item C1: each core's own guest-written bring-up mark
-    /// (`machine_info::OFF_CORE_MARK`), one word per packing slot in
-    /// bring-up order — `core_mark_running(n)` for a core that reached its
-    /// own event loop, `0` for one that never ran. A single-core image
-    /// leaves marks at `0` (it releases nothing and writes no mark);
-    /// `check_core_marks` has already refused any boot where a *released*
-    /// core is missing its own mark, so this field is evidence for a test
-    /// to read, never a condition a caller has to remember to check.
+    /// plans/M8.md item C1 / M15 item F: each sealed core's own
+    /// guest-written bring-up mark (`machine_info::OFF_CORE_MARK`), length
+    /// = report `Cores count=N` — `core_mark_running(n)` for a core that
+    /// reached its own event loop, `0` for one that never ran. A
+    /// single-core image yields `[0]` (it releases nothing and writes no
+    /// mark); `check_core_marks` has already refused any boot where a
+    /// *released* core is missing its own mark, so this field is evidence
+    /// for a test to read, never a condition a caller has to remember to
+    /// check.
     pub core_marks: Vec<u64>,
 }
 
@@ -168,8 +202,8 @@ pub struct BootOutcome {
 /// Parse logic lives in the machine crate; this module keeps VMM-specific
 /// digest checks, W^X, and boot wiring.
 pub use wrela_machine::report::{
-    BlkConfig, BlkQueueConfig, CoreEntry, EMPTY_SHA256, IrqHostInject, ParsedReport, PoolWindow,
-    ReportSection, RequestRing,
+    BlkConfig, BlkQueueConfig, CoreEntry, CoreStack, EMPTY_SHA256, IrqHostInject, ParsedReport,
+    PoolWindow, ReportSection, RequestRing,
 };
 
 /// Parse the VMM-facing report text, mapping machine `String` errors into
@@ -245,10 +279,15 @@ mod boot;
 mod exit_loop;
 
 pub use boot::boot_image;
-pub(crate) use boot::boot_image_core;
+pub(crate) use boot::{boot_image_core, host_cores_refuse};
 #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
-pub(crate) use boot::boot_image_core_with_delayed_raise;
+pub(crate) use boot::{
+    boot_image_core_with_delayed_raise, core_sp_tops_from_report,
+    create_inject as vcpu_create_inject,
+};
 
+#[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+pub(crate) use exit_loop::check_core_marks;
 #[cfg(test)]
 pub(crate) use exit_loop::{
     AdmissionWitness, check_vector_in_range, drain_console, raise_vector, read_core_mark,
@@ -2615,9 +2654,83 @@ async fn boots(home: Actor[Home]):
 
 @image
 pub fn build() -> Image:
-    img = Image(name="cross-core-conf", target=Target.wrela_machine_v1)
+    img = Image(name="cross-core-conf", target=Target.wrela_machine_v1, cores=3)
     home = img.actor(Home, mailbox=4, core=0)
     away = img.actor(Away, mailbox=2, core=1)
+    img.on_failure(policy=Failure.Halt)
+    return img.seal()
+"#;
+
+    /// Focused N=2 bring-up under the baton (plans/M15.md item F).
+    const TWO_CORE_SRC: &str = r#"module conformance.two_core
+
+@actor
+pub struct Home:
+    value: u64
+
+    init(mut self):
+        self.value = 5
+
+    pub fn get(read self) -> u64:
+        return self.value
+
+@actor
+pub struct Away:
+    n: u32
+
+    init(mut self):
+        self.n = 0
+
+    pub fn poke(read self) -> u32:
+        return self.n
+
+@test(runtime)
+async fn boots(home: Actor[Home]):
+    v = await home.get()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
+    match v:
+        case .Ok(n):
+            assert n == 5, "expected 5"
+        case .Err(_):
+            assert false, "rejected"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="two-core-conf", target=Target.wrela_machine_v1, cores=2)
+    home = img.actor(Home, mailbox=4, core=0)
+    away = img.actor(Away, mailbox=2, core=1)
+    img.on_failure(policy=Failure.Halt)
+    return img.seal()
+"#;
+
+    /// Minimal single-core image for the host-refuse inject (create fails
+    /// before any guest instruction runs).
+    const SINGLE_CORE_REFUSE_SRC: &str = r#"module conformance.host_refuse
+
+@actor
+pub struct Home:
+    value: u64
+
+    init(mut self):
+        self.value = 1
+
+    pub fn get(read self) -> u64:
+        return self.value
+
+@test(runtime)
+async fn boots(home: Actor[Home]):
+    v = await home.get()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
+    match v:
+        case .Ok(n):
+            assert n == 1, "expected 1"
+        case .Err(_):
+            assert false, "rejected"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="host-refuse", target=Target.wrela_machine_v1, cores=1)
+    home = img.actor(Home, mailbox=4, core=0)
     img.on_failure(policy=Failure.Halt)
     return img.seal()
 "#;
@@ -2642,14 +2755,16 @@ pub fn build() -> Image:
         assert_eq!(outcome.exit_code, 0);
         // Core 0 by the entry driver, cores 1 and 2 by their own entry
         // blocks — each its own value, so a core running another core's
-        // block cannot pass this.
-        assert_eq!(&outcome.core_marks[..3], &[1, 2, 3]);
-        assert!(outcome.core_marks[3..].iter().all(|&m| m == 0));
+        // block cannot pass this. Length is sealed N (item F).
+        assert_eq!(outcome.core_marks, vec![1, 2, 3]);
 
         // The single-core control: same shape, no `core=` anywhere, so
-        // nothing is released and no core marks itself.
+        // nothing is released and no core marks itself. Drop `cores=3`
+        // too — otherwise a pin-less cores=3 image still brings up
+        // secondaries that write marks.
         let single = boot_source(
             &CROSS_CORE_SRC
+                .replace(", cores=3", "")
                 .replace(", core=0", "")
                 .replace(", core=1", ""),
             "c1-single-core",
@@ -2658,7 +2773,134 @@ pub fn build() -> Image:
             String::from_utf8_lossy(&single.transcript),
             "test boots: ok\n1 passed, 0 failed\n"
         );
-        assert!(single.core_marks.iter().all(|&m| m == 0));
+        assert_eq!(single.core_marks, vec![0]);
+    }
+
+    /// plans/M15.md item F focused boot: create-N path for N=2 under the
+    /// baton (marks exactly `[1, 2]`).
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn two_cores_come_up_under_baton_over_hvf() {
+        let outcome = boot_source(TWO_CORE_SRC, "f-two-cores");
+        assert_eq!(
+            String::from_utf8_lossy(&outcome.transcript),
+            "test boots: ok\n1 passed, 0 failed\n"
+        );
+        assert_eq!(outcome.exit_code, 0);
+        assert_eq!(outcome.core_marks, vec![1, 2]);
+    }
+
+    /// Named `HostCoresRefuse` mapping (decision 1062) — pure, no HVF.
+    #[test]
+    fn host_cores_refuse_names_sealed_n() {
+        let err = host_cores_refuse(3, 2, 0xfae9_4005u32 as i32);
+        match err {
+            VmmError::HostCoresRefuse {
+                requested: 3,
+                failed_at: 2,
+                code,
+            } => {
+                assert_eq!(code as u32, 0xfae9_4005);
+            }
+            other => panic!("expected HostCoresRefuse, got {other}"),
+        }
+        let msg = err.to_string();
+        assert!(
+            msg.contains("host refused Cores count=3") && msg.contains("core 2"),
+            "{msg}"
+        );
+    }
+
+    /// Inject create failure on core 0 of a cores=1 image — proves the
+    /// boot path returns `HostCoresRefuse` without needing a 32-core host.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn host_refuses_when_vcpu_create_fails_over_hvf() {
+        let _guard = vcpu_create_inject::Guard;
+        vcpu_create_inject::arm(0);
+        let (image, report) = compile_test_image(SINGLE_CORE_REFUSE_SRC);
+        let report = stamp_image_digest(&report, &image.blob);
+        let dir = std::env::temp_dir().join(format!(
+            "wrela-vmm-host-refuse-{}-{}",
+            std::process::id(),
+            "f"
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let img_path = dir.join("test.img");
+        let report_path = dir.join("test.report.txt");
+        std::fs::write(&img_path, &image.blob).expect("img");
+        std::fs::write(&report_path, &report).expect("report");
+        let err = boot_image(&report_path, &img_path).expect_err("create inject must refuse");
+        let _ = std::fs::remove_dir_all(&dir);
+        match err {
+            VmmError::HostCoresRefuse {
+                requested: 1,
+                failed_at: 0,
+                ..
+            } => {}
+            other => {
+                panic!("expected HostCoresRefuse {{ requested: 1, failed_at: 0 }}, got {other}")
+            }
+        }
+    }
+
+    /// Report `Cores`/`CoreStack` parse surfaces through the VMM wrapper
+    /// (item F cheap: report parse of Cores/CoreStack).
+    #[test]
+    fn parse_report_accepts_cores_and_high_core_stacks() {
+        let n = 2usize;
+        let s0 = wrela_machine::layout::core_stack_base_n(0, n);
+        let s1 = wrela_machine::layout::core_stack_base_n(1, n);
+        let text = format!(
+            "Machine revision={}\n\
+             Input path=input.wr sha256={}\n\
+             Image sha256={}\n\
+             Section name=entry base=0x40500000 size=64\n\
+             Section name=rtcode base=0x40500100 size=0x200\n\
+             Cores count=2\n\
+             CoreStack core=0 base={s0:#x} size={:#x}\n\
+             CoreStack core=1 base={s1:#x} size={:#x}\n\
+             Entry base=0x40500000\n\
+             CoreEntry core=1 base=0x40500100\n",
+            wrela_machine::MACHINE_REVISION_STR,
+            EMPTY_SHA256,
+            EMPTY_SHA256,
+            wrela_machine::layout::CORE_STACK_SIZE,
+            wrela_machine::layout::CORE_STACK_SIZE,
+        );
+        let parsed = parse_report(&text).expect("Cores+CoreStack");
+        assert_eq!(parsed.cores, 2);
+        assert_eq!(parsed.core_stacks.len(), 2);
+        assert_eq!(parsed.core_stacks[0].base, s0);
+        assert_eq!(parsed.core_stacks[1].base, s1);
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            let tops = core_sp_tops_from_report(&parsed);
+            assert_eq!(tops[0], s0 + wrela_machine::layout::CORE_STACK_SIZE);
+            assert_eq!(tops[1], s1 + wrela_machine::layout::CORE_STACK_SIZE);
+        }
+    }
+
+    /// Retargeted mark helper: scopes to declared N, not a fixed 3
+    /// (decision 1065).
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn check_core_marks_scopes_to_declared_n() {
+        use wrela_machine::layout as machine_layout;
+        use wrela_machine::machine_info;
+        // Marks live in the machine-info page at DRAM_BASE — a 4 KiB
+        // stand-in is enough; do not allocate the whole 1 GiB reservation.
+        let mut ram = vec![0u8; machine_layout::MACHINE_INFO_SIZE as usize];
+        for core in 0..2 {
+            let off = (machine_info::core_mark_addr(core) - machine_layout::DRAM_BASE) as usize;
+            ram[off..off + 8].copy_from_slice(&machine_info::core_mark_running(core).to_le_bytes());
+        }
+        // cores=2 green even though slot 2 is still zero.
+        check_core_marks(ram.as_ptr(), 2).expect("N=2 marks present");
+        // cores=3 demands core 2's mark — still zero → refuse naming core 2.
+        let err = check_core_marks(ram.as_ptr(), 3).expect_err("N=3 missing mark");
+        let msg = err.to_string();
+        assert!(msg.contains("core 2 was released but never ran"), "{msg}");
     }
 
     /// The mark is `core + 1`, never a bare `1`, for one reason: a

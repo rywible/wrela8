@@ -26,9 +26,10 @@
 //!   `HV_REG_CPSR == 34`.
 //! - `hv_sys_reg_t` (`OS_ENUM(..., uint16_t, ...)`): only
 //!   `HV_SYS_REG_CPACR_EL1 = 0xc082` is needed at M5 (FP/SIMD enable);
-//!   `SP_EL1` is deliberately never touched here (decision 11: "SP handled
-//!   by guest entry code itself" — `layout.rs`'s own entry driver installs
-//!   its own `sp`, so the VMM never sets it).
+//!   `HV_SYS_REG_SP_EL1 = 0xe208` is set at boot from the report's
+//!   `CoreStack` lines (plans/M15.md item F / decision 1064) before the
+//!   guest entry also installs SP — the report remains the VMM's whole
+//!   config; guest install is belt-and-suspenders.
 
 use std::ffi::c_void;
 
@@ -83,6 +84,13 @@ pub fn hv_reg_xn(n: u32) -> u32 {
 // --- system register IDs (hv_vcpu_types.h's `hv_sys_reg_t`) -----------------
 
 pub const HV_SYS_REG_CPACR_EL1: u16 = 0xc082;
+/// `SP_EL1` — boot SP init from report `CoreStack` (plans/M15.md item F).
+/// CPSR boots as EL1h (`SPSel = 1`), so this is the architectural SP the
+/// guest sees at entry.
+pub const HV_SYS_REG_SP_EL1: u16 = 0xe208;
+/// Synthetic `hv_return_t` used by the create-failure inject (item F
+/// host-refuse unit test). Matches Apple's `HV_NO_RESOURCES`.
+pub const HV_NO_RESOURCES: i32 = 0xfae9_4005u32 as i32;
 /// plans/M6.md item F: the three EL1 exception-state registers a guest's
 /// own *first* fault leaves behind when it vectors into an unmapped
 /// vector table (`lib.rs::el1_exception_note`'s own doc comment has the

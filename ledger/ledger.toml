@@ -1718,9 +1718,13 @@ note = """06-machine.md §1 / plans/M15.md item D (decisions 1040–1046): the r
 [[clause]]
 id = "machine.vmm.host-cores-refuse"
 doc = "06-machine.md#1"
-status = "gap"
-tests = []
-note = """06-machine.md §1 / plans/M15.md item A: the VMM refuses at boot when the host cannot create the sealed N vCPUs (short host is a VMM error, never a guest probe). Flip at items F/G when host-refuse + goldens land."""
+status = "test"
+tests = [
+  "unit:host_cores_refuse_names_sealed_n",
+  "unit:host_refuses_when_vcpu_create_fails_over_hvf",
+  "unit:two_cores_come_up_under_baton_over_hvf",
+]
+note = """06-machine.md §1 / plans/M15.md item F (decisions 1060–1066): the VMM creates exactly the sealed `Cores count=N` vCPUs (`1..=CORE_SLOTS`), initializes SP from report `CoreStack` lines, and returns named `VmmError::HostCoresRefuse` when `hv_vcpu_create` fails for any of those N — short host is a VMM error, never a guest probe. Pin is an inject/mock (`vcpu_create_inject`), not a 32-core host. Stage-1 boot goldens for N=1/2/3 under baton still land at item G; N=3 goldens remain the CI floor. Baton / `HV_VCPU_RUN_DEPTH` kept until item I."""
 
 
 [[clause]]

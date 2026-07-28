@@ -4,7 +4,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use wrela_machine::report::{CoreEntry, ReportSection};
+use wrela_machine::report::{CoreEntry, CoreStack, ParsedReport, ReportSection};
 
 use crate::devices;
 use crate::exit_loop::{
@@ -19,6 +19,74 @@ use crate::{
     BootOutcome, VmmError, WALL_CAP, capped_park_deadline_ns, guest_dram_offset, parse_report,
     validate_report_digests,
 };
+
+/// Array capacity for per-core baton state / vCPU handles: packing ceiling
+/// (`CORE_SLOTS`), not the sealed bring-up N. Live loops use
+/// `cores_declared` (plans/M15.md item F / decision 1060).
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const CORE_SLOTS: usize = wrela_machine::CORE_SLOTS;
+
+/// plans/M15.md item F / decision 1064: SP top for each sealed core from
+/// report `CoreStack` lines (`base + size`). Legacy fixtures that omit
+/// the lines fall back to the high-DRAM formula — never the retired low
+/// `STACKS_BASE` map.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(crate) fn core_sp_tops_from_report(parsed: &ParsedReport) -> [u64; CORE_SLOTS] {
+    use wrela_machine::layout as machine_layout;
+    let mut tops = [0u64; CORE_SLOTS];
+    if parsed.core_stacks.is_empty() {
+        for c in 0..parsed.cores {
+            tops[c] = machine_layout::core_stack_base_n(c, parsed.cores)
+                + machine_layout::CORE_STACK_SIZE;
+        }
+    } else {
+        for CoreStack { core, base, size } in &parsed.core_stacks {
+            if *core < CORE_SLOTS {
+                tops[*core] = base + size;
+            }
+        }
+    }
+    tops
+}
+
+/// Named mapping for a failed `hv_vcpu_create` on a sealed-N bring-up
+/// (plans/M15.md item F / decision 1062). Kept as a free function so the
+/// unit test can pin the variant without needing a short host.
+pub(crate) fn host_cores_refuse(requested: usize, failed_at: usize, code: i32) -> VmmError {
+    VmmError::HostCoresRefuse {
+        requested,
+        failed_at,
+        code,
+    }
+}
+
+/// `cfg(test)` inject: force `hv_vcpu_create` for core `n` to fail with
+/// `HV_NO_RESOURCES`, so host-refuse is pinned without a 32-core host.
+#[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+pub(crate) mod create_inject {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static FAIL_AT: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+    pub fn arm(core: usize) {
+        FAIL_AT.store(core, Ordering::SeqCst);
+    }
+
+    pub fn clear() {
+        FAIL_AT.store(usize::MAX, Ordering::SeqCst);
+    }
+
+    pub fn should_fail(core: usize) -> bool {
+        FAIL_AT.load(Ordering::SeqCst) == core
+    }
+
+    pub struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            clear();
+        }
+    }
+}
 
 /// Raise report-declared executable sections to RX (page-granular). The
 /// DRAM reservation was mapped RW-only; this is the only place execute
@@ -239,6 +307,8 @@ fn boot_image_core_inner(
     // so `now()` measures from the machine coming up rather than from
     // whichever guest read happened to be first (`monotonic_ns`'s own doc).
     let _ = monotonic_ns();
+    // Capture stack tops before `parsed.blk` is moved into the device model.
+    let sp_tops = core_sp_tops_from_report(&parsed);
     // plans/M7.md item F: the declared `blk` device model, preconfigured
     // from the report (06 §3) before the vCPU ever runs. `None` unless the
     // report declares one, which nothing the compiler emits does yet — so
@@ -339,17 +409,18 @@ fn boot_image_core_inner(
         })
     }));
 
-    // --- the three vCPUs (plans/M8.md item C1, decision 11) ----------------
+    // --- N vCPUs under the baton (plans/M8.md decision 11; M15 item F) ----
     //
-    // 06-machine.md §1 gives this machine three vCPUs, and §3 makes core 0's
-    // own entry "release the other vCPUs". Hypervisor.framework binds a vCPU
-    // to the thread that created it, so there are three host threads — but
-    // exactly one of them is inside `hv_vcpu_run` at any instant, because
-    // they pass a single **baton** whose hand-off order is a pure function of
-    // guest-visible state: which cores the guest has released, which have
-    // parked, and what their own pending words hold. Nothing in `next_core`
-    // below reads a host clock, a thread id, or an address to decide who runs
-    // next — otherwise `xtask repro` would be measuring the host's scheduler,
+    // 06-machine.md §1: sealed image `Cores count=N`; the VMM creates
+    // exactly those N vCPUs. §3 makes core 0's entry "release the other
+    // vCPUs". Hypervisor.framework binds a vCPU to the thread that created
+    // it, so there are N host threads — but exactly one of them is inside
+    // `hv_vcpu_run` at any instant, because they pass a single **baton**
+    // whose hand-off order is a pure function of guest-visible state:
+    // which cores the guest has released, which have parked, and what
+    // their own pending words hold. Nothing in `next_core` below reads a
+    // host clock, a thread id, or an address to decide who runs next —
+    // otherwise `xtask repro` would be measuring the host's scheduler,
     // and 06 §8's enumerable choice sequence would have quietly become an
     // opaque interleaving trace (decision 11's own rejected alternative).
     //
@@ -358,13 +429,10 @@ fn boot_image_core_inner(
     // the release doorbell (core 0 hands off to each released core in
     // ascending order) and a park (a core with nothing ready hands off).
     // Every other exit keeps the baton, which is why a single-core image —
-    // where cores 1 and 2 are never released and the release store is never
-    // even emitted — runs down exactly the path it ran before this item.
-    // Array capacity = packing ceiling; live bring-up is `cores_declared`
-    // from the report (plans/M15.md item D; item F creates exactly N
-    // vCPUs). Guest secondary trampoline pool still sized to 3 until
-    // item E — leave that for E.
-    const NCORES: usize = wrela_machine::CORE_SLOTS;
+    // where secondaries are never released and the release store is never
+    // even emitted — runs down exactly the path it ran before M8.
+    // Array capacity = packing ceiling (`CORE_SLOTS`); live bring-up is
+    // `cores_declared` from the report (item F creates exactly N vCPUs).
 
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
     enum CoreState {
@@ -384,7 +452,7 @@ fn boot_image_core_inner(
     struct Sched {
         /// Whose turn it is. Only this core may be inside `hv_vcpu_run`.
         current: usize,
-        state: [CoreState; NCORES],
+        state: [CoreState; CORE_SLOTS],
         /// The boot is over (halt, fault, or timeout); every core returns.
         done: bool,
     }
@@ -402,7 +470,7 @@ fn boot_image_core_inner(
         /// clears its own slot **under this lock, strictly before**
         /// destroying its vCPU, so the watchdog can never force-exit a
         /// handle that no longer exists.
-        vcpus: [u64; NCORES],
+        vcpus: [u64; CORE_SLOTS],
         /// Did the guest ring the release doorbell? Recorded rather than
         /// inferred from `sched.state`, which is `Finished` for every core
         /// by the time the marks are checked and so cannot say whether a
@@ -430,11 +498,18 @@ fn boot_image_core_inner(
     }
 
     /// The baton's whole hand-off rule: the next core after `from`, in
-    /// ascending core order (wrapping, so a lone runnable core hands the
-    /// baton back to itself), that guest-visible state says can run.
-    fn next_core(sched: &mut Sched, from: usize, host_ram: *const u8) -> Option<usize> {
-        for step in 1..=NCORES {
-            let c = (from + step) % NCORES;
+    /// ascending core order among the sealed N (wrapping, so a lone
+    /// runnable core hands the baton back to itself), that guest-visible
+    /// state says can run. Walks only `0..cores_declared` — packing slots
+    /// above N are never brought up (decision 1061).
+    fn next_core(
+        sched: &mut Sched,
+        from: usize,
+        host_ram: *const u8,
+        cores_declared: usize,
+    ) -> Option<usize> {
+        for step in 1..=cores_declared {
+            let c = (from + step) % cores_declared;
             match sched.state[c] {
                 CoreState::Runnable => return Some(c),
                 CoreState::Parked if pending_word(host_ram, c) != 0 => {
@@ -457,19 +532,20 @@ fn boot_image_core_inner(
         Halt(u64),
     }
 
-    // plans/M15.md item D: bring-up count is the report's `Cores count=N`
+    // plans/M15.md item D/F: bring-up count is the report's `Cores count=N`
     // (parse defaults to `1 + core_entries.len()` when the line is absent).
+    // Decision 1061: refuse anything outside `1..=CORE_SLOTS`.
     let cores_declared = parsed.cores;
-    if cores_declared > NCORES {
+    if !(1..=CORE_SLOTS).contains(&cores_declared) {
         return Err(VmmError::MalformedReport(format!(
-            "`Cores count={cores_declared}` exceeds CORE_SLOTS ({NCORES})"
+            "`Cores count={cores_declared}` must satisfy 1..=CORE_SLOTS ({CORE_SLOTS})"
         )));
     }
     let shared = std::sync::Mutex::new(Shared {
         sched: Sched {
             current: 0,
             state: {
-                let mut s = [CoreState::Unreleased; NCORES];
+                let mut s = [CoreState::Unreleased; CORE_SLOTS];
                 s[0] = CoreState::Runnable;
                 s
             },
@@ -486,7 +562,7 @@ fn boot_image_core_inner(
         exits: 0,
         exit_code: None,
         error: None,
-        vcpus: [0; NCORES],
+        vcpus: [0; CORE_SLOTS],
         admission: AdmissionWitness::new(parsed.request_rings.clone()),
     });
     let baton = std::sync::Condvar::new();
@@ -664,12 +740,13 @@ fn boot_image_core_inner(
                         }
                         None => 0,
                     };
+                    // Decision 1061: release value must equal report
+                    // `Cores count` (already in `1..=CORE_SLOTS`).
                     if value != cores_declared as u64 {
                         return Err(VmmError::GuestFault(format!(
                             "core 0 released {value} core(s) but this image's report declares \
-                             {cores_declared} (one `Entry base=` plus {} `CoreEntry` line(s)) — \
-                             the image and its report disagree about the machine",
-                            cores_declared - 1
+                             Cores count={cores_declared} — the image and its report disagree \
+                             about the machine"
                         )));
                     }
                     advance_pc(vcpu)?;
@@ -834,7 +911,7 @@ fn boot_image_core_inner(
                     // park path, unchanged.
                     {
                         let g = lock.lock().unwrap_or_else(|e| e.into_inner());
-                        let sibling = (1..NCORES).any(|c| {
+                        let sibling = (1..cores_declared).any(|c| {
                             g.sched.state[c] == CoreState::Runnable
                                 || (g.sched.state[c] == CoreState::Parked
                                     && pending_word(host_ram, c) != 0)
@@ -1030,7 +1107,7 @@ fn boot_image_core_inner(
                 Ok(Step::Yield) => {
                     let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
                     let g = &mut *guard;
-                    match next_core(&mut g.sched, core, host_ram) {
+                    match next_core(&mut g.sched, core, host_ram, cores_declared) {
                         Some(next) => g.sched.current = next,
                         None => {
                             // Every core is parked or finished and no
@@ -1081,7 +1158,7 @@ fn boot_image_core_inner(
 
     // Core `n`'s own entry address: the report's `Entry base=` for core 0,
     // its own `CoreEntry core=n base=` line for the rest.
-    let mut core_entry = [0u64; NCORES];
+    let mut core_entry = [0u64; CORE_SLOTS];
     core_entry[0] = parsed.entry;
     for CoreEntry { core, base } in &parsed.core_entries {
         core_entry[*core] = *base;
@@ -1096,6 +1173,7 @@ fn boot_image_core_inner(
             let shared = &shared;
             let baton = &baton;
             let entry = core_entry[core];
+            let sp_top = sp_tops[core];
             threads.push(scope.spawn(move || {
                 let ram = ram;
                 let SendPtr(host_ram) = ram;
@@ -1103,13 +1181,20 @@ fn boot_image_core_inner(
                 // run and destroy all happen right here.
                 let mut vcpu: u64 = 0;
                 let mut exit_ptr: *mut HvVcpuExit = std::ptr::null_mut();
-                let r = unsafe { hv_vcpu_create(&mut vcpu, &mut exit_ptr, std::ptr::null_mut()) };
-                if r != HV_SUCCESS {
+                #[cfg(test)]
+                let create_code = if create_inject::should_fail(core) {
+                    HV_NO_RESOURCES
+                } else {
+                    unsafe { hv_vcpu_create(&mut vcpu, &mut exit_ptr, std::ptr::null_mut()) }
+                };
+                #[cfg(not(test))]
+                let create_code =
+                    unsafe { hv_vcpu_create(&mut vcpu, &mut exit_ptr, std::ptr::null_mut()) };
+                if create_code != HV_SUCCESS {
+                    // Decision 1062: named host-refuse, not a bare Hvf.
                     let mut g = shared.lock().unwrap_or_else(|e| e.into_inner());
-                    g.error.get_or_insert(VmmError::Hvf {
-                        call: "hv_vcpu_create",
-                        code: r,
-                    });
+                    g.error
+                        .get_or_insert(host_cores_refuse(cores_declared, core, create_code));
                     g.sched.done = true;
                     g.sched.state[core] = CoreState::Finished;
                     drop(g);
@@ -1147,6 +1232,16 @@ fn boot_image_core_inner(
                     // (`DAIF = 1111`) — the standard bare-metal AArch64 boot
                     // value, plans/M5.md decision text's own "0x3c5".
                     set(HV_REG_CPSR, 0x3c5)?;
+                    // Decision 1064: SP from report `CoreStack` (top =
+                    // base+size). Guest entry also installs SP; the report
+                    // is still the VMM's whole config.
+                    let r = unsafe { hv_vcpu_set_sys_reg(vcpu, HV_SYS_REG_SP_EL1, sp_top) };
+                    if r != HV_SUCCESS {
+                        return Err(VmmError::Hvf {
+                            call: "hv_vcpu_set_sys_reg(SP_EL1)",
+                            code: r,
+                        });
+                    }
                     let r = unsafe { hv_vcpu_set_sys_reg(vcpu, HV_SYS_REG_CPACR_EL1, 0x0030_0000) };
                     if r != HV_SUCCESS {
                         return Err(VmmError::Hvf {
@@ -1278,7 +1373,11 @@ fn boot_image_core_inner(
     // decision 12: the transcript is read from the ring pages only after the
     // guest halts.
     let transcript = drain_console(host_ram);
-    let core_marks = (0..NCORES)
+    // Decision 1065: evidence length is the sealed N, not CORE_SLOTS.
+    // Packing slots above N share the machine-info page with
+    // `OFF_TEST_LINE_BUF` (0x100) until a later layout move — reading
+    // them as marks would observe harness scratch, not bring-up.
+    let core_marks = (0..cores_declared)
         .map(|c| read_core_mark(host_ram, c))
         .collect::<Vec<u64>>();
     let (choices, divergences) = record::finish_chooser(shared.chooser)?;
