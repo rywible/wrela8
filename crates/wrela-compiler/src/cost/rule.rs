@@ -85,6 +85,62 @@ impl CostRule {
     }
 }
 
+/// Memory class for load/store MemRef tags (cost hard-cut item B).
+/// Stack = proven SP-relative; Cold = everything else that was tagged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MemClass {
+    Stack,
+    Cold,
+}
+
+/// AArch64 load/store encoding of SP (not XZR) — the only Stack base.
+pub const MEM_SP_REG: u8 = 31;
+
+/// Proven or unique memory identity for scoreboard reuse (item C).
+/// Missing `EmittedWord::mem` is scored as a cold miss later; Adrp never
+/// carries a MemRef.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct MemRef {
+    pub class: MemClass,
+    /// Stack: frame byte offset from SP. Cold stable: packed base+imm.
+    /// Cold unique: high bit set + per-push sequence.
+    pub key: u64,
+}
+
+impl MemRef {
+    pub fn stack(offset: u64) -> MemRef {
+        MemRef {
+            class: MemClass::Stack,
+            key: offset,
+        }
+    }
+
+    /// Stable Cold key for a proven `[base_reg, #imm]` (base ≠ SP).
+    pub fn cold_stable(base_reg: u8, imm: u64) -> MemRef {
+        MemRef {
+            class: MemClass::Cold,
+            key: ((base_reg as u64) << 48) | (imm & 0x0000_FFFF_FFFF_FFFF),
+        }
+    }
+
+    /// Unique Cold key when the address is not a proven base+imm.
+    pub fn cold_unique(seq: u64) -> MemRef {
+        MemRef {
+            class: MemClass::Cold,
+            key: (1u64 << 63) | (seq & !(1u64 << 63)),
+        }
+    }
+
+    /// Classify a proven `[base_reg, #imm]`: SP → Stack; else Cold stable.
+    pub fn for_base_imm(base_reg: u8, imm: u64) -> MemRef {
+        if base_reg == MEM_SP_REG {
+            MemRef::stack(imm)
+        } else {
+            MemRef::cold_stable(base_reg, imm)
+        }
+    }
+}
+
 /// One machine word in the final asm stream, tagged at emit time
 /// (plans/M18.md freeze 1303). Scoreboard uses `rule` + regs; asm dump
 /// prints only `word` + `text`.
@@ -96,6 +152,9 @@ pub struct EmittedWord {
     pub dst: Option<u8>,
     pub srcs: [u8; 4],
     pub src_len: u8,
+    /// Load/Store memory identity when tagged at emit; `None` for Adrp
+    /// and untagged sites (scorer treats missing as cold miss).
+    pub mem: Option<MemRef>,
 }
 
 impl EmittedWord {
@@ -116,7 +175,13 @@ impl EmittedWord {
             dst,
             srcs: arr,
             src_len: n as u8,
+            mem: None,
         }
+    }
+
+    pub fn with_mem(mut self, mem: MemRef) -> EmittedWord {
+        self.mem = Some(mem);
+        self
     }
 
     pub fn src_slice(&self) -> &[u8] {
@@ -141,5 +206,44 @@ mod tests {
         keys.sort_unstable();
         keys.dedup();
         assert_eq!(keys.len(), CostRule::ALL.len());
+    }
+
+    #[test]
+    fn sp_base_imm_is_stack() {
+        let m = MemRef::for_base_imm(MEM_SP_REG, 24);
+        assert_eq!(m.class, MemClass::Stack);
+        assert_eq!(m.key, 24);
+    }
+
+    #[test]
+    fn non_sp_base_imm_is_cold_stable() {
+        let m = MemRef::for_base_imm(28, 16);
+        assert_eq!(m.class, MemClass::Cold);
+        assert_eq!(m, MemRef::cold_stable(28, 16));
+        assert_eq!(m.key & (1u64 << 63), 0);
+    }
+
+    #[test]
+    fn unknown_cold_unique_sets_high_bit_and_differs() {
+        let a = MemRef::cold_unique(0);
+        let b = MemRef::cold_unique(1);
+        assert_eq!(a.class, MemClass::Cold);
+        assert_eq!(b.class, MemClass::Cold);
+        assert_ne!(a.key, b.key);
+        assert_ne!(a.key & (1u64 << 63), 0);
+        assert_ne!(b.key & (1u64 << 63), 0);
+    }
+
+    #[test]
+    fn emitted_word_new_has_no_mem() {
+        let ew = EmittedWord::new(0, String::new(), CostRule::Adrp, None, &[]);
+        assert_eq!(ew.mem, None);
+    }
+
+    #[test]
+    fn emitted_word_with_mem_sets_tag() {
+        let ew = EmittedWord::new(0, String::new(), CostRule::Load, Some(0), &[31])
+            .with_mem(MemRef::stack(8));
+        assert_eq!(ew.mem, Some(MemRef::stack(8)));
     }
 }
