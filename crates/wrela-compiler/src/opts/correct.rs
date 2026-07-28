@@ -17,12 +17,12 @@ use std::path::PathBuf;
 
 use crate::codegen::codegen_program;
 use crate::eval;
-use crate::lower::{lower_program_with, LowerOpts};
+use crate::lower::{LowerOpts, lower_program_with};
 use crate::mwir;
 use crate::sema;
 use crate::syntax::{lexer, parser};
 
-use super::{apply_mode, CompileMode};
+use super::{CompileMode, apply_mode};
 
 /// Representative comptime `@test` goldens (same arithmetic-heavy cases
 /// `diff-eval` smoke already names for the evaluator↔backend agree
@@ -130,16 +130,8 @@ mod tests {
         for case in DEV_CORRECT_SLICE {
             let input = root.join(case).join("input.wr");
             let expected = root.join(case).join("expected/test.txt");
-            assert!(
-                input.is_file(),
-                "missing {}",
-                input.display()
-            );
-            assert!(
-                expected.is_file(),
-                "missing {}",
-                expected.display()
-            );
+            assert!(input.is_file(), "missing {}", input.display());
+            assert!(expected.is_file(), "missing {}", expected.display());
         }
     }
 }

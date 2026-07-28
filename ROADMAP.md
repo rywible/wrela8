@@ -72,8 +72,8 @@ beyond the active milestone. A milestone's *first deliverable* is its plan
 code exists, the shape decisions that milestone freezes, and explicit
 non-goals. Plans are written when a milestone activates, never earlier
 (each milestone manufactures the facts the next plan needs), and become
-history when it completes. Active plan:
-[plans/M19.md](plans/M19.md) (optimization harness; proxy-only modes).
+history when it completes. Active plan: **none**. M19 is COMPLETE
+([plans/M19.md](plans/M19.md); optimization harness; proxy-only modes).
 M18 is COMPLETE ([plans/M18.md](plans/M18.md); cycle proxy — differential
 ISA ranking only). M17 is COMPLETE ([plans/M17.md](plans/M17.md); thin
 entropy device + sync MWIR floor). M16 is COMPLETE
@@ -85,7 +85,8 @@ constructive progress theorem; no `plans/M14.md` — capability cut, not a
 build-out; forward-ref golden still `image.graph.handle-dag` gap). M13 is
 COMPLETE ([plans/M13.md](plans/M13.md)). M12 is COMPLETE
 ([plans/M12.md](plans/M12.md)). M11 is COMPLETE
-([plans/M11.md](plans/M11.md)). Ladder design:
+([plans/M11.md](plans/M11.md)). Pixels remains an unscheduled intention
+(not activated). Ladder design:
 [docs/superpowers/specs/2026-07-27-post-m15-ladder-design.md](docs/superpowers/specs/2026-07-27-post-m15-ladder-design.md).
 
 ### M1 — Parse everything
@@ -999,8 +1000,8 @@ cache/L2/L3/branch-mispredict models; `profile` juxtaposition; `@budget`
 proofs; WCET; exit-rate report lines; multicore contention; DVFS/thermal;
 in-compiler ML; anything beyond the capstone smoke.
 
-### M19 — The optimization harness — ACTIVE
-**Activated 2026-07-28.** Detail: [plans/M19.md](plans/M19.md). M18 is
+### M19 — The optimization harness — COMPLETE
+**Closed 2026-07-28.** Detail: [plans/M19.md](plans/M19.md). M18 is
 the ruler (COMPLETE); M19 is the **in-code harness** that uses it — not
 an evidence table, not purchases, not a physical-measurement loop.
 
@@ -1048,7 +1049,9 @@ still wanted) are later spends that use this harness, or recorded
 intentions — not M19 deliverables.
 
 Depends on M18's score + proxy A/B (COMPLETE; no physical calibration).
-Opens: compile-mode and proxy-win-corpus clauses (ids in the plan).
+Flipped: `compiler.opts.compile-mode`, `compiler.opts.proxy-win-corpus`,
+`compiler.opts.dev-correct`. Cost-corpus proxy Δ (`dev` → `release`)
+recorded in [plans/M19.md](plans/M19.md) evidence block (SUM −749).
 
 ### Recorded language intentions (not yet scheduled)
 

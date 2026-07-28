@@ -1050,7 +1050,8 @@ impl<'a> FnCtx<'a> {
     // Best-effort dest/src regs at emit time; `dst=None` / empty `srcs` OK when unknown
     // (scoreboard treats missing operands as no register deps). Never parse mnemonics.
     fn push(&mut self, word: u32, text: String, rule: CostRule, dst: Option<u8>, srcs: &[u8]) {
-        self.words.push(EmittedWord::new(word, text, rule, dst, srcs));
+        self.words
+            .push(EmittedWord::new(word, text, rule, dst, srcs));
     }
 
     fn cur_word(&self) -> usize {
@@ -1062,21 +1063,25 @@ impl<'a> FnCtx<'a> {
     fn load_slot(&mut self, reg: u8, off: usize) {
         let off = (off + self.slot_bias) as u16;
         let base = self.slot_base;
-        self.push(encode::enc_ldr_x_imm(reg, base, off),
+        self.push(
+            encode::enc_ldr_x_imm(reg, base, off),
             format!("ldr {}, [{}, #{off}]", reg_name(reg), reg_name(base)),
             CostRule::Load,
             Some(reg),
-            &[base]);
+            &[base],
+        );
     }
 
     fn store_slot(&mut self, reg: u8, off: usize) {
         let off = (off + self.slot_bias) as u16;
         let base = self.slot_base;
-        self.push(encode::enc_str_x_imm(reg, base, off),
+        self.push(
+            encode::enc_str_x_imm(reg, base, off),
             format!("str {}, [{}, #{off}]", reg_name(reg), reg_name(base)),
             CostRule::Store,
             None,
-            &[reg, base]);
+            &[reg, base],
+        );
     }
 
     /// Loads an 8-byte word from `[base_reg, #byte_off]` (`base_reg`
@@ -1085,7 +1090,8 @@ impl<'a> FnCtx<'a> {
     /// `sp`).
     fn load_ptr(&mut self, reg: u8, base_reg: u8, byte_off: usize) {
         let byte_off = byte_off as u16;
-        self.push(encode::enc_ldr_x_imm(reg, base_reg, byte_off),
+        self.push(
+            encode::enc_ldr_x_imm(reg, base_reg, byte_off),
             format!(
                 "ldr {}, [{}, #{byte_off}]",
                 reg_name(reg),
@@ -1093,12 +1099,14 @@ impl<'a> FnCtx<'a> {
             ),
             CostRule::Load,
             Some(reg),
-            &[base_reg]);
+            &[base_reg],
+        );
     }
 
     fn store_ptr(&mut self, reg: u8, base_reg: u8, byte_off: usize) {
         let byte_off = byte_off as u16;
-        self.push(encode::enc_str_x_imm(reg, base_reg, byte_off),
+        self.push(
+            encode::enc_str_x_imm(reg, base_reg, byte_off),
             format!(
                 "str {}, [{}, #{byte_off}]",
                 reg_name(reg),
@@ -1106,7 +1114,8 @@ impl<'a> FnCtx<'a> {
             ),
             CostRule::Store,
             None,
-            &[reg, base_reg]);
+            &[reg, base_reg],
+        );
     }
 
     /// Unsigned byte load `ldrb Wt, [Xn, #imm]`. Shared by
@@ -1116,11 +1125,13 @@ impl<'a> FnCtx<'a> {
     /// closed-emitter scan (plans/M10.md item F0) does not grow a new
     /// top-level emitter row.
     fn load_byte_imm(&mut self, rt: u8, rn: u8, byte_off: u16) {
-        self.push(encode::enc_ldrb_imm(rt, rn, byte_off),
+        self.push(
+            encode::enc_ldrb_imm(rt, rn, byte_off),
             format!("ldrb w{rt}, [{}, #{byte_off}]", reg_name(rn)),
             CostRule::Load,
             Some(rt),
-            &[rn]);
+            &[rn],
+        );
     }
 
     /// `reg = <slot base> + #off` — the address of a frame slot, for a
@@ -1130,11 +1141,13 @@ impl<'a> FnCtx<'a> {
     fn addr_of_slot(&mut self, reg: u8, off: usize) {
         let off = (off + self.slot_bias) as u16;
         let base = self.slot_base;
-        self.push(encode::enc_add_imm(reg, base, off, true),
+        self.push(
+            encode::enc_add_imm(reg, base, off, true),
             format!("add {}, {}, #{off}", reg_name(reg), reg_name(base)),
             CostRule::Alu,
             Some(reg),
-            &[base]);
+            &[base],
+        );
     }
 
     /// Always `MOVZ` + three `MOVK`s (four words). Reloc sites that
@@ -1256,23 +1269,29 @@ impl<'a> FnCtx<'a> {
             return;
         }
         let shift = (64 - bits) as u8;
-        self.push(encode::enc_lsl_imm(reg, reg, shift, true),
+        self.push(
+            encode::enc_lsl_imm(reg, reg, shift, true),
             format!("lsl {}, {}, #{shift}", reg_name(reg), reg_name(reg)),
             CostRule::Alu,
             Some(reg),
-            &[reg]);
+            &[reg],
+        );
         if signed {
-            self.push(encode::enc_asr_imm(reg, reg, shift, true),
+            self.push(
+                encode::enc_asr_imm(reg, reg, shift, true),
                 format!("asr {}, {}, #{shift}", reg_name(reg), reg_name(reg)),
                 CostRule::Alu,
                 Some(reg),
-                &[reg]);
+                &[reg],
+            );
         } else {
-            self.push(encode::enc_lsr_imm(reg, reg, shift, true),
+            self.push(
+                encode::enc_lsr_imm(reg, reg, shift, true),
                 format!("lsr {}, {}, #{shift}", reg_name(reg), reg_name(reg)),
                 CostRule::Alu,
                 Some(reg),
-                &[reg]);
+                &[reg],
+            );
         }
     }
 
@@ -1286,17 +1305,25 @@ impl<'a> FnCtx<'a> {
     fn b_unconditional(&mut self, target_mwir_idx: usize) {
         let this_word = self.cur_word();
         let delta = self.branch_target_delta(target_mwir_idx, this_word);
-        self.push(encode::enc_b(delta), format!("b #{delta}"), CostRule::Branch, None, &[]);
+        self.push(
+            encode::enc_b(delta),
+            format!("b #{delta}"),
+            CostRule::Branch,
+            None,
+            &[],
+        );
     }
 
     fn cbz(&mut self, reg: u8, target_mwir_idx: usize) {
         let this_word = self.cur_word();
         let delta = self.branch_target_delta(target_mwir_idx, this_word);
-        self.push(encode::enc_cbz(reg, delta, true),
+        self.push(
+            encode::enc_cbz(reg, delta, true),
             format!("cbz {}, #{delta}", reg_name(reg)),
             CostRule::Branch,
             None,
-            &[reg]);
+            &[reg],
+        );
     }
 
     // --- rodata + abort calls -------------------------------------------
@@ -1305,12 +1332,15 @@ impl<'a> FnCtx<'a> {
     fn load_rodata_addr(&mut self, reg: u8, data_index: usize) {
         let byte_offset = self.rodata.byte_offset(data_index);
         let word_adrp = self.cur_word();
-        self.push(encode::enc_adrp(reg, 0),
+        self.push(
+            encode::enc_adrp(reg, 0),
             format!("adrp {}, rodata+{byte_offset:#x}", reg_name(reg)),
             CostRule::Adrp,
             Some(reg),
-            &[]);
-        self.push(encode::enc_add_imm(reg, reg, 0, true),
+            &[],
+        );
+        self.push(
+            encode::enc_add_imm(reg, reg, 0, true),
             format!(
                 "add {}, {}, rodata+{byte_offset:#x}",
                 reg_name(reg),
@@ -1318,7 +1348,8 @@ impl<'a> FnCtx<'a> {
             ),
             CostRule::Alu,
             Some(reg),
-            &[reg]);
+            &[reg],
+        );
         self.relocs.push(Reloc::Rodata {
             word_adrp,
             byte_offset,
@@ -1327,7 +1358,13 @@ impl<'a> FnCtx<'a> {
 
     fn bl_symbolic_call(&mut self, key: &str) {
         let word = self.cur_word();
-        self.push(encode::enc_bl(0), format!("bl <{key}>"), CostRule::Call, None, &[]);
+        self.push(
+            encode::enc_bl(0),
+            format!("bl <{key}>"),
+            CostRule::Call,
+            None,
+            &[],
+        );
         self.relocs.push(Reloc::Call {
             word,
             key: key.to_string(),
@@ -1341,30 +1378,44 @@ impl<'a> FnCtx<'a> {
         let len = bytes.len();
         let idx = self.rodata.intern(bytes);
         // Noreturn path: carve a 16-byte Bytes slot below the live frame.
-        self.push(encode::enc_sub_imm(31, 31, 16, true),
+        self.push(
+            encode::enc_sub_imm(31, 31, 16, true),
             "sub sp, sp, #16  ; abort Bytes slot".to_string(),
             CostRule::Alu,
             Some(31),
-            &[31]);
+            &[31],
+        );
         self.load_rodata_addr(X_A, idx);
-        self.push(encode::enc_str_x_imm(X_A, 31, 0),
+        self.push(
+            encode::enc_str_x_imm(X_A, 31, 0),
             format!("str {}, [sp]  ; Bytes.base", reg_name(X_A)),
             CostRule::Store,
             None,
-            &[X_A, 31]);
+            &[X_A, 31],
+        );
         self.load_imm(X_A, len as i64);
-        self.push(encode::enc_str_x_imm(X_A, 31, 8),
+        self.push(
+            encode::enc_str_x_imm(X_A, 31, 8),
             format!("str {}, [sp, #8]  ; Bytes.len", reg_name(X_A)),
             CostRule::Store,
             None,
-            &[X_A, 31]);
-        self.push(encode::enc_add_imm(0, 31, 0, true),
+            &[X_A, 31],
+        );
+        self.push(
+            encode::enc_add_imm(0, 31, 0, true),
             "add x0, sp, #0  ; *Bytes".to_string(),
             CostRule::Alu,
             Some(0),
-            &[31]);
+            &[31],
+        );
         let word = self.cur_word();
-        self.push(encode::enc_bl(0), "bl <__wrela_abort>".to_string(), CostRule::Abort, None, &[]);
+        self.push(
+            encode::enc_bl(0),
+            "bl <__wrela_abort>".to_string(),
+            CostRule::Abort,
+            None,
+            &[],
+        );
         self.relocs.push(Reloc::AbortFixed { word });
     }
 
@@ -1383,22 +1434,28 @@ impl<'a> FnCtx<'a> {
     fn checkpoint(&mut self) {
         let addr = wrela_machine::pending::core_word_addr(0);
         self.load_imm(X_A, addr as i64);
-        self.push(encode::enc_ldr_x_imm(X_B, X_A, 0),
+        self.push(
+            encode::enc_ldr_x_imm(X_B, X_A, 0),
             format!("ldr {}, [{}]", reg_name(X_B), reg_name(X_A)),
             CostRule::Load,
             Some(X_B),
-            &[X_A]);
-        self.push(encode::enc_cbz(X_B, 8, true),
+            &[X_A],
+        );
+        self.push(
+            encode::enc_cbz(X_B, 8, true),
             format!("cbz {}, #8", reg_name(X_B)),
             CostRule::Branch,
             None,
-            &[X_B]);
+            &[X_B],
+        );
         let word = self.cur_word();
-        self.push(encode::enc_bl(0),
+        self.push(
+            encode::enc_bl(0),
             "bl <__wrela_checkpoint_service>".to_string(),
             CostRule::Call,
             None,
-            &[]);
+            &[],
+        );
         self.relocs.push(Reloc::CheckpointService { word });
     }
 
@@ -1407,64 +1464,88 @@ impl<'a> FnCtx<'a> {
     /// `X_A`/`X_B`/... outside x0..x3).
     fn abort_val(&mut self, prefix: &str, value_reg: u8, signed: bool, suffix: &str) {
         // Stash value before carving stack / building Bytes slots.
-        self.push(encode::enc_mov_reg(X_B, value_reg, true),
+        self.push(
+            encode::enc_mov_reg(X_B, value_reg, true),
             format!("mov {}, {}", reg_name(X_B), reg_name(value_reg)),
             CostRule::Alu,
             Some(X_B),
-            &[value_reg]);
+            &[value_reg],
+        );
         let prefix_bytes = prefix.as_bytes().to_vec();
         let prefix_len = prefix_bytes.len();
         let prefix_idx = self.rodata.intern(prefix_bytes);
         let suffix_bytes = suffix.as_bytes().to_vec();
         let suffix_len = suffix_bytes.len();
         let suffix_idx = self.rodata.intern(suffix_bytes);
-        self.push(encode::enc_sub_imm(31, 31, 32, true),
+        self.push(
+            encode::enc_sub_imm(31, 31, 32, true),
             "sub sp, sp, #32  ; abort_val prefix+suffix Bytes".to_string(),
             CostRule::AbortVal,
             Some(31),
-            &[31]);
+            &[31],
+        );
         self.load_rodata_addr(X_A, prefix_idx);
-        self.push(encode::enc_str_x_imm(X_A, 31, 0),
+        self.push(
+            encode::enc_str_x_imm(X_A, 31, 0),
             format!("str {}, [sp]  ; prefix.base", reg_name(X_A)),
             CostRule::Store,
             None,
-            &[X_A, 31]);
+            &[X_A, 31],
+        );
         self.load_imm(X_A, prefix_len as i64);
-        self.push(encode::enc_str_x_imm(X_A, 31, 8),
+        self.push(
+            encode::enc_str_x_imm(X_A, 31, 8),
             format!("str {}, [sp, #8]  ; prefix.len", reg_name(X_A)),
             CostRule::Store,
             None,
-            &[X_A, 31]);
+            &[X_A, 31],
+        );
         self.load_rodata_addr(X_A, suffix_idx);
-        self.push(encode::enc_str_x_imm(X_A, 31, 16),
+        self.push(
+            encode::enc_str_x_imm(X_A, 31, 16),
             format!("str {}, [sp, #16]  ; suffix.base", reg_name(X_A)),
             CostRule::Store,
             None,
-            &[X_A, 31]);
+            &[X_A, 31],
+        );
         self.load_imm(X_A, suffix_len as i64);
-        self.push(encode::enc_str_x_imm(X_A, 31, 24),
+        self.push(
+            encode::enc_str_x_imm(X_A, 31, 24),
             format!("str {}, [sp, #24]  ; suffix.len", reg_name(X_A)),
             CostRule::Store,
             None,
-            &[X_A, 31]);
-        self.push(encode::enc_add_imm(0, 31, 0, true),
+            &[X_A, 31],
+        );
+        self.push(
+            encode::enc_add_imm(0, 31, 0, true),
             "add x0, sp, #0  ; *prefix".to_string(),
             CostRule::Alu,
             Some(0),
-            &[31]);
-        self.push(encode::enc_mov_reg(1, X_B, true),
+            &[31],
+        );
+        self.push(
+            encode::enc_mov_reg(1, X_B, true),
             format!("mov x1, {}", reg_name(X_B)),
             CostRule::Alu,
             Some(1),
-            &[X_B]);
+            &[X_B],
+        );
         self.load_imm(2, signed as i64);
-        self.push(encode::enc_add_imm(3, 31, 16, true),
+        self.push(
+            encode::enc_add_imm(3, 31, 16, true),
             "add x3, sp, #16  ; *suffix".to_string(),
             CostRule::Alu,
             Some(3),
-            &[31]);
+            &[31],
+        );
         let word = self.cur_word();
-        self.push(encode::enc_bl(0), "bl <__wrela_abort_val>".to_string(), CostRule::AbortVal, None, &[]);
+        self.push(
+            encode::enc_bl(0),
+            "bl <__wrela_abort_val>".to_string(),
+            CostRule::AbortVal,
+            None,
+            &[],
+        );
         self.relocs.push(Reloc::AbortVal { word });
     }
 }
@@ -1560,7 +1641,8 @@ enum SkipKind {
 impl FnCtx<'_> {
     fn emit_skip(&mut self, _kind: SkipKind) -> usize {
         let w = self.cur_word();
-        self.words.push(EmittedWord::new(0, String::new(), CostRule::Alu, None, &[]));
+        self.words
+            .push(EmittedWord::new(0, String::new(), CostRule::Alu, None, &[]));
         w
     }
 
@@ -1593,20 +1675,24 @@ impl FnCtx<'_> {
     /// (module doc). Clobbers `X_D`.
     fn check_bounds_i64_or_abort(&mut self, value_reg: u8, min: i64, max: i64, message: &str) {
         self.load_imm(X_D, min);
-        self.push(encode::enc_cmp_reg(value_reg, X_D, true),
+        self.push(
+            encode::enc_cmp_reg(value_reg, X_D, true),
             format!("cmp {}, {}", reg_name(value_reg), reg_name(X_D)),
             CostRule::Alu,
             None,
-            &[value_reg, X_D]);
+            &[value_reg, X_D],
+        );
         let skip1 = self.emit_skip(SkipKind::Cond(Cond::Ge));
         self.abort_fixed(message);
         self.patch_skip(skip1, SkipKind::Cond(Cond::Ge));
         self.load_imm(X_D, max);
-        self.push(encode::enc_cmp_reg(value_reg, X_D, true),
+        self.push(
+            encode::enc_cmp_reg(value_reg, X_D, true),
             format!("cmp {}, {}", reg_name(value_reg), reg_name(X_D)),
             CostRule::Alu,
             None,
-            &[value_reg, X_D]);
+            &[value_reg, X_D],
+        );
         let skip2 = self.emit_skip(SkipKind::Cond(Cond::Le));
         self.abort_fixed(message);
         self.patch_skip(skip2, SkipKind::Cond(Cond::Le));
@@ -1809,7 +1895,13 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             } else {
                 format!("w{X_B}")
             };
-            ctx.push(enc, format!("{mnem} {rt}, [{}, #0]", reg_name(X_C)), CostRule::Load, Some(X_B), &[X_C]);
+            ctx.push(
+                enc,
+                format!("{mnem} {rt}, [{}, #0]", reg_name(X_C)),
+                CostRule::Load,
+                Some(X_B),
+                &[X_C],
+            );
             ctx.store_slot(X_B, ctx.frame.off(*dst));
         }
         Inst::PlacedIndexSet {
@@ -1843,7 +1935,13 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             } else {
                 format!("w{X_B}")
             };
-            ctx.push(enc, format!("{mnem} {rt}, [{}, #0]", reg_name(X_C)), CostRule::Store, None, &[X_B, X_C]);
+            ctx.push(
+                enc,
+                format!("{mnem} {rt}, [{}, #0]", reg_name(X_C)),
+                CostRule::Store,
+                None,
+                &[X_B, X_C],
+            );
         }
         // plans/M10.md item B4 / decisions 595–596: packed byte load
         // through an unbounded `Bytes` (base, len) handle.
@@ -1884,16 +1982,20 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             if is_option_group_id(&src_ty) {
                 // tag = (word != 0) ? 1 : 0 — Some vs None.
                 ctx.load_slot(X_A, ctx.frame.off(*src));
-                ctx.push(encode::enc_cmp_imm(X_A, 0, true),
+                ctx.push(
+                    encode::enc_cmp_imm(X_A, 0, true),
                     format!("cmp {}, #0", reg_name(X_A)),
                     CostRule::Alu,
                     None,
-                    &[X_A]);
-                ctx.push(encode::enc_cset(X_A, Cond::Ne, true),
+                    &[X_A],
+                );
+                ctx.push(
+                    encode::enc_cset(X_A, Cond::Ne, true),
                     format!("cset {}, ne", reg_name(X_A)),
                     CostRule::Alu,
                     Some(X_A),
-                    &[]);
+                    &[],
+                );
                 ctx.store_slot(X_A, ctx.frame.off(*dst));
             } else {
                 ctx.load_slot(X_A, ctx.frame.off(*src));
@@ -1962,7 +2064,8 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
                     )));
                 }
             };
-            ctx.push(enc,
+            ctx.push(
+                enc,
                 format!(
                     "{mnem} {}, {}, {}",
                     reg_name(X_C),
@@ -1971,7 +2074,8 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
                 ),
                 CostRule::Alu,
                 None,
-                &[]);
+                &[],
+            );
             ctx.store_slot(X_C, ctx.frame.off(*dst));
         }
         Inst::Compare {
@@ -1986,17 +2090,21 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             }
             ctx.load_slot(X_A, ctx.frame.off(*lhs));
             ctx.load_slot(X_B, ctx.frame.off(*rhs));
-            ctx.push(encode::enc_cmp_reg(X_A, X_B, true),
+            ctx.push(
+                encode::enc_cmp_reg(X_A, X_B, true),
                 format!("cmp {}, {}", reg_name(X_A), reg_name(X_B)),
                 CostRule::Alu,
                 None,
-                &[X_A, X_B]);
+                &[X_A, X_B],
+            );
             let cond = compare_cond(*op)?;
-            ctx.push(encode::enc_cset(X_C, cond, true),
+            ctx.push(
+                encode::enc_cset(X_C, cond, true),
                 format!("cset {}, {}", reg_name(X_C), cond_mnemonic(cond)),
                 CostRule::Alu,
                 Some(X_C),
-                &[]);
+                &[],
+            );
             ctx.store_slot(X_C, ctx.frame.off(*dst));
         }
         Inst::Neg {
@@ -2016,19 +2124,23 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             let (min, _) = int_bounds_i64(ty).unwrap();
             ctx.load_slot(X_A, ctx.frame.off(*src));
             ctx.load_imm(X_D, min);
-            ctx.push(encode::enc_cmp_reg(X_A, X_D, true),
+            ctx.push(
+                encode::enc_cmp_reg(X_A, X_D, true),
                 format!("cmp {}, {}", reg_name(X_A), reg_name(X_D)),
                 CostRule::Alu,
                 None,
-                &[X_A, X_D]);
+                &[X_A, X_D],
+            );
             let skip = ctx.emit_skip(SkipKind::Cond(Cond::Ne));
             ctx.abort_fixed(abort);
             ctx.patch_skip(skip, SkipKind::Cond(Cond::Ne));
-            ctx.push(encode::enc_sub_reg(X_C, X_ZR, X_A, true),
+            ctx.push(
+                encode::enc_sub_reg(X_C, X_ZR, X_A, true),
                 format!("neg {}, {}", reg_name(X_C), reg_name(X_A)),
                 CostRule::Alu,
                 Some(X_C),
-                &[X_ZR, X_A]);
+                &[X_ZR, X_A],
+            );
             ctx.store_slot(X_C, ctx.frame.off(*dst));
         }
         Inst::BitNot { dst, ty, src } => {
@@ -2039,7 +2151,8 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
                 .ok_or_else(|| CodegenError::internal(format!("`BitNot` on non-integer {ty:?}")))?;
             ctx.load_slot(X_A, ctx.frame.off(*src));
             ctx.load_imm(X_D, -1);
-            ctx.push(encode::enc_eor_reg(X_C, X_A, X_D, true),
+            ctx.push(
+                encode::enc_eor_reg(X_C, X_A, X_D, true),
                 format!(
                     "eor {}, {}, {}",
                     reg_name(X_C),
@@ -2048,7 +2161,8 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
                 ),
                 CostRule::Alu,
                 Some(X_C),
-                &[X_A, X_D]);
+                &[X_A, X_D],
+            );
             ctx.narrow_to_width(X_C, bits, signed);
             ctx.store_slot(X_C, ctx.frame.off(*dst));
         }
@@ -2060,22 +2174,27 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
         } => emit_convert(ctx, f, ty, *src, *dst, abort)?,
         Inst::Not { dst, src } => {
             ctx.load_slot(X_A, ctx.frame.off(*src));
-            ctx.push(encode::enc_cmp_reg(X_A, X_ZR, true),
+            ctx.push(
+                encode::enc_cmp_reg(X_A, X_ZR, true),
                 format!("cmp {}, xzr", reg_name(X_A)),
                 CostRule::Alu,
                 None,
-                &[X_A, X_ZR]);
-            ctx.push(encode::enc_cset(X_C, Cond::Eq, true),
+                &[X_A, X_ZR],
+            );
+            ctx.push(
+                encode::enc_cset(X_C, Cond::Eq, true),
                 format!("cset {}, eq", reg_name(X_C)),
                 CostRule::Alu,
                 Some(X_C),
-                &[]);
+                &[],
+            );
             ctx.store_slot(X_C, ctx.frame.off(*dst));
         }
         Inst::BoolAnd { dst, lhs, rhs } => {
             ctx.load_slot(X_A, ctx.frame.off(*lhs));
             ctx.load_slot(X_B, ctx.frame.off(*rhs));
-            ctx.push(encode::enc_and_reg(X_C, X_A, X_B, true),
+            ctx.push(
+                encode::enc_and_reg(X_C, X_A, X_B, true),
                 format!(
                     "and {}, {}, {}",
                     reg_name(X_C),
@@ -2084,7 +2203,8 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
                 ),
                 CostRule::Alu,
                 Some(X_C),
-                &[X_A, X_B]);
+                &[X_A, X_B],
+            );
             ctx.store_slot(X_C, ctx.frame.off(*dst));
         }
         Inst::Jump { target } => ctx.b_unconditional(*target),
@@ -2209,7 +2329,13 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             } else {
                 format!("w{X_B}")
             };
-            ctx.push(enc, format!("{mnem} {rt}, [{}, #{off}]", reg_name(X_A)), CostRule::Load, Some(X_B), &[X_A]);
+            ctx.push(
+                enc,
+                format!("{mnem} {rt}, [{}, #{off}]", reg_name(X_A)),
+                CostRule::Load,
+                Some(X_B),
+                &[X_A],
+            );
             ctx.store_slot(X_B, ctx.frame.off(*dst));
         }
         // plans/M7.md item G, decision 12: load the driver's vector bit
@@ -2237,18 +2363,22 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             emit_interrupt_cell_addr(ctx, *field_off)?;
             match *width {
                 4 => {
-                    ctx.push(encode::enc_ldar_w(X_B, X_A),
+                    ctx.push(
+                        encode::enc_ldar_w(X_B, X_A),
                         format!("ldar w{}, [{}]", X_B, reg_name(X_A)),
                         CostRule::Load,
                         Some(X_B),
-                        &[X_A]);
+                        &[X_A],
+                    );
                 }
                 8 => {
-                    ctx.push(encode::enc_ldar_x(X_B, X_A),
+                    ctx.push(
+                        encode::enc_ldar_x(X_B, X_A),
                         format!("ldar {}, [{}]", reg_name(X_B), reg_name(X_A)),
                         CostRule::Load,
                         Some(X_B),
-                        &[X_A]);
+                        &[X_A],
+                    );
                 }
                 w => {
                     return Err(CodegenError::internal(format!(
@@ -2267,18 +2397,22 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             ctx.load_slot(X_B, ctx.frame.off(*value));
             match *width {
                 4 => {
-                    ctx.push(encode::enc_stlr_w(X_B, X_A),
+                    ctx.push(
+                        encode::enc_stlr_w(X_B, X_A),
                         format!("stlr w{}, [{}]", X_B, reg_name(X_A)),
                         CostRule::Store,
                         Some(X_B),
-                        &[X_A]);
+                        &[X_A],
+                    );
                 }
                 8 => {
-                    ctx.push(encode::enc_stlr_x(X_B, X_A),
+                    ctx.push(
+                        encode::enc_stlr_x(X_B, X_A),
                         format!("stlr {}, [{}]", reg_name(X_B), reg_name(X_A)),
                         CostRule::Store,
                         Some(X_B),
-                        &[X_A]);
+                        &[X_A],
+                    );
                 }
                 w => {
                     return Err(CodegenError::internal(format!(
@@ -2349,11 +2483,13 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
                 driver: driver.clone(),
             });
             ctx.load_imm(X_B, 1);
-            ctx.push(encode::enc_str_x_imm(X_B, X_A, 0),
+            ctx.push(
+                encode::enc_str_x_imm(X_B, X_A, 0),
                 format!("str {}, [{}]", reg_name(X_B), reg_name(X_A)),
                 CostRule::Store,
                 None,
-                &[X_B, X_A]);
+                &[X_B, X_A],
+            );
         }
         // plans/M17.md item Es / freeze 4: shared emitters with FlowWir.
         Inst::Now { dst } => {
@@ -2384,7 +2520,13 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             } else {
                 format!("w{X_B}")
             };
-            ctx.push(enc, format!("{mnem} {rt}, [{}, #{off}]", reg_name(X_A)), CostRule::Store, None, &[X_B, X_A]);
+            ctx.push(
+                enc,
+                format!("{mnem} {rt}, [{}, #{off}]", reg_name(X_A)),
+                CostRule::Store,
+                None,
+                &[X_B, X_A],
+            );
         }
         Inst::MemLoad {
             dst,
@@ -2408,7 +2550,8 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
                 ctx.store_slot(X_A, ctx.frame.off(*dst));
             } else {
                 ctx.load_imm(X_B, *offset as i64);
-                ctx.push(encode::enc_add_reg(X_C, X_A, X_B, true),
+                ctx.push(
+                    encode::enc_add_reg(X_C, X_A, X_B, true),
                     format!(
                         "add {}, {}, {}",
                         reg_name(X_C),
@@ -2417,7 +2560,8 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
                     ),
                     CostRule::Alu,
                     Some(X_C),
-                    &[X_A, X_B]);
+                    &[X_A, X_B],
+                );
                 ctx.store_slot(X_C, ctx.frame.off(*dst));
             }
         }
@@ -2436,18 +2580,21 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
 /// `Option[TurnId]` → absolute turn-area address via layout relocs.
 /// The `- 1` lives here and in `TurnId::index` and nowhere else.
 fn push_turn_addr_from_id(ctx: &mut FnCtx, id_reg: u8, scratch: u8) {
-    ctx.push(encode::enc_sub_imm(id_reg, id_reg, 1, true),
+    ctx.push(
+        encode::enc_sub_imm(id_reg, id_reg, 1, true),
         format!("sub {}, {}, #1", reg_name(id_reg), reg_name(id_reg)),
         CostRule::Alu,
         Some(id_reg),
-        &[id_reg]);
+        &[id_reg],
+    );
     let word = ctx.cur_word();
     ctx.load_imm_naive(scratch, 0);
     for w in ctx.words[word..word + 4].iter_mut() {
         w.text = format!("turn-stride {}", reg_name(scratch));
     }
     ctx.relocs.push(Reloc::TurnStride { word });
-    ctx.push(encode::enc_mul(id_reg, id_reg, scratch, true),
+    ctx.push(
+        encode::enc_mul(id_reg, id_reg, scratch, true),
         format!(
             "mul {}, {}, {}",
             reg_name(id_reg),
@@ -2456,14 +2603,16 @@ fn push_turn_addr_from_id(ctx: &mut FnCtx, id_reg: u8, scratch: u8) {
         ),
         CostRule::Mul,
         Some(id_reg),
-        &[id_reg, scratch]);
+        &[id_reg, scratch],
+    );
     let word = ctx.cur_word();
     ctx.load_imm_naive(scratch, 0);
     for w in ctx.words[word..word + 4].iter_mut() {
         w.text = format!("turns-base {}", reg_name(scratch));
     }
     ctx.relocs.push(Reloc::TurnsBase { word });
-    ctx.push(encode::enc_add_reg(id_reg, scratch, id_reg, true),
+    ctx.push(
+        encode::enc_add_reg(id_reg, scratch, id_reg, true),
         format!(
             "add {}, {}, {}",
             reg_name(id_reg),
@@ -2472,7 +2621,8 @@ fn push_turn_addr_from_id(ctx: &mut FnCtx, id_reg: u8, scratch: u8) {
         ),
         CostRule::Alu,
         Some(id_reg),
-        &[scratch, id_reg]);
+        &[scratch, id_reg],
+    );
 }
 
 fn emit_mem_addr(ctx: &mut FnCtx, base: Temp, offset: u64) {
@@ -2481,7 +2631,8 @@ fn emit_mem_addr(ctx: &mut FnCtx, base: Temp, offset: u64) {
         return;
     }
     ctx.load_imm(X_B, offset as i64);
-    ctx.push(encode::enc_add_reg(X_A, X_A, X_B, true),
+    ctx.push(
+        encode::enc_add_reg(X_A, X_A, X_B, true),
         format!(
             "add {}, {}, {}",
             reg_name(X_A),
@@ -2490,7 +2641,8 @@ fn emit_mem_addr(ctx: &mut FnCtx, base: Temp, offset: u64) {
         ),
         CostRule::Alu,
         Some(X_A),
-        &[X_A, X_B]);
+        &[X_A, X_B],
+    );
 }
 
 fn emit_mem_load(
@@ -2517,7 +2669,13 @@ fn emit_mem_load(
     } else {
         format!("w{X_B}")
     };
-    ctx.push(enc, format!("{mnem} {rt}, [{}]", reg_name(X_A)), CostRule::Load, Some(X_B), &[X_A]);
+    ctx.push(
+        enc,
+        format!("{mnem} {rt}, [{}]", reg_name(X_A)),
+        CostRule::Load,
+        Some(X_B),
+        &[X_A],
+    );
     ctx.store_slot(X_B, ctx.frame.off(dst));
     Ok(())
 }
@@ -2547,7 +2705,13 @@ fn emit_mem_store(
     } else {
         format!("w{X_B}")
     };
-    ctx.push(enc, format!("{mnem} {rt}, [{}]", reg_name(X_A)), CostRule::Store, None, &[X_B, X_A]);
+    ctx.push(
+        enc,
+        format!("{mnem} {rt}, [{}]", reg_name(X_A)),
+        CostRule::Store,
+        None,
+        &[X_B, X_A],
+    );
     Ok(())
 }
 
@@ -2642,11 +2806,13 @@ fn emit_format_scalar(
             ctx.load_slot(X_A, src_off); // codepoint
             // 1-byte ASCII fast path.
             ctx.load_imm(X_B, 0x80);
-            ctx.push(encode::enc_cmp_reg(X_A, X_B, true),
+            ctx.push(
+                encode::enc_cmp_reg(X_A, X_B, true),
                 format!("cmp {}, {}", reg_name(X_A), reg_name(X_B)),
                 CostRule::Alu,
                 None,
-                &[X_A, X_B]);
+                &[X_A, X_B],
+            );
             let not_ascii = ctx.emit_skip(SkipKind::Cond(Cond::Cs));
             ctx.load_imm(X_B, 1);
             ctx.store_slot(X_B, dst_off);
@@ -2655,20 +2821,25 @@ fn emit_format_scalar(
             ctx.patch_skip(not_ascii, SkipKind::Cond(Cond::Cs));
             // 2-byte: U+0080..U+07FF
             ctx.load_imm(X_B, 0x800);
-            ctx.push(encode::enc_cmp_reg(X_A, X_B, true),
+            ctx.push(
+                encode::enc_cmp_reg(X_A, X_B, true),
                 format!("cmp {}, {}", reg_name(X_A), reg_name(X_B)),
                 CostRule::Alu,
                 None,
-                &[X_A, X_B]);
+                &[X_A, X_B],
+            );
             let not_2 = ctx.emit_skip(SkipKind::Cond(Cond::Cs));
             // b0 = 0xC0 | (cp >> 6); b1 = 0x80 | (cp & 0x3F)
-            ctx.push(encode::enc_lsr_imm(X_C, X_A, 6, true),
+            ctx.push(
+                encode::enc_lsr_imm(X_C, X_A, 6, true),
                 format!("lsr {}, {}, #6", reg_name(X_C), reg_name(X_A)),
                 CostRule::Alu,
                 Some(X_C),
-                &[X_A]);
+                &[X_A],
+            );
             ctx.load_imm(X_D, 0xC0);
-            ctx.push(encode::enc_orr_reg(X_C, X_C, X_D, true),
+            ctx.push(
+                encode::enc_orr_reg(X_C, X_C, X_D, true),
                 format!(
                     "orr {}, {}, {}",
                     reg_name(X_C),
@@ -2677,9 +2848,11 @@ fn emit_format_scalar(
                 ),
                 CostRule::Alu,
                 Some(X_C),
-                &[X_C, X_D]);
+                &[X_C, X_D],
+            );
             ctx.load_imm(X_D, 0x3F);
-            ctx.push(encode::enc_and_reg(X_E, X_A, X_D, true),
+            ctx.push(
+                encode::enc_and_reg(X_E, X_A, X_D, true),
                 format!(
                     "and {}, {}, {}",
                     reg_name(X_E),
@@ -2688,9 +2861,11 @@ fn emit_format_scalar(
                 ),
                 CostRule::Alu,
                 Some(X_E),
-                &[X_A, X_D]);
+                &[X_A, X_D],
+            );
             ctx.load_imm(X_D, 0x80);
-            ctx.push(encode::enc_orr_reg(X_E, X_E, X_D, true),
+            ctx.push(
+                encode::enc_orr_reg(X_E, X_E, X_D, true),
                 format!(
                     "orr {}, {}, {}",
                     reg_name(X_E),
@@ -2699,7 +2874,8 @@ fn emit_format_scalar(
                 ),
                 CostRule::Alu,
                 Some(X_E),
-                &[X_E, X_D]);
+                &[X_E, X_D],
+            );
             ctx.load_imm(X_B, 2);
             ctx.store_slot(X_B, dst_off);
             ctx.store_slot(X_C, dst_off + 8);
@@ -2710,20 +2886,25 @@ fn emit_format_scalar(
             // scalars still fit the bound of 4 and use the same path with
             // a wider check below).
             ctx.load_imm(X_B, 0x10000);
-            ctx.push(encode::enc_cmp_reg(X_A, X_B, true),
+            ctx.push(
+                encode::enc_cmp_reg(X_A, X_B, true),
                 format!("cmp {}, {}", reg_name(X_A), reg_name(X_B)),
                 CostRule::Alu,
                 None,
-                &[X_A, X_B]);
+                &[X_A, X_B],
+            );
             let not_3 = ctx.emit_skip(SkipKind::Cond(Cond::Cs));
             // b0 = 0xE0 | (cp >> 12); b1 = 0x80 | ((cp >> 6) & 0x3F); b2 = 0x80 | (cp & 0x3F)
-            ctx.push(encode::enc_lsr_imm(X_C, X_A, 12, true),
+            ctx.push(
+                encode::enc_lsr_imm(X_C, X_A, 12, true),
                 format!("lsr {}, {}, #12", reg_name(X_C), reg_name(X_A)),
                 CostRule::Alu,
                 Some(X_C),
-                &[X_A]);
+                &[X_A],
+            );
             ctx.load_imm(X_D, 0xE0);
-            ctx.push(encode::enc_orr_reg(X_C, X_C, X_D, true),
+            ctx.push(
+                encode::enc_orr_reg(X_C, X_C, X_D, true),
                 format!(
                     "orr {}, {}, {}",
                     reg_name(X_C),
@@ -2732,14 +2913,18 @@ fn emit_format_scalar(
                 ),
                 CostRule::Alu,
                 Some(X_C),
-                &[X_C, X_D]);
-            ctx.push(encode::enc_lsr_imm(X_E, X_A, 6, true),
+                &[X_C, X_D],
+            );
+            ctx.push(
+                encode::enc_lsr_imm(X_E, X_A, 6, true),
                 format!("lsr {}, {}, #6", reg_name(X_E), reg_name(X_A)),
                 CostRule::Alu,
                 Some(X_E),
-                &[X_A]);
+                &[X_A],
+            );
             ctx.load_imm(X_D, 0x3F);
-            ctx.push(encode::enc_and_reg(X_E, X_E, X_D, true),
+            ctx.push(
+                encode::enc_and_reg(X_E, X_E, X_D, true),
                 format!(
                     "and {}, {}, {}",
                     reg_name(X_E),
@@ -2748,9 +2933,11 @@ fn emit_format_scalar(
                 ),
                 CostRule::Alu,
                 Some(X_E),
-                &[X_E, X_D]);
+                &[X_E, X_D],
+            );
             ctx.load_imm(X_D, 0x80);
-            ctx.push(encode::enc_orr_reg(X_E, X_E, X_D, true),
+            ctx.push(
+                encode::enc_orr_reg(X_E, X_E, X_D, true),
                 format!(
                     "orr {}, {}, {}",
                     reg_name(X_E),
@@ -2759,9 +2946,11 @@ fn emit_format_scalar(
                 ),
                 CostRule::Alu,
                 Some(X_E),
-                &[X_E, X_D]);
+                &[X_E, X_D],
+            );
             ctx.load_imm(X_D, 0x3F);
-            ctx.push(encode::enc_and_reg(X_F, X_A, X_D, true),
+            ctx.push(
+                encode::enc_and_reg(X_F, X_A, X_D, true),
                 format!(
                     "and {}, {}, {}",
                     reg_name(X_F),
@@ -2770,9 +2959,11 @@ fn emit_format_scalar(
                 ),
                 CostRule::Alu,
                 Some(X_F),
-                &[X_A, X_D]);
+                &[X_A, X_D],
+            );
             ctx.load_imm(X_D, 0x80);
-            ctx.push(encode::enc_orr_reg(X_F, X_F, X_D, true),
+            ctx.push(
+                encode::enc_orr_reg(X_F, X_F, X_D, true),
                 format!(
                     "orr {}, {}, {}",
                     reg_name(X_F),
@@ -2781,7 +2972,8 @@ fn emit_format_scalar(
                 ),
                 CostRule::Alu,
                 Some(X_F),
-                &[X_F, X_D]);
+                &[X_F, X_D],
+            );
             ctx.load_imm(X_B, 3);
             ctx.store_slot(X_B, dst_off);
             ctx.store_slot(X_C, dst_off + 8);
@@ -2790,13 +2982,16 @@ fn emit_format_scalar(
             let done3 = ctx.emit_skip(SkipKind::Cond(Cond::Al));
             ctx.patch_skip(not_3, SkipKind::Cond(Cond::Cs));
             // 4-byte
-            ctx.push(encode::enc_lsr_imm(X_C, X_A, 18, true),
+            ctx.push(
+                encode::enc_lsr_imm(X_C, X_A, 18, true),
                 format!("lsr {}, {}, #18", reg_name(X_C), reg_name(X_A)),
                 CostRule::Alu,
                 Some(X_C),
-                &[X_A]);
+                &[X_A],
+            );
             ctx.load_imm(X_D, 0xF0);
-            ctx.push(encode::enc_orr_reg(X_C, X_C, X_D, true),
+            ctx.push(
+                encode::enc_orr_reg(X_C, X_C, X_D, true),
                 format!(
                     "orr {}, {}, {}",
                     reg_name(X_C),
@@ -2805,14 +3000,18 @@ fn emit_format_scalar(
                 ),
                 CostRule::Alu,
                 Some(X_C),
-                &[X_C, X_D]);
-            ctx.push(encode::enc_lsr_imm(X_E, X_A, 12, true),
+                &[X_C, X_D],
+            );
+            ctx.push(
+                encode::enc_lsr_imm(X_E, X_A, 12, true),
                 format!("lsr {}, {}, #12", reg_name(X_E), reg_name(X_A)),
                 CostRule::Alu,
                 Some(X_E),
-                &[X_A]);
+                &[X_A],
+            );
             ctx.load_imm(X_D, 0x3F);
-            ctx.push(encode::enc_and_reg(X_E, X_E, X_D, true),
+            ctx.push(
+                encode::enc_and_reg(X_E, X_E, X_D, true),
                 format!(
                     "and {}, {}, {}",
                     reg_name(X_E),
@@ -2821,9 +3020,11 @@ fn emit_format_scalar(
                 ),
                 CostRule::Alu,
                 Some(X_E),
-                &[X_E, X_D]);
+                &[X_E, X_D],
+            );
             ctx.load_imm(X_D, 0x80);
-            ctx.push(encode::enc_orr_reg(X_E, X_E, X_D, true),
+            ctx.push(
+                encode::enc_orr_reg(X_E, X_E, X_D, true),
                 format!(
                     "orr {}, {}, {}",
                     reg_name(X_E),
@@ -2832,14 +3033,18 @@ fn emit_format_scalar(
                 ),
                 CostRule::Alu,
                 Some(X_E),
-                &[X_E, X_D]);
-            ctx.push(encode::enc_lsr_imm(X_F, X_A, 6, true),
+                &[X_E, X_D],
+            );
+            ctx.push(
+                encode::enc_lsr_imm(X_F, X_A, 6, true),
                 format!("lsr {}, {}, #6", reg_name(X_F), reg_name(X_A)),
                 CostRule::Alu,
                 Some(X_F),
-                &[X_A]);
+                &[X_A],
+            );
             ctx.load_imm(X_D, 0x3F);
-            ctx.push(encode::enc_and_reg(X_F, X_F, X_D, true),
+            ctx.push(
+                encode::enc_and_reg(X_F, X_F, X_D, true),
                 format!(
                     "and {}, {}, {}",
                     reg_name(X_F),
@@ -2848,9 +3053,11 @@ fn emit_format_scalar(
                 ),
                 CostRule::Alu,
                 Some(X_F),
-                &[X_F, X_D]);
+                &[X_F, X_D],
+            );
             ctx.load_imm(X_D, 0x80);
-            ctx.push(encode::enc_orr_reg(X_F, X_F, X_D, true),
+            ctx.push(
+                encode::enc_orr_reg(X_F, X_F, X_D, true),
                 format!(
                     "orr {}, {}, {}",
                     reg_name(X_F),
@@ -2859,10 +3066,12 @@ fn emit_format_scalar(
                 ),
                 CostRule::Alu,
                 Some(X_F),
-                &[X_F, X_D]);
+                &[X_F, X_D],
+            );
             // reuse X_B for last byte
             ctx.load_imm(X_D, 0x3F);
-            ctx.push(encode::enc_and_reg(X_B, X_A, X_D, true),
+            ctx.push(
+                encode::enc_and_reg(X_B, X_A, X_D, true),
                 format!(
                     "and {}, {}, {}",
                     reg_name(X_B),
@@ -2871,9 +3080,11 @@ fn emit_format_scalar(
                 ),
                 CostRule::Alu,
                 Some(X_B),
-                &[X_A, X_D]);
+                &[X_A, X_D],
+            );
             ctx.load_imm(X_D, 0x80);
-            ctx.push(encode::enc_orr_reg(X_B, X_B, X_D, true),
+            ctx.push(
+                encode::enc_orr_reg(X_B, X_B, X_D, true),
                 format!(
                     "orr {}, {}, {}",
                     reg_name(X_B),
@@ -2882,7 +3093,8 @@ fn emit_format_scalar(
                 ),
                 CostRule::Alu,
                 Some(X_B),
-                &[X_B, X_D]);
+                &[X_B, X_D],
+            );
             if capacity < 4 {
                 return Err(CodegenError::internal(
                     "FormatScalar char capacity < 4".to_string(),
@@ -2921,18 +3133,22 @@ fn emit_format_scalar(
             ctx.load_slot(X_A, src_off); // value
             ctx.load_imm(X_F, 0); // negative flag
             if signed {
-                ctx.push(encode::enc_cmp_reg(X_A, X_ZR, true),
+                ctx.push(
+                    encode::enc_cmp_reg(X_A, X_ZR, true),
                     format!("cmp {}, xzr", reg_name(X_A)),
                     CostRule::Alu,
                     None,
-                    &[X_A, X_ZR]);
+                    &[X_A, X_ZR],
+                );
                 let nonneg = ctx.emit_skip(SkipKind::Cond(Cond::Ge));
                 ctx.load_imm(X_F, 1);
-                ctx.push(encode::enc_sub_reg(X_A, X_ZR, X_A, true),
+                ctx.push(
+                    encode::enc_sub_reg(X_A, X_ZR, X_A, true),
                     format!("neg {}, {}", reg_name(X_A), reg_name(X_A)),
                     CostRule::Alu,
                     Some(X_A),
-                    &[X_ZR, X_A]);
+                    &[X_ZR, X_A],
+                );
                 ctx.patch_skip(nonneg, SkipKind::Cond(Cond::Ge));
             }
             // Zero → "0" (with optional leading '-').
@@ -2942,11 +3158,13 @@ fn emit_format_scalar(
             ctx.store_slot(X_B, dst_off + 8);
             ctx.load_imm(X_B, 1);
             // if negative: write '-' at [0], '0' at [1], len=2
-            ctx.push(encode::enc_cmp_reg(X_F, X_ZR, true),
+            ctx.push(
+                encode::enc_cmp_reg(X_F, X_ZR, true),
                 format!("cmp {}, xzr", reg_name(X_F)),
                 CostRule::Alu,
                 None,
-                &[X_F, X_ZR]);
+                &[X_F, X_ZR],
+            );
             let no_sign0 = ctx.emit_skip(SkipKind::Cond(Cond::Eq));
             ctx.load_imm(X_C, b'-' as i64);
             ctx.store_slot(X_C, dst_off + 8);
@@ -2965,7 +3183,8 @@ fn emit_format_scalar(
             let loop_start = ctx.cur_word();
             // dig = X_A % 10; X_A /= 10
             ctx.load_imm(X_B, 10);
-            ctx.push(encode::enc_udiv(X_C, X_A, X_B, true),
+            ctx.push(
+                encode::enc_udiv(X_C, X_A, X_B, true),
                 format!(
                     "udiv {}, {}, {}",
                     reg_name(X_C),
@@ -2974,8 +3193,10 @@ fn emit_format_scalar(
                 ),
                 CostRule::Udiv,
                 Some(X_C),
-                &[X_A, X_B]);
-            ctx.push(encode::enc_msub(X_D, X_C, X_B, X_A, true),
+                &[X_A, X_B],
+            );
+            ctx.push(
+                encode::enc_msub(X_D, X_C, X_B, X_A, true),
                 format!(
                     "msub {}, {}, {}, {}",
                     reg_name(X_D),
@@ -2985,9 +3206,11 @@ fn emit_format_scalar(
                 ),
                 CostRule::Mul,
                 Some(X_D),
-                &[X_C, X_B]);
+                &[X_C, X_B],
+            );
             ctx.load_imm(X_B, b'0' as i64);
-            ctx.push(encode::enc_add_reg(X_D, X_D, X_B, true),
+            ctx.push(
+                encode::enc_add_reg(X_D, X_D, X_B, true),
                 format!(
                     "add {}, {}, {}",
                     reg_name(X_D),
@@ -2996,16 +3219,20 @@ fn emit_format_scalar(
                 ),
                 CostRule::Alu,
                 Some(X_D),
-                &[X_D, X_B]);
-            ctx.push(encode::enc_sub_imm(X_I_REG, X_I_REG, 1, true),
+                &[X_D, X_B],
+            );
+            ctx.push(
+                encode::enc_sub_imm(X_I_REG, X_I_REG, 1, true),
                 format!("sub {}, {}, #1", reg_name(X_I_REG), reg_name(X_I_REG)),
                 CostRule::Alu,
                 Some(X_I_REG),
-                &[X_I_REG]);
+                &[X_I_REG],
+            );
             // store digit at data[X_I]: addr = dst_base + 8 + X_I*8
             ctx.addr_of_slot(X_E, dst_off + 8);
             ctx.load_imm(X_B, 8);
-            ctx.push(encode::enc_mul(X_B, X_I_REG, X_B, true),
+            ctx.push(
+                encode::enc_mul(X_B, X_I_REG, X_B, true),
                 format!(
                     "mul {}, {}, {}",
                     reg_name(X_B),
@@ -3014,8 +3241,10 @@ fn emit_format_scalar(
                 ),
                 CostRule::Mul,
                 Some(X_B),
-                &[X_I_REG, X_B]);
-            ctx.push(encode::enc_add_reg(X_E, X_E, X_B, true),
+                &[X_I_REG, X_B],
+            );
+            ctx.push(
+                encode::enc_add_reg(X_E, X_E, X_B, true),
                 format!(
                     "add {}, {}, {}",
                     reg_name(X_E),
@@ -3024,43 +3253,55 @@ fn emit_format_scalar(
                 ),
                 CostRule::Alu,
                 Some(X_E),
-                &[X_E, X_B]);
+                &[X_E, X_B],
+            );
             ctx.store_ptr(X_D, X_E, 0);
-            ctx.push(encode::enc_add_imm(X_N_REG, X_N_REG, 1, true),
+            ctx.push(
+                encode::enc_add_imm(X_N_REG, X_N_REG, 1, true),
                 format!("add {}, {}, #1", reg_name(X_N_REG), reg_name(X_N_REG)),
                 CostRule::Alu,
                 Some(X_N_REG),
-                &[X_N_REG]);
-            ctx.push(encode::enc_mov_reg(X_A, X_C, true),
+                &[X_N_REG],
+            );
+            ctx.push(
+                encode::enc_mov_reg(X_A, X_C, true),
                 format!("mov {}, {}", reg_name(X_A), reg_name(X_C)),
                 CostRule::Alu,
                 Some(X_A),
-                &[X_C]);
+                &[X_C],
+            );
             // loop while X_A != 0
             let here = ctx.cur_word();
             let back = (loop_start as i64 - here as i64) as i32 * 4;
-            ctx.push(encode::enc_cbnz(X_A, back, true),
+            ctx.push(
+                encode::enc_cbnz(X_A, back, true),
                 format!("cbnz {}, #{back}", reg_name(X_A)),
                 CostRule::Branch,
                 None,
-                &[X_A]);
+                &[X_A],
+            );
 
             // Optional leading '-': decrement X_I, store '-', bump X_N
-            ctx.push(encode::enc_cmp_reg(X_F, X_ZR, true),
+            ctx.push(
+                encode::enc_cmp_reg(X_F, X_ZR, true),
                 format!("cmp {}, xzr", reg_name(X_F)),
                 CostRule::Alu,
                 None,
-                &[X_F, X_ZR]);
+                &[X_F, X_ZR],
+            );
             let no_sign = ctx.emit_skip(SkipKind::Cond(Cond::Eq));
-            ctx.push(encode::enc_sub_imm(X_I_REG, X_I_REG, 1, true),
+            ctx.push(
+                encode::enc_sub_imm(X_I_REG, X_I_REG, 1, true),
                 format!("sub {}, {}, #1", reg_name(X_I_REG), reg_name(X_I_REG)),
                 CostRule::Alu,
                 Some(X_I_REG),
-                &[X_I_REG]);
+                &[X_I_REG],
+            );
             ctx.load_imm(X_D, b'-' as i64);
             ctx.addr_of_slot(X_E, dst_off + 8);
             ctx.load_imm(X_B, 8);
-            ctx.push(encode::enc_mul(X_B, X_I_REG, X_B, true),
+            ctx.push(
+                encode::enc_mul(X_B, X_I_REG, X_B, true),
                 format!(
                     "mul {}, {}, {}",
                     reg_name(X_B),
@@ -3069,8 +3310,10 @@ fn emit_format_scalar(
                 ),
                 CostRule::Mul,
                 Some(X_B),
-                &[X_I_REG, X_B]);
-            ctx.push(encode::enc_add_reg(X_E, X_E, X_B, true),
+                &[X_I_REG, X_B],
+            );
+            ctx.push(
+                encode::enc_add_reg(X_E, X_E, X_B, true),
                 format!(
                     "add {}, {}, {}",
                     reg_name(X_E),
@@ -3079,26 +3322,32 @@ fn emit_format_scalar(
                 ),
                 CostRule::Alu,
                 Some(X_E),
-                &[X_E, X_B]);
+                &[X_E, X_B],
+            );
             ctx.store_ptr(X_D, X_E, 0);
-            ctx.push(encode::enc_add_imm(X_N_REG, X_N_REG, 1, true),
+            ctx.push(
+                encode::enc_add_imm(X_N_REG, X_N_REG, 1, true),
                 format!("add {}, {}, #1", reg_name(X_N_REG), reg_name(X_N_REG)),
                 CostRule::Alu,
                 Some(X_N_REG),
-                &[X_N_REG]);
+                &[X_N_REG],
+            );
             ctx.patch_skip(no_sign, SkipKind::Cond(Cond::Eq));
 
             // Shift data[X_I ..) down to data[0 .. X_N)
             ctx.load_imm(X_A, 0); // j
             let shift_start = ctx.cur_word();
-            ctx.push(encode::enc_cmp_reg(X_A, X_N_REG, true),
+            ctx.push(
+                encode::enc_cmp_reg(X_A, X_N_REG, true),
                 format!("cmp {}, {}", reg_name(X_A), reg_name(X_N_REG)),
                 CostRule::Alu,
                 None,
-                &[X_A, X_N_REG]);
+                &[X_A, X_N_REG],
+            );
             let shift_done = ctx.emit_skip(SkipKind::Cond(Cond::Cs));
             // load data[X_I + j]
-            ctx.push(encode::enc_add_reg(X_B, X_I_REG, X_A, true),
+            ctx.push(
+                encode::enc_add_reg(X_B, X_I_REG, X_A, true),
                 format!(
                     "add {}, {}, {}",
                     reg_name(X_B),
@@ -3107,10 +3356,12 @@ fn emit_format_scalar(
                 ),
                 CostRule::Alu,
                 Some(X_B),
-                &[X_I_REG, X_A]);
+                &[X_I_REG, X_A],
+            );
             ctx.addr_of_slot(X_E, dst_off + 8);
             ctx.load_imm(X_C, 8);
-            ctx.push(encode::enc_mul(X_D, X_B, X_C, true),
+            ctx.push(
+                encode::enc_mul(X_D, X_B, X_C, true),
                 format!(
                     "mul {}, {}, {}",
                     reg_name(X_D),
@@ -3119,8 +3370,10 @@ fn emit_format_scalar(
                 ),
                 CostRule::Mul,
                 Some(X_D),
-                &[X_B, X_C]);
-            ctx.push(encode::enc_add_reg(X_E, X_E, X_D, true),
+                &[X_B, X_C],
+            );
+            ctx.push(
+                encode::enc_add_reg(X_E, X_E, X_D, true),
                 format!(
                     "add {}, {}, {}",
                     reg_name(X_E),
@@ -3129,11 +3382,13 @@ fn emit_format_scalar(
                 ),
                 CostRule::Alu,
                 Some(X_E),
-                &[X_E, X_D]);
+                &[X_E, X_D],
+            );
             ctx.load_ptr(X_F, X_E, 0);
             // store data[j]
             ctx.addr_of_slot(X_E, dst_off + 8);
-            ctx.push(encode::enc_mul(X_D, X_A, X_C, true),
+            ctx.push(
+                encode::enc_mul(X_D, X_A, X_C, true),
                 format!(
                     "mul {}, {}, {}",
                     reg_name(X_D),
@@ -3142,8 +3397,10 @@ fn emit_format_scalar(
                 ),
                 CostRule::Mul,
                 Some(X_D),
-                &[X_A, X_C]);
-            ctx.push(encode::enc_add_reg(X_E, X_E, X_D, true),
+                &[X_A, X_C],
+            );
+            ctx.push(
+                encode::enc_add_reg(X_E, X_E, X_D, true),
                 format!(
                     "add {}, {}, {}",
                     reg_name(X_E),
@@ -3152,26 +3409,37 @@ fn emit_format_scalar(
                 ),
                 CostRule::Alu,
                 Some(X_E),
-                &[X_E, X_D]);
+                &[X_E, X_D],
+            );
             ctx.store_ptr(X_F, X_E, 0);
-            ctx.push(encode::enc_add_imm(X_A, X_A, 1, true),
+            ctx.push(
+                encode::enc_add_imm(X_A, X_A, 1, true),
                 format!("add {}, {}, #1", reg_name(X_A), reg_name(X_A)),
                 CostRule::Alu,
                 Some(X_A),
-                &[X_A]);
+                &[X_A],
+            );
             let here = ctx.cur_word();
             let back = (shift_start as i64 - here as i64) as i32 * 4;
-            ctx.push(encode::enc_b(back), format!("b #{back}"), CostRule::Branch, None, &[]);
+            ctx.push(
+                encode::enc_b(back),
+                format!("b #{back}"),
+                CostRule::Branch,
+                None,
+                &[],
+            );
             ctx.patch_skip(shift_done, SkipKind::Cond(Cond::Cs));
 
             // Zero the remaining data slots beyond X_N (unrolled).
             for i in 0..capacity {
                 ctx.load_imm(X_A, i as i64);
-                ctx.push(encode::enc_cmp_reg(X_A, X_N_REG, true),
+                ctx.push(
+                    encode::enc_cmp_reg(X_A, X_N_REG, true),
                     format!("cmp {}, {}", reg_name(X_A), reg_name(X_N_REG)),
                     CostRule::Alu,
                     None,
-                    &[X_A, X_N_REG]);
+                    &[X_A, X_N_REG],
+                );
                 let keep = ctx.emit_skip(SkipKind::Cond(Cond::Cc)); // i < n → keep
                 ctx.load_imm(X_B, 0);
                 ctx.store_slot(X_B, dst_off + 8 * (1 + i));
@@ -3214,7 +3482,8 @@ fn emit_string_concat(
     // out_len = lhs_len + rhs_len
     ctx.load_slot(X_A, lhs_off); // lhs_len
     ctx.load_slot(X_B, rhs_off); // rhs_len
-    ctx.push(encode::enc_add_reg(X_C, X_A, X_B, true),
+    ctx.push(
+        encode::enc_add_reg(X_C, X_A, X_B, true),
         format!(
             "add {}, {}, {}",
             reg_name(X_C),
@@ -3223,16 +3492,19 @@ fn emit_string_concat(
         ),
         CostRule::Alu,
         Some(X_C),
-        &[X_A, X_B]);
+        &[X_A, X_B],
+    );
     ctx.store_slot(X_C, dst_off);
     // Copy lhs occupied bytes (unrolled against capacity; gated by lhs_len).
     for i in 0..lhs_cap {
         ctx.load_imm(X_D, i as i64);
-        ctx.push(encode::enc_cmp_reg(X_D, X_A, true),
+        ctx.push(
+            encode::enc_cmp_reg(X_D, X_A, true),
             format!("cmp {}, {}", reg_name(X_D), reg_name(X_A)),
             CostRule::Alu,
             None,
-            &[X_D, X_A]);
+            &[X_D, X_A],
+        );
         let skip = ctx.emit_skip(SkipKind::Cond(Cond::Cs)); // i >= lhs_len
         ctx.load_slot(X_E, lhs_off + 8 * (1 + i));
         ctx.store_slot(X_E, dst_off + 8 * (1 + i));
@@ -3241,16 +3513,19 @@ fn emit_string_concat(
     // Copy rhs occupied bytes to dst[lhs_len + j].
     for j in 0..rhs_cap {
         ctx.load_imm(X_D, j as i64);
-        ctx.push(encode::enc_cmp_reg(X_D, X_B, true),
+        ctx.push(
+            encode::enc_cmp_reg(X_D, X_B, true),
             format!("cmp {}, {}", reg_name(X_D), reg_name(X_B)),
             CostRule::Alu,
             None,
-            &[X_D, X_B]);
+            &[X_D, X_B],
+        );
         let skip = ctx.emit_skip(SkipKind::Cond(Cond::Cs)); // j >= rhs_len
         ctx.load_slot(X_E, rhs_off + 8 * (1 + j));
         // dest index = lhs_len + j → byte off = 8 + 8*(lhs_len+j)
         ctx.addr_of_slot(X_F, dst_off + 8);
-        ctx.push(encode::enc_add_reg(X_C, X_A, X_D, true),
+        ctx.push(
+            encode::enc_add_reg(X_C, X_A, X_D, true),
             format!(
                 "add {}, {}, {}",
                 reg_name(X_C),
@@ -3259,9 +3534,11 @@ fn emit_string_concat(
             ),
             CostRule::Alu,
             Some(X_C),
-            &[X_A, X_D]);
+            &[X_A, X_D],
+        );
         ctx.load_imm(X_D, 8);
-        ctx.push(encode::enc_mul(X_D, X_C, X_D, true),
+        ctx.push(
+            encode::enc_mul(X_D, X_C, X_D, true),
             format!(
                 "mul {}, {}, {}",
                 reg_name(X_D),
@@ -3270,8 +3547,10 @@ fn emit_string_concat(
             ),
             CostRule::Mul,
             Some(X_D),
-            &[X_C, X_D]);
-        ctx.push(encode::enc_add_reg(X_F, X_F, X_D, true),
+            &[X_C, X_D],
+        );
+        ctx.push(
+            encode::enc_add_reg(X_F, X_F, X_D, true),
             format!(
                 "add {}, {}, {}",
                 reg_name(X_F),
@@ -3280,7 +3559,8 @@ fn emit_string_concat(
             ),
             CostRule::Alu,
             Some(X_F),
-            &[X_F, X_D]);
+            &[X_F, X_D],
+        );
         ctx.store_ptr(X_E, X_F, 0);
         ctx.patch_skip(skip, SkipKind::Cond(Cond::Cs));
     }
@@ -3296,11 +3576,13 @@ fn emit_index_addr(
 ) {
     ctx.load_slot(X_A, index_off);
     ctx.load_imm(X_B, len as i64);
-    ctx.push(encode::enc_cmp_reg(X_A, X_B, true),
+    ctx.push(
+        encode::enc_cmp_reg(X_A, X_B, true),
         format!("cmp {}, {}", reg_name(X_A), reg_name(X_B)),
         CostRule::Alu,
         None,
-        &[X_A, X_B]);
+        &[X_A, X_B],
+    );
     let skip = ctx.emit_skip(SkipKind::Cond(Cond::Cc));
     ctx.abort_val(
         "index ",
@@ -3311,7 +3593,8 @@ fn emit_index_addr(
     ctx.patch_skip(skip, SkipKind::Cond(Cond::Cc));
     ctx.addr_of_slot(out_reg, base_off);
     ctx.load_imm(X_D, elem_size as i64);
-    ctx.push(encode::enc_mul(X_E, X_A, X_D, true),
+    ctx.push(
+        encode::enc_mul(X_E, X_A, X_D, true),
         format!(
             "mul {}, {}, {}",
             reg_name(X_E),
@@ -3320,8 +3603,10 @@ fn emit_index_addr(
         ),
         CostRule::Mul,
         Some(X_E),
-        &[X_A, X_D]);
-    ctx.push(encode::enc_add_reg(out_reg, out_reg, X_E, true),
+        &[X_A, X_D],
+    );
+    ctx.push(
+        encode::enc_add_reg(out_reg, out_reg, X_E, true),
         format!(
             "add {}, {}, {}",
             reg_name(out_reg),
@@ -3330,7 +3615,8 @@ fn emit_index_addr(
         ),
         CostRule::Alu,
         Some(out_reg),
-        &[out_reg, X_E]);
+        &[out_reg, X_E],
+    );
 }
 
 /// plans/M10.md item B4 / decisions 595–596: address of packed byte
@@ -3347,11 +3633,13 @@ fn emit_bytes_index_addr(
     // live index (length rendered as the handle's own len word).
     ctx.load_slot(X_A, index_off);
     ctx.load_slot(X_B, handle_off + 8);
-    ctx.push(encode::enc_cmp_reg(X_A, X_B, true),
+    ctx.push(
+        encode::enc_cmp_reg(X_A, X_B, true),
         format!("cmp {}, {}", reg_name(X_A), reg_name(X_B)),
         CostRule::Alu,
         None,
-        &[X_A, X_B]);
+        &[X_A, X_B],
+    );
     let skip = ctx.emit_skip(SkipKind::Cond(Cond::Cc));
     // Suffix embeds the live length so the diagnostic matches IndexGet's
     // `"index {i} out of bounds (length {len})"` shape; the length half
@@ -3363,7 +3651,8 @@ fn emit_bytes_index_addr(
     ctx.patch_skip(skip, SkipKind::Cond(Cond::Cc));
     // out = handle.base + index (elem_stride = 1 packed byte).
     ctx.load_slot(out_reg, handle_off);
-    ctx.push(encode::enc_add_reg(out_reg, out_reg, X_A, true),
+    ctx.push(
+        encode::enc_add_reg(out_reg, out_reg, X_A, true),
         format!(
             "add {}, {}, {}",
             reg_name(out_reg),
@@ -3372,7 +3661,8 @@ fn emit_bytes_index_addr(
         ),
         CostRule::Alu,
         Some(out_reg),
-        &[out_reg, X_A]);
+        &[out_reg, X_A],
+    );
     Ok(())
 }
 
@@ -3389,11 +3679,13 @@ fn emit_placed_index_addr(
 ) {
     ctx.load_slot(X_A, index_off);
     ctx.load_imm(X_B, len as i64);
-    ctx.push(encode::enc_cmp_reg(X_A, X_B, true),
+    ctx.push(
+        encode::enc_cmp_reg(X_A, X_B, true),
         format!("cmp {}, {}", reg_name(X_A), reg_name(X_B)),
         CostRule::Alu,
         None,
-        &[X_A, X_B]);
+        &[X_A, X_B],
+    );
     let skip = ctx.emit_skip(SkipKind::Cond(Cond::Cc));
     ctx.abort_val(
         "index ",
@@ -3405,7 +3697,8 @@ fn emit_placed_index_addr(
     ctx.load_slot(out_reg, base_off);
     if field_offset != 0 {
         ctx.load_imm(X_D, field_offset as i64);
-        ctx.push(encode::enc_add_reg(out_reg, out_reg, X_D, true),
+        ctx.push(
+            encode::enc_add_reg(out_reg, out_reg, X_D, true),
             format!(
                 "add {}, {}, {}",
                 reg_name(out_reg),
@@ -3414,10 +3707,12 @@ fn emit_placed_index_addr(
             ),
             CostRule::Alu,
             Some(out_reg),
-            &[out_reg, X_D]);
+            &[out_reg, X_D],
+        );
     }
     ctx.load_imm(X_D, elem_stride as i64);
-    ctx.push(encode::enc_mul(X_E, X_A, X_D, true),
+    ctx.push(
+        encode::enc_mul(X_E, X_A, X_D, true),
         format!(
             "mul {}, {}, {}",
             reg_name(X_E),
@@ -3426,8 +3721,10 @@ fn emit_placed_index_addr(
         ),
         CostRule::Mul,
         Some(X_E),
-        &[X_A, X_D]);
-    ctx.push(encode::enc_add_reg(out_reg, out_reg, X_E, true),
+        &[X_A, X_D],
+    );
+    ctx.push(
+        encode::enc_add_reg(out_reg, out_reg, X_E, true),
         format!(
             "add {}, {}, {}",
             reg_name(out_reg),
@@ -3436,7 +3733,8 @@ fn emit_placed_index_addr(
         ),
         CostRule::Alu,
         Some(out_reg),
-        &[out_reg, X_E]);
+        &[out_reg, X_E],
+    );
 }
 
 fn emit_arith_checked(
@@ -3467,7 +3765,8 @@ fn emit_arith_checked(
                 )));
             }
         };
-        ctx.push(enc,
+        ctx.push(
+            enc,
             format!(
                 "{mnem} {}, {}, {}",
                 reg_name(X_C),
@@ -3479,7 +3778,8 @@ fn emit_arith_checked(
                 _ => CostRule::Alu,
             },
             Some(X_C),
-            &[X_A, X_B]);
+            &[X_A, X_B],
+        );
         let (min, max) = int_bounds_i64(ty).unwrap();
         ctx.check_bounds_i64_or_abort(X_C, min, max, abort);
         ctx.store_slot(X_C, ctx.frame.off(dst));
@@ -3487,7 +3787,8 @@ fn emit_arith_checked(
     }
     match op {
         BinOp::Add => {
-            ctx.push(encode::enc_adds_reg(X_C, X_A, X_B, true),
+            ctx.push(
+                encode::enc_adds_reg(X_C, X_A, X_B, true),
                 format!(
                     "adds {}, {}, {}",
                     reg_name(X_C),
@@ -3496,12 +3797,14 @@ fn emit_arith_checked(
                 ),
                 CostRule::Alu,
                 Some(X_C),
-                &[X_A, X_B]);
+                &[X_A, X_B],
+            );
             let fail = if signed { Cond::Vs } else { Cond::Cs };
             ctx.check_flags_or_abort(fail, abort);
         }
         BinOp::Sub => {
-            ctx.push(encode::enc_subs_reg(X_C, X_A, X_B, true),
+            ctx.push(
+                encode::enc_subs_reg(X_C, X_A, X_B, true),
                 format!(
                     "subs {}, {}, {}",
                     reg_name(X_C),
@@ -3510,12 +3813,14 @@ fn emit_arith_checked(
                 ),
                 CostRule::Alu,
                 Some(X_C),
-                &[X_A, X_B]);
+                &[X_A, X_B],
+            );
             let fail = if signed { Cond::Vs } else { Cond::Cc };
             ctx.check_flags_or_abort(fail, abort);
         }
         BinOp::Mul => {
-            ctx.push(encode::enc_mul(X_C, X_A, X_B, true),
+            ctx.push(
+                encode::enc_mul(X_C, X_A, X_B, true),
                 format!(
                     "mul {}, {}, {}",
                     reg_name(X_C),
@@ -3524,9 +3829,11 @@ fn emit_arith_checked(
                 ),
                 CostRule::Mul,
                 Some(X_C),
-                &[X_A, X_B]);
+                &[X_A, X_B],
+            );
             if signed {
-                ctx.push(encode::enc_smulh(X_D, X_A, X_B),
+                ctx.push(
+                    encode::enc_smulh(X_D, X_A, X_B),
                     format!(
                         "smulh {}, {}, {}",
                         reg_name(X_D),
@@ -3535,19 +3842,25 @@ fn emit_arith_checked(
                     ),
                     CostRule::Alu,
                     Some(X_D),
-                    &[X_A, X_B]);
-                ctx.push(encode::enc_asr_imm(X_E, X_C, 63, true),
+                    &[X_A, X_B],
+                );
+                ctx.push(
+                    encode::enc_asr_imm(X_E, X_C, 63, true),
                     format!("asr {}, {}, #63", reg_name(X_E), reg_name(X_C)),
                     CostRule::Alu,
                     Some(X_E),
-                    &[X_C]);
-                ctx.push(encode::enc_cmp_reg(X_D, X_E, true),
+                    &[X_C],
+                );
+                ctx.push(
+                    encode::enc_cmp_reg(X_D, X_E, true),
                     format!("cmp {}, {}", reg_name(X_D), reg_name(X_E)),
                     CostRule::Alu,
                     None,
-                    &[X_D, X_E]);
+                    &[X_D, X_E],
+                );
             } else {
-                ctx.push(encode::enc_umulh(X_D, X_A, X_B),
+                ctx.push(
+                    encode::enc_umulh(X_D, X_A, X_B),
                     format!(
                         "umulh {}, {}, {}",
                         reg_name(X_D),
@@ -3556,12 +3869,15 @@ fn emit_arith_checked(
                     ),
                     CostRule::Alu,
                     Some(X_D),
-                    &[X_A, X_B]);
-                ctx.push(encode::enc_cmp_reg(X_D, X_ZR, true),
+                    &[X_A, X_B],
+                );
+                ctx.push(
+                    encode::enc_cmp_reg(X_D, X_ZR, true),
                     format!("cmp {}, xzr", reg_name(X_D)),
                     CostRule::Alu,
                     None,
-                    &[X_D, X_ZR]);
+                    &[X_D, X_ZR],
+                );
             }
             ctx.check_flags_or_abort(Cond::Ne, abort);
         }
@@ -3604,7 +3920,8 @@ fn emit_arith_wrapping(
             )));
         }
     };
-    ctx.push(enc,
+    ctx.push(
+        enc,
         format!(
             "{mnem} {}, {}, {}",
             reg_name(X_C),
@@ -3613,7 +3930,8 @@ fn emit_arith_wrapping(
         ),
         CostRule::Alu,
         None,
-        &[]);
+        &[],
+    );
     ctx.narrow_to_width(X_C, bits, signed);
     ctx.store_slot(X_C, ctx.frame.off(dst));
     Ok(())
@@ -3636,29 +3954,35 @@ fn emit_div_rem(
         .ok_or_else(|| CodegenError::internal(format!("`DivRem` on non-integer {ty:?}")))?;
     ctx.load_slot(X_A, ctx.frame.off(lhs));
     ctx.load_slot(X_B, ctx.frame.off(rhs));
-    ctx.push(encode::enc_cmp_reg(X_B, X_ZR, true),
+    ctx.push(
+        encode::enc_cmp_reg(X_B, X_ZR, true),
         format!("cmp {}, xzr", reg_name(X_B)),
         CostRule::Alu,
         None,
-        &[X_B, X_ZR]);
+        &[X_B, X_ZR],
+    );
     let skip_zero = ctx.emit_skip(SkipKind::Cond(Cond::Ne));
     ctx.abort_fixed(abort_zero);
     ctx.patch_skip(skip_zero, SkipKind::Cond(Cond::Ne));
     if signed && op == BinOp::Div {
         let (min, _) = int_bounds_i64(ty).unwrap();
         ctx.load_imm(X_D, min);
-        ctx.push(encode::enc_cmp_reg(X_A, X_D, true),
+        ctx.push(
+            encode::enc_cmp_reg(X_A, X_D, true),
             format!("cmp {}, {}", reg_name(X_A), reg_name(X_D)),
             CostRule::Alu,
             None,
-            &[X_A, X_D]);
+            &[X_A, X_D],
+        );
         let skip_a = ctx.emit_skip(SkipKind::Cond(Cond::Ne));
         ctx.load_imm(X_E, -1);
-        ctx.push(encode::enc_cmp_reg(X_B, X_E, true),
+        ctx.push(
+            encode::enc_cmp_reg(X_B, X_E, true),
             format!("cmp {}, {}", reg_name(X_B), reg_name(X_E)),
             CostRule::Alu,
             None,
-            &[X_B, X_E]);
+            &[X_B, X_E],
+        );
         let skip_b = ctx.emit_skip(SkipKind::Cond(Cond::Ne));
         ctx.abort_fixed(abort_overflow);
         ctx.patch_skip(skip_a, SkipKind::Cond(Cond::Ne));
@@ -3669,7 +3993,8 @@ fn emit_div_rem(
     } else {
         (encode::enc_udiv(X_C, X_A, X_B, true), "udiv")
     };
-    ctx.push(enc,
+    ctx.push(
+        enc,
         format!(
             "{mnem} {}, {}, {}",
             reg_name(X_C),
@@ -3678,9 +4003,11 @@ fn emit_div_rem(
         ),
         CostRule::Alu,
         None,
-        &[]);
+        &[],
+    );
     if op == BinOp::Rem {
-        ctx.push(encode::enc_msub(X_C, X_C, X_B, X_A, true),
+        ctx.push(
+            encode::enc_msub(X_C, X_C, X_B, X_A, true),
             format!(
                 "msub {}, {}, {}, {}",
                 reg_name(X_C),
@@ -3690,7 +4017,8 @@ fn emit_div_rem(
             ),
             CostRule::Mul,
             Some(X_C),
-            &[X_C, X_B]);
+            &[X_C, X_B],
+        );
     } else if op != BinOp::Div {
         return Err(CodegenError::internal(format!(
             "`DivRem` with op `{}`",
@@ -3721,11 +4049,13 @@ fn emit_shift(
     // Range check: one unsigned compare catches both "negative" and
     // "too large" (module doc's own worked reasoning).
     ctx.load_imm(X_D, bits as i64);
-    ctx.push(encode::enc_cmp_reg(X_B, X_D, true),
+    ctx.push(
+        encode::enc_cmp_reg(X_B, X_D, true),
         format!("cmp {}, {}", reg_name(X_B), reg_name(X_D)),
         CostRule::Alu,
         None,
-        &[X_B, X_D]);
+        &[X_B, X_D],
+    );
     let skip_range = ctx.emit_skip(SkipKind::Cond(Cond::Cc));
     ctx.abort_val(
         "shift count ",
@@ -3737,14 +4067,17 @@ fn emit_shift(
 
     if op == BinOp::Shl {
         let skip_zero = ctx.emit_skip(SkipKind::Cbz(X_B));
-        ctx.push(encode::enc_mov_reg(X_C, X_A, true),
+        ctx.push(
+            encode::enc_mov_reg(X_C, X_A, true),
             format!("mov {}, {}", reg_name(X_C), reg_name(X_A)),
             CostRule::Alu,
             Some(X_C),
-            &[X_A]);
+            &[X_A],
+        );
         ctx.narrow_to_width(X_C, bits, false);
         ctx.load_imm(X_D, bits as i64);
-        ctx.push(encode::enc_sub_reg(X_D, X_D, X_B, true),
+        ctx.push(
+            encode::enc_sub_reg(X_D, X_D, X_B, true),
             format!(
                 "sub {}, {}, {}",
                 reg_name(X_D),
@@ -3753,8 +4086,10 @@ fn emit_shift(
             ),
             CostRule::Alu,
             Some(X_D),
-            &[X_D, X_B]);
-        ctx.push(encode::enc_lsr_reg(X_E, X_C, X_D, true),
+            &[X_D, X_B],
+        );
+        ctx.push(
+            encode::enc_lsr_reg(X_E, X_C, X_D, true),
             format!(
                 "lsr {}, {}, {}",
                 reg_name(X_E),
@@ -3763,12 +4098,15 @@ fn emit_shift(
             ),
             CostRule::Alu,
             Some(X_E),
-            &[X_C, X_D]);
-        ctx.push(encode::enc_cmp_reg(X_E, X_ZR, true),
+            &[X_C, X_D],
+        );
+        ctx.push(
+            encode::enc_cmp_reg(X_E, X_ZR, true),
             format!("cmp {}, xzr", reg_name(X_E)),
             CostRule::Alu,
             None,
-            &[X_E, X_ZR]);
+            &[X_E, X_ZR],
+        );
         let skip_lost = ctx.emit_skip(SkipKind::Cond(Cond::Eq));
         let lost_msg = lost.ok_or_else(|| {
             CodegenError::internal("`Shift` Shl with no `lost` message (mwir producer bug)")
@@ -3777,7 +4115,8 @@ fn emit_shift(
         ctx.patch_skip(skip_lost, SkipKind::Cond(Cond::Eq));
         ctx.patch_skip(skip_zero, SkipKind::Cbz(X_B));
 
-        ctx.push(encode::enc_lsl_reg(X_F, X_A, X_B, true),
+        ctx.push(
+            encode::enc_lsl_reg(X_F, X_A, X_B, true),
             format!(
                 "lsl {}, {}, {}",
                 reg_name(X_F),
@@ -3786,7 +4125,8 @@ fn emit_shift(
             ),
             CostRule::Alu,
             Some(X_F),
-            &[X_A, X_B]);
+            &[X_A, X_B],
+        );
         ctx.narrow_to_width(X_F, bits, signed);
         ctx.store_slot(X_F, ctx.frame.off(dst));
     } else if op == BinOp::Shr {
@@ -3795,7 +4135,8 @@ fn emit_shift(
         } else {
             (encode::enc_lsr_reg(X_F, X_A, X_B, true), "lsr")
         };
-        ctx.push(enc,
+        ctx.push(
+            enc,
             format!(
                 "{mnem} {}, {}, {}",
                 reg_name(X_F),
@@ -3804,7 +4145,8 @@ fn emit_shift(
             ),
             CostRule::Alu,
             None,
-            &[]);
+            &[],
+        );
         ctx.store_slot(X_F, ctx.frame.off(dst));
     } else {
         return Err(CodegenError::internal(format!(
@@ -3836,22 +4178,26 @@ fn emit_convert(
     ctx.load_slot(X_A, ctx.frame.off(src));
     if tbits == 64 && !tsigned {
         if ssigned {
-            ctx.push(encode::enc_cmp_reg(X_A, X_ZR, true),
+            ctx.push(
+                encode::enc_cmp_reg(X_A, X_ZR, true),
                 format!("cmp {}, xzr", reg_name(X_A)),
                 CostRule::Alu,
                 None,
-                &[X_A, X_ZR]);
+                &[X_A, X_ZR],
+            );
             let skip = ctx.emit_skip(SkipKind::Cond(Cond::Ge));
             ctx.abort_fixed(abort);
             ctx.patch_skip(skip, SkipKind::Cond(Cond::Ge));
         }
     } else if tbits == 64 && tsigned {
         if !ssigned && sbits == 64 {
-            ctx.push(encode::enc_cmp_reg(X_A, X_ZR, true),
+            ctx.push(
+                encode::enc_cmp_reg(X_A, X_ZR, true),
                 format!("cmp {}, xzr", reg_name(X_A)),
                 CostRule::Alu,
                 None,
-                &[X_A, X_ZR]);
+                &[X_A, X_ZR],
+            );
             let skip = ctx.emit_skip(SkipKind::Cond(Cond::Ge));
             ctx.abort_fixed(abort);
             ctx.patch_skip(skip, SkipKind::Cond(Cond::Ge));
@@ -3860,11 +4206,13 @@ fn emit_convert(
         let (min, max) = int_bounds_i64(target_ty).unwrap();
         ctx.check_bounds_i64_or_abort(X_A, min, max, abort);
     }
-    ctx.push(encode::enc_mov_reg(X_C, X_A, true),
+    ctx.push(
+        encode::enc_mov_reg(X_C, X_A, true),
         format!("mov {}, {}", reg_name(X_C), reg_name(X_A)),
         CostRule::Alu,
         Some(X_C),
-        &[X_A]);
+        &[X_A],
+    );
     ctx.narrow_to_width(X_C, tbits, tsigned);
     ctx.store_slot(X_C, ctx.frame.off(dst));
     Ok(())
@@ -3873,11 +4221,13 @@ fn emit_convert(
 // --- prologue/epilogue -------------------------------------------------------
 
 fn emit_prologue(f: &MwirFn, frame: &Frame, ctx: &mut FnCtx) -> Result<(), CodegenError> {
-    ctx.push(encode::enc_sub_imm(X_SP, X_SP, frame.size as u16, true),
+    ctx.push(
+        encode::enc_sub_imm(X_SP, X_SP, frame.size as u16, true),
         format!("sub sp, sp, #{}", frame.size),
         CostRule::Alu,
         Some(X_SP),
-        &[X_SP]);
+        &[X_SP],
+    );
     ctx.store_slot(X_LR, frame.lr_off);
     let mut next_reg = 0u8;
     if let Some((self_temp, mode)) = f.receiver {
@@ -3975,12 +4325,20 @@ fn emit_epilogue(f: &MwirFn, frame: &Frame, ctx: &mut FnCtx) -> Result<(), Codeg
         }
     }
     ctx.load_slot(X_LR, frame.lr_off);
-    ctx.push(encode::enc_add_imm(X_SP, X_SP, frame.size as u16, true),
+    ctx.push(
+        encode::enc_add_imm(X_SP, X_SP, frame.size as u16, true),
         format!("add sp, sp, #{}", frame.size),
         CostRule::Alu,
         Some(X_SP),
-        &[X_SP]);
-    ctx.push(encode::enc_ret(X_LR), "ret".to_string(), CostRule::Branch, None, &[X_LR]);
+        &[X_SP],
+    );
+    ctx.push(
+        encode::enc_ret(X_LR),
+        "ret".to_string(),
+        CostRule::Branch,
+        None,
+        &[X_LR],
+    );
     Ok(())
 }
 
@@ -4003,11 +4361,13 @@ fn emit_interrupt_cell_addr(ctx: &mut FnCtx, field_off: usize) -> Result<(), Cod
                 "InterruptCell field_off above add-immediate range",
             ));
         }
-        ctx.push(encode::enc_add_imm(X_A, X_A, field_off as u16, true),
+        ctx.push(
+            encode::enc_add_imm(X_A, X_A, field_off as u16, true),
             format!("add {}, {}, #{field_off}", reg_name(X_A), reg_name(X_A)),
             CostRule::Alu,
             Some(X_A),
-            &[X_A]);
+            &[X_A],
+        );
     }
     Ok(())
 }
@@ -4036,49 +4396,62 @@ fn emit_interrupt_cell_rmw(
     ctx.load_slot(X_B, value_off);
     match width {
         4 => {
-            ctx.push(encode::enc_ldar_w(X_C, X_A),
+            ctx.push(
+                encode::enc_ldar_w(X_C, X_A),
                 format!("ldar w{}, [{}]", X_C, reg_name(X_A)),
                 CostRule::Load,
                 Some(X_C),
-                &[X_A]);
+                &[X_A],
+            );
             match kind {
                 InterruptCellRmw::Swap => {
-                    ctx.push(encode::enc_stlr_w(X_B, X_A),
+                    ctx.push(
+                        encode::enc_stlr_w(X_B, X_A),
                         format!("stlr w{}, [{}]", X_B, reg_name(X_A)),
                         CostRule::Store,
                         Some(X_B),
-                        &[X_A]);
+                        &[X_A],
+                    );
                 }
                 InterruptCellRmw::FetchOr => {
-                    ctx.push(encode::enc_orr_reg(X_D, X_C, X_B, false),
+                    ctx.push(
+                        encode::enc_orr_reg(X_D, X_C, X_B, false),
                         format!("orr w{}, w{}, w{}", X_D, X_C, X_B),
                         CostRule::Alu,
                         Some(X_D),
-                        &[X_C, X_B]);
-                    ctx.push(encode::enc_stlr_w(X_D, X_A),
+                        &[X_C, X_B],
+                    );
+                    ctx.push(
+                        encode::enc_stlr_w(X_D, X_A),
                         format!("stlr w{}, [{}]", X_D, reg_name(X_A)),
                         CostRule::Store,
                         Some(X_D),
-                        &[X_A]);
+                        &[X_A],
+                    );
                 }
             }
         }
         8 => {
-            ctx.push(encode::enc_ldar_x(X_C, X_A),
+            ctx.push(
+                encode::enc_ldar_x(X_C, X_A),
                 format!("ldar {}, [{}]", reg_name(X_C), reg_name(X_A)),
                 CostRule::Load,
                 Some(X_C),
-                &[X_A]);
+                &[X_A],
+            );
             match kind {
                 InterruptCellRmw::Swap => {
-                    ctx.push(encode::enc_stlr_x(X_B, X_A),
+                    ctx.push(
+                        encode::enc_stlr_x(X_B, X_A),
                         format!("stlr {}, [{}]", reg_name(X_B), reg_name(X_A)),
                         CostRule::Store,
                         Some(X_B),
-                        &[X_A]);
+                        &[X_A],
+                    );
                 }
                 InterruptCellRmw::FetchOr => {
-                    ctx.push(encode::enc_orr_reg(X_D, X_C, X_B, true),
+                    ctx.push(
+                        encode::enc_orr_reg(X_D, X_C, X_B, true),
                         format!(
                             "orr {}, {}, {}",
                             reg_name(X_D),
@@ -4087,12 +4460,15 @@ fn emit_interrupt_cell_rmw(
                         ),
                         CostRule::Alu,
                         Some(X_D),
-                        &[X_C, X_B]);
-                    ctx.push(encode::enc_stlr_x(X_D, X_A),
+                        &[X_C, X_B],
+                    );
+                    ctx.push(
+                        encode::enc_stlr_x(X_D, X_A),
                         format!("stlr {}, [{}]", reg_name(X_D), reg_name(X_A)),
                         CostRule::Store,
                         Some(X_D),
-                        &[X_A]);
+                        &[X_A],
+                    );
                 }
             }
         }
@@ -4222,7 +4598,8 @@ fn emit_slotmap_mint_id(map: Temp, ctx: &mut FnCtx<'_>) -> Result<(), CodegenErr
     let addr =
         wrela_machine::layout::MACHINE_INFO_BASE + wrela_machine::machine_info::OFF_SLOTMAP_NEXT_ID;
     ctx.load_imm(X_A, addr as i64);
-    ctx.push(encode::enc_ldr_x_imm(X_B, X_A, 0),
+    ctx.push(
+        encode::enc_ldr_x_imm(X_B, X_A, 0),
         format!(
             "ldr {}, [{}]  ; SlotMap next id",
             reg_name(X_B),
@@ -4230,23 +4607,28 @@ fn emit_slotmap_mint_id(map: Temp, ctx: &mut FnCtx<'_>) -> Result<(), CodegenErr
         ),
         CostRule::Load,
         Some(X_B),
-        &[X_A]);
-    ctx.push(encode::enc_add_imm(X_C, X_B, 1, true),
+        &[X_A],
+    );
+    ctx.push(
+        encode::enc_add_imm(X_C, X_B, 1, true),
         format!("add {}, {}, #1", reg_name(X_C), reg_name(X_B)),
         CostRule::Alu,
         Some(X_C),
-        &[X_B]);
+        &[X_B],
+    );
     // Non-wrapping: a zero after +1 means the u64 space wrapped.
     let skip = ctx.emit_skip(SkipKind::Cbnz(X_C));
     ctx.abort_fixed(
         "SlotMap instance id space exhausted (u64 non-wrapping mint, 05-library.md §7)",
     );
     ctx.patch_skip(skip, SkipKind::Cbnz(X_C));
-    ctx.push(encode::enc_str_x_imm(X_C, X_A, 0),
+    ctx.push(
+        encode::enc_str_x_imm(X_C, X_A, 0),
         format!("str {}, [{}]", reg_name(X_C), reg_name(X_A)),
         CostRule::Store,
         None,
-        &[X_C, X_A]);
+        &[X_C, X_A],
+    );
     // `map_id` is field 0 — first 8 bytes of the aggregate.
     ctx.store_slot(X_C, ctx.frame.off(map));
     Ok(())
@@ -5183,7 +5565,8 @@ fn emit_async_entry(
     // every exit (suspend or complete) reloads it from there.
     ctx.store_slot(X_LR, ctx.frame.lr_off);
     // Fresh-vs-resume fork on the suspended discriminant.
-    ctx.push(encode::enc_ldr_x_imm(X_A, X_FRAME, OFF_TURN_SUSPENDED as u16),
+    ctx.push(
+        encode::enc_ldr_x_imm(X_A, X_FRAME, OFF_TURN_SUSPENDED as u16),
         format!(
             "ldr {}, [{}, #{OFF_TURN_SUSPENDED}]",
             reg_name(X_A),
@@ -5191,7 +5574,8 @@ fn emit_async_entry(
         ),
         CostRule::Load,
         Some(X_A),
-        &[X_FRAME]);
+        &[X_FRAME],
+    );
     let fork = ctx.emit_skip(SkipKind::Cbnz(X_A));
 
     // --- fresh path: spill self/params into the persistent frame -------
@@ -5277,26 +5661,32 @@ fn emit_async_entry(
     // --- resume path: consume the discriminant, dispatch --------------
     ctx.patch_skip(fork, SkipKind::Cbnz(X_A));
     for off in [OFF_TURN_SUSPENDED, OFF_TURN_RESUME_READY] {
-        ctx.push(encode::enc_str_x_imm(X_ZR, X_FRAME, off as u16),
+        ctx.push(
+            encode::enc_str_x_imm(X_ZR, X_FRAME, off as u16),
             format!("str xzr, [{}, #{off}]", reg_name(X_FRAME)),
             CostRule::Store,
             None,
-            &[X_ZR, X_FRAME]);
+            &[X_ZR, X_FRAME],
+        );
     }
     ctx.load_slot(X_A, ctx.frame.off(state_temp));
     for (i, &flat_idx) in resume_target.iter().enumerate() {
-        ctx.push(encode::enc_cmp_imm(X_A, i as u16, true),
+        ctx.push(
+            encode::enc_cmp_imm(X_A, i as u16, true),
             format!("cmp {}, #{i}", reg_name(X_A)),
             CostRule::Alu,
             None,
-            &[X_A]);
+            &[X_A],
+        );
         ctx.b_cond_to(Cond::Eq, flat_idx);
     }
-    ctx.push(encode::enc_brk(BRK_ASYNC_DISPATCH_NO_STATE_MATCHED),
+    ctx.push(
+        encode::enc_brk(BRK_ASYNC_DISPATCH_NO_STATE_MATCHED),
         format!("brk #{BRK_ASYNC_DISPATCH_NO_STATE_MATCHED:#x}"),
         CostRule::System,
         None,
-        &[]);
+        &[],
+    );
     Ok(())
 }
 
@@ -5317,18 +5707,27 @@ fn emit_async_epilogue(f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError> 
         // in the scalar reply word rather than whatever register state
         // the body happened to leave behind, since the dispatch arm
         // stores that word into an image-visible turn record.
-        ctx.push(encode::enc_mov_reg(1, X_ZR, true),
+        ctx.push(
+            encode::enc_mov_reg(1, X_ZR, true),
             "mov x1, xzr".to_string(),
             CostRule::Alu,
             Some(1),
-            &[X_ZR]);
+            &[X_ZR],
+        );
     } else {
-        ctx.push(encode::enc_mov_reg(1, 0, true), "mov x1, x0".to_string(), CostRule::Alu, Some(1), &[0]);
+        ctx.push(
+            encode::enc_mov_reg(1, 0, true),
+            "mov x1, x0".to_string(),
+            CostRule::Alu,
+            Some(1),
+            &[0],
+        );
     }
     // M11 F (decision 793): park the completing scalar in OFF_TURN_REPLY so
     // generic `__wrela_child_poll` can read it after the resume Call (the
     // specialized emitter captured x1; wrela Calls only bind x0).
-    ctx.push(encode::enc_str_x_imm(1, X_FRAME, OFF_TURN_REPLY as u16),
+    ctx.push(
+        encode::enc_str_x_imm(1, X_FRAME, OFF_TURN_REPLY as u16),
         format!(
             "str {}, [{}, #{OFF_TURN_REPLY}]  ; complete → turn.reply",
             reg_name(1),
@@ -5336,7 +5735,8 @@ fn emit_async_epilogue(f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError> 
         ),
         CostRule::Store,
         None,
-        &[1, X_FRAME]);
+        &[1, X_FRAME],
+    );
     if let Some((self_temp, mode)) = f.receiver {
         if mode == AccessMode::Mut {
             // plans/M7.md item G, decision 17: same InterruptCell skip as
@@ -5363,7 +5763,13 @@ fn emit_async_epilogue(f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError> 
     }
     ctx.load_imm(0, TURN_STATUS_COMPLETED as i64);
     ctx.load_slot(X_LR, ctx.frame.lr_off);
-    ctx.push(encode::enc_ret(X_LR), "ret".to_string(), CostRule::Branch, None, &[X_LR]);
+    ctx.push(
+        encode::enc_ret(X_LR),
+        "ret".to_string(),
+        CostRule::Branch,
+        None,
+        &[X_LR],
+    );
     Ok(())
 }
 
@@ -5373,11 +5779,13 @@ impl FnCtx<'_> {
     fn b_cond_to(&mut self, cond: Cond, target_flat_idx: usize) {
         let this_word = self.cur_word();
         let delta = self.branch_target_delta(target_flat_idx, this_word);
-        self.push(encode::enc_b_cond(cond, delta),
+        self.push(
+            encode::enc_b_cond(cond, delta),
             format!("b.{} #{delta}", cond_mnemonic(cond)),
             CostRule::Branch,
             None,
-            &[]);
+            &[],
+        );
     }
 }
 
@@ -5420,11 +5828,13 @@ fn emit_marshal_and_call(
         match arg_temps.get(reg as usize - 1) {
             Some(t) => ctx.load_slot(reg, ctx.frame.off(*t)),
             // `mov xN, xzr` — 1 word, no `load_imm` 4-word movz/movk run.
-            None => ctx.push(encode::enc_mov_reg(reg, X_ZR, true),
+            None => ctx.push(
+                encode::enc_mov_reg(reg, X_ZR, true),
                 format!("mov x{reg}, xzr"),
                 CostRule::Alu,
                 Some(reg),
-                &[X_ZR]),
+                &[X_ZR],
+            ),
         }
     }
     match waker_self_key {
@@ -5706,12 +6116,15 @@ fn emit_group_create(
     // Branch-free narrowing (module doc): 0 means "no deadline" throughout,
     // so it is remapped to a MAX sentinel for the `min`, then remapped back.
     ctx.load_imm(X_D, u64::MAX as i64); // sentinel
-    ctx.push(encode::enc_cmp_imm(X_B, 0, true),
+    ctx.push(
+        encode::enc_cmp_imm(X_B, 0, true),
         format!("cmp {}, #0", reg_name(X_B)),
         CostRule::Alu,
         None,
-        &[X_B]);
-    ctx.push(encode::enc_csel(X_E, X_D, X_B, Cond::Eq, true),
+        &[X_B],
+    );
+    ctx.push(
+        encode::enc_csel(X_E, X_D, X_B, Cond::Eq, true),
         format!(
             "csel {}, {}, {}, eq",
             reg_name(X_E),
@@ -5720,13 +6133,17 @@ fn emit_group_create(
         ),
         CostRule::Alu,
         Some(X_E),
-        &[X_D, X_B]);
-    ctx.push(encode::enc_cmp_imm(X_C, 0, true),
+        &[X_D, X_B],
+    );
+    ctx.push(
+        encode::enc_cmp_imm(X_C, 0, true),
         format!("cmp {}, #0", reg_name(X_C)),
         CostRule::Alu,
         None,
-        &[X_C]);
-    ctx.push(encode::enc_csel(X_F, X_D, X_C, Cond::Eq, true),
+        &[X_C],
+    );
+    ctx.push(
+        encode::enc_csel(X_F, X_D, X_C, Cond::Eq, true),
         format!(
             "csel {}, {}, {}, eq",
             reg_name(X_F),
@@ -5735,12 +6152,15 @@ fn emit_group_create(
         ),
         CostRule::Alu,
         Some(X_F),
-        &[X_D, X_C]);
-    ctx.push(encode::enc_cmp_reg(X_E, X_F, true),
+        &[X_D, X_C],
+    );
+    ctx.push(
+        encode::enc_cmp_reg(X_E, X_F, true),
         format!("cmp {}, {}", reg_name(X_E), reg_name(X_F)),
         CostRule::Alu,
         None,
-        &[X_E, X_F]);
+        &[X_E, X_F],
+    );
     // `Ls`, not `Le` — **a real bug the first deadline-bearing boot
     // caught** (recorded, not silently fixed): a deadline is a raw
     // `u64` nanosecond count and the "no deadline" sentinel above is
@@ -5751,7 +6171,8 @@ fn emit_group_create(
     // and no ambient one (i.e. every top-level `with group(deadline=..)`
     // there is at M6) stored "no deadline" and could never expire.
     // Invisible until a golden actually armed a deadline.
-    ctx.push(encode::enc_csel(X_TAG, X_E, X_F, Cond::Ls, true),
+    ctx.push(
+        encode::enc_csel(X_TAG, X_E, X_F, Cond::Ls, true),
         format!(
             "csel {}, {}, {}, ls",
             reg_name(X_TAG),
@@ -5760,13 +6181,17 @@ fn emit_group_create(
         ),
         CostRule::Alu,
         Some(X_TAG),
-        &[X_E, X_F]);
-    ctx.push(encode::enc_cmp_reg(X_TAG, X_D, true),
+        &[X_E, X_F],
+    );
+    ctx.push(
+        encode::enc_cmp_reg(X_TAG, X_D, true),
         format!("cmp {}, {}", reg_name(X_TAG), reg_name(X_D)),
         CostRule::Alu,
         None,
-        &[X_TAG, X_D]);
-    ctx.push(encode::enc_csel(X_TAG, X_ZR, X_TAG, Cond::Eq, true),
+        &[X_TAG, X_D],
+    );
+    ctx.push(
+        encode::enc_csel(X_TAG, X_ZR, X_TAG, Cond::Eq, true),
         format!(
             "csel {}, {}, {}, eq",
             reg_name(X_TAG),
@@ -5775,23 +6200,29 @@ fn emit_group_create(
         ),
         CostRule::Alu,
         Some(X_TAG),
-        &[X_ZR, X_TAG]);
+        &[X_ZR, X_TAG],
+    );
     // X_TAG now holds the effective (narrowed) deadline. Stash the old
     // ambient group (X_A) as the new group's parent before we clobber the
     // lineage slot — `parent_group = (old_ambient == 0) ? GROUP_NO_PARENT
     // : old_ambient - 1`.
-    ctx.push(encode::enc_sub_imm(X_B, X_A, 1, true),
+    ctx.push(
+        encode::enc_sub_imm(X_B, X_A, 1, true),
         format!("sub {}, {}, #1", reg_name(X_B), reg_name(X_A)),
         CostRule::Alu,
         Some(X_B),
-        &[X_A]);
+        &[X_A],
+    );
     ctx.load_imm(X_D, GROUP_NO_PARENT as i64);
-    ctx.push(encode::enc_cmp_imm(X_A, 0, true),
+    ctx.push(
+        encode::enc_cmp_imm(X_A, 0, true),
         format!("cmp {}, #0", reg_name(X_A)),
         CostRule::Alu,
         None,
-        &[X_A]);
-    ctx.push(encode::enc_csel(X_B, X_D, X_B, Cond::Eq, true),
+        &[X_A],
+    );
+    ctx.push(
+        encode::enc_csel(X_B, X_D, X_B, Cond::Eq, true),
         format!(
             "csel {}, {}, {}, eq",
             reg_name(X_B),
@@ -5800,20 +6231,24 @@ fn emit_group_create(
         ),
         CostRule::Alu,
         Some(X_B),
-        &[X_D, X_B]);
+        &[X_D, X_B],
+    );
     // X_B now holds parent_group.
 
     let mut to_after: Vec<usize> = Vec::new();
     for i in 0..gctx.arena_capacity {
         if i == 0 {
-            ctx.push(encode::enc_add_imm(X_CAND, X_ARENA, 0, true),
+            ctx.push(
+                encode::enc_add_imm(X_CAND, X_ARENA, 0, true),
                 format!("add {}, {}, #0", reg_name(X_CAND), reg_name(X_ARENA)),
                 CostRule::Alu,
                 Some(X_CAND),
-                &[X_ARENA]);
+                &[X_ARENA],
+            );
         } else {
             ctx.load_imm(X_D, (i * gctx.slot_size()) as i64);
-            ctx.push(encode::enc_add_reg(X_CAND, X_ARENA, X_D, true),
+            ctx.push(
+                encode::enc_add_reg(X_CAND, X_ARENA, X_D, true),
                 format!(
                     "add {}, {}, {}",
                     reg_name(X_CAND),
@@ -5822,9 +6257,11 @@ fn emit_group_create(
                 ),
                 CostRule::Alu,
                 Some(X_CAND),
-                &[X_ARENA, X_D]);
+                &[X_ARENA, X_D],
+            );
         }
-        ctx.push(encode::enc_ldr_x_imm(X_D, X_CAND, OFF_GROUP_IN_USE as u16),
+        ctx.push(
+            encode::enc_ldr_x_imm(X_D, X_CAND, OFF_GROUP_IN_USE as u16),
             format!(
                 "ldr {}, [{}, #{OFF_GROUP_IN_USE}]",
                 reg_name(X_D),
@@ -5832,12 +6269,14 @@ fn emit_group_create(
             ),
             CostRule::Load,
             Some(X_D),
-            &[X_CAND]);
+            &[X_CAND],
+        );
         let skip_try_next = ctx.emit_skip(SkipKind::Cbnz(X_D)); // in_use != 0 -> try next candidate
 
         // Found: initialize this slot.
         ctx.load_imm(X_D, 1);
-        ctx.push(encode::enc_str_x_imm(X_D, X_CAND, OFF_GROUP_IN_USE as u16),
+        ctx.push(
+            encode::enc_str_x_imm(X_D, X_CAND, OFF_GROUP_IN_USE as u16),
             format!(
                 "str {}, [{}, #{OFF_GROUP_IN_USE}]",
                 reg_name(X_D),
@@ -5845,14 +6284,16 @@ fn emit_group_create(
             ),
             CostRule::Store,
             None,
-            &[X_D, X_CAND]);
+            &[X_D, X_CAND],
+        );
         match own_capacity_off {
             Some(off) => {
                 ctx.load_slot(X_D, off);
             }
             None => ctx.load_imm(X_D, 0),
         }
-        ctx.push(encode::enc_str_x_imm(X_D, X_CAND, OFF_GROUP_CAPACITY as u16),
+        ctx.push(
+            encode::enc_str_x_imm(X_D, X_CAND, OFF_GROUP_CAPACITY as u16),
             format!(
                 "str {}, [{}, #{OFF_GROUP_CAPACITY}]",
                 reg_name(X_D),
@@ -5860,13 +6301,16 @@ fn emit_group_create(
             ),
             CostRule::Store,
             None,
-            &[X_D, X_CAND]);
+            &[X_D, X_CAND],
+        );
         for off in [OFF_GROUP_ACTIVE_CHILDREN, OFF_GROUP_CANCELLED] {
-            ctx.push(encode::enc_str_x_imm(X_ZR, X_CAND, off as u16),
+            ctx.push(
+                encode::enc_str_x_imm(X_ZR, X_CAND, off as u16),
                 format!("str xzr, [{}, #{off}]", reg_name(X_CAND)),
                 CostRule::Store,
                 None,
-                &[X_ZR, X_CAND]);
+                &[X_ZR, X_CAND],
+            );
         }
         // plans/M10.md item 0c2: `join_waiter` is now an
         // `Option[TurnId]` — a `u32`, so the hygiene zeroing clears the
@@ -5874,21 +6318,26 @@ fn emit_group_create(
         // unused padding above it. `wzr` rather than `xzr` is the honest
         // width; the niche (decision 567) makes `0` still mean "nobody
         // waiting", so this zero test keeps its meaning exactly.
-        ctx.push(encode::enc_str_w_imm(X_ZR, X_CAND, OFF_GROUP_JOIN_WAITER as u16),
+        ctx.push(
+            encode::enc_str_w_imm(X_ZR, X_CAND, OFF_GROUP_JOIN_WAITER as u16),
             format!("str wzr, [{}, #{OFF_GROUP_JOIN_WAITER}]", reg_name(X_CAND)),
             CostRule::Store,
             None,
-            &[X_ZR, X_CAND]);
+            &[X_ZR, X_CAND],
+        );
         for c in 0..gctx.max_children {
             for off in [group_child_tag_off(c), group_child_payload_off(c)] {
-                ctx.push(encode::enc_str_x_imm(X_ZR, X_CAND, off as u16),
+                ctx.push(
+                    encode::enc_str_x_imm(X_ZR, X_CAND, off as u16),
                     format!("str xzr, [{}, #{off}]", reg_name(X_CAND)),
                     CostRule::Store,
                     None,
-                    &[X_ZR, X_CAND]);
+                    &[X_ZR, X_CAND],
+                );
             }
         }
-        ctx.push(encode::enc_str_x_imm(X_TAG, X_CAND, OFF_GROUP_DEADLINE as u16),
+        ctx.push(
+            encode::enc_str_x_imm(X_TAG, X_CAND, OFF_GROUP_DEADLINE as u16),
             format!(
                 "str {}, [{}, #{OFF_GROUP_DEADLINE}]",
                 reg_name(X_TAG),
@@ -5896,8 +6345,10 @@ fn emit_group_create(
             ),
             CostRule::Store,
             None,
-            &[X_TAG, X_CAND]);
-        ctx.push(encode::enc_str_x_imm(X_B, X_CAND, OFF_GROUP_PARENT as u16),
+            &[X_TAG, X_CAND],
+        );
+        ctx.push(
+            encode::enc_str_x_imm(X_B, X_CAND, OFF_GROUP_PARENT as u16),
             format!(
                 "str {}, [{}, #{OFF_GROUP_PARENT}]",
                 reg_name(X_B),
@@ -5905,7 +6356,8 @@ fn emit_group_create(
             ),
             CostRule::Store,
             None,
-            &[X_B, X_CAND]);
+            &[X_B, X_CAND],
+        );
         // The owning turn (02-language.md §9.5's own "parent"): this fn's
         // own turn, which used to be written as `X_FRAME` — the raw
         // address of that turn's persistent area. plans/M10.md item 0c2
@@ -5927,14 +6379,16 @@ fn emit_group_create(
             word,
             key: fn_key.to_string(),
         });
-        ctx.push(encode::enc_str_w_imm(X_D, X_CAND, OFF_GROUP_OWNER_TURN as u16),
+        ctx.push(
+            encode::enc_str_w_imm(X_D, X_CAND, OFF_GROUP_OWNER_TURN as u16),
             format!(
                 "str w{X_D}, [{}, #{OFF_GROUP_OWNER_TURN}]",
                 reg_name(X_CAND)
             ),
             CostRule::Store,
             None,
-            &[X_D, X_CAND]);
+            &[X_D, X_CAND],
+        );
         // new ambient lineage = i + 1, threaded into the lineage slots +
         // the `g` binding's own `group_temp`.
         ctx.load_imm(X_D, (i + 1) as i64);
@@ -5950,7 +6404,8 @@ fn emit_group_create(
         // remained, so the loop's own final successful init fell straight
         // through into the abort it had just escaped).
         let j = ctx.words.len();
-        ctx.words.push(EmittedWord::new(0, String::new(), CostRule::Alu, None, &[]));
+        ctx.words
+            .push(EmittedWord::new(0, String::new(), CostRule::Alu, None, &[]));
         to_after.push(j);
         ctx.patch_skip(skip_try_next, SkipKind::Cbnz(X_D));
     }
@@ -5962,7 +6417,13 @@ fn emit_group_create(
     let after = ctx.cur_word();
     for j in to_after {
         let delta = (after as i64 - j as i64) as i32 * 4;
-        ctx.words[j] = EmittedWord::new(encode::enc_b(delta), format!("b #{delta}"), CostRule::Branch, None, &[]);
+        ctx.words[j] = EmittedWord::new(
+            encode::enc_b(delta),
+            format!("b #{delta}"),
+            CostRule::Branch,
+            None,
+            &[],
+        );
     }
     Ok(())
 }
@@ -6016,7 +6477,8 @@ fn emit_group_start(
     // own doc), so it resolves `Cancelled` here, and `g.start`'s arguments
     // are plain scalars with nothing to hand back.
     emit_group_addr_from_temp(ctx, group_temp, X_B, X_A, gctx);
-    ctx.push(encode::enc_ldr_x_imm(X_C, X_B, OFF_GROUP_CANCELLED as u16),
+    ctx.push(
+        encode::enc_ldr_x_imm(X_C, X_B, OFF_GROUP_CANCELLED as u16),
         format!(
             "ldr {}, [{}, #{OFF_GROUP_CANCELLED}]",
             reg_name(X_C),
@@ -6024,10 +6486,12 @@ fn emit_group_start(
         ),
         CostRule::Load,
         Some(X_C),
-        &[X_B]);
+        &[X_B],
+    );
     let skip_admit = ctx.emit_skip(SkipKind::Cbz(X_C));
     ctx.load_imm(X_A, 1); // tag = Err(CallError::Cancelled)
-    ctx.push(encode::enc_str_x_imm(X_A, X_B, group_child_tag_off(child_index) as u16),
+    ctx.push(
+        encode::enc_str_x_imm(X_A, X_B, group_child_tag_off(child_index) as u16),
         format!(
             "str {}, [{}, #{}]",
             reg_name(X_A),
@@ -6036,8 +6500,10 @@ fn emit_group_start(
         ),
         CostRule::Store,
         None,
-        &[X_A, X_B]);
-    ctx.push(encode::enc_str_x_imm(X_ZR, X_B, group_child_payload_off(child_index) as u16),
+        &[X_A, X_B],
+    );
+    ctx.push(
+        encode::enc_str_x_imm(X_ZR, X_B, group_child_payload_off(child_index) as u16),
         format!(
             "str xzr, [{}, #{}]",
             reg_name(X_B),
@@ -6045,9 +6511,11 @@ fn emit_group_start(
         ),
         CostRule::Store,
         None,
-        &[X_ZR, X_B]);
+        &[X_ZR, X_B],
+    );
     let to_after = ctx.words.len();
-    ctx.words.push(EmittedWord::new(0, String::new(), CostRule::Alu, None, &[]));
+    ctx.words
+        .push(EmittedWord::new(0, String::new(), CostRule::Alu, None, &[]));
     ctx.patch_skip(skip_admit, SkipKind::Cbz(X_C));
 
     // Write the ambient lineage into the child's own persistent frame
@@ -6063,7 +6531,8 @@ fn emit_group_start(
         key: callee_key.to_string(),
     });
     ctx.load_slot(X_D, ctx.frame.off(LINEAGE_GROUP_SLOT));
-    ctx.push(encode::enc_str_x_imm(X_D, X_C, (TURN_RECORD_SIZE) as u16),
+    ctx.push(
+        encode::enc_str_x_imm(X_D, X_C, (TURN_RECORD_SIZE) as u16),
         format!(
             "str {}, [{}, #{TURN_RECORD_SIZE}]",
             reg_name(X_D),
@@ -6071,9 +6540,11 @@ fn emit_group_start(
         ),
         CostRule::Store,
         None,
-        &[X_D, X_C]);
+        &[X_D, X_C],
+    );
     ctx.load_slot(X_D, ctx.frame.off(LINEAGE_DEADLINE_SLOT));
-    ctx.push(encode::enc_str_x_imm(X_D, X_C, (TURN_RECORD_SIZE + 8) as u16),
+    ctx.push(
+        encode::enc_str_x_imm(X_D, X_C, (TURN_RECORD_SIZE + 8) as u16),
         format!(
             "str {}, [{}, #{}]",
             reg_name(X_D),
@@ -6082,11 +6553,13 @@ fn emit_group_start(
         ),
         CostRule::Store,
         None,
-        &[X_D, X_C]);
+        &[X_D, X_C],
+    );
     // Mark it busy/fresh (suspended=0, resume_ready=0 — a truly fresh
     // activation, its own entry's fresh-vs-resume fork reads this).
     ctx.load_imm(X_D, 1);
-    ctx.push(encode::enc_str_x_imm(X_D, X_C, OFF_TURN_BUSY as u16),
+    ctx.push(
+        encode::enc_str_x_imm(X_D, X_C, OFF_TURN_BUSY as u16),
         format!(
             "str {}, [{}, #{OFF_TURN_BUSY}]",
             reg_name(X_D),
@@ -6094,13 +6567,16 @@ fn emit_group_start(
         ),
         CostRule::Store,
         None,
-        &[X_D, X_C]);
+        &[X_D, X_C],
+    );
     for off in [OFF_TURN_SUSPENDED, OFF_TURN_RESUME_READY, OFF_TURN_WAKER] {
-        ctx.push(encode::enc_str_x_imm(X_ZR, X_C, off as u16),
+        ctx.push(
+            encode::enc_str_x_imm(X_ZR, X_C, off as u16),
             format!("str xzr, [{}, #{off}]", reg_name(X_C)),
             CostRule::Store,
             None,
-            &[X_ZR, X_C]);
+            &[X_ZR, X_C],
+        );
     }
 
     // Group address (computed once, before the call, so admission can
@@ -6113,13 +6589,16 @@ fn emit_group_start(
     // wrong and `join_all` could never see zero).
     let group_addr_reg = X_D;
     ctx.load_slot(X_E, ctx.frame.off(group_temp)); // encoded group id (i+1)
-    ctx.push(encode::enc_sub_imm(X_E, X_E, 1, true),
+    ctx.push(
+        encode::enc_sub_imm(X_E, X_E, 1, true),
         format!("sub {}, {}, #1", reg_name(X_E), reg_name(X_E)),
         CostRule::Alu,
         Some(X_E),
-        &[X_E]);
+        &[X_E],
+    );
     ctx.load_imm(X_F, gctx.slot_size() as i64);
-    ctx.push(encode::enc_mul(X_E, X_E, X_F, true),
+    ctx.push(
+        encode::enc_mul(X_E, X_E, X_F, true),
         format!(
             "mul {}, {}, {}",
             reg_name(X_E),
@@ -6128,14 +6607,16 @@ fn emit_group_start(
         ),
         CostRule::Mul,
         Some(X_E),
-        &[X_E, X_F]);
+        &[X_E, X_F],
+    );
     let word = ctx.cur_word();
     ctx.load_imm_naive(group_addr_reg, 0);
     for w in ctx.words[word..word + 4].iter_mut() {
         w.text = "group-arena-base (g.start)".to_string();
     }
     ctx.relocs.push(Reloc::GroupArenaBase { word });
-    ctx.push(encode::enc_add_reg(group_addr_reg, group_addr_reg, X_E, true),
+    ctx.push(
+        encode::enc_add_reg(group_addr_reg, group_addr_reg, X_E, true),
         format!(
             "add {}, {}, {}",
             reg_name(group_addr_reg),
@@ -6144,9 +6625,11 @@ fn emit_group_start(
         ),
         CostRule::Alu,
         Some(group_addr_reg),
-        &[group_addr_reg, X_E]);
+        &[group_addr_reg, X_E],
+    );
     // active_children += 1 (admission).
-    ctx.push(encode::enc_ldr_x_imm(X_A, group_addr_reg, OFF_GROUP_ACTIVE_CHILDREN as u16),
+    ctx.push(
+        encode::enc_ldr_x_imm(X_A, group_addr_reg, OFF_GROUP_ACTIVE_CHILDREN as u16),
         format!(
             "ldr {}, [{}, #{OFF_GROUP_ACTIVE_CHILDREN}]",
             reg_name(X_A),
@@ -6154,13 +6637,17 @@ fn emit_group_start(
         ),
         CostRule::Load,
         Some(X_A),
-        &[group_addr_reg]);
-    ctx.push(encode::enc_add_imm(X_A, X_A, 1, true),
+        &[group_addr_reg],
+    );
+    ctx.push(
+        encode::enc_add_imm(X_A, X_A, 1, true),
         format!("add {}, {}, #1", reg_name(X_A), reg_name(X_A)),
         CostRule::Alu,
         Some(X_A),
-        &[X_A]);
-    ctx.push(encode::enc_str_x_imm(X_A, group_addr_reg, OFF_GROUP_ACTIVE_CHILDREN as u16),
+        &[X_A],
+    );
+    ctx.push(
+        encode::enc_str_x_imm(X_A, group_addr_reg, OFF_GROUP_ACTIVE_CHILDREN as u16),
         format!(
             "str {}, [{}, #{OFF_GROUP_ACTIVE_CHILDREN}]",
             reg_name(X_A),
@@ -6168,7 +6655,8 @@ fn emit_group_start(
         ),
         CostRule::Store,
         None,
-        &[X_A, group_addr_reg]);
+        &[X_A, group_addr_reg],
+    );
 
     // Marshal args (at most 2 scalars) directly into x0/x1 (a fresh call's
     // own receiver-less ABI: a free async fn's entry takes no receiver, so
@@ -6206,13 +6694,16 @@ fn emit_group_start(
     // fresh (the callee's own compiled body may have clobbered any of
     // x0..x17 — nothing survives a `BL` here by convention).
     ctx.load_slot(X_E, ctx.frame.off(group_temp));
-    ctx.push(encode::enc_sub_imm(X_E, X_E, 1, true),
+    ctx.push(
+        encode::enc_sub_imm(X_E, X_E, 1, true),
         format!("sub {}, {}, #1", reg_name(X_E), reg_name(X_E)),
         CostRule::Alu,
         Some(X_E),
-        &[X_E]);
+        &[X_E],
+    );
     ctx.load_imm(X_F, gctx.slot_size() as i64);
-    ctx.push(encode::enc_mul(X_E, X_E, X_F, true),
+    ctx.push(
+        encode::enc_mul(X_E, X_E, X_F, true),
         format!(
             "mul {}, {}, {}",
             reg_name(X_E),
@@ -6221,14 +6712,16 @@ fn emit_group_start(
         ),
         CostRule::Mul,
         Some(X_E),
-        &[X_E, X_F]);
+        &[X_E, X_F],
+    );
     let word = ctx.cur_word();
     ctx.load_imm_naive(group_addr_reg, 0);
     for w in ctx.words[word..word + 4].iter_mut() {
         w.text = "group-arena-base (g.start harvest)".to_string();
     }
     ctx.relocs.push(Reloc::GroupArenaBase { word });
-    ctx.push(encode::enc_add_reg(group_addr_reg, group_addr_reg, X_E, true),
+    ctx.push(
+        encode::enc_add_reg(group_addr_reg, group_addr_reg, X_E, true),
         format!(
             "add {}, {}, {}",
             reg_name(group_addr_reg),
@@ -6237,29 +6730,37 @@ fn emit_group_start(
         ),
         CostRule::Alu,
         Some(group_addr_reg),
-        &[group_addr_reg, X_E]);
+        &[group_addr_reg, X_E],
+    );
 
-    ctx.push(encode::enc_cmp_imm(0, TURN_STATUS_SUSPENDED as u16, true),
+    ctx.push(
+        encode::enc_cmp_imm(0, TURN_STATUS_SUSPENDED as u16, true),
         format!("cmp x0, #{TURN_STATUS_SUSPENDED}"),
         CostRule::Alu,
         None,
-        &[0]);
+        &[0],
+    );
     let skip_still_running = ctx.emit_skip(SkipKind::Cond(Cond::Eq)); // suspended: leave parked, nothing to harvest yet.
 
     // Completed or cancelled: tag = 0 (Ok) unless status ==
     // TURN_STATUS_CANCELLED, in which case tag = 1 (the composed
     // `CallError::Cancelled`, this item's own floor — module doc above).
-    ctx.push(encode::enc_cmp_imm(0, TURN_STATUS_CANCELLED as u16, true),
+    ctx.push(
+        encode::enc_cmp_imm(0, TURN_STATUS_CANCELLED as u16, true),
         format!("cmp x0, #{TURN_STATUS_CANCELLED}"),
         CostRule::Alu,
         None,
-        &[0]);
-    ctx.push(encode::enc_cset(X_A, Cond::Eq, true),
+        &[0],
+    );
+    ctx.push(
+        encode::enc_cset(X_A, Cond::Eq, true),
         format!("cset {}, eq", reg_name(X_A)),
         CostRule::Alu,
         Some(X_A),
-        &[]);
-    ctx.push(encode::enc_str_x_imm(X_A, group_addr_reg, group_child_tag_off(child_index) as u16),
+        &[],
+    );
+    ctx.push(
+        encode::enc_str_x_imm(X_A, group_addr_reg, group_child_tag_off(child_index) as u16),
         format!(
             "str {}, [{}, #{}]",
             reg_name(X_A),
@@ -6268,8 +6769,10 @@ fn emit_group_start(
         ),
         CostRule::Store,
         None,
-        &[X_A, group_addr_reg]);
-    ctx.push(encode::enc_str_x_imm(
+        &[X_A, group_addr_reg],
+    );
+    ctx.push(
+        encode::enc_str_x_imm(
             1,
             group_addr_reg,
             group_child_payload_off(child_index) as u16,
@@ -6281,14 +6784,16 @@ fn emit_group_start(
         ),
         CostRule::Store,
         None,
-        &[1, group_addr_reg]);
+        &[1, group_addr_reg],
+    );
     // Completed/cancelled (never suspended): decrement active_children —
     // this admission's own count is now settled — and clear this child's
     // own `busy` (harvested inline; available for a later loop iteration
     // of this same `g.start` site to reuse). A suspended child leaves both
     // untouched: still `busy`, still counted `active`, for
     // `codegen::emit_rt_child_poll` to harvest later.
-    ctx.push(encode::enc_ldr_x_imm(X_A, group_addr_reg, OFF_GROUP_ACTIVE_CHILDREN as u16),
+    ctx.push(
+        encode::enc_ldr_x_imm(X_A, group_addr_reg, OFF_GROUP_ACTIVE_CHILDREN as u16),
         format!(
             "ldr {}, [{}, #{OFF_GROUP_ACTIVE_CHILDREN}]",
             reg_name(X_A),
@@ -6296,13 +6801,17 @@ fn emit_group_start(
         ),
         CostRule::Load,
         Some(X_A),
-        &[group_addr_reg]);
-    ctx.push(encode::enc_sub_imm(X_A, X_A, 1, true),
+        &[group_addr_reg],
+    );
+    ctx.push(
+        encode::enc_sub_imm(X_A, X_A, 1, true),
         format!("sub {}, {}, #1", reg_name(X_A), reg_name(X_A)),
         CostRule::Alu,
         Some(X_A),
-        &[X_A]);
-    ctx.push(encode::enc_str_x_imm(X_A, group_addr_reg, OFF_GROUP_ACTIVE_CHILDREN as u16),
+        &[X_A],
+    );
+    ctx.push(
+        encode::enc_str_x_imm(X_A, group_addr_reg, OFF_GROUP_ACTIVE_CHILDREN as u16),
         format!(
             "str {}, [{}, #{OFF_GROUP_ACTIVE_CHILDREN}]",
             reg_name(X_A),
@@ -6310,7 +6819,8 @@ fn emit_group_start(
         ),
         CostRule::Store,
         None,
-        &[X_A, group_addr_reg]);
+        &[X_A, group_addr_reg],
+    );
     let word = ctx.cur_word();
     ctx.load_imm_naive(X_A, 0);
     for w in ctx.words[word..word + 4].iter_mut() {
@@ -6320,16 +6830,24 @@ fn emit_group_start(
         word,
         key: callee_key.to_string(),
     });
-    ctx.push(encode::enc_str_x_imm(X_ZR, X_A, OFF_TURN_BUSY as u16),
+    ctx.push(
+        encode::enc_str_x_imm(X_ZR, X_A, OFF_TURN_BUSY as u16),
         format!("str xzr, [{}, #{OFF_TURN_BUSY}]", reg_name(X_A)),
         CostRule::Store,
         None,
-        &[X_ZR, X_A]);
+        &[X_ZR, X_A],
+    );
 
     ctx.patch_skip(skip_still_running, SkipKind::Cond(Cond::Eq));
     let after = ctx.cur_word();
     let delta = (after as i64 - to_after as i64) as i32 * 4;
-    ctx.words[to_after] = EmittedWord::new(encode::enc_b(delta), format!("b #{delta}"), CostRule::Branch, None, &[]);
+    ctx.words[to_after] = EmittedWord::new(
+        encode::enc_b(delta),
+        format!("b #{delta}"),
+        CostRule::Branch,
+        None,
+        &[],
+    );
     Ok(())
 }
 
@@ -6356,13 +6874,16 @@ fn emit_group_close(
     }
     ctx.relocs.push(Reloc::GroupArenaBase { word });
     ctx.load_slot(X_B, ctx.frame.off(group_temp)); // encoded group id (i+1)
-    ctx.push(encode::enc_sub_imm(X_B, X_B, 1, true),
+    ctx.push(
+        encode::enc_sub_imm(X_B, X_B, 1, true),
         format!("sub {}, {}, #1", reg_name(X_B), reg_name(X_B)),
         CostRule::Alu,
         Some(X_B),
-        &[X_B]);
+        &[X_B],
+    );
     ctx.load_imm(X_C, gctx.slot_size() as i64);
-    ctx.push(encode::enc_mul(X_B, X_B, X_C, true),
+    ctx.push(
+        encode::enc_mul(X_B, X_B, X_C, true),
         format!(
             "mul {}, {}, {}",
             reg_name(X_B),
@@ -6371,8 +6892,10 @@ fn emit_group_close(
         ),
         CostRule::Mul,
         Some(X_B),
-        &[X_B, X_C]);
-    ctx.push(encode::enc_add_reg(X_A, X_A, X_B, true),
+        &[X_B, X_C],
+    );
+    ctx.push(
+        encode::enc_add_reg(X_A, X_A, X_B, true),
         format!(
             "add {}, {}, {}",
             reg_name(X_A),
@@ -6381,9 +6904,11 @@ fn emit_group_close(
         ),
         CostRule::Alu,
         Some(X_A),
-        &[X_A, X_B]);
+        &[X_A, X_B],
+    );
     // Restore ambient lineage from this group's own `parent_group`.
-    ctx.push(encode::enc_ldr_x_imm(X_B, X_A, OFF_GROUP_PARENT as u16),
+    ctx.push(
+        encode::enc_ldr_x_imm(X_B, X_A, OFF_GROUP_PARENT as u16),
         format!(
             "ldr {}, [{}, #{OFF_GROUP_PARENT}]",
             reg_name(X_B),
@@ -6391,30 +6916,38 @@ fn emit_group_close(
         ),
         CostRule::Load,
         Some(X_B),
-        &[X_A]);
+        &[X_A],
+    );
     ctx.load_imm(X_C, GROUP_NO_PARENT as i64);
-    ctx.push(encode::enc_cmp_reg(X_B, X_C, true),
+    ctx.push(
+        encode::enc_cmp_reg(X_B, X_C, true),
         format!("cmp {}, {}", reg_name(X_B), reg_name(X_C)),
         CostRule::Alu,
         None,
-        &[X_B, X_C]);
+        &[X_B, X_C],
+    );
     let skip_no_parent = ctx.emit_skip(SkipKind::Cond(Cond::Eq)); // == GROUP_NO_PARENT -> no-parent arm
 
     // Had a parent: new ambient group = parent_index + 1; new ambient
     // deadline = the parent slot's own (already-narrowed) deadline.
-    ctx.push(encode::enc_add_imm(X_B, X_B, 1, true),
+    ctx.push(
+        encode::enc_add_imm(X_B, X_B, 1, true),
         format!("add {}, {}, #1", reg_name(X_B), reg_name(X_B)),
         CostRule::Alu,
         Some(X_B),
-        &[X_B]);
+        &[X_B],
+    );
     ctx.store_slot(X_B, ctx.frame.off(LINEAGE_GROUP_SLOT));
-    ctx.push(encode::enc_sub_imm(X_C, X_B, 1, true),
+    ctx.push(
+        encode::enc_sub_imm(X_C, X_B, 1, true),
         format!("sub {}, {}, #1", reg_name(X_C), reg_name(X_B)),
         CostRule::Alu,
         Some(X_C),
-        &[X_B]);
+        &[X_B],
+    );
     ctx.load_imm(X_D, gctx.slot_size() as i64);
-    ctx.push(encode::enc_mul(X_C, X_C, X_D, true),
+    ctx.push(
+        encode::enc_mul(X_C, X_C, X_D, true),
         format!(
             "mul {}, {}, {}",
             reg_name(X_C),
@@ -6423,14 +6956,16 @@ fn emit_group_close(
         ),
         CostRule::Mul,
         Some(X_C),
-        &[X_C, X_D]);
+        &[X_C, X_D],
+    );
     let word2 = ctx.cur_word();
     ctx.load_imm_naive(X_D, 0);
     for w in ctx.words[word2..word2 + 4].iter_mut() {
         w.text = "group-arena-base (GroupClose parent deadline)".to_string();
     }
     ctx.relocs.push(Reloc::GroupArenaBase { word: word2 });
-    ctx.push(encode::enc_add_reg(X_C, X_D, X_C, true),
+    ctx.push(
+        encode::enc_add_reg(X_C, X_D, X_C, true),
         format!(
             "add {}, {}, {}",
             reg_name(X_C),
@@ -6439,8 +6974,10 @@ fn emit_group_close(
         ),
         CostRule::Alu,
         Some(X_C),
-        &[X_D, X_C]);
-    ctx.push(encode::enc_ldr_x_imm(X_D, X_C, OFF_GROUP_DEADLINE as u16),
+        &[X_D, X_C],
+    );
+    ctx.push(
+        encode::enc_ldr_x_imm(X_D, X_C, OFF_GROUP_DEADLINE as u16),
         format!(
             "ldr {}, [{}, #{OFF_GROUP_DEADLINE}]",
             reg_name(X_D),
@@ -6448,10 +6985,12 @@ fn emit_group_close(
         ),
         CostRule::Load,
         Some(X_D),
-        &[X_C]);
+        &[X_C],
+    );
     ctx.store_slot(X_D, ctx.frame.off(LINEAGE_DEADLINE_SLOT));
     let to_free = ctx.cur_word();
-    ctx.words.push(EmittedWord::new(0, String::new(), CostRule::Alu, None, &[]));
+    ctx.words
+        .push(EmittedWord::new(0, String::new(), CostRule::Alu, None, &[]));
 
     ctx.patch_skip(skip_no_parent, SkipKind::Cond(Cond::Eq));
     // No parent: ambient becomes "none" (0/0).
@@ -6461,12 +7000,20 @@ fn emit_group_close(
     // Both arms converge here: free the slot.
     let free = ctx.cur_word();
     let delta = (free as i64 - to_free as i64) as i32 * 4;
-    ctx.words[to_free] = EmittedWord::new(encode::enc_b(delta), format!("b #{delta}"), CostRule::Branch, None, &[]);
-    ctx.push(encode::enc_str_x_imm(X_ZR, X_A, OFF_GROUP_IN_USE as u16),
+    ctx.words[to_free] = EmittedWord::new(
+        encode::enc_b(delta),
+        format!("b #{delta}"),
+        CostRule::Branch,
+        None,
+        &[],
+    );
+    ctx.push(
+        encode::enc_str_x_imm(X_ZR, X_A, OFF_GROUP_IN_USE as u16),
         format!("str xzr, [{}, #{OFF_GROUP_IN_USE}]", reg_name(X_A)),
         CostRule::Store,
         None,
-        &[X_ZR, X_A]);
+        &[X_ZR, X_A],
+    );
     Ok(())
 }
 
@@ -6502,7 +7049,8 @@ fn emit_flow_op(
             const NS_PER_MS: i64 = 1_000_000;
             ctx.load_slot(X_A, ctx.frame.off(*n));
             ctx.load_imm(X_B, NS_PER_MS);
-            ctx.push(encode::enc_mul(X_A, X_A, X_B, true),
+            ctx.push(
+                encode::enc_mul(X_A, X_A, X_B, true),
                 format!(
                     "mul {}, {}, {}",
                     reg_name(X_A),
@@ -6511,7 +7059,8 @@ fn emit_flow_op(
                 ),
                 CostRule::Mul,
                 Some(X_A),
-                &[X_A, X_B]);
+                &[X_A, X_B],
+            );
             ctx.store_slot(X_A, ctx.frame.off(*dst));
             Ok(())
         }
@@ -6572,16 +7121,20 @@ fn emit_flow_op(
 /// pre-item-F async golden byte-identical (`emit_checkpoint_cancellation_test`
 /// below has the full reasoning); callers must not emit it in that case.
 fn emit_group_cancelled_flags(ctx: &mut FnCtx, fn_key: &str, gctx: &GroupCtx) {
-    ctx.push(encode::enc_movz(X_C, 0, 0, true),
+    ctx.push(
+        encode::enc_movz(X_C, 0, 0, true),
         format!("movz {}, #0", reg_name(X_C)),
         CostRule::MovWide,
         Some(X_C),
-        &[]);
-    ctx.push(encode::enc_movz(X_D, 0, 0, true),
+        &[],
+    );
+    ctx.push(
+        encode::enc_movz(X_D, 0, 0, true),
         format!("movz {}, #0", reg_name(X_D)),
         CostRule::MovWide,
         Some(X_D),
-        &[]);
+        &[],
+    );
     ctx.load_slot(X_A, ctx.frame.off(LINEAGE_GROUP_SLOT));
     let skip_no_group = ctx.emit_skip(SkipKind::Cbz(X_A));
     let word = ctx.cur_word();
@@ -6590,13 +7143,16 @@ fn emit_group_cancelled_flags(ctx: &mut FnCtx, fn_key: &str, gctx: &GroupCtx) {
         w.text = "group-arena-base (cancel flags)".to_string();
     }
     ctx.relocs.push(Reloc::GroupArenaBase { word });
-    ctx.push(encode::enc_sub_imm(X_A, X_A, 1, true),
+    ctx.push(
+        encode::enc_sub_imm(X_A, X_A, 1, true),
         format!("sub {}, {}, #1", reg_name(X_A), reg_name(X_A)),
         CostRule::Alu,
         Some(X_A),
-        &[X_A]);
+        &[X_A],
+    );
     ctx.load_imm(X_E, gctx.slot_size() as i64);
-    ctx.push(encode::enc_mul(X_A, X_A, X_E, true),
+    ctx.push(
+        encode::enc_mul(X_A, X_A, X_E, true),
         format!(
             "mul {}, {}, {}",
             reg_name(X_A),
@@ -6605,8 +7161,10 @@ fn emit_group_cancelled_flags(ctx: &mut FnCtx, fn_key: &str, gctx: &GroupCtx) {
         ),
         CostRule::Mul,
         Some(X_A),
-        &[X_A, X_E]);
-    ctx.push(encode::enc_add_reg(X_B, X_B, X_A, true),
+        &[X_A, X_E],
+    );
+    ctx.push(
+        encode::enc_add_reg(X_B, X_B, X_A, true),
         format!(
             "add {}, {}, {}",
             reg_name(X_B),
@@ -6615,8 +7173,10 @@ fn emit_group_cancelled_flags(ctx: &mut FnCtx, fn_key: &str, gctx: &GroupCtx) {
         ),
         CostRule::Alu,
         Some(X_B),
-        &[X_B, X_A]);
-    ctx.push(encode::enc_ldr_x_imm(X_A, X_B, OFF_GROUP_CANCELLED as u16),
+        &[X_B, X_A],
+    );
+    ctx.push(
+        encode::enc_ldr_x_imm(X_A, X_B, OFF_GROUP_CANCELLED as u16),
         format!(
             "ldr {}, [{}, #{OFF_GROUP_CANCELLED}]",
             reg_name(X_A),
@@ -6624,28 +7184,35 @@ fn emit_group_cancelled_flags(ctx: &mut FnCtx, fn_key: &str, gctx: &GroupCtx) {
         ),
         CostRule::Load,
         Some(X_A),
-        &[X_B]);
-    ctx.push(encode::enc_cmp_imm(X_A, 0, true),
+        &[X_B],
+    );
+    ctx.push(
+        encode::enc_cmp_imm(X_A, 0, true),
         format!("cmp {}, #0", reg_name(X_A)),
         CostRule::Alu,
         None,
-        &[X_A]);
-    ctx.push(encode::enc_cset(X_C, Cond::Ne, true),
+        &[X_A],
+    );
+    ctx.push(
+        encode::enc_cset(X_C, Cond::Ne, true),
         format!("cset {}, ne", reg_name(X_C)),
         CostRule::Alu,
         Some(X_C),
-        &[]);
+        &[],
+    );
     // plans/M10.md item 0c2: `owner_turn` is a `TurnId` (a `u32` at +56),
     // so this is a 32-bit load compared against this fn's own relocated
     // `TurnId` immediate instead of a 64-bit load compared against
     // `X_FRAME`. Equality only — no index→address step is needed or
     // wanted here. `ldr w`/`cmp w`: an `x` load would fold the adjacent
     // word in as high bits.
-    ctx.push(encode::enc_ldr_w_imm(X_A, X_B, OFF_GROUP_OWNER_TURN as u16),
+    ctx.push(
+        encode::enc_ldr_w_imm(X_A, X_B, OFF_GROUP_OWNER_TURN as u16),
         format!("ldr w{X_A}, [{}, #{OFF_GROUP_OWNER_TURN}]", reg_name(X_B)),
         CostRule::Load,
         Some(X_A),
-        &[X_B]);
+        &[X_B],
+    );
     let word = ctx.cur_word();
     ctx.load_imm_naive(X_E, 0);
     for (i, w) in ctx.words[word..word + 4].iter_mut().enumerate() {
@@ -6655,16 +7222,20 @@ fn emit_group_cancelled_flags(ctx: &mut FnCtx, fn_key: &str, gctx: &GroupCtx) {
         word,
         key: fn_key.to_string(),
     });
-    ctx.push(encode::enc_cmp_reg(X_A, X_E, false),
+    ctx.push(
+        encode::enc_cmp_reg(X_A, X_E, false),
         format!("cmp w{X_A}, w{X_E}"),
         CostRule::Alu,
         None,
-        &[X_A, X_E]);
-    ctx.push(encode::enc_cset(X_D, Cond::Eq, true),
+        &[X_A, X_E],
+    );
+    ctx.push(
+        encode::enc_cset(X_D, Cond::Eq, true),
         format!("cset {}, eq", reg_name(X_D)),
         CostRule::Alu,
         Some(X_D),
-        &[]);
+        &[],
+    );
     ctx.patch_skip(skip_no_group, SkipKind::Cbz(X_A));
 }
 
@@ -6709,17 +7280,25 @@ fn emit_checkpoint_cancellation_test(ctx: &mut FnCtx, gctx: &GroupCtx, fn_key: &
 /// discarded, never published to `self`).
 fn emit_async_cancelled_tail(ctx: &mut FnCtx) {
     // M11 F (decision 793): deterministic zero payload for cancelled harvest.
-    ctx.push(encode::enc_str_x_imm(X_ZR, X_FRAME, OFF_TURN_REPLY as u16),
+    ctx.push(
+        encode::enc_str_x_imm(X_ZR, X_FRAME, OFF_TURN_REPLY as u16),
         format!(
             "str xzr, [{}, #{OFF_TURN_REPLY}]  ; cancelled → turn.reply = 0",
             reg_name(X_FRAME)
         ),
         CostRule::Store,
         None,
-        &[X_ZR, X_FRAME]);
+        &[X_ZR, X_FRAME],
+    );
     ctx.load_imm(0, TURN_STATUS_CANCELLED as i64);
     ctx.load_slot(X_LR, ctx.frame.lr_off);
-    ctx.push(encode::enc_ret(X_LR), "ret".to_string(), CostRule::Branch, None, &[X_LR]);
+    ctx.push(
+        encode::enc_ret(X_LR),
+        "ret".to_string(),
+        CostRule::Branch,
+        None,
+        &[X_LR],
+    );
 }
 
 /// `g.join_all()`'s own result composition (item F #2, shared by both the
@@ -6798,7 +7377,8 @@ fn emit_compose_group_join_result(
     let result_off = ctx.frame.off(result_temp);
     for c in 0..child_count {
         let elem_off = result_off + c * elem_size;
-        ctx.push(encode::enc_ldr_x_imm(VAL_TAG, group_reg, group_child_tag_off(c) as u16),
+        ctx.push(
+            encode::enc_ldr_x_imm(VAL_TAG, group_reg, group_child_tag_off(c) as u16),
             format!(
                 "ldr {}, [{}, #{}]",
                 reg_name(VAL_TAG),
@@ -6807,8 +7387,10 @@ fn emit_compose_group_join_result(
             ),
             CostRule::Load,
             Some(VAL_TAG),
-            &[group_reg]);
-        ctx.push(encode::enc_ldr_x_imm(VAL_PAYLOAD, group_reg, group_child_payload_off(c) as u16),
+            &[group_reg],
+        );
+        ctx.push(
+            encode::enc_ldr_x_imm(VAL_PAYLOAD, group_reg, group_child_payload_off(c) as u16),
             format!(
                 "ldr {}, [{}, #{}]",
                 reg_name(VAL_PAYLOAD),
@@ -6817,7 +7399,8 @@ fn emit_compose_group_join_result(
             ),
             CostRule::Load,
             Some(VAL_PAYLOAD),
-            &[group_reg]);
+            &[group_reg],
+        );
         // The arena's own child tag is already the `Result` tag by
         // construction (0 = `Ok`, 1 = `Err`); its payload word is the
         // child's scalar reply, which is only meaningful on the `Ok` side.
@@ -6829,12 +7412,15 @@ fn emit_compose_group_join_result(
         // can produce. Branch-free, mirroring `emit_group_create`'s own
         // deadline narrowing.
         ctx.load_imm(VAL_CONST, CALL_ERROR_TAG_CANCELLED as i64);
-        ctx.push(encode::enc_cmp_imm(VAL_TAG, 0, true),
+        ctx.push(
+            encode::enc_cmp_imm(VAL_TAG, 0, true),
             format!("cmp {}, #0", reg_name(VAL_TAG)),
             CostRule::Alu,
             None,
-            &[VAL_TAG]);
-        ctx.push(encode::enc_csel(VAL_PAYLOAD, VAL_PAYLOAD, VAL_CONST, Cond::Eq, true),
+            &[VAL_TAG],
+        );
+        ctx.push(
+            encode::enc_csel(VAL_PAYLOAD, VAL_PAYLOAD, VAL_CONST, Cond::Eq, true),
             format!(
                 "csel {}, {}, {}, eq",
                 reg_name(VAL_PAYLOAD),
@@ -6843,7 +7429,8 @@ fn emit_compose_group_join_result(
             ),
             CostRule::Alu,
             Some(VAL_PAYLOAD),
-            &[VAL_PAYLOAD, VAL_CONST]);
+            &[VAL_PAYLOAD, VAL_CONST],
+        );
         ctx.store_slot(VAL_TAG, elem_off);
         ctx.store_slot(VAL_PAYLOAD, elem_off + PAYLOAD_OFF);
         // Zero the rest of the payload area: dead union padding on the
@@ -6875,7 +7462,8 @@ fn emit_group_addr_from_temp(
     }
     ctx.relocs.push(Reloc::GroupArenaBase { word });
     ctx.load_slot(scratch_reg, ctx.frame.off(group_temp));
-    ctx.push(encode::enc_sub_imm(scratch_reg, scratch_reg, 1, true),
+    ctx.push(
+        encode::enc_sub_imm(scratch_reg, scratch_reg, 1, true),
         format!(
             "sub {}, {}, #1",
             reg_name(scratch_reg),
@@ -6883,13 +7471,15 @@ fn emit_group_addr_from_temp(
         ),
         CostRule::Alu,
         Some(scratch_reg),
-        &[scratch_reg]);
+        &[scratch_reg],
+    );
     // arena index -> byte offset (a real bug this golden's first real boot
     // caught: an earlier draft added the raw index to the arena base
     // instead of `index * slot_size`, invisible for arena index 0
     // alone since `0 * anything == 0`, wrong for any other slot).
     ctx.load_imm(X_D, gctx.slot_size() as i64);
-    ctx.push(encode::enc_mul(scratch_reg, scratch_reg, X_D, true),
+    ctx.push(
+        encode::enc_mul(scratch_reg, scratch_reg, X_D, true),
         format!(
             "mul {}, {}, {}",
             reg_name(scratch_reg),
@@ -6898,8 +7488,10 @@ fn emit_group_addr_from_temp(
         ),
         CostRule::Mul,
         Some(scratch_reg),
-        &[scratch_reg, X_D]);
-    ctx.push(encode::enc_add_reg(dst_reg, dst_reg, scratch_reg, true),
+        &[scratch_reg, X_D],
+    );
+    ctx.push(
+        encode::enc_add_reg(dst_reg, dst_reg, scratch_reg, true),
         format!(
             "add {}, {}, {}",
             reg_name(dst_reg),
@@ -6908,7 +7500,8 @@ fn emit_group_addr_from_temp(
         ),
         CostRule::Alu,
         Some(dst_reg),
-        &[dst_reg, scratch_reg]);
+        &[dst_reg, scratch_reg],
+    );
 }
 
 /// plans/M7.md item Z1: the declared reply type of one `Await{ActorCall}`
@@ -7006,21 +7599,26 @@ fn emit_await_suspend(
                     word,
                     key: fn_key.to_string(),
                 });
-                ctx.push(encode::enc_str_w_imm(X_A, X_FRAME, OFF_TURN_REPLY_SLOT as u16),
+                ctx.push(
+                    encode::enc_str_w_imm(X_A, X_FRAME, OFF_TURN_REPLY_SLOT as u16),
                     format!(
                         "str w{X_A}, [{}, #{OFF_TURN_REPLY_SLOT}]",
                         reg_name(X_FRAME)
                     ),
                     CostRule::Store,
                     None,
-                    &[X_A, X_FRAME]);
+                    &[X_A, X_FRAME],
+                );
                 let interior = (stage_off + ctx.slot_bias) as u16;
-                ctx.push(encode::enc_movz(X_A, interior, 0, false),
+                ctx.push(
+                    encode::enc_movz(X_A, interior, 0, false),
                     format!("movz w{X_A}, #{interior:#x}"),
                     CostRule::MovWide,
                     Some(X_A),
-                    &[]);
-                ctx.push(encode::enc_str_w_imm(X_A, X_FRAME, OFF_TURN_REPLY_SLOT as u16 + 4),
+                    &[],
+                );
+                ctx.push(
+                    encode::enc_str_w_imm(X_A, X_FRAME, OFF_TURN_REPLY_SLOT as u16 + 4),
                     format!(
                         "str w{X_A}, [{}, #{}]",
                         reg_name(X_FRAME),
@@ -7028,7 +7626,8 @@ fn emit_await_suspend(
                     ),
                     CostRule::Store,
                     None,
-                    &[X_A, X_FRAME]);
+                    &[X_A, X_FRAME],
+                );
             }
             emit_marshal_and_call(
                 idx,
@@ -7066,7 +7665,8 @@ fn emit_await_suspend(
             // scheduler (the real park — control genuinely leaves this
             // fn; every other ready actor can now run).
             ctx.load_imm(X_A, 1);
-            ctx.push(encode::enc_str_x_imm(X_A, X_FRAME, OFF_TURN_SUSPENDED as u16),
+            ctx.push(
+                encode::enc_str_x_imm(X_A, X_FRAME, OFF_TURN_SUSPENDED as u16),
                 format!(
                     "str {}, [{}, #{OFF_TURN_SUSPENDED}]",
                     reg_name(X_A),
@@ -7074,10 +7674,17 @@ fn emit_await_suspend(
                 ),
                 CostRule::Store,
                 None,
-                &[X_A, X_FRAME]);
+                &[X_A, X_FRAME],
+            );
             ctx.load_imm(0, TURN_STATUS_SUSPENDED as i64);
             ctx.load_slot(X_LR, ctx.frame.lr_off);
-            ctx.push(encode::enc_ret(X_LR), "ret".to_string(), CostRule::Branch, None, &[X_LR]);
+            ctx.push(
+                encode::enc_ret(X_LR),
+                "ret".to_string(),
+                CostRule::Branch,
+                None,
+                &[X_LR],
+            );
             Ok(())
         }
         AwaitKind::GroupJoin {
@@ -7092,7 +7699,8 @@ fn emit_await_suspend(
                 )));
             }
             emit_group_addr_from_temp(ctx, *group_temp, X_B, X_A, gctx);
-            ctx.push(encode::enc_ldr_x_imm(X_C, X_B, OFF_GROUP_ACTIVE_CHILDREN as u16),
+            ctx.push(
+                encode::enc_ldr_x_imm(X_C, X_B, OFF_GROUP_ACTIVE_CHILDREN as u16),
                 format!(
                     "ldr {}, [{}, #{OFF_GROUP_ACTIVE_CHILDREN}]",
                     reg_name(X_C),
@@ -7100,7 +7708,8 @@ fn emit_await_suspend(
                 ),
                 CostRule::Load,
                 Some(X_C),
-                &[X_B]);
+                &[X_B],
+            );
             let skip_park = ctx.emit_skip(SkipKind::Cbnz(X_C));
             // Immediate: every child already harvested — compose now and
             // fall straight through to the resume state, no scheduler
@@ -7125,15 +7734,18 @@ fn emit_await_suspend(
                 word,
                 key: fn_key.to_string(),
             });
-            ctx.push(encode::enc_str_w_imm(X_A, X_B, OFF_GROUP_JOIN_WAITER as u16),
+            ctx.push(
+                encode::enc_str_w_imm(X_A, X_B, OFF_GROUP_JOIN_WAITER as u16),
                 format!("str w{X_A}, [{}, #{OFF_GROUP_JOIN_WAITER}]", reg_name(X_B)),
                 CostRule::Store,
                 None,
-                &[X_A, X_B]);
+                &[X_A, X_B],
+            );
             ctx.load_imm(X_A, resume_state as i64);
             ctx.store_slot(X_A, ctx.frame.off(state_temp));
             ctx.load_imm(X_A, 1);
-            ctx.push(encode::enc_str_x_imm(X_A, X_FRAME, OFF_TURN_SUSPENDED as u16),
+            ctx.push(
+                encode::enc_str_x_imm(X_A, X_FRAME, OFF_TURN_SUSPENDED as u16),
                 format!(
                     "str {}, [{}, #{OFF_TURN_SUSPENDED}]",
                     reg_name(X_A),
@@ -7141,10 +7753,17 @@ fn emit_await_suspend(
                 ),
                 CostRule::Store,
                 None,
-                &[X_A, X_FRAME]);
+                &[X_A, X_FRAME],
+            );
             ctx.load_imm(0, TURN_STATUS_SUSPENDED as i64);
             ctx.load_slot(X_LR, ctx.frame.lr_off);
-            ctx.push(encode::enc_ret(X_LR), "ret".to_string(), CostRule::Branch, None, &[X_LR]);
+            ctx.push(
+                encode::enc_ret(X_LR),
+                "ret".to_string(),
+                CostRule::Branch,
+                None,
+                &[X_LR],
+            );
             Ok(())
         }
         AwaitKind::Receipt { receipt_temp } => {
@@ -7183,12 +7802,15 @@ fn emit_await_suspend(
                 key: fn_key.to_string(),
             });
             let interior = (stage_off + ctx.slot_bias) as u16;
-            ctx.push(encode::enc_movz(X_B, interior, 0, false),
+            ctx.push(
+                encode::enc_movz(X_B, interior, 0, false),
                 format!("movz w{X_B}, #{interior:#x}"),
                 CostRule::MovWide,
                 Some(X_B),
-                &[]);
-            ctx.push(encode::enc_str_w_imm(X_A, X_D, crate::virtqueue::SLOT_META_REPLY_STAGE as u16),
+                &[],
+            );
+            ctx.push(
+                encode::enc_str_w_imm(X_A, X_D, crate::virtqueue::SLOT_META_REPLY_STAGE as u16),
                 format!(
                     "str w{X_A}, [{}, #{}]",
                     reg_name(X_D),
@@ -7196,8 +7818,10 @@ fn emit_await_suspend(
                 ),
                 CostRule::Store,
                 None,
-                &[X_A, X_D]);
-            ctx.push(encode::enc_str_w_imm(X_B, X_D, crate::virtqueue::SLOT_META_REPLY_STAGE as u16 + 4),
+                &[X_A, X_D],
+            );
+            ctx.push(
+                encode::enc_str_w_imm(X_B, X_D, crate::virtqueue::SLOT_META_REPLY_STAGE as u16 + 4),
                 format!(
                     "str w{X_B}, [{}, #{}]",
                     reg_name(X_D),
@@ -7205,8 +7829,10 @@ fn emit_await_suspend(
                 ),
                 CostRule::Store,
                 None,
-                &[X_B, X_D]);
-            ctx.push(encode::enc_str_w_imm(X_A, X_D, crate::virtqueue::SLOT_META_WAITER as u16),
+                &[X_B, X_D],
+            );
+            ctx.push(
+                encode::enc_str_w_imm(X_A, X_D, crate::virtqueue::SLOT_META_WAITER as u16),
                 format!(
                     "str w{X_A}, [{}, #{}]",
                     reg_name(X_D),
@@ -7214,10 +7840,12 @@ fn emit_await_suspend(
                 ),
                 CostRule::Store,
                 None,
-                &[X_A, X_D]);
+                &[X_A, X_D],
+            );
             ctx.load_ptr(X_A, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
             ctx.load_imm(X_B, crate::virtqueue::SLOT_FLAG_RESOLVED as i64);
-            ctx.push(encode::enc_and_reg(X_A, X_A, X_B, true),
+            ctx.push(
+                encode::enc_and_reg(X_A, X_A, X_B, true),
                 format!(
                     "and {}, {}, {}",
                     reg_name(X_A),
@@ -7226,7 +7854,8 @@ fn emit_await_suspend(
                 ),
                 CostRule::Alu,
                 Some(X_A),
-                &[X_A, X_B]);
+                &[X_A, X_B],
+            );
             let need_park = ctx.emit_skip(SkipKind::Cbz(X_A));
             // Already resolved: copy completion stash → result_temp and
             // continue into the resume state without leaving the fn.
@@ -7237,7 +7866,8 @@ fn emit_await_suspend(
             let stash_delta =
                 crate::virtqueue::SLOT_META_BYTES + crate::virtqueue::REQ_HEADER_SIZE + 8;
             ctx.load_imm(X_A, stash_delta as i64);
-            ctx.push(encode::enc_add_reg(X_A, X_D, X_A, true),
+            ctx.push(
+                encode::enc_add_reg(X_A, X_D, X_A, true),
                 format!(
                     "add {}, {}, {}",
                     reg_name(X_A),
@@ -7246,7 +7876,8 @@ fn emit_await_suspend(
                 ),
                 CostRule::Alu,
                 Some(X_A),
-                &[X_D, X_A]);
+                &[X_D, X_A],
+            );
             let result_off = ctx.frame.off(result_temp);
             let mut w = 0usize;
             while w < result_size {
@@ -7260,7 +7891,8 @@ fn emit_await_suspend(
             ctx.patch_skip(need_park, SkipKind::Cbz(X_A));
             // Park until drain sets resume_ready.
             ctx.load_imm(X_A, 1);
-            ctx.push(encode::enc_str_x_imm(X_A, X_FRAME, OFF_TURN_SUSPENDED as u16),
+            ctx.push(
+                encode::enc_str_x_imm(X_A, X_FRAME, OFF_TURN_SUSPENDED as u16),
                 format!(
                     "str {}, [{}, #{OFF_TURN_SUSPENDED}]",
                     reg_name(X_A),
@@ -7268,10 +7900,17 @@ fn emit_await_suspend(
                 ),
                 CostRule::Store,
                 None,
-                &[X_A, X_FRAME]);
+                &[X_A, X_FRAME],
+            );
             ctx.load_imm(0, TURN_STATUS_SUSPENDED as i64);
             ctx.load_slot(X_LR, ctx.frame.lr_off);
-            ctx.push(encode::enc_ret(X_LR), "ret".to_string(), CostRule::Branch, None, &[X_LR]);
+            ctx.push(
+                encode::enc_ret(X_LR),
+                "ret".to_string(),
+                CostRule::Branch,
+                None,
+                &[X_LR],
+            );
             Ok(())
         }
     }
@@ -7632,7 +8271,8 @@ fn emit_await_resume(
                     ));
                 }
                 let result_off = ctx.frame.off(result_temp);
-                ctx.push(encode::enc_ldr_x_imm(X_A, X_FRAME, OFF_TURN_REPLY as u16),
+                ctx.push(
+                    encode::enc_ldr_x_imm(X_A, X_FRAME, OFF_TURN_REPLY as u16),
                     format!(
                         "ldr {}, [{}, #{OFF_TURN_REPLY}]",
                         reg_name(X_A),
@@ -7640,7 +8280,8 @@ fn emit_await_resume(
                     ),
                     CostRule::Load,
                     Some(X_A),
-                    &[X_FRAME]);
+                    &[X_FRAME],
+                );
                 ctx.store_slot(X_A, result_off);
                 ctx.checkpoint();
                 emit_checkpoint_cancellation_test(ctx, gctx, fn_key);
@@ -7742,7 +8383,8 @@ fn emit_await_resume(
                 if gctx.arena_capacity != 0 {
                     emit_group_cancelled_flags(ctx, fn_key, gctx);
                 }
-                ctx.push(encode::enc_ldr_x_imm(X_A, X_FRAME, OFF_TURN_REPLY as u16),
+                ctx.push(
+                    encode::enc_ldr_x_imm(X_A, X_FRAME, OFF_TURN_REPLY as u16),
                     format!(
                         "ldr {}, [{}, #{OFF_TURN_REPLY}]",
                         reg_name(X_A),
@@ -7750,8 +8392,10 @@ fn emit_await_resume(
                     ),
                     CostRule::Load,
                     Some(X_A),
-                    &[X_FRAME]);
-                ctx.push(encode::enc_ldr_x_imm(X_B, X_FRAME, OFF_TURN_REPLY_TAG as u16),
+                    &[X_FRAME],
+                );
+                ctx.push(
+                    encode::enc_ldr_x_imm(X_B, X_FRAME, OFF_TURN_REPLY_TAG as u16),
                     format!(
                         "ldr {}, [{}, #{OFF_TURN_REPLY_TAG}]",
                         reg_name(X_B),
@@ -7759,16 +8403,19 @@ fn emit_await_resume(
                     ),
                     CostRule::Load,
                     Some(X_B),
-                    &[X_FRAME]);
+                    &[X_FRAME],
+                );
                 if gctx.arena_capacity != 0 {
                     // If cancelled and the delivered tag is Ok, force
                     // Cancelled. A delivered Cancelled/NotAdmitted stands.
                     let skip_force = ctx.emit_skip(SkipKind::Cbz(X_C));
-                    ctx.push(encode::enc_cmp_imm(X_B, 0, true),
+                    ctx.push(
+                        encode::enc_cmp_imm(X_B, 0, true),
                         format!("cmp {}, #0", reg_name(X_B)),
                         CostRule::Alu,
                         None,
-                        &[X_B]);
+                        &[X_B],
+                    );
                     let skip_keep = ctx.emit_skip(SkipKind::Cond(Cond::Ne));
                     ctx.load_imm(X_B, CALL_ERROR_TAG_CANCELLED as i64);
                     ctx.load_imm(X_A, 0);
@@ -8132,7 +8779,12 @@ pub fn async_frame_sizes(
 /// `n_cores` is the sealed report N (plans/M15.md item D high-DRAM stacks).
 pub fn emit_secondary_sp_install(core: usize, n_cores: usize) -> Vec<EmittedWord> {
     let mut words: Vec<EmittedWord> = Vec::new();
-    let push = |words: &mut Vec<EmittedWord>, w: u32, text: String, rule: CostRule, dst: Option<u8>, srcs: &[u8]| {
+    let push = |words: &mut Vec<EmittedWord>,
+                w: u32,
+                text: String,
+                rule: CostRule,
+                dst: Option<u8>,
+                srcs: &[u8]| {
         words.push(EmittedWord::new(w, text, rule, dst, srcs));
     };
     let load_imm = |words: &mut Vec<EmittedWord>, reg: u8, value: u64, label: &str| {
@@ -8140,41 +8792,51 @@ pub fn emit_secondary_sp_install(core: usize, n_cores: usize) -> Vec<EmittedWord
         let h1 = ((value >> 16) & 0xFFFF) as u16;
         let h2 = ((value >> 32) & 0xFFFF) as u16;
         let h3 = ((value >> 48) & 0xFFFF) as u16;
-        push(words,
+        push(
+            words,
             encode::enc_movz(reg, h0, 0, true),
             format!("movz {}, #{:#x}  ; {label}", reg_name(reg), value),
             CostRule::MovWide,
             Some(reg),
-            &[]);
-        push(words,
+            &[],
+        );
+        push(
+            words,
             encode::enc_movk(reg, h1, 16, true),
             format!("movk {}, #{:#x}, lsl #16", reg_name(reg), h1),
             CostRule::MovWide,
             Some(reg),
-            &[]);
-        push(words,
+            &[],
+        );
+        push(
+            words,
             encode::enc_movk(reg, h2, 32, true),
             format!("movk {}, #{:#x}, lsl #32", reg_name(reg), h2),
             CostRule::MovWide,
             Some(reg),
-            &[]);
-        push(words,
+            &[],
+        );
+        push(
+            words,
             encode::enc_movk(reg, h3, 48, true),
             format!("movk {}, #{:#x}, lsl #48", reg_name(reg), h3),
             CostRule::MovWide,
             Some(reg),
-            &[]);
+            &[],
+        );
     };
     let n = n_cores.max(1);
     let sp_top =
         wrela_machine::layout::core_stack_base_n(core, n) + wrela_machine::layout::CORE_STACK_SIZE;
     load_imm(&mut words, 9, sp_top, "sp_top");
-    push(&mut words,
+    push(
+        &mut words,
         encode::enc_add_imm(31, 9, 0, true),
         "mov sp, x9".to_string(),
         CostRule::Alu,
         Some(31),
-        &[9]);
+        &[9],
+    );
     words
 }
 
@@ -8182,7 +8844,14 @@ pub fn emit_secondary_sp_install(core: usize, n_cores: usize) -> Vec<EmittedWord
 /// Relocs). Zero-fill lives in `__wrela_rt_boot_init`; inject overwrites
 /// `__boot_call_<i>` with this body. Saves `x30`; no mid-tick checkpoint.
 pub fn emit_boot_init_call(slot: &BootInitSlotSpec) -> CodegenFn {
-    fn push(words: &mut Vec<EmittedWord>, w: u32, text: String, rule: CostRule, dst: Option<u8>, srcs: &[u8]) {
+    fn push(
+        words: &mut Vec<EmittedWord>,
+        w: u32,
+        text: String,
+        rule: CostRule,
+        dst: Option<u8>,
+        srcs: &[u8],
+    ) {
         words.push(EmittedWord::new(w, text, rule, dst, srcs));
     }
     fn load_imm(words: &mut Vec<EmittedWord>, reg: u8, value: u64, label: &str) {
@@ -8190,30 +8859,38 @@ pub fn emit_boot_init_call(slot: &BootInitSlotSpec) -> CodegenFn {
         let h1 = ((value >> 16) & 0xFFFF) as u16;
         let h2 = ((value >> 32) & 0xFFFF) as u16;
         let h3 = ((value >> 48) & 0xFFFF) as u16;
-        push(words,
+        push(
+            words,
             encode::enc_movz(reg, h0, 0, true),
             format!("movz {}, #{:#x}  ; {label}", reg_name(reg), value),
             CostRule::MovWide,
             Some(reg),
-            &[]);
-        push(words,
+            &[],
+        );
+        push(
+            words,
             encode::enc_movk(reg, h1, 16, true),
             format!("movk {}, #{:#x}, lsl #16", reg_name(reg), h1),
             CostRule::MovWide,
             Some(reg),
-            &[]);
-        push(words,
+            &[],
+        );
+        push(
+            words,
             encode::enc_movk(reg, h2, 32, true),
             format!("movk {}, #{:#x}, lsl #32", reg_name(reg), h2),
             CostRule::MovWide,
             Some(reg),
-            &[]);
-        push(words,
+            &[],
+        );
+        push(
+            words,
             encode::enc_movk(reg, h3, 48, true),
             format!("movk {}, #{:#x}, lsl #48", reg_name(reg), h3),
             CostRule::MovWide,
             Some(reg),
-            &[]);
+            &[],
+        );
     }
     fn load_state(
         words: &mut Vec<EmittedWord>,
@@ -8243,7 +8920,14 @@ pub fn emit_boot_init_call(slot: &BootInitSlotSpec) -> CodegenFn {
     }
     fn bl_key(words: &mut Vec<EmittedWord>, relocs: &mut Vec<Reloc>, key: &str) {
         let word = words.len();
-        push(words, encode::enc_bl(0), format!("bl <{key}>"), CostRule::Call, None, &[]);
+        push(
+            words,
+            encode::enc_bl(0),
+            format!("bl <{key}>"),
+            CostRule::Call,
+            None,
+            &[],
+        );
         relocs.push(Reloc::Call {
             word,
             key: key.to_string(),
@@ -8265,7 +8949,7 @@ pub fn emit_boot_init_call(slot: &BootInitSlotSpec) -> CodegenFn {
                 load_imm(words, reg, 0, &format!("device#{i} regs"));
                 for j in 0..4 {
                     if let Some(ew) = words.get_mut(word + j) {
-                ew.text = format!("device-regs[{j}] device#{i} x{reg}");
+                        ew.text = format!("device-regs[{j}] device#{i} x{reg}");
                     }
                 }
                 relocs.push(Reloc::DeviceRegsBase { word, device: *i });
@@ -8276,7 +8960,7 @@ pub fn emit_boot_init_call(slot: &BootInitSlotSpec) -> CodegenFn {
                 load_imm(words, reg, 0, &format!("pool {name}"));
                 for j in 0..4 {
                     if let Some(ew) = words.get_mut(word + j) {
-                ew.text = format!("pool-base[{j}] {name} x{reg}");
+                        ew.text = format!("pool-base[{j}] {name} x{reg}");
                     }
                 }
                 relocs.push(Reloc::PoolBase {
@@ -8294,7 +8978,7 @@ pub fn emit_boot_init_call(slot: &BootInitSlotSpec) -> CodegenFn {
                 load_imm(words, reg, 0, &format!("own {pool}[{index}]"));
                 for j in 0..4 {
                     if let Some(ew) = words.get_mut(word + j) {
-                ew.text = format!("pool-slot[{j}] {pool}[{index}] x{reg}");
+                        ew.text = format!("pool-slot[{j}] {pool}[{index}] x{reg}");
                     }
                 }
                 relocs.push(Reloc::PoolSlot {
@@ -8320,18 +9004,20 @@ pub fn emit_boot_init_call(slot: &BootInitSlotSpec) -> CodegenFn {
                          (count={count}); boot's unsigned-immediate SUB reaches 4095"
                     ));
                 }
-                push(words,
+                push(
+                    words,
                     encode::enc_sub_imm(31, 31, bytes as u16, true),
                     format!("sub sp, sp, #{bytes}  ; own-handle table"),
                     CostRule::Alu,
                     Some(31),
-                    &[31]);
+                    &[31],
+                );
                 for i in 0..*count {
                     let word = words.len();
                     load_imm(words, 9, 0, &format!("own {pool}[{i}]"));
                     for j in 0..4 {
                         if let Some(ew) = words.get_mut(word + j) {
-                ew.text = format!("pool-slot[{j}] {pool}[{i}] x9");
+                            ew.text = format!("pool-slot[{j}] {pool}[{i}] x9");
                         }
                     }
                     relocs.push(Reloc::PoolSlot {
@@ -8340,19 +9026,23 @@ pub fn emit_boot_init_call(slot: &BootInitSlotSpec) -> CodegenFn {
                         index: i,
                         slot_bytes: *slot_bytes,
                     });
-                    push(words,
+                    push(
+                        words,
                         encode::enc_str_x_imm(9, 31, (i * 8) as u16),
                         format!("str x9, [sp, #{}]", i * 8),
                         CostRule::Store,
                         None,
-                        &[9, 31]);
+                        &[9, 31],
+                    );
                 }
-                push(words,
+                push(
+                    words,
                     encode::enc_add_imm(reg, 31, 0, true),
                     format!("mov {}, sp", reg_name(reg)),
                     CostRule::Alu,
                     Some(reg),
-                    &[31]);
+                    &[31],
+                );
                 Ok(bytes)
             }
         }
@@ -8366,18 +9056,22 @@ pub fn emit_boot_init_call(slot: &BootInitSlotSpec) -> CodegenFn {
     };
 
     // x30 save — second hang regression (layout::build_boot_init doc).
-    push(&mut words,
+    push(
+        &mut words,
         encode::enc_sub_imm(31, 31, 16, true),
         "sub sp, sp, #16".to_string(),
         CostRule::Alu,
         Some(31),
-        &[31]);
-    push(&mut words,
+        &[31],
+    );
+    push(
+        &mut words,
         encode::enc_str_x_imm(30, 31, 0),
         "str x30, [sp]".to_string(),
         CostRule::Store,
         None,
-        &[30, 31]);
+        &[30, 31],
+    );
 
     let mut array_stack: u64 = 0;
     for (i, arg) in call.args.iter().enumerate() {
@@ -8394,83 +9088,112 @@ pub fn emit_boot_init_call(slot: &BootInitSlotSpec) -> CodegenFn {
                 call.key
             )
         });
-        push(&mut words,
+        push(
+            &mut words,
             encode::enc_sub_imm(31, 31, 16, true),
             "sub sp, sp, #16  ; reply slot".to_string(),
             CostRule::Alu,
             Some(31),
-            &[31]);
-        push(&mut words,
+            &[31],
+        );
+        push(
+            &mut words,
             encode::enc_add_imm(8, 31, 0, true),
             "mov x8, sp".to_string(),
             CostRule::Alu,
             Some(8),
-            &[31]);
+            &[31],
+        );
         bl_key(&mut words, &mut relocs, &call.key);
-        push(&mut words,
+        push(
+            &mut words,
             encode::enc_ldr_x_imm(9, 31, 0),
             "ldr x9, [sp]  ; Result tag".to_string(),
             CostRule::Load,
             Some(9),
-            &[31]);
-        push(&mut words,
+            &[31],
+        );
+        push(
+            &mut words,
             encode::enc_add_imm(31, 31, 16, true),
             "add sp, sp, #16  ; drop reply slot".to_string(),
             CostRule::Alu,
             Some(31),
-            &[31]);
+            &[31],
+        );
         let ok_fixup = words.len();
-        push(&mut words, 0, "cbz x9, .ok".to_string(), CostRule::Branch, None, &[]);
+        push(
+            &mut words,
+            0,
+            "cbz x9, .ok".to_string(),
+            CostRule::Branch,
+            None,
+            &[],
+        );
         // `__wrela_abort(x0=*Bytes)` — stack slot, then BL (noreturn).
-        push(&mut words,
+        push(
+            &mut words,
             encode::enc_sub_imm(31, 31, 16, true),
             "sub sp, sp, #16  ; abort Bytes slot".to_string(),
             CostRule::Alu,
             Some(31),
-            &[31]);
+            &[31],
+        );
         let word_adrp = words.len();
-        push(&mut words,
+        push(
+            &mut words,
             encode::enc_adrp(10, 0),
             format!("adrp x10, rodata+{msg_off}"),
             CostRule::Adrp,
             Some(10),
-            &[]);
-        push(&mut words,
+            &[],
+        );
+        push(
+            &mut words,
             encode::enc_add_imm(10, 10, 0, true),
             format!("add x10, x10, #rodata+{msg_off}"),
             CostRule::Alu,
             Some(10),
-            &[10]);
+            &[10],
+        );
         relocs.push(Reloc::Rodata {
             word_adrp,
             byte_offset: msg_off,
         });
-        push(&mut words,
+        push(
+            &mut words,
             encode::enc_str_x_imm(10, 31, 0),
             "str x10, [sp]  ; Bytes.base".to_string(),
             CostRule::Store,
             None,
-            &[10, 31]);
+            &[10, 31],
+        );
         load_imm(&mut words, 10, msg_len as u64, "abort msg len");
-        push(&mut words,
+        push(
+            &mut words,
             encode::enc_str_x_imm(10, 31, 8),
             "str x10, [sp, #8]  ; Bytes.len".to_string(),
             CostRule::Store,
             None,
-            &[10, 31]);
-        push(&mut words,
+            &[10, 31],
+        );
+        push(
+            &mut words,
             encode::enc_add_imm(0, 31, 0, true),
             "add x0, sp, #0  ; *Bytes".to_string(),
             CostRule::Alu,
             Some(0),
-            &[31]);
+            &[31],
+        );
         let abort_word = words.len();
-        push(&mut words,
+        push(
+            &mut words,
             encode::enc_bl(0),
             "bl <__wrela_abort>".to_string(),
             CostRule::Abort,
             None,
-            &[]);
+            &[],
+        );
         relocs.push(Reloc::AbortFixed { word: abort_word });
         let after = words.len();
         let delta = (after as i64 - ok_fixup as i64) * 4;
@@ -8490,27 +9213,40 @@ pub fn emit_boot_init_call(slot: &BootInitSlotSpec) -> CodegenFn {
             array_stack < 4096,
             "own-handle array stack frame is {array_stack} bytes"
         );
-        push(&mut words,
+        push(
+            &mut words,
             encode::enc_add_imm(31, 31, array_stack as u16, true),
             format!("add sp, sp, #{array_stack}  ; free own-handle table"),
             CostRule::Alu,
             Some(31),
-            &[31]);
+            &[31],
+        );
     }
 
-    push(&mut words,
+    push(
+        &mut words,
         encode::enc_ldr_x_imm(30, 31, 0),
         "ldr x30, [sp]".to_string(),
         CostRule::Load,
         Some(30),
-        &[31]);
-    push(&mut words,
+        &[31],
+    );
+    push(
+        &mut words,
         encode::enc_add_imm(31, 31, 16, true),
         "add sp, sp, #16".to_string(),
         CostRule::Alu,
         Some(31),
-        &[31]);
-    push(&mut words, encode::enc_ret(30), "ret".to_string(), CostRule::Branch, None, &[30]);
+        &[31],
+    );
+    push(
+        &mut words,
+        encode::enc_ret(30),
+        "ret".to_string(),
+        CostRule::Branch,
+        None,
+        &[30],
+    );
 
     CodegenFn {
         frame_size: 16,
@@ -8667,7 +9403,14 @@ pub fn emit_checkpoint_wake_call(spec: &CheckpointWakeSpec) -> CodegenFn {
 }
 
 fn emit_driver_state_call(key: &str, driver_state: u64) -> CodegenFn {
-    fn push(words: &mut Vec<EmittedWord>, w: u32, text: String, rule: CostRule, dst: Option<u8>, srcs: &[u8]) {
+    fn push(
+        words: &mut Vec<EmittedWord>,
+        w: u32,
+        text: String,
+        rule: CostRule,
+        dst: Option<u8>,
+        srcs: &[u8],
+    ) {
         words.push(EmittedWord::new(w, text, rule, dst, srcs));
     }
     fn load_imm(words: &mut Vec<EmittedWord>, reg: u8, value: u64, label: &str) {
@@ -8675,65 +9418,95 @@ fn emit_driver_state_call(key: &str, driver_state: u64) -> CodegenFn {
         let h1 = ((value >> 16) & 0xFFFF) as u16;
         let h2 = ((value >> 32) & 0xFFFF) as u16;
         let h3 = ((value >> 48) & 0xFFFF) as u16;
-        push(words,
+        push(
+            words,
             encode::enc_movz(reg, h0, 0, true),
             format!("movz {}, #{:#x}  ; {label}", reg_name(reg), value),
             CostRule::MovWide,
             Some(reg),
-            &[]);
-        push(words,
+            &[],
+        );
+        push(
+            words,
             encode::enc_movk(reg, h1, 16, true),
             format!("movk {}, #{:#x}, lsl #16", reg_name(reg), h1),
             CostRule::MovWide,
             Some(reg),
-            &[]);
-        push(words,
+            &[],
+        );
+        push(
+            words,
             encode::enc_movk(reg, h2, 32, true),
             format!("movk {}, #{:#x}, lsl #32", reg_name(reg), h2),
             CostRule::MovWide,
             Some(reg),
-            &[]);
-        push(words,
+            &[],
+        );
+        push(
+            words,
             encode::enc_movk(reg, h3, 48, true),
             format!("movk {}, #{:#x}, lsl #48", reg_name(reg), h3),
             CostRule::MovWide,
             Some(reg),
-            &[]);
+            &[],
+        );
     }
     let mut words: Vec<EmittedWord> = Vec::new();
     let mut relocs: Vec<Reloc> = Vec::new();
-    push(&mut words,
+    push(
+        &mut words,
         encode::enc_sub_imm(31, 31, 16, true),
         "sub sp, sp, #16".into(),
         CostRule::Alu,
         Some(31),
-        &[31]);
-    push(&mut words,
+        &[31],
+    );
+    push(
+        &mut words,
         encode::enc_str_x_imm(30, 31, 0),
         "str x30, [sp]".into(),
         CostRule::Store,
         None,
-        &[30, 31]);
+        &[30, 31],
+    );
     load_imm(&mut words, 0, driver_state, "driver_state");
     let bl = words.len();
-    push(&mut words, encode::enc_bl(0), format!("bl <{key}>"), CostRule::Call, None, &[]);
+    push(
+        &mut words,
+        encode::enc_bl(0),
+        format!("bl <{key}>"),
+        CostRule::Call,
+        None,
+        &[],
+    );
     relocs.push(Reloc::Call {
         word: bl,
         key: key.to_string(),
     });
-    push(&mut words,
+    push(
+        &mut words,
         encode::enc_ldr_x_imm(30, 31, 0),
         "ldr x30, [sp]".into(),
         CostRule::Load,
         Some(30),
-        &[31]);
-    push(&mut words,
+        &[31],
+    );
+    push(
+        &mut words,
         encode::enc_add_imm(31, 31, 16, true),
         "add sp, sp, #16".into(),
         CostRule::Alu,
         Some(31),
-        &[31]);
-    push(&mut words, encode::enc_ret(30), "ret".into(), CostRule::Branch, None, &[30]);
+        &[31],
+    );
+    push(
+        &mut words,
+        encode::enc_ret(30),
+        "ret".into(),
+        CostRule::Branch,
+        None,
+        &[30],
+    );
     CodegenFn {
         frame_size: 16,
         code: words,
@@ -8746,7 +9519,14 @@ fn emit_driver_state_call(key: &str, driver_state: u64) -> CodegenFn {
 /// `bl <method_key>`. Aggregate returns write through `x8`; non-aggregate
 /// methods ignore it. Inject overwrites `__method_R_M` placeholders.
 pub fn emit_method_call_stub(method_key: &str, state: u64) -> CodegenFn {
-    fn push(words: &mut Vec<EmittedWord>, w: u32, text: String, rule: CostRule, dst: Option<u8>, srcs: &[u8]) {
+    fn push(
+        words: &mut Vec<EmittedWord>,
+        w: u32,
+        text: String,
+        rule: CostRule,
+        dst: Option<u8>,
+        srcs: &[u8],
+    ) {
         words.push(EmittedWord::new(w, text, rule, dst, srcs));
     }
     fn load_imm(words: &mut Vec<EmittedWord>, reg: u8, value: u64, label: &str) {
@@ -8754,84 +9534,120 @@ pub fn emit_method_call_stub(method_key: &str, state: u64) -> CodegenFn {
         let h1 = ((value >> 16) & 0xFFFF) as u16;
         let h2 = ((value >> 32) & 0xFFFF) as u16;
         let h3 = ((value >> 48) & 0xFFFF) as u16;
-        push(words,
+        push(
+            words,
             encode::enc_movz(reg, h0, 0, true),
             format!("movz {}, #{:#x}  ; {label}", reg_name(reg), value),
             CostRule::MovWide,
             Some(reg),
-            &[]);
-        push(words,
+            &[],
+        );
+        push(
+            words,
             encode::enc_movk(reg, h1, 16, true),
             format!("movk {}, #{:#x}, lsl #16", reg_name(reg), h1),
             CostRule::MovWide,
             Some(reg),
-            &[]);
-        push(words,
+            &[],
+        );
+        push(
+            words,
             encode::enc_movk(reg, h2, 32, true),
             format!("movk {}, #{:#x}, lsl #32", reg_name(reg), h2),
             CostRule::MovWide,
             Some(reg),
-            &[]);
-        push(words,
+            &[],
+        );
+        push(
+            words,
             encode::enc_movk(reg, h3, 48, true),
             format!("movk {}, #{:#x}, lsl #48", reg_name(reg), h3),
             CostRule::MovWide,
             Some(reg),
-            &[]);
+            &[],
+        );
     }
     let mut words: Vec<EmittedWord> = Vec::new();
     let mut relocs: Vec<Reloc> = Vec::new();
-    push(&mut words,
+    push(
+        &mut words,
         encode::enc_sub_imm(31, 31, 16, true),
         "sub sp, sp, #16".into(),
         CostRule::Alu,
         Some(31),
-        &[31]);
-    push(&mut words,
+        &[31],
+    );
+    push(
+        &mut words,
         encode::enc_str_x_imm(30, 31, 0),
         "str x30, [sp]".into(),
         CostRule::Store,
         None,
-        &[30, 31]);
+        &[30, 31],
+    );
     // x8 = stage (x2); shift args; x0 = state.
-    push(&mut words,
+    push(
+        &mut words,
         encode::enc_mov_reg(8, 2, true),
         "mov x8, x2  ; aggregate stage".into(),
         CostRule::Alu,
         Some(8),
-        &[2]);
-    push(&mut words,
+        &[2],
+    );
+    push(
+        &mut words,
         encode::enc_mov_reg(2, 1, true),
         "mov x2, x1  ; arg1".into(),
         CostRule::Alu,
         Some(2),
-        &[1]);
-    push(&mut words,
+        &[1],
+    );
+    push(
+        &mut words,
         encode::enc_mov_reg(1, 0, true),
         "mov x1, x0  ; arg0".into(),
         CostRule::Alu,
         Some(1),
-        &[0]);
+        &[0],
+    );
     load_imm(&mut words, 0, state, "actor state");
     let bl = words.len();
-    push(&mut words, encode::enc_bl(0), format!("bl <{method_key}>"), CostRule::Call, None, &[]);
+    push(
+        &mut words,
+        encode::enc_bl(0),
+        format!("bl <{method_key}>"),
+        CostRule::Call,
+        None,
+        &[],
+    );
     relocs.push(Reloc::Call {
         word: bl,
         key: method_key.to_string(),
     });
-    push(&mut words,
+    push(
+        &mut words,
         encode::enc_ldr_x_imm(30, 31, 0),
         "ldr x30, [sp]".into(),
         CostRule::Load,
         Some(30),
-        &[31]);
-    push(&mut words,
+        &[31],
+    );
+    push(
+        &mut words,
         encode::enc_add_imm(31, 31, 16, true),
         "add sp, sp, #16".into(),
         CostRule::Alu,
         Some(31),
-        &[31]);
-    push(&mut words, encode::enc_ret(30), "ret".into(), CostRule::Branch, None, &[30]);
+        &[31],
+    );
+    push(
+        &mut words,
+        encode::enc_ret(30),
+        "ret".into(),
+        CostRule::Branch,
+        None,
+        &[30],
+    );
     CodegenFn {
         frame_size: 16,
         code: words,
@@ -8843,7 +9659,14 @@ pub fn emit_method_call_stub(method_key: &str, state: u64) -> CodegenFn {
 /// Loads resolved handle args into `x0..`, sets `x8` to `OFF_TEST_LINE_BUF`,
 /// `bl <test_key>`, returns status in `x0`. Inject overwrites `__test_call_i`.
 pub fn emit_test_call_stub(test_key: &str, args: &[u64]) -> CodegenFn {
-    fn push(words: &mut Vec<EmittedWord>, w: u32, text: String, rule: CostRule, dst: Option<u8>, srcs: &[u8]) {
+    fn push(
+        words: &mut Vec<EmittedWord>,
+        w: u32,
+        text: String,
+        rule: CostRule,
+        dst: Option<u8>,
+        srcs: &[u8],
+    ) {
         words.push(EmittedWord::new(w, text, rule, dst, srcs));
     }
     fn load_imm(words: &mut Vec<EmittedWord>, reg: u8, value: u64, label: &str) {
@@ -8851,45 +9674,57 @@ pub fn emit_test_call_stub(test_key: &str, args: &[u64]) -> CodegenFn {
         let h1 = ((value >> 16) & 0xFFFF) as u16;
         let h2 = ((value >> 32) & 0xFFFF) as u16;
         let h3 = ((value >> 48) & 0xFFFF) as u16;
-        push(words,
+        push(
+            words,
             encode::enc_movz(reg, h0, 0, true),
             format!("movz {}, #{:#x}  ; {label}", reg_name(reg), value),
             CostRule::MovWide,
             Some(reg),
-            &[]);
-        push(words,
+            &[],
+        );
+        push(
+            words,
             encode::enc_movk(reg, h1, 16, true),
             format!("movk {}, #{:#x}, lsl #16", reg_name(reg), h1),
             CostRule::MovWide,
             Some(reg),
-            &[]);
-        push(words,
+            &[],
+        );
+        push(
+            words,
             encode::enc_movk(reg, h2, 32, true),
             format!("movk {}, #{:#x}, lsl #32", reg_name(reg), h2),
             CostRule::MovWide,
             Some(reg),
-            &[]);
-        push(words,
+            &[],
+        );
+        push(
+            words,
             encode::enc_movk(reg, h3, 48, true),
             format!("movk {}, #{:#x}, lsl #48", reg_name(reg), h3),
             CostRule::MovWide,
             Some(reg),
-            &[]);
+            &[],
+        );
     }
     let mut words: Vec<EmittedWord> = Vec::new();
     let mut relocs: Vec<Reloc> = Vec::new();
-    push(&mut words,
+    push(
+        &mut words,
         encode::enc_sub_imm(31, 31, 16, true),
         "sub sp, sp, #16".into(),
         CostRule::Alu,
         Some(31),
-        &[31]);
-    push(&mut words,
+        &[31],
+    );
+    push(
+        &mut words,
         encode::enc_str_x_imm(30, 31, 0),
         "str x30, [sp]".into(),
         CostRule::Store,
         None,
-        &[30, 31]);
+        &[30, 31],
+    );
     for (i, &v) in args.iter().enumerate() {
         assert!(i < 8, "emit_test_call_stub: too many args");
         load_imm(&mut words, i as u8, v, &format!("test arg {i}"));
@@ -8898,24 +9733,42 @@ pub fn emit_test_call_stub(test_key: &str, args: &[u64]) -> CodegenFn {
         wrela_machine::layout::MACHINE_INFO_BASE + wrela_machine::machine_info::OFF_TEST_LINE_BUF;
     load_imm(&mut words, 8, line_buf, "OFF_TEST_LINE_BUF");
     let bl = words.len();
-    push(&mut words, encode::enc_bl(0), format!("bl <{test_key}>"), CostRule::Call, None, &[]);
+    push(
+        &mut words,
+        encode::enc_bl(0),
+        format!("bl <{test_key}>"),
+        CostRule::Call,
+        None,
+        &[],
+    );
     relocs.push(Reloc::Call {
         word: bl,
         key: test_key.to_string(),
     });
-    push(&mut words,
+    push(
+        &mut words,
         encode::enc_ldr_x_imm(30, 31, 0),
         "ldr x30, [sp]".into(),
         CostRule::Load,
         Some(30),
-        &[31]);
-    push(&mut words,
+        &[31],
+    );
+    push(
+        &mut words,
         encode::enc_add_imm(31, 31, 16, true),
         "add sp, sp, #16".into(),
         CostRule::Alu,
         Some(31),
-        &[31]);
-    push(&mut words, encode::enc_ret(30), "ret".into(), CostRule::Branch, None, &[30]);
+        &[31],
+    );
+    push(
+        &mut words,
+        encode::enc_ret(30),
+        "ret".into(),
+        CostRule::Branch,
+        None,
+        &[30],
+    );
     CodegenFn {
         frame_size: 16,
         code: words,
@@ -8928,7 +9781,14 @@ pub fn emit_test_call_stub(test_key: &str, args: &[u64]) -> CodegenFn {
 /// Bytes is by-pointer: stack slot `(base, capacity)`, `x0 = &*slot`,
 /// `x1 = copy_len`.
 pub fn emit_test_prefix_stub(rodata_off: usize, len: u64) -> CodegenFn {
-    fn push(words: &mut Vec<EmittedWord>, w: u32, text: String, rule: CostRule, dst: Option<u8>, srcs: &[u8]) {
+    fn push(
+        words: &mut Vec<EmittedWord>,
+        w: u32,
+        text: String,
+        rule: CostRule,
+        dst: Option<u8>,
+        srcs: &[u8],
+    ) {
         words.push(EmittedWord::new(w, text, rule, dst, srcs));
     }
     fn load_imm(words: &mut Vec<EmittedWord>, reg: u8, value: u64, label: &str) {
@@ -8936,107 +9796,142 @@ pub fn emit_test_prefix_stub(rodata_off: usize, len: u64) -> CodegenFn {
         let h1 = ((value >> 16) & 0xFFFF) as u16;
         let h2 = ((value >> 32) & 0xFFFF) as u16;
         let h3 = ((value >> 48) & 0xFFFF) as u16;
-        push(words,
+        push(
+            words,
             encode::enc_movz(reg, h0, 0, true),
             format!("movz {}, #{:#x}  ; {label}", reg_name(reg), value),
             CostRule::MovWide,
             Some(reg),
-            &[]);
-        push(words,
+            &[],
+        );
+        push(
+            words,
             encode::enc_movk(reg, h1, 16, true),
             format!("movk {}, #{:#x}, lsl #16", reg_name(reg), h1),
             CostRule::MovWide,
             Some(reg),
-            &[]);
-        push(words,
+            &[],
+        );
+        push(
+            words,
             encode::enc_movk(reg, h2, 32, true),
             format!("movk {}, #{:#x}, lsl #32", reg_name(reg), h2),
             CostRule::MovWide,
             Some(reg),
-            &[]);
-        push(words,
+            &[],
+        );
+        push(
+            words,
             encode::enc_movk(reg, h3, 48, true),
             format!("movk {}, #{:#x}, lsl #48", reg_name(reg), h3),
             CostRule::MovWide,
             Some(reg),
-            &[]);
+            &[],
+        );
     }
     let mut words: Vec<EmittedWord> = Vec::new();
     let mut relocs: Vec<Reloc> = Vec::new();
     // 16-byte Bytes slot at [sp], LR at [sp,#16].
-    push(&mut words,
+    push(
+        &mut words,
         encode::enc_sub_imm(31, 31, 32, true),
         "sub sp, sp, #32".into(),
         CostRule::Alu,
         Some(31),
-        &[31]);
-    push(&mut words,
+        &[31],
+    );
+    push(
+        &mut words,
         encode::enc_str_x_imm(30, 31, 16),
         "str x30, [sp, #16]".into(),
         CostRule::Store,
         None,
-        &[30, 31]);
+        &[30, 31],
+    );
     let word_adrp = words.len();
-    push(&mut words,
+    push(
+        &mut words,
         encode::enc_adrp(9, 0),
         format!("adrp x9, rodata+{rodata_off:#x}"),
         CostRule::Adrp,
         Some(9),
-        &[]);
-    push(&mut words,
+        &[],
+    );
+    push(
+        &mut words,
         encode::enc_add_imm(9, 9, 0, true),
         format!("add x9, x9, #rodata+{rodata_off:#x}"),
         CostRule::Alu,
         Some(9),
-        &[9]);
+        &[9],
+    );
     relocs.push(Reloc::Rodata {
         word_adrp,
         byte_offset: rodata_off,
     });
-    push(&mut words,
+    push(
+        &mut words,
         encode::enc_str_x_imm(9, 31, 0),
         "str x9, [sp]  ; Bytes.base".into(),
         CostRule::Store,
         None,
-        &[9, 31]);
+        &[9, 31],
+    );
     load_imm(&mut words, 9, len, "Bytes.capacity");
-    push(&mut words,
+    push(
+        &mut words,
         encode::enc_str_x_imm(9, 31, 8),
         "str x9, [sp, #8]  ; Bytes.len".into(),
         CostRule::Store,
         None,
-        &[9, 31]);
-    push(&mut words,
+        &[9, 31],
+    );
+    push(
+        &mut words,
         encode::enc_add_imm(0, 31, 0, true),
         "add x0, sp, #0  ; *Bytes".into(),
         CostRule::Alu,
         Some(0),
-        &[31]);
+        &[31],
+    );
     load_imm(&mut words, 1, len, "copy len");
     let bl = words.len();
-    push(&mut words,
+    push(
+        &mut words,
         encode::enc_bl(0),
         "bl <__wrela_console_append_bytes>".into(),
         CostRule::Call,
         None,
-        &[]);
+        &[],
+    );
     relocs.push(Reloc::Call {
         word: bl,
         key: "__wrela_console_append_bytes".into(),
     });
-    push(&mut words,
+    push(
+        &mut words,
         encode::enc_ldr_x_imm(30, 31, 16),
         "ldr x30, [sp, #16]".into(),
         CostRule::Load,
         Some(30),
-        &[31]);
-    push(&mut words,
+        &[31],
+    );
+    push(
+        &mut words,
         encode::enc_add_imm(31, 31, 32, true),
         "add sp, sp, #32".into(),
         CostRule::Alu,
         Some(31),
-        &[31]);
-    push(&mut words, encode::enc_ret(30), "ret".into(), CostRule::Branch, None, &[30]);
+        &[31],
+    );
+    push(
+        &mut words,
+        encode::enc_ret(30),
+        "ret".into(),
+        CostRule::Branch,
+        None,
+        &[30],
+    );
     CodegenFn {
         frame_size: 32,
         code: words,
@@ -9124,7 +10019,11 @@ pub fn dump(program: &CodegenProgram) -> String {
             &format!("Fn key={key} frame={} bytes", f.frame_size),
         );
         for (i, ew) in f.code.iter().enumerate() {
-            push_line(&mut out, 2, &format!("{i:04}: {:08x}  {}", ew.word, ew.text));
+            push_line(
+                &mut out,
+                2,
+                &format!("{i:04}: {:08x}  {}", ew.word, ew.text),
+            );
         }
     }
     if !program.rodata.is_empty() {
@@ -9621,8 +10520,16 @@ mod tests {
 
         let naive_mov = mov_wide_words(&naive.fns["c"]);
         let narrow_mov = mov_wide_words(&narrow.fns["c"]);
-        assert_eq!(naive_mov.len(), 4, "naive must stay four words: {naive_mov:?}");
-        assert_eq!(narrow_mov.len(), 1, "small imm must be one movz: {narrow_mov:?}");
+        assert_eq!(
+            naive_mov.len(),
+            4,
+            "naive must stay four words: {naive_mov:?}"
+        );
+        assert_eq!(
+            narrow_mov.len(),
+            1,
+            "small imm must be one movz: {narrow_mov:?}"
+        );
         assert_eq!(narrow_mov[0], encode::enc_movz(X_A, 42, 0, true));
         assert_eq!(materialize_mov_wide(&narrow_mov), 42);
         assert_eq!(
@@ -9795,12 +10702,22 @@ mod tests {
         let off_mov: usize = off_prog
             .fns
             .values()
-            .map(|f| f.code.iter().filter(|ew| ew.rule == CostRule::MovWide).count())
+            .map(|f| {
+                f.code
+                    .iter()
+                    .filter(|ew| ew.rule == CostRule::MovWide)
+                    .count()
+            })
             .sum();
         let on_mov: usize = on_prog
             .fns
             .values()
-            .map(|f| f.code.iter().filter(|ew| ew.rule == CostRule::MovWide).count())
+            .map(|f| {
+                f.code
+                    .iter()
+                    .filter(|ew| ew.rule == CostRule::MovWide)
+                    .count()
+            })
             .sum();
         assert!(
             on_mov < off_mov,
@@ -10190,7 +11107,10 @@ mod tests {
             "fn:only".to_string(),
             CodegenFn {
                 frame_size: 16,
-                code: vec![EmittedWord::new(0, String::new(), CostRule::Alu, None, &[]), EmittedWord::new(0, String::new(), CostRule::Alu, None, &[])],
+                code: vec![
+                    EmittedWord::new(0, String::new(), CostRule::Alu, None, &[]),
+                    EmittedWord::new(0, String::new(), CostRule::Alu, None, &[]),
+                ],
                 relocs: vec![Reloc::Rodata {
                     word_adrp: 0,
                     byte_offset: 100,

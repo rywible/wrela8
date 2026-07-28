@@ -15,7 +15,7 @@ use crate::mwir;
 use crate::sema;
 use crate::syntax::{lexer, parser};
 
-use super::{OptId, RELEASE_OPTS, apply_mode, apply_opts, CompileMode};
+use super::{CompileMode, OptId, RELEASE_OPTS, apply_mode, apply_opts};
 
 /// One cost-* case scored under baseline vs candidate.
 #[derive(Debug, Clone)]
@@ -249,11 +249,7 @@ mod tests {
         eprintln!("corpus proxy win (dev → release):\n{table}");
         // Stable shape for item L: every case + SUM row.
         for c in &cmp.cases {
-            assert!(
-                table.contains(&c.name),
-                "table missing case {}",
-                c.name
-            );
+            assert!(table.contains(&c.name), "table missing case {}", c.name);
         }
         assert!(table.contains("SUM"));
         assert!(cmp.sum_delta() < 0, "corpus sum must fall under release");
@@ -309,7 +305,8 @@ mod tests {
         // Both axes are independent TLS knobs; enabling both before
         // lower+codegen yields identical scores regardless of slice order.
         assert_eq!(
-            cmp.baseline_sum, cmp.candidate_sum,
+            cmp.baseline_sum,
+            cmp.candidate_sum,
             "swapped order should be independent (equal totals); got Δ {}",
             cmp.sum_delta()
         );

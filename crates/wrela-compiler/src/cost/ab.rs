@@ -143,10 +143,7 @@ pub fn hot(a: [u64; 32]) -> u64:
     return v0 +% v1
 "#;
 
-    fn lower_codegen_score(
-        src: &str,
-        mode: CompileMode,
-    ) -> CostReport {
+    fn lower_codegen_score(src: &str, mode: CompileMode) -> CostReport {
         use crate::codegen::codegen_program;
         use crate::lower::lower_program;
         use crate::mwir;

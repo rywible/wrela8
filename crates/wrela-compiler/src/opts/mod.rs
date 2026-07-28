@@ -77,10 +77,7 @@ mod tests {
 
     #[test]
     fn release_opts_order_is_bounds_elide_then_narrow_imm() {
-        assert_eq!(
-            RELEASE_OPTS,
-            &[OptId::BoundsElide, OptId::NarrowImm]
-        );
+        assert_eq!(RELEASE_OPTS, &[OptId::BoundsElide, OptId::NarrowImm]);
     }
 
     #[test]
@@ -129,10 +126,7 @@ pub fn add_one(x: u64) -> u64:
         );
         let table = load_default().expect("cost table");
         let cost = score_program(&prog, &table).expect("cost under Dev");
-        assert!(
-            cost.total_proxy_cycles > 0,
-            "dev cost dump must score > 0"
-        );
+        assert!(cost.total_proxy_cycles > 0, "dev cost dump must score > 0");
 
         apply_mode(CompileMode::Release);
     }

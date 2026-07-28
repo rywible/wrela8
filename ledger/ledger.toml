@@ -642,28 +642,33 @@ note = """plans/M18.md item L (2026-07-28): flipped. Image report short Cost sum
 [[clause]]
 id = "compiler.opts.compile-mode"
 doc = "04-compiler.md#5"
-status = "gap"
-note = """plans/M19.md item A / decisions 1410–1411: 04 §5 names product modes `dev` (all named opts off) and `release` (all named opts on, fixed in-code call order; default product path). Opts are ordinary skippable functions — no recipe TOML, evidence table, or plugin. Opened as `gap` until `CompileMode` + CLI `--mode` land (items B/C) and modes drive emission.
-
-**Flip when** items B+C+F prove `--mode=dev|release` (default `release`) and the release order applies named opts; goldens/units cite both modes."""
+status = "test"
+tests = [
+  "unit:dev_disables_both_opts",
+  "unit:release_enables_both_opts",
+  "unit:release_opts_order_is_bounds_elide_then_narrow_imm",
+  "unit:apply_opts_enables_only_named",
+  "unit:dump_asm_and_cost_succeed_under_dev",
+]
+note = """plans/M19.md item L (2026-07-28): FLIPPED from `gap` to `test`. 04 §5 product modes `dev`/`release` via `opts::CompileMode` + `opts::apply_mode` (single front door); `RELEASE_OPTS` = BoundsElide then NarrowImm; CLI `--mode=dev|release` (default `release`). Units in `opts::tests` prove apply_mode / apply_opts TLS knobs and that `dev` dumps still succeed. No recipe TOML / evidence table / plugin."""
 
 [[clause]]
 id = "compiler.opts.proxy-win-corpus"
 doc = "04-compiler.md#5"
-status = "gap"
-note = """plans/M19.md item A / decisions 1410–1411: 04 §5 states the corpus proxy win rule — scored in context under M18's ISA proxy-cycle ranking: no fixed cost-* case may rise; ≥1 must strictly fall. Physical / host wall-time never gates opts. Opened as `gap`.
-
-**Flip when** item E's corpus proxy win oracle is green (`release` vs `dev` on the pinned cost corpus)."""
+status = "test"
+tests = [
+  "unit:assert_release_wins_cost_corpus_oracle",
+  "unit:bounds_elide_alone_wins_cost_bounds_elide",
+  "unit:narrow_imm_alone_wins_some_cost_case",
+]
+note = """plans/M19.md item L (2026-07-28): FLIPPED from `gap` to `test`. Corpus proxy win rule under M18's ISA proxy-cycle ranking: no fixed cost-* case may rise under `release` vs `dev`; ≥1 must strictly fall; scored in context of the full pipeline. Oracle `opts::win::tests::assert_release_wins_cost_corpus_oracle` (+ convolution singles). Physical / host wall-time never gates opts."""
 
 [[clause]]
 id = "compiler.opts.dev-correct"
 doc = "04-compiler.md#5"
-status = "gap"
-note = """plans/M19.md item A / decisions 1410–1411: 04 §5 requires semantics independent of mode — both `dev` and `release` stay correct under ordinary oracles (`diff-eval`, goldens, validate). Opened as `gap`.
-
-**Wired (item G / decisions 1470–1473):** dedicated dual-mode unit `opts::correct::tests::dev_and_release_agree_on_semantic_test_slice` (helper `assert_dev_release_agree_on_test_slice`) on representative goldens `check-tests-arith` + `check-tests-program` — eval `@test` reports must agree under `dev`/`release` and match `expected/test.txt`; both modes must lower+codegen with `emit_comptime_tests`. Not a doubled full `diff-eval` (decision 1470); `diff-eval` is the product-default (`release`) backend↔eval oracle and must call `opts::apply_mode(Release)` (TLS leaves NarrowImm off otherwise — 1470 follow-up). Status stays `gap` until item L flips.
-
-**Flip when** item L cites `opts::correct::tests::dev_and_release_agree_on_semantic_test_slice` (and helper) as `test`."""
+status = "test"
+tests = ["unit:dev_and_release_agree_on_semantic_test_slice"]
+note = """plans/M19.md item L (2026-07-28): FLIPPED from `gap` to `test`. Semantics independent of mode — both `dev` and `release` stay correct. Dedicated dual-mode unit `opts::correct::tests::dev_and_release_agree_on_semantic_test_slice` (helper `assert_dev_release_agree_on_test_slice`) on representative goldens `check-tests-arith` + `check-tests-program`. Not a doubled full `diff-eval` (decision 1470); product-default `diff-eval` applies `opts::apply_mode(Release)`."""
 
 [[clause]]
 id = "compiler.bench.compiler-lane-locked"
