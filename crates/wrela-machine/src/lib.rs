@@ -299,6 +299,23 @@ pub mod machine_info {
     pub const OFF_TEST_LINE_BUF: u64 = 0x218;
     pub const TEST_LINE_BUF_SIZE: u64 = 256;
 
+    /// Offset 0x318 (792): u64 guest-physical destination for the
+    /// entropy fill (plans/M17.md freeze 3 / decisions 1220–1225). First
+    /// free slot after `OFF_TEST_LINE_BUF` (0x218 + 256 = 0x318). The
+    /// guest writes an ordinary store of the scratch GPA here, then a
+    /// length at `OFF_ENTROPY_LEN`, then a trapping store to
+    /// `mmio::ENTROPY_MMIO_ADDR`; the VMM fills `[dest, dest+len)`.
+    pub const OFF_ENTROPY_DEST: u64 = 0x318;
+
+    /// Offset 0x320 (800): u64 length in bytes for the entropy fill
+    /// (plans/M17.md freeze 3). Must be in `1..=ENTROPY_LEN_MAX`.
+    pub const OFF_ENTROPY_LEN: u64 = 0x320;
+
+    /// Maximum `entropy[N]()` length (`N` in `1..=64`). Same ceiling the
+    /// guest intrinsic, VMM trap, and choice-log underrun path all refuse
+    /// past (plans/M17.md freeze 1 / decision 1220).
+    pub const ENTROPY_LEN_MAX: u64 = 64;
+
     /// Offset 0x200 (512): plans/M6.md item E's own vector-observation
     /// counter, `u64`, zeroed at boot — `__wrela_vector0_service`'s whole
     /// body (`wrela-compiler/src/layout.rs::build_checkpoint_and_vector_stub`)
@@ -552,6 +569,18 @@ pub mod mmio {
     /// where a trap is fine." An image with no `RunningDevice.reset` site
     /// emits no store at all.
     pub const QUIESCE_MMIO_ADDR: u64 = MMIO_BASE + 0x4000;
+
+    /// One `u64` store: the entropy device's trapping doorbell
+    /// (plans/M17.md freeze 3 / decisions 1220–1225). Park-shaped
+    /// protocol, not a single load: the guest writes dest GPA + length
+    /// to `machine_info::OFF_ENTROPY_DEST` / `OFF_ENTROPY_LEN` (ordinary,
+    /// non-trapping stores), then performs *this* trapping store (any
+    /// value). The VMM reads dest/len from the machine-info page, fills
+    /// `[dest, dest+len)` with entropy bytes, logs one choice, and
+    /// advances PC. A store without the staging writes, or a load of
+    /// this address, is a guest fault. Next free page after
+    /// `QUIESCE_MMIO_ADDR`, same one-page-per-register convention.
+    pub const ENTROPY_MMIO_ADDR: u64 = MMIO_BASE + 0x5000;
 }
 
 /// The closed device set of machine v1 (06-machine.md §6). There is no
@@ -738,6 +767,7 @@ mod tests {
             ("park_mmio", mmio::PARK_MMIO_ADDR, 8),
             ("release_mmio", mmio::RELEASE_MMIO_ADDR, 8),
             ("quiesce_mmio", mmio::QUIESCE_MMIO_ADDR, 8),
+            ("entropy_mmio", mmio::ENTROPY_MMIO_ADDR, 8),
         ]
     }
 
@@ -907,10 +937,17 @@ mod tests {
         assert!(machine_info::OFF_VECTOR0_OBSERVED + 8 <= machine_info::OFF_ABORT_LATCH);
         assert!(machine_info::OFF_ABORT_LATCH + 8 <= machine_info::OFF_SLOTMAP_NEXT_ID);
         assert!(machine_info::OFF_SLOTMAP_NEXT_ID + 8 <= machine_info::OFF_TEST_LINE_BUF);
+        // Entropy staging slots sit immediately after the test line buf
+        // (0x218 + 256 = 0x318); both must fit the page (plans/M17.md B).
         assert!(
             machine_info::OFF_TEST_LINE_BUF + machine_info::TEST_LINE_BUF_SIZE
-                <= layout::MACHINE_INFO_SIZE
+                <= machine_info::OFF_ENTROPY_DEST
         );
+        assert!(machine_info::OFF_ENTROPY_DEST + 8 <= machine_info::OFF_ENTROPY_LEN);
+        assert!(
+            machine_info::OFF_ENTROPY_LEN + 8 <= layout::MACHINE_INFO_SIZE
+        );
+        assert!(machine_info::ENTROPY_LEN_MAX == 64);
     }
 
     /// plans/M8.md item C1: every core's own mark word is distinct, inside
