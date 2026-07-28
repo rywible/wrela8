@@ -35,7 +35,7 @@ use wrela_compiler::sema::typed::{TestKind, TypedProgram};
 use wrela_compiler::syntax::ast::Module;
 use wrela_compiler::syntax::{lexer, parser, printer};
 
-const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed|layout-types|flowwir|mwir|asm|image|report|rtconfig> [--timings] [--omit-dmb] <file.wr>\n       wrela test <file.wr> [--vmm <path>] [--omit-dmb]\n       wrela build <file.wr> [--out-dir <dir>] [--omit-dmb]\n       wrela version";
+const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed|layout-types|flowwir|mwir|asm|cost|image|report|rtconfig> [--timings] [--omit-dmb] <file.wr>\n       wrela test <file.wr> [--vmm <path>] [--omit-dmb]\n       wrela build <file.wr> [--out-dir <dir>] [--omit-dmb]\n       wrela version";
 
 // Set by every diagnostic printer while `dump` runs; cleared at the
 // start of each `dump` invocation. Plans/M9.md item NN: `dump` exits
@@ -1235,7 +1235,10 @@ fn dump(args: &[String]) -> ExitCode {
         // so force-rooted `core.runtime` helpers enter the emit set —
         // root-only lower never sees them. Builds a whole-closure
         // LayoutCtx and dumps the merged codegen program.
-        "asm" => {
+        // plans/M18.md items D+E: `--stage=cost` shares this pipeline, then
+        // scores with `wrela-cost-v1` instead of printing asm text.
+        "asm" | "cost" => {
+            let dump_cost = stage == "cost";
             match lex_result {
                 Ok(tokens) => {
                     let parse_start = Instant::now();
@@ -1325,12 +1328,40 @@ fn dump(args: &[String]) -> ExitCode {
                                                     group_arena_capacity,
                                                     &enqueue_specs,
                                                 ) {
-                                                    Ok(codegen_program) => print!(
-                                                        "{}",
-                                                        wrela_compiler::codegen::dump(
-                                                            &codegen_program
-                                                        )
-                                                    ),
+                                                    Ok(codegen_program) => {
+                                                        if dump_cost {
+                                                            match wrela_compiler::cost::load_default()
+                                                            {
+                                                                Ok(table) => {
+                                                                    match wrela_compiler::cost::dump(
+                                                                        &codegen_program,
+                                                                        &table,
+                                                                    ) {
+                                                                        Ok(text) => print!("{text}"),
+                                                                        Err(e) => {
+                                                                            print_line_diagnostic(
+                                                                                &format!(
+                                                                                    "error[unimplemented]: {e}"
+                                                                                ),
+                                                                            )
+                                                                        }
+                                                                    }
+                                                                }
+                                                                Err(e) => print_line_diagnostic(
+                                                                    &format!(
+                                                                        "error[unimplemented]: {e}"
+                                                                    ),
+                                                                ),
+                                                            }
+                                                        } else {
+                                                            print!(
+                                                                "{}",
+                                                                wrela_compiler::codegen::dump(
+                                                                    &codegen_program
+                                                                )
+                                                            );
+                                                        }
+                                                    }
                                                     Err(e) => print_line_diagnostic(&format!(
                                                         "error[unimplemented]: {}",
                                                         e.message
