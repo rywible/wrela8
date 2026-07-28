@@ -1,12 +1,15 @@
-//! Actor/driver core placement (plans/M8.md item B, 04-compiler.md §3).
+//! Actor/driver core placement (plans/M8.md item B, plans/M15.md item C,
+//! 04-compiler.md §3).
 //!
 //! Placement is a **build output**: every `@actor` / `@driver` declaration
-//! gets exactly one core in `0..VCPUS`. Explicit `core=N` annotations are
-//! fixed first; the virtio-blk driver is pinned to core 0; everything else
-//! is inferred deterministically from published facts, or rejected by name
-//! when a fact the algorithm needs cannot be produced.
+//! gets exactly one core in `0..N` where `N` is the image's sealed
+//! `Image(..., cores=N?)` (default 1). Explicit `core=K` annotations are
+//! fixed first (`core ≥ N` is a build error); the virtio-blk driver is
+//! pinned to core 0; everything else is inferred deterministically from
+//! published facts, or rejected by name when a fact the algorithm needs
+//! cannot be produced.
 //!
-//! ## The inference rule (04 §3, narrowed for M8-B — see plans/M8.md)
+//! ## The inference rule (04 §3)
 //!
 //! Published sort key for an unfixed placeable: descending
 //! `(work, bytes)`, then ascending canonical identity (`driver#i` before
@@ -23,14 +26,10 @@
 //!   bytes attributed to that placeable (DMA pools via their `device=` to
 //!   the bound driver; image pools with no single owner contribute 0).
 //!
-//! **Single-core floor (M8-B decision):** when no declaration carries an
-//! explicit `core=` ≥ 1, the live assignment domain is `{0}` — every
-//! unfixed placeable lands on core 0. Secondary vCPUs are not started
-//! until item C; spreading unannotated actors across cores would silently
-//! strand them. A graph that *does* name `core=` ≥ 1 is a cross-core
-//! graph: the full three-core packing runs for the unfixed rest, and the
-//! report states the result (dump/report oracles). Execution of off-core
-//! placements is item C's multicore boot.
+//! **Domain = N (plans/M15.md item C):** `PlacementTable.cores` is always
+//! the image's `N`. There is no binary floor that jumps to a machine-wide
+//! packing width when any pin names `core ≥ 1` — the packing domain is
+//! exactly `{0 .. N-1}`.
 //!
 //! Inputs, the chosen core, and the source of each assignment
 //! (`explicit` / `pinned-virtio-blk` / `inferred`) are published in the
@@ -43,7 +42,6 @@ use crate::eval::value::Value;
 use crate::mwir::{self, LayoutCtx};
 use crate::sema::types::{self, Type};
 use crate::syntax::ast::Module;
-use wrela_machine::VCPUS;
 
 /// How a placeable got its core.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,7 +50,7 @@ pub enum PlacementSource {
     Explicit,
     /// Virtio-blk driver (and its ISR/bottom half): pinned to core 0.
     PinnedVirtioBlk,
-    /// 04 §3 inference (or the M8-B single-core floor).
+    /// 04 §3 inference over the image's N-core domain.
     Inferred,
 }
 
@@ -87,13 +85,10 @@ pub struct PlacementEntry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlacementTable {
     pub entries: Vec<PlacementEntry>,
-    /// How many cores this image **brings up** — the single-core floor's
-    /// own live-domain count (`1`, every M5-M7 image) or `VCPUS` for a
-    /// cross-core graph. plans/M8.md item C1 makes this load-bearing: the
-    /// image emits one entry block, one `rt_run_one` and one round-robin
-    /// cursor per live core, and the report publishes a `CoreEntry` line
-    /// for each secondary. One truth: the same predicate that opens the
-    /// packing domain below opens the bring-up set.
+    /// How many cores this image **brings up** — always equal to the
+    /// sealed `Image(..., cores=N)` (plans/M15.md item C). The packing
+    /// domain, secondary entry blocks, and report `CoreEntry` lines all
+    /// follow this same N.
     pub cores: usize,
 }
 
@@ -131,14 +126,15 @@ impl PlacementTable {
 }
 
 /// Validates every `core=` annotation on drivers/actors without sizing:
-/// range `0..VCPUS`, integer shape, and virtio-blk may not leave core 0.
-/// Called from `check_sealed` so `--stage=image` rejects bad annotations
-/// even when the report is not rendered.
+/// range `0..N` (`N = graph.cores`), integer shape, and virtio-blk may not
+/// leave core 0. Called from `check_sealed` so `--stage=image` rejects bad
+/// annotations even when the report is not rendered.
 pub fn check_annotations(graph: &ImageGraph) -> Result<(), String> {
+    let n = graph.cores;
     for (i, d) in graph.drivers.iter().enumerate() {
         let name = types::render_type(&d.actor_type);
         let id = format!("driver#{i}");
-        match read_core_arg(&d.args, &id)? {
+        match read_core_arg(&d.args, &id, n)? {
             Some(core) => {
                 if driver_is_virtio_blk(graph, d) && core != 0 {
                     return Err(format!(
@@ -153,18 +149,27 @@ pub fn check_annotations(graph: &ImageGraph) -> Result<(), String> {
     }
     for (i, d) in graph.actors.iter().enumerate() {
         let id = format!("actor#{i}");
-        let _ = read_core_arg(&d.args, &id)?;
+        let _ = read_core_arg(&d.args, &id, n)?;
     }
     Ok(())
 }
 
-/// Infers every actor/driver core. `check_annotations` must already have
-/// passed (same rules; this re-reads `core=` for the fixed set).
+/// Infers every actor/driver core. `cores` is the image's sealed N
+/// (`graph.cores`); callers pass it explicitly so report/build paths name
+/// the same fact. `check_annotations` must already have passed (same
+/// rules; this re-reads `core=` for the fixed set).
 pub fn place(
     graph: &ImageGraph,
     modules: &BTreeMap<String, Module>,
     layout_ctx: &LayoutCtx,
+    cores: usize,
 ) -> Result<PlacementTable, String> {
+    if cores != graph.cores {
+        return Err(format!(
+            "internal error: placement: cores={cores} disagrees with ImageGraph.cores={}",
+            graph.cores
+        ));
+    }
     check_annotations(graph)?;
 
     let empty_frames = BTreeMap::new();
@@ -197,7 +202,7 @@ pub fn place(
             .map(|m| m.capacity * m.slot_size + MAILBOX_BOOKKEEPING)
             .unwrap_or(0);
         let pool = pool_by_driver.get(&i).copied().unwrap_or(0);
-        let explicit = read_core_arg(&d.args, &format!("driver#{i}"))?;
+        let explicit = read_core_arg(&d.args, &format!("driver#{i}"), cores)?;
         let pinned = driver_is_virtio_blk(graph, d);
         placeables.push(Placeable {
             id: ImageDeclRef::Driver(i),
@@ -218,7 +223,7 @@ pub fn place(
             )
         })?;
         let bytes_mailbox = rt.mailbox_capacity * rt.slot_size + MAILBOX_BOOKKEEPING;
-        let explicit = read_core_arg(&d.args, &format!("actor#{i}"))?;
+        let explicit = read_core_arg(&d.args, &format!("actor#{i}"), cores)?;
         placeables.push(Placeable {
             id: ImageDeclRef::Actor(i),
             type_name,
@@ -231,13 +236,8 @@ pub fn place(
         });
     }
 
-    // Single-core floor: with no explicit core ≥ 1, only core 0 is live
-    // (secondary vCPUs start at item C). A cross-core graph opens the
-    // full VCPUS-wide packing domain for unfixed placeables.
-    let cross_core = placeables
-        .iter()
-        .any(|p| matches!(p.explicit, Some(c) if c >= 1));
-    let live_cores: usize = if cross_core { VCPUS } else { 1 };
+    // Domain = N: packing width is the sealed image cores, always.
+    let live_cores = cores;
 
     let mut core_load: Vec<(u64, u64)> = vec![(0, 0); live_cores];
     let mut assigned: BTreeMap<ImageDeclRef, (usize, PlacementSource)> = BTreeMap::new();
@@ -246,7 +246,7 @@ pub fn place(
     // forbids non-zero on virtio-blk via check_annotations).
     for p in &placeables {
         if let Some(core) = p.explicit {
-            // `check_annotations` already proved `core < VCPUS`.
+            // `check_annotations` already proved `core < N`.
             add_load(&mut core_load, core, p.work, p.bytes());
             assigned.insert(p.id.clone(), (core, PlacementSource::Explicit));
         } else if p.pinned_virtio_blk {
@@ -364,7 +364,7 @@ fn pick_core(loads: &[(u64, u64)]) -> usize {
     best
 }
 
-fn read_core_arg(args: &[DeclArg], id: &str) -> Result<Option<usize>, String> {
+fn read_core_arg(args: &[DeclArg], id: &str, cores: usize) -> Result<Option<usize>, String> {
     let Some(a) = args.iter().find(|a| a.label == "core") else {
         return Ok(None);
     };
@@ -373,10 +373,10 @@ fn read_core_arg(args: &[DeclArg], id: &str) -> Result<Option<usize>, String> {
             "`{id}` sets `core=...` to a value that is not a plain non-negative integer"
         ));
     };
-    if n as usize >= VCPUS {
+    if n as usize >= cores {
         return Err(format!(
-            "`{id}` sets `core={n}`, which is outside 0..{VCPUS} (06-machine.md §1: the machine \
-             has {VCPUS} vCPUs)"
+            "`{id}` sets `core={n}`, which is outside 0..{cores} (04-compiler.md §3: placement \
+             domain is 0..N-1 for Image cores={cores})"
         ));
     }
     Ok(Some(n as usize))
@@ -492,16 +492,40 @@ mod tests {
                 Value::Enum(0, vec![]),
             ),
         );
+        g.cores = 2;
         g.actors.push(ActorDecl {
             actor_type: Type::Named("Store".to_string(), vec![]),
             args: vec![
                 arg("mailbox", Type::U32, Value::U32(4)),
-                arg("core", Type::U32, Value::U32(3)),
+                arg("core", Type::U32, Value::U32(2)),
             ],
         });
-        let err = check_annotations(&g).expect_err("core=3");
-        assert!(err.contains("core=3"), "{err}");
-        assert!(err.contains("0..3"), "{err}");
+        let err = check_annotations(&g).expect_err("core=2");
+        assert!(err.contains("core=2"), "{err}");
+        assert!(err.contains("0..2"), "{err}");
+        assert!(err.contains("cores=2"), "{err}");
+    }
+
+    #[test]
+    fn core_out_of_range_uses_image_n_not_machine_width() {
+        let mut g = ImageGraph::new(
+            tv(Type::Static(Box::new(Type::Str)), Value::Str(b"t".to_vec())),
+            tv(
+                Type::Named("Target".to_string(), vec![]),
+                Value::Enum(0, vec![]),
+            ),
+        );
+        // Default N=1: core=1 is refused (no silent jump to a wider domain).
+        g.actors.push(ActorDecl {
+            actor_type: Type::Named("Store".to_string(), vec![]),
+            args: vec![
+                arg("mailbox", Type::U32, Value::U32(4)),
+                arg("core", Type::U32, Value::U32(1)),
+            ],
+        });
+        let err = check_annotations(&g).expect_err("core=1 with N=1");
+        assert!(err.contains("0..1"), "{err}");
+        assert!(err.contains("cores=1"), "{err}");
     }
 
     #[test]
@@ -513,6 +537,9 @@ mod tests {
                 Value::Enum(0, vec![]),
             ),
         );
+        // N must admit core=1 so the virtio-blk pin rule, not the range
+        // rule, is the one that fires.
+        g.cores = 2;
         g.devices.push(DeviceDecl {
             device_type: Type::Named("VirtioBlock".to_string(), vec![]),
             args: vec![],

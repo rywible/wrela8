@@ -562,8 +562,9 @@ fn build_report(
                         let mut layout_ctx =
                             layout::merge_layout_ctx(modules).map_err(|e| render_sema_error(&e))?;
                         layout::enrich_layout_ctx_with_instantiations(&mut layout_ctx, programs);
-                        let placement = placement::place(&graph, modules, &layout_ctx)
-                            .map_err(|e| format!("error[build]: {e}\n"))?;
+                        let placement =
+                            placement::place(&graph, modules, &layout_ctx, graph.cores)
+                                .map_err(|e| format!("error[build]: {e}\n"))?;
                         let enum_variants: BTreeMap<String, Vec<String>> = program
                             .enums
                             .iter()

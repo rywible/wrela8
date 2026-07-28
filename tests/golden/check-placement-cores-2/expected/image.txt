@@ -1,0 +1,12 @@
+ImageGraph v0
+  Name value=placement-cores-2
+  Target value=Target.wrela_machine_v1
+  Cores count=2
+  Actor index=0 type=Light
+    Arg label=mailbox value=2
+    Arg label=core value=1
+  Actor index=1 type=Heavy
+    Arg label=mailbox value=32
+  OnFailure index=0
+    Arg label=policy value=Failure.Halt
+  Sealed value=true

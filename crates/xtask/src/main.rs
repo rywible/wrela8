@@ -515,11 +515,15 @@ pub(crate) fn produce_report_and_image(target: &Path) -> Result<(String, Option<
                         let mut layout_ctx = layout::merge_layout_ctx(&modules_by_addr)
                             .map_err(|e| render_sema_error(&e))?;
                         layout::enrich_layout_ctx_with_instantiations(&mut layout_ctx, &programs);
-                        let placement =
-                            match placement::place(&graph, &modules_by_addr, &layout_ctx) {
-                                Ok(p) => p,
-                                Err(e) => return Ok((format!("error[build]: {e}\n"), None)),
-                            };
+                        let placement = match placement::place(
+                            &graph,
+                            &modules_by_addr,
+                            &layout_ctx,
+                            graph.cores,
+                        ) {
+                            Ok(p) => p,
+                            Err(e) => return Ok((format!("error[build]: {e}\n"), None)),
+                        };
                         let enum_variants: BTreeMap<String, Vec<String>> = program
                             .enums
                             .iter()

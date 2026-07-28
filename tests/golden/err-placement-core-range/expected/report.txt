@@ -1,1 +1,1 @@
-error[build]: `actor#0` sets `core=3`, which is outside 0..3 (06-machine.md §1: the machine has 3 vCPUs)
+error[build]: `actor#0` sets `core=3`, which is outside 0..1 (04-compiler.md §3: placement domain is 0..N-1 for Image cores=1)

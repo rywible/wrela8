@@ -1,0 +1,37 @@
+module examples.check_placement_cores_2
+
+# plans/M15.md item C: cores=2 + pin core=1 ⇒ packing domain {0,1}
+# (PlacementTable.cores == 2; not forced to 3). Work is unproved (=0);
+# bytes decide for the unfixed Heavy → core 0.
+
+@actor
+pub struct Light:
+    n: u32
+
+    init(mut self):
+        self.n = 0
+
+    pub fn get(read self) -> u32:
+        return self.n
+
+@actor
+pub struct Heavy:
+    n: u32
+
+    init(mut self):
+        self.n = 0
+
+    pub fn get(read self) -> u32:
+        return self.n
+
+    # Widen the mailbox slot so Heavy's bytes clearly exceed Light's.
+    pub fn bump(read self, a: u64, b: u64, c: u64, d: u64) -> u64:
+        return a
+
+@image
+pub fn build() -> Image:
+    img = Image(name="placement-cores-2", target=Target.wrela_machine_v1, cores=2)
+    light = img.actor(Light, mailbox=2, core=1)
+    heavy = img.actor(Heavy, mailbox=32)
+    img.on_failure(policy=Failure.Halt)
+    return img.seal()

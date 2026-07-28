@@ -1,0 +1,1 @@
+error[build]: `actor#0` sets `core=2`, which is outside 0..2 (04-compiler.md §3: placement domain is 0..N-1 for Image cores=2)

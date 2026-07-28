@@ -1,0 +1,18 @@
+module examples.err_placement_cores1_pin1
+
+# plans/M15.md item C: default cores=1 + core=1 fails closed (no silent
+# jump to a wider packing domain).
+
+@actor
+pub struct Store:
+    count: u32
+
+    init(mut self):
+        self.count = 0
+
+@image
+pub fn build() -> Image:
+    img = Image(name="cores1-pin1", target=Target.wrela_machine_v1)
+    store = img.actor(Store, mailbox=4, core=1)
+    img.on_failure(policy=Failure.Halt)
+    return img.seal()

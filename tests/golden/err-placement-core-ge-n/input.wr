@@ -1,0 +1,17 @@
+module examples.err_placement_core_ge_n
+
+# plans/M15.md item C: cores=2 + core=2 (core ≥ N) fails closed.
+
+@actor
+pub struct Store:
+    count: u32
+
+    init(mut self):
+        self.count = 0
+
+@image
+pub fn build() -> Image:
+    img = Image(name="core-ge-n", target=Target.wrela_machine_v1, cores=2)
+    store = img.actor(Store, mailbox=4, core=2)
+    img.on_failure(policy=Failure.Halt)
+    return img.seal()
