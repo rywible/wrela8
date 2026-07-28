@@ -1,6 +1,7 @@
 ImageGraph v0
   Name value=basic-appliance
   Target value=Target.wrela_machine_v1
+  Cores count=1
   Device index=0 type=NicHw
     Arg label=transport value=4096
     Arg label=required_features value=[Feature.Flush]

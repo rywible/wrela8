@@ -1,6 +1,7 @@
 ImageGraph v0
   Name value=import-sig-peer
   Target value=Target.wrela_machine_v1
+  Cores count=1
   Actor index=0 type=Store
     Arg label=plain value=305
     Arg label=mailbox value=4

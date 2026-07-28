@@ -72,7 +72,7 @@ async fn calls_far(f: Actor[Far]):
 
 @image
 pub fn build() -> Image:
-    img = Image(name="cross-core-aggregate", target=Target.wrela_machine_v1)
+    img = Image(name="cross-core-aggregate", target=Target.wrela_machine_v1, cores=2)
     far = img.actor(Far, mailbox=4, core=1)
     img.on_failure(policy=Failure.Halt)
     return img.seal()

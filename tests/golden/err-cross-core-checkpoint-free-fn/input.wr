@@ -58,7 +58,7 @@ async fn lost_wake(q: Actor[Quick], s: Actor[Slow]):
 
 @image
 pub fn build() -> Image:
-    img = Image(name="err-cross-core-checkpoint-free-fn", target=Target.wrela_machine_v1)
+    img = Image(name="err-cross-core-checkpoint-free-fn", target=Target.wrela_machine_v1, cores=2)
     q = img.actor(Quick, mailbox=4, core=1)
     s = img.actor(Slow, mailbox=4, core=1)
     img.on_failure(policy=Failure.Halt)

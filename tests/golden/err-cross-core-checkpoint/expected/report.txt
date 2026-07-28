@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/err_cross_core_checkpoint.wr sha256=3bf7ffa445273c33d2459f58f0b0903d81e137dc19513ce4320fe2d548524f5b
+  Input path=examples/err_cross_core_checkpoint.wr sha256=ddb67c6f23eb01c2a6ae4f583d0195c691cb08b192f22e6571d2d082155f0bf5
   Name value=cross-core-checkpoint
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Cell

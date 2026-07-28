@@ -1,6 +1,7 @@
 ImageGraph v0
   Name value=try-ok-unwraps
   Target value=Target.wrela_machine_v1
+  Cores count=1
   Actor index=0 type=Store
     Arg label=scalar value=7
     Arg label=structured value=12

@@ -1,6 +1,7 @@
 ImageGraph v0
   Name value=check-nested-place-assign
   Target value=Target.wrela_machine_v1
+  Cores count=1
   Actor index=0 type=Store
     Arg label=mailbox value=8
   OnFailure index=0

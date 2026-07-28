@@ -16,7 +16,7 @@ pub struct BlkDriver:
 
 @image
 pub fn build() -> Image:
-    img = Image(name="blk-off-core", target=Target.wrela_machine_v1)
+    img = Image(name="blk-off-core", target=Target.wrela_machine_v1, cores=2)
     blk_device = img.device[VirtioBlock](transport=0x2000)
     disk = img.driver(BlkDriver, device=blk_device, core=1)
     img.on_failure(policy=Failure.Halt)

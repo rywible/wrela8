@@ -1,6 +1,7 @@
 ImageGraph v0
   Name value=check-deriving-from-struct
   Target value=Target.wrela_machine_v1
+  Cores count=1
   Actor index=0 type=Store
     Arg label=converted value=1000
     Arg label=ok value=7

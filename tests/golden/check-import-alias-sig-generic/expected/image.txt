@@ -1,6 +1,7 @@
 ImageGraph v0
   Name value=import-alias-sig-generic
   Target value=Target.wrela_machine_v1
+  Cores count=1
   Actor index=0 type=Store
     Arg label=gen value=406
     Arg label=mailbox value=4

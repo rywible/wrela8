@@ -70,7 +70,7 @@ async fn spins_off_core(s: Actor[Spinner]):
 
 @image
 pub fn build() -> Image:
-    img = Image(name="cross-core-checkpoint", target=Target.wrela_machine_v1)
+    img = Image(name="cross-core-checkpoint", target=Target.wrela_machine_v1, cores=2)
     c = img.actor(Cell, mailbox=4, core=1)
     s = img.actor(Spinner, mailbox=4, core=1, cell=c)
     img.on_failure(policy=Failure.Halt)
