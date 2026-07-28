@@ -34,9 +34,11 @@
 //! **It is a witness, not an injection, and the distinction is the whole
 //! honest claim of the item.** The drain is guest code and the mailbox is
 //! guest memory; the VMM never writes either, so replay does not *feed*
-//! the recorded order back — under plans/M8.md decision 11's baton there
-//! is no alternative order to feed. What replay does is **check**: the
-//! same witness runs, and an entry that disagrees with the recording is
+//! the recorded order back — under plans/M15.md item I's Yield-`Progress`
+//! replay the concurrent record schedule is re-serialized from Progress
+//! entries, and Admission remains a witness checked under that serial
+//! hand-off. What replay does is **check**: the same witness runs, and
+//! an entry that disagrees with the recording is
 //! `Divergence::AdmissionMismatch`, named exactly like a device
 //! completion's. Divergence detection is therefore the entire enforcement
 //! (`xtask repro`'s own cross-core admission lane is its oracle), and this
@@ -109,6 +111,11 @@ pub enum ChoiceEntry {
         len: u32,
         digest: String,
     },
+    /// plans/M15.md item I / decision 7: a guest Yield that moves the
+    /// schedule — release or park. `core` is the next core to run (the
+    /// hand-off target). Recorded under Progress-serialized execution;
+    /// under replay that core is forced.
+    Progress { core: u32 },
 }
 
 impl ChoiceEntry {
@@ -119,6 +126,7 @@ impl ChoiceEntry {
             ChoiceEntry::VectorRaise { .. } => "VectorRaise",
             ChoiceEntry::Admission { .. } => "Admission",
             ChoiceEntry::DeviceCompletion { .. } => "DeviceCompletion",
+            ChoiceEntry::Progress { .. } => "Progress",
         }
     }
 
@@ -146,6 +154,7 @@ impl ChoiceEntry {
             } => format!(
                 "DeviceCompletion device={device} queue={queue} head={head} status={status} len={len} digest={digest}"
             ),
+            ChoiceEntry::Progress { core } => format!("Progress core={core}"),
         }
     }
 
@@ -207,6 +216,11 @@ impl ChoiceEntry {
                     digest: field("digest")?.to_string(),
                 })
             }
+            "Progress" => Ok(ChoiceEntry::Progress {
+                core: field("core")?
+                    .parse()
+                    .map_err(|e| format!("bad Progress core: {e}"))?,
+            }),
             other => Err(format!("unknown choice tag `{other}`")),
         }
     }
@@ -253,6 +267,11 @@ pub enum ChoiceRequest {
         mailbox: String,
         sender: String,
     },
+    /// plans/M15.md item I: Yield hand-off. Under record the live closure
+    /// supplies `next_core`; under replay the logged core is injected.
+    Progress {
+        core: u32,
+    },
 }
 
 impl ChoiceRequest {
@@ -263,6 +282,7 @@ impl ChoiceRequest {
             ChoiceRequest::VectorRaise { .. } => "VectorRaise",
             ChoiceRequest::DeviceCompletion { .. } => "DeviceCompletion",
             ChoiceRequest::Admission { .. } => "Admission",
+            ChoiceRequest::Progress { .. } => "Progress",
         }
     }
 
@@ -298,6 +318,7 @@ impl ChoiceRequest {
                 mailbox: mailbox.clone(),
                 sender: sender.clone(),
             },
+            ChoiceRequest::Progress { core } => ChoiceEntry::Progress { core: *core },
         }
     }
 }
@@ -365,6 +386,14 @@ pub enum Divergence {
     /// so a count tamper is caught by name (06 §8: the choice sequence is
     /// enumerable and replay is exact).
     AdmissionCountMismatch { index: usize, detail: String },
+    /// plans/M15.md item I: a `Progress` Yield hand-off named a different
+    /// next core than this boot's guest-visible `next_core` would have
+    /// picked (or a Progress tamper changed the forced core).
+    ProgressMismatch {
+        index: usize,
+        recorded: u32,
+        actual: u32,
+    },
 }
 
 impl std::fmt::Display for Divergence {
@@ -419,6 +448,15 @@ impl std::fmt::Display for Divergence {
             Divergence::AdmissionCountMismatch { index, detail } => {
                 write!(f, "choice #{index} admission count mismatch: {detail}")
             }
+            Divergence::ProgressMismatch {
+                index,
+                recorded,
+                actual,
+            } => write!(
+                f,
+                "choice #{index} progress mismatch: recorded next core {recorded}, this boot's \
+                 Yield hand-off would have run core {actual}"
+            ),
         }
     }
 }
@@ -507,6 +545,21 @@ impl Chooser {
     /// the only mode that must perform a real host-side park sleep).
     pub fn is_recording(&self) -> bool {
         matches!(self.mode, ChooserMode::Record)
+    }
+
+    /// `true` in replay mode — serial Yield hand-off from `Progress`.
+    pub fn is_replaying(&self) -> bool {
+        matches!(self.mode, ChooserMode::Replay { .. })
+    }
+
+    /// Peek at the next recorded choice without consuming it (replay only).
+    /// Used so Yield-`Progress` can force the next core from the following
+    /// Progress entry (plans/M15.md item I).
+    pub fn peek_replay(&self) -> Option<&ChoiceEntry> {
+        match &self.mode {
+            ChooserMode::Replay { log, idx } => log.get(*idx),
+            ChooserMode::Record => None,
+        }
     }
 
     /// Fail closed on the first divergence (live replay boots).
@@ -970,6 +1023,7 @@ mod tests {
                     mailbox: "Store".to_string(),
                     sender: "root".to_string(),
                 },
+                ChoiceEntry::Progress { core: 1 },
                 ChoiceEntry::DeviceCompletion {
                     device: "blk".to_string(),
                     queue: 0,
@@ -984,17 +1038,36 @@ mod tests {
             exits: 3,
         };
         let expected = "ChoiceLog v1\n\
-             choice_count=5\n\
+             choice_count=6\n\
              choice[0]=ClockRead value=12345\n\
              choice[1]=DeadlineWake deadline_ns=500000\n\
              choice[2]=VectorRaise vector=0\n\
              choice[3]=Admission mailbox=Store sender=root\n\
-             choice[4]=DeviceCompletion device=blk queue=0 head=3 status=0 len=513 digest=fedcba9876543210\n\
+             choice[4]=Progress core=1\n\
+             choice[5]=DeviceCompletion device=blk queue=0 head=3 status=0 len=513 digest=fedcba9876543210\n\
              transcript_digest=0123456789abcdef\n\
              exit_code=0\n\
              exits=3\n";
         assert_eq!(rec.to_text(), expected);
         assert_eq!(RecordFile::parse(expected).expect("parses"), rec);
+    }
+
+    /// plans/M15.md item I: `Progress` tag parse / round-trip.
+    #[test]
+    fn progress_choice_parses_and_round_trips() {
+        let entry = ChoiceEntry::Progress { core: 2 };
+        assert_eq!(entry.to_text_fields(), "Progress core=2");
+        assert_eq!(
+            ChoiceEntry::parse_fields("Progress core=2").expect("parses"),
+            entry
+        );
+        let rec = RecordFile {
+            choices: vec![entry.clone()],
+            transcript_digest: digest_hex(b"p"),
+            exit_code: 0,
+            exits: 1,
+        };
+        assert_eq!(RecordFile::parse(&rec.to_text()).expect("round-trip"), rec);
     }
 
     #[test]

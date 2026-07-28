@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/boot_cross_core_mailbox_depth.wr sha256=7862c4a5835c5d3f290d0d3e155dd870a1c62828ad7842a2d62a828cc61f2109
+  Input path=examples/boot_cross_core_mailbox_depth.wr sha256=b7b2aa63bdb55dcc860be517914eb31298135a65244c81a506aa286112d3d796
   Input path=<generated> sha256=edaa33253314f940ce5ad75b6d019ca7f471294ed67bab2be9621042504d23a9
   Name value=cross-core-mailbox-depth
   Target value=Target.wrela_machine_v1
@@ -58,14 +58,14 @@ ImageReport v0
   CoreStack core=1 base=0x7fe00000 size=0x100000
   CoreStack core=2 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=122472
-  Section name=rodata base=0x4051deb8 size=866
-  Section name=abort base=0x4051e21c size=120
-  Section name=checkpoint base=0x4051e294 size=28
+  Section name=code base=0x40500050 size=122660
+  Section name=rodata base=0x4051df78 size=862
+  Section name=abort base=0x4051e2d8 size=120
+  Section name=checkpoint base=0x4051e350 size=28
   Section name=rtdata base=0x40540000 size=4992
   Entry base=0x40500000
-  CoreEntry core=1 base=0x4051de18
-  CoreEntry core=2 base=0x4051de68
+  CoreEntry core=1 base=0x4051ded4
+  CoreEntry core=2 base=0x4051df24
   PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
@@ -157,7 +157,7 @@ ImageReport v0
   Actor name=Sink mailbox=1 slot=24 frame=64 state=8
   Actor name=Near mailbox=4 slot=16 frame=304 state=8
   Actor name=Far mailbox=4 slot=16 frame=272 state=8
-  Turn fn=mailbox_depth_backpressures_under_three_cores frame=672
+  Turn fn=mailbox_depth_backpressures_under_three_cores frame=736
   Ring kind=request src=0 dst=1 target=Sink cap=1 slot=24 bytes=48 base=0x40541200
   Ring kind=request src=0 dst=2 target=Far cap=4 slot=16 bytes=88 base=0x40541240
   Ring kind=request src=2 dst=1 target=Sink cap=1 slot=24 bytes=48 base=0x40541280

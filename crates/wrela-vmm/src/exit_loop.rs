@@ -217,115 +217,158 @@ pub(crate) fn commit_completions(
 /// "per-mailbox cross-core admission order", which is the one scheduling
 /// nondeterminism 04 §2 gives this machine.
 ///
-/// **Why a witness can be exact here, stated as the invariant it rests
-/// on.** A cross-core request ring's producer is core `src` and its
-/// consumer is core `dst`, and `src != dst` by construction
-/// (`parse_report` refuses otherwise). Decision 11's baton means exactly
-/// one vCPU is inside `hv_vcpu_run` at any instant. So between two
-/// consecutive vCPU exits **at most one core ran**, and for any one ring
-/// that core is either its producer or its consumer, never both:
-/// a ring whose `dst` just ran can only have *shrunk*, and by exactly the
-/// number of messages that core's drain admitted. The occupancy word is
-/// therefore an exact counter, not a sampled one — no modular head
-/// arithmetic, no lost wrap.
-///
-/// **The order is exact too, for the same reason.**
-/// `layout::build_rt_drain` walks its request lanes in `RuntimeTables::
-/// rings` order and drains each lane to empty before starting the next,
-/// and no other core can produce into any of them meanwhile. Walking the
-/// report's `Ring` lines in that same order reconstructs the order the
-/// guest actually admitted in.
+/// Under plans/M15.md item I, concurrent record may overlap producers and
+/// consumers, so occupancy Δcount alone can miss a produce+consume pair
+/// that nets to zero between exits. The ring's **head** only advances on
+/// drain, so head deltas are the concurrent-safe admission count (with
+/// `capacity` for wrap). Cap-1 rings keep head at 0 always; for those we
+/// still fall back to count shrinks on the consumer's exit (and accept
+/// that a fully overlapped produce+consume can under-count — Progress
+/// replay re-checks under serial hand-off).
 #[derive(Debug, Default)]
 pub(crate) struct AdmissionWitness {
     rings: Vec<RequestRing>,
-    /// Each ring's occupancy word as of the last observation, parallel to
-    /// `rings`. Zero-initialized, which is the value guest DRAM's own
-    /// zeroed reservation puts there before the first instruction runs.
     last_count: Vec<u64>,
+    last_head: Vec<u64>,
 }
 
 impl AdmissionWitness {
     pub(crate) fn new(rings: Vec<RequestRing>) -> AdmissionWitness {
-        let last_count = vec![0; rings.len()];
-        AdmissionWitness { rings, last_count }
+        let n = rings.len();
+        AdmissionWitness {
+            rings,
+            last_count: vec![0; n],
+            last_head: vec![0; n],
+        }
     }
 
-    /// The whole counting rule, as a pure function of (this observation's
-    /// occupancy words, which core just ran) — separated from the guest
-    /// memory read above it so it can be unit-tested directly
-    /// (`admission_witness_*`, below).
-    ///
-    /// Returns one `(mailbox, sender)` pair per message admitted, in the
-    /// order they were admitted. Fails closed rather than guessing if a
-    /// ring the running core *consumes* somehow grew: that would mean the
-    /// SPSC producer/consumer split this reconstruction rests on is not
-    /// true of the running image, and a silently under-recorded admission
-    /// order is the exact thing 06 §8 exists to prevent.
+    /// Pure observation rule (unit-tested via `admission_witness_*`).
     pub(crate) fn observe(
         &mut self,
         counts: &[u64],
+        heads: &[u64],
         core: usize,
     ) -> Result<Vec<(String, String)>, String> {
         debug_assert_eq!(counts.len(), self.rings.len());
+        debug_assert_eq!(heads.len(), self.rings.len());
         let mut admitted = Vec::new();
         for (i, ring) in self.rings.iter().enumerate() {
-            let now = counts[i];
-            let was = self.last_count[i];
+            let now_c = counts[i];
+            let was_c = self.last_count[i];
+            let now_h = heads[i];
+            let was_h = self.last_head[i];
             if ring.dst == core {
-                if now > was {
-                    return Err(format!(
-                        "cross-core ring src={} dst={} target={} grew from {was} to {now} while \
-                         its own consuming core {core} was the only core running — the SPSC \
-                         producer/consumer split the admission recorder rests on does not hold",
-                        ring.src, ring.dst, ring.target
-                    ));
-                }
-                for _ in 0..(was - now) {
+                let n = if ring.capacity > 1 {
+                    let cap = ring.capacity;
+                    let mut d = (now_h + cap - was_h) % cap;
+                    // Full-wrap of exactly `cap` leaves head unchanged.
+                    if d == 0 && was_c > now_c && now_h == was_h {
+                        d = was_c - now_c;
+                        if d > cap {
+                            d = cap;
+                        }
+                    }
+                    d
+                } else if now_c < was_c {
+                    was_c - now_c
+                } else {
+                    0
+                };
+                for _ in 0..n {
                     admitted.push((ring.target.clone(), format!("core{}", ring.src)));
                 }
+                // Head only moves on drain — update it only on the consumer
+                // so an unrelated exit cannot steal a concurrent head advance.
+                self.last_head[i] = now_h;
             }
-            self.last_count[i] = now;
+            self.last_count[i] = now_c;
         }
         Ok(admitted)
     }
+
+    /// Align witness baselines to the live ring words without emitting
+    /// Admissions — used when ending the bring-up overlap window so entry
+    /// parks that ran un-witnessed do not create a false head delta later.
+    pub(crate) fn sync_baselines(&mut self, counts: &[u64], heads: &[u64]) {
+        debug_assert_eq!(counts.len(), self.rings.len());
+        debug_assert_eq!(heads.len(), self.rings.len());
+        self.last_count.clear();
+        self.last_count.extend_from_slice(counts);
+        self.last_head.clear();
+        self.last_head.extend_from_slice(heads);
+    }
 }
 
-/// Reads every request ring's occupancy word out of guest memory and
-/// pushes one `ChoiceEntry::Admission` per message core `core`'s drain
-/// just admitted (`AdmissionWitness` above has the whole argument).
-///
-/// **Witness, not injection** — the honest claim, in the words plans/M8.md
-/// item C3 asks for. The drain is guest code and the mailbox is guest
-/// memory; nothing here writes either, in record mode or replay mode. So
-/// replay does not *feed* the recorded admission order back to the guest;
-/// it re-witnesses and **checks**, and a disagreement is
-/// `Divergence::AdmissionMismatch`, named exactly like a device
-/// completion's. Under decision 11's baton there is no alternative order
-/// to feed, which is why the checking form is the honest one — and why a
-/// later schedule enumerator, which would vary the baton hand-off, is the
-/// thing that would make injection mean something.
+/// Reads every request ring's occupancy word and head out of guest memory
+/// and returns one `(mailbox, sender)` per message core `core`'s drain
+/// just admitted. Callers buffer these until the core's next Yield so the
+/// choice-log interleaving matches Progress-serialized replay
+/// (plans/M15.md item I).
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-pub(crate) fn witness_admissions(
+pub(crate) fn observe_admissions(
     witness: &mut AdmissionWitness,
-    chooser: &mut record::Chooser,
     host_ram: *const u8,
     core: usize,
-) -> Result<(), VmmError> {
+) -> Result<Vec<(String, String)>, VmmError> {
     if witness.rings.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let mut counts = Vec::with_capacity(witness.rings.len());
+    let mut heads = Vec::with_capacity(witness.rings.len());
     for r in &witness.rings {
         let off = guest_dram_offset(r.count_addr, 8, "admission count_addr")?;
         let mut b = [0u8; 8];
         unsafe { std::ptr::copy_nonoverlapping(host_ram.add(off), b.as_mut_ptr(), 8) };
         counts.push(u64::from_le_bytes(b));
+        let head_addr = r.count_addr.saturating_sub(16);
+        let hoff = guest_dram_offset(head_addr, 8, "admission head_addr")?;
+        let mut hb = [0u8; 8];
+        unsafe { std::ptr::copy_nonoverlapping(host_ram.add(hoff), hb.as_mut_ptr(), 8) };
+        heads.push(u64::from_le_bytes(hb));
     }
-    let admitted = witness
-        .observe(&counts, core)
-        .map_err(VmmError::GuestFault)?;
+    witness
+        .observe(&counts, &heads, core)
+        .map_err(VmmError::GuestFault)
+}
+
+/// Snap witness baselines to the live ring without emitting Admissions.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(crate) fn sync_admission_baselines(
+    witness: &mut AdmissionWitness,
+    host_ram: *const u8,
+) -> Result<(), VmmError> {
+    if witness.rings.is_empty() {
+        return Ok(());
+    }
+    let mut counts = Vec::with_capacity(witness.rings.len());
+    let mut heads = Vec::with_capacity(witness.rings.len());
+    for r in &witness.rings {
+        let off = guest_dram_offset(r.count_addr, 8, "admission count_addr")?;
+        let mut b = [0u8; 8];
+        unsafe { std::ptr::copy_nonoverlapping(host_ram.add(off), b.as_mut_ptr(), 8) };
+        counts.push(u64::from_le_bytes(b));
+        let head_addr = r.count_addr.saturating_sub(16);
+        let hoff = guest_dram_offset(head_addr, 8, "admission head_addr")?;
+        let mut hb = [0u8; 8];
+        unsafe { std::ptr::copy_nonoverlapping(host_ram.add(hoff), hb.as_mut_ptr(), 8) };
+        heads.push(u64::from_le_bytes(hb));
+    }
+    witness.sync_baselines(&counts, &heads);
+    Ok(())
+}
+
+/// Appends buffered `(mailbox, sender)` pairs as `Admission` choices and
+/// checks them under replay.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(crate) fn commit_admissions(
+    chooser: &mut record::Chooser,
+    admitted: &[(String, String)],
+) -> Result<(), VmmError> {
     for (mailbox, sender) in admitted {
-        let request = record::ChoiceRequest::Admission { mailbox, sender };
+        let request = record::ChoiceRequest::Admission {
+            mailbox: mailbox.clone(),
+            sender: sender.clone(),
+        };
         let observed = request.fallback();
         let index = chooser.resolved_count();
         let chosen = {

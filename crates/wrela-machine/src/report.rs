@@ -159,6 +159,9 @@ pub struct RequestRing {
     /// DATA base from the report's `base=` (slots start here).
     pub data_base: u64,
     pub count_addr: u64,
+    /// Slot capacity (`cap=`). Needed so the admission witness can count
+    /// head advances under concurrent record (plans/M15.md item I).
+    pub capacity: u64,
 }
 
 /// plans/M12.md item C: the report's `Rings count={} stride={} padding={}
@@ -567,6 +570,7 @@ pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
                         // Pre-M12 default; rewritten below when `Rings` meta
                         // is present (CTL-then-DATA packing).
                         count_addr: base + capacity * slot + 16,
+                        capacity,
                     });
                     ring_ranges.push(RingRange {
                         kind: "request".to_string(),

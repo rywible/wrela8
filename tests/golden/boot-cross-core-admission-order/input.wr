@@ -20,25 +20,13 @@ module examples.boot_cross_core_admission_order
 # checkpoint, so a secondary core can produce into another core's mailbox
 # today, which is exactly the fact this golden needs.
 #
-# **Falsifiable, not decorative.** `Sink.add` accumulates from zero, so the
-# value `Near`'s await returns says which message reached `Sink` first: 11
-# would mean core 2's `+10` was admitted first, 1 means core 0's `+1` was.
-# The transcript and the recorded `Admission` sequence are two independent
-# statements of the same order, and `xtask repro`'s admission lane checks
-# that they agree. `Far` exists only on core 2 and `Sink` only on core 1, so
-# neither value can be produced anywhere else.
-#
-# **The observed answer is 1, and it is the interesting one.** Core 2's
-# `send` is published *first* in program order — the root awaits `Far.kick`
-# before it awaits `Near.go` — and it is admitted *second*, because
-# admission is performed by the consuming core's own drain
-# (`layout::build_rt_drain`), which walks its inbound lanes in ring order
-# and admits everything waiting in the `src=0` lane before it looks at the
-# `src=2` one. Publication order is a property of the producers; admission
-# order is a property of the consumer. That gap is precisely what
-# 06-machine.md §8 calls "per-mailbox cross-core admission order" and asks
-# the recorder to log, and this golden is the smallest image in which the
-# two orders visibly differ.
+# **plans/M15.md item I retarget.** Under the baton, both messages sat in
+# their rings before Sink drained, so drain order (src=0 then src=2) made
+# Near's await return `1`. Under overlapping `hv_vcpu_run`, Sink may drain
+# Far's earlier-published `+10` alone before Near publishes — Near then
+# returns `11`. Guest-visible fact that still holds: both messages admit,
+# and the final total is `11`. The choice log still records the observed
+# order; `xtask repro` checks replay + Progress/Admission tampers.
 
 @actor
 pub struct Sink:
@@ -60,6 +48,9 @@ pub struct Sink:
     pub fn bump(mut self, by: u64) -> unit:
         self.n = self.n + by
         return unit
+
+    pub fn total(read self) -> u64:
+        return self.n
 
 @actor
 pub struct Near:
@@ -83,7 +74,7 @@ pub struct Far:
         return 7
 
 @test(runtime)
-async fn admission_order_across_two_cores(near: Actor[Near], far: Actor[Far]):
+async fn admission_order_across_two_cores(near: Actor[Near], far: Actor[Far], sink: Actor[Sink]):
     k = await far.kick()
     @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match k:
@@ -95,9 +86,23 @@ async fn admission_order_across_two_cores(near: Actor[Near], far: Actor[Far]):
     @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match x:
         case .Ok(n):
-            assert n == 1, "core 0's +1 was admitted at Sink before core 2's earlier-published +10"
+            # 1 = Near admitted first (drain order with both pending);
+            # 11 = Far drained alone before Near published (overlap).
+            ok: u64 = 0
+            if n == 1:
+                ok = 1
+            if n == 11:
+                ok = 1
+            assert ok == 1, "Near's +1 was admitted (alone or after Far's +10)"
         case .Err(_):
             assert false, "Near rejected"
+    t = await sink.total()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
+    match t:
+        case .Ok(n):
+            assert n == 11, "both Far's +10 and Near's +1 were admitted"
+        case .Err(_):
+            assert false, "Sink.total rejected"
 
 @image
 pub fn build() -> Image:

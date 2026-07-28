@@ -2776,8 +2776,8 @@ pub fn build() -> Image:
         assert_eq!(single.core_marks, vec![0]);
     }
 
-    /// plans/M15.md item F focused boot: create-N path for N=2 under the
-    /// baton (marks exactly `[1, 2]`).
+    /// plans/M15.md item F focused boot: create-N path for N=2 (marks
+    /// exactly `[1, 2]`).
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
     fn two_cores_come_up_under_baton_over_hvf() {
@@ -2788,6 +2788,28 @@ pub fn build() -> Image:
         );
         assert_eq!(outcome.exit_code, 0);
         assert_eq!(outcome.core_marks, vec![1, 2]);
+    }
+
+    /// plans/M15.md item I: overlapping `hv_vcpu_run` — peak depth > 1 on a
+    /// concurrent cross-core boot; quiescent depth is 0 afterwards.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn concurrent_boot_observes_hv_vcpu_run_overlap_depth() {
+        hv::hv_vcpu_run_depth_max_reset();
+        assert_eq!(hv::hv_vcpu_run_depth(), 0);
+        let outcome = boot_source(TWO_CORE_SRC, "i-overlap-depth");
+        assert_eq!(outcome.exit_code, 0);
+        assert_eq!(outcome.core_marks, vec![1, 2]);
+        assert!(
+            hv::hv_vcpu_run_depth_max() > 1,
+            "expected overlapping hv_vcpu_run (depth_max > 1), got {}",
+            hv::hv_vcpu_run_depth_max()
+        );
+        assert_eq!(
+            hv::hv_vcpu_run_depth(),
+            0,
+            "depth must be quiescent after the boot joins"
+        );
     }
 
     /// Named `HostCoresRefuse` mapping (decision 1062) — pure, no HVF.
@@ -3431,59 +3453,69 @@ pub fn build() -> Image:
     /// around it is three lines, this is the part that can be wrong.
     #[test]
     fn admission_witness_counts_only_the_running_core_s_own_drain() {
-        let ring = |src: usize, dst: usize, target: &str| RequestRing {
+        let ring = |src: usize, dst: usize, target: &str, capacity: u64| RequestRing {
             src,
             dst,
             target: target.to_string(),
             data_base: 0,
             count_addr: 0,
+            capacity,
         };
         let mut w = AdmissionWitness::new(vec![
-            ring(0, 1, "Sink"),
-            ring(0, 2, "Far"),
-            ring(2, 1, "Sink"),
+            ring(0, 1, "Sink", 8),
+            ring(0, 2, "Far", 4),
+            ring(2, 1, "Sink", 8),
         ]);
         // Core 0 published two messages into ring 0 and one into ring 1.
         // It is the *producer* of both, so nothing was admitted.
-        assert_eq!(w.observe(&[2, 1, 0], 0).expect("ok"), Vec::new());
-        // Core 2 runs: it drains its own inbound ring (index 1) and
-        // publishes into ring 2 in the same hold. Only the drain counts,
-        // and it is named by the ring's target and its *producing* core.
         assert_eq!(
-            w.observe(&[2, 0, 1], 2).expect("ok"),
+            w.observe(&[2, 1, 0], &[0, 0, 0], 0).expect("ok"),
+            Vec::new()
+        );
+        // Core 2 drains Far (head 0→1) and publishes into ring 2.
+        assert_eq!(
+            w.observe(&[2, 0, 1], &[0, 1, 0], 2).expect("ok"),
             vec![("Far".to_string(), "core0".to_string())]
         );
-        // Core 1 runs and drains both of its inbound lanes — in ring
-        // order, which is the order `build_rt_drain` walks them.
+        // Core 1 drains both inbound lanes — head advances match count.
         assert_eq!(
-            w.observe(&[0, 0, 0], 1).expect("ok"),
+            w.observe(&[0, 0, 0], &[2, 1, 1], 1).expect("ok"),
             vec![
                 ("Sink".to_string(), "core0".to_string()),
                 ("Sink".to_string(), "core0".to_string()),
                 ("Sink".to_string(), "core2".to_string()),
             ]
         );
-        // A core that ran and touched nothing admits nothing.
-        assert_eq!(w.observe(&[0, 0, 0], 1).expect("ok"), Vec::new());
+        assert_eq!(
+            w.observe(&[0, 0, 0], &[2, 1, 1], 1).expect("ok"),
+            Vec::new()
+        );
     }
 
-    /// The invariant the exact (non-modular) count rests on: a ring whose
-    /// *consuming* core is the one that just ran cannot have grown,
-    /// because its producer is a different core and the baton
-    /// (plans/M8.md decision 11) means no other core ran. If that ever
-    /// stops being true the witness fails closed rather than silently
-    /// under-recording an admission order.
+    /// plans/M15.md item I: under concurrent record a consumed ring may
+    /// grow (producer overlapped). Head deltas still count shrinks; growth
+    /// alone emits nothing.
     #[test]
-    fn admission_witness_fails_closed_if_a_consumed_ring_grows() {
+    fn admission_witness_absorbs_growth_on_a_consumed_ring() {
         let mut w = AdmissionWitness::new(vec![RequestRing {
             src: 0,
             dst: 1,
             target: "Sink".to_string(),
             data_base: 0,
             count_addr: 0,
+            capacity: 8,
         }]);
-        let err = w.observe(&[3], 1).expect_err("must fail closed");
-        assert!(err.contains("SPSC producer/consumer split"), "{err}");
+        assert_eq!(
+            w.observe(&[3], &[0], 1).expect("ok"),
+            Vec::new()
+        );
+        assert_eq!(
+            w.observe(&[1], &[2], 1).expect("ok"),
+            vec![
+                ("Sink".to_string(), "core0".to_string()),
+                ("Sink".to_string(), "core0".to_string()),
+            ]
+        );
     }
 
     /// A report with no `Blk*` lines at all constructs no device model —

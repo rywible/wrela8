@@ -5,21 +5,17 @@ module examples.boot_cross_core_mailbox_depth
 # rather than dropping it.
 #
 # `Sink` is declared `mailbox=1` on core 1. Two producers — `Near` on core 0
-# and `Far` on core 2 — each publish one cross-core message into it. Under
-# decision 11's baton both messages sit in their request rings before core 1
-# drains; the drain walks `src=0` then `src=2`, admits Near's into the one
-# mailbox slot, and **holds** Far's in its ring when `__rt_enqueue_Sink`
-# rejects (mailbox full). That hold is back-pressure. Widening `mailbox=`
-# to 2 would admit both in one drain pass and this golden's transcript
-# would still pass — so the depth is not what the asserts measure alone.
+# and `Far` on core 2 — each publish one cross-core message into it.
 #
-# **What the transcript makes impossible without back-pressure.**
-# 1. `Near`'s await returns `1`, not `11` — Far's earlier-published `+10`
-#    was not admitted first (same order fact as
-#    `boot-cross-core-admission-order`, now under depth 1).
-# 2. After Near returns, `Sink.total` is `11` — Far's held `+10` was
-#    admitted later, not dropped. Invert the drain's rejection test (pop on
-#    reject) and (2) fails: total stays `1`.
+# **plans/M15.md item I retarget.** Under the baton both messages sat in
+# their request rings before core 1 drained; the drain walked `src=0` then
+# `src=2`, admitted Near's into the one mailbox slot, and **held** Far's in
+# its ring when `__rt_enqueue_Sink` rejected (mailbox full). Under
+# overlapping `hv_vcpu_run`, Sink may admit Far first (Near then sees `11`)
+# — the "Near returns 1" baton assumption is gone. What still falsifies
+# missing back-pressure: after both have run, `Sink.total` is `11` (Far's
+# `+10` was not dropped). Invert the drain's rejection test (pop on reject)
+# and total stays `1`.
 #
 # Far uses a bare `send` (decision 31 refuses an await/checkpoint on a
 # secondary core). Ring capacity equals mailbox capacity (decision 29), so
@@ -84,16 +80,22 @@ async fn mailbox_depth_backpressures_under_three_cores(
     @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match x:
         case .Ok(n):
-            assert n == 1, "Near's +1 admitted first into the depth-1 mailbox"
+            # 1 = Near first (both pending, drain order); 11 = Far first (overlap).
+            ok: u64 = 0
+            if n == 1:
+                ok = 1
+            if n == 11:
+                ok = 1
+            assert ok == 1, "Near's +1 was admitted (alone or after Far's +10)"
         case .Err(_):
             assert false, "Near rejected"
-    # Far's held +10 must have been admitted after the mailbox freed —
-    # otherwise back-pressure silently dropped it and total stays 1.
+    # Far's +10 must have been admitted eventually — otherwise it was
+    # dropped and total stays 1 (or Near-only).
     t = await sink.total()
     @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match t:
         case .Ok(n):
-            assert n == 11, "Far's back-pressured +10 was admitted later, not dropped"
+            assert n == 11, "Far's +10 was admitted later (or first), not dropped"
         case .Err(_):
             assert false, "Sink.total rejected"
 

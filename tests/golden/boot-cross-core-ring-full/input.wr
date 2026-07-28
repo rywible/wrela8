@@ -7,9 +7,14 @@ module examples.boot_cross_core_ring_full
 # is one slot deep (the ring is sized from the mailbox it feeds — 04 §3's
 # sealed graph is where the capacity comes from, never a constant picked
 # here). The root turn on core 0 issues two one-way `send`s back to back.
-# Nothing yields between them — a turn runs to its next suspension point
-# before any other core can be handed the baton — so the far core cannot
-# drain in between, and the second send meets a full ring.
+#
+# **plans/M15.md item I retarget.** The old claim was "nothing yields
+# between them — a turn runs to its next suspension point before any other
+# core can be handed the **baton**". The baton is gone; what still holds is
+# that both sends run inside one `hv_vcpu_run` with no guest Yield/MMIO
+# between them, so the far core cannot drain mid-pair and the second send
+# meets a full ring. Cross-core overlap is real after a Yield; it is not
+# mid-instruction-stream of a single producer turn.
 #
 # What it must do then is what a full *mailbox* already does at this ABI
 # granularity (02-language.md §9.4's `NotAdmitted` path,

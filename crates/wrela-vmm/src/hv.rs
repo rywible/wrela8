@@ -153,34 +153,43 @@ unsafe extern "C" {
     pub fn hv_vcpu_set_reg(vcpu: u64, reg: u32, value: u64) -> i32;
     pub fn hv_vcpu_set_sys_reg(vcpu: u64, reg: u16, value: u64) -> i32;
     pub fn hv_vcpu_get_sys_reg(vcpu: u64, reg: u16, value: *mut u64) -> i32;
-    /// Raw FFI. Callers go through [`hv_vcpu_run`], which asserts decision
-    /// 11's baton (exactly one vCPU inside the call at a time).
+    /// Raw FFI. Callers go through [`hv_vcpu_run`], which tracks overlap
+    /// depth as a test metric (plans/M15.md item I).
     #[link_name = "hv_vcpu_run"]
     fn hv_vcpu_run_raw(vcpu: u64) -> i32;
     pub fn hv_vcpus_exit(vcpus: *mut u64, vcpu_count: u32) -> i32;
 }
 
-/// plans/M8.md decision 11 / item H attack 4: count of host threads
-/// currently inside the raw `hv_vcpu_run`. The baton means this is 0 or 1
-/// at every instant; a value ≥ 2 is the invariant broken, and is what
-/// would make a missing cross-core barrier observable.
+/// plans/M15.md item I: count of host threads currently inside the raw
+/// `hv_vcpu_run`. Under overlapping execution this is a test metric only
+/// (depth > 1 is expected and required proof of concurrency); there is no
+/// live assert that it stay at 0-or-1.
 static HV_VCPU_RUN_DEPTH: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// How many host threads are inside [`hv_vcpu_run`] right now. Exposed for
-/// the unit test that pins the counter starts at zero; the live assert is
-/// inside the wrapper.
+/// Peak value of [`hv_vcpu_run_depth`] since process start / last reset.
+/// Concurrent boots must observe a peak > 1 (item I overlap proof).
+static HV_VCPU_RUN_DEPTH_MAX: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// How many host threads are inside [`hv_vcpu_run`] right now.
 pub fn hv_vcpu_run_depth() -> usize {
     HV_VCPU_RUN_DEPTH.load(std::sync::atomic::Ordering::SeqCst)
 }
 
-/// Enter the guest on `vcpu`, asserting plans/M8.md decision 11's baton:
-/// exactly one host thread may be inside this call at any instant. The
-/// three vCPU threads still exist (Hypervisor.framework binds a vCPU to
-/// its creating thread); the baton in `lib.rs` is what keeps them from
-/// overlapping here. This wrapper makes that assumption fail closed
-/// rather than merely believed — the day true concurrent `hv_vcpu_run`
-/// lands, this assert fires before any silent memory-ordering bug can
-/// masquerade as a green boot.
+/// Peak overlap depth observed so far.
+pub fn hv_vcpu_run_depth_max() -> usize {
+    HV_VCPU_RUN_DEPTH_MAX.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Reset the peak counter (unit tests that need a clean overlap window).
+pub fn hv_vcpu_run_depth_max_reset() {
+    HV_VCPU_RUN_DEPTH_MAX.store(0, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Enter the guest on `vcpu`. Plans/M15.md item I deleted the baton: every
+/// released Runnable core may be inside this call at once. The depth
+/// counter remains so tests can prove overlap (peak > 1) and quiescence
+/// (depth == 0 outside any call).
 ///
 /// # Safety
 /// Same contract as the Hypervisor.framework `hv_vcpu_run`: `vcpu` must
@@ -188,18 +197,13 @@ pub fn hv_vcpu_run_depth() -> usize {
 pub unsafe fn hv_vcpu_run(vcpu: u64) -> i32 {
     use std::sync::atomic::Ordering;
     let prev = HV_VCPU_RUN_DEPTH.fetch_add(1, Ordering::SeqCst);
-    assert!(
-        prev == 0,
-        "plans/M8.md decision 11 baton broken: {prev} host thread(s) already inside \
-         hv_vcpu_run when another entered — exactly one vCPU may run at a time under \
-         the baton (item H attack 4). True concurrent vCPU execution would make this \
-         fire and is also the day a missing cross-core DMB must become observable"
-    );
+    let depth = prev + 1;
+    HV_VCPU_RUN_DEPTH_MAX.fetch_max(depth, Ordering::SeqCst);
     let r = unsafe { hv_vcpu_run_raw(vcpu) };
     let left = HV_VCPU_RUN_DEPTH.fetch_sub(1, Ordering::SeqCst);
     debug_assert!(
         left >= 1,
-        "plans/M8.md decision 11 baton counter underflowed inside hv_vcpu_run"
+        "hv_vcpu_run depth counter underflowed"
     );
     r
 }
@@ -380,11 +384,10 @@ mod tests {
     }
 
     #[test]
-    fn baton_run_depth_starts_at_zero() {
-        // plans/M8.md item H attack 4: the counter `hv_vcpu_run` asserts
-        // against must be idle outside any call. A boot that overlapped
-        // two `hv_vcpu_run`s would trip the wrapper's assert; this pins
-        // the quiescent half so the assumption is not merely believed.
+    fn overlap_run_depth_is_quiescent_outside_run() {
+        // plans/M15.md item I: depth is a test metric only. Outside any
+        // `hv_vcpu_run` it must read zero; overlapping boots separately
+        // prove the peak rises above 1 (`lib` concurrent boot test).
         assert_eq!(hv_vcpu_run_depth(), 0);
     }
 }

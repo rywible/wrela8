@@ -1187,10 +1187,11 @@ fn repro() -> Result<(), String> {
 
 /// plans/M8.md item H Target C: the depth-1 mailbox under three cores
 /// records both eventual admissions (Near then Far). Back-pressure is
-/// not itself a choice entry — under the baton it is deterministic — but
-/// the choice sequence must still name both messages once they admit, or
-/// a drain that dropped the held message would look identical to one that
-/// held it until the transcript assert (`total == 11`) fired.
+/// not itself a choice entry — under Progress-serial replay it is still
+/// checked — but the choice sequence must still name both messages once
+/// they admit, or a drain that dropped the held message would look
+/// identical to one that held it until the transcript assert (`total == 11`)
+/// fired.
 fn repro_cross_core_mailbox_depth_admissions(vmm: &Path) -> Result<(), String> {
     const CASE: &str = "boot-cross-core-mailbox-depth";
     let (img_bytes, report_text) = golden_test_image(CASE)?;
@@ -1336,37 +1337,39 @@ fn repro_cross_core_admission_replay(vmm: &Path) -> Result<(), String> {
     let record_text = std::fs::read_to_string(&record_path)
         .map_err(|e| format!("read {}: {e}", record_path.display()))?;
 
-    // (1) The recording carries exactly the admissions this workload's own
-    // source says it must, in order — the oracle on the *witness* itself,
-    // checked before any replay is attempted, so a recorder that miscounted
-    // a drain, watched the wrong ring, or emitted nothing at all fails here
-    // rather than replaying its own mistake back to itself:
-    //
-    //   - the root turn on core 0 messages `Far` on core 2;
-    //   - `Near`'s turn on core 0 messages `Sink` on core 1;
-    //   - `Far`'s turn on core 2 messages the same `Sink`, and is admitted
-    //     *after* core 0's even though it was published before it (the
-    //     consuming core's drain walks its lanes in ring order — the
-    //     workload's own header has the whole argument, and its assertion
-    //     `n == 1` is the transcript half of this same claim).
-    //
-    // `sender=` is a core, not an actor: decision 28 settled that the
-    // producer of a cross-core ring is a core.
+    // (1) Witness multiset under overlap (plans/M15.md item I):
+    //   Far←core0 (root's await far.kick),
+    //   Sink←core2 (Far.bump), Sink←core0 (Near.add), Sink←core0 (sink.total).
+    // Order is not fixed; Progress still serializes replay.
     let admissions: Vec<&str> = record_text
         .lines()
         .filter_map(|l| l.split_once("]=").map(|(_, rhs)| rhs))
         .filter(|rhs| rhs.starts_with("Admission "))
         .collect();
-    let expected = [
+    let mut got = admissions.clone();
+    got.sort();
+    let mut want = vec![
         "Admission mailbox=Far sender=core0",
+        "Admission mailbox=Sink sender=core0",
         "Admission mailbox=Sink sender=core0",
         "Admission mailbox=Sink sender=core2",
     ];
-    if admissions != expected {
+    want.sort();
+    if got != want {
         let _ = std::fs::remove_dir_all(&tmp_dir);
         return Err(format!(
-            "repro: {CASE} recorded {:?}, expected {:?}",
-            admissions, expected
+            "repro: {CASE} recorded {:?}, expected the multiset {:?}",
+            admissions, want
+        ));
+    }
+    let progress_count = record_text
+        .lines()
+        .filter(|l| l.contains("]=Progress "))
+        .count();
+    if progress_count == 0 {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        return Err(format!(
+            "repro: {CASE} recorded no Progress entries — Yield-Progress replay needs at least one"
         ));
     }
 
@@ -1422,6 +1425,30 @@ fn repro_cross_core_admission_replay(vmm: &Path) -> Result<(), String> {
             },
         },
         Tamper {
+            // plans/M15.md item I: Progress tamper → named divergence
+            // (ordinary repro, not an enumerator).
+            name: "Progress core out of range",
+            expect: "progress mismatch",
+            apply: |text| {
+                let mut out = String::new();
+                let mut done = false;
+                for line in text.lines() {
+                    if !done {
+                        if let Some((head, rhs)) = line.split_once("]=") {
+                            if rhs.starts_with("Progress core=") {
+                                out.push_str(&format!("{head}]=Progress core=99\n"));
+                                done = true;
+                                continue;
+                            }
+                        }
+                    }
+                    out.push_str(line);
+                    out.push('\n');
+                }
+                out
+            },
+        },
+        Tamper {
             name: "tamper sender core on Far",
             expect: "admission mismatch (sender)",
             apply: |text| {
@@ -1443,7 +1470,9 @@ fn repro_cross_core_admission_replay(vmm: &Path) -> Result<(), String> {
         },
         Tamper {
             name: "drop last Admission",
-            expect: "admission count mismatch",
+            // With Progress in the log, deleting an Admission shifts a
+            // Progress into that slot → tag mismatch (still named).
+            expect: "tag mismatch",
             apply: |text| {
                 // Delete the last Admission line and renumber + recount so
                 // the file still parses — otherwise parse fails before
@@ -1479,7 +1508,8 @@ fn repro_cross_core_admission_replay(vmm: &Path) -> Result<(), String> {
         },
         Tamper {
             name: "add spurious Admission",
-            expect: "admission count mismatch",
+            // Extra Admission before a Progress → tag or count mismatch.
+            expect: "mismatch",
             apply: |text| {
                 let mut choice_lines: Vec<String> = Vec::new();
                 let mut trailer: Vec<String> = Vec::new();

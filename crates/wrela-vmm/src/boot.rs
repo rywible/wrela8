@@ -9,8 +9,9 @@ use wrela_machine::report::{CoreEntry, CoreStack, ParsedReport, ReportSection};
 use crate::devices;
 use crate::exit_loop::{
     AdmissionWitness, BlkState, advance_pc, check_core_marks, check_vector_in_range,
-    commit_completions, drain_console, el1_exception_note, monotonic_ns, raise_vector,
-    read_core_mark, read_pc, service_blk, witness_admissions,
+    commit_admissions, commit_completions, drain_console, el1_exception_note, monotonic_ns,
+    observe_admissions, raise_vector, read_core_mark, read_pc, service_blk,
+    sync_admission_baselines,
 };
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use crate::hv;
@@ -20,7 +21,7 @@ use crate::{
     validate_report_digests,
 };
 
-/// Array capacity for per-core baton state / vCPU handles: packing ceiling
+/// Array capacity for per-core sched state / vCPU handles: packing ceiling
 /// (`CORE_SLOTS`), not the sealed bring-up N. Live loops use
 /// `cores_declared` (plans/M15.md item F / decision 1060).
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -409,28 +410,23 @@ fn boot_image_core_inner(
         })
     }));
 
-    // --- N vCPUs under the baton (plans/M8.md decision 11; M15 item F) ----
+    // --- N vCPUs, overlapping hv_vcpu_run (plans/M15.md item I) ------------
     //
     // 06-machine.md §1: sealed image `Cores count=N`; the VMM creates
     // exactly those N vCPUs. §3 makes core 0's entry "release the other
     // vCPUs". Hypervisor.framework binds a vCPU to the thread that created
-    // it, so there are N host threads — but exactly one of them is inside
-    // `hv_vcpu_run` at any instant, because they pass a single **baton**
-    // whose hand-off order is a pure function of guest-visible state:
-    // which cores the guest has released, which have parked, and what
-    // their own pending words hold. Nothing in `next_core` below reads a
-    // host clock, a thread id, or an address to decide who runs next —
-    // otherwise `xtask repro` would be measuring the host's scheduler,
-    // and 06 §8's enumerable choice sequence would have quietly become an
-    // opaque interleaving trace (decision 11's own rejected alternative).
+    // it, so there are N host threads. plans/M15.md item I deleted the
+    // baton: every released Runnable core may enter `hv_vcpu_run`
+    // concurrently. Host `Shared` bookkeeping stays behind one mutex
+    // (dumb); park/release/watchdog stay. Replay alone re-serializes via
+    // Yield-`Progress` (decision 7): `next_core` is forced from the next
+    // Progress entry.
     //
-    // The baton changes hands at exactly two guest actions, both of them
-    // things the guest itself does and a recording can therefore replay:
-    // the release doorbell (core 0 hands off to each released core in
-    // ascending order) and a park (a core with nothing ready hands off).
-    // Every other exit keeps the baton, which is why a single-core image —
-    // where secondaries are never released and the release store is never
-    // even emitted — runs down exactly the path it ran before M8.
+    // Progress is appended at exactly the two guest actions that used to
+    // move the baton: the release doorbell and a park (Yield). Every other
+    // exit keeps the same core running. A single-core image — where
+    // secondaries are never released — never emits Progress and runs down
+    // exactly the path it ran before M8.
     // Array capacity = packing ceiling (`CORE_SLOTS`); live bring-up is
     // `cores_declared` from the report (item F creates exactly N vCPUs).
 
@@ -438,7 +434,7 @@ fn boot_image_core_inner(
     enum CoreState {
         /// Created and register-initialized, never released by the guest.
         Unreleased,
-        /// Eligible for the baton.
+        /// Eligible to enter `hv_vcpu_run` (concurrently under record).
         Runnable,
         /// Parked at `mmio::PARK_MMIO_ADDR` with nothing of its own to run.
         /// Runnable again only when its own pending word is nonzero — the
@@ -450,7 +446,9 @@ fn boot_image_core_inner(
     }
 
     struct Sched {
-        /// Whose turn it is. Only this core may be inside `hv_vcpu_run`.
+        /// Replay serial hand-off / record log-serializer cursor: whose
+        /// buffered Admissions+Progress may flush into the choice log next.
+        /// Under record, Runnable cores still overlap in `hv_vcpu_run`.
         current: usize,
         state: [CoreState; CORE_SLOTS],
         /// The boot is over (halt, fault, or timeout); every core returns.
@@ -480,10 +478,16 @@ fn boot_image_core_inner(
         /// Empty `rings` for every single-core image, which is what makes
         /// their choice sequences byte-identical to their pre-C3 ones.
         admission: AdmissionWitness,
+        /// plans/M15.md item I: Admissions buffered until Yield-`Progress`.
+        admission_buf: [Vec<(String, String)>; CORE_SLOTS],
+        /// Record-only bring-up window: after release until every core has
+        /// entered `hv_vcpu_run` once — proves depth > 1. Parks in this
+        /// window are silent (no Progress); the choice log starts after.
+        overlap_phase: bool,
+        started: [bool; CORE_SLOTS],
     }
-    // Every field above is touched only by the thread currently holding the
-    // baton (or by the main thread, before any core runs and after all have
-    // finished); the `Mutex` is what publishes those writes across threads.
+    // Every field above is touched only under this mutex (dumb host
+    // bookkeeping — plans/M15.md item I). Guest rings stay SPSC + DMB.
     unsafe impl Send for Shared {}
 
     /// Core `core`'s own pending-vector word, read straight out of guest
@@ -497,11 +501,10 @@ fn boot_image_core_inner(
         u64::from_le_bytes(b)
     }
 
-    /// The baton's whole hand-off rule: the next core after `from`, in
-    /// ascending core order among the sealed N (wrapping, so a lone
-    /// runnable core hands the baton back to itself), that guest-visible
-    /// state says can run. Walks only `0..cores_declared` — packing slots
-    /// above N are never brought up (decision 1061).
+    /// Guest-visible next-core pick: the next core after `from`, in
+    /// ascending core order among the sealed N (wrapping), that state says
+    /// can run. Under record this feeds the Progress log; under replay
+    /// Progress forces the hand-off and a mismatch is a named divergence.
     fn next_core(
         sched: &mut Sched,
         from: usize,
@@ -522,12 +525,14 @@ fn boot_image_core_inner(
         None
     }
 
-    /// What a handled exit asks of the baton.
+    /// What a handled exit asks of the scheduler.
     enum Step {
         /// Ordinary exit — this core keeps running.
         Keep,
-        /// This core volunteers the machine (release, or a park).
-        Yield,
+        /// Release doorbell or park / deadline hand-off.
+        /// `release`: Progress stays on this core (bring-up continues).
+        /// `park`: mark `Parked` after Progress (deferred for next_core).
+        Yield { release: bool, park: bool },
         /// The guest's exit protocol: the image is done.
         Halt(u64),
     }
@@ -564,19 +569,20 @@ fn boot_image_core_inner(
         error: None,
         vcpus: [0; CORE_SLOTS],
         admission: AdmissionWitness::new(parsed.request_rings.clone()),
+        admission_buf: std::array::from_fn(|_| Vec::new()),
+        overlap_phase: false,
+        started: [false; CORE_SLOTS],
     });
-    let baton = std::sync::Condvar::new();
+    // Park-sleep / eligibility / replay-wait / watchdog wake — not a baton.
+    let wake = std::sync::Condvar::new();
 
-    /// One vCPU exit, decoded and serviced on the core that took it. Every
-    /// diagnostic here names its core: with three of them, "unhandled
-    /// exception" without a core is a bug report missing its first fact.
     /// Sleep until `deadline_ns` (clamped to [`WALL_CAP`] past now), or
     /// until the watchdog/`sched.done` wakes us — **never** while holding
-    /// `lock`. Uses `baton.wait_timeout` so the mutex is released for the
+    /// `lock`. Uses `wake.wait_timeout` so the mutex is released for the
     /// whole wait slice and the watchdog can still force-exit.
     fn sleep_until_park_deadline(
         lock: &std::sync::Mutex<Shared>,
-        baton: &std::sync::Condvar,
+        wake: &std::sync::Condvar,
         deadline_ns: u64,
     ) {
         const SLICE: Duration = Duration::from_millis(100);
@@ -592,7 +598,7 @@ fn boot_image_core_inner(
             }
             let remaining = Duration::from_nanos(capped - now);
             let slice = if remaining < SLICE { remaining } else { SLICE };
-            let (g2, _) = baton
+            let (g2, _) = wake
                 .wait_timeout(g, slice)
                 .unwrap_or_else(|e| e.into_inner());
             drop(g2);
@@ -620,7 +626,7 @@ fn boot_image_core_inner(
         host_ram: *mut u8,
         cores_declared: usize,
         lock: &std::sync::Mutex<Shared>,
-        baton: &std::sync::Condvar,
+        wake: &std::sync::Condvar,
     ) -> Result<Step, VmmError> {
         use wrela_machine::mmio;
         let deadline_off = (machine_layout::MACHINE_INFO_BASE - machine_layout::DRAM_BASE) as usize
@@ -762,8 +768,14 @@ fn boot_image_core_inner(
                         g.sched.state[c] = CoreState::Runnable;
                     }
                     g.released = true;
+                    if cores_declared > 1 && !g.chooser.is_replaying() {
+                        g.overlap_phase = true;
+                    }
                     drop(g);
-                    Ok(Step::Yield)
+                    Ok(Step::Yield {
+                        release: true,
+                        park: false,
+                    })
                 } else if ipa == mmio::QUIESCE_MMIO_ADDR {
                     // plans/M8.md item F / decision 36, 03-hardware.md §9:
                     // "per-queue reset (when negotiated) or full reset
@@ -848,10 +860,20 @@ fn boot_image_core_inner(
                         // it never spins: this core stops being scheduled
                         // until its own pending word is raised, which is
                         // item C2's cross-core wake.
-                        let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
-                        g.sched.state[core] = CoreState::Parked;
-                        drop(g);
-                        return Ok(Step::Yield);
+                        //
+                        // plans/M15.md item I: under overlapping
+                        // `hv_vcpu_run` the producer may raise pending
+                        // between the guest's last look and this trap —
+                        // the same mask-arm-recheck core 0 already did.
+                        // Recheck before parking or a lost wake deadlocks
+                        // the machine.
+                        if pending_word(host_ram, core) != 0 {
+                            return Ok(Step::Keep);
+                        }
+                        return Ok(Step::Yield {
+                            release: false,
+                            park: true,
+                        });
                     }
                     let deadline_ns = unsafe {
                         let mut b = [0u8; 8];
@@ -873,16 +895,17 @@ fn boot_image_core_inner(
                     // shortcut below**, and that ordering is the whole reason a
                     // lost wake is catchable. Leaving core 0 `Runnable` because
                     // some sibling happened to be runnable would mean core 0
-                    // gets the baton back whether or not anything ever woke it,
+                    // gets to run again whether or not anything ever woke it,
                     // so an omitted cross-core wake would still boot green — a
                     // decorative mechanism, found by mutating `waker_tag` and
                     // watching every golden pass. Marking it `Parked` puts its
                     // resumption where the machine's own contract puts it: on
-                    // its pending word. `next_core` then either finds a runnable
-                    // sibling, finds this core's own word already raised, or
-                    // fails the boot closed with `no core is runnable` — which
-                    // is what replaces the guest-side `DEADLOCK_MSG` for a
-                    // cross-core image.
+                    // its pending word. Under concurrent record a sibling may
+                    // already be running; under Progress replay `next_core`
+                    // either finds a runnable sibling, finds this core's own
+                    // word already raised, or fails the boot closed with
+                    // `no core is runnable` — which is what replaces the
+                    // guest-side `DEADLOCK_MSG` for a cross-core image.
                     //
                     // Unreachable for a single-core image: its entry driver only
                     // parks when a deadline is armed, so every M5-M7 boot takes
@@ -896,19 +919,17 @@ fn boot_image_core_inner(
                         // The mask-arm-recheck "recheck" half: a wake that
                         // landed between the guest's last look and this trap
                         // must not put the core to sleep.
-                        if !blk_completed && pending_word(host_ram, core) == 0 {
-                            let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
-                            g.sched.state[core] = CoreState::Parked;
-                        }
-                        return Ok(Step::Yield);
+                        return Ok(Step::Yield {
+                            release: false,
+                            park: !blk_completed && pending_word(host_ram, core) == 0,
+                        });
                     }
-                    // Core 0, with a deadline armed. A sibling that can run gets
-                    // the machine before this core considers sleeping the host
-                    // thread — sleeping while another core is ready would be the
-                    // baton deciding scheduling by host timing, which
-                    // decision 11 forbids. With no runnable sibling (every
-                    // single-core image, always) this is exactly the M6
-                    // park path, unchanged.
+                    // Core 0, with a deadline armed. A sibling that can run is
+                    // already overlapping under concurrent record; under
+                    // Progress replay this Yield hands off before sleeping so
+                    // host timing does not decide the schedule (decision 7).
+                    // With no runnable sibling (every single-core image,
+                    // always) this is exactly the M6 park path, unchanged.
                     {
                         let g = lock.lock().unwrap_or_else(|e| e.into_inner());
                         let sibling = (1..cores_declared).any(|c| {
@@ -918,7 +939,12 @@ fn boot_image_core_inner(
                         });
                         if sibling {
                             drop(g);
-                            return Ok(Step::Yield);
+                            // Deadline armed + runnable sibling: hand off
+                            // without parking (core 0 stays Runnable).
+                            return Ok(Step::Yield {
+                                release: false,
+                                park: false,
+                            });
                         }
                     }
                     // plans/M7.md item F: the second doorbell poll site
@@ -953,7 +979,7 @@ fn boot_image_core_inner(
                             g.chooser.is_recording()
                         };
                         if should_sleep {
-                            sleep_until_park_deadline(lock, baton, deadline_ns);
+                            sleep_until_park_deadline(lock, wake, deadline_ns);
                         }
                         {
                             let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
@@ -1025,8 +1051,9 @@ fn boot_image_core_inner(
     }
 
     /// One core's whole life: create nothing (its vCPU is already made on
-    /// this thread), take the baton when it is this core's turn, run, service
-    /// the exit, and hand the baton on when the guest asks it to.
+    /// this thread). plans/M15.md item I: record overlaps — every Runnable
+    /// core may enter `hv_vcpu_run` concurrently. Replay alone serializes
+    /// via Yield-`Progress` (`next_core` forced from the log).
     fn run_core(
         core: usize,
         vcpu: u64,
@@ -1034,7 +1061,7 @@ fn boot_image_core_inner(
         host_ram: *mut u8,
         cores_declared: usize,
         lock: &std::sync::Mutex<Shared>,
-        baton: &std::sync::Condvar,
+        wake: &std::sync::Condvar,
     ) {
         loop {
             {
@@ -1044,16 +1071,32 @@ fn boot_image_core_inner(
                         g.sched.state[core] = CoreState::Finished;
                         return;
                     }
-                    if g.sched.current == core {
-                        break;
+                    if g.sched.state[core] == CoreState::Parked && pending_word(host_ram, core) != 0
+                    {
+                        g.sched.state[core] = CoreState::Runnable;
                     }
-                    g = baton.wait(g).unwrap_or_else(|e| e.into_inner());
+                    // Barrier note: overlap_phase means "first post-release
+                    // enter may race"; entry wait is skipped only for that
+                    // one synchronized enter (see pre-hv_vcpu_run below).
+                    // After the barrier fires, Progress cursor serializes.
+                    let skip_cursor = g.overlap_phase && !g.chooser.is_replaying();
+                    match g.sched.state[core] {
+                        CoreState::Runnable => {
+                            if !skip_cursor && g.sched.current != core {
+                                g = wake.wait(g).unwrap_or_else(|e| e.into_inner());
+                                continue;
+                            }
+                            break;
+                        }
+                        CoreState::Unreleased | CoreState::Parked => {
+                            let (g2, _) = wake
+                                .wait_timeout(g, Duration::from_millis(1))
+                                .unwrap_or_else(|e| e.into_inner());
+                            g = g2;
+                        }
+                        CoreState::Finished => return,
+                    }
                 }
-                // 06 §5: "the VMM's I/O threads poll hot doorbells ... and
-                // arm wakes when idle." The device model is polled on the
-                // core that owns the device — 04 §3: "a `@driver`'s vectors,
-                // pools, permits, and recovery lanes live on its core", and
-                // plans/M8.md decision 8 pins virtio-blk to core 0.
                 if core == 0 {
                     let s = &mut *g;
                     if let Err(e) = service_blk(&mut s.blk, &mut s.chooser, host_ram) {
@@ -1061,9 +1104,43 @@ fn boot_image_core_inner(
                         s.sched.done = true;
                         s.sched.state[core] = CoreState::Finished;
                         drop(g);
-                        baton.notify_all();
+                        wake.notify_all();
                         return;
                     }
+                }
+            }
+            {
+                let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
+                if g.overlap_phase && !g.chooser.is_replaying() {
+                    g.started[core] = true;
+                    // Wait until every live core is at this barrier so the
+                    // next hv_vcpu_run calls overlap (depth > 1), then end
+                    // the window before any guest-visible drain is witnessed.
+                    while g.overlap_phase
+                        && !(0..cores_declared).all(|c| g.started[c])
+                    {
+                        g = wake.wait(g).unwrap_or_else(|e| e.into_inner());
+                        if g.sched.done {
+                            g.sched.state[core] = CoreState::Finished;
+                            drop(g);
+                            wake.notify_all();
+                            return;
+                        }
+                    }
+                    if g.overlap_phase {
+                        g.overlap_phase = false;
+                        if let Err(e) = sync_admission_baselines(&mut g.admission, host_ram) {
+                            g.error.get_or_insert(e);
+                            g.sched.done = true;
+                            g.sched.state[core] = CoreState::Finished;
+                            drop(g);
+                            wake.notify_all();
+                            return;
+                        }
+                        wake.notify_all();
+                    }
+                } else {
+                    g.started[core] = true;
                 }
             }
             let r = unsafe { hv_vcpu_run(vcpu) };
@@ -1076,71 +1153,215 @@ fn boot_image_core_inner(
                 g.sched.done = true;
                 g.sched.state[core] = CoreState::Finished;
                 drop(g);
-                baton.notify_all();
+                wake.notify_all();
                 return;
             }
             {
                 let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
                 guard.exits += 1;
-                // plans/M8.md item C3: the admission witness's one and only
-                // call site (06 §8). It runs *before* this exit is decoded,
-                // so every message the guest admitted during the run that
-                // just ended is in the choice sequence ahead of whatever
-                // choice this exit itself resolves — and it runs on every
-                // exit, so no drain can hide between two of them. A
-                // single-core image has no request ring and this returns
-                // immediately, which is why every pre-C3 recording is
-                // byte-identical.
                 let g = &mut *guard;
-                if let Err(e) = witness_admissions(&mut g.admission, &mut g.chooser, host_ram, core)
-                {
-                    g.error.get_or_insert(e);
-                    g.sched.done = true;
-                    g.sched.state[core] = CoreState::Finished;
-                    drop(guard);
-                    baton.notify_all();
-                    return;
+                match observe_admissions(&mut g.admission, host_ram, core) {
+                    Ok(admitted) => g.admission_buf[core].extend(admitted),
+                    Err(e) => {
+                        g.error.get_or_insert(e);
+                        g.sched.done = true;
+                        g.sched.state[core] = CoreState::Finished;
+                        drop(guard);
+                        wake.notify_all();
+                        return;
+                    }
                 }
             }
-            match handle_exit(core, vcpu, exit_ptr, host_ram, cores_declared, lock, baton) {
-                Ok(Step::Keep) => {}
-                Ok(Step::Yield) => {
+            match handle_exit(core, vcpu, exit_ptr, host_ram, cores_declared, lock, wake) {
+                Ok(Step::Keep) => {
+                    wake.notify_all();
+                }
+                Ok(Step::Yield { release, park }) => {
                     let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
-                    let g = &mut *guard;
-                    match next_core(&mut g.sched, core, host_ram, cores_declared) {
-                        Some(next) => g.sched.current = next,
-                        None => {
-                            // Every core is parked or finished and no
-                            // pending word can change that: nothing will
-                            // ever run again. Fail closed rather than hang
-                            // (CLAUDE.md's own rule) — a hung machine that
-                            // prints its transcript as success is the one
-                            // outcome a boot must never produce.
-                            g.error.get_or_insert(VmmError::GuestFault(format!(
-                                "core {core} parked and no core is runnable: every core is \
-                                 parked with an empty pending word, so no turn can ever run \
-                                 again (04-compiler.md §2)"
-                            )));
-                            g.sched.done = true;
+                    // Decision 7: Progress is a single global tape. After
+                    // the bring-up overlap window (and always under replay),
+                    // a Yield holds the log cursor before Admissions+Progress.
+                    loop {
+                        if guard.sched.done {
+                            guard.sched.state[core] = CoreState::Finished;
+                            drop(guard);
+                            wake.notify_all();
+                            return;
                         }
+                        if guard.sched.current == core {
+                            break;
+                        }
+                        // If overlap just ended while we waited, silent-park
+                        // secondaries may need the cursor fixup above on
+                        // another core's loop; keep waiting.
+                        guard = wake.wait(guard).unwrap_or_else(|e| e.into_inner());
+                    }
+                    let g = &mut *guard;
+                    let buffered = std::mem::take(&mut g.admission_buf[core]);
+                    if let Err(e) = commit_admissions(&mut g.chooser, &buffered) {
+                        g.error.get_or_insert(e);
+                        g.sched.done = true;
+                        g.sched.state[core] = CoreState::Finished;
+                        drop(guard);
+                        wake.notify_all();
+                        return;
+                    }
+                    let index = g.chooser.resolved_count();
+                    let live_next = next_core(&mut g.sched, core, host_ram, cores_declared);
+                    // Release: Progress stays on the releasing core so replay
+                    // keeps publishing; secondaries overlap under record and
+                    // take the cursor on a later park Progress.
+                    let progress_core = if release {
+                        core as u32
+                    } else {
+                        match live_next {
+                            Some(n) => n as u32,
+                            None => core as u32,
+                        }
+                    };
+                    let chosen = match g.chooser.choose_checked(
+                        record::ChoiceRequest::Progress {
+                            core: progress_core,
+                        },
+                        || record::ChoiceEntry::Progress {
+                            core: progress_core,
+                        },
+                    ) {
+                        Ok(e) => e,
+                        Err(e) => {
+                            g.error.get_or_insert(e);
+                            g.sched.done = true;
+                            g.sched.state[core] = CoreState::Finished;
+                            drop(guard);
+                            wake.notify_all();
+                            return;
+                        }
+                    };
+                    let record::ChoiceEntry::Progress { core: forced } = chosen else {
+                        unreachable!("Progress request returns Progress");
+                    };
+                    if release {
+                        if (forced as usize) >= cores_declared {
+                            if let Err(e) = g.chooser.note_divergence_checked(
+                                record::Divergence::ProgressMismatch {
+                                    index,
+                                    recorded: forced,
+                                    actual: core as u32,
+                                },
+                            ) {
+                                g.error.get_or_insert(e);
+                                g.sched.done = true;
+                                g.sched.state[core] = CoreState::Finished;
+                                drop(guard);
+                                wake.notify_all();
+                                return;
+                            }
+                        }
+                        g.sched.current = if g.chooser.is_replaying() {
+                            (forced as usize).min(cores_declared.saturating_sub(1))
+                        } else {
+                            core
+                        };
+                    } else {
+                        match live_next {
+                            Some(next) => {
+                                let use_core = if g.chooser.is_replaying() {
+                                    forced as usize
+                                } else {
+                                    next
+                                };
+                                if (forced as usize) >= cores_declared {
+                                    if let Err(e) = g.chooser.note_divergence_checked(
+                                        record::Divergence::ProgressMismatch {
+                                            index,
+                                            recorded: forced,
+                                            actual: next as u32,
+                                        },
+                                    ) {
+                                        g.error.get_or_insert(e);
+                                        g.sched.done = true;
+                                        g.sched.state[core] = CoreState::Finished;
+                                        drop(guard);
+                                        wake.notify_all();
+                                        return;
+                                    }
+                                }
+                                g.sched.current = use_core.min(cores_declared.saturating_sub(1));
+                                if g.sched.state[g.sched.current] == CoreState::Parked
+                                    && pending_word(host_ram, g.sched.current) != 0
+                                {
+                                    g.sched.state[g.sched.current] = CoreState::Runnable;
+                                }
+                            }
+                            None => {
+                                if g.exit_code.is_some() || g.sched.done {
+                                    g.sched.done = true;
+                                } else {
+                                    g.error.get_or_insert(VmmError::GuestFault(format!(
+                                        "core {core} parked and no core is runnable: every core is \
+                                         parked with an empty pending word, so no turn can ever run \
+                                         again (04-compiler.md §2)"
+                                    )));
+                                    g.sched.done = true;
+                                }
+                            }
+                        }
+                    }
+                    if park {
+                        g.sched.state[core] = CoreState::Parked;
                     }
                     if g.sched.done {
                         g.sched.state[core] = CoreState::Finished;
                     }
                     let finished = g.sched.done;
                     drop(guard);
-                    baton.notify_all();
+                    wake.notify_all();
                     if finished {
                         return;
                     }
                 }
                 Ok(Step::Halt(code)) => {
+                    {
+                        let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
+                        g.exit_code.get_or_insert(code);
+                        for c in 0..cores_declared {
+                            let buffered = std::mem::take(&mut g.admission_buf[c]);
+                            if let Err(e) = commit_admissions(&mut g.chooser, &buffered) {
+                                g.error.get_or_insert(e);
+                                g.sched.done = true;
+                                g.sched.state[core] = CoreState::Finished;
+                                drop(g);
+                                wake.notify_all();
+                                return;
+                            }
+                        }
+                        let released = g.released;
+                        drop(g);
+                        if released {
+                            let grace = std::time::Instant::now() + Duration::from_millis(50);
+                            while std::time::Instant::now() < grace {
+                                let mut ok = true;
+                                for c in 0..cores_declared {
+                                    if read_core_mark(host_ram, c)
+                                        != wrela_machine::machine_info::core_mark_running(c)
+                                    {
+                                        ok = false;
+                                        break;
+                                    }
+                                }
+                                if ok {
+                                    break;
+                                }
+                                wake.notify_all();
+                                std::thread::sleep(Duration::from_micros(200));
+                            }
+                        }
+                    }
                     let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
-                    g.exit_code.get_or_insert(code);
                     g.sched.done = true;
                     g.sched.state[core] = CoreState::Finished;
                     drop(g);
-                    baton.notify_all();
+                    wake.notify_all();
                     return;
                 }
                 Err(e) => {
@@ -1149,7 +1370,7 @@ fn boot_image_core_inner(
                     g.sched.done = true;
                     g.sched.state[core] = CoreState::Finished;
                     drop(g);
-                    baton.notify_all();
+                    wake.notify_all();
                     return;
                 }
             }
@@ -1171,7 +1392,7 @@ fn boot_image_core_inner(
             let ram = SendPtr(host_ram);
             let tx = handles_tx.clone();
             let shared = &shared;
-            let baton = &baton;
+            let wake = &wake;
             let entry = core_entry[core];
             let sp_top = sp_tops[core];
             threads.push(scope.spawn(move || {
@@ -1198,7 +1419,7 @@ fn boot_image_core_inner(
                     g.sched.done = true;
                     g.sched.state[core] = CoreState::Finished;
                     drop(g);
-                    baton.notify_all();
+                    wake.notify_all();
                     let _ = tx.send(core);
                     return;
                 }
@@ -1259,7 +1480,7 @@ fn boot_image_core_inner(
                         host_ram,
                         cores_declared,
                         shared,
-                        baton,
+                        wake,
                     ),
                     Err(e) => {
                         let mut g = shared.lock().unwrap_or_else(|e| e.into_inner());
@@ -1267,7 +1488,7 @@ fn boot_image_core_inner(
                         g.sched.done = true;
                         g.sched.state[core] = CoreState::Finished;
                         drop(g);
-                        baton.notify_all();
+                        wake.notify_all();
                     }
                 }
                 // Clear this core's handle *under the lock* before
@@ -1295,7 +1516,7 @@ fn boot_image_core_inner(
         // number.
         let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
         let watchdog_shared = &shared;
-        let watchdog_baton = &baton;
+        let watchdog_wake = &wake;
         let watchdog = scope.spawn(move || {
             if done_rx.recv_timeout(WALL_CAP).is_err() {
                 let mut g = watchdog_shared.lock().unwrap_or_else(|e| e.into_inner());
@@ -1310,7 +1531,7 @@ fn boot_image_core_inner(
                 // Wake any core parked in `sleep_until_park_deadline`'s
                 // Condvar wait — without this, a force-exit alone leaves
                 // the sleeper waiting out its current slice.
-                watchdog_baton.notify_all();
+                watchdog_wake.notify_all();
             }
         });
         for t in threads {
