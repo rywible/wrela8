@@ -101,7 +101,7 @@ async fn admission_order_across_two_cores(near: Actor[Near], far: Actor[Far]):
 
 @image
 pub fn build() -> Image:
-    img = Image(name="cross-core-admission-order", target=Target.wrela_machine_v1)
+    img = Image(name="cross-core-admission-order", target=Target.wrela_machine_v1, cores=3)
     sink = img.actor(Sink, mailbox=8, core=1)
     near = img.actor(Near, mailbox=4, core=0, sink=sink)
     far = img.actor(Far, mailbox=4, core=2, sink=sink)

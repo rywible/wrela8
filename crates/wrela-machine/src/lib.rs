@@ -31,15 +31,11 @@ pub const MACHINE_REVISION: u32 = 1;
 /// crate only defines the one shared string so neither side can drift).
 pub const MACHINE_REVISION_STR: &str = "wrela-machine-v1";
 
-/// Always three vCPUs. Hosts with more cores run VMM threads on the surplus
-/// (ROADMAP M8 / 06 §1: `vCPUs = flagship core count − 1 housekeeping core`).
-pub const VCPUS: usize = 3;
-
 /// Soft page-packing ceiling for sealed `Image(..., cores=N)` (06 §1 /
-/// plans/M15.md). Not a published machine maximum — seal refuses
-/// `N > CORE_SLOTS` the same way layout refuses an oversize rtdata against
-/// `RTDATA_SIZE_MAX`. Item D deletes `VCPUS`; until then both constants
-/// coexist.
+/// plans/M15.md decision 3 / item D). Not a published machine maximum —
+/// seal refuses `N > CORE_SLOTS` the same way layout refuses an oversize
+/// rtdata against `RTDATA_SIZE_MAX`. Bring-up count is **only** the
+/// report's `Cores count=N` — there is no fixed machine core-count constant.
 pub const CORE_SLOTS: usize = 32;
 
 /// Guest-physical memory layout (06-machine.md §2). Flagship profile: one
@@ -57,12 +53,15 @@ pub const CORE_SLOTS: usize = 32;
 /// 0x4000_3000  console::DATA_BASE  (16 KiB)  console tx byte buffers
 /// 0x4000_7000  pending::BASE       (4 KiB)   per-core pending-vector page
 /// 0x4000_8000  .. 0x4001_0000               reserved (device-page growth)
-/// 0x4001_0000  STACKS_BASE         (3 MiB)   3 per-core stacks, 1 MiB each
-/// 0x4031_0000  .. 0x4050_0000               reserved (stack growth room)
-/// 0x4050_0000  IMAGE_BASE          (rest)    sealed image, loaded flat
+/// 0x4001_0000  STACKS_BASE                  reserved padding below IMAGE_BASE
+///                                            (former low stack slab; not live)
+/// 0x4050_0000  IMAGE_BASE                   sealed image, loaded flat
 /// 0x4054_0000  RTDATA_BASE                  in-image rtdata packing base
 ///                                            (code/rodata/abort/checkpoint
 ///                                            pack below; see RTDATA_SIZE_MAX)
+/// … high DRAM …
+/// DRAM_END-N*1MiB .. DRAM_END               per-core stacks (report-owned;
+///                                            core_stack_base_n(n, N))
 /// ```
 ///
 /// (`console::RING_BASE`'s own region grew from 4 KiB to 8 KiB, and
@@ -94,10 +93,9 @@ pub mod layout {
     pub const MACHINE_INFO_BASE: u64 = DRAM_BASE;
     pub const MACHINE_INFO_SIZE: u64 = 0x1000;
 
-    /// Reserved region for the 3 per-core stacks (06 §1: "3 vCPUs,
-    /// always"). Only core 0 runs until M8 multicore boot starts the rest
-    /// (plans/M5.md decision 11 reserved the unused cores in the layout;
-    /// the count itself moved 4 → 3 at plans/M8.md item A).
+    /// Former low stack slab base. Retained as a named reserved-padding
+    /// landmark below `IMAGE_BASE` (plans/M15.md decision 4 / item D);
+    /// live bring-up stacks live in high DRAM via `core_stack_base_n`.
     pub const STACKS_BASE: u64 = 0x4001_0000;
     /// 1 MiB per core. Generous for a spill-everything frame convention
     /// (plans/M5.md decision 4) with no register allocation to shrink
@@ -105,20 +103,33 @@ pub mod layout {
     /// budget), never preemptively.
     pub const CORE_STACK_SIZE: u64 = 1 << 20; // 1 MiB
 
-    /// Guest-physical base of core `n`'s stack (`n` in `0..VCPUS`), i.e.
-    /// the stack pointer's *initial* value: SP grows down, so codegen
-    /// initializes `sp = core_stack_base(n) + CORE_STACK_SIZE`, the top
-    /// of the reservation, and the reservation's own base is the lowest
-    /// address that stack may ever reach.
-    pub const fn core_stack_base(core: usize) -> u64 {
-        STACKS_BASE + (core as u64) * CORE_STACK_SIZE
+    /// One past the last guest-physical DRAM byte
+    /// (`DRAM_BASE + DRAM_SIZE`).
+    pub const fn dram_end() -> u64 {
+        DRAM_BASE + DRAM_SIZE
+    }
+
+    /// Guest-physical base of core `n`'s stack for an image that brings
+    /// up `n_cores` cores (`n` in `0..n_cores`), plans/M15.md decision 4:
+    ///
+    /// ```text
+    /// core_stack_base(n, N) = DRAM_END - (N - n) * CORE_STACK_SIZE
+    /// ```
+    ///
+    /// SP grows down, so codegen initializes
+    /// `sp = core_stack_base_n(n, N) + CORE_STACK_SIZE` (the top of the
+    /// reservation). Stacks sit in high DRAM; `IMAGE_BASE` stays fixed.
+    pub const fn core_stack_base_n(core: usize, n_cores: usize) -> u64 {
+        debug_assert!(n_cores >= 1);
+        debug_assert!(core < n_cores);
+        dram_end() - ((n_cores - core) as u64) * CORE_STACK_SIZE
     }
 
     /// Sealed image load base; vCPU 0 starts at the image entry here (06
     /// §3). Placed a round 5 MiB into RAM, after the info/console pages
-    /// and the stacks region, with reserved padding on both sides
-    /// (documented in the module-level map above) for pages a later
-    /// milestone might add without having to move the image itself.
+    /// and reserved padding below, with room above for the image itself.
+    /// Live stacks no longer sit between here and the device pages —
+    /// they are report-owned in high DRAM (`core_stack_base_n`).
     pub const IMAGE_BASE: u64 = 0x4050_0000;
 
     /// In-image base of the `rtdata` section (static actor runtime tables).
@@ -247,24 +258,25 @@ pub mod machine_info {
     /// "at most `console::QUEUE_SIZE` *lines*" as a result.
     pub const OFF_LINE_START: u64 = 0x60;
 
-    /// Offset 0x68 (104), `VCPUS` `u64` words: each core's own **bring-up
-    /// mark** (plans/M8.md item C1). 06-machine.md §3's boot sequence has
-    /// the entry "install per-core state, release the other vCPUs ... and
-    /// enter the per-core event loops"; this word is the guest-written
-    /// evidence that a released core actually reached its own loop. Core
-    /// `n`'s own entry block stores `CORE_MARK_RUNNING(n)` — deliberately
-    /// `n + 1`, never a bare `1`, so a core that ran *another* core's entry
-    /// block (a mis-wired secondary entry address) is caught rather than
-    /// blessed, and never `0`, which the zeroed reservation already is.
+    /// Offset 0x68 (104), up to `CORE_SLOTS` `u64` words: each core's own
+    /// **bring-up mark** (plans/M8.md item C1; M15 item D sized the
+    /// packing ceiling). 06-machine.md §3's boot sequence has the entry
+    /// "install per-core state, release the other vCPUs ... and enter the
+    /// per-core event loops"; this word is the guest-written evidence that
+    /// a released core actually reached its own loop. Core `n`'s own entry
+    /// block stores `CORE_MARK_RUNNING(n)` — deliberately `n + 1`, never a
+    /// bare `1`, so a core that ran *another* core's entry block (a
+    /// mis-wired secondary entry address) is caught rather than blessed,
+    /// and never `0`, which the zeroed reservation already is.
     ///
-    /// The VMM reads all `VCPUS` words after the guest halts and refuses a
-    /// boot in which a core it released never marked itself
-    /// (`wrela-vmm`'s own `check_core_marks`) — a released core that never
-    /// executed is a silently-wrong machine, not a slow one.
+    /// The VMM reads the report's `Cores count=N` words after the guest
+    /// halts and refuses a boot in which a core it released never marked
+    /// itself (`wrela-vmm`'s own `check_core_marks`) — a released core that
+    /// never executed is a silently-wrong machine, not a slow one.
     pub const OFF_CORE_MARK: u64 = 0x68;
     pub const CORE_MARK_STRIDE: u64 = 8;
 
-    /// Core `n`'s own bring-up mark address (`n` in `0..VCPUS`).
+    /// Core `n`'s own bring-up mark address (`n` in `0..CORE_SLOTS`).
     pub const fn core_mark_addr(core: usize) -> u64 {
         super::layout::MACHINE_INFO_BASE + OFF_CORE_MARK + (core as u64) * CORE_MARK_STRIDE
     }
@@ -414,11 +426,12 @@ pub mod console {
 /// own module doc in `wrela-compiler/src/layout.rs` records why) — that is
 /// item E/D's job, not a reason to leave the addresses undecided.
 ///
-/// One word per core (`VCPUS` of them, 8 bytes each — room for 64 vector
-/// bits per core, far more than M6's one real injector (decision 7: "the
-/// deadline service") ever needs, but a bitmask-per-core is the dumbest
-/// shape that generalizes to more vectors later without moving anything).
-/// The remainder of the page is reserved.
+/// One word per core (up to `CORE_SLOTS` of them, 8 bytes each — room for
+/// 64 vector bits per core, far more than M6's one real injector
+/// (decision 7: "the deadline service") ever needs, but a bitmask-per-core
+/// is the dumbest shape that generalizes to more vectors later without
+/// moving anything). Live bring-up indexes `0..N` from the report; the
+/// remainder of the page is reserved.
 pub mod pending {
     use super::layout::DRAM_BASE;
 
@@ -431,9 +444,9 @@ pub mod pending {
     pub const WORD_SIZE: u64 = 8;
 
     /// Guest-physical address of core `n`'s own pending word (`n` in
-    /// `0..VCPUS`) — the word a checkpoint's mask–arm–recheck sequence
-    /// (item D) loads, and the word the VMM's deadline-wake/vector-raise
-    /// path (item E) stores to before waking that core's vCPU.
+    /// `0..CORE_SLOTS`) — the word a checkpoint's mask–arm–recheck sequence
+    /// loads, and the word the VMM's deadline-wake/vector-raise path stores
+    /// to before waking that core's vCPU.
     pub const fn core_word_addr(core: usize) -> u64 {
         BASE + (core as u64) * WORD_SIZE
     }
@@ -499,9 +512,10 @@ pub mod mmio {
     /// and actor initialization ... and enters the per-core event loops" —
     /// so it is a guest action the VMM observes, never a host-side decision
     /// taken behind the guest's back. The stored value is the number of
-    /// cores this image brings up (`1..=VCPUS`); the VMM refuses any other
-    /// value rather than guessing, and refuses a count that disagrees with
-    /// the `CoreEntry` lines the report declares.
+    /// cores this image brings up (`1..=CORE_SLOTS`, matching report
+    /// `Cores count=N`); the VMM refuses any other value rather than
+    /// guessing, and refuses a count that disagrees with the `CoreEntry`
+    /// lines the report declares.
     ///
     /// A trapping store, exactly like `PARK_MMIO_ADDR` and for the same
     /// reason (one decode path, one page per register); boot is not a hot
@@ -683,6 +697,10 @@ mod tests {
     /// fails here before it ever reaches emission (item D) or boot (item
     /// E).
     fn regions() -> Vec<(&'static str, u64, u64)> {
+        // High-DRAM stacks for a representative N=3 (and separately for
+        // CORE_SLOTS in `high_stacks_clear_the_image_window`). Low
+        // STACKS_BASE is reserved padding, not a live region.
+        let n = 3usize;
         vec![
             (
                 "machine_info",
@@ -692,27 +710,27 @@ mod tests {
             ("console_ring", console::RING_BASE, console::RING_SIZE),
             ("console_data", console::DATA_BASE, console::DATA_SIZE),
             ("pending", pending::BASE, pending::SIZE),
-            (
-                "core_stack_0",
-                layout::core_stack_base(0),
-                layout::CORE_STACK_SIZE,
-            ),
-            (
-                "core_stack_1",
-                layout::core_stack_base(1),
-                layout::CORE_STACK_SIZE,
-            ),
-            (
-                "core_stack_2",
-                layout::core_stack_base(2),
-                layout::CORE_STACK_SIZE,
-            ),
             // The image region has no fixed size (it is whatever the
             // build emits), so it is checked here only as a zero-size
             // marker: it must start after every region above it and
             // before DRAM ends, which the two dedicated tests below
             // (not this table) prove.
             ("image_base", layout::IMAGE_BASE, 0),
+            (
+                "core_stack_0",
+                layout::core_stack_base_n(0, n),
+                layout::CORE_STACK_SIZE,
+            ),
+            (
+                "core_stack_1",
+                layout::core_stack_base_n(1, n),
+                layout::CORE_STACK_SIZE,
+            ),
+            (
+                "core_stack_2",
+                layout::core_stack_base_n(2, n),
+                layout::CORE_STACK_SIZE,
+            ),
             ("clock_mmio", mmio::CLOCK_MMIO_ADDR, 8),
             ("exit_mmio", mmio::EXIT_MMIO_ADDR, 8),
             ("park_mmio", mmio::PARK_MMIO_ADDR, 8),
@@ -767,11 +785,63 @@ mod tests {
 
     #[test]
     fn core_slots_is_the_soft_packing_ceiling() {
-        // plans/M15.md item B: soft page-packing ceiling, not a published
+        // plans/M15.md item B/D: soft page-packing ceiling, not a published
         // machine max. Fits machine-info core_marks before vector0_observed
         // @ 0x200: OFF_CORE_MARK (0x68) + 32*8 = 0x168.
         assert_eq!(crate::CORE_SLOTS, 32);
-        assert!(crate::CORE_SLOTS > crate::VCPUS);
+        assert!(
+            machine_info::OFF_CORE_MARK
+                + crate::CORE_SLOTS as u64 * machine_info::CORE_MARK_STRIDE
+                <= machine_info::OFF_VECTOR0_OBSERVED
+        );
+    }
+
+    #[test]
+    fn core_stack_base_n_is_high_dram_from_the_end() {
+        // plans/M15.md decision 4:
+        //   core_stack_base(n, N) = DRAM_END - (N - n) * CORE_STACK_SIZE
+        let dram_end = layout::dram_end();
+        assert_eq!(dram_end, 0x8000_0000);
+        assert_eq!(
+            layout::core_stack_base_n(0, 1),
+            dram_end - layout::CORE_STACK_SIZE
+        );
+        assert_eq!(
+            layout::core_stack_base_n(0, 2),
+            dram_end - 2 * layout::CORE_STACK_SIZE
+        );
+        assert_eq!(
+            layout::core_stack_base_n(1, 2),
+            dram_end - layout::CORE_STACK_SIZE
+        );
+        // Contiguous, ascending with core index, clear of IMAGE_BASE.
+        for n in [1usize, 2, 3, crate::CORE_SLOTS] {
+            for c in 0..n {
+                let base = layout::core_stack_base_n(c, n);
+                assert!(base >= layout::IMAGE_BASE + layout::RTDATA_SIZE_MAX);
+                assert_eq!(base + layout::CORE_STACK_SIZE, {
+                    if c + 1 < n {
+                        layout::core_stack_base_n(c + 1, n)
+                    } else {
+                        dram_end
+                    }
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn high_stacks_clear_the_image_window() {
+        let n = crate::CORE_SLOTS;
+        let stacks_lo = layout::core_stack_base_n(0, n);
+        let image_hi = layout::RTDATA_BASE + layout::RTDATA_SIZE_MAX;
+        assert!(
+            image_hi <= stacks_lo,
+            "CORE_SLOTS stacks at {stacks_lo:#x} must sit above rtdata window ending {image_hi:#x}"
+        );
+        // Former low STACKS_BASE is unused padding — not a live stack.
+        assert!(layout::STACKS_BASE < layout::IMAGE_BASE);
+        assert!(layout::STACKS_BASE + layout::CORE_STACK_SIZE <= layout::IMAGE_BASE);
     }
 
     #[test]
@@ -794,15 +864,15 @@ mod tests {
 
     #[test]
     fn pending_words_fit_the_page_and_do_not_overlap() {
-        let used = VCPUS as u64 * pending::WORD_SIZE;
+        let used = CORE_SLOTS as u64 * pending::WORD_SIZE;
         assert!(used <= pending::SIZE);
-        for core in 0..VCPUS {
+        for core in 0..CORE_SLOTS {
             let addr = pending::core_word_addr(core);
             assert!(addr >= pending::BASE && addr + pending::WORD_SIZE <= pending::BASE + used);
         }
         // Every core's word is distinct and 8-byte-spaced.
-        for a in 0..VCPUS {
-            for b in (a + 1)..VCPUS {
+        for a in 0..CORE_SLOTS {
+            for b in (a + 1)..CORE_SLOTS {
                 let (addr_a, addr_b) = (pending::core_word_addr(a), pending::core_word_addr(b));
                 assert!(
                     addr_a + pending::WORD_SIZE <= addr_b || addr_b + pending::WORD_SIZE <= addr_a
@@ -826,9 +896,13 @@ mod tests {
         assert!(machine_info::OFF_RING_DATA_BUMP + 8 <= machine_info::OFF_RING_DESC_BUMP);
         assert!(machine_info::OFF_RING_DESC_BUMP + 8 <= machine_info::OFF_LINE_START);
         assert!(machine_info::OFF_LINE_START + 8 <= machine_info::OFF_CORE_MARK);
+        // CORE_SLOTS marks fit before vector0_observed; the legacy
+        // OFF_TEST_LINE_BUF scratch (0x100) sits inside that packing
+        // window and is unused once guest arrays grow to CORE_SLOTS (E).
         assert!(
-            machine_info::OFF_CORE_MARK + VCPUS as u64 * machine_info::CORE_MARK_STRIDE
-                <= machine_info::OFF_TEST_LINE_BUF
+            machine_info::OFF_CORE_MARK
+                + CORE_SLOTS as u64 * machine_info::CORE_MARK_STRIDE
+                <= machine_info::OFF_VECTOR0_OBSERVED
         );
         assert!(
             machine_info::OFF_TEST_LINE_BUF + machine_info::TEST_LINE_BUF_SIZE
@@ -844,14 +918,14 @@ mod tests {
     /// cannot produce (never `0`, never another core's).
     #[test]
     fn core_marks_are_distinct_and_never_zero() {
-        for core in 0..VCPUS {
+        for core in 0..CORE_SLOTS {
             let addr = machine_info::core_mark_addr(core);
             assert!(addr >= layout::MACHINE_INFO_BASE);
             assert!(addr + 8 <= layout::MACHINE_INFO_BASE + layout::MACHINE_INFO_SIZE);
             assert_ne!(machine_info::core_mark_running(core), 0);
         }
-        for a in 0..VCPUS {
-            for b in (a + 1)..VCPUS {
+        for a in 0..CORE_SLOTS {
+            for b in (a + 1)..CORE_SLOTS {
                 assert_ne!(
                     machine_info::core_mark_addr(a),
                     machine_info::core_mark_addr(b)

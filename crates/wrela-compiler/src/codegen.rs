@@ -7610,7 +7610,8 @@ pub fn async_frame_sizes(
 /// M11 H / decision 811: floor-cat1 SP install for a secondary core (5 words).
 /// Prepended at inject onto `__wrela_secondary_entry_<core>` before the key is
 /// republished as `rt_secondary_core_entry <core>` (decision 636 extraction).
-pub fn emit_secondary_sp_install(core: usize) -> Vec<(u32, String)> {
+/// `n_cores` is the sealed report N (plans/M15.md item D high-DRAM stacks).
+pub fn emit_secondary_sp_install(core: usize, n_cores: usize) -> Vec<(u32, String)> {
     let mut words: Vec<(u32, String)> = Vec::new();
     let push = |words: &mut Vec<(u32, String)>, w: u32, text: String| {
         words.push((w, text));
@@ -7641,8 +7642,9 @@ pub fn emit_secondary_sp_install(core: usize) -> Vec<(u32, String)> {
             format!("movk {}, #{:#x}, lsl #48", reg_name(reg), h3),
         );
     };
-    let sp_top =
-        wrela_machine::layout::core_stack_base(core) + wrela_machine::layout::CORE_STACK_SIZE;
+    let n = n_cores.max(1);
+    let sp_top = wrela_machine::layout::core_stack_base_n(core, n)
+        + wrela_machine::layout::CORE_STACK_SIZE;
     load_imm(&mut words, 9, sp_top, "sp_top");
     push(
         &mut words,
@@ -8820,7 +8822,7 @@ pub(crate) fn emitted_a64_census_specialization_live_counts()
     // M11 H: secondary algorithm → wrela; floor SP install measured here.
     out.insert(
         "emit_secondary_sp_install",
-        emit_secondary_sp_install(1).len(),
+        emit_secondary_sp_install(1, 2).len(),
     );
     // emit_boot_init deleted (force-rooted __wrela_rt_boot_init); call
     // stubs are inject-only (decision 812) — not a census REF row.
@@ -9407,7 +9409,7 @@ mod rt_cross_core_tests {
         assert_eq!(rt_xreply_cores(&rt_xreply_symbol(1, 0)), Some((1, 0)));
         assert_eq!(rt_xreply_cores("rt_enqueue Actor"), None);
 
-        let sp = emit_secondary_sp_install(1);
+        let sp = emit_secondary_sp_install(1, 2);
         assert_eq!(sp.len(), 5); // floor-cat1 SP (decision 811)
     }
 }

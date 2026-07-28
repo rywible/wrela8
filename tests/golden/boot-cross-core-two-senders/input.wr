@@ -89,7 +89,7 @@ async fn two_senders_one_ring(a: Actor[Alpha], b: Actor[Beta]):
 
 @image
 pub fn build() -> Image:
-    img = Image(name="cross-core-two-senders", target=Target.wrela_machine_v1)
+    img = Image(name="cross-core-two-senders", target=Target.wrela_machine_v1, cores=3)
     sink = img.actor(Sink, mailbox=4, core=1)
     alpha = img.actor(Alpha, mailbox=4, core=0, sink=sink)
     beta = img.actor(Beta, mailbox=4, core=0, sink=sink)

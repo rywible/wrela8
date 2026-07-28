@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/boot_cross_core.wr sha256=fc83fe871be479b7244be700036368aea32f7db22b6bf02a9a013df3527bb0ae
+  Input path=examples/boot_cross_core.wr sha256=72f7aa029cc99e2262d2e438d720ec2f83ddea7e8c402ec7ff0d6e1beecc7fb5
   Input path=<generated> sha256=44f961bbaef258839785a351bc994d36ef0e5359135de5ee59d618b638cc0862
   Name value=boot-cross-core
   Target value=Target.wrela_machine_v1
@@ -48,7 +48,10 @@ ImageReport v0
   Layout name=TestLineBuf kind=runtime endian=little size=21 padding=0
     Field name=bytes type=[u8; LINE_BUF_SIZE] offset=0x0 size=21
   Section name=pages base=0x40000000 size=28672
-  Section name=stacks base=0x40010000 size=3145728
+  Cores count=3
+  CoreStack core=0 base=0x7fd00000 size=0x100000
+  CoreStack core=1 base=0x7fe00000 size=0x100000
+  CoreStack core=2 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
   Section name=code base=0x40500050 size=112548
   Section name=rodata base=0x4051b7f8 size=560

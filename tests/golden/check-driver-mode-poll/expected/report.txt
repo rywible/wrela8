@@ -51,7 +51,8 @@ ImageReport v0
     Field name=interrupt_status type=ReadOnly[u32] offset=0x60 size=4
     Field name=interrupt_ack type=WriteOnly[u32] offset=0x64 size=4
   Section name=pages base=0x40000000 size=28672
-  Section name=stacks base=0x40010000 size=3145728
+  Cores count=1
+  CoreStack core=0 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
   Section name=code base=0x40500050 size=107048
   Section name=rodata base=0x4051a278 size=430

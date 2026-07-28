@@ -360,7 +360,11 @@ fn boot_image_core_inner(
     // Every other exit keeps the baton, which is why a single-core image —
     // where cores 1 and 2 are never released and the release store is never
     // even emitted — runs down exactly the path it ran before this item.
-    const NCORES: usize = wrela_machine::VCPUS;
+    // Array capacity = packing ceiling; live bring-up is `cores_declared`
+    // from the report (plans/M15.md item D; item F creates exactly N
+    // vCPUs). Guest secondary trampoline pool still sized to 3 until
+    // item E — leave that for E.
+    const NCORES: usize = wrela_machine::CORE_SLOTS;
 
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
     enum CoreState {
@@ -453,7 +457,14 @@ fn boot_image_core_inner(
         Halt(u64),
     }
 
-    let cores_declared = 1 + parsed.core_entries.len();
+    // plans/M15.md item D: bring-up count is the report's `Cores count=N`
+    // (parse defaults to `1 + core_entries.len()` when the line is absent).
+    let cores_declared = parsed.cores;
+    if cores_declared > NCORES {
+        return Err(VmmError::MalformedReport(format!(
+            "`Cores count={cores_declared}` exceeds CORE_SLOTS ({NCORES})"
+        )));
+    }
     let shared = std::sync::Mutex::new(Shared {
         sched: Sched {
             current: 0,

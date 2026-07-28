@@ -46,7 +46,8 @@ ImageReport v0
   Layout name=TestLineBuf kind=runtime endian=little size=21 padding=0
     Field name=bytes type=[u8; LINE_BUF_SIZE] offset=0x0 size=21
   Section name=pages base=0x40000000 size=28672
-  Section name=stacks base=0x40010000 size=3145728
+  Cores count=1
+  CoreStack core=0 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
   Section name=code base=0x40500050 size=108388
   Section name=rodata base=0x4051a7b8 size=456

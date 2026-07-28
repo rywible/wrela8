@@ -73,6 +73,15 @@ pub struct CoreEntry {
     pub base: u64,
 }
 
+/// Per-core high-DRAM stack (`CoreStack core= base= size=`), plans/M15.md
+/// decision 4 / item D.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CoreStack {
+    pub core: usize,
+    pub base: u64,
+    pub size: u64,
+}
+
 /// Structural facts the VMM-facing report subset carries (06 §3's whole
 /// configuration for boot). Full `--stage=report` also has compiler-
 /// internal bookkeeping this parser ignores.
@@ -106,6 +115,14 @@ pub struct ParsedReport {
     /// before this item, so their boot path is unchanged down to the
     /// number of vCPUs this VMM creates.
     pub core_entries: Vec<CoreEntry>,
+    /// Sealed bring-up count (`Cores count=N`), plans/M15.md decision 3–4.
+    /// Always `1..=CORE_SLOTS`. When the report omits `Cores` (hand-written
+    /// unit fixtures), parse defaults to `1 + core_entries.len()`.
+    pub cores: usize,
+    /// Per-core high-DRAM stacks (`CoreStack` lines). Empty only on legacy
+    /// fixtures that omit them; compiler-emitted reports always carry
+    /// exactly `cores` lines matching `layout::core_stack_base_n`.
+    pub core_stacks: Vec<CoreStack>,
     /// plans/M8.md item C3, decision 42: this image's own cross-core
     /// **request** rings, in report order — the order the guest's own
     /// drain walks its lanes (`layout::build_rt_drain`), which is what
@@ -313,6 +330,8 @@ pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
     let mut blk_pools: Vec<PoolWindow> = Vec::new();
     let mut irq_injects: Vec<IrqHostInject> = Vec::new();
     let mut core_entries: Vec<CoreEntry> = Vec::new();
+    let mut cores_line: Option<usize> = None;
+    let mut core_stacks: Vec<CoreStack> = Vec::new();
     let mut request_rings: Vec<RequestRing> = Vec::new();
     // plans/M8.md item H sweep, Target A: semantic checks beyond
     // presence/shape. Sections are parsed fully (a `CoreEntry` must land
@@ -417,20 +436,53 @@ pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
         } else if let Some(rest) = line.strip_prefix("Entry base=") {
             let digits = rest.trim_start_matches("0x");
             entry = u64::from_str_radix(digits, 16).ok();
+        } else if let Some(rest) = line.strip_prefix("Cores count=") {
+            // plans/M15.md item D / decision 3: sealed bring-up count.
+            let n: u64 = rest.trim().parse().map_err(|e| {
+                format!("`Cores count=`: expected a decimal integer, got {rest:?} ({e})")
+            })?;
+            if n < 1 || n as usize > crate::CORE_SLOTS {
+                return Err(format!(
+                    "`Cores count={n}`: sealed cores must satisfy 1..=CORE_SLOTS ({}) \
+                     (06-machine.md §1 / plans/M15.md decision 3)",
+                    crate::CORE_SLOTS
+                ));
+            }
+            if cores_line.is_some() {
+                return Err("more than one `Cores count=` line".to_string());
+            }
+            cores_line = Some(n as usize);
+        } else if let Some(rest) = line.strip_prefix("CoreStack ") {
+            // plans/M15.md item D / decision 4: high-DRAM per-core stack.
+            let fields = parse_report_fields("CoreStack", rest, &["core", "base", "size"])?;
+            let core = report_u64("CoreStack", &fields, "core")?;
+            let base = report_u64("CoreStack", &fields, "base")?;
+            let size = report_u64("CoreStack", &fields, "size")?;
+            if core as usize >= crate::CORE_SLOTS {
+                return Err(format!(
+                    "`CoreStack core={core}`: core index must be < CORE_SLOTS ({})",
+                    crate::CORE_SLOTS
+                ));
+            }
+            core_stacks.push(CoreStack {
+                core: core as usize,
+                base,
+                size,
+            });
         } else if let Some(rest) = line.strip_prefix("CoreEntry ") {
             // plans/M8.md item C1 / 06 §3: where this VMM starts vCPU N once
             // core 0's entry rings the release doorbell. Device topology is
             // a build output and so is the core set — nothing here is
-            // probed, defaulted, or guessed.
+            // probed, defaulted, or guessed. Bounds vs report N are checked
+            // in `validate_report_invariants` once `Cores` is known.
             let fields = parse_report_fields("CoreEntry", rest, &["core", "base"])?;
             let core = report_u64("CoreEntry", &fields, "core")?;
             let base = report_u64("CoreEntry", &fields, "base")?;
-            if core == 0 || core as usize >= crate::VCPUS {
+            if core == 0 || core as usize >= crate::CORE_SLOTS {
                 return Err(format!(
-                    "`CoreEntry core={core}`: secondary cores are 1..{} (06-machine.md §1: the \
-                     machine has {} vCPUs, and core 0's entry is the `Entry base=` line)",
-                    crate::VCPUS,
-                    crate::VCPUS
+                    "`CoreEntry core={core}`: secondary cores are 1..CORE_SLOTS ({}) \
+                     (core 0's entry is the `Entry base=` line; packing ceiling is CORE_SLOTS)",
+                    crate::CORE_SLOTS
                 ));
             }
             core_entries.push(CoreEntry {
@@ -467,10 +519,11 @@ pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
                 .get("target")
                 .copied()
                 .ok_or_else(|| "`Ring` is missing required field `target`".to_string())?;
-            if src as usize >= crate::VCPUS || dst as usize >= crate::VCPUS {
+            if src as usize >= crate::CORE_SLOTS || dst as usize >= crate::CORE_SLOTS {
                 return Err(format!(
-                    "`Ring src={src} dst={dst}`: this machine has {} vCPUs (06-machine.md §1)",
-                    crate::VCPUS
+                    "`Ring src={src} dst={dst}`: core index must be < CORE_SLOTS ({}) \
+                     (06-machine.md §1 / plans/M15.md)",
+                    crate::CORE_SLOTS
                 ));
             }
             if src == dst {
@@ -574,10 +627,11 @@ pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
                 .copied()
                 .ok_or_else(|| "`Placement` is missing required field `type`".to_string())?;
             let core = report_u64("Placement", &fields, "core")?;
-            if core as usize >= crate::VCPUS {
+            if core as usize >= crate::CORE_SLOTS {
                 return Err(format!(
-                    "`Placement id={id} core={core}`: this machine has {} vCPUs (06-machine.md §1)",
-                    crate::VCPUS
+                    "`Placement id={id} core={core}`: core index must be < CORE_SLOTS ({}) \
+                     (06-machine.md §1 / plans/M15.md)",
+                    crate::CORE_SLOTS
                 ));
             }
             placements.push(ReportPlacement {
@@ -785,9 +839,16 @@ pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
     if let Some(meta) = rings_meta {
         apply_uniform_ring_layout(&mut request_rings, &mut ring_ranges, meta)?;
     }
+    let cores = match cores_line {
+        Some(n) => n,
+        None => 1 + core_entries.len(),
+    };
     validate_report_invariants(
         entry,
+        cores,
+        cores_line.is_some(),
         &mut core_entries,
+        &mut core_stacks,
         &sections,
         &request_rings,
         &ring_ranges,
@@ -803,6 +864,8 @@ pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
         blk,
         irq_injects,
         core_entries,
+        cores,
+        core_stacks,
         request_rings,
     })
 }
@@ -871,11 +934,15 @@ fn apply_uniform_ring_layout(
 }
 
 /// Set-level invariants over the report's own tables (plans/M8.md item H
-/// Target A follow-up). Per-line shape checks live in `parse_report`; this
-/// function is the one place that validates the **set**.
+/// Target A follow-up; M15 item D for `Cores`/`CoreStack`). Per-line shape
+/// checks live in `parse_report`; this function is the one place that
+/// validates the **set**.
 fn validate_report_invariants(
     entry: u64,
+    cores: usize,
+    cores_declared: bool,
     core_entries: &mut Vec<CoreEntry>,
+    core_stacks: &mut Vec<CoreStack>,
     sections: &[ReportSection],
     request_rings: &[RequestRing],
     ring_ranges: &[RingRange],
@@ -884,7 +951,7 @@ fn validate_report_invariants(
     layout_root_names: &[String],
 ) -> Result<(), String> {
     use crate::layout as machine_layout;
-    let dram_end = machine_layout::DRAM_BASE + machine_layout::DRAM_SIZE;
+    let dram_end = machine_layout::dram_end();
 
     // (0) Every section and every ring range lies wholly inside guest DRAM
     // — otherwise a forged report can name host-OOB GPAs that later
@@ -942,8 +1009,15 @@ fn validate_report_invariants(
         }
     }
 
-    // (2) Contiguous secondary-core set from core 1.
+    // (2) Contiguous secondary-core set from core 1, agreeing with report N.
     core_entries.sort_by_key(|e| e.core);
+    if cores_declared && core_entries.len() + 1 != cores {
+        return Err(format!(
+            "`Cores count={cores}` disagrees with {} `CoreEntry` line(s) (bring-up is one \
+             `Entry base=` plus N-1 secondary entries)",
+            core_entries.len()
+        ));
+    }
     for (i, e) in core_entries.iter().enumerate() {
         if e.core != i + 1 {
             return Err(format!(
@@ -952,6 +1026,69 @@ fn validate_report_invariants(
                 e.core,
                 i + 1
             ));
+        }
+        if e.core >= cores {
+            return Err(format!(
+                "`CoreEntry core={}`: secondary cores are 1..{cores} for this image's \
+                 `Cores count={cores}`",
+                e.core
+            ));
+        }
+    }
+
+    // (2b) CoreStack lines: when present, exactly N contiguous high-DRAM
+    // stacks matching `layout::core_stack_base_n`.
+    if !core_stacks.is_empty() || cores_declared {
+        if core_stacks.len() != cores {
+            return Err(format!(
+                "`Cores count={cores}` requires exactly {cores} `CoreStack` line(s); saw {}",
+                core_stacks.len()
+            ));
+        }
+        core_stacks.sort_by_key(|s| s.core);
+        for (i, s) in core_stacks.iter().enumerate() {
+            if s.core != i {
+                return Err(format!(
+                    "`CoreStack` lines are not contiguous from core 0 (saw core {} where core {} \
+                     was expected)",
+                    s.core, i
+                ));
+            }
+            let expect_base = machine_layout::core_stack_base_n(s.core, cores);
+            if s.base != expect_base || s.size != machine_layout::CORE_STACK_SIZE {
+                return Err(format!(
+                    "`CoreStack core={} base={:#x} size={}`: expected base={expect_base:#x} \
+                     size={} (plans/M15.md decision 4: DRAM_END - (N-n)*CORE_STACK_SIZE)",
+                    s.core,
+                    s.base,
+                    s.size,
+                    machine_layout::CORE_STACK_SIZE
+                ));
+            }
+            let end = s.base.saturating_add(s.size);
+            if s.base < machine_layout::DRAM_BASE || end > dram_end {
+                return Err(format!(
+                    "`CoreStack core={} base={:#x} size={}` is outside guest DRAM",
+                    s.core, s.base, s.size
+                ));
+            }
+            // Must not overlap the image packing window / fixed low pages.
+            if s.base < layout_image_hi(sections) {
+                return Err(format!(
+                    "`CoreStack core={} base={:#x}` overlaps the image / low-map window \
+                     (stacks are high-DRAM only; IMAGE_BASE stays fixed)",
+                    s.core, s.base
+                ));
+            }
+            for sec in sections {
+                if s.base < sec.end() && sec.base < end {
+                    return Err(format!(
+                        "`CoreStack core={} base={:#x} size={}` overlaps `Section name={} \
+                         base={:#x} size={}`",
+                        s.core, s.base, s.size, sec.name, sec.base, sec.size
+                    ));
+                }
+            }
         }
     }
 
@@ -1041,8 +1178,15 @@ fn validate_report_invariants(
         }
     }
 
-    // (5) Request rings name only brought-up cores.
+    // (5) Request rings name only brought-up cores (report N).
     for r in request_rings {
+        if r.src >= cores || r.dst >= cores {
+            return Err(format!(
+                "`Ring kind=request src={} dst={} target={}` names a core outside 0..{cores} \
+                 (this image's `Cores count={cores}`)",
+                r.src, r.dst, r.target
+            ));
+        }
         let brought_up = r.dst == 0 || core_entries.iter().any(|e| e.core == r.dst);
         let src_up = r.src == 0 || core_entries.iter().any(|e| e.core == r.src);
         if !brought_up || !src_up {
@@ -1078,9 +1222,13 @@ fn validate_report_invariants(
                 ));
             }
         }
-        for core in 0..crate::VCPUS {
-            let stack_base = crate::layout::core_stack_base(core);
-            let stack_end = stack_base + crate::layout::CORE_STACK_SIZE;
+        for core in 0..cores {
+            let stack_base = if let Some(s) = core_stacks.iter().find(|s| s.core == core) {
+                s.base
+            } else {
+                machine_layout::core_stack_base_n(core, cores)
+            };
+            let stack_end = stack_base + machine_layout::CORE_STACK_SIZE;
             if a.base < stack_end && stack_base < a.end() {
                 return Err(format!(
                     "`Ring kind={} src={} dst={} target={} base={:#x} bytes={}` overlaps \
@@ -1173,6 +1321,13 @@ fn validate_report_invariants(
     }
 
     for p in placements {
+        if p.core >= cores {
+            return Err(format!(
+                "`Placement id={} core={}`: core index must be < {cores} \
+                 (this image's `Cores count={cores}`)",
+                p.id, p.core
+            ));
+        }
         let core_up = p.core == 0 || core_entries.iter().any(|e| e.core == p.core);
         if !core_up {
             return Err(format!(
@@ -1222,6 +1377,20 @@ fn validate_report_invariants(
     Ok(())
 }
 
+/// Upper bound of the image / low-map window stacks must clear: the end of
+/// the highest `Section` at or above `IMAGE_BASE`, or the rtdata packing
+/// ceiling when no such section exists.
+fn layout_image_hi(sections: &[ReportSection]) -> u64 {
+    use crate::layout as machine_layout;
+    let mut hi = machine_layout::RTDATA_BASE + machine_layout::RTDATA_SIZE_MAX;
+    for s in sections {
+        if s.base >= machine_layout::IMAGE_BASE {
+            hi = hi.max(s.end());
+        }
+    }
+    hi
+}
+
 // --- shared Kind-line spellings (emitter + parser agree here) ------------
 
 pub fn line_machine_revision(revision: &str) -> String {
@@ -1246,6 +1415,14 @@ pub fn line_entry(base: u64) -> String {
 
 pub fn line_core_entry(core: usize, base: u64) -> String {
     format!("CoreEntry core={core} base={base:#x}")
+}
+
+pub fn line_cores(count: usize) -> String {
+    format!("Cores count={count}")
+}
+
+pub fn line_core_stack(core: usize, base: u64, size: u64) -> String {
+    format!("CoreStack core={core} base={base:#x} size={size:#x}")
 }
 
 pub fn line_irq_host_inject(base: u64, offset: u64, status: u32, vector: u64) -> String {
@@ -1277,12 +1454,32 @@ pub fn line_blk_pool(p: &PoolWindow) -> String {
     )
 }
 
-/// Render CoreEntry / Blk* / IrqHostInject lines from a `ParsedReport`
-/// (the runtime-config tail the compiler appends after Entry). Ring lines
-/// stay compiler-side: `RequestRing` is lossy vs the live `Ring kind=`
-/// spelling.
+/// Render Cores / CoreStack / CoreEntry / Blk* / IrqHostInject lines from a
+/// `ParsedReport` (the runtime-config tail the compiler appends after
+/// Entry). Ring lines stay compiler-side: `RequestRing` is lossy vs the
+/// live `Ring kind=` spelling.
 pub fn render_runtime_tail(parsed: &ParsedReport) -> String {
     let mut out = String::new();
+    out.push_str(&line_cores(parsed.cores));
+    out.push('\n');
+    if parsed.core_stacks.is_empty() {
+        // Synthesize the canonical high-DRAM table so parse→render→parse
+        // round-trips stay closed when a fixture omitted `CoreStack` lines.
+        for core in 0..parsed.cores {
+            let base = crate::layout::core_stack_base_n(core, parsed.cores);
+            out.push_str(&line_core_stack(
+                core,
+                base,
+                crate::layout::CORE_STACK_SIZE,
+            ));
+            out.push('\n');
+        }
+    } else {
+        for s in &parsed.core_stacks {
+            out.push_str(&line_core_stack(s.core, s.base, s.size));
+            out.push('\n');
+        }
+    }
     for e in &parsed.core_entries {
         out.push_str(&line_core_entry(e.core, e.base));
         out.push('\n');
@@ -1356,9 +1553,62 @@ mod tests {
         assert_eq!(parsed.input_digests, again.input_digests);
         assert_eq!(parsed.exec_sections, again.exec_sections);
         assert_eq!(parsed.core_entries, again.core_entries);
+        assert_eq!(parsed.cores, again.cores);
+        assert_eq!(again.cores, 1);
+        assert_eq!(again.core_stacks.len(), 1);
+        assert_eq!(
+            again.core_stacks[0].base,
+            crate::layout::core_stack_base_n(0, 1)
+        );
         assert_eq!(parsed.blk, again.blk);
         assert_eq!(parsed.irq_injects, again.irq_injects);
         assert_eq!(parsed.request_rings, again.request_rings);
+    }
+
+    #[test]
+    fn parse_accepts_cores_and_high_core_stacks() {
+        let n = 2usize;
+        let s0 = crate::layout::core_stack_base_n(0, n);
+        let s1 = crate::layout::core_stack_base_n(1, n);
+        let text = format!(
+            "Machine revision={}\nInput path=input.wr sha256={EMPTY_SHA256}\n\
+             Image sha256={EMPTY_SHA256}\n\
+             Section name=entry base=0x40500000 size=64\n\
+             Section name=rtcode base=0x40500100 size=0x200\n\
+             Cores count=2\n\
+             CoreStack core=0 base={s0:#x} size={:#x}\n\
+             CoreStack core=1 base={s1:#x} size={:#x}\n\
+             Entry base=0x40500000\n\
+             CoreEntry core=1 base=0x40500100\n",
+            crate::MACHINE_REVISION_STR,
+            crate::layout::CORE_STACK_SIZE,
+            crate::layout::CORE_STACK_SIZE,
+        );
+        let parsed = parse_report(&text).expect("parse");
+        assert_eq!(parsed.cores, 2);
+        assert_eq!(parsed.core_stacks.len(), 2);
+        assert_eq!(parsed.core_stacks[0].base, s0);
+        assert_eq!(parsed.core_stacks[1].base, s1);
+        assert_eq!(parsed.core_entries.len(), 1);
+    }
+
+    #[test]
+    fn parse_rejects_low_dram_core_stack() {
+        let text = format!(
+            "Machine revision={}\nInput path=input.wr sha256={EMPTY_SHA256}\n\
+             Image sha256={EMPTY_SHA256}\n\
+             Section name=entry base=0x40500000 size=64\n\
+             Cores count=1\n\
+             CoreStack core=0 base=0x40010000 size={:#x}\n\
+             Entry base=0x40500000\n",
+            crate::MACHINE_REVISION_STR,
+            crate::layout::CORE_STACK_SIZE,
+        );
+        let err = parse_report(&text).expect_err("low stack");
+        assert!(
+            err.contains("expected base=") || err.contains("high-DRAM"),
+            "{err}"
+        );
     }
 
     #[test]
