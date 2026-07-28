@@ -2,7 +2,7 @@
 
 use crate::codegen::CodegenProgram;
 
-use super::score::{score_program, CostReport};
+use super::score::{CostReport, score_program};
 use super::table::CostTable;
 
 /// Score `program` then format the cost dump.
@@ -50,11 +50,7 @@ fn format_report(report: &CostReport) -> String {
             ),
         );
         for (rule, count) in &f.terms {
-            push_line(
-                &mut out,
-                2,
-                &format!("Term rule={rule} count={count}"),
-            );
+            push_line(&mut out, 2, &format!("Term rule={rule} count={count}"));
         }
     }
     out

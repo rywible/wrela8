@@ -174,3 +174,7 @@ ImageReport v0
   Totals actors=2 drivers=2 ready_queue=3 group_arena=0 bytes=3344
   DeviceRegs device=device#0 type=HwA driver=S0 base=0x40540d10 size=8
   DeviceRegs device=device#1 type=HwB driver=S1 base=0x40540d18 size=8
+  Cost version=1 digest=46282f52bdf2ba37 total=19672
+    Owner name=app proxy_cycles=2040
+    Owner name=runtime proxy_cycles=17632
+    Owner name=driver proxy_cycles=0

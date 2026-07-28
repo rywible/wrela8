@@ -167,3 +167,7 @@ ImageReport v0
   Turns count=4 stride=1024 bytes=4096
   Rings count=6 stride=192 padding=624 bytes=1296
   Totals actors=3 drivers=0 ready_queue=4 group_arena=0 bytes=5928
+  Cost version=1 digest=46282f52bdf2ba37 total=20386
+    Owner name=app proxy_cycles=1747
+    Owner name=runtime proxy_cycles=18639
+    Owner name=driver proxy_cycles=0

@@ -171,3 +171,7 @@ ImageReport v0
   Pool name=ControlB kind=dma payload=Ctl slots=2 slot_bytes=8 base=0x40540040 size=16 align=8 coherency=coherent device=device#1
   BlkPool name=ControlA device=device#0 base=0x40540030 size=0x10
   BlkPool name=ControlB device=device#1 base=0x40540040 size=0x10
+  Cost version=1 digest=46282f52bdf2ba37 total=17902
+    Owner name=app proxy_cycles=1029
+    Owner name=runtime proxy_cycles=16873
+    Owner name=driver proxy_cycles=0

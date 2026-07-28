@@ -83,9 +83,7 @@ pub fn load_from_path(path: &Path) -> Result<CostTable, String> {
 
 /// Parse table TOML text.
 pub fn parse(text: &str) -> Result<CostTable, String> {
-    let value: toml::Value = text
-        .parse()
-        .map_err(|e| format!("parse failed: {e}"))?;
+    let value: toml::Value = text.parse().map_err(|e| format!("parse failed: {e}"))?;
 
     let version = value
         .get("version")
@@ -121,8 +119,7 @@ pub fn parse(text: &str) -> Result<CostTable, String> {
 
     let mut latencies: BTreeMap<&'static str, u64> = BTreeMap::new();
     for (key, val) in latency_tbl {
-        let rule = CostRule::from_str(key)
-            .ok_or_else(|| format!("unknown latency key `{key}`"))?;
+        let rule = CostRule::from_str(key).ok_or_else(|| format!("unknown latency key `{key}`"))?;
         let n = val
             .as_integer()
             .ok_or_else(|| format!("latency.{key} must be an integer"))?;

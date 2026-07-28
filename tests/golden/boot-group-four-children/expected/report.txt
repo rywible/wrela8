@@ -150,3 +150,7 @@ ImageReport v0
   Turn fn=test_join_four frame=528
   Turns count=6 stride=1024 bytes=6144
   Totals actors=1 drivers=0 ready_queue=2 group_arena=1 bytes=6512
+  Cost version=1 digest=46282f52bdf2ba37 total=19758
+    Owner name=app proxy_cycles=2420
+    Owner name=runtime proxy_cycles=17338
+    Owner name=driver proxy_cycles=0

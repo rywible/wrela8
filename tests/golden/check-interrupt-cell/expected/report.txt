@@ -155,3 +155,7 @@ ImageReport v0
   Totals actors=0 drivers=1 ready_queue=1 group_arena=0 bytes=48
   DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40540030 size=104
   IrqHostInject base=0x40540030 offset=0x60 status=0xa501 vector=1
+  Cost version=1 digest=46282f52bdf2ba37 total=18050
+    Owner name=app proxy_cycles=1076
+    Owner name=runtime proxy_cycles=16898
+    Owner name=driver proxy_cycles=76

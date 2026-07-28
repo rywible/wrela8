@@ -41,10 +41,7 @@ pub struct CostReport {
 /// `max(ready[srcs…], next_issue_slot)`, retire at `start + latency[rule]`,
 /// update `ready[dst]`, advance issue slots by `issue_width`. Fn total =
 /// max retire time (0 if empty). Program total = sum of fn totals.
-pub fn score_program(
-    program: &CodegenProgram,
-    table: &CostTable,
-) -> Result<CostReport, String> {
+pub fn score_program(program: &CodegenProgram, table: &CostTable) -> Result<CostReport, String> {
     let mut fns = Vec::with_capacity(program.fns.len());
     let mut total_proxy_cycles = 0u64;
     let mut owner_totals = BTreeMap::from([

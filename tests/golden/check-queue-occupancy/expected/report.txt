@@ -167,3 +167,7 @@ ImageReport v0
   BlkDevice device=device#0 capacity_sectors=16 features=0x100000200
   BlkQueue index=0 size=128 desc=0x40540098 avail=0x40540898 used=0x405409a0 doorbell=0x40540da8
   BlkAccounting descriptors_per_op=3 queue_depth=128 occupancy_bound=42
+  Cost version=1 digest=46282f52bdf2ba37 total=18043
+    Owner name=app proxy_cycles=1182
+    Owner name=runtime proxy_cycles=16861
+    Owner name=driver proxy_cycles=0

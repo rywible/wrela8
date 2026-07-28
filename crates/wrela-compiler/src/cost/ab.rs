@@ -9,7 +9,7 @@ use std::cmp::Ordering;
 
 use crate::codegen::CodegenProgram;
 
-use super::score::{score_program, CostReport};
+use super::score::{CostReport, score_program};
 use super::table::CostTable;
 
 /// Options that select which emission to score (mirrors lower TLS / CLI
@@ -97,9 +97,7 @@ neon = 1
                 word(CostRule::Alu, Some(2), &[1, 1]),
             ],
         );
-        let opts = CostOpts {
-            bounds_elide: true,
-        };
+        let opts = CostOpts { bounds_elide: true };
         let a = score_with_opts(&p, &table, opts).expect("first");
         let b = score_with_opts(&p, &table, opts).expect("second");
         assert_eq!(a.total_proxy_cycles, b.total_proxy_cycles);
@@ -193,14 +191,8 @@ pub fn hot(a: [u64; 32]) -> u64:
         set_bounds_elide(true);
         let mwir_on = lower_program(&typed).expect("lower on");
         let prog_on = codegen_program(&mwir_on, &layout).expect("codegen on");
-        let on = score_with_opts(
-            &prog_on,
-            &table,
-            CostOpts {
-                bounds_elide: true,
-            },
-        )
-        .expect("score on");
+        let on =
+            score_with_opts(&prog_on, &table, CostOpts { bounds_elide: true }).expect("score on");
 
         set_bounds_elide(false);
         let mwir_off = lower_program(&typed).expect("lower off");

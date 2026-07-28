@@ -153,3 +153,7 @@ ImageReport v0
   Turns count=1 stride=64 bytes=64
   Totals actors=1 drivers=1 ready_queue=2 group_arena=0 bytes=192
   DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x405400c0 size=8
+  Cost version=1 digest=46282f52bdf2ba37 total=18083
+    Owner name=app proxy_cycles=993
+    Owner name=runtime proxy_cycles=17090
+    Owner name=driver proxy_cycles=0

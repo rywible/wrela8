@@ -157,3 +157,7 @@ ImageReport v0
   Turns count=4 stride=1024 bytes=4096
   Totals actors=1 drivers=1 ready_queue=3 group_arena=1 bytes=4480
   DeviceRegs device=device#0 type=Hw driver=Stub base=0x40541180 size=8
+  Cost version=1 digest=46282f52bdf2ba37 total=19393
+    Owner name=app proxy_cycles=1932
+    Owner name=runtime proxy_cycles=17461
+    Owner name=driver proxy_cycles=0

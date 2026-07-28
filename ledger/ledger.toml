@@ -589,32 +589,55 @@ note = "plans/M5.md item F, decision 9: FLIPPED from `gap` to `test` — `cargo 
 [[clause]]
 id = "compiler.costs.predicted-vs-measured"
 doc = "04-compiler.md#5"
-status = "gap"
-note = "Stays a gap until M18 close: no `--stage=cost` / report-summary goldens or proxy off/on rank oracles yet. `cargo xtask profile` (plans/M5.md item F) prints compiler wall time and guest counts — a *measurement* report, not a predicted-vs-measured one.\n\n**Owner:** ROADMAP **M18** (cycle proxy).\n\n**Normative (M18 item A, 2026-07-28):** 04 §5 splits flagship A76 microarchitecture / `@budget` discharge from the ISA **proxy-cycle ranking** model (`wrela-cost-v1` scoreboard). 06 §1 same split. Value is **differential rank direction**, not absolute wall-clock.\n\n**Flip condition (human reshape 2026-07-28 — differential ISA ranking):** `--stage=cost` / report-summary goldens + ISA scoreboard proxy off/on **rank** oracles + semantic exact-matches (choice entries, exits, transcript bytes, exit status). **Not** absolute wall-clock on any host; **not** an A76 (or Apple) microarchitecture model / SOG port maps; **not** physical calibration against `bench guest` / `profile`; **not** device exit-rate report lines (06 §5); **not** `profile` juxtaposition. Cache/µarch may change absolute time without flipping rank direction. Physical disposal of proxy wins stays with the cleverness budget / M19 evidence rows. Until M18 closes, this is the standing flip condition. Sub-clauses: `compiler.costs.stage-dump`, `compiler.costs.v1-table`, `compiler.costs.proxy-ab`, `compiler.costs.report-summary`."
+status = "test"
+tests = [
+  "golden/cost-arith",
+  "golden/cost-calls",
+  "golden/cost-bounds-elide",
+  "golden/cost-runtime",
+  "golden/image-basic",
+  "unit:bounds_elide_on_ranks_strictly_below_off",
+  "unit:load_committed_table",
+  "unit:cost_summary_contains_version_and_owners",
+]
+note = """plans/M18.md item L (2026-07-28): FLIPPED from `gap` to `test`. Umbrella for the ISA **proxy-cycle ranking** surface (04 §5 / 06 §1): `--stage=cost` goldens, short report Cost summary, `wrela-cost-v1` table load, and proxy off/on **rank** A/B. Value remains **differential ISA ranking only** — not predicted-vs-physical wall-clock, not A76 SOG ports, not host calibration against `bench guest` / `profile`, not exit-rate report lines (06 §5). `cargo xtask profile` stays a measurement report, not this clause's oracle. Sub-clauses: `compiler.costs.stage-dump`, `compiler.costs.v1-table`, `compiler.costs.proxy-ab`, `compiler.costs.report-summary`."""
 
 [[clause]]
 id = "compiler.costs.stage-dump"
 doc = "04-compiler.md#5"
-status = "gap"
-note = "plans/M18.md item A opens; flips with items D/E/F/L. Normative: `wrela dump --stage=cost` emits Terms (rule counts) + scoreboard schedule totals + owners from the final asm-pipeline stream. Golden when the stage exists. Umbrella flip: `compiler.costs.predicted-vs-measured`."
+status = "test"
+tests = [
+  "golden/cost-arith",
+  "golden/cost-calls",
+  "golden/cost-bounds-elide",
+  "golden/cost-runtime",
+]
+note = """plans/M18.md item L (2026-07-28): flipped. `wrela dump --stage=cost` emits Terms (rule counts) + scoreboard schedule totals + owners from the final asm-pipeline stream. Still differential ISA ranking only (not physical). Umbrella: `compiler.costs.predicted-vs-measured`."""
 
 [[clause]]
 id = "compiler.costs.v1-table"
 doc = "04-compiler.md#5"
-status = "gap"
-note = "plans/M18.md item A opens; flips with items B/L. Versioned `bench/wrela-cost-v1.toml`: per-CostRule latency (+ optional model `issue_width`). ISA ranking table — not A76 SOG ports, not host calibration. Umbrella flip: `compiler.costs.predicted-vs-measured`."
+status = "test"
+tests = ["unit:load_committed_table", "unit:parse_and_digest_stable"]
+note = """plans/M18.md item L (2026-07-28): flipped. Versioned `bench/wrela-cost-v1.toml` loads via `cost::table` (per-CostRule latency + optional model `issue_width`). ISA ranking table — not A76 SOG ports, not host calibration. Umbrella: `compiler.costs.predicted-vs-measured`."""
 
 [[clause]]
 id = "compiler.costs.proxy-ab"
 doc = "04-compiler.md#5"
-status = "gap"
-note = "plans/M18.md item A opens; flips with items H/J/L. Off/on **rank** oracle (schedule totals): semantically equivalent emissions compared under the scoreboard — never wall time. Capstone smoke uses this shape. Umbrella flip: `compiler.costs.predicted-vs-measured`."
+status = "test"
+tests = ["unit:bounds_elide_on_ranks_strictly_below_off", "golden/cost-bounds-elide"]
+note = """plans/M18.md item L (2026-07-28): flipped. Off/on **rank** oracle (`cost::ab::bounds_elide_on_ranks_strictly_below_off`): elide-on schedule total strictly below elide-off — never wall time. Capstone dump `golden/cost-bounds-elide`. Still differential ISA ranking only (not physical). Umbrella: `compiler.costs.predicted-vs-measured`."""
 
 [[clause]]
 id = "compiler.costs.report-summary"
 doc = "04-compiler.md#6"
-status = "gap"
-note = "plans/M18.md item A opens; flips with items R/L. Image report short Cost summary by default (version, digest, totals by owner) — not per-Term lines (those on `--stage=cost`); not exit-rate lines (06 §5). Umbrella flip: `compiler.costs.predicted-vs-measured`."
+status = "test"
+tests = [
+  "golden/image-basic",
+  "unit:cost_summary_contains_version_and_owners",
+  "unit:format_cost_summary_aggregates_owners",
+]
+note = """plans/M18.md item L (2026-07-28): flipped. Image report short Cost summary by default (version, digest, totals by owner) via `report::append_cost_summary` — not per-Term lines (those on `--stage=cost`); not exit-rate lines (06 §5). Still differential ISA ranking only (not physical). Umbrella: `compiler.costs.predicted-vs-measured`."""
 
 [[clause]]
 id = "compiler.bench.compiler-lane-locked"

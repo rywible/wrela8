@@ -163,3 +163,7 @@ ImageReport v0
   DeviceRegs device=device#0 type=BlockHw driver=BlkDriver base=0x40540018 size=8
   Pool name=BlockControl kind=dma payload=BlkReqHeader slots=16 slot_bytes=16 base=0x40540020 size=256 align=8 coherency=coherent device=device#0
   BlkPool name=BlockControl device=device#0 base=0x40540020 size=0x100
+  Cost version=1 digest=46282f52bdf2ba37 total=17870
+    Owner name=app proxy_cycles=1009
+    Owner name=runtime proxy_cycles=16861
+    Owner name=driver proxy_cycles=0

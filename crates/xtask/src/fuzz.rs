@@ -2328,8 +2328,8 @@ pub(crate) fn runtime_test_names(program: &sema::typed::TypedProgram) -> Vec<Str
 pub(crate) fn concat_code_words(program: &codegen::CodegenProgram) -> Vec<u32> {
     let mut words = Vec::new();
     for f in program.fns.values() {
-        for (w, _text) in &f.code {
-            words.push(*w);
+        for ew in &f.code {
+            words.push(ew.word);
         }
     }
     words

@@ -151,3 +151,7 @@ ImageReport v0
   Actor name=Heavy mailbox=32 slot=48 frame=64 state=8
   Turns count=2 stride=64 bytes=128
   Totals actors=2 drivers=0 ready_queue=3 group_arena=0 bytes=1824
+  Cost version=1 digest=46282f52bdf2ba37 total=18592
+    Owner name=app proxy_cycles=1049
+    Owner name=runtime proxy_cycles=17543
+    Owner name=driver proxy_cycles=0
