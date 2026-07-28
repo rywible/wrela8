@@ -30,6 +30,7 @@
 
 pub mod census;
 pub mod codegen;
+pub mod cost;
 pub mod emitted_a64_census;
 pub mod encode;
 pub mod eval;
