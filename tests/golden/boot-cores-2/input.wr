@@ -1,0 +1,35 @@
+module examples.boot_cores_2
+
+# plans/M15.md item G / decision 1071: stage-1 N=2 under the baton.
+# Explicit `cores=2`, one actor pinned `core=1`, cross-core call returns
+# a known scalar (42) that only the off-core actor can produce. Report
+# pins exactly one `CoreEntry` (core=1); release value is 2; guest marks
+# cover both cores. Depth assert (`HV_VCPU_RUN_DEPTH`) still forbids
+# overlapping `hv_vcpu_run` — stage 1 only, baton remains.
+
+@actor
+pub struct Off:
+    n: u32
+
+    init(mut self):
+        self.n = 42
+
+    pub fn get(read self) -> u32:
+        return self.n
+
+@test(runtime)
+async fn runs_off_core(o: Actor[Off]):
+    v = await o.get()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
+    match v:
+        case .Ok(n):
+            assert n == 42, "expected 42 from Off on core 1"
+        case .Err(_):
+            assert false, "call rejected"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="boot-cores-2", target=Target.wrela_machine_v1, cores=2)
+    off = img.actor(Off, mailbox=4, core=1)
+    img.on_failure(policy=Failure.Halt)
+    return img.seal()

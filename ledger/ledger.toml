@@ -1702,8 +1702,11 @@ tests = [
   "golden/err-image-cores-zero",
   "golden/err-image-cores-unknown-label",
   "golden/err-image-cores-above-slots",
+  "golden/boot-cores-1",
+  "golden/boot-cores-2",
+  "golden/boot-cores-3",
 ]
-note = """05-library.md §9 / plans/M15.md item B (decisions 1020–1025): `Image(name=..., target=..., cores=N?)` — optional comptime `usize` N ≥ 1, default 1; unknown `Image(...)` labels are a comptime error (silent-drop closed); seal refuses N > CORE_SLOTS with a packing-ceiling diagnostic. ImageGraph.cores always set. Stage-1 boot goldens under baton still land at item G."""
+note = """05-library.md §9 / plans/M15.md item B (decisions 1020–1025): `Image(name=..., target=..., cores=N?)` — optional comptime `usize` N ≥ 1, default 1; unknown `Image(...)` labels are a comptime error (silent-drop closed); seal refuses N > CORE_SLOTS with a packing-ceiling diagnostic. ImageGraph.cores always set. Stage-1 boot goldens under baton: `boot-cores-1`/`boot-cores-2`/`boot-cores-3` (item G / decisions 1070–1075)."""
 
 [[clause]]
 id = "image.report.cores-and-stacks"
@@ -1712,8 +1715,11 @@ status = "test"
 tests = [
   "golden/check-cores-stacks-high",
   "golden/check-placement-cores-2",
+  "golden/boot-cores-1",
+  "golden/boot-cores-2",
+  "golden/boot-cores-3",
 ]
-note = """06-machine.md §1 / plans/M15.md item D (decisions 1040–1046): the report publishes sealed `Cores count=N` and per-core `CoreStack` lines (high-DRAM stacks via `core_stack_base_n`; `IMAGE_BASE` stays fixed; former low `Section name=stacks size=3145728` retired). Soft packing ceiling is `CORE_SLOTS`, not a published machine max. `wrela_machine` fixed core-count constant deleted (grep-clean in crates/). Layout packing (item F discovery): `OFF_TEST_LINE_BUF` moved 0x100 → 0x218 so `CORE_SLOTS=32` marks at 0x68..0x168 no longer overlap the harness scratch; `vector0_observed` stays @ 0x200. Stage-1 boot goldens under baton still land at item G; VMM create-N at item F."""
+note = """06-machine.md §1 / plans/M15.md item D (decisions 1040–1046): the report publishes sealed `Cores count=N` and per-core `CoreStack` lines (high-DRAM stacks via `core_stack_base_n`; `IMAGE_BASE` stays fixed; former low `Section name=stacks size=3145728` retired). Soft packing ceiling is `CORE_SLOTS`, not a published machine max. `wrela_machine` fixed core-count constant deleted (grep-clean in crates/). Layout packing (item F discovery): `OFF_TEST_LINE_BUF` moved 0x100 → 0x218 so `CORE_SLOTS=32` marks at 0x68..0x168 no longer overlap the harness scratch; `vector0_observed` stays @ 0x200. Stage-1 boot goldens under baton: `boot-cores-1`/`boot-cores-2`/`boot-cores-3` (item G / decisions 1070–1075); VMM create-N at item F."""
 
 [[clause]]
 id = "machine.vmm.host-cores-refuse"
@@ -1723,8 +1729,11 @@ tests = [
   "unit:host_cores_refuse_names_sealed_n",
   "unit:host_refuses_when_vcpu_create_fails_over_hvf",
   "unit:two_cores_come_up_under_baton_over_hvf",
+  "golden/boot-cores-1",
+  "golden/boot-cores-2",
+  "golden/boot-cores-3",
 ]
-note = """06-machine.md §1 / plans/M15.md item F (decisions 1060–1066): the VMM creates exactly the sealed `Cores count=N` vCPUs (`1..=CORE_SLOTS`), initializes SP from report `CoreStack` lines, and returns named `VmmError::HostCoresRefuse` when `hv_vcpu_create` fails for any of those N — short host is a VMM error, never a guest probe. Pin is an inject/mock (`vcpu_create_inject`), not a 32-core host. Stage-1 boot goldens for N=1/2/3 under baton still land at item G; N=3 goldens remain the CI floor. Baton / `HV_VCPU_RUN_DEPTH` kept until item I."""
+note = """06-machine.md §1 / plans/M15.md item F (decisions 1060–1066): the VMM creates exactly the sealed `Cores count=N` vCPUs (`1..=CORE_SLOTS`), initializes SP from report `CoreStack` lines, and returns named `VmmError::HostCoresRefuse` when `hv_vcpu_create` fails for any of those N — short host is a VMM error, never a guest probe. Pin is an inject/mock (`vcpu_create_inject`), not a 32-core host. Stage-1 boot goldens for N=1/2/3 under baton: `boot-cores-1`/`boot-cores-2`/`boot-cores-3` (item G / decisions 1070–1075); N=3 goldens remain the CI floor. Baton / `HV_VCPU_RUN_DEPTH` kept until item I."""
 
 
 [[clause]]

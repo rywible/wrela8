@@ -1,0 +1,33 @@
+module examples.boot_cores_3
+
+# plans/M15.md item G / decision 1072: stage-1 N=3 under the baton.
+# Thin twin of `boot-cross-core-call` so N is authored (`cores=3`), not
+# implied by a `core=1` pin alone. D already added `cores=3` to that
+# sibling; this golden names the stage-1 N=3 floor for the focused boot.
+
+@actor
+pub struct Off:
+    n: u32
+
+    init(mut self):
+        self.n = 77
+
+    pub fn get(read self) -> u32:
+        return self.n
+
+@test(runtime)
+async fn runs_off_core(o: Actor[Off]):
+    v = await o.get()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
+    match v:
+        case .Ok(n):
+            assert n == 77, "expected 77"
+        case .Err(_):
+            assert false, "call rejected"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="boot-cores-3", target=Target.wrela_machine_v1, cores=3)
+    off = img.actor(Off, mailbox=4, core=1)
+    img.on_failure(policy=Failure.Halt)
+    return img.seal()
