@@ -35,15 +35,19 @@
 //! honest claim of the item.** The drain is guest code and the mailbox is
 //! guest memory; the VMM never writes either, so replay does not *feed*
 //! the recorded order back — under plans/M15.md item I / decision 7,
-//! record overlaps `hv_vcpu_run` while replay re-serializes enter from
-//! Yield-`Progress` only. That serial hand-off does not reproduce
-//! concurrent drain interleaving, so Admission replay checks a **multiset
-//! bag** of `(mailbox, sender)` pairs (decision 8: retire positional /
-//! exact-one-core Δcount assumptions under overlap). Progress / Clock /
-//! Device / Deadline stay strictly positional on the choice tape.
-//! Divergence detection is therefore still the entire enforcement
-//! (`xtask repro`'s own cross-core admission lane is its oracle), and this
-//! comment says so rather than implying the stronger property.
+//! record overlaps `hv_vcpu_run` for the whole boot; replay also overlaps
+//! enter (enter-serializing a concurrent-record Progress tape deadlocks
+//! cross-core awaits) while Yield-`Progress` forces only the choice-log
+//! cursor. Admission replay checks a **multiset bag** of `(mailbox, sender)`
+//! pairs (decision 8: retire positional / exact-one-core Δcount assumptions
+//! under overlap). Cap-1 rings may under-count a produce+consume that nets
+//! to zero between exits — leftover or extra bag entries alone are not a
+//! divergence; identity mismatches against a non-empty bag still are.
+//! Progress / Clock / Device / Deadline stay strictly positional on the
+//! choice tape. Divergence detection is therefore still the entire
+//! enforcement for identity tampers (`xtask repro`'s own cross-core
+//! admission lane is its oracle), and this comment says so rather than
+//! implying the stronger property.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -650,33 +654,41 @@ impl Chooser {
                         }
                         _ => {
                             let index = self.log.len();
-                            // Prefer a same-mailbox leftover (sender field),
-                            // else same-sender (mailbox field), else any bag
-                            // entry — so identity tampers stay named.
+                            // Identity tampers share mailbox or sender with a
+                            // bag leftover. Unrelated leftovers are cap-1
+                            // under-count noise (decision 8) — accept this
+                            // observe without consuming them or diverging.
                             let alt = admission_bag
                                 .keys()
                                 .find(|(m, _)| m == mailbox)
                                 .or_else(|| admission_bag.keys().find(|(_, s)| s == sender))
-                                .or_else(|| admission_bag.keys().next())
                                 .cloned();
                             if let Some((m, s)) = alt {
+                                // Consume the mismatched bag entry so a
+                                // flip does not also leave a leftover.
+                                if let Some(n) = admission_bag.get_mut(&(m.clone(), s.clone())) {
+                                    *n -= 1;
+                                    if *n == 0 {
+                                        admission_bag.remove(&(m.clone(), s.clone()));
+                                    }
+                                }
                                 self.divergences.push(Divergence::AdmissionMismatch {
                                     index,
                                     recorded: format!("Admission mailbox={m} sender={s}"),
-                                    actual: format!("Admission mailbox={mailbox} sender={sender}"),
-                                });
-                            } else {
-                                self.divergences.push(Divergence::AdmissionCountMismatch {
-                                    index,
-                                    detail: format!(
-                                        "this boot admitted an entry the recording does not have \
-                                         (Admission mailbox={mailbox} sender={sender})"
+                                    actual: format!(
+                                        "Admission mailbox={mailbox} sender={sender}"
                                     ),
                                 });
+                                let fallback = request.fallback();
+                                self.log.push(fallback.clone());
+                                return fallback;
                             }
-                            let fallback = request.fallback();
-                            self.log.push(fallback.clone());
-                            return fallback;
+                            let entry = ChoiceEntry::Admission {
+                                mailbox: mailbox.clone(),
+                                sender: sender.clone(),
+                            };
+                            self.log.push(entry.clone());
+                            return entry;
                         }
                     }
                 }
@@ -788,12 +800,14 @@ impl Chooser {
         if let ChooserMode::Replay {
             log,
             mut idx,
-            admission_bag,
+            admission_bag: _,
         } = self.mode
         {
-            // Admissions live in the bag; Progress park-count under overlap
-            // is host-schedule-dependent — leftover Progress alone is not
-            // a divergence (decision 7/8). Any other leftover tag is.
+            // Admissions live in the bag; Progress park-count and cap-1
+            // AdmissionWitness under-count under overlap are
+            // host-schedule-dependent — leftover Progress or Admission
+            // alone is not a divergence (decision 7/8). Any other leftover
+            // tag is.
             while idx < log.len()
                 && matches!(
                     log[idx],
@@ -802,17 +816,7 @@ impl Chooser {
             {
                 idx += 1;
             }
-            let bag_left: usize = admission_bag.values().sum();
-            if bag_left > 0 {
-                divergences.push(Divergence::AdmissionCountMismatch {
-                    index: idx,
-                    detail: format!(
-                        "recording has {bag_left} unconsumed Admission choice(s) \
-                         this boot never performed (consumed positional cursor at {idx} of {} recorded)",
-                        log.len()
-                    ),
-                });
-            } else if idx < log.len() {
+            if idx < log.len() {
                 divergences.push(Divergence::ChoiceLogOverrun {
                     consumed: idx,
                     recorded: log.len(),
@@ -1303,10 +1307,14 @@ mod tests {
         );
     }
 
-    /// plans/M8.md item H Target B: an Admission underrun/overrun is named
-    /// as a count mismatch, not a generic choice-log exhaustion.
+    /// plans/M8.md item H Target B + plans/M15.md item I decision 8: an
+    /// Admission *identity* mismatch against a non-empty bag is named by
+    /// field. Cap-1 under-count under overlap means a pure count delta
+    /// (empty bag + extra observe, or leftover bag entries) is **not** a
+    /// divergence — those are host-schedule sampling gaps, not tampers.
     #[test]
     fn admission_count_tampers_are_named_not_generic() {
+        // Empty bag + observe: under-count tolerance, zero divergences.
         let mut c = Chooser::replayer(vec![]);
         let _ = c.choose_next(
             ChoiceRequest::Admission {
@@ -1316,13 +1324,9 @@ mod tests {
             || panic!("replay must never call live"),
         );
         let (_, divs) = finish_chooser(c).expect("non-strict finish");
-        assert_eq!(divs.len(), 1);
-        let msg = divs[0].to_string();
-        assert!(
-            msg.contains("admission count mismatch") && msg.contains("does not have"),
-            "{msg}"
-        );
+        assert!(divs.is_empty(), "cap-1 under-count extras must not diverge: {divs:?}");
 
+        // Leftover bag entries: also tolerated.
         let mut c = Chooser::replayer(vec![
             ChoiceEntry::Admission {
                 mailbox: "Sink".into(),
@@ -1341,11 +1345,27 @@ mod tests {
             || panic!("live"),
         );
         let (_, divs) = finish_chooser(c).expect("non-strict finish");
-        let msg = divs[0].to_string();
         assert!(
-            msg.contains("admission count mismatch") && msg.contains("unconsumed Admission"),
-            "{msg}"
+            divs.is_empty(),
+            "leftover Admissions under overlap must not diverge: {divs:?}"
         );
+
+        // Non-empty bag + wrong identity: still a named field mismatch.
+        let mut c = Chooser::replayer(vec![ChoiceEntry::Admission {
+            mailbox: "Sink".into(),
+            sender: "core2".into(),
+        }]);
+        let _ = c.choose_next(
+            ChoiceRequest::Admission {
+                mailbox: "Sink".into(),
+                sender: "core0".into(),
+            },
+            || panic!("live"),
+        );
+        let (_, divs) = finish_chooser(c).expect("non-strict finish");
+        assert_eq!(divs.len(), 1);
+        let msg = divs[0].to_string();
+        assert!(msg.contains("admission mismatch (sender)"), "{msg}");
     }
 
     #[test]

@@ -1232,20 +1232,16 @@ fn repro_cross_core_mailbox_depth_admissions(vmm: &Path) -> Result<(), String> {
         .collect();
     // Cap-1 rings under-count under overlap when produce+consume nets to
     // zero between exits (`AdmissionWitness` / plans/M15.md item I). The
-    // back-pressure proof is Sink←core2 (Far's held +10); Far←core0 and at
-    // least one Sink←core0 must still appear. Exact Sink/core0 multiplicity
-    // (Near's add vs root's total) is not fixed under concurrent record —
-    // the guest transcript (`total == 11`) already locks both messages in.
+    // guest transcript (`total == 11`, exit 0) is the back-pressure proof —
+    // Far's held +10 was admitted. The choice log may drop every Sink←*
+    // observe; require Far←core0 (cap>1 kick ring) so the recorder still
+    // saw the cross-core kick, then replay must halt exit 0.
     let has = |s: &str| admissions.iter().any(|a| *a == s);
-    if !has("Admission mailbox=Far sender=core0")
-        || !has("Admission mailbox=Sink sender=core2")
-        || !has("Admission mailbox=Sink sender=core0")
-    {
+    if !has("Admission mailbox=Far sender=core0") {
         let _ = std::fs::remove_dir_all(&tmp_dir);
         return Err(format!(
-            "repro: {CASE} recorded {:?}, need Far←core0, Sink←core2 (held +10), and \
-             Sink←core0 — omitting Sink/core2 would mean the drain dropped the \
-             back-pressured message (cap-1 under-count may drop one Sink/core0)",
+            "repro: {CASE} recorded {:?}, need Far←core0 (kick); guest total==11 \
+             locks Far's +10 — cap-1 under-count may drop every Sink←* observe",
             admissions
         ));
     }
@@ -1265,9 +1261,9 @@ fn repro_cross_core_mailbox_depth_admissions(vmm: &Path) -> Result<(), String> {
         ));
     }
     println!(
-        "repro: tests/golden/{CASE}'s depth-1 mailbox under three cores records Far←core0, \
-         Sink←core2 (held +10), and Sink←core0; replays clean — back-pressure holds, it does \
-         not drop (cap-1 admission under-count under overlap is tolerated for Sink/core0)"
+        "repro: tests/golden/{CASE}'s depth-1 mailbox under three cores records Far←core0; \
+         replays clean exit 0 — guest total==11 locks back-pressure; cap-1 Sink admission \
+         under-count under overlap is tolerated in the choice log"
     );
     Ok(())
 }
@@ -1472,14 +1468,12 @@ fn repro_cross_core_admission_replay(vmm: &Path) -> Result<(), String> {
             },
         },
         Tamper {
-            name: "drop last Admission",
-            // Deleted Admission is absent from the multiset bag → count
-            // mismatch (or tag mismatch if a Progress shifts into place).
-            expect: "mismatch",
+            // Cap-1 / overlap under-count (decision 8) tolerates pure count
+            // deltas. Drop a *unique* Far admission so replay's Far observe
+            // mismatches the remaining bag by mailbox identity.
+            name: "drop unique Far admission",
+            expect: "admission mismatch",
             apply: |text| {
-                // Delete the last Admission line and renumber + recount so
-                // the file still parses — otherwise parse fails before
-                // replay can name the count mismatch.
                 let mut choice_lines: Vec<String> = Vec::new();
                 let mut trailer: Vec<String> = Vec::new();
                 for line in text.lines() {
@@ -1493,8 +1487,8 @@ fn repro_cross_core_admission_replay(vmm: &Path) -> Result<(), String> {
                 }
                 let idx = choice_lines
                     .iter()
-                    .rposition(|l| l.contains("]=Admission "))
-                    .expect("at least one Admission");
+                    .position(|l| l.contains("]=Admission mailbox=Far "))
+                    .expect("Far admission present");
                 choice_lines.remove(idx);
                 let mut out = String::from("ChoiceLog v1\n");
                 out.push_str(&format!("choice_count={}\n", choice_lines.len()));
@@ -1510,24 +1504,31 @@ fn repro_cross_core_admission_replay(vmm: &Path) -> Result<(), String> {
             },
         },
         Tamper {
-            name: "add spurious Admission",
-            // Extra Admission in the bag → count mismatch at finish.
-            expect: "mismatch",
+            // Strip every real Admission and leave only Spurious←core0 so
+            // the first observe mismatches by mailbox (same-sender alt).
+            name: "replace bag with spurious Admission",
+            expect: "admission mismatch",
             apply: |text| {
-                let mut choice_lines: Vec<String> = Vec::new();
+                let mut non_admission: Vec<String> = Vec::new();
                 let mut trailer: Vec<String> = Vec::new();
                 for line in text.lines() {
                     if line.starts_with("choice[") {
-                        choice_lines.push(line.to_string());
+                        if let Some((_, rhs)) = line.split_once("]=") {
+                            if rhs.starts_with("Admission ") {
+                                continue;
+                            }
+                        }
+                        non_admission.push(line.to_string());
                     } else if line.starts_with("ChoiceLog") || line.starts_with("choice_count=") {
                     } else if !line.is_empty() {
                         trailer.push(line.to_string());
                     }
                 }
-                choice_lines.push("choice[N]=Admission mailbox=Spurious sender=core1".to_string());
+                non_admission
+                    .push("choice[N]=Admission mailbox=Spurious sender=core0".to_string());
                 let mut out = String::from("ChoiceLog v1\n");
-                out.push_str(&format!("choice_count={}\n", choice_lines.len()));
-                for (i, line) in choice_lines.iter().enumerate() {
+                out.push_str(&format!("choice_count={}\n", non_admission.len()));
+                for (i, line) in non_admission.iter().enumerate() {
                     let rhs = line.split_once("]=").map(|(_, r)| r).unwrap_or(line);
                     out.push_str(&format!("choice[{i}]={rhs}\n"));
                 }

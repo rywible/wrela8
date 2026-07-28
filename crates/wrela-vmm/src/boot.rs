@@ -421,8 +421,10 @@ fn boot_image_core_inner(
     // Yield-`Progress` forces the choice-log cursor (`sched.current`) at
     // park/release (decision 7) — that is the serial hand-off. Enter itself
     // is not gated on the cursor: enter-serializing replay of a concurrent-
-    // record Progress tape deadlocks cross-core awaits. Admission replay
-    // checks a multiset bag (decision 8).
+    // record Progress tape deadlocks cross-core awaits. Yield-flush recovers
+    // a stuck cursor (Progress target Parked with empty pending). Admission
+    // replay checks a multiset bag (decision 8); cap-1 under-count leftovers
+    // / extras are tolerated.
     //
     // Progress is appended at exactly the two guest actions that used to
     // move the baton: the release doorbell and a park (Yield). Every other
@@ -451,7 +453,9 @@ fn boot_image_core_inner(
         /// Log-serializer cursor: whose buffered Admissions+Progress may
         /// flush next. Progress at Yield forces this under record and
         /// replay (decision 7). Enter does not wait on it — Runnable cores
-        /// overlap in `hv_vcpu_run` under both modes.
+        /// overlap in `hv_vcpu_run` under both modes. Yield-flush recovers
+        /// the cursor when the holder is Parked with an empty pending word
+        /// (otherwise Progress can plant a stuck cursor under overlap).
         current: usize,
         state: [CoreState; CORE_SLOTS],
         /// The boot is over (halt, fault, or timeout); every core returns.
@@ -1075,12 +1079,14 @@ fn boot_image_core_inner(
                     }
                     // Decision 7: every Runnable core may enter `hv_vcpu_run`
                     // without waiting on `sched.current` (record and replay).
-                    // Progress forces `next_core` for the Yield choice-log
-                    // cursor only — enter-serializing replay of a concurrent-
-                    // record Progress tape deadlocks cross-core awaits.
-                    // Admission replay is a multiset bag (decision 8);
-                    // leftover Progress at finish is tolerated (park count
-                    // under overlap is host-schedule-dependent).
+                    // Enter-serializing replay of a concurrent-record Progress
+                    // tape deadlocks cross-core awaits; Progress forces the
+                    // Yield choice-log cursor only. Admission replay is a
+                    // multiset bag (decision 8). Cap-1 rings may under-count
+                    // under overlap — leftover / extra Admissions at finish
+                    // are tolerated like leftover Progress (park count is
+                    // host-schedule-dependent). Yield-flush recovers a stuck
+                    // cursor (Parked holder, empty pending).
                     match g.sched.state[core] {
                         CoreState::Runnable => break,
                         CoreState::Unreleased | CoreState::Parked => {
@@ -1141,7 +1147,15 @@ fn boot_image_core_inner(
                     let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
                     // Decision 7: Progress is a single global tape. Yield
                     // holds the log cursor before Admissions+Progress flush
-                    // (record and replay). Enter under record does not.
+                    // (record and replay). Enter does not wait on it.
+                    //
+                    // Cursor recovery (mailbox-depth hang under overlap):
+                    // Progress may force `current` onto a Parked core whose
+                    // pending word is still clear. Enter stays concurrent, so
+                    // a sibling that could raise that wake may itself need to
+                    // Yield-flush — and would deadlock waiting on that stuck
+                    // cursor until WALL_CAP (no EXIT_MMIO_ADDR). If the holder
+                    // cannot reach a Yield, take the cursor.
                     loop {
                         if guard.sched.done {
                             guard.sched.state[core] = CoreState::Finished;
@@ -1150,6 +1164,16 @@ fn boot_image_core_inner(
                             return;
                         }
                         if guard.sched.current == core {
+                            break;
+                        }
+                        let cur = guard.sched.current;
+                        let holder_stuck = match guard.sched.state[cur] {
+                            CoreState::Finished | CoreState::Unreleased => true,
+                            CoreState::Parked => pending_word(host_ram, cur) == 0,
+                            CoreState::Runnable => false,
+                        };
+                        if holder_stuck {
+                            guard.sched.current = core;
                             break;
                         }
                         guard = wake.wait(guard).unwrap_or_else(|e| e.into_inner());
@@ -1224,7 +1248,21 @@ fn boot_image_core_inner(
                         match live_next {
                             Some(next) => {
                                 let use_core = if g.chooser.is_replaying() {
-                                    forced as usize
+                                    let forced_usize = forced as usize;
+                                    // Do not plant a stuck cursor: a Progress
+                                    // target that is Parked with an empty
+                                    // pending word cannot Yield-flush, and
+                                    // under concurrent enter that deadlocks
+                                    // siblings waiting on the log cursor
+                                    // (boot-cross-core-mailbox-depth).
+                                    if forced_usize < cores_declared
+                                        && (g.sched.state[forced_usize] != CoreState::Parked
+                                            || pending_word(host_ram, forced_usize) != 0)
+                                    {
+                                        forced_usize
+                                    } else {
+                                        next
+                                    }
                                 } else {
                                     next
                                 };
