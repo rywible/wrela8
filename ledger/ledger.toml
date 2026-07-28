@@ -661,7 +661,7 @@ doc = "04-compiler.md#5"
 status = "gap"
 note = """plans/M19.md item A / decisions 1410–1411: 04 §5 requires semantics independent of mode — both `dev` and `release` stay correct under ordinary oracles (`diff-eval`, goldens, validate). Opened as `gap`.
 
-**Wired (item G / decisions 1470–1473):** dedicated dual-mode unit `opts::correct::tests::dev_and_release_agree_on_semantic_test_slice` (helper `assert_dev_release_agree_on_test_slice`) on representative goldens `check-tests-arith` + `check-tests-program` — eval `@test` reports must agree under `dev`/`release` and match `expected/test.txt`; both modes must lower+codegen with `emit_comptime_tests`. Not a doubled full `diff-eval` (decision 1470); `diff-eval` already uses product-default `release`. Status stays `gap` until item L flips.
+**Wired (item G / decisions 1470–1473):** dedicated dual-mode unit `opts::correct::tests::dev_and_release_agree_on_semantic_test_slice` (helper `assert_dev_release_agree_on_test_slice`) on representative goldens `check-tests-arith` + `check-tests-program` — eval `@test` reports must agree under `dev`/`release` and match `expected/test.txt`; both modes must lower+codegen with `emit_comptime_tests`. Not a doubled full `diff-eval` (decision 1470); `diff-eval` is the product-default (`release`) backend↔eval oracle and must call `opts::apply_mode(Release)` (TLS leaves NarrowImm off otherwise — 1470 follow-up). Status stays `gap` until item L flips.
 
 **Flip when** item L cites `opts::correct::tests::dev_and_release_agree_on_semantic_test_slice` (and helper) as `test`."""
 

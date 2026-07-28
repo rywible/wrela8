@@ -3,10 +3,12 @@
 //!
 //! Decision 1470: a dedicated dual-mode unit on a representative
 //! `@test` slice — not doubling full `xtask diff-eval`. `diff-eval`
-//! already runs under the product default (`release`); this lane is the
-//! explicit `dev` ↔ `release` agreement check on the same semantic
-//! oracle (`eval::run_tests`) for that slice, and proves both modes
-//! still lower+codegen the `@test` bodies (`emit_comptime_tests`).
+//! is meant to exercise the product-default backend (`release`); xtask
+//! must call `opts::apply_mode(Release)` for that (TLS does not default
+//! NarrowImm on). This lane is the explicit `dev` ↔ `release`
+//! agreement check on the same semantic oracle (`eval::run_tests`) for
+//! that slice, and proves both modes still lower+codegen the `@test`
+//! bodies (`emit_comptime_tests`).
 //!
 //! Fail closed if the modes disagree, or if either drifts from the
 //! pinned `expected/test.txt`.

@@ -173,6 +173,7 @@ use wrela_compiler::layout;
 use wrela_compiler::loader;
 use wrela_compiler::lower;
 use wrela_compiler::mwir;
+use wrela_compiler::opts::{self, CompileMode};
 use wrela_compiler::placement;
 use wrela_compiler::report;
 use wrela_compiler::sema;
@@ -2376,7 +2377,12 @@ pub(crate) fn parse_guest_record(text: &str) -> Result<GuestRecord, String> {
 /// visited prints its own contribution as it happens; any real
 /// disagreement returns `Err` immediately (decision 9: "ANY disagreement
 /// ... fails"), never accumulated past the first one found.
+///
+/// Product-default `release` (plans/M19.md decision 1470 follow-up): TLS
+/// opt knobs default NarrowImm **off**; without `apply_mode` this lane
+/// would score a half-release backend. Call once before any lower/codegen.
 fn diff_eval_over_cases(vmm: &Path, filter: Option<&[&str]>) -> Result<DiffEvalTally, String> {
+    opts::apply_mode(CompileMode::Release);
     let golden_dir = root().join("tests/golden");
     let mut tally = DiffEvalTally::default();
     for case in golden_case_dirs(&golden_dir)? {
