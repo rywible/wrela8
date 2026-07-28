@@ -338,12 +338,31 @@
 //!   length, ...) — passed straight through as `mwir::size_of`'s own
 //!   `Err`, not re-worded.
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::encode::{self, Cond};
 use crate::mwir::{self, Inst, LayoutCtx, MwirFn, MwirProgram, Temp};
 use crate::sema::types::Type;
 use crate::syntax::ast::{AccessMode, BinOp};
+
+// plans/M15.md item K / decision 1098: test-only front-door. When set,
+// `Inst::Dmb` emits nothing — the barrier-deletion golden's mutated arm
+// builds the same guest with publish/acquire DMBs stripped. Only the
+// CLI (`wrela … --omit-dmb`) and the xtask golden runner set this; it is
+// never a production knob. Cleared at the start of every CLI command.
+thread_local! {
+    static OMIT_DMB: Cell<bool> = const { Cell::new(false) };
+}
+
+/// plans/M15.md item K: enable/disable DMB omission for the current thread.
+pub fn set_omit_dmb(omit: bool) {
+    OMIT_DMB.with(|c| c.set(omit));
+}
+
+fn omit_dmb() -> bool {
+    OMIT_DMB.with(|c| c.get())
+}
 
 // plans/M6.md decision 6 / plans/M11.md decision 740: a *backward*
 // unconditional `Jump` (`target <= idx`) is a loop's own back-edge —
@@ -2131,7 +2150,12 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             ctx.store_slot(X_C, dst_off);
         }
         // plans/M15.md item H: one DMB word, no BL.
+        // plans/M15.md item K / decision 1098: `--omit-dmb` drops the word
+        // (mutation arm of boot-cross-core-publish-acquire).
         Inst::Dmb { option } => {
+            if omit_dmb() {
+                return Ok(());
+            }
             let (enc, mnem) = match option.as_str() {
                 "ishst" => (encode::enc_dmb_ishst(), "dmb ishst"),
                 "ishld" => (encode::enc_dmb_ishld(), "dmb ishld"),
@@ -9007,6 +9031,70 @@ mod tests {
         };
         let ok = build_frame(&smaller, &layout, 0, bias).expect("fits under 4031 with the bias");
         assert!(ok.size + bias <= 4095);
+    }
+
+    /// plans/M15.md item K / decision 1098: `--omit-dmb` strips every
+    /// `Inst::Dmb` word from the asm dump (cheap oracle for the mutation
+    /// front-door; the focused boot proves the guest-visible half).
+    #[test]
+    fn omit_dmb_strips_barrier_words_from_asm() {
+        let mwir = MwirProgram {
+            fns: BTreeMap::from([(
+                "barrier".to_string(),
+                MwirFn {
+                    receiver: None,
+                    params: vec![],
+                    ret: Type::Unit,
+                    temp_types: vec![],
+                    body: vec![
+                        Inst::Dmb {
+                            option: "ishst".to_string(),
+                        },
+                        Inst::Dmb {
+                            option: "ishld".to_string(),
+                        },
+                        Inst::Return { value: None },
+                    ],
+                },
+            )]),
+            rodata: vec![],
+        };
+        let layout = LayoutCtx::default();
+
+        set_omit_dmb(false);
+        let intact = codegen_program(&mwir, &layout).expect("intact codegen");
+        let intact_dump = dump(&intact);
+        assert!(
+            intact_dump.contains("dmb ishst") && intact_dump.contains("dmb ishld"),
+            "intact must emit both barriers:\n{intact_dump}"
+        );
+        assert!(
+            intact_dump.contains(&format!("{:08x}", encode::enc_dmb_ishst())),
+            "intact must carry DMB ISHST encoding"
+        );
+        assert!(
+            intact_dump.contains(&format!("{:08x}", encode::enc_dmb_ishld())),
+            "intact must carry DMB ISHLD encoding"
+        );
+
+        set_omit_dmb(true);
+        let mutated = codegen_program(&mwir, &layout).expect("mutated codegen");
+        let mutated_dump = dump(&mutated);
+        set_omit_dmb(false);
+        assert!(
+            !mutated_dump.contains("dmb ishst")
+                && !mutated_dump.contains("dmb ishld")
+                && !mutated_dump.contains(&format!("{:08x}", encode::enc_dmb_ishst()))
+                && !mutated_dump.contains(&format!("{:08x}", encode::enc_dmb_ishld())),
+            "omit-dmb must strip every DMB word:\n{mutated_dump}"
+        );
+        let intact_words = intact.fns["barrier"].code.len();
+        let mutated_words = mutated.fns["barrier"].code.len();
+        assert_eq!(
+            intact_words - mutated_words,
+            2,
+            "exactly two DMB words must disappear under omit-dmb"
+        );
     }
 
     // --- end-to-end: exact word sequences for tiny fns ------------------

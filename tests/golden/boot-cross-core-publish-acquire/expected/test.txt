@@ -1,0 +1,2 @@
+test publish_acquire: ok
+1 passed, 0 failed

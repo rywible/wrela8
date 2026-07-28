@@ -35,7 +35,7 @@ use wrela_compiler::sema::typed::{TestKind, TypedProgram};
 use wrela_compiler::syntax::ast::Module;
 use wrela_compiler::syntax::{lexer, parser, printer};
 
-const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed|layout-types|flowwir|mwir|asm|image|report|rtconfig> [--timings] <file.wr>\n       wrela test <file.wr> [--vmm <path>]\n       wrela build <file.wr> [--out-dir <dir>]\n       wrela version";
+const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed|layout-types|flowwir|mwir|asm|image|report|rtconfig> [--timings] [--omit-dmb] <file.wr>\n       wrela test <file.wr> [--vmm <path>] [--omit-dmb]\n       wrela build <file.wr> [--out-dir <dir>] [--omit-dmb]\n       wrela version";
 
 // Set by every diagnostic printer while `dump` runs; cleared at the
 // start of each `dump` invocation. Plans/M9.md item NN: `dump` exits
@@ -862,15 +862,22 @@ fn dump(args: &[String]) -> ExitCode {
     // cannot leak a stale bit (the CLI is one-shot today, but the rule
     // is cheap and local).
     DUMP_HAD_DIAGNOSTIC.with(|c| c.set(false));
+    // plans/M15.md item K: reset the mutation front-door every invocation.
+    wrela_compiler::codegen::set_omit_dmb(false);
 
     let mut stage = None;
     let mut path = None;
     let mut timings = false;
+    let mut omit_dmb = false;
     for a in args {
         if let Some(s) = a.strip_prefix("--stage=") {
             stage = Some(s.to_string());
         } else if a == "--timings" {
             timings = true;
+        } else if a == "--omit-dmb" {
+            // plans/M15.md item K / decision 1098: test-only barrier
+            // deletion. Only the xtask golden runner passes this.
+            omit_dmb = true;
         } else if path.is_none() {
             path = Some(a.clone());
         } else {
@@ -882,6 +889,7 @@ fn dump(args: &[String]) -> ExitCode {
         eprintln!("{USAGE}");
         return ExitCode::FAILURE;
     };
+    wrela_compiler::codegen::set_omit_dmb(omit_dmb);
 
     let total_start = Instant::now();
 
@@ -1532,8 +1540,12 @@ fn find_vmm_binary(explicit: Option<&str>) -> Option<PathBuf> {
 /// trusting any of it; (5) prints comptime lines, then the transcript's
 /// own per-test lines, then the one merged summary.
 fn test_cmd(args: &[String]) -> ExitCode {
+    // plans/M15.md item K: reset the mutation front-door every invocation.
+    wrela_compiler::codegen::set_omit_dmb(false);
+
     let mut path: Option<String> = None;
     let mut vmm_arg: Option<String> = None;
+    let mut omit_dmb = false;
     let mut i = 0;
     while i < args.len() {
         if args[i] == "--vmm" {
@@ -1545,6 +1557,11 @@ fn test_cmd(args: &[String]) -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             }
+        } else if args[i] == "--omit-dmb" {
+            // plans/M15.md item K / decision 1098: test-only barrier
+            // deletion for the mutated arm of
+            // boot-cross-core-publish-acquire. Only xtask golden passes it.
+            omit_dmb = true;
         } else if path.is_none() {
             path = Some(args[i].clone());
         } else {
@@ -1557,6 +1574,7 @@ fn test_cmd(args: &[String]) -> ExitCode {
         eprintln!("{USAGE}");
         return ExitCode::FAILURE;
     };
+    wrela_compiler::codegen::set_omit_dmb(omit_dmb);
 
     let source = match std::fs::read_to_string(&path) {
         Ok(s) => s,
@@ -1892,8 +1910,12 @@ fn test_cmd(args: &[String]) -> ExitCode {
 /// absolute, so the line stays stable in a pinned golden no matter the
 /// invoking directory).
 fn build_cmd(args: &[String]) -> ExitCode {
+    // plans/M15.md item K: reset the mutation front-door every invocation.
+    wrela_compiler::codegen::set_omit_dmb(false);
+
     let mut path = None;
     let mut out_dir: Option<String> = None;
+    let mut omit_dmb = false;
     let mut i = 0;
     while i < args.len() {
         let a = &args[i];
@@ -1906,6 +1928,9 @@ fn build_cmd(args: &[String]) -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             }
+        } else if a == "--omit-dmb" {
+            // plans/M15.md item K / decision 1098: test-only front-door.
+            omit_dmb = true;
         } else if path.is_none() {
             path = Some(a.clone());
         } else {
@@ -1918,6 +1943,7 @@ fn build_cmd(args: &[String]) -> ExitCode {
         eprintln!("{USAGE}");
         return ExitCode::FAILURE;
     };
+    wrela_compiler::codegen::set_omit_dmb(omit_dmb);
 
     let source = match std::fs::read_to_string(&path) {
         Ok(s) => s,

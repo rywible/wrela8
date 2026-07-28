@@ -311,15 +311,19 @@ pub(crate) fn golden(update: bool) -> Result<(), String> {
             // not a runner malfunction, so unlike every `dump` stage
             // below, a nonzero exit here is not itself a failure; only
             // stdout is ever compared, exactly like every other stage.
-            let out = if stage == "test" {
-                Command::new(&wrela)
-                    .current_dir(root())
-                    .arg("test")
-                    .arg(rel_input)
-                    .arg("--vmm")
-                    .arg(&vmm)
-                    .output()
-                    .map_err(|e| format!("run wrela: {e}"))?
+            //
+            // plans/M15.md item K / decision 1098: `test-omit-dmb.txt`
+            // is the mutated arm of boot-cross-core-publish-acquire —
+            // same `wrela test` path with `--omit-dmb` (barriers
+            // stripped). Timeout / pass under that flag is an oracle
+            // failure (pinned expectation is a FAILED checksum).
+            let out = if stage == "test" || stage == "test-omit-dmb" {
+                let mut cmd = Command::new(&wrela);
+                cmd.current_dir(root()).arg("test").arg(rel_input);
+                if stage == "test-omit-dmb" {
+                    cmd.arg("--omit-dmb");
+                }
+                cmd.arg("--vmm").arg(&vmm).output().map_err(|e| format!("run wrela: {e}"))?
             } else if stage == "build" || stage == "build-err" {
                 Command::new(&wrela)
                     .current_dir(root())
@@ -353,7 +357,7 @@ pub(crate) fn golden(update: bool) -> Result<(), String> {
                     ));
                     continue;
                 }
-            } else if stage != "test" && !out.status.success() {
+            } else if stage != "test" && stage != "test-omit-dmb" && !out.status.success() {
                 // plans/M9.md item NN: dump exits nonzero on a diagnostic.
                 // Accept that when the pinned expectation (or, under
                 // `--update`, the fresh stdout) is itself an `error[…]`

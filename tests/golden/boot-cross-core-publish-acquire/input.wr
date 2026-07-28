@@ -1,0 +1,56 @@
+module examples.boot_cross_core_publish_acquire
+
+# plans/M15.md item K / decision 1098: barrier-deletion witness.
+#
+# Attack 4 from plans/M8.md: store-store / load-load reordering across a
+# cross-core ring's occupancy word and its multi-word payload. Under true
+# concurrent record (item I deleted the baton), omitting the publish
+# `DMB ISHST` / acquire `DMB ISHLD` pair is supposed to let the consumer
+# observe `count` / pending before the payload words are visible.
+#
+# Shape (frozen):
+#   - cores=2; Sink on core 1; root test on core 0 publishes.
+#   - Multi-word ring payload (`a`, `b`); Sink returns `a + (b * 31)`.
+#   - Amplify inside ONE boot (ITERS tight awaits).
+#   - Intact (`wrela test`) → ok under concurrent record.
+#   - Mutated (`wrela test --omit-dmb`) → must FAILED checksum. Measured
+#     2026-07-27 on this macOS/HVF host: mutated also passes at ITERS=
+#     65536 (park/wake host path serializes visibility before the
+#     consumer runs). Item K is BLOCKED — see plans/REVIEW-QUEUE.md.
+#     Do not weaken to "barriers present in asm only."
+#   - No WRELA_VMM_BATON and no second scheduler.
+
+const ITERS: u64 = 8192
+const MAGIC_A: u64 = 1000003
+const MAGIC_B: u64 = 1000033
+
+@actor
+pub struct Sink:
+    pub fn check(read self, a: u64, b: u64) -> u64:
+        return a + (b * 31)
+
+@test(runtime)
+async fn publish_acquire(s: Actor[Sink]):
+    i: u64 = 0
+    ok: u64 = 0
+    while i < ITERS:
+        a = MAGIC_A + (i * 3)
+        b = MAGIC_B + (i * 5)
+        expect = a + (b * 31)
+        v = await s.check(a=a, b=b)
+        @discard(reason="migrated: deliberate Err discard (M13 item L)")
+        match v:
+            case .Ok(got):
+                if got == expect:
+                    ok = ok + 1
+            case .Err(_):
+                assert false, "call rejected"
+        i = i + 1
+    assert ok == ITERS, "stale publish/acquire under concurrent record"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="cross-core-publish-acquire", target=Target.wrela_machine_v1, cores=2)
+    s = img.actor(Sink, mailbox=8, core=1)
+    img.on_failure(policy=Failure.Halt)
+    return img.seal()
