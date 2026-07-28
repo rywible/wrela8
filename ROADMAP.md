@@ -72,8 +72,10 @@ beyond the active milestone. A milestone's *first deliverable* is its plan
 code exists, the shape decisions that milestone freezes, and explicit
 non-goals. Plans are written when a milestone activates, never earlier
 (each milestone manufactures the facts the next plan needs), and become
-history when it completes. Active plan: [plans/M15.md](plans/M15.md) — M15 (variable cores + true
-concurrent vCPUs) **ACTIVE** (2026-07-27). M14 is COMPLETE (doc cut:
+history when it completes. Active plan: **none**. M15 is COMPLETE
+([plans/M15.md](plans/M15.md); variable cores + true concurrent vCPUs;
+barrier clause remains gap per [plans/BLOCKED.md](plans/BLOCKED.md)).
+M14 is COMPLETE (doc cut:
 constructive progress theorem; no `plans/M14.md` — capability cut, not a
 build-out; forward-ref golden still `image.graph.handle-dag` gap). M13 is
 COMPLETE ([plans/M13.md](plans/M13.md)). Cycle proxy is M16; optimization
@@ -700,8 +702,8 @@ a fail-closed refusal naming this rung. Retargets
 history preserved. Follows M13 because M13 lands its ingredients
 (loop discharge, fail-fast admission, the `Actor[T]` class).
 
-### M15 — Variable cores + true concurrent vCPUs
-Settled 2026-07-27 (human decision). Multicore today is affinity and
+### M15 — Variable cores + true concurrent vCPUs — COMPLETE
+Settled 2026-07-27 (human decision); closed 2026-07-27. Multicore today is affinity and
 messaging under M8 decision 11's **baton** — exactly one vCPU inside
 `hv_vcpu_run` at a time — with a machine-revision constant of **3 vCPUs,
 always**. That buys sealed placement and cross-core rings without host
@@ -779,8 +781,11 @@ baton. (5) Inline `@dmb` in publish/drain. (6) Baton deletion +
 Yield-Progress replay. (7) Barrier-deletion golden; flip
 `machine.cross-core.publish-acquire-barrier`.
 
-Flips: `machine.cross-core.publish-acquire-barrier`. Opens: image-cores
-authoring / report-N / host-refuse clauses (named in the plan). Touches:
+Flips: authoring/report/host-refuse clauses (`image.cores.authoring`,
+`image.report.cores-and-stacks`, `machine.vmm.host-cores-refuse`).
+**Not flipped (host limit):** `machine.cross-core.publish-acquire-barrier`
+remains `gap` — see [plans/BLOCKED.md](plans/BLOCKED.md) / known risk 4.
+Touches:
 `actors.placement.deterministic` (domain is N, not the constant 3).
 Normative edits as above. Detail: [plans/M15.md](plans/M15.md).
 
@@ -979,16 +984,12 @@ Plan when activated.
   Separately, the **durable-checkpoint idiom + storage stack** is the
   named dependency of crash-only's `Failure.Reboot` viability
   (currently unbuilt; conformance goldens pin `Halt` until it exists).
-- **True concurrent vCPUs + variable image core count** — *scheduled
-  2026-07-27: M15* ([plans/M15.md](plans/M15.md)). Was an unscheduled
-  intention (pointer 2026-07-26, note expanded 2026-07-27). Owns
-  `cores=N` on `Image` (default 1; not a machine revision; no contract
-  max; VMM refuses a short host), report-owned high-DRAM stacks with
-  fixed `IMAGE_BASE`, staged baton **deletion**, runtime-only inlined
-  `@dmb`, Yield-`Progress` replay (exhaustive schedule enumeration
-  remains a later intention), and the flip of
-  `machine.cross-core.publish-acquire-barrier`. Do not relitigate
-  inside M16/M17.
+- **True concurrent vCPUs + variable image core count** — *COMPLETE
+  2026-07-27: M15* ([plans/M15.md](plans/M15.md)). Delivered `cores=N`
+  on `Image`, report-owned high-DRAM stacks, baton deletion, inline
+  `@dmb`, Yield-`Progress` replay. **`machine.cross-core.publish-acquire-barrier`
+  remains `gap`** (mutation not observed on HVF — plans/BLOCKED.md).
+  Do not relitigate inside M16/M17.
 - **Report/diagnostics coverage** (owner: report work, no rung): the
   actor-chatter lint (04 §7's `warning[performance]`) and the copy
   pricing threshold line (04 §1/§7) — M13 item E audits both and opens
