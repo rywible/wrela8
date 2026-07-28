@@ -792,8 +792,7 @@ mod tests {
         // @ 0x200: OFF_CORE_MARK (0x68) + 32*8 = 0x168.
         assert_eq!(crate::CORE_SLOTS, 32);
         assert!(
-            machine_info::OFF_CORE_MARK
-                + crate::CORE_SLOTS as u64 * machine_info::CORE_MARK_STRIDE
+            machine_info::OFF_CORE_MARK + crate::CORE_SLOTS as u64 * machine_info::CORE_MARK_STRIDE
                 <= machine_info::OFF_VECTOR0_OBSERVED
         );
     }
@@ -901,8 +900,8 @@ mod tests {
         // CORE_SLOTS marks end at 0x168 ≤ vector0_observed @ 0x200 (M15
         // decision 3). Line buf sits after test_next @ 0x210+8 (= 0x218)
         // so it no longer overlaps the mark packing window.
-        let marks_end = machine_info::OFF_CORE_MARK
-            + CORE_SLOTS as u64 * machine_info::CORE_MARK_STRIDE;
+        let marks_end =
+            machine_info::OFF_CORE_MARK + CORE_SLOTS as u64 * machine_info::CORE_MARK_STRIDE;
         assert!(marks_end <= machine_info::OFF_VECTOR0_OBSERVED);
         assert!(marks_end <= machine_info::OFF_TEST_LINE_BUF);
         assert!(machine_info::OFF_VECTOR0_OBSERVED + 8 <= machine_info::OFF_ABORT_LATCH);

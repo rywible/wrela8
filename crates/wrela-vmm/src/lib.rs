@@ -3292,7 +3292,10 @@ pub fn build() -> Image:
                 "{msg}"
             );
         }
-        // (6) Placement core disagrees with the CoreEntry set.
+        // (6) Placement core outside this image's sealed N.
+        // With inferred `Cores count` (= 1 + CoreEntry lines), every core in
+        // `0..N` is brought up, so out-of-range is the remaining refuse path
+        // (plans/M15.md decision 2–3).
         {
             let text = format!(
                 "{head}\
@@ -3301,10 +3304,12 @@ pub fn build() -> Image:
                  Placement id=actor#0 type=Sink core=2 source=explicit work=0 work_source=unproved \
                  bytes=1 bytes_state=1 bytes_mailbox=0 bytes_pool=0\n"
             );
-            let err = parse_report(&text).expect_err("Placement on undeclared core");
+            let err = parse_report(&text).expect_err("Placement core >= N");
             let msg = err.to_string();
             assert!(
-                msg.contains("Placement id=actor#0 core=2") && msg.contains("never brings up"),
+                msg.contains("Placement id=actor#0 core=2")
+                    && msg.contains("core index must be < 2")
+                    && msg.contains("Cores count=2"),
                 "{msg}"
             );
         }
@@ -3505,10 +3510,7 @@ pub fn build() -> Image:
             count_addr: 0,
             capacity: 8,
         }]);
-        assert_eq!(
-            w.observe(&[3], &[0], 1).expect("ok"),
-            Vec::new()
-        );
+        assert_eq!(w.observe(&[3], &[0], 1).expect("ok"), Vec::new());
         assert_eq!(
             w.observe(&[1], &[2], 1).expect("ok"),
             vec![

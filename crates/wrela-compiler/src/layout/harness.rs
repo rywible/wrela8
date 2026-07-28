@@ -85,8 +85,7 @@ pub(super) fn build_entry_stub() -> Vec<u32> {
     let mut words = Vec::new();
     // Production stub: single-core high-DRAM stack (plans/M15.md item D).
     // Actor images use `build_primary_entry_trampoline` with the sealed N.
-    let sp_top =
-        machine_layout::core_stack_base_n(0, 1) + machine_layout::CORE_STACK_SIZE;
+    let sp_top = machine_layout::core_stack_base_n(0, 1) + machine_layout::CORE_STACK_SIZE;
     push_load_imm(&mut words, SCRATCH_A, sp_top as i64);
     words.push(encode::enc_add_imm(X_SP, SCRATCH_A, 0, true)); // `mov sp, x9`
     push_halt(&mut words, EXIT_CODE_NO_RUNTIME);
@@ -1857,11 +1856,7 @@ pub fn layout_test_image(
         _ => Vec::new(),
     };
     let _ = core_entry_starts;
-    let cores = wiring
-        .as_ref()
-        .map(|w| w.tables.cores)
-        .unwrap_or(1)
-        .max(1);
+    let cores = wiring.as_ref().map(|w| w.tables.cores).unwrap_or(1).max(1);
     Ok(ImageLayout {
         blob,
         entry: harness_base + (entry_start as u64) * 4,

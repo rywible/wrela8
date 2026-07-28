@@ -3979,9 +3979,7 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
             lower_array_map_take(key, receiver.as_deref(), args, &expr.ty, b, env)
         }
         // plans/M15.md item H: `@dmb(ishst|ishld)` → one DMB word.
-        TypedExprKind::Intrinsic { key, .. }
-            if key == "dmb.ishst" || key == "dmb.ishld" =>
-        {
+        TypedExprKind::Intrinsic { key, .. } if key == "dmb.ishst" || key == "dmb.ishld" => {
             let option = key.strip_prefix("dmb.").unwrap_or(key).to_string();
             b.emit(Inst::Dmb { option });
             let dst = b.fresh(expr.ty.clone());

@@ -663,9 +663,7 @@ impl Chooser {
                                 self.divergences.push(Divergence::AdmissionMismatch {
                                     index,
                                     recorded: format!("Admission mailbox={m} sender={s}"),
-                                    actual: format!(
-                                        "Admission mailbox={mailbox} sender={sender}"
-                                    ),
+                                    actual: format!("Admission mailbox={mailbox} sender={sender}"),
                                 });
                             } else {
                                 self.divergences.push(Divergence::AdmissionCountMismatch {

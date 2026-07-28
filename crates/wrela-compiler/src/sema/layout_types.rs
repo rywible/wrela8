@@ -1725,8 +1725,7 @@ fn collect_length_consts(
             // Local or imported module-level const (plans/M15.md item E:
             // runtime.wr sizes overlays to imported `CORE_SLOTS`). `eval_const`
             // already resolves both tables.
-            if !program.consts.contains_key(name) && !program.imported.consts.contains_key(name)
-            {
+            if !program.consts.contains_key(name) && !program.imported.consts.contains_key(name) {
                 return Err(layout_error(
                     format!(
                         "{where_} is `{name}`, which is not a module-level `const` visible here; \

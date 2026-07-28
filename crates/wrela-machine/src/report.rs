@@ -1471,11 +1471,7 @@ pub fn render_runtime_tail(parsed: &ParsedReport) -> String {
         // round-trips stay closed when a fixture omitted `CoreStack` lines.
         for core in 0..parsed.cores {
             let base = crate::layout::core_stack_base_n(core, parsed.cores);
-            out.push_str(&line_core_stack(
-                core,
-                base,
-                crate::layout::CORE_STACK_SIZE,
-            ));
+            out.push_str(&line_core_stack(core, base, crate::layout::CORE_STACK_SIZE));
             out.push('\n');
         }
     } else {

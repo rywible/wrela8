@@ -323,7 +323,10 @@ pub(crate) fn golden(update: bool) -> Result<(), String> {
                 if stage == "test-omit-dmb" {
                     cmd.arg("--omit-dmb");
                 }
-                cmd.arg("--vmm").arg(&vmm).output().map_err(|e| format!("run wrela: {e}"))?
+                cmd.arg("--vmm")
+                    .arg(&vmm)
+                    .output()
+                    .map_err(|e| format!("run wrela: {e}"))?
             } else if stage == "build" || stage == "build-err" {
                 Command::new(&wrela)
                     .current_dir(root())

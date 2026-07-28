@@ -201,10 +201,7 @@ pub unsafe fn hv_vcpu_run(vcpu: u64) -> i32 {
     HV_VCPU_RUN_DEPTH_MAX.fetch_max(depth, Ordering::SeqCst);
     let r = unsafe { hv_vcpu_run_raw(vcpu) };
     let left = HV_VCPU_RUN_DEPTH.fetch_sub(1, Ordering::SeqCst);
-    debug_assert!(
-        left >= 1,
-        "hv_vcpu_run depth counter underflowed"
-    );
+    debug_assert!(left >= 1, "hv_vcpu_run depth counter underflowed");
     r
 }
 

@@ -2693,7 +2693,11 @@ mod tests {
         let mut g = ImageGraph::default();
         g.cores = 0;
         let err = check_cores(&g).expect_err("cores=0 must fail at seal");
-        assert!(err.message.contains("≥ 1") || err.message.contains(">= 1"), "{}", err.message);
+        assert!(
+            err.message.contains("≥ 1") || err.message.contains(">= 1"),
+            "{}",
+            err.message
+        );
     }
 
     // --- construction DAG -------------------------------------------------

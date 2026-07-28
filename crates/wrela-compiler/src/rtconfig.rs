@@ -1686,7 +1686,10 @@ mod tests {
     #[test]
     fn core_slots_matches_machine() {
         let text = generate(&sample_tables(1)).unwrap();
-        let expected = format!("pub const CORE_SLOTS: usize = {}\n", wrela_machine::CORE_SLOTS);
+        let expected = format!(
+            "pub const CORE_SLOTS: usize = {}\n",
+            wrela_machine::CORE_SLOTS
+        );
         assert!(
             text.contains(&expected),
             "rtconfig CORE_SLOTS must match wrela_machine::CORE_SLOTS; got:\n{text}"

@@ -1431,15 +1431,9 @@ fn boot_image_core_inner(
                     Ok(())
                 })();
                 match init {
-                    Ok(()) => run_core(
-                        core,
-                        vcpu,
-                        exit_ptr,
-                        host_ram,
-                        cores_declared,
-                        shared,
-                        wake,
-                    ),
+                    Ok(()) => {
+                        run_core(core, vcpu, exit_ptr, host_ram, cores_declared, shared, wake)
+                    }
                     Err(e) => {
                         let mut g = shared.lock().unwrap_or_else(|e| e.into_inner());
                         g.error.get_or_insert(e);

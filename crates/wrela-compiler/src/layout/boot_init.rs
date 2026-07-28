@@ -979,13 +979,9 @@ impl RuntimeWiring {
         // plans/M8.md item C1: placement first — it decides how many cores
         // this image brings up, which stripes the scheduler tables before
         // anything is placed or emitted against them.
-        let placement = crate::placement::place(
-            boot.graph,
-            boot.modules,
-            boot.layout_ctx,
-            boot.graph.cores,
-        )
-        .map_err(LayoutError::new)?;
+        let placement =
+            crate::placement::place(boot.graph, boot.modules, boot.layout_ctx, boot.graph.cores)
+                .map_err(LayoutError::new)?;
         tables.stripe_for_cores(placement.cores);
         // plans/M8.md item C1's second fail-closed arm. A `@driver`'s ISR
         // and `@task` bottom half are emitted into the **checkpoint

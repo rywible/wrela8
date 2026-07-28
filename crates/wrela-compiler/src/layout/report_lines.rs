@@ -315,21 +315,13 @@ pub fn render_layout_section(out: &mut String, layout: &ImageLayout) {
         &format!("Section name=pages base={pages_base:#x} size={pages_size}"),
     );
     let n_cores = layout.cores.max(1);
-    push_line(
-        out,
-        1,
-        &wrela_machine::report::line_cores(n_cores),
-    );
+    push_line(out, 1, &wrela_machine::report::line_cores(n_cores));
     for core in 0..n_cores {
         let base = machine_layout::core_stack_base_n(core, n_cores);
         push_line(
             out,
             1,
-            &wrela_machine::report::line_core_stack(
-                core,
-                base,
-                machine_layout::CORE_STACK_SIZE,
-            ),
+            &wrela_machine::report::line_core_stack(core, base, machine_layout::CORE_STACK_SIZE),
         );
     }
     for s in &layout.sections {

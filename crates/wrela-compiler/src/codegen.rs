@@ -7680,8 +7680,8 @@ pub fn emit_secondary_sp_install(core: usize, n_cores: usize) -> Vec<(u32, Strin
         );
     };
     let n = n_cores.max(1);
-    let sp_top = wrela_machine::layout::core_stack_base_n(core, n)
-        + wrela_machine::layout::CORE_STACK_SIZE;
+    let sp_top =
+        wrela_machine::layout::core_stack_base_n(core, n) + wrela_machine::layout::CORE_STACK_SIZE;
     load_imm(&mut words, 9, sp_top, "sp_top");
     push(
         &mut words,
