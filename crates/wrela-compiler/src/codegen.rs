@@ -365,6 +365,26 @@ fn omit_dmb() -> bool {
     OMIT_DMB.with(|c| c.get())
 }
 
+// plans/M19.md item B / decision 1421: TLS knob for narrow-immediate
+// materialization. Default **off**; `opts::apply_mode(Release)` turns
+// it on when `OptId::NarrowImm` is in `RELEASE_OPTS`. Item I fills
+// `load_imm` behavior later — this stub only owns the flag.
+thread_local! {
+    static NARROW_IMM: Cell<bool> = const { Cell::new(false) };
+}
+
+/// plans/M19.md item B: enable/disable narrow-imm for the current thread.
+pub fn set_narrow_imm(enabled: bool) {
+    NARROW_IMM.with(|c| c.set(enabled));
+}
+
+/// Whether narrow-imm materialization is enabled (default false).
+/// Item I will read this from `load_imm`; until then only `opts` tests do.
+#[allow(dead_code)] // consumed by item I / opts unit tests
+pub(crate) fn narrow_imm() -> bool {
+    NARROW_IMM.with(|c| c.get())
+}
+
 // plans/M6.md decision 6 / plans/M11.md decision 740: a *backward*
 // unconditional `Jump` (`target <= idx`) is a loop's own back-edge —
 // the exact shape `lower.rs` / `flowwir_lower.rs` emit for a `while`/
