@@ -358,8 +358,8 @@ fn collect(programs: &BTreeMap<String, &TypedProgram>) -> Facts {
         }
         for (struct_name, s) in &program.structs {
             if s.is_driver {
-                let live = program.image_fn.is_some()
-                    || imported_driver_names.contains(struct_name);
+                let live =
+                    program.image_fn.is_some() || imported_driver_names.contains(struct_name);
                 if !live {
                     continue;
                 }

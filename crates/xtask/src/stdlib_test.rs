@@ -109,13 +109,8 @@ fn run_one_file(path: &Path) -> Result<(String, usize, bool), String> {
         .map(|(k, m)| (k, m.module))
         .collect();
 
-    let programs = sema::check_program_typed(&modules, &paths).map_err(|e| {
-        format!(
-            "stdlib-test: check {}: {}",
-            display_path(path),
-            e.message
-        )
-    })?;
+    let programs = sema::check_program_typed(&modules, &paths)
+        .map_err(|e| format!("stdlib-test: check {}: {}", display_path(path), e.message))?;
 
     let program = programs.get(&loaded.root).ok_or_else(|| {
         format!(
@@ -148,10 +143,8 @@ mod tests {
 
     #[test]
     fn empty_stdlib_tests_root_fails_closed() {
-        let dir = std::env::temp_dir().join(format!(
-            "wrela-stdlib-test-empty-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("wrela-stdlib-test-empty-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create empty suite root");
         let err = run_stdlib_tests(&dir).expect_err("empty root must fail closed");

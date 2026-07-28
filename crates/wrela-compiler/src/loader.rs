@@ -396,9 +396,7 @@ pub fn load_closure(root_file: &Path) -> Result<LoadedProgram, LoadError> {
         head += 1;
         let imports = modules[&current].module.imports.clone();
         for import in &imports {
-            if import.path.len() == 1
-                && (import.path[0] == "core" || import.path[0] == "drivers")
-            {
+            if import.path.len() == 1 && (import.path[0] == "core" || import.path[0] == "drivers") {
                 // Bare `from core|drivers import <name>` — nothing to load;
                 // see the module doc comment's own note on this shape.
                 continue;
