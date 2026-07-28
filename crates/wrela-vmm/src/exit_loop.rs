@@ -2,6 +2,7 @@
 //! blk service/completions, admission witness, and core-mark checks.
 //! Called from `boot::boot_image_core`'s vCPU loop.
 
+use std::io::Read;
 use std::time::Instant;
 
 use wrela_machine::report::RequestRing;
@@ -11,6 +12,112 @@ use crate::devices;
 use crate::hv;
 use crate::record;
 use crate::{VmmError, guest_dram_offset};
+
+/// plans/M17.md item D / freeze 7: live host entropy. Exactly `buf.len()`
+/// bytes from `/dev/urandom` — fail closed on open/short-read (never silent
+/// zero-fill on the live path; zeros are only the replay underrun fallback).
+pub(crate) fn host_entropy(buf: &mut [u8]) -> Result<(), VmmError> {
+    let mut f = std::fs::File::open("/dev/urandom")
+        .map_err(|e| VmmError::Io(format!("open /dev/urandom: {e}")))?;
+    f.read_exact(buf)
+        .map_err(|e| VmmError::Io(format!("read /dev/urandom: {e}")))?;
+    Ok(())
+}
+
+/// plans/M17.md item D / freeze 8: write entropy bytes into guest DRAM via
+/// `host_ram` — not `GuestMem` (stack scratch is not a DMA pool window;
+/// `GuestMem::window_offset` would refuse it). `[dest, dest+bytes.len())`
+/// must lie wholly inside `DRAM_BASE .. DRAM_BASE+DRAM_SIZE`.
+pub(crate) fn fill_entropy_into_dram(
+    host_ram: *mut u8,
+    dest: u64,
+    bytes: &[u8],
+) -> Result<(), VmmError> {
+    use wrela_machine::layout as machine_layout;
+    let len = bytes.len() as u64;
+    let end = dest.checked_add(len).ok_or_else(|| {
+        VmmError::GuestFault(format!(
+            "entropy fill destination {dest:#x}+{len} overflows a u64"
+        ))
+    })?;
+    let dram_base = machine_layout::DRAM_BASE;
+    let dram_end = dram_base + machine_layout::DRAM_SIZE;
+    if dest < dram_base || end > dram_end {
+        return Err(VmmError::GuestFault(format!(
+            "entropy fill destination [{dest:#x}..{end:#x}) is outside guest DRAM \
+             [{dram_base:#x}..{dram_end:#x})"
+        )));
+    }
+    let off = (dest - dram_base) as usize;
+    unsafe {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), host_ram.add(off), bytes.len());
+    }
+    Ok(())
+}
+
+/// plans/M17.md item D: one park-shaped entropy fill. Validates
+/// `len ∈ 1..=ENTROPY_LEN_MAX` and `[dest, dest+len)` inside DRAM, then
+/// `choose_checked(EntropyRead {{ len }})` — live `/dev/urandom` under
+/// record, logged bytes under replay — and copies the resolved bytes into
+/// `host_ram`.
+pub(crate) fn apply_entropy_read(
+    chooser: &mut record::Chooser,
+    host_ram: *mut u8,
+    dest: u64,
+    len: u64,
+) -> Result<(), VmmError> {
+    use wrela_machine::layout as machine_layout;
+    use wrela_machine::machine_info;
+
+    if len == 0 || len > machine_info::ENTROPY_LEN_MAX {
+        return Err(VmmError::GuestFault(format!(
+            "entropy length {len} is not in 1..={}",
+            machine_info::ENTROPY_LEN_MAX
+        )));
+    }
+    // Refuse a bad destination before burning a choice / reading urandom.
+    let end = dest.checked_add(len).ok_or_else(|| {
+        VmmError::GuestFault(format!(
+            "entropy fill destination {dest:#x}+{len} overflows a u64"
+        ))
+    })?;
+    let dram_base = machine_layout::DRAM_BASE;
+    let dram_end = dram_base + machine_layout::DRAM_SIZE;
+    if dest < dram_base || end > dram_end {
+        return Err(VmmError::GuestFault(format!(
+            "entropy fill destination [{dest:#x}..{end:#x}) is outside guest DRAM \
+             [{dram_base:#x}..{dram_end:#x})"
+        )));
+    }
+
+    // Fallible live fill runs *before* `choose_checked` records a choice,
+    // so an open/short-read never leaves a half-logged EntropyRead on the
+    // tape. Replay never invokes `live`.
+    let entry = if chooser.is_recording() {
+        let mut buf = vec![0u8; len as usize];
+        host_entropy(&mut buf)?;
+        chooser.choose_checked(record::ChoiceRequest::EntropyRead { len }, move || {
+            record::ChoiceEntry::EntropyRead { bytes: buf }
+        })?
+    } else {
+        chooser.choose_checked(record::ChoiceRequest::EntropyRead { len }, || {
+            unreachable!("Chooser::choose_next never invokes `live` under replay")
+        })?
+    };
+    let record::ChoiceEntry::EntropyRead { bytes } = entry else {
+        unreachable!(
+            "choose_checked(EntropyRead, ..) always returns an EntropyRead-shaped entry \
+             (a mismatched replay tag falls back to the request's own shape)"
+        )
+    };
+    if bytes.len() as u64 != len {
+        return Err(VmmError::GuestFault(format!(
+            "entropy choice returned {} byte(s), guest asked for {len}",
+            bytes.len()
+        )));
+    }
+    fill_entropy_into_dram(host_ram, dest, &bytes)
+}
 
 /// Core `core`'s own guest-written bring-up mark (plans/M8.md item C1,
 /// `machine_info::OFF_CORE_MARK`).
@@ -532,4 +639,97 @@ pub(crate) fn drain_console(host_ram: *const u8) -> Vec<u8> {
         out.extend_from_slice(&buf);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wrela_machine::layout as machine_layout;
+    use wrela_machine::machine_info;
+
+    #[test]
+    fn host_entropy_fills_buffer_from_urandom() {
+        let mut a = [0xAAu8; 32];
+        let mut b = [0xAAu8; 32];
+        host_entropy(&mut a).expect("urandom open/read");
+        host_entropy(&mut b).expect("urandom open/read");
+        // A 32-byte all-0xAA leftover would mean the read never wrote;
+        // two identical draws are astronomically unlikely.
+        assert_ne!(a, [0xAAu8; 32], "host_entropy must overwrite the buffer");
+        assert_ne!(a, b, "two live draws should disagree");
+    }
+
+    #[test]
+    fn apply_entropy_read_records_and_replays_into_dram() {
+        let dest = machine_layout::DRAM_BASE + 0x400;
+        let len = 8u64;
+        let mut ram = vec![0u8; 0x800];
+
+        let mut recorder = record::Chooser::recorder();
+        apply_entropy_read(&mut recorder, ram.as_mut_ptr(), dest, len).expect("record fill");
+        let off = (dest - machine_layout::DRAM_BASE) as usize;
+        let recorded = ram[off..off + len as usize].to_vec();
+        assert_ne!(
+            recorded,
+            vec![0u8; len as usize],
+            "live fill must not be silent zeros"
+        );
+
+        let (choices, divergences) = record::finish_chooser(recorder).expect("finish");
+        assert!(divergences.is_empty());
+        assert_eq!(choices.len(), 1);
+        assert_eq!(
+            choices[0],
+            record::ChoiceEntry::EntropyRead {
+                bytes: recorded.clone()
+            }
+        );
+
+        let mut ram2 = vec![0u8; 0x800];
+        let mut replayer = record::Chooser::replayer(choices);
+        apply_entropy_read(&mut replayer, ram2.as_mut_ptr(), dest, len).expect("replay fill");
+        assert_eq!(&ram2[off..off + len as usize], recorded.as_slice());
+        let (_, divergences) = record::finish_chooser(replayer).expect("finish");
+        assert!(divergences.is_empty());
+    }
+
+    #[test]
+    fn apply_entropy_read_refuses_bad_len_and_oob_dest() {
+        let mut ram = vec![0u8; 0x1000];
+        let mut c = record::Chooser::recorder();
+        let err = apply_entropy_read(&mut c, ram.as_mut_ptr(), machine_layout::DRAM_BASE, 0)
+            .expect_err("len 0");
+        assert!(
+            matches!(&err, VmmError::GuestFault(m) if m.contains("entropy length")),
+            "got {err:?}"
+        );
+        let err = apply_entropy_read(
+            &mut c,
+            ram.as_mut_ptr(),
+            machine_layout::DRAM_BASE,
+            machine_info::ENTROPY_LEN_MAX + 1,
+        )
+        .expect_err("len too large");
+        assert!(matches!(&err, VmmError::GuestFault(_)), "got {err:?}");
+        let err = apply_entropy_read(&mut c, ram.as_mut_ptr(), machine_layout::DRAM_BASE - 1, 8)
+            .expect_err("below DRAM");
+        assert!(
+            matches!(&err, VmmError::GuestFault(m) if m.contains("outside guest DRAM")),
+            "got {err:?}"
+        );
+        assert_eq!(
+            c.resolved_count(),
+            0,
+            "a refused request must not burn a choice"
+        );
+    }
+
+    #[test]
+    fn fill_entropy_into_dram_copies_bytes() {
+        let dest = machine_layout::DRAM_BASE + 0x10;
+        let mut ram = vec![0u8; 0x40];
+        fill_entropy_into_dram(ram.as_mut_ptr(), dest, &[0xde, 0xad, 0xbe, 0xef])
+            .expect("in-range");
+        assert_eq!(&ram[0x10..0x14], &[0xde, 0xad, 0xbe, 0xef]);
+    }
 }

@@ -8,9 +8,10 @@ use wrela_machine::report::{CoreEntry, CoreStack, ParsedReport, ReportSection};
 
 use crate::devices;
 use crate::exit_loop::{
-    AdmissionWitness, BlkState, advance_pc, check_core_marks, check_vector_in_range,
-    commit_admissions, commit_completions, drain_console, el1_exception_note, monotonic_ns,
-    observe_admissions, raise_vector, read_core_mark, read_pc, service_blk,
+    AdmissionWitness, BlkState, advance_pc, apply_entropy_read, check_core_marks,
+    check_vector_in_range, commit_admissions, commit_completions, drain_console,
+    el1_exception_note, monotonic_ns, observe_admissions, raise_vector, read_core_mark, read_pc,
+    service_blk,
 };
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 use crate::hv;
@@ -709,6 +710,56 @@ fn boot_image_core_inner(
                                 code: r,
                             });
                         }
+                    }
+                    advance_pc(vcpu)?;
+                    Ok(Step::Keep)
+                } else if ipa == mmio::ENTROPY_MMIO_ADDR {
+                    // plans/M17.md item D / freeze 3+7+8: park-shaped
+                    // entropy fill. Guest staged dest/len at
+                    // machine_info::OFF_ENTROPY_DEST / OFF_ENTROPY_LEN
+                    // (ordinary stores), then this trapping store. VMM
+                    // fills [dest, dest+len) via host_ram — not GuestMem
+                    // (stack scratch is not a DMA pool window).
+                    let Some(da) = decode_data_abort(esr) else {
+                        return Err(VmmError::GuestFault(format!(
+                            "core {core}: unhandled access shape at ENTROPY_MMIO_ADDR \
+                             (esr={esr:#x})"
+                        )));
+                    };
+                    require_mmword(&da, core, "ENTROPY_MMIO_ADDR")?;
+                    if !da.write {
+                        return Err(VmmError::GuestFault(format!(
+                            "core {core}: a load from ENTROPY_MMIO_ADDR is not part of the \
+                             entropy protocol"
+                        )));
+                    }
+                    let info_off =
+                        (machine_layout::MACHINE_INFO_BASE - machine_layout::DRAM_BASE) as usize;
+                    let dest = unsafe {
+                        let mut b = [0u8; 8];
+                        std::ptr::copy_nonoverlapping(
+                            host_ram.add(
+                                info_off + wrela_machine::machine_info::OFF_ENTROPY_DEST as usize,
+                            ),
+                            b.as_mut_ptr(),
+                            8,
+                        );
+                        u64::from_le_bytes(b)
+                    };
+                    let len = unsafe {
+                        let mut b = [0u8; 8];
+                        std::ptr::copy_nonoverlapping(
+                            host_ram.add(
+                                info_off + wrela_machine::machine_info::OFF_ENTROPY_LEN as usize,
+                            ),
+                            b.as_mut_ptr(),
+                            8,
+                        );
+                        u64::from_le_bytes(b)
+                    };
+                    {
+                        let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
+                        apply_entropy_read(&mut g.chooser, host_ram, dest, len)?;
                     }
                     advance_pc(vcpu)?;
                     Ok(Step::Keep)

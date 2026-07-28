@@ -256,8 +256,8 @@ impl ChoiceEntry {
                         expected_hex_len
                     ));
                 }
-                let bytes = lowercase_hex_to_bytes(hex)
-                    .map_err(|e| format!("bad EntropyRead hex: {e}"))?;
+                let bytes =
+                    lowercase_hex_to_bytes(hex).map_err(|e| format!("bad EntropyRead hex: {e}"))?;
                 Ok(ChoiceEntry::EntropyRead { bytes })
             }
             other => Err(format!("unknown choice tag `{other}`")),
@@ -1263,10 +1263,7 @@ mod tests {
             bytes: vec![0xab, 0xcd, 0xef, 0x01],
         };
         assert_eq!(entry.tag(), "EntropyRead");
-        assert_eq!(
-            ChoiceRequest::EntropyRead { len: 4 }.tag(),
-            "EntropyRead"
-        );
+        assert_eq!(ChoiceRequest::EntropyRead { len: 4 }.tag(), "EntropyRead");
         assert_eq!(entry.to_text_fields(), "EntropyRead len=4 hex=abcdef01");
         assert_eq!(
             ChoiceEntry::parse_fields("EntropyRead len=4 hex=abcdef01").expect("parses"),
@@ -1294,12 +1291,7 @@ mod tests {
         );
 
         let fb = ChoiceRequest::EntropyRead { len: 8 }.fallback();
-        assert_eq!(
-            fb,
-            ChoiceEntry::EntropyRead {
-                bytes: vec![0; 8]
-            }
-        );
+        assert_eq!(fb, ChoiceEntry::EntropyRead { bytes: vec![0; 8] });
     }
 
     #[test]
