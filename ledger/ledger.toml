@@ -640,6 +640,30 @@ tests = [
 note = """plans/M18.md item L (2026-07-28): flipped. Image report short Cost summary by default (version, digest, totals by owner) via `report::append_cost_summary` — not per-Term lines (those on `--stage=cost`); not exit-rate lines (06 §5). Still differential ISA ranking only (not physical). Umbrella: `compiler.costs.predicted-vs-measured`."""
 
 [[clause]]
+id = "compiler.opts.compile-mode"
+doc = "04-compiler.md#5"
+status = "gap"
+note = """plans/M19.md item A / decisions 1410–1411: 04 §5 names product modes `dev` (all named opts off) and `release` (all named opts on, fixed in-code call order; default product path). Opts are ordinary skippable functions — no recipe TOML, evidence table, or plugin. Opened as `gap` until `CompileMode` + CLI `--mode` land (items B/C) and modes drive emission.
+
+**Flip when** items B+C+F prove `--mode=dev|release` (default `release`) and the release order applies named opts; goldens/units cite both modes."""
+
+[[clause]]
+id = "compiler.opts.proxy-win-corpus"
+doc = "04-compiler.md#5"
+status = "gap"
+note = """plans/M19.md item A / decisions 1410–1411: 04 §5 states the corpus proxy win rule — scored in context under M18's ISA proxy-cycle ranking: no fixed cost-* case may rise; ≥1 must strictly fall. Physical / host wall-time never gates opts. Opened as `gap`.
+
+**Flip when** item E's corpus proxy win oracle is green (`release` vs `dev` on the pinned cost corpus)."""
+
+[[clause]]
+id = "compiler.opts.dev-correct"
+doc = "04-compiler.md#5"
+status = "gap"
+note = """plans/M19.md item A / decisions 1410–1411: 04 §5 requires semantics independent of mode — both `dev` and `release` stay correct under ordinary oracles (`diff-eval`, goldens, validate). Opened as `gap`.
+
+**Flip when** item G proves the chosen semantic oracle green under both modes (or documents that the default path already covers one and adds an explicit `dev` pass)."""
+
+[[clause]]
 id = "compiler.bench.compiler-lane-locked"
 doc = "04-compiler.md#7"
 status = "test"

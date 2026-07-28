@@ -255,7 +255,23 @@ and shorter true data deps must not require those. The model is not an
 A76 SOG port map, is not calibrated to host wall clocks, and does not
 discharge `@budget` or cost proofs. Stable dump: `wrela dump --stage=cost`
 (Terms = rule counts, plus schedule totals and owners). The image report
-carries only a short summary ([§6](#6)).
+carries only a short summary ([§6](#6)). This ranking is the optimization
+ruler (M18); modes below consume it and do not replace it.
+
+**Compile modes.** The compiler has exactly two product modes: `dev`
+(every named optimization off) and `release` (every named optimization
+on). The default product path is `release`. Each optimization is an
+ordinary named function in a fixed in-code call order — skippable by
+mode, never a recipe file, evidence table, or plugin. Profitability is
+scored only under the proxy-cycle ranking above, always **in context** of
+the full pipeline: on the fixed cost corpus, a candidate pipeline must
+not raise any case's proxy total and must strictly lower at least one.
+Losers are deleted or reworked, not kept disabled. Host wall-time, flame
+graphs, `profile`, and `bench guest` A/B are out of this process — optional
+offline research may retune `wrela-cost-v1` on suspected proxy misrank,
+but they never gate landing and are never a `check` column. Semantics
+must not depend on which mode is selected; both modes stay correct under
+the ordinary oracles.
 
 **Actor as-if.** A call through an actor handle is always a logical admission
 under capacity and FIFO rules. Subject to that, the compiler may use direct
