@@ -5,7 +5,9 @@ pub mod dump;
 pub mod rule;
 pub mod score;
 pub mod table;
+pub mod ab;
 
+pub use ab::{rank_cmp, score_with_opts, CostOpts};
 pub use dump::dump;
 pub use rule::{CostRule, EmittedWord};
 pub use score::{score_program, CostReport, FnCost};
