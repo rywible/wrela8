@@ -1,0 +1,1 @@
+error[type]: `entropy[...]()` takes no arguments at 6:22

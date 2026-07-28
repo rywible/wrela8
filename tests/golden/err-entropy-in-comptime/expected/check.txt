@@ -1,0 +1,2 @@
+error[comptime]: `comptime assert` requires a comptime-legal closure, but `is_ready` is not comptime-callable at 11:5
+  `is_ready` uses `entropy[N]()` (a runtime-only entropy fill)

@@ -2463,10 +2463,15 @@ note = """plans/M17.md item A / decisions 1212–1213: entropy joins the choice-
 [[clause]]
 id = "library.entropy.effect"
 doc = "05-library.md#5"
-status = "gap"
-note = """plans/M17.md item A / decisions 1214–1215: 05 §5 names `entropy[N]() -> Bytes[N]` (`N` literal `1..=64`), sealed, comptime/ISR illegal, recorded/replayed through `EntropyRead`. Opened as `gap`.
-
-**Flip when** items E+F land sema/err goldens + this 05 text."""
+status = "test"
+tests = [
+  "golden/err-entropy-in-comptime",
+  "golden/err-entropy-in-isr",
+  "golden/err-entropy-n-zero",
+  "golden/err-entropy-n-too-big",
+  "golden/err-entropy-args",
+]
+note = """plans/M17.md item F / decisions 1270–1274: flipped. 05 §5 names `entropy[N]() -> Bytes[N]` (`N` literal `1..=64`), sealed, comptime/ISR illegal, recorded/replayed through `EntropyRead`. Err goldens pin the refusals: comptime (`err-entropy-in-comptime`), ISR (`err-entropy-in-isr`), bound 0/65 (`err-entropy-n-zero` / `err-entropy-n-too-big`), extra args (`err-entropy-args`). Sema/intrinsic half landed in item E."""
 
 [[clause]]
 id = "compiler.effects.sealed-runtime-sync"

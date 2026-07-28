@@ -1,0 +1,12 @@
+module examples.err_entropy_in_comptime
+
+# plans/M17.md item F / decisions 1270–1274: entropy[N]() is forbidden in
+# comptime like now() (05-library.md §5).
+
+fn is_ready() -> bool:
+    b = entropy[8]()
+    return true
+
+pub fn check() -> bool:
+    comptime assert is_ready(), "entropy must be ready"
+    return true
