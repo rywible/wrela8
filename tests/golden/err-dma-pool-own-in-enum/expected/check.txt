@@ -1,1 +1,0 @@
-error[type]: enum `SlotHolder` declares `own[BlockControl] BlkReqStatus` in a variant payload; a pool handle there does not reach the pool-binding check (02-language.md §4 / 03-hardware.md §3: `T` is the payload type the image bound `P` with — checked over fn signatures, struct fields and generic instantiations, not enum payloads). Hold it in a struct field instead at 53:10

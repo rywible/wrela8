@@ -1,1 +1,49 @@
-error[build]: layout: `Spinner.tick` runs on core 1 and contains a checkpoint (a loop back-edge), but `__wrela_checkpoint_service` and every checkpoint test name core 0's own pending word by construction — servicing one from core 1 would clear the wake a cross-core ring raised for core 0. Place this actor on core 0, or remove the loop; per-core checkpoint services are not part of plans/M8.md item C2
+ImageReport v0
+  Compiler version=0.1.0
+  Machine revision=wrela-machine-v1
+  Target value=Target.wrela_machine_v1
+  Quota max_steps=20000
+  Quota max_memory=10000000
+  Quota max_call_depth=1000
+  Quota max_exhaustive_cases=65536
+  Input path=examples/err_cross_core_checkpoint.wr sha256=3bf7ffa445273c33d2459f58f0b0903d81e137dc19513ce4320fe2d548524f5b
+  Name value=cross-core-checkpoint
+  Target value=Target.wrela_machine_v1
+  Actor index=0 type=Cell
+    Mailbox value=4
+  Actor index=1 type=Spinner
+    Mailbox value=4
+  Edge from=actor#1 to=actor#0
+  OnFailure index=0 policy=Failure.Halt
+  Placement id=actor#0 type=Cell core=1 source=explicit work=0 work_source=unproved bytes=96 bytes_state=8 bytes_mailbox=88 bytes_pool=0
+  Placement id=actor#1 type=Spinner core=1 source=explicit work=0 work_source=unproved bytes=104 bytes_state=16 bytes_mailbox=88 bytes_pool=0
+  Layout name=MachineInfoPage kind=runtime endian=little size=536 padding=432
+    Padding offset=0x0 size=40
+    Field name=next_deadline type=u64 offset=0x28 size=8
+    Field name=exit_code type=u64 offset=0x30 size=8
+    Padding offset=0x38 size=8
+    Field name=test_passed type=u64 offset=0x40 size=8
+    Field name=test_failed type=u64 offset=0x48 size=8
+    Field name=ring_data_bump type=u64 offset=0x50 size=8
+    Field name=ring_desc_bump type=u64 offset=0x58 size=8
+    Field name=line_start type=u64 offset=0x60 size=8
+    Field name=core_marks type=[u64; VCPUS] offset=0x68 size=24
+    Padding offset=0x80 size=384
+    Field name=vector0_observed type=u64 offset=0x200 size=8
+    Field name=abort_latch type=u64 offset=0x208 size=8
+    Field name=test_next type=u64 offset=0x210 size=8
+  Layout name=ClockMmio kind=runtime endian=little size=8 padding=0
+    Field name=now_ns type=u64 offset=0x0 size=8
+  Layout name=ParkMmio kind=runtime endian=little size=8 padding=0
+    Field name=word type=u64 offset=0x0 size=8
+  Layout name=PendingPage kind=runtime endian=little size=24 padding=0
+    Field name=words type=[u64; PENDING_WORD_COUNT] offset=0x0 size=24
+  Layout name=ConsoleRingPage kind=runtime endian=little size=6672 padding=2564
+    Field name=desc_words type=[u64; DESC_WORD_COUNT] offset=0x0 size=4096
+    Field name=avail_flags_idx type=u32 offset=0x1000 size=4
+    Padding offset=0x1004 size=2564
+    Field name=doorbell type=u64 offset=0x1a08 size=8
+  Layout name=ConsoleDataPage kind=runtime endian=little size=16384 padding=0
+    Field name=bytes type=[u8; DATA_SIZE] offset=0x0 size=16384
+  Layout name=TestLineBuf kind=runtime endian=little size=21 padding=0
+    Field name=bytes type=[u8; LINE_BUF_SIZE] offset=0x0 size=21

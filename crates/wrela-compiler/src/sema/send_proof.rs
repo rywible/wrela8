@@ -532,7 +532,7 @@ impl Cx<'_> {
         });
         self.note_call(callee, false);
         self.expr(recv);
-        for a in args.iter().flatten() {
+        for a in args.iter().filter_map(|a| a.value.as_ref()) {
             self.expr(a);
         }
         true
@@ -686,13 +686,13 @@ impl Cx<'_> {
                 if let Some(r) = receiver {
                     self.expr(r);
                 }
-                for a in args.iter().flatten() {
+                for a in args.iter().filter_map(|a| a.value.as_ref()) {
                     self.expr(a);
                 }
             }
             TypedExprKind::CallValue(callee, args) => {
                 self.expr(callee);
-                for a in args {
+                for a in args.iter().filter_map(|a| a.value.as_ref()) {
                     self.expr(a);
                 }
             }
@@ -722,7 +722,7 @@ impl Cx<'_> {
                 self.pattern(pat);
             }
             TypedExprKind::EnumConstruct { args, .. } => {
-                for a in args {
+                for a in args.iter().filter_map(|a| a.value.as_ref()) {
                     self.expr(a);
                 }
             }

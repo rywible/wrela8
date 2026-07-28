@@ -147,12 +147,12 @@ impl AccessMode {
 }
 
 /// The receiver parameter of a method: `read self` / `mut self` / `take
-/// self`, or bare `self` (read, the unwritten default — 02-language.md
-/// §5.1).
+/// self`, or bare `self` (`mode: None` — the unwritten default,
+/// 02-language.md §5.1). Explicit `read` is `Some(AccessMode::Read)`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Receiver {
     pub span: Span,
-    pub mode: AccessMode,
+    pub mode: Option<AccessMode>,
 }
 
 /// One non-receiver parameter: `[mode] name: Type [= default]`.

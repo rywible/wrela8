@@ -1,3 +1,1 @@
-error[comptime]: `@image fn build` requires a comptime-legal closure, but `build` is not comptime-callable at 0:0
-  `build` calls `add_actor`
-  `add_actor` uses an `@image` builder intrinsic
+error[access]: parameter `img` requires `mut`, found an unmarked argument at 8:15

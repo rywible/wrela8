@@ -18,8 +18,7 @@
 //! drained once, after halt) and the clock MMIO trap (decision 13, logged
 //! every read). Everything else fails closed.
 
-use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub mod hv;
@@ -64,6 +63,13 @@ pub enum VmmError {
     /// class/exit reason — reported with the guest's own PC and the raw
     /// `ESR` for a post-mortem.
     GuestFault(String),
+    /// `--replay` found a determinism disagreement mid-boot (strict
+    /// chooser abort: choice-log underrun/overrun/tag mismatch, etc.).
+    /// Distinct from [`VmmError::GuestFault`]: the process exit contract
+    /// maps this to `EXIT_REPLAY_DIVERGENCE` (3), never `EXIT_VMM_FAILURE`
+    /// (2) — a caller checking `$?` alone must never confuse a
+    /// determinism finding with a boot that never produced an answer.
+    ReplayDivergence(String),
     /// The host-side wall-clock cap (`WALL_CAP`) elapsed with the guest
     /// still running; `transcript_so_far` is whatever the console ring
     /// held at the moment of the forced exit (decision 15: "the
@@ -100,6 +106,7 @@ impl std::fmt::Display for VmmError {
             }
             VmmError::BadImage(msg) => write!(f, "bad image: {msg}"),
             VmmError::GuestFault(msg) => write!(f, "guest fault: {msg}"),
+            VmmError::ReplayDivergence(msg) => write!(f, "replay divergence: {msg}"),
             VmmError::Timeout {
                 core,
                 transcript_so_far,
@@ -146,789 +153,37 @@ pub struct BootOutcome {
     pub core_marks: Vec<u64>,
 }
 
-/// The report's own structural facts this VMM actually consumes (module
-/// doc's own "whole configuration" — everything else this milestone's
-/// report format carries is compiler-internal bookkeeping this VMM never
-/// reads). Parsed by `parse_report`, below.
-#[derive(Debug)]
-struct ParsedReport {
-    entry: u64,
-    /// SHA-256 hex of the sealed image blob (06 §3: "validates digests").
-    /// Checked against the `.img` bytes at boot.
-    image_sha256: String,
-    /// `(path, sha256_hex)` for every `Input path=… sha256=…` line.
-    /// Verified against the file when that path is readable.
-    input_digests: Vec<(String, String)>,
-    /// Executable section ranges (rtcode/code/entry) — used for W^X
-    /// `hv_vm_protect` after the image is loaded.
-    exec_sections: Vec<ReportSection>,
-    /// plans/M7.md item F: the declared `blk` device, if any (06 §3: "the
-    /// VMM ... preconfigures every device, queue, and shared-memory window
-    /// the report declares — device topology is a *build output*, not a
-    /// probed fact"). `None` for every image built today: the compiler
-    /// emits no `Blk*` lines until the driver-side items (C/D/E) land, and
-    /// a report without them boots exactly as it did before this item, no
-    /// device model constructed at all.
-    blk: Option<devices::BlkConfig>,
-    /// plans/M7.md item G: host writes into `interrupt_status` plus the
-    /// vector to raise, applied before the vCPU runs. Empty for images
-    /// that bind no ISR.
-    irq_injects: Vec<IrqHostInject>,
-    /// plans/M8.md item C1: `(core, entry address)` for every **secondary**
-    /// core the image brings up, ascending and contiguous from core 1.
-    /// Empty for every single-core image — which is every image built
-    /// before this item, so their boot path is unchanged down to the
-    /// number of vCPUs this VMM creates.
-    core_entries: Vec<(usize, u64)>,
-    /// plans/M8.md item C3, decision 42: this image's own cross-core
-    /// **request** rings, in report order — the order the guest's own
-    /// drain walks its lanes (`layout::build_rt_drain`), which is what
-    /// makes a reconstruction from occupancy words an ordered one. Reply
-    /// rings are parsed for shape and then dropped: a reply is addressed
-    /// to a turn record, not admitted to a mailbox, so it is not part of
-    /// 06 §8's "per-mailbox cross-core admission order". Empty for every
-    /// single-core image.
-    request_rings: Vec<RequestRing>,
-}
+/// Re-exports of the shared image-report schema (`wrela_machine::report`).
+/// Parse logic lives in the machine crate; this module keeps VMM-specific
+/// digest checks, W^X, and boot wiring.
+pub use wrela_machine::report::{
+    BlkConfig, BlkQueueConfig, CoreEntry, EMPTY_SHA256, IrqHostInject, ParsedReport, PoolWindow,
+    ReportSection, RequestRing,
+};
 
-/// One `Ring kind=request ...` report line, as the recorder consumes it
-/// (plans/M8.md item C3). `count_addr` is the ring's occupancy word.
-///
-/// Pre-M12 packing: each ring was `capacity * slot_size` bytes of slots
-/// followed by `head`, `tail`, `count`, so count sat at
-/// `base + capacity * slot_size + 16`.
-///
-/// M12 item C (decision 875): all CTL records pack contiguously, then
-/// uniformly-strided DATA. When the report carries a `Rings count=…
-/// stride=…` line, `parse_report` rewrites `count_addr` from that
-/// geometry (`ctl_base + index * 24 + 16`). Without that line the
-/// pre-M12 derivation stands (hand-written unit fixtures).
-#[derive(Debug, Clone)]
-struct RequestRing {
-    /// The producing core — decision 28: the producer of a cross-core ring
-    /// is a *core*, not an actor, which is exactly what an `Admission`
-    /// entry's `sender` field names.
-    src: usize,
-    /// The consuming core: the one whose drain performs the admission.
-    dst: usize,
-    /// The mailbox root this ring feeds — exactly one, by decision 28.
-    target: String,
-    /// DATA base from the report's `base=` (slots start here).
-    data_base: u64,
-    count_addr: u64,
-}
-
-/// plans/M12.md item C: the report's `Rings count={} stride={} padding={}
-/// bytes={}` summary. Present on every image with cross-core rings after
-/// that item; absent on hand-written unit fixtures and ringless images.
-#[derive(Debug, Clone, Copy)]
-struct RingsMeta {
-    count: u64,
-    stride: u64,
-}
-
-/// A ring's declared byte range (`base`..`base+bytes`), request or reply —
-/// kept only long enough for the overlap checks in `parse_report`. The
-/// three-word head/tail/count bookkeeping is part of `bytes` (same formula
-/// the compiler's `RingLayout::bytes` uses: `cap * slot + 24`).
-#[derive(Debug, Clone)]
-struct RingRange {
-    kind: String,
-    src: usize,
-    dst: usize,
-    target: String,
-    base: u64,
-    bytes: u64,
-}
-
-impl RingRange {
-    fn end(&self) -> u64 {
-        self.base.saturating_add(self.bytes)
-    }
-}
-
-/// plans/M8.md item H sweep, Target A: a `Section name=... base=... size=`
-/// line, parsed fully so a `CoreEntry`/`Ring` that points into the wrong
-/// section (or into no section) can be refused by name rather than booted.
-#[derive(Debug, Clone)]
-struct ReportSection {
-    name: String,
-    base: u64,
-    size: u64,
-}
-
-impl ReportSection {
-    fn contains(&self, addr: u64) -> bool {
-        addr >= self.base && addr < self.base.saturating_add(self.size)
-    }
-
-    fn end(&self) -> u64 {
-        self.base.saturating_add(self.size)
-    }
-}
-
-/// One `Placement id=actor#N ... core=C ...` line. Optional in the
-/// VMM-facing report (`append_vmm_runtime_lines` does not emit them today),
-/// but when present they are configuration and a forgery that places an
-/// actor on a core this image never brings up must not boot.
-#[derive(Debug, Clone)]
-struct ReportPlacement {
-    id: String,
-    type_name: String,
-    core: usize,
-}
-
-/// An `Actor index=` / `Driver index=` root the Placement set must cover
-/// exactly once (plans/M8.md item H Target A follow-up).
-#[derive(Debug, Clone)]
-struct DeclaredRoot {
-    id: String,
-    type_name: String,
-}
-
-/// Ring bookkeeping beyond the slot bytes: head, tail, count — three
-/// u64s. Mirrored from the compiler's `MAILBOX_BOOKKEEPING_SIZE` rather
-/// than imported (that constant lives in `layout.rs`, which this crate
-/// does not link for the formula); the `bytes == cap * slot + 24` check
-/// below is the tripwire if either side drifts.
-const RING_BOOKKEEPING_BYTES: u64 = 3 * 8;
-
-/// One `IrqHostInject` report line (plans/M7.md item G).
-#[derive(Debug, Clone)]
-struct IrqHostInject {
-    base: u64,
-    offset: u64,
-    status: u32,
-    vector: u64,
-}
-
-/// One `Kind key=value key=value ...` report line's own fields. Shared by
-/// every `Blk*` line below; deliberately strict — a malformed field, a
-/// missing required field, or an unknown key fails the whole report closed
-/// (`VmmError::MalformedReport`), because a device declaration this VMM
-/// half-understands is exactly the configuration it must never boot on.
-fn parse_report_fields<'a>(
-    kind: &str,
-    rest: &'a str,
-    allowed: &[&str],
-) -> Result<std::collections::BTreeMap<&'a str, &'a str>, VmmError> {
-    let mut fields = std::collections::BTreeMap::new();
-    for part in rest.split_whitespace() {
-        let Some((k, v)) = part.split_once('=') else {
-            return Err(VmmError::MalformedReport(format!(
-                "`{kind}` field {part:?} has no `=`"
-            )));
-        };
-        if !allowed.contains(&k) {
-            return Err(VmmError::MalformedReport(format!(
-                "`{kind}` has no field `{k}` (expected one of {allowed:?})"
-            )));
-        }
-        if fields.insert(k, v).is_some() {
-            return Err(VmmError::MalformedReport(format!(
-                "`{kind}` repeats field `{k}`"
-            )));
-        }
-    }
-    Ok(fields)
-}
-
-/// A required `key=<integer>` field, decimal or `0x`-prefixed.
-fn report_u64(
-    kind: &str,
-    fields: &std::collections::BTreeMap<&str, &str>,
-    key: &str,
-) -> Result<u64, VmmError> {
-    let raw = fields.get(key).copied().ok_or_else(|| {
-        VmmError::MalformedReport(format!("`{kind}` is missing required field `{key}`"))
-    })?;
-    let parsed = match raw.strip_prefix("0x") {
-        Some(hex) => u64::from_str_radix(hex, 16),
-        None => raw.parse::<u64>(),
-    };
-    parsed.map_err(|e| VmmError::MalformedReport(format!("`{kind}` field `{key}={raw}`: {e}")))
-}
-
-/// A required `device=device#<N>` field (plans/M8.md item P). The report
-/// spells a declared device the same way everywhere — `device#0` — and
-/// this VMM parses that spelling rather than a bare integer so a line that
-/// lost its prefix is a malformed report rather than a silently different
-/// device.
-fn report_device_index(
-    kind: &str,
-    fields: &std::collections::BTreeMap<&str, &str>,
-) -> Result<u64, VmmError> {
-    let raw = fields.get("device").copied().ok_or_else(|| {
-        VmmError::MalformedReport(format!(
-            "`{kind}` is missing required field `device` — 03-hardware.md §3: all memory a device \
-             can reach originates from *its* bound pools, which is not a statement this VMM can \
-             enforce about an unnamed device"
-        ))
-    })?;
-    let digits = raw.strip_prefix("device#").ok_or_else(|| {
-        VmmError::MalformedReport(format!(
-            "`{kind}` field `device={raw}`: expected `device#<index>`"
-        ))
-    })?;
-    digits
-        .parse::<u64>()
-        .map_err(|e| VmmError::MalformedReport(format!("`{kind}` field `device={raw}`: {e}")))
-}
-
-/// Empty-string SHA-256 — used by unit-test report preambles that do not
-/// boot a real image (parse-only). Live boots always carry the blob's own
-/// digest from the compiler.
-pub const EMPTY_SHA256: &str =
-    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-
-/// Parses the minimal, internal (not itself golden-pinned — `wrela test`'s
-/// own merged stdout is the golden surface, not this file) report format
-/// `bin/wrela.rs`'s runtime tier writes alongside the image (a `Machine
-/// revision=` line, one or more `Input path=... sha256=...` lines, one
-/// `Image sha256=...` line, section/entry lines). Validates 06 §3/§10:
-/// machine revision, digest *presence and shape*, and — at boot — the
-/// image blob hash and every readable input file's hash.
-fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
-    let mut revision: Option<String> = None;
-    let mut input_digests: Vec<(String, String)> = Vec::new();
-    let mut image_sha256: Option<String> = None;
-    let mut entry: Option<u64> = None;
-    // plans/M7.md item F: the declared `blk` device's own three line
-    // kinds, accumulated here and assembled into one `BlkConfig` below.
-    // Deliberately `Blk`-prefixed rather than reusing `Device`/`Pool`:
-    // `report.rs`'s own full `--stage=report` artifact already spells
-    // those two words with entirely different fields, and `parse_report`
-    // trims indentation away, so a distinct prefix is what keeps the two
-    // formats from ever being silently confusable.
-    let mut blk_device: Option<(u64, u64, u64, Option<u64>)> = None;
-    let mut blk_queue: Option<devices::BlkQueueConfig> = None;
-    let mut blk_pools: Vec<devices::PoolWindow> = Vec::new();
-    let mut irq_injects: Vec<IrqHostInject> = Vec::new();
-    let mut core_entries: Vec<(usize, u64)> = Vec::new();
-    let mut request_rings: Vec<RequestRing> = Vec::new();
-    // plans/M8.md item H sweep, Target A: semantic checks beyond
-    // presence/shape. Sections are parsed fully (a `CoreEntry` must land
-    // in `rtcode`); every ring's byte range is retained for overlap;
-    // `Placement`/`Actor` lines are optional but, when present, must agree
-    // with the core set and with each other — a forged report is an attack
-    // surface, not a convenience.
-    let mut sections: Vec<ReportSection> = Vec::new();
-    let mut ring_ranges: Vec<RingRange> = Vec::new();
-    let mut placements: Vec<ReportPlacement> = Vec::new();
-    let mut declared_roots: Vec<DeclaredRoot> = Vec::new();
-    let mut layout_root_names: Vec<String> = Vec::new();
-    let mut rings_meta: Option<RingsMeta> = None;
-    for raw_line in text.lines() {
-        let line = raw_line.trim();
-        if let Some(rest) = line.strip_prefix("Machine revision=") {
-            revision = Some(rest.to_string());
-        } else if let Some(rest) = line.strip_prefix("Image sha256=") {
-            let dig = rest.trim();
-            if !wrela_machine::sha256::is_sha256_hex(dig) {
-                return Err(VmmError::MalformedReport(format!(
-                    "`Image sha256=` must be 64 hex digits, got {dig:?}"
-                )));
-            }
-            if image_sha256.is_some() {
-                return Err(VmmError::MalformedReport(
-                    "more than one `Image sha256=` line".to_string(),
-                ));
-            }
-            image_sha256 = Some(dig.to_ascii_lowercase());
-        } else if let Some(rest) = line.strip_prefix("Input ") {
-            let fields = parse_report_fields("Input", rest, &["path", "sha256"])?;
-            let path = fields.get("path").copied().ok_or_else(|| {
-                VmmError::MalformedReport("`Input` is missing required field `path`".to_string())
-            })?;
-            let dig = fields.get("sha256").copied().ok_or_else(|| {
-                VmmError::MalformedReport("`Input` is missing required field `sha256`".to_string())
-            })?;
-            if !wrela_machine::sha256::is_sha256_hex(dig) {
-                return Err(VmmError::MalformedReport(format!(
-                    "`Input path={path} sha256=` must be 64 hex digits, got {dig:?}"
-                )));
-            }
-            input_digests.push((path.to_string(), dig.to_ascii_lowercase()));
-        } else if let Some(rest) = line.strip_prefix("Rings ") {
-            // plans/M12.md item C: `Rings count={} stride={} padding={} bytes={}`.
-            let fields =
-                parse_report_fields("Rings", rest, &["count", "stride", "padding", "bytes"])?;
-            let count = report_u64("Rings", &fields, "count")?;
-            let stride = report_u64("Rings", &fields, "stride")?;
-            let padding = report_u64("Rings", &fields, "padding")?;
-            let bytes = report_u64("Rings", &fields, "bytes")?;
-            if count == 0 {
-                return Err(VmmError::MalformedReport(
-                    "`Rings count=0`: the summary line is absent for ringless images, never zero"
-                        .to_string(),
-                ));
-            }
-            if stride == 0 {
-                return Err(VmmError::MalformedReport(
-                    "`Rings stride=0`: a live ring image always has a positive data stride"
-                        .to_string(),
-                ));
-            }
-            let expect_bytes = count
-                .checked_mul(24)
-                .and_then(|c| c.checked_add(count.checked_mul(stride)?))
-                .ok_or_else(|| {
-                    VmmError::MalformedReport(
-                        "`Rings` count/stride overflow computing expected bytes".to_string(),
-                    )
-                })?;
-            if bytes != expect_bytes {
-                return Err(VmmError::MalformedReport(format!(
-                    "`Rings count={count} stride={stride} padding={padding} bytes={bytes}`: \
-                     bytes must equal count*24 + count*stride (={expect_bytes})"
-                )));
-            }
-            // padding is disclosed; forge-check it against the Ring lines
-            // after the loop (needs every ring's cap*slot).
-            rings_meta = Some(RingsMeta { count, stride });
-        } else if let Some(rest) = line.strip_prefix("Section ") {
-            let fields = parse_report_fields("Section", rest, &["name", "base", "size"])?;
-            let name = fields.get("name").copied().ok_or_else(|| {
-                VmmError::MalformedReport("`Section` is missing required field `name`".to_string())
-            })?;
-            let base = report_u64("Section", &fields, "base")?;
-            let size = report_u64("Section", &fields, "size")?;
-            if size == 0 {
-                return Err(VmmError::MalformedReport(format!(
-                    "`Section name={name} base={base:#x} size=0`: a section with no bytes is not \
-                     a configuration this VMM can honor"
-                )));
-            }
-            if sections.iter().any(|s| s.name == name) {
-                return Err(VmmError::MalformedReport(format!(
-                    "`Section name={name}` is repeated"
-                )));
-            }
-            sections.push(ReportSection {
-                name: name.to_string(),
-                base,
-                size,
-            });
-        } else if let Some(rest) = line.strip_prefix("Entry base=") {
-            let digits = rest.trim_start_matches("0x");
-            entry = u64::from_str_radix(digits, 16).ok();
-        } else if let Some(rest) = line.strip_prefix("CoreEntry ") {
-            // plans/M8.md item C1 / 06 §3: where this VMM starts vCPU N once
-            // core 0's entry rings the release doorbell. Device topology is
-            // a build output and so is the core set — nothing here is
-            // probed, defaulted, or guessed.
-            let fields = parse_report_fields("CoreEntry", rest, &["core", "base"])?;
-            let core = report_u64("CoreEntry", &fields, "core")?;
-            let base = report_u64("CoreEntry", &fields, "base")?;
-            if core == 0 || core as usize >= wrela_machine::VCPUS {
-                return Err(VmmError::MalformedReport(format!(
-                    "`CoreEntry core={core}`: secondary cores are 1..{} (06-machine.md §1: the \
-                     machine has {} vCPUs, and core 0's entry is the `Entry base=` line)",
-                    wrela_machine::VCPUS,
-                    wrela_machine::VCPUS
-                )));
-            }
-            core_entries.push((core as usize, base));
-        } else if let Some(rest) = line.strip_prefix("Ring ") {
-            // plans/M8.md item C3, decision 42: a cross-core ring the
-            // recorder must be able to *address*, because 06 §8 makes this
-            // VMM the recorder of "per-mailbox cross-core admission order"
-            // and the admission itself is performed by guest code in guest
-            // memory. Parsed strictly (an unknown field or a missing
-            // `base=` fails the report closed) for the same reason every
-            // device line is: a ring this VMM half-understands is one it
-            // would silently under-record.
-            let fields = parse_report_fields(
-                "Ring",
-                rest,
-                &[
-                    "kind", "src", "dst", "target", "cap", "slot", "bytes", "base",
-                ],
-            )?;
-            let kind = fields.get("kind").copied().ok_or_else(|| {
-                VmmError::MalformedReport("`Ring` is missing required field `kind`".to_string())
-            })?;
-            let src = report_u64("Ring", &fields, "src")?;
-            let dst = report_u64("Ring", &fields, "dst")?;
-            let capacity = report_u64("Ring", &fields, "cap")?;
-            let slot = report_u64("Ring", &fields, "slot")?;
-            let bytes = report_u64("Ring", &fields, "bytes")?;
-            let base = report_u64("Ring", &fields, "base")?;
-            let target = fields.get("target").copied().ok_or_else(|| {
-                VmmError::MalformedReport("`Ring` is missing required field `target`".to_string())
-            })?;
-            if src as usize >= wrela_machine::VCPUS || dst as usize >= wrela_machine::VCPUS {
-                return Err(VmmError::MalformedReport(format!(
-                    "`Ring src={src} dst={dst}`: this machine has {} vCPUs (06-machine.md §1)",
-                    wrela_machine::VCPUS
-                )));
-            }
-            if src == dst {
-                return Err(VmmError::MalformedReport(format!(
-                    "`Ring src={src} dst={dst}`: a ring is a *cross*-core edge; same-core edges \
-                     keep the mailbox path (04-compiler.md §3)"
-                )));
-            }
-            // plans/M8.md item H Target A: `bytes` is not decorative — it
-            // is `cap * slot + 24` (slots plus head/tail/count). A triple
-            // that does not add up would make `count_addr` disagree with
-            // the range the report claims to reserve.
-            let expected_bytes = capacity
-                .checked_mul(slot)
-                .and_then(|s| s.checked_add(RING_BOOKKEEPING_BYTES))
-                .ok_or_else(|| {
-                    VmmError::MalformedReport(format!(
-                        "`Ring cap={capacity} slot={slot}`: capacity * slot overflows"
-                    ))
-                })?;
-            if bytes != expected_bytes {
-                return Err(VmmError::MalformedReport(format!(
-                    "`Ring kind={kind} src={src} dst={dst} target={target} cap={capacity} \
-                     slot={slot} bytes={bytes}`: bytes must equal cap*slot+{RING_BOOKKEEPING_BYTES} \
-                     (={expected_bytes}); a forged triple would point the admission witness at \
-                     the wrong occupancy word"
-                )));
-            }
-            match kind {
-                "request" => {
-                    if target == "-" {
-                        return Err(VmmError::MalformedReport(
-                            "`Ring kind=request` with no `target=`: a request ring feeds exactly \
-                             one mailbox root, which is what names the admission"
-                                .to_string(),
-                        ));
-                    }
-                    request_rings.push(RequestRing {
-                        src: src as usize,
-                        dst: dst as usize,
-                        target: target.to_string(),
-                        data_base: base,
-                        // Pre-M12 default; rewritten below when `Rings` meta
-                        // is present (CTL-then-DATA packing).
-                        count_addr: base + capacity * slot + 16,
-                    });
-                    ring_ranges.push(RingRange {
-                        kind: "request".to_string(),
-                        src: src as usize,
-                        dst: dst as usize,
-                        target: target.to_string(),
-                        base,
-                        bytes,
-                    });
-                }
-                // A reply is delivered to a turn record, not admitted to a
-                // mailbox: retained for overlap checks, then dropped from
-                // the admission witness set.
-                "reply" => {
-                    ring_ranges.push(RingRange {
-                        kind: "reply".to_string(),
-                        src: src as usize,
-                        dst: dst as usize,
-                        target: target.to_string(),
-                        base,
-                        bytes,
-                    });
-                }
-                other => {
-                    return Err(VmmError::MalformedReport(format!(
-                        "`Ring kind={other}`: the only lanes are `request` and `reply` \
-                         (plans/M8.md decision 29)"
-                    )));
-                }
-            }
-        } else if let Some(rest) = line.strip_prefix("Placement ") {
-            // Full `--stage=report` lines; optional in the VMM-facing
-            // subset. When present they must name a real actor and a core
-            // this image brings up — otherwise a forged placement would
-            // disagree with the CoreEntry set the VMM actually starts.
-            let fields = parse_report_fields(
-                "Placement",
-                rest,
-                &[
-                    "id",
-                    "type",
-                    "core",
-                    "source",
-                    "work",
-                    "work_source",
-                    "bytes",
-                    "bytes_state",
-                    "bytes_mailbox",
-                    "bytes_pool",
-                ],
-            )?;
-            let id = fields.get("id").copied().ok_or_else(|| {
-                VmmError::MalformedReport("`Placement` is missing required field `id`".to_string())
-            })?;
-            let type_name = fields.get("type").copied().ok_or_else(|| {
-                VmmError::MalformedReport(
-                    "`Placement` is missing required field `type`".to_string(),
-                )
-            })?;
-            let core = report_u64("Placement", &fields, "core")?;
-            if core as usize >= wrela_machine::VCPUS {
-                return Err(VmmError::MalformedReport(format!(
-                    "`Placement id={id} core={core}`: this machine has {} vCPUs (06-machine.md §1)",
-                    wrela_machine::VCPUS
-                )));
-            }
-            placements.push(ReportPlacement {
-                id: id.to_string(),
-                type_name: type_name.to_string(),
-                core: core as usize,
-            });
-        } else if let Some(rest) = line.strip_prefix("Actor ") {
-            // Two spellings reach this VMM: the full report's
-            // `Actor index=N type=Name` and the layout section's
-            // `Actor name=Name mailbox=...`. Index roots are the Placement
-            // set's exact cover; bare names are still accepted as ids.
-            let fields = parse_report_fields(
-                "Actor",
-                rest,
-                &["index", "type", "name", "mailbox", "slot", "frame", "state"],
-            )?;
-            if let Some(index) = fields.get("index").copied() {
-                let n: u64 = index.parse().map_err(|e| {
-                    VmmError::MalformedReport(format!("`Actor` field `index={index}`: {e}"))
-                })?;
-                let type_name = fields.get("type").copied().ok_or_else(|| {
-                    VmmError::MalformedReport(
-                        "`Actor index=` is missing required field `type`".to_string(),
-                    )
-                })?;
-                declared_roots.push(DeclaredRoot {
-                    id: format!("actor#{n}"),
-                    type_name: type_name.to_string(),
-                });
-            } else if let Some(name) = fields.get("name").copied() {
-                layout_root_names.push(name.to_string());
+/// Parse the VMM-facing report text, mapping machine `String` errors into
+/// `VmmError` (including the distinct machine-revision mismatch variant).
+pub(crate) fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
+    match wrela_machine::report::parse_report(text) {
+        Ok(parsed) => Ok(parsed),
+        Err(msg) => {
+            if let Some(report) = msg.strip_prefix("machine-revision-mismatch:") {
+                Err(VmmError::MachineRevisionMismatch {
+                    report: report.to_string(),
+                    vmm: wrela_machine::MACHINE_REVISION_STR,
+                })
             } else {
-                return Err(VmmError::MalformedReport(
-                    "`Actor` line names neither `index=` nor `name=`".to_string(),
-                ));
+                Err(VmmError::MalformedReport(msg))
             }
-        } else if let Some(rest) = line.strip_prefix("Driver ") {
-            let fields = parse_report_fields(
-                "Driver",
-                rest,
-                &["index", "type", "name", "mailbox", "slot", "frame", "state"],
-            )?;
-            if let Some(index) = fields.get("index").copied() {
-                let n: u64 = index.parse().map_err(|e| {
-                    VmmError::MalformedReport(format!("`Driver` field `index={index}`: {e}"))
-                })?;
-                let type_name = fields.get("type").copied().ok_or_else(|| {
-                    VmmError::MalformedReport(
-                        "`Driver index=` is missing required field `type`".to_string(),
-                    )
-                })?;
-                declared_roots.push(DeclaredRoot {
-                    id: format!("driver#{n}"),
-                    type_name: type_name.to_string(),
-                });
-            } else if let Some(name) = fields.get("name").copied() {
-                // A messageable driver is a ring target like any mailbox
-                // root, so its layout-section name belongs in the same
-                // pool invariant (9) checks against.
-                layout_root_names.push(name.to_string());
-            }
-        } else if let Some(rest) = line.strip_prefix("BlkDevice ") {
-            let fields = parse_report_fields(
-                "BlkDevice",
-                rest,
-                &["device", "capacity_sectors", "features", "vector"],
-            )?;
-            if blk_device.is_some() {
-                return Err(VmmError::MalformedReport(
-                    "more than one `BlkDevice` line (06 §6: the device set is closed and there is no hotplug; machine v1 has exactly one `blk`)".to_string(),
-                ));
-            }
-            let vector = match fields.get("vector") {
-                Some(_) => Some(report_u64("BlkDevice", &fields, "vector")?),
-                None => None,
-            };
-            blk_device = Some((
-                report_device_index("BlkDevice", &fields)?,
-                report_u64("BlkDevice", &fields, "capacity_sectors")?,
-                report_u64("BlkDevice", &fields, "features")?,
-                vector,
-            ));
-        } else if let Some(rest) = line.strip_prefix("BlkQueue ") {
-            let fields = parse_report_fields(
-                "BlkQueue",
-                rest,
-                &["index", "size", "desc", "avail", "used", "doorbell"],
-            )?;
-            let index = report_u64("BlkQueue", &fields, "index")?;
-            if index != 0 {
-                return Err(VmmError::MalformedReport(format!(
-                    "`BlkQueue index={index}`: machine v1's `blk` has exactly one queue (index 0)"
-                )));
-            }
-            if blk_queue.is_some() {
-                return Err(VmmError::MalformedReport(
-                    "more than one `BlkQueue index=0` line".to_string(),
-                ));
-            }
-            let size = report_u64("BlkQueue", &fields, "size")?;
-            let size = u16::try_from(size).map_err(|_| {
-                VmmError::MalformedReport(format!(
-                    "`BlkQueue size={size}` does not fit virtio's own 16-bit queue depth"
-                ))
-            })?;
-            blk_queue = Some(devices::BlkQueueConfig {
-                size,
-                desc: report_u64("BlkQueue", &fields, "desc")?,
-                avail: report_u64("BlkQueue", &fields, "avail")?,
-                used: report_u64("BlkQueue", &fields, "used")?,
-                doorbell: report_u64("BlkQueue", &fields, "doorbell")?,
-            });
-        } else if let Some(rest) = line.strip_prefix("BlkPool ") {
-            let fields = parse_report_fields("BlkPool", rest, &["name", "device", "base", "size"])?;
-            let name = fields.get("name").copied().ok_or_else(|| {
-                VmmError::MalformedReport("`BlkPool` is missing required field `name`".to_string())
-            })?;
-            blk_pools.push(devices::PoolWindow {
-                name: name.to_string(),
-                device: report_device_index("BlkPool", &fields)?,
-                base: report_u64("BlkPool", &fields, "base")?,
-                size: report_u64("BlkPool", &fields, "size")?,
-            });
-        } else if let Some(rest) = line.strip_prefix("IrqHostInject ") {
-            // plans/M7.md item G: host `interrupt_status` writer + vector
-            // raise. Applied before the vCPU runs so the guest's first
-            // checkpoint delivers a status word the guest did not produce.
-            let fields = parse_report_fields(
-                "IrqHostInject",
-                rest,
-                &["base", "offset", "status", "vector"],
-            )?;
-            let status = report_u64("IrqHostInject", &fields, "status")?;
-            let status = u32::try_from(status).map_err(|_| {
-                VmmError::MalformedReport(format!(
-                    "`IrqHostInject status={status:#x}` does not fit a u32 register"
-                ))
-            })?;
-            irq_injects.push(IrqHostInject {
-                base: report_u64("IrqHostInject", &fields, "base")?,
-                offset: report_u64("IrqHostInject", &fields, "offset")?,
-                status,
-                vector: report_u64("IrqHostInject", &fields, "vector")?,
-            });
         }
     }
-    let revision = revision
-        .ok_or_else(|| VmmError::MalformedReport("no `Machine revision=` line".to_string()))?;
-    if revision != wrela_machine::MACHINE_REVISION_STR {
-        return Err(VmmError::MachineRevisionMismatch {
-            report: revision,
-            vmm: wrela_machine::MACHINE_REVISION_STR,
-        });
-    }
-    if input_digests.is_empty() {
-        return Err(VmmError::MalformedReport(
-            "no `Input path=… sha256=…` digest line".to_string(),
-        ));
-    }
-    let image_sha256 = image_sha256.ok_or_else(|| {
-        VmmError::MalformedReport("no `Image sha256=` digest line".to_string())
-    })?;
-    if sections.is_empty() {
-        return Err(VmmError::MalformedReport(
-            "no `Section name=` line".to_string(),
-        ));
-    }
-    let entry =
-        entry.ok_or_else(|| VmmError::MalformedReport("no `Entry base=0x...` line".to_string()))?;
-    let exec_sections: Vec<ReportSection> = sections
-        .iter()
-        .filter(|s| {
-            matches!(
-                s.name.as_str(),
-                "entry" | "code" | "abort" | "checkpoint" | "rtcode"
-            )
-        })
-        .cloned()
-        .collect();
-    // The three `Blk*` line kinds are all-or-nothing: a device with no
-    // queue, a queue with no device, or either with no pool is a report
-    // this VMM refuses outright rather than booting on a device model it
-    // would have to guess the shape of.
-    let blk = match (blk_device, blk_queue) {
-        (None, None) => {
-            if !blk_pools.is_empty() {
-                return Err(VmmError::MalformedReport(
-                    "`BlkPool` line(s) with no `BlkDevice`/`BlkQueue` to bind them to".to_string(),
-                ));
-            }
-            None
-        }
-        (Some(_), None) => {
-            return Err(VmmError::MalformedReport(
-                "a `BlkDevice` line with no `BlkQueue index=0` line".to_string(),
-            ));
-        }
-        (None, Some(_)) => {
-            return Err(VmmError::MalformedReport(
-                "a `BlkQueue` line with no `BlkDevice` line".to_string(),
-            ));
-        }
-        (Some((device, capacity_sectors, features, vector)), Some(queue)) => {
-            // plans/M8.md item P: per *this* device. A `BlkPool` naming
-            // some other device is a declared window this model may not
-            // reach — it is carried into `GuestMem` (which is what makes
-            // the refusal observable), but it cannot stand in for the
-            // device's own bound pool.
-            if !blk_pools.iter().any(|p| p.device == device) {
-                return Err(VmmError::MalformedReport(format!(
-                    "a `BlkDevice device=device#{device}` with no `BlkPool device=device#{device}` \
-                     line: all memory a device can reach originates from its bound pools \
-                     (03-hardware.md §3)"
-                )));
-            }
-            Some(devices::BlkConfig {
-                device,
-                capacity_sectors,
-                features,
-                vector,
-                queue,
-                pools: blk_pools,
-            })
-        }
-    };
-    // M12 item C: when the report publishes `Rings …`, rewrite count_addrs
-    // and overlap ranges for CTL-then-uniform-DATA packing. Without that
-    // line (unit fixtures), pre-M12 DATA-then-CTL stands.
-    if let Some(meta) = rings_meta {
-        apply_uniform_ring_layout(&mut request_rings, &mut ring_ranges, meta)?;
-    }
-    validate_report_invariants(
-        entry,
-        &mut core_entries,
-        &sections,
-        &request_rings,
-        &ring_ranges,
-        &placements,
-        &declared_roots,
-        &layout_root_names,
-    )?;
-    Ok(ParsedReport {
-        entry,
-        image_sha256,
-        input_digests,
-        exec_sections,
-        blk,
-        irq_injects,
-        core_entries,
-        request_rings,
-    })
 }
 
 /// 06 §3: re-check the sealed image blob and every readable `Input` file
 /// against the digests the report declares. An unreadably-named input
 /// (unit-test placeholders like `<conformance>`) is skipped — presence of
 /// a well-formed digest is still required at parse time.
-fn validate_report_digests(parsed: &ParsedReport, img: &[u8]) -> Result<(), VmmError> {
+pub(crate) fn validate_report_digests(parsed: &ParsedReport, img: &[u8]) -> Result<(), VmmError> {
     let got = wrela_machine::sha256::sha256_hex(img);
     if got != parsed.image_sha256 {
         return Err(VmmError::BadImage(format!(
@@ -941,9 +196,8 @@ fn validate_report_digests(parsed: &ParsedReport, img: &[u8]) -> Result<(), VmmE
         if !p.is_file() {
             continue;
         }
-        let bytes = std::fs::read(p).map_err(|e| {
-            VmmError::Io(format!("read input `{path}` for digest check: {e}"))
-        })?;
+        let bytes = std::fs::read(p)
+            .map_err(|e| VmmError::Io(format!("read input `{path}` for digest check: {e}")))?;
         let got = wrela_machine::sha256::sha256_hex(&bytes);
         if got != *expected {
             return Err(VmmError::BadImage(format!(
@@ -954,136 +208,11 @@ fn validate_report_digests(parsed: &ParsedReport, img: &[u8]) -> Result<(), VmmE
     Ok(())
 }
 
-/// Raise report-declared executable sections to RX (page-granular). The
-/// DRAM reservation was mapped RW-only; this is the only place execute
-/// permission is granted.
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn apply_wx_exec_protections(exec_sections: &[ReportSection]) -> Result<(), VmmError> {
-    use hv::{HV_MEMORY_EXEC, HV_MEMORY_READ, HV_SUCCESS, hv_vm_protect};
-    // Apple Silicon HVF page size matches the host DRAM allocation align.
-    const PAGE: u64 = 16 * 1024;
-    for s in exec_sections {
-        let start = s.base & !(PAGE - 1);
-        let end = s
-            .base
-            .checked_add(s.size)
-            .and_then(|e| e.checked_add(PAGE - 1))
-            .map(|e| e & !(PAGE - 1))
-            .ok_or_else(|| {
-                VmmError::BadImage(format!(
-                    "exec section `{}` base={:#x} size={} overflows when page-aligning for W^X",
-                    s.name, s.base, s.size
-                ))
-            })?;
-        let size = (end - start) as usize;
-        if size == 0 {
-            continue;
-        }
-        let r = unsafe { hv_vm_protect(start, size, HV_MEMORY_READ | HV_MEMORY_EXEC) };
-        if r != HV_SUCCESS {
-            return Err(VmmError::Hvf {
-                call: "hv_vm_protect",
-                code: r,
-            });
-        }
-    }
-    Ok(())
-}
-
-/// plans/M12.md item C: fold the `Rings` summary into per-ring
-/// `count_addr` and into the ranges overlap checks walk. DATA bases stay
-/// as reported; each ring's overlap span becomes the uniform `stride`,
-/// and the contiguous CTL block is appended so stack/section checks see
-/// it (CTL words live immediately before the first DATA base).
-fn apply_uniform_ring_layout(
-    request_rings: &mut [RequestRing],
-    ring_ranges: &mut Vec<RingRange>,
-    meta: RingsMeta,
-) -> Result<(), VmmError> {
-    if ring_ranges.len() as u64 != meta.count {
-        return Err(VmmError::MalformedReport(format!(
-            "`Rings count={}` but the report has {} `Ring kind=` line(s)",
-            meta.count,
-            ring_ranges.len()
-        )));
-    }
-    let mut sorted: Vec<u64> = ring_ranges.iter().map(|r| r.base).collect();
-    sorted.sort_unstable();
-    sorted.dedup();
-    if sorted.len() as u64 != meta.count {
-        return Err(VmmError::MalformedReport(
-            "`Ring` DATA bases are not unique under uniform stride packing".to_string(),
-        ));
-    }
-    let data0 = sorted[0];
-    for (i, &b) in sorted.iter().enumerate() {
-        let expect = data0 + (i as u64) * meta.stride;
-        if b != expect {
-            return Err(VmmError::MalformedReport(format!(
-                "`Ring` DATA base {b:#x} is not at index {i} of stride {} from {data0:#x} \
-                 (expected {expect:#x})",
-                meta.stride
-            )));
-        }
-    }
-    let ctl_base = data0.checked_sub(meta.count * 24).ok_or_else(|| {
-        VmmError::MalformedReport(
-            "uniform ring CTL block would underflow below DATA base".to_string(),
-        )
-    })?;
-    for r in request_rings.iter_mut() {
-        let idx = sorted
-            .iter()
-            .position(|&b| b == r.data_base)
-            .ok_or_else(|| {
-                VmmError::MalformedReport(format!(
-                    "request ring DATA base {:#x} missing from Ring ranges",
-                    r.data_base
-                ))
-            })?;
-        r.count_addr = ctl_base + (idx as u64) * 24 + 16;
-    }
-    for r in ring_ranges.iter_mut() {
-        r.bytes = meta.stride;
-    }
-    ring_ranges.push(RingRange {
-        kind: "ctl".to_string(),
-        src: 0,
-        dst: 0,
-        target: "-".to_string(),
-        base: ctl_base,
-        bytes: meta.count * 24,
-    });
-    Ok(())
-}
-
-/// Set-level invariants over the report's own tables (plans/M8.md item H
-/// Target A follow-up). Per-line shape checks live in `parse_report`; this
-/// function is the one place that validates the **set**. The list below is
-/// the contract — keep it and the body in lockstep:
-///
-/// 1. every `Section` is pairwise disjoint from every other `Section`;
-/// 2. `CoreEntry` lines are contiguous from core 1;
-/// 3. every `CoreEntry` base is 4-byte aligned (an AArch64 PC is; a report
-///    that says otherwise is forged) and distinct from every other core's
-///    (including core 0's `Entry base=`);
-/// 4. every `CoreEntry` base lands inside an executable section
-///    (`rtcode` / `code` / `entry`);
-/// 5. every request `Ring` names only cores this image brings up;
-/// 6. `Ring` ranges are pairwise disjoint, disjoint from every per-core
-///    stack, and wholly inside `rtdata` (so also disjoint from every other
-///    `Section`); when the report has no `rtdata`, a ring may not overlap
-///    any declared `Section`;
-/// 7. declared `Actor index=` / `Driver index=` ids are unique;
-/// 8. when `Placement` lines are present: ids are unique (an actor is
-///    placed exactly once), each `core=` is brought up, each `type=`
-///    agrees with the declared root, and every declared root has exactly
-///    one `Placement`.
 /// Host offset into the DRAM reservation for a guest-physical range, or a
 /// `BadImage`/`MalformedReport` when the range is not wholly inside
 /// `[DRAM_BASE, DRAM_BASE + DRAM_SIZE)`. Callers that only have a point
 /// use `nbytes = 1` (or the access width).
-fn guest_dram_offset(guest: u64, nbytes: u64, what: &str) -> Result<usize, VmmError> {
+pub(crate) fn guest_dram_offset(guest: u64, nbytes: u64, what: &str) -> Result<usize, VmmError> {
     use wrela_machine::layout as machine_layout;
     let end = guest.checked_add(nbytes).ok_or_else(|| {
         VmmError::BadImage(format!(
@@ -1101,2032 +230,23 @@ fn guest_dram_offset(guest: u64, nbytes: u64, what: &str) -> Result<usize, VmmEr
     Ok((guest - machine_layout::DRAM_BASE) as usize)
 }
 
-fn validate_report_invariants(
-    entry: u64,
-    core_entries: &mut Vec<(usize, u64)>,
-    sections: &[ReportSection],
-    request_rings: &[RequestRing],
-    ring_ranges: &[RingRange],
-    placements: &[ReportPlacement],
-    declared_roots: &[DeclaredRoot],
-    layout_root_names: &[String],
-) -> Result<(), VmmError> {
-    use wrela_machine::layout as machine_layout;
-    let dram_end = machine_layout::DRAM_BASE + machine_layout::DRAM_SIZE;
+mod boot;
+mod exit_loop;
 
-    // (0) Every section and every ring range lies wholly inside guest DRAM
-    // — otherwise a forged report can name host-OOB GPAs that later
-    // `host_ram.add(off)` paths trust.
-    for s in sections {
-        let end = s.base.checked_add(s.size).ok_or_else(|| {
-            VmmError::MalformedReport(format!(
-                "`Section name={} base={:#x} size={}` overflows a u64",
-                s.name, s.base, s.size
-            ))
-        })?;
-        if s.base < machine_layout::DRAM_BASE || end > dram_end {
-            return Err(VmmError::MalformedReport(format!(
-                "`Section name={} base={:#x} size={}` is outside guest DRAM \
-                 [{:#x}..{dram_end:#x})",
-                s.name, s.base, s.size, machine_layout::DRAM_BASE
-            )));
-        }
-    }
-    for a in ring_ranges {
-        let end = a.base.checked_add(a.bytes).ok_or_else(|| {
-            VmmError::MalformedReport(format!(
-                "`Ring kind={} … base={:#x} bytes={}` overflows a u64",
-                a.kind, a.base, a.bytes
-            ))
-        })?;
-        if a.base < machine_layout::DRAM_BASE || end > dram_end {
-            return Err(VmmError::MalformedReport(format!(
-                "`Ring kind={} src={} dst={} target={} base={:#x} bytes={}` is outside \
-                 guest DRAM [{:#x}..{dram_end:#x})",
-                a.kind,
-                a.src,
-                a.dst,
-                a.target,
-                a.base,
-                a.bytes,
-                machine_layout::DRAM_BASE
-            )));
-        }
-    }
+pub use boot::boot_image;
+pub(crate) use boot::boot_image_core;
+#[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+pub(crate) use boot::boot_image_core_with_delayed_raise;
 
-    // (1) Sections are pairwise disjoint.
-    for (i, a) in sections.iter().enumerate() {
-        for b in sections.iter().skip(i + 1) {
-            if a.base < b.end() && b.base < a.end() {
-                return Err(VmmError::MalformedReport(format!(
-                    "`Section name={} base={:#x} size={}` overlaps `Section name={} base={:#x} \
-                     size={}`",
-                    a.name, a.base, a.size, b.name, b.base, b.size
-                )));
-            }
-        }
-    }
-
-    // (2) Contiguous secondary-core set from core 1.
-    core_entries.sort_by_key(|(c, _)| *c);
-    for (i, (core, _)) in core_entries.iter().enumerate() {
-        if *core != i + 1 {
-            return Err(VmmError::MalformedReport(format!(
-                "`CoreEntry` lines are not contiguous from core 1 (saw core {core} where core {} \
-                 was expected)",
-                i + 1
-            )));
-        }
-    }
-
-    // (3) Every CoreEntry base is 4-byte aligned and distinct from every
-    // other core's entry (including core 0's `Entry base=`). Core 0's
-    // entry must also sit in guest DRAM and inside an executable section
-    // (same rule as secondary cores — a forged `Entry` below DRAM_BASE
-    // used to pass structural checks and then fault host-side).
-    if entry % 4 != 0 {
-        return Err(VmmError::MalformedReport(format!(
-            "`Entry base={entry:#x}` is not 4-byte aligned (an AArch64 PC must be)"
-        )));
-    }
-    if entry < machine_layout::DRAM_BASE || entry >= dram_end {
-        return Err(VmmError::MalformedReport(format!(
-            "`Entry base={entry:#x}` is outside guest DRAM [{:#x}..{dram_end:#x})",
-            machine_layout::DRAM_BASE
-        )));
-    }
-    {
-        const EXEC_SECTIONS: &[&str] = &["rtcode", "code", "entry"];
-        match sections.iter().find(|s| s.contains(entry)) {
-            Some(s) if EXEC_SECTIONS.contains(&s.name.as_str()) => {}
-            Some(s) => {
-                return Err(VmmError::MalformedReport(format!(
-                    "`Entry base={entry:#x}` falls inside `Section name={}` — the image \
-                     entry must be code (`rtcode`, or a test image's `entry`/`code` \
-                     harness), not data",
-                    s.name
-                )));
-            }
-            None => {
-                return Err(VmmError::MalformedReport(format!(
-                    "`Entry base={entry:#x}` is outside every `Section` this report declares"
-                )));
-            }
-        }
-    }
-    for (core, base) in core_entries.iter() {
-        if base % 4 != 0 {
-            return Err(VmmError::MalformedReport(format!(
-                "`CoreEntry core={core} base={base:#x}` is not 4-byte aligned (an AArch64 PC must \
-                 be; a report that says otherwise is forged)"
-            )));
-        }
-        if *base == entry {
-            return Err(VmmError::MalformedReport(format!(
-                "`CoreEntry core={core} base={base:#x}` equals core 0's `Entry base=` — two cores \
-                 cannot enter at the same address"
-            )));
-        }
-    }
-    for (i, (c_a, b_a)) in core_entries.iter().enumerate() {
-        for (c_b, b_b) in core_entries.iter().skip(i + 1) {
-            if b_a == b_b {
-                return Err(VmmError::MalformedReport(format!(
-                    "`CoreEntry core={c_a} base={b_a:#x}` and `CoreEntry core={c_b} base={b_b:#x}` \
-                     name the same entry address — two cores cannot enter at the same address"
-                )));
-            }
-        }
-    }
-
-    // (4) Every CoreEntry lands in an executable section.
-    const EXEC_SECTIONS: &[&str] = &["rtcode", "code", "entry"];
-    for (core, base) in core_entries.iter() {
-        let owner = sections.iter().find(|s| s.contains(*base));
-        match owner {
-            Some(s) if EXEC_SECTIONS.contains(&s.name.as_str()) => {}
-            Some(s) => {
-                return Err(VmmError::MalformedReport(format!(
-                    "`CoreEntry core={core} base={base:#x}` falls inside `Section name={}` — a \
-                     secondary entry must be code (`rtcode`, or a test image's `entry`/`code` \
-                     harness), not data",
-                    s.name
-                )));
-            }
-            None => {
-                return Err(VmmError::MalformedReport(format!(
-                    "`CoreEntry core={core} base={base:#x}` is outside every `Section` this report \
-                     declares — a secondary entry must be code"
-                )));
-            }
-        }
-    }
-
-    // (5) Request rings name only brought-up cores.
-    for r in request_rings {
-        let brought_up = r.dst == 0 || core_entries.iter().any(|(c, _)| *c == r.dst);
-        let src_up = r.src == 0 || core_entries.iter().any(|(c, _)| *c == r.src);
-        if !brought_up || !src_up {
-            return Err(VmmError::MalformedReport(format!(
-                "`Ring kind=request src={} dst={} target={}` names a core this image never brings \
-                 up (no `CoreEntry` line for it)",
-                r.src, r.dst, r.target
-            )));
-        }
-    }
-
-    // (6) Ring ranges: pairwise disjoint; disjoint from stacks; disjoint
-    // from every Section other than `rtdata` (and wholly inside `rtdata`
-    // when that section exists).
-    for (i, a) in ring_ranges.iter().enumerate() {
-        for b in ring_ranges.iter().skip(i + 1) {
-            if a.base < b.end() && b.base < a.end() {
-                return Err(VmmError::MalformedReport(format!(
-                    "`Ring kind={} src={} dst={} target={} base={:#x} bytes={}` overlaps \
-                     `Ring kind={} src={} dst={} target={} base={:#x} bytes={}`",
-                    a.kind,
-                    a.src,
-                    a.dst,
-                    a.target,
-                    a.base,
-                    a.bytes,
-                    b.kind,
-                    b.src,
-                    b.dst,
-                    b.target,
-                    b.base,
-                    b.bytes
-                )));
-            }
-        }
-        for core in 0..wrela_machine::VCPUS {
-            let stack_base = wrela_machine::layout::core_stack_base(core);
-            let stack_end = stack_base + wrela_machine::layout::CORE_STACK_SIZE;
-            if a.base < stack_end && stack_base < a.end() {
-                return Err(VmmError::MalformedReport(format!(
-                    "`Ring kind={} src={} dst={} target={} base={:#x} bytes={}` overlaps \
-                     core {core}'s stack [{stack_base:#x}..{stack_end:#x})",
-                    a.kind, a.src, a.dst, a.target, a.base, a.bytes
-                )));
-            }
-        }
-        if let Some(rtdata) = sections.iter().find(|s| s.name == "rtdata") {
-            if a.base < rtdata.base || a.end() > rtdata.end() {
-                return Err(VmmError::MalformedReport(format!(
-                    "`Ring kind={} src={} dst={} target={} base={:#x} bytes={}` is not wholly \
-                     inside `Section name=rtdata base={:#x} size={}` (rings live in `rtdata` only)",
-                    a.kind, a.src, a.dst, a.target, a.base, a.bytes, rtdata.base, rtdata.size
-                )));
-            }
-        } else {
-            for s in sections {
-                if a.base < s.end() && s.base < a.end() {
-                    return Err(VmmError::MalformedReport(format!(
-                        "`Ring kind={} src={} dst={} target={} base={:#x} bytes={}` overlaps \
-                         `Section name={} base={:#x} size={}` (rings live in `rtdata` only)",
-                        a.kind, a.src, a.dst, a.target, a.base, a.bytes, s.name, s.base, s.size
-                    )));
-                }
-            }
-        }
-    }
-
-    // (7) Declared Actor/Driver index= ids are unique.
-    for (i, a) in declared_roots.iter().enumerate() {
-        for b in declared_roots.iter().skip(i + 1) {
-            if a.id == b.id {
-                return Err(VmmError::MalformedReport(format!(
-                    "declared root `{}` is repeated",
-                    a.id
-                )));
-            }
-        }
-    }
-
-    // (9) Every request ring's `target=` names a root this report
-    // declares. A ring is the delivery path into a mailbox, so a target
-    // no `Actor`/`Driver` line accounts for is a forged edge — the same
-    // set-level defect as a repeated `Placement id=`, one field over.
-    // A reply ring carries `target=-` (it delivers back to its caller,
-    // not into a named mailbox) and is exempt by that spelling.
-    if !declared_roots.is_empty() || !layout_root_names.is_empty() {
-        for r in ring_ranges {
-            if r.target == "-" {
-                continue;
-            }
-            let known = declared_roots.iter().any(|d| d.type_name == r.target)
-                || layout_root_names.iter().any(|n| n == &r.target);
-            if !known {
-                let mut declared: Vec<&str> = declared_roots
-                    .iter()
-                    .map(|d| d.type_name.as_str())
-                    .chain(layout_root_names.iter().map(|s| s.as_str()))
-                    .collect();
-                declared.sort_unstable();
-                declared.dedup();
-                return Err(VmmError::MalformedReport(format!(
-                    "`Ring kind={} src={} dst={} target={}` names a root this report never \
-                     declares (known roots: {}) — a ring is the delivery path into a mailbox, \
-                     so a target no `Actor`/`Driver` line accounts for is a forged edge",
-                    r.kind,
-                    r.src,
-                    r.dst,
-                    r.target,
-                    declared.join(", ")
-                )));
-            }
-        }
-    }
-
-    // (8) Placement set — only when Placement lines are present (the
-    // VMM-facing subset from `append_vmm_runtime_lines` emits none).
-    if placements.is_empty() {
-        return Ok(());
-    }
-
-    for (i, a) in placements.iter().enumerate() {
-        for b in placements.iter().skip(i + 1) {
-            if a.id == b.id {
-                return Err(VmmError::MalformedReport(format!(
-                    "`Placement id={}` is repeated (an actor/driver is placed exactly once; two \
-                     lines would put the same root on cores {} and {})",
-                    a.id, a.core, b.core
-                )));
-            }
-        }
-    }
-
-    for p in placements {
-        let core_up = p.core == 0 || core_entries.iter().any(|(c, _)| *c == p.core);
-        if !core_up {
-            return Err(VmmError::MalformedReport(format!(
-                "`Placement id={} core={}` names a core this image never brings up (no \
-                 `CoreEntry` line for it; core 0 is the `Entry base=` line)",
-                p.id, p.core
-            )));
-        }
-
-        if let Some(root) = declared_roots.iter().find(|r| r.id == p.id) {
-            if root.type_name != p.type_name {
-                return Err(VmmError::MalformedReport(format!(
-                    "`Placement id={} type={}` disagrees with the declared root's `type={}`",
-                    p.id, p.type_name, root.type_name
-                )));
-            }
-        } else if layout_root_names.iter().any(|n| n == &p.id) {
-            // Bare-name Placement against a layout-section Actor name=.
-        } else if !declared_roots.is_empty() || !layout_root_names.is_empty() {
-            let declared: Vec<&str> = declared_roots
-                .iter()
-                .map(|r| r.id.as_str())
-                .chain(layout_root_names.iter().map(|s| s.as_str()))
-                .collect();
-            return Err(VmmError::MalformedReport(format!(
-                "`Placement id={}` names an actor this report's `Actor` lines do not \
-                 declare (declared: {declared:?})",
-                p.id
-            )));
-        }
-    }
-
-    if !declared_roots.is_empty() {
-        for root in declared_roots {
-            let n = placements.iter().filter(|p| p.id == root.id).count();
-            if n == 0 {
-                return Err(VmmError::MalformedReport(format!(
-                    "declared root `{}` (type={}) has no `Placement` line — every Actor/Driver \
-                     is placed exactly once",
-                    root.id, root.type_name
-                )));
-            }
-            let _ = n;
-        }
-    }
-
-    Ok(())
-}
-
-/// Boots `img_path` (a flat blob, loaded at `wrela_machine::layout::
-/// IMAGE_BASE`, exactly as `layout::layout_test_image`/`layout_program`
-/// emit it) under `report_path`'s own declared configuration, on
-/// Hypervisor.framework — the VMM's whole public entry point (plans/M5.md
-/// item E).
-///
-/// **Every one of guest DRAM's `DRAM_SIZE` (1 GiB) bytes is zeroed before
-/// the vCPU ever runs** (`std::alloc::alloc_zeroed`) — 06 §3's own "zeroes
-/// the declared reservations" boot step, and not merely a tidiness
-/// convention: chasing an unrelated test bug during this item's own
-/// development (`wrela-compiler/src/layout.rs`'s `harness_jit` module doc)
-/// found that a write from freshly-JIT'd/executed code to a never-before-
-/// touched anonymous page was not reliably observable without the page
-/// having been faulted in first — pre-zeroing the whole reservation here
-/// removes any question of whether that same class of issue could ever
-/// affect a real guest write to a freshly mapped page.
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-pub fn boot_image(report_path: &Path, img_path: &Path) -> Result<BootOutcome, VmmError> {
-    boot_image_core(report_path, img_path, None, None).map(|(outcome, _divergences)| outcome)
-}
-
-/// The shared boot core (plans/M5.md item F, grown by plans/M6.md item E
-/// into the choice-sequence shape): identical to `boot_image` above in
-/// every respect but two extra parameters.
-///
-/// `replay_choices`: `None` (live/record mode) or `Some(log)` (replay
-/// mode) — every nondeterministic decision this boot's exit loop makes
-/// (a clock read, a deadline park's own wake) flows through exactly one
-/// `record::Chooser::choose_next` call (decision 9's own single-point-of-
-/// choice mandate), which either produces a fresh live value (recording
-/// it) or consumes the next tagged entry from `log` (replaying it,
-/// diverging loudly — via the second return value — on a tag mismatch or
-/// underrun, never a panic and never a silently wrong value). `boot_image`
-/// itself is simply this function called with `replay_choices: None`.
-///
-/// `test_delayed_raise`: `cfg(test)`-only conformance seam (this crate's
-/// own tests module is the only caller — plans/M6.md item E's
-/// conformance test (a), "vector raise observed at a checkpoint"): after
-/// `(delay, vector_bit)`, a background host thread stores `vector_bit`
-/// directly into this core's own pending word — a raw host-side memory
-/// write, no vCPU exit involved, exactly modeling "the VMM raises a
-/// vector while the guest is actively running, not parked" (06 §4's own
-/// store-half of "a store-release plus a wake" — no wake is needed here
-/// since the vCPU was never parked). This path is **not** itself
-/// recorded/replayed (a host-timing-dependent raise cannot be replayed
-/// deterministically without a virtual clock this milestone does not
-/// have) — it exists purely to prove the checkpoint-service dispatch
-/// mechanism honestly, since M6-E's only *real* mid-run vector producer
-/// (an expired group's deadline while its target is still running) is
-/// item F's own job. Always `None` on every production call site
-/// (`boot_image`, `record::record`, `record::replay`).
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn boot_image_core(
-    report_path: &Path,
-    img_path: &Path,
-    replay_choices: Option<Vec<record::ChoiceEntry>>,
-    test_delayed_raise: Option<(Duration, u64)>,
-) -> Result<(BootOutcome, Vec<record::Divergence>), VmmError> {
-    use hv::*;
-    use std::alloc::{Layout, alloc_zeroed, dealloc};
-    use std::ffi::c_void;
-    use wrela_machine::layout as machine_layout;
-    use wrela_machine::machine_info;
-
-    let report_text = std::fs::read_to_string(report_path)
-        .map_err(|e| VmmError::Io(format!("read {}: {e}", report_path.display())))?;
-    let parsed = parse_report(&report_text)?;
-    let img = std::fs::read(img_path)
-        .map_err(|e| VmmError::Io(format!("read {}: {e}", img_path.display())))?;
-    validate_report_digests(&parsed, &img)?;
-
-    let image_off = machine_layout::IMAGE_BASE - machine_layout::DRAM_BASE;
-    if image_off + (img.len() as u64) > machine_layout::DRAM_SIZE {
-        return Err(VmmError::BadImage(format!(
-            "image ({} bytes at offset {:#x}) does not fit the {} byte DRAM reservation",
-            img.len(),
-            image_off,
-            machine_layout::DRAM_SIZE
-        )));
-    }
-
-    // --- hv_vm_create --------------------------------------------------------
-    let r = unsafe { hv_vm_create(std::ptr::null_mut()) };
-    if r != HV_SUCCESS {
-        return Err(VmmError::Hvf {
-            call: "hv_vm_create",
-            code: r,
-        });
-    }
-    // From here on, every early-return must still run `hv_vm_destroy` — a
-    // small RAII guard makes that automatic instead of repeated at every
-    // `return Err`.
-    struct VmGuard;
-    impl Drop for VmGuard {
-        fn drop(&mut self) {
-            unsafe {
-                hv_vm_destroy();
-            }
-        }
-    }
-    let _vm_guard = VmGuard;
-
-    // --- host DRAM allocation (zeroed, 16 KiB aligned — Apple Silicon's own
-    // page size, plenty for hv_vm_map's own alignment requirement) -----------
-    const PAGE_ALIGN: usize = 16 * 1024;
-    let dram_size = machine_layout::DRAM_SIZE as usize;
-    let layout = Layout::from_size_align(dram_size, PAGE_ALIGN)
-        .map_err(|e| VmmError::BadImage(format!("bad DRAM layout: {e}")))?;
-    let host_ram = unsafe { alloc_zeroed(layout) };
-    if host_ram.is_null() {
-        return Err(VmmError::BadImage(
-            "failed to allocate the guest DRAM reservation".to_string(),
-        ));
-    }
-    struct RamGuard {
-        ptr: *mut u8,
-        layout: Layout,
-    }
-    impl Drop for RamGuard {
-        fn drop(&mut self) {
-            unsafe {
-                dealloc(self.ptr, self.layout);
-            }
-        }
-    }
-    let _ram_guard = RamGuard {
-        ptr: host_ram,
-        layout,
-    };
-
-    // W^X: map the whole reservation RW (never RWX). Executable sections
-    // from the report are raised to RX via `hv_vm_protect` after the
-    // image bytes are copied in — a guest that later stores into those
-    // pages faults rather than executing its own write.
-    let r = unsafe {
-        hv_vm_map(
-            host_ram as *mut c_void,
-            machine_layout::DRAM_BASE,
-            dram_size,
-            HV_MEMORY_READ | HV_MEMORY_WRITE,
-        )
-    };
-    if r != HV_SUCCESS {
-        return Err(VmmError::Hvf {
-            call: "hv_vm_map",
-            code: r,
-        });
-    }
-
-    // --- load the image + machine-info page ----------------------------------
-    unsafe {
-        std::ptr::copy_nonoverlapping(img.as_ptr(), host_ram.add(image_off as usize), img.len());
-    }
-    apply_wx_exec_protections(&parsed.exec_sections)?;
-    let info_off = (machine_layout::MACHINE_INFO_BASE - machine_layout::DRAM_BASE) as usize;
-    unsafe {
-        let rev_bytes = wrela_machine::MACHINE_REVISION_STR.as_bytes();
-        std::ptr::copy_nonoverlapping(
-            rev_bytes.as_ptr(),
-            host_ram.add(info_off + machine_info::OFF_REVISION as usize),
-            rev_bytes.len(),
-        );
-        // Wall-clock seed: 0, deterministic at M5 (plans/M5.md item E's
-        // own boot-path note — recorded here, not merely implied).
-        std::ptr::write_bytes(
-            host_ram.add(info_off + machine_info::OFF_WALL_SEED as usize),
-            0,
-            8,
-        );
-    }
-
-    // --- device model + boot-time injections, before any vCPU runs --------
-    // Establish the monotonic epoch before the guest's first instruction,
-    // so `now()` measures from the machine coming up rather than from
-    // whichever guest read happened to be first (`monotonic_ns`'s own doc).
-    let _ = monotonic_ns();
-    // plans/M7.md item F: the declared `blk` device model, preconfigured
-    // from the report (06 §3) before the vCPU ever runs. `None` unless the
-    // report declares one, which nothing the compiler emits does yet — so
-    // every existing image boots down exactly the path it did before.
-    let blk: Option<BlkState> = match parsed.blk {
-        None => None,
-        Some(cfg) => {
-            let pools = cfg.pools.clone();
-            let vector = cfg.vector;
-            let device_index = cfg.device;
-            let device = devices::BlkDevice::new(cfg).map_err(VmmError::BadImage)?;
-            // plans/M8.md item P: the view is *this device's*. Every
-            // declared window goes in; only the ones bound to
-            // `device_index` are reachable through it.
-            let mem = unsafe { devices::GuestMem::new(host_ram, pools, device_index) }
-                .map_err(VmmError::BadImage)?;
-            // Completion-time `interrupt_status` writer: same GPA the
-            // boot-time `IrqHostInject` names, when this device owns a
-            // vector. Plans/M7.md item E4: the ISR masks bit 0 after a
-            // real used-ring completion, not only the one-shot boot inject.
-            let irq_status_gpa = vector.and_then(|v| {
-                parsed
-                    .irq_injects
-                    .iter()
-                    .find_map(|inj| (inj.vector == v).then_some(inj.base.checked_add(inj.offset)?))
-            });
-            Some(BlkState {
-                device,
-                mem,
-                irq_status_gpa,
-            })
-        }
-    };
-    // plans/M7.md item G: write `interrupt_status` then raise the vector
-    // before the guest's first instruction. The status value is the
-    // compiler's `IRQ_HOST_STATUS_MAGIC` — a word the zeroed reservation
-    // cannot produce — so an ISR that asserts equality has proved the
-    // host write, not a vacuous zero read.
-    for inj in &parsed.irq_injects {
-        let guest = inj.base.checked_add(inj.offset).ok_or_else(|| {
-            VmmError::BadImage(format!(
-                "IrqHostInject base={:#x}+offset={:#x} overflows",
-                inj.base, inj.offset
-            ))
-        })?;
-        let off = guest_dram_offset(guest, 4, "IrqHostInject")?;
-        check_vector_in_range(inj.vector)?;
-        unsafe {
-            std::ptr::copy_nonoverlapping(inj.status.to_le_bytes().as_ptr(), host_ram.add(off), 4);
-        }
-        raise_vector(host_ram, inj.vector)?;
-    }
-
-    // --- plans/M6.md item E's own conformance-only seam: a delayed,
-    // host-side raise (module doc above) — absent (`None`) on every
-    // production path. `host_ram` is a raw pointer into this fn's own
-    // `alloc_zeroed` reservation, alive for the whole fn body (`_ram_guard`
-    // frees it only on return) — a plain byte store into it from another
-    // host thread is exactly as safe as the main thread's own later
-    // `drain_console`/park-handling reads of the identical region, wrapped
-    // only so `std::thread::spawn` accepts the raw pointer at all.
-    struct SendPtr(*mut u8);
-    unsafe impl Send for SendPtr {}
-    /// Joins the raiser thread on drop — guarantees it is finished (and
-    /// therefore never touches `host_ram` again) before `_ram_guard`
-    /// (declared earlier, dropped later — Rust drops in reverse
-    /// declaration order) deallocates the reservation this thread writes
-    /// into.
-    struct RaiseGuard(Option<std::thread::JoinHandle<()>>);
-    impl Drop for RaiseGuard {
-        fn drop(&mut self) {
-            if let Some(h) = self.0.take() {
-                let _ = h.join();
-            }
-        }
-    }
-    let _raise_guard = RaiseGuard(test_delayed_raise.map(|(delay, vector_bit)| {
-        let ptr = SendPtr(host_ram);
-        let raise_pending_off =
-            (wrela_machine::pending::core_word_addr(0) - machine_layout::DRAM_BASE) as usize;
-        std::thread::spawn(move || {
-            // `let ptr = ptr;` forces the closure to capture the whole
-            // `SendPtr` value (Rust 2021's disjoint-field capture would
-            // otherwise capture only the inner `*mut u8` field directly,
-            // which is not `Send` on its own — `SendPtr`'s own `unsafe
-            // impl Send` only helps if the wrapper itself is what gets
-            // captured).
-            let ptr = ptr;
-            std::thread::sleep(delay);
-            let SendPtr(base) = ptr;
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    vector_bit.to_le_bytes().as_ptr(),
-                    base.add(raise_pending_off),
-                    8,
-                );
-            }
-        })
-    }));
-
-    // --- the three vCPUs (plans/M8.md item C1, decision 11) ----------------
-    //
-    // 06-machine.md §1 gives this machine three vCPUs, and §3 makes core 0's
-    // own entry "release the other vCPUs". Hypervisor.framework binds a vCPU
-    // to the thread that created it, so there are three host threads — but
-    // exactly one of them is inside `hv_vcpu_run` at any instant, because
-    // they pass a single **baton** whose hand-off order is a pure function of
-    // guest-visible state: which cores the guest has released, which have
-    // parked, and what their own pending words hold. Nothing in `next_core`
-    // below reads a host clock, a thread id, or an address to decide who runs
-    // next — otherwise `xtask repro` would be measuring the host's scheduler,
-    // and 06 §8's enumerable choice sequence would have quietly become an
-    // opaque interleaving trace (decision 11's own rejected alternative).
-    //
-    // The baton changes hands at exactly two guest actions, both of them
-    // things the guest itself does and a recording can therefore replay:
-    // the release doorbell (core 0 hands off to each released core in
-    // ascending order) and a park (a core with nothing ready hands off).
-    // Every other exit keeps the baton, which is why a single-core image —
-    // where cores 1 and 2 are never released and the release store is never
-    // even emitted — runs down exactly the path it ran before this item.
-    const NCORES: usize = wrela_machine::VCPUS;
-
-    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-    enum CoreState {
-        /// Created and register-initialized, never released by the guest.
-        Unreleased,
-        /// Eligible for the baton.
-        Runnable,
-        /// Parked at `mmio::PARK_MMIO_ADDR` with nothing of its own to run.
-        /// Runnable again only when its own pending word is nonzero — the
-        /// mask-arm-recheck discipline, read out of guest memory rather than
-        /// remembered host-side.
-        Parked,
-        /// Its loop has ended (the boot finished, faulted, or timed out).
-        Finished,
-    }
-
-    struct Sched {
-        /// Whose turn it is. Only this core may be inside `hv_vcpu_run`.
-        current: usize,
-        state: [CoreState; NCORES],
-        /// The boot is over (halt, fault, or timeout); every core returns.
-        done: bool,
-    }
-
-    struct Shared {
-        sched: Sched,
-        chooser: record::Chooser,
-        blk: Option<BlkState>,
-        exits: u64,
-        exit_code: Option<u64>,
-        /// The first failure any core reported — a boot fails closed on the
-        /// first one, it never reports a partial transcript as success.
-        error: Option<VmmError>,
-        /// Live vCPU handles, for the watchdog's own `hv_vcpus_exit`. A core
-        /// clears its own slot **under this lock, strictly before**
-        /// destroying its vCPU, so the watchdog can never force-exit a
-        /// handle that no longer exists.
-        vcpus: [u64; NCORES],
-        /// Did the guest ring the release doorbell? Recorded rather than
-        /// inferred from `sched.state`, which is `Finished` for every core
-        /// by the time the marks are checked and so cannot say whether a
-        /// core was ever released.
-        released: bool,
-        /// plans/M8.md item C3: the cross-core admission witness (06 §8).
-        /// Empty `rings` for every single-core image, which is what makes
-        /// their choice sequences byte-identical to their pre-C3 ones.
-        admission: AdmissionWitness,
-    }
-    // Every field above is touched only by the thread currently holding the
-    // baton (or by the main thread, before any core runs and after all have
-    // finished); the `Mutex` is what publishes those writes across threads.
-    unsafe impl Send for Shared {}
-
-    /// Core `core`'s own pending-vector word, read straight out of guest
-    /// memory — the only thing that can make a parked core runnable again,
-    /// and guest-visible by construction (06 §4).
-    fn pending_word(host_ram: *const u8, core: usize) -> u64 {
-        let off =
-            (wrela_machine::pending::core_word_addr(core) - machine_layout::DRAM_BASE) as usize;
-        let mut b = [0u8; 8];
-        unsafe { std::ptr::copy_nonoverlapping(host_ram.add(off), b.as_mut_ptr(), 8) };
-        u64::from_le_bytes(b)
-    }
-
-    /// The baton's whole hand-off rule: the next core after `from`, in
-    /// ascending core order (wrapping, so a lone runnable core hands the
-    /// baton back to itself), that guest-visible state says can run.
-    fn next_core(sched: &mut Sched, from: usize, host_ram: *const u8) -> Option<usize> {
-        for step in 1..=NCORES {
-            let c = (from + step) % NCORES;
-            match sched.state[c] {
-                CoreState::Runnable => return Some(c),
-                CoreState::Parked if pending_word(host_ram, c) != 0 => {
-                    sched.state[c] = CoreState::Runnable;
-                    return Some(c);
-                }
-                _ => {}
-            }
-        }
-        None
-    }
-
-    /// What a handled exit asks of the baton.
-    enum Step {
-        /// Ordinary exit — this core keeps running.
-        Keep,
-        /// This core volunteers the machine (release, or a park).
-        Yield,
-        /// The guest's exit protocol: the image is done.
-        Halt(u64),
-    }
-
-    let cores_declared = 1 + parsed.core_entries.len();
-    let shared = std::sync::Mutex::new(Shared {
-        sched: Sched {
-            current: 0,
-            state: {
-                let mut s = [CoreState::Unreleased; NCORES];
-                s[0] = CoreState::Runnable;
-                s
-            },
-            done: false,
-        },
-        released: false,
-        chooser: match replay_choices {
-            // Live replay fails closed on the first divergence (06 §8);
-            // unit tests of the chooser itself leave `.strict()` off.
-            Some(log) => record::Chooser::replayer(log).strict(),
-            None => record::Chooser::recorder(),
-        },
-        blk,
-        exits: 0,
-        exit_code: None,
-        error: None,
-        vcpus: [0; NCORES],
-        admission: AdmissionWitness::new(parsed.request_rings.clone()),
-    });
-    let baton = std::sync::Condvar::new();
-
-    /// One vCPU exit, decoded and serviced on the core that took it. Every
-    /// diagnostic here names its core: with three of them, "unhandled
-    /// exception" without a core is a bug report missing its first fact.
-    #[allow(clippy::too_many_arguments)]
-    fn handle_exit(
-        core: usize,
-        vcpu: u64,
-        exit_ptr: *const HvVcpuExit,
-        host_ram: *mut u8,
-        cores_declared: usize,
-        lock: &std::sync::Mutex<Shared>,
-    ) -> Result<Step, VmmError> {
-        use wrela_machine::mmio;
-        let deadline_off = (machine_layout::MACHINE_INFO_BASE - machine_layout::DRAM_BASE) as usize
-            + wrela_machine::machine_info::OFF_NEXT_DEADLINE as usize;
-        let exit = unsafe { *exit_ptr };
-        match exit.reason {
-            HV_EXIT_REASON_EXCEPTION => {
-                let esr = exit.exception.syndrome;
-                let ipa = exit.exception.physical_address;
-                if ipa == mmio::EXIT_MMIO_ADDR {
-                    let Some(da) = decode_data_abort(esr) else {
-                        return Err(VmmError::GuestFault(format!(
-                            "core {core}: unhandled access shape at EXIT_MMIO_ADDR (esr={esr:#x})"
-                        )));
-                    };
-                    if !da.write {
-                        return Err(VmmError::GuestFault(format!(
-                            "core {core}: a load from EXIT_MMIO_ADDR is not part of the exit \
-                             protocol"
-                        )));
-                    }
-                    let value = match da.reg {
-                        Some(reg) => {
-                            let mut v = 0u64;
-                            let r = unsafe { hv_vcpu_get_reg(vcpu, hv_reg_xn(reg), &mut v) };
-                            if r != HV_SUCCESS {
-                                return Err(VmmError::Hvf {
-                                    call: "hv_vcpu_get_reg",
-                                    code: r,
-                                });
-                            }
-                            v
-                        }
-                        None => 0, // SRT == 31: XZR, architecturally zero.
-                    };
-                    Ok(Step::Halt(value))
-                } else if ipa == mmio::CLOCK_MMIO_ADDR {
-                    let Some(da) = decode_data_abort(esr) else {
-                        return Err(VmmError::GuestFault(format!(
-                            "core {core}: unhandled access shape at CLOCK_MMIO_ADDR (esr={esr:#x})"
-                        )));
-                    };
-                    if da.write {
-                        return Err(VmmError::GuestFault(format!(
-                            "core {core}: a store to CLOCK_MMIO_ADDR is not part of the clock \
-                             protocol"
-                        )));
-                    }
-                    // plans/M6.md item E, decision 9: the single point of
-                    // choice — record produces a fresh live read, replay
-                    // consumes the next logged one (never re-reading the
-                    // real clock).
-                    let entry = {
-                        let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
-                        g.chooser.choose_checked(record::ChoiceRequest::ClockRead, || {
-                            record::ChoiceEntry::ClockRead {
-                                value: monotonic_ns(),
-                            }
-                        })?
-                    };
-                    let record::ChoiceEntry::ClockRead { value: ns } = entry else {
-                        unreachable!(
-                            "choose_checked(ClockRead, ..) always returns a ClockRead-shaped entry \
-                             (a mismatched replay tag falls back to the request's own shape)"
-                        )
-                    };
-                    if let Some(reg) = da.reg {
-                        let r = unsafe { hv_vcpu_set_reg(vcpu, hv_reg_xn(reg), ns) };
-                        if r != HV_SUCCESS {
-                            return Err(VmmError::Hvf {
-                                call: "hv_vcpu_set_reg",
-                                code: r,
-                            });
-                        }
-                    }
-                    advance_pc(vcpu)?;
-                    Ok(Step::Keep)
-                } else if ipa == mmio::RELEASE_MMIO_ADDR {
-                    // plans/M8.md item C1 / 06 §3: "the entry ... releases
-                    // the other vCPUs". Everything about this store is
-                    // checked rather than assumed — a machine that starts
-                    // cores nobody asked it to start is exactly the
-                    // silent-wrong-answer this item exists to remove.
-                    let Some(da) = decode_data_abort(esr) else {
-                        return Err(VmmError::GuestFault(format!(
-                            "core {core}: unhandled access shape at RELEASE_MMIO_ADDR \
-                             (esr={esr:#x})"
-                        )));
-                    };
-                    if !da.write {
-                        return Err(VmmError::GuestFault(format!(
-                            "core {core}: a load from RELEASE_MMIO_ADDR is not part of the \
-                             release protocol"
-                        )));
-                    }
-                    if core != 0 {
-                        return Err(VmmError::GuestFault(format!(
-                            "core {core} rang the release doorbell: only the boot core releases \
-                             the others (06-machine.md §3)"
-                        )));
-                    }
-                    let value = match da.reg {
-                        Some(reg) => {
-                            let mut v = 0u64;
-                            let r = unsafe { hv_vcpu_get_reg(vcpu, hv_reg_xn(reg), &mut v) };
-                            if r != HV_SUCCESS {
-                                return Err(VmmError::Hvf {
-                                    call: "hv_vcpu_get_reg",
-                                    code: r,
-                                });
-                            }
-                            v
-                        }
-                        None => 0,
-                    };
-                    if value != cores_declared as u64 {
-                        return Err(VmmError::GuestFault(format!(
-                            "core 0 released {value} core(s) but this image's report declares \
-                             {cores_declared} (one `Entry base=` plus {} `CoreEntry` line(s)) — \
-                             the image and its report disagree about the machine",
-                            cores_declared - 1
-                        )));
-                    }
-                    advance_pc(vcpu)?;
-                    let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
-                    for c in 1..cores_declared {
-                        if g.sched.state[c] != CoreState::Unreleased {
-                            return Err(VmmError::GuestFault(format!(
-                                "core 0 rang the release doorbell twice (core {c} is already \
-                                 {:?}) — release is a one-shot boot step",
-                                g.sched.state[c]
-                            )));
-                        }
-                        g.sched.state[c] = CoreState::Runnable;
-                    }
-                    g.released = true;
-                    drop(g);
-                    Ok(Step::Yield)
-                } else if ipa == mmio::QUIESCE_MMIO_ADDR {
-                    // plans/M8.md item F / decision 36, 03-hardware.md §9:
-                    // "per-queue reset (when negotiated) or full reset
-                    // establishes quiescence, and only then is memory
-                    // reclaimed". The device is this VMM, so quiescence is
-                    // a thing only this VMM can establish — the guest's
-                    // reset traps here first, and the count word it will
-                    // later gate a reclaim on is written *by the host*,
-                    // after the model has actually stopped using the ring.
-                    let Some(da) = decode_data_abort(esr) else {
-                        return Err(VmmError::GuestFault(format!(
-                            "core {core}: unhandled access shape at QUIESCE_MMIO_ADDR \
-                             (esr={esr:#x})"
-                        )));
-                    };
-                    if !da.write {
-                        return Err(VmmError::GuestFault(format!(
-                            "core {core}: a load from QUIESCE_MMIO_ADDR is not part of the \
-                             quiesce protocol"
-                        )));
-                    }
-                    let named = match da.reg {
-                        Some(reg) => {
-                            let mut v = 0u64;
-                            let r = unsafe { hv_vcpu_get_reg(vcpu, hv_reg_xn(reg), &mut v) };
-                            if r != HV_SUCCESS {
-                                return Err(VmmError::Hvf {
-                                    call: "hv_vcpu_get_reg",
-                                    code: r,
-                                });
-                            }
-                            v
-                        }
-                        None => 0,
-                    };
-                    {
-                        let g = &mut *lock.lock().unwrap_or_else(|e| e.into_inner());
-                        let Some(state) = g.blk.as_mut() else {
-                            return Err(VmmError::GuestFault(format!(
-                                "core {core} rang the quiesce doorbell, but this image declares \
-                                 no `blk` device to quiesce (03-hardware.md §9)"
-                            )));
-                        };
-                        let completions =
-                            state
-                                .device
-                                .quiesce(&mut state.mem, named)
-                                .map_err(|fault| {
-                                    VmmError::GuestFault(format!("virtio-blk: {fault}"))
-                                })?;
-                        commit_completions(state, &mut g.chooser, &completions, host_ram)?;
-                    }
-                    advance_pc(vcpu)?;
-                    Ok(Step::Keep)
-                } else if ipa == mmio::PARK_MMIO_ADDR {
-                    // plans/M6.md item E, decision 7/06 §5: the park
-                    // protocol's own doorbell (`mmio::PARK_MMIO_ADDR`'s
-                    // own module doc has the whole contract).
-                    let Some(da) = decode_data_abort(esr) else {
-                        return Err(VmmError::GuestFault(format!(
-                            "core {core}: unhandled access shape at PARK_MMIO_ADDR (esr={esr:#x})"
-                        )));
-                    };
-                    if !da.write {
-                        return Err(VmmError::GuestFault(format!(
-                            "core {core}: a load from PARK_MMIO_ADDR is not part of the park \
-                             protocol"
-                        )));
-                    }
-                    // Advance PC now — the guest resumes right after its
-                    // own trapping store the moment this vCPU is next run,
-                    // whether or not this park ends up sleeping at all.
-                    advance_pc(vcpu)?;
-                    if core != 0 {
-                        // plans/M8.md item C1: a secondary core's park is a
-                        // plain "nothing of mine is ready". It never sleeps
-                        // on a deadline (`OFF_NEXT_DEADLINE` is the boot
-                        // core's own park word, and no turn can arm a
-                        // deadline on a core no message can reach yet) and
-                        // it never spins: this core stops being scheduled
-                        // until its own pending word is raised, which is
-                        // item C2's cross-core wake.
-                        let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
-                        g.sched.state[core] = CoreState::Parked;
-                        drop(g);
-                        return Ok(Step::Yield);
-                    }
-                    let deadline_ns = unsafe {
-                        let mut b = [0u8; 8];
-                        std::ptr::copy_nonoverlapping(
-                            host_ram.add(deadline_off),
-                            b.as_mut_ptr(),
-                            8,
-                        );
-                        u64::from_le_bytes(b)
-                    };
-                    // plans/M8.md item C2, decision 31: in a cross-core image,
-                    // core 0 parking with **no deadline armed** is exactly a
-                    // secondary core's park — "nothing of mine is ready" — and
-                    // is treated identically: this core stops being scheduled
-                    // until its own pending word is raised. There is nothing to
-                    // sleep until, so the deadline path below does not apply.
-                    //
-                    // **It is deliberately handled before the runnable-sibling
-                    // shortcut below**, and that ordering is the whole reason a
-                    // lost wake is catchable. Leaving core 0 `Runnable` because
-                    // some sibling happened to be runnable would mean core 0
-                    // gets the baton back whether or not anything ever woke it,
-                    // so an omitted cross-core wake would still boot green — a
-                    // decorative mechanism, found by mutating `waker_tag` and
-                    // watching every golden pass. Marking it `Parked` puts its
-                    // resumption where the machine's own contract puts it: on
-                    // its pending word. `next_core` then either finds a runnable
-                    // sibling, finds this core's own word already raised, or
-                    // fails the boot closed with `no core is runnable` — which
-                    // is what replaces the guest-side `DEADLOCK_MSG` for a
-                    // cross-core image.
-                    //
-                    // Unreachable for a single-core image: its entry driver only
-                    // parks when a deadline is armed, so every M5-M7 boot takes
-                    // the untouched path below.
-                    if cores_declared > 1 && deadline_ns == 0 {
-                        let blk_completed = {
-                            let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
-                            let g = &mut *g;
-                            service_blk(&mut g.blk, &mut g.chooser, host_ram)?
-                        };
-                        // The mask-arm-recheck "recheck" half: a wake that
-                        // landed between the guest's last look and this trap
-                        // must not put the core to sleep.
-                        if !blk_completed && pending_word(host_ram, core) == 0 {
-                            let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
-                            g.sched.state[core] = CoreState::Parked;
-                        }
-                        return Ok(Step::Yield);
-                    }
-                    // Core 0, with a deadline armed. A sibling that can run gets
-                    // the machine before this core considers sleeping the host
-                    // thread — sleeping while another core is ready would be the
-                    // baton deciding scheduling by host timing, which
-                    // decision 11 forbids. With no runnable sibling (every
-                    // single-core image, always) this is exactly the M6
-                    // park path, unchanged.
-                    {
-                        let g = lock.lock().unwrap_or_else(|e| e.into_inner());
-                        let sibling = (1..NCORES).any(|c| {
-                            g.sched.state[c] == CoreState::Runnable
-                                || (g.sched.state[c] == CoreState::Parked
-                                    && pending_word(host_ram, c) != 0)
-                        });
-                        if sibling {
-                            drop(g);
-                            return Ok(Step::Yield);
-                        }
-                    }
-                    // plans/M7.md item F: the second doorbell poll site
-                    // (06 §5). A completion serviced *here* — after the
-                    // guest published and rang, before this VMM decides to
-                    // sleep — is exactly the wake the mask-arm-recheck
-                    // discipline exists to keep: a doorbell rung between
-                    // the driver's last check and its park must never
-                    // sleep the core that is waiting for it.
-                    let blk_completed = {
-                        let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
-                        let g = &mut *g;
-                        service_blk(&mut g.blk, &mut g.chooser, host_ram)?
-                    };
-                    // The mask-arm-recheck discipline's own "recheck"
-                    // half (`mmio::PARK_MMIO_ADDR`'s own doc): a vector
-                    // already pending at the moment of this trap means a
-                    // wake already happened (or was never needed) — do
-                    // not sleep at all, so it is never lost.
-                    let already_pending = pending_word(host_ram, core) != 0;
-                    if !already_pending && !blk_completed {
-                        {
-                            let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
-                            g.chooser.choose_checked(
-                                record::ChoiceRequest::DeadlineWake { deadline_ns },
-                                || {
-                                    // The real, host-side sleep — never
-                                    // invoked in replay mode (decision 9:
-                                    // "sleep skipped under replay").
-                                    let now = monotonic_ns();
-                                    if deadline_ns > now {
-                                        std::thread::sleep(Duration::from_nanos(deadline_ns - now));
-                                    }
-                                    record::ChoiceEntry::DeadlineWake { deadline_ns }
-                                },
-                            )?;
-                            g.chooser.choose_checked(
-                                record::ChoiceRequest::VectorRaise { vector: 0 },
-                                || record::ChoiceEntry::VectorRaise { vector: 0 },
-                            )?;
-                        }
-                        // The raise itself (06 §4: "a store-release plus
-                        // a wake"): a plain host-side write into this
-                        // core's own pending word. No separate wake is
-                        // needed — resuming this already-exited vCPU on
-                        // the next loop iteration below *is* the wake.
-                        raise_vector(host_ram, 0)?;
-                    }
-                    Ok(Step::Keep)
-                } else if let Some(imm) = decode_brk(esr) {
-                    let pc = read_pc(vcpu).unwrap_or(0);
-                    Err(VmmError::GuestFault(format!(
-                        "core {core}: unexpected `BRK #{imm}` (esr={esr:#x}, ipa={ipa:#x}, \
-                         pc={pc:#x})"
-                    )))
-                } else {
-                    let pc = read_pc(vcpu).unwrap_or(0);
-                    let note = el1_exception_note(vcpu, pc);
-                    Err(VmmError::GuestFault(format!(
-                        "core {core}: unhandled exception (esr={esr:#x}, ipa={ipa:#x}, \
-                         pc={pc:#x}){note}"
-                    )))
-                }
-            }
-            HV_EXIT_REASON_CANCELED => {
-                // The watchdog force-exited every vCPU; whichever one was
-                // inside `hv_vcpu_run` reports the hang, and names itself —
-                // "which core hung" is the first thing a three-core hang
-                // needs to say.
-                let transcript_so_far = drain_console(host_ram);
-                Err(VmmError::Timeout {
-                    core,
-                    transcript_so_far,
-                })
-            }
-            other => Err(VmmError::GuestFault(format!(
-                "core {core}: unexpected hv_exit_reason_t {other}"
-            ))),
-        }
-    }
-
-    /// One core's whole life: create nothing (its vCPU is already made on
-    /// this thread), take the baton when it is this core's turn, run, service
-    /// the exit, and hand the baton on when the guest asks it to.
-    fn run_core(
-        core: usize,
-        vcpu: u64,
-        exit_ptr: *const HvVcpuExit,
-        host_ram: *mut u8,
-        cores_declared: usize,
-        lock: &std::sync::Mutex<Shared>,
-        baton: &std::sync::Condvar,
-    ) {
-        loop {
-            {
-                let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
-                loop {
-                    if g.sched.done {
-                        g.sched.state[core] = CoreState::Finished;
-                        return;
-                    }
-                    if g.sched.current == core {
-                        break;
-                    }
-                    g = baton.wait(g).unwrap_or_else(|e| e.into_inner());
-                }
-                // 06 §5: "the VMM's I/O threads poll hot doorbells ... and
-                // arm wakes when idle." The device model is polled on the
-                // core that owns the device — 04 §3: "a `@driver`'s vectors,
-                // pools, permits, and recovery lanes live on its core", and
-                // plans/M8.md decision 8 pins virtio-blk to core 0.
-                if core == 0 {
-                    let s = &mut *g;
-                    if let Err(e) = service_blk(&mut s.blk, &mut s.chooser, host_ram) {
-                        s.error.get_or_insert(e);
-                        s.sched.done = true;
-                        s.sched.state[core] = CoreState::Finished;
-                        drop(g);
-                        baton.notify_all();
-                        return;
-                    }
-                }
-            }
-            let r = unsafe { hv_vcpu_run(vcpu) };
-            if r != HV_SUCCESS {
-                let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
-                g.error.get_or_insert(VmmError::Hvf {
-                    call: "hv_vcpu_run",
-                    code: r,
-                });
-                g.sched.done = true;
-                g.sched.state[core] = CoreState::Finished;
-                drop(g);
-                baton.notify_all();
-                return;
-            }
-            {
-                let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
-                guard.exits += 1;
-                // plans/M8.md item C3: the admission witness's one and only
-                // call site (06 §8). It runs *before* this exit is decoded,
-                // so every message the guest admitted during the run that
-                // just ended is in the choice sequence ahead of whatever
-                // choice this exit itself resolves — and it runs on every
-                // exit, so no drain can hide between two of them. A
-                // single-core image has no request ring and this returns
-                // immediately, which is why every pre-C3 recording is
-                // byte-identical.
-                let g = &mut *guard;
-                if let Err(e) = witness_admissions(&mut g.admission, &mut g.chooser, host_ram, core)
-                {
-                    g.error.get_or_insert(e);
-                    g.sched.done = true;
-                    g.sched.state[core] = CoreState::Finished;
-                    drop(guard);
-                    baton.notify_all();
-                    return;
-                }
-            }
-            match handle_exit(core, vcpu, exit_ptr, host_ram, cores_declared, lock) {
-                Ok(Step::Keep) => {}
-                Ok(Step::Yield) => {
-                    let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
-                    let g = &mut *guard;
-                    match next_core(&mut g.sched, core, host_ram) {
-                        Some(next) => g.sched.current = next,
-                        None => {
-                            // Every core is parked or finished and no
-                            // pending word can change that: nothing will
-                            // ever run again. Fail closed rather than hang
-                            // (CLAUDE.md's own rule) — a hung machine that
-                            // prints its transcript as success is the one
-                            // outcome a boot must never produce.
-                            g.error.get_or_insert(VmmError::GuestFault(format!(
-                                "core {core} parked and no core is runnable: every core is \
-                                 parked with an empty pending word, so no turn can ever run \
-                                 again (04-compiler.md §2)"
-                            )));
-                            g.sched.done = true;
-                        }
-                    }
-                    if g.sched.done {
-                        g.sched.state[core] = CoreState::Finished;
-                    }
-                    let finished = g.sched.done;
-                    drop(guard);
-                    baton.notify_all();
-                    if finished {
-                        return;
-                    }
-                }
-                Ok(Step::Halt(code)) => {
-                    let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
-                    g.exit_code.get_or_insert(code);
-                    g.sched.done = true;
-                    g.sched.state[core] = CoreState::Finished;
-                    drop(g);
-                    baton.notify_all();
-                    return;
-                }
-                Err(e) => {
-                    let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
-                    g.error.get_or_insert(e);
-                    g.sched.done = true;
-                    g.sched.state[core] = CoreState::Finished;
-                    drop(g);
-                    baton.notify_all();
-                    return;
-                }
-            }
-        }
-    }
-
-    // Core `n`'s own entry address: the report's `Entry base=` for core 0,
-    // its own `CoreEntry core=n base=` line for the rest.
-    let mut core_entry = [0u64; NCORES];
-    core_entry[0] = parsed.entry;
-    for (core, base) in &parsed.core_entries {
-        core_entry[*core] = *base;
-    }
-
-    let (handles_tx, handles_rx) = std::sync::mpsc::channel::<usize>();
-    std::thread::scope(|scope| {
-        let mut threads = Vec::with_capacity(cores_declared);
-        for core in 0..cores_declared {
-            let ram = SendPtr(host_ram);
-            let tx = handles_tx.clone();
-            let shared = &shared;
-            let baton = &baton;
-            let entry = core_entry[core];
-            threads.push(scope.spawn(move || {
-                let ram = ram;
-                let SendPtr(host_ram) = ram;
-                // HVF binds a vCPU to its creating thread: create, register,
-                // run and destroy all happen right here.
-                let mut vcpu: u64 = 0;
-                let mut exit_ptr: *mut HvVcpuExit = std::ptr::null_mut();
-                let r = unsafe { hv_vcpu_create(&mut vcpu, &mut exit_ptr, std::ptr::null_mut()) };
-                if r != HV_SUCCESS {
-                    let mut g = shared.lock().unwrap_or_else(|e| e.into_inner());
-                    g.error.get_or_insert(VmmError::Hvf {
-                        call: "hv_vcpu_create",
-                        code: r,
-                    });
-                    g.sched.done = true;
-                    g.sched.state[core] = CoreState::Finished;
-                    drop(g);
-                    baton.notify_all();
-                    let _ = tx.send(core);
-                    return;
-                }
-                {
-                    let mut g = shared.lock().unwrap_or_else(|e| e.into_inner());
-                    g.vcpus[core] = vcpu;
-                }
-                let _ = tx.send(core);
-
-                // 06 §3: "points `x0` at the machine-info page ... and starts
-                // vCPU 0 at the image entry." Every core gets the identical
-                // boot register state at its own entry — there is no
-                // per-core discovery register and no MPIDR read: a core
-                // knows which core it is because the image gave it its own
-                // entry block (06 §3: "no discovery").
-                let set = |reg: u32, value: u64| -> Result<(), VmmError> {
-                    let r = unsafe { hv_vcpu_set_reg(vcpu, reg, value) };
-                    if r == HV_SUCCESS {
-                        Ok(())
-                    } else {
-                        Err(VmmError::Hvf {
-                            call: "hv_vcpu_set_reg",
-                            code: r,
-                        })
-                    }
-                };
-                let init = (|| -> Result<(), VmmError> {
-                    set(hv_reg_xn(0), machine_layout::MACHINE_INFO_BASE)?;
-                    set(HV_REG_PC, entry)?;
-                    // EL1h (`SPSel = 1`), every exception masked
-                    // (`DAIF = 1111`) — the standard bare-metal AArch64 boot
-                    // value, plans/M5.md decision text's own "0x3c5".
-                    set(HV_REG_CPSR, 0x3c5)?;
-                    let r = unsafe { hv_vcpu_set_sys_reg(vcpu, HV_SYS_REG_CPACR_EL1, 0x0030_0000) };
-                    if r != HV_SUCCESS {
-                        return Err(VmmError::Hvf {
-                            call: "hv_vcpu_set_sys_reg(CPACR_EL1)",
-                            code: r,
-                        });
-                    }
-                    Ok(())
-                })();
-                match init {
-                    Ok(()) => run_core(
-                        core,
-                        vcpu,
-                        exit_ptr,
-                        host_ram,
-                        cores_declared,
-                        shared,
-                        baton,
-                    ),
-                    Err(e) => {
-                        let mut g = shared.lock().unwrap_or_else(|e| e.into_inner());
-                        g.error.get_or_insert(e);
-                        g.sched.done = true;
-                        g.sched.state[core] = CoreState::Finished;
-                        drop(g);
-                        baton.notify_all();
-                    }
-                }
-                // Clear this core's handle *under the lock* before
-                // destroying it, so the watchdog's own `hv_vcpus_exit` can
-                // never name a destroyed vCPU.
-                {
-                    let mut g = shared.lock().unwrap_or_else(|e| e.into_inner());
-                    g.vcpus[core] = 0;
-                }
-                unsafe {
-                    hv_vcpu_destroy(vcpu);
-                }
-            }));
-        }
-        // Every core has registered its handle before the watchdog can name
-        // any of them.
-        for _ in 0..cores_declared {
-            let _ = handles_rx.recv();
-        }
-
-        // --- watchdog thread (decision 15's own host-side wall cap) --------
-        // With three cores, a hang on *any* of them must still terminate the
-        // boot: force-exit every live vCPU, and let whichever core was
-        // actually inside `hv_vcpu_run` report the timeout under its own
-        // number.
-        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
-        let watchdog_shared = &shared;
-        let watchdog = scope.spawn(move || {
-            if done_rx.recv_timeout(WALL_CAP).is_err() {
-                let mut g = watchdog_shared.lock().unwrap_or_else(|e| e.into_inner());
-                let mut live: Vec<u64> = g.vcpus.iter().copied().filter(|v| *v != 0).collect();
-                if !live.is_empty() {
-                    unsafe {
-                        hv_vcpus_exit(live.as_mut_ptr(), live.len() as u32);
-                    }
-                }
-                g.sched.done = true;
-            }
-        });
-        for t in threads {
-            let _ = t.join();
-        }
-        let _ = done_tx.send(());
-        let _ = watchdog.join();
-    });
-    // Nothing else can hold the lock now (every core thread and the watchdog
-    // were joined inside the scope above).
-    let shared = shared.into_inner().unwrap_or_else(|e| e.into_inner());
-    if let Some(e) = shared.error {
-        return Err(e);
-    }
-    let exit_code = shared.exit_code.ok_or_else(|| {
-        VmmError::GuestFault(
-            "no core reported the guest exit protocol (`EXIT_MMIO_ADDR`) — the boot ended without \
-             the image ever halting"
-                .to_string(),
-        )
-    })?;
-    // plans/M10.md item B1 / decision 591: the abort re-entrancy latch must
-    // be clear on every green boot. A nonzero value after exit 0 means an
-    // abort path ran (or left the latch set) on a boot that claimed success.
-    if exit_code == 0 {
-        let latch_off = (machine_layout::MACHINE_INFO_BASE - machine_layout::DRAM_BASE
-            + machine_info::OFF_ABORT_LATCH) as usize;
-        let latch = unsafe { std::ptr::read_unaligned((host_ram.add(latch_off)) as *const u64) };
-        if latch != 0 {
-            return Err(VmmError::GuestFault(format!(
-                "abort re-entrancy latch at machine_info::OFF_ABORT_LATCH is {latch:#x} after a \
-                 green boot (exit_code=0); decision 591 requires it never set on any green boot"
-            )));
-        }
-    }
-    // plans/M8.md item C1: every core this image released must have
-    // executed its own entry block. The mark is guest-written (each core's
-    // entry stores `machine_info::core_mark_running(n)` into its own slot),
-    // so a core that never ran leaves a zero the zeroed reservation put
-    // there — a released-but-dead core is a machine that silently ran an
-    // image on fewer cores than it claims, which is the exact failure this
-    // item exists to make impossible.
-    //
-    // Keyed on the release the guest actually rang, not on the report's
-    // declared count. A `wrela build` image is the case that forced this:
-    // `layout_program`'s entry stub halts with `EXIT_CODE_NO_RUNTIME` and
-    // never calls `build_entry_driver`, so its release block — the same one
-    // that writes core 0's own mark — is never emitted at all. Such an
-    // image still carries `CoreEntry` lines in its report, because it still
-    // *contains* the secondary entry blocks; checking the declared count
-    // there reported "core 0 was released but never ran its own entry
-    // block" about a core that was never released, and turned a clean
-    // "no runtime yet" exit (1) into a bad-image fault (2). The marks are
-    // evidence of the release, so the release is what decides whether to
-    // demand them.
-    if shared.released {
-        check_core_marks(host_ram, cores_declared)?;
-    }
-
-    // decision 12: the transcript is read from the ring pages only after the
-    // guest halts.
-    let transcript = drain_console(host_ram);
-    let core_marks = (0..NCORES)
-        .map(|c| read_core_mark(host_ram, c))
-        .collect::<Vec<u64>>();
-    let (choices, divergences) = record::finish_chooser(shared.chooser)?;
-    Ok((
-        BootOutcome {
-            transcript,
-            exit_code,
-            choices,
-            exits: shared.exits,
-            core_marks,
-        },
-        divergences,
-    ))
-}
-
-/// Core `core`'s own guest-written bring-up mark (plans/M8.md item C1,
-/// `machine_info::OFF_CORE_MARK`).
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn read_core_mark(host_ram: *const u8, core: usize) -> u64 {
-    use wrela_machine::layout as machine_layout;
-    let off =
-        (wrela_machine::machine_info::core_mark_addr(core) - machine_layout::DRAM_BASE) as usize;
-    let mut b = [0u8; 8];
-    unsafe { std::ptr::copy_nonoverlapping(host_ram.add(off), b.as_mut_ptr(), 8) };
-    u64::from_le_bytes(b)
-}
-
-/// plans/M8.md item C1's own acceptance check, run after every multicore
-/// boot: each of the `cores` cores this image brought up wrote its own mark,
-/// and wrote *its own* (never another core's — that would be a mis-wired
-/// `CoreEntry` address, a real and otherwise silent bug).
-///
-/// A single-core image (`cores == 1`) writes no mark at all and is not
-/// checked: it releases nothing, so there is nothing to have gone missing,
-/// and that is also what keeps every M5-M7 boot byte-identical.
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn check_core_marks(host_ram: *const u8, cores: usize) -> Result<(), VmmError> {
-    use wrela_machine::machine_info;
-    if cores <= 1 {
-        return Ok(());
-    }
-    for core in 0..cores {
-        let want = machine_info::core_mark_running(core);
-        let got = read_core_mark(host_ram, core);
-        if got != want {
-            return Err(VmmError::GuestFault(format!(
-                "core {core} was released but never ran its own entry block: its bring-up mark is \
-                 {got:#x}, expected {want:#x} (06-machine.md §3: the entry releases the other \
-                 vCPUs and every core enters its own event loop)"
-            )));
-        }
-    }
-    Ok(())
-}
-
-/// plans/M7.md item F: one declared `blk` device model plus the checked
-/// view of guest memory it is allowed to touch. A pair rather than one
-/// type because `devices::GuestMem` is deliberately the *only* thing in
-/// this VMM holding both a raw DRAM pointer and the declared pool windows
-/// (`devices.rs`'s own module doc: decision 5's security boundary is
-/// enforced by there being no other way to turn a guest address into a
-/// host offset).
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-struct BlkState {
-    device: devices::BlkDevice,
-    mem: devices::GuestMem,
-    /// Guest GPA of `interrupt_status` (devregs + 0x60), when the image
-    /// declared a vector and bound an ISR. `None` for poll builds.
-    irq_status_gpa: Option<u64>,
-}
-
-/// 06 §4's raise, both producers' one implementation: set bit `vector` in
-/// core 0's own pending word. **An OR, never a store**, since M7 gives
-/// this machine a second raiser (a `blk` completion) alongside M6's
-/// deadline service — a plain store of `1` would silently drop a
-/// completion vector raised moments earlier in the same park.
-/// Pending-word vectors are bits `0..63`. Masking with `& 63` used to
-/// silently alias high values onto low bits — refuse instead.
-fn check_vector_in_range(vector: u64) -> Result<(), VmmError> {
-    if vector >= 64 {
-        return Err(VmmError::BadImage(format!(
-            "vector={vector} is out of range (pending word has 64 bits; `& 63` would alias)"
-        )));
-    }
-    Ok(())
-}
-
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn raise_vector(host_ram: *mut u8, vector: u64) -> Result<(), VmmError> {
-    check_vector_in_range(vector)?;
-    let off = guest_dram_offset(wrela_machine::pending::core_word_addr(0), 8, "pending word")?;
-    unsafe {
-        let mut b = [0u8; 8];
-        std::ptr::copy_nonoverlapping(host_ram.add(off), b.as_mut_ptr(), 8);
-        let raised = u64::from_le_bytes(b) | (1u64 << vector);
-        std::ptr::copy_nonoverlapping(raised.to_le_bytes().as_ptr(), host_ram.add(off), 8);
-    }
-    Ok(())
-}
-
-/// 06 §5's doorbell poll, plans/M7.md decision 7's recording, and the
-/// completion's own vector raise — the whole guest-visible half of the
-/// `blk` device model, in one place, called from exactly two sites in
-/// `boot_image_core`'s loop (every vCPU exit, and the park path before the
-/// sleep decision). Returns whether anything completed.
-///
-/// The record/replay split (decision 7, 06 §8) is the subtle part, so it
-/// is spelled out rather than implied:
-///
-/// - The **model always runs**, in both modes. A completion is not a value
-///   this VMM invents — it is a deterministic function of the ring the
-///   guest published and the disk this VMM owns, and the *payload bytes*
-///   have to be written into guest memory for a replayed guest to see
-///   anything at all. 06 §8's "replay feeds the log from virtual device
-///   models" is exactly this: the models are still there.
-/// - The **used-ring `len` and the status the driver branches on come from
-///   the log** under replay, never from the fresh model run.
-/// - The **`head` always comes from the model**, never the log: a chain's
-///   head is the identity the *guest itself* published in `avail.ring`, so
-///   feeding it from an untrusted log would be precisely the unchecked
-///   index 03 §4 forbids. A log whose head disagrees is a divergence, not
-///   an index.
-/// - A disagreement in any field is `Divergence::DeviceCompletionMismatch`
-///   — named, never silently taken.
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn service_blk(
-    blk: &mut Option<BlkState>,
-    chooser: &mut record::Chooser,
-    host_ram: *mut u8,
-) -> Result<bool, VmmError> {
-    let Some(state) = blk.as_mut() else {
-        return Ok(false);
-    };
-    let completions = state
-        .device
-        .service(&mut state.mem)
-        .map_err(|fault| VmmError::GuestFault(format!("virtio-blk: {fault}")))?;
-    commit_completions(state, chooser, &completions, host_ram)
-}
-
-/// The recorder-and-used-ring half of `service_blk`, shared verbatim with
-/// the quiesce path (plans/M8.md item F). A completion produced while
-/// establishing quiescence is an ordinary completion in every respect —
-/// same choice entry, same divergence check, same used-ring publication,
-/// same vector raise — and factoring it out is what makes that true by
-/// construction rather than by two copies agreeing.
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn commit_completions(
-    state: &mut BlkState,
-    chooser: &mut record::Chooser,
-    completions: &[devices::Completion],
-    host_ram: *mut u8,
-) -> Result<bool, VmmError> {
-    if completions.is_empty() {
-        return Ok(false);
-    }
-    for c in completions {
-        let request = record::ChoiceRequest::DeviceCompletion {
-            device: "blk".to_string(),
-            queue: 0,
-            head: c.head as u32,
-            status: c.status as u32,
-            len: c.len,
-            digest: c.digest.clone(),
-        };
-        let observed = request.fallback();
-        let index = chooser.resolved_count();
-        let chosen = {
-            let observed = observed.clone();
-            chooser.choose_checked(request, move || observed)?
-        };
-        if chosen != observed {
-            chooser.note_divergence_checked(record::Divergence::DeviceCompletionMismatch {
-                index,
-                recorded: chosen.to_text_fields(),
-                actual: observed.to_text_fields(),
-            })?;
-        }
-        let len = match &chosen {
-            record::ChoiceEntry::DeviceCompletion { len, .. } => *len,
-            // A replayed tag mismatch already fell back to `observed`
-            // (`ChoiceRequest::fallback`), so this arm is unreachable;
-            // it fails closed rather than inventing a length.
-            _ => c.len,
-        };
-        state
-            .device
-            .commit_used(&mut state.mem, c.head, len)
-            .map_err(|fault| VmmError::GuestFault(format!("virtio-blk: {fault}")))?;
-    }
-    // 06 §4: a completion optionally raises this driver's own vector. A
-    // device declared with none is 03 §7's poll build — the used ring
-    // alone is the signal, and nothing is raised or recorded.
-    //
-    // plans/M7.md item E4: also OR `INT_VRING` (bit 0) into the guest's
-    // `interrupt_status` so the ISR's mask-against-declared-bits path
-    // sees a real level after a used-ring publish (boot-time
-    // `IrqHostInject` only covers the pre-first-instruction oracle).
-    if let Some(vector) = state.device.config.vector {
-        if let Some(gpa) = state.irq_status_gpa {
-            let off = guest_dram_offset(gpa, 4, "interrupt_status")?;
-            unsafe {
-                let mut b = [0u8; 4];
-                std::ptr::copy_nonoverlapping(host_ram.add(off), b.as_mut_ptr(), 4);
-                let status = u32::from_le_bytes(b) | 1;
-                std::ptr::copy_nonoverlapping(status.to_le_bytes().as_ptr(), host_ram.add(off), 4);
-            }
-        }
-        chooser.choose_checked(record::ChoiceRequest::VectorRaise { vector }, || {
-            record::ChoiceEntry::VectorRaise { vector }
-        })?;
-        raise_vector(host_ram, vector)?;
-    }
-    Ok(true)
-}
-
-/// plans/M8.md item C3, decision 42 — the recorder's witness on 06 §8's
-/// "per-mailbox cross-core admission order", which is the one scheduling
-/// nondeterminism 04 §2 gives this machine.
-///
-/// **Why a witness can be exact here, stated as the invariant it rests
-/// on.** A cross-core request ring's producer is core `src` and its
-/// consumer is core `dst`, and `src != dst` by construction
-/// (`parse_report` refuses otherwise). Decision 11's baton means exactly
-/// one vCPU is inside `hv_vcpu_run` at any instant. So between two
-/// consecutive vCPU exits **at most one core ran**, and for any one ring
-/// that core is either its producer or its consumer, never both:
-/// a ring whose `dst` just ran can only have *shrunk*, and by exactly the
-/// number of messages that core's drain admitted. The occupancy word is
-/// therefore an exact counter, not a sampled one — no modular head
-/// arithmetic, no lost wrap.
-///
-/// **The order is exact too, for the same reason.**
-/// `layout::build_rt_drain` walks its request lanes in `RuntimeTables::
-/// rings` order and drains each lane to empty before starting the next,
-/// and no other core can produce into any of them meanwhile. Walking the
-/// report's `Ring` lines in that same order reconstructs the order the
-/// guest actually admitted in.
-#[derive(Debug, Default)]
-struct AdmissionWitness {
-    rings: Vec<RequestRing>,
-    /// Each ring's occupancy word as of the last observation, parallel to
-    /// `rings`. Zero-initialized, which is the value guest DRAM's own
-    /// zeroed reservation puts there before the first instruction runs.
-    last_count: Vec<u64>,
-}
-
-impl AdmissionWitness {
-    fn new(rings: Vec<RequestRing>) -> AdmissionWitness {
-        let last_count = vec![0; rings.len()];
-        AdmissionWitness { rings, last_count }
-    }
-
-    /// The whole counting rule, as a pure function of (this observation's
-    /// occupancy words, which core just ran) — separated from the guest
-    /// memory read above it so it can be unit-tested directly
-    /// (`admission_witness_*`, below).
-    ///
-    /// Returns one `(mailbox, sender)` pair per message admitted, in the
-    /// order they were admitted. Fails closed rather than guessing if a
-    /// ring the running core *consumes* somehow grew: that would mean the
-    /// SPSC producer/consumer split this reconstruction rests on is not
-    /// true of the running image, and a silently under-recorded admission
-    /// order is the exact thing 06 §8 exists to prevent.
-    fn observe(&mut self, counts: &[u64], core: usize) -> Result<Vec<(String, String)>, String> {
-        debug_assert_eq!(counts.len(), self.rings.len());
-        let mut admitted = Vec::new();
-        for (i, ring) in self.rings.iter().enumerate() {
-            let now = counts[i];
-            let was = self.last_count[i];
-            if ring.dst == core {
-                if now > was {
-                    return Err(format!(
-                        "cross-core ring src={} dst={} target={} grew from {was} to {now} while \
-                         its own consuming core {core} was the only core running — the SPSC \
-                         producer/consumer split the admission recorder rests on does not hold",
-                        ring.src, ring.dst, ring.target
-                    ));
-                }
-                for _ in 0..(was - now) {
-                    admitted.push((ring.target.clone(), format!("core{}", ring.src)));
-                }
-            }
-            self.last_count[i] = now;
-        }
-        Ok(admitted)
-    }
-}
-
-/// Reads every request ring's occupancy word out of guest memory and
-/// pushes one `ChoiceEntry::Admission` per message core `core`'s drain
-/// just admitted (`AdmissionWitness` above has the whole argument).
-///
-/// **Witness, not injection** — the honest claim, in the words plans/M8.md
-/// item C3 asks for. The drain is guest code and the mailbox is guest
-/// memory; nothing here writes either, in record mode or replay mode. So
-/// replay does not *feed* the recorded admission order back to the guest;
-/// it re-witnesses and **checks**, and a disagreement is
-/// `Divergence::AdmissionMismatch`, named exactly like a device
-/// completion's. Under decision 11's baton there is no alternative order
-/// to feed, which is why the checking form is the honest one — and why a
-/// later schedule enumerator, which would vary the baton hand-off, is the
-/// thing that would make injection mean something.
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn witness_admissions(
-    witness: &mut AdmissionWitness,
-    chooser: &mut record::Chooser,
-    host_ram: *const u8,
-    core: usize,
-) -> Result<(), VmmError> {
-    if witness.rings.is_empty() {
-        return Ok(());
-    }
-    let mut counts = Vec::with_capacity(witness.rings.len());
-    for r in &witness.rings {
-        let off = guest_dram_offset(r.count_addr, 8, "admission count_addr")?;
-        let mut b = [0u8; 8];
-        unsafe { std::ptr::copy_nonoverlapping(host_ram.add(off), b.as_mut_ptr(), 8) };
-        counts.push(u64::from_le_bytes(b));
-    }
-    let admitted = witness
-        .observe(&counts, core)
-        .map_err(VmmError::GuestFault)?;
-    for (mailbox, sender) in admitted {
-        let request = record::ChoiceRequest::Admission { mailbox, sender };
-        let observed = request.fallback();
-        let index = chooser.resolved_count();
-        let chosen = {
-            let observed = observed.clone();
-            chooser.choose_checked(request, move || observed)?
-        };
-        if chosen != observed {
-            chooser.note_divergence_checked(record::Divergence::AdmissionMismatch {
-                index,
-                recorded: chosen.to_text_fields(),
-                actual: observed.to_text_fields(),
-            })?;
-        }
-    }
-    Ok(())
-}
-
-/// Reads the vCPU's own current `PC` for a fault diagnostic — best-effort
-/// (`Ok(0)` is never returned; a real HVF failure here still surfaces as
-/// `None` to the caller, which substitutes `0` rather than compounding
-/// one failure with another).
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn read_pc(vcpu: u64) -> Option<u64> {
-    use hv::{HV_REG_PC, HV_SUCCESS, hv_vcpu_get_reg};
-    let mut pc = 0u64;
-    let r = unsafe { hv_vcpu_get_reg(vcpu, HV_REG_PC, &mut pc) };
-    if r == HV_SUCCESS { Some(pc) } else { None }
-}
-
-/// plans/M6.md item F: the fault diagnostic's own second half, and the
-/// single highest-value debugging tool this milestone added.
-///
-/// 06-machine.md §4 gives this machine **no** exception vector table:
-/// there is no emulated GIC, the guest never installs a `VBAR_EL1`, and
-/// every interrupt is a checkpoint-observed pending word instead. So an
-/// EL1 synchronous exception the guest takes *itself* — an unaligned
-/// 64-bit access (the MMU is off, so every access is Device-nGnRnE and
-/// alignment-checked), a misaligned `sp`, an undefined instruction — is
-/// not routed to the host at all: the CPU vectors to `VBAR_EL1 + <slot>`,
-/// which is guest-physical `0x000..0x780` with `VBAR_EL1` still zero,
-/// which is not mapped, which *then* exits to this VMM as an instruction
-/// abort at that vector address. The reported `esr`/`ipa`/`pc` therefore
-/// describe the **second** fault, and say nothing at all about the first.
-///
-/// The original fault's own state is still sitting in `ESR_EL1`/
-/// `ELR_EL1`/`FAR_EL1`, untouched (nothing at the vector address ran to
-/// clobber it) — so whenever `pc` lands on a `VBAR_EL1` vector slot,
-/// report those too, and name the mechanism. Item F's own
-/// `golden/boot-group-join` cost a full debugging session to a bare
-/// `pc=0x200`; with this note the same failure reads out its real cause
-/// (`ESR_EL1` EC `0x25`, DFSC `0b100001` — an alignment fault) and its
-/// real faulting instruction directly.
-///
-/// Best-effort by construction: a register read that fails is simply
-/// omitted, never turned into a second error on top of the first.
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn el1_exception_note(vcpu: u64, pc: u64) -> String {
-    use hv::*;
-    let sys = |reg: u16| -> Option<u64> {
-        let mut v = 0u64;
-        let r = unsafe { hv_vcpu_get_sys_reg(vcpu, reg, &mut v) };
-        if r == HV_SUCCESS { Some(v) } else { None }
-    };
-    let Some(vbar) = sys(HV_SYS_REG_VBAR_EL1) else {
-        return String::new();
-    };
-    // The AArch64 vector table is 16 slots of 0x80 bytes (ARM ARM
-    // D1.10.2): four groups of four (current EL with SP0, current EL with
-    // SPx, lower EL AArch64, lower EL AArch32) x (sync, IRQ, FIQ, SError).
-    if pc < vbar || pc >= vbar + 0x800 || (pc - vbar) % 0x80 != 0 {
-        return String::new();
-    }
-    let slot = pc - vbar;
-    let (esr1, elr1, far1) = (
-        sys(HV_SYS_REG_ESR_EL1),
-        sys(HV_SYS_REG_ELR_EL1),
-        sys(HV_SYS_REG_FAR_EL1),
-    );
-    let mut note = format!(
-        "; pc is VBAR_EL1({vbar:#x}) + {slot:#x} — the guest took an EL1 exception into a \
-         vector table this machine never installs (06-machine.md §4), so the fault above is \
-         only the resulting instruction abort. The original fault:"
-    );
-    match esr1 {
-        Some(e) => {
-            note.push_str(&format!(" ESR_EL1={e:#x} (EC={:#x})", (e >> 26) & 0x3F));
-        }
-        None => note.push_str(" ESR_EL1=<unreadable>"),
-    }
-    if let Some(v) = elr1 {
-        note.push_str(&format!(" ELR_EL1={v:#x}"));
-    }
-    if let Some(v) = far1 {
-        note.push_str(&format!(" FAR_EL1={v:#x}"));
-    }
-    note
-}
-
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn advance_pc(vcpu: u64) -> Result<(), VmmError> {
-    use hv::*;
-    let mut pc = 0u64;
-    let r = unsafe { hv_vcpu_get_reg(vcpu, HV_REG_PC, &mut pc) };
-    if r != HV_SUCCESS {
-        return Err(VmmError::Hvf {
-            call: "hv_vcpu_get_reg(PC)",
-            code: r,
-        });
-    }
-    let r = unsafe { hv_vcpu_set_reg(vcpu, HV_REG_PC, pc + 4) };
-    if r != HV_SUCCESS {
-        return Err(VmmError::Hvf {
-            call: "hv_vcpu_set_reg(PC)",
-            code: r,
-        });
-    }
-    Ok(())
-}
-
-/// Monotonic nanoseconds since an arbitrary, process-local epoch — decision
-/// 13's own "the VMM ... returns monotonic ns"; `std::time::Instant`
-/// already is exactly this on every platform Rust supports, so no host
-/// syscall FFI is needed for it (unlike the guest-facing MMIO trap itself,
-/// which is HVF's own exit mechanism).
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn monotonic_ns() -> u64 {
-    use std::sync::OnceLock;
-    static EPOCH: OnceLock<Instant> = OnceLock::new();
-    let epoch = EPOCH.get_or_init(Instant::now);
-    // plans/M6.md item F: never `0`. `0` is the deadline protocol's own
-    // "no deadline" sentinel everywhere it appears — `machine_info::
-    // OFF_NEXT_DEADLINE` (item E's park contract with this VMM) and the
-    // group arena's own `deadline_ns` word — so a guest that computed
-    // `now() + ms(0)` at the very first instant of the epoch would
-    // otherwise arm a deadline indistinguishable from "none". Clamping the
-    // clock's own floor to 1ns is the smallest coherent fix: the machine's
-    // monotonic clock is defined to start at 1, the sentinel keeps its one
-    // meaning, and no arithmetic anywhere needs a second sentinel value.
-    (epoch.elapsed().as_nanos() as u64).max(1)
-}
-
-/// Reads the console ring's own `avail.idx` and walks descriptors
-/// `0..avail.idx` **directly by index** (decision 12's own disclosed
-/// simplification, `layout.rs`'s module doc: this producer never
-/// populates `avail.ring[]` at all, since it never reorders or skips an
-/// index) — the used ring is never read either (nothing here tracks
-/// completions). Every offset is clamped to the DRAM reservation so a
-/// malformed/adversarial descriptor can only truncate the transcript,
-/// never read out of bounds.
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn drain_console(host_ram: *const u8) -> Vec<u8> {
-    use wrela_machine::console;
-    use wrela_machine::layout as machine_layout;
-
-    // Only the console data window is transcript material — never the rest
-    // of guest DRAM (a forged descriptor must not leak arbitrary guest
-    // memory into the host-side transcript / choice-log digest).
-    let data_base = console::DATA_BASE;
-    let data_end = console::DATA_BASE + console::DATA_SIZE;
-    let ring_off = (console::RING_BASE - machine_layout::DRAM_BASE) as usize;
-
-    let read_u16 = |off: usize| -> u16 {
-        let mut b = [0u8; 2];
-        unsafe { std::ptr::copy_nonoverlapping(host_ram.add(off), b.as_mut_ptr(), 2) };
-        u16::from_le_bytes(b)
-    };
-    let read_u32 = |off: usize| -> u32 {
-        let mut b = [0u8; 4];
-        unsafe { std::ptr::copy_nonoverlapping(host_ram.add(off), b.as_mut_ptr(), 4) };
-        u32::from_le_bytes(b)
-    };
-    let read_u64 = |off: usize| -> u64 {
-        let mut b = [0u8; 8];
-        unsafe { std::ptr::copy_nonoverlapping(host_ram.add(off), b.as_mut_ptr(), 8) };
-        u64::from_le_bytes(b)
-    };
-
-    let avail_idx = read_u16(ring_off + console::AVAIL_OFFSET as usize + 2);
-    let mut out = Vec::new();
-    let count = (avail_idx as u64).min(console::QUEUE_SIZE);
-    for i in 0..count {
-        let desc_off =
-            ring_off + (console::DESC_TABLE_OFFSET + i * console::DESC_ENTRY_SIZE) as usize;
-        let addr = read_u64(desc_off);
-        let len = read_u32(desc_off + 8) as u64;
-        if addr < data_base || addr >= data_end {
-            continue;
-        }
-        let max_len = data_end - addr;
-        let clamped_len = len.min(max_len) as usize;
-        if clamped_len == 0 {
-            continue;
-        }
-        let src_off = (addr - machine_layout::DRAM_BASE) as usize;
-        let mut buf = vec![0u8; clamped_len];
-        unsafe {
-            std::ptr::copy_nonoverlapping(host_ram.add(src_off), buf.as_mut_ptr(), clamped_len);
-        }
-        out.extend_from_slice(&buf);
-    }
-    out
-}
-
-#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-pub fn boot_image(_report_path: &Path, _img_path: &Path) -> Result<BootOutcome, VmmError> {
-    Err(VmmError::Unsupported(
-        "the wrela VMM needs Hypervisor.framework (macOS/aarch64 at M5); no other host is implemented yet",
-    ))
-}
-
-/// Non-HVF-host stub for `boot_image_core` (`record::replay`'s own
-/// dependency) — fails closed exactly like `boot_image` above, so
-/// `record::replay` is callable (and fails the same honest way) on every
-/// host, not only the one this milestone actually boots on.
-#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-fn boot_image_core(
-    _report_path: &Path,
-    _img_path: &Path,
-    _replay_choices: Option<Vec<record::ChoiceEntry>>,
-    _test_delayed_raise: Option<(Duration, u64)>,
-) -> Result<(BootOutcome, Vec<record::Divergence>), VmmError> {
-    Err(VmmError::Unsupported(
-        "the wrela VMM needs Hypervisor.framework (macOS/aarch64 at M5); no other host is implemented yet",
-    ))
-}
+#[cfg(test)]
+pub(crate) use exit_loop::{
+    AdmissionWitness, check_vector_in_range, drain_console, raise_vector, read_core_mark,
+};
 
 #[cfg(target_os = "linux")]
 pub mod kvm {
-    //! Linux/KVM backend. May build on the rust-vmm crates. Unimplemented
-    //! until the Raspberry Pi flagship host milestone.
+    //! Unimplemented until the Raspberry Pi flagship host milestone.
+    //! Hardcoded KVM backend when it lands — no rust-vmm dependency.
 }
 
 pub mod devices;
@@ -3267,12 +387,14 @@ mod tests {
     fn guest_dram_offset_rejects_oob_and_accepts_in_range() {
         assert!(guest_dram_offset(wrela_machine::layout::DRAM_BASE, 4, "t").is_ok());
         assert!(guest_dram_offset(wrela_machine::layout::DRAM_BASE - 1, 4, "t").is_err());
-        assert!(guest_dram_offset(
-            wrela_machine::layout::DRAM_BASE + wrela_machine::layout::DRAM_SIZE - 3,
-            4,
-            "t"
-        )
-        .is_err());
+        assert!(
+            guest_dram_offset(
+                wrela_machine::layout::DRAM_BASE + wrela_machine::layout::DRAM_SIZE - 3,
+                4,
+                "t"
+            )
+            .is_err()
+        );
         assert!(guest_dram_offset(0xffff_ffff_ffff_fff0, 32, "t").is_err());
     }
 
@@ -3457,10 +579,7 @@ mod tests {
         let mut short_log = recorded.clone();
         short_log.choices.truncate(1);
         let err = record::replay(&report_path, &img_path, &short_log).expect_err("strict underrun");
-        assert!(
-            err.to_string().contains("replay divergence"),
-            "got {err}"
-        );
+        assert!(err.to_string().contains("replay divergence"), "got {err}");
 
         // --- padded choice log: an overrun aborts (strict replay) ----------
         let mut long_log = recorded.clone();
@@ -3468,10 +587,7 @@ mod tests {
             .choices
             .push(record::ChoiceEntry::ClockRead { value: 424242 });
         let err = record::replay(&report_path, &img_path, &long_log).expect_err("strict overrun");
-        assert!(
-            err.to_string().contains("replay divergence"),
-            "got {err}"
-        );
+        assert!(err.to_string().contains("replay divergence"), "got {err}");
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
@@ -3661,7 +777,7 @@ mod tests {
         use std::collections::{BTreeMap, BTreeSet};
         use wrela_compiler::sema::typed::TestKind;
         use wrela_compiler::sema::types::{Type, TypeArg};
-        use wrela_compiler::{codegen, layout, loader, lower};
+        use wrela_compiler::{layout, loader};
 
         let tokens = wrela_compiler::syntax::lexer::lex(src).expect("conformance source must lex");
         let module = wrela_compiler::syntax::parser::parse(tokens).expect("must parse");
@@ -3736,24 +852,6 @@ mod tests {
             "a conformance source declares runtime tests"
         );
 
-        let reachable =
-            lower::guest_reachable_keys_closure(&programs, &lower::LowerOpts::default());
-        let lower_opts = lower::LowerOpts {
-            emit_comptime_tests: false,
-            only: Some(reachable),
-        };
-        let mut mwir_programs = Vec::new();
-        let mut flow_fns = BTreeMap::new();
-        for typed in programs.values() {
-            mwir_programs.push(lower::lower_program_with(typed, &lower_opts).expect("sync lower"));
-            flow_fns.extend(
-                wrela_compiler::flowwir_lower::lower_program_with(typed, &lower_opts)
-                    .expect("flowwir lower")
-                    .fns,
-            );
-        }
-        let mwir_program = layout::merge_mwir_programs(mwir_programs);
-        let flow_program = wrela_compiler::flowwir::FlowWirProgram { fns: flow_fns };
         let mut layout_ctx = layout::merge_layout_ctx(&modules).expect("layout ctx");
         layout::enrich_layout_ctx_with_instantiations(&mut layout_ctx, &programs);
         let graph = match &program.image_fn {
@@ -3762,22 +860,6 @@ mod tests {
             }
             None => Default::default(),
         };
-        let method_index =
-            layout::actor_method_index_tables(&modules, &layout_ctx).expect("method index");
-        let group_arena_capacity = layout::count_with_group_sites(&modules);
-        let enqueue_specs =
-            layout::mailbox_enqueue_specs(&graph, &modules, &layout_ctx).expect("enqueue specs");
-        let codegen_program = codegen::codegen_program_with_async(
-            &mwir_program,
-            &flow_program,
-            &layout_ctx,
-            &method_index,
-            group_arena_capacity,
-            &enqueue_specs,
-        )
-        .expect("codegen");
-        let async_frames =
-            codegen::async_frame_sizes(&flow_program, &layout_ctx).expect("async frames");
         let async_tests: BTreeSet<String> = runtime_tests
             .iter()
             .filter(|name| program.fns.get(*name).is_some_and(|f| f.is_async))
@@ -3807,18 +889,26 @@ mod tests {
             }
             test_args.insert(name.clone(), args);
         }
-        let (group_child_index, _) =
-            codegen::compute_group_child_indices(&flow_program).expect("group child index");
+        let compiled = layout::lower_and_codegen_image(
+            &modules,
+            &programs,
+            &layout_ctx,
+            &graph,
+            &runtime_tests,
+            &async_tests,
+        )
+        .expect("lower_and_codegen_image");
         let boot = layout::BootCtx {
             graph: &graph,
-            modules: &modules,
-            programs: &programs,
-            layout_ctx: &layout_ctx,
-            async_frames: &async_frames,
-            group_child_index: &group_child_index,
+            modules: &compiled.modules,
+            programs: &compiled.programs,
+            layout_ctx: &compiled.layout_ctx,
+            async_frames: &compiled.async_frames,
+            group_child_index: &compiled.group_child_index,
+            flow: &compiled.flow,
         };
         let image = layout::layout_test_image(
-            &codegen_program,
+            &compiled.program,
             &runtime_tests,
             &async_tests,
             Some(boot),
@@ -3852,8 +942,8 @@ mod tests {
     /// difference that matters (which layout fn runs).
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn compile_program_image(src: &str) -> (wrela_compiler::layout::ImageLayout, String) {
-        use std::collections::BTreeMap;
-        use wrela_compiler::{codegen, layout};
+        use std::collections::{BTreeMap, BTreeSet};
+        use wrela_compiler::layout;
 
         let tokens = wrela_compiler::syntax::lexer::lex(src).expect("conformance source must lex");
         let module = wrela_compiler::syntax::parser::parse(tokens).expect("must parse");
@@ -3864,42 +954,32 @@ mod tests {
         let mut programs = BTreeMap::new();
         programs.insert(module.path.join("."), program.clone());
         let layout_ctx = layout::merge_layout_ctx(&modules).expect("layout ctx");
-        let mwir_program = wrela_compiler::lower::lower_program(&program).expect("sync lower");
-        let flow_program =
-            wrela_compiler::flowwir_lower::lower_program(&program).expect("flowwir lower");
         let graph = match &program.image_fn {
             Some(fn_name) => {
                 wrela_compiler::eval::interp::eval_image(&program, fn_name).expect("image graph")
             }
             None => Default::default(),
         };
-        let method_index =
-            layout::actor_method_index_tables(&modules, &layout_ctx).expect("method index");
-        let group_arena_capacity = layout::count_with_group_sites(&modules);
-        let enqueue_specs =
-            layout::mailbox_enqueue_specs(&graph, &modules, &layout_ctx).expect("enqueue specs");
-        let codegen_program = codegen::codegen_program_with_async(
-            &mwir_program,
-            &flow_program,
+        let empty_async = BTreeSet::new();
+        let compiled = layout::lower_and_codegen_image(
+            &modules,
+            &programs,
             &layout_ctx,
-            &method_index,
-            group_arena_capacity,
-            &enqueue_specs,
+            &graph,
+            &[],
+            &empty_async,
         )
-        .expect("codegen");
-        let async_frames =
-            codegen::async_frame_sizes(&flow_program, &layout_ctx).expect("async frames");
-        let (group_child_index, _) =
-            codegen::compute_group_child_indices(&flow_program).expect("group child index");
+        .expect("lower_and_codegen_image");
         let boot = layout::BootCtx {
             graph: &graph,
-            modules: &modules,
-            programs: &programs,
-            layout_ctx: &layout_ctx,
-            async_frames: &async_frames,
-            group_child_index: &group_child_index,
+            modules: &compiled.modules,
+            programs: &compiled.programs,
+            layout_ctx: &compiled.layout_ctx,
+            async_frames: &compiled.async_frames,
+            group_child_index: &compiled.group_child_index,
+            flow: &compiled.flow,
         };
-        let image = layout::layout_program(&codegen_program, Some(boot)).expect("layout_program");
+        let image = layout::layout_program(&compiled.program, Some(boot)).expect("layout_program");
 
         let mut report = report_identity("<conformance>", &image.blob);
         for sec in &image.sections {
@@ -4430,7 +1510,7 @@ pub fn build() -> Image:
 
         let img_bytes: Vec<u8> = w.iter().flat_map(|word| word.to_le_bytes()).collect();
         let (report_path, img_path) = write_hand_built_image(&img_bytes, "vector-raise");
-        let (outcome, divergences) = boot_image_core(
+        let (outcome, divergences) = boot_image_core_with_delayed_raise(
             &report_path,
             &img_path,
             None,
@@ -4583,11 +1663,9 @@ pub fn build() -> Image:
         // --- tampered choice tag: aborts (strict replay) -------------------
         let mut bad_tag = recorded.clone();
         bad_tag.choices[1] = record::ChoiceEntry::ClockRead { value: 0 };
-        let err = record::replay(&report_path, &img_path, &bad_tag).expect_err("strict tag mismatch");
-        assert!(
-            err.to_string().contains("replay divergence"),
-            "got {err}"
-        );
+        let err =
+            record::replay(&report_path, &img_path, &bad_tag).expect_err("strict tag mismatch");
+        assert!(err.to_string().contains("replay divergence"), "got {err}");
 
         // --- tampered exit code: caught -------------------------------------
         let mut bad_exit = recorded.clone();
@@ -4629,8 +1707,7 @@ pub fn build() -> Image:
     fn replay_divergence_and_record_failures_exit_nonzero_through_the_real_binary() {
         use std::process::Command;
 
-        const EXIT_VMM_FAILURE: i32 = 2;
-        const EXIT_REPLAY_DIVERGENCE: i32 = 3;
+        use wrela_machine::vmm_process::{EXIT_REPLAY_DIVERGENCE, EXIT_VMM_FAILURE};
         const GUEST_EXIT_CODE: u64 = 5; // nonzero — must collapse to process exit `1`, never `0`.
 
         let build = Command::new("cargo")
@@ -4961,10 +2038,14 @@ pub fn build() -> Image:
         }
 
         let entry_len = build_entry(sp_top, 0, 0, 0).len();
-        let data_base = {
-            let after_code = machine_layout::IMAGE_BASE + (entry_len as u64) * 4;
-            after_code.div_ceil(16) * 16
-        };
+        let code_bytes = (entry_len as u64) * 4;
+        // Data must sit outside the page-granular RX window applied to
+        // `Section name=entry` (16 KiB HVF pages). Padding code up to a
+        // page and starting the ring/doorbell there keeps doorbell stores
+        // on RW DRAM.
+        const PAGE: u64 = 16 * 1024;
+        let code_span = code_bytes.div_ceil(PAGE) * PAGE;
+        let data_base = machine_layout::IMAGE_BASE + code_span;
         let words = build_entry(sp_top, data_base, expect_first, expect_last);
         assert_eq!(
             words.len(),
@@ -4973,10 +2054,7 @@ pub fn build() -> Image:
         );
 
         let mut img: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
-        img.resize(
-            (data_base - machine_layout::IMAGE_BASE + DATA_REGION_SIZE) as usize,
-            0,
-        );
+        img.resize((code_span + DATA_REGION_SIZE) as usize, 0);
         let data_off = (data_base - machine_layout::IMAGE_BASE) as usize;
         let put = |img: &mut Vec<u8>, off: u64, bytes: &[u8]| {
             let at = data_off + off as usize;
@@ -5060,7 +2138,7 @@ pub fn build() -> Image:
              BlkPool name=BlockControl device=device#0 base={:#x} size={:#x}\n",
             report_identity("blk-conformance.wr", &img),
             machine_layout::IMAGE_BASE,
-            img.len(),
+            code_bytes,
             machine_layout::IMAGE_BASE,
             devices::DEVICE_FEATURES,
             data_base + OFF_DESC,
@@ -5279,6 +2357,24 @@ pub fn build() -> Image:
         let mut img = built.img_bytes.clone();
         let desc1 = (data_base - machine_layout::IMAGE_BASE) as usize + devices::DESC_SIZE as usize; // descriptor index 1
         img[desc1..desc1 + 8].copy_from_slice(&machine_layout::DRAM_BASE.to_le_bytes());
+        // Digest is checked before the device model runs — rewrite the
+        // report's Image sha256 so the deliberate descriptor forgery is
+        // what fails closed, not the digest gate.
+        let new_digest = wrela_machine::sha256::sha256_hex(&img);
+        let report_text = built
+            .report_text
+            .lines()
+            .map(|l| {
+                if let Some(rest) = l.strip_prefix("Image sha256=") {
+                    let _ = rest;
+                    format!("Image sha256={new_digest}")
+                } else {
+                    l.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
 
         let tmp_dir =
             std::env::temp_dir().join(format!("wrela-vmm-blk-oob-test-{}", std::process::id()));
@@ -5286,7 +2382,7 @@ pub fn build() -> Image:
         let img_path = tmp_dir.join("blk-oob.img");
         let report_path = tmp_dir.join("blk-oob.report.txt");
         std::fs::write(&img_path, &img).expect("write image");
-        std::fs::write(&report_path, &built.report_text).expect("write report");
+        std::fs::write(&report_path, &report_text).expect("write report");
         let err = boot_image(&report_path, &img_path)
             .expect_err("a descriptor outside every declared pool must fail the boot closed");
         let _ = std::fs::remove_dir_all(&tmp_dir);
@@ -5670,7 +2766,19 @@ pub fn build() -> Image:
         let ok =
             format!("{head}CoreEntry core=2 base=0x40500200\nCoreEntry core=1 base=0x40500100\n");
         let parsed = parse_report(&ok).expect("parses");
-        assert_eq!(parsed.core_entries, vec![(1, 0x40500100), (2, 0x40500200)]);
+        assert_eq!(
+            parsed.core_entries,
+            vec![
+                CoreEntry {
+                    core: 1,
+                    base: 0x40500100
+                },
+                CoreEntry {
+                    core: 2,
+                    base: 0x40500200
+                },
+            ]
+        );
     }
 
     /// plans/M8.md item C3: the `Ring` lines the admission recorder reads.

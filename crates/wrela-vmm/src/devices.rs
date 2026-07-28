@@ -74,10 +74,7 @@
 
 use crate::record::digest_hex;
 use wrela_machine::layout as machine_layout;
-use wrela_machine::virtio::{
-    avail_bytes as virtio_avail_bytes, desc_bytes as virtio_desc_bytes,
-    quiesce_count_addr as virtio_quiesce_count_addr, used_bytes as virtio_used_bytes,
-};
+use wrela_machine::virtio::quiesce_count_addr as virtio_quiesce_count_addr;
 
 // --- virtio-blk protocol constants (OASIS VIRTIO 1.2, as profiled by 06) ---
 //
@@ -87,6 +84,7 @@ use wrela_machine::virtio::{
 // below is VMM-only: request types, status bytes, sector size, the
 // never-offered INDIRECT flag, and this VMM's own disk ceiling.
 
+pub use wrela_machine::report::{BlkConfig, BlkQueueConfig, PoolWindow};
 pub use wrela_machine::virtio::{
     DESC_F_NEXT, DESC_F_WRITE, DESC_SIZE, DEVICE_FEATURES, F_BLK_FLUSH, F_VERSION_1,
     REQ_HEADER_SIZE,
@@ -121,27 +119,6 @@ pub const SECTOR_SIZE: u64 = 512;
 pub const MAX_DISK_BYTES: u64 = 64 << 20;
 
 // --- declared pool windows and checked guest memory -------------------------
-
-/// One declared, device-reachable window of guest DRAM (05-library.md §9's
-/// `img.pool`/`img.dma_pool`, as it reaches this VMM through the report).
-/// plans/M7.md decision 5: "the VMM maps exactly the declared pools and
-/// nothing else" — on the flagship there is no IOMMU, so this list *is*
-/// the mapping, and `GuestMem` below is what enforces it.
-///
-/// plans/M8.md item P: a window is bound to **one** device, named by the
-/// report's own `BlkPool name= device=device#N base= size=` line.
-/// 03-hardware.md §3 is per-device — "all memory a device can reach
-/// originates from *its* bound pools" — so a window without its device is
-/// not a statement this VMM can enforce.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PoolWindow {
-    pub name: String,
-    /// Declared-device index (`device#N` in the report), the sole device
-    /// this window is reachable from.
-    pub device: u64,
-    pub base: u64,
-    pub size: u64,
-}
 
 /// Guest DRAM as **one device** may reach it: every declared pool window
 /// in the image, plus the identity of the device doing the reaching.
@@ -537,63 +514,9 @@ impl std::fmt::Display for BlkFault {
 }
 
 // --- configuration ----------------------------------------------------------
-
-/// One split ring's own addresses, exactly as the report declares them
-/// (06 §3: "preconfigures every device, queue, and shared-memory window
-/// the report declares"). Deliberately three independent addresses rather
-/// than one base plus the legacy contiguous-with-padding layout: there is
-/// no transport here to negotiate a layout with, so the declaration says
-/// where each part is and nothing is implied.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BlkQueueConfig {
-    pub size: u16,
-    pub desc: u64,
-    pub avail: u64,
-    pub used: u64,
-    /// 06 §5's shared-memory doorbell word (8 bytes). The guest stores a
-    /// nonzero value here after publishing; no trap, no exit.
-    pub doorbell: u64,
-}
-
-impl BlkQueueConfig {
-    fn desc_bytes(&self) -> u64 {
-        virtio_desc_bytes(self.size)
-    }
-    /// `flags: u16, idx: u16, ring: [u16; size]`.
-    fn avail_bytes(&self) -> u64 {
-        virtio_avail_bytes(self.size)
-    }
-    /// `flags: u16, idx: u16, ring: [(id: u32, len: u32); size]`.
-    fn used_bytes(&self) -> u64 {
-        virtio_used_bytes(self.size)
-    }
-}
-
-/// The whole configuration of one declared `blk` device.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BlkConfig {
-    /// plans/M8.md item P: which declared device this model *is*
-    /// (`BlkDevice device=device#N`). It is the identity every pool window
-    /// is matched against, so it is configuration, not decoration.
-    pub device: u64,
-    pub capacity_sectors: u64,
-    /// The feature bits the image declares (03 §9: "The image declares
-    /// required features ...; boot still negotiates the real device") —
-    /// run through `negotiate` at construction, so a build asking for a
-    /// bit this model does not implement fails the boot closed instead of
-    /// silently running without it.
-    pub features: u64,
-    /// The vector bit a completion raises in core 0's own pending word
-    /// (06 §4). `None` is 03 §7's poll build: no vector exists, and the
-    /// used ring alone is the completion signal.
-    pub vector: Option<u64>,
-    pub queue: BlkQueueConfig,
-    /// **Every** declared pool window in the image, not only this
-    /// device's — `GuestMem`'s own doc comment says why the whole set is
-    /// carried. `BlkDevice::new` filters on `device` when it checks its
-    /// own ring.
-    pub pools: Vec<PoolWindow>,
-}
+// `BlkConfig` / `BlkQueueConfig` / `PoolWindow` live in
+// `wrela_machine::report` (shared with the report parser) and are
+// re-exported at the top of this module.
 
 /// 03 §9's negotiation, device side: the driver's requested set against
 /// what this model offers. Returns the accepted set, or names exactly
@@ -2116,7 +2039,9 @@ mod tests {
             },
             BlkFault::UnalignedDataLength { len: 500 },
             BlkFault::FlushWithData { len: 512 },
-            BlkFault::DescTooLarge { len: MAX_DISK_BYTES + 1 },
+            BlkFault::DescTooLarge {
+                len: MAX_DISK_BYTES + 1,
+            },
             BlkFault::QuiesceWrongWord {
                 named: 1,
                 expected: 2,

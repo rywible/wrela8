@@ -11,44 +11,17 @@
 //! `await`/`send`/actor operations, `with` group/pool, pool operations,
 //! `@image` bodies, and anything still fail-closed.
 //!
-//! ## The await/send/with/pool-op question, answered
+//! ## Illegal operations in the typed tree
 //!
-//! Every one of those operations is *unrepresentable* in the current
-//! typed tree. `bodies.rs` fails closed on each before a typed node is
-//! ever built:
-//!
-//!   - `Expr::Unary(_, UnaryOp::Await, _)` -> `error[unimplemented]:
-//!     await is not checked yet` (bodies.rs, `check_expr`)
-//!   - `Expr::Send` -> `error[unimplemented]: send is not checked yet`
-//!   - `Stmt::With` -> `error[unimplemented]: \`with\` is not checked
-//!     yet` (covers both the group and scoped-pool forms — one node,
-//!     one fail-closed arm)
-//!   - an `@image` fn's body -> `error[unimplemented]: @image bodies are
-//!     not checked yet` (`bodies::is_image_fn`)
-//!
-//! `sema::check_typed` runs this exact `bodies::check` pass first in its
-//! pipeline (`sema/mod.rs`) and returns `Err` the moment any of these is
-//! reached, before a `TypedProgram` exists at all — so a `TypedProgram`
-//! this module ever sees is, by construction, already free of every one
-//! of decision 7's illegal operations (golden/err-unimplemented-await
-//! pins the await case; the other three fail closed the identical way,
-//! unpinned by a dedicated golden only because M2's goldens never
-//! exercised them). There is no representable "illegal" typed node to
-//! classify yet.
-//!
-//! This module is honest about that rather than inventing a fixture: the
-//! per-node scan below (`expr_illegal_reason`/`stmt_illegal_reason`) is
-//! an *exhaustive* match over every current `TypedExprKind`/
-//! `TypedStmtKind` variant, returning "legal" for all of them — not a
-//! wildcard `_ => None`. When M5 lifts any of decision 7's fail-closed
-//! diagnostics, `typed.rs` gains a real node for it and *this match stops
-//! compiling* until a real arm (returning `Some("<operation>")`) is added
-//! here — the illegal-op detection this module owns is enforced by the
-//! compiler itself, not by a comment promising someone will remember.
-//! Until then, whole-graph classification over the representable set is
-//! the entire job, and every reachable verdict is `Legal` — proven by
-//! the unit tests below (plain/transitive/recursive/mutually-recursive/
-//! generic-instantiation/method/closure cases), not asserted by fiat.
+//! Decision 7's illegal set is now representable: `await`/`send`/
+//! `with group`/restricted `@image` builder intrinsics/`now()`/MMIO
+//! and related hardware effects all exist as typed nodes. Whole-graph
+//! classification walks the typed tree once, driven by an effect-class →
+//! allowed-contexts table (`effect_reason` below). Contexts today are
+//! comptime, ISR, and bottom-half (`@task`); hardware provenance is the
+//! same walk with a capability-authority visitor. A new `TypedExprKind`/
+//! `TypedStmtKind` variant forces an arm in the shared walk
+//! (`eval::walk`) and, when it carries an effect, a row in the table.
 //!
 //! ## What "closure" means for classification
 //!
@@ -82,8 +55,8 @@ use std::collections::BTreeSet;
 
 use crate::sema::SemaError;
 use crate::sema::typed::{
-    TypedClosureBody, TypedDeferBody, TypedExpr, TypedExprKind, TypedFn, TypedForIter,
-    TypedInstantiation, TypedPattern, TypedPatternKind, TypedProgram, TypedStmt, TypedStmtKind,
+    TypedExpr, TypedExprKind, TypedFn, TypedForIter, TypedInstantiation, TypedProgram, TypedStmt,
+    TypedStmtKind,
 };
 use crate::syntax::ast::Span;
 
@@ -112,10 +85,8 @@ pub struct Legality {
 impl Legality {
     /// A key `classify` never registered a node for (an unresolved/
     /// builtin callee outside the typed program's own maps) is treated
-    /// as legal by default: with nothing illegal representable in the
-    /// typed tree at all (see the module doc), there is no information
-    /// to the contrary, and "unknown" cannot itself be one of decision
-    /// 7's named illegal operations.
+    /// as legal by default: unknowns are not decision-7 illegal
+    /// operations, and there is no information to the contrary.
     pub fn verdict(&self, key: &str) -> Verdict {
         self.verdicts.get(key).cloned().unwrap_or(Verdict::Legal)
     }
@@ -651,199 +622,11 @@ fn expr_hardware_reason(e: &TypedExpr, authority: &Authority) -> Option<String> 
     }
 }
 
-/// The same body walk `scan_stmts` performs, asking the hardware question
-/// instead of the legality one. Deliberately a second walk rather than a
-/// second field on `BodyScan`: `classify`'s scan runs on every program and
-/// this one only ever runs when a capability exists somewhere, and folding
-/// the two would make `classify`'s hot path pay for a rule it does not
-/// use. A closure's body folds into its enclosing fn here for the identical
-/// reason it does there (plans/M3.md decision 4) — which is also how 03 §1's
-/// "or captures" is covered for a *driver*'s own closures.
-fn scan_hardware_stmts(stmts: &[TypedStmt], authority: &Authority, scan: &mut BodyScan) {
-    for s in stmts {
-        scan_hardware_stmt(s, authority, scan);
-    }
-}
-
-fn scan_hardware_stmt(stmt: &TypedStmt, authority: &Authority, scan: &mut BodyScan) {
-    match &stmt.kind {
-        TypedStmtKind::Let { value, .. } => scan_hardware_expr(value, authority, scan),
-        TypedStmtKind::Assign { target, value } => {
-            scan_hardware_expr(target, authority, scan);
-            scan_hardware_expr(value, authority, scan);
-        }
-        TypedStmtKind::If {
-            cond,
-            then_branch,
-            elifs,
-            else_branch,
-        } => {
-            scan_hardware_expr(cond, authority, scan);
-            scan_hardware_stmts(then_branch, authority, scan);
-            for elif in elifs {
-                scan_hardware_expr(&elif.cond, authority, scan);
-                scan_hardware_stmts(&elif.body, authority, scan);
-            }
-            if let Some(b) = else_branch {
-                scan_hardware_stmts(b, authority, scan);
-            }
-        }
-        TypedStmtKind::Match { scrutinee, arms } => {
-            scan_hardware_expr(scrutinee, authority, scan);
-            for arm in arms {
-                if let Some(g) = &arm.guard {
-                    scan_hardware_expr(g, authority, scan);
-                }
-                scan_hardware_stmts(&arm.body, authority, scan);
-            }
-        }
-        TypedStmtKind::For { iter, body, .. } => {
-            match iter {
-                TypedForIter::Range(from, to, _) => {
-                    scan_hardware_expr(from, authority, scan);
-                    scan_hardware_expr(to, authority, scan);
-                }
-                TypedForIter::Expr(e) => scan_hardware_expr(e, authority, scan),
-            }
-            scan_hardware_stmts(body, authority, scan);
-        }
-        TypedStmtKind::While { cond, body, .. } => {
-            scan_hardware_expr(cond, authority, scan);
-            scan_hardware_stmts(body, authority, scan);
-        }
-        TypedStmtKind::Break | TypedStmtKind::Continue | TypedStmtKind::Pass => {}
-        TypedStmtKind::Return(value) => {
-            if let Some(e) = value {
-                scan_hardware_expr(e, authority, scan);
-            }
-        }
-        TypedStmtKind::Assert { cond, message } => {
-            scan_hardware_expr(cond, authority, scan);
-            if let Some(m) = message {
-                scan_hardware_expr(m, authority, scan);
-            }
-        }
-        TypedStmtKind::ComptimeAssert { cond, message, .. } => {
-            scan_hardware_expr(cond, authority, scan);
-            if let Some(m) = message {
-                scan_hardware_expr(m, authority, scan);
-            }
-        }
-        TypedStmtKind::Defer(body) => match body {
-            TypedDeferBody::Expr(e) => scan_hardware_expr(e, authority, scan),
-            TypedDeferBody::Suite(stmts) => scan_hardware_stmts(stmts, authority, scan),
-        },
-        TypedStmtKind::ExprStmt(e) => scan_hardware_expr(e, authority, scan),
-        TypedStmtKind::BareSend { expr, .. } => scan_hardware_expr(expr, authority, scan),
-        TypedStmtKind::WithGroup {
-            capacity,
-            deadline,
-            body,
-            ..
-        } => {
-            if let Some(c) = capacity {
-                scan_hardware_expr(c, authority, scan);
-            }
-            if let Some(d) = deadline {
-                scan_hardware_expr(d, authority, scan);
-            }
-            scan_hardware_stmts(body, authority, scan);
-        }
-    }
-}
-
-fn scan_hardware_expr(e: &TypedExpr, authority: &Authority, scan: &mut BodyScan) {
-    if let Some(reason) = expr_hardware_reason(e, authority) {
-        if scan.illegal.is_none() {
-            scan.illegal = Some(reason);
-        }
-    }
-    match &e.kind {
-        TypedExprKind::Int(_)
-        | TypedExprKind::Float(_)
-        | TypedExprKind::Str(_)
-        | TypedExprKind::BStr(_)
-        | TypedExprKind::Char(_)
-        | TypedExprKind::Bool(_)
-        | TypedExprKind::Unit
-        | TypedExprKind::Local(_)
-        | TypedExprKind::Const(_)
-        | TypedExprKind::Static(_)
-        | TypedExprKind::FnRef(_)
-        | TypedExprKind::PoolName(_)
-        | TypedExprKind::GroupChild(_) => {}
-        TypedExprKind::Field(base, _) => scan_hardware_expr(base, authority, scan),
-        TypedExprKind::Index(base, idx) => {
-            scan_hardware_expr(base, authority, scan);
-            scan_hardware_expr(idx, authority, scan);
-        }
-        TypedExprKind::Call { receiver, args, .. } => {
-            if let Some(r) = receiver {
-                scan_hardware_expr(r, authority, scan);
-            }
-            for a in args.iter().flatten() {
-                scan_hardware_expr(a, authority, scan);
-            }
-        }
-        TypedExprKind::CallValue(callee, args) => {
-            scan_hardware_expr(callee, authority, scan);
-            for a in args {
-                scan_hardware_expr(a, authority, scan);
-            }
-        }
-        TypedExprKind::ToScalar(inner)
-        | TypedExprKind::Neg(inner)
-        | TypedExprKind::BitNot(inner)
-        | TypedExprKind::Take(inner)
-        | TypedExprKind::Not(inner)
-        | TypedExprKind::Panic(inner)
-        | TypedExprKind::Await(inner)
-        | TypedExprKind::Send(inner) => scan_hardware_expr(inner, authority, scan),
-        TypedExprKind::Try(inner, _) => scan_hardware_expr(inner, authority, scan),
-        TypedExprKind::Binary(_, l, r)
-        | TypedExprKind::OpCall(_, l, r)
-        | TypedExprKind::And(l, r)
-        | TypedExprKind::Or(l, r) => {
-            scan_hardware_expr(l, authority, scan);
-            scan_hardware_expr(r, authority, scan);
-        }
-        TypedExprKind::Is(inner, _) => scan_hardware_expr(inner, authority, scan),
-        TypedExprKind::EnumConstruct { args, .. } => {
-            for a in args {
-                scan_hardware_expr(a, authority, scan);
-            }
-        }
-        TypedExprKind::Closure { body, .. } => match body {
-            TypedClosureBody::Expr(e) => scan_hardware_expr(e, authority, scan),
-            TypedClosureBody::Suite(stmts) => scan_hardware_stmts(stmts, authority, scan),
-        },
-        TypedExprKind::Tuple(items) | TypedExprKind::List(items) => {
-            for i in items {
-                scan_hardware_expr(i, authority, scan);
-            }
-        }
-        TypedExprKind::StructLiteral { fields, .. } => {
-            for (_, v) in fields {
-                scan_hardware_expr(v, authority, scan);
-            }
-        }
-        TypedExprKind::Intrinsic { receiver, args, .. } => {
-            if let Some(r) = receiver {
-                scan_hardware_expr(r, authority, scan);
-            }
-            for (_, a) in args {
-                scan_hardware_expr(a, authority, scan);
-            }
-        }
-    }
-}
-
 // --- the callee graph: one node per classifiable key -----------------------
 
 /// One graph node: a fn/method/instantiation body's own direct callees
 /// (by `CalleeKey::spelling()`) and whether its own body directly
-/// contains a decision-7 illegal operation (today: never — see the
-/// module doc's exhaustive-match argument).
+/// contains a decision-7 illegal operation.
 struct NodeInfo {
     display_name: String,
     callees: BTreeSet<String>,
@@ -995,375 +778,355 @@ impl BodyScan {
     }
 }
 
-// --- the illegal-op scan: exhaustive, so a new node kind forces a real
-// arm here rather than silently defaulting to "legal" (see module doc).
+// --- helpers shared by the effect table and ISR signature checks ---
 
-fn expr_illegal_reason(kind: &TypedExprKind) -> Option<&'static str> {
+fn is_float_type(ty: &crate::sema::types::Type) -> bool {
+    matches!(
+        ty,
+        crate::sema::types::Type::F32 | crate::sema::types::Type::F64
+    )
+}
+
+fn dma_touch_reason(ty: &crate::sema::types::Type) -> Option<String> {
+    use crate::sema::types::Type;
+    match ty {
+        Type::Own(pool, inner) => Some(format!(
+            "own[{pool}] {}",
+            crate::sema::types::render_type(inner)
+        )),
+        Type::Named(name, _) if name == "DmaShared" => Some(crate::sema::types::render_type(ty)),
+        Type::Option(inner) | Type::Static(inner) => dma_touch_reason(inner),
+        Type::Array(elem, _) => dma_touch_reason(elem),
+        Type::Tuple(elems) => elems.iter().find_map(dma_touch_reason),
+        Type::Result(ok, err) => dma_touch_reason(ok).or_else(|| dma_touch_reason(err)),
+        _ => None,
+    }
+}
+
+/// `self.<field> = ...` where the field is not an `InterruptCell[T]`.
+fn is_plain_self_field_channel(target: &TypedExpr) -> bool {
+    let TypedExprKind::Field(base, _) = &target.kind else {
+        return false;
+    };
+    let TypedExprKind::Local(name) = &base.kind else {
+        return false;
+    };
+    if name != "self" {
+        return false;
+    }
+    !crate::sema::bodies::is_interrupt_cell_type(&target.ty)
+}
+
+fn is_format_method_callee(callee: &crate::sema::typed::CalleeKey) -> bool {
+    match callee {
+        crate::sema::typed::CalleeKey::Method(_, m)
+        | crate::sema::typed::CalleeKey::MethodInstance(_, m) => m == "format",
+        _ => false,
+    }
+}
+
+// --- effect-class → allowed-contexts table + one typed-tree walk --------
+//
+// Contexts: Comptime (legality), Isr (03 §6 effect set), BottomHalf (`@task`).
+// Hardware provenance uses the same walk skeleton with a capability visitor.
+// Reasons that differ by context live in `effect_reason`; classification of
+// a node into effect classes is `stmt_effects` / `expr_effects`.
+
+use super::walk::{self, Visitor};
+
+/// Where an effect is being judged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EffectContext {
+    Comptime,
+    Isr,
+    BottomHalf,
+}
+
+/// Effect classes drawn from expr/stmt nodes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EffectClass {
+    Await,
+    Send,
+    WithGroup,
+    BareSend,
+    MmioAccess,
+    DeviceTransport,
+    QueueOp,
+    IrqCapOp,
+    RestrictedIntrinsic,
+    Now,
+    GroupOp,
+    Float,
+    Format,
+    UnboundedLoop,
+    PlainSelfFieldChannel,
+    DmaPayload,
+}
+
+/// Diagnostic reason when `effect` is forbidden in `ctx`, or `None` if
+/// allowed / not policed in that context.
+fn effect_reason(effect: EffectClass, ctx: EffectContext) -> Option<&'static str> {
+    use EffectClass::*;
+    use EffectContext::*;
+    match (effect, ctx) {
+        (Await, Comptime) => Some("an `await` expression"),
+        (Await, Isr) => Some("an `await`"),
+        (Await, BottomHalf) => Some("an `await` (stays active while waiting)"),
+        (Send, Comptime) => Some("a `send` expression"),
+        (Send, Isr) => Some("a `send` (call another actor)"),
+        (Send, BottomHalf) => Some("a `send` (call another actor)"),
+        (WithGroup, Comptime) => Some("a `with group` block"),
+        (WithGroup, Isr) => Some("a `with group` (call another actor / block)"),
+        (WithGroup, BottomHalf) => Some("a `with group` (stays active while waiting)"),
+        (BareSend, Comptime) => Some("a `send` statement"),
+        (BareSend, Isr) => Some("a bare `send` (call another actor)"),
+        (BareSend, BottomHalf) => Some("a bare `send` (call another actor)"),
+        (MmioAccess, Comptime) => Some("a volatile MMIO register access"),
+        (MmioAccess, Isr | BottomHalf) => None,
+        (DeviceTransport, Comptime) => Some("a device bring-up transition (03-hardware.md §9)"),
+        (DeviceTransport, Isr) => Some("a device bring-up transition (not in the ISR effect set)"),
+        (DeviceTransport, BottomHalf) => None,
+        (QueueOp, Comptime) => Some("a queue operation (03-hardware.md §4)"),
+        (QueueOp, Isr) => {
+            Some("a queue operation (not in the ISR effect set — drain belongs in `@task`)")
+        }
+        (QueueOp, BottomHalf) => None,
+        (IrqCapOp, Comptime) => Some("an interrupt-vector operation (03-hardware.md §6)"),
+        (IrqCapOp, Isr) => Some("an interrupt-vector bind/unmask (not in the ISR effect set)"),
+        (IrqCapOp, BottomHalf) => None,
+        (RestrictedIntrinsic, Comptime) => Some("an `@image` builder intrinsic"),
+        (RestrictedIntrinsic, Isr | BottomHalf) => None,
+        (Now, Comptime) => Some("`now()` (a runtime-only clock read)"),
+        (Now, Isr) => Some("a runtime clock read (`now()` — not in the ISR effect set)"),
+        (Now, BottomHalf) => None,
+        (GroupOp, Comptime) => Some("a `group` construct"),
+        (GroupOp, Isr) => Some("a `group` construct (call another actor / block)"),
+        (GroupOp, BottomHalf) => None,
+        (Float, Isr) => Some("floating point"),
+        (Float, Comptime | BottomHalf) => None,
+        (Format, Isr) => Some("formatting (f-string / Format)"),
+        (Format, Comptime | BottomHalf) => None,
+        (UnboundedLoop, Isr) => {
+            Some("a loop (drain unbounded work — loops belong in the bottom half)")
+        }
+        (UnboundedLoop, Comptime | BottomHalf) => None,
+        (PlainSelfFieldChannel, Isr) => {
+            Some("a plain field as an ISR channel (03-hardware.md §6: use `InterruptCell[T]`)")
+        }
+        (PlainSelfFieldChannel, Comptime | BottomHalf) => None,
+        (DmaPayload, Isr) => Some("a device-owned DMA payload (`own[P] T` / `DmaShared`)"),
+        (DmaPayload, Comptime | BottomHalf) => None,
+    }
+}
+
+fn stmt_kind_effects(kind: &TypedStmtKind) -> Vec<EffectClass> {
     match kind {
-        TypedExprKind::Int(_)
-        | TypedExprKind::Float(_)
-        | TypedExprKind::Str(_)
-        | TypedExprKind::BStr(_)
-        | TypedExprKind::Char(_)
-        | TypedExprKind::Bool(_)
-        | TypedExprKind::Unit
-        | TypedExprKind::Local(_)
-        | TypedExprKind::Const(_)
-        | TypedExprKind::Static(_)
-        | TypedExprKind::FnRef(_)
-        | TypedExprKind::Field(..)
-        | TypedExprKind::Index(..)
-        | TypedExprKind::Call { .. }
-        | TypedExprKind::CallValue(..)
-        | TypedExprKind::ToScalar(_)
-        | TypedExprKind::Neg(_)
-        | TypedExprKind::BitNot(_)
-        | TypedExprKind::Take(_)
-        | TypedExprKind::Try(..)
-        | TypedExprKind::Binary(..)
-        | TypedExprKind::OpCall(..)
-        | TypedExprKind::Is(..)
-        | TypedExprKind::Not(_)
-        | TypedExprKind::And(..)
-        | TypedExprKind::Or(..)
-        | TypedExprKind::EnumConstruct { .. }
-        | TypedExprKind::Closure { .. }
-        | TypedExprKind::Tuple(_)
-        | TypedExprKind::List(_)
-        | TypedExprKind::StructLiteral { .. }
-        | TypedExprKind::Panic(_)
-        | TypedExprKind::PoolName(_) => None,
-        // plans/M4.md item B, decision 5: the ten graph-building builder
-        // intrinsics (`typed::is_restricted_intrinsic`) are illegal
-        // anywhere but the one reachable `@image` fn — `classify` clears
-        // this flag on that one fn's own node afterward, so this arm
-        // does not need to know which fn is currently being scanned.
-        // Non-restricted intrinsics sharing the node kind fall through
-        // to `None`, legal everywhere.
+        TypedStmtKind::BareSend { .. } => vec![EffectClass::BareSend],
+        TypedStmtKind::WithGroup { .. } => vec![EffectClass::WithGroup],
+        TypedStmtKind::While { .. } | TypedStmtKind::For { .. } => {
+            vec![EffectClass::UnboundedLoop]
+        }
+        TypedStmtKind::Assign { target, .. } if is_plain_self_field_channel(target) => {
+            vec![EffectClass::PlainSelfFieldChannel]
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn stmt_effects(stmt: &TypedStmt) -> Vec<EffectClass> {
+    stmt_kind_effects(&stmt.kind)
+}
+
+/// Test helpers folded into the effect table.
+#[cfg(test)]
+fn stmt_isr_forbidden_reason(kind: &TypedStmtKind) -> Option<&'static str> {
+    stmt_kind_effects(kind)
+        .into_iter()
+        .find_map(|e| effect_reason(e, EffectContext::Isr))
+}
+
+#[cfg(test)]
+fn expr_isr_forbidden_reason(e: &TypedExpr) -> Option<&'static str> {
+    expr_effects(e)
+        .into_iter()
+        .find_map(|ef| effect_reason(ef, EffectContext::Isr))
+}
+
+#[cfg(test)]
+fn bottom_half_expr_forbidden_reason(e: &TypedExpr) -> Option<&'static str> {
+    expr_effects(e)
+        .into_iter()
+        .find_map(|ef| effect_reason(ef, EffectContext::BottomHalf))
+}
+
+fn expr_effects(e: &TypedExpr) -> Vec<EffectClass> {
+    let mut out = Vec::new();
+    match &e.kind {
+        TypedExprKind::Await(_) => out.push(EffectClass::Await),
+        TypedExprKind::Send(_) => out.push(EffectClass::Send),
+        TypedExprKind::Float(_) => out.push(EffectClass::Float),
+        TypedExprKind::Binary(..) | TypedExprKind::OpCall(..) | TypedExprKind::Neg(_)
+            if is_float_type(&e.ty) =>
+        {
+            out.push(EffectClass::Float);
+        }
+        TypedExprKind::Field(..) | TypedExprKind::Take(_) | TypedExprKind::Local(_)
+            if dma_touch_reason(&e.ty).is_some() =>
+        {
+            out.push(EffectClass::DmaPayload);
+        }
+        TypedExprKind::Call { callee, .. } if is_format_method_callee(callee) => {
+            out.push(EffectClass::Format);
+        }
         TypedExprKind::Intrinsic { key, .. } => {
             if crate::sema::bodies::is_mmio_access_intrinsic(key) {
-                // plans/M7.md item C: 02-language.md §12's own sentence —
-                // "comptime-callable when its transitive closure is
-                // deterministic and free of I/O, async/actor operations,
-                // and **hardware effects**". A volatile MMIO access is
-                // that clause's flagship instance; it is also the first
-                // one this compiler can represent at all.
-                Some("a volatile MMIO register access")
+                out.push(EffectClass::MmioAccess);
             } else if crate::sema::bodies::is_device_transport_intrinsic(key) {
-                // plans/M7.md item H1: same sentence, same reason — a
-                // bring-up transition is a hardware effect, so it is
-                // comptime-illegal wherever an MMIO access is.
-                Some("a device bring-up transition (03-hardware.md §9)")
+                out.push(EffectClass::DeviceTransport);
             } else if crate::sema::bodies::is_queue_op_intrinsic(key) {
-                // plans/M7.md item E2: queue reservation / prepare are
-                // hardware effects (03-hardware.md §4).
-                Some("a queue operation (03-hardware.md §4)")
+                out.push(EffectClass::QueueOp);
             } else if crate::sema::bodies::is_irq_cap_intrinsic(key) {
-                // plans/M7.md item G: binding/unmasking a vector is an
-                // IRQ-state effect, comptime-illegal for the same §12
-                // sentence.
-                Some("an interrupt-vector operation (03-hardware.md §6)")
+                out.push(EffectClass::IrqCapOp);
             } else if crate::sema::typed::is_restricted_intrinsic(key) {
-                Some("an `@image` builder intrinsic")
+                out.push(EffectClass::RestrictedIntrinsic);
             } else if key == "now" {
-                // Plans/M6.md item A, decision 11: `now()` is
-                // runtime-only (illegal in every comptime context) — the
-                // new illegal-reason arm decision 11 asks for, mirroring
-                // the intrinsic-outside-`@image` precedent just above.
-                // `ms(n)` shares this node kind but stays comptime-legal
-                // (falls through to `None`).
-                Some("`now()` (a runtime-only clock read)")
+                out.push(EffectClass::Now);
             } else if key.starts_with("Group.") {
-                // `Group.start`/`Group.join_all` (plans/M6.md item A):
-                // actor/async operations, illegal in every comptime
-                // context (02-language.md §12).
-                Some("a `group` construct")
-            } else {
-                None
+                out.push(EffectClass::GroupOp);
+            }
+            // InterruptCell / wake: ISR-allowed, never an effect class here.
+        }
+        _ => {}
+    }
+    out
+}
+
+/// Visitor: effect-context check, optionally collecting callee edges.
+struct EffectVisitor<'a> {
+    ctx: EffectContext,
+    scan: &'a mut BodyScan,
+    collect_callees: bool,
+    patterns: bool,
+}
+
+impl Visitor for EffectVisitor<'_> {
+    fn pre_stmt(&mut self, stmt: &TypedStmt) {
+        for effect in stmt_effects(stmt) {
+            if let Some(reason) = effect_reason(effect, self.ctx) {
+                self.scan.note_illegal(reason);
             }
         }
-        // Plans/M6.md item A: `await`/`send` are both decision-7 illegal
-        // ops (02-language.md §12: "free of ... async/actor operations").
-        TypedExprKind::Await(_) => Some("an `await` expression"),
-        TypedExprKind::Send(_) => Some("a `send` expression"),
-        // Never independently illegal — the enclosing `Group.start`
-        // intrinsic (above) already flags illegal; this is only ever a
-        // leaf naming that intrinsic's own callee argument.
-        TypedExprKind::GroupChild(_) => None,
+    }
+    fn pre_expr(&mut self, expr: &TypedExpr) {
+        for effect in expr_effects(expr) {
+            if let Some(reason) = effect_reason(effect, self.ctx) {
+                self.scan.note_illegal(reason);
+            }
+        }
+    }
+    fn on_callee(&mut self, key: String) {
+        if self.collect_callees {
+            self.scan.callees.insert(key);
+        }
+    }
+    fn walk_patterns(&self) -> bool {
+        self.patterns
     }
 }
-
-fn stmt_illegal_reason(kind: &TypedStmtKind) -> Option<&'static str> {
-    match kind {
-        TypedStmtKind::Let { .. }
-        | TypedStmtKind::Assign { .. }
-        | TypedStmtKind::If { .. }
-        | TypedStmtKind::Match { .. }
-        | TypedStmtKind::For { .. }
-        | TypedStmtKind::While { .. }
-        | TypedStmtKind::Break
-        | TypedStmtKind::Continue
-        | TypedStmtKind::Pass
-        | TypedStmtKind::Return(_)
-        | TypedStmtKind::Assert { .. }
-        | TypedStmtKind::ComptimeAssert { .. }
-        | TypedStmtKind::Defer(_)
-        | TypedStmtKind::ExprStmt(_) => None,
-        // Plans/M6.md item G: the bare `send` statement form — the same
-        // decision-7 illegal op `TypedExprKind::Send` already is (the
-        // expression inside would flag it anyway; naming it here keeps
-        // the diagnostic's own wording about the statement the author
-        // actually wrote).
-        TypedStmtKind::BareSend { .. } => Some("a `send` statement"),
-        // Plans/M6.md item A: `with group(...)` is a decision-7 illegal
-        // op (an actor/async construct, 02-language.md §12).
-        TypedStmtKind::WithGroup { .. } => Some("a `with group` block"),
-    }
-}
-
-// --- the walk: collects callee keys, folding closure bodies into
-// whichever enclosing node they were found in (module doc) ------------------
 
 fn scan_stmts(stmts: &[TypedStmt], scan: &mut BodyScan) {
-    for s in stmts {
-        scan_stmt(s, scan);
-    }
-}
-
-fn scan_stmt(stmt: &TypedStmt, scan: &mut BodyScan) {
-    if let Some(reason) = stmt_illegal_reason(&stmt.kind) {
-        scan.note_illegal(reason);
-    }
-    match &stmt.kind {
-        TypedStmtKind::Let { value, .. } => scan_expr(value, scan),
-        TypedStmtKind::Assign { target, value } => {
-            scan_expr(target, scan);
-            scan_expr(value, scan);
-        }
-        TypedStmtKind::If {
-            cond,
-            then_branch,
-            elifs,
-            else_branch,
-        } => {
-            scan_expr(cond, scan);
-            scan_stmts(then_branch, scan);
-            for elif in elifs {
-                scan_expr(&elif.cond, scan);
-                scan_stmts(&elif.body, scan);
-            }
-            if let Some(b) = else_branch {
-                scan_stmts(b, scan);
-            }
-        }
-        TypedStmtKind::Match { scrutinee, arms } => {
-            scan_expr(scrutinee, scan);
-            for arm in arms {
-                scan_pattern(&arm.pattern, scan);
-                if let Some(g) = &arm.guard {
-                    scan_expr(g, scan);
-                }
-                scan_stmts(&arm.body, scan);
-            }
-        }
-        TypedStmtKind::For { iter, body, .. } => {
-            match iter {
-                TypedForIter::Range(from, to, _) => {
-                    scan_expr(from, scan);
-                    scan_expr(to, scan);
-                }
-                TypedForIter::Expr(e) => scan_expr(e, scan),
-            }
-            scan_stmts(body, scan);
-        }
-        TypedStmtKind::While { cond, body, .. } => {
-            scan_expr(cond, scan);
-            scan_stmts(body, scan);
-        }
-        TypedStmtKind::Break | TypedStmtKind::Continue | TypedStmtKind::Pass => {}
-        TypedStmtKind::Return(value) => {
-            if let Some(e) = value {
-                scan_expr(e, scan);
-            }
-        }
-        TypedStmtKind::Assert { cond, message } => {
-            scan_expr(cond, scan);
-            if let Some(m) = message {
-                scan_expr(m, scan);
-            }
-        }
-        TypedStmtKind::ComptimeAssert { cond, message, .. } => {
-            scan_expr(cond, scan);
-            if let Some(m) = message {
-                scan_expr(m, scan);
-            }
-        }
-        TypedStmtKind::Defer(body) => match body {
-            TypedDeferBody::Expr(e) => scan_expr(e, scan),
-            TypedDeferBody::Suite(stmts) => scan_stmts(stmts, scan),
-        },
-        TypedStmtKind::ExprStmt(e) => scan_expr(e, scan),
-        TypedStmtKind::BareSend { expr, .. } => scan_expr(expr, scan),
-        TypedStmtKind::WithGroup {
-            capacity,
-            deadline,
-            body,
-            ..
-        } => {
-            if let Some(c) = capacity {
-                scan_expr(c, scan);
-            }
-            if let Some(d) = deadline {
-                scan_expr(d, scan);
-            }
-            scan_stmts(body, scan);
-        }
-    }
+    let mut v = EffectVisitor {
+        ctx: EffectContext::Comptime,
+        scan,
+        collect_callees: true,
+        patterns: true,
+    };
+    walk::walk_stmts(stmts, &mut v);
 }
 
 fn scan_expr(e: &TypedExpr, scan: &mut BodyScan) {
-    if let Some(reason) = expr_illegal_reason(&e.kind) {
-        scan.note_illegal(reason);
-    }
-    match &e.kind {
-        TypedExprKind::Int(_)
-        | TypedExprKind::Float(_)
-        | TypedExprKind::Str(_)
-        | TypedExprKind::BStr(_)
-        | TypedExprKind::Char(_)
-        | TypedExprKind::Bool(_)
-        | TypedExprKind::Unit
-        | TypedExprKind::Local(_)
-        | TypedExprKind::Const(_)
-        | TypedExprKind::Static(_) => {}
-        TypedExprKind::FnRef(key) => {
-            scan.callees.insert(key.spelling());
-        }
-        TypedExprKind::Field(base, _) => scan_expr(base, scan),
-        TypedExprKind::Index(base, idx) => {
-            scan_expr(base, scan);
-            scan_expr(idx, scan);
-        }
-        TypedExprKind::Call {
-            callee,
-            receiver,
-            args,
-        } => {
-            scan.callees.insert(callee.spelling());
-            if let Some(r) = receiver {
-                scan_expr(r, scan);
+    let mut v = EffectVisitor {
+        ctx: EffectContext::Comptime,
+        scan,
+        collect_callees: true,
+        patterns: true,
+    };
+    walk::walk_expr(e, &mut v);
+}
+
+struct HardwareVisitor<'a> {
+    authority: &'a Authority,
+    scan: &'a mut BodyScan,
+}
+
+impl Visitor for HardwareVisitor<'_> {
+    fn pre_expr(&mut self, expr: &TypedExpr) {
+        if let Some(reason) = expr_hardware_reason(expr, self.authority) {
+            if self.scan.illegal.is_none() {
+                self.scan.illegal = Some(reason);
             }
-            for a in args {
-                if let Some(a) = a {
-                    scan_expr(a, scan);
-                }
-            }
-        }
-        TypedExprKind::CallValue(callee, args) => {
-            // The callee expr is walked like any other: a `FnRef(key)`
-            // here still adds its edge (the `FnRef` arm above), a
-            // `Closure` here still folds its body in (the `Closure` arm
-            // below) — an unresolvable target (e.g. a `Local` holding a
-            // fn value passed in from elsewhere) contributes no edge,
-            // which is the honest "no information" default (module doc).
-            scan_expr(callee, scan);
-            for a in args {
-                scan_expr(a, scan);
-            }
-        }
-        TypedExprKind::ToScalar(inner)
-        | TypedExprKind::Neg(inner)
-        | TypedExprKind::BitNot(inner)
-        | TypedExprKind::Take(inner)
-        | TypedExprKind::Not(inner) => scan_expr(inner, scan),
-        TypedExprKind::Try(inner, conv) => {
-            scan_expr(inner, scan);
-            if let Some(key) = conv {
-                scan.callees.insert(key.spelling());
-            }
-        }
-        TypedExprKind::Binary(_, l, r) => {
-            scan_expr(l, scan);
-            scan_expr(r, scan);
-        }
-        TypedExprKind::OpCall(key, l, r) => {
-            scan.callees.insert(key.spelling());
-            scan_expr(l, scan);
-            scan_expr(r, scan);
-        }
-        TypedExprKind::Is(inner, pat) => {
-            scan_expr(inner, scan);
-            scan_pattern(pat, scan);
-        }
-        TypedExprKind::And(l, r) | TypedExprKind::Or(l, r) => {
-            scan_expr(l, scan);
-            scan_expr(r, scan);
-        }
-        TypedExprKind::EnumConstruct { args, .. } => {
-            for a in args {
-                scan_expr(a, scan);
-            }
-        }
-        TypedExprKind::Closure { body, .. } => match body {
-            // Decision 4: a closure's body is part of its enclosing fn's
-            // closure-set, not a graph node of its own — folded straight
-            // into the same `scan` the enclosing body is accumulating.
-            TypedClosureBody::Expr(e) => scan_expr(e, scan),
-            TypedClosureBody::Suite(stmts) => scan_stmts(stmts, scan),
-        },
-        TypedExprKind::Tuple(items) | TypedExprKind::List(items) => {
-            for i in items {
-                scan_expr(i, scan);
-            }
-        }
-        TypedExprKind::StructLiteral { fields, .. } => {
-            for (_, v) in fields {
-                scan_expr(v, scan);
-            }
-        }
-        TypedExprKind::Panic(msg) => scan_expr(msg, scan),
-        TypedExprKind::Intrinsic { receiver, args, .. } => {
-            if let Some(r) = receiver {
-                scan_expr(r, scan);
-            }
-            for (_, a) in args {
-                scan_expr(a, scan);
-            }
-        }
-        TypedExprKind::PoolName(_) => {}
-        TypedExprKind::Await(inner) | TypedExprKind::Send(inner) => scan_expr(inner, scan),
-        TypedExprKind::GroupChild(key) => {
-            // Mirrors `FnRef`'s own arm: names a callee edge (the
-            // enclosing fn is already independently marked illegal by
-            // the `Group.start` intrinsic itself, above — this edge is
-            // only for the graph's own completeness, same reasoning as
-            // `FnRef`).
-            scan.callees.insert(key.spelling());
         }
     }
 }
 
-fn scan_pattern(p: &TypedPattern, scan: &mut BodyScan) {
-    match &p.kind {
-        TypedPatternKind::Wildcard | TypedPatternKind::Binding(_) => {}
-        TypedPatternKind::Literal(e) => scan_expr(e, scan),
-        TypedPatternKind::Take(inner) => scan_pattern(inner, scan),
-        TypedPatternKind::Variant { payload, .. } => {
-            for p in payload {
-                scan_pattern(p, scan);
-            }
-        }
-        TypedPatternKind::Tuple(elems) | TypedPatternKind::Array(elems) => {
-            for p in elems {
-                scan_pattern(p, scan);
-            }
-        }
-        TypedPatternKind::Or(alts) => {
-            for p in alts {
-                scan_pattern(p, scan);
+fn scan_hardware_stmts(stmts: &[TypedStmt], authority: &Authority, scan: &mut BodyScan) {
+    let mut v = HardwareVisitor { authority, scan };
+    walk::walk_stmts(stmts, &mut v);
+}
+
+fn scan_bottom_half_stmts(stmts: &[TypedStmt], scan: &mut BodyScan) {
+    let mut v = EffectVisitor {
+        ctx: EffectContext::BottomHalf,
+        scan,
+        collect_callees: false,
+        patterns: false,
+    };
+    walk::walk_stmts(stmts, &mut v);
+}
+
+fn scan_isr_forbidden_stmts(stmts: &[TypedStmt], scan: &mut BodyScan) {
+    let mut v = EffectVisitor {
+        ctx: EffectContext::Isr,
+        scan,
+        collect_callees: false,
+        patterns: false,
+    };
+    walk::walk_stmts(stmts, &mut v);
+}
+
+fn scan_isr_forbidden_expr(e: &TypedExpr, scan: &mut BodyScan) {
+    let mut v = EffectVisitor {
+        ctx: EffectContext::Isr,
+        scan,
+        collect_callees: false,
+        patterns: false,
+    };
+    walk::walk_expr(e, &mut v);
+}
+
+struct IsrBindVisitor<'a> {
+    roots: &'a mut BTreeSet<String>,
+}
+
+impl Visitor for IsrBindVisitor<'_> {
+    fn pre_expr(&mut self, e: &TypedExpr) {
+        if let TypedExprKind::Intrinsic { key, args, .. } = &e.kind {
+            if key == "IrqCap.bind" {
+                for (label, arg) in args {
+                    if label == "handler" {
+                        if let TypedExprKind::FnRef(k) = &arg.kind {
+                            self.roots.insert(k.spelling());
+                        }
+                    }
+                }
             }
         }
     }
+}
+
+fn scan_isr_bind_stmts(stmts: &[TypedStmt], _scan: &mut BodyScan, roots: &mut BTreeSet<String>) {
+    let mut v = IsrBindVisitor { roots };
+    walk::walk_stmts(stmts, &mut v);
 }
 
 // --- ISR effect restriction: the same graph, a third color (plans/M7.md item G) ---
@@ -1564,178 +1327,21 @@ pub fn check_wake_sites(program: &TypedProgram) -> Result<(), SemaError> {
 }
 
 fn fn_contains_wake(f: &TypedFn) -> bool {
-    let mut found = false;
-    fn walk_stmts(stmts: &[TypedStmt], found: &mut bool) {
-        for s in stmts {
-            walk_stmt(s, found);
+    struct WakeVisitor {
+        found: bool,
+    }
+    impl Visitor for WakeVisitor {
+        fn pre_expr(&mut self, e: &TypedExpr) {
+            if let TypedExprKind::Intrinsic { key, .. } = &e.kind {
+                if key == "wake" {
+                    self.found = true;
+                }
+            }
         }
     }
-    fn walk_stmt(stmt: &TypedStmt, found: &mut bool) {
-        match &stmt.kind {
-            TypedStmtKind::Let { value, .. } | TypedStmtKind::ExprStmt(value) => {
-                walk_expr(value, found)
-            }
-            TypedStmtKind::Assign { target, value } => {
-                walk_expr(target, found);
-                walk_expr(value, found);
-            }
-            TypedStmtKind::If {
-                cond,
-                then_branch,
-                elifs,
-                else_branch,
-            } => {
-                walk_expr(cond, found);
-                walk_stmts(then_branch, found);
-                for e in elifs {
-                    walk_expr(&e.cond, found);
-                    walk_stmts(&e.body, found);
-                }
-                if let Some(b) = else_branch {
-                    walk_stmts(b, found);
-                }
-            }
-            TypedStmtKind::Match { scrutinee, arms } => {
-                walk_expr(scrutinee, found);
-                for a in arms {
-                    if let Some(g) = &a.guard {
-                        walk_expr(g, found);
-                    }
-                    walk_stmts(&a.body, found);
-                }
-            }
-            TypedStmtKind::For { iter, body, .. } => {
-                match iter {
-                    TypedForIter::Range(a, b, _) => {
-                        walk_expr(a, found);
-                        walk_expr(b, found);
-                    }
-                    TypedForIter::Expr(e) => walk_expr(e, found),
-                }
-                walk_stmts(body, found);
-            }
-            TypedStmtKind::While { cond, body, .. } => {
-                walk_expr(cond, found);
-                walk_stmts(body, found);
-            }
-            TypedStmtKind::Return(Some(e))
-            | TypedStmtKind::Assert {
-                cond: e,
-                message: None,
-            } => walk_expr(e, found),
-            TypedStmtKind::Assert {
-                cond,
-                message: Some(m),
-            }
-            | TypedStmtKind::ComptimeAssert {
-                cond,
-                message: Some(m),
-                ..
-            } => {
-                walk_expr(cond, found);
-                walk_expr(m, found);
-            }
-            TypedStmtKind::ComptimeAssert {
-                cond,
-                message: None,
-                ..
-            } => walk_expr(cond, found),
-            TypedStmtKind::Defer(TypedDeferBody::Expr(e)) => walk_expr(e, found),
-            TypedStmtKind::Defer(TypedDeferBody::Suite(s)) => walk_stmts(s, found),
-            TypedStmtKind::BareSend { expr, .. } => walk_expr(expr, found),
-            TypedStmtKind::WithGroup {
-                capacity,
-                deadline,
-                body,
-                ..
-            } => {
-                if let Some(c) = capacity {
-                    walk_expr(c, found);
-                }
-                if let Some(d) = deadline {
-                    walk_expr(d, found);
-                }
-                walk_stmts(body, found);
-            }
-            TypedStmtKind::Break
-            | TypedStmtKind::Continue
-            | TypedStmtKind::Pass
-            | TypedStmtKind::Return(None) => {}
-        }
-    }
-    fn walk_expr(e: &TypedExpr, found: &mut bool) {
-        if let TypedExprKind::Intrinsic { key, .. } = &e.kind {
-            if key == "wake" {
-                *found = true;
-            }
-        }
-        match &e.kind {
-            TypedExprKind::Field(b, _)
-            | TypedExprKind::Take(b)
-            | TypedExprKind::Neg(b)
-            | TypedExprKind::BitNot(b)
-            | TypedExprKind::Not(b)
-            | TypedExprKind::ToScalar(b)
-            | TypedExprKind::Await(b)
-            | TypedExprKind::Send(b)
-            | TypedExprKind::Panic(b) => walk_expr(b, found),
-            TypedExprKind::Try(b, _) | TypedExprKind::Is(b, _) => walk_expr(b, found),
-            TypedExprKind::Index(a, b)
-            | TypedExprKind::Binary(_, a, b)
-            | TypedExprKind::OpCall(_, a, b)
-            | TypedExprKind::And(a, b)
-            | TypedExprKind::Or(a, b) => {
-                walk_expr(a, found);
-                walk_expr(b, found);
-            }
-            TypedExprKind::Call { receiver, args, .. } => {
-                if let Some(r) = receiver {
-                    walk_expr(r, found);
-                }
-                for a in args {
-                    if let Some(e) = a {
-                        walk_expr(e, found);
-                    }
-                }
-            }
-            TypedExprKind::Intrinsic { receiver, args, .. } => {
-                if let Some(r) = receiver {
-                    walk_expr(r, found);
-                }
-                for (_, a) in args {
-                    walk_expr(a, found);
-                }
-            }
-            TypedExprKind::CallValue(f, args) => {
-                walk_expr(f, found);
-                for a in args {
-                    walk_expr(a, found);
-                }
-            }
-            TypedExprKind::Closure { body, .. } => match body {
-                TypedClosureBody::Expr(e) => walk_expr(e, found),
-                TypedClosureBody::Suite(s) => walk_stmts(s, found),
-            },
-            TypedExprKind::Tuple(items) | TypedExprKind::List(items) => {
-                for i in items {
-                    walk_expr(i, found);
-                }
-            }
-            TypedExprKind::StructLiteral { fields, .. } => {
-                for (_, v) in fields {
-                    walk_expr(v, found);
-                }
-            }
-            TypedExprKind::EnumConstruct { args, .. } => {
-                for a in args {
-                    walk_expr(a, found);
-                }
-            }
-            _ => {}
-        }
-    }
-    walk_stmts(&f.body, &mut found);
-    found
+    let mut v = WakeVisitor { found: false };
+    walk::walk_stmts(&f.body, &mut v);
+    v.found
 }
 
 /// plans/M7.md item G / E4 decision 22: a `@task` bottom half — may drain,
@@ -1797,166 +1403,6 @@ fn bottom_half_forbidden_of(f: &TypedFn) -> Option<String> {
     let mut scan = BodyScan::default();
     scan_bottom_half_stmts(&f.body, &mut scan);
     scan.illegal.map(|r| format!("uses {r}"))
-}
-
-fn scan_bottom_half_stmts(stmts: &[TypedStmt], scan: &mut BodyScan) {
-    for s in stmts {
-        scan_bottom_half_stmt(s, scan);
-    }
-}
-
-fn scan_bottom_half_stmt(stmt: &TypedStmt, scan: &mut BodyScan) {
-    match &stmt.kind {
-        TypedStmtKind::Let { value, .. } | TypedStmtKind::ExprStmt(value) => {
-            scan_bottom_half_expr(value, scan);
-        }
-        TypedStmtKind::Assign { target, value } => {
-            scan_bottom_half_expr(target, scan);
-            scan_bottom_half_expr(value, scan);
-        }
-        TypedStmtKind::If {
-            cond,
-            then_branch,
-            elifs,
-            else_branch,
-        } => {
-            scan_bottom_half_expr(cond, scan);
-            scan_bottom_half_stmts(then_branch, scan);
-            for e in elifs {
-                scan_bottom_half_expr(&e.cond, scan);
-                scan_bottom_half_stmts(&e.body, scan);
-            }
-            if let Some(b) = else_branch {
-                scan_bottom_half_stmts(b, scan);
-            }
-        }
-        TypedStmtKind::Match { scrutinee, arms } => {
-            scan_bottom_half_expr(scrutinee, scan);
-            for a in arms {
-                if let Some(g) = &a.guard {
-                    scan_bottom_half_expr(g, scan);
-                }
-                scan_bottom_half_stmts(&a.body, scan);
-            }
-        }
-        TypedStmtKind::For { iter, body, .. } => {
-            match iter {
-                TypedForIter::Range(a, b, _) => {
-                    scan_bottom_half_expr(a, scan);
-                    scan_bottom_half_expr(b, scan);
-                }
-                TypedForIter::Expr(e) => scan_bottom_half_expr(e, scan),
-            }
-            scan_bottom_half_stmts(body, scan);
-        }
-        TypedStmtKind::While { cond, body, .. } => {
-            scan_bottom_half_expr(cond, scan);
-            scan_bottom_half_stmts(body, scan);
-        }
-        TypedStmtKind::Return(Some(e)) => scan_bottom_half_expr(e, scan),
-        TypedStmtKind::Assert { cond, message }
-        | TypedStmtKind::ComptimeAssert { cond, message, .. } => {
-            scan_bottom_half_expr(cond, scan);
-            if let Some(m) = message {
-                scan_bottom_half_expr(m, scan);
-            }
-        }
-        TypedStmtKind::Defer(TypedDeferBody::Expr(e)) => scan_bottom_half_expr(e, scan),
-        TypedStmtKind::Defer(TypedDeferBody::Suite(s)) => scan_bottom_half_stmts(s, scan),
-        TypedStmtKind::BareSend { expr, .. } => {
-            scan.note_illegal("a bare `send` (call another actor)");
-            scan_bottom_half_expr(expr, scan);
-        }
-        TypedStmtKind::WithGroup { .. } => {
-            scan.note_illegal("a `with group` (stays active while waiting)");
-        }
-        TypedStmtKind::Break
-        | TypedStmtKind::Continue
-        | TypedStmtKind::Pass
-        | TypedStmtKind::Return(None) => {}
-    }
-}
-
-/// plans/M7.md item G / E4 decision 22: bottom-half forbidden reasons.
-/// `await`/`send` stay refused (stays-active-while-waiting). Receipt /
-/// `IoCompletion` are allowed — the bottom half is where drain resolves
-/// them (03 §5).
-fn bottom_half_expr_forbidden_reason(e: &TypedExpr) -> Option<&'static str> {
-    match &e.kind {
-        TypedExprKind::Await(_) => Some("an `await` (stays active while waiting)"),
-        TypedExprKind::Send(_) => Some("a `send` (call another actor)"),
-        _ => None,
-    }
-}
-
-fn scan_bottom_half_expr(e: &TypedExpr, scan: &mut BodyScan) {
-    if let Some(reason) = bottom_half_expr_forbidden_reason(e) {
-        scan.note_illegal(reason);
-    }
-    match &e.kind {
-        TypedExprKind::Field(b, _)
-        | TypedExprKind::Take(b)
-        | TypedExprKind::Neg(b)
-        | TypedExprKind::BitNot(b)
-        | TypedExprKind::Not(b)
-        | TypedExprKind::ToScalar(b)
-        | TypedExprKind::Await(b)
-        | TypedExprKind::Send(b)
-        | TypedExprKind::Panic(b) => scan_bottom_half_expr(b, scan),
-        TypedExprKind::Try(b, _) | TypedExprKind::Is(b, _) => scan_bottom_half_expr(b, scan),
-        TypedExprKind::Index(a, b)
-        | TypedExprKind::Binary(_, a, b)
-        | TypedExprKind::OpCall(_, a, b)
-        | TypedExprKind::And(a, b)
-        | TypedExprKind::Or(a, b) => {
-            scan_bottom_half_expr(a, scan);
-            scan_bottom_half_expr(b, scan);
-        }
-        TypedExprKind::Call { receiver, args, .. } => {
-            if let Some(r) = receiver {
-                scan_bottom_half_expr(r, scan);
-            }
-            for a in args {
-                if let Some(e) = a {
-                    scan_bottom_half_expr(e, scan);
-                }
-            }
-        }
-        TypedExprKind::Intrinsic { receiver, args, .. } => {
-            if let Some(r) = receiver {
-                scan_bottom_half_expr(r, scan);
-            }
-            for (_, a) in args {
-                scan_bottom_half_expr(a, scan);
-            }
-        }
-        TypedExprKind::CallValue(f, args) => {
-            scan_bottom_half_expr(f, scan);
-            for a in args {
-                scan_bottom_half_expr(a, scan);
-            }
-        }
-        TypedExprKind::Closure { body, .. } => match body {
-            TypedClosureBody::Expr(e) => scan_bottom_half_expr(e, scan),
-            TypedClosureBody::Suite(s) => scan_bottom_half_stmts(s, scan),
-        },
-        TypedExprKind::Tuple(items) | TypedExprKind::List(items) => {
-            for i in items {
-                scan_bottom_half_expr(i, scan);
-            }
-        }
-        TypedExprKind::StructLiteral { fields, .. } => {
-            for (_, v) in fields {
-                scan_bottom_half_expr(v, scan);
-            }
-        }
-        TypedExprKind::EnumConstruct { args, .. } => {
-            for a in args {
-                scan_bottom_half_expr(a, scan);
-            }
-        }
-        _ => {}
-    }
 }
 
 /// Kept for the decision-22 unit test that pins Receipt is *not* an
@@ -2028,192 +1474,6 @@ fn collect_isr_roots(program: &TypedProgram) -> BTreeSet<String> {
         }
     }
     roots
-}
-
-fn scan_isr_bind_stmts(stmts: &[TypedStmt], scan: &mut BodyScan, roots: &mut BTreeSet<String>) {
-    for s in stmts {
-        // Reuse the hardware stmt walk's shape: scan exprs for IrqCap.bind.
-        scan_isr_bind_stmt(s, scan, roots);
-    }
-}
-
-fn scan_isr_bind_stmt(stmt: &TypedStmt, scan: &mut BodyScan, roots: &mut BTreeSet<String>) {
-    // Walk every subexpression the hardware scan walks, looking only for binds.
-    match &stmt.kind {
-        TypedStmtKind::Let { value, .. } | TypedStmtKind::ExprStmt(value) => {
-            scan_isr_bind_expr(value, roots);
-        }
-        TypedStmtKind::Assign { target, value } => {
-            scan_isr_bind_expr(target, roots);
-            scan_isr_bind_expr(value, roots);
-        }
-        TypedStmtKind::If {
-            cond,
-            then_branch,
-            elifs,
-            else_branch,
-        } => {
-            scan_isr_bind_expr(cond, roots);
-            scan_isr_bind_stmts(then_branch, scan, roots);
-            for elif in elifs {
-                scan_isr_bind_expr(&elif.cond, roots);
-                scan_isr_bind_stmts(&elif.body, scan, roots);
-            }
-            if let Some(b) = else_branch {
-                scan_isr_bind_stmts(b, scan, roots);
-            }
-        }
-        TypedStmtKind::Match { scrutinee, arms } => {
-            scan_isr_bind_expr(scrutinee, roots);
-            for arm in arms {
-                if let Some(g) = &arm.guard {
-                    scan_isr_bind_expr(g, roots);
-                }
-                scan_isr_bind_stmts(&arm.body, scan, roots);
-            }
-        }
-        TypedStmtKind::For { iter, body, .. } => {
-            match iter {
-                TypedForIter::Range(from, to, _) => {
-                    scan_isr_bind_expr(from, roots);
-                    scan_isr_bind_expr(to, roots);
-                }
-                TypedForIter::Expr(e) => scan_isr_bind_expr(e, roots),
-            }
-            scan_isr_bind_stmts(body, scan, roots);
-        }
-        TypedStmtKind::While { cond, body, .. } => {
-            scan_isr_bind_expr(cond, roots);
-            scan_isr_bind_stmts(body, scan, roots);
-        }
-        TypedStmtKind::Break | TypedStmtKind::Continue | TypedStmtKind::Pass => {}
-        TypedStmtKind::Return(value) => {
-            if let Some(e) = value {
-                scan_isr_bind_expr(e, roots);
-            }
-        }
-        TypedStmtKind::Assert { cond, message }
-        | TypedStmtKind::ComptimeAssert { cond, message, .. } => {
-            scan_isr_bind_expr(cond, roots);
-            if let Some(m) = message {
-                scan_isr_bind_expr(m, roots);
-            }
-        }
-        TypedStmtKind::Defer(body) => match body {
-            TypedDeferBody::Expr(e) => scan_isr_bind_expr(e, roots),
-            TypedDeferBody::Suite(stmts) => scan_isr_bind_stmts(stmts, scan, roots),
-        },
-        TypedStmtKind::BareSend { expr, .. } => scan_isr_bind_expr(expr, roots),
-        TypedStmtKind::WithGroup {
-            capacity,
-            deadline,
-            body,
-            ..
-        } => {
-            if let Some(c) = capacity {
-                scan_isr_bind_expr(c, roots);
-            }
-            if let Some(d) = deadline {
-                scan_isr_bind_expr(d, roots);
-            }
-            scan_isr_bind_stmts(body, scan, roots);
-        }
-    }
-}
-
-fn scan_isr_bind_expr(e: &TypedExpr, roots: &mut BTreeSet<String>) {
-    if let TypedExprKind::Intrinsic { key, args, .. } = &e.kind {
-        if key == "IrqCap.bind" {
-            for (label, arg) in args {
-                if label == "handler" {
-                    if let TypedExprKind::FnRef(k) = &arg.kind {
-                        roots.insert(k.spelling());
-                    }
-                }
-            }
-        }
-    }
-    // Recurse via the hardware expr walk's coverage by scanning children
-    // the same way `scan_hardware_expr` does after its reason check.
-    match &e.kind {
-        TypedExprKind::Field(b, _)
-        | TypedExprKind::Take(b)
-        | TypedExprKind::Neg(b)
-        | TypedExprKind::BitNot(b)
-        | TypedExprKind::Not(b)
-        | TypedExprKind::ToScalar(b)
-        | TypedExprKind::Await(b)
-        | TypedExprKind::Send(b)
-        | TypedExprKind::Panic(b) => scan_isr_bind_expr(b, roots),
-        TypedExprKind::Try(b, _) | TypedExprKind::Is(b, _) => scan_isr_bind_expr(b, roots),
-        TypedExprKind::Index(a, b)
-        | TypedExprKind::Binary(_, a, b)
-        | TypedExprKind::OpCall(_, a, b)
-        | TypedExprKind::And(a, b)
-        | TypedExprKind::Or(a, b) => {
-            scan_isr_bind_expr(a, roots);
-            scan_isr_bind_expr(b, roots);
-        }
-        TypedExprKind::Call { receiver, args, .. } => {
-            if let Some(r) = receiver {
-                scan_isr_bind_expr(r, roots);
-            }
-            for a in args {
-                if let Some(e) = a {
-                    scan_isr_bind_expr(e, roots);
-                }
-            }
-        }
-        TypedExprKind::Intrinsic { receiver, args, .. } => {
-            if let Some(r) = receiver {
-                scan_isr_bind_expr(r, roots);
-            }
-            for (_, a) in args {
-                scan_isr_bind_expr(a, roots);
-            }
-        }
-        TypedExprKind::CallValue(f, args) => {
-            scan_isr_bind_expr(f, roots);
-            for a in args {
-                scan_isr_bind_expr(a, roots);
-            }
-        }
-        TypedExprKind::Closure { body, .. } => match body {
-            TypedClosureBody::Expr(e) => scan_isr_bind_expr(e, roots),
-            TypedClosureBody::Suite(stmts) => {
-                let mut scan = BodyScan::default();
-                scan_isr_bind_stmts(stmts, &mut scan, roots);
-            }
-        },
-        TypedExprKind::Tuple(items) | TypedExprKind::List(items) => {
-            for i in items {
-                scan_isr_bind_expr(i, roots);
-            }
-        }
-        TypedExprKind::StructLiteral { fields, .. } => {
-            for (_, v) in fields {
-                scan_isr_bind_expr(v, roots);
-            }
-        }
-        TypedExprKind::EnumConstruct { args, .. } => {
-            for a in args {
-                scan_isr_bind_expr(a, roots);
-            }
-        }
-        TypedExprKind::Int(_)
-        | TypedExprKind::Float(_)
-        | TypedExprKind::Str(_)
-        | TypedExprKind::BStr(_)
-        | TypedExprKind::Char(_)
-        | TypedExprKind::Bool(_)
-        | TypedExprKind::Unit
-        | TypedExprKind::Local(_)
-        | TypedExprKind::Const(_)
-        | TypedExprKind::Static(_)
-        | TypedExprKind::FnRef(_)
-        | TypedExprKind::PoolName(_)
-        | TypedExprKind::GroupChild(_) => {}
-    }
 }
 
 fn isr_path_from_root(
@@ -2319,360 +1579,13 @@ fn lookup_typed_fn<'a>(program: &'a TypedProgram, key: &str) -> Option<&'a Typed
     None
 }
 
-fn is_float_type(ty: &crate::sema::types::Type) -> bool {
-    matches!(
-        ty,
-        crate::sema::types::Type::F32 | crate::sema::types::Type::F64
-    )
-}
-
-fn dma_touch_reason(ty: &crate::sema::types::Type) -> Option<String> {
-    use crate::sema::types::Type;
-    match ty {
-        Type::Own(pool, inner) => Some(format!(
-            "own[{pool}] {}",
-            crate::sema::types::render_type(inner)
-        )),
-        Type::Named(name, _) if name == "DmaShared" => Some(crate::sema::types::render_type(ty)),
-        Type::Option(inner) | Type::Static(inner) => dma_touch_reason(inner),
-        Type::Array(elem, _) => dma_touch_reason(elem),
-        Type::Tuple(elems) => elems.iter().find_map(dma_touch_reason),
-        Type::Result(ok, err) => dma_touch_reason(ok).or_else(|| dma_touch_reason(err)),
-        _ => None,
-    }
-}
-
-fn scan_isr_forbidden_stmts(stmts: &[TypedStmt], scan: &mut BodyScan) {
-    for s in stmts {
-        scan_isr_forbidden_stmt(s, scan);
-    }
-}
-
-fn scan_isr_forbidden_stmt(stmt: &TypedStmt, scan: &mut BodyScan) {
-    if let Some(reason) = stmt_isr_forbidden_reason(&stmt.kind) {
-        scan.note_illegal(reason);
-    }
-    match &stmt.kind {
-        TypedStmtKind::Let { value, .. } | TypedStmtKind::ExprStmt(value) => {
-            scan_isr_forbidden_expr(value, scan);
-        }
-        TypedStmtKind::Assign { target, value } => {
-            scan_isr_forbidden_expr(target, scan);
-            scan_isr_forbidden_expr(value, scan);
-        }
-        TypedStmtKind::If {
-            cond,
-            then_branch,
-            elifs,
-            else_branch,
-        } => {
-            scan_isr_forbidden_expr(cond, scan);
-            scan_isr_forbidden_stmts(then_branch, scan);
-            for elif in elifs {
-                scan_isr_forbidden_expr(&elif.cond, scan);
-                scan_isr_forbidden_stmts(&elif.body, scan);
-            }
-            if let Some(b) = else_branch {
-                scan_isr_forbidden_stmts(b, scan);
-            }
-        }
-        TypedStmtKind::Match { scrutinee, arms } => {
-            scan_isr_forbidden_expr(scrutinee, scan);
-            for arm in arms {
-                if let Some(g) = &arm.guard {
-                    scan_isr_forbidden_expr(g, scan);
-                }
-                scan_isr_forbidden_stmts(&arm.body, scan);
-            }
-        }
-        TypedStmtKind::For { iter, body, .. } => {
-            match iter {
-                TypedForIter::Range(from, to, _) => {
-                    scan_isr_forbidden_expr(from, scan);
-                    scan_isr_forbidden_expr(to, scan);
-                }
-                TypedForIter::Expr(e) => scan_isr_forbidden_expr(e, scan),
-            }
-            scan_isr_forbidden_stmts(body, scan);
-        }
-        TypedStmtKind::While { cond, body, .. } => {
-            scan_isr_forbidden_expr(cond, scan);
-            scan_isr_forbidden_stmts(body, scan);
-        }
-        TypedStmtKind::Break | TypedStmtKind::Continue | TypedStmtKind::Pass => {}
-        TypedStmtKind::Return(value) => {
-            if let Some(e) = value {
-                scan_isr_forbidden_expr(e, scan);
-            }
-        }
-        TypedStmtKind::Assert { cond, message }
-        | TypedStmtKind::ComptimeAssert { cond, message, .. } => {
-            scan_isr_forbidden_expr(cond, scan);
-            if let Some(m) = message {
-                scan_isr_forbidden_expr(m, scan);
-            }
-        }
-        TypedStmtKind::Defer(body) => match body {
-            TypedDeferBody::Expr(e) => scan_isr_forbidden_expr(e, scan),
-            TypedDeferBody::Suite(stmts) => scan_isr_forbidden_stmts(stmts, scan),
-        },
-        TypedStmtKind::BareSend { expr, .. } => scan_isr_forbidden_expr(expr, scan),
-        TypedStmtKind::WithGroup {
-            capacity,
-            deadline,
-            body,
-            ..
-        } => {
-            if let Some(c) = capacity {
-                scan_isr_forbidden_expr(c, scan);
-            }
-            if let Some(d) = deadline {
-                scan_isr_forbidden_expr(d, scan);
-            }
-            scan_isr_forbidden_stmts(body, scan);
-        }
-    }
-}
-
-fn scan_isr_forbidden_expr(e: &TypedExpr, scan: &mut BodyScan) {
-    if let Some(reason) = expr_isr_forbidden_reason(e) {
-        scan.note_illegal(reason);
-    }
-    match &e.kind {
-        TypedExprKind::Field(b, _)
-        | TypedExprKind::Take(b)
-        | TypedExprKind::Neg(b)
-        | TypedExprKind::BitNot(b)
-        | TypedExprKind::Not(b)
-        | TypedExprKind::ToScalar(b)
-        | TypedExprKind::Await(b)
-        | TypedExprKind::Send(b)
-        | TypedExprKind::Panic(b) => scan_isr_forbidden_expr(b, scan),
-        TypedExprKind::Try(b, _) | TypedExprKind::Is(b, _) => scan_isr_forbidden_expr(b, scan),
-        TypedExprKind::Index(a, b)
-        | TypedExprKind::Binary(_, a, b)
-        | TypedExprKind::OpCall(_, a, b)
-        | TypedExprKind::And(a, b)
-        | TypedExprKind::Or(a, b) => {
-            scan_isr_forbidden_expr(a, scan);
-            scan_isr_forbidden_expr(b, scan);
-        }
-        TypedExprKind::Call { receiver, args, .. } => {
-            if let Some(r) = receiver {
-                scan_isr_forbidden_expr(r, scan);
-            }
-            for a in args {
-                if let Some(e) = a {
-                    scan_isr_forbidden_expr(e, scan);
-                }
-            }
-        }
-        TypedExprKind::Intrinsic { receiver, args, .. } => {
-            if let Some(r) = receiver {
-                scan_isr_forbidden_expr(r, scan);
-            }
-            for (_, a) in args {
-                scan_isr_forbidden_expr(a, scan);
-            }
-        }
-        TypedExprKind::CallValue(f, args) => {
-            scan_isr_forbidden_expr(f, scan);
-            for a in args {
-                scan_isr_forbidden_expr(a, scan);
-            }
-        }
-        TypedExprKind::Closure { body, .. } => match body {
-            TypedClosureBody::Expr(e) => scan_isr_forbidden_expr(e, scan),
-            TypedClosureBody::Suite(stmts) => scan_isr_forbidden_stmts(stmts, scan),
-        },
-        TypedExprKind::Tuple(items) | TypedExprKind::List(items) => {
-            for i in items {
-                scan_isr_forbidden_expr(i, scan);
-            }
-        }
-        TypedExprKind::StructLiteral { fields, .. } => {
-            for (_, v) in fields {
-                scan_isr_forbidden_expr(v, scan);
-            }
-        }
-        TypedExprKind::EnumConstruct { args, .. } => {
-            for a in args {
-                scan_isr_forbidden_expr(a, scan);
-            }
-        }
-        TypedExprKind::Int(_)
-        | TypedExprKind::Float(_)
-        | TypedExprKind::Str(_)
-        | TypedExprKind::BStr(_)
-        | TypedExprKind::Char(_)
-        | TypedExprKind::Bool(_)
-        | TypedExprKind::Unit
-        | TypedExprKind::Local(_)
-        | TypedExprKind::Const(_)
-        | TypedExprKind::Static(_)
-        | TypedExprKind::FnRef(_)
-        | TypedExprKind::PoolName(_)
-        | TypedExprKind::GroupChild(_) => {}
-    }
-}
-
-fn stmt_isr_forbidden_reason(kind: &TypedStmtKind) -> Option<&'static str> {
-    match kind {
-        TypedStmtKind::While { .. } | TypedStmtKind::For { .. } => {
-            Some("a loop (drain unbounded work — loops belong in the bottom half)")
-        }
-        TypedStmtKind::WithGroup { .. } => Some("a `with group` (call another actor / block)"),
-        TypedStmtKind::BareSend { .. } => Some("a bare `send` (call another actor)"),
-        // plans/M7.md item G, decision 17: 03 §6 — "A plain field is not a
-        // communication channel." Assigning `self.<non-cell>` from an ISR
-        // is exactly that misuse; `InterruptCell` assign is the channel.
-        TypedStmtKind::Assign { target, .. } => {
-            if is_plain_self_field_channel(target) {
-                Some("a plain field as an ISR channel (03-hardware.md §6: use `InterruptCell[T]`)")
-            } else {
-                None
-            }
-        }
-        TypedStmtKind::Let { .. }
-        | TypedStmtKind::Return(_)
-        | TypedStmtKind::Break
-        | TypedStmtKind::Continue
-        | TypedStmtKind::Pass
-        | TypedStmtKind::If { .. }
-        | TypedStmtKind::Match { .. }
-        | TypedStmtKind::Assert { .. }
-        | TypedStmtKind::ComptimeAssert { .. }
-        | TypedStmtKind::Defer(_)
-        | TypedStmtKind::ExprStmt(_) => None,
-    }
-}
-
-/// `self.<field> = ...` where the field is not an `InterruptCell[T]`.
-fn is_plain_self_field_channel(target: &TypedExpr) -> bool {
-    let TypedExprKind::Field(base, _) = &target.kind else {
-        return false;
-    };
-    let TypedExprKind::Local(name) = &base.kind else {
-        return false;
-    };
-    if name != "self" {
-        return false;
-    }
-    !crate::sema::bodies::is_interrupt_cell_type(&target.ty)
-}
-
-fn is_format_method_callee(callee: &crate::sema::typed::CalleeKey) -> bool {
-    match callee {
-        crate::sema::typed::CalleeKey::Method(_, m)
-        | crate::sema::typed::CalleeKey::MethodInstance(_, m) => m == "format",
-        _ => false,
-    }
-}
-
-fn expr_isr_forbidden_reason(e: &TypedExpr) -> Option<&'static str> {
-    // Do **not** blanket-reject every expression whose type is float or
-    // DMA-shaped: passing `None` into a helper that takes
-    // `Option[own[P] T]`, or calling a float-returning helper, would
-    // otherwise pin the *caller* and hide the real path. Signatures of
-    // reachable fns, float literals, and float-producing operators carry
-    // the type-based half; Field/Take of a DMA-shaped place is a touch.
-    match &e.kind {
-        TypedExprKind::Float(_) => Some("floating point"),
-        TypedExprKind::Binary(..) | TypedExprKind::OpCall(..) | TypedExprKind::Neg(_)
-            if is_float_type(&e.ty) =>
-        {
-            Some("floating point")
-        }
-        TypedExprKind::Field(..) | TypedExprKind::Take(_) | TypedExprKind::Local(_)
-            if dma_touch_reason(&e.ty).is_some() =>
-        {
-            Some("a device-owned DMA payload (`own[P] T` / `DmaShared`)")
-        }
-        TypedExprKind::Await(_) => Some("an `await`"),
-        TypedExprKind::Send(_) => Some("a `send` (call another actor)"),
-        // plans/M9.md item D / 03-hardware.md §6: ISR cannot format.
-        // F-strings desugar to `.format()` (+ String concat), so this
-        // one arm covers both `f"..."` interpolation and a bare
-        // `.format()` call.
-        TypedExprKind::Call { callee, .. } if is_format_method_callee(callee) => {
-            Some("formatting (f-string / Format)")
-        }
-        TypedExprKind::Intrinsic { key, .. } => {
-            if crate::sema::bodies::is_mmio_access_intrinsic(key) {
-                None
-            } else if crate::sema::bodies::is_interrupt_cell_intrinsic(key) {
-                // plans/M7.md item G, decision 17: on the allowed list.
-                None
-            } else if crate::sema::bodies::is_wake_intrinsic(key) {
-                // plans/M7.md item G: on the allowed list (site check is
-                // `check_wake_sites` — ISR or `@task` only).
-                None
-            } else if crate::sema::bodies::is_device_transport_intrinsic(key) {
-                Some("a device bring-up transition (not in the ISR effect set)")
-            } else if crate::sema::bodies::is_queue_op_intrinsic(key) {
-                // 03 §6: substantive queue work (including `drain`) is the
-                // bottom half's job, never the ISR's.
-                Some("a queue operation (not in the ISR effect set — drain belongs in `@task`)")
-            } else if crate::sema::bodies::is_irq_cap_intrinsic(key) {
-                Some("an interrupt-vector bind/unmask (not in the ISR effect set)")
-            } else if key.starts_with("Group.") {
-                Some("a `group` construct (call another actor / block)")
-            } else if key == "now" {
-                Some("a runtime clock read (`now()` — not in the ISR effect set)")
-            } else {
-                None
-            }
-        }
-        TypedExprKind::Int(_)
-        | TypedExprKind::Str(_)
-        | TypedExprKind::BStr(_)
-        | TypedExprKind::Char(_)
-        | TypedExprKind::Bool(_)
-        | TypedExprKind::Unit
-        | TypedExprKind::Local(_)
-        | TypedExprKind::Const(_)
-        | TypedExprKind::Static(_)
-        | TypedExprKind::FnRef(_)
-        | TypedExprKind::Field(..)
-        | TypedExprKind::Index(..)
-        | TypedExprKind::Call { .. }
-        | TypedExprKind::CallValue(..)
-        | TypedExprKind::ToScalar(_)
-        | TypedExprKind::Neg(_)
-        | TypedExprKind::BitNot(_)
-        | TypedExprKind::Take(_)
-        | TypedExprKind::Try(..)
-        | TypedExprKind::Binary(..)
-        | TypedExprKind::OpCall(..)
-        | TypedExprKind::Is(..)
-        | TypedExprKind::Not(_)
-        | TypedExprKind::And(..)
-        | TypedExprKind::Or(..)
-        | TypedExprKind::EnumConstruct { .. }
-        | TypedExprKind::Closure { .. }
-        | TypedExprKind::Tuple(_)
-        | TypedExprKind::List(_)
-        | TypedExprKind::StructLiteral { .. }
-        | TypedExprKind::Panic(_)
-        | TypedExprKind::PoolName(_)
-        | TypedExprKind::GroupChild(_) => None,
-    }
-}
+// --- unit tests --------------------------------------------------------
 
 // --- unit tests --------------------------------------------------------
 //
 // Built from real source through the real pipeline (`sema::check_typed`)
-// wherever the construct is representable — no hand-built `TypedProgram`
-// fixtures. The await/send/with/pool-operation/`@image` cases the M3-C
-// task's own test list names are deliberately *not* here: `check_typed`
-// fails closed (`error[unimplemented]`) on every one of them before a
-// `TypedProgram` exists at all (module doc), so there is no legal way to
-// produce a fixture that reaches `classify` containing one — faking one
-// would mean hand-constructing a `TypedProgram` around a typed-tree node
-// kind that does not exist. `golden/err-unimplemented-await` already
-// pins the await case at the sema layer; the other three fail closed the
-// identical way. Their day is M5, when `typed.rs` gains real nodes for
-// them and this file's exhaustive match forces real arms.
+// wherever convenient; hand-built nodes exercise the effect table for
+// ISR / bottom-half arms that need a single expression.
 
 #[cfg(test)]
 mod tests {
@@ -3151,6 +2064,7 @@ pub fn double(x: u64) -> u64:
         assert_eq!(
             stmt_isr_forbidden_reason(&TypedStmtKind::While {
                 cond: TypedExpr {
+                    span: Span::default(),
                     ty: Type::Bool,
                     kind: TypedExprKind::Bool(true),
                 },
@@ -3166,10 +2080,12 @@ pub fn double(x: u64) -> u64:
                 take_binding: false,
                 iter: TypedForIter::Range(
                     TypedExpr {
+                        span: Span::default(),
                         ty: Type::U64,
                         kind: TypedExprKind::Int("0".into()),
                     },
                     TypedExpr {
+                        span: Span::default(),
                         ty: Type::U64,
                         kind: TypedExprKind::Int("1".into()),
                     },
@@ -3184,6 +2100,7 @@ pub fn double(x: u64) -> u64:
             stmt_isr_forbidden_reason(&TypedStmtKind::BareSend {
                 span: Span::default(),
                 expr: TypedExpr {
+                    span: Span::default(),
                     ty: Type::Unit,
                     kind: TypedExprKind::Unit,
                 },
@@ -3200,16 +2117,20 @@ pub fn double(x: u64) -> u64:
             Some("a `with group` (call another actor / block)")
         );
         let await_expr = TypedExpr {
+            span: Span::default(),
             ty: Type::U64,
             kind: TypedExprKind::Await(Box::new(TypedExpr {
+                span: Span::default(),
                 ty: Type::U64,
                 kind: TypedExprKind::Unit,
             })),
         };
         assert_eq!(expr_isr_forbidden_reason(&await_expr), Some("an `await`"));
         let send_expr = TypedExpr {
+            span: Span::default(),
             ty: Type::Unit,
             kind: TypedExprKind::Send(Box::new(TypedExpr {
+                span: Span::default(),
                 ty: Type::Unit,
                 kind: TypedExprKind::Unit,
             })),
@@ -3219,6 +2140,7 @@ pub fn double(x: u64) -> u64:
             Some("a `send` (call another actor)")
         );
         let float_expr = TypedExpr {
+            span: Span::default(),
             ty: Type::F64,
             kind: TypedExprKind::Float("1.0".into()),
         };
@@ -3227,6 +2149,7 @@ pub fn double(x: u64) -> u64:
             Some("floating point")
         );
         let format_expr = TypedExpr {
+            span: Span::default(),
             ty: Type::String(Box::new(crate::syntax::ast::Expr::Int(
                 Span::default(),
                 "10".into(),
@@ -3234,6 +2157,7 @@ pub fn double(x: u64) -> u64:
             kind: TypedExprKind::Call {
                 callee: crate::sema::typed::CalleeKey::Method("u32".into(), "format".into()),
                 receiver: Some(Box::new(TypedExpr {
+                    span: Span::default(),
                     ty: Type::U32,
                     kind: TypedExprKind::Int("1".into()),
                 })),
@@ -3249,6 +2173,7 @@ pub fn double(x: u64) -> u64:
         // `Receipt` is a source type — the scanner arm exists so item E
         // cannot land a typed node this match would silently accept.
         let wake_expr = TypedExpr {
+            span: Span::default(),
             ty: Type::Unit,
             kind: TypedExprKind::Intrinsic {
                 key: "wake".into(),
@@ -3270,8 +2195,10 @@ pub fn double(x: u64) -> u64:
     fn bottom_half_forbidden_reason_names_await_send_not_receipt() {
         use crate::sema::types::Type;
         let await_expr = TypedExpr {
+            span: Span::default(),
             ty: Type::U64,
             kind: TypedExprKind::Await(Box::new(TypedExpr {
+                span: Span::default(),
                 ty: Type::U64,
                 kind: TypedExprKind::Unit,
             })),
@@ -3281,8 +2208,10 @@ pub fn double(x: u64) -> u64:
             Some("an `await` (stays active while waiting)")
         );
         let send_expr = TypedExpr {
+            span: Span::default(),
             ty: Type::Unit,
             kind: TypedExprKind::Send(Box::new(TypedExpr {
+                span: Span::default(),
                 ty: Type::Unit,
                 kind: TypedExprKind::Unit,
             })),
@@ -3296,6 +2225,7 @@ pub fn double(x: u64) -> u64:
             vec![crate::sema::types::TypeArg::Type(Type::U32)],
         );
         let receipt_expr = TypedExpr {
+            span: Span::default(),
             ty: receipt_ty,
             kind: TypedExprKind::Unit,
         };

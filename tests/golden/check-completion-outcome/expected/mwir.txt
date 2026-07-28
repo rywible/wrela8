@@ -1,159 +1,418 @@
 Program
-  Fn key=BlkDriver.abandon ret=u64 temps=67 receiver=t0:mut params=[t1:take,t2:take,t3]
+  Fn key=BlkDriver.abandon ret=u64 temps=166 receiver=t0:mut params=[t1:take,t2:take,t3]
     Temp t0 ty=BlkDriver
     Temp t1 ty=Receipt[own[BlockPayloads] DmaBlock]
     Temp t2 ty=own[BlockPayloads] DmaBlock
     Temp t3 ty=u64
     Temp t4 ty=VirtQueue[..8]
     Temp t5 ty=CompletionOutcome
-    Temp t6 ty=CompletionOutcome
+    Temp t6 ty=u64
     Temp t7 ty=u64
     Temp t8 ty=u64
-    Temp t9 ty=bool
+    Temp t9 ty=u64
     Temp t10 ty=u64
-    Temp t11 ty=u64
+    Temp t11 ty=bool
     Temp t12 ty=u64
-    Temp t13 ty=own[BlockPayloads] DmaBlock
+    Temp t13 ty=u64
     Temp t14 ty=u64
-    Temp t15 ty=u64
+    Temp t15 ty=bool
     Temp t16 ty=u64
     Temp t17 ty=u64
-    Temp t18 ty=u64
-    Temp t19 ty=bool
+    Temp t18 ty=bool
+    Temp t19 ty=u64
     Temp t20 ty=u64
-    Temp t21 ty=u64
+    Temp t21 ty=bool
     Temp t22 ty=u64
-    Temp t23 ty=own[BlockPayloads] DmaBlock
+    Temp t23 ty=u64
     Temp t24 ty=u64
     Temp t25 ty=u64
     Temp t26 ty=u64
     Temp t27 ty=u64
     Temp t28 ty=u64
-    Temp t29 ty=bool
-    Temp t30 ty=QueuePermit
-    Temp t31 ty=Result[QueuePermit, CapacityError]
-    Temp t32 ty=Result[QueuePermit, CapacityError]
-    Temp t33 ty=VirtQueue[..8]
-    Temp t34 ty=QueuePermit
-    Temp t35 ty=u32
-    Temp t36 ty=u32
-    Temp t37 ty=BlkReqHeader
-    Temp t38 ty=u8
-    Temp t39 ty=BlkReqStatus
-    Temp t40 ty=QueueOp[own[BlockPayloads] DmaBlock, true]
-    Temp t41 ty=QueueOp[own[BlockPayloads] DmaBlock, true]
-    Temp t42 ty=VirtQueue[..8]
-    Temp t43 ty=Receipt[own[BlockPayloads] DmaBlock]
-    Temp t44 ty=Receipt[own[BlockPayloads] DmaBlock]
-    Temp t45 ty=VirtQueue[..8]
-    Temp t46 ty=CompletionOutcome
-    Temp t47 ty=CompletionOutcome
+    Temp t29 ty=u64
+    Temp t30 ty=u64
+    Temp t31 ty=u64
+    Temp t32 ty=u64
+    Temp t33 ty=CompletionOutcome
+    Temp t34 ty=u64
+    Temp t35 ty=u64
+    Temp t36 ty=bool
+    Temp t37 ty=u64
+    Temp t38 ty=u64
+    Temp t39 ty=u64
+    Temp t40 ty=own[BlockPayloads] DmaBlock
+    Temp t41 ty=u64
+    Temp t42 ty=u64
+    Temp t43 ty=u64
+    Temp t44 ty=u64
+    Temp t45 ty=u64
+    Temp t46 ty=bool
+    Temp t47 ty=u64
     Temp t48 ty=u64
     Temp t49 ty=u64
-    Temp t50 ty=bool
+    Temp t50 ty=own[BlockPayloads] DmaBlock
     Temp t51 ty=u64
     Temp t52 ty=u64
     Temp t53 ty=u64
     Temp t54 ty=u64
     Temp t55 ty=u64
     Temp t56 ty=bool
-    Temp t57 ty=u64
-    Temp t58 ty=u64
-    Temp t59 ty=u64
-    Temp t60 ty=u64
-    Temp t61 ty=u64
-    Temp t62 ty=bool
-    Temp t63 ty=u64
-    Temp t64 ty=u64
-    Temp t65 ty=u64
-    Temp t66 ty=u64
+    Temp t57 ty=QueuePermit
+    Temp t58 ty=Result[QueuePermit, CapacityError]
+    Temp t59 ty=Result[QueuePermit, CapacityError]
+    Temp t60 ty=VirtQueue[..8]
+    Temp t61 ty=QueuePermit
+    Temp t62 ty=u32
+    Temp t63 ty=u32
+    Temp t64 ty=BlkReqHeader
+    Temp t65 ty=u8
+    Temp t66 ty=BlkReqStatus
+    Temp t67 ty=QueueOp[own[BlockPayloads] DmaBlock, true]
+    Temp t68 ty=u64
+    Temp t69 ty=u64
+    Temp t70 ty=u64
+    Temp t71 ty=u64
+    Temp t72 ty=u64
+    Temp t73 ty=u64
+    Temp t74 ty=u64
+    Temp t75 ty=u64
+    Temp t76 ty=u64
+    Temp t77 ty=u64
+    Temp t78 ty=u64
+    Temp t79 ty=u64
+    Temp t80 ty=u64
+    Temp t81 ty=QueueOp[own[BlockPayloads] DmaBlock, true]
+    Temp t82 ty=VirtQueue[..8]
+    Temp t83 ty=Receipt[own[BlockPayloads] DmaBlock]
+    Temp t84 ty=u64
+    Temp t85 ty=u64
+    Temp t86 ty=u64
+    Temp t87 ty=u64
+    Temp t88 ty=u64
+    Temp t89 ty=u64
+    Temp t90 ty=u64
+    Temp t91 ty=u64
+    Temp t92 ty=u64
+    Temp t93 ty=u64
+    Temp t94 ty=u64
+    Temp t95 ty=u64
+    Temp t96 ty=u64
+    Temp t97 ty=u64
+    Temp t98 ty=u64
+    Temp t99 ty=u64
+    Temp t100 ty=u64
+    Temp t101 ty=u64
+    Temp t102 ty=u64
+    Temp t103 ty=u64
+    Temp t104 ty=u64
+    Temp t105 ty=u64
+    Temp t106 ty=u64
+    Temp t107 ty=u64
+    Temp t108 ty=u64
+    Temp t109 ty=u64
+    Temp t110 ty=u64
+    Temp t111 ty=u64
+    Temp t112 ty=u64
+    Temp t113 ty=u64
+    Temp t114 ty=u64
+    Temp t115 ty=u64
+    Temp t116 ty=Receipt[own[BlockPayloads] DmaBlock]
+    Temp t117 ty=VirtQueue[..8]
+    Temp t118 ty=CompletionOutcome
+    Temp t119 ty=u64
+    Temp t120 ty=u64
+    Temp t121 ty=u64
+    Temp t122 ty=u64
+    Temp t123 ty=u64
+    Temp t124 ty=bool
+    Temp t125 ty=u64
+    Temp t126 ty=u64
+    Temp t127 ty=u64
+    Temp t128 ty=bool
+    Temp t129 ty=u64
+    Temp t130 ty=u64
+    Temp t131 ty=bool
+    Temp t132 ty=u64
+    Temp t133 ty=u64
+    Temp t134 ty=bool
+    Temp t135 ty=u64
+    Temp t136 ty=u64
+    Temp t137 ty=u64
+    Temp t138 ty=u64
+    Temp t139 ty=u64
+    Temp t140 ty=u64
+    Temp t141 ty=u64
+    Temp t142 ty=u64
+    Temp t143 ty=u64
+    Temp t144 ty=u64
+    Temp t145 ty=u64
+    Temp t146 ty=CompletionOutcome
+    Temp t147 ty=u64
+    Temp t148 ty=u64
+    Temp t149 ty=bool
+    Temp t150 ty=u64
+    Temp t151 ty=u64
+    Temp t152 ty=u64
+    Temp t153 ty=u64
+    Temp t154 ty=u64
+    Temp t155 ty=bool
+    Temp t156 ty=u64
+    Temp t157 ty=u64
+    Temp t158 ty=u64
+    Temp t159 ty=u64
+    Temp t160 ty=u64
+    Temp t161 ty=bool
+    Temp t162 ty=u64
+    Temp t163 ty=u64
+    Temp t164 ty=u64
+    Temp t165 ty=u64
     Body
       0000: Project dst=t4 base=t0 index=2
-      0001: QueueRecover dst=t5 queue=t4 receipt=t1
-      0002: Copy dst=t6 src=t5
-      0003: EnumTag dst=t7 src=t6
-      0004: ConstInt dst=t8 ty=u64 value=0
-      0005: Compare op=== ty=u64 dst=t9 lhs=t7 rhs=t8
-      0006: JumpIfFalse cond=t9 target=0017
-      0007: Project dst=t10 base=t0 index=4
-      0008: ConstInt dst=t11 ty=u64 value=1
-      0009: ArithChecked op=+ ty=u64 dst=t12 lhs=t10 rhs=t11 abort="arithmetic overflow in `+`"
-      0010: SetField base=t0 index=4 value=t12
-      0011: Copy dst=t13 src=t2
-      0012: Project dst=t14 base=t0 index=4
-      0013: Project dst=t15 base=t13 index=0
-      0014: ArithChecked op=+ ty=u64 dst=t16 lhs=t14 rhs=t15 abort="arithmetic overflow in `+`"
-      0015: SetField base=t0 index=4 value=t16
-      0016: Jump target=0083
-      0017: EnumTag dst=t17 src=t6
-      0018: ConstInt dst=t18 ty=u64 value=1
-      0019: Compare op=== ty=u64 dst=t19 lhs=t17 rhs=t18
-      0020: JumpIfFalse cond=t19 target=0031
-      0021: Project dst=t20 base=t0 index=4
-      0022: ConstInt dst=t21 ty=u64 value=2
-      0023: ArithChecked op=+ ty=u64 dst=t22 lhs=t20 rhs=t21 abort="arithmetic overflow in `+`"
-      0024: SetField base=t0 index=4 value=t22
-      0025: Copy dst=t23 src=t2
-      0026: Project dst=t24 base=t0 index=4
-      0027: Project dst=t25 base=t23 index=0
-      0028: ArithChecked op=+ ty=u64 dst=t26 lhs=t24 rhs=t25 abort="arithmetic overflow in `+`"
-      0029: SetField base=t0 index=4 value=t26
-      0030: Jump target=0083
-      0031: EnumTag dst=t27 src=t6
-      0032: ConstInt dst=t28 ty=u64 value=2
-      0033: Compare op=== ty=u64 dst=t29 lhs=t27 rhs=t28
-      0034: JumpIfFalse cond=t29 target=0082
-      0035: ConstInt dst=t30 ty=u64 value=0
-      0036: MakeEnum dst=t31 tag=0 payload=[t30]
-      0037: Copy dst=t32 src=t31
-      0038: Project dst=t33 base=t0 index=2
-      0039: EnumPayload dst=t34 src=t32 index=0
-      0040: ConstInt dst=t35 ty=u32 value=0
-      0041: ConstInt dst=t36 ty=u32 value=0
-      0042: MakeAggregate dst=t37 elems=[t35,t36,t3]
-      0043: ConstInt dst=t38 ty=u8 value=255
-      0044: MakeAggregate dst=t39 elems=[t38]
-      0045: QueuePrepare dst=t40 queue=t33 permit=t34 header=t37 payload=t2 status=t39 device_writes=true payload_len=512
-      0046: Copy dst=t41 src=t40
-      0047: Project dst=t42 base=t0 index=2
-      0048: QueuePublish dst=t43 queue=t42 operation=t41 order=[write_descriptors, publish_available, notify_queue]
-      0049: Copy dst=t44 src=t43
-      0050: Project dst=t45 base=t0 index=2
-      0051: QueueRecover dst=t46 queue=t45 receipt=t44
-      0052: Copy dst=t47 src=t46
-      0053: EnumTag dst=t48 src=t47
-      0054: ConstInt dst=t49 ty=u64 value=0
-      0055: Compare op=== ty=u64 dst=t50 lhs=t48 rhs=t49
-      0056: JumpIfFalse cond=t50 target=0062
-      0057: Project dst=t51 base=t0 index=4
-      0058: ConstInt dst=t52 ty=u64 value=10
-      0059: ArithChecked op=+ ty=u64 dst=t53 lhs=t51 rhs=t52 abort="arithmetic overflow in `+`"
-      0060: SetField base=t0 index=4 value=t53
-      0061: Jump target=0081
-      0062: EnumTag dst=t54 src=t47
-      0063: ConstInt dst=t55 ty=u64 value=1
-      0064: Compare op=== ty=u64 dst=t56 lhs=t54 rhs=t55
-      0065: JumpIfFalse cond=t56 target=0071
-      0066: Project dst=t57 base=t0 index=4
-      0067: ConstInt dst=t58 ty=u64 value=20
-      0068: ArithChecked op=+ ty=u64 dst=t59 lhs=t57 rhs=t58 abort="arithmetic overflow in `+`"
-      0069: SetField base=t0 index=4 value=t59
-      0070: Jump target=0081
-      0071: EnumTag dst=t60 src=t47
-      0072: ConstInt dst=t61 ty=u64 value=2
-      0073: Compare op=== ty=u64 dst=t62 lhs=t60 rhs=t61
-      0074: JumpIfFalse cond=t62 target=0080
-      0075: Project dst=t63 base=t0 index=4
-      0076: ConstInt dst=t64 ty=u64 value=30
-      0077: ArithChecked op=+ ty=u64 dst=t65 lhs=t63 rhs=t64 abort="arithmetic overflow in `+`"
-      0078: SetField base=t0 index=4 value=t65
-      0079: Jump target=0081
-      0080: AssertFail message="match: no arm matched (exhaustiveness already proved this cannot happen)"
-      0081: Jump target=0083
-      0082: AssertFail message="match: no arm matched (exhaustiveness already proved this cannot happen)"
-      0083: Project dst=t66 base=t0 index=4
-      0084: Return value=t66
-      0085: Return
+      0001: PtrOffset dst=t6 base=t4 offset=0xf0
+      0002: MemLoad dst=t7 base=t6 offset=0x0 width=8
+      0003: MemLoad dst=t8 base=t1 offset=0x28 width=8
+      0004: MemLoad dst=t9 base=t1 offset=0x20 width=8
+      0005: ConstInt dst=t10 ty=u64 value=0
+      0006: Compare op=== ty=u64 dst=t11 lhs=t8 rhs=t7
+      0007: JumpIfFalse cond=t11 target=0009
+      0008: Jump target=0012
+      0009: ConstInt dst=t12 ty=u64 value=2
+      0010: Copy dst=t5 src=t12
+      0011: Jump target=0035
+      0012: ConstInt dst=t13 ty=u64 value=2
+      0013: Bitwise op=& ty=u64 dst=t14 lhs=t9 rhs=t13
+      0014: Compare op=== ty=u64 dst=t15 lhs=t14 rhs=t10
+      0015: JumpIfFalse cond=t15 target=0017
+      0016: Jump target=0019
+      0017: Copy dst=t5 src=t12
+      0018: Jump target=0035
+      0019: ConstInt dst=t16 ty=u64 value=4
+      0020: Bitwise op=& ty=u64 dst=t17 lhs=t9 rhs=t16
+      0021: Compare op=!= ty=u64 dst=t18 lhs=t17 rhs=t10
+      0022: JumpIfFalse cond=t18 target=0024
+      0023: Jump target=0025
+      0024: Abort message="driver fault: recover of a receipt that is neither in flight nor resolved (03-hardware.md §5)"
+      0025: MemLoad dst=t19 base=t1 offset=0x10 width=8
+      0026: MemLoad dst=t20 base=t19 offset=0x0 width=1
+      0027: Compare op=== ty=u64 dst=t21 lhs=t20 rhs=t10
+      0028: ConstInt dst=t22 ty=u64 value=0
+      0029: ConstInt dst=t23 ty=u64 value=1
+      0030: JumpIfFalse cond=t21 target=0032
+      0031: Jump target=0034
+      0032: Copy dst=t5 src=t23
+      0033: Jump target=0035
+      0034: Copy dst=t5 src=t22
+      0035: MemLoad dst=t24 base=t1 offset=0x20 width=8
+      0036: ConstInt dst=t25 ty=u64 value=6
+      0037: BitNot ty=u64 dst=t26 src=t25
+      0038: Bitwise op=& ty=u64 dst=t27 lhs=t24 rhs=t26
+      0039: ConstInt dst=t28 ty=u64 value=8
+      0040: Bitwise op=| ty=u64 dst=t29 lhs=t27 rhs=t28
+      0041: MemStore base=t1 offset=0x20 value=t29 width=8
+      0042: PtrOffset dst=t30 base=t4 offset=0xf8
+      0043: MemLoad dst=t31 base=t30 offset=0x0 width=8
+      0044: PtrOffset dst=t32 base=t4 offset=0x100
+      0045: MemStore base=t32 offset=0x0 value=t31 width=8
+      0046: Copy dst=t33 src=t5
+      0047: EnumTag dst=t34 src=t33
+      0048: ConstInt dst=t35 ty=u64 value=0
+      0049: Compare op=== ty=u64 dst=t36 lhs=t34 rhs=t35
+      0050: JumpIfFalse cond=t36 target=0061
+      0051: Project dst=t37 base=t0 index=4
+      0052: ConstInt dst=t38 ty=u64 value=1
+      0053: ArithChecked op=+ ty=u64 dst=t39 lhs=t37 rhs=t38 abort="arithmetic overflow in `+`"
+      0054: SetField base=t0 index=4 value=t39
+      0055: Copy dst=t40 src=t2
+      0056: Project dst=t41 base=t0 index=4
+      0057: Project dst=t42 base=t40 index=0
+      0058: ArithChecked op=+ ty=u64 dst=t43 lhs=t41 rhs=t42 abort="arithmetic overflow in `+`"
+      0059: SetField base=t0 index=4 value=t43
+      0060: Jump target=0243
+      0061: EnumTag dst=t44 src=t33
+      0062: ConstInt dst=t45 ty=u64 value=1
+      0063: Compare op=== ty=u64 dst=t46 lhs=t44 rhs=t45
+      0064: JumpIfFalse cond=t46 target=0075
+      0065: Project dst=t47 base=t0 index=4
+      0066: ConstInt dst=t48 ty=u64 value=2
+      0067: ArithChecked op=+ ty=u64 dst=t49 lhs=t47 rhs=t48 abort="arithmetic overflow in `+`"
+      0068: SetField base=t0 index=4 value=t49
+      0069: Copy dst=t50 src=t2
+      0070: Project dst=t51 base=t0 index=4
+      0071: Project dst=t52 base=t50 index=0
+      0072: ArithChecked op=+ ty=u64 dst=t53 lhs=t51 rhs=t52 abort="arithmetic overflow in `+`"
+      0073: SetField base=t0 index=4 value=t53
+      0074: Jump target=0243
+      0075: EnumTag dst=t54 src=t33
+      0076: ConstInt dst=t55 ty=u64 value=2
+      0077: Compare op=== ty=u64 dst=t56 lhs=t54 rhs=t55
+      0078: JumpIfFalse cond=t56 target=0242
+      0079: ConstInt dst=t57 ty=u64 value=0
+      0080: MakeEnum dst=t58 tag=0 payload=[t57]
+      0081: Copy dst=t59 src=t58
+      0082: Project dst=t60 base=t0 index=2
+      0083: EnumPayload dst=t61 src=t59 index=0
+      0084: ConstInt dst=t62 ty=u32 value=0
+      0085: ConstInt dst=t63 ty=u32 value=0
+      0086: MakeAggregate dst=t64 elems=[t62,t63,t3]
+      0087: ConstInt dst=t65 ty=u8 value=255
+      0088: MakeAggregate dst=t66 elems=[t65]
+      0089: PtrOffset dst=t68 base=t60 offset=0x148
+      0090: Project dst=t69 base=t64 index=0
+      0091: MemStore base=t68 offset=0x0 value=t69 width=4
+      0092: Project dst=t70 base=t64 index=1
+      0093: MemStore base=t68 offset=0x4 value=t70 width=4
+      0094: Project dst=t71 base=t64 index=2
+      0095: MemStore base=t68 offset=0x8 value=t71 width=8
+      0096: PtrOffset dst=t72 base=t60 offset=0x158
+      0097: MemStore base=t72 offset=0x0 value=t66 width=1
+      0098: PtrOffset dst=t73 base=t60 offset=0x108
+      0099: MemStore base=t73 offset=0x0 value=t2 width=8
+      0100: PtrOffset dst=t74 base=t60 offset=0x148
+      0101: MemStore base=t73 offset=0x8 value=t74 width=8
+      0102: PtrOffset dst=t75 base=t60 offset=0x158
+      0103: MemStore base=t73 offset=0x10 value=t75 width=8
+      0104: ConstInt dst=t76 ty=u64 value=512
+      0105: MemStore base=t73 offset=0x18 value=t76 width=8
+      0106: ConstInt dst=t77 ty=u64 value=3
+      0107: MemStore base=t73 offset=0x20 value=t77 width=8
+      0108: PtrOffset dst=t78 base=t60 offset=0xf0
+      0109: MemLoad dst=t79 base=t78 offset=0x0 width=8
+      0110: MemStore base=t73 offset=0x28 value=t79 width=8
+      0111: ConstInt dst=t80 ty=u64 value=0
+      0112: MemStore base=t73 offset=0x30 value=t80 width=4
+      0113: MemStore base=t73 offset=0x38 value=t80 width=8
+      0114: Copy dst=t67 src=t73
+      0115: Copy dst=t81 src=t67
+      0116: Project dst=t82 base=t0 index=2
+      0117: MemLoad dst=t84 base=t81 offset=0x8 width=8
+      0118: ConstInt dst=t85 ty=u64 value=16
+      0119: ConstInt dst=t86 ty=u64 value=1
+      0120: PtrOffset dst=t87 base=t82 offset=0x0
+      0121: MemStore base=t87 offset=0x0 value=t84 width=8
+      0122: MemStore base=t87 offset=0x8 value=t85 width=4
+      0123: MemStore base=t87 offset=0xc value=t86 width=2
+      0124: ConstInt dst=t88 ty=u64 value=1
+      0125: MemStore base=t87 offset=0xe value=t88 width=2
+      0126: MemLoad dst=t89 base=t81 offset=0x0 width=8
+      0127: MemLoad dst=t90 base=t81 offset=0x18 width=8
+      0128: MemLoad dst=t91 base=t81 offset=0x20 width=8
+      0129: ConstInt dst=t92 ty=u64 value=1
+      0130: Bitwise op=& ty=u64 dst=t93 lhs=t91 rhs=t92
+      0131: ArithWrapping op=+% ty=u64 dst=t94 lhs=t93 rhs=t93
+      0132: ConstInt dst=t95 ty=u64 value=1
+      0133: Bitwise op=| ty=u64 dst=t96 lhs=t94 rhs=t95
+      0134: PtrOffset dst=t97 base=t82 offset=0x10
+      0135: MemStore base=t97 offset=0x0 value=t89 width=8
+      0136: MemStore base=t97 offset=0x8 value=t90 width=4
+      0137: MemStore base=t97 offset=0xc value=t96 width=2
+      0138: ConstInt dst=t98 ty=u64 value=2
+      0139: MemStore base=t97 offset=0xe value=t98 width=2
+      0140: MemLoad dst=t99 base=t81 offset=0x10 width=8
+      0141: ConstInt dst=t100 ty=u64 value=1
+      0142: ConstInt dst=t101 ty=u64 value=2
+      0143: PtrOffset dst=t102 base=t82 offset=0x20
+      0144: MemStore base=t102 offset=0x0 value=t99 width=8
+      0145: MemStore base=t102 offset=0x8 value=t100 width=4
+      0146: MemStore base=t102 offset=0xc value=t101 width=2
+      0147: ConstInt dst=t103 ty=u64 value=0
+      0148: MemStore base=t102 offset=0xe value=t103 width=2
+      0149: PtrOffset dst=t104 base=t82 offset=0x80
+      0150: MemLoad dst=t105 base=t104 offset=0x2 width=2
+      0151: ConstInt dst=t106 ty=u64 value=7
+      0152: Bitwise op=& ty=u64 dst=t107 lhs=t105 rhs=t106
+      0153: ArithWrapping op=+% ty=u64 dst=t108 lhs=t107 rhs=t107
+      0154: ConstInt dst=t109 ty=u64 value=4
+      0155: ArithWrapping op=+% ty=u64 dst=t110 lhs=t108 rhs=t109
+      0156: ArithWrapping op=+% ty=u64 dst=t111 lhs=t104 rhs=t110
+      0157: ConstInt dst=t112 ty=u64 value=0
+      0158: MemStore base=t111 offset=0x0 value=t112 width=2
+      0159: ConstInt dst=t113 ty=u64 value=1
+      0160: ArithWrapping op=+% ty=u64 dst=t114 lhs=t105 rhs=t113
+      0161: MemStore base=t104 offset=0x2 value=t114 width=2
+      0162: PtrOffset dst=t115 base=t82 offset=0xe0
+      0163: MemStore base=t115 offset=0x0 value=t113 width=8
+      0164: Copy dst=t83 src=t81
+      0165: Copy dst=t116 src=t83
+      0166: Project dst=t117 base=t0 index=2
+      0167: PtrOffset dst=t119 base=t117 offset=0xf0
+      0168: MemLoad dst=t120 base=t119 offset=0x0 width=8
+      0169: MemLoad dst=t121 base=t116 offset=0x28 width=8
+      0170: MemLoad dst=t122 base=t116 offset=0x20 width=8
+      0171: ConstInt dst=t123 ty=u64 value=0
+      0172: Compare op=== ty=u64 dst=t124 lhs=t121 rhs=t120
+      0173: JumpIfFalse cond=t124 target=0175
+      0174: Jump target=0178
+      0175: ConstInt dst=t125 ty=u64 value=2
+      0176: Copy dst=t118 src=t125
+      0177: Jump target=0201
+      0178: ConstInt dst=t126 ty=u64 value=2
+      0179: Bitwise op=& ty=u64 dst=t127 lhs=t122 rhs=t126
+      0180: Compare op=== ty=u64 dst=t128 lhs=t127 rhs=t123
+      0181: JumpIfFalse cond=t128 target=0183
+      0182: Jump target=0185
+      0183: Copy dst=t118 src=t125
+      0184: Jump target=0201
+      0185: ConstInt dst=t129 ty=u64 value=4
+      0186: Bitwise op=& ty=u64 dst=t130 lhs=t122 rhs=t129
+      0187: Compare op=!= ty=u64 dst=t131 lhs=t130 rhs=t123
+      0188: JumpIfFalse cond=t131 target=0190
+      0189: Jump target=0191
+      0190: Abort message="driver fault: recover of a receipt that is neither in flight nor resolved (03-hardware.md §5)"
+      0191: MemLoad dst=t132 base=t116 offset=0x10 width=8
+      0192: MemLoad dst=t133 base=t132 offset=0x0 width=1
+      0193: Compare op=== ty=u64 dst=t134 lhs=t133 rhs=t123
+      0194: ConstInt dst=t135 ty=u64 value=0
+      0195: ConstInt dst=t136 ty=u64 value=1
+      0196: JumpIfFalse cond=t134 target=0198
+      0197: Jump target=0200
+      0198: Copy dst=t118 src=t136
+      0199: Jump target=0201
+      0200: Copy dst=t118 src=t135
+      0201: MemLoad dst=t137 base=t116 offset=0x20 width=8
+      0202: ConstInt dst=t138 ty=u64 value=6
+      0203: BitNot ty=u64 dst=t139 src=t138
+      0204: Bitwise op=& ty=u64 dst=t140 lhs=t137 rhs=t139
+      0205: ConstInt dst=t141 ty=u64 value=8
+      0206: Bitwise op=| ty=u64 dst=t142 lhs=t140 rhs=t141
+      0207: MemStore base=t116 offset=0x20 value=t142 width=8
+      0208: PtrOffset dst=t143 base=t117 offset=0xf8
+      0209: MemLoad dst=t144 base=t143 offset=0x0 width=8
+      0210: PtrOffset dst=t145 base=t117 offset=0x100
+      0211: MemStore base=t145 offset=0x0 value=t144 width=8
+      0212: Copy dst=t146 src=t118
+      0213: EnumTag dst=t147 src=t146
+      0214: ConstInt dst=t148 ty=u64 value=0
+      0215: Compare op=== ty=u64 dst=t149 lhs=t147 rhs=t148
+      0216: JumpIfFalse cond=t149 target=0222
+      0217: Project dst=t150 base=t0 index=4
+      0218: ConstInt dst=t151 ty=u64 value=10
+      0219: ArithChecked op=+ ty=u64 dst=t152 lhs=t150 rhs=t151 abort="arithmetic overflow in `+`"
+      0220: SetField base=t0 index=4 value=t152
+      0221: Jump target=0241
+      0222: EnumTag dst=t153 src=t146
+      0223: ConstInt dst=t154 ty=u64 value=1
+      0224: Compare op=== ty=u64 dst=t155 lhs=t153 rhs=t154
+      0225: JumpIfFalse cond=t155 target=0231
+      0226: Project dst=t156 base=t0 index=4
+      0227: ConstInt dst=t157 ty=u64 value=20
+      0228: ArithChecked op=+ ty=u64 dst=t158 lhs=t156 rhs=t157 abort="arithmetic overflow in `+`"
+      0229: SetField base=t0 index=4 value=t158
+      0230: Jump target=0241
+      0231: EnumTag dst=t159 src=t146
+      0232: ConstInt dst=t160 ty=u64 value=2
+      0233: Compare op=== ty=u64 dst=t161 lhs=t159 rhs=t160
+      0234: JumpIfFalse cond=t161 target=0240
+      0235: Project dst=t162 base=t0 index=4
+      0236: ConstInt dst=t163 ty=u64 value=30
+      0237: ArithChecked op=+ ty=u64 dst=t164 lhs=t162 rhs=t163 abort="arithmetic overflow in `+`"
+      0238: SetField base=t0 index=4 value=t164
+      0239: Jump target=0241
+      0240: AssertFail message="match: no arm matched (exhaustiveness already proved this cannot happen)"
+      0241: Jump target=0243
+      0242: AssertFail message="match: no arm matched (exhaustiveness already proved this cannot happen)"
+      0243: Project dst=t165 base=t0 index=4
+      0244: Return value=t165
+      0245: Return
   Fn key=BlkDriver.init ret=Result[unit, BootError] temps=28 receiver=t0:mut params=[t1:take,t2:take]
     Temp t0 ty=BlkDriver
     Temp t1 ty=DeviceCap[VirtioBlock]

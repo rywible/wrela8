@@ -23,6 +23,7 @@
 //! what item A actually implements.
 
 pub mod access;
+pub mod actor;
 pub mod bodies;
 /// plans/M13.md item O: computed type classes (copy / must_consume /
 /// crosses_actor / holds_authority).
@@ -37,15 +38,20 @@ pub mod imports;
 /// and locked against `bodies.rs` (there is no runtime code here — the
 /// list *is* the deliverable, and its test is the ratchet).
 pub mod intrinsics;
+pub mod layout_types;
 pub mod matches;
 pub mod paths;
+/// Always-in-scope name table (language prelude + time + AUTO_VISIBLE).
+pub mod prelude_scope;
 pub mod reserve_proof;
 pub mod send_proof;
 pub mod specialize;
 /// plans/M9.md item I: five formerly-prelude enums loaded from
 /// `stdlib/core/*.wr` (variant order for tags / exhaustiveness).
 pub mod stdlib_enums;
+pub mod sum;
 pub mod symbols;
+pub mod transport;
 pub mod typed;
 pub mod types;
 
@@ -239,8 +245,13 @@ fn check_typed_single(module: &Module, path: &str) -> Result<typed::TypedProgram
 /// Same as `check_typed_single`, then render the check dump from the
 /// DeclItems that pass produced (plans/M9.md item LL).
 fn check_typed_single_dump(module: &Module, path: &str) -> Result<String, SemaError> {
-    let (_program, decl_items) = check_typed_single_with_decls(module, path)?;
-    dump_with_imports(module, &types::ImportedTypes::new(), Some(&decl_items))
+    let (program, decl_items) = check_typed_single_with_decls(module, path)?;
+    dump_with_imports(
+        module,
+        &types::ImportedTypes::new(),
+        Some(&decl_items),
+        Some(&program.effects),
+    )
 }
 
 fn check_typed_single_with_decls(
@@ -285,13 +296,13 @@ fn check_typed_single_with_decls(
     // `Result[T]` markers to the inferred sets typed dump already shows.
     sync_inferred_error_sets(&mut decl_items, &mctx.inferred_rets.borrow());
     program.layouts = layouts;
-    access::check(&specialized, &decl_items, &mctx)?;
-    flow::check(&specialized, &decl_items, &mctx)?;
+    access::check(&mut program, &mctx)?;
+    flow::check(&program, &mctx)?;
     // plans/M7.md item E3: handoff signature + producer-transition body
     // (03-hardware.md §5). Runs after flow so a missing return is already
     // diagnosed; this pass only insists every `return` is publish/reject.
     handoff::check(&specialized, &decl_items, &mctx)?;
-    matches::check(&specialized, &decl_items, &mctx)?;
+    matches::check(&program, &mctx)?;
     program.instantiations = generics::check(&specialized, &decl_items, &mctx, path)?;
     crate::eval::check_comptime(&program)?;
     // plans/M10.md item A2b, decision 581: the **later layout-completion
@@ -438,7 +449,7 @@ pub fn dump(module: &Module) -> Result<String, SemaError> {
         modules.insert(time_key, time_loaded.module);
         return dump_program(&modules);
     }
-    dump_with_imports(module, &types::ImportedTypes::new(), None)
+    dump_with_imports(module, &types::ImportedTypes::new(), None, None)
 }
 
 /// Check one module and render the `--stage=check` dump from the same
@@ -479,8 +490,8 @@ pub fn check_program_dump(
     modules: &BTreeMap<Vec<String>, Module>,
     paths: &BTreeMap<Vec<String>, String>,
 ) -> Result<String, SemaError> {
-    let (_programs, tables) = check_program_typed_tables(modules, paths)?;
-    render_check_dump(modules, &tables)
+    let (programs, tables) = check_program_typed_tables(modules, paths)?;
+    render_check_dump(modules, &programs, &tables)
 }
 
 /// `dump` for one module of a build closure (plans/M9.md item A1):
@@ -494,19 +505,27 @@ pub fn check_program_dump(
 ///
 /// plans/M9.md item LL: returns `Err` instead of panicking when declare
 /// disagrees with a prior check — ordinary input must never `expect`.
+/// Prefer `effects` from a checked `TypedProgram` when available (avoids
+/// re-inferring from AST after access has already filled them).
 fn dump_with_imports(
     module: &Module,
     imported: &types::ImportedTypes,
     classification: Option<&[types::DeclItem]>,
+    effects: Option<&access::EffectMap>,
 ) -> Result<String, SemaError> {
     let specialized = specialize::specialize(module)?;
     let decl_items = match classification {
         Some(items) => items.to_vec(),
         None => types::declare_with_imports(&specialized, imported)?,
     };
-    let effects = access::infer_effects(&specialized, &decl_items, imported);
+    let owned_effects: Option<access::EffectMap> = if effects.is_none() {
+        Some(access::infer_effects(&specialized, &decl_items, imported))
+    } else {
+        None
+    };
+    let effects = effects.or(owned_effects.as_ref()).expect("effects present");
     let mut out = format!("Module path={}\n", specialized.path.join("."));
-    types::render_items(&decl_items, &effects, &mut out);
+    types::render_items(&decl_items, effects, &mut out);
     Ok(out)
 }
 
@@ -515,12 +534,11 @@ fn dump_with_imports(
 struct CheckDumpTables {
     decl_items_map: BTreeMap<Vec<String>, Vec<types::DeclItem>>,
     imported_types: BTreeMap<Vec<String>, types::ImportedTypes>,
-    /// plans/M13.md item G1: warn-only cross-module private-field uses.
-    field_visibility: crate::field_visibility_census::Census,
 }
 
 fn render_check_dump(
     modules: &BTreeMap<Vec<String>, Module>,
+    programs: &BTreeMap<Vec<String>, typed::TypedProgram>,
     tables: &CheckDumpTables,
 ) -> Result<String, SemaError> {
     let time_key: Vec<String> = crate::loader::TIME_MODULE_KEY
@@ -553,19 +571,15 @@ fn render_check_dump(
         if key.as_slice() == crate::loader::IMAGE_RUNTIME_MODULE_KEY {
             continue;
         }
-        // DeclItems are already classified; specialize only for the path
-        // line + effect inference. Uses the tables check produced — never
-        // a fresh declare (item LL).
+        // DeclItems are already classified; prefer TypedProgram.effects
+        // from the check that just ran (item LL — never re-declare).
+        let effects = programs.get(key).map(|p| &p.effects);
         out.push_str(&dump_with_imports(
             module,
             &tables.imported_types[key],
             Some(&tables.decl_items_map[key]),
+            effects,
         )?);
-    }
-    // plans/M13.md item G3: append a non-empty census only if one slips
-    // past bodies.rs enforcement (belt-and-suspenders). Empty stays silent.
-    if !tables.field_visibility.is_empty() {
-        out.push_str(&tables.field_visibility.render());
     }
     Ok(out)
 }
@@ -935,10 +949,10 @@ fn check_program_typed_tables(
         );
         let decl_items = &decl_items_map[key];
         program.layouts = layouts.get(key).cloned().unwrap_or_default();
-        access::check(module, decl_items, mctx)?;
-        flow::check(module, decl_items, mctx)?;
+        access::check(&mut program, mctx)?;
+        flow::check(&program, mctx)?;
         handoff::check(module, decl_items, mctx)?;
-        matches::check(module, decl_items, mctx)?;
+        matches::check(&program, mctx)?;
         let empty_path = String::new();
         let path = paths.get(key).unwrap_or(&empty_path);
         program.instantiations = generics::check(module, decl_items, mctx, path)?;
@@ -1040,70 +1054,13 @@ fn check_program_typed_tables(
         )?;
     }
 
-    // plans/M13.md item G3: field-visibility census (belt-and-suspenders;
-    // bodies.rs already emits error[sema] at the same sites). Skip the
-    // same auto-injected modules `render_check_dump` omits, so generated
-    // runtime field traffic is not counted.
-    let skip_modules = field_visibility_skip_modules(modules);
-    let field_visibility = crate::field_visibility_census::census_programs(
-        &programs,
-        &decl_items_map,
-        &bindings,
-        &skip_modules,
-    );
-
     Ok((
         programs,
         CheckDumpTables {
             decl_items_map,
             imported_types,
-            field_visibility,
         },
     ))
-}
-
-/// Modules omitted from the field-visibility census — same set
-/// `render_check_dump` hides from `--stage=check` output.
-fn field_visibility_skip_modules(modules: &BTreeMap<Vec<String>, Module>) -> BTreeSet<Vec<String>> {
-    let time_key: Vec<String> = crate::loader::TIME_MODULE_KEY
-        .iter()
-        .map(|s| (*s).to_string())
-        .collect();
-    let runtime_key: Vec<String> = crate::loader::RUNTIME_MODULE_KEY
-        .iter()
-        .map(|s| (*s).to_string())
-        .collect();
-    let time_explicit = modules
-        .values()
-        .any(|m| m.imports.iter().any(|imp| imp.path == time_key));
-    let runtime_explicit = modules
-        .values()
-        .any(|m| m.imports.iter().any(|imp| imp.path == runtime_key));
-    let mut skip = BTreeSet::new();
-    if !time_explicit {
-        skip.insert(time_key);
-    }
-    if !runtime_explicit {
-        skip.insert(runtime_key);
-    }
-    skip.insert(
-        crate::loader::IMAGE_RUNTIME_MODULE_KEY
-            .iter()
-            .map(|s| (*s).to_string())
-            .collect(),
-    );
-    skip
-}
-
-/// plans/M13.md item G1: run check and return the field-visibility census
-/// for a whole-program closure. Public so `xtask check` can warn-only
-/// aggregate across goldens without failing the build.
-pub fn census_field_visibility(
-    modules: &BTreeMap<Vec<String>, Module>,
-    paths: &BTreeMap<Vec<String>, String>,
-) -> Result<crate::field_visibility_census::Census, SemaError> {
-    let (_programs, tables) = check_program_typed_tables(modules, paths)?;
-    Ok(tables.field_visibility)
 }
 
 /// plans/M9.md item A1b: fills every module's `TypedProgram::imported`
@@ -1812,12 +1769,13 @@ pub fn dump_program(modules: &BTreeMap<Vec<String>, Module>) -> Result<String, S
     }
     types::classify_closure(&mut decl_items_map, &imported_targets)?;
 
+    // Pure dump path: no TypedProgram yet — re-infer effects from AST.
     render_check_dump(
         modules,
+        &BTreeMap::new(),
         &CheckDumpTables {
             decl_items_map,
             imported_types,
-            field_visibility: crate::field_visibility_census::Census::default(),
         },
     )
 }

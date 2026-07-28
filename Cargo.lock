@@ -157,6 +157,7 @@ dependencies = [
 name = "wrela-compiler"
 version = "0.1.0"
 dependencies = [
+ "toml",
  "wrela-machine",
 ]
 

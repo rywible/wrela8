@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/check_pool_driverless_device.wr sha256=e961948d89df7b823f65a07141997e7ad0bb7ff08ec9211c39a088ad1be577c9
-  Input path=<generated> sha256=25af4c94d45b87f07bfbf239d5fefe8b5101411862215201c417214c8ffea26a
+  Input path=<generated> sha256=d44d1957de1811bc66faad44d60817c851605f8b85ea6337d9126cd5780cd1b4
   Name value=pool-driverless
   Target value=Target.wrela_machine_v1
   Device index=0 type=BlockHw
@@ -56,10 +56,10 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=88800
-  Section name=rodata base=0x40515b30 size=263
-  Section name=abort base=0x40515c38 size=120
-  Section name=checkpoint base=0x40515cb0 size=28
+  Section name=code base=0x40500050 size=106780
+  Section name=rodata base=0x4051a170 size=455
+  Section name=abort base=0x4051a338 size=120
+  Section name=checkpoint base=0x4051a3b0 size=28
   Section name=rtdata base=0x40540000 size=32
   Section name=devregs base=0x40540020 size=8
   Section name=pooldata base=0x40540028 size=16
@@ -69,7 +69,7 @@ ImageReport v0
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
   PlacedStatic name=EXIT type=ParkMmio addr=0x8001000 size=8
   PlacedStatic name=GROUPS type=GroupArena addr=0x4057f778 size=96
-  PlacedStatic name=INIT_SPAN0 type=InitSpan0Words addr=0x4057f738 size=8
+  PlacedStatic name=INIT_SPAN0 type=InitSpan0Words addr=0x40540000 size=16
   PlacedStatic name=INIT_SPAN1 type=InitSpan1Words addr=0x4057f740 size=8
   PlacedStatic name=INIT_SPAN2 type=InitSpan2Words addr=0x4057f748 size=8
   PlacedStatic name=INIT_SPAN3 type=InitSpan3Words addr=0x4057f750 size=8

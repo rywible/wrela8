@@ -64,7 +64,7 @@ Program
       0033: MakeEnum dst=t26 tag=0 payload=[t25]
       0034: Return value=t26
       0035: Return
-  Fn key=BlkDriver.submit_read ret=Receipt[own[BlockPayloads] DmaBlock] temps=21 receiver=t0:mut params=[t1,t2:take]
+  Fn key=BlkDriver.submit_read ret=Receipt[own[BlockPayloads] DmaBlock] temps=66 receiver=t0:mut params=[t1,t2:take]
     Temp t0 ty=BlkDriver
     Temp t1 ty=u64
     Temp t2 ty=own[BlockPayloads] DmaBlock
@@ -83,9 +83,54 @@ Program
     Temp t15 ty=u8
     Temp t16 ty=BlkReqStatus
     Temp t17 ty=QueueOp[own[BlockPayloads] DmaBlock, true]
-    Temp t18 ty=QueueOp[own[BlockPayloads] DmaBlock, true]
-    Temp t19 ty=VirtQueue[..8]
-    Temp t20 ty=Receipt[own[BlockPayloads] DmaBlock]
+    Temp t18 ty=u64
+    Temp t19 ty=u64
+    Temp t20 ty=u64
+    Temp t21 ty=u64
+    Temp t22 ty=u64
+    Temp t23 ty=u64
+    Temp t24 ty=u64
+    Temp t25 ty=u64
+    Temp t26 ty=u64
+    Temp t27 ty=u64
+    Temp t28 ty=u64
+    Temp t29 ty=u64
+    Temp t30 ty=u64
+    Temp t31 ty=QueueOp[own[BlockPayloads] DmaBlock, true]
+    Temp t32 ty=VirtQueue[..8]
+    Temp t33 ty=Receipt[own[BlockPayloads] DmaBlock]
+    Temp t34 ty=u64
+    Temp t35 ty=u64
+    Temp t36 ty=u64
+    Temp t37 ty=u64
+    Temp t38 ty=u64
+    Temp t39 ty=u64
+    Temp t40 ty=u64
+    Temp t41 ty=u64
+    Temp t42 ty=u64
+    Temp t43 ty=u64
+    Temp t44 ty=u64
+    Temp t45 ty=u64
+    Temp t46 ty=u64
+    Temp t47 ty=u64
+    Temp t48 ty=u64
+    Temp t49 ty=u64
+    Temp t50 ty=u64
+    Temp t51 ty=u64
+    Temp t52 ty=u64
+    Temp t53 ty=u64
+    Temp t54 ty=u64
+    Temp t55 ty=u64
+    Temp t56 ty=u64
+    Temp t57 ty=u64
+    Temp t58 ty=u64
+    Temp t59 ty=u64
+    Temp t60 ty=u64
+    Temp t61 ty=u64
+    Temp t62 ty=u64
+    Temp t63 ty=u64
+    Temp t64 ty=u64
+    Temp t65 ty=u64
     Body
       0000: Project dst=t3 base=t0 index=3
       0001: Compare op=>= ty=u64 dst=t4 lhs=t1 rhs=t3
@@ -104,9 +149,81 @@ Program
       0014: MakeAggregate dst=t14 elems=[t12,t13,t1]
       0015: ConstInt dst=t15 ty=u8 value=255
       0016: MakeAggregate dst=t16 elems=[t15]
-      0017: QueuePrepare dst=t17 queue=t10 permit=t11 header=t14 payload=t2 status=t16 device_writes=true payload_len=512
-      0018: Copy dst=t18 src=t17
-      0019: Project dst=t19 base=t0 index=2
-      0020: QueuePublish dst=t20 queue=t19 operation=t18 order=[write_descriptors, publish_available, notify_queue]
-      0021: Return value=t20
-      0022: Return
+      0017: PtrOffset dst=t18 base=t10 offset=0x148
+      0018: Project dst=t19 base=t14 index=0
+      0019: MemStore base=t18 offset=0x0 value=t19 width=4
+      0020: Project dst=t20 base=t14 index=1
+      0021: MemStore base=t18 offset=0x4 value=t20 width=4
+      0022: Project dst=t21 base=t14 index=2
+      0023: MemStore base=t18 offset=0x8 value=t21 width=8
+      0024: PtrOffset dst=t22 base=t10 offset=0x158
+      0025: MemStore base=t22 offset=0x0 value=t16 width=1
+      0026: PtrOffset dst=t23 base=t10 offset=0x108
+      0027: MemStore base=t23 offset=0x0 value=t2 width=8
+      0028: PtrOffset dst=t24 base=t10 offset=0x148
+      0029: MemStore base=t23 offset=0x8 value=t24 width=8
+      0030: PtrOffset dst=t25 base=t10 offset=0x158
+      0031: MemStore base=t23 offset=0x10 value=t25 width=8
+      0032: ConstInt dst=t26 ty=u64 value=512
+      0033: MemStore base=t23 offset=0x18 value=t26 width=8
+      0034: ConstInt dst=t27 ty=u64 value=3
+      0035: MemStore base=t23 offset=0x20 value=t27 width=8
+      0036: PtrOffset dst=t28 base=t10 offset=0xf0
+      0037: MemLoad dst=t29 base=t28 offset=0x0 width=8
+      0038: MemStore base=t23 offset=0x28 value=t29 width=8
+      0039: ConstInt dst=t30 ty=u64 value=0
+      0040: MemStore base=t23 offset=0x30 value=t30 width=4
+      0041: MemStore base=t23 offset=0x38 value=t30 width=8
+      0042: Copy dst=t17 src=t23
+      0043: Copy dst=t31 src=t17
+      0044: Project dst=t32 base=t0 index=2
+      0045: MemLoad dst=t34 base=t31 offset=0x8 width=8
+      0046: ConstInt dst=t35 ty=u64 value=16
+      0047: ConstInt dst=t36 ty=u64 value=1
+      0048: PtrOffset dst=t37 base=t32 offset=0x0
+      0049: MemStore base=t37 offset=0x0 value=t34 width=8
+      0050: MemStore base=t37 offset=0x8 value=t35 width=4
+      0051: MemStore base=t37 offset=0xc value=t36 width=2
+      0052: ConstInt dst=t38 ty=u64 value=1
+      0053: MemStore base=t37 offset=0xe value=t38 width=2
+      0054: MemLoad dst=t39 base=t31 offset=0x0 width=8
+      0055: MemLoad dst=t40 base=t31 offset=0x18 width=8
+      0056: MemLoad dst=t41 base=t31 offset=0x20 width=8
+      0057: ConstInt dst=t42 ty=u64 value=1
+      0058: Bitwise op=& ty=u64 dst=t43 lhs=t41 rhs=t42
+      0059: ArithWrapping op=+% ty=u64 dst=t44 lhs=t43 rhs=t43
+      0060: ConstInt dst=t45 ty=u64 value=1
+      0061: Bitwise op=| ty=u64 dst=t46 lhs=t44 rhs=t45
+      0062: PtrOffset dst=t47 base=t32 offset=0x10
+      0063: MemStore base=t47 offset=0x0 value=t39 width=8
+      0064: MemStore base=t47 offset=0x8 value=t40 width=4
+      0065: MemStore base=t47 offset=0xc value=t46 width=2
+      0066: ConstInt dst=t48 ty=u64 value=2
+      0067: MemStore base=t47 offset=0xe value=t48 width=2
+      0068: MemLoad dst=t49 base=t31 offset=0x10 width=8
+      0069: ConstInt dst=t50 ty=u64 value=1
+      0070: ConstInt dst=t51 ty=u64 value=2
+      0071: PtrOffset dst=t52 base=t32 offset=0x20
+      0072: MemStore base=t52 offset=0x0 value=t49 width=8
+      0073: MemStore base=t52 offset=0x8 value=t50 width=4
+      0074: MemStore base=t52 offset=0xc value=t51 width=2
+      0075: ConstInt dst=t53 ty=u64 value=0
+      0076: MemStore base=t52 offset=0xe value=t53 width=2
+      0077: PtrOffset dst=t54 base=t32 offset=0x80
+      0078: MemLoad dst=t55 base=t54 offset=0x2 width=2
+      0079: ConstInt dst=t56 ty=u64 value=7
+      0080: Bitwise op=& ty=u64 dst=t57 lhs=t55 rhs=t56
+      0081: ArithWrapping op=+% ty=u64 dst=t58 lhs=t57 rhs=t57
+      0082: ConstInt dst=t59 ty=u64 value=4
+      0083: ArithWrapping op=+% ty=u64 dst=t60 lhs=t58 rhs=t59
+      0084: ArithWrapping op=+% ty=u64 dst=t61 lhs=t54 rhs=t60
+      0085: ConstInt dst=t62 ty=u64 value=0
+      0086: MemStore base=t61 offset=0x0 value=t62 width=2
+      0087: ConstInt dst=t63 ty=u64 value=1
+      0088: ArithWrapping op=+% ty=u64 dst=t64 lhs=t55 rhs=t63
+      0089: MemStore base=t54 offset=0x2 value=t64 width=2
+      0090: PtrOffset dst=t65 base=t32 offset=0xe0
+      0091: MemStore base=t65 offset=0x0 value=t63 width=8
+      0092: Copy dst=t33 src=t31
+      0093: Return value=t33
+      0094: Return

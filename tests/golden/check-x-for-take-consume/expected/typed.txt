@@ -11,14 +11,16 @@ Program
       Let name=total ty=u64
         Int text=0 ty=u64
       For name=p elem_ty=Packet take=true budget=1000000
-        Local name=arr ty=[Packet; 2]
+        Take ty=[Packet; 2]
+          Local name=arr ty=[Packet; 2]
         Body
           Assign
             Local name=total ty=u64
             Binary op=+ ty=u64
               Local name=total ty=u64
               Call key=consume ty=u64
-                Local name=p ty=Packet
+                Arg mode=take
+                  Local name=p ty=Packet
       Return
         Local name=total ty=u64
   Fn name=peek_all ret=u64

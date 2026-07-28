@@ -12,6 +12,7 @@ module runtime
 # pool); boot_init zeros live spans via __wrela_init_* (`N_INIT_SLOTS`).
 from core.__image_runtime import (
     N_CORES,
+    CONSOLE_DATA_BASE,
     N_TURNS,
     N_TURNS_LEN,
     N_CHILD_SITES,
@@ -432,7 +433,7 @@ TURNS_BASE,
 
 const QUEUE_SIZE: u64 = 256
 const DESC_WORD_COUNT: usize = 512
-const CONSOLE_DATA_BASE: u64 = 0x40003000
+# CONSOLE_DATA_BASE imported from core.__image_runtime (wrela-machine).
 const DATA_SIZE: usize = 16384
 
 # VCPU count is a machine constant (wrela_machine::VCPUS); algorithms still
@@ -536,7 +537,7 @@ pub fn __wrela_line_commit() -> u64:
     line_start = MACHINE_INFO.line_start
     data_bump = MACHINE_INFO.ring_data_bump
     len = data_bump -% line_start
-    data_addr = CONSOLE_DATA_BASE +% line_start
+    data_addr = CONSOLE_DATA_BASE.to[u64]() +% line_start
     wi = (desc_bump *% 2).to[usize]()
     CONSOLE_RING.desc_words[wi] = data_addr
     # flags/next = 0 occupies the high half of this word (little-endian).
@@ -713,11 +714,12 @@ fn append_newline_literal() -> u64:
     TEST_LINE_BUF.bytes[0] = 10
     return __wrela_console_append_line_buf(1)
 
-# M10 C: `__wrela_abort(msg: Bytes)` — ABI x0/x1 = (ptr, len), matching
-# today's Reloc::AbortFixed callers (capacity equals length). Re-entrancy
-# latch at OFF_ABORT_LATCH (decision 591); overflow from append/commit is
-# status (decision 592); wrapping arith (decision 652); console helpers
-# use `@budget`-bounded sync loops (M11 decisions 740–742).
+# M10 C: `__wrela_abort(msg: Bytes)` — Bytes is by-pointer (one ABI rule
+# with every other non-scalar); Reloc::AbortFixed callers pass `x0 =`
+# address of a stack `(base, len)` slot (capacity equals length).
+# Re-entrancy latch at OFF_ABORT_LATCH (decision 591); overflow from
+# append/commit is status (decision 592); wrapping arith (decision 652);
+# console helpers use `@budget`-bounded sync loops (M11 decisions 740–742).
 pub fn __wrela_abort(msg: Bytes):
     if MACHINE_INFO.abort_latch != 0:
         finish_abort()
@@ -729,8 +731,9 @@ pub fn __wrela_abort(msg: Bytes):
     _ = __wrela_line_commit()
     finish_abort()
 
-# M10 C: `__wrela_abort_val` — six-register ABI (prefix Bytes, value,
-# value_signed, suffix Bytes) matching Reloc::AbortVal callers.
+# M10 C: `__wrela_abort_val` — by-pointer Bytes for prefix/suffix plus
+# value / value_signed scalars (`x0=*prefix, x1=value, x2=signed,
+# x3=*suffix`), matching Reloc::AbortVal callers.
 pub fn __wrela_abort_val(prefix: Bytes, value: u64, value_signed: u64, suffix: Bytes):
     if MACHINE_INFO.abort_latch != 0:
         finish_abort()

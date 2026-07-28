@@ -12,24 +12,21 @@ use std::collections::BTreeMap;
 use wrela_machine::machine_info as mi;
 use wrela_machine::{console, layout as machine_layout, machine_info, mmio};
 
-use crate::codegen::{CodegenProgram, Reloc};
-use crate::encode;
-use crate::encode::Cond;
-use crate::syntax::ast::Module;
-
 use super::{
     BootCtx, BootInitArg, BootInitCall, CheckpointBlock, DeviceRegs, GroupServiceCtx, ImageLayout,
     IrqVectorEntry, LayoutError, PoolPlacement, RuntimePlacement, RuntimeTables, RuntimeWiring,
-    Section, WakeDrainEntry, actor_method_index_tables, build_irq_host_injects,
-    checkpoint_irq_shape, device_register_windows, driver_irq_vector, driver_state_addr,
-    driver_wake_pending_addr, enrich_layout_ctx_with_instantiations, group_service_ctx,
-    group_service_shape, image_pool_backings, intern_fallible_init_abort_messages,
-    merge_layout_ctx, merge_mwir_programs, pad_to, patch_adrp_add, patch_bl, patch_load_imm_words,
-    place_device_regs, place_pools, place_pools_unchecked, place_runtime_tables,
-    resolve_cross_core_edge, resolve_mailbox_actor_addrs, resolve_xreply_edge, round_up,
-    steer_rtdata_base, turns_deref_needs_rtdata, unresolved_call_target, verify_device_windows,
-    verify_pool_windows, verify_section_sizes, wake_needs_rtdata,
+    Section, WakeDrainEntry, build_irq_host_injects, checkpoint_irq_shape, device_register_windows,
+    driver_irq_vector, driver_state_addr, driver_wake_pending_addr, group_service_ctx,
+    group_service_shape, image_pool_backings, intern_fallible_init_abort_messages, pad_to,
+    patch_adrp_add, patch_bl, patch_load_imm_words, place_device_regs, place_pools,
+    place_pools_unchecked, place_runtime_tables, resolve_cross_core_edge,
+    resolve_mailbox_actor_addrs, resolve_xreply_edge, round_up, steer_rtdata_base,
+    turns_deref_needs_rtdata, unresolved_call_target, verify_device_windows, verify_pool_windows,
+    verify_section_sizes, wake_needs_rtdata,
 };
+use crate::codegen::{CodegenProgram, Reloc};
+use crate::encode;
+use crate::encode::Cond;
 
 // --- scratch registers for stub emission (never x0..x8/x29/x30/sp) -----
 
@@ -132,9 +129,12 @@ pub fn build_checkpoint_and_vector_stub_ex(
 pub(super) fn inject_rt_enqueue_and_dispatch_fns(
     program: &mut CodegenProgram,
     wiring: &RuntimeWiring,
-) {
-    let extras = crate::rtconfig::extras_from_tables(&wiring.tables)
-        .expect("runtime wiring tables agree with placement");
+) -> Result<(), LayoutError> {
+    let extras = crate::rtconfig::extras_from_tables(&wiring.tables).map_err(|e| {
+        LayoutError::new(format!(
+            "runtime wiring tables disagree with placement: {e}"
+        ))
+    })?;
     let mut flat = 0usize;
     for mb in &extras.mailboxes {
         for method in &mb.methods {
@@ -149,23 +149,36 @@ pub(super) fn inject_rt_enqueue_and_dispatch_fns(
     for (i, name) in wiring.tables.enqueue_actors.iter().enumerate() {
         let tramp = format!("__enqueue_{i}");
         let Some(f) = program.fns.get(&tramp).cloned() else {
-            panic!("internal error: missing enqueue trampoline `{tramp}` after runtime reinject");
+            // Named rejection (not the producer-bug prefix) — callers that
+            // skip `lower_and_codegen_image` force-roots hit this; fuzz
+            // treats it as Rejected layout, not a Bug panic.
+            return Err(LayoutError::new(format!(
+                "missing enqueue trampoline `{tramp}` after live codegen — lower with \
+                 `ImageForceRootOpts::with_wiring` before `layout_test_image`"
+            )));
         };
         program
             .fns
             .insert(crate::codegen::rt_enqueue_symbol(name), f);
     }
+    Ok(())
 }
 
 /// M11 H (decisions 811 / 814): prepend floor-cat1 SP install onto each
 /// `__wrela_secondary_entry_<core>` trampoline and republish under
 /// `rt_secondary_core_entry <core>` for VMM `core_entries`.
-pub(super) fn inject_rt_cross_core_fns(program: &mut CodegenProgram, wiring: &RuntimeWiring) {
+pub(super) fn inject_rt_cross_core_fns(
+    program: &mut CodegenProgram,
+    wiring: &RuntimeWiring,
+) -> Result<(), LayoutError> {
     for core in 1..wiring.tables.cores {
         let tramp = format!("__wrela_secondary_entry_{core}");
-        let mut f = program.fns.get(&tramp).cloned().unwrap_or_else(|| {
-            panic!("internal error: missing secondary trampoline `{tramp}` after runtime reinject")
-        });
+        let Some(mut f) = program.fns.get(&tramp).cloned() else {
+            return Err(LayoutError::new(format!(
+                "missing secondary trampoline `{tramp}` after live codegen — lower with \
+                 `ImageForceRootOpts::with_wiring` before `layout_test_image`"
+            )));
+        };
         let sp = crate::codegen::emit_secondary_sp_install(core);
         let sp_len = sp.len();
         for r in &mut f.relocs {
@@ -177,6 +190,7 @@ pub(super) fn inject_rt_cross_core_fns(program: &mut CodegenProgram, wiring: &Ru
         let key = crate::codegen::rt_secondary_core_entry_symbol(core);
         program.fns.insert(key, f);
     }
+    Ok(())
 }
 
 fn shift_reloc_words(r: &mut crate::codegen::Reloc, delta: usize) {
@@ -624,14 +638,12 @@ impl Asm {
     }
 
     /// plans/M10.md item B4: `BL __wrela_console_append_bytes`.
-    /// Pre: `x0` holds the packed-byte base. Sets `x1 = x2 = len` so the
-    /// Bytes handle's capacity equals the copy length (every harness
-    /// literal call site).
+    /// Pre: `x0` holds `*Bytes` (pointer to a `(base, capacity)` slot).
+    /// Sets `x1 = len` (copy length; capacity is already in the slot).
     // M11 K: last call sites lived in `build_entry_driver` (deleted).
     #[allow(dead_code)]
     fn bl_console_append_bytes(&mut self, len: u64) {
         self.load_imm(1, len);
-        self.load_imm(2, len);
         self.bl_call_key("__wrela_console_append_bytes");
     }
 
@@ -798,7 +810,7 @@ pub(super) fn build_abort_tail_codegen_fn() -> crate::codegen::CodegenFn {
 }
 
 /// Replace the compiled `__wrela_abort_tail` stub with the floor long-jump.
-/// Inlined by `with_force_rooted_runtime` today.
+/// Irreducible floor inject — runs after the single live CodegenProgram.
 pub(super) fn install_abort_tail_floor(program: &mut CodegenProgram) -> Result<(), LayoutError> {
     if program.fns.contains_key("__wrela_abort") || program.fns.contains_key("__wrela_abort_val") {
         if !program.fns.contains_key("__wrela_abort_tail") {
@@ -1056,460 +1068,9 @@ pub fn check_transcript_bound(
 /// overwhelming majority of today's corpus, and every pre-M6 golden)
 /// keeps `layout_test_image` byte-identical to its pre-item-D behavior:
 /// no `rtdata`, no boot sequence, no runtime-glue routines.
-/// plans/M10.md item B2: inject force-rooted `core.runtime` helpers into
-/// a `CodegenProgram` that was lowered without the auto-loaded module
-/// (fuzz / diff-eval / profile / older conformance shortcuts). Real
-/// `wrela test` already lowers them via `guest_reachable_keys_closure`;
-/// this is the fail-closed backstop so `layout_test_image`'s harness
-/// `bl_call_key("__wrela_line_*")` never meets a missing symbol.
-pub(super) fn with_force_rooted_runtime(
-    program: &CodegenProgram,
-) -> Result<CodegenProgram, LayoutError> {
-    let missing: Vec<&str> = crate::lower::RUNTIME_FORCE_ROOT_KEYS
-        .iter()
-        .copied()
-        .filter(|k| !program.fns.contains_key(*k))
-        .collect();
-    let mut out = if missing.is_empty() {
-        program.clone()
-    } else {
-        let runtime_cg = codegen_runtime_force_roots().map_err(|m| {
-            LayoutError::new(format!(
-                "internal error: could not codegen force-rooted runtime helpers ({missing:?}): {m}"
-            ))
-        })?;
-        let mut merged = program.clone();
-        let rodata_byte_base: usize = merged.rodata.iter().map(Vec::len).sum();
-        for (key, mut f) in runtime_cg.fns {
-            if merged.fns.contains_key(&key) {
-                continue;
-            }
-            if rodata_byte_base != 0 {
-                for r in &mut f.relocs {
-                    if let Reloc::Rodata { byte_offset, .. } = r {
-                        *byte_offset += rodata_byte_base;
-                    }
-                }
-            }
-            merged.fns.insert(key, f);
-        }
-        merged.rodata.extend(runtime_cg.rodata);
-        merged
-    };
-    // plans/M10.md item C / decision 650: overwrite the compiled
-    // `__wrela_abort_tail` stub with the floor category 4 `LDR`+`BR`.
-    // Test images must never `ret` from abort.
-    install_abort_tail_floor(&mut out)?;
-    Ok(out)
-}
-
-/// Lower + codegen every `RUNTIME_FORCE_ROOT_KEYS` entry from
-/// `stdlib/core/runtime.wr` as a standalone `CodegenProgram`.
-///
-/// When `rtconfig_text` is `Some`, that generated module is paired with
-/// unstripped `runtime.wr` (live image addresses). When `None`, the
-/// batch-1 stub is used (plans/M11.md item E / decision 780).
-pub(super) fn codegen_runtime_force_roots_with(
-    rtconfig_text: Option<&str>,
-) -> Result<CodegenProgram, String> {
-    let (runtime_key, runtime_loaded) = crate::loader::load_runtime_module()
-        .map_err(|_| "stdlib/core/runtime.wr missing".to_string())?;
-    let gen_text = rtconfig_text
-        .map(|s| s.to_string())
-        .unwrap_or_else(crate::rtconfig::stub_text);
-    let gen_module = crate::rtconfig::parse_generated(&gen_text)?;
-    let gen_key: Vec<String> = crate::loader::IMAGE_RUNTIME_MODULE_KEY
-        .iter()
-        .map(|s| (*s).to_string())
-        .collect();
-    let mut modules = BTreeMap::new();
-    modules.insert(gen_key.clone(), gen_module);
-    modules.insert(runtime_key.clone(), runtime_loaded.module);
-    let mut paths = BTreeMap::new();
-    paths.insert(gen_key, crate::rtconfig::GENERATED_INPUT_PATH.to_string());
-    paths.insert(
-        runtime_key.clone(),
-        runtime_loaded.file.display().to_string(),
-    );
-    let programs_vec = crate::sema::check_program_typed(&modules, &paths).map_err(|e| e.message)?;
-    let programs: BTreeMap<String, crate::sema::typed::TypedProgram> = programs_vec
-        .into_iter()
-        .map(|(k, p)| (k.join("."), p))
-        .collect();
-    let modules_dot: BTreeMap<String, Module> =
-        modules.into_iter().map(|(k, m)| (k.join("."), m)).collect();
-    // Force-root seeds plus their callee closure (M10 B3: `fmt_dec` →
-    // `store_at` / `extract_one` / …; M10 B4: append → `copy_*_range`).
-    // M11 E: deadline poll/scan are not in RUNTIME_FORCE_ROOT_KEYS (only
-    // reinjected when a group arena exists) — seed them here so this
-    // helper can compile them for reinject / stub coverage.
-    // M11 F: run_one / child_poll + match ladders likewise.
-    let mut only =
-        crate::lower::guest_reachable_keys_closure(&programs, &crate::lower::LowerOpts::default());
-    for key in [
-        "__wrela_deadline_poll",
-        "__wrela_deadline_scan",
-        "__wrela_rt_run_one",
-        "__wrela_child_poll",
-        "__wrela_select_count",
-        "__wrela_try_select",
-        "__wrela_select_root",
-        "__wrela_rt_select",
-        "__wrela_try_drain",
-        "__wrela_rt_drain",
-        "__wrela_rt_xsend",
-        "__wrela_rt_xreply",
-        "__wrela_resume_child",
-        "__wrela_child_turn_index",
-        "__wrela_child_slot",
-        "__wrela_child_store_result",
-        "__wrela_try_enqueue",
-        "__wrela_enqueue_root",
-        "__wrela_rt_enqueue",
-        "__wrela_call_method",
-        "__wrela_deliver_reply",
-        "__wrela_invoke_xreply",
-        "__wrela_mb_capacity",
-        "__wrela_mb_slot_words",
-        "__wrela_mb_turn_index",
-        "__wrela_mb_core",
-        "__wrela_mb_state",
-        "__wrela_mb_has_lineage",
-        "__wrela_mb_method_count",
-        "__wrela_mb_get_head",
-        "__wrela_mb_set_head",
-        "__wrela_mb_get_tail",
-        "__wrela_mb_set_tail",
-        "__wrela_mb_get_count",
-        "__wrela_mb_set_count",
-        "__wrela_mb_load_word",
-        "__wrela_mb_store_word",
-        "__wrela_method_suspends",
-        "__wrela_method_is_aggregate",
-        "__wrela_ring_capacity",
-        "__wrela_ring_slot_words",
-        "__wrela_ring_dst_core",
-        "__wrela_ring_src_core",
-        "__wrela_ring_target_handle",
-        "__wrela_drain_reply_count",
-        "__wrela_drain_reply_edge",
-        "__wrela_drain_request_count",
-        "__wrela_drain_request_edge",
-        "__wrela_xsend_edge",
-        "__wrela_xreply_edge",
-        "__wrela_rt_boot_init",
-        "__wrela_rt_secondary_entry",
-        "__wrela_secondary_entry_1",
-        "__wrela_secondary_entry_2",
-        "__wrela_rt_primary_boot",
-        "__wrela_rt_primary_entry",
-        "__wrela_rt_summary_and_halt",
-        "__wrela_append_ok_literal",
-        "__wrela_append_passed_comma_literal",
-        "__wrela_append_failed_tail_literal",
-        "__wrela_append_deadlock_literal",
-        "__wrela_abort_deadlock",
-        "__wrela_test_call",
-        "__wrela_test_append_prefix",
-        "__wrela_test_suspends",
-        "__wrela_test_turn_index",
-        "__wrela_init_nwords",
-        "__wrela_init_store_word",
-        "__wrela_boot_call",
-        "__wrela_vector0",
-        "__wrela_rt_checkpoint",
-        "__wrela_irq_mask",
-        "__wrela_irq_invoke",
-        "__wrela_wake_invoke",
-    ] {
-        only.insert(key.to_string());
-    }
-    for i in 0..crate::rtconfig::TEST_CALL_POOL_COUNT {
-        only.insert(format!("__test_call_{i}"));
-        only.insert(format!("__test_prefix_{i}"));
-    }
-    // Live `__boot_call_*` keys are seeded from the generated module's
-    // fn set below (reachability via `__wrela_boot_call`); do not force
-    // the whole pool — packing must stay under RTDATA_BASE.
-    // Item F/G stubs live in the generated module; seed every `__select_*` /
-    // `__resume_*` / `__enqueue_*` so match-ladder Calls lower. Trampolines
-    // `__wrela_xsend_*` / `__wrela_xreply_*` live in runtime.wr.
-    for typed in programs.values() {
-        for name in typed.fns.keys() {
-            if name.starts_with("__resume_")
-                || name.starts_with("__method_")
-                || name.starts_with("__enqueue_")
-                || name.starts_with("__wrela_xsend_")
-                || name.starts_with("__wrela_xreply_")
-                || name.starts_with("__irq_call_")
-                || name.starts_with("__wake_call_")
-            {
-                only.insert(name.clone());
-            }
-        }
-        for name in typed.imported.fns.keys() {
-            if name.starts_with("__resume_")
-                || name.starts_with("__method_")
-                || name.starts_with("__enqueue_")
-                || name.starts_with("__wrela_")
-                || name.starts_with("__irq_call_")
-                || name.starts_with("__wake_call_")
-            {
-                only.insert(name.clone());
-            }
-        }
-    }
-    let lower_opts = crate::lower::LowerOpts {
-        emit_comptime_tests: false,
-        only: Some(only),
-    };
-    let mut mwir_programs = Vec::new();
-    let mut flow_fns = BTreeMap::new();
-    for typed in programs.values() {
-        mwir_programs
-            .push(crate::lower::lower_program_with(typed, &lower_opts).map_err(|e| e.message)?);
-        flow_fns.extend(
-            crate::flowwir_lower::lower_program_with(typed, &lower_opts)
-                .map_err(|e| e.message)?
-                .fns,
-        );
-    }
-    let mwir = merge_mwir_programs(mwir_programs);
-    let flow = crate::flowwir::FlowWirProgram { fns: flow_fns };
-    let mut layout_ctx = merge_layout_ctx(&modules_dot).map_err(|e| e.message)?;
-    enrich_layout_ctx_with_instantiations(&mut layout_ctx, &programs);
-    let method_index =
-        actor_method_index_tables(&modules_dot, &layout_ctx).map_err(|e| e.message)?;
-    crate::codegen::codegen_program_with_async(&mwir, &flow, &layout_ctx, &method_index, 0, &[])
-        .map_err(|e| e.message)
-}
-
-/// Lower + codegen force-rooted runtime helpers against the batch-1 stub.
-pub(super) fn codegen_runtime_force_roots() -> Result<CodegenProgram, String> {
-    codegen_runtime_force_roots_with(None)
-}
-
-/// Replace force-rooted deadline / run_one / child_poll helpers with a
-/// codegen against the live `rtconfig` text (correct `RT` / `GROUPS` /
-/// `sched` addresses and select/child match ladders for this image).
-pub(super) fn reinject_runtime_with_rtconfig(
-    program: &mut CodegenProgram,
-    wiring: &RuntimeWiring,
-) -> Result<(), LayoutError> {
-    // Ordinary images: no primary entry / test stub pool (keeps code under
-    // RTDATA_BASE). Test images call `reinject_runtime_with_test_facts`.
-    reinject_runtime_with_test_facts(program, Some(wiring), &[], false)
-}
-
-/// M11 K: reinject runtime (+ optional test-runner facts) against live or
-/// stub rtconfig. `wiring == None` uses the batch-1 stub tables with
-/// `HAS_BOOT_INIT = false`. `include_test_runner` pulls primary entry +
-/// live `__test_*` stubs only for `layout_test_image`.
-pub(super) fn reinject_runtime_with_test_facts(
-    program: &mut CodegenProgram,
-    wiring: Option<&RuntimeWiring>,
-    tests: &[crate::rtconfig::TestRunnerFact],
-    include_test_runner: bool,
-) -> Result<(), LayoutError> {
-    let (text, extras, tables_n_boot, tables_irq, tables_wake) = match wiring {
-        Some(w) => {
-            let mut extras = crate::rtconfig::extras_from_tables(&w.tables).map_err(|m| {
-                LayoutError::new(format!("rtconfig extras: {m}"))
-            })?;
-            extras.tests = tests.to_vec();
-            extras.has_boot_init = true;
-            let text = crate::rtconfig::generate_with(&w.tables, &extras).map_err(|m| {
-                LayoutError::new(format!("rtconfig pool ceiling: {m}"))
-            })?;
-            (
-                text,
-                extras,
-                w.tables.n_boot_calls,
-                w.tables.irq_vector_bits.len(),
-                w.tables.wake_pending_addrs.len(),
-            )
-        }
-        None => {
-            let mut tables = RuntimeTables {
-                n_turns: 0,
-                turn_stride: 0,
-                ready_queue_capacity: 1,
-                group_arena_capacity: 0,
-                total_bytes: 128,
-                cores: 1,
-                ..RuntimeTables::default()
-            };
-            tables.stripe_for_cores(1);
-            let mut extras = crate::rtconfig::RtconfigExtras::default();
-            extras.tests = tests.to_vec();
-            extras.has_boot_init = false;
-            let text = crate::rtconfig::generate_with(&tables, &extras).map_err(|m| {
-                LayoutError::new(format!("rtconfig pool ceiling: {m}"))
-            })?;
-            (text, extras, 0, 0, 0)
-        }
-    };
-    let runtime_cg = codegen_runtime_force_roots_with(Some(&text)).map_err(|m| {
-        LayoutError::new(format!(
-            "internal error: could not codegen runtime helpers against live rtconfig: {m}"
-        ))
-    })?;
-    let remaps = crate::rtconfig::stub_call_remaps(&extras);
-    let rodata_byte_base: usize = program.rodata.iter().map(Vec::len).sum();
-
-    // Keys that need live RT/GROUPS/sched/ring addresses or match ladders.
-    // Console/abort helpers already bind MACHINE_INFO / CONSOLE_* and must
-    // not be duplicated into rodata.
-    let mut keys: Vec<String> = Vec::new();
-    // M11 I: vector0 may Call deadline_scan whenever GROUP_ARENA_CAPACITY
-    // is nonzero at runtime — always reinject both so the Call resolves
-    // (empty arena ⇒ scan loops are no-ops). Poll stays entry-driver-only
-    // via has_deadline_poll, but reinjecting it is cheap next to scan.
-    keys.push("__wrela_deadline_poll".into());
-    keys.push("__wrela_deadline_scan".into());
-    // Scheduler tick + child poll (item F) — always when wiring exists.
-    keys.push("__wrela_rt_run_one".into());
-    keys.push("__wrela_child_poll".into());
-    // Match ladders / stub wrappers (Calls remapped onto ImageStatic keys).
-    keys.push("__wrela_select_count".into());
-    keys.push("__wrela_select_root".into());
-    keys.push("__wrela_try_select".into());
-    keys.push("__wrela_rt_select".into());
-    keys.push("__wrela_try_drain".into());
-    keys.push("__wrela_rt_drain".into());
-    keys.push("__wrela_rt_xsend".into());
-    keys.push("__wrela_rt_xreply".into());
-    keys.push("__wrela_resume_child".into());
-    keys.push("__wrela_child_turn_index".into());
-    keys.push("__wrela_child_slot".into());
-    keys.push("__wrela_child_store_result".into());
-    keys.push("__wrela_enqueue_root".into());
-    keys.push("__wrela_try_enqueue".into());
-    keys.push("__wrela_rt_enqueue".into());
-    keys.push("__wrela_call_method".into());
-    keys.push("__wrela_deliver_reply".into());
-    keys.push("__wrela_invoke_xreply".into());
-    keys.push("__wrela_mb_capacity".into());
-    keys.push("__wrela_mb_slot_words".into());
-    keys.push("__wrela_mb_turn_index".into());
-    keys.push("__wrela_mb_core".into());
-    keys.push("__wrela_mb_state".into());
-    keys.push("__wrela_mb_has_lineage".into());
-    keys.push("__wrela_mb_method_count".into());
-    keys.push("__wrela_mb_get_head".into());
-    keys.push("__wrela_mb_set_head".into());
-    keys.push("__wrela_mb_get_tail".into());
-    keys.push("__wrela_mb_set_tail".into());
-    keys.push("__wrela_mb_get_count".into());
-    keys.push("__wrela_mb_set_count".into());
-    keys.push("__wrela_mb_load_word".into());
-    keys.push("__wrela_mb_store_word".into());
-    keys.push("__wrela_method_suspends".into());
-    keys.push("__wrela_method_is_aggregate".into());
-    // Ring accessors + drain lane ladders (item G).
-    for k in [
-        "__wrela_ring_capacity",
-        "__wrela_ring_slot_words",
-        "__wrela_ring_dst_core",
-        "__wrela_ring_src_core",
-        "__wrela_ring_target_handle",
-        "__wrela_drain_reply_count",
-        "__wrela_drain_reply_edge",
-        "__wrela_drain_request_count",
-        "__wrela_drain_request_edge",
-        "__wrela_xsend_edge",
-        "__wrela_xreply_edge",
-        "__wrela_rt_boot_init",
-        "__wrela_rt_secondary_entry",
-        "__wrela_secondary_entry_1",
-        "__wrela_secondary_entry_2",
-        "__wrela_init_nwords",
-        "__wrela_init_store_word",
-        "__wrela_boot_call",
-        "__wrela_vector0",
-        "__wrela_rt_checkpoint",
-        "__wrela_irq_mask",
-        "__wrela_irq_invoke",
-        "__wrela_wake_invoke",
-    ] {
-        keys.push(k.into());
-    }
-    if include_test_runner {
-        for k in [
-            "__wrela_rt_primary_boot",
-            "__wrela_rt_primary_entry",
-            "__wrela_rt_summary_and_halt",
-            "__wrela_append_ok_literal",
-            "__wrela_append_passed_comma_literal",
-            "__wrela_append_failed_tail_literal",
-            "__wrela_append_deadlock_literal",
-            "__wrela_abort_deadlock",
-            "__wrela_test_call",
-            "__wrela_test_append_prefix",
-            "__wrela_test_suspends",
-            "__wrela_test_turn_index",
-        ] {
-            keys.push(k.into());
-        }
-        // Live stubs only — the full pool blows past RTDATA_BASE.
-        for i in 0..tests.len() {
-            keys.push(format!("__test_call_{i}"));
-            keys.push(format!("__test_prefix_{i}"));
-        }
-    }
-    // Fixed trampoline pools (decision 802).
-    for i in 0..crate::rtconfig::RING_POOL_COUNT {
-        keys.push(format!("__wrela_xsend_{i}"));
-        keys.push(format!("__wrela_xreply_{i}"));
-    }
-    for i in 0..crate::rtconfig::ENQUEUE_STUB_COUNT {
-        keys.push(format!("__enqueue_{i}"));
-    }
-
-    // Boot call stubs (decision 812) — only live ones; overwritten after.
-    for i in 0..tables_n_boot {
-        keys.push(format!("__boot_call_{i}"));
-    }
-    // IRQ / wake stubs (decision 823) — only live ones; overwritten after.
-    for i in 0..tables_irq {
-        keys.push(format!("__irq_call_{i}"));
-    }
-    for i in 0..tables_wake {
-        keys.push(format!("__wake_call_{i}"));
-    }
-
-    for key in &keys {
-        let Some(mut f) = runtime_cg.fns.get(key).cloned() else {
-            // Child poll / ladders may be absent from the reachability set
-            // when N_CHILD_SITES == 0 and nothing references them — only
-            // run_one is required when wiring exists.
-            if key == "__wrela_rt_run_one" && wiring.is_some() {
-                return Err(LayoutError::new(format!(
-                    "internal error: live rtconfig codegen missing `{key}`"
-                )));
-            }
-            if include_test_runner
-                && (key == "__wrela_rt_primary_entry" || key == "__wrela_rt_primary_boot")
-            {
-                return Err(LayoutError::new(format!(
-                    "internal error: live rtconfig codegen missing `{key}`"
-                )));
-            }
-            continue;
-        };
-        crate::rtconfig::remap_call_keys(&mut f, &remaps);
-        if rodata_byte_base != 0 {
-            for r in &mut f.relocs {
-                if let Reloc::Rodata { byte_offset, .. } = r {
-                    *byte_offset += rodata_byte_base;
-                }
-            }
-        }
-        program.fns.insert(key.clone(), f);
-    }
-    let _ = runtime_cg.rodata;
-    Ok(())
-}
+// `codegen_runtime_force_roots_with` / `merge_live_runtime` deleted:
+// live rtconfig is swapped into the closure before the single
+// `CodegenProgram` (`layout::lower_and_codegen_image`).
 
 pub fn layout_test_image(
     program: &CodegenProgram,
@@ -1526,20 +1087,16 @@ pub fn layout_test_image(
     // identical).
     test_args: &BTreeMap<String, Vec<u64>>,
 ) -> Result<ImageLayout, LayoutError> {
-    // M10 B2: harness bl_call_keys force-rooted console helpers. Callers
-    // that already lowered `core.runtime` are a no-op; others get them
-    // injected here so the reloc never fails closed on a missing symbol.
-    let mut program = with_force_rooted_runtime(program)?;
+    // `program` must already be the single live CodegenProgram
+    // (`layout::lower_and_codegen_image`). Remaining work is named floor
+    // inject only — not a second runtime.wr codegen.
+    let mut program = program.clone();
     check_transcript_bound(&program, runtime_tests)?;
 
     let image_base = machine_layout::IMAGE_BASE;
 
-    // plans/M6.md item D: the real boot wiring — derived *before* the code
-    // section is laid out so M10 E3/E4/F can inject specialized `rt_run_one`
-    // / `rt_child_poll` / `rt_select_and_run` bodies into `program.fns`
-    // (decisions 620 / 623 / 630).
     let mut wiring: Option<RuntimeWiring> = match &boot {
-        Some(b) => RuntimeWiring::derive(b, &program)?,
+        Some(b) => RuntimeWiring::derive(b)?,
         None => None,
     };
     let mut rodata: Vec<Vec<u8>> = program.rodata.clone();
@@ -1555,12 +1112,12 @@ pub fn layout_test_image(
         async_tests,
         wiring.as_ref().map(|w| &w.tables),
     );
-    // M11 K: always reinject with test-runner facts (even sync-only / no
-    // wiring) so N_TESTS + ladders + primary entry see the live list.
-    reinject_runtime_with_test_facts(&mut program, wiring.as_ref(), &tests, true)?;
+    install_abort_tail_floor(&mut program)?;
     if let Some(w) = wiring.as_ref() {
-        inject_rt_enqueue_and_dispatch_fns(&mut program, w);
-        inject_rt_cross_core_fns(&mut program, w);
+        // Named floor: ImageStatic stub specialization + symbol aliases.
+        super::apply_resume_remaps(&mut program, w);
+        inject_rt_enqueue_and_dispatch_fns(&mut program, w)?;
+        inject_rt_cross_core_fns(&mut program, w)?;
         inject_boot_init_fn(&mut program, w);
         inject_checkpoint_irq_fns(&mut program, w);
     }
@@ -1669,11 +1226,18 @@ pub fn layout_test_image(
     cursor += code_size;
 
     // Arm OFF_TEST_CONTINUATION at `__wrela_rt_primary_entry` (decision 852).
+    // Callers that go through `lower_and_codegen_image` with
+    // `with_test_runner` seed this key; the fuzz lower lane's sync-only
+    // codegen does not. Named (not `internal error:`) so a missing seed
+    // is a fail-closed rejection rather than a census bug.
     let primary_entry_word = *fn_word_base
         .get("__wrela_rt_primary_entry")
         .ok_or_else(|| {
             LayoutError::new(
-                "internal error: force-rooted `__wrela_rt_primary_entry` missing from emit set",
+                "test image is missing `__wrela_rt_primary_entry` — lower with \
+                 live runtime force-roots (`layout::lower_and_codegen_image` / \
+                 `ImageForceRootOpts::with_test_runner`) before `layout_test_image`"
+                    .to_string(),
             )
         })?;
     let primary_entry_addr = code_base + (primary_entry_word as u64) * 4;
@@ -2622,11 +2186,12 @@ mod harness_jit {
     /// long-jumps through were pinned by nothing at all. `dump --stage=asm`
     /// shows this symbol as the wrela `__wrela_abort_tail` stub's compiled
     /// `ret` (the stub exists only so `finish_abort`'s call type-checks),
-    /// because the overwrite happens later, in `with_force_rooted_runtime`.
-    /// So the bytes that actually run appeared in no golden and no test:
-    /// dropping `install_abort_tail_floor` would have left every test image
-    /// *returning* from abort instead of long-jumping to the landing pad,
-    /// and the whole suite would still have been green.
+    /// because the overwrite happens later, in `install_abort_tail_floor`
+    /// after the single live CodegenProgram. So the bytes that actually run appeared
+    /// in no golden and no test: dropping `install_abort_tail_floor` would
+    /// have left every test image *returning* from abort instead of
+    /// long-jumping to the landing pad, and the whole suite would still
+    /// have been green.
     ///
     /// The address is checked by decoding it back out of the `MOVZ`/`MOVK`
     /// stream rather than by recomputing the same halfword arithmetic the

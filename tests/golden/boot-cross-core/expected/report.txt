@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_cross_core.wr sha256=fc83fe871be479b7244be700036368aea32f7db22b6bf02a9a013df3527bb0ae
-  Input path=<generated> sha256=91f43a953bab44ba3d2e9ba172ee0a634e5f6b77a71dc3a07eade8722ab4f89f
+  Input path=<generated> sha256=44f961bbaef258839785a351bc994d36ef0e5359135de5ee59d618b638cc0862
   Name value=boot-cross-core
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Store
@@ -50,21 +50,21 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=94504
-  Section name=rodata base=0x40517178 size=433
-  Section name=abort base=0x4051732c size=120
-  Section name=checkpoint base=0x405173a4 size=28
+  Section name=code base=0x40500050 size=112548
+  Section name=rodata base=0x4051b7f8 size=560
+  Section name=abort base=0x4051ba28 size=120
+  Section name=checkpoint base=0x4051baa0 size=28
   Section name=rtdata base=0x40540000 size=1792
   Entry base=0x40500000
-  CoreEntry core=1 base=0x405170d8
-  CoreEntry core=2 base=0x40517128
+  CoreEntry core=1 base=0x4051b754
+  CoreEntry core=2 base=0x4051b7a4
   PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
   PlacedStatic name=EXIT type=ParkMmio addr=0x8001000 size=8
   PlacedStatic name=GROUPS type=GroupArena addr=0x4057f778 size=96
-  PlacedStatic name=INIT_SPAN0 type=InitSpan0Words addr=0x4057f738 size=8
-  PlacedStatic name=INIT_SPAN1 type=InitSpan1Words addr=0x4057f740 size=8
+  PlacedStatic name=INIT_SPAN0 type=InitSpan0Words addr=0x40540600 size=8
+  PlacedStatic name=INIT_SPAN1 type=InitSpan1Words addr=0x40540660 size=8
   PlacedStatic name=INIT_SPAN2 type=InitSpan2Words addr=0x4057f748 size=8
   PlacedStatic name=INIT_SPAN3 type=InitSpan3Words addr=0x4057f750 size=8
   PlacedStatic name=INIT_SPAN4 type=InitSpan4Words addr=0x4057f758 size=8
@@ -72,8 +72,8 @@ ImageReport v0
   PlacedStatic name=INIT_SPAN6 type=InitSpan6Words addr=0x4057f768 size=8
   PlacedStatic name=INIT_SPAN7 type=InitSpan7Words addr=0x4057f770 size=8
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=536
-  PlacedStatic name=MB0_CTL type=MbCtl addr=0x4057f7f8 size=24
-  PlacedStatic name=MB0_DATA type=Mb0Data addr=0x4057f7d8 size=8
+  PlacedStatic name=MB0_CTL type=MbCtl addr=0x40540648 size=24
+  PlacedStatic name=MB0_DATA type=Mb0Data addr=0x40540608 size=64
   PlacedStatic name=MB10_CTL type=MbCtl addr=0x4057fa78 size=24
   PlacedStatic name=MB10_DATA type=Mb10Data addr=0x4057fa58 size=8
   PlacedStatic name=MB11_CTL type=MbCtl addr=0x4057fab8 size=24
@@ -94,8 +94,8 @@ ImageReport v0
   PlacedStatic name=MB18_DATA type=Mb18Data addr=0x4057fc58 size=8
   PlacedStatic name=MB19_CTL type=MbCtl addr=0x4057fcb8 size=24
   PlacedStatic name=MB19_DATA type=Mb19Data addr=0x4057fc98 size=8
-  PlacedStatic name=MB1_CTL type=MbCtl addr=0x4057f838 size=24
-  PlacedStatic name=MB1_DATA type=Mb1Data addr=0x4057f818 size=8
+  PlacedStatic name=MB1_CTL type=MbCtl addr=0x40540688 size=24
+  PlacedStatic name=MB1_DATA type=Mb1Data addr=0x40540668 size=32
   PlacedStatic name=MB20_CTL type=MbCtl addr=0x4057fcf8 size=24
   PlacedStatic name=MB20_DATA type=Mb20Data addr=0x4057fcd8 size=8
   PlacedStatic name=MB21_CTL type=MbCtl addr=0x4057fd38 size=24
@@ -141,8 +141,8 @@ ImageReport v0
   PlacedStatic name=RELEASE type=ParkMmio addr=0x8003000 size=8
   PlacedStatic name=RINGS_CTL type=RingsCtl addr=0x4057ffe0 size=24
   PlacedStatic name=RINGS_DATA type=RingsData addr=0x4057fff8 size=8
-  PlacedStatic name=RT type=RuntimeTables addr=0x4057f6b8 size=128
-  PlacedStatic name=SCHED type=SchedStripe addr=0x40540080 size=16
+  PlacedStatic name=RT type=RuntimeTables addr=0x40540000 size=1536
+  PlacedStatic name=SCHED type=SchedStripe addr=0x405406a0 size=96
   PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000100 size=21
   PlacedStatic name=WAKE type=WakeTables addr=0x4057ffd8 size=8
   PlacedStatics count=81 fixed=CLOCK,CONSOLE_DATA,CONSOLE_RING,EXIT,GROUPS,MACHINE_INFO,MB0_CTL,MB0_DATA,MB10_CTL,MB10_DATA,MB11_CTL,MB11_DATA,MB12_CTL,MB12_DATA,MB13_CTL,MB13_DATA,MB14_CTL,MB14_DATA,MB15_CTL,MB15_DATA,MB16_CTL,MB16_DATA,MB17_CTL,MB17_DATA,MB18_CTL,MB18_DATA,MB19_CTL,MB19_DATA,MB1_CTL,MB1_DATA,MB20_CTL,MB20_DATA,MB21_CTL,MB21_DATA,MB22_CTL,MB22_DATA,MB23_CTL,MB23_DATA,MB24_CTL,MB24_DATA,MB25_CTL,MB25_DATA,MB26_CTL,MB26_DATA,MB27_CTL,MB27_DATA,MB28_CTL,MB28_DATA,MB29_CTL,MB29_DATA,MB2_CTL,MB2_DATA,MB30_CTL,MB30_DATA,MB31_CTL,MB31_DATA,MB3_CTL,MB3_DATA,MB4_CTL,MB4_DATA,MB5_CTL,MB5_DATA,MB6_CTL,MB6_DATA,MB7_CTL,MB7_DATA,MB8_CTL,MB8_DATA,MB9_CTL,MB9_DATA,PARK,PENDING,RELEASE,RINGS_CTL,RINGS_DATA,RT,SCHED,TEST_LINE_BUF,WAKE spans=2

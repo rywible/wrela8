@@ -388,6 +388,8 @@ mod tests {
     /// `sema/bodies.rs`, embedded at compile time. A missing or renamed
     /// file is a build failure, never an empty scan that passes.
     const BODIES_SRC: &str = include_str!("bodies.rs");
+    const TRANSPORT_SRC: &str = include_str!("transport.rs");
+    const ACTOR_SRC: &str = include_str!("actor.rs");
 
     /// The marker the census keys on (decision 60), assembled at runtime
     /// from two halves so that *this file's own code* never contains it
@@ -573,11 +575,15 @@ mod tests {
     /// being removed here.
     #[test]
     fn intrinsic_surface_equals_the_written_down_list() {
-        let sites = scan_key_sites("sema/bodies.rs", BODIES_SRC);
+        // Wave 7: sealed-transport / actor call checkers live in sibling
+        // files; the closed surface is the union of their key sites.
+        let mut sites = scan_key_sites("sema/bodies.rs", BODIES_SRC);
+        sites.extend(scan_key_sites("sema/transport.rs", TRANSPORT_SRC));
+        sites.extend(scan_key_sites("sema/actor.rs", ACTOR_SRC));
         assert!(
             sites.len() >= 30,
-            "the census scan found only {} key sites in bodies.rs — the marker no longer \
-             matches the source, so this test is proving nothing",
+            "the census scan found only {} key sites in bodies+transport+actor — the marker \
+             no longer matches the source, so this test is proving nothing",
             sites.len()
         );
         let mut literals = BTreeSet::new();
@@ -659,6 +665,41 @@ mod tests {
         // A `#[cfg(test)]` fixture asserting `wake` is ISR-legal. A test
         // fixture is not surface.
         ("wrela-compiler/src/eval/legal.rs", "wake"),
+        // Wave 7 artifact split: sealed-transport / actor call checkers.
+        ("wrela-compiler/src/sema/transport.rs", "Device.claim"),
+        ("wrela-compiler/src/sema/transport.rs", "Device.take_irq"),
+        ("wrela-compiler/src/sema/transport.rs", "Device.negotiate"),
+        ("wrela-compiler/src/sema/transport.rs", "Device.start"),
+        ("wrela-compiler/src/sema/transport.rs", "Device.reset"),
+        (
+            "wrela-compiler/src/sema/transport.rs",
+            "Device.read_capacity_sectors",
+        ),
+        (
+            "wrela-compiler/src/sema/transport.rs",
+            "Device.map_partition",
+        ),
+        ("wrela-compiler/src/sema/transport.rs", "VirtQueue.reserve"),
+        (
+            "wrela-compiler/src/sema/transport.rs",
+            "VirtQueue.prepare_block",
+        ),
+        ("wrela-compiler/src/sema/transport.rs", "VirtQueue.publish"),
+        ("wrela-compiler/src/sema/transport.rs", "VirtQueue.reject"),
+        ("wrela-compiler/src/sema/transport.rs", "VirtQueue.drain"),
+        ("wrela-compiler/src/sema/transport.rs", "VirtQueue.claim"),
+        ("wrela-compiler/src/sema/transport.rs", "VirtQueue.recover"),
+        ("wrela-compiler/src/sema/transport.rs", "VirtQueue.reclaim"),
+        (
+            "wrela-compiler/src/sema/transport.rs",
+            "VirtQueue.suppress_interrupts",
+        ),
+        (
+            "wrela-compiler/src/sema/transport.rs",
+            "VirtQueue.configure",
+        ),
+        ("wrela-compiler/src/sema/actor.rs", "Group.join_all"),
+        ("wrela-compiler/src/sema/actor.rs", "Group.start"),
     ];
 
     /// `sema/bodies.rs` is the sole producer of intrinsic nodes, which is

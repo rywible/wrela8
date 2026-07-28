@@ -1026,6 +1026,24 @@ impl Parser {
         }
     }
 
+    /// Receiver mode: missing → `None` (plain `self`); explicit `read` →
+    /// `Some(Read)`. Param/arg modes still use `parse_optional_mode`
+    /// (missing defaults to `Read`).
+    fn parse_receiver_mode(&mut self) -> Option<AccessMode> {
+        if self.at_keyword("read") {
+            self.bump();
+            Some(AccessMode::Read)
+        } else if self.at_keyword("mut") {
+            self.bump();
+            Some(AccessMode::Mut)
+        } else if self.at_keyword("take") {
+            self.bump();
+            Some(AccessMode::Take)
+        } else {
+            None
+        }
+    }
+
     /// `(params...)`, with the first parameter recognized as the receiver
     /// when it is a bare (possibly mode-prefixed) `self` (02-language.md
     /// §5.1).
@@ -1039,11 +1057,18 @@ impl Parser {
                 break;
             }
             let pspan = self.peek_span();
-            let mode = self.parse_optional_mode();
-            if first && self.at_keyword("self") {
-                self.bump();
+            if first
+                && (self.at_keyword("self")
+                    || ((self.at_keyword("read")
+                        || self.at_keyword("mut")
+                        || self.at_keyword("take"))
+                        && self.peek_is_keyword_at(1, "self")))
+            {
+                let mode = self.parse_receiver_mode();
+                self.expect_keyword("self")?;
                 receiver = Some(Receiver { span: pspan, mode });
             } else {
+                let mode = self.parse_optional_mode();
                 let (_, name) = self.expect_ident("a parameter name")?;
                 self.expect_op(":")?;
                 let ty = self.parse_type()?;
@@ -3305,14 +3330,14 @@ fn dump_generics(generics: &[GenericParam], depth: usize, strip: bool, out: &mut
 }
 
 fn dump_receiver(receiver: &Receiver, depth: usize, strip: bool, out: &mut String) {
+    let mode = match receiver.mode {
+        None => "plain",
+        Some(m) => m.as_str(),
+    };
     push_line(
         out,
         depth,
-        &format!(
-            "{} mode={}",
-            hdr(strip, "Receiver", receiver.span),
-            receiver.mode.as_str()
-        ),
+        &format!("{} mode={}", hdr(strip, "Receiver", receiver.span), mode),
     );
 }
 

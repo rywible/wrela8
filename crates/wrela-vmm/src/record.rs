@@ -598,9 +598,7 @@ impl Chooser {
 
     fn abort_if_strict_diverged(&self) -> Result<(), crate::VmmError> {
         if let Some(d) = self.fatal_divergence() {
-            return Err(crate::VmmError::GuestFault(format!(
-                "replay divergence: {d}"
-            )));
+            return Err(crate::VmmError::ReplayDivergence(d.to_string()));
         }
         Ok(())
     }
@@ -680,7 +678,7 @@ pub(crate) fn finish_chooser(
     let (log, divergences) = chooser.finish();
     if strict {
         if let Some(d) = divergences.first() {
-            return Err(crate::VmmError::GuestFault(format!("replay divergence: {d}")));
+            return Err(crate::VmmError::ReplayDivergence(d.to_string()));
         }
     }
     Ok((log, divergences))
@@ -835,7 +833,7 @@ impl RecordFile {
 /// live recording can never diverge from itself (`Chooser::recorder`
 /// never accumulates a `Divergence`), asserted defensively.
 pub fn record(report_path: &Path, img_path: &Path) -> Result<RecordFile, VmmError> {
-    let (outcome, divergences) = boot_image_core(report_path, img_path, None, None)?;
+    let (outcome, divergences) = boot_image_core(report_path, img_path, None)?;
     debug_assert!(
         divergences.is_empty(),
         "a live recording boot cannot diverge from itself: {divergences:?}"
@@ -858,7 +856,7 @@ pub fn replay(
     recorded: &RecordFile,
 ) -> Result<Vec<Divergence>, VmmError> {
     let (outcome, mut divergences) =
-        boot_image_core(report_path, img_path, Some(recorded.choices.clone()), None)?;
+        boot_image_core(report_path, img_path, Some(recorded.choices.clone()))?;
     let actual_digest = digest_hex(&outcome.transcript);
     if actual_digest != recorded.transcript_digest {
         divergences.push(Divergence::TranscriptDigestMismatch {
@@ -1079,10 +1077,7 @@ mod tests {
                 panic!("replay must never call `live`")
             })
             .expect_err("strict mode must abort");
-        assert!(
-            err.to_string().contains("replay divergence"),
-            "got {err}"
-        );
+        assert!(err.to_string().contains("replay divergence"), "got {err}");
     }
 
     #[test]

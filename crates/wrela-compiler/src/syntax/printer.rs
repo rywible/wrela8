@@ -180,6 +180,15 @@ fn mode_prefix(mode: AccessMode) -> &'static str {
     }
 }
 
+fn receiver_mode_prefix(mode: Option<AccessMode>) -> &'static str {
+    match mode {
+        None => "",
+        Some(AccessMode::Read) => "read ",
+        Some(AccessMode::Mut) => "mut ",
+        Some(AccessMode::Take) => "take ",
+    }
+}
+
 fn print_generics_suffix(generics: &[GenericParam], indent: usize, line: &mut String) {
     if generics.is_empty() {
         return;
@@ -460,7 +469,7 @@ fn print_fn_header_and_body(
     line.push('(');
     let mut parts = Vec::new();
     if let Some(r) = receiver {
-        parts.push(format!("{}self", mode_prefix(r.mode)));
+        parts.push(format!("{}self", receiver_mode_prefix(r.mode)));
     }
     for p in params {
         let mut s = format!(

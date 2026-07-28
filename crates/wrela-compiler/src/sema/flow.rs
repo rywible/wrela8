@@ -9,53 +9,26 @@
 //!
 //! Shape: this pass runs after `access` (mirroring/read-loans/receiver
 //! mutability already proven) and before `matches` (exhaustiveness not
-//! yet proven — see the note on `walk_match` below). It re-walks every
-//! body exactly like `bodies.rs`/`access.rs`/`matches.rs` do, reusing
-//! `bodies::ModuleCtx`/`StructInfo`/`FnCtx` and `access::EffectMap`/
-//! `resolve_receiver_mode` wholesale (the established `pub(crate)` reuse
-//! pattern — nothing in an earlier pass is restructured).
-//!
-//! CFG shape: rather than materializing an explicit graph, each
-//! statement-list walk (`walk_block`) is a direct structural
-//! interpreter over the (loop-free, structured) AST — `if`/`match`
-//! clone the incoming state once per arm and *meet* the arms' resulting
-//! states back together (a name is initialized after the join only when
-//! every non-diverging inbound edge initialized it — `return`/`break`/
-//! `continue` drop out of the merge, matching plans/M2.md item 2
-//! verbatim). `for`/`while` bodies are re-run (their own real,
-//! error-raising walk, not a silent shadow pass) from a candidate entry
-//! state that starts as the pre-loop state and is replaced, each
-//! iteration, by the *meet* of the pre-loop state's own back-edges (its
-//! own fallthrough plus every `continue`) — repeated until the candidate
-//! stops changing or a small fixed cap is hit (`LOOP_FIXED_POINT_CAP`,
-//! `MAX_GENERIC_DEPTH`'s sibling: dumb, fixed, no measurement). A `take`
-//! inside the loop body of something initialized before the loop and
-//! never restored is therefore caught on the *second* real pass (the
-//! first pass's own back-edge state already carries the un-restored
-//! `Moved` state into the second run, which then rejects the very same
-//! `take`/read that broke the invariant) rather than needing a separate
-//! non-erroring shadow interpreter.
+//! yet proven). It walks the **typed** tree (`walk_typed_*`); the
+//! historical AST walkers were deleted once `check` only ever saw
+//! `TypedProgram`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::sema::SemaError;
 use crate::sema::access::{self, EffectMap};
-use crate::sema::bodies::{self, FnCtx, ModuleCtx, StructInfo};
-use crate::sema::generics;
-use crate::sema::paths::{PathStep, StoragePath, const_index_value, render_path};
-use crate::sema::types::{self, Type};
-use crate::syntax::ast::{
-    self, AccessMode, Arg, AssignOp, AssignStmt, ClosureBody, ClosureExpr, DeferBody, DeferStmt,
-    Expr, ForStmt, IfStmt, Item, MatchStmt, Member, Module, Pattern, Span, Stmt, UnaryOp,
-    WhileStmt, WithStmt,
+use crate::sema::bodies::{self, FnCtx, ModuleCtx};
+use crate::sema::paths::{PathStep, StoragePath, render_path};
+use crate::sema::typed::{
+    CalleeKey, TypedCallArg, TypedClosureBody, TypedDeferBody, TypedExpr, TypedExprKind, TypedFn,
+    TypedForIter, TypedPattern, TypedPatternKind, TypedProgram, TypedStmt, TypedStmtKind,
+    TypedStruct,
 };
+use crate::sema::types::{self, Type};
+use crate::syntax::ast::{AccessMode, Span};
 
 /// Dumb, fixed cap on loop fixed-point iteration (mirrors
-/// `bodies::MAX_GENERIC_DEPTH`'s "no measurement, no configuration"
-/// shape) — every loop the M2 corpus expresses converges in 1-2 real
-/// passes; a program that somehow doesn't stabilize within this cap just
-/// gets checked against the last candidate reached, rather than looping
-/// forever.
+/// `MAX_GENERIC_DEPTH`'s sibling: dumb, fixed, no measurement).
 const LOOP_FIXED_POINT_CAP: usize = 4;
 
 // --- per-path initialization/move state ------------------------------------
@@ -72,73 +45,6 @@ enum PathState {
     Uninit,
     Init,
     Moved,
-}
-
-/// One `defer`'s registration stack, shared for the whole function/
-/// method/`init` body walk (deliverable: 02-language.md §10's "verifies
-/// the places it names are valid at every exit"): a true call stack —
-/// `walk_block` pushes each `Stmt::Defer` it meets onto this as it
-/// processes the block's own statements in order, and pops back to its
-/// own entry length before returning, so a nested block's own defers
-/// never leak past that block's own exit (the docs' "against the
-/// enclosing block"). `return`/`?` check against the *whole* stack (they
-/// exit the entire function); `break`/`continue` check only the slice
-/// registered since the nearest enclosing loop was entered (`loop_marker`
-/// below) — defers registered outside the loop stay pending for a later,
-/// real exit.
-type DStack<'a> = Vec<&'a DeferStmt>;
-
-/// Re-validates every currently active `defer` at one real exit — a
-/// block's own normal completion, a `return`, a `?`, or a `break`/
-/// `continue` crossing the enclosing loop (02-language.md §10: "its
-/// accesses activate when it *runs*, not when it is registered ... the
-/// compiler verifies the places it names are valid at every exit").
-/// `active` is already sliced to exactly the defers live at this exit,
-/// oldest-registered first (registration order); they run in *reverse*
-/// registration order at cleanup, so this walks them back-to-front,
-/// threading one running clone of `exit_state` through each one's own
-/// body-walk in turn — reusing the very same `walk_expr`/`walk_block`
-/// machinery that checks an ordinary statement, exactly like the
-/// snapshot this replaces used to at registration time only. Threading
-/// (rather than re-cloning `exit_state` for each) means a later-
-/// registered/earlier-run defer's own effects (a `take`, say) are visible
-/// to whichever earlier-registered defer is checked next
-/// (`err-defer-taken-by-defer`). Never mutates the real, still-
-/// propagating state passed by the caller — the deferred action doesn't
-/// actually run here, only its accesses are validated against a
-/// hypothetical replay of cleanup order.
-fn check_active_defers<'a>(
-    active: &[&'a DeferStmt],
-    exit_desc: &str,
-    exit_state: &StateMap,
-    fctx: &mut FnCtx,
-    wctx: &WCtx,
-) -> Result<(), SemaError> {
-    let mut cur = exit_state.clone();
-    for d in active.iter().rev() {
-        let mut scratch: DStack<'a> = Vec::new();
-        let result = match &d.body {
-            DeferBody::Expr(e) => walk_expr(e, &mut cur, fctx, wctx, &mut scratch, 0),
-            DeferBody::Suite(stmts) => {
-                walk_block(stmts, &mut cur, fctx, wctx, &mut scratch, 0).map(|_| ())
-            }
-        };
-        result.map_err(|mut err| {
-            // No raw `line:col` text here (unlike the primary message):
-            // `sema.check.roundtrip-stable`'s oracle compares diagnostics
-            // with spans erased (reformatting shifts every span), and
-            // this extra line isn't one of the ` at <path>:<line>` tails
-            // that oracle already knows to strip (sema/generics.rs's
-            // chain format) — embedding a bare `L:C` here would make an
-            // otherwise identical diagnostic disagree after a pretty/
-            // reparse round trip.
-            err.extra_lines.push(format!(
-                "  this `defer` must be valid at every exit, including {exit_desc}"
-            ));
-            err
-        })?;
-    }
-    Ok(())
 }
 
 /// The state map a walk threads through one function/method/init body:
@@ -210,195 +116,6 @@ fn meet_all(maps: Vec<StateMap>) -> StateMap {
     acc
 }
 
-/// Records `new_state` at exactly `path`, dropping every stale
-/// descendant entry (a fresh assignment/take of `path` supersedes
-/// whatever was separately tracked about its own fields/indices).
-fn set_state(path: &StoragePath, state: &mut StateMap, new_state: PathState) {
-    let stale: Vec<StoragePath> = state
-        .keys()
-        .filter(|k| *k != path && k.starts_with(path))
-        .cloned()
-        .collect();
-    for k in stale {
-        state.remove(&k);
-    }
-    state.insert(path.clone(), new_state);
-}
-
-// --- storage paths from place expressions ----------------------------------
-
-/// Reads `expr` as a storage path (paths.rs) if it is one (a name, or a
-/// field/single-index chain rooted at one) — `None` for anything else (a
-/// call, a literal, a binary expression, a parenthesized-away take
-/// wrapper never reaching here, ...). Mirrors `access.rs`'s own
-/// `is_full_place`, restated to build the path rather than a bool.
-///
-/// A root name only counts as a storage path when it is a *tracked*
-/// local (a parameter, `self`, or an ordinary assigned/pattern-bound
-/// local) — `fctx` decides that. Every other bare name (a builtin
-/// prelude constructor like `None`/`Some`/`Ok`/`Err`/`panic`, a
-/// module-level fn/const referenced as a value, a struct/enum type name)
-/// is not a storage location at all, so it is never `Uninit`/`Moved` and
-/// never needs a "readable" check — treated as a fresh value instead,
-/// exactly like a call result or a literal.
-fn as_path(expr: &Expr, fctx: &FnCtx, mctx: &ModuleCtx) -> Option<StoragePath> {
-    match expr {
-        Expr::Name(_, name) => {
-            if fctx.lookup_local(name).is_some() {
-                Some(StoragePath::root(name.clone()))
-            } else {
-                None
-            }
-        }
-        Expr::Field(base, _, name) => {
-            let base_path = as_path(base, fctx, mctx)?;
-            // plans/M7.md item G: `self.on_queue_irq` (03-hardware.md §6)
-            // is a method reference for `IrqCap.bind`, not a field place.
-            // A method has no storage path; treating it as `self.<field>`
-            // would falsely report "not initialized".
-            if is_method_reference(expr, fctx, mctx) {
-                return None;
-            }
-            Some(base_path.field(name.clone()))
-        }
-        Expr::Index(base, _, args) => {
-            if args.len() != 1 {
-                return None;
-            }
-            let step = match const_index_value(&args[0]) {
-                Some(v) => PathStep::Index(v),
-                None => PathStep::RuntimeIndex,
-            };
-            Some(as_path(base, fctx, mctx)?.index(step))
-        }
-        _ => None,
-    }
-}
-
-/// `self.method` / `value.method` naming a declared method or assoc fn —
-/// not a data field. Used so `IrqCap.bind(self.on_queue_irq)` is not
-/// treated as reading an uninitialized field of `self`.
-fn is_method_reference(expr: &Expr, fctx: &FnCtx, mctx: &ModuleCtx) -> bool {
-    let Expr::Field(base, _, name) = expr else {
-        return false;
-    };
-    let Some(base_ty) = place_type(base, fctx, mctx) else {
-        // `BlkDriver.on_queue_irq` — base is a type name, not a place.
-        if let Expr::Name(_, bname) = base.as_ref() {
-            if fctx.lookup_local(bname).is_none() {
-                if let Some(s) = mctx.structs.get(bname.as_str()) {
-                    return s.method(name).is_some() || s.assoc_fn(name).is_some();
-                }
-                if let Some(e) = mctx.enums.get(bname.as_str()) {
-                    return e.method(name).is_some() || e.assoc_fn(name).is_some();
-                }
-            }
-        }
-        return false;
-    };
-    let base_ty = bodies::unwrap_own(base_ty);
-    let Type::Named(sname, targs) = &base_ty else {
-        return false;
-    };
-    // plans/M7.md item G, decision 18: an ISR gated by
-    // `comptime if MODE == DriverMode.Irq` exists only on the expanded
-    // instantiation, not on the unsubstituted template in `mctx.structs`.
-    if targs.is_empty() {
-        if let Some(s) = mctx.structs.get(sname.as_str()) {
-            return s.field_ty(name).is_none()
-                && (s.method(name).is_some() || s.assoc_fn(name).is_some());
-        }
-        if let Some(e) = mctx.enums.get(sname.as_str()) {
-            return e.method(name).is_some() || e.assoc_fn(name).is_some();
-        }
-        return false;
-    }
-    let Ok(s) = generics::instantiate_struct(mctx, sname, targs, Span::default()) else {
-        return false;
-    };
-    s.field_ty(name).is_none() && (s.method(name).is_some() || s.assoc_fn(name).is_some())
-}
-
-/// Walks the nested sub-expressions of a place chain that themselves
-/// need checking (an index argument's own expression — `arr[compute()]`
-/// — everything else in a place chain is just names/field labels with
-/// nothing further to walk).
-fn walk_place_subexprs<'a>(
-    expr: &'a Expr,
-    state: &mut StateMap,
-    fctx: &mut FnCtx,
-    wctx: &WCtx,
-    dstack: &mut DStack<'a>,
-    loop_marker: usize,
-) -> Result<(), SemaError> {
-    match expr {
-        Expr::Field(base, _, _) => {
-            walk_place_subexprs(base, state, fctx, wctx, dstack, loop_marker)
-        }
-        Expr::Index(base, _, args) => {
-            walk_place_subexprs(base, state, fctx, wctx, dstack, loop_marker)?;
-            for a in args {
-                walk_expr(a, state, fctx, wctx, dstack, loop_marker)?;
-            }
-            Ok(())
-        }
-        _ => Ok(()),
-    }
-}
-
-/// A lightweight, best-effort place typing (mirrors `access.rs`'s own
-/// `name_ty`/`check_field`: this pass does not re-derive full inference,
-/// only enough to answer "is this place a resource" for the implicit-copy
-/// check). `own[P] T` unwraps to `T` (calling through a pool handle
-/// derives access to the payload, 02-language.md §4).
-fn place_type(expr: &Expr, fctx: &FnCtx, mctx: &ModuleCtx) -> Option<Type> {
-    match expr {
-        Expr::Name(_, name) => fctx
-            .lookup_local(name)
-            .or_else(|| mctx.consts.get(name).cloned()),
-        Expr::Field(base, _, name) => {
-            let base_ty = bodies::unwrap_own(place_type(base, fctx, mctx)?);
-            if let Type::Named(sname, targs) = &base_ty {
-                let s = mctx.structs.get(sname)?;
-                let field_ty = s.field_ty(name)?;
-                if targs.is_empty() {
-                    return Some(field_ty);
-                }
-                // A field accessed through an instantiated generic
-                // struct (`Box[DmaBlock].item`): the struct table only
-                // ever holds the *unsubstituted* declaration, so the
-                // field's own type must be substituted here using this
-                // use site's concrete type arguments — otherwise a
-                // resource classification hiding behind a generic field
-                // (the implicit-copy and overwrite-live checks below,
-                // both keyed on `place_type`) would silently see `None`
-                // and never fire (crate::sema::generics's own
-                // `subst_field_type`, widened `pub(crate)` for exactly
-                // this reuse, decision 10).
-                return Some(crate::sema::generics::subst_field_type(
-                    &field_ty,
-                    &s.decl.generics,
-                    targs,
-                ));
-            }
-            None
-        }
-        Expr::Index(base, _, args) => {
-            if args.len() != 1 {
-                return None;
-            }
-            match bodies::unwrap_own(place_type(base, fctx, mctx)?) {
-                Type::Array(elem, _) => Some(*elem),
-                Type::Bytes(_) => Some(Type::U8),
-                _ => None,
-            }
-        }
-        _ => None,
-    }
-}
-
-// --- diagnostics ------------------------------------------------------------
-
 fn init_error(message: String, span: Span) -> SemaError {
     SemaError::at("init", message, span)
 }
@@ -411,191 +128,16 @@ fn overlap_error(message: String, span: Span) -> SemaError {
     SemaError::at("overlap", message, span)
 }
 
-// --- the per-operand checks: readable / takeable / storing / overwrite ----
-
-/// The state to use when *using* `path`: for an exact root that is a
-/// known parameter/`self` (a "whole value use", 02-language.md §3.2/
-/// §7.1), any not-fully-restored descendant counts against it (a field
-/// left `Moved`/`Uninit` makes the *whole* value unusable); otherwise the
-/// path's own ancestor-resolved state.
-fn whole_or_state(path: &StoragePath, state: &StateMap, wctx: &WCtx) -> PathState {
-    if path.is_root() && wctx.modes.get(&path.root) == Some(&AccessMode::Mut) {
-        first_bad_under(path, state)
-            .map(|(_, s)| s)
-            .unwrap_or(PathState::Init)
-    } else {
-        state_of(path, state)
+fn set_state(path: &StoragePath, state: &mut StateMap, new_state: PathState) {
+    let stale: Vec<StoragePath> = state
+        .keys()
+        .filter(|k| *k != path && k.starts_with(path))
+        .cloned()
+        .collect();
+    for k in stale {
+        state.remove(&k);
     }
-}
-
-fn check_readable(
-    path: &StoragePath,
-    state: &StateMap,
-    wctx: &WCtx,
-    span: Span,
-) -> Result<(), SemaError> {
-    match whole_or_state(path, state, wctx) {
-        PathState::Uninit => Err(init_error(
-            format!("`{}` is not initialized here", render_path(path)),
-            span,
-        )),
-        PathState::Moved => Err(move_error(
-            format!("`{}` was already taken", render_path(path)),
-            span,
-        )),
-        PathState::Init => Ok(()),
-    }
-}
-
-/// `take place` (deliverable 3): the place must currently hold a value
-/// (never-initialized -> `error[init]`, already-taken -> `error[move]`),
-/// moving out of an array through a runtime index is always forbidden
-/// (02-language.md §3.2), and a whole-root take is only legal when the
-/// root is owned by this function (an ordinary local, or a `take`-mode
-/// parameter/`self`) — taking a *borrowed* (`mut`-mode) root whole would
-/// move a value this function does not own (access.rs's own doc comment
-/// on `Mut`/`Take`: "moving a borrowed value is item E/F's job").
-///
-/// A `read`-mode root is rejected here too, for *any* take under it (not
-/// only a whole-root one): `access.rs`'s own `Expr::Unary(Take, ...)`
-/// check already rejects an ordinary `take place`/`take place.field`
-/// expression against a `read` root earlier in the frozen pass order, but
-/// a `take` written inside a `match`/`is` *pattern* payload never passes
-/// through that expression-level check at all (`Pattern::Take` is a
-/// different AST node, walked by `access.rs`'s `bind_pattern_locals`,
-/// which only binds names — it never re-derives the scrutinee's root
-/// mode) — so this pass is the only one that ever sees it. Checked on
-/// every path depth (not gated behind `path.is_root()` the way the
-/// `mut`-root case below is) to mirror `access.rs`'s own field-inclusive
-/// `place_root_name` reach.
-fn check_takeable(
-    path: &StoragePath,
-    state: &StateMap,
-    wctx: &WCtx,
-    span: Span,
-) -> Result<(), SemaError> {
-    match whole_or_state(path, state, wctx) {
-        PathState::Uninit => {
-            return Err(init_error(
-                format!("`{}` is not initialized here", render_path(path)),
-                span,
-            ));
-        }
-        PathState::Moved => {
-            return Err(move_error(
-                format!("`{}` was already taken", render_path(path)),
-                span,
-            ));
-        }
-        PathState::Init => {}
-    }
-    if path
-        .steps
-        .iter()
-        .any(|s| matches!(s, PathStep::RuntimeIndex))
-    {
-        return Err(move_error(
-            format!(
-                "moving `{}` out of an array through a runtime index is forbidden",
-                render_path(path)
-            ),
-            span,
-        ));
-    }
-    if let Some(AccessMode::Read) = wctx.modes.get(&path.root) {
-        return Err(move_error(
-            format!("`{}` is a `read` parameter; it cannot be taken", path.root),
-            span,
-        ));
-    }
-    if path.is_root() {
-        if let Some(AccessMode::Mut) = wctx.modes.get(&path.root) {
-            return Err(move_error(
-                format!(
-                    "`{}` is a `mut` place; taking it whole would move a value this function only borrows",
-                    path.root
-                ),
-                span,
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// Exclusivity (deliverable 4, 02-language.md §8.2): once an earlier
-/// operand in this call's receiver-then-argument evaluation order
-/// activated `mut`/`take` on a path, no later operand may touch
-/// overlapping storage — two overlapping `mut`s, `mut` then a later
-/// read, `mut`/`take` mixes, all reduce to the same overlap check on
-/// storage paths.
-fn check_no_overlap(
-    path: &StoragePath,
-    activated: &[StoragePath],
-    span: Span,
-) -> Result<(), SemaError> {
-    for a in activated {
-        if a.overlaps(path) {
-            return Err(overlap_error(
-                format!(
-                    "`{}` overlaps `{}`, still exclusively active earlier in this call",
-                    render_path(path),
-                    render_path(a)
-                ),
-                span,
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// Overwriting a live resource is always an error (02-language.md §3.1:
-/// "move it or finish it first"); overwriting live data is fine (checked
-/// only when `ty` classifies as a resource).
-fn check_overwrite_live(
-    path: &StoragePath,
-    ty: Option<&Type>,
-    state: &StateMap,
-    wctx: &WCtx,
-    span: Span,
-) -> Result<(), SemaError> {
-    if let Some(t) = ty {
-        if bodies::is_resource_type(t, wctx.mctx) && state_of(path, state) == PathState::Init {
-            return Err(move_error(
-                format!(
-                    "`{}` still holds a live resource; move it or finish it before overwriting",
-                    render_path(path)
-                ),
-                span,
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// The implicit-copy check (decision 9/deliverable 3): any binding/
-/// storing use of a resource *place* without `take` is an error — an
-/// assignment source, a literal/constructor operand (a struct/enum
-/// field, a tuple/array/list element), all reduce to "is this bare
-/// expression a place, and is its type a resource". A fresh value (a
-/// call result, a literal/constructor) is never a place, so it always
-/// passes; a `take`-wrapped operand never reaches this check at all (it
-/// is handled as a real move instead, never as a bare value).
-fn check_storing_value(value: &Expr, fctx: &FnCtx, wctx: &WCtx) -> Result<(), SemaError> {
-    let Some(path) = as_path(value, fctx, wctx.mctx) else {
-        return Ok(());
-    };
-    if let Some(ty) = place_type(value, fctx, wctx.mctx) {
-        if bodies::is_resource_type(&ty, wctx.mctx) {
-            return Err(move_error(
-                format!(
-                    "`{}` is a resource; use `take` to move it here (an implicit copy is not allowed)",
-                    render_path(&path)
-                ),
-                value.span(),
-            ));
-        }
-    }
-    Ok(())
+    state.insert(path.clone(), new_state);
 }
 
 /// The field-take-and-restore / definite-init-of-`init`'s-own-fields
@@ -765,717 +307,6 @@ fn check_protocol_consumption(
     Ok(())
 }
 
-/// One operand's full processing (a call's receiver or argument, but
-/// also reused — with a throwaway `activated` list and `mode: Read` — for
-/// any other "bare value in a storing/reading position" spot, since the
-/// place/non-place dispatch and the storing-check are exactly the same
-/// question there). `synthetic` marks a "no declared parameter mode"
-/// position (a struct-literal/enum-variant/pseudo-constructor field) —
-/// the implicit-copy check only ever applies there; a real declared
-/// parameter's `Read`/`Mut` mode is a loan, never a copy.
-fn process_operand<'a>(
-    expr: &'a Expr,
-    mode: AccessMode,
-    activated: &mut Vec<StoragePath>,
-    state: &mut StateMap,
-    fctx: &mut FnCtx,
-    wctx: &WCtx,
-    synthetic: bool,
-    span: Span,
-    dstack: &mut DStack<'a>,
-    loop_marker: usize,
-) -> Result<(), SemaError> {
-    let Some(path) = as_path(expr, fctx, wctx.mctx) else {
-        return walk_expr(expr, state, fctx, wctx, dstack, loop_marker);
-    };
-    walk_place_subexprs(expr, state, fctx, wctx, dstack, loop_marker)?;
-    match mode {
-        AccessMode::Take => {
-            check_no_overlap(&path, activated, span)?;
-            check_takeable(&path, state, wctx, span)?;
-            set_state(&path, state, PathState::Moved);
-            activated.push(path);
-        }
-        AccessMode::Read | AccessMode::Mut => {
-            check_readable(&path, state, wctx, span)?;
-            check_no_overlap(&path, activated, span)?;
-            if synthetic && mode == AccessMode::Read {
-                check_storing_value(expr, fctx, wctx)?;
-            }
-            if mode == AccessMode::Mut {
-                activated.push(path);
-            }
-        }
-    }
-    Ok(())
-}
-
-/// The same per-operand processing used at a call's argument list, for a
-/// single bare (non-`Arg`) expression in a storing position — an
-/// assignment source or a `return` expression. A throwaway `activated`
-/// list is correct: exclusivity is scoped to call-expression argument
-/// lists/receivers only (deliverable 4's "keep it to the documented
-/// rule").
-fn walk_storing_expr<'a>(
-    value: &'a Expr,
-    state: &mut StateMap,
-    fctx: &mut FnCtx,
-    wctx: &WCtx,
-    dstack: &mut DStack<'a>,
-    loop_marker: usize,
-) -> Result<(), SemaError> {
-    let mut activated = Vec::new();
-    process_operand(
-        value,
-        AccessMode::Read,
-        &mut activated,
-        state,
-        fctx,
-        wctx,
-        true,
-        value.span(),
-        dstack,
-        loop_marker,
-    )
-}
-
-// --- pattern payload moves (decision 9's "pattern payload", §7.2) ---------
-
-/// Whether `p` requests a `take` anywhere in its shape. A `match`/`is`
-/// pattern never moves a payload implicitly; writing `take` anywhere in
-/// it does. Since a payload is not addressable by its own storage path
-/// (an enum variant's payload has no field name; a tuple/array pattern's
-/// element paths are not tracked at this granularity either), any `take`
-/// found anywhere in the pattern moves the *whole* scrutinee place — for
-/// an enum this is exact (a sum type has exactly one active payload, so
-/// taking any of it invalidates the whole value, not merely an approximation
-/// of it); for a tuple/array pattern this is a conservative, sound
-/// over-approximation (flagged in the session report) rather than
-/// per-element precision.
-fn pattern_has_take(p: &Pattern) -> bool {
-    match p {
-        Pattern::Take(..) => true,
-        Pattern::Wildcard(_) | Pattern::Literal(..) | Pattern::Binding(..) => false,
-        Pattern::Variant { payload, .. } => payload.iter().any(pattern_has_take),
-        Pattern::Tuple(_, items) | Pattern::Array(_, items) | Pattern::Or(_, items) => {
-            items.iter().any(pattern_has_take)
-        }
-    }
-}
-
-/// Applies a pattern's move effect (if any) to `scrutinee`'s own storage
-/// path, if it has one (a fresh scrutinee — a call result — has nothing
-/// to move from).
-///
-/// Two reasons to move the whole place:
-/// 1. `take` appears anywhere in the pattern (existing rule).
-/// 2. plans/M7.md item I: the scrutinee *carries* a protocol resource
-///    but is not itself one by name (`Option[Receipt]`, `CapBundle`, …).
-///    Destructuring is how the inner value becomes reachable to consume;
-///    leaving the wrapper `Init` after the match would launder the drop
-///    check (`golden/boot-blk-roundtrip`'s `match slot` over
-///    `Option[Receipt]`). A bare `DeviceCap` / `Receipt` is *not* moved
-///    by a take-free match — that would invent a consume that skipped
-///    claim/publish.
-fn apply_pattern_move(
-    scrutinee: &Expr,
-    pattern: &Pattern,
-    state: &mut StateMap,
-    fctx: &FnCtx,
-    wctx: &WCtx,
-    span: Span,
-    scrutinee_ty: &Type,
-) -> Result<(), SemaError> {
-    let root_must_consume = matches!(
-        scrutinee_ty,
-        Type::Named(n, _) if crate::sema::classes::name_must_consume(n, false)
-    );
-    let move_protocol_wrapper =
-        protocol_resource_carried(scrutinee_ty, wctx.mctx).is_some() && !root_must_consume;
-    if !pattern_has_take(pattern) && !move_protocol_wrapper {
-        return Ok(());
-    }
-    let Some(path) = as_path(scrutinee, fctx, wctx.mctx) else {
-        return Ok(());
-    };
-    check_takeable(&path, state, wctx, span)?;
-    set_state(&path, state, PathState::Moved);
-    Ok(())
-}
-
-/// Every name a pattern binds is a fresh local for the duration of the
-/// arm/success branch (`bodies::check_pattern` — reused verbatim,
-/// exactly like `matches.rs` does — already gave each one its type in
-/// `fctx`; this only needs to mark each one `Init` in the flow state,
-/// since a pattern never leaves a binding partially formed).
-fn seed_pattern_bindings(p: &Pattern, state: &mut StateMap) {
-    match p {
-        Pattern::Wildcard(_) | Pattern::Literal(..) => {}
-        Pattern::Binding(_, name) => {
-            state.insert(StoragePath::root(name.clone()), PathState::Init);
-        }
-        Pattern::Take(_, inner) => seed_pattern_bindings(inner, state),
-        Pattern::Variant { payload, .. } => {
-            for p in payload {
-                seed_pattern_bindings(p, state);
-            }
-        }
-        Pattern::Tuple(_, items) | Pattern::Array(_, items) | Pattern::Or(_, items) => {
-            for p in items {
-                seed_pattern_bindings(p, state);
-            }
-        }
-    }
-}
-
-// --- the general expression walk -------------------------------------------
-
-fn walk_expr<'a>(
-    expr: &'a Expr,
-    state: &mut StateMap,
-    fctx: &mut FnCtx,
-    wctx: &WCtx,
-    dstack: &mut DStack<'a>,
-    loop_marker: usize,
-) -> Result<(), SemaError> {
-    match expr {
-        Expr::Int(..)
-        | Expr::Float(..)
-        | Expr::Str(..)
-        | Expr::BStr(..)
-        | Expr::Char(..)
-        | Expr::Bool(..)
-        | Expr::Unit(_) => Ok(()),
-        // plans/M9.md item D: desugar is an owned temporary, so it cannot
-        // share the defer-stack's AST lifetime. Walk moves/reads on that
-        // tree through a lifetime-decoupled helper (f-string desugar has
-        // no `defer` of its own).
-        Expr::FStr(f) => {
-            let desugared = crate::sema::fstring::desugar_fstring(f)?;
-            walk_ephemeral_expr(&desugared, state, fctx, wctx)
-        }
-        Expr::Name(span, name) => {
-            if fctx.lookup_local(name).is_some() {
-                check_readable(&StoragePath::root(name.clone()), state, wctx, *span)
-            } else {
-                Ok(()) // a module fn/const, struct/enum type name, or a builtin
-                // prelude constructor (`None`/`Some`/`Ok`/`Err`/`panic`) — never a
-                // storage location, so never `Uninit`/`Moved`.
-            }
-        }
-        Expr::Field(base, _, _) => match as_path(expr, fctx, wctx.mctx) {
-            Some(path) => {
-                walk_place_subexprs(expr, state, fctx, wctx, dstack, loop_marker)?;
-                check_readable(&path, state, wctx, expr.span())
-            }
-            None if is_method_reference(expr, fctx, wctx.mctx) => {
-                // plans/M7.md item G: `self.on_queue_irq` names a method,
-                // not a place — do not demand `self` be fully initialized
-                // the way a whole-value field read would.
-                Ok(())
-            }
-            None => walk_expr(base, state, fctx, wctx, dstack, loop_marker),
-        },
-        Expr::Index(base, ispan, args) => match as_path(expr, fctx, wctx.mctx) {
-            Some(path) => {
-                walk_place_subexprs(expr, state, fctx, wctx, dstack, loop_marker)?;
-                check_readable(&path, state, wctx, *ispan)
-            }
-            None => {
-                walk_expr(base, state, fctx, wctx, dstack, loop_marker)?;
-                for a in args {
-                    walk_expr(a, state, fctx, wctx, dstack, loop_marker)?;
-                }
-                Ok(())
-            }
-        },
-        Expr::Call(callee, span, args) => {
-            walk_call(callee, *span, args, state, fctx, wctx, dstack, loop_marker)
-        }
-        Expr::Unary(span, UnaryOp::Take, inner) => {
-            let Some(path) = as_path(inner, fctx, wctx.mctx) else {
-                // access.rs already requires `take`'s operand to be a
-                // full place; unreachable for a module that reached
-                // flow, but fail closed rather than panic if it somehow
-                // isn't.
-                return Err(move_error(
-                    "`take` requires a place expression".to_string(),
-                    *span,
-                ));
-            };
-            walk_place_subexprs(inner, state, fctx, wctx, dstack, loop_marker)?;
-            check_takeable(&path, state, wctx, *span)?;
-            set_state(&path, state, PathState::Moved);
-            // plans/M13.md item O/P: taking a field out of a
-            // `resource(manual)` consumes the wrapper — the Validated
-            // idiom's `into_value(take self) -> T` via `take self.value`.
-            // Prelude sealed leaves have no source-visible fields, so
-            // this arm is unreachable for them.
-            if !path.steps.is_empty() {
-                if let Some(Type::Named(n, _)) = fctx.lookup_local(&path.root) {
-                    if wctx
-                        .mctx
-                        .structs
-                        .get(n.as_str())
-                        .is_some_and(|s| s.decl.is_manual_resource)
-                    {
-                        set_state(
-                            &StoragePath {
-                                root: path.root.clone(),
-                                steps: Vec::new(),
-                            },
-                            state,
-                            PathState::Moved,
-                        );
-                    }
-                }
-            }
-            Ok(())
-        }
-        // plans/M7.md item E4 / 03-hardware.md §5: `completion = await
-        // receipt` consumes the `Receipt[P]`. Without this, a local
-        // receipt looks live after the await and fails protocol-
-        // consumption as an illegal drop. Actor-call awaits
-        // (`await handle.m(...)`) are not places — fall through.
-        Expr::Unary(span, UnaryOp::Await, inner) => {
-            if let Some(path) = as_path(inner, fctx, wctx.mctx) {
-                if let Some(ty) = place_type(inner, fctx, wctx.mctx) {
-                    // Bare protocol-consuming leaf only — wrappers do not await.
-                    if matches!(
-                        &ty,
-                        Type::Named(n, _) if crate::sema::classes::name_must_consume(n, false)
-                    ) {
-                        walk_place_subexprs(inner, state, fctx, wctx, dstack, loop_marker)?;
-                        check_takeable(&path, state, wctx, *span)?;
-                        set_state(&path, state, PathState::Moved);
-                        return Ok(());
-                    }
-                }
-            }
-            walk_expr(inner, state, fctx, wctx, dstack, loop_marker)
-        }
-        Expr::Unary(_, _, inner) => walk_expr(inner, state, fctx, wctx, dstack, loop_marker),
-        Expr::Try(_, inner) => {
-            // `?` returns from the enclosing function on `Err` (02-
-            // language.md §8.2/§10): the same real, unforked `state`
-            // this pass already uses for both continuations (see the
-            // module doc comment on `?`'s own move semantics) means every
-            // currently active defer — the *whole* stack, not sliced by
-            // `loop_marker`, since `?` exits the function, not merely a
-            // loop — must be re-validated here, exactly like a `return`.
-            walk_expr(inner, state, fctx, wctx, dstack, loop_marker)?;
-            check_active_defers(dstack, "a `?` exit", state, fctx, wctx)
-        }
-        Expr::Binary(_, _, l, r) => {
-            walk_expr(l, state, fctx, wctx, dstack, loop_marker)?;
-            walk_expr(r, state, fctx, wctx, dstack, loop_marker)
-        }
-        Expr::Range(_, a, b, _) => {
-            walk_expr(a, state, fctx, wctx, dstack, loop_marker)?;
-            walk_expr(b, state, fctx, wctx, dstack, loop_marker)
-        }
-        Expr::Is(_, scrutinee, pattern) => {
-            walk_expr(scrutinee, state, fctx, wctx, dstack, loop_marker)?;
-            let sty = bodies::check_expr(scrutinee, None, fctx, wctx.mctx)?.ty;
-            apply_pattern_move(
-                scrutinee,
-                pattern,
-                state,
-                fctx,
-                wctx,
-                scrutinee.span(),
-                &sty,
-            )?;
-            bodies::check_pattern(pattern, &sty, fctx, wctx.mctx)?;
-            seed_pattern_bindings(pattern, state);
-            Ok(())
-        }
-        Expr::Not(_, inner) => walk_expr(inner, state, fctx, wctx, dstack, loop_marker),
-        Expr::And(_, l, r) | Expr::Or(_, l, r) => {
-            walk_expr(l, state, fctx, wctx, dstack, loop_marker)?;
-            walk_expr(r, state, fctx, wctx, dstack, loop_marker)
-        }
-        Expr::DotVariant(_, _, args) => {
-            let mut activated = Vec::new();
-            for a in args {
-                process_operand(
-                    &a.value,
-                    a.mode,
-                    &mut activated,
-                    state,
-                    fctx,
-                    wctx,
-                    true,
-                    a.span,
-                    dstack,
-                    loop_marker,
-                )?;
-            }
-            Ok(())
-        }
-        Expr::Closure(c) => walk_closure(c, state, fctx, wctx, dstack, loop_marker),
-        // Plans/M6.md item A: `send`'s expression form (`match send x.y(...):`)
-        // now type-checks (bodies.rs lifted the fail-closed) — its
-        // operand is always a call (the ast's own doc comment), walked
-        // exactly like an ordinary `Unary`'s inner expression above.
-        Expr::Send(_, inner) => walk_expr(inner, state, fctx, wctx, dstack, loop_marker),
-        Expr::Tuple(_, items) | Expr::List(_, items) => {
-            let mut activated = Vec::new();
-            for i in items {
-                process_operand(
-                    i,
-                    AccessMode::Read,
-                    &mut activated,
-                    state,
-                    fctx,
-                    wctx,
-                    true,
-                    i.span(),
-                    dstack,
-                    loop_marker,
-                )?;
-            }
-            Ok(())
-        }
-        Expr::ArrayRepeat(_, elem, count) => {
-            walk_expr(elem, state, fctx, wctx, dstack, loop_marker)?;
-            walk_expr(count, state, fctx, wctx, dstack, loop_marker)
-        }
-    }
-}
-
-fn walk_closure<'a>(
-    c: &'a ClosureExpr,
-    state: &mut StateMap,
-    fctx: &mut FnCtx,
-    wctx: &WCtx,
-    dstack: &mut DStack<'a>,
-    loop_marker: usize,
-) -> Result<(), SemaError> {
-    fctx.push_scope();
-    for p in &c.params {
-        if let Some(t) = &p.ty {
-            let ty = wctx.mctx.resolve_type(t, &fctx.local_pools)?;
-            fctx.insert_local(p.name.clone(), ty);
-        }
-        state.insert(StoragePath::root(p.name.clone()), PathState::Init);
-    }
-    match &c.body {
-        ClosureBody::Expr(e) => walk_expr(e, state, fctx, wctx, dstack, loop_marker)?,
-        ClosureBody::Suite(stmts) => {
-            walk_block(stmts, state, fctx, wctx, dstack, loop_marker)?;
-        }
-    }
-    fctx.pop_scope();
-    Ok(())
-}
-
-/// Flow walk over an owned/temporary expression tree (f-string desugar)
-/// that cannot borrow into `DStack`'s AST lifetime. Covers the shapes
-/// desugar produces (`Str` / `.format()` call / `+`) plus ordinary
-/// interpolation operands (`Name` / field / take / call / binary).
-fn walk_ephemeral_expr(
-    expr: &Expr,
-    state: &mut StateMap,
-    fctx: &mut FnCtx,
-    wctx: &WCtx,
-) -> Result<(), SemaError> {
-    match expr {
-        Expr::Int(..)
-        | Expr::Float(..)
-        | Expr::Str(..)
-        | Expr::BStr(..)
-        | Expr::Char(..)
-        | Expr::Bool(..)
-        | Expr::Unit(_) => Ok(()),
-        Expr::Name(span, name) => {
-            if fctx.lookup_local(name).is_some() {
-                check_readable(&StoragePath::root(name.clone()), state, wctx, *span)
-            } else {
-                Ok(())
-            }
-        }
-        Expr::Field(base, _, _) => walk_ephemeral_expr(base, state, fctx, wctx),
-        Expr::Index(base, _, args) => {
-            walk_ephemeral_expr(base, state, fctx, wctx)?;
-            for a in args {
-                walk_ephemeral_expr(a, state, fctx, wctx)?;
-            }
-            Ok(())
-        }
-        Expr::Call(callee, _, args) => {
-            walk_ephemeral_expr(callee, state, fctx, wctx)?;
-            for a in args {
-                ephemeral_operand(&a.value, a.mode, a.span, state, fctx, wctx)?;
-            }
-            Ok(())
-        }
-        Expr::Unary(span, UnaryOp::Take, inner) => {
-            ephemeral_operand(inner, AccessMode::Take, *span, state, fctx, wctx)
-        }
-        Expr::Unary(_, _, inner) | Expr::Try(_, inner) | Expr::Not(_, inner) => {
-            walk_ephemeral_expr(inner, state, fctx, wctx)
-        }
-        Expr::Binary(_, _, l, r)
-        | Expr::And(_, l, r)
-        | Expr::Or(_, l, r)
-        | Expr::Range(_, l, r, _) => {
-            walk_ephemeral_expr(l, state, fctx, wctx)?;
-            walk_ephemeral_expr(r, state, fctx, wctx)
-        }
-        Expr::DotVariant(_, _, args) => {
-            for a in args {
-                ephemeral_operand(&a.value, a.mode, a.span, state, fctx, wctx)?;
-            }
-            Ok(())
-        }
-        Expr::Tuple(_, items) | Expr::List(_, items) => {
-            for i in items {
-                walk_ephemeral_expr(i, state, fctx, wctx)?;
-            }
-            Ok(())
-        }
-        Expr::ArrayRepeat(_, elem, count) => {
-            walk_ephemeral_expr(elem, state, fctx, wctx)?;
-            walk_ephemeral_expr(count, state, fctx, wctx)
-        }
-        Expr::Closure(c) => match &c.body {
-            ClosureBody::Expr(e) => walk_ephemeral_expr(e, state, fctx, wctx),
-            ClosureBody::Suite(stmts) => {
-                for s in stmts {
-                    // Suite-form closures inside an f-string are exotic;
-                    // walk expression-shaped statements only.
-                    if let Stmt::Expr(_, e) | Stmt::Return(_, Some(e)) = s {
-                        walk_ephemeral_expr(e, state, fctx, wctx)?;
-                    }
-                }
-                Ok(())
-            }
-        },
-        Expr::Send(_, inner) => walk_ephemeral_expr(inner, state, fctx, wctx),
-        Expr::FStr(f) => {
-            let desugared = crate::sema::fstring::desugar_fstring(f)?;
-            walk_ephemeral_expr(&desugared, state, fctx, wctx)
-        }
-        Expr::Is(_, scrutinee, _) => walk_ephemeral_expr(scrutinee, state, fctx, wctx),
-    }
-}
-
-fn ephemeral_operand(
-    expr: &Expr,
-    mode: AccessMode,
-    span: Span,
-    state: &mut StateMap,
-    fctx: &mut FnCtx,
-    wctx: &WCtx,
-) -> Result<(), SemaError> {
-    match mode {
-        AccessMode::Take => {
-            let Some(path) = as_path(expr, fctx, wctx.mctx) else {
-                return walk_ephemeral_expr(expr, state, fctx, wctx);
-            };
-            check_takeable(&path, state, wctx, span)?;
-            set_state(&path, state, PathState::Moved);
-            Ok(())
-        }
-        AccessMode::Mut | AccessMode::Read => {
-            if let Some(path) = as_path(expr, fctx, wctx.mctx) {
-                check_readable(&path, state, wctx, span)?;
-            }
-            walk_ephemeral_expr(expr, state, fctx, wctx)
-        }
-    }
-}
-
-// --- calls: receiver + argument-list exclusivity + move/storing dispatch --
-
-/// Whether `callee` resolves to a position with *no* declared parameter
-/// modes (a struct literal without `init`, an enum variant, or an
-/// unresolvable builtin pseudo-constructor like `Some`/`Ok`/`Err`) —
-/// exactly the shapes where the implicit-copy check applies to an
-/// unmarked argument. A real fn/method/`init`/associated-fn call, or a
-/// call through a `fn`-typed value, always has declared modes (mirrored
-/// by `access.rs` already, so this pass only needs `Arg.mode` itself,
-/// never the declared mode).
-fn is_synthetic_call(callee: &Expr, fctx: &FnCtx, wctx: &WCtx) -> bool {
-    match callee {
-        Expr::Name(_, name) => {
-            if fctx.lookup_local(name).is_some() {
-                return false;
-            }
-            if wctx.mctx.consts.contains_key(name) {
-                return false;
-            }
-            if wctx.mctx.fns.contains_key(name) {
-                return false;
-            }
-            if let Some(s) = wctx.mctx.structs.get(name) {
-                return s.init().is_none();
-            }
-            true // `Some`/`Ok`/`Err`/`panic`.
-        }
-        Expr::Field(base, _, _) => {
-            if let Expr::Name(_, bname) = base.as_ref() {
-                if fctx.lookup_local(bname).is_none() {
-                    if wctx.mctx.structs.contains_key(bname) {
-                        return false; // associated fn.
-                    }
-                    if wctx.mctx.enums.contains_key(bname) {
-                        return true; // enum variant construction.
-                    }
-                }
-            }
-            false // a real method call.
-        }
-        Expr::Index(inner, _, _) => is_synthetic_call(inner, fctx, wctx),
-        _ => false,
-    }
-}
-
-/// The receiver operand + its effective access mode, for a real method
-/// call (`base.method(...)`) — `None` for every other callee shape
-/// (associated fn/enum variant: `base` names a type, not a value; a
-/// plain fn/closure call: no receiver at all).
-fn receiver_of<'e>(callee: &'e Expr, fctx: &FnCtx, wctx: &WCtx) -> Option<(&'e Expr, AccessMode)> {
-    match callee {
-        Expr::Index(inner, _, _) => receiver_of(inner, fctx, wctx),
-        Expr::Field(base, _, name) => {
-            if let Expr::Name(_, bname) = base.as_ref() {
-                if fctx.lookup_local(bname).is_none()
-                    && (wctx.mctx.structs.contains_key(bname)
-                        || wctx.mctx.enums.contains_key(bname))
-                {
-                    return None;
-                }
-            }
-            let base_ty = bodies::unwrap_own(place_type(base, fctx, wctx.mctx)?);
-            let Type::Named(sname, _) = &base_ty else {
-                return None;
-            };
-            // 03 §9 bring-up states are builtins with no DeclStruct. Their
-            // consuming transitions must still Take the receiver for
-            // protocol-consumption, or a `claimed` left after `negotiate`
-            // would falsely look live (and a partial bring-up that never
-            // stores the state would silently drop it).
-            if crate::eval::image_checks::is_protocol_state_type_name(sname) {
-                let mode = match name.as_str() {
-                    // Fallible / final transitions consume the input state
-                    // (03-hardware.md §9).
-                    "negotiate" | "start" | "reset" => AccessMode::Take,
-                    // Partition hand-out and capacity read keep the state.
-                    "map_partition" | "read_capacity_sectors" => AccessMode::Read,
-                    // `take_irq`: on `DriverClaimedDevice` it is the terminal
-                    // mint (boot-irq-isr / check-device-take-irq — no
-                    // negotiate/start). On `FeaturesAcceptedDevice` it must
-                    // keep the state so `start` can follow (virtio-storage.wr
-                    // / the E4 flagship). Decision 15's blanket Take was the
-                    // claimed-only shape; the accepted-state half is Read.
-                    "take_irq" if sname.starts_with("FeaturesAccepted") => AccessMode::Read,
-                    "take_irq" => AccessMode::Take,
-                    _ => AccessMode::Read,
-                };
-                return Some((base.as_ref(), mode));
-            }
-            let s = wctx.mctx.structs.get(sname)?;
-            let (mf, d) = s.method(name)?;
-            let mode = access::resolve_receiver_mode(mf, d, sname, wctx.mctx, wctx.effects).ok()?;
-            Some((base.as_ref(), mode))
-        }
-        _ => None,
-    }
-}
-
-/// Walks the callee expression itself when it is not a real method's
-/// receiver — a plain type/fn name contributes nothing to check (no
-/// value read); a real value (a local holding a `fn`, or a scalar
-/// conversion's `x` in `x.to[T]()`) still needs its own validity check.
-fn walk_callee_base<'a>(
-    callee: &'a Expr,
-    state: &mut StateMap,
-    fctx: &mut FnCtx,
-    wctx: &WCtx,
-    dstack: &mut DStack<'a>,
-    loop_marker: usize,
-) -> Result<(), SemaError> {
-    match callee {
-        Expr::Name(_, name) => {
-            if fctx.lookup_local(name).is_some() || wctx.mctx.consts.contains_key(name) {
-                walk_expr(callee, state, fctx, wctx, dstack, loop_marker)
-            } else {
-                Ok(())
-            }
-        }
-        Expr::Field(base, _, _) => {
-            if let Expr::Name(_, bname) = base.as_ref() {
-                if fctx.lookup_local(bname).is_none()
-                    && (wctx.mctx.structs.contains_key(bname)
-                        || wctx.mctx.enums.contains_key(bname))
-                {
-                    return Ok(());
-                }
-            }
-            walk_expr(base, state, fctx, wctx, dstack, loop_marker)
-        }
-        Expr::Index(inner, _, _) => walk_callee_base(inner, state, fctx, wctx, dstack, loop_marker),
-        other => walk_expr(other, state, fctx, wctx, dstack, loop_marker),
-    }
-}
-
-fn walk_call<'a>(
-    callee: &'a Expr,
-    _span: Span,
-    args: &'a [Arg],
-    state: &mut StateMap,
-    fctx: &mut FnCtx,
-    wctx: &WCtx,
-    dstack: &mut DStack<'a>,
-    loop_marker: usize,
-) -> Result<(), SemaError> {
-    let synthetic = is_synthetic_call(callee, fctx, wctx);
-    let mut activated: Vec<StoragePath> = Vec::new();
-
-    match receiver_of(callee, fctx, wctx) {
-        Some((recv_expr, recv_mode)) => {
-            let span = recv_expr.span();
-            process_operand(
-                recv_expr,
-                recv_mode,
-                &mut activated,
-                state,
-                fctx,
-                wctx,
-                false,
-                span,
-                dstack,
-                loop_marker,
-            )?;
-        }
-        None => walk_callee_base(callee, state, fctx, wctx, dstack, loop_marker)?,
-    }
-
-    for a in args {
-        process_operand(
-            &a.value,
-            a.mode,
-            &mut activated,
-            state,
-            fctx,
-            wctx,
-            synthetic,
-            a.span,
-            dstack,
-            loop_marker,
-        )?;
-    }
-    Ok(())
-}
-
-// --- statements + the structural CFG walk ----------------------------------
-
-/// One block's control-flow result: `fallthrough` is the merged state
-/// reaching the end of the block normally (`None` if every path
-/// diverges); `breaks`/`continues` collect the states at every reachable
-/// `break`/`continue` not yet consumed by an enclosing loop.
 struct Outcome {
     fallthrough: Option<StateMap>,
     breaks: Vec<StateMap>,
@@ -1490,139 +321,824 @@ fn fallthrough(state: StateMap) -> Outcome {
     }
 }
 
-fn merge_outcomes(outcomes: Vec<Outcome>) -> Outcome {
+fn join_outcomes(arms: Vec<Outcome>) -> Outcome {
     let mut breaks = Vec::new();
     let mut continues = Vec::new();
     let mut fallthroughs = Vec::new();
-    for o in outcomes {
+    for o in arms {
         breaks.extend(o.breaks);
         continues.extend(o.continues);
         if let Some(s) = o.fallthrough {
             fallthroughs.push(s);
         }
     }
-    let ft = if fallthroughs.is_empty() {
-        None
-    } else {
-        Some(meet_all(fallthroughs))
-    };
     Outcome {
-        fallthrough: ft,
+        fallthrough: if fallthroughs.is_empty() {
+            None
+        } else {
+            Some(meet_all(fallthroughs))
+        },
         breaks,
         continues,
     }
 }
 
-fn walk_assign<'a>(
-    a: &'a AssignStmt,
-    state: &mut StateMap,
-    fctx: &mut FnCtx,
-    wctx: &WCtx,
-    dstack: &mut DStack<'a>,
-    loop_marker: usize,
+// --- module-wide checking context + entry points ---------------------------
+
+/// Every parameter's (and, where applicable, `self`'s) declared access
+/// mode, root-keyed — the only extra bookkeeping flow needs beyond
+/// `bodies::ModuleCtx`/`FnCtx`.
+struct WCtx<'a> {
+    mctx: &'a ModuleCtx,
+    effects: &'a EffectMap,
+    modes: BTreeMap<String, AccessMode>,
+    /// Whether this body is a struct's `init` (02-language.md §7.1).
+    is_init: bool,
+}
+
+fn whole_or_state(path: &StoragePath, state: &StateMap, wctx: &WCtx<'_>) -> PathState {
+    if path.is_root() && wctx.modes.get(&path.root) == Some(&AccessMode::Mut) {
+        first_bad_under(path, state)
+            .map(|(_, s)| s)
+            .unwrap_or(PathState::Init)
+    } else {
+        state_of(path, state)
+    }
+}
+
+fn check_readable(
+    path: &StoragePath,
+    state: &StateMap,
+    wctx: &WCtx<'_>,
+    span: Span,
 ) -> Result<(), SemaError> {
-    if a.op == AssignOp::Assign {
-        walk_storing_expr(&a.value, state, fctx, wctx, dstack, loop_marker)?;
-    } else {
-        walk_expr(&a.value, state, fctx, wctx, dstack, loop_marker)?;
+    match whole_or_state(path, state, wctx) {
+        PathState::Uninit => Err(init_error(
+            format!("`{}` is not initialized here", render_path(path)),
+            span,
+        )),
+        PathState::Moved => Err(move_error(
+            format!("`{}` was already taken", render_path(path)),
+            span,
+        )),
+        PathState::Init => Ok(()),
     }
+}
 
-    if let Expr::Name(_, name) = &a.target {
-        // Mirrors `bodies::check_assign`'s own scoping exactly (see its
-        // doc comment): a typed declaration only reuses a same-block
-        // binding (`lookup_innermost`); a plain assignment reuses one
-        // from any scope still open (`lookup_local`), which is how the
-        // arm-merge idiom's name survives to be read after the
-        // construct. `walk_if`/`walk_while`/`walk_for`/`walk_match` push
-        // a scope per branch/body/arm to match, so a name first bound
-        // inside one no longer leaks into `fctx` past it
-        // (err-mwir-if-else-scope-leak).
-        let already_bound = if a.ty.is_some() {
-            fctx.lookup_innermost(name).is_some()
-        } else {
-            fctx.lookup_local(name).is_some()
-        };
-        if !already_bound {
-            let ty = match &a.ty {
-                Some(ann) => wctx.mctx.resolve_type(ann, &fctx.local_pools)?,
-                None => bodies::check_expr(&a.value, None, fctx, wctx.mctx)?.ty,
-            };
-            fctx.insert_local(name.clone(), ty);
+fn check_takeable(
+    path: &StoragePath,
+    state: &StateMap,
+    wctx: &WCtx<'_>,
+    span: Span,
+) -> Result<(), SemaError> {
+    match whole_or_state(path, state, wctx) {
+        PathState::Uninit => {
+            return Err(init_error(
+                format!("`{}` is not initialized here", render_path(path)),
+                span,
+            ));
         }
-    } else {
-        walk_place_subexprs(&a.target, state, fctx, wctx, dstack, loop_marker)?;
+        PathState::Moved => {
+            return Err(move_error(
+                format!("`{}` was already taken", render_path(path)),
+                span,
+            ));
+        }
+        PathState::Init => {}
     }
-
-    let Some(path) = as_path(&a.target, fctx, wctx.mctx) else {
-        return Ok(());
-    };
-    if a.op == AssignOp::Assign {
-        let ty = place_type(&a.target, fctx, wctx.mctx);
-        check_overwrite_live(&path, ty.as_ref(), state, wctx, a.span)?;
-    } else {
-        check_readable(&path, state, wctx, a.span)?;
+    if path
+        .steps
+        .iter()
+        .any(|s| matches!(s, PathStep::RuntimeIndex))
+    {
+        return Err(move_error(
+            format!(
+                "moving `{}` out of an array through a runtime index is forbidden",
+                render_path(path)
+            ),
+            span,
+        ));
     }
-    set_state(&path, state, PathState::Init);
+    if let Some(AccessMode::Read) = wctx.modes.get(&path.root) {
+        return Err(move_error(
+            format!("`{}` is a `read` parameter; it cannot be taken", path.root),
+            span,
+        ));
+    }
+    if path.is_root() {
+        if let Some(AccessMode::Mut) = wctx.modes.get(&path.root) {
+            return Err(move_error(
+                format!(
+                    "`{}` is a `mut` place; taking it whole would move a value this function only borrows",
+                    path.root
+                ),
+                span,
+            ));
+        }
+    }
     Ok(())
 }
 
-/// `init`'s own `return Err(...)` (02-language.md §7.1): recognized
-/// syntactically (the return expression is directly a call to `Err`) —
-/// the only pattern the M2 corpus's `init`s use, and the honest limit of
-/// what this pass can tell apart without real control analysis.
-fn is_err_return(e: &Expr) -> bool {
-    matches!(e, Expr::Call(callee, _, _) if matches!(callee.as_ref(), Expr::Name(_, name) if name == "Err"))
+fn check_no_overlap(
+    path: &StoragePath,
+    activated: &[StoragePath],
+    span: Span,
+) -> Result<(), SemaError> {
+    for a in activated {
+        if a.overlaps(path) {
+            return Err(overlap_error(
+                format!(
+                    "`{}` overlaps `{}`, still exclusively active earlier in this call",
+                    render_path(path),
+                    render_path(a)
+                ),
+                span,
+            ));
+        }
+    }
+    Ok(())
 }
 
-fn walk_return<'a>(
+fn check_overwrite_live(
+    path: &StoragePath,
+    ty: Option<&Type>,
+    state: &StateMap,
+    wctx: &WCtx<'_>,
     span: Span,
-    e: &'a Option<Expr>,
+) -> Result<(), SemaError> {
+    if let Some(t) = ty {
+        if bodies::is_resource_type(t, wctx.mctx) && state_of(path, state) == PathState::Init {
+            return Err(move_error(
+                format!(
+                    "`{}` still holds a live resource; move it or finish it before overwriting",
+                    render_path(path)
+                ),
+                span,
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn check_storing_typed(value: &TypedExpr, fctx: &FnCtx, wctx: &WCtx<'_>) -> Result<(), SemaError> {
+    let Some(path) = typed_as_path(value, fctx, wctx) else {
+        return Ok(());
+    };
+    if bodies::is_resource_type(&value.ty, wctx.mctx) {
+        return Err(move_error(
+            format!(
+                "`{}` is a resource; use `take` to move it here (an implicit copy is not allowed)",
+                render_path(&path)
+            ),
+            value.span,
+        ));
+    }
+    let _ = fctx;
+    Ok(())
+}
+
+fn check_body_exit(
+    outcome: &Outcome,
+    fctx: &FnCtx,
+    wctx: &WCtx<'_>,
+    span: Span,
+) -> Result<(), SemaError> {
+    let Some(final_state) = &outcome.fallthrough else {
+        return Ok(());
+    };
+    if fctx.ret_ty != Type::Unit {
+        return Err(init_error(
+            format!(
+                "missing return of type `{}` on some path",
+                types::render_type(&fctx.ret_ty)
+            ),
+            span,
+        ));
+    }
+    check_exit_obligations(final_state, fctx, wctx, span)
+}
+
+/// The flow pass (plans/M2.md items E/F): walks the typed tree. Uses
+/// `TypedProgram::effects` for effective receiver modes.
+pub(crate) fn check(program: &TypedProgram, mctx: &ModuleCtx) -> Result<(), SemaError> {
+    let effects = &program.effects;
+    for f in program.fns.values() {
+        check_typed_fn_inner(f, mctx, effects, false)?;
+    }
+    for s in program.structs.values() {
+        check_typed_struct(s, mctx, effects)?;
+    }
+    for e in program.enums.values() {
+        for f in e.methods.values().chain(e.assoc_fns.values()) {
+            check_typed_fn_inner(f, mctx, effects, false)?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn check_typed_fn(
+    f: &TypedFn,
+    mctx: &ModuleCtx,
+    effects: &EffectMap,
+) -> Result<(), SemaError> {
+    check_typed_fn_inner(f, mctx, effects, false)
+}
+
+fn check_typed_fn_inner(
+    f: &TypedFn,
+    mctx: &ModuleCtx,
+    effects: &EffectMap,
+    is_init: bool,
+) -> Result<(), SemaError> {
+    let mut modes = BTreeMap::new();
+    let mut state = StateMap::new();
+    let mut fctx = FnCtx::new(f.ret.clone(), mctx.module_pools.clone());
+    fctx.in_async = f.is_async;
+    if let Some((mode, ty)) = &f.receiver {
+        fctx.insert_local("self".to_string(), ty.clone());
+        modes.insert("self".to_string(), *mode);
+        if !is_init {
+            state.insert(StoragePath::root("self"), PathState::Init);
+        }
+    }
+    for p in &f.params {
+        modes.insert(p.name.clone(), p.mode);
+        state.insert(StoragePath::root(p.name.clone()), PathState::Init);
+        fctx.insert_local(p.name.clone(), p.ty.clone());
+    }
+    let wctx = WCtx {
+        mctx,
+        effects,
+        modes,
+        is_init,
+    };
+    let mut dstack: TypedDStack = Vec::new();
+    let outcome = walk_typed_block(&f.body, &mut state, &mut fctx, &wctx, &mut dstack, 0)?;
+    let span = f.body.first().map(|s| s.span).unwrap_or_default();
+    check_body_exit(&outcome, &fctx, &wctx, span)
+}
+
+pub(crate) fn check_typed_struct(
+    s: &TypedStruct,
+    mctx: &ModuleCtx,
+    effects: &EffectMap,
+) -> Result<(), SemaError> {
+    for f in s.methods.values().chain(s.assoc_fns.values()) {
+        check_typed_fn_inner(f, mctx, effects, false)?;
+    }
+    if let Some(f) = &s.init {
+        let mut modes = BTreeMap::new();
+        let mut state = StateMap::new();
+        let mut fctx = FnCtx::new(f.ret.clone(), mctx.module_pools.clone());
+        if let Some((mode, ty)) = &f.receiver {
+            fctx.insert_local("self".to_string(), ty.clone());
+            modes.insert("self".to_string(), *mode);
+            // init: fields start Uninit (02-language.md §7.1).
+            for field in &s.fields {
+                state.insert(
+                    StoragePath::root("self").field(field.clone()),
+                    PathState::Uninit,
+                );
+            }
+        }
+        for p in &f.params {
+            modes.insert(p.name.clone(), p.mode);
+            state.insert(StoragePath::root(p.name.clone()), PathState::Init);
+            fctx.insert_local(p.name.clone(), p.ty.clone());
+        }
+        let wctx = WCtx {
+            mctx,
+            effects,
+            modes,
+            is_init: true,
+        };
+        let mut dstack: TypedDStack = Vec::new();
+        let outcome = walk_typed_block(&f.body, &mut state, &mut fctx, &wctx, &mut dstack, 0)?;
+        let span = f.body.first().map(|s| s.span).unwrap_or_default();
+        check_body_exit(&outcome, &fctx, &wctx, span)?;
+    }
+    Ok(())
+}
+
+type TypedDStack<'a> = Vec<&'a TypedDeferBody>;
+
+/// Re-validates every currently active `defer` at one real exit.
+fn check_active_defers<'a>(
+    active: &[&'a TypedDeferBody],
+    exit_desc: &str,
+    exit_state: &StateMap,
+    fctx: &mut FnCtx,
+    wctx: &WCtx<'_>,
+) -> Result<(), SemaError> {
+    let mut cur = exit_state.clone();
+    for d in active.iter().rev() {
+        let mut scratch: TypedDStack<'a> = Vec::new();
+        let result = match d {
+            TypedDeferBody::Expr(e) => walk_typed_expr(e, &mut cur, fctx, wctx, &mut scratch, 0),
+            TypedDeferBody::Suite(stmts) => {
+                walk_typed_block(stmts, &mut cur, fctx, wctx, &mut scratch, 0).map(|_| ())
+            }
+        };
+        result.map_err(|mut err| {
+            err.extra_lines.push(format!(
+                "  this `defer` must be valid at every exit, including {exit_desc}"
+            ));
+            err
+        })?;
+    }
+    Ok(())
+}
+
+fn typed_as_path(expr: &TypedExpr, fctx: &FnCtx, wctx: &WCtx<'_>) -> Option<StoragePath> {
+    match &expr.kind {
+        TypedExprKind::Local(name) => {
+            if fctx.lookup_local(name).is_some() {
+                Some(StoragePath::root(name.clone()))
+            } else {
+                None
+            }
+        }
+        TypedExprKind::Field(base, name) => {
+            if is_typed_method_reference(expr, fctx, wctx) {
+                return None;
+            }
+            let base_path = typed_as_path(base, fctx, wctx)?;
+            Some(base_path.field(name.clone()))
+        }
+        TypedExprKind::Index(base, idx) => {
+            let step = match &idx.kind {
+                TypedExprKind::Int(text) => match text.parse::<i128>() {
+                    Ok(v) => PathStep::Index(v),
+                    Err(_) => PathStep::RuntimeIndex,
+                },
+                _ => PathStep::RuntimeIndex,
+            };
+            Some(typed_as_path(base, fctx, wctx)?.index(step))
+        }
+        _ => None,
+    }
+}
+
+fn is_typed_method_reference(expr: &TypedExpr, fctx: &FnCtx, wctx: &WCtx<'_>) -> bool {
+    let TypedExprKind::Field(base, name) = &expr.kind else {
+        return false;
+    };
+    let base_ty = bodies::unwrap_own(base.ty.clone());
+    let Type::Named(sname, targs) = &base_ty else {
+        return false;
+    };
+    let _ = fctx;
+    if !targs.is_empty() {
+        // Instantiated generic: treat as method if no field of that name
+        // is known on the unspecialized decl (conservative).
+        if let Some(s) = wctx.mctx.structs.get(sname.as_str()) {
+            return s.field_ty(name).is_none()
+                && (s.method(name).is_some() || s.assoc_fn(name).is_some());
+        }
+        return false;
+    }
+    if let Some(s) = wctx.mctx.structs.get(sname.as_str()) {
+        return s.field_ty(name).is_none()
+            && (s.method(name).is_some() || s.assoc_fn(name).is_some());
+    }
+    if let Some(e) = wctx.mctx.enums.get(sname.as_str()) {
+        return e.method(name).is_some() || e.assoc_fn(name).is_some();
+    }
+    false
+}
+
+fn walk_typed_place_subexprs(
+    expr: &TypedExpr,
     state: &mut StateMap,
     fctx: &mut FnCtx,
-    wctx: &WCtx,
-    dstack: &mut DStack<'a>,
+    wctx: &WCtx<'_>,
+    dstack: &mut TypedDStack<'_>,
     loop_marker: usize,
 ) -> Result<(), SemaError> {
-    if let Some(expr) = e {
-        walk_storing_expr(expr, state, fctx, wctx, dstack, loop_marker)?;
+    match &expr.kind {
+        TypedExprKind::Field(base, _) => {
+            walk_typed_place_subexprs(base, state, fctx, wctx, dstack, loop_marker)
+        }
+        TypedExprKind::Index(base, idx) => {
+            walk_typed_place_subexprs(base, state, fctx, wctx, dstack, loop_marker)?;
+            walk_typed_expr(idx, state, fctx, wctx, dstack, loop_marker)
+        }
+        _ => Ok(()),
     }
-    // `return` exits the entire function: every currently active defer —
-    // the whole stack, from every enclosing block, not sliced by
-    // `loop_marker` — runs here, in reverse registration order
-    // (02-language.md §10). Checked unconditionally, including an
-    // `init`'s own `return Err(...)` (the ordinary local-cleanup rule
-    // for that path per §7.1 still includes any covering `defer`).
-    check_active_defers(dstack, "a `return` exit", state, fctx, wctx)?;
-    if wctx.is_init && e.as_ref().is_some_and(is_err_return) {
-        return Ok(());
-    }
-    check_exit_obligations(state, fctx, wctx, span)
 }
 
-fn walk_stmt<'a>(
-    stmt: &'a Stmt,
-    state: &StateMap,
+fn process_typed_operand(
+    expr: &TypedExpr,
+    mode: AccessMode,
+    activated: &mut Vec<StoragePath>,
+    state: &mut StateMap,
     fctx: &mut FnCtx,
-    wctx: &WCtx,
-    dstack: &mut DStack<'a>,
+    wctx: &WCtx<'_>,
+    synthetic: bool,
+    dstack: &mut TypedDStack<'_>,
+    loop_marker: usize,
+) -> Result<(), SemaError> {
+    let Some(path) = typed_as_path(expr, fctx, wctx) else {
+        return walk_typed_expr(expr, state, fctx, wctx, dstack, loop_marker);
+    };
+    walk_typed_place_subexprs(expr, state, fctx, wctx, dstack, loop_marker)?;
+    match mode {
+        AccessMode::Take => {
+            check_no_overlap(&path, activated, expr.span)?;
+            check_takeable(&path, state, wctx, expr.span)?;
+            set_state(&path, state, PathState::Moved);
+            activated.push(path);
+        }
+        AccessMode::Read | AccessMode::Mut => {
+            check_readable(&path, state, wctx, expr.span)?;
+            check_no_overlap(&path, activated, expr.span)?;
+            if synthetic && mode == AccessMode::Read {
+                check_storing_typed(expr, fctx, wctx)?;
+            }
+            if mode == AccessMode::Mut {
+                activated.push(path);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn walk_storing_typed(
+    value: &TypedExpr,
+    state: &mut StateMap,
+    fctx: &mut FnCtx,
+    wctx: &WCtx<'_>,
+    dstack: &mut TypedDStack<'_>,
+    loop_marker: usize,
+) -> Result<(), SemaError> {
+    let mut activated = Vec::new();
+    process_typed_operand(
+        value,
+        AccessMode::Read,
+        &mut activated,
+        state,
+        fctx,
+        wctx,
+        true,
+        dstack,
+        loop_marker,
+    )
+}
+
+fn receiver_mode_for_callee(callee: &CalleeKey, wctx: &WCtx<'_>) -> Option<AccessMode> {
+    let (owner, method) = match callee {
+        CalleeKey::Method(o, m) => (o.as_str(), m.as_str()),
+        CalleeKey::MethodInstance(o, m) => {
+            let bare = o
+                .strip_prefix("struct:")
+                .or_else(|| o.strip_prefix("enum:"))
+                .unwrap_or(o.as_str())
+                .split('[')
+                .next()
+                .unwrap_or(o.as_str());
+            (bare, m.as_str())
+        }
+        _ => return None,
+    };
+    // 03 §9 bring-up states are builtins with no DeclStruct. Their
+    // consuming transitions must still Take the receiver for
+    // protocol-consumption (same table as Intrinsic keys below).
+    if crate::eval::image_checks::is_protocol_state_type_name(owner) {
+        return Some(protocol_state_method_mode(owner, method));
+    }
+    if let Some(s) = wctx.mctx.structs.get(owner) {
+        if let Some((af, d)) = s.method(method) {
+            return access::resolve_receiver_mode(af, d, owner, wctx.mctx, wctx.effects).ok();
+        }
+    }
+    if let Some(e) = wctx.mctx.enums.get(owner) {
+        if let Some((af, d)) = e.method(method) {
+            return access::resolve_receiver_mode(af, d, owner, wctx.mctx, wctx.effects).ok();
+        }
+    }
+    None
+}
+
+/// Effective receiver mode for a 03 §9 bring-up state transition
+/// (historical AST `receiver_of` table). `take_irq` is Take only on the
+/// claimed-only mint (no negotiate/start). After `negotiate` — and after
+/// `VirtQueue.configure` rebinds the local to `QueuesConfiguredDevice` —
+/// it must be Read so `start` can still consume the state. (AST flow
+/// never saw the configure rebind, so its table only named
+/// `FeaturesAccepted*`; typed flow must also keep `QueuesConfigured*`.)
+fn protocol_state_method_mode(state: &str, method: &str) -> AccessMode {
+    match method {
+        "negotiate" | "start" | "reset" => AccessMode::Take,
+        "map_partition" | "read_capacity_sectors" => AccessMode::Read,
+        "take_irq"
+            if state.starts_with("FeaturesAccepted") || state.starts_with("QueuesConfigured") =>
+        {
+            AccessMode::Read
+        }
+        "take_irq" => AccessMode::Take,
+        _ => AccessMode::Read,
+    }
+}
+
+/// Receiver mode for a sealed-transport `Intrinsic`, keyed by the
+/// intrinsic spelling plus the receiver's protocol-state type name.
+fn intrinsic_receiver_mode(key: &str, receiver: &TypedExpr) -> AccessMode {
+    let place = match &receiver.kind {
+        TypedExprKind::Take(inner) => inner.as_ref(),
+        _ => receiver,
+    };
+    let base_ty = bodies::unwrap_own(place.ty.clone());
+    let Type::Named(sname, _) = &base_ty else {
+        return AccessMode::Read;
+    };
+    if !crate::eval::image_checks::is_protocol_state_type_name(sname) {
+        return AccessMode::Read;
+    }
+    let method = key.strip_prefix("Device.").unwrap_or(key);
+    protocol_state_method_mode(sname, method)
+}
+
+fn walk_typed_call(
+    callee: &CalleeKey,
+    receiver: Option<&TypedExpr>,
+    args: &[TypedCallArg],
+    state: &mut StateMap,
+    fctx: &mut FnCtx,
+    wctx: &WCtx<'_>,
+    dstack: &mut TypedDStack<'_>,
+    loop_marker: usize,
+) -> Result<(), SemaError> {
+    let mut activated: Vec<StoragePath> = Vec::new();
+    if let Some(recv) = receiver {
+        let mode = receiver_mode_for_callee(callee, wctx).unwrap_or(AccessMode::Read);
+        process_typed_operand(
+            recv,
+            mode,
+            &mut activated,
+            state,
+            fctx,
+            wctx,
+            false,
+            dstack,
+            loop_marker,
+        )?;
+    }
+    for a in args {
+        if let Some(v) = &a.value {
+            process_typed_operand(
+                v,
+                a.mode,
+                &mut activated,
+                state,
+                fctx,
+                wctx,
+                false,
+                dstack,
+                loop_marker,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn pattern_has_take(p: &TypedPattern) -> bool {
+    match &p.kind {
+        TypedPatternKind::Take(_) => true,
+        TypedPatternKind::Wildcard
+        | TypedPatternKind::Literal(_)
+        | TypedPatternKind::Binding(_) => false,
+        TypedPatternKind::Variant { payload, .. }
+        | TypedPatternKind::Tuple(payload)
+        | TypedPatternKind::Array(payload)
+        | TypedPatternKind::Or(payload) => payload.iter().any(pattern_has_take),
+    }
+}
+
+/// Applies a pattern's move effect to the scrutinee place (plans/M7.md
+/// item I). Same two reasons as the former AST `apply_pattern_move`:
+/// 1. `take` appears anywhere in the pattern.
+/// 2. The scrutinee *carries* a protocol resource but is not itself one
+///    by name (`Option[Receipt]`, …) — destructuring is how the inner
+///    value becomes reachable; leaving the wrapper `Init` would launder
+///    the drop check.
+fn apply_typed_pattern_move(
+    scrutinee: &TypedExpr,
+    pattern: &TypedPattern,
+    state: &mut StateMap,
+    fctx: &FnCtx,
+    wctx: &WCtx<'_>,
+    span: Span,
+) -> Result<(), SemaError> {
+    let scrutinee_ty = &scrutinee.ty;
+    let root_must_consume = matches!(
+        scrutinee_ty,
+        Type::Named(n, _) if crate::sema::classes::name_must_consume(n, false)
+    );
+    let move_protocol_wrapper =
+        protocol_resource_carried(scrutinee_ty, wctx.mctx).is_some() && !root_must_consume;
+    if !pattern_has_take(pattern) && !move_protocol_wrapper {
+        return Ok(());
+    }
+    let Some(path) = typed_as_path(scrutinee, fctx, wctx) else {
+        return Ok(());
+    };
+    check_takeable(&path, state, wctx, span)?;
+    set_state(&path, state, PathState::Moved);
+    Ok(())
+}
+
+fn bind_typed_pattern_flow(p: &TypedPattern, state: &mut StateMap, fctx: &mut FnCtx) {
+    match &p.kind {
+        TypedPatternKind::Wildcard | TypedPatternKind::Literal(_) => {}
+        TypedPatternKind::Binding(name) => {
+            fctx.insert_local(name.clone(), p.ty.clone());
+            state.insert(StoragePath::root(name.clone()), PathState::Init);
+        }
+        TypedPatternKind::Take(inner) => bind_typed_pattern_flow(inner, state, fctx),
+        TypedPatternKind::Or(alts) => {
+            if let Some(first) = alts.first() {
+                bind_typed_pattern_flow(first, state, fctx);
+            }
+        }
+        TypedPatternKind::Variant { payload, .. }
+        | TypedPatternKind::Tuple(payload)
+        | TypedPatternKind::Array(payload) => {
+            for sp in payload {
+                bind_typed_pattern_flow(sp, state, fctx);
+            }
+        }
+    }
+}
+
+fn walk_typed_block<'a>(
+    body: &'a [TypedStmt],
+    state: &mut StateMap,
+    fctx: &mut FnCtx,
+    wctx: &WCtx<'_>,
+    dstack: &mut TypedDStack<'a>,
     loop_marker: usize,
 ) -> Result<Outcome, SemaError> {
-    match stmt {
-        Stmt::Assign(a) => {
-            let mut st = state.clone();
-            walk_assign(a, &mut st, fctx, wctx, dstack, loop_marker)?;
-            Ok(fallthrough(st))
+    let entry_len = dstack.len();
+    let mut breaks = Vec::new();
+    let mut continues = Vec::new();
+    for stmt in body {
+        if let TypedStmtKind::Defer(d) = &stmt.kind {
+            dstack.push(d);
         }
-        Stmt::If(i) => walk_if(i, state, fctx, wctx, dstack, loop_marker),
-        Stmt::Match(m) => walk_match(m, state, fctx, wctx, dstack, loop_marker),
-        Stmt::For(f) => walk_for(f, state, fctx, wctx, dstack, loop_marker),
-        Stmt::While(w) => walk_while(w, state, fctx, wctx, dstack, loop_marker),
-        Stmt::Break(_) => {
-            // `break` exits only the nearest enclosing loop, not the
-            // whole function: only defers registered since that loop was
-            // entered (`loop_marker`) run here — a defer registered in an
-            // enclosing block outside the loop stays pending for a later,
-            // real exit (02-language.md §10).
+        let out = walk_typed_stmt(stmt, state, fctx, wctx, dstack, loop_marker)?;
+        breaks.extend(out.breaks);
+        continues.extend(out.continues);
+        match out.fallthrough {
+            Some(new_state) => *state = new_state,
+            None => {
+                dstack.truncate(entry_len);
+                return Ok(Outcome {
+                    fallthrough: None,
+                    breaks,
+                    continues,
+                });
+            }
+        }
+    }
+    check_active_defers(
+        &dstack[entry_len..],
+        "this block's own normal completion",
+        state,
+        fctx,
+        wctx,
+    )?;
+    dstack.truncate(entry_len);
+    Ok(Outcome {
+        fallthrough: Some(state.clone()),
+        breaks,
+        continues,
+    })
+}
+
+fn is_err_return_typed(e: &TypedExpr) -> bool {
+    match &e.kind {
+        TypedExprKind::EnumConstruct { variant, .. } => variant == "Err",
+        TypedExprKind::Call {
+            callee: CalleeKey::Fn(n),
+            ..
+        } => n == "Err",
+        _ => false,
+    }
+}
+
+fn walk_typed_stmt<'a>(
+    stmt: &'a TypedStmt,
+    state: &mut StateMap,
+    fctx: &mut FnCtx,
+    wctx: &WCtx<'_>,
+    dstack: &mut TypedDStack<'a>,
+    loop_marker: usize,
+) -> Result<Outcome, SemaError> {
+    match &stmt.kind {
+        TypedStmtKind::Let { name, ty, value } => {
+            walk_storing_typed(value, state, fctx, wctx, dstack, loop_marker)?;
+            fctx.insert_local(name.clone(), ty.clone());
+            state.insert(StoragePath::root(name.clone()), PathState::Init);
+            Ok(fallthrough(state.clone()))
+        }
+        TypedStmtKind::Assign { target, value } => {
+            walk_storing_typed(value, state, fctx, wctx, dstack, loop_marker)?;
+            if let Some(path) = typed_as_path(target, fctx, wctx) {
+                if let Some(mode) = wctx.modes.get(&path.root) {
+                    if *mode == AccessMode::Read {
+                        return Err(init_error(
+                            format!(
+                                "`{}` is a `read` parameter; it cannot be assigned",
+                                path.root
+                            ),
+                            target.span,
+                        ));
+                    }
+                }
+                check_overwrite_live(&path, Some(&target.ty), state, wctx, target.span)?;
+                set_state(&path, state, PathState::Init);
+            } else {
+                walk_typed_expr(target, state, fctx, wctx, dstack, loop_marker)?;
+            }
+            Ok(fallthrough(state.clone()))
+        }
+        TypedStmtKind::If {
+            cond,
+            then_branch,
+            elifs,
+            else_branch,
+        } => {
+            let mut outcomes = Vec::new();
+            let mut st = state.clone();
+            walk_typed_expr(cond, &mut st, fctx, wctx, dstack, loop_marker)?;
+            outcomes.push(bodies::scoped(fctx, |fctx| {
+                walk_typed_block(then_branch, &mut st, fctx, wctx, dstack, loop_marker)
+            })?);
+            for e in elifs {
+                let mut st = state.clone();
+                walk_typed_expr(&e.cond, &mut st, fctx, wctx, dstack, loop_marker)?;
+                outcomes.push(bodies::scoped(fctx, |fctx| {
+                    walk_typed_block(&e.body, &mut st, fctx, wctx, dstack, loop_marker)
+                })?);
+            }
+            match else_branch {
+                Some(b) => {
+                    let mut st = state.clone();
+                    outcomes.push(bodies::scoped(fctx, |fctx| {
+                        walk_typed_block(b, &mut st, fctx, wctx, dstack, loop_marker)
+                    })?);
+                }
+                None => outcomes.push(fallthrough(state.clone())),
+            }
+            Ok(join_outcomes(outcomes))
+        }
+        TypedStmtKind::Match { scrutinee, arms } => {
+            let mut entry = state.clone();
+            walk_typed_expr(scrutinee, &mut entry, fctx, wctx, dstack, loop_marker)?;
+            let mut outs = Vec::new();
+            for arm in arms {
+                let mut st = entry.clone();
+                let outcome = bodies::scoped(fctx, |fctx| {
+                    apply_typed_pattern_move(
+                        scrutinee,
+                        &arm.pattern,
+                        &mut st,
+                        fctx,
+                        wctx,
+                        arm.pattern.span,
+                    )?;
+                    bind_typed_pattern_flow(&arm.pattern, &mut st, fctx);
+                    if let Some(g) = &arm.guard {
+                        walk_typed_expr(g, &mut st, fctx, wctx, dstack, loop_marker)?;
+                    }
+                    walk_typed_block(&arm.body, &mut st, fctx, wctx, dstack, loop_marker)
+                })?;
+                outs.push(outcome);
+            }
+            Ok(join_outcomes(outs))
+        }
+        TypedStmtKind::For {
+            name,
+            elem_ty,
+            take_binding,
+            iter,
+            body,
+            ..
+        } => walk_typed_for(
+            name,
+            elem_ty,
+            *take_binding,
+            iter,
+            body,
+            state,
+            fctx,
+            wctx,
+            dstack,
+        ),
+        TypedStmtKind::While { cond, body, .. } => {
+            walk_typed_while(cond, body, state, fctx, wctx, dstack)
+        }
+        TypedStmtKind::Break => {
             check_active_defers(&dstack[loop_marker..], "a `break` exit", state, fctx, wctx)?;
             Ok(Outcome {
                 fallthrough: None,
@@ -1630,7 +1146,7 @@ fn walk_stmt<'a>(
                 continues: Vec::new(),
             })
         }
-        Stmt::Continue(_) => {
+        TypedStmtKind::Continue => {
             check_active_defers(
                 &dstack[loop_marker..],
                 "a `continue` exit",
@@ -1644,289 +1160,71 @@ fn walk_stmt<'a>(
                 continues: vec![state.clone()],
             })
         }
-        Stmt::Return(span, e) => {
-            let mut st = state.clone();
-            walk_return(*span, e, &mut st, fctx, wctx, dstack, loop_marker)?;
-            Ok(Outcome {
-                fallthrough: None,
-                breaks: Vec::new(),
-                continues: Vec::new(),
-            })
-        }
-        Stmt::Pass(_) => Ok(fallthrough(state.clone())),
-        Stmt::Assert(a) => {
-            let mut st = state.clone();
-            walk_expr(&a.cond, &mut st, fctx, wctx, dstack, loop_marker)?;
-            if let Some(msg) = &a.message {
-                walk_expr(msg, &mut st, fctx, wctx, dstack, loop_marker)?;
+        TypedStmtKind::Pass => Ok(fallthrough(state.clone())),
+        TypedStmtKind::Return(v) => {
+            if let Some(e) = v {
+                walk_storing_typed(e, state, fctx, wctx, dstack, loop_marker)?;
             }
-            Ok(fallthrough(st))
-        }
-        Stmt::Defer(d) => {
-            // Registration only (deliverable: 02-language.md §10's
-            // "verifies the places it names are valid at every exit," not
-            // at registration) — pushed onto the block-scoped stack;
-            // `walk_block` (this statement's own enclosing block) checks
-            // and pops it, and every real exit reached before that check
-            // (`return`/`?`/`break`/`continue`) re-validates it too, via
-            // `check_active_defers`.
-            dstack.push(d);
-            Ok(fallthrough(state.clone()))
-        }
-        Stmt::With(w) => walk_with(w, state, fctx, wctx, dstack, loop_marker),
-        Stmt::Send(_, e) => {
-            // plans/M6.md item G: a bare `send` statement now types (its
-            // legality is the whole-image `sema::send_proof` question,
-            // answered after every pass here has run), so flow really
-            // does walk one — exactly like `Stmt::Expr` below: the
-            // message arguments are ordinary operands that move/read
-            // storage paths like any other call's.
-            // plans/M13.md item H: on an awaited call, `take` args that
-            // admission refuses come back inside
-            // `Err(CallError.NotAdmitted(_, args))` — the owned tuple on
-            // that match arm is the resource (02 §9.4); ordinary pattern
-            // binding seeds those names as `Init` on that arm only.
-            let mut st = state.clone();
-            walk_expr(e, &mut st, fctx, wctx, dstack, loop_marker)?;
-            Ok(fallthrough(st))
-        }
-        // plans/M3.md item D: `sema::specialize` eliminates every
-        // `comptime if` node before `collect`/`declare`/`bodies` (and so
-        // `flow`) ever see the module — reaching this would mean
-        // `specialize` left one behind (a producer bug), not an expected
-        // path; kept as a defense-in-depth net rather than silently
-        // matched by a wildcard.
-        Stmt::ComptimeIf(_) => {
-            unreachable!("sema::specialize already eliminates this construct before flow runs")
-        }
-        // `comptime assert`'s own condition/message are ordinary typed
-        // expressions once `bodies.rs` lifted the fail-closed on this
-        // node (decision 8) — flow needs to walk them for definite-init
-        // exactly like a plain `assert`'s, since a name introduced
-        // earlier in the same block may be read here.
-        Stmt::ComptimeAssert(_, cond, message) => {
-            let mut st = state.clone();
-            walk_expr(cond, &mut st, fctx, wctx, dstack, loop_marker)?;
-            if let Some(msg) = message {
-                walk_expr(msg, &mut st, fctx, wctx, dstack, loop_marker)?;
-            }
-            Ok(fallthrough(st))
-        }
-        Stmt::Expr(_, e) => {
-            let mut st = state.clone();
-            walk_expr(e, &mut st, fctx, wctx, dstack, loop_marker)?;
-            // 02-language.md §11: `panic(message)` **abandons** the actor
-            // — "the turn stops, generated cleanup runs ... Abandonment
-            // is not catchable". A statement whose type is `never`
-            // therefore has no fallthrough, exactly like `return`.
-            //
-            // plans/M8.md item E, decision 34 — a defect this item
-            // tripped over rather than went looking for. The normative
-            // worked example (`docs/language/examples/virtio-storage.wr`,
-            // six sites: `panic("cache line has no payload")` and
-            // friends) uses a `panic` arm as the *only* thing that makes
-            // its sibling arm's binding definitely initialized, so the
-            // language has always meant this; nothing had reached
-            // `sema::flow` with one before, because that example is
-            // parse-tier only (`golden/ast-virtio`).
-            if matches!(
-                bodies::check_expr(e, None, fctx, wctx.mctx)?.ty,
-                Type::Never
-            ) {
+            check_active_defers(dstack, "a `return` exit", state, fctx, wctx)?;
+            if wctx.is_init && v.as_ref().is_some_and(is_err_return_typed) {
                 return Ok(Outcome {
                     fallthrough: None,
                     breaks: Vec::new(),
                     continues: Vec::new(),
                 });
             }
-            Ok(fallthrough(st))
+            check_exit_obligations(state, fctx, wctx, stmt.span)?;
+            Ok(Outcome {
+                fallthrough: None,
+                breaks: Vec::new(),
+                continues: Vec::new(),
+            })
         }
-    }
-}
-
-/// Walks one block's own statements, threading `dstack` as a true call
-/// stack (02-language.md §10's "registers ... against the enclosing
-/// block"): defers registered directly by this block's own statements
-/// (not ones already popped by a nested block's own call) are, if this
-/// block completes normally, re-validated against exactly that
-/// completion state — the block's own fallthrough exit — in reverse
-/// registration order, then popped, so they stop being visible to
-/// whatever code follows this block once it returns (an early exit
-/// reached *during* this block's own walk was already checked in place,
-/// by `walk_stmt`'s `Return`/`Break`/`Continue` handling or `walk_expr`'s
-/// `?` handling, using `dstack` as it stood at that point).
-fn walk_block<'a>(
-    stmts: &'a [Stmt],
-    state: &mut StateMap,
-    fctx: &mut FnCtx,
-    wctx: &WCtx,
-    dstack: &mut DStack<'a>,
-    loop_marker: usize,
-) -> Result<Outcome, SemaError> {
-    let start = dstack.len();
-    let mut breaks = Vec::new();
-    let mut continues = Vec::new();
-    for s in stmts {
-        let outcome = walk_stmt(s, state, fctx, wctx, dstack, loop_marker)?;
-        breaks.extend(outcome.breaks);
-        continues.extend(outcome.continues);
-        match outcome.fallthrough {
-            Some(new_state) => *state = new_state,
-            None => {
-                dstack.truncate(start);
+        TypedStmtKind::Assert { cond, message }
+        | TypedStmtKind::ComptimeAssert { cond, message, .. } => {
+            walk_typed_expr(cond, state, fctx, wctx, dstack, loop_marker)?;
+            if let Some(m) = message {
+                walk_typed_expr(m, state, fctx, wctx, dstack, loop_marker)?;
+            }
+            Ok(fallthrough(state.clone()))
+        }
+        TypedStmtKind::Defer(_) => Ok(fallthrough(state.clone())),
+        TypedStmtKind::ExprStmt(e) | TypedStmtKind::BareSend { expr: e, .. } => {
+            walk_typed_expr(e, state, fctx, wctx, dstack, loop_marker)?;
+            // 02-language.md §11: `panic` abandons — `never`-typed
+            // statements have no fallthrough (same as `return`).
+            if matches!(e.ty, Type::Never) {
                 return Ok(Outcome {
                     fallthrough: None,
-                    breaks,
-                    continues,
+                    breaks: Vec::new(),
+                    continues: Vec::new(),
                 });
             }
+            Ok(fallthrough(state.clone()))
         }
-    }
-    check_active_defers(
-        &dstack[start..],
-        "this block's own normal completion",
-        state,
-        fctx,
-        wctx,
-    )?;
-    dstack.truncate(start);
-    Ok(Outcome {
-        fallthrough: Some(state.clone()),
-        breaks,
-        continues,
-    })
-}
-
-/// Each branch gets its own `fctx` scope (`bodies::scoped`), popped
-/// again before the next branch is walked — mirrors `bodies::check_if`
-/// exactly, so a typed declaration inside one branch never leaks into a
-/// sibling or past the whole `if` in flow's own re-walk of `fctx`
-/// (err-mwir-if-else-scope-leak). `state`'s own per-branch clone already
-/// keeps definite-init merging correct; this only fixes the parallel
-/// name/type map flow keeps for `bodies::check_expr` calls.
-/// `with group(...) [as g]:` (plans/M6.md item A, 02-language.md §9.5):
-/// an unconditional single-body block — unlike `if`'s multi-branch meet,
-/// there is exactly one path through, so the post-`with` state is simply
-/// whatever the body's own walk produces. `g`'s own local binding (mirrors
-/// `bodies::check_with`'s own `fctx.insert_local`) is scoped to the body
-/// via `bodies::scoped`, same as `walk_if`'s own per-branch scope.
-fn walk_with<'a>(
-    w: &'a WithStmt,
-    state: &StateMap,
-    fctx: &mut FnCtx,
-    wctx: &WCtx,
-    dstack: &mut DStack<'a>,
-    loop_marker: usize,
-) -> Result<Outcome, SemaError> {
-    let mut st = state.clone();
-    walk_expr(&w.expr, &mut st, fctx, wctx, dstack, loop_marker)?;
-    bodies::scoped(fctx, |fctx| {
-        if let Some(name) = &w.as_name {
-            fctx.insert_local(name.clone(), Type::Named("Group".to_string(), vec![]));
-            st.insert(StoragePath::root(name.clone()), PathState::Init);
-            // Mirrors `bodies::check_with`'s own seeding — see
-            // `bodies::compute_group_children`'s own doc comment for why
-            // this must be a pure re-computation rather than shared
-            // mutable state.
-            if let Some(children) = bodies::compute_group_children(&w.body, name, fctx, wctx.mctx)?
-            {
-                fctx.group_children.insert(name.clone(), children);
+        TypedStmtKind::WithGroup {
+            capacity,
+            deadline,
+            as_name,
+            body,
+        } => {
+            if let Some(c) = capacity {
+                walk_typed_expr(c, state, fctx, wctx, dstack, loop_marker)?;
             }
-        }
-        walk_block(&w.body, &mut st, fctx, wctx, dstack, loop_marker)
-    })
-}
-
-fn walk_if<'a>(
-    i: &'a IfStmt,
-    state: &StateMap,
-    fctx: &mut FnCtx,
-    wctx: &WCtx,
-    dstack: &mut DStack<'a>,
-    loop_marker: usize,
-) -> Result<Outcome, SemaError> {
-    let mut outcomes = Vec::new();
-
-    let mut st = state.clone();
-    walk_expr(&i.cond, &mut st, fctx, wctx, dstack, loop_marker)?;
-    outcomes.push(bodies::scoped(fctx, |fctx| {
-        walk_block(&i.then_branch, &mut st, fctx, wctx, dstack, loop_marker)
-    })?);
-
-    for elif in &i.elifs {
-        let mut st = state.clone();
-        walk_expr(&elif.cond, &mut st, fctx, wctx, dstack, loop_marker)?;
-        outcomes.push(bodies::scoped(fctx, |fctx| {
-            walk_block(&elif.body, &mut st, fctx, wctx, dstack, loop_marker)
-        })?);
-    }
-
-    match &i.else_branch {
-        Some(body) => {
-            let mut st = state.clone();
-            outcomes.push(bodies::scoped(fctx, |fctx| {
-                walk_block(body, &mut st, fctx, wctx, dstack, loop_marker)
-            })?);
-        }
-        None => outcomes.push(fallthrough(state.clone())),
-    }
-
-    Ok(merge_outcomes(outcomes))
-}
-
-/// `match`'s own arms only (deliberately no implicit "no arm matched"
-/// path): exhaustiveness is `matches.rs`'s job, which runs *after* flow
-/// in the frozen pass order. Assuming the written arms are exhaustive
-/// here is always safe — a module whose match genuinely isn't exhaustive
-/// still gets rejected, just by `matches.rs`'s own diagnostic once flow
-/// finishes; flow merely doesn't manufacture a spurious extra edge for a
-/// case that (if real) is caught downstream anyway.
-fn walk_match<'a>(
-    m: &'a MatchStmt,
-    state: &StateMap,
-    fctx: &mut FnCtx,
-    wctx: &WCtx,
-    dstack: &mut DStack<'a>,
-    loop_marker: usize,
-) -> Result<Outcome, SemaError> {
-    let mut entry = state.clone();
-    walk_expr(&m.scrutinee, &mut entry, fctx, wctx, dstack, loop_marker)?;
-    let sty = bodies::check_expr(&m.scrutinee, None, fctx, wctx.mctx)?.ty;
-
-    let mut outcomes = Vec::new();
-    for arm in &m.arms {
-        let mut st = entry.clone();
-        // One scope per arm (`bodies::scoped`), covering the pattern's
-        // own bindings too — mirrors `bodies::check_match` exactly, so a
-        // binding from one arm's pattern never leaks into a sibling arm
-        // or past the whole `match`.
-        let outcome = bodies::scoped(fctx, |fctx| {
-            apply_pattern_move(
-                &m.scrutinee,
-                &arm.pattern,
-                &mut st,
-                fctx,
-                wctx,
-                arm.span,
-                &sty,
-            )?;
-            bodies::check_pattern(&arm.pattern, &sty, fctx, wctx.mctx)?;
-            seed_pattern_bindings(&arm.pattern, &mut st);
-            if let Some(g) = &arm.guard {
-                walk_expr(g, &mut st, fctx, wctx, dstack, loop_marker)?;
+            if let Some(d) = deadline {
+                walk_typed_expr(d, state, fctx, wctx, dstack, loop_marker)?;
             }
-            walk_block(&arm.body, &mut st, fctx, wctx, dstack, loop_marker)
-        })?;
-        outcomes.push(outcome);
+            bodies::scoped(fctx, |fctx| {
+                if let Some(name) = as_name {
+                    fctx.insert_local(name.clone(), Type::Named("Group".to_string(), vec![]));
+                    state.insert(StoragePath::root(name.clone()), PathState::Init);
+                }
+                walk_typed_block(body, state, fctx, wctx, dstack, loop_marker)
+            })
+        }
     }
-    Ok(merge_outcomes(outcomes))
 }
 
-/// One loop iteration's back-edge state: the meet of falling through the
-/// body normally and every `continue` reached within it (both loop back
-/// to the condition/next-element check) — `break`s are excluded (they
-/// exit the loop, contributing to its own post-loop state instead, see
-/// `walk_while`/`walk_for`).
 fn loop_backedge(out: &Outcome) -> Option<StateMap> {
     let mut states = Vec::new();
     if let Some(s) = &out.fallthrough {
@@ -1940,54 +1238,28 @@ fn loop_backedge(out: &Outcome) -> Option<StateMap> {
     }
 }
 
-/// Loop-local freshness: a path whose root never appeared in the state
-/// *entering* the loop is, by construction, first bound somewhere inside
-/// the loop's own body — and 02-language.md §3.2's "the first assignment
-/// to a name introduces it" applies anew on every real iteration, not
-/// only the textual first time this analysis's fixed-point re-walk
-/// visits that statement. Without this, a resource-typed local first
-/// bound inside a loop body (`q = make(i)`) would spuriously fail
-/// `check_overwrite_live` starting on the *second* fixed-point pass: nothing
-/// about `q`'s value actually carries across a real iteration boundary
-/// (unlike a `mut` parameter/field, whose root is already present in
-/// `baseline_roots` and so is correctly left to flow through the fixed
-/// point), but the fixed point's own carried-forward `candidate` would
-/// otherwise still show it `Init` going into the next pass's re-walk of
-/// its own introducing assignment. Pruning every non-baseline path out of
-/// the candidate before each pass keeps the fixed point meaningful only
-/// for paths that genuinely persist across the loop's back edge.
 fn prune_loop_locals(st: &mut StateMap, baseline_roots: &BTreeSet<String>) {
     st.retain(|p, _| baseline_roots.contains(&p.root));
 }
 
-fn walk_while<'a>(
-    w: &'a WhileStmt,
-    state: &StateMap,
+fn walk_typed_while<'a>(
+    cond: &'a TypedExpr,
+    body: &'a [TypedStmt],
+    state: &mut StateMap,
     fctx: &mut FnCtx,
-    wctx: &WCtx,
-    dstack: &mut DStack<'a>,
-    _loop_marker: usize,
+    wctx: &WCtx<'_>,
+    dstack: &mut TypedDStack<'a>,
 ) -> Result<Outcome, SemaError> {
-    // A fresh loop boundary for `break`/`continue` inside this loop's own
-    // body: only defers registered from here on (this loop's own body,
-    // per iteration — see the module doc comment's "Loops" note) are
-    // theirs to run; a defer registered by an enclosing block stays
-    // pending for whatever real exit eventually reaches it.
     let body_marker = dstack.len();
     let baseline_roots: BTreeSet<String> = state.keys().map(|p| p.root.clone()).collect();
     let mut candidate = state.clone();
     let mut out = fallthrough(state.clone());
-    // One `fctx` scope for the whole fixed-point re-walk (mirrors
-    // `bodies::check_while`'s single push/pop around the body): a
-    // typed declaration inside the body is re-seen on every fixed-point
-    // pass exactly as before (this only stops it from surviving past the
-    // loop once the fixed point is reached).
     let fixed_point = bodies::scoped(fctx, |fctx| {
         for _ in 0..LOOP_FIXED_POINT_CAP {
             let mut st = candidate.clone();
             prune_loop_locals(&mut st, &baseline_roots);
-            walk_expr(&w.cond, &mut st, fctx, wctx, dstack, body_marker)?;
-            let o = walk_block(&w.body, &mut st, fctx, wctx, dstack, body_marker)?;
+            walk_typed_expr(cond, &mut st, fctx, wctx, dstack, body_marker)?;
+            let o = walk_typed_block(body, &mut st, fctx, wctx, dstack, body_marker)?;
             let next = loop_backedge(&o).unwrap_or_else(|| candidate.clone());
             let converged = next == candidate;
             candidate = next;
@@ -2011,76 +1283,60 @@ fn walk_while<'a>(
     })
 }
 
-/// Mirrors `matches::check_for`'s own elem-type derivation exactly
-/// (range vs fixed array, `take`-consumed iterable unwrapped the same
-/// way) purely to keep `fctx`'s locals accurate; typing itself is
-/// `bodies::check_expr` reused, not reimplemented.
-fn for_elem_type(f: &ForStmt, fctx: &mut FnCtx, wctx: &WCtx) -> Result<Type, SemaError> {
-    let raw_iterable: &Expr = match &f.iterable {
-        Expr::Unary(_, UnaryOp::Take, inner) => inner.as_ref(),
-        other => other,
-    };
-    match raw_iterable {
-        Expr::Range(_, from, to, _incl) => {
-            let (first, _second) =
-                if bodies::is_bare_numeric_literal(from) && !bodies::is_bare_numeric_literal(to) {
-                    (to.as_ref(), from.as_ref())
-                } else {
-                    (from.as_ref(), to.as_ref())
-                };
-            bodies::check_expr(first, None, fctx, wctx.mctx).map(|te| te.ty)
-        }
-        other => match bodies::check_expr(other, None, fctx, wctx.mctx)?.ty {
-            Type::Array(elem, _) => Ok(*elem),
-            other_ty => Ok(other_ty),
-        },
-    }
-}
-
-fn walk_for<'a>(
-    f: &'a ForStmt,
-    state: &StateMap,
+fn walk_typed_for<'a>(
+    name: &str,
+    elem_ty: &Type,
+    take_binding: bool,
+    iter: &'a TypedForIter,
+    body: &'a [TypedStmt],
+    state: &mut StateMap,
     fctx: &mut FnCtx,
-    wctx: &WCtx,
-    dstack: &mut DStack<'a>,
-    _loop_marker: usize,
+    wctx: &WCtx<'_>,
+    dstack: &mut TypedDStack<'a>,
 ) -> Result<Outcome, SemaError> {
     let mut entry = state.clone();
-    let elem_ty = for_elem_type(f, fctx, wctx)?;
-
-    // The iterable is evaluated exactly once (02-language.md §8.1),
-    // before the loop; `for take x in take arr` consumes the array
-    // (decision 9). A fresh loop boundary for `break`/`continue` inside
-    // the body, same reasoning as `walk_while`.
     let body_marker = dstack.len();
-    if let Expr::Unary(span, UnaryOp::Take, inner) = &f.iterable {
-        match as_path(inner, fctx, wctx.mctx) {
-            Some(path) => {
-                walk_place_subexprs(inner, &mut entry, fctx, wctx, dstack, body_marker)?;
-                check_takeable(&path, &entry, wctx, *span)?;
-                set_state(&path, &mut entry, PathState::Moved);
-            }
-            None => walk_expr(inner, &mut entry, fctx, wctx, dstack, body_marker)?,
+    match iter {
+        TypedForIter::Range(a, b, _) => {
+            walk_typed_expr(a, &mut entry, fctx, wctx, dstack, body_marker)?;
+            walk_typed_expr(b, &mut entry, fctx, wctx, dstack, body_marker)?;
         }
-    } else {
-        walk_expr(&f.iterable, &mut entry, fctx, wctx, dstack, body_marker)?;
+        TypedForIter::Expr(e) => {
+            if take_binding {
+                if let TypedExprKind::Take(inner) = &e.kind {
+                    if let Some(path) = typed_as_path(inner, fctx, wctx) {
+                        walk_typed_place_subexprs(
+                            inner,
+                            &mut entry,
+                            fctx,
+                            wctx,
+                            dstack,
+                            body_marker,
+                        )?;
+                        check_takeable(&path, &entry, wctx, e.span)?;
+                        set_state(&path, &mut entry, PathState::Moved);
+                    } else {
+                        walk_typed_expr(inner, &mut entry, fctx, wctx, dstack, body_marker)?;
+                    }
+                } else {
+                    walk_typed_expr(e, &mut entry, fctx, wctx, dstack, body_marker)?;
+                }
+            } else {
+                walk_typed_expr(e, &mut entry, fctx, wctx, dstack, body_marker)?;
+            }
+        }
     }
 
     let baseline_roots: BTreeSet<String> = entry.keys().map(|p| p.root.clone()).collect();
     let mut candidate = entry.clone();
     let mut out = fallthrough(entry.clone());
-    // The loop binding and the fixed-point re-walk of the body share one
-    // `fctx` scope (mirrors `bodies::check_for`'s single push/pop around
-    // both): a typed declaration inside the body is re-seen on every
-    // fixed-point pass exactly as before, but neither it nor the loop
-    // binding itself survives past the loop.
     let fixed_point = bodies::scoped(fctx, |fctx| {
-        fctx.insert_local(f.name.clone(), elem_ty);
+        fctx.insert_local(name.to_string(), elem_ty.clone());
         for _ in 0..LOOP_FIXED_POINT_CAP {
             let mut st = candidate.clone();
             prune_loop_locals(&mut st, &baseline_roots);
-            st.insert(StoragePath::root(f.name.clone()), PathState::Init);
-            let o = walk_block(&f.body, &mut st, fctx, wctx, dstack, body_marker)?;
+            st.insert(StoragePath::root(name.to_string()), PathState::Init);
+            let o = walk_typed_block(body, &mut st, fctx, wctx, dstack, body_marker)?;
             let next = loop_backedge(&o).unwrap_or_else(|| candidate.clone());
             let converged = next == candidate;
             candidate = next;
@@ -2105,231 +1361,212 @@ fn walk_for<'a>(
     })
 }
 
-// --- module-wide checking context + entry points ---------------------------
-
-/// Every parameter's (and, where applicable, `self`'s) declared access
-/// mode, root-keyed — the only extra bookkeeping flow needs beyond
-/// `bodies::ModuleCtx`/`FnCtx`: whether a whole-root `take` is legal
-/// (owned: an ordinary local absent from this map, or a `Take`-mode
-/// root; never a `Read`/`Mut`-mode root) and which roots the
-/// field-take-and-restore/definite-init-of-fields obligation applies to.
-struct WCtx<'a> {
-    mctx: &'a ModuleCtx,
-    effects: &'a EffectMap,
-    modes: BTreeMap<String, AccessMode>,
-    /// Whether this body is a struct's `init` (02-language.md §7.1): an
-    /// `init`'s `return Err(...)` exit tears down whatever fields were
-    /// initialized so far by the ordinary local-cleanup rule, so — unlike
-    /// every other exit — it carries no field-completeness obligation of
-    /// its own (`walk_return` special-cases exactly this one shape,
-    /// syntactically, since that is the only honestly checkable reading:
-    /// distinguishing a "successful" exit from a "the whole value is
-    /// abandoned" exit for any richer error shape would need real control
-    /// analysis this item does not otherwise do).
-    is_init: bool,
-}
-
-/// The two checks that only make sense at a function's own boundary
-/// (deliverable 2's "value-returning body must return on every path",
-/// and the field-restore obligation applied to the implicit end-of-body
-/// exit) — shared by `check_top_fn`/`check_struct_members`'s three
-/// member shapes.
-fn check_body_exit(
-    outcome: &Outcome,
-    fctx: &FnCtx,
-    wctx: &WCtx,
-    span: Span,
+fn walk_typed_expr(
+    expr: &TypedExpr,
+    state: &mut StateMap,
+    fctx: &mut FnCtx,
+    wctx: &WCtx<'_>,
+    dstack: &mut TypedDStack<'_>,
+    loop_marker: usize,
 ) -> Result<(), SemaError> {
-    let Some(final_state) = &outcome.fallthrough else {
-        return Ok(());
-    };
-    if fctx.ret_ty != Type::Unit {
-        return Err(init_error(
-            format!(
-                "missing return of type `{}` on some path",
-                types::render_type(&fctx.ret_ty)
-            ),
-            span,
-        ));
-    }
-    check_exit_obligations(final_state, fctx, wctx, span)
-}
-
-/// `pub(crate)` (item H, generics.rs): re-run verbatim over a
-/// substituted, generics-cleared copy of a generic fn's own ast+decl,
-/// mirroring `bodies::check_top_fn`/`access::check_top_fn`'s own
-/// widening exactly.
-pub(crate) fn check_top_fn(
-    f: &ast::FnItem,
-    d: &types::DeclFn,
-    mctx: &ModuleCtx,
-    effects: &EffectMap,
-) -> Result<(), SemaError> {
-    if bodies::is_image_fn(f) || !f.generics.is_empty() {
-        return Ok(());
-    }
-    let Some(body) = &f.body else {
-        return Ok(()); // bodyless: already fails closed in bodies::check.
-    };
-
-    let mut modes = BTreeMap::new();
-    let mut state = StateMap::new();
-    let mut fctx = FnCtx::new(d.ret.clone(), mctx.module_pools.clone());
-    // Plans/M6.md item A: this pass re-derives its own `FnCtx` per body
-    // too (module doc) — `in_async` must be set here, mirroring
-    // `bodies::check_top_fn`, so this pass's own `bodies::check_expr`/
-    // `check_pattern` re-invocations (`Expr::Is`, `walk_match_stmt`'s
-    // scrutinee, a plain assignment's inferred type) see the same gate.
-    fctx.in_async = f.is_async;
-    for (_ap, dp) in f.params.iter().zip(d.params.iter()) {
-        modes.insert(dp.name.clone(), dp.mode);
-        state.insert(StoragePath::root(dp.name.clone()), PathState::Init);
-        fctx.insert_local(dp.name.clone(), dp.ty.clone());
-    }
-    let wctx = WCtx {
-        mctx,
-        effects,
-        modes,
-        is_init: false,
-    };
-
-    let mut dstack: DStack = Vec::new();
-    let outcome = walk_block(body, &mut state, &mut fctx, &wctx, &mut dstack, 0)?;
-    check_body_exit(&outcome, &fctx, &wctx, f.span)
-}
-
-fn check_struct_bodies(
-    s: &ast::StructItem,
-    mctx: &ModuleCtx,
-    effects: &EffectMap,
-) -> Result<(), SemaError> {
-    if !s.generics.is_empty() {
-        return Ok(());
-    }
-    let info = mctx.structs.get(&s.name).expect("struct present in mctx");
-    let self_ty = Type::Named(s.name.clone(), Vec::new());
-    check_struct_members(info, self_ty, mctx, effects)
-}
-
-/// `pub(crate)` (item H, generics.rs): the guts of `check_struct_bodies`,
-/// pulled out to take a `StructInfo` directly, mirroring
-/// `bodies::check_struct_members`'s own doc comment.
-pub(crate) fn check_struct_members(
-    info: &StructInfo,
-    self_ty: Type,
-    mctx: &ModuleCtx,
-    effects: &EffectMap,
-) -> Result<(), SemaError> {
-    let sname = info.decl.name.clone();
-    let local_pools = bodies::local_pool_names(info);
-
-    for (am, dm) in info.members() {
-        match (am, dm) {
-            (Member::Fn(f), types::DeclMember::Fn(fd)) => {
-                if !f.generics.is_empty() {
-                    continue;
-                }
-                let Some(body) = &f.body else {
-                    continue; // bodyless: already fails closed in bodies::check.
-                };
-                let self_mode = access::resolve_receiver_mode(f, fd, &sname, mctx, effects)?;
-
-                let mut modes = BTreeMap::new();
-                let mut state = StateMap::new();
-                let mut fctx = FnCtx::new(fd.ret.clone(), local_pools.clone());
-                fctx.in_async = f.is_async; // mirrors bodies::check_struct_members
-                fctx.insert_local("self".to_string(), self_ty.clone());
-                modes.insert("self".to_string(), self_mode);
-                state.insert(StoragePath::root("self"), PathState::Init);
-                for (_ap, dp) in f.params.iter().zip(fd.params.iter()) {
-                    modes.insert(dp.name.clone(), dp.mode);
-                    state.insert(StoragePath::root(dp.name.clone()), PathState::Init);
-                    fctx.insert_local(dp.name.clone(), dp.ty.clone());
-                }
-                let wctx = WCtx {
-                    mctx,
-                    effects,
-                    modes,
-                    is_init: false,
-                };
-
-                let mut dstack: DStack = Vec::new();
-                let outcome = walk_block(body, &mut state, &mut fctx, &wctx, &mut dstack, 0)?;
-                check_body_exit(&outcome, &fctx, &wctx, f.span)?;
-            }
-            (Member::Init(i), types::DeclMember::Init(fd)) => {
-                // `init` (02-language.md §7.1): each field of `self` is
-                // checked exactly like an uninitialized local — seeded
-                // `Uninit` here, one entry per declared field, rather
-                // than seeding `self`'s own root at all (there is
-                // nothing coherent to use "whole" until every field is
-                // assigned, so a bare `self` read before that point
-                // correctly falls back to this pass's default `Uninit`,
-                // no root entry needed).
-                let self_mode = fd
-                    .receiver
-                    .as_ref()
-                    .map(|r| r.mode)
-                    .unwrap_or(AccessMode::Read);
-
-                let mut modes = BTreeMap::new();
-                let mut state = StateMap::new();
-                let mut fctx = FnCtx::new(fd.ret.clone(), local_pools.clone());
-                fctx.insert_local("self".to_string(), self_ty.clone());
-                modes.insert("self".to_string(), self_mode);
-                for (am2, dm2) in info.members() {
-                    if let (Member::Field(field), types::DeclMember::Field(_)) = (am2, dm2) {
-                        state.insert(
-                            StoragePath::root("self").field(field.name.clone()),
-                            PathState::Uninit,
-                        );
-                    }
-                }
-                for (_ap, dp) in i.params.iter().zip(fd.params.iter()) {
-                    modes.insert(dp.name.clone(), dp.mode);
-                    state.insert(StoragePath::root(dp.name.clone()), PathState::Init);
-                    fctx.insert_local(dp.name.clone(), dp.ty.clone());
-                }
-                let wctx = WCtx {
-                    mctx,
-                    effects,
-                    modes,
-                    is_init: true,
-                };
-
-                let mut dstack: DStack = Vec::new();
-                let outcome = walk_block(&i.body, &mut state, &mut fctx, &wctx, &mut dstack, 0)?;
-                check_body_exit(&outcome, &fctx, &wctx, i.span)?;
-            }
-            _ => {}
+    if let Some(path) = typed_as_path(expr, fctx, wctx) {
+        // Bare place use: must be readable (unless this is a field/index
+        // chain walked only for path construction — those recurse below).
+        if matches!(
+            &expr.kind,
+            TypedExprKind::Local(_) | TypedExprKind::Field(_, _) | TypedExprKind::Index(_, _)
+        ) {
+            // Field/index: check the path itself when used as a value.
+            check_readable(&path, state, wctx, expr.span)?;
+            return walk_typed_place_subexprs(expr, state, fctx, wctx, dstack, loop_marker);
         }
     }
-    Ok(())
-}
-
-/// The flow pass (plans/M2.md items E/F): fail-fast, source order, same
-/// module-wide traversal shape as `bodies::check`/`access::check`.
-/// `mctx` is shared with every other pass so item H's instantiation
-/// queue accumulates across all of them.
-pub(crate) fn check(
-    module: &Module,
-    decl_items: &[types::DeclItem],
-    mctx: &ModuleCtx,
-) -> Result<(), SemaError> {
-    let effects = access::infer_effects_over(mctx);
-    let ast_items: Vec<&Item> = module
-        .items
-        .iter()
-        .filter(|i| !matches!(i, Item::ComptimeIf(_)))
-        .collect();
-    for (ai, di) in ast_items.iter().zip(decl_items.iter()) {
-        match (ai, di) {
-            (Item::Fn(f), types::DeclItem::Fn(d)) => check_top_fn(f, d, mctx, &effects)?,
-            (Item::Struct(s), types::DeclItem::Struct(_)) => {
-                check_struct_bodies(s, mctx, &effects)?
+    match &expr.kind {
+        TypedExprKind::Take(inner) => {
+            if let Some(path) = typed_as_path(inner, fctx, wctx) {
+                walk_typed_place_subexprs(inner, state, fctx, wctx, dstack, loop_marker)?;
+                check_takeable(&path, state, wctx, expr.span)?;
+                set_state(&path, state, PathState::Moved);
+            } else {
+                walk_typed_expr(inner, state, fctx, wctx, dstack, loop_marker)?;
             }
-            _ => {}
+            Ok(())
         }
+        TypedExprKind::Call {
+            callee,
+            receiver,
+            args,
+        } => walk_typed_call(
+            callee,
+            receiver.as_deref(),
+            args,
+            state,
+            fctx,
+            wctx,
+            dstack,
+            loop_marker,
+        ),
+        TypedExprKind::CallValue(c, args) => {
+            walk_typed_expr(c, state, fctx, wctx, dstack, loop_marker)?;
+            let mut activated = Vec::new();
+            for a in args {
+                if let Some(v) = &a.value {
+                    process_typed_operand(
+                        v,
+                        a.mode,
+                        &mut activated,
+                        state,
+                        fctx,
+                        wctx,
+                        false,
+                        dstack,
+                        loop_marker,
+                    )?;
+                }
+            }
+            Ok(())
+        }
+        TypedExprKind::Try(inner, _) => {
+            walk_typed_expr(inner, state, fctx, wctx, dstack, loop_marker)?;
+            // `?` is a potential early exit: active defers must be valid.
+            check_active_defers(dstack, "a `?` exit", state, fctx, wctx)
+        }
+        TypedExprKind::Await(inner) => {
+            // plans/M7.md item E4 / 03-hardware.md §5: `await receipt`
+            // consumes the `Receipt[P]`. Actor-call awaits are not
+            // places — fall through.
+            if let Some(path) = typed_as_path(inner, fctx, wctx) {
+                if matches!(
+                    &inner.ty,
+                    Type::Named(n, _) if crate::sema::classes::name_must_consume(n, false)
+                ) {
+                    walk_typed_place_subexprs(inner, state, fctx, wctx, dstack, loop_marker)?;
+                    check_takeable(&path, state, wctx, expr.span)?;
+                    set_state(&path, state, PathState::Moved);
+                    return Ok(());
+                }
+            }
+            walk_typed_expr(inner, state, fctx, wctx, dstack, loop_marker)
+        }
+        TypedExprKind::Field(base, _)
+        | TypedExprKind::ToScalar(base)
+        | TypedExprKind::Neg(base)
+        | TypedExprKind::BitNot(base)
+        | TypedExprKind::Not(base)
+        | TypedExprKind::Panic(base)
+        | TypedExprKind::Send(base) => {
+            walk_typed_expr(base, state, fctx, wctx, dstack, loop_marker)
+        }
+        TypedExprKind::Index(base, idx) => {
+            walk_typed_expr(base, state, fctx, wctx, dstack, loop_marker)?;
+            walk_typed_expr(idx, state, fctx, wctx, dstack, loop_marker)
+        }
+        TypedExprKind::Binary(_, l, r)
+        | TypedExprKind::OpCall(_, l, r)
+        | TypedExprKind::And(l, r)
+        | TypedExprKind::Or(l, r) => {
+            walk_typed_expr(l, state, fctx, wctx, dstack, loop_marker)?;
+            walk_typed_expr(r, state, fctx, wctx, dstack, loop_marker)
+        }
+        TypedExprKind::Is(s, pat) => {
+            walk_typed_expr(s, state, fctx, wctx, dstack, loop_marker)?;
+            apply_typed_pattern_move(s, pat, state, fctx, wctx, expr.span)?;
+            Ok(())
+        }
+        TypedExprKind::EnumConstruct { args, .. } => {
+            let mut activated = Vec::new();
+            for a in args {
+                if let Some(v) = &a.value {
+                    process_typed_operand(
+                        v,
+                        a.mode,
+                        &mut activated,
+                        state,
+                        fctx,
+                        wctx,
+                        true,
+                        dstack,
+                        loop_marker,
+                    )?;
+                }
+            }
+            Ok(())
+        }
+        TypedExprKind::Closure { body, .. } => match body {
+            TypedClosureBody::Expr(e) => walk_typed_expr(e, state, fctx, wctx, dstack, loop_marker),
+            TypedClosureBody::Suite(stmts) => {
+                let mut nested: TypedDStack = Vec::new();
+                walk_typed_block(stmts, state, fctx, wctx, &mut nested, 0)?;
+                Ok(())
+            }
+        },
+        TypedExprKind::Tuple(items) | TypedExprKind::List(items) => {
+            let mut activated = Vec::new();
+            for i in items {
+                process_typed_operand(
+                    i,
+                    AccessMode::Read,
+                    &mut activated,
+                    state,
+                    fctx,
+                    wctx,
+                    true,
+                    dstack,
+                    loop_marker,
+                )?;
+            }
+            Ok(())
+        }
+        TypedExprKind::StructLiteral { fields, .. } => {
+            let mut activated = Vec::new();
+            for (_, v) in fields {
+                process_typed_operand(
+                    v,
+                    AccessMode::Read,
+                    &mut activated,
+                    state,
+                    fctx,
+                    wctx,
+                    true,
+                    dstack,
+                    loop_marker,
+                )?;
+            }
+            Ok(())
+        }
+        TypedExprKind::Intrinsic {
+            key,
+            receiver,
+            args,
+            ..
+        } => {
+            // Same operand discipline as `walk_typed_call`: take-mode
+            // receivers (03 §9 `take_irq` / negotiate / start / reset)
+            // and take-wrapped args (`with_arg_mode` → `TypedExprKind::Take`)
+            // must mark roots Moved, or protocol-consumption falsely
+            // reports a live `claimed` after the terminal mint.
+            let mut activated: Vec<StoragePath> = Vec::new();
+            if let Some(r) = receiver {
+                let mode = intrinsic_receiver_mode(key, r);
+                process_typed_operand(
+                    r,
+                    mode,
+                    &mut activated,
+                    state,
+                    fctx,
+                    wctx,
+                    false,
+                    dstack,
+                    loop_marker,
+                )?;
+            }
+            for (_, a) in args {
+                // Intrinsic args have no mode slot; take-mode sites wrap
+                // the value in `TypedExprKind::Take` at construction.
+                walk_typed_expr(a, state, fctx, wctx, dstack, loop_marker)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
     }
-    Ok(())
 }

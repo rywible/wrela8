@@ -1,1 +1,1 @@
-error[init]: missing return of type `u64` on some path at 3:1
+error[init]: missing return of type `u64` on some path at 4:5

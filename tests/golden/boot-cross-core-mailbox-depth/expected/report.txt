@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_cross_core_mailbox_depth.wr sha256=25213ebd0eb4dbdf5f9588f8435f6cb8d669a5c529a9e37189584ea5f62940ef
-  Input path=<generated> sha256=0825c37acdaa78ad19df1cc852d94c47e2b0cefec2a5dd06f2e9f97857dac2ee
+  Input path=<generated> sha256=27de2276a6ac195fffba564ac7f6a302796d00feada9daa98bf228870b2c69b9
   Name value=cross-core-mailbox-depth
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Sink
@@ -55,101 +55,101 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=104072
-  Section name=rodata base=0x405196d8 size=662
-  Section name=abort base=0x40519970 size=120
-  Section name=checkpoint base=0x405199e8 size=28
+  Section name=code base=0x40500050 size=122344
+  Section name=rodata base=0x4051de38 size=840
+  Section name=abort base=0x4051e180 size=120
+  Section name=checkpoint base=0x4051e1f8 size=28
   Section name=rtdata base=0x40540000 size=4992
   Entry base=0x40500000
-  CoreEntry core=1 base=0x40519638
-  CoreEntry core=2 base=0x40519688
+  CoreEntry core=1 base=0x4051dd98
+  CoreEntry core=2 base=0x4051dde8
   PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
   PlacedStatic name=EXIT type=ParkMmio addr=0x8001000 size=8
-  PlacedStatic name=GROUPS type=GroupArena addr=0x4057f778 size=96
-  PlacedStatic name=INIT_SPAN0 type=InitSpan0Words addr=0x4057f738 size=8
-  PlacedStatic name=INIT_SPAN1 type=InitSpan1Words addr=0x4057f740 size=8
-  PlacedStatic name=INIT_SPAN2 type=InitSpan2Words addr=0x4057f748 size=8
-  PlacedStatic name=INIT_SPAN3 type=InitSpan3Words addr=0x4057f750 size=8
-  PlacedStatic name=INIT_SPAN4 type=InitSpan4Words addr=0x4057f758 size=8
-  PlacedStatic name=INIT_SPAN5 type=InitSpan5Words addr=0x4057f760 size=8
-  PlacedStatic name=INIT_SPAN6 type=InitSpan6Words addr=0x4057f768 size=8
-  PlacedStatic name=INIT_SPAN7 type=InitSpan7Words addr=0x4057f770 size=8
+  PlacedStatic name=GROUPS type=GroupArena addr=0x4057f798 size=96
+  PlacedStatic name=INIT_SPAN0 type=InitSpan0Words addr=0x40541000 size=8
+  PlacedStatic name=INIT_SPAN1 type=InitSpan1Words addr=0x40541038 size=8
+  PlacedStatic name=INIT_SPAN2 type=InitSpan2Words addr=0x40541098 size=8
+  PlacedStatic name=INIT_SPAN3 type=InitSpan3Words addr=0x4057f770 size=8
+  PlacedStatic name=INIT_SPAN4 type=InitSpan4Words addr=0x4057f778 size=8
+  PlacedStatic name=INIT_SPAN5 type=InitSpan5Words addr=0x4057f780 size=8
+  PlacedStatic name=INIT_SPAN6 type=InitSpan6Words addr=0x4057f788 size=8
+  PlacedStatic name=INIT_SPAN7 type=InitSpan7Words addr=0x4057f790 size=8
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=536
-  PlacedStatic name=MB0_CTL type=MbCtl addr=0x4057f7f8 size=24
-  PlacedStatic name=MB0_DATA type=Mb0Data addr=0x4057f7d8 size=8
-  PlacedStatic name=MB10_CTL type=MbCtl addr=0x4057fa78 size=24
-  PlacedStatic name=MB10_DATA type=Mb10Data addr=0x4057fa58 size=8
-  PlacedStatic name=MB11_CTL type=MbCtl addr=0x4057fab8 size=24
-  PlacedStatic name=MB11_DATA type=Mb11Data addr=0x4057fa98 size=8
-  PlacedStatic name=MB12_CTL type=MbCtl addr=0x4057faf8 size=24
-  PlacedStatic name=MB12_DATA type=Mb12Data addr=0x4057fad8 size=8
-  PlacedStatic name=MB13_CTL type=MbCtl addr=0x4057fb38 size=24
-  PlacedStatic name=MB13_DATA type=Mb13Data addr=0x4057fb18 size=8
-  PlacedStatic name=MB14_CTL type=MbCtl addr=0x4057fb78 size=24
-  PlacedStatic name=MB14_DATA type=Mb14Data addr=0x4057fb58 size=8
-  PlacedStatic name=MB15_CTL type=MbCtl addr=0x4057fbb8 size=24
-  PlacedStatic name=MB15_DATA type=Mb15Data addr=0x4057fb98 size=8
-  PlacedStatic name=MB16_CTL type=MbCtl addr=0x4057fbf8 size=24
-  PlacedStatic name=MB16_DATA type=Mb16Data addr=0x4057fbd8 size=8
-  PlacedStatic name=MB17_CTL type=MbCtl addr=0x4057fc38 size=24
-  PlacedStatic name=MB17_DATA type=Mb17Data addr=0x4057fc18 size=8
-  PlacedStatic name=MB18_CTL type=MbCtl addr=0x4057fc78 size=24
-  PlacedStatic name=MB18_DATA type=Mb18Data addr=0x4057fc58 size=8
-  PlacedStatic name=MB19_CTL type=MbCtl addr=0x4057fcb8 size=24
-  PlacedStatic name=MB19_DATA type=Mb19Data addr=0x4057fc98 size=8
-  PlacedStatic name=MB1_CTL type=MbCtl addr=0x4057f838 size=24
-  PlacedStatic name=MB1_DATA type=Mb1Data addr=0x4057f818 size=8
-  PlacedStatic name=MB20_CTL type=MbCtl addr=0x4057fcf8 size=24
-  PlacedStatic name=MB20_DATA type=Mb20Data addr=0x4057fcd8 size=8
-  PlacedStatic name=MB21_CTL type=MbCtl addr=0x4057fd38 size=24
-  PlacedStatic name=MB21_DATA type=Mb21Data addr=0x4057fd18 size=8
-  PlacedStatic name=MB22_CTL type=MbCtl addr=0x4057fd78 size=24
-  PlacedStatic name=MB22_DATA type=Mb22Data addr=0x4057fd58 size=8
-  PlacedStatic name=MB23_CTL type=MbCtl addr=0x4057fdb8 size=24
-  PlacedStatic name=MB23_DATA type=Mb23Data addr=0x4057fd98 size=8
-  PlacedStatic name=MB24_CTL type=MbCtl addr=0x4057fdf8 size=24
-  PlacedStatic name=MB24_DATA type=Mb24Data addr=0x4057fdd8 size=8
-  PlacedStatic name=MB25_CTL type=MbCtl addr=0x4057fe38 size=24
-  PlacedStatic name=MB25_DATA type=Mb25Data addr=0x4057fe18 size=8
-  PlacedStatic name=MB26_CTL type=MbCtl addr=0x4057fe78 size=24
-  PlacedStatic name=MB26_DATA type=Mb26Data addr=0x4057fe58 size=8
-  PlacedStatic name=MB27_CTL type=MbCtl addr=0x4057feb8 size=24
-  PlacedStatic name=MB27_DATA type=Mb27Data addr=0x4057fe98 size=8
-  PlacedStatic name=MB28_CTL type=MbCtl addr=0x4057fef8 size=24
-  PlacedStatic name=MB28_DATA type=Mb28Data addr=0x4057fed8 size=8
-  PlacedStatic name=MB29_CTL type=MbCtl addr=0x4057ff38 size=24
-  PlacedStatic name=MB29_DATA type=Mb29Data addr=0x4057ff18 size=8
-  PlacedStatic name=MB2_CTL type=MbCtl addr=0x4057f878 size=24
-  PlacedStatic name=MB2_DATA type=Mb2Data addr=0x4057f858 size=8
-  PlacedStatic name=MB30_CTL type=MbCtl addr=0x4057ff78 size=24
-  PlacedStatic name=MB30_DATA type=Mb30Data addr=0x4057ff58 size=8
-  PlacedStatic name=MB31_CTL type=MbCtl addr=0x4057ffb8 size=24
-  PlacedStatic name=MB31_DATA type=Mb31Data addr=0x4057ff98 size=8
-  PlacedStatic name=MB3_CTL type=MbCtl addr=0x4057f8b8 size=24
-  PlacedStatic name=MB3_DATA type=Mb3Data addr=0x4057f898 size=8
-  PlacedStatic name=MB4_CTL type=MbCtl addr=0x4057f8f8 size=24
-  PlacedStatic name=MB4_DATA type=Mb4Data addr=0x4057f8d8 size=8
-  PlacedStatic name=MB5_CTL type=MbCtl addr=0x4057f938 size=24
-  PlacedStatic name=MB5_DATA type=Mb5Data addr=0x4057f918 size=8
-  PlacedStatic name=MB6_CTL type=MbCtl addr=0x4057f978 size=24
-  PlacedStatic name=MB6_DATA type=Mb6Data addr=0x4057f958 size=8
-  PlacedStatic name=MB7_CTL type=MbCtl addr=0x4057f9b8 size=24
-  PlacedStatic name=MB7_DATA type=Mb7Data addr=0x4057f998 size=8
-  PlacedStatic name=MB8_CTL type=MbCtl addr=0x4057f9f8 size=24
-  PlacedStatic name=MB8_DATA type=Mb8Data addr=0x4057f9d8 size=8
-  PlacedStatic name=MB9_CTL type=MbCtl addr=0x4057fa38 size=24
-  PlacedStatic name=MB9_DATA type=Mb9Data addr=0x4057fa18 size=8
+  PlacedStatic name=MB0_CTL type=MbCtl addr=0x40541020 size=24
+  PlacedStatic name=MB0_DATA type=Mb0Data addr=0x40541008 size=24
+  PlacedStatic name=MB10_CTL type=MbCtl addr=0x4057fa98 size=24
+  PlacedStatic name=MB10_DATA type=Mb10Data addr=0x4057fa78 size=8
+  PlacedStatic name=MB11_CTL type=MbCtl addr=0x4057fad8 size=24
+  PlacedStatic name=MB11_DATA type=Mb11Data addr=0x4057fab8 size=8
+  PlacedStatic name=MB12_CTL type=MbCtl addr=0x4057fb18 size=24
+  PlacedStatic name=MB12_DATA type=Mb12Data addr=0x4057faf8 size=8
+  PlacedStatic name=MB13_CTL type=MbCtl addr=0x4057fb58 size=24
+  PlacedStatic name=MB13_DATA type=Mb13Data addr=0x4057fb38 size=8
+  PlacedStatic name=MB14_CTL type=MbCtl addr=0x4057fb98 size=24
+  PlacedStatic name=MB14_DATA type=Mb14Data addr=0x4057fb78 size=8
+  PlacedStatic name=MB15_CTL type=MbCtl addr=0x4057fbd8 size=24
+  PlacedStatic name=MB15_DATA type=Mb15Data addr=0x4057fbb8 size=8
+  PlacedStatic name=MB16_CTL type=MbCtl addr=0x4057fc18 size=24
+  PlacedStatic name=MB16_DATA type=Mb16Data addr=0x4057fbf8 size=8
+  PlacedStatic name=MB17_CTL type=MbCtl addr=0x4057fc58 size=24
+  PlacedStatic name=MB17_DATA type=Mb17Data addr=0x4057fc38 size=8
+  PlacedStatic name=MB18_CTL type=MbCtl addr=0x4057fc98 size=24
+  PlacedStatic name=MB18_DATA type=Mb18Data addr=0x4057fc78 size=8
+  PlacedStatic name=MB19_CTL type=MbCtl addr=0x4057fcd8 size=24
+  PlacedStatic name=MB19_DATA type=Mb19Data addr=0x4057fcb8 size=8
+  PlacedStatic name=MB1_CTL type=MbCtl addr=0x40541080 size=24
+  PlacedStatic name=MB1_DATA type=Mb1Data addr=0x40541040 size=64
+  PlacedStatic name=MB20_CTL type=MbCtl addr=0x4057fd18 size=24
+  PlacedStatic name=MB20_DATA type=Mb20Data addr=0x4057fcf8 size=8
+  PlacedStatic name=MB21_CTL type=MbCtl addr=0x4057fd58 size=24
+  PlacedStatic name=MB21_DATA type=Mb21Data addr=0x4057fd38 size=8
+  PlacedStatic name=MB22_CTL type=MbCtl addr=0x4057fd98 size=24
+  PlacedStatic name=MB22_DATA type=Mb22Data addr=0x4057fd78 size=8
+  PlacedStatic name=MB23_CTL type=MbCtl addr=0x4057fdd8 size=24
+  PlacedStatic name=MB23_DATA type=Mb23Data addr=0x4057fdb8 size=8
+  PlacedStatic name=MB24_CTL type=MbCtl addr=0x4057fe18 size=24
+  PlacedStatic name=MB24_DATA type=Mb24Data addr=0x4057fdf8 size=8
+  PlacedStatic name=MB25_CTL type=MbCtl addr=0x4057fe58 size=24
+  PlacedStatic name=MB25_DATA type=Mb25Data addr=0x4057fe38 size=8
+  PlacedStatic name=MB26_CTL type=MbCtl addr=0x4057fe98 size=24
+  PlacedStatic name=MB26_DATA type=Mb26Data addr=0x4057fe78 size=8
+  PlacedStatic name=MB27_CTL type=MbCtl addr=0x4057fed8 size=24
+  PlacedStatic name=MB27_DATA type=Mb27Data addr=0x4057feb8 size=8
+  PlacedStatic name=MB28_CTL type=MbCtl addr=0x4057ff18 size=24
+  PlacedStatic name=MB28_DATA type=Mb28Data addr=0x4057fef8 size=8
+  PlacedStatic name=MB29_CTL type=MbCtl addr=0x4057ff58 size=24
+  PlacedStatic name=MB29_DATA type=Mb29Data addr=0x4057ff38 size=8
+  PlacedStatic name=MB2_CTL type=MbCtl addr=0x405410e0 size=24
+  PlacedStatic name=MB2_DATA type=Mb2Data addr=0x405410a0 size=64
+  PlacedStatic name=MB30_CTL type=MbCtl addr=0x4057ff98 size=24
+  PlacedStatic name=MB30_DATA type=Mb30Data addr=0x4057ff78 size=8
+  PlacedStatic name=MB31_CTL type=MbCtl addr=0x4057ffd8 size=24
+  PlacedStatic name=MB31_DATA type=Mb31Data addr=0x4057ffb8 size=8
+  PlacedStatic name=MB3_CTL type=MbCtl addr=0x4057f8d8 size=24
+  PlacedStatic name=MB3_DATA type=Mb3Data addr=0x4057f8b8 size=8
+  PlacedStatic name=MB4_CTL type=MbCtl addr=0x4057f918 size=24
+  PlacedStatic name=MB4_DATA type=Mb4Data addr=0x4057f8f8 size=8
+  PlacedStatic name=MB5_CTL type=MbCtl addr=0x4057f958 size=24
+  PlacedStatic name=MB5_DATA type=Mb5Data addr=0x4057f938 size=8
+  PlacedStatic name=MB6_CTL type=MbCtl addr=0x4057f998 size=24
+  PlacedStatic name=MB6_DATA type=Mb6Data addr=0x4057f978 size=8
+  PlacedStatic name=MB7_CTL type=MbCtl addr=0x4057f9d8 size=24
+  PlacedStatic name=MB7_DATA type=Mb7Data addr=0x4057f9b8 size=8
+  PlacedStatic name=MB8_CTL type=MbCtl addr=0x4057fa18 size=24
+  PlacedStatic name=MB8_DATA type=Mb8Data addr=0x4057f9f8 size=8
+  PlacedStatic name=MB9_CTL type=MbCtl addr=0x4057fa58 size=24
+  PlacedStatic name=MB9_DATA type=Mb9Data addr=0x4057fa38 size=8
   PlacedStatic name=PARK type=ParkMmio addr=0x8002000 size=8
   PlacedStatic name=PENDING type=PendingPage addr=0x40007000 size=24
   PlacedStatic name=RELEASE type=ParkMmio addr=0x8003000 size=8
-  PlacedStatic name=RINGS_CTL type=RingsCtl addr=0x4057ffe0 size=24
-  PlacedStatic name=RINGS_DATA type=RingsData addr=0x4057fff8 size=8
-  PlacedStatic name=RT type=RuntimeTables addr=0x4057f6b8 size=128
-  PlacedStatic name=SCHED type=SchedStripe addr=0x40540080 size=16
+  PlacedStatic name=RINGS_CTL type=RingsCtl addr=0x40541170 size=144
+  PlacedStatic name=RINGS_DATA type=RingsData addr=0x40541200 size=384
+  PlacedStatic name=RT type=RuntimeTables addr=0x40540000 size=4096
+  PlacedStatic name=SCHED type=SchedStripe addr=0x405410f8 size=120
   PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000100 size=21
-  PlacedStatic name=WAKE type=WakeTables addr=0x4057ffd8 size=8
+  PlacedStatic name=WAKE type=WakeTables addr=0x4057fff8 size=8
   PlacedStatics count=82 fixed=CLOCK,CONSOLE_DATA,CONSOLE_RING,EXIT,GROUPS,MACHINE_INFO,MB0_CTL,MB0_DATA,MB10_CTL,MB10_DATA,MB11_CTL,MB11_DATA,MB12_CTL,MB12_DATA,MB13_CTL,MB13_DATA,MB14_CTL,MB14_DATA,MB15_CTL,MB15_DATA,MB16_CTL,MB16_DATA,MB17_CTL,MB17_DATA,MB18_CTL,MB18_DATA,MB19_CTL,MB19_DATA,MB1_CTL,MB1_DATA,MB20_CTL,MB20_DATA,MB21_CTL,MB21_DATA,MB22_CTL,MB22_DATA,MB23_CTL,MB23_DATA,MB24_CTL,MB24_DATA,MB25_CTL,MB25_DATA,MB26_CTL,MB26_DATA,MB27_CTL,MB27_DATA,MB28_CTL,MB28_DATA,MB29_CTL,MB29_DATA,MB2_CTL,MB2_DATA,MB30_CTL,MB30_DATA,MB31_CTL,MB31_DATA,MB3_CTL,MB3_DATA,MB4_CTL,MB4_DATA,MB5_CTL,MB5_DATA,MB6_CTL,MB6_DATA,MB7_CTL,MB7_DATA,MB8_CTL,MB8_DATA,MB9_CTL,MB9_DATA,PARK,PENDING,RELEASE,RINGS_CTL,RINGS_DATA,RT,SCHED,TEST_LINE_BUF,WAKE spans=3
   Actor name=Sink mailbox=1 slot=24 frame=64 state=8
   Actor name=Near mailbox=4 slot=16 frame=304 state=8

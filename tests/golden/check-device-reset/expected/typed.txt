@@ -44,7 +44,8 @@ Program
         Let name=claimed ty=DriverClaimedDevice[VirtioBlock]
           Intrinsic key=Device.claim type_arg=VirtioBlock ty=DriverClaimedDevice[VirtioBlock]
             Arg label=cap
-              Local name=cap ty=DeviceCap[VirtioBlock]
+              Take ty=DeviceCap[VirtioBlock]
+                Local name=cap ty=DeviceCap[VirtioBlock]
         Assign
           Field name=irq_regs ty=Mmio[VirtioIrqMmio]
             Local name=self ty=BlkDriver
@@ -55,7 +56,8 @@ Program
           Try ty=FeaturesAcceptedDevice[VirtioBlock]
             Intrinsic key=Device.negotiate type_arg=VirtioBlock ty=Result[FeaturesAcceptedDevice[VirtioBlock], BootError]
               Receiver
-                Local name=claimed ty=DriverClaimedDevice[VirtioBlock]
+                Take ty=DriverClaimedDevice[VirtioBlock]
+                  Local name=claimed ty=DriverClaimedDevice[VirtioBlock]
               Arg label=required
                 List ty=[Feature; 1]
                   EnumConstruct enum=Feature variant=Flush ty=Feature
@@ -68,7 +70,8 @@ Program
           Try ty=VirtQueue[..8]
             Intrinsic key=VirtQueue.configure type_arg=VirtioBlock ty=Result[VirtQueue[..8], BootError]
               Arg label=pool
-                Local name=control_pool ty=DmaPool[BlockControl, 512]
+                Take ty=DmaPool[BlockControl, 512]
+                  Local name=control_pool ty=DmaPool[BlockControl, 512]
               Arg label=device
                 Local name=negotiated ty=FeaturesAcceptedDevice[VirtioBlock]
               Arg label=index
@@ -84,14 +87,16 @@ Program
             Local name=self ty=BlkDriver
           Intrinsic key=Device.start type_arg=VirtioBlock ty=RunningDevice[VirtioBlock]
             Receiver
-              Local name=negotiated ty=QueuesConfiguredDevice[VirtioBlock]
+              Take ty=QueuesConfiguredDevice[VirtioBlock]
+                Local name=negotiated ty=QueuesConfiguredDevice[VirtioBlock]
         Assign
           Field name=device ty=RunningDevice[VirtioBlock]
             Local name=self ty=BlkDriver
           Intrinsic key=Device.reset type_arg=VirtioBlock ty=RunningDevice[VirtioBlock]
             Receiver
-              Field name=device ty=RunningDevice[VirtioBlock]
-                Local name=self ty=BlkDriver
+              Take ty=RunningDevice[VirtioBlock]
+                Field name=device ty=RunningDevice[VirtioBlock]
+                  Local name=self ty=BlkDriver
             Arg label=queue
               Field name=queue ty=VirtQueue[..8]
                 Local name=self ty=BlkDriver

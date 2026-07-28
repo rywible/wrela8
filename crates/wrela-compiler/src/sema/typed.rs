@@ -2,11 +2,9 @@
 //! an IR. A plain-enum mirror of `syntax::ast`'s `Expr`/`Stmt`/
 //! declaration shapes — no lowering, no CFG, no SSA, no node IDs, no
 //! arena, no `Rc`. Produced by `bodies.rs`'s expression/statement checker
-//! (`check_expr`/`check_stmt` now return a typed node instead of a bare
-//! `Type`/`()`); `access.rs`/`flow.rs`/`matches.rs` are **not** retrofitted
-//! onto this in M3 — they keep consuming the ast, peeking at a typed
-//! node's `.ty` only where they already asked `bodies::check_expr` for a
-//! `Type` (a recorded non-goal, plans/M3.md).
+//! (`check_expr`/`check_stmt` return a typed node). Post-bodies passes
+//! (`access`/`flow`/`matches`) consume this tree — not the AST — and
+//! read `.ty`, call-site modes, and spans from it.
 //!
 //! Every expression node carries its resolved `Type` (`types::Type`,
 //! reused directly — no duplicate type representation). A call carries a
@@ -43,6 +41,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::sema::types::{self, Type};
 use crate::syntax::ast::{AccessMode, BinOp, Span};
+
+/// `(struct/enum name, method name) -> inferred receiver effect` for
+/// every private plain-`self` method. Filled by `access::check`; also
+/// the check-dump lookup key.
+pub type EffectMap = BTreeMap<(String, String), AccessMode>;
 
 // --- callee keys (decision 1) --------------------------------------------
 
@@ -103,9 +106,21 @@ pub fn is_restricted_intrinsic(key: &str) -> bool {
 
 // --- expressions -----------------------------------------------------------
 
+/// One call-site argument slot: the mirrored `read`/`mut`/`take` mode
+/// plus the typed value (`None` when the call left the slot to the
+/// callee's stored default — `TypedParam::default`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypedCallArg {
+    pub mode: AccessMode,
+    pub value: Option<TypedExpr>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypedExpr {
     pub ty: Type,
+    /// Source position for post-bodies diagnostics (access/flow/match).
+    /// Omitted from `--stage=typed` dump text.
+    pub span: Span,
     pub kind: TypedExprKind,
 }
 
@@ -141,17 +156,17 @@ pub enum TypedExprKind {
     Index(Box<TypedExpr>, Box<TypedExpr>),
     /// A resolved call: `receiver` is `Some` for a method/`init` call,
     /// `None` for a plain fn/associated-fn call; `args` aligns 1:1 with
-    /// the callee's declared parameters, `None` for a slot left to the
-    /// callee's own stored default (`TypedParam::default`).
+    /// the callee's declared parameters (`TypedCallArg::value` is `None`
+    /// for a slot left to the callee's own stored default).
     Call {
         callee: CalleeKey,
         receiver: Option<Box<TypedExpr>>,
-        args: Vec<Option<TypedExpr>>,
+        args: Vec<TypedCallArg>,
     },
     /// Calling a `fn(...)`-typed value (a closure, or a plain fn/method
     /// referenced as a value): positional only, no defaults possible (a
-    /// raw `fn` type carries none).
-    CallValue(Box<TypedExpr>, Vec<TypedExpr>),
+    /// raw `fn` type carries none). Each arg keeps its call-site mode.
+    CallValue(Box<TypedExpr>, Vec<TypedCallArg>),
     /// `x.to[T]()` — a scalar-to-scalar conversion (`checked_to`/
     /// `truncate_to` still fail closed in sema, so they never reach here).
     ToScalar(Box<TypedExpr>),
@@ -179,7 +194,8 @@ pub enum TypedExprKind {
     EnumConstruct {
         enum_name: String,
         variant: String,
-        args: Vec<TypedExpr>,
+        /// Payload args with call-site access modes (usually `read`).
+        args: Vec<TypedCallArg>,
     },
     Closure {
         params: Vec<TypedClosureParam>,
@@ -308,6 +324,7 @@ pub struct TypedPattern {
     /// The type this pattern matches against (its scrutinee's type at
     /// this position) — not a "type of the pattern" in any other sense.
     pub ty: Type,
+    pub span: Span,
     pub kind: TypedPatternKind,
 }
 
@@ -334,6 +351,7 @@ pub enum TypedPatternKind {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypedStmt {
+    pub span: Span,
     pub kind: TypedStmtKind,
 }
 
@@ -750,6 +768,10 @@ pub struct TypedProgram {
     /// plans/M13.md item N: sync loops that omitted `@budget`, for the
     /// observation-discharge check (spans from body typing).
     pub unbounded_sync_loops: Vec<UnboundedSyncLoop>,
+    /// Private plain-`self` receiver effects inferred by `access::check`
+    /// (`(owner, method) -> mode`). Check-dump rendering and flow's
+    /// effective-receiver lookup read this instead of re-scanning AST.
+    pub effects: EffectMap,
     /// plans/M9.md item A1b: the declarations this module *imports*,
     /// keyed by the local (possibly aliased) spelling — the comptime
     /// evaluator's read-only window onto the rest of the build closure.
@@ -823,10 +845,9 @@ pub struct ImportedDecls {
 //
 // One node per line, two-space indent per nesting level, `Kind
 // key=value ty=<type>` in the M1 dump style (`syntax::parser`'s own
-// `dump`/`dump_expr` conventions) — no spans anywhere (a typed node has
-// none of its own; the ast's spans are exactly what this tree does not
-// carry, decision 1). `Program`'s four maps are already `BTreeMap`s, so
-// iterating each in order is deterministic.
+// `dump`/`dump_expr` conventions). Spans are carried on nodes for
+// post-bodies diagnostics but omitted from dump text. `Program`'s maps
+// are already `BTreeMap`s, so iterating each in order is deterministic.
 
 fn push_line(out: &mut String, depth: usize, line: &str) {
     out.push_str(&"  ".repeat(depth));
@@ -1134,15 +1155,17 @@ fn dump_pattern(p: &TypedPattern, depth: usize, out: &mut String) {
     }
 }
 
-fn dump_call_args(
-    args: &[Option<TypedExpr>],
-    ty_for_default: &Type,
-    depth: usize,
-    out: &mut String,
-) {
+fn dump_call_args(args: &[TypedCallArg], ty_for_default: &Type, depth: usize, out: &mut String) {
     for a in args {
-        match a {
-            Some(e) => dump_expr(e, depth, out),
+        match &a.value {
+            Some(e) => {
+                if a.mode != AccessMode::Read {
+                    push_line(out, depth, &format!("Arg mode={}", a.mode.as_str()));
+                    dump_expr(e, depth + 1, out);
+                } else {
+                    dump_expr(e, depth, out);
+                }
+            }
             None => push_line(out, depth, &format!("DefaultArg ty={}", ty(ty_for_default))),
         }
     }
@@ -1199,9 +1222,7 @@ fn dump_expr(e: &TypedExpr, depth: usize, out: &mut String) {
             push_line(out, depth, &format!("CallValue ty={t}"));
             push_line(out, depth + 1, "Callee");
             dump_expr(callee, depth + 2, out);
-            for a in args {
-                dump_expr(a, depth + 1, out);
-            }
+            dump_call_args(args, &Type::Unit, depth + 1, out);
         }
         TypedExprKind::ToScalar(inner) => {
             push_line(out, depth, &format!("ToScalar ty={t}"));
@@ -1266,9 +1287,7 @@ fn dump_expr(e: &TypedExpr, depth: usize, out: &mut String) {
                 depth,
                 &format!("EnumConstruct enum={enum_name} variant={variant} ty={t}"),
             );
-            for a in args {
-                dump_expr(a, depth + 1, out);
-            }
+            dump_call_args(args, &Type::Unit, depth + 1, out);
         }
         TypedExprKind::Closure { params, body } => {
             push_line(out, depth, &format!("Closure ty={t}"));
@@ -1657,15 +1676,17 @@ fn rekey_expr(e: &mut TypedExpr, subs: &BTreeMap<String, String>) {
                 rekey_expr(r, subs);
             }
             for a in args {
-                if let Some(a) = a {
-                    rekey_expr(a, subs);
+                if let Some(v) = a.value.as_mut() {
+                    rekey_expr(v, subs);
                 }
             }
         }
         TypedExprKind::CallValue(f, args) => {
             rekey_expr(f, subs);
             for a in args {
-                rekey_expr(a, subs);
+                if let Some(v) = a.value.as_mut() {
+                    rekey_expr(v, subs);
+                }
             }
         }
         TypedExprKind::Try(inner, conv) => {
@@ -1694,7 +1715,9 @@ fn rekey_expr(e: &mut TypedExpr, subs: &BTreeMap<String, String>) {
                 *enum_name = to.clone();
             }
             for a in args {
-                rekey_expr(a, subs);
+                if let Some(v) = a.value.as_mut() {
+                    rekey_expr(v, subs);
+                }
             }
         }
         TypedExprKind::Closure { params, body } => {

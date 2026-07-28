@@ -270,7 +270,7 @@ Module @12:1 path=examples.virtio_storage
           Name @142:25 name=DriverMode
       Then
         Fn @144:9 name=on_queue_irq
-          Receiver @144:25 mode=read
+          Receiver @144:25 mode=plain
           Body
             Assign @145:13 op==
               Name @145:13 name=status
@@ -844,7 +844,7 @@ Module @12:1 path=examples.virtio_storage
             Arg @322:52
               Name @322:52 name=lba
     Fn @324:5 name=ensure async=true
-      Receiver @324:21 mode=read
+      Receiver @324:21 mode=plain
       Param @324:27 name=disk mode=read
         TypeName @324:33 name=Actor
           TypeName @324:39 name=BlkDriver
@@ -1145,7 +1145,7 @@ Module @12:1 path=examples.virtio_storage
             Name @403:9 name=self
           Int @403:30 text=64
     Fn @405:5 name=read_file async=true
-      Receiver @405:24 mode=read
+      Receiver @405:24 mode=plain
       Param @405:30 name=ino mode=read
         TypeName @405:35 name=u32
       Param @406:24 name=out mode=take
@@ -1362,7 +1362,7 @@ Module @12:1 path=examples.virtio_storage
             Arg @445:19 mode=take
               Name @445:24 name=out
     Fn @447:5 name=write_file async=true
-      Receiver @447:25 mode=read
+      Receiver @447:25 mode=plain
       Param @447:31 name=ino mode=read
         TypeName @447:36 name=u32
       Param @448:25 name=data mode=take
@@ -1573,7 +1573,7 @@ Module @12:1 path=examples.virtio_storage
             Arg @488:19
               Unit @488:19
     Fn @490:5 name=flush async=true
-      Receiver @490:20 mode=read
+      Receiver @490:20 mode=plain
       TypeName @490:29 name=Result
         TypeName @490:36 name=unit
         TypeName @490:42 name=FsError

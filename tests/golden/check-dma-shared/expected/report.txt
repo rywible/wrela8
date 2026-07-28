@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/check_dma_shared.wr sha256=b6c61116f4dd5ffe6534b56d74de683ed2d5ba06cef1e355faab7f049f41f733
-  Input path=<generated> sha256=a499c7b9e3e915a3d8f6b103cb689ae1e800a4d2f407039026becaa2e564c1bf
+  Input path=<generated> sha256=69ddeac88b30961b76e1172bac6031c9f72c187812b6fd83cae31c4f8d9253d5
   Name value=dma-shared
   Target value=Target.wrela_machine_v1
   Device index=0 type=BlockHw
@@ -60,10 +60,10 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=88908
-  Section name=rodata base=0x40515ba0 size=263
-  Section name=abort base=0x40515ca8 size=120
-  Section name=checkpoint base=0x40515d20 size=28
+  Section name=code base=0x40500050 size=106896
+  Section name=rodata base=0x4051a1e0 size=430
+  Section name=abort base=0x4051a390 size=120
+  Section name=checkpoint base=0x4051a408 size=28
   Section name=rtdata base=0x40540000 size=24
   Section name=devregs base=0x40540018 size=8
   Section name=pooldata base=0x40540020 size=256
@@ -73,7 +73,7 @@ ImageReport v0
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
   PlacedStatic name=EXIT type=ParkMmio addr=0x8001000 size=8
   PlacedStatic name=GROUPS type=GroupArena addr=0x4057f778 size=96
-  PlacedStatic name=INIT_SPAN0 type=InitSpan0Words addr=0x4057f738 size=8
+  PlacedStatic name=INIT_SPAN0 type=InitSpan0Words addr=0x40540000 size=8
   PlacedStatic name=INIT_SPAN1 type=InitSpan1Words addr=0x4057f740 size=8
   PlacedStatic name=INIT_SPAN2 type=InitSpan2Words addr=0x4057f748 size=8
   PlacedStatic name=INIT_SPAN3 type=InitSpan3Words addr=0x4057f750 size=8

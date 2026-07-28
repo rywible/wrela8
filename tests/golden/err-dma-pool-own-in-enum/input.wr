@@ -7,32 +7,13 @@ module examples.err_dma_pool_own_in_enum
 # `golden/err-dma-pool-own-mismatch` is this exact mismatch —
 # `own[BlockControl] BlkReqStatus` against
 # `img.dma_pool[BlkReqHeader](name=BlockControl, ...)` — in a fn
-# signature, rejected with the byte counts spelled out. Move the same
-# handle into an **enum variant payload** and, before this rejection, the
-# whole rule went quiet: the image checked, the pool was placed, and the
-# report rendered.
-#
-# WHY, and why it is a rejection rather than a fix.
-# `eval::image_checks::check_pool_decls` collects every `own[P] T` in the
-# build closure from `own_handles_in_closure`, which walks consts, fn
-# signatures, **struct** fields/methods/`init`s, and generic
-# instantiations. It cannot walk an enum's payloads, and not by oversight:
-# `TypedProgram::enums` is `BTreeMap<String, Vec<String>>` — variant
-# *names* only — because an enum has no body to check, so the typed tree
-# this compiler produces carries no enum payload type anywhere at all.
-# Making the rule reach here means carrying payload types into the typed
-# tree, which is a producer change to a core structure and belongs to
-# **plans/M7.md item E** — the item that makes an `own[P] T` handle exist
-# at runtime, and the first that could want one in an enum.
-#
-# Refused at the declaration meanwhile, because an unchecked pool binding
-# is exactly the "handle names a slot of the wrong shape for a device to
-# read or write" that the sibling golden's own diagnostic describes.
-#
-# Nothing legitimate is blocked today: every `own[P] T` in the docs' own
-# aspirational driver (`docs/language/examples/virtio-storage.wr`) is a
-# parameter, a return type, a struct field, an `Option` field or an array
-# element, and all five are walked.
+# signature, rejected with the byte counts spelled out. The same handle
+# in an **enum variant payload** used to escape that walk: historically
+# `TypedProgram::enums` was names-only and a declaration-site ban refused
+# the shape instead. Enums now carry `variant_payload_types`, so
+# `own_handles_in_closure` walks them and `check_pool_decls` rejects
+# this at report time with the same pool-binding diagnostic as the
+# sibling golden.
 
 @layout(dma, endian=little)
 struct BlkReqHeader:

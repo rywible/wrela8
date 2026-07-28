@@ -1,0 +1,565 @@
+# Census allowlists (plans/M9–M13 ratchets).
+# Loaded by crates/wrela-compiler/src/census.rs and xtask corpus pins.
+# Update deliberately in the same commit that changes a locked surface.
+
+[internal_error]
+total = 205
+
+[internal_error.sites_by_file]
+"layout.rs" = 58
+"layout/harness.rs" = 27
+"layout/boot_init.rs" = 11
+"layout/rtdata.rs" = 2
+"eval/interp.rs" = 85
+"lower.rs" = 5
+"codegen.rs" = 4
+"eval/mod.rs" = 2
+"placement.rs" = 2
+"sema/mod.rs" = 3
+"sema/specialize.rs" = 2
+"sema/types.rs" = 2
+"flowwir_lower.rs" = 1
+"sema/typed.rs" = 1
+
+[emitted_a64]
+encode_enc_site_total = 449
+floor_sum_of_rows = 67
+floor_words = 52
+image_static_sum_of_rows = 0
+not_yet_migrated_sum_of_rows = 0
+unclassified_sum_of_rows = 23
+grand_total_sum_of_rows = 90
+backend_emitters = ["codegen.rs::emit_one", "codegen.rs::emit_mem_addr", "codegen.rs::emit_mem_load", "codegen.rs::emit_mem_store", "codegen.rs::emit_format_scalar", "codegen.rs::emit_string_concat", "codegen.rs::emit_index_addr", "codegen.rs::emit_bytes_index_addr", "codegen.rs::emit_placed_index_addr", "codegen.rs::emit_arith_checked", "codegen.rs::emit_arith_wrapping", "codegen.rs::emit_div_rem", "codegen.rs::emit_shift", "codegen.rs::emit_convert", "codegen.rs::emit_prologue", "codegen.rs::emit_epilogue", "codegen.rs::emit_interrupt_cell_addr", "codegen.rs::emit_interrupt_cell_rmw", "codegen.rs::emit_async_entry", "codegen.rs::emit_async_epilogue", "codegen.rs::emit_group_create", "codegen.rs::emit_group_start", "codegen.rs::emit_group_close", "codegen.rs::emit_flow_op", "codegen.rs::emit_group_cancelled_flags", "codegen.rs::emit_async_cancelled_tail", "codegen.rs::emit_compose_group_join_result", "codegen.rs::emit_group_addr_from_temp", "codegen.rs::emit_await_suspend", "codegen.rs::emit_await_resume", "codegen.rs::emit_checkpoint_cancellation_test", "codegen.rs::emit_copy_staged_reply", "codegen.rs::emit_recompose_staged_result", "codegen.rs::emit_compose_staged_reply", "codegen.rs::emit_compose_from_reply_tag", "codegen.rs::emit_transition", "codegen.rs::emit_flat_entry", "codegen.rs::emit_flowwir_fn", "codegen.rs::emit_fn", "codegen.rs::emit_marshal_and_call", "codegen.rs::emit_send", "codegen.rs::emit_self_path", "codegen.rs::emit_now", "codegen.rs::push_turn_addr_from_id", "codegen.rs::emit_slotmap_mint_id"]
+non_inventory = ["layout.rs::patch_bl", "layout.rs::patch_load_imm_words", "layout.rs::patch_adrp_add", "layout.rs::layout_program", "layout/harness.rs::emitted_a64_census_live_counts", "codegen.rs::emitted_a64_census_specialization_live_counts", "layout/harness.rs::build_checkpoint_and_vector_stub", "layout/harness.rs::build_checkpoint_and_vector_stub_ex", "layout/harness.rs::install_abort_tail_floor", "codegen.rs::emit_boot_init_call", "layout/harness.rs::inject_boot_init_fn", "layout/harness.rs::inject_rt_cross_core_fns", "layout/harness.rs::shift_reloc_words", "codegen.rs::emit_checkpoint_service_trampoline", "codegen.rs::emit_checkpoint_irq_call", "codegen.rs::emit_checkpoint_wake_call", "codegen.rs::emit_driver_state_call", "layout/harness.rs::inject_checkpoint_irq_fns", "codegen.rs::emit_method_call_stub", "layout/harness.rs::inject_rt_enqueue_and_dispatch_fns", "codegen.rs::emit_test_call_stub", "codegen.rs::emit_test_prefix_stub", "layout/harness.rs::inject_test_runner_fns"]
+wrapper_emitters = []
+
+[emitted_a64.encode_enc_sites_by_file]
+"codegen.rs" = 400
+"layout.rs" = 8
+"layout/harness.rs" = 41
+
+[[emitted_a64.entries]]
+name = "push_halt"
+file = "layout/harness.rs"
+words = 15
+category = "floor"
+note = "floor cat1+cat3 halt sequence"
+
+[[emitted_a64.entries]]
+name = "build_entry_stub"
+file = "layout/harness.rs"
+words = 20
+category = "floor"
+note = "floor cat1 SP install + halt"
+
+[[emitted_a64.entries]]
+name = "build_abort_tail_codegen_fn"
+file = "layout/harness.rs"
+words = 6
+category = "floor"
+note = "floor cat4 abort long-jump"
+
+[[emitted_a64.entries]]
+name = "emit_secondary_sp_install"
+file = "codegen.rs"
+words = 5
+category = "floor"
+note = "decision 811; floor-cat1 SP prepended onto secondary trampoline"
+
+[[emitted_a64.entries]]
+name = "emit_checkpoint_lr_frame"
+file = "codegen.rs"
+words = 5
+category = "floor"
+note = "decision 821; floor-cat2 LR save/restore around BL __wrela_rt_checkpoint"
+
+[[emitted_a64.entries]]
+name = "push_load_imm"
+file = "layout/harness.rs"
+words = 4
+category = "unclassified"
+note = "micro-helper; 4 words always"
+
+[[emitted_a64.entries]]
+name = "push_abort_tail"
+file = "layout/harness.rs"
+words = 19
+category = "unclassified"
+note = "cfg(test) only; C left it for the latch probe"
+
+[[emitted_a64.entries]]
+name = "build_primary_entry_trampoline"
+file = "layout/harness.rs"
+words = 16
+category = "floor"
+note = "decision 852; SP + OFF_TEST_CONTINUATION arm + BL boot + brk"
+
+[placed_static]
+fixed_core_names = ["CLOCK", "CONSOLE_DATA", "CONSOLE_RING", "EXIT", "GROUPS", "MACHINE_INFO", "PARK", "PENDING", "RELEASE", "RINGS_CTL", "RINGS_DATA", "RT", "SCHED", "TEST_LINE_BUF", "WAKE"]
+
+[[guest_fn_key.zero_fn_dumps]]
+path = "err-boot-dma-region-handoff-group/expected/asm.txt"
+reason = "boot refuses before codegen emits fns (DMA handoff group diagnostic)"
+
+[[guest_fn_key.zero_fn_dumps]]
+path = "err-import-lower-body-helper/expected/asm.txt"
+reason = "lower refuses body-only helper before emitting fns (decision 321)"
+
+[[guest_fn_key.zero_fn_dumps]]
+path = "err-mmio-offset-out-of-reach/expected/asm.txt"
+reason = "layout/codegen refuses before emitting fns"
+
+[[guest_fn_key.zero_fn_dumps]]
+path = "err-mmio-signed-register/expected/asm.txt"
+reason = "layout/codegen refuses before emitting fns"
+
+[[guest_fn_key.zero_fn_dumps]]
+path = "err-mwir-dynamic-panic/expected/mwir.txt"
+reason = "lower refuses dynamic panic before emitting fns"
+
+[[guest_fn_key.zero_fn_dumps]]
+path = "err-mwir-if-else-scope-leak/expected/mwir.txt"
+reason = "sema/lower refuse scope leak; mwir dump is empty"
+
+[[guest_fn_key.zero_fn_dumps]]
+path = "err-send-too-many-args/expected/asm.txt"
+reason = "codegen refuses >2 scalar message args before emitting fns (M10 item D / decision 610)"
+
+[[guest_fn_key.required]]
+path = "asm-arith/expected/asm.txt"
+keys = ["checked_add", "checked_div", "mixed", "wrapping_add"]
+
+[[guest_fn_key.required]]
+path = "check-duration-field-image/expected/asm.txt"
+keys = ["Store.budget_ns", "Store.init", "ms"]
+
+[[guest_fn_key.required]]
+path = "asm-async-basic/expected/asm.txt"
+keys = ["Caller.run", "Counter.get"]
+
+[[guest_fn_key.required]]
+path = "asm-async-loop-checkpoint/expected/asm.txt"
+keys = ["Store.load", "poll_until"]
+
+[[guest_fn_key.required]]
+path = "asm-runtime-probe/expected/asm.txt"
+keys = ["__wrela_console_append_bytes", "__wrela_console_append_line_buf", "__wrela_fmt_dec", "__wrela_line_begin", "__wrela_line_commit", "__wrela_abort", "__wrela_abort_val", "__wrela_abort_tail", "__wrela_runtime_probe", "ascii_digit", "append_failed_literal", "append_newline_literal", "copy_bytes_range", "copy_line_buf_range", "finish_abort", "probe_seed"]
+
+[[guest_fn_key.required]]
+path = "asm-placed-index/expected/asm.txt"
+keys = ["read_mark", "write_mark"]
+
+[[guest_fn_key.required]]
+path = "asm-bytes-param/expected/asm.txt"
+keys = ["first_byte"]
+
+[[guest_fn_key.required]]
+path = "asm-calls/expected/asm.txt"
+keys = ["add_one", "combo", "double"]
+
+[[guest_fn_key.required]]
+path = "asm-enum-match/expected/asm.txt"
+keys = ["area"]
+
+[[guest_fn_key.required]]
+path = "asm-generic/expected/asm.txt"
+keys = ["double_identity", "fn:identity[u64]"]
+
+[[guest_fn_key.required]]
+path = "asm-loop/expected/asm.txt"
+keys = ["sum_array", "sum_to"]
+
+[[guest_fn_key.required]]
+path = "asm-struct/expected/asm.txt"
+keys = ["Point.init", "Point.shift", "Point.sum", "make_and_sum"]
+
+[[guest_fn_key.required]]
+path = "asm-take/expected/asm.txt"
+keys = ["consume", "consume_box", "use_takes"]
+
+[[guest_fn_key.required]]
+path = "boot-dma-reclaim/expected/mwir.txt"
+keys = ["BlkDriver.drain", "BlkDriver.init", "BlkDriver.on_queue_irq", "Ledger.mark", "Ledger.read_marks"]
+
+[[guest_fn_key.required]]
+path = "check-completion-outcome/expected/mwir.txt"
+keys = ["BlkDriver.abandon", "BlkDriver.init"]
+
+[[guest_fn_key.required]]
+path = "check-deriving-from-struct/expected/mwir.txt"
+keys = ["WrapError.from", "convert_wrapped", "direct_call", "parse", "settle", "guest_from"]
+
+[[guest_fn_key.required]]
+path = "check-deriving-from/expected/mwir.txt"
+keys = ["WrapError.from", "convert_wrapped", "direct_call", "parse", "settle", "guest_from"]
+
+[[guest_fn_key.required]]
+path = "check-device-claim/expected/asm.txt"
+keys = ["BlkDriver.ack_low", "BlkDriver.init", "BlkDriver.last_handled", "BlkDriver.on_queue_irq"]
+
+[[guest_fn_key.required]]
+path = "check-device-claim/expected/mwir.txt"
+keys = ["BlkDriver.ack_low", "BlkDriver.init", "BlkDriver.last_handled", "BlkDriver.on_queue_irq"]
+
+[[guest_fn_key.required]]
+path = "check-device-reset/expected/mwir.txt"
+keys = ["BlkDriver.init"]
+
+[[guest_fn_key.required]]
+path = "check-placed-machine-info/expected/asm.txt"
+keys = ["read_wall_seed"]
+
+[[guest_fn_key.required]]
+path = "check-driver-mode-irq/expected/mwir.txt"
+keys = ["struct:BlkDriver[DriverMode.Irq].drain", "struct:BlkDriver[DriverMode.Irq].init", "struct:BlkDriver[DriverMode.Irq].on_queue_irq"]
+
+[[guest_fn_key.required]]
+path = "check-driver-mode-poll/expected/mwir.txt"
+keys = ["struct:BlkDriver[DriverMode.Poll].drain", "struct:BlkDriver[DriverMode.Poll].init"]
+
+[[guest_fn_key.required]]
+path = "check-enum-method-properties/expected/asm.txt"
+keys = ["State.consume", "State.double_score", "State.finish", "State.fresh", "State.score", "State.start", "bump_state", "p_assoc", "p_chain", "p_mut_param", "p_no_clobber", "p_sibling", "p_take", "p_variant_change"]
+
+[[guest_fn_key.required]]
+path = "check-enum-methods/expected/asm.txt"
+keys = ["Cell.empty", "Cell.fill", "Cell.into_n", "Cell.value", "mut_path", "take_path", "guest_methods"]
+
+[[guest_fn_key.required]]
+path = "check-enum-methods/expected/mwir.txt"
+keys = ["Cell.empty", "Cell.fill", "Cell.into_n", "Cell.value", "mut_path", "take_path", "guest_methods"]
+
+[[guest_fn_key.required]]
+path = "check-format-bound/expected/mwir.txt"
+keys = ["Point.format", "Hue.format", "Point.max_formatted_len", "digest", "digest_small", "digest_hue", "digest_concat", "bool_digest", "as_u64", "inferred_format", "guest_format"]
+
+[[guest_fn_key.required]]
+path = "check-format-fstring-guest/expected/asm.txt"
+keys = ["Pt.format", "Store.fmt_len", "guest_fmt"]
+
+[[guest_fn_key.required]]
+path = "check-format-fstring-guest/expected/mwir.txt"
+keys = ["Pt.format", "Store.fmt_len"]
+
+[[guest_fn_key.required]]
+path = "check-await-question-mark/expected/mwir.txt"
+keys = ["AppErr.from", "Counter.bump", "Counter.get", "Probe.last", "wrap_ok"]
+
+[[guest_fn_key.required]]
+path = "check-from-explicit/expected/mwir.txt"
+keys = ["WrapError.from", "convert_wrapped", "parse", "settle", "guest_from"]
+
+[[guest_fn_key.required]]
+path = "check-fstring-bounds/expected/mwir.txt"
+keys = ["Store.init"]
+
+[[guest_fn_key.required]]
+path = "check-if-else-scoping/expected/mwir.txt"
+keys = ["conditional_use"]
+
+[[guest_fn_key.required]]
+path = "check-list-backend/expected/asm.txt"
+keys = ["Store.fill", "Store.init", "guest_list", "struct:List[u64, 2].init", "struct:List[u64, 2].len", "struct:List[u64, 2].push"]
+
+[[guest_fn_key.required]]
+path = "check-list-backend/expected/mwir.txt"
+keys = ["Store.fill", "Store.init", "struct:List[u64, 2].init", "struct:List[u64, 2].len", "struct:List[u64, 2].push"]
+
+[[guest_fn_key.required]]
+path = "check-map-take-backend/expected/asm.txt"
+keys = ["Store.init", "Store.map_ok", "Store.try_err", "bump", "double", "guest_map"]
+
+[[guest_fn_key.required]]
+path = "check-map-take-backend/expected/mwir.txt"
+keys = ["Store.init", "Store.map_ok", "Store.try_err", "bump", "double"]
+
+[[guest_fn_key.required]]
+path = "check-nested-place-assign/expected/asm.txt"
+keys = ["Holder.get", "Holder.set", "Store.init", "Store.poke", "guest_nested"]
+
+[[guest_fn_key.required]]
+path = "check-nested-place-assign/expected/mwir.txt"
+keys = ["Holder.get", "Holder.set", "Store.init", "Store.poke"]
+
+[[guest_fn_key.required]]
+path = "check-import-alias-deriving-format/expected/asm.txt"
+keys = ["Label.format", "digest", "guest_alias_format"]
+
+[[guest_fn_key.required]]
+path = "check-import-alias-deriving-from/expected/asm.txt"
+keys = ["Box.from", "direct", "guest_alias_from"]
+
+[[guest_fn_key.required]]
+path = "check-import-alias-enum-method/expected/asm.txt"
+keys = ["Hue.code", "Hue.flip", "Hue.into_code", "Hue.red", "mut_path", "take_path", "guest_alias_enum_method"]
+
+[[guest_fn_key.required]]
+path = "check-import-alias-method/expected/asm.txt"
+keys = ["Cnt.bump", "Cnt.get", "Cnt.into_n", "Cnt.zero", "mut_path", "take_path", "guest_alias_method"]
+
+[[guest_fn_key.required]]
+path = "check-import-alias-pattern/expected/asm.txt"
+keys = ["pick_annotated", "pick_constructed", "guest_alias_pattern"]
+
+[[guest_fn_key.required]]
+path = "check-import-alias-sig-dual/expected/asm.txt"
+keys = ["Grip.make", "Out.peel", "param_path", "return_path", "guest_sig_dual"]
+
+[[guest_fn_key.required]]
+path = "check-import-alias-sig-param/expected/asm.txt"
+keys = ["Grip.make", "drive", "guest_sig_param"]
+
+[[guest_fn_key.required]]
+path = "check-import-deriving-format/expected/asm.txt"
+keys = ["Tag.format", "digest", "guest_import_format"]
+
+[[guest_fn_key.required]]
+path = "check-import-enum-method/expected/asm.txt"
+keys = ["Color.code", "Color.red", "guest_enum_method"]
+
+[[guest_fn_key.required]]
+path = "check-import-lower/expected/asm.txt"
+keys = ["Pair.sum", "twice", "drive", "field_sum", "method_sum", "guest_import_lower"]
+
+[[guest_fn_key.required]]
+path = "check-import-lower/expected/mwir.txt"
+keys = ["Pair.sum", "twice", "drive", "field_sum", "method_sum", "guest_import_lower"]
+
+[[guest_fn_key.required]]
+path = "check-import-reachable-alias-generic/expected/asm.txt"
+keys = ["wrap_box", "peel_box", "drive", "Store.guest_reachable"]
+
+[[guest_fn_key.required]]
+path = "check-import-reachable-alias/expected/asm.txt"
+keys = ["Builder.build", "drive", "guest_reachable"]
+
+[[guest_fn_key.required]]
+path = "check-import-reachable-chain/expected/asm.txt"
+keys = ["A.make", "B.get", "drive", "guest_reachable"]
+
+[[guest_fn_key.required]]
+path = "check-import-reachable-enum-payload/expected/asm.txt"
+keys = ["make", "drive", "guest_reachable"]
+
+[[guest_fn_key.required]]
+path = "check-import-reachable-field-generic/expected/asm.txt"
+keys = ["Maker.hold", "Maker.wrap", "drive", "Store.guest_reachable"]
+
+[[guest_fn_key.required]]
+path = "check-import-reachable-only/expected/asm.txt"
+keys = ["Store.bump", "Store.init", "used"]
+
+[[guest_fn_key.required]]
+path = "check-import-reachable-only/expected/mwir.txt"
+keys = ["Store.bump", "Store.init", "used"]
+
+[[guest_fn_key.required]]
+path = "check-import-reachable-private/expected/asm.txt"
+keys = ["Maker.build", "drive", "guest_reachable"]
+
+[[guest_fn_key.required]]
+path = "check-import-reachable-type/expected/asm.txt"
+keys = ["Maker.build", "drive", "guest_reachable"]
+
+[[guest_fn_key.required]]
+path = "check-interrupt-cell/expected/mwir.txt"
+keys = ["BlkDriver.drain", "BlkDriver.init", "BlkDriver.on_queue_irq"]
+
+[[guest_fn_key.required]]
+path = "check-receipt-handoff/expected/mwir.txt"
+keys = ["BlkDriver.init", "BlkDriver.submit_read"]
+
+[[guest_fn_key.required]]
+path = "check-slotmap-backend/expected/asm.txt"
+keys = ["Store.insert_one", "guest_slotmap", "struct:SlotMap[u64, 2].contains", "struct:SlotMap[u64, 2].init", "struct:SlotMap[u64, 2].insert"]
+
+[[guest_fn_key.required]]
+path = "check-slotmap-backend/expected/mwir.txt"
+keys = ["Store.insert_one", "struct:SlotMap[u64, 2].contains", "struct:SlotMap[u64, 2].init", "struct:SlotMap[u64, 2].insert"]
+
+[[guest_fn_key.required]]
+path = "check-stdlib-loaded/expected/mwir.txt"
+keys = ["sample"]
+
+[[guest_fn_key.required]]
+path = "check-string-bound/expected/mwir.txt"
+keys = ["occupied", "byte0", "byte1", "probe", "guest_string"]
+
+[[guest_fn_key.required]]
+path = "check-untrusted-narrow-index/expected/asm.txt"
+keys = ["good"]
+
+[[guest_fn_key.required]]
+path = "check-untrusted-narrow-index/expected/mwir.txt"
+keys = ["good"]
+
+[[guest_fn_key.required]]
+path = "check-untrusted-narrowing/expected/asm.txt"
+keys = ["narrow", "use_ok"]
+
+[[guest_fn_key.required]]
+path = "check-untrusted-narrowing/expected/mwir.txt"
+keys = ["narrow", "use_ok"]
+
+[[guest_fn_key.required]]
+path = "check-untrusted-try/expected/asm.txt"
+keys = ["narrow"]
+
+[[guest_fn_key.required]]
+path = "check-untrusted-try/expected/mwir.txt"
+keys = ["narrow"]
+
+[[guest_fn_key.required]]
+path = "mwir-arith/expected/mwir.txt"
+keys = ["checked_add", "checked_div", "mixed", "wrapping_add"]
+
+[[guest_fn_key.required]]
+path = "mwir-calls/expected/mwir.txt"
+keys = ["add_one", "combo", "double"]
+
+[[guest_fn_key.required]]
+path = "mwir-enum-match/expected/mwir.txt"
+keys = ["area"]
+
+[[guest_fn_key.required]]
+path = "mwir-generic/expected/mwir.txt"
+keys = ["double_identity", "fn:identity[u64]"]
+
+[[guest_fn_key.required]]
+path = "mwir-loop/expected/mwir.txt"
+keys = ["sum_array", "sum_to"]
+
+[[guest_fn_key.required]]
+path = "mwir-struct/expected/mwir.txt"
+keys = ["Point.init", "Point.shift", "Point.sum", "make_and_sum"]
+
+[[guest_fn_key.required]]
+path = "mwir-take/expected/mwir.txt"
+keys = ["consume", "consume_box", "use_takes"]
+
+[[corpus_sema.pins]]
+key = "8949ad8e2912"
+loc = "docs/language/02-language.md:43"
+kind = "ok"
+
+[[corpus_sema.pins]]
+key = "91f2c87cf267"
+loc = "docs/language/02-language.md:150"
+kind = "ok"
+
+[[corpus_sema.pins]]
+key = "be05640fe581"
+loc = "docs/language/02-language.md:185"
+kind = "ok"
+
+[[corpus_sema.pins]]
+key = "ae1b6fca2a64"
+loc = "docs/language/02-language.md:206"
+kind = "disagreement"
+gap = "values.regions.two-binding-disciplines"
+
+[[corpus_sema.pins]]
+key = "dd7b0c3dadfe"
+loc = "docs/language/02-language.md:250"
+kind = "ok"
+
+[[corpus_sema.pins]]
+key = "af47d81c4f9f"
+loc = "docs/language/02-language.md:314"
+kind = "ok"
+
+[[corpus_sema.pins]]
+key = "5bc7a67c7fee"
+loc = "docs/language/02-language.md:331"
+kind = "ok"
+
+[[corpus_sema.pins]]
+key = "b49b24ba36e0"
+loc = "docs/language/02-language.md:348"
+kind = "ok"
+
+[[corpus_sema.pins]]
+key = "7595bd03723a"
+loc = "docs/language/02-language.md:370"
+kind = "ok"
+
+[[corpus_sema.pins]]
+key = "8e5ee656b323"
+loc = "docs/language/02-language.md:396"
+kind = "ok"
+
+[[corpus_sema.pins]]
+key = "d81156810e9a"
+loc = "docs/language/02-language.md:410"
+kind = "ok"
+
+[[corpus_sema.pins]]
+key = "8d7336ba95d3"
+loc = "docs/language/02-language.md:458"
+kind = "ok"
+
+[[corpus_sema.pins]]
+key = "b05b056b05b1"
+loc = "docs/language/02-language.md:473"
+kind = "ok"
+
+[[corpus_sema.pins]]
+key = "276e58180606"
+loc = "docs/language/02-language.md:556"
+kind = "ok"
+
+[[corpus_sema.pins]]
+key = "f56a6f9b7f60"
+loc = "docs/language/02-language.md:604"
+kind = "ok"
+
+[[corpus_sema.pins]]
+key = "ca57644b1058"
+loc = "docs/language/02-language.md:698"
+kind = "disagreement"
+gap = "actors.messages.take-non-own-resource"
+
+[[corpus_sema.pins]]
+key = "7c68d809d413"
+loc = "docs/language/02-language.md:721"
+kind = "ok"
+
+[[corpus_sema.pins]]
+key = "84c332141ae2"
+loc = "docs/language/02-language.md:734"
+kind = "ok"
+
+[[corpus_sema.pins]]
+key = "6e8e60909180"
+loc = "docs/language/02-language.md:870"
+kind = "ok"
+
+[[corpus_sema.pins]]
+key = "aefff425cad3"
+loc = "docs/language/03-hardware.md:51"
+kind = "ok"
+
+[[corpus_sema.pins]]
+key = "f4ee6fe571a7"
+loc = "docs/language/03-hardware.md:86"
+kind = "ok"
+
+[[corpus_sema.pins]]
+key = "4ab31cc43898"
+loc = "docs/language/03-hardware.md:136"
+kind = "ok"
+
+[[corpus_sema.pins]]
+key = "5bbef735fe9c"
+loc = "docs/language/03-hardware.md:227"
+kind = "ok"
+
+[[corpus_sema.pins]]
+key = "f0f2c62e8a44"
+loc = "docs/language/03-hardware.md:271"
+kind = "ok"
+
+[[corpus_sema.pins]]
+key = "19e016849751"
+loc = "docs/language/03-hardware.md:305"
+kind = "ok"

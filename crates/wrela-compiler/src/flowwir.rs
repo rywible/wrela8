@@ -299,7 +299,13 @@ pub enum Transition {
 }
 
 /// What a `Transition::Await` actually awaits (02-language.md §9.4/§9.5):
-/// an actor-handle method call, or a group's own `join_all()`.
+/// an actor-handle method call, a group's own `join_all()`, or a
+/// `Receipt[P]`.
+///
+/// **Hard cap:** these three variants are the closed set. Do not add
+/// peephole/`Suspend`/`ResumeCompose` synthetic MWIR Insts unless an
+/// addition deletes real code in `flowwir_lower` / async codegen — the
+/// await transition *is* the suspension representation (module doc).
 #[derive(Debug, Clone, PartialEq)]
 pub enum AwaitKind {
     /// `target_temp` is the already-lowered `Actor[T]` handle value (a

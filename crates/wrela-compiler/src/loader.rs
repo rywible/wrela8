@@ -430,11 +430,9 @@ pub fn module_mentions_time(module: &Module) -> bool {
 }
 
 /// Names item E keeps prelude-visible while their implementations live
-/// in `stdlib/core/time.wr`. `now` is deliberately absent: it stays a
-/// sealed intrinsic (05 §5).
-pub const TIME_PRELUDE_NAMES: &[&str] = &[
-    "Duration", "Instant", "ns", "us", "ms", "seconds", "minutes", "hours",
-];
+/// in `stdlib/core/time.wr`. Canonical slice lives in
+/// [`crate::sema::prelude_scope::TIME_PRELUDE_NAMES`].
+pub use crate::sema::prelude_scope::TIME_PRELUDE_NAMES;
 
 /// Ensures `core.time` is present in `modules`. Idempotent when the
 /// closure already imported it explicitly.

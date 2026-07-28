@@ -650,100 +650,48 @@ pub enum Inst {
         driver: String,
     },
 
-    /// `VirtQueue.prepare_block` (plans/M7.md item E4 / decisions 20–22):
-    /// copy the header and status into the control-pool packaging area,
-    /// record the payload address / length / direction in the meta slot,
-    /// and mint a `QueueOp` word = absolute address of that meta record
-    /// (the ring still uses descriptor head 0 for single-flight).
-    /// `payload_len` is the `@layout(dma)` size of the own'd type — the
-    /// descriptor length the device model validates against `SECTOR_SIZE`.
-    QueuePrepare {
+    /// 05-library.md §7: mint a fresh non-wrapping `SlotMap` instance id
+    /// into field 0 (`map_id`) of `map`. Emitted from lower at every
+    /// `SlotMap` construction site (after `init`), never recognized by
+    /// callee-key string match in codegen.
+    SlotMapMint {
+        map: Temp,
+    },
+
+    /// Guest DRAM/MMIO load: `dst = load_width(*(base + offset))`.
+    /// Queue / ring sequences lower to these (plus `PtrOffset` /
+    /// `Project` / arithmetic) rather than megainsts in codegen.
+    MemLoad {
         dst: Temp,
-        queue: Temp,
-        permit: Temp,
-        header: Temp,
-        payload: Temp,
-        status: Temp,
-        device_writes: bool,
-        payload_len: u32,
+        base: Temp,
+        offset: u64,
+        width: u8,
     },
-
-    /// `VirtQueue.publish` (plans/M7.md item E3/E4, 03-hardware.md §3/§5,
-    /// decision 15/16/20): the sealed ring-write sequence in normative
-    /// order. `steps` is exactly `virtqueue::PUBLISH_WRITE_ORDER`. Real
-    /// DRAM stores against pool-backed addresses (decision 20). `dst` is
-    /// the minted `Receipt[P]` word (same identity as the operation).
-    QueuePublish {
+    /// Guest DRAM/MMIO store: `*(base + offset) = trunc_width(value)`.
+    MemStore {
+        base: Temp,
+        offset: u64,
+        value: Temp,
+        width: u8,
+    },
+    /// `dst = base + offset` (pointer / address arithmetic).
+    PtrOffset {
         dst: Temp,
-        queue: Temp,
-        operation: Temp,
-        steps: &'static [&'static str],
+        base: Temp,
+        offset: u64,
     },
-
-    /// `VirtQueue.drain` (plans/M7.md item E4, 03-hardware.md §4/§6):
-    /// acquire used-ring visibility, validate the device-reported id
-    /// against generation/epoch, check the reported length, resolve the
-    /// matching receipt (wake its waiter with an `IoCompletion[P]`).
-    /// `max` is the bounded drain count from source.
-    QueueDrain {
-        queue: Temp,
-        max: u16,
-    },
-
-    /// `VirtQueue.suppress_interrupts` (03-hardware.md §7 / poll builds):
-    /// set `VIRTQ_AVAIL_F_NO_INTERRUPT` on the available ring.
-    QueueSuppressInterrupts {
-        queue: Temp,
-    },
-
-    /// `VirtQueue.claim(receipt=take r)` (plans/M7.md item E4 / decision 22):
-    /// sync claim of a drain-resolved receipt's `IoCompletion` stash — the
-    /// bottom-half dual of `await receipt` when the driver holds the
-    /// receipt itself (no parked waiter). Aborts if the meta is not
-    /// `RESOLVED`.
-    QueueClaim {
+    /// `Option[TurnId]` → absolute turn-area address via layout relocs
+    /// (`TurnStride` / `TurnsBase`). Used by lowered `VirtQueue.drain`
+    /// when waking a parked waiter / writing a reply stage.
+    TurnAddrFromId {
         dst: Temp,
-        queue: Temp,
-        receipt: Temp,
+        id: Temp,
     },
-
-    /// `VirtQueue.recover(receipt=take r)` (plans/M8.md item G / decision 17,
-    /// 03-hardware.md §5's `Recovery` state / §9's `CompletionOutcome`):
-    /// resolve a receipt through the recovery path and produce the outcome
-    /// tag. Reads the slot's stamped epoch against the queue's live epoch
-    /// and the slot's flags; returns **no payload** (§9: never reclaim
-    /// possibly device-owned memory).
-    QueueRecover {
-        dst: Temp,
-        queue: Temp,
-        receipt: Temp,
-    },
-
-    /// `VirtQueue.reclaim(pool=P, payload=T)` (plans/M8.md item F /
-    /// decision 37, 03-hardware.md §9's "and only then is memory
-    /// reclaimed"): hand the quarantined slot's `own[P] T` handle back,
-    /// but only once the **host** has recorded a device quiescence since
-    /// `recover` quarantined it. Takes no receipt — `recover` consumed
-    /// that (§5: a receipt resolves exactly once) and the queue is
-    /// single-flight, so the quarantined slot is the queue's own meta
-    /// record. Aborts by name when nothing is quarantined, and when the
-    /// quiesce count has not moved.
-    QueueReclaim {
-        dst: Temp,
-        queue: Temp,
-    },
-
-    /// `RunningDevice.reset(queue=mut q)` (plans/M7.md item H2b / decision 23,
-    /// 03-hardware.md §9): full device reset on machine v1. Consumes
-    /// `Running`, bumps the queue's live epoch (invalidating every prior
-    /// receipt), and yields `Running` again — claim/negotiate/start are
-    /// authority-only on this target, so re-walking them would invent a
-    /// second configure path for a queue that already exists. Per-queue
-    /// reset is a typed rejection (`VirtQueue.reset`), not this inst.
-    DeviceReset {
-        dst: Temp,
-        device: Temp,
-        queue: Temp,
+    /// Unconditional abort with a fixed message (no `"assertion failed"`
+    /// prefix). Driver-fault paths from lowered queue ops use this;
+    /// `AssertFail` keeps the assert/panic wording.
+    Abort {
+        message: String,
     },
 
     /// Unconditional abandonment: `assert`'s own failure path, an
@@ -1220,6 +1168,190 @@ pub fn size_of(ty: &Type, ctx: &LayoutCtx) -> Result<usize, String> {
     }
 }
 
+/// Strip `Static` wrappers for offset math (does **not** unwrap `Own` —
+/// `own[P] T` is one word; field offsets look through the handle, not the
+/// payload). Same rule as codegen's former `strip_wrappers`.
+fn strip_static(ty: &Type) -> &Type {
+    match ty {
+        Type::Static(inner) => strip_static(inner),
+        other => other,
+    }
+}
+
+/// 05-library.md §7 / `Inst::SlotMapMint`: true for the plain name and
+/// for rendered instantiation keys (`SlotMap[u64, 2]`).
+pub fn is_slotmap_type_name(name: &str) -> bool {
+    name == "SlotMap" || name.starts_with("SlotMap[")
+}
+
+/// True when `ty` is a `SlotMap[..]` (`Static` wrappers stripped).
+pub fn is_slotmap_type(ty: &Type) -> bool {
+    matches!(strip_static(ty), Type::Named(n, _) if is_slotmap_type_name(n))
+}
+
+/// Byte offset and size of field/element `index` inside an already-built
+/// aggregate of type `base_ty` (`Project`/`SetField`'s compile-time-known
+/// offset). Single authority next to `size_of` — codegen calls this.
+pub fn field_offset(
+    base_ty: &Type,
+    index: usize,
+    ctx: &LayoutCtx,
+) -> Result<(usize, usize), String> {
+    match strip_static(base_ty) {
+        Type::Tuple(elems) => {
+            let mut off = 0usize;
+            for e in &elems[..index] {
+                off += size_of(e, ctx)?;
+            }
+            let sz = size_of(&elems[index], ctx)?;
+            Ok((off, sz))
+        }
+        Type::Array(elem, _) => {
+            let sz = size_of(elem, ctx)?;
+            Ok((sz * index, sz))
+        }
+        // plans/M9.md item C1: slot 0 = occupied length (usize); slots
+        // 1..=N = byte payload. Each occupies one SLOT.
+        Type::String(n_expr) => {
+            let n = crate::sema::bodies::literal_array_len(n_expr).ok_or_else(|| {
+                "a `String[..N]` capacity that is not a literal is not supported".to_string()
+            })?;
+            let n = usize::try_from(n).map_err(|_| "String capacity out of range".to_string())?;
+            if index > n {
+                return Err(format!(
+                    "`String[..{n}]` project index {index} out of range"
+                ));
+            }
+            Ok((8 * index, 8))
+        }
+        // plans/M10.md item B4: word 0 = base (not source-visible as a
+        // field), word 1 = capacity (`Bytes.len`).
+        Type::Bytes(None) => {
+            if index > 1 {
+                return Err(format!("`Bytes` project index {index} out of range"));
+            }
+            Ok((8 * index, 8))
+        }
+        Type::Named(name, targs) => {
+            // plans/M7.md item E4: `IoCompletion[P]` is a real aggregate
+            // (payload + status + written_len), not a sealed one-word
+            // authority type.
+            if name == "IoCompletion" {
+                let Some(crate::sema::types::TypeArg::Type(payload)) = targs.first() else {
+                    return Err("`IoCompletion` with no payload type".to_string());
+                };
+                let fields = [
+                    payload.clone(),
+                    Type::Result(
+                        Box::new(Type::Unit),
+                        Box::new(Type::Named("IoError".to_string(), vec![])),
+                    ),
+                    Type::Named(
+                        "Untrusted".to_string(),
+                        vec![crate::sema::types::TypeArg::Type(Type::Usize)],
+                    ),
+                ];
+                if index >= fields.len() {
+                    return Err(format!("`IoCompletion` field index {index} out of range"));
+                }
+                let mut off = 0usize;
+                for f in &fields[..index] {
+                    off += size_of(f, ctx)?;
+                }
+                let sz = size_of(&fields[index], ctx)?;
+                return Ok((off, sz));
+            }
+            // plans/M7.md item G, decision 18: look up by rendered type.
+            let key = if targs.is_empty() {
+                name.clone()
+            } else {
+                crate::sema::types::render_type(&Type::Named(name.clone(), targs.to_vec()))
+            };
+            let fields = ctx
+                .structs
+                .get(&key)
+                .ok_or_else(|| format!("unknown struct `{key}`"))?;
+            let mut off = 0usize;
+            for f in &fields[..index] {
+                off += size_of(f, ctx)?;
+            }
+            let sz = size_of(&fields[index], ctx)?;
+            Ok((off, sz))
+        }
+        other => Err(format!(
+            "`Project`/`SetField` base is not an aggregate type: {other:?}"
+        )),
+    }
+}
+
+/// Byte offset of enum payload slot `index`, past the 8-byte tag —
+/// `EnumPayload`/`MakeEnum` never carry *which variant* is live, only
+/// `base`/`src`'s own enum type, so a specific payload slot's offset is
+/// computed the same way regardless of which variant actually built the
+/// value (mirroring `size_of`'s "every variant's payload lives at the
+/// identical fixed offset" invariant): slot `j`'s own width is the
+/// *widest* field at position `j` across every variant that has one
+/// there.
+pub fn enum_payload_offset(base_ty: &Type, index: usize, ctx: &LayoutCtx) -> Result<usize, String> {
+    const TAG: usize = 8;
+    let variants: Vec<Vec<Type>> = match strip_static(base_ty) {
+        // plans/M10.md item E2: niche-packed — payload occupies the same
+        // word as the discriminant (0 = None). Offset 0, not past a tag.
+        Type::Option(inner)
+            if matches!(
+                strip_static(inner),
+                Type::Named(name, _) if name == "GroupId"
+            ) =>
+        {
+            return Ok(0);
+        }
+        Type::Option(inner) => vec![Vec::new(), vec![(**inner).clone()]],
+        Type::Result(ok, err) => vec![vec![(**ok).clone()], vec![(**err).clone()]],
+        // plans/M7.md item Z2: `CallError[E]` is compiler-known rather than
+        // a DeclEnum in LayoutCtx.
+        Type::Named(name, targs) if name == "CallError" => {
+            let Some(crate::sema::types::TypeArg::Type(e_ty)) = targs.first() else {
+                return Err("`CallError` with no error type argument".to_string());
+            };
+            // plans/M13.md item H / decision 4: NotAdmitted(Admission, args).
+            // Item I / decision 6: PeerFailed deleted.
+            let args_ty = crate::sema::bodies::not_admitted_args_type(targs);
+            vec![
+                vec![e_ty.clone()],                                              // Op(E)
+                Vec::new(),                                                      // Cancelled
+                Vec::new(),                                                      // DeadlineExceeded
+                vec![Type::Named("Admission".to_string(), Vec::new()), args_ty], // NotAdmitted
+            ]
+        }
+        Type::Named(name, targs) => {
+            if !targs.is_empty() {
+                return Err(
+                    "payload access on an instantiated generic enum is not implemented".to_string(),
+                );
+            }
+            ctx.enums
+                .get(name)
+                .ok_or_else(|| format!("unknown enum `{name}`"))?
+                .clone()
+        }
+        other => {
+            return Err(format!("`EnumPayload` base is not an enum type: {other:?}"));
+        }
+    };
+    let mut off = TAG;
+    for j in 0..index {
+        let mut widest = 0usize;
+        for v in &variants {
+            if let Some(ty) = v.get(j) {
+                let sz = size_of(ty, ctx)?;
+                widest = widest.max(sz);
+            }
+        }
+        off += widest;
+    }
+    Ok(off)
+}
+
 #[cfg(test)]
 mod layout_tests {
     use super::*;
@@ -1507,55 +1639,25 @@ pub(crate) fn fmt_inst(inst: &Inst) -> String {
         Inst::BytesIndexGet { dst, base, index } => {
             format!("BytesIndexGet dst={dst} base={base} index={index}")
         }
-        Inst::QueuePrepare {
+        Inst::MemLoad {
             dst,
-            queue,
-            permit,
-            header,
-            payload,
-            status,
-            device_writes,
-            payload_len,
-        } => format!(
-            "QueuePrepare dst={dst} queue={queue} permit={permit} header={header} \
-             payload={payload} status={status} device_writes={device_writes} \
-             payload_len={payload_len}"
-        ),
-        Inst::QueuePublish {
-            dst,
-            queue,
-            operation,
-            steps,
-        } => format!(
-            "QueuePublish dst={dst} queue={queue} operation={operation} order=[{}]",
-            steps.join(", ")
-        ),
-        Inst::QueueDrain { queue, max } => {
-            format!("QueueDrain queue={queue} max={max}")
+            base,
+            offset,
+            width,
+        } => format!("MemLoad dst={dst} base={base} offset={offset:#x} width={width}"),
+        Inst::MemStore {
+            base,
+            offset,
+            value,
+            width,
+        } => format!("MemStore base={base} offset={offset:#x} value={value} width={width}"),
+        Inst::PtrOffset { dst, base, offset } => {
+            format!("PtrOffset dst={dst} base={base} offset={offset:#x}")
         }
-        Inst::QueueSuppressInterrupts { queue } => {
-            format!("QueueSuppressInterrupts queue={queue}")
+        Inst::TurnAddrFromId { dst, id } => {
+            format!("TurnAddrFromId dst={dst} id={id}")
         }
-        Inst::QueueClaim {
-            dst,
-            queue,
-            receipt,
-        } => {
-            format!("QueueClaim dst={dst} queue={queue} receipt={receipt}")
-        }
-        Inst::QueueRecover {
-            dst,
-            queue,
-            receipt,
-        } => {
-            format!("QueueRecover dst={dst} queue={queue} receipt={receipt}")
-        }
-        Inst::QueueReclaim { dst, queue } => {
-            format!("QueueReclaim dst={dst} queue={queue}")
-        }
-        Inst::DeviceReset { dst, device, queue } => {
-            format!("DeviceReset dst={dst} device={device} queue={queue}")
-        }
+        Inst::Abort { message } => format!("Abort message={message:?}"),
         Inst::LoadIrqVector { dst, driver } => {
             format!("LoadIrqVector dst={dst} driver={driver}")
         }
@@ -1586,6 +1688,7 @@ pub(crate) fn fmt_inst(inst: &Inst) -> String {
             "InterruptCellFetchOrRelease dst={dst} field_off={field_off} width={width} value={value}"
         ),
         Inst::Wake { driver } => format!("Wake driver={driver}"),
+        Inst::SlotMapMint { map } => format!("SlotMapMint map={map}"),
         Inst::MakeAggregate { dst, elems } => {
             format!("MakeAggregate dst={dst} elems=[{}]", join_temps(elems))
         }

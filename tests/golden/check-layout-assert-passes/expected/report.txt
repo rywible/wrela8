@@ -8,7 +8,7 @@ ImageReport v0
   Quota max_exhaustive_cases=65536
   Input path=core/image_report.wr sha256=7abde3292fbefa4cd47b167ad19ed31ab9e08a7267f0dc3d40b1414b80b416bf
   Input path=examples/check_layout_assert_passes.wr sha256=9c5d86d2757cbb161e5438dca439af74d1f071c91d807ba95a67b5e48447207c
-  Input path=<generated> sha256=53728d546fd78bcd5ef4b80264c0b7e8322d583d84cbeb693e53922fbeb68a57
+  Input path=<generated> sha256=a1a05e137449e80a4206508c3dedb6a3cfd087435e477b2e2811ecf3cb802ba6
   Name value=layout-assert-ok
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Store
@@ -48,10 +48,10 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=90404
-  Section name=rodata base=0x40516178 size=263
-  Section name=abort base=0x40516280 size=120
-  Section name=checkpoint base=0x405162f8 size=28
+  Section name=code base=0x40500050 size=108388
+  Section name=rodata base=0x4051a7b8 size=455
+  Section name=abort base=0x4051a980 size=120
+  Section name=checkpoint base=0x4051a9f8 size=28
   Section name=rtdata base=0x40540000 size=184
   Entry base=0x40500000
   PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
@@ -59,7 +59,7 @@ ImageReport v0
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
   PlacedStatic name=EXIT type=ParkMmio addr=0x8001000 size=8
   PlacedStatic name=GROUPS type=GroupArena addr=0x4057f778 size=96
-  PlacedStatic name=INIT_SPAN0 type=InitSpan0Words addr=0x4057f738 size=8
+  PlacedStatic name=INIT_SPAN0 type=InitSpan0Words addr=0x40540040 size=8
   PlacedStatic name=INIT_SPAN1 type=InitSpan1Words addr=0x4057f740 size=8
   PlacedStatic name=INIT_SPAN2 type=InitSpan2Words addr=0x4057f748 size=8
   PlacedStatic name=INIT_SPAN3 type=InitSpan3Words addr=0x4057f750 size=8
@@ -68,8 +68,8 @@ ImageReport v0
   PlacedStatic name=INIT_SPAN6 type=InitSpan6Words addr=0x4057f768 size=8
   PlacedStatic name=INIT_SPAN7 type=InitSpan7Words addr=0x4057f770 size=8
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=536
-  PlacedStatic name=MB0_CTL type=MbCtl addr=0x4057f7f8 size=24
-  PlacedStatic name=MB0_DATA type=Mb0Data addr=0x4057f7d8 size=8
+  PlacedStatic name=MB0_CTL type=MbCtl addr=0x40540088 size=24
+  PlacedStatic name=MB0_DATA type=Mb0Data addr=0x40540048 size=64
   PlacedStatic name=MB10_CTL type=MbCtl addr=0x4057fa78 size=24
   PlacedStatic name=MB10_DATA type=Mb10Data addr=0x4057fa58 size=8
   PlacedStatic name=MB11_CTL type=MbCtl addr=0x4057fab8 size=24
@@ -137,8 +137,8 @@ ImageReport v0
   PlacedStatic name=RELEASE type=ParkMmio addr=0x8003000 size=8
   PlacedStatic name=RINGS_CTL type=RingsCtl addr=0x4057ffe0 size=24
   PlacedStatic name=RINGS_DATA type=RingsData addr=0x4057fff8 size=8
-  PlacedStatic name=RT type=RuntimeTables addr=0x4057f6b8 size=128
-  PlacedStatic name=SCHED type=SchedStripe addr=0x40540080 size=16
+  PlacedStatic name=RT type=RuntimeTables addr=0x40540000 size=80
+  PlacedStatic name=SCHED type=SchedStripe addr=0x405400a0 size=24
   PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000100 size=21
   PlacedStatic name=WAKE type=WakeTables addr=0x4057ffd8 size=8
   PlacedStatics count=80 fixed=CLOCK,CONSOLE_DATA,CONSOLE_RING,EXIT,GROUPS,MACHINE_INFO,MB0_CTL,MB0_DATA,MB10_CTL,MB10_DATA,MB11_CTL,MB11_DATA,MB12_CTL,MB12_DATA,MB13_CTL,MB13_DATA,MB14_CTL,MB14_DATA,MB15_CTL,MB15_DATA,MB16_CTL,MB16_DATA,MB17_CTL,MB17_DATA,MB18_CTL,MB18_DATA,MB19_CTL,MB19_DATA,MB1_CTL,MB1_DATA,MB20_CTL,MB20_DATA,MB21_CTL,MB21_DATA,MB22_CTL,MB22_DATA,MB23_CTL,MB23_DATA,MB24_CTL,MB24_DATA,MB25_CTL,MB25_DATA,MB26_CTL,MB26_DATA,MB27_CTL,MB27_DATA,MB28_CTL,MB28_DATA,MB29_CTL,MB29_DATA,MB2_CTL,MB2_DATA,MB30_CTL,MB30_DATA,MB31_CTL,MB31_DATA,MB3_CTL,MB3_DATA,MB4_CTL,MB4_DATA,MB5_CTL,MB5_DATA,MB6_CTL,MB6_DATA,MB7_CTL,MB7_DATA,MB8_CTL,MB8_DATA,MB9_CTL,MB9_DATA,PARK,PENDING,RELEASE,RINGS_CTL,RINGS_DATA,RT,SCHED,TEST_LINE_BUF,WAKE spans=1

@@ -15,7 +15,9 @@
 //! proves the map is internally coherent before anything is built on top
 //! of it.
 
+pub mod report;
 pub mod sha256;
+pub mod vmm_process;
 
 /// Machine contract revision (numeric form). The compiler seals this into
 /// the build identity; the VMM refuses an image built for another

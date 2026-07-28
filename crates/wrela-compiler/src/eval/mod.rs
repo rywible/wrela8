@@ -33,6 +33,7 @@ pub mod legal;
 pub mod observes;
 pub mod quota;
 pub mod value;
+pub mod walk;
 
 use crate::sema::SemaError;
 use crate::sema::typed::{
@@ -569,7 +570,7 @@ fn first_runtime_local(e: &TypedExpr) -> Option<&str> {
                     return Some(n);
                 }
             }
-            for a in args.iter().flatten() {
+            for a in args.iter().filter_map(|a| a.value.as_ref()) {
                 if let Some(n) = first_runtime_local(a) {
                     return Some(n);
                 }
@@ -580,7 +581,7 @@ fn first_runtime_local(e: &TypedExpr) -> Option<&str> {
             if let Some(n) = first_runtime_local(callee) {
                 return Some(n);
             }
-            for a in args {
+            for a in args.iter().filter_map(|a| a.value.as_ref()) {
                 if let Some(n) = first_runtime_local(a) {
                     return Some(n);
                 }
@@ -588,7 +589,7 @@ fn first_runtime_local(e: &TypedExpr) -> Option<&str> {
             None
         }
         TypedExprKind::EnumConstruct { args, .. } => {
-            for a in args {
+            for a in args.iter().filter_map(|a| a.value.as_ref()) {
                 if let Some(n) = first_runtime_local(a) {
                     return Some(n);
                 }
@@ -847,13 +848,13 @@ fn collect_asserts_expr<'p>(e: &'p TypedExpr, out: &mut Vec<AssertSite<'p>>) {
             if let Some(r) = receiver {
                 collect_asserts_expr(r, out);
             }
-            for a in args.iter().flatten() {
+            for a in args.iter().filter_map(|a| a.value.as_ref()) {
                 collect_asserts_expr(a, out);
             }
         }
         TypedExprKind::CallValue(callee, args) => {
             collect_asserts_expr(callee, out);
-            for a in args {
+            for a in args.iter().filter_map(|a| a.value.as_ref()) {
                 collect_asserts_expr(a, out);
             }
         }
@@ -873,7 +874,7 @@ fn collect_asserts_expr<'p>(e: &'p TypedExpr, out: &mut Vec<AssertSite<'p>>) {
             collect_asserts_expr(r, out);
         }
         TypedExprKind::EnumConstruct { args, .. } => {
-            for a in args {
+            for a in args.iter().filter_map(|a| a.value.as_ref()) {
                 collect_asserts_expr(a, out);
             }
         }

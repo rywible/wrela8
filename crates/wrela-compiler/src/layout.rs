@@ -142,7 +142,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::codegen::{CodegenProgram, Reloc};
 use crate::encode;
-use crate::eval::image::{ImageGraph, push_line};
+use crate::eval::image::ImageGraph;
+use crate::flowwir::{AwaitKind, FlowInst, FlowWirProgram, Transition};
 use crate::mwir::{self, LayoutCtx};
 use crate::sema::SemaError;
 use crate::sema::typed::TypedProgram;
@@ -153,6 +154,35 @@ use wrela_machine::{console, layout as machine_layout};
 /// specialized inject helpers, JIT materializers, and `layout_test_image`.
 /// Pure section packing / placement / reports stay in this file.
 mod harness;
+mod place;
+mod report_lines;
+
+mod boot_init;
+mod rtdata;
+
+pub(crate) use boot_init::device_index_of;
+pub use rtdata::{
+    ActorAddrs, ActorRuntimeLayout, DriverMailbox, DriverRuntimeLayout, GroupId, RingAddrs,
+    RingKind, RingLayout, RuntimePlacement, RuntimeTables, TurnId, actor_method_index_tables,
+    compute_runtime_tables, count_with_group_sites, mailbox_root_names, resolve_runtime_test_args,
+    ring_data_stride_bytes, rings_padding_bytes, rings_reservation_bytes,
+};
+pub(crate) use rtdata::{
+    MAILBOX_BOOKKEEPING_SIZE, REPLY_SLOT_SIZE, RR_CURSOR_SIZE, declared_mailbox_capacity,
+    merge_actor_pub_methods, turn_owner,
+};
+
+pub use boot_init::BootCtx;
+pub(crate) use boot_init::{
+    BootInitArg, BootInitCall, RuntimeWiring, actor_inits, build_boot_init_calls,
+    intern_fallible_init_abort_messages,
+};
+
+pub use place::place_runtime_tables;
+pub use report_lines::{
+    append_blk_vmm_lines, append_ring_vmm_lines, append_vmm_runtime_lines, attach_blk_report,
+    parsed_runtime_tail, render_layout_section,
+};
 
 // Runtime / harness emission (plans/M10.md item K) — re-export so
 // `layout::build_*` / `layout::layout_test_image` / census paths stay stable.
@@ -167,8 +197,7 @@ pub(crate) use harness::emitted_a64_census_live_counts;
 
 use harness::{
     append_rodata, build_entry_stub, inject_boot_init_fn, inject_checkpoint_irq_fns,
-    inject_rt_cross_core_fns, inject_rt_enqueue_and_dispatch_fns, push_halt,
-    reinject_runtime_with_rtconfig,
+    inject_rt_cross_core_fns, inject_rt_enqueue_and_dispatch_fns, push_halt, test_runner_facts,
 };
 
 #[cfg(test)]
@@ -182,7 +211,7 @@ pub struct LayoutError {
 }
 
 impl LayoutError {
-    fn new(message: impl Into<String>) -> LayoutError {
+    pub(crate) fn new(message: impl Into<String>) -> LayoutError {
         LayoutError {
             message: message.into(),
         }
@@ -792,29 +821,38 @@ fn resolve_xreply_edge(target: &str, w: &RuntimeWiring) -> Option<String> {
 }
 
 /// plans/M8.md item C2: every cross-core message edge this image's own
-/// compiled code actually contains, as `(sending core, target mailbox
-/// root)` pairs. Derived from the sealed graph's placement (04 §3: "the
-/// inputs, the inference, and the final table are published in the report
-/// and sealed into the build identity") crossed with the `Reloc::Call`
-/// sites codegen emitted — never from a heuristic, and never from the
-/// wiring graph alone, which records handles rather than message sites.
+/// FlowWir actually contains, as `(sending core, target mailbox root)`
+/// pairs. Derived from placement crossed with `Send` / `Await{ActorCall}`
+/// sites — never from a compiled `CodegenProgram` (Wave 1: rings before
+/// runtime codegen).
 fn cross_core_edges(
-    program: &CodegenProgram,
+    flow: &FlowWirProgram,
     w: &RuntimeWiring,
 ) -> Result<BTreeSet<(usize, String)>, LayoutError> {
     let mut out = BTreeSet::new();
     if w.placement.cores <= 1 {
         return Ok(out);
     }
-    for (key, f) in &program.fns {
-        for reloc in &f.relocs {
-            let Reloc::Call { key: target, .. } = reloc else {
-                continue;
-            };
-            if let Some(sym) = resolve_cross_core_edge(key, target, Some(w))? {
-                let actor = crate::codegen::rt_enqueue_actor(target)
-                    .expect("resolve_cross_core_edge only redirects an rt_enqueue target")
-                    .to_string();
+    for (key, f) in &flow.fns {
+        let mut method_keys: Vec<String> = Vec::new();
+        for state in &f.states {
+            for op in &state.ops {
+                if let FlowInst::Send { method_key, .. } = op {
+                    method_keys.push(method_key.clone());
+                }
+            }
+            if let Transition::Await {
+                what: AwaitKind::ActorCall { method_key, .. },
+                ..
+            } = &state.transition
+            {
+                method_keys.push(method_key.clone());
+            }
+        }
+        for mk in method_keys {
+            let actor = mk.split('.').next().unwrap_or(mk.as_str()).to_string();
+            let target = crate::codegen::rt_enqueue_symbol(&actor);
+            if let Some(sym) = resolve_cross_core_edge(key, &target, Some(w))? {
                 debug_assert!(
                     sym.starts_with("__wrela_xsend_"),
                     "cross-core redirect must be an xsend trampoline, got {sym}"
@@ -846,10 +884,10 @@ fn cross_core_edges(
 ///   makes `BRK_XREPLY_RING_FULL` an unreachability guard rather than a
 ///   dropped reply.
 fn cross_core_rings(
-    program: &CodegenProgram,
+    flow: &FlowWirProgram,
     w: &RuntimeWiring,
 ) -> Result<Vec<RingLayout>, LayoutError> {
-    let edges = cross_core_edges(program, w)?;
+    let edges = cross_core_edges(flow, w)?;
     if edges.is_empty() {
         return Ok(Vec::new());
     }
@@ -954,7 +992,7 @@ fn reject_unlowerable_cross_core_shapes(
     rings: &[RingLayout],
     w: &RuntimeWiring,
     boot: &BootCtx,
-    program: &CodegenProgram,
+    flow: &FlowWirProgram,
 ) -> Result<(), LayoutError> {
     let _ = boot;
     if w.placement.cores <= 1 {
@@ -976,12 +1014,23 @@ fn reject_unlowerable_cross_core_shapes(
             )));
         }
     }
-    for (key, f) in &program.fns {
-        if !f
-            .relocs
+    // Wave 1: checkpoint = FlowWir back-edge (Jump/Branch to a prior state),
+    // not `Reloc::CheckpointService` on a compiled program.
+    for (key, f) in &flow.fns {
+        let has_checkpoint = f
+            .states
             .iter()
-            .any(|r| matches!(r, Reloc::CheckpointService { .. }))
-        {
+            .enumerate()
+            .any(|(i, s)| match &s.transition {
+                Transition::Jump(t) if *t <= i => true,
+                Transition::Branch {
+                    then_state,
+                    else_state,
+                    ..
+                } if *then_state <= i || *else_state <= i => true,
+                _ => false,
+            });
+        if !has_checkpoint {
             continue;
         }
         // Fail closed on "cannot attribute", not just on "attributed to a
@@ -1855,7 +1904,7 @@ fn verify_pool_windows(sections: &[Section], pools: &[PoolPlacement]) -> Result<
 /// about which bytes the device reaches is forbidden: both this check and
 /// the emitter call `virtqueue::place_ring` against the same pool base and
 /// depth.
-fn verify_ring_windows(
+pub(crate) fn verify_ring_windows(
     pools: &[PoolPlacement],
     blk: &Option<BlkReport>,
 ) -> Result<(), LayoutError> {
@@ -2063,151 +2112,6 @@ pub fn derive_blk_report(
 /// Order matters only for human readability — `parse_report` is
 /// line-oriented and order-independent — and mirrors `render_layout_
 /// section`'s own order so the two artifacts read alike.
-pub fn append_vmm_runtime_lines(out: &mut String, layout: &ImageLayout) {
-    // plans/M8.md item C1 / 06 §3: where the VMM starts vCPU N once the
-    // guest rings `mmio::RELEASE_MMIO_ADDR`. Absent for a single-core image.
-    for (core, base) in &layout.core_entries {
-        out.push_str(&format!("CoreEntry core={core} base={base:#x}\n"));
-    }
-    // plans/M8.md item C3: this image's cross-core rings, addresses
-    // included — 06 §8 makes the VMM the recorder of "per-mailbox
-    // cross-core admission order", and the admission happens in guest
-    // memory the VMM has to be told about. Absent for a single-core image.
-    append_ring_vmm_lines(out, layout);
-    append_blk_vmm_lines(out, layout);
-    // plans/M7.md item G: host `interrupt_status` write + vector raise.
-    for inj in &layout.irq_host_injects {
-        out.push_str(&format!(
-            "IrqHostInject base={:#x} offset={:#x} status={:#x} vector={}\n",
-            inj.base, inj.offset, inj.status, inj.vector
-        ));
-    }
-}
-
-/// The `Ring ...` lines, in `RuntimeTables::rings` order — the same order
-/// `build_rt_drain` walks its lanes, which is what makes the VMM's
-/// reconstruction of admission order an ordered one. Shares
-/// `render_layout_section`'s own rendering so the runtime report and the
-/// `--stage=report` artifact cannot disagree about a ring.
-fn append_ring_vmm_lines(out: &mut String, layout: &ImageLayout) {
-    for line in ring_report_lines(layout) {
-        out.push_str(&line);
-        out.push('\n');
-    }
-    // plans/M12.md item C: uniform-stride summary — the VMM needs
-    // `stride` to derive CTL addresses and overlap spans under
-    // CTL-then-DATA packing. Absent when this image has no rings.
-    if let Some(tables) = &layout.runtime {
-        if !tables.rings.is_empty() {
-            out.push_str(&format!(
-                "Rings count={} stride={} padding={} bytes={}\n",
-                tables.rings.len(),
-                tables.ring_stride,
-                tables.rings_padding,
-                rings_reservation_bytes(&tables.rings)
-            ));
-        }
-    }
-}
-
-/// One `Ring kind=... base=0x...` line per cross-core ring. Empty for an
-/// image with no cross-core message edge. The addresses are recomputed
-/// from the already-placed `rtdata` base through the identical
-/// `place_runtime_tables` the emitter used, never by a second rule that
-/// could drift from it.
-fn ring_report_lines(layout: &ImageLayout) -> Vec<String> {
-    let Some(tables) = &layout.runtime else {
-        return Vec::new();
-    };
-    if tables.rings.is_empty() {
-        return Vec::new();
-    }
-    let rtdata_base = layout
-        .sections
-        .iter()
-        .find(|s| s.name == "rtdata")
-        .map(|s| s.base)
-        .unwrap_or_else(|| {
-            debug_assert!(false, "an image with rings always places `rtdata`");
-            0
-        });
-    let addrs = place_runtime_tables(rtdata_base, tables).rings;
-    tables
-        .rings
-        .iter()
-        .enumerate()
-        .map(|(i, r)| {
-            format!(
-                "Ring kind={} src={} dst={} target={} cap={} slot={} bytes={} base={:#x}",
-                r.kind_name(),
-                r.src,
-                r.dst,
-                r.actor.as_deref().unwrap_or("-"),
-                r.capacity,
-                r.slot_size,
-                r.bytes(),
-                addrs[i].ring,
-            )
-        })
-        .collect()
-}
-
-/// Append the VMM-facing `BlkDevice`/`BlkQueue`/`BlkPool` lines (and the
-/// decision-2c accounting fact E1 can honestly derive) for a test-image
-/// hand-built report. No-op when `layout.blk` is `None`.
-pub fn append_blk_vmm_lines(out: &mut String, layout: &ImageLayout) {
-    let Some(blk) = &layout.blk else {
-        return;
-    };
-    out.push_str(&format!(
-        "BlkDevice device=device#{} capacity_sectors={} features={:#x}{}\n",
-        blk.device,
-        blk.capacity_sectors,
-        blk.features,
-        match blk.vector {
-            Some(v) => format!(" vector={v}"),
-            None => String::new(),
-        }
-    ));
-    let q = &blk.queue;
-    out.push_str(&format!(
-        "BlkQueue index={} size={} desc={:#x} avail={:#x} used={:#x} doorbell={:#x}\n",
-        q.index, q.size, q.desc, q.avail, q.used, q.doorbell
-    ));
-    // Every device-reachable pool — ring *and* payload — matching the
-    // full `--stage=report` `BlkPool` set (decision 5: the VMM maps exactly
-    // these windows). Emitting only the queue's control pool left payload
-    // DMA unmapped and failed the flagship write at the first descriptor.
-    //
-    // plans/M8.md item P: each line carries the device it is bound to, and
-    // the set is still *every* device-reachable pool, not just this
-    // device's — the VMM needs to know a window exists in order to refuse
-    // it to a device that does not own it.
-    for p in &layout.pools {
-        let Some(dev) = p.backing.device else {
-            continue;
-        };
-        out.push_str(&format!(
-            "BlkPool name={} device=device#{dev} base={:#x} size={:#x}\n",
-            p.backing.name, p.base, p.backing.bytes
-        ));
-    }
-    out.push_str(&format!(
-        "BlkAccounting descriptors_per_op={} occupancy_bound={}\n",
-        blk.descriptors_per_op, blk.occupancy_bound
-    ));
-}
-
-/// Fill `layout.blk` from configure sites + placed pools, then re-verify
-/// ring windows. Called by every consumer that has `programs` after layout.
-pub fn attach_blk_report(
-    layout: &mut ImageLayout,
-    graph: &ImageGraph,
-    programs: &BTreeMap<String, crate::sema::typed::TypedProgram>,
-) -> Result<(), LayoutError> {
-    layout.blk = derive_blk_report(&layout.pools, graph, programs)?;
-    verify_ring_windows(&layout.pools, &layout.blk)
-}
 
 // --- device register windows: the `devregs` section (item H1) -------------
 //
@@ -2512,7 +2416,7 @@ pub fn layout_program(
     let image_base = machine_layout::IMAGE_BASE;
 
     let mut wiring: Option<RuntimeWiring> = match &boot {
-        Some(b) => RuntimeWiring::derive(b, program)?,
+        Some(b) => RuntimeWiring::derive(b)?,
         None => None,
     };
 
@@ -2525,14 +2429,16 @@ pub fn layout_program(
         intern_fallible_init_abort_messages(w, &mut rodata_entries, &mut rodata_cursor);
     }
 
-    // M10 E3/E4/F/F2/H + M11 E/F: specialized runtime bodies into code;
-    // reinject deadline/run_one/child_poll against live RT/GROUPS first.
+    // Single CodegenProgram already includes live runtime.wr (lowered
+    // against swapped rtconfig upstream). Remaining inject_* are named
+    // floor specialization (ImageStatic stubs + aliases), not a second
+    // codegen path.
     let mut program_owned;
     let program = if let Some(w) = wiring.as_ref() {
         program_owned = program.clone();
-        reinject_runtime_with_rtconfig(&mut program_owned, w)?;
-        inject_rt_enqueue_and_dispatch_fns(&mut program_owned, w);
-        inject_rt_cross_core_fns(&mut program_owned, w);
+        apply_resume_remaps(&mut program_owned, w);
+        inject_rt_enqueue_and_dispatch_fns(&mut program_owned, w)?;
+        inject_rt_cross_core_fns(&mut program_owned, w)?;
         inject_boot_init_fn(&mut program_owned, w);
         inject_checkpoint_irq_fns(&mut program_owned, w);
         &program_owned
@@ -3463,107 +3369,323 @@ pub fn merge_mwir_programs(programs: Vec<mwir::MwirProgram>) -> mwir::MwirProgra
 /// restriction). Both callers already hold `graph`/`modules` in scope at
 /// the exact point they call this fn; neither edit changes any other
 /// behavior.
+/// Result of the one-check → one-lower image compile (live rtconfig
+/// swapped before the single `CodegenProgram`).
+pub struct ImageCodegen {
+    pub program: CodegenProgram,
+    pub modules: BTreeMap<String, Module>,
+    pub programs: BTreeMap<String, TypedProgram>,
+    pub flow: FlowWirProgram,
+    pub async_frames: BTreeMap<String, u64>,
+    pub group_child_index: BTreeMap<String, usize>,
+    pub layout_ctx: LayoutCtx,
+    /// Generated `core.__image_runtime` source (digest / report).
+    pub rtconfig_text: String,
+}
+
+/// Eval wiring facts → live `rtconfig::generate_with` → swap stub
+/// `__image_runtime` → re-check → single lower/codegen with
+/// wiring-conditional force-root seeds. No second `CodegenProgram`.
+pub fn lower_and_codegen_image(
+    modules: &BTreeMap<String, Module>,
+    programs: &BTreeMap<String, TypedProgram>,
+    layout_ctx: &LayoutCtx,
+    graph: &ImageGraph,
+    runtime_tests: &[String],
+    async_tests: &BTreeSet<String>,
+) -> Result<ImageCodegen, String> {
+    let capacity = crate::eval::image_checks::blk_capacity_sectors(graph);
+    let mut layout_ctx = layout_ctx.clone();
+    enrich_layout_ctx_with_instantiations(&mut layout_ctx, programs);
+
+    // Pass 1: FlowWir against stub-checked programs — enough for
+    // `RuntimeWiring::derive` (rings / tables; no CodegenProgram).
+    let reachable =
+        crate::lower::guest_reachable_keys_closure(programs, &crate::lower::LowerOpts::default());
+    let derive_opts = crate::lower::LowerOpts {
+        emit_comptime_tests: false,
+        only: Some(reachable),
+    };
+    let flow_derive = lower_flow_closure(programs, capacity, &derive_opts)?;
+    let async_frames_derive =
+        crate::codegen::async_frame_sizes(&flow_derive, &layout_ctx).map_err(|e| e.message)?;
+    let (group_child_index_derive, _) =
+        crate::codegen::compute_group_child_indices(&flow_derive).map_err(|e| e.message)?;
+    let boot = BootCtx {
+        graph,
+        modules,
+        programs,
+        layout_ctx: &layout_ctx,
+        async_frames: &async_frames_derive,
+        group_child_index: &group_child_index_derive,
+        flow: &flow_derive,
+    };
+    let wiring = RuntimeWiring::derive(&boot).map_err(|e| e.message)?;
+    let tests = test_runner_facts(
+        runtime_tests,
+        async_tests,
+        wiring.as_ref().map(|w| &w.tables),
+    );
+    let need_live = wiring.is_some() || !tests.is_empty();
+
+    let (live_modules, live_programs, rtconfig_text, force_opts) = if need_live {
+        let (text, force_opts) = generate_live_rtconfig(wiring.as_ref(), &tests)?;
+        let (mods, progs) = recheck_with_live_rtconfig(modules, &text)?;
+        (mods, progs, text, force_opts)
+    } else {
+        (
+            modules.clone(),
+            programs.clone(),
+            String::new(),
+            crate::lower::ImageForceRootOpts::default(),
+        )
+    };
+
+    let mut only = crate::lower::guest_reachable_keys_closure(
+        &live_programs,
+        &crate::lower::LowerOpts::default(),
+    );
+    crate::lower::seed_image_force_roots(&mut only, &live_programs, force_opts);
+    let lower_opts = crate::lower::LowerOpts {
+        emit_comptime_tests: false,
+        only: Some(only),
+    };
+    let mwir = lower_mwir_closure(&live_programs, capacity, &lower_opts)?;
+    let flow = lower_flow_closure(&live_programs, capacity, &lower_opts)?;
+    let method_index =
+        actor_method_index_tables(&live_modules, &layout_ctx).map_err(|e| e.message)?;
+    let group_arena_capacity = count_with_group_sites(&live_modules);
+    let enqueue_specs = mailbox_enqueue_specs(graph, &live_modules, &layout_ctx)?;
+    let program = crate::codegen::codegen_program_with_async(
+        &mwir,
+        &flow,
+        &layout_ctx,
+        &method_index,
+        group_arena_capacity,
+        &enqueue_specs,
+    )
+    .map_err(|e| e.message)?;
+    let async_frames =
+        crate::codegen::async_frame_sizes(&flow, &layout_ctx).map_err(|e| e.message)?;
+    let (group_child_index, _) =
+        crate::codegen::compute_group_child_indices(&flow).map_err(|e| e.message)?;
+    Ok(ImageCodegen {
+        program,
+        modules: live_modules,
+        programs: live_programs,
+        flow,
+        async_frames,
+        group_child_index,
+        layout_ctx,
+        rtconfig_text,
+    })
+}
+
+fn generate_live_rtconfig(
+    wiring: Option<&RuntimeWiring>,
+    tests: &[crate::rtconfig::TestRunnerFact],
+) -> Result<(String, crate::lower::ImageForceRootOpts), String> {
+    match wiring {
+        Some(w) => {
+            let mut extras = crate::rtconfig::extras_from_tables(&w.tables)?;
+            extras.tests = tests.to_vec();
+            extras.has_boot_init = true;
+            let text = crate::rtconfig::generate_with(&w.tables, &extras)?;
+            let opts = crate::lower::ImageForceRootOpts {
+                with_wiring: true,
+                with_test_runner: !tests.is_empty(),
+                n_tests: tests.len(),
+                n_boot_calls: w.tables.n_boot_calls,
+                n_irq_calls: w.tables.irq_vector_bits.len(),
+                n_wake_calls: w.tables.wake_pending_addrs.len(),
+            };
+            Ok((text, opts))
+        }
+        None => {
+            let mut tables = RuntimeTables {
+                n_turns: 0,
+                turn_stride: 0,
+                ready_queue_capacity: 1,
+                group_arena_capacity: 0,
+                total_bytes: 128,
+                cores: 1,
+                ..RuntimeTables::default()
+            };
+            tables.stripe_for_cores(1);
+            let mut extras = crate::rtconfig::RtconfigExtras::default();
+            extras.tests = tests.to_vec();
+            extras.has_boot_init = false;
+            let text = crate::rtconfig::generate_with(&tables, &extras)?;
+            let opts = crate::lower::ImageForceRootOpts {
+                with_wiring: false,
+                with_test_runner: !tests.is_empty(),
+                n_tests: tests.len(),
+                n_boot_calls: 0,
+                n_irq_calls: 0,
+                n_wake_calls: 0,
+            };
+            Ok((text, opts))
+        }
+    }
+}
+
+fn recheck_with_live_rtconfig(
+    modules: &BTreeMap<String, Module>,
+    rtconfig_text: &str,
+) -> Result<(BTreeMap<String, Module>, BTreeMap<String, TypedProgram>), String> {
+    let gen_module = crate::rtconfig::parse_generated(rtconfig_text)?;
+    let gen_key: Vec<String> = crate::loader::IMAGE_RUNTIME_MODULE_KEY
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    let mut modules_vec: BTreeMap<Vec<String>, Module> = BTreeMap::new();
+    let mut paths: BTreeMap<Vec<String>, String> = BTreeMap::new();
+    for (dot, m) in modules {
+        let key: Vec<String> = dot.split('.').map(|s| s.to_string()).collect();
+        if key.as_slice() == crate::loader::IMAGE_RUNTIME_MODULE_KEY {
+            continue;
+        }
+        paths.insert(key.clone(), format!("<{dot}>"));
+        modules_vec.insert(key, m.clone());
+    }
+    // Live image always needs `core.runtime` + generated config together.
+    let (runtime_key, runtime_loaded) = crate::loader::load_runtime_module()
+        .map_err(|_| "stdlib/core/runtime.wr missing".to_string())?;
+    modules_vec.insert(runtime_key.clone(), runtime_loaded.module);
+    paths.insert(runtime_key, runtime_loaded.file.display().to_string());
+    modules_vec.insert(gen_key.clone(), gen_module);
+    paths.insert(gen_key, crate::rtconfig::GENERATED_INPUT_PATH.to_string());
+    // The first check may have discarded `core.time` (dump/report
+    // discipline). Live re-check still needs it whenever any module
+    // mentions a time-prelude name — otherwise `ms`/`Instant.less_than`
+    // resolve as non-callable stubs.
+    let time_key: Vec<String> = crate::loader::TIME_MODULE_KEY
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    let needs_time = modules_vec
+        .values()
+        .any(crate::loader::module_mentions_time);
+    if needs_time && !modules_vec.contains_key(&time_key) {
+        let (loaded_key, time_loaded) = crate::loader::load_time_module()
+            .map_err(|_| "stdlib/core/time.wr missing".to_string())?;
+        debug_assert_eq!(loaded_key, time_key);
+        paths.insert(time_key.clone(), time_loaded.file.display().to_string());
+        modules_vec.insert(time_key, time_loaded.module);
+    }
+    let programs_vec = crate::sema::check_program_typed(&modules_vec, &paths).map_err(|e| {
+        format!(
+            "error[{}]: live rtconfig re-check: {}",
+            e.category, e.message
+        )
+    })?;
+    let programs: BTreeMap<String, TypedProgram> = programs_vec
+        .into_iter()
+        .map(|(k, p)| (k.join("."), p))
+        .collect();
+    let modules: BTreeMap<String, Module> = modules_vec
+        .into_iter()
+        .map(|(k, m)| (k.join("."), m))
+        .collect();
+    Ok((modules, programs))
+}
+
+fn lower_mwir_closure(
+    programs: &BTreeMap<String, TypedProgram>,
+    capacity: Option<u64>,
+    opts: &crate::lower::LowerOpts,
+) -> Result<mwir::MwirProgram, String> {
+    let mut mwir_programs = Vec::with_capacity(programs.len());
+    for typed in programs.values() {
+        let mut stamped = typed.clone();
+        stamped.blk_capacity_sectors = capacity;
+        mwir_programs
+            .push(crate::lower::lower_program_with(&stamped, opts).map_err(|e| e.message)?);
+    }
+    Ok(merge_mwir_programs(mwir_programs))
+}
+
+fn lower_flow_closure(
+    programs: &BTreeMap<String, TypedProgram>,
+    capacity: Option<u64>,
+    opts: &crate::lower::LowerOpts,
+) -> Result<FlowWirProgram, String> {
+    let mut flow_fns = BTreeMap::new();
+    for typed in programs.values() {
+        let mut stamped = typed.clone();
+        stamped.blk_capacity_sectors = capacity;
+        flow_fns.extend(
+            crate::flowwir_lower::lower_program_with(&stamped, opts)
+                .map_err(|e| e.message)?
+                .fns,
+        );
+    }
+    Ok(FlowWirProgram { fns: flow_fns })
+}
+
+pub(super) fn apply_resume_remaps(program: &mut CodegenProgram, wiring: &RuntimeWiring) {
+    let Ok(extras) = crate::rtconfig::extras_from_tables(&wiring.tables) else {
+        return;
+    };
+    let remaps = crate::rtconfig::stub_call_remaps(&extras);
+    if remaps.is_empty() {
+        return;
+    }
+    for f in program.fns.values_mut() {
+        crate::rtconfig::remap_call_keys(f, &remaps);
+    }
+}
+
 pub fn try_layout_program(
     programs: &BTreeMap<String, TypedProgram>,
     layout_ctx: &LayoutCtx,
     graph: &ImageGraph,
     modules: &BTreeMap<String, Module>,
 ) -> Result<Option<ImageLayout>, String> {
-    // plans/M7.md item E1: capacity is an image-declared build constant.
-    // Stamp it onto every TypedProgram before lower so
-    // `read_capacity_sectors` can emit it as a ConstInt.
-    let capacity = crate::eval::image_checks::blk_capacity_sectors(graph);
-    // Decision 18: instantiations must be sizeable before codegen.
-    let mut layout_ctx = layout_ctx.clone();
-    enrich_layout_ctx_with_instantiations(&mut layout_ctx, programs);
-    let layout_ctx = &layout_ctx;
-    // plans/M9.md item H3: one reachable set over the whole build
-    // closure, so a library module with no actors does not emit its
-    // entire surface into the merged image.
-    let reachable =
-        crate::lower::guest_reachable_keys_closure(programs, &crate::lower::LowerOpts::default());
-    let lower_opts = crate::lower::LowerOpts {
-        emit_comptime_tests: false,
-        only: Some(reachable),
-    };
-    let mut mwir_programs = Vec::with_capacity(programs.len());
-    for typed in programs.values() {
-        let mut stamped = typed.clone();
-        stamped.blk_capacity_sectors = capacity;
-        match crate::lower::lower_program_with(&stamped, &lower_opts) {
-            Ok(p) => mwir_programs.push(p),
-            Err(_) => return Ok(None),
-        }
+    let empty_tests: &[String] = &[];
+    let empty_async = BTreeSet::new();
+    // Item W / fallible-`init` refusals must fail `wrela build` even when
+    // the rest of image layout is optional (`Ok(None)` → report without
+    // an `.img`). `RuntimeWiring::derive` also runs these, but only after
+    // FlowWir ring discovery — and cross-core unlowerable shapes there
+    // are deliberately soft for `--stage=report` (pinned by
+    // `err-cross-core-*` report goldens). So the boot-init law is checked
+    // here first, before the soft lower/codegen gate.
+    {
+        let inits = actor_inits(modules).map_err(|e| e.message)?;
+        let layouts = closure_layout_types(modules, programs).map_err(|e| e.message)?;
+        let backings =
+            crate::eval::image_checks::pool_backings(graph, &layouts).map_err(|e| e.message)?;
+        build_boot_init_calls(graph, &inits, &backings).map_err(|e| e.message)?;
     }
-    let merged = merge_mwir_programs(mwir_programs);
-    // The async half (park-and-resume): every module's own async fns
-    // lower through FlowWir and compile alongside the sync half, so a
-    // build image's `Actor`/`Turn` accounting and its compiled state
-    // machines can never disagree with the test-image path's.
-    let mut flow_fns = BTreeMap::new();
-    for typed in programs.values() {
-        let mut stamped = typed.clone();
-        stamped.blk_capacity_sectors = capacity;
-        match crate::flowwir_lower::lower_program_with(&stamped, &lower_opts) {
-            Ok(p) => flow_fns.extend(p.fns),
-            Err(_) => return Ok(None),
-        }
-    }
-    let flow = crate::flowwir::FlowWirProgram { fns: flow_fns };
-    let method_index = match actor_method_index_tables(modules, layout_ctx) {
-        Ok(m) => m,
-        Err(_) => return Ok(None),
-    };
-    let async_frames = match crate::codegen::async_frame_sizes(&flow, layout_ctx) {
-        Ok(m) => m,
-        Err(_) => return Ok(None),
-    };
-    let group_arena_capacity = count_with_group_sites(modules);
-    let enqueue_specs = match mailbox_enqueue_specs(graph, modules, layout_ctx) {
-        Ok(s) => s,
-        Err(_) => return Ok(None),
-    };
-    let codegen_program = match crate::codegen::codegen_program_with_async(
-        &merged,
-        &flow,
+    let compiled = match lower_and_codegen_image(
+        modules,
+        programs,
         layout_ctx,
-        &method_index,
-        group_arena_capacity,
-        &enqueue_specs,
+        graph,
+        empty_tests,
+        &empty_async,
     ) {
-        Ok(p) => p,
-        Err(_) => return Ok(None),
-    };
-    // plans/M6.md item F/G follow-up: the same `BootCtx` the test-image
-    // path builds — `layout_program` derives its runtime tables *and* its
-    // runtime routines from it, through the one shared
-    // `RuntimeWiring::derive`/`build_runtime_block` pair, so the two image
-    // flavors can never again disagree about what runtime machinery an
-    // actor-bearing image contains.
-    // (`codegen_program_with_async` above already called this same fn and
-    // propagated its two disclosed floors, so this call can only ever
-    // succeed here — the `Err` arm keeps this fn's own "all or nothing"
-    // rule rather than introducing a second, differently-shaped outcome.)
-    let group_child_index = match crate::codegen::compute_group_child_indices(&flow) {
-        Ok((m, _)) => m,
+        Ok(c) => c,
+        // Soft: reachable surface / cross-core shape did not fully lower.
+        // Report stages keep an ImageReport without an `.img`.
         Err(_) => return Ok(None),
     };
     layout_program(
-        &codegen_program,
+        &compiled.program,
         Some(BootCtx {
             graph,
-            modules,
-            programs,
-            layout_ctx,
-            async_frames: &async_frames,
-            group_child_index: &group_child_index,
+            modules: &compiled.modules,
+            programs: &compiled.programs,
+            layout_ctx: &compiled.layout_ctx,
+            async_frames: &compiled.async_frames,
+            group_child_index: &compiled.group_child_index,
+            flow: &compiled.flow,
         }),
     )
     .and_then(|mut layout| {
-        // plans/M7.md item E1: BlkDevice/BlkQueue from configure + pools.
-        attach_blk_report(&mut layout, graph, programs)?;
-        // plans/M10.md item A2c / decision 588: publish every placed static.
-        layout.placed_statics = collect_placed_statics(programs)?;
+        attach_blk_report(&mut layout, graph, &compiled.programs)?;
+        layout.placed_statics = collect_placed_statics(&compiled.programs)?;
         Ok(Some(layout))
     })
     .or_else(|e| Err(e.message))
@@ -3610,3225 +3732,11 @@ fn collect_placed_statics(
     Ok(out)
 }
 
-// ===========================================================================
-// plans/M6.md item C, decision 3: static actor runtime-table sizing — a
-// pure function of `(graph, modules, layout_ctx)`, computed once here and
-// consumed by both `layout_program`/`layout_test_image` (the `rtdata`
-// reservation) and `render_layout_section` (the report's own accounting
-// facts) via `ImageLayout::runtime`, so the two can never drift apart.
-
-/// One actor declaration's own static sizing (04 §2/§7, decision 3):
-/// facts only, never a placeholder — every field here is a real byte
-/// count this image's own `rtdata` section actually reserves.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActorRuntimeLayout {
-    /// The declared actor struct's own name (`types::render_type` of
-    /// `ActorDecl::actor_type`) — matches the report's own existing
-    /// `Actor index=N type=<name>` line so a reader can correlate the two
-    /// without a shared index scheme.
-    pub name: String,
-    /// The declared `mailbox=` bound (02 §9.2: "the compiler derives the
-    /// capacity from the closed sender set" — M6 ships the dumbest sound
-    /// floor, the *declared* bound, not derivation; recorded honestly in
-    /// plans/M6.md, mailbox capacity *derivation* is explicitly OUT of
-    /// M6's own scope line).
-    pub mailbox_capacity: u64,
-    /// One ring slot's own byte size: 16 (the method-index tag plus the
-    /// admitted message's own **waker** word — the awaiting turn's turn
-    /// area address, or 0 for a one-way `send`; `codegen::OFF_TURN_*`'s
-    /// own module doc has the whole park-and-resume contract) plus the
-    /// widest of this actor's own `pub` methods' param blobs (each
-    /// param's own `mwir::size_of`, summed). A method with zero params
-    /// (or an actor with no `pub` methods at all) still costs the
-    /// 16-byte tag+waker pair alone — the minimum a slot can ever be.
-    pub slot_size: u64,
-    /// This actor struct's own field storage (`mwir::size_of` over the
-    /// struct's own field list, `LayoutCtx`) — where the actor instance
-    /// itself lives (decision 3's own "fixed data-section slot per
-    /// declared actor instance" answer, recorded in plans/M6.md).
-    pub state_size: u64,
-    /// This actor's own **turn area**: the fixed turn record
-    /// (`codegen::TURN_RECORD_SIZE` — busy/suspended/resume_ready/reply/
-    /// waker/cur_method/reply_slot/reply_tag) plus the widest persistent frame any of its own
-    /// `pub async fn` methods needs (`codegen::async_frame_sizes` — 04
-    /// §2's "statically reserved frame slots", where a parked turn's
-    /// live temps actually survive its `ret` to the scheduler). One area
-    /// per actor, never one per queued message: non-reentrancy caps
-    /// in-flight activations at one (item C's frame-arena reading,
-    /// unchanged — now finally holding real async locals, the growth
-    /// item C's own note predicted).
-    pub frame_size: u64,
-}
-
-/// Every actor's own sizing, plus the scheduler's own fixed-capacity
-/// tables (plans/M6.md item C, decision 3's own "Scheduler tables"
-/// paragraph). `total_bytes` is the exact `rtdata` section size
-/// `layout_program`/`layout_test_image` reserve — computed once, here,
-/// from the per-actor/per-table sizes below, so the reservation and the
-/// report's own totals line can never disagree.
-/// One `@driver` declaration's own static sizing (plans/M7.md item H1).
-/// Deliberately *not* an `ActorRuntimeLayout`: a driver is an actor root
-/// (02 §9.1) and, since plans/M8.md item D, may own a mailbox — but only
-/// when its declaration says `mailbox=` (05-library.md §9). The state
-/// bytes are unconditional; the mailbox half is `Option`, so a driver
-/// with no `mailbox=` still has exactly one static fact and no zeroed
-/// ring/slot/frame numbers pretending to be decisions.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DriverRuntimeLayout {
-    pub name: String,
-    /// This driver struct's own field storage (`mwir::size_of`) — where
-    /// the instance lives, exactly like an actor's `state_size`.
-    pub state_size: u64,
-    /// True when the driver declares a `@task`. Sticky wake-pending bits
-    /// live in the contiguous `WAKE.wake_pending` array (M12 item D /
-    /// decisions 880–882), not as a trailing word of driver state.
-    pub has_wake: bool,
-    /// Index into `wake_pending_addrs` / `WAKE.wake_pending` for this
-    /// driver's first `@task` drain. Filled by `fill_checkpoint_irq_facts`.
-    pub wake_drain_index: Option<usize>,
-    /// plans/M8.md item D (decision 19): present exactly when this
-    /// declaration carried `mailbox=n`. The three numbers are the same
-    /// three an `ActorRuntimeLayout` carries and are computed by the same
-    /// arithmetic — a messageable driver is admitted, selected and
-    /// dispatched by the identical routines an `@actor` is
-    /// (`build_rt_enqueue` / `build_rt_select_and_run_symbolic`), never a
-    /// second path.
-    pub mailbox: Option<DriverMailbox>,
-}
-
-/// The mailbox half of a messageable `@driver` (plans/M8.md item D).
-/// Field-for-field the mailbox half of `ActorRuntimeLayout`; kept as its
-/// own struct so "has a mailbox" is one `Option`, not three sentinel
-/// zeros.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DriverMailbox {
-    pub capacity: u64,
-    pub slot_size: u64,
-    pub frame_size: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct RuntimeTables {
-    pub actors: Vec<ActorRuntimeLayout>,
-    /// plans/M7.md item H1: one entry per declared `@driver` instance, in
-    /// `ImageGraph::drivers` order. Until this item a `@driver`'s state
-    /// was never reserved and its `init` never called, so no capability of
-    /// any kind had bytes at runtime — decision 10's second prerequisite.
-    pub drivers: Vec<DriverRuntimeLayout>,
-    /// One turn area per **free** async fn (every `FlowWirProgram::fns`
-    /// key that is not a declared actor's own method — `@test(runtime)`
-    /// roots foremost; a compiled-but-unreachable free `async fn` still
-    /// gets one so its own `Reloc::TurnFrameAddr` resolves): `(fn key,
-    /// area bytes)` where area = `codegen::TURN_RECORD_SIZE` + that fn's
-    /// own persistent frame. The root test turn parks/resumes through
-    /// its own area via the identical machinery an actor turn uses —
-    /// decision 3's "+1 root" ready-queue slot, now made concrete.
-    pub free_turns: Vec<(String, u64)>,
-    /// plans/M10.md item 0a (decision 552): how many turn areas this image
-    /// has — every actor, every **messageable** driver, every free async
-    /// fn. The three sets above, counted once, so `total_bytes` and
-    /// `place_runtime_tables` cannot disagree about how many strides they
-    /// are accounting for.
-    pub n_turns: u64,
-    /// plans/M10.md item 0a (decision 552): the **uniform** byte stride
-    /// every turn area is reserved at — `round_up_pow2` of the widest raw
-    /// area over all three owner kinds, or `0` when `n_turns == 0`.
-    ///
-    /// The per-owner `frame_size` fields (`ActorRuntimeLayout::frame_size`,
-    /// `DriverMailbox::frame_size`, `free_turns.1`) stay the **raw** area —
-    /// `TURN_RECORD_SIZE + widest owned async frame` — deliberately. Two
-    /// things depend on that: the report's own `frame=` lines say how much
-    /// of the stride is real (a reader can subtract and see the padding),
-    /// and `build_rt_select_and_run_core`'s lineage-zeroing guard is keyed
-    /// on "does this owner actually have frame slots past its record",
-    /// which the stride cannot answer — under a uniform stride it would
-    /// answer "yes" for a bare actor and emit two stores into padding.
-    /// Only the *reservation* (this field) is uniform.
-    pub turn_stride: u64,
-    /// Ready-queue capacity: every actor plus the one root test turn
-    /// (decision 3's own "fixed capacity = actor count + 1 root").
-    /// Reserved as a real `u64`-per-slot table; `rt_select_and_run` (below)
-    /// does not yet populate it (an O(actor-count) round-robin scan is the
-    /// dumbest correct selection at M6's own actor counts, module doc on
-    /// `build_rt_select_and_run` below) — reserved now so a later
-    /// milestone's real event-driven wake can start using it without a
-    /// layout change, exactly like `wrela_machine::machine_info::
-    /// OFF_NEXT_DEADLINE`'s own precedent.
-    pub ready_queue_capacity: u64,
-    /// A real (not hand-waved) static count of `with group(...)` sites
-    /// found across every raw module in the build closure (decision 3's
-    /// own "fixed small global group arena sized from static with-site
-    /// count" — `count_with_group_sites`, below, an honest AST-level walk
-    /// that does not descend into closure bodies or `comptime if`
-    /// branches; recorded as a disclosed gap in plans/M6.md, inert at C
-    /// since no group actually executes against this arena until item F
-    /// wires it). Always `0` in today's report-bearing corpus (no
-    /// existing actor-bearing golden uses `with group` yet).
-    pub group_arena_capacity: u64,
-    /// plans/M12.md item F (decisions 886–889): image
-    /// `GROUP_MAX_CHILDREN` fact — `max(FLOOR=2, max g.start children
-    /// over group sites)`. Drives `GROUP_SLOT_SIZE = 64 + N*16` and the
-    /// generated `GroupSlot` child fields. Floor 2 for empty-arena images.
-    pub group_max_children: usize,
-    /// plans/M8.md item C2: this image's own cross-core SPSC rings, in
-    /// `cross_core_rings`'s canonical order. Empty for every single-core
-    /// image and for a cross-core image whose graph has no cross-core
-    /// message edge (decision 28's own "emit nothing" rule).
-    pub rings: Vec<RingLayout>,
-    /// plans/M12.md item C (decision 875): image-wide uniform ring-data
-    /// stride in bytes (`max(capacity * slot_size)`), or `0` when there
-    /// are no rings. Padding cost is `rings_padding`.
-    pub ring_stride: u64,
-    /// plans/M12.md item C: `n_rings * ring_stride - sum(capacity *
-    /// slot_size)` — bytes spent to buy a uniformly-strided type. Printed
-    /// on the report's `Rings` line; folded into `total_bytes` before
-    /// `steer_rtdata_base` so `RTDATA_SIZE_MAX` fails closed with the
-    /// number.
-    pub rings_padding: u64,
-    /// How many cores this image brings up (`placement::PlacementTable::
-    /// cores` — `1` for every single-core image, `VCPUS` for a cross-core
-    /// graph). plans/M8.md item C1: the scheduler's own per-core state is
-    /// **striped by this count** — one ready-queue table and one
-    /// round-robin cursor per live core, never one global set shared
-    /// across cores (04 §2: one event loop *per core*, no migration). A
-    /// single-core image stripes by 1, which is byte-for-byte the
-    /// pre-C1 reservation.
-    pub cores: usize,
-    /// The exact `rtdata` section size: every actor's own state + ring +
-    /// bookkeeping + frame bytes, plus the per-core ready-queue tables,
-    /// the per-core round-robin cursor words, and the group arena.
-    pub total_bytes: u64,
-    /// M11 F (decision 790): mailbox-root names per live core, in
-    /// `mailbox_root_names` order filtered by placement — the RR select
-    /// list. Empty until `RuntimeWiring::derive` fills them.
-    pub select_by_core: Vec<Vec<String>>,
-    /// M11 F: `true` when this core has any inbound cross-core ring.
-    pub drain_by_core: Vec<bool>,
-    /// M11 F: `(callee_key, child_index, turn_index)` per `g.start` site,
-    /// in `BTreeMap` key order.
-    pub child_sites: Vec<(String, usize, usize)>,
-    /// M11 G (decision 801): image handle word per request ring (parallel
-    /// to `rings`); 0 / unused for reply rings.
-    pub ring_target_handles: Vec<u64>,
-    /// M11 G: mailbox-root handle words in root order (enqueue stubs).
-    pub enqueue_handles: Vec<u64>,
-    /// M11 G: mailbox-root names parallel to `enqueue_handles`.
-    pub enqueue_actors: Vec<String>,
-    /// M11 J: per root (enqueue_actors order): `(method_key, is_async, reply_is_aggregate)`.
-    pub root_methods: Vec<Vec<(String, bool, bool)>>,
-    /// M11 J: placement core per root (enqueue_actors order).
-    pub root_cores: Vec<usize>,
-    /// M11 H: count of boot `init` calls (drivers then actors with `init`).
-    pub n_boot_calls: usize,
-    /// M11 I: pending-vector bit indices for sealed IRQ binds (decision 823).
-    pub irq_vector_bits: Vec<u64>,
-    /// M11 I: absolute wake-pending word addresses (decision 823).
-    pub wake_pending_addrs: Vec<u64>,
-}
-
-impl RuntimeTables {
-    /// Restripes the scheduler tables for `cores` live cores, recomputing
-    /// `total_bytes`. Called once, by `RuntimeWiring::derive`, as soon as
-    /// placement is known — `compute_runtime_tables` itself cannot call
-    /// `placement::place` (placement calls *it* for the per-actor sizes it
-    /// packs on, so the dependency runs one way only).
-    pub fn stripe_for_cores(&mut self, cores: usize) {
-        debug_assert!(cores >= 1);
-        let old = self.cores as u64;
-        let new = cores as u64;
-        let per_core = self.ready_queue_capacity * 8 + RR_CURSOR_SIZE;
-        self.total_bytes = self.total_bytes - old * per_core + new * per_core;
-        self.cores = cores;
-    }
-
-    /// plans/M8.md item C2 / M12 item C: installs this image's own
-    /// cross-core rings and grows `total_bytes` by their **padded**
-    /// reservation (all CTLs, then uniformly-strided DATA). Called once,
-    /// by `RuntimeWiring::derive`, right after `stripe_for_cores` — the
-    /// rings are placed **last** in `rtdata` (after the group arena), so
-    /// nothing an existing golden pins moves for an image that has none.
-    pub fn add_cross_core_rings(&mut self, rings: Vec<RingLayout>) {
-        self.ring_stride = ring_data_stride_bytes(&rings);
-        self.rings_padding = rings_padding_bytes(&rings);
-        self.total_bytes += rings_reservation_bytes(&rings);
-        self.rings = rings;
-    }
-}
-
-/// Image-wide max of `capacity * slot_size` (decision 875). `0` when empty.
-pub fn ring_data_stride_bytes(rings: &[RingLayout]) -> u64 {
-    rings
-        .iter()
-        .map(|r| r.capacity * r.slot_size)
-        .max()
-        .unwrap_or(0)
-}
-
-/// `n * stride - sum(raw data)` — the bytes uniform stride spends.
-pub fn rings_padding_bytes(rings: &[RingLayout]) -> u64 {
-    if rings.is_empty() {
-        return 0;
-    }
-    let stride = ring_data_stride_bytes(rings);
-    let raw: u64 = rings.iter().map(|r| r.capacity * r.slot_size).sum();
-    (rings.len() as u64) * stride - raw
-}
-
-/// CTL block (`n * 24`) plus padded DATA (`n * stride`).
-pub fn rings_reservation_bytes(rings: &[RingLayout]) -> u64 {
-    if rings.is_empty() {
-        return 0;
-    }
-    let n = rings.len() as u64;
-    n * MAILBOX_BOOKKEEPING_SIZE + n * ring_data_stride_bytes(rings)
-}
-
-/// plans/M8.md item C2 (04-compiler.md §3: "cross-core actor edges ...
-/// lowered to compiler-generated bounded SPSC rings in guest memory").
-/// Which of the two lanes a ring is — decision 29 keeps them separate so a
-/// request lane's back-pressure can never sit in front of a reply that has
-/// nowhere else to go.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RingKind {
-    /// `src` -> `dst`: an admitted message, waiting to be handed to
-    /// `dst`'s own `__rt_enqueue_<actor>` by `dst`'s drain.
-    Request,
-    /// `src` -> `dst`: a completed turn's reply word plus the address of
-    /// the turn record on `dst` it belongs to.
-    Reply,
-}
-
-/// One cross-core SPSC ring's own static shape. The producer is core
-/// `src` and the consumer is core `dst` — **one producer because one
-/// core**, not because one actor (decision 28): two actors on core 0 that
-/// both message the same actor on core 1 share one ring, and the baton
-/// (decision 11) plus the per-core cooperative loop mean neither can be
-/// mid-enqueue when the other starts.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RingLayout {
-    pub src: usize,
-    pub dst: usize,
-    pub kind: RingKind,
-    /// The target actor struct, for a `Request` ring: the ring feeds
-    /// exactly one mailbox, which is what makes its slot format identical
-    /// to that mailbox's own and its capacity derivable from the sealed
-    /// graph. `None` for a `Reply` ring (a reply is addressed to a turn
-    /// record, not to an actor).
-    pub actor: Option<String>,
-    pub capacity: u64,
-    pub slot_size: u64,
-}
-
-impl RingLayout {
-    /// Logical ring size: `capacity * slot_size` plus the same three-word
-    /// head/tail/count bookkeeping a mailbox carries. The **placed**
-    /// reservation after M12 item C is larger when strides differ — see
-    /// `rings_reservation_bytes` / `rings_padding_bytes`. Report `bytes=`
-    /// still spells this logical size (VMM forge check).
-    pub fn bytes(&self) -> u64 {
-        self.capacity * self.slot_size + MAILBOX_BOOKKEEPING_SIZE
-    }
-
-    pub fn kind_name(&self) -> &'static str {
-        match self.kind {
-            RingKind::Request => "request",
-            RingKind::Reply => "reply",
-        }
-    }
-}
-
-/// A bounded ring's four placed addresses — the only thing
-/// `build_ring_enqueue` and the drain routines address. A mailbox is one
-/// of these (`ActorAddrs::mailbox`) and so is every cross-core ring, which
-/// is exactly why the cross-core producer *is* `build_rt_enqueue`'s own
-/// body rather than a second implementation of it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RingAddrs {
-    pub ring: u64,
-    pub head: u64,
-    pub tail: u64,
-    pub count: u64,
-}
-
-/// A reply slot: the destination turn's own `TurnId` in the low half of
-/// word 0, the reply `tag` in the high half (plans/M10.md item J,
-/// decision 665 — the upper half was unused padding after 0c1), then the
-/// reply word at +8. `REPLY_SLOT_SIZE` stays 16: the tag rides the spare
-/// half rather than growing the ring.
-const REPLY_SLOT_SIZE: u64 = 16;
-
-// M10 F dissolved `BRK_XREPLY_UNKNOWN_CORE` (0xACD8): specialized
-// `emit_rt_select_and_run` dense-matches `xreply_remotes` (decision 557
-// typed core tag + decision 630). F2's `build_rt_xreply` still owns the
-// ring-full trap above.
-
-/// Per-actor ring bookkeeping beyond the ring bytes themselves: head,
-/// tail, count (3 `u64`s). Reply plumbing no longer lives here at all —
-/// M6-C's own `last_result` slot (the nested-drain placeholder's side
-/// channel) is deleted with the placeholder itself: a completing turn's
-/// reply is delivered to the *awaiting turn's* own reply slot
-/// (`codegen::OFF_TURN_REPLY`, via the waker carried in the message).
-const MAILBOX_BOOKKEEPING_SIZE: u64 = 3 * 8; // head, tail, count
-/// The deterministic round-robin cursor word `rt_run_one` reads/advances
-/// (04 §2's own tie-breaker) — one `u64`, placed right after the
-/// ready-queue table (`RuntimeTables::total_bytes`'s own byte order).
-const RR_CURSOR_SIZE: u64 = 8;
-
-fn value_as_u64(v: &crate::eval::value::Value) -> Option<u64> {
-    use crate::eval::value::Value;
-    match *v {
-        Value::U8(n) => Some(n as u64),
-        Value::U16(n) => Some(n as u64),
-        Value::U32(n) => Some(n as u64),
-        Value::U64(n) => Some(n),
-        Value::Usize(n) => Some(n as u64),
-        Value::I8(n) if n >= 0 => Some(n as u64),
-        Value::I16(n) if n >= 0 => Some(n as u64),
-        Value::I32(n) if n >= 0 => Some(n as u64),
-        Value::I64(n) if n >= 0 => Some(n as u64),
-        Value::Isize(n) if n >= 0 => Some(n as u64),
-        _ => None,
-    }
-}
-
-/// One actor struct's own shape, re-derived from raw source the same way
-/// `merge_layout_ctx`/`mwir::build_layout_ctx` already re-derive
-/// `sema::specialize::specialize` -> `sema::types::declare` per module
-/// (this module's own established precedent for "recompute from the raw
-/// AST rather than thread extra state out of an earlier pass") — the one
-/// additional fact `LayoutCtx` does not carry: each `pub` method's own
-/// name, `is_async` color, and param types (02 §9.2: only a `pub` method
-/// is ever reachable through `Actor[T]`, so only these are message
-/// shapes). Keyed by struct name, last-module-wins on a same-spelling
-/// collision — the identical disclosed simplification `merge_layout_ctx`
-/// already carries.
-#[derive(Clone)]
-struct ActorMethodShape {
-    /// plans/M6.md item D: this method's own bare name — added to this
-    /// struct (previously anonymous within its own `Vec`) so
-    /// `actor_method_index_tables`, below, can hand out a stable
-    /// `(actor, method name) -> dispatch index` table, the exact same
-    /// declaration order `dispatch: &[usize]` (`build_rt_select_and_run`)
-    /// already numbers methods in.
-    name: String,
-    /// The method's own color — the dispatch arms in
-    /// `rt_select_and_run` read the two return ABIs differently (a sync
-    /// method returns its reply in `x0`; an async state machine returns
-    /// status in `x0` and, when completed, its reply in `x1` —
-    /// `codegen::TURN_STATUS_*`), so every dispatch entry carries this
-    /// flag alongside its call target.
-    is_async: bool,
-    /// plans/M7.md item Z1 (decision 9a): whether this method's own
-    /// *declared* reply is an aggregate (`codegen::is_aggregate`, the one
-    /// shared ABI predicate — never a copy of it, exactly as
-    /// `sema::types::validate_message_shape` already calls it). Such a
-    /// method is handed its caller's staging-slot address in `x8` by the
-    /// dispatch arm below and writes its reply straight into the awaiting
-    /// frame; a scalar-reply method's arm is untouched, down to the word.
-    reply_is_aggregate: bool,
-    param_sizes: Vec<u64>,
-    /// plans/M8.md item D: the message shape itself — every parameter's
-    /// declared type plus the declared reply — so the messageable-driver
-    /// check (`check_driver_message_surface`) can ask
-    /// `sema::types::driver_message_forbidden_carried` about the exact
-    /// types the author wrote. Sizes cannot answer an authority question:
-    /// a `Receipt[P]`, an `InterruptCell[u32]` and a `u64` are all one
-    /// word.
-    param_types: Vec<crate::sema::types::Type>,
-    ret: crate::sema::types::Type,
-    /// 03-hardware.md §6's bottom half. A `@task` is woken by an ISR, not
-    /// admitted from a mailbox; a `pub` `@task` on a messageable driver
-    /// would give one turn body two entry paths (decision 21).
-    is_task: bool,
-    /// 03-hardware.md §5's handoff calling convention, recognized by the
-    /// one predicate `sema::handoff::is_handoff_signature` (never a copy
-    /// of it): a public *synchronous* `@driver` method with exactly one
-    /// `take p: P` parameter and result `Receipt[P]`. plans/M8.md item E,
-    /// decision 33: it is the one shape whose reply may carry a
-    /// `Receipt[P]` across a driver mailbox, because §5 blesses precisely
-    /// this signature and nothing else can produce the pair the caller
-    /// then `await`s.
-    is_handoff: bool,
-}
-
-fn merge_actor_pub_methods(
-    modules: &BTreeMap<String, Module>,
-    layout_ctx: &LayoutCtx,
-) -> Result<BTreeMap<String, Vec<ActorMethodShape>>, LayoutError> {
-    use crate::sema::types::{DeclItem, DeclMember};
-
-    let imported = closure_imported_types(modules)
-        .map_err(|e| LayoutError::new(format!("actor runtime layout: {}", e.message)))?;
-    let mut out: BTreeMap<String, Vec<ActorMethodShape>> = BTreeMap::new();
-    for (addr, module) in modules {
-        let specialized = crate::sema::specialize::specialize(module)
-            .map_err(|e| LayoutError::new(format!("actor runtime layout: {}", e.message)))?;
-        let items = crate::sema::types::declare_with_imports(&specialized, &imported[addr])
-            .map_err(|e| LayoutError::new(format!("actor runtime layout: {}", e.message)))?;
-        for item in items {
-            let DeclItem::Struct(s) = item else { continue };
-            // plans/M9.md item MM: only `@actor`/`@driver` structs own
-            // message shapes. A generic stdlib type (`List[T, N]`,
-            // `SlotMap[T, N]`) is not an actor — sizing its template
-            // methods hits bare type parameters and must not run here.
-            if !s.is_actor {
-                continue;
-            }
-            if !s.generics.is_empty() {
-                continue;
-            }
-            let mut methods = Vec::new();
-            for m in &s.members {
-                let DeclMember::Fn(f) = m else { continue };
-                let Some(recv) = &f.receiver else { continue };
-                if !recv.is_pub {
-                    continue;
-                }
-                let mut param_sizes = Vec::with_capacity(f.params.len());
-                let mut param_types = Vec::with_capacity(f.params.len());
-                for p in &f.params {
-                    let size = mwir::size_of(&p.ty, layout_ctx).map_err(|e| {
-                        LayoutError::new(format!(
-                            "actor `{}`'s own `{}` message shape: {e}",
-                            s.name, f.name
-                        ))
-                    })?;
-                    param_sizes.push(size as u64);
-                    param_types.push(p.ty.clone());
-                }
-                methods.push(ActorMethodShape {
-                    name: f.name.clone(),
-                    is_async: f.is_async,
-                    reply_is_aggregate: crate::codegen::is_aggregate(&f.ret),
-                    param_sizes,
-                    param_types,
-                    ret: f.ret.clone(),
-                    is_task: f.is_task,
-                    is_handoff: s.is_driver && crate::sema::handoff::is_handoff_signature(f),
-                });
-            }
-            out.insert(s.name, methods);
-        }
-    }
-    Ok(out)
-}
-
-/// plans/M7.md item W: every struct's own declared `init`, in the shape
-/// boot needs to *call* it — the `program.fns` key, the declared
-/// parameter list (name, access mode, declared type, declaration order)
-/// and the declared return type. `build_boot_init_calls` (below) turns
-/// one of these plus one `ActorDecl`'s own wiring arguments into the
-/// argument words `build_boot_init` loads into `x1..`.
-///
-/// What this replaced, recorded because it was a *rejection* and is not
-/// one any more: until item W this returned only which structs declared
-/// a **zero-argument** `init` — the one shape a boot sequence with no
-/// argument marshalling could call — plus the parameter count of every
-/// other one, purely so `RuntimeWiring::derive` could refuse to lay the
-/// image out at all. That guard existed because the two halves of the
-/// rule had silently composed into a wrong answer: `eval::image_checks`
-/// accepts `depth=7` (it really does name a real `Sink.init` parameter),
-/// boot never called that `init`, and the actor booted with `depth == 0`
-/// while every assertion over it read 0 and all three tiers reported
-/// success. Boot now calls a declared `init` with its declared
-/// arguments, so the guard is gone; what remains fails closed on the
-/// *specific shape it cannot marshal*, named one at a time in
-/// `build_boot_init_calls`, never on "declares parameters at all".
-struct ActorInit {
-    /// `"{Struct}.init"` — `lower::lower_struct`'s own key for the
-    /// compiled body, which is what `Asm::bl_call_key` resolves against.
-    key: String,
-    params: Vec<crate::sema::types::DeclParam>,
-    ret: crate::sema::types::Type,
-}
-
-fn actor_inits(
-    modules: &BTreeMap<String, Module>,
-) -> Result<BTreeMap<String, ActorInit>, LayoutError> {
-    use crate::sema::types::{DeclItem, DeclMember};
-
-    let imported = closure_imported_types(modules)
-        .map_err(|e| LayoutError::new(format!("actor boot init: {}", e.message)))?;
-    let mut out: BTreeMap<String, ActorInit> = BTreeMap::new();
-    for (addr, module) in modules {
-        let specialized = crate::sema::specialize::specialize(module)
-            .map_err(|e| LayoutError::new(format!("actor boot init: {}", e.message)))?;
-        let items = crate::sema::types::declare_with_imports(&specialized, &imported[addr])
-            .map_err(|e| LayoutError::new(format!("actor boot init: {}", e.message)))?;
-        for item in items {
-            let DeclItem::Struct(s) = item else { continue };
-            for m in &s.members {
-                if let DeclMember::Init(f) = m {
-                    out.insert(
-                        s.name.clone(),
-                        ActorInit {
-                            key: format!("{}.init", s.name),
-                            params: f.params.clone(),
-                            ret: f.ret.clone(),
-                        },
-                    );
-                }
-            }
-        }
-    }
-    Ok(out)
-}
-
-/// One declared actor instance's own boot-time `init` call: the compiled
-/// body's key and its already-materialized argument words, in declared
-/// parameter order. `build_boot_init` loads word `i` into `x{i+1}`.
-///
-/// **The ABI is not restated here, it is derived**: `codegen::emit_prologue`
-/// spills the receiver from `x0` into the frame's `self_ptr` slot (a
-/// pointer — the receiver is always by address), then walks `f.params` in
-/// declaration order spilling each one from the next register up, by
-/// value for a non-aggregate and by address for an aggregate
-/// (`codegen::is_aggregate`), and refuses past `x8`. `codegen`'s own
-/// `Inst::Call` emitter is the mirror image of that, and
-/// `build_rt_select_and_run_core`'s hand-assembled dispatch already
-/// relies on the `x0`-is-`self`-pointer half (`a.load_imm(0, addrs.state)`
-/// before every method call). Boot is a third caller of the identical
-/// convention: `x0` = the actor's own state address, `x1..` = the
-/// scalar arguments. Aggregates are not passed at all — they would need
-/// a staging buffer boot has nowhere to put — so `boot_init_arg_word`
-/// fails closed on every one of them instead.
-#[derive(Debug)]
-struct BootInitCall {
-    key: String,
-    args: Vec<BootInitArg>,
-    /// plans/M7.md item E1: `true` when `init` returns
-    /// `Result[unit, BootError]` — boot must arm `x8` with a reply slot
-    /// and abort on `Err`.
-    fallible: bool,
-    /// When `fallible`: `(rodata_byte_offset, len)` of the abort message
-    /// `"{key} returned Err"`, interned once before either assembly pass
-    /// so the sizing and real-address builds agree on every word. `None`
-    /// until `intern_fallible_init_abort_messages` runs (and forever for
-    /// an infallible `init`).
-    err_msg: Option<(usize, usize)>,
-}
-
-/// One materialized `init` argument word — or the promise of one whose
-/// value is not known until the section table is placed.
-///
-/// plans/M7.md item H1: a `DeviceCap[D]` argument is decision 11's own
-/// representation, the base address of the device's declared register
-/// window, and that address exists only after `place_device_regs` has run.
-/// Every other argument is already a build-time constant by the time
-/// `build_boot_init_calls` sees it. Carrying the one unresolved case as
-/// its own variant (rather than threading placement through the whole
-/// derivation, or patching a word after the fact) keeps the emitted word
-/// count identical in both of `build_runtime_block`'s passes — a
-/// `load_imm` is four words whatever it loads — which is the invariant
-/// both image flavors' two-pass assembly rests on.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum BootInitArg {
-    Word(u64),
-    /// The base of `ImageGraph::devices[.0]`'s own register window.
-    DeviceRegsBase(usize),
-    /// The base of the named pool's own backing in `pooldata` — decision
-    /// 11's word for a `DmaPool[P, N]`, which item D placed and reported
-    /// but nothing could yet pass to an `init`.
-    PoolBase(String),
-    /// plans/M7.md item E4 / decision 19: one `own[P] T` — the guest
-    /// address of slot `index` in pool `name` (`base + index * slot_bytes`).
-    OwnSlot {
-        pool: String,
-        index: u64,
-        slot_bytes: u64,
-    },
-    /// plans/M7.md item E4: `[own[P] T; N]` — boot builds a table of
-    /// `count` slot addresses on its own stack and passes the table's
-    /// address (this machine's bare-pointer aggregate ABI).
-    OwnHandleArray {
-        pool: String,
-        count: u64,
-        slot_bytes: u64,
-    },
-}
-
-impl BootInitArg {
-    /// The word this argument actually loads. `regs`/`pools` are the
-    /// placed window lists; a reference with no matching placement is an
-    /// internal inconsistency (both parameters only exist on a driver
-    /// whose binding `eval::image_checks` already resolved), reported
-    /// rather than silently zeroed.
-    /// Kept for unit tests / future inject-time validation; specialized
-    /// emit uses Reloc variants (decision 683) instead.
-    #[allow(dead_code)]
-    fn resolve(&self, regs: &[DeviceRegs], pools: &[PoolPlacement]) -> Result<u64, LayoutError> {
-        match self {
-            BootInitArg::Word(w) => Ok(*w),
-            BootInitArg::DeviceRegsBase(i) => regs
-                .iter()
-                .find(|r| r.device == *i)
-                .map(|r| r.base)
-                .ok_or_else(|| {
-                    LayoutError::new(format!(
-                        "internal error: boot passes a `DeviceCap` for device#{i}, which has no \
-                         placed register window"
-                    ))
-                }),
-            BootInitArg::PoolBase(name) => pools
-                .iter()
-                .find(|p| &p.backing.name == name)
-                .map(|p| p.base)
-                .ok_or_else(|| {
-                    LayoutError::new(format!(
-                        "internal error: boot passes a `DmaPool` for pool `{name}`, which has no \
-                         placed backing"
-                    ))
-                }),
-            BootInitArg::OwnSlot {
-                pool,
-                index,
-                slot_bytes,
-            } => {
-                let p = pools
-                    .iter()
-                    .find(|p| &p.backing.name == pool)
-                    .ok_or_else(|| {
-                        LayoutError::new(format!(
-                            "internal error: boot passes an `own` into pool `{pool}`, which has no \
-                             placed backing"
-                        ))
-                    })?;
-                Ok(p.base + *index * *slot_bytes)
-            }
-            BootInitArg::OwnHandleArray { .. } => Err(LayoutError::new(
-                "internal error: `OwnHandleArray` has no single resolve word — emit via \
-                 `emit_boot_init_arg`"
-                    .to_string(),
-            )),
-        }
-    }
-}
-
-/// The one place a build-time `eval::value::Value` becomes the 64-bit
-/// word boot loads into an argument register. Deliberately exhaustive and
-/// deliberately narrow: `None` means "this compiler has no register
-/// representation for this value", and the caller turns that into a named
-/// diagnostic rather than into a zero.
-///
-/// The encodings are `codegen`'s own, not new ones — an integer is
-/// `Inst::ConstInt`'s `load_imm(value as i64)` (a negative value is
-/// therefore its sign-extended two's complement, exactly as a compiled
-/// `-5` would be), a bool is `Inst::ConstBool`'s 0/1, a char is
-/// `Inst::ConstChar`'s code point, and `unit` is all-zero (the same fact
-/// `build_boot_init`'s own zero-fill already rests on).
-///
-/// Counts that define the shared image-declaration handle space
-/// (plans/M8.md item H attack 6). Derived once from the sealed graph so
-/// every consumer (`boot_init_arg_word`, `resolve_runtime_test_args`)
-/// sees the same shift.
-#[derive(Clone, Copy, Debug, Default)]
-struct HandleSpace {
-    n_actors: usize,
-    n_drivers: usize,
-}
-
-impl HandleSpace {
-    fn from_graph(graph: &ImageGraph) -> Self {
-        Self {
-            n_actors: graph.actors.len(),
-            n_drivers: graph.drivers.len(),
-        }
-    }
-}
-
-/// **Contract: no two distinct image declarations share a handle word,
-/// whatever their kind.** Every `ImageDeclRef` variant is named here so a
-/// fourth kind cannot quietly reuse a number — it either gets a fresh
-/// range or fails closed like a pool.
-///
-/// Layout (dumb, deterministic, actors-then-drivers-then-devices):
-/// - `Actor(i)`  → `i`
-/// - `Driver(i)` → `n_actors + i`
-/// - `Device(i)` → `n_actors + n_drivers + i`
-/// - `Pool` / `DmaPool` → no word (`None`); they are named by string, not
-///   indexed (`ImageDeclRef`'s own two recording disciplines).
-///
-/// Why one space for all three indexed kinds: `decl.handle()` erases the
-/// declaration's type into a bare `u32` (`check_image_decl_method_intrinsic`
-/// accepts it on any `ImageDecl`), so a kind-local scheme for devices is
-/// the same shape of hole item D decision 22 left for actors/drivers —
-/// found by orchestrator spot-probe after the first attack-6 fix covered
-/// only two of the three kinds.
-fn image_decl_handle_word(
-    space: HandleSpace,
-    decl: &crate::eval::image::ImageDeclRef,
-) -> Option<u64> {
-    use crate::eval::image::ImageDeclRef;
-    match decl {
-        ImageDeclRef::Actor(i) => Some(*i as u64),
-        ImageDeclRef::Driver(i) => Some((space.n_actors + *i) as u64),
-        ImageDeclRef::Device(i) => Some((space.n_actors + space.n_drivers + *i) as u64),
-        ImageDeclRef::Pool(_) | ImageDeclRef::DmaPool(_) => None,
-    }
-}
-
-/// A declaration handle (`Value::ImageDecl`) becomes its word in the
-/// shared space (`image_decl_handle_word`) — the identical number
-/// `resolve_runtime_test_args` hands a `@test(runtime)` root for an
-/// `Actor[T]` parameter. **What that number is and is not**: `codegen`
-/// still routes every `await`/`send` statically by actor type today, but
-/// the guest can store and compare the word (and the day handles become
-/// dynamic this is the one place that has to change). A pool reference
-/// is named by a string, not an index, so it has no word and fails closed.
-fn boot_init_arg_word(value: &crate::eval::value::Value, space: HandleSpace) -> Option<u64> {
-    use crate::eval::value::Value;
-
-    Some(match value {
-        Value::U8(n) => *n as u64,
-        Value::U16(n) => *n as u64,
-        Value::U32(n) => *n as u64,
-        Value::U64(n) | Value::Usize(n) => *n,
-        Value::I8(n) => *n as i64 as u64,
-        Value::I16(n) => *n as i64 as u64,
-        Value::I32(n) => *n as i64 as u64,
-        Value::I64(n) | Value::Isize(n) => *n as u64,
-        Value::Bool(b) => u64::from(*b),
-        Value::Char(c) => *c as u32 as u64,
-        Value::Unit => 0,
-        Value::ImageDecl(decl) => return image_decl_handle_word(space, decl),
-        // Every remaining shape is either an aggregate (no register
-        // representation: `Struct`/`Tuple`/`Array`/`Enum`/`Str`/`Bytes`),
-        // a float (`codegen` has no FP/SIMD encoder subset at all —
-        // `Inst::ConstFloat` fails closed for the identical reason), or a
-        // callable (`Fn`/`Closure` — not a value this machine passes).
-        Value::F32(_)
-        | Value::F64(_)
-        | Value::Str(_)
-        | Value::Bytes(_)
-        | Value::Tuple(_)
-        | Value::Array(_)
-        | Value::Struct(_)
-        | Value::Enum(_, _)
-        | Value::Fn(_)
-        | Value::Closure { .. } => return None,
-    })
-}
-
-/// A `Value`'s own shape, for a diagnostic that has to name what it
-/// could not marshal without printing the whole value.
-fn value_shape_name(value: &crate::eval::value::Value) -> &'static str {
-    use crate::eval::image::ImageDeclRef;
-    use crate::eval::value::Value;
-
-    match value {
-        Value::U8(_)
-        | Value::U16(_)
-        | Value::U32(_)
-        | Value::U64(_)
-        | Value::Usize(_)
-        | Value::I8(_)
-        | Value::I16(_)
-        | Value::I32(_)
-        | Value::I64(_)
-        | Value::Isize(_) => "an integer",
-        Value::Bool(_) => "a bool",
-        Value::Char(_) => "a char",
-        Value::Unit => "unit",
-        Value::F32(_) | Value::F64(_) => "a floating-point value",
-        Value::Str(_) => "a string",
-        Value::Bytes(_) => "a byte string",
-        Value::Tuple(_) => "a tuple",
-        Value::Array(_) => "an array",
-        Value::Struct(_) => "a struct value",
-        Value::Enum(_, _) => "an enum value",
-        Value::Fn(_) => "a function reference",
-        Value::Closure { .. } => "a closure",
-        Value::ImageDecl(ImageDeclRef::Device(_)) => "a device handle",
-        Value::ImageDecl(ImageDeclRef::Driver(_)) => "a driver handle",
-        Value::ImageDecl(ImageDeclRef::Actor(_)) => "an actor handle",
-        Value::ImageDecl(ImageDeclRef::Pool(_)) => "a pool handle",
-        Value::ImageDecl(ImageDeclRef::DmaPool(_)) => "a DMA-pool handle",
-    }
-}
-
-/// **plans/M7.md item W's residual, closed here** (item W named item D as
-/// its owner; this is that).
-///
-/// The residual, in item W's own words: "A handle wired through an `init`
-/// *parameter* now carries its real construction index; a handle wired
-/// straight to a *field* (05-library.md §9's literal-constructor path,
-/// which has no `init` to call) still arrives as the zero the state-fill
-/// leaves. The two paths genuinely disagree. ... the fix is either
-/// materializing into the field's own offset with W's marshalling or
-/// failing closed on a nonzero index."
-///
-/// **Failing closed is the option taken**, for three reasons stated once
-/// so the choice is reviewable rather than inferred:
-///
-/// 1. It is *exact*, not conservative. A field-wired argument whose boot
-///    word is `0` agrees with the state-fill byte for byte — there is no
-///    disagreement to close, which is why `golden/image-field-wired-accept`
-///    (`led=<actor#0>`) stays green untouched. Every word that is not `0`
-///    is a wrong answer today, and every one of them is now rejected. The
-///    two paths therefore never disagree again, which is the whole
-///    property the residual asked for.
-/// 2. Materializing would build a mechanism with no consumer.
-///    `codegen` routes every `await`/`send` statically, by actor *type*
-///    (`codegen::rt_enqueue_symbol`), so nothing reads a handle word at
-///    runtime; storing one into a field offset would be an unobservable
-///    write, and the house rule is that a feature waits for the thing that
-///    needs it. When an `Actor[T]` becomes comparable, storable or
-///    sendable, this rejection is what fails and points at the work.
-/// 3. It generalizes correctly rather than only to handles. Item W found
-///    the defect through a handle, but a *scalar* wired to a field of a
-///    no-`init` struct is silently zero for exactly the same reason
-///    (`img.actor(Store, seed=8)` against `Store.seed: u32`, no `init` —
-///    accepted by `eval::image_checks`' literal-constructor arm, never
-///    materialized by anything). "Nonzero index" and "nonzero value" are
-///    one rule: *a field-wired argument must equal the zero the state-fill
-///    leaves*. A value with no register representation at all is rejected
-///    too, since this compiler cannot show it is zero either.
-/// Image-wiring labels that are never field/init arguments — the same
-/// sets `eval::image_checks::reserved_args` uses, restated here by `kind`
-/// because that helper is not `pub` and `is_reserved_actor_arg` only
-/// covers the actor half. Sharing the actor predicate for drivers would
-/// let `device=` fall through as a field wire (and, once device handles
-/// left word 0, fail closed against zero-fill — the exact break
-/// `check-driver-mode-irq`/`-poll` hit under attack 6's device half).
-fn is_reserved_wiring_arg(kind: &str, label: &str) -> bool {
-    match kind {
-        "driver" => matches!(label, "device" | "core" | "mailbox"),
-        "actor" => crate::eval::image_checks::is_reserved_actor_arg(label),
-        _ => false,
-    }
-}
-
-fn check_field_wired_args(
-    kind: &str,
-    name: &str,
-    decl_args: &[crate::eval::image::DeclArg],
-    space: HandleSpace,
-) -> Result<(), LayoutError> {
-    for a in decl_args {
-        if is_reserved_wiring_arg(kind, &a.label) {
-            continue;
-        }
-        let word = boot_init_arg_word(&a.value, space);
-        if word == Some(0) {
-            continue;
-        }
-        let what = match word {
-            Some(w) => format!("materializes as {w}"),
-            None => format!(
-                "is {} and has no register representation at all",
-                value_shape_name(&a.value)
-            ),
-        };
-        return Err(LayoutError::new(format!(
-            "{kind} `{name}` declares no `init`, so this image wires `{}=...` to its field of \
-             that name — and boot has nothing to call: it zero-fills the whole state slot and \
-             stops (05-library.md §9's literal-constructor path). The wired value {what}, which \
-             is not the zero the state-fill leaves, so the {kind} would boot with a value this \
-             image did not declare. Failing closed (plans/M7.md item W's residual, owned by item \
-             D) rather than reporting success over a wrong answer. Give `{name}` an `init` that \
-             takes it, or drop the argument.",
-            a.label
-        )));
-    }
-    Ok(())
-}
-
-/// plans/M7.md item W: every declared actor *and driver* instance's own
-/// boot `init` call, in `graph.actors`/`graph.drivers` order — which is
-/// `RuntimeTables::actors`/`RuntimeTables::drivers` order too
-/// (`compute_runtime_tables` builds one entry per graph entry, in the same
-/// walks), so each result indexes 1:1 against the matching
-/// `RuntimePlacement` list.
-///
-/// **plans/M7.md item H1, decision 10's second prerequisite**: until this
-/// item the walk was `graph.actors` only, so a `@driver`'s `init` was
-/// never called at boot at all and no capability of any kind had bytes at
-/// runtime. A driver's `init` is now called exactly like an actor's, with
-/// one difference that is the whole point: its `DeviceCap[D]` parameter
-/// carries no explicit image argument (05-library.md §9 substitutes it)
-/// and is materialized as decision 11's own word — the base of the device
-/// register window `place_device_regs` reserved for the device its
-/// `device=` binding names.
-///
-/// `None` for an actor whose struct declares no `init` at all: its state
-/// is its own literal constructor's, and `build_boot_init`'s zero-fill
-/// already gave every field a defined value (`eval::image_checks`'s own
-/// missing-slot note rests on exactly that).
-///
-/// Everything this cannot do fails closed with an ordinary named
-/// diagnostic — never `internal error:` (that spelling is reserved for a
-/// producer bug), and never a zero. The shapes, all of them:
-///
-/// - a **fallible `init`** (`-> Result[...]`): running one means driving
-///   03-hardware.md §9's consuming transition chain from boot, which is
-///   plans/M7.md item H's bring-up work. Until then a fallible `init`
-///   fails closed rather than having its `Result` dropped on the floor.
-///   Note this arm also closes a live defect that predates item W: a
-///   *zero-argument* `init` returning a `Result` was called by the old
-///   boot sequence with no `x8`, so the callee wrote its aggregate reply
-///   through whatever `x8` happened to hold — a real guest fault at
-///   `ipa=0x0`, verified by running it.
-/// - any other **non-`unit` return**, for the same reason with no item to
-///   name: boot has nowhere to put the value.
-/// - a **capability parameter other than `DeviceCap[D]` on a `@driver`**
-///   (recognized by name exactly as `eval::image_checks` recognizes them):
-///   `eval::image_checks::check_capability_substitution` already refuses
-///   each of these at the image binding, naming the item that mints it;
-///   this is the same refusal for the shape that check cannot see (an
-///   `img.actor(...)` naming a struct that is not an `@actor`).
-/// - an **`Actor[T]` parameter with no explicit argument**: 05-library.md
-///   §9 lets an actor handle be substituted by type rather than wired by
-///   name, and boot materializes only what the image explicitly wired.
-/// - a **pool handle argument** (05-library.md §9's "create the initial
-///   handles", wired as `blocks=take cache_blocks`): plans/M7.md item E4
-///   / decision 19 materializes each `own[P] T` as the guest address of
-///   one pool slot. A single `own` is that word; an `[own; N]` is a
-///   stack-built table of them passed by the bare-pointer aggregate ABI.
-///   Any other parameter type wired from a pool still fails closed.
-/// - an **argument whose value has no register representation**
-///   (an aggregate, a float, ...).
-/// - **more than eight arguments**, the register budget `x1..x8` leaves
-///   once `x0` carries the receiver — `codegen`'s own identical limit.
-fn build_boot_init_calls(
-    graph: &ImageGraph,
-    inits: &BTreeMap<String, ActorInit>,
-    backings: &BTreeMap<String, crate::eval::image_checks::PoolBacking>,
-) -> Result<(Vec<Option<BootInitCall>>, Vec<Option<BootInitCall>>), LayoutError> {
-    let mut actors = Vec::with_capacity(graph.actors.len());
-    for decl in &graph.actors {
-        actors.push(one_boot_init_call(
-            "actor",
-            &decl.actor_type,
-            &decl.args,
-            None,
-            graph,
-            inits,
-            backings,
-        )?);
-    }
-    let mut drivers = Vec::with_capacity(graph.drivers.len());
-    for decl in &graph.drivers {
-        let device = device_index_of(&decl.args);
-        drivers.push(one_boot_init_call(
-            "driver",
-            &decl.actor_type,
-            &decl.args,
-            device,
-            graph,
-            inits,
-            backings,
-        )?);
-    }
-    Ok((actors, drivers))
-}
-
-/// The `device#N` an `img.driver(..., device=...)` declaration binds, if
-/// its `device=` argument is a device reference at all. `None` is never a
-/// silent default: the one caller that needs it turns it into a named
-/// rejection on the `DeviceCap[D]` parameter that would have used it.
-fn device_index_of(args: &[crate::eval::image::DeclArg]) -> Option<usize> {
-    use crate::eval::image::ImageDeclRef;
-    use crate::eval::value::Value;
-    args.iter()
-        .find(|a| a.label == "device")
-        .and_then(|a| match &a.value {
-            Value::ImageDecl(ImageDeclRef::Device(i)) => Some(*i),
-            _ => None,
-        })
-}
-
-/// One declaration's own boot `init` call. `kind` is the noun every
-/// diagnostic here uses (`actor`/`driver`) so a driver is never described
-/// as an actor and vice versa; `device` is the driver's own bound device
-/// index (`None` for an actor, which binds none).
-fn one_boot_init_call(
-    kind: &str,
-    decl_type: &crate::sema::types::Type,
-    decl_args: &[crate::eval::image::DeclArg],
-    device: Option<usize>,
-    graph: &ImageGraph,
-    inits: &BTreeMap<String, ActorInit>,
-    backings: &BTreeMap<String, crate::eval::image_checks::PoolBacking>,
-) -> Result<Option<BootInitCall>, LayoutError> {
-    use crate::sema::types::{Type, render_type};
-
-    let name = render_type(decl_type);
-    let space = HandleSpace::from_graph(graph);
-    let Some(init) = inits.get(&name) else {
-        check_field_wired_args(kind, &name, decl_args, space)?;
-        return Ok(None);
-    };
-    if init.ret != Type::Unit {
-        let rendered = render_type(&init.ret);
-        // plans/M7.md item E1: a fallible `init` returning
-        // `Result[unit, BootError]` is now real — 03 §1's own constructor
-        // signature. Boot allocates a reply slot, calls `init`, and on
-        // `Err` aborts with a diagnosable line (plans/M6.md decision 12 /
-        // plans/M7.md decision 8). Any other non-`unit` return still fails
-        // closed: boot has nowhere to put the value.
-        let ok_fallible = matches!(
-            &init.ret,
-            Type::Result(ok, err)
-                if matches!(ok.as_ref(), Type::Unit)
-                    && matches!(err.as_ref(), Type::Named(n, _) if n == "BootError")
-        );
-        if !ok_fallible {
-            return Err(LayoutError::new(if matches!(init.ret, Type::Result(..)) {
-                format!(
-                    "{kind} `{name}` declares a fallible `init` returning `{rendered}`, and this \
-                     image declares an instance of it — boot can only handle \
-                     `Result[unit, BootError]` (03-hardware.md §1/§9); any other error type \
-                     would need a recovery path this machine does not have yet"
-                )
-            } else {
-                format!(
-                    "{kind} `{name}` declares `init` returning `{rendered}`, and this image \
-                     declares an instance of it — boot can only call an `init` returning \
-                     `unit` or `Result[unit, BootError]`, and has nowhere to put a returned value."
-                )
-            }));
-        }
-    }
-    if init.params.len() > 8 {
-        return Err(LayoutError::new(format!(
-            "{kind} `{name}`'s own `init` declares {} parameters; boot can pass at most 8 \
-             (`x0` carries the receiver, leaving `x1..x8`) — the identical limit \
-             `codegen` places on every other call.",
-            init.params.len()
-        )));
-    }
-    let mut args = Vec::with_capacity(init.params.len());
-    for p in &init.params {
-        // Reserved labels are skipped through the same predicate
-        // `eval::image_checks` accepts them by, so the acceptance rule
-        // and this materialization rule can never disagree about which
-        // label is image-wiring metadata rather than an `init`
-        // argument (a parameter that happens to be named `mailbox` is
-        // therefore unsatisfiable on both sides alike, not satisfiable
-        // on one).
-        let wired = decl_args.iter().find(|a| {
-            a.label == p.name && !crate::eval::image_checks::is_reserved_actor_arg(&a.label)
-        });
-        let Some(a) = wired else {
-            let param_ty = render_type(&p.ty);
-            if let Type::Named(tn, targs) = &p.ty {
-                // plans/M7.md item H1: **the mint, materialized.** A
-                // `@driver`'s `DeviceCap[D]` parameter carries no explicit
-                // argument — 05-library.md §9 substitutes it from the
-                // `device=` binding, and `check_capability_substitution`
-                // has already checked that `D` *is* the device that
-                // binding names. Its word is decision 11's: the base of
-                // that device's own declared register window.
-                if tn == "DeviceCap" {
-                    let Some(i) = device else {
-                        return Err(LayoutError::new(format!(
-                            "{kind} `{name}`'s own `init` takes `{}: {param_ty}`, but this \
-                             declaration binds no device — a `DeviceCap[D]` is authority over one \
-                             device instance and is minted only from an `img.driver(..., \
-                             device=...)` binding (03-hardware.md §1).",
-                            p.name
-                        )));
-                    };
-                    args.push(BootInitArg::DeviceRegsBase(i));
-                    continue;
-                }
-                // plans/M7.md item H1: a `DmaPool[P, N]` parameter is
-                // substituted the same way, and its word is decision 11's
-                // — the base of pool `P`'s own backing, which item D
-                // already sized, placed and reported.
-                // `check_dma_pool_mint` has already checked that `P` is
-                // bound, DMA, reachable from *this* driver's device and at
-                // least `N` bytes wide, so nothing is re-derived here.
-                if tn == "DmaPool" {
-                    let Some(crate::sema::types::TypeArg::Pool(pool)) = targs.first() else {
-                        return Err(LayoutError::new(format!(
-                            "internal error: `{name}.init`'s own `{}: {param_ty}` names no pool",
-                            p.name
-                        )));
-                    };
-                    args.push(BootInitArg::PoolBase(pool.clone()));
-                    continue;
-                }
-                // plans/M7.md item G, decision 12: an `IrqCap[V]` parameter
-                // is the vector bit index. `check_irq_cap_mint` already
-                // required `vector=`; the word is known here, so it is a
-                // plain `Word` rather than a reloc against placement.
-                if tn == "IrqCap" {
-                    let Some(i) = device else {
-                        return Err(LayoutError::new(format!(
-                            "{kind} `{name}`'s own `init` takes `{}: {param_ty}`, but this \
-                             declaration binds no device — an `IrqCap[V]` is minted from a \
-                             device's declared `vector=` (03-hardware.md §6).",
-                            p.name
-                        )));
-                    };
-                    let Some(dev) = graph.devices.get(i) else {
-                        return Err(LayoutError::new(format!(
-                            "internal error: `{name}.init` takes an `IrqCap` for device#{i}, \
-                             which does not exist"
-                        )));
-                    };
-                    let Some(v) = crate::eval::image_checks::device_vector(&dev.args) else {
-                        return Err(LayoutError::new(format!(
-                            "internal error: `{name}.init` takes an `IrqCap` for device#{i}, \
-                             which declared no `vector=` — `check_vector_bindings` should have \
-                             rejected first"
-                        )));
-                    };
-                    args.push(BootInitArg::Word(v));
-                    continue;
-                }
-                if crate::eval::image_checks::is_capability_type_name(tn) {
-                    return Err(LayoutError::new(format!(
-                        "{kind} `{name}`'s own `init` takes `{}: {param_ty}`, a capability this \
-                         image never wires explicitly — the image binding mints a `DeviceCap[D]`, \
-                         a `DmaPool[P, N]` and an `IrqCap[V]` (from `vector=`) and nothing else \
-                         (plans/M7.md items H1/G); an `Mmio[L]` comes from the sealed transport's \
-                         own `map_partition` (03-hardware.md §2/§9), and the rest are named by \
-                         `eval::image_checks::check_capability_substitution`. Failing closed \
-                         rather than passing a zero.",
-                        p.name
-                    )));
-                }
-                if crate::eval::image_checks::is_protocol_state_type_name(tn) {
-                    return Err(LayoutError::new(format!(
-                        "{kind} `{name}`'s own `init` takes `{}: {param_ty}`, a bring-up state \
-                         (03-hardware.md §9). A state is produced by a transition inside the \
-                         driver, never handed to it: boot mints the `DeviceCap[D]` and the \
-                         driver's own `init` calls `claim`.",
-                        p.name
-                    )));
-                }
-                if crate::eval::image_checks::is_handle_type_name(tn) {
-                    return Err(LayoutError::new(format!(
-                        "{kind} `{name}`'s own `init` takes `{}: {param_ty}` with no \
-                         `{}=...` argument in this image — 05-library.md §9 allows an actor \
-                         handle to be substituted by type there, but boot materializes only \
-                         the arguments the image wires by name. Wire it explicitly, or wait \
-                         for handle substitution.",
-                        p.name, p.name
-                    )));
-                }
-            }
-            return Err(LayoutError::new(format!(
-                "{kind} `{name}`'s own `init` takes `{}: {param_ty}` and this image wires no \
-                 `{}=...` argument for it, so boot has no value to pass.",
-                p.name, p.name
-            )));
-        };
-        // plans/M7.md item E4 / decision 19: a pool wired to an `own[P] T`
-        // or `[own[P] T; N]` parameter becomes the initial handles
-        // 05-library.md §9 promises. Each handle is one word — the guest
-        // address of a pool slot. A single `own` is that word; an array
-        // is a pre-built table of them passed by the bare-pointer
-        // aggregate ABI.
-        if matches!(
-            a.value,
-            crate::eval::value::Value::ImageDecl(
-                crate::eval::image::ImageDeclRef::Pool(_)
-                    | crate::eval::image::ImageDeclRef::DmaPool(_)
-            )
-        ) {
-            let pool_name = match &a.value {
-                crate::eval::value::Value::ImageDecl(
-                    crate::eval::image::ImageDeclRef::Pool(n)
-                    | crate::eval::image::ImageDeclRef::DmaPool(n),
-                ) => n.clone(),
-                _ => unreachable!(),
-            };
-            let backing = backings.get(&pool_name).ok_or_else(|| {
-                LayoutError::new(format!(
-                    "internal error: `{name}.init` wires pool `{pool_name}`, which has no \
-                     PoolBacking — `check_pool_decls` should have rejected first"
-                ))
-            })?;
-            match &p.ty {
-                Type::Own(own_pool, _) if own_pool == &pool_name => {
-                    if backing.slots < 1 {
-                        return Err(LayoutError::new(format!(
-                            "{kind} `{name}` wires `{}=...` to a single `own[{pool_name}] _`, but \
-                             pool `{pool_name}` declares zero slots",
-                            a.label
-                        )));
-                    }
-                    args.push(BootInitArg::OwnSlot {
-                        pool: pool_name,
-                        index: 0,
-                        slot_bytes: backing.slot_bytes,
-                    });
-                    continue;
-                }
-                Type::Array(elem, len_expr) => {
-                    if let Type::Own(own_pool, _) = elem.as_ref() {
-                        if own_pool == &pool_name {
-                            let n = crate::sema::bodies::literal_array_len(len_expr).ok_or_else(
-                                || {
-                                    LayoutError::new(format!(
-                                        "{kind} `{name}`'s own `{}: {}` has a non-literal array \
-                                         length — boot can only materialize a fixed `[own; N]`",
-                                        p.name,
-                                        render_type(&p.ty),
-                                    ))
-                                },
-                            )?;
-                            if n as u64 != backing.slots {
-                                return Err(LayoutError::new(format!(
-                                    "{kind} `{name}` wires `{}=...` to `[own[{pool_name}] _; {n}]`, \
-                                     but pool `{pool_name}` declares {} slots — 05-library.md §9's \
-                                     initial handles are exactly one per slot",
-                                    a.label, backing.slots
-                                )));
-                            }
-                            args.push(BootInitArg::OwnHandleArray {
-                                pool: pool_name,
-                                count: backing.slots,
-                                slot_bytes: backing.slot_bytes,
-                            });
-                            continue;
-                        }
-                    }
-                }
-                _ => {}
-            }
-            return Err(LayoutError::new(format!(
-                "{kind} `{name}` wires `{}=...` to `{name}.init`'s own `{}: {}` from a declared \
-                 pool. The pool is real, but that parameter is not an `own[{pool_name}] T` or \
-                 `[own[{pool_name}] T; N]` — 05-library.md §9's \"create the initial handles\" \
-                 only substitutes those shapes (plans/M7.md item E4 / decision 19).",
-                a.label,
-                p.name,
-                render_type(&p.ty),
-            )));
-        }
-        let Some(word) = boot_init_arg_word(&a.value, space) else {
-            return Err(LayoutError::new(format!(
-                "{kind} `{name}` wires `{}=...` to `{name}.init`'s own `{}: {}`, but the \
-                 value is {} — boot passes arguments in registers (`x1..`), and this \
-                 compiler has no register representation for that shape. Failing closed \
-                 rather than passing a zero.",
-                a.label,
-                p.name,
-                render_type(&p.ty),
-                value_shape_name(&a.value)
-            )));
-        };
-        args.push(BootInitArg::Word(word));
-    }
-    Ok(Some(BootInitCall {
-        key: init.key.clone(),
-        args,
-        fallible: matches!(
-            &init.ret,
-            Type::Result(ok, err)
-                if matches!(ok.as_ref(), Type::Unit)
-                    && matches!(err.as_ref(), Type::Named(n, _) if n == "BootError")
-        ),
-        err_msg: None,
-    }))
-}
-
-/// Intern one abort message per fallible `init` into `rodata`, recording
-/// the offset/len on the call. Must run **once** before either of
-/// `build_runtime_block`'s two assembly passes, so both see the same
-/// offsets and emit the same word count.
-///
-/// Message shape matches an `assert` failure inside `init`: the harness
-/// `__wrela_abort` prepends `FAILED `, so the interned text is just
-/// `"{Actor}.init returned Err"` — the `@driver`/`@actor` struct name is
-/// already in `BootInitCall::key`. The concrete `BootError` variant is
-/// not recovered (would need a second formatting path over the reply
-/// slot); named in the plan's Done prose rather than pretended.
-fn intern_fallible_init_abort_messages(
-    wiring: &mut RuntimeWiring,
-    rodata: &mut Vec<Vec<u8>>,
-    rodata_cursor: &mut usize,
-) {
-    for call in wiring
-        .init_calls
-        .iter_mut()
-        .chain(wiring.driver_init_calls.iter_mut())
-        .flatten()
-    {
-        if !call.fallible || call.err_msg.is_some() {
-            continue;
-        }
-        let bytes = format!("{} returned Err", call.key).into_bytes();
-        let len = bytes.len();
-        let off = append_rodata(rodata, rodata_cursor, bytes);
-        call.err_msg = Some((off, len));
-    }
-}
-
-/// plans/M6.md item D: `(actor name) -> (method name) -> its own 0-based
-/// dispatch index`, in the exact declaration order `merge_actor_pub_methods`
-/// (immediately above) already establishes — the same order
-/// `build_rt_select_and_run`'s own `dispatch` table numbers methods in, so
-/// codegen's own symbolic `Send`/`Await{ActorCall}` lookups
-/// (`codegen::ActorMethodIndex`) can never disagree with the runtime
-/// dispatch table actually built alongside it.
-pub fn actor_method_index_tables(
-    modules: &BTreeMap<String, Module>,
-    layout_ctx: &LayoutCtx,
-) -> Result<BTreeMap<String, BTreeMap<String, usize>>, LayoutError> {
-    let shapes = merge_actor_pub_methods(modules, layout_ctx)?;
-    Ok(shapes
-        .into_iter()
-        .map(|(actor, methods)| {
-            let table = methods
-                .into_iter()
-                .enumerate()
-                .map(|(i, m)| (m.name, i))
-                .collect();
-            (actor, table)
-        })
-        .collect())
-}
-
-/// A real (not hand-waved) static count of `with group(...)` sites across
-/// every raw module in the build closure — `RuntimeTables::
-/// group_arena_capacity`'s own doc comment explains the scope and the
-/// disclosed gap (closures, `comptime if` branches). Every surviving
-/// `Stmt::With` at M6 names a `group(...)` (the scoped-`pool` `with` form
-/// stays fail-closed at sema, 02 §10 — plans/M6.md item A's own note), so
-/// counting every `Stmt::With` is exact for anything that type-checks.
-pub fn count_with_group_sites(modules: &BTreeMap<String, Module>) -> u64 {
-    use crate::syntax::ast::{FnItem, InitItem, Item, Member, Stmt};
-
-    fn walk_stmts(stmts: &[Stmt], count: &mut u64) {
-        for s in stmts {
-            match s {
-                Stmt::With(w) => {
-                    *count += 1;
-                    walk_stmts(&w.body, count);
-                }
-                Stmt::If(i) => {
-                    walk_stmts(&i.then_branch, count);
-                    for e in &i.elifs {
-                        walk_stmts(&e.body, count);
-                    }
-                    if let Some(eb) = &i.else_branch {
-                        walk_stmts(eb, count);
-                    }
-                }
-                Stmt::Match(m) => {
-                    for arm in &m.arms {
-                        walk_stmts(&arm.body, count);
-                    }
-                }
-                Stmt::For(f) => walk_stmts(&f.body, count),
-                Stmt::While(w) => walk_stmts(&w.body, count),
-                Stmt::Defer(d) => {
-                    if let crate::syntax::ast::DeferBody::Suite(body) = &d.body {
-                        walk_stmts(body, count);
-                    }
-                }
-                Stmt::ComptimeIf(_)
-                | Stmt::Assign(_)
-                | Stmt::Break(_)
-                | Stmt::Continue(_)
-                | Stmt::Return(_, _)
-                | Stmt::Pass(_)
-                | Stmt::Assert(_)
-                | Stmt::Send(_, _)
-                | Stmt::Expr(_, _)
-                | Stmt::ComptimeAssert(_, _, _) => {}
-            }
-        }
-    }
-
-    fn walk_fn(f: &FnItem, count: &mut u64) {
-        if let Some(body) = &f.body {
-            walk_stmts(body, count);
-        }
-    }
-    fn walk_init(i: &InitItem, count: &mut u64) {
-        walk_stmts(&i.body, count);
-    }
-
-    let mut count = 0u64;
-    for module in modules.values() {
-        for item in &module.items {
-            match item {
-                Item::Fn(f) => walk_fn(f, &mut count),
-                Item::Struct(s) => {
-                    for m in &s.members {
-                        match m {
-                            Member::Fn(f) => walk_fn(f, &mut count),
-                            Member::Init(i) => walk_init(i, &mut count),
-                            Member::Field(_) | Member::Pool(_) | Member::ComptimeIf(_) => {}
-                        }
-                    }
-                }
-                Item::Const(_)
-                | Item::Enum(_)
-                | Item::Pool(_)
-                | Item::ComptimeIf(_)
-                | Item::Static(_) => {}
-            }
-        }
-    }
-    count
-}
-
-/// Which turn area an async fn's own `Reloc::TurnFrameAddr` (and its
-/// sizing) belongs to: a `Struct.method` key whose struct is a declared
-/// actor shares that actor's one turn area (non-reentrancy: one turn per
-/// actor, whichever method it runs); every other key — free fns
-/// (`@test(runtime)` roots foremost), plus any non-actor-owned method
-/// key — gets its own dedicated free-turn area. One shared rule so
-/// `compute_runtime_tables`'s sizing and `layout`'s reloc resolution can
-/// never classify a key differently.
-fn turn_owner<'k>(key: &'k str, actor_names: &[String]) -> Option<&'k str> {
-    key.split_once('.')
-        .map(|(prefix, _)| prefix)
-        .filter(|prefix| actor_names.iter().any(|a| a == prefix))
-}
-
-/// plans/M8.md item D: the `mailbox=` capacity one declaration carries, or
-/// `None` when it carries none. One reader for both `img.actor` (where the
-/// label is required — M6 decision 3) and `img.driver` (where it is what
-/// makes the driver messageable at all — 05-library.md §9), so the two can
-/// never read the same label differently.
-fn declared_mailbox_capacity(
-    args: &[crate::eval::image::DeclArg],
-    who: &str,
-) -> Result<Option<u64>, String> {
-    let Some(arg) = args.iter().find(|a| a.label == "mailbox") else {
-        return Ok(None);
-    };
-    let capacity = value_as_u64(&arg.value).ok_or_else(|| {
-        format!("{who}'s own `mailbox=` value is not a plain non-negative integer")
-    })?;
-    Ok(Some(capacity))
-}
-
-/// Every root that owns a mailbox, in the one order every consumer walks:
-/// each declared `@actor`, then each messageable `@driver`
-/// (`graph.drivers` order). `turn_owner`, `place_runtime_tables`,
-/// `build_runtime_glue_block` and `RuntimePlacement::turn_area_for` all
-/// read this order; a second spelling of it anywhere would be a silent
-/// index skew between a turn area and the routine that writes it.
-fn mailbox_root_names(tables: &RuntimeTables) -> Vec<String> {
-    let mut out: Vec<String> = tables.actors.iter().map(|a| a.name.clone()).collect();
-    for d in &tables.drivers {
-        if d.mailbox.is_some() {
-            out.push(d.name.clone());
-        }
-    }
-    out
-}
-
-/// plans/M8.md item D, the security surface (decisions 20/21). A
-/// messageable `@driver`'s mailbox admits its `pub` methods, so those
-/// signatures are message shapes (02-language.md §9.4) and 03-hardware.md
-/// §1's "a driver may export safe actor APIs but **never raw
-/// capabilities**" is what decides which of them may exist at all.
-///
-/// Three refusals, each a separate sentence because each names a different
-/// leak:
-///
-/// 1. **Nothing sealed crosses the mailbox, in either direction.** No 03
-///    §1 capability, §9 protocol state or §4 sealed queue value may appear
-///    in a parameter or reply — and *that* rule is not re-implemented
-///    here: `sema::types::validate_fn_capability_types` already refuses
-///    every one of them for every `pub` method of an actor or driver,
-///    whether or not a mailbox exists (M7 decision 3: "checked where
-///    `Actor[T]` already is ... do not build a second mechanism"), and
-///    `err-driver-message-capability` pins that it still fires on a
-///    *messageable* driver. What this pass adds is the two names that pass
-///    lets through, each for its own good reason:
-///
-///    - **`Receipt[P]`**, which 03 §5 blesses by name for the handoff
-///      convention — and a handoff needs the caller-side `await receipt`
-///      that plans/M8.md item E makes executable. Refused here, by name,
-///      pointing at item E, rather than admitted into a mailbox whose
-///      caller cannot resolve what comes back.
-///    - **`InterruptCell[T]`** (decision 23), which is not sealed
-///      authority at all (M7 decision 17: source-constructible, an
-///      `@actor` may hold one) and so is invisible to the containment
-///      rules — but which 03 §6 calls "the **sole** ISR/ordinary-code
-///      channel". A cell in a message is a second channel between
-///      different principals, carrying the interrupt-status word's value
-///      to a sender that owns none of §6's ordering.
-///
-///    Both directions are checked, because for `InterruptCell` both are
-///    reachable: the parameter arm is live precisely where sema's is not.
-/// 2. **The wrong effect set.** A `@task` bottom half (03 §6) is woken by
-///    an ISR and drains completions; it is not a message. Declaring one
-///    `pub` on a messageable driver would give one turn body two entry
-///    paths — a wake and an admission — and the mailbox path carries none
-///    of §6's ordering.
-/// 3. **The ISR itself.** An interrupt handler bound with `irq.bind` runs
-///    in 03 §6's restricted effect set against its device's registers.
-///    Admitting one from a mailbox would run device acknowledge work as an
-///    ordinary turn, at an arbitrary time, on behalf of an arbitrary
-///    sender.
-/// The reason clause both directions of `check_driver_message_surface`
-/// append, keyed on which name was found. One writer, so a parameter and a
-/// reply carrying the same type can never be told two different stories.
-fn why_forbidden_across_a_driver_mailbox(found: &str) -> &'static str {
-    if found.starts_with("InterruptCell") {
-        // 03-hardware.md §6, quoted rather than paraphrased on "sole",
-        // because that word is the whole argument.
-        return ". 03-hardware.md §6: `InterruptCell[T]` is \"the sole ISR/ordinary-code \
-                channel\", interrupt-atomic with respect to every vector that may touch the \
-                cell — a channel between this driver's ISR and this driver's own ordinary code. \
-                A mailbox is a different channel between different principals, and a cell that \
-                crosses it is a second, unordered one. Export the value the cell holds, not the \
-                cell";
-    }
-    if found.starts_with("Receipt") {
-        // plans/M8.md item E, decision 33: item D's floor here refused a
-        // receipt in *either* direction, naming this item. The reply
-        // direction is now 03-hardware.md §5's blessed handoff and is
-        // gone; this is the half that survives, and its reason is
-        // narrower than "authority". A receipt names a slot in *this
-        // driver's* queue, and 03 §5 gives it exactly one consumer on
-        // the driver side — the bottom half's `claim`/`recover`. A sender
-        // that could post one back into the mailbox would name a queue
-        // slot it does not own, at a time the driver did not choose.
-        return ". 03-hardware.md §5 gives a receipt one owner and one resolution: the caller \
-                holds it and `await`s it; the driver's own bottom half resolves it. A mailbox \
-                message posting one back into the driver would let an arbitrary sender name a \
-                slot in this driver's queue. The handoff direction — a `Receipt[P]` *reply* \
-                from a public synchronous method with exactly one `take p: P` parameter — is \
-                the convention §5 blesses, and is accepted";
-    }
-    ", which 03-hardware.md §1 keeps inside the driver (\"a driver may export safe actor APIs \
-     but never raw capabilities\")"
-}
-
-fn check_driver_message_surface(
-    driver: &str,
-    methods: &[ActorMethodShape],
-    modules: &BTreeMap<String, Module>,
-    decl_items: &[crate::sema::types::DeclItem],
-) -> Result<(), String> {
-    let bare = driver.split('[').next().unwrap_or(driver);
-    let tasks = driver_task_method_names(modules, driver);
-    let isrs = irq_bind_handlers_in_driver(modules, bare);
-    for m in methods {
-        for (i, ty) in m.param_types.iter().enumerate() {
-            let Some(found) = crate::sema::types::driver_message_forbidden_carried(ty, decl_items)
-            else {
-                continue;
-            };
-            return Err(format!(
-                "`@driver` `{driver}` is declared with `mailbox=`, so its `pub` method \
-                 `{driver}.{}` is a message shape — and parameter #{} carries `{found}`{}",
-                m.name,
-                i + 1,
-                why_forbidden_across_a_driver_mailbox(&found)
-            ));
-        }
-        // plans/M8.md item E, decision 33: 03-hardware.md §5's handoff
-        // reply is not probed at all, and the reason is structural rather
-        // than an exemption. §5's signature is "exactly one `take p: P`
-        // parameter and result `Receipt[P]`" — the *same* `P` — so the
-        // loop above has already probed the whole payload as parameter
-        // #k, with the same walk and the same leaf set. Probing
-        // `Receipt[P]` here again could only ever refuse the `Receipt`
-        // wrapper, which is the convention itself. Item D's floor
-        // (`golden/err-driver-message-receipt`) was this arm refusing that
-        // wrapper; it is retargeted at the direction that survives — a
-        // receipt as a message *parameter* (05-library.md §2), which the
-        // loop above still refuses by name.
-        if !m.is_handoff {
-            if let Some(found) =
-                crate::sema::types::driver_message_forbidden_carried(&m.ret, decl_items)
-            {
-                return Err(format!(
-                    "`@driver` `{driver}` is declared with `mailbox=`, so its `pub` method \
-                     `{driver}.{}` is a message shape — and its reply carries `{found}`{}",
-                    m.name,
-                    why_forbidden_across_a_driver_mailbox(&found)
-                ));
-            }
-        }
-        if m.is_task || tasks.iter().any(|t| *t == m.name) {
-            return Err(format!(
-                "`@driver` `{driver}` is declared with `mailbox=`, but its `@task` bottom half \
-                 `{driver}.{}` is `pub` — 03-hardware.md §6: a bottom half is woken by an ISR \
-                 and drains completions, it is not a message. One turn body cannot have both \
-                 entry paths; make it private",
-                m.name
-            ));
-        }
-        if isrs.iter().any(|h| *h == m.name) {
-            return Err(format!(
-                "`@driver` `{driver}` is declared with `mailbox=`, but its interrupt handler \
-                 `{driver}.{}` is `pub` — 03-hardware.md §6: an ISR runs in the restricted \
-                 interrupt effect set against its own device's registers, never as an admitted \
-                 turn on behalf of a sender. Make it private",
-                m.name
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// The whole static-sizing pass (module doc above). `Ok(None)` when the
-/// image declares no actors AND no async fn exists — the no-placeholder
-/// rule: a fully sync image gets no `rtdata` section and no report
-/// accounting at all, never a zeroed `RuntimeTables` rendered as if it
-/// meant something. `async_frames` is `codegen::async_frame_sizes`'s own
-/// result (fn key -> persistent frame bytes), the park-and-resume
-/// redesign's one new input: each actor's turn area is sized as the
-/// 48-byte record plus the widest of its own async methods' frames, and
-/// every non-actor-owned async fn gets its own free-turn area
-/// (`RuntimeTables::free_turns`).
-pub fn compute_runtime_tables(
-    graph: &ImageGraph,
-    modules: &BTreeMap<String, Module>,
-    layout_ctx: &LayoutCtx,
-    async_frames: &BTreeMap<String, u64>,
-    // plans/M12.md item F: image `GROUP_MAX_CHILDREN` fact (floor 2).
-    group_max_children: usize,
-) -> Result<Option<RuntimeTables>, String> {
-    if graph.actors.is_empty() && graph.drivers.is_empty() && async_frames.is_empty() {
-        return Ok(None);
-    }
-    let shapes = merge_actor_pub_methods(modules, layout_ctx).map_err(|e| e.message)?;
-    // plans/M8.md item D: the turn-area owner set is every *mailbox* root,
-    // not every actor — a messageable driver's own `pub async fn` parks in
-    // its own turn area exactly as an actor's does, and must not be sized
-    // as a free turn.
-    let mut actor_names: Vec<String> = graph
-        .actors
-        .iter()
-        .map(|d| crate::sema::types::render_type(&d.actor_type))
-        .collect();
-    for decl in &graph.drivers {
-        let name = crate::sema::types::render_type(&decl.actor_type);
-        if declared_mailbox_capacity(&decl.args, &format!("driver `{name}`"))?.is_some() {
-            actor_names.push(name);
-        }
-    }
-
-    let mut actors = Vec::with_capacity(graph.actors.len());
-    for decl in &graph.actors {
-        let name = crate::sema::types::render_type(&decl.actor_type);
-        let mailbox_capacity = declared_mailbox_capacity(&decl.args, &format!("actor `{name}`"))?
-            .ok_or_else(|| {
-            format!(
-                "actor `{name}` has no declared `mailbox=` capacity (plans/M6.md decision 3: \
-                 the declared bound is the whole of M6's own mailbox-capacity story; derivation \
-                 is out of scope)"
-            )
-        })?;
-        let state_size = mwir::size_of(&decl.actor_type, layout_ctx)
-            .map_err(|e| format!("actor `{name}`'s own state: {e}"))?
-            as u64;
-        let methods = shapes.get(&name).map(Vec::as_slice).unwrap_or(&[]);
-        let max_args_bytes = methods
-            .iter()
-            .map(|m| m.param_sizes.iter().sum::<u64>())
-            .max()
-            .unwrap_or(0);
-        let slot_size = 16 + max_args_bytes; // method idx + waker + args
-        let max_async_frame = async_frames
-            .iter()
-            .filter(|(key, _)| turn_owner(key, &actor_names) == Some(name.as_str()))
-            .map(|(_, &bytes)| bytes)
-            .max()
-            .unwrap_or(0);
-        actors.push(ActorRuntimeLayout {
-            name,
-            mailbox_capacity,
-            slot_size,
-            state_size,
-            frame_size: crate::codegen::TURN_RECORD_SIZE + max_async_frame,
-        });
-    }
-
-    // plans/M7.md item H1: every declared `@driver` instance's own state
-    // bytes, sized by the identical `mwir::size_of` an actor's are — which
-    // is only answerable at all since this item taught it that a
-    // capability is one word.
-    // plans/M7.md item G / M12 item D: a `@task` marks `has_wake`; the
-    // sticky wake-pending bit lives in contiguous `WAKE.wake_pending`
-    // (decisions 880–882), not a trailing word of driver state.
-    // plans/M8.md item D: a `mailbox=` on the declaration makes the driver
-    // messageable, and its mailbox is sized by the *identical* arithmetic
-    // an actor's is, from the identical `merge_actor_pub_methods` shapes —
-    // one mailbox story, not a driver-shaped copy of it.
-    let mut decl_items: Option<Vec<crate::sema::types::DeclItem>> = None;
-    let mut drivers = Vec::with_capacity(graph.drivers.len());
-    for decl in &graph.drivers {
-        let name = crate::sema::types::render_type(&decl.actor_type);
-        let state_size = mwir::size_of(&decl.actor_type, layout_ctx)
-            .map_err(|e| format!("driver `{name}`'s own state: {e}"))?
-            as u64;
-        let has_wake = driver_declares_task(modules, &name);
-        let capacity = declared_mailbox_capacity(&decl.args, &format!("driver `{name}`"))?;
-        let mailbox = match capacity {
-            None => None,
-            Some(capacity) => {
-                let methods = shapes.get(&name).map(Vec::as_slice).unwrap_or(&[]);
-                if decl_items.is_none() {
-                    // The component table `sealed_authority_carried` walks
-                    // spans modules: a plain wrapper struct declared in one
-                    // module can carry a capability into a driver method
-                    // declared in another.
-                    decl_items = Some(closure_decl_items(modules).map_err(|e| e.message)?);
-                }
-                check_driver_message_surface(
-                    &name,
-                    methods,
-                    modules,
-                    decl_items.as_deref().unwrap_or(&[]),
-                )?;
-                let max_args_bytes = methods
-                    .iter()
-                    .map(|m| m.param_sizes.iter().sum::<u64>())
-                    .max()
-                    .unwrap_or(0);
-                let max_async_frame = async_frames
-                    .iter()
-                    .filter(|(key, _)| turn_owner(key, &actor_names) == Some(name.as_str()))
-                    .map(|(_, &bytes)| bytes)
-                    .max()
-                    .unwrap_or(0);
-                Some(DriverMailbox {
-                    capacity,
-                    slot_size: 16 + max_args_bytes,
-                    frame_size: crate::codegen::TURN_RECORD_SIZE + max_async_frame,
-                })
-            }
-        };
-        drivers.push(DriverRuntimeLayout {
-            name,
-            state_size,
-            has_wake,
-            wake_drain_index: None,
-            mailbox,
-        });
-    }
-
-    let free_turns: Vec<(String, u64)> = async_frames
-        .iter()
-        .filter(|(key, _)| turn_owner(key, &actor_names).is_none())
-        .map(|(key, &bytes)| (key.clone(), crate::codegen::TURN_RECORD_SIZE + bytes))
-        .collect();
-
-    // "actor count + 1 root" (decision 3), where "actor" is every mailbox
-    // root: a messageable driver is selected by the same round-robin tick.
-    let messageable_drivers = drivers.iter().filter(|d| d.mailbox.is_some()).count() as u64;
-    let ready_queue_capacity = graph.actors.len() as u64 + messageable_drivers + 1;
-    let group_arena_capacity = count_with_group_sites(modules);
-
-    // plans/M10.md item 0a (decision 552): every turn area is *reserved* at
-    // one image-wide power-of-two stride, so a turn reference can become an
-    // index scaled by a shift instead of a bumped address. The stride is
-    // `round_up_pow2` of the widest raw area over **all three** owner kinds
-    // — actors, messageable drivers, free async fns. Missing one of them
-    // undersizes the stride and the array overlaps itself, which is a
-    // corrupted transcript rather than a compile error.
-    let n_turns = actors.len() as u64 + messageable_drivers + free_turns.len() as u64;
-    let widest_turn_area = actors
-        .iter()
-        .map(|a| a.frame_size)
-        .chain(
-            drivers
-                .iter()
-                .filter_map(|d| d.mailbox.as_ref())
-                .map(|mb| mb.frame_size),
-        )
-        .chain(free_turns.iter().map(|(_, area)| *area))
-        .max()
-        .unwrap_or(0);
-    // `widest_turn_area >= TURN_RECORD_SIZE` (64) whenever `n_turns > 0`, so
-    // the degenerate `n <= 1` cases of the rounding never arise here.
-    let turn_stride = if n_turns == 0 {
-        0
-    } else {
-        1u64 << (64 - (widest_turn_area - 1).leading_zeros())
-    };
-
-    let mut total_bytes = 0u64;
-    for a in &actors {
-        total_bytes += a.state_size + a.mailbox_capacity * a.slot_size + MAILBOX_BOOKKEEPING_SIZE;
-    }
-    for d in &drivers {
-        total_bytes += d.state_size;
-        if let Some(mb) = &d.mailbox {
-            total_bytes += mb.capacity * mb.slot_size + MAILBOX_BOOKKEEPING_SIZE;
-        }
-    }
-    // Every turn area, at the uniform stride — one term, in place of the
-    // three per-owner sums it replaces. `place_runtime_tables` bumps the
-    // identical stride at the identical three sites; `verify_section_sizes`'
-    // blob-length check is what catches the two ever disagreeing.
-    total_bytes += n_turns * turn_stride;
-    let group_max_children = group_max_children.max(crate::codegen::GROUP_MAX_CHILDREN_FLOOR);
-    let group_slot = crate::codegen::group_slot_size(group_max_children);
-    total_bytes += ready_queue_capacity * 8 + RR_CURSOR_SIZE + group_arena_capacity * group_slot;
-
-    Ok(Some(RuntimeTables {
-        actors,
-        drivers,
-        free_turns,
-        n_turns,
-        turn_stride,
-        ready_queue_capacity,
-        group_arena_capacity,
-        group_max_children,
-        // Single-core until placement says otherwise (`stripe_for_cores`),
-        // and ringless until `add_cross_core_rings` says otherwise.
-        // select/drain/child facts filled later by `fill_rtconfig_facts`.
-        rings: Vec::new(),
-        cores: 1,
-        total_bytes,
-        ..Default::default()
-    }))
-}
-
-// --- report rendering (decision 7's own Layout section) -------------------
-
-/// The two fixed, always-present machine regions below `IMAGE_BASE`
-/// (module doc's own "pages"/"stacks" reporting note): the machine-info
-/// page plus the console ring/data pages, combined into one `pages` fact,
-/// and the three reserved per-core stacks as one `stacks` fact.
-fn pages_region() -> (u64, u64) {
-    let base = machine_layout::MACHINE_INFO_BASE;
-    let end = console::DATA_BASE + console::DATA_SIZE;
-    (base, end - base)
-}
-
-fn stacks_region() -> (u64, u64) {
-    (
-        machine_layout::STACKS_BASE,
-        wrela_machine::VCPUS as u64 * machine_layout::CORE_STACK_SIZE,
-    )
-}
-
-/// Appends the `Layout` section (decision 7) to an already-rendered report
-/// buffer: `pages`/`stacks` (fixed machine constants, every build) then
-/// every section `layout` actually placed (`entry`/`code`/`rodata`?/
-/// `abort`), then the separate `Entry base=0x...` fact.
-pub fn render_layout_section(out: &mut String, layout: &ImageLayout) {
-    let (pages_base, pages_size) = pages_region();
-    push_line(
-        out,
-        1,
-        &format!("Section name=pages base={pages_base:#x} size={pages_size}"),
-    );
-    let (stacks_base, stacks_size) = stacks_region();
-    push_line(
-        out,
-        1,
-        &format!("Section name=stacks base={stacks_base:#x} size={stacks_size}"),
-    );
-    for s in &layout.sections {
-        push_line(
-            out,
-            1,
-            &format!("Section name={} base={:#x} size={}", s.name, s.base, s.size),
-        );
-    }
-    push_line(out, 1, &format!("Entry base={:#x}", layout.entry));
-    // plans/M8.md item C1: one line per secondary core this image brings
-    // up — the address the VMM starts that vCPU at once core 0 rings
-    // `mmio::RELEASE_MMIO_ADDR` (06 §3: "releases the other vCPUs").
-    // Absent entirely for a single-core image, so no pre-C1 report golden
-    // moves; core 0's own entry stays the `Entry base=` line above.
-    for (core, base) in &layout.core_entries {
-        push_line(out, 1, &format!("CoreEntry core={core} base={base:#x}"));
-    }
-
-    // plans/M10.md item A2c / decision 588: one line per `@placed` static.
-    // Absent entirely when the image declares none, so no pre-A2c report
-    // golden moves.
-    for s in &layout.placed_statics {
-        push_line(
-            out,
-            1,
-            &format!(
-                "PlacedStatic name={} type={} addr={:#x} size={}",
-                s.name, s.ty, s.addr, s.size
-            ),
-        );
-    }
-    // plans/M12.md item G / decisions 890–893: census line after the
-    // per-static list. `spans` is live `N_INIT_SLOTS` (not the INIT_SPAN
-    // placeholder pool); `count` excludes high-zone INIT_SPAN placeholders
-    // so the ratchet `N ≤ FIXED_SET_LEN + spans` stays honest while
-    // `runtime.wr` still imports INIT_SPAN0..7. Absent when no placed
-    // statics (same no-placeholder rule as the lines above).
-    if !layout.placed_statics.is_empty() {
-        let spans = layout
-            .runtime
-            .as_ref()
-            .map(|t| {
-                crate::rtconfig::live_init_span_count(t)
-                    .expect("sealed ImageLayout runtime tables agree with placement")
-            })
-            .unwrap_or(0);
-        let census = crate::placed_static_census::summarize(&layout.placed_statics, spans);
-        push_line(out, 1, &census.render_line());
-    }
-
-    // --- plans/M6.md item C, decision 3: per-actor runtime-table
-    // accounting — facts only, absent entirely when this image has no
-    // actors (`ImageLayout::runtime`'s own doc comment: never a
-    // placeholder). Appended after `Entry base=...` (04-compiler.md §7's
-    // own "this milestone appends sections without reshuffling" reading,
-    // mirrored here): every existing report golden's `Layout` section
-    // text up to and including its own `Entry base=...` line stays
-    // byte-identical; only actor-bearing images gain anything past it.
-    if let Some(tables) = &layout.runtime {
-        for a in &tables.actors {
-            push_line(
-                out,
-                1,
-                &format!(
-                    "Actor name={} mailbox={} slot={} frame={} state={}",
-                    a.name, a.mailbox_capacity, a.slot_size, a.frame_size, a.state_size
-                ),
-            );
-        }
-        // Free-turn areas (park-and-resume: one per non-actor-owned
-        // async fn — `RuntimeTables::free_turns`'s own doc comment) —
-        // facts only, absent when no free async fn exists.
-        for (key, area) in &tables.free_turns {
-            push_line(out, 1, &format!("Turn fn={key} frame={area}"));
-        }
-        // plans/M7.md item H1: one line per declared `@driver` instance.
-        // Deliberately its own line kind, not an `Actor ...` line with
-        // blanks: a driver without `mailbox=` has no ring and no turn
-        // area, and printing `mailbox=0 slot=0 frame=0` would read as
-        // three decisions the image did not make.
-        // plans/M8.md item D: a driver declared with `mailbox=` gains the
-        // same three facts, appended to its own line — so the report says
-        // which drivers are messageable and how much they cost, and a
-        // driver without a mailbox still says nothing it does not have.
-        for d in &tables.drivers {
-            let mailbox = match &d.mailbox {
-                None => String::new(),
-                Some(mb) => format!(
-                    " mailbox={} slot={} frame={}",
-                    mb.capacity, mb.slot_size, mb.frame_size
-                ),
-            };
-            push_line(
-                out,
-                1,
-                &format!("Driver name={} state={}{mailbox}", d.name, d.state_size),
-            );
-        }
-        // plans/M8.md item C2: this image's own cross-core SPSC rings —
-        // 04 §3's "sealed graph" made visible, one line per ring, so a
-        // reviewer can see how many there are, which core produces into
-        // each, how deep it is, and where the capacity came from. Absent
-        // entirely for an image with no cross-core message edge.
-        //
-        // plans/M8.md item C3, decision 42: the line also carries the
-        // ring's own placed `base=`, because the report is the VMM's whole
-        // configuration and 06 §8 makes the VMM the recorder of
-        // "per-mailbox cross-core admission order" — an admission this VMM
-        // cannot address is one it cannot witness. One renderer
-        // (`ring_report_lines`) serves this artifact and the runtime
-        // report the VMM actually parses, so the two cannot disagree.
-        for line in ring_report_lines(layout) {
-            push_line(out, 1, &line);
-        }
-        // plans/M10.md item 0b (decision 555): the turn array's own three
-        // facts, published so an image can see — and later assert — what
-        // the uniform stride costs it. Placed directly under the per-owner
-        // `frame=` lines it summarizes, so a reviewer reads `frame=56 /
-        // frame=472` and then `stride=1024` on adjacent lines and can take
-        // the padding off the page; `Totals` stays last.
-        //
-        // Deliberately *not* folded into `Totals`: that would churn a line
-        // reviewers skim, in every actor-bearing golden, for a reason
-        // unrelated to totals. Absent entirely when this image has no
-        // runtime table, like every other line in this block.
-        //
-        // Making these two numbers `@layout_assert`-able is a separate item
-        // (decision 568): `ImageReport` is a closed eight-field stdlib
-        // surface, and a stdlib change does not belong in a byte-identity
-        // commit.
-        push_line(
-            out,
-            1,
-            &format!(
-                "Turns count={} stride={} bytes={}",
-                tables.n_turns,
-                tables.turn_stride,
-                tables.n_turns * tables.turn_stride
-            ),
-        );
-        // plans/M12.md item C (decision 875): uniform ring-stride cost,
-        // printed so a reviewer can see the padding trade. Absent when
-        // this image has no cross-core rings (like the `Ring kind=` lines).
-        if !tables.rings.is_empty() {
-            push_line(
-                out,
-                1,
-                &format!(
-                    "Rings count={} stride={} padding={} bytes={}",
-                    tables.rings.len(),
-                    tables.ring_stride,
-                    tables.rings_padding,
-                    rings_reservation_bytes(&tables.rings)
-                ),
-            );
-        }
-        push_line(
-            out,
-            1,
-            &format!(
-                "Totals actors={} drivers={} ready_queue={} group_arena={} bytes={}",
-                tables.actors.len(),
-                tables.drivers.len(),
-                tables.ready_queue_capacity,
-                tables.group_arena_capacity,
-                tables.total_bytes
-            ),
-        );
-    }
-
-    // --- plans/M7.md item H1: the device register windows, appended for
-    // the identical reason every accounting block above it is — facts
-    // only, absent entirely for an image that binds no driver.
-    //
-    // **One** line kind, deliberately — unlike item D's pool block, which
-    // emits an accounting `Pool ...` line *and* a mapping `BlkPool ...`
-    // line. A mapping line exists to be parsed by a device model, and
-    // `wrela-vmm::parse_report` has no register-window field to parse into:
-    // machine v1's virtio-blk model has no register file at all
-    // (06-machine.md §3, `wrela-vmm`'s `devices` module doc). Inventing a
-    // device-kind-prefixed second line now would be naming a protocol
-    // against a consumer that does not exist; `DeviceRegs` carries every
-    // fact such a consumer would need (base, size, which device, which
-    // driver), and item G — which gives the window's other side a writer,
-    // 03 §6's own `interrupt_status` — is where the mapping half lands.
-    for r in &layout.device_regs {
-        push_line(
-            out,
-            1,
-            &format!(
-                "DeviceRegs device=device#{} type={} driver={} base={:#x} size={}",
-                r.device, r.device_type, r.driver, r.base, r.size
-            ),
-        );
-    }
-    // plans/M7.md item G: the mapping half of DeviceRegs — a host write
-    // into `interrupt_status` plus the vector to raise. Parsed by the
-    // VMM (`IrqHostInject`); absent when no ISR is bound.
-    for inj in &layout.irq_host_injects {
-        push_line(
-            out,
-            1,
-            &format!(
-                "IrqHostInject base={:#x} offset={:#x} status={:#x} vector={}",
-                inj.base, inj.offset, inj.status, inj.vector
-            ),
-        );
-    }
-
-    // --- plans/M7.md item D: DMA pool accounting (a milestone exit
-    // criterion), appended after the actor tables for the identical
-    // reason those were appended after `Entry base=...`: facts only,
-    // absent entirely for an image with no pool, so no existing golden
-    // moves that did not gain a pool.
-    //
-    // Two line kinds, and the split is the point:
-    //
-    // - `Pool ...` is the *accounting* line: 03-hardware.md §3's five
-    //   declared facts about every bound pool, device-reachable or not
-    //   (`PoolBacking`'s own doc comment derives each one). It is a
-    //   report fact; nothing consumes it as configuration.
-    // - `BlkPool name= device= base= size=` is the *mapping* line, and it
-    //   exists for device-reachable pools only. It is the exact format
-    //   `wrela-vmm`'s own `parse_report` reads (plans/M7.md item F,
-    //   plans/M8.md item P), and the list of them is the whole of what
-    //   that VMM maps — decision 5's security property, in the artifact
-    //   rather than in a comment: a pool with no `device=` never produces
-    //   one, so no device can reach it.
-    //
-    //   plans/M8.md item P made the line carry **its own device**, which
-    //   is what the property needed all along: 03-hardware.md §3's "all
-    //   memory a device can reach originates from *its* bound pools" is
-    //   per-device, and until this landed the VMM handed every window to
-    //   its one device model. The set emitted here is still every
-    //   device-reachable pool in the image, not just the modelled
-    //   device's — the VMM must know a window exists in order to refuse
-    //   it to a device that does not own it, which is exactly what
-    //   `golden/err-boot-blk-cross-device-pool` proves at boot.
-    //
-    // An image that declares a device-reachable pool but no queue is not
-    // bootable yet, by design: `parse_report` refuses a `BlkPool` line
-    // with no `BlkDevice`/`BlkQueue` to bind it to (those lines come from
-    // item E1 when a configure site exists). Fail-closed and named,
-    // rather than a window mapped for a device model that was never
-    // configured.
-    for p in &layout.pools {
-        let b = &p.backing;
-        let kind = if b.is_dma { "dma" } else { "image" };
-        let mut line = format!(
-            "Pool name={} kind={} payload={} slots={} slot_bytes={} base={:#x} size={} align={} \
-             coherency=coherent",
-            b.name, kind, b.payload, b.slots, b.slot_bytes, p.base, b.bytes, b.align
-        );
-        match b.device {
-            Some(i) => line.push_str(&format!(" device=device#{i}")),
-            None => line.push_str(" device=none"),
-        }
-        push_line(out, 1, &line);
-    }
-    for p in &layout.pools {
-        let Some(dev) = p.backing.device else {
-            continue;
-        };
-        push_line(
-            out,
-            1,
-            &format!(
-                "BlkPool name={} device=device#{dev} base={:#x} size={:#x}",
-                p.backing.name, p.base, p.backing.bytes
-            ),
-        );
-    }
-    // plans/M7.md item E1: the VMM-facing device/queue lines
-    // `parse_report` already consumes. Absent entirely until a
-    // `VirtQueue.configure` site exists (`layout.blk`).
-    if let Some(blk) = &layout.blk {
-        push_line(
-            out,
-            1,
-            &format!(
-                "BlkDevice device=device#{} capacity_sectors={} features={:#x}{}",
-                blk.device,
-                blk.capacity_sectors,
-                blk.features,
-                match blk.vector {
-                    Some(v) => format!(" vector={v}"),
-                    None => String::new(),
-                }
-            ),
-        );
-        let q = &blk.queue;
-        push_line(
-            out,
-            1,
-            &format!(
-                "BlkQueue index={} size={} desc={:#x} avail={:#x} used={:#x} doorbell={:#x}",
-                q.index, q.size, q.desc, q.avail, q.used, q.doorbell
-            ),
-        );
-        // Decision 2c / plans/M7.md item E2: occupancy bound is
-        // floor(queue_depth / descriptors_per_op). Exits-per-op stays
-        // deferred (decision 21).
-        push_line(
-            out,
-            1,
-            &format!(
-                "BlkAccounting descriptors_per_op={} queue_depth={} occupancy_bound={}",
-                blk.descriptors_per_op, q.size, blk.occupancy_bound
-            ),
-        );
-    }
-}
-
-// ===========================================================================
-// Emitted runtime routines (plans/M6.md item C, redesigned by the
-// park-and-resume mandate): `rt_enqueue` (admission), `rt_select_and_run`
-// (per-actor readiness/selection/dispatch/reply-delivery), `rt_run_one`
-// (the round-robin scheduler tick over every actor), and the abandon
-// path. Hand-assembled via `Asm` (defined below, M5-E's own tool), the
-// identical M5-E style: no asm strings, one instruction encoder call at a
-// time, conformance established by real execution (JIT'd against
-// host-mmap'd stand-in memory, `harness_jit` below, plus real HVF boots
-// in `wrela-vmm`'s own conformance tests) rather than by hand-verifying
-// encoded bytes.
-//
-// ## Why one hand-assembled pair *per actor*, not one generic pair indexed
-// by a runtime `actor_idx`
-//
-// Every actor's own ring/state/bookkeeping address is already a build-time
-// constant (`RuntimeTables`/`place_runtime_tables`, above/below) — there is
-// no `actor_idx` a real caller would ever need to pass at runtime, so a
-// generic address-indexed pair would only add a layer of register-offset
-// indirection this milestone's own actor counts never need. 04-compiler.md
-// §6's own "Actor as-if" license says exactly this is allowed: "the
-// compiler may use direct placement, specialized dispatch tables ...
-// provided admission order, non-reentrancy, ... are all preserved" — one
-// specialized `rt_enqueue_actor`/`rt_select_actor` pair per actor is that
-// license exercised at its simplest.
-//
-// ## Slot layout (decision 3's "method index + args blob", grown a waker)
-//
-// `[0..8)`: the admitted message's own method index, a plain `u64`.
-// `[8..16)`: the message's own waker — the awaiting turn's turn-area
-// address, or 0 for a one-way `send` (`codegen::OFF_TURN_*`'s module doc
-// carries the whole contract).
-// `[16..slot_size)`: the method's own argument blob, raw 8-byte-per-
-// scalar-param words in declared parameter order
-// (`ActorRuntimeLayout::slot_size`'s own doc comment) — every param here
-// is assumed to fit one 8-byte slot (a disclosed, real simplification: a
-// message-legal aggregate wider than one slot is out of scope for this
-// hand-assembled dispatch; every `pub` actor method in today's whole
-// corpus takes only scalar params, so this never silently narrows a real
-// case).
-
-/// plans/M10.md item 0b (decisions 554/567): one turn's index into the
-/// single contiguous `RT.turns` array `place_runtime_tables` lays down at
-/// `rtdata_base`. The whole point of item 0 — the value a waker, a
-/// reply-ring slot or a group's `owner_turn` will carry once 0c1/0c2/0c3
-/// land, in place of a raw turn-area address.
-///
-/// **1-based, deliberately.** Array index 0 is a live turn in every
-/// actor-bearing image (`tables.actors[0]`'s turn is placed first), so `0`
-/// is not a free value — it is *made* free by biasing the id, and it then
-/// serves as the `Option[TurnId]` niche. That is already the machine's
-/// convention for exactly this problem: a group id is `arena_index + 1`
-/// with `0` meaning "no ambient group". The field is private and
-/// `from_index` is the only constructor, so `TurnId(0)` is
-/// unconstructible — this type is the one place the niche is enforced,
-/// rather than nine `cbz` sites assuming it.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub struct TurnId(u32);
-
-impl TurnId {
-    /// The id of turn-array element `index` (0-based, `place_runtime_tables`'
-    /// own order: actors, then messageable drivers, then free turns).
-    pub fn from_index(index: usize) -> TurnId {
-        // `n_turns` is bounded by the declaration count of one image; a
-        // u32 overflow here would mean a 4-billion-root image, which the
-        // 1 GiB ceiling refuses long before this does.
-        let biased = u32::try_from(index + 1)
-            .expect("a turn array with over 4 billion entries cannot fit the machine's memory");
-        TurnId(biased)
-    }
-
-    /// The 1-based value an `Option[TurnId]` word holds — never `0`, which
-    /// is what makes every existing `cbz`/`str xzr` "no waker" test keep
-    /// meaning "none".
-    pub fn get(self) -> u32 {
-        debug_assert!(self.0 != 0, "TurnId(0) is the None niche, not an id");
-        self.0
-    }
-
-    /// The 0-based array index — what `RuntimePlacement::turn_addr` scales
-    /// by the stride. Bias removal lives here and nowhere else.
-    pub fn index(self) -> usize {
-        debug_assert!(self.0 != 0, "TurnId(0) is the None niche, not an id");
-        self.0 as usize - 1
-    }
-}
-
-/// plans/M10.md item E2 / decision 669: one group's index into the
-/// group arena, encoded the way ambient lineage already encodes it —
-/// `arena_index + 1`, with `0` meaning "no ambient group". That zero is
-/// the `Option[GroupId]` None niche (decision 567's convention, already
-/// the machine's). Same shape as [`TurnId`]: private field, `from_index`
-/// only, so `GroupId(0)` is unconstructible in Rust.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub struct GroupId(u32);
-
-impl GroupId {
-    pub fn from_index(index: usize) -> GroupId {
-        let biased = u32::try_from(index + 1)
-            .expect("a group arena with over 4 billion slots cannot fit the machine's memory");
-        GroupId(biased)
-    }
-
-    pub fn get(self) -> u32 {
-        debug_assert!(self.0 != 0, "GroupId(0) is the None niche, not an id");
-        self.0
-    }
-
-    pub fn index(self) -> usize {
-        debug_assert!(self.0 != 0, "GroupId(0) is the None niche, not an id");
-        self.0 as usize - 1
-    }
-}
-
-/// One actor's own absolute runtime-table addresses, placed sequentially
-/// from a given base (`rtdata_base` for a real image, or a host-mmap'd
-/// stand-in base for a JIT/HVF test) — the exact byte order
-/// `compute_runtime_tables`'s own `RuntimeTables::total_bytes` already
-/// accounts for (state, ring, head/tail/count), so a real image's `rtdata`
-/// section and this fn's own addresses can never disagree.
-#[derive(Debug, Clone, Copy)]
-pub struct ActorAddrs {
-    pub state: u64,
-    pub ring: u64,
-    pub head: u64,
-    pub tail: u64,
-    pub count: u64,
-    /// This actor's own turn area base — no longer bumped alongside the
-    /// four fields above (plans/M10.md item 0b): it is
-    /// `turns_base + (this actor's TurnId index << log2 stride)`, an
-    /// element of the one contiguous turn array. Still a build-time
-    /// absolute address, because the fully-unrolled scans want one.
-    ///
-    /// The fixed 48-byte turn record
-    /// (`codegen::OFF_TURN_*`: busy/suspended/resume_ready/reply/waker/
-    /// cur_method) followed by its persistent async frame slots. The
-    /// address every message this actor's turns *send* carries as their
-    /// waker, and the address `Reloc::TurnFrameAddr` resolves to for its
-    /// own async methods.
-    pub turn: u64,
-}
-
-impl ActorAddrs {
-    /// This actor's mailbox, as the plain bounded ring it is — the shape
-    /// `build_ring_enqueue` produces into, shared verbatim with every
-    /// cross-core ring (plans/M8.md item C2, decision 28).
-    pub fn mailbox(&self) -> RingAddrs {
-        RingAddrs {
-            ring: self.ring,
-            head: self.head,
-            tail: self.tail,
-            count: self.count,
-        }
-    }
-}
-
-/// Every runtime-table address, placed from one `base` (`rtdata_base` for
-/// a real image, a host-mmap'd stand-in for a JIT/HVF test) in the exact
-/// byte order `compute_runtime_tables::total_bytes` accounts for.
-///
-/// plans/M10.md item 0b (decision 554) re-grouped that order. It is now:
-/// the whole **turn array** first (`n_turns * turn_stride`, actors then
-/// messageable drivers then free turns), then each actor's region (state,
-/// ring, head/tail/count — the turn area no longer rides along), then each
-/// driver's state and, when messageable, its own ring/head/tail/count, then
-/// the per-core scheduler stripe, the group arena, and the cross-core
-/// rings.
-///
-/// Turns first buys the one property `TurnId` needs: `turns_base ==
-/// rtdata_base` exactly, so the address the whole runtime indexes from *is*
-/// a section base and needs no arithmetic to resolve. Keeping them last
-/// instead would only have preserved goldens this item moves anyway.
-#[derive(Debug, Clone, Default)]
-pub struct RuntimePlacement {
-    /// plans/M10.md item 0b: the base of the one contiguous turn array —
-    /// equal to `base` itself, and so to `rtdata_base` for a real image.
-    pub turns_base: u64,
-    /// The uniform stride the array is indexed at, copied from
-    /// `RuntimeTables::turn_stride` so `turn_addr` below needs no second
-    /// argument (`0` for an image with no turns, which then never indexes).
-    pub turn_stride: u64,
-    /// plans/M10.md item 0b: free async fn key -> that fn's own `TurnId` —
-    /// the exact twin of `free_turns` below, and the only owner kind whose
-    /// id is not positional (an actor's is its `tables.actors` index; a
-    /// messageable driver's is `actors.len()` + its rank among the
-    /// messageable drivers). `turn_id_for` is the reader; nothing indexes
-    /// this map directly.
-    pub turn_ids: BTreeMap<String, TurnId>,
-    pub actors: Vec<ActorAddrs>,
-    /// plans/M7.md item H1: each declared `@driver` instance's own state
-    /// address, in `RuntimeTables::drivers` order. Placed after every
-    /// actor's region and before the free-turn areas.
-    ///
-    /// plans/M8.md item D: a messageable driver's region continues past
-    /// its state with the same ring/head/tail/count/turn run an actor's
-    /// does, in the same order `RuntimeTables::total_bytes` accounts for —
-    /// `driver_mailboxes` below holds those addresses, keyed by the same
-    /// index. The `state` word here is unchanged either way.
-    ///
-    /// M12 item D: sticky wake-pending bits are no longer a trail word of
-    /// driver state — they live at `wake_base` (contiguous `WAKE` array).
-    pub drivers: Vec<u64>,
-    /// plans/M8.md item D: `RuntimeTables::drivers` index -> that
-    /// messageable driver's own mailbox addresses. An `ActorAddrs`
-    /// deliberately, not a driver-shaped twin: it is handed straight to
-    /// `build_rt_enqueue` / `build_rt_select_and_run_symbolic`, the same
-    /// two routines every actor's mailbox is built from. Its `state` field
-    /// is the same address `drivers[i]` holds.
-    pub driver_mailboxes: BTreeMap<usize, ActorAddrs>,
-    /// fn key -> free-turn area base (`RuntimeTables::free_turns` order).
-    pub free_turns: BTreeMap<String, u64>,
-    /// The deterministic round-robin cursor word each core's own
-    /// `rt_run_one` reads/advances (04 §2's tie-breaker; at M6 every
-    /// scheduling key is equal, so the cursor is the whole selection order
-    /// among that core's ready actors). One per live core
-    /// (`RuntimeTables::cores`) — 04 §2's event loop is per core, so its
-    /// cursor is too; a shared cursor would make one core's selection
-    /// depend on another's, which is exactly the migration/stealing the
-    /// chapter forbids. `rr_cursors[0]` is core 0's, at the identical
-    /// address the single global cursor occupied before item C1.
-    pub rr_cursors: Vec<u64>,
-    /// plans/M6.md item F: the whole-image group arena's own base address
-    /// — `Reloc::GroupArenaBase`'s own resolution target, placed last
-    /// (`RuntimeTables::total_bytes`'s own byte-order doc: actors, free
-    /// turns, ready-queue table, rr cursor, then the group arena).
-    pub group_arena: u64,
-    /// plans/M8.md item C2: each cross-core ring's own placed addresses, in
-    /// `RuntimeTables::rings` order — placed after the group arena, so an
-    /// image with no cross-core edge places byte-for-byte what it did
-    /// before this item.
-    pub rings: Vec<RingAddrs>,
-    /// M12 item D (decisions 880–882): base of the contiguous
-    /// `WAKE.wake_pending` array, placed after rings. Equal to the rings
-    /// end when `wake_pending_addrs` is empty (no reservation).
-    pub wake_base: u64,
-}
-
-impl RuntimePlacement {
-    /// The address of turn-array element `id` — the one index→address rule,
-    /// `turns_base + (index << log2 stride)`. `place_runtime_tables` fills
-    /// every `ActorAddrs::turn` / `free_turns` value from this same
-    /// expression, so a build-time address and a `TurnId` can never name
-    /// different bytes.
-    pub fn turn_addr(&self, id: TurnId) -> u64 {
-        self.turns_base + (id.index() as u64) * self.turn_stride
-    }
-
-    /// `log2(turn_stride)` — the shift the index→address rule scales an
-    /// index by, and the whole reason item 0a made the stride a power of
-    /// two. `0` for an image with no turns, which then never indexes (no
-    /// `rt_*` routine is emitted at all). (The one live emitter of the
-    /// rule, `codegen::push_turn_addr_from_id`, multiplies by a relocated
-    /// stride instead — see its doc; the dead harness twin that used this
-    /// shift was deleted in M10 item M, sweep find L-11.)
-    pub fn log2_turn_stride(&self) -> u8 {
-        if self.turn_stride == 0 {
-            0
-        } else {
-            debug_assert!(self.turn_stride.is_power_of_two());
-            self.turn_stride.trailing_zeros() as u8
-        }
-    }
-
-    /// The `TurnId` of async fn `key`'s turn (`turn_owner`'s own rule): an
-    /// actor method's turn is its actor's; a messageable driver's `pub async
-    /// fn` parks in the driver's one turn (plans/M8.md item D —
-    /// non-reentrancy is per root, not per method); anything else owns its
-    /// own free turn. `None` only for a key the tables never sized — an
-    /// internal inconsistency the caller reports loudly.
-    ///
-    /// plans/M10.md item 0b: this is *the* owner-resolution rule.
-    /// `turn_area_for` below is defined in terms of it rather than beside
-    /// it, so there is one rule and not two that could skew.
-    pub fn turn_id_for(&self, key: &str, tables: &RuntimeTables) -> Option<TurnId> {
-        let roots = mailbox_root_names(tables);
-        match turn_owner(key, &roots) {
-            Some(root) => {
-                if let Some(i) = tables.actors.iter().position(|a| a.name == root) {
-                    return Some(TurnId::from_index(i));
-                }
-                let di = tables.drivers.iter().position(|d| d.name == root)?;
-                // `driver_mailboxes` is keyed by `tables.drivers` index and
-                // is a `BTreeMap`, so its key order *is* the messageable
-                // subsequence of `tables.drivers` — the same order
-                // `place_runtime_tables` assigned indices in.
-                let rank = self.driver_mailboxes.keys().position(|k| *k == di)?;
-                Some(TurnId::from_index(tables.actors.len() + rank))
-            }
-            None => self.turn_ids.get(key).copied(),
-        }
-    }
-
-    /// The turn area address for async fn `key` — `turn_id_for` scaled by
-    /// the stride.
-    pub fn turn_area_for(&self, key: &str, tables: &RuntimeTables) -> Option<u64> {
-        self.turn_id_for(key, tables).map(|id| self.turn_addr(id))
-    }
-}
-
-pub fn place_runtime_tables(base: u64, tables: &RuntimeTables) -> RuntimePlacement {
-    // plans/M10.md item 0b (decision 554): the turn array comes first and
-    // whole, so `turns_base == base` and element `i` sits at a plain
-    // stride multiple. Each area is *reserved* at the image-wide uniform
-    // stride (item 0a), not at its owner's raw area — the owner's own
-    // `frame_size` still says how much of it is live.
-    //
-    // Deliberately **not** aligned up to the stride: `add`-based indexing
-    // does not need it, and `verify_section_sizes`' 8-byte inter-section
-    // gap rule reports a larger gap as a producer bug (the prefix every
-    // fuzz lane treats as a failure), not as an outcome.
-    let turns_base = base;
-    let turn_addr = |index: usize| turns_base + (index as u64) * tables.turn_stride;
-    let mut cursor = base + tables.n_turns * tables.turn_stride;
-    let mut actors = Vec::with_capacity(tables.actors.len());
-    for (i, a) in tables.actors.iter().enumerate() {
-        let state = cursor;
-        cursor += a.state_size;
-        let ring = cursor;
-        cursor += a.mailbox_capacity * a.slot_size;
-        let head = cursor;
-        cursor += 8;
-        let tail = cursor;
-        cursor += 8;
-        let count = cursor;
-        cursor += 8;
-        actors.push(ActorAddrs {
-            state,
-            ring,
-            head,
-            tail,
-            count,
-            // The first `tables.actors.len()` turn-array elements are the
-            // actors', in this order.
-            turn: turn_addr(i),
-        });
-    }
-    let mut drivers = Vec::with_capacity(tables.drivers.len());
-    let mut driver_mailboxes = BTreeMap::new();
-    // The turn array continues with the messageable drivers, in
-    // `tables.drivers` order (`mailbox_root_names`' own order).
-    let mut next_turn = tables.actors.len();
-    for (i, d) in tables.drivers.iter().enumerate() {
-        let state = cursor;
-        drivers.push(state);
-        cursor += d.state_size;
-        // plans/M8.md item D: same four regions, same order, same
-        // arithmetic as the actor loop above.
-        if let Some(mb) = &d.mailbox {
-            let ring = cursor;
-            cursor += mb.capacity * mb.slot_size;
-            let head = cursor;
-            cursor += 8;
-            let tail = cursor;
-            cursor += 8;
-            let count = cursor;
-            cursor += 8;
-            let turn = turn_addr(next_turn);
-            next_turn += 1;
-            driver_mailboxes.insert(
-                i,
-                ActorAddrs {
-                    state,
-                    ring,
-                    head,
-                    tail,
-                    count,
-                    turn,
-                },
-            );
-        }
-    }
-    // ...and ends with the free turns, in `tables.free_turns` order.
-    let mut free_turns = BTreeMap::new();
-    let mut turn_ids = BTreeMap::new();
-    for (k, (key, _area)) in tables.free_turns.iter().enumerate() {
-        let index = next_turn + k;
-        free_turns.insert(key.clone(), turn_addr(index));
-        turn_ids.insert(key.clone(), TurnId::from_index(index));
-    }
-    debug_assert_eq!(
-        next_turn + tables.free_turns.len(),
-        tables.n_turns as usize,
-        "`compute_runtime_tables` and `place_runtime_tables` disagree about how many turns exist"
-    );
-    // plans/M8.md item C1: one ready-queue table + one round-robin cursor
-    // per live core, uniformly strided (each core's pair sits at
-    // `base + core * (ready_queue_capacity * 8 + RR_CURSOR_SIZE)`). With
-    // `cores == 1` this is byte-for-byte the pre-C1 single reservation.
-    let sched_base = cursor;
-    let per_core = tables.ready_queue_capacity * 8 + RR_CURSOR_SIZE;
-    let mut rr_cursors = Vec::with_capacity(tables.cores);
-    for core in 0..tables.cores {
-        rr_cursors.push(sched_base + (core as u64) * per_core + tables.ready_queue_capacity * 8);
-    }
-    cursor = sched_base + (tables.cores as u64) * per_core;
-    let group_arena = cursor;
-    let group_slot = crate::codegen::group_slot_size(
-        tables
-            .group_max_children
-            .max(crate::codegen::GROUP_MAX_CHILDREN_FLOOR),
-    );
-    cursor += tables.group_arena_capacity * group_slot;
-    // plans/M8.md item C2 / M12 item C (decision 875): cross-core rings
-    // last — all CTL records contiguously, then uniformly-strided DATA.
-    // Every address above this point is unchanged for an image with none.
-    let n_rings = tables.rings.len() as u64;
-    let stride = if tables.rings.is_empty() {
-        0
-    } else {
-        // Prefer the value `add_cross_core_rings` recorded; recompute if a
-        // unit test built tables by hand without that path.
-        let s = tables.ring_stride;
-        if s == 0 {
-            ring_data_stride_bytes(&tables.rings)
-        } else {
-            s
-        }
-    };
-    let ctl_base = cursor;
-    let data_base = ctl_base + n_rings * MAILBOX_BOOKKEEPING_SIZE;
-    let mut rings = Vec::with_capacity(tables.rings.len());
-    for (i, _r) in tables.rings.iter().enumerate() {
-        let i = i as u64;
-        let head = ctl_base + i * MAILBOX_BOOKKEEPING_SIZE;
-        rings.push(RingAddrs {
-            ring: data_base + i * stride,
-            head,
-            tail: head + 8,
-            count: head + 16,
-        });
-    }
-    let rings_end = data_base + n_rings * stride;
-    // M12 item D: contiguous WAKE.wake_pending after rings. Length comes
-    // from `wake_pending_addrs` (filled to the drain count before place).
-    let n_wake = tables.wake_pending_addrs.len() as u64;
-    let wake_base = rings_end;
-    let _wake_end = wake_base + n_wake * 8;
-    RuntimePlacement {
-        turns_base,
-        turn_stride: tables.turn_stride,
-        turn_ids,
-        actors,
-        drivers,
-        driver_mailboxes,
-        free_turns,
-        rr_cursors,
-        group_arena,
-        rings,
-        wake_base,
-    }
-}
-
-/// plans/M6.md decision 11b (02-language.md §12.2): resolves every
-/// runtime test's own declared `Actor[T]` params against the image
-/// graph's own declared instances — `T`'s *unique* instance across
-/// `graph.actors`/`graph.drivers` (both are actor roots, 02 §9.1: "A
-/// struct marked `@actor` ... or `@driver` ... is an actor"), by build-
-/// time index (04-compiler.md §6's own "Actor as-if" license: a handle's
-/// runtime value is just that instance's own build-time-constant index).
-/// Zero or more than one instance is a named `error[build]` line listing
-/// every candidate (`actor#i`/`driver#i`, the identical spelling
-/// `eval::image::dump`'s own edge lines already use) — sema
-/// (`check_runtime_test_params`) already guarantees every param here is
-/// a plain `Actor[T]` handle, so the only failure mode left is a real
-/// ambiguity/absence in *this* image. A test with no params (every sync
-/// test, and any async test that declares none) resolves to an empty arg
-/// list — byte-identical to every pre-decision-11b test.
-pub fn resolve_runtime_test_args(
-    program: &crate::sema::typed::TypedProgram,
-    runtime_tests: &[String],
-    graph: &crate::eval::image::ImageGraph,
-) -> Result<BTreeMap<String, Vec<u64>>, String> {
-    let mut out = BTreeMap::new();
-    for name in runtime_tests {
-        let f = &program.fns[name];
-        let mut args = Vec::with_capacity(f.params.len());
-        for p in &f.params {
-            let crate::sema::types::Type::Named(_, targs) = &p.ty else {
-                return Err(format!(
-                    "internal error: runtime test `{name}`'s own param `{}` is not an \
-                     `Actor[T]` handle (sema should have already rejected this)",
-                    p.name
-                ));
-            };
-            let Some(crate::sema::types::TypeArg::Type(inner)) = targs.first() else {
-                return Err(format!(
-                    "internal error: runtime test `{name}`'s own `Actor[T]` param `{}` has no \
-                     type argument",
-                    p.name
-                ));
-            };
-            let target_name = crate::sema::types::render_type(inner);
-            let space = HandleSpace::from_graph(graph);
-            let mut candidates: Vec<String> = Vec::new();
-            let mut actor_index: Option<usize> = None;
-            for (i, a) in graph.actors.iter().enumerate() {
-                if crate::sema::types::render_type(&a.actor_type) == target_name {
-                    candidates.push(format!("actor#{i}"));
-                    actor_index = Some(i);
-                }
-            }
-            // plans/M8.md item D: a `@driver` declared with `mailbox=` is a
-            // messageable actor root, so a runtime test may hold its handle
-            // like any other. A driver *without* one still resolves as a
-            // candidate — that is how the count check above stays honest —
-            // but produces the named floor below rather than an index.
-            // plans/M8.md item H attack 6: the handle word shares one index
-            // space with every other `ImageDecl` (`image_decl_handle_word`).
-            let mut driver_index: Option<usize> = None;
-            for (i, d) in graph.drivers.iter().enumerate() {
-                if crate::sema::types::render_type(&d.actor_type) == target_name {
-                    candidates.push(format!("driver#{i}"));
-                    if d.args.iter().any(|a| a.label == "mailbox") {
-                        driver_index = Some(i);
-                    }
-                }
-            }
-            if candidates.len() != 1 {
-                return Err(format!(
-                    "runtime test `{name}`'s own parameter `{}: Actor[{target_name}]` needs \
-                     exactly one declared `{target_name}` instance in this image; found {} ({})",
-                    p.name,
-                    candidates.len(),
-                    if candidates.is_empty() {
-                        "none".to_string()
-                    } else {
-                        candidates.join(", ")
-                    }
-                ));
-            }
-            let Some(idx) = actor_index
-                .and_then(|i| {
-                    image_decl_handle_word(space, &crate::eval::image::ImageDeclRef::Actor(i))
-                })
-                .or_else(|| {
-                    driver_index.and_then(|i| {
-                        image_decl_handle_word(space, &crate::eval::image::ImageDeclRef::Driver(i))
-                    })
-                })
-            else {
-                return Err(format!(
-                    "runtime test `{name}`'s own parameter `{}: Actor[{target_name}]` resolves \
-                     to a `@driver` declared with no `mailbox=` — a driver is messageable only \
-                     when its declaration says so (05-library.md §9), so there is nothing for \
-                     this handle to call. Add `mailbox=n` to `img.driver({target_name}, ...)`",
-                    p.name
-                ));
-            };
-            args.push(idx);
-        }
-        out.insert(name.clone(), args);
-    }
-    Ok(out)
-}
-
-// plans/M10.md item H: `build_boot_init` / `emit_boot_init_arg` deleted —
-// specialized `codegen::emit_boot_init` lives in `code` under
-// `rt_boot_init 0` (decisions 680–684). `build_boot_init_calls` remains:
-// it materializes the call specs inject_boot_init_fn consumes.
-
-// ===========================================================================
-// plans/M6.md item F/G follow-up (the found-and-fixed `layout_program`
-// defect): the runtime machinery, derived and assembled **once**, for both
-// image flavors.
-//
-// Until this landed, only `layout_test_image` built the per-actor
-// `__rt_enqueue_*`/`rt_select_and_run` glue, the group-child poll routines,
-// `rt_run_one` and the boot-init routine. `layout_program` — the path
-// `wrela build`/`wrela dump --stage=report` take — reserved `rtdata` but
-// emitted none of the code that addresses it, so the first `.wr` image that
-// actually *messaged* an actor (any `await`/`send` through an `Actor[T]`
-// handle, which codegen lowers to a `Reloc::Call` at the symbolic
-// `codegen::rt_enqueue_symbol` name) died in reloc resolution with
-// `internal error: call target `__rt_enqueue_X` was never codegen'd` — an
-// internal-error guard on a plainly user-reachable path. `tests/golden/
-// appliance` never caught it because its actors are declared and never
-// messaged, so no such `Reloc::Call` is ever emitted.
-//
-// The rule (item C's own, restated): the runtime tables **and** the routines
-// that address them are part of the image, tests or not. So both paths now
-// derive their inputs through `RuntimeWiring::derive` and assemble the exact
-// same words through `build_runtime_block`. The only thing that legitimately
-// differs is the entry driver — `layout_test_image`'s real console harness +
-// test roots vs. `layout_program`'s `build_entry_stub` placeholder, which
-// still halts with `EXIT_CODE_NO_RUNTIME` and therefore never calls any of
-// this. That the block is unreachable in a `wrela build` image today is the
-// identical, already-recorded position `rtdata`'s own reservation takes
-// (`layout_program`'s doc): it is *there* because it is part of the image,
-// not because anything executes it yet. The moment a real non-test image
-// entry exists (M7+), it is one `bl_to(boot_init_start)` away, byte-for-byte
-// the same machinery `wrela test` already boots for real.
-
-/// Every whole-build fact the runtime block needs, derived once from a
-/// `BootCtx` so the two image flavors can never disagree about an actor's
-/// dispatch keys, its `init`, or the group-child index. `None` means "this
-/// build has no actor runtime at all" (no `@actor` declaration, or tables
-/// that size to zero bytes) — the overwhelming majority of today's corpus,
-/// for which both paths stay byte-identical to their pre-M6 behavior.
-struct RuntimeWiring {
-    tables: RuntimeTables,
-    /// Per actor, in `tables.actors` order: its own name and its `pub`
-    /// method dispatch keys (`"{Actor}.{method}"`, `program.fns` keys) with
-    /// each one's asyncness and (plans/M7.md item Z1) whether its declared
-    /// reply is an aggregate.
-    dispatch: Vec<(String, Vec<(String, bool, bool)>)>,
-    /// Per declared actor *instance*, in `tables.actors` order: the boot
-    /// `init` call to make for it, or `None` if its struct declares no
-    /// `init` at all (plans/M7.md item W, `build_boot_init_calls`).
-    ///
-    /// Per instance rather than per struct name, because the arguments
-    /// come from the *declaration* (`ActorDecl::args`) and not from the
-    /// struct: two `img.actor(Same, ...)` calls are two calls with two
-    /// argument lists.
-    init_calls: Vec<Option<BootInitCall>>,
-    /// plans/M7.md item H1: the same, per declared `@driver` instance, in
-    /// `tables.drivers` order.
-    driver_init_calls: Vec<Option<BootInitCall>>,
-    state_sizes: Vec<u64>,
-    driver_state_sizes: Vec<u64>,
-    group_child_index: BTreeMap<String, usize>,
-    /// plans/M8.md item C1: each actor instance's own core, in
-    /// `tables.actors` (= `ImageGraph::actors`) order — read straight off
-    /// the report's own Placement table (`placement::place`), never
-    /// re-derived here. Shape decision 2: the report's assignment *is* the
-    /// runtime's assignment, or there are two truths.
-    actor_cores: Vec<usize>,
-    /// The whole placement table, kept for the cross-core edge check both
-    /// image flavors run during reloc resolution.
-    placement: crate::placement::PlacementTable,
-    /// M11 I: IRQ handler stubs to overwrite (`handler_key`, `driver_state`).
-    irq_calls: Vec<(String, u64)>,
-    /// M11 I: wake `@task` stubs (`task_key`, `driver_state`).
-    wake_calls: Vec<(String, u64)>,
-}
-
-impl RuntimeWiring {
-    /// One derivation for both image flavors, with no flavor-conditional
-    /// behavior in it at all. plans/M6.md item F/G's own found-and-fixed
-    /// defect (this module's block comment above) is exactly that the
-    /// runtime block **is** part of the image, tests or not, so the day
-    /// `layout_program` grows a real entry it must find the identical boot
-    /// sequence `wrela test` already boots. plans/M7.md item W removed the
-    /// one exception that had grown back: a `reject_parameterized_init`
-    /// flag, set only by `layout_test_image`, that made a parameterized
-    /// `init` a build error on the path that boots and a silent no-op on
-    /// the path that does not. Both paths now materialize the same
-    /// arguments and fail closed on the same shapes.
-    fn derive(
-        boot: &BootCtx,
-        // plans/M8.md item C2: the compiled program, for the one fact
-        // placement cannot supply — which `send`/`await` sites actually
-        // exist, and therefore which cross-core edges this image has rings
-        // for. Both image flavors pass their own, so neither can end up
-        // with a ring set the other does not have.
-        program: &CodegenProgram,
-    ) -> Result<Option<RuntimeWiring>, LayoutError> {
-        let group_max_children = crate::codegen::group_max_children_of(boot.group_child_index);
-        let Some(mut tables) = compute_runtime_tables(
-            boot.graph,
-            boot.modules,
-            boot.layout_ctx,
-            boot.async_frames,
-            group_max_children,
-        )
-        .map_err(LayoutError::new)?
-        .filter(|t| t.total_bytes > 0) else {
-            return Ok(None);
-        };
-        // plans/M8.md item C1: placement first — it decides how many cores
-        // this image brings up, which stripes the scheduler tables before
-        // anything is placed or emitted against them.
-        let placement = crate::placement::place(boot.graph, boot.modules, boot.layout_ctx)
-            .map_err(LayoutError::new)?;
-        tables.stripe_for_cores(placement.cores);
-        // plans/M8.md item C1's second fail-closed arm. A `@driver`'s ISR
-        // and `@task` bottom half are emitted into the **checkpoint
-        // service**, which only core 0's entry driver and core 0's compiled
-        // code ever call; its `init` likewise runs in core 0's boot
-        // sequence. So a driver inferred or annotated onto a secondary core
-        // would be a second truth of exactly the shape shape decision 2
-        // forbids — the report saying `core=2` while every one of that
-        // driver's own instructions runs on core 0. 04 §3 is explicit
-        // ("a `@driver`'s vectors, pools, permits, and recovery lanes live
-        // on its core; there is no cross-core hardware state"), so this is
-        // refused rather than approximated. Lifting it is item C2's
-        // per-core checkpoint work, not a silent demotion here.
-        for (i, d) in tables.drivers.iter().enumerate() {
-            let core = placement
-                .core_of(&crate::eval::image::ImageDeclRef::Driver(i))
-                .unwrap_or(0);
-            if core != 0 {
-                return Err(LayoutError::new(format!(
-                    "driver#{i} (`{}`) is placed on core {core}, but a `@driver`'s ISR, `@task` \
-                     bottom half and boot `init` all run in core 0's checkpoint service and boot \
-                     sequence — plans/M8.md item C1 brings up secondary cores for actors only. \
-                     Place this driver on core 0 (`core=0`), or wait for item C2's per-core \
-                     device lanes",
-                    d.name
-                )));
-            }
-        }
-        // plans/M8.md item C2, on top of item D: one entry per **mailbox
-        // root**, in `mailbox_root_names` order — every declared actor,
-        // then every messageable `@driver`. A driver's entry is always 0:
-        // shape decision 2 keeps `@driver` on core 0 and the arm just above
-        // refuses anything else, so a messageable driver is only ever a
-        // ring *destination*, never a ring source, and 04 §3's "a
-        // `@driver`'s vectors, pools, permits, and recovery lanes live on
-        // its core" is not in tension — a ring slot carries a method index,
-        // a waker and that method's own argument words, and nothing else.
-        let mut actor_cores: Vec<usize> = (0..tables.actors.len())
-            .map(|i| {
-                placement
-                    .core_of(&crate::eval::image::ImageDeclRef::Actor(i))
-                    .unwrap_or(0)
-            })
-            .collect();
-        actor_cores.extend(
-            tables
-                .drivers
-                .iter()
-                .filter(|d| d.mailbox.is_some())
-                .map(|_| 0),
-        );
-        let shapes = merge_actor_pub_methods(boot.modules, boot.layout_ctx)?;
-        // plans/M8.md item D: dispatch tables are per *mailbox root*, in
-        // `mailbox_root_names`' order — the same order
-        // `build_runtime_glue_block` walks. A messageable driver's methods
-        // are numbered by the identical `merge_actor_pub_methods` shapes
-        // `actor_method_index_tables` hands codegen, so an admitted method
-        // index means the same thing on both sides.
-        let dispatch = mailbox_root_names(&tables)
-            .into_iter()
-            .map(|name| {
-                let methods = shapes.get(&name).cloned().unwrap_or_default();
-                let keys = methods
-                    .iter()
-                    .map(|m| {
-                        (
-                            format!("{name}.{}", m.name),
-                            m.is_async,
-                            m.reply_is_aggregate,
-                        )
-                    })
-                    .collect();
-                (name, keys)
-            })
-            .collect();
-        // Every rejection this pass can still make lives in here, keyed on
-        // the shape boot genuinely cannot marshal rather than on "declares
-        // parameters at all" (`build_boot_init_calls`'s own doc comment
-        // lists them). Derived against the *declared* actor set, never
-        // against every struct in the closure — an `init` on a plain data
-        // struct is ordinary, legal code (`Pair.init(lo, hi)` in
-        // `golden/boot-actor-reply-struct`) and is none of this pass's
-        // business.
-        let layouts = closure_layout_types(boot.modules, boot.programs)?;
-        let backings =
-            crate::eval::image_checks::pool_backings(boot.graph, &layouts).map_err(|e| {
-                LayoutError::new(format!(
-                    "internal error: a pool declaration this image's own graph check accepted \
-                     cannot be read for own-handle materialization: {}",
-                    e.message
-                ))
-            })?;
-        let (init_calls, driver_init_calls) =
-            build_boot_init_calls(boot.graph, &actor_inits(boot.modules)?, &backings)?;
-        debug_assert_eq!(
-            init_calls.len(),
-            tables.actors.len(),
-            "one boot `init` call per declared actor instance"
-        );
-        debug_assert_eq!(
-            driver_init_calls.len(),
-            tables.drivers.len(),
-            "one boot `init` call per declared driver instance"
-        );
-        let state_sizes = tables.actors.iter().map(|a| a.state_size).collect();
-        let driver_state_sizes = tables.drivers.iter().map(|d| d.state_size).collect();
-        let mut wiring = RuntimeWiring {
-            tables,
-            dispatch,
-            init_calls,
-            driver_init_calls,
-            state_sizes,
-            driver_state_sizes,
-            group_child_index: boot.group_child_index.clone(),
-            actor_cores,
-            placement,
-            irq_calls: Vec::new(),
-            wake_calls: Vec::new(),
-        };
-        // plans/M8.md item C2: the ring set, last — it is derived from the
-        // finished placement plus the compiled call sites, and it grows
-        // `rtdata` by exactly its own reservation.
-        let rings = cross_core_rings(program, &wiring)?;
-        reject_unlowerable_cross_core_shapes(&rings, &wiring, boot, program)?;
-        wiring.tables.add_cross_core_rings(rings);
-        // M11 F: stamp select/drain/child facts onto tables so dump and
-        // reinject share one `rtconfig::generate` input (decision 790).
-        fill_rtconfig_facts(&mut wiring)?;
-        // M11 I: IRQ/wake facts for checkpoint body (decision 823).
-        fill_checkpoint_irq_facts(&mut wiring, boot)?;
-        Ok(Some(wiring))
-    }
-}
-
-/// Fill `RuntimeTables::{select_by_core,drain_by_core,child_sites,
-/// ring_target_handles,enqueue_handles,enqueue_actors}` from the finished
-/// wiring (plans/M11.md item F / decision 790; item G / decision 801).
-fn fill_rtconfig_facts(wiring: &mut RuntimeWiring) -> Result<(), LayoutError> {
-    let roots = mailbox_root_names(&wiring.tables);
-    let mut select_by_core: Vec<Vec<String>> = vec![Vec::new(); wiring.tables.cores];
-    for (i, name) in roots.iter().enumerate() {
-        let core = wiring.actor_cores.get(i).copied().unwrap_or(0);
-        if core < select_by_core.len() {
-            select_by_core[core].push(name.clone());
-        }
-    }
-    let mut drain_by_core = vec![false; wiring.tables.cores];
-    for r in &wiring.tables.rings {
-        if r.dst < drain_by_core.len() {
-            drain_by_core[r.dst] = true;
-        }
-    }
-    let actor_n = wiring.tables.actors.len();
-    let msg_drivers = wiring
-        .tables
-        .drivers
-        .iter()
-        .filter(|d| d.mailbox.is_some())
-        .count();
-    let mut child_sites = Vec::new();
-    for (callee_key, &child_index) in &wiring.group_child_index {
-        let Some(pos) = wiring
-            .tables
-            .free_turns
-            .iter()
-            .position(|(k, _)| k == callee_key)
-        else {
-            continue;
-        };
-        child_sites.push((callee_key.clone(), child_index, actor_n + msg_drivers + pos));
-    }
-    // Handle space: actors then drivers then devices (image_decl_handle_word).
-    // Mailbox roots are actors then messageable drivers — handle word for
-    // actor i is i; for messageable driver at drivers[j] it is actor_n + j.
-    let mut enqueue_handles = Vec::new();
-    let mut enqueue_actors = Vec::new();
-    for (i, a) in wiring.tables.actors.iter().enumerate() {
-        enqueue_handles.push(i as u64);
-        enqueue_actors.push(a.name.clone());
-    }
-    for (j, d) in wiring.tables.drivers.iter().enumerate() {
-        if d.mailbox.is_some() {
-            enqueue_handles.push((actor_n + j) as u64);
-            enqueue_actors.push(d.name.clone());
-        }
-    }
-    let mut ring_target_handles = Vec::with_capacity(wiring.tables.rings.len());
-    for r in &wiring.tables.rings {
-        match r.kind {
-            RingKind::Request => {
-                let actor = r.actor.as_deref().unwrap_or("");
-                let h = enqueue_actors
-                    .iter()
-                    .zip(enqueue_handles.iter())
-                    .find(|(n, _)| *n == actor)
-                    .map(|(_, h)| *h)
-                    .unwrap_or(0);
-                ring_target_handles.push(h);
-            }
-            RingKind::Reply => ring_target_handles.push(0),
-        }
-    }
-    wiring.tables.select_by_core = select_by_core;
-    wiring.tables.drain_by_core = drain_by_core;
-    wiring.tables.child_sites = child_sites;
-    wiring.tables.ring_target_handles = ring_target_handles;
-    let mut root_methods = Vec::with_capacity(enqueue_actors.len());
-    let mut root_cores = Vec::with_capacity(enqueue_actors.len());
-    for (i, name) in enqueue_actors.iter().enumerate() {
-        let methods = wiring
-            .dispatch
-            .iter()
-            .find(|(n, _)| n == name)
-            .map(|(_, m)| m.clone())
-            .unwrap_or_default();
-        root_methods.push(methods);
-        // `actor_cores` is parallel to `mailbox_root_names` == enqueue_actors order.
-        root_cores.push(wiring.actor_cores.get(i).copied().unwrap_or(0));
-    }
-    wiring.tables.enqueue_handles = enqueue_handles;
-    wiring.tables.enqueue_actors = enqueue_actors;
-    wiring.tables.root_methods = root_methods;
-    wiring.tables.root_cores = root_cores;
-    // M11 H: drivers then actors (same call order as former emit_boot_init).
-    let n_boot_calls = wiring
-        .driver_init_calls
-        .iter()
-        .chain(wiring.init_calls.iter())
-        .filter(|c| c.is_some())
-        .count();
-    if n_boot_calls > crate::rtconfig::BOOT_CALL_POOL_COUNT {
-        return Err(LayoutError::new(format!(
-            "image needs {n_boot_calls} boot init calls; pool is {}",
-            crate::rtconfig::BOOT_CALL_POOL_COUNT
-        )));
-    }
-    wiring.tables.n_boot_calls = n_boot_calls;
-    Ok(())
-}
-
-/// M11 I / decision 823 / M12 item D: stamp IRQ vector bits + contiguous
-/// `WAKE.wake_pending` addresses onto `tables`, and handler/task keys onto
-/// `wiring` for inject.
-fn fill_checkpoint_irq_facts(
-    wiring: &mut RuntimeWiring,
-    boot: &BootCtx,
-) -> Result<(), LayoutError> {
-    // Place once for driver_state addresses (wake region still empty).
-    let rtdata = place_runtime_tables(wrela_machine::layout::RTDATA_BASE, &wiring.tables);
-    let (irq, wake) = checkpoint_irq_shape(Some(boot), Some(&rtdata), Some(&wiring.tables));
-    if irq.len() > crate::rtconfig::IRQ_CALL_POOL_COUNT {
-        return Err(LayoutError::new(format!(
-            "image needs {} IRQ stubs; pool is {}",
-            irq.len(),
-            crate::rtconfig::IRQ_CALL_POOL_COUNT
-        )));
-    }
-    if wake.len() > crate::rtconfig::WAKE_CALL_POOL_COUNT {
-        return Err(LayoutError::new(format!(
-            "image needs {} wake stubs; pool is {}",
-            wake.len(),
-            crate::rtconfig::WAKE_CALL_POOL_COUNT
-        )));
-    }
-    // Reserve the contiguous WAKE array after rings, then re-place so
-    // `wake_base` sits past the ring reservation.
-    wiring.tables.total_bytes += (wake.len() as u64) * 8;
-    wiring.tables.wake_pending_addrs = vec![0; wake.len()];
-    let rtdata = place_runtime_tables(wrela_machine::layout::RTDATA_BASE, &wiring.tables);
-    wiring.tables.irq_vector_bits = irq.iter().map(|e| e.vector).collect();
-    wiring.tables.wake_pending_addrs = (0..wake.len())
-        .map(|i| rtdata.wake_base + (i as u64) * 8)
-        .collect();
-    // First drain index per driver (shared-bit / Reloc::WakePending target).
-    for d in &mut wiring.tables.drivers {
-        d.wake_drain_index = None;
-    }
-    for e in &wake {
-        // Match by placed driver_state address.
-        if let Some(di) = rtdata
-            .drivers
-            .iter()
-            .position(|&addr| addr == e.driver_state)
-        {
-            let d = &mut wiring.tables.drivers[di];
-            if d.wake_drain_index.is_none() {
-                d.wake_drain_index = Some(e.wake_drain_index);
-            }
-        }
-    }
-    wiring.irq_calls = irq
-        .into_iter()
-        .map(|e| (e.handler_key, e.driver_state))
-        .collect();
-    wiring.wake_calls = wake
-        .into_iter()
-        .map(|e| (e.task_key, e.driver_state))
-        .collect();
-    Ok(())
-}
-
-pub struct BootCtx<'a> {
-    pub graph: &'a ImageGraph,
-    pub modules: &'a BTreeMap<String, Module>,
-    /// Typed programs for the same closure — needed so
-    /// `closure_layout_types` can run `complete_layouts` (plans/M10.md
-    /// item E1 / A2b carry): a `@layout(runtime)` array length that is a
-    /// `const` name has no size until after const evaluation, and that
-    /// evaluation's results live here.
-    pub programs: &'a BTreeMap<String, TypedProgram>,
-    pub layout_ctx: &'a LayoutCtx,
-    /// `codegen::async_frame_sizes`' result for this same build — every
-    /// async fn's own persistent frame bytes, the park-and-resume
-    /// redesign's sizing input (`compute_runtime_tables`'s own doc).
-    pub async_frames: &'a BTreeMap<String, u64>,
-    /// `codegen::compute_group_child_indices`' result for this same build
-    /// (plans/M6.md item F / M10 E4): every `g.start`-able callee's own
-    /// fixed child-slot ordinal — consumed by `__wrela_child_poll` /
-    /// rtconfig child ladders (M11 F). Empty for a build with no
-    /// `with group(...)` sites at all.
-    pub group_child_index: &'a BTreeMap<String, usize>,
-}
-
 #[cfg(test)]
 mod tests {
+    use super::boot_init::{
+        ActorInit, HandleSpace, actor_inits, boot_init_arg_word, image_decl_handle_word,
+    };
     use super::*;
     use crate::codegen::CodegenFn;
 
@@ -6991,10 +3899,10 @@ pub fn t():
             fns,
             rodata: codegen.rodata.clone(),
         };
-        let runtime_tests = vec!["t".to_string()];
-        let async_tests = BTreeSet::new();
-        let test_args = BTreeMap::new();
-        let laid = layout_test_image(&codegen, &runtime_tests, &async_tests, None, &test_args)
+        // Wave 1+: test-image layout seeds `__wrela_rt_primary_entry` via
+        // `lower_and_codegen_image`. This unit only needs the probe to
+        // resolve through ordinary `layout_program` (no boot wiring).
+        let laid = layout_program(&codegen, None)
             .expect("layout must resolve bl_call_key to force-rooted probe");
         assert!(!laid.sections.is_empty());
     }

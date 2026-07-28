@@ -1547,12 +1547,12 @@ fn check_one_instantiation_inner(
     match entry.kind {
         InstKind::Fn => {
             let fi = instantiate_fn(mctx, &entry.name, &entry.args, call_span)?;
-            let tf = bodies::check_top_fn(&fi.ast, &fi.decl, mctx)?
+            let mut tf = bodies::check_top_fn(&fi.ast, &fi.decl, mctx)?
                 .expect("an instantiated fn is always concrete, never itself generic");
             let empty_effects = access::EffectMap::new();
-            access::check_top_fn(&fi.ast, &fi.decl, mctx, &empty_effects)?;
-            flow::check_top_fn(&fi.ast, &fi.decl, mctx, &empty_effects)?;
-            matches::check_top_fn(&fi.ast, &fi.decl, mctx)?;
+            access::check_typed_fn(&mut tf, mctx, &empty_effects)?;
+            flow::check_typed_fn(&tf, mctx, &empty_effects)?;
+            matches::check_fn(&tf, mctx)?;
             Ok(TypedInstantiation::Fn(tf))
         }
         InstKind::Method => {
@@ -1563,11 +1563,11 @@ fn check_one_instantiation_inner(
             let (ast, decl) =
                 instantiate_method(mctx, receiver, &entry.name, &entry.args, call_span)?;
             let mini = method_instantiation_struct_info(mctx, receiver, &ast, &decl, call_span)?;
-            let ts = bodies::check_struct_members(&mini, receiver.clone(), mctx)?;
+            let mut ts = bodies::check_struct_members(&mini, receiver.clone(), mctx)?;
             let effects = access::infer_effects_over(mctx);
-            access::check_struct_members(&mini, receiver.clone(), mctx, &effects)?;
-            flow::check_struct_members(&mini, receiver.clone(), mctx, &effects)?;
-            matches::check_struct_members(&mini, receiver.clone(), mctx)?;
+            access::check_typed_struct(&mut ts, mctx, &effects)?;
+            flow::check_typed_struct(&ts, mctx, &effects)?;
+            matches::check_struct(&ts, mctx)?;
             let tf = ts
                 .methods
                 .get(&entry.name)
@@ -1579,11 +1579,11 @@ fn check_one_instantiation_inner(
         InstKind::Struct => {
             let si = instantiate_struct(mctx, &entry.name, &entry.args, call_span)?;
             let self_ty = Type::Named(entry.name.clone(), entry.args.clone());
-            let ts = bodies::check_struct_members(&si, self_ty.clone(), mctx)?;
+            let mut ts = bodies::check_struct_members(&si, self_ty.clone(), mctx)?;
             let effects = access::infer_effects_over(mctx);
-            access::check_struct_members(&si, self_ty.clone(), mctx, &effects)?;
-            flow::check_struct_members(&si, self_ty.clone(), mctx, &effects)?;
-            matches::check_struct_members(&si, self_ty, mctx)?;
+            access::check_typed_struct(&mut ts, mctx, &effects)?;
+            flow::check_typed_struct(&ts, mctx, &effects)?;
+            matches::check_struct(&ts, mctx)?;
             Ok(TypedInstantiation::Struct(ts))
         }
         InstKind::Enum => {

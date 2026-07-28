@@ -25,9 +25,9 @@ use crate::eval::value::{self, Env, Value};
 use crate::sema::bodies::{self, InstKind};
 use crate::sema::generics;
 use crate::sema::typed::{
-    CalleeKey, TypedClosureBody, TypedDeferBody, TypedEnum, TypedExpr, TypedExprKind, TypedFn,
-    TypedForIter, TypedInstantiation, TypedPattern, TypedPatternKind, TypedProgram, TypedStmt,
-    TypedStmtKind, TypedStruct,
+    CalleeKey, TypedCallArg, TypedClosureBody, TypedDeferBody, TypedEnum, TypedExpr, TypedExprKind,
+    TypedFn, TypedForIter, TypedInstantiation, TypedPattern, TypedPatternKind, TypedProgram,
+    TypedStmt, TypedStmtKind, TypedStruct,
 };
 use crate::sema::types::{Type, TypeArg};
 use crate::syntax::ast::{AccessMode, BinOp};
@@ -1181,7 +1181,7 @@ fn match_pattern(
 /// same way here).
 fn bind_params<'a, 'p>(
     f: &'p TypedFn,
-    args: &'a [Option<TypedExpr>],
+    args: &'a [TypedCallArg],
     caller_env: &mut Env,
     caller_dstack: &mut Vec<&'a TypedDeferBody>,
     caller_loop_marker: usize,
@@ -1189,7 +1189,7 @@ fn bind_params<'a, 'p>(
     ctx: &mut Interp<'p>,
 ) -> R<()> {
     for (param, slot) in f.params.iter().zip(args.iter()) {
-        let v = match slot {
+        let v = match &slot.value {
             Some(e) => eval_expr(e, caller_env, caller_dstack, caller_loop_marker, ctx)?,
             None => {
                 let default = param
@@ -1278,7 +1278,7 @@ fn run_call<'p>(
 /// silently drop the mutation (plans/M9.md item CC, decision 69).
 fn write_back_mut_params<'a, 'p>(
     f: &TypedFn,
-    args: &'a [Option<TypedExpr>],
+    args: &'a [TypedCallArg],
     mut_params: Vec<(usize, Value)>,
     env: &mut Env,
     dstack: &mut Vec<&'a TypedDeferBody>,
@@ -1287,7 +1287,7 @@ fn write_back_mut_params<'a, 'p>(
 ) -> R<()> {
     for (i, val) in mut_params {
         let param = &f.params[i];
-        let Some(arg_expr) = args.get(i).and_then(|s| s.as_ref()) else {
+        let Some(arg_expr) = args.get(i).and_then(|s| s.value.as_ref()) else {
             return Err(ctx.abandon(format!(
                 "writing back `mut` parameter `{}` through a defaulted argument is not supported",
                 param.name
@@ -1337,8 +1337,9 @@ fn run_init<'p>(
     }
     // 05-library.md §7: overwrite the placeholder `map_id = 0` with a
     // fresh non-wrapping instance id. Field 0 is `map_id` by declaration
-    // order in `stdlib/core/slotmap.wr`.
-    if s.name == "SlotMap" || s.name.starts_with("SlotMap[") {
+    // order in `stdlib/core/slotmap.wr`. Same recognition as lower's
+    // `Inst::SlotMapMint` (`mwir::is_slotmap_type_name`).
+    if crate::mwir::is_slotmap_type_name(&s.name) {
         let id = ctx.slotmap_next_id;
         if id == 0 {
             return Err(ctx.abandon(
@@ -1351,9 +1352,9 @@ fn run_init<'p>(
                 fields[0] = Value::U64(id);
             }
             _ => {
-                return Err(ctx.abandon(
-                    "internal error: SlotMap init did not produce a struct value",
-                ));
+                return Err(
+                    ctx.abandon("internal error: SlotMap init did not produce a struct value")
+                );
             }
         }
     }
@@ -1384,7 +1385,7 @@ fn run_init<'p>(
 fn eval_call<'a, 'p>(
     callee: &CalleeKey,
     receiver: &'a Option<Box<TypedExpr>>,
-    args: &'a [Option<TypedExpr>],
+    args: &'a [TypedCallArg],
     env: &mut Env,
     dstack: &mut Vec<&'a TypedDeferBody>,
     loop_marker: usize,
@@ -1642,12 +1643,20 @@ fn eval_expr<'a, 'p>(
                     let mut mut_idxs = Vec::new();
                     for (i, (p, a)) in params.iter().zip(args.iter()).enumerate() {
                         if p.mode == AccessMode::Mut {
-                            let place = place_mut(a, env, dstack, loop_marker, ctx)?;
+                            let e = a.value.as_ref().ok_or_else(|| {
+                                ctx.abandon(
+                                    "internal error: `mut` closure argument missing at call site",
+                                )
+                            })?;
+                            let place = place_mut(e, env, dstack, loop_marker, ctx)?;
                             let taken = std::mem::replace(place, Value::Unit);
                             arg_vals.push(taken);
                             mut_idxs.push(i);
                         } else {
-                            arg_vals.push(eval_expr(a, env, dstack, loop_marker, ctx)?);
+                            let e = a.value.as_ref().ok_or_else(|| {
+                                ctx.abandon("internal error: closure argument missing at call site")
+                            })?;
+                            arg_vals.push(eval_expr(e, env, dstack, loop_marker, ctx)?);
                         }
                     }
                     ctx.enter("<closure>".to_string())?;
@@ -1688,7 +1697,12 @@ fn eval_expr<'a, 'p>(
                     }
                     ctx.leave();
                     for (i, val) in mut_finals {
-                        let place = place_mut(&args[i], env, dstack, loop_marker, ctx)?;
+                        let e = args[i].value.as_ref().ok_or_else(|| {
+                            ctx.abandon(
+                                "internal error: `mut` closure argument missing for write-back",
+                            )
+                        })?;
+                        let place = place_mut(e, env, dstack, loop_marker, ctx)?;
                         *place = val;
                     }
                     Ok(result)
@@ -1706,11 +1720,17 @@ fn eval_expr<'a, 'p>(
                     let mut arg_vals = Vec::with_capacity(args.len());
                     for (p, a) in f.params.iter().zip(args.iter()) {
                         if p.mode == AccessMode::Mut {
-                            let place = place_mut(a, env, dstack, loop_marker, ctx)?;
+                            let e = a.value.as_ref().ok_or_else(|| {
+                                ctx.abandon("internal error: `mut` argument missing at call site")
+                            })?;
+                            let place = place_mut(e, env, dstack, loop_marker, ctx)?;
                             let taken = std::mem::replace(place, Value::Unit);
                             arg_vals.push(taken);
                         } else {
-                            arg_vals.push(eval_expr(a, env, dstack, loop_marker, ctx)?);
+                            let e = a.value.as_ref().ok_or_else(|| {
+                                ctx.abandon("internal error: argument missing at call site")
+                            })?;
+                            arg_vals.push(eval_expr(e, env, dstack, loop_marker, ctx)?);
                         }
                     }
                     let frame = key.spelling();
@@ -1727,7 +1747,10 @@ fn eval_expr<'a, 'p>(
                         ctx,
                     )?;
                     for (i, val) in outcome.mut_params {
-                        let place = place_mut(&args[i], env, dstack, loop_marker, ctx)?;
+                        let e = args[i].value.as_ref().ok_or_else(|| {
+                            ctx.abandon("internal error: `mut` argument missing for write-back")
+                        })?;
+                        let place = place_mut(e, env, dstack, loop_marker, ctx)?;
                         *place = val;
                     }
                     Ok(outcome.result)
@@ -1949,7 +1972,7 @@ fn eval_expr<'a, 'p>(
         } => {
             let idx = variant_index(ctx.program, enum_name, variant, ctx)?;
             let mut vals = Vec::with_capacity(args.len());
-            for a in args {
+            for a in args.iter().filter_map(|a| a.value.as_ref()) {
                 vals.push(eval_expr(a, env, dstack, loop_marker, ctx)?);
             }
             let v = Value::Enum(idx, vals);

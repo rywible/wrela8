@@ -76,7 +76,7 @@ Program
     0073: f900012a  str x10, [x9, #0]
     0074: f94043ea  ldr x10, [sp, #128]
     0075: f900052a  str x10, [x9, #8]
-    0076: 14000033  b #204
+    0076: 1400003b  b #236
     0077: f94037e9  ldr x9, [sp, #104]
     0078: f90047e9  str x9, [sp, #136]
     0079: f94047e9  ldr x9, [sp, #136]
@@ -85,51 +85,59 @@ Program
     0082: f2c0000a  movk x10, #0x0, lsl #32
     0083: f2e0000a  movk x10, #0x0, lsl #48
     0084: eb0a013f  cmp x9, x10
-    0085: 54000263  b.cc #76
-    0086: aa0903e2  mov x2, x9
-    0087: 90000000  adrp x0, rodata+0x0
-    0088: 91000000  add x0, x0, rodata+0x0
-    0089: d28000c1  movz x1, #0x6
-    0090: f2a00001  movk x1, #0x0, lsl #16
-    0091: f2c00001  movk x1, #0x0, lsl #32
-    0092: f2e00001  movk x1, #0x0, lsl #48
-    0093: d2800003  movz x3, #0x0
-    0094: f2a00003  movk x3, #0x0, lsl #16
-    0095: f2c00003  movk x3, #0x0, lsl #32
-    0096: f2e00003  movk x3, #0x0, lsl #48
-    0097: 90000004  adrp x4, rodata+0x6
-    0098: 91000084  add x4, x4, rodata+0x6
-    0099: d2800325  movz x5, #0x19
-    0100: f2a00005  movk x5, #0x0, lsl #16
-    0101: f2c00005  movk x5, #0x0, lsl #32
-    0102: f2e00005  movk x5, #0x0, lsl #48
-    0103: 94000000  bl <__wrela_abort_val>
-    0104: 910023eb  add x11, sp, #8
-    0105: d280010c  movz x12, #0x8
-    0106: f2a0000c  movk x12, #0x0, lsl #16
-    0107: f2c0000c  movk x12, #0x0, lsl #32
-    0108: f2e0000c  movk x12, #0x0, lsl #48
-    0109: 9b0c7d2d  mul x13, x9, x12
-    0110: 8b0d016b  add x11, x11, x13
-    0111: f940016e  ldr x14, [x11, #0]
-    0112: f9004bee  str x14, [sp, #144]
-    0113: d2800009  movz x9, #0x0
-    0114: f2a00009  movk x9, #0x0, lsl #16
-    0115: f2c00009  movk x9, #0x0, lsl #32
-    0116: f2e00009  movk x9, #0x0, lsl #48
-    0117: f9004fe9  str x9, [sp, #152]
-    0118: f9404be9  ldr x9, [sp, #144]
-    0119: f90053e9  str x9, [sp, #160]
-    0120: f94057e9  ldr x9, [sp, #168]
-    0121: f9404fea  ldr x10, [sp, #152]
-    0122: f900012a  str x10, [x9, #0]
-    0123: f94053ea  ldr x10, [sp, #160]
-    0124: f900052a  str x10, [x9, #8]
-    0125: 14000002  b #8
-    0126: 14000001  b #4
-    0127: f9405bfe  ldr lr, [sp, #176]
-    0128: 910303ff  add sp, sp, #192
-    0129: d65f03c0  ret
+    0085: 54000363  b.cc #108
+    0086: aa0903ea  mov x10, x9
+    0087: d10083ff  sub sp, sp, #32  ; abort_val prefix+suffix Bytes
+    0088: 90000009  adrp x9, rodata+0x0
+    0089: 91000129  add x9, x9, rodata+0x0
+    0090: f90003e9  str x9, [sp]  ; prefix.base
+    0091: d28000c9  movz x9, #0x6
+    0092: f2a00009  movk x9, #0x0, lsl #16
+    0093: f2c00009  movk x9, #0x0, lsl #32
+    0094: f2e00009  movk x9, #0x0, lsl #48
+    0095: f90007e9  str x9, [sp, #8]  ; prefix.len
+    0096: 90000009  adrp x9, rodata+0x6
+    0097: 91000129  add x9, x9, rodata+0x6
+    0098: f9000be9  str x9, [sp, #16]  ; suffix.base
+    0099: d2800329  movz x9, #0x19
+    0100: f2a00009  movk x9, #0x0, lsl #16
+    0101: f2c00009  movk x9, #0x0, lsl #32
+    0102: f2e00009  movk x9, #0x0, lsl #48
+    0103: f9000fe9  str x9, [sp, #24]  ; suffix.len
+    0104: 910003e0  add x0, sp, #0  ; *prefix
+    0105: aa0a03e1  mov x1, x10
+    0106: d2800002  movz x2, #0x0
+    0107: f2a00002  movk x2, #0x0, lsl #16
+    0108: f2c00002  movk x2, #0x0, lsl #32
+    0109: f2e00002  movk x2, #0x0, lsl #48
+    0110: 910043e3  add x3, sp, #16  ; *suffix
+    0111: 94000000  bl <__wrela_abort_val>
+    0112: 910023eb  add x11, sp, #8
+    0113: d280010c  movz x12, #0x8
+    0114: f2a0000c  movk x12, #0x0, lsl #16
+    0115: f2c0000c  movk x12, #0x0, lsl #32
+    0116: f2e0000c  movk x12, #0x0, lsl #48
+    0117: 9b0c7d2d  mul x13, x9, x12
+    0118: 8b0d016b  add x11, x11, x13
+    0119: f940016e  ldr x14, [x11, #0]
+    0120: f9004bee  str x14, [sp, #144]
+    0121: d2800009  movz x9, #0x0
+    0122: f2a00009  movk x9, #0x0, lsl #16
+    0123: f2c00009  movk x9, #0x0, lsl #32
+    0124: f2e00009  movk x9, #0x0, lsl #48
+    0125: f9004fe9  str x9, [sp, #152]
+    0126: f9404be9  ldr x9, [sp, #144]
+    0127: f90053e9  str x9, [sp, #160]
+    0128: f94057e9  ldr x9, [sp, #168]
+    0129: f9404fea  ldr x10, [sp, #152]
+    0130: f900012a  str x10, [x9, #0]
+    0131: f94053ea  ldr x10, [sp, #160]
+    0132: f900052a  str x10, [x9, #8]
+    0133: 14000002  b #8
+    0134: 14000001  b #4
+    0135: f9405bfe  ldr lr, [sp, #176]
+    0136: 910303ff  add sp, sp, #192
+    0137: d65f03c0  ret
   Rodata
     0: offset=0x0 index 
     1: offset=0x6  out of bounds (length 4)

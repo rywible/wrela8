@@ -697,31 +697,20 @@ impl<'a> Resolver<'a> {
 // (02 §2). `Admission` is also auto-visible via `stdlib_enums`; listing
 // `CallError` here (and in `is_builtin_type_name`) is what makes the
 // annotation resolve at the symbols pass.
-const FIXED_PRELUDE: &[&str] = &[
-    "Option",
-    "Some",
-    "None",
-    "Result",
-    "Ok",
-    "Err",
-    "panic",
-    "CallError",
-    "Admission",
-];
-
 /// Does `name` resolve with no import and no local binding?
 ///
 /// Distributed across the homes that already own each surface
-/// (plans/M9.md item I) — not a renamed `prelude.rs`:
-/// - [`FIXED_PRELUDE`] — 02 §2
+/// (plans/M9.md item I) — see [`super::prelude_scope`] for the one
+/// documented table:
+/// - [`super::prelude_scope::FIXED_PRELUDE`] — 02 §2
 /// - [`super::types::is_builtin_type_name`] — compiler type names
 /// - [`super::intrinsics::is_bare_resolvable`] — bare intrinsic / `with` names
-/// - [`super::stdlib_enums::is_auto_visible`] — five stdlib enums
-/// - [`crate::loader::TIME_PRELUDE_NAMES`] — time constructors (decision 470)
+/// - [`super::prelude_scope::STDLIB_AUTO_VISIBLE`] — AUTO_VISIBLE stdlib enums
+/// - [`super::prelude_scope::TIME_PRELUDE_NAMES`] — time constructors (decision 470)
 pub fn is_resolvable_without_import(name: &str) -> bool {
-    FIXED_PRELUDE.contains(&name)
+    super::prelude_scope::is_fixed_prelude_name(name)
         || super::types::is_builtin_type_name(name)
         || super::intrinsics::is_bare_resolvable(name)
-        || super::stdlib_enums::is_auto_visible(name)
-        || crate::loader::TIME_PRELUDE_NAMES.contains(&name)
+        || super::prelude_scope::STDLIB_AUTO_VISIBLE.contains(&name)
+        || super::prelude_scope::TIME_PRELUDE_NAMES.contains(&name)
 }

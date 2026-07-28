@@ -176,13 +176,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::eval::value::{self, Value};
+use crate::lower_queue::{self, QueueSink};
+use crate::lower_shared;
 use crate::mwir::{self, Inst, MwirFn, MwirProgram, Temp};
 use crate::sema::bodies::{self, InstKind};
 use crate::sema::generics;
 use crate::sema::typed::{
-    CalleeKey, TestKind, TypedDeferBody, TypedEnum, TypedExpr, TypedExprKind, TypedFn,
-    TypedForIter, TypedInstantiation, TypedPattern, TypedPatternKind, TypedProgram, TypedStmt,
-    TypedStmtKind, TypedStruct,
+    CalleeKey, TestKind, TypedCallArg, TypedDeferBody, TypedEnum, TypedExpr, TypedExprKind,
+    TypedFn, TypedForIter, TypedInstantiation, TypedPattern, TypedPatternKind, TypedProgram,
+    TypedStmt, TypedStmtKind, TypedStruct,
 };
 use crate::sema::types::{Type, TypeArg};
 use crate::syntax::ast::{self, AccessMode, BinOp};
@@ -315,11 +317,170 @@ pub const RUNTIME_FORCE_ROOT_KEYS: &[&str] = &[
     // M10 C: abort print bodies (Reloc::AbortFixed / AbortVal targets).
     "__wrela_abort",
     "__wrela_abort_val",
-    // M11 E: `__wrela_deadline_poll` / `__wrela_deadline_scan` are NOT
-    // always force-rooted — reinject_runtime_with_rtconfig inserts them
-    // only when a group arena exists (avoids blowing code-size budgets
-    // on every runtime-bearing image).
 ];
+
+/// Scheduler / mailbox / ring helpers force-rooted when live wiring is
+/// present (or a test image needs the same surface). Not in
+/// [`RUNTIME_FORCE_ROOT_KEYS`] — always-rooting blows code-size budgets
+/// on every runtime-bearing image (M11 E).
+pub const RUNTIME_WIRING_FORCE_ROOT_KEYS: &[&str] = &[
+    "__wrela_deadline_poll",
+    "__wrela_deadline_scan",
+    "__wrela_rt_run_one",
+    "__wrela_child_poll",
+    "__wrela_select_count",
+    "__wrela_try_select",
+    "__wrela_select_root",
+    "__wrela_rt_select",
+    "__wrela_try_drain",
+    "__wrela_rt_drain",
+    "__wrela_rt_xsend",
+    "__wrela_rt_xreply",
+    "__wrela_resume_child",
+    "__wrela_child_turn_index",
+    "__wrela_child_slot",
+    "__wrela_child_store_result",
+    "__wrela_try_enqueue",
+    "__wrela_enqueue_root",
+    "__wrela_rt_enqueue",
+    "__wrela_call_method",
+    "__wrela_deliver_reply",
+    "__wrela_invoke_xreply",
+    "__wrela_mb_capacity",
+    "__wrela_mb_slot_words",
+    "__wrela_mb_turn_index",
+    "__wrela_mb_core",
+    "__wrela_mb_state",
+    "__wrela_mb_has_lineage",
+    "__wrela_mb_method_count",
+    "__wrela_mb_get_head",
+    "__wrela_mb_set_head",
+    "__wrela_mb_get_tail",
+    "__wrela_mb_set_tail",
+    "__wrela_mb_get_count",
+    "__wrela_mb_set_count",
+    "__wrela_mb_load_word",
+    "__wrela_mb_store_word",
+    "__wrela_method_suspends",
+    "__wrela_method_is_aggregate",
+    "__wrela_ring_capacity",
+    "__wrela_ring_slot_words",
+    "__wrela_ring_dst_core",
+    "__wrela_ring_src_core",
+    "__wrela_ring_target_handle",
+    "__wrela_drain_reply_count",
+    "__wrela_drain_reply_edge",
+    "__wrela_drain_request_count",
+    "__wrela_drain_request_edge",
+    "__wrela_xsend_edge",
+    "__wrela_xreply_edge",
+    "__wrela_rt_boot_init",
+    "__wrela_rt_secondary_entry",
+    "__wrela_secondary_entry_1",
+    "__wrela_secondary_entry_2",
+    "__wrela_init_nwords",
+    "__wrela_init_store_word",
+    "__wrela_boot_call",
+    "__wrela_vector0",
+    "__wrela_rt_checkpoint",
+    "__wrela_irq_mask",
+    "__wrela_irq_invoke",
+    "__wrela_wake_invoke",
+];
+
+/// Test-runner helpers force-rooted for `@test(runtime)` images (M11 K).
+pub const RUNTIME_TEST_FORCE_ROOT_KEYS: &[&str] = &[
+    "__wrela_rt_primary_boot",
+    "__wrela_rt_primary_entry",
+    "__wrela_rt_summary_and_halt",
+    "__wrela_append_ok_literal",
+    "__wrela_append_passed_comma_literal",
+    "__wrela_append_failed_tail_literal",
+    "__wrela_append_deadlock_literal",
+    "__wrela_abort_deadlock",
+    "__wrela_test_call",
+    "__wrela_test_append_prefix",
+    "__wrela_test_suspends",
+    "__wrela_test_turn_index",
+];
+
+/// Optional seeds for the single image lower (wiring / test-runner).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ImageForceRootOpts {
+    /// Actor/driver wiring present — seed scheduler + live stub pools.
+    pub with_wiring: bool,
+    /// `@test(runtime)` image — seed test-runner keys (implies scheduler).
+    pub with_test_runner: bool,
+    pub n_tests: usize,
+    pub n_boot_calls: usize,
+    pub n_irq_calls: usize,
+    pub n_wake_calls: usize,
+}
+
+/// Extend `only` with wiring-conditional / test-runner force-root seeds
+/// and generated stub prefixes present in `programs` (single CodegenProgram
+/// path — replaces the deleted `codegen_runtime_force_roots_with` seed set).
+pub fn seed_image_force_roots(
+    only: &mut BTreeSet<String>,
+    programs: &BTreeMap<String, TypedProgram>,
+    opts: ImageForceRootOpts,
+) {
+    let need_scheduler = opts.with_wiring || opts.with_test_runner;
+    if need_scheduler {
+        for key in RUNTIME_WIRING_FORCE_ROOT_KEYS {
+            only.insert((*key).to_string());
+        }
+        for i in 0..crate::rtconfig::RING_POOL_COUNT {
+            only.insert(format!("__wrela_xsend_{i}"));
+            only.insert(format!("__wrela_xreply_{i}"));
+        }
+        for i in 0..crate::rtconfig::ENQUEUE_STUB_COUNT {
+            only.insert(format!("__enqueue_{i}"));
+        }
+    }
+    if opts.with_wiring {
+        for i in 0..opts.n_boot_calls {
+            only.insert(format!("__boot_call_{i}"));
+        }
+        for i in 0..opts.n_irq_calls {
+            only.insert(format!("__irq_call_{i}"));
+        }
+        for i in 0..opts.n_wake_calls {
+            only.insert(format!("__wake_call_{i}"));
+        }
+    }
+    if opts.with_test_runner {
+        for key in RUNTIME_TEST_FORCE_ROOT_KEYS {
+            only.insert((*key).to_string());
+        }
+        for i in 0..opts.n_tests {
+            only.insert(format!("__test_call_{i}"));
+            only.insert(format!("__test_prefix_{i}"));
+        }
+    }
+    if !need_scheduler {
+        return;
+    }
+    // Live ladders / trampolines from the generated module + runtime.wr.
+    for typed in programs.values() {
+        for name in typed.fns.keys().chain(typed.imported.fns.keys()) {
+            if name.starts_with("__resume_")
+                || name.starts_with("__method_")
+                || name.starts_with("__enqueue_")
+                || name.starts_with("__wrela_xsend_")
+                || name.starts_with("__wrela_xreply_")
+                || name.starts_with("__irq_call_")
+                || name.starts_with("__wake_call_")
+                || name.starts_with("__boot_call_")
+                || name.starts_with("__select_")
+                || (opts.with_test_runner
+                    && (name.starts_with("__test_call_") || name.starts_with("__test_prefix_")))
+            {
+                only.insert(name.clone());
+            }
+        }
+    }
+}
 
 fn guest_reachable_keys_over(programs: &[&TypedProgram], opts: &LowerOpts) -> BTreeSet<String> {
     let mut work: BTreeSet<String> = BTreeSet::new();
@@ -709,7 +870,7 @@ fn collect_callees_from_expr(program: &TypedProgram, expr: &TypedExpr, out: &mut
                 collect_callees_from_expr(program, r, out);
             }
             for (i, a) in args.iter().enumerate() {
-                match a {
+                match &a.value {
                     Some(e) => collect_callees_from_expr(program, e, out),
                     None => {
                         // Defaulted arg: walk the callee's stored default.
@@ -724,7 +885,7 @@ fn collect_callees_from_expr(program: &TypedProgram, expr: &TypedExpr, out: &mut
         }
         TypedExprKind::CallValue(f, args) => {
             collect_callees_from_expr(program, f, out);
-            for a in args {
+            for a in args.iter().filter_map(|a| a.value.as_ref()) {
                 collect_callees_from_expr(program, a, out);
             }
         }
@@ -739,9 +900,12 @@ fn collect_callees_from_expr(program: &TypedProgram, expr: &TypedExpr, out: &mut
             collect_callees_from_expr(program, a, out);
             collect_callees_from_expr(program, b, out);
         }
-        TypedExprKind::EnumConstruct { args, .. }
-        | TypedExprKind::Tuple(args)
-        | TypedExprKind::List(args) => {
+        TypedExprKind::EnumConstruct { args, .. } => {
+            for a in args.iter().filter_map(|a| a.value.as_ref()) {
+                collect_callees_from_expr(program, a, out);
+            }
+        }
+        TypedExprKind::Tuple(args) | TypedExprKind::List(args) => {
             for a in args {
                 collect_callees_from_expr(program, a, out);
             }
@@ -870,6 +1034,23 @@ impl<'p, 'l> FnBuilder<'p, 'l> {
     }
 }
 
+struct LowerQueueSink<'a, 'p, 'l>(&'a mut FnBuilder<'p, 'l>);
+
+impl QueueSink for LowerQueueSink<'_, '_, '_> {
+    fn fresh(&mut self, ty: Type) -> Temp {
+        self.0.fresh(ty)
+    }
+    fn emit(&mut self, inst: Inst) -> usize {
+        self.0.emit(inst)
+    }
+    fn here(&mut self) -> usize {
+        self.0.here()
+    }
+    fn patch(&mut self, idx: usize, target: usize) {
+        self.0.patch_jump(idx, target)
+    }
+}
+
 /// One enclosing loop's own backpatch bookkeeping — `defer_marker`
 /// mirrors `interp::exec_for`'s own `loop_marker` (the active-defer-stack
 /// depth at loop entry, module doc's own "Control flow" section).
@@ -950,124 +1131,33 @@ fn mmio_register_offset(
     }
 }
 
-/// Declared offset of `field` in a `@layout(runtime)` type — same table
-/// `check_layouts` produced (plans/M10.md item A2c).
 fn runtime_layout_field_offset(
     layout: &str,
     field: &str,
     prog: &TypedProgram,
 ) -> Result<u64, LowerError> {
-    Ok(runtime_layout_field(layout, field, prog)?.offset)
+    lower_shared::runtime_layout_field_offset(prog, layout, field).map_err(LowerError::internal)
 }
 
-/// Offset and dense byte size of a `@layout(runtime)` field (plans/M10.md
-/// item B1 uses `size` as `len * elem_stride` for array fields).
-fn runtime_layout_field(
-    layout: &str,
-    field: &str,
-    prog: &TypedProgram,
-) -> Result<crate::sema::types::LayoutField, LowerError> {
-    let Some(l) = prog.layouts.iter().find(|l| l.name == layout) else {
-        return Err(LowerError::internal(format!(
-            "placed-static field access through `{layout}`, which has no layout table entry"
-        )));
-    };
-    for e in &l.entries {
-        if let crate::sema::types::LayoutEntry::Field(f) = e {
-            if f.name == field {
-                return Ok(f.clone());
-            }
-        }
-    }
-    Err(LowerError::internal(format!(
-        "`{layout}` declares no field `{field}` (the checker already refused this)"
-    )))
-}
-
-/// `STATIC.array_field[i]` place parts: layout field offset, dense element
-/// stride, and compile-time length (plans/M10.md item B1).
 fn placed_array_field_index(
     array_place: &TypedExpr,
     prog: &TypedProgram,
-) -> Result<Option<(TypedExpr /* static base */, u64, u64, usize)>, LowerError> {
-    let TypedExprKind::Field(static_base, fname) = &array_place.kind else {
-        return Ok(None);
-    };
-    let TypedExprKind::Static(sname) = &static_base.kind else {
-        return Ok(None);
-    };
-    let layout_name = match bodies::unwrap_own(static_base.ty.clone()) {
-        Type::Named(n, _) => n,
-        other => {
-            return Err(LowerError::internal(format!(
-                "placed static `{sname}` has non-named type {other:?}"
-            )));
-        }
-    };
-    let field = runtime_layout_field(&layout_name, fname, prog)?;
-    let len = eval_array_len_with_prog(&array_place.ty, prog)?;
-    if len == 0 {
-        return Err(LowerError::internal(format!(
-            "placed array field `{layout_name}.{fname}` has length 0"
-        )));
-    }
-    if field.size % len as u64 != 0 {
-        return Err(LowerError::internal(format!(
-            "placed array field `{layout_name}.{fname}` size {} is not divisible by len {len}",
-            field.size
-        )));
-    }
-    let elem_stride = field.size / len as u64;
-    Ok(Some((
-        (**static_base).clone(),
-        field.offset,
-        elem_stride,
-        len,
-    )))
+) -> Result<Option<(TypedExpr, u64, u64, usize)>, LowerError> {
+    lower_shared::placed_array_field_index(array_place, prog, |ty| {
+        eval_array_len_with_prog(ty, prog).map_err(|e| e.message)
+    })
+    .map_err(LowerError::internal)
 }
 
-/// `STATIC.struct_array[i].field` — scalar through a placed array of
-/// `@layout(runtime)` structs (plans/M11.md item E / decision 786). Reuses
-/// `PlacedIndexGet`/`Set` with `field_offset + subfield_offset` so the
-/// address is `base + array_off + i*stride + field_off`.
 fn placed_struct_array_scalar_field(
     elem_place: &TypedExpr,
     field_name: &str,
     prog: &TypedProgram,
-) -> Result<
-    Option<(
-        TypedExpr, /* static */
-        TypedExpr, /* index */
-        u64,
-        u64,
-        usize,
-    )>,
-    LowerError,
-> {
-    let TypedExprKind::Index(array_place, idx_expr) = &elem_place.kind else {
-        return Ok(None);
-    };
-    let Some((static_expr, array_off, elem_stride, len)) =
-        placed_array_field_index(array_place, prog)?
-    else {
-        return Ok(None);
-    };
-    let elem_layout = match bodies::unwrap_own(elem_place.ty.clone()) {
-        Type::Named(n, _) => n,
-        other => {
-            return Err(LowerError::internal(format!(
-                "placed struct-array element has non-named type {other:?}"
-            )));
-        }
-    };
-    let sub = runtime_layout_field_offset(&elem_layout, field_name, prog)?;
-    Ok(Some((
-        static_expr,
-        (**idx_expr).clone(),
-        array_off + sub,
-        elem_stride,
-        len,
-    )))
+) -> Result<Option<(TypedExpr, TypedExpr, u64, u64, usize)>, LowerError> {
+    lower_shared::placed_struct_array_scalar_field(elem_place, field_name, prog, |ty| {
+        eval_array_len_with_prog(ty, prog).map_err(|e| e.message)
+    })
+    .map_err(LowerError::internal)
 }
 
 fn placed_static_addr(prog: &TypedProgram, name: &str) -> Result<u64, LowerError> {
@@ -1075,28 +1165,6 @@ fn placed_static_addr(prog: &TypedProgram, name: &str) -> Result<u64, LowerError
         .get(name)
         .map(|s| s.addr)
         .ok_or_else(|| LowerError::internal(format!("placed static `{name}` not in TypedProgram")))
-}
-
-/// Exact `@layout(dma)` byte size of an `own[P] T` payload (or bare `T`).
-/// Used by `prepare_block` for the descriptor length — mwir `size_of` is
-/// the frame ABI (8-byte slots), not the device-visible layout.
-pub(crate) fn layout_dma_size(ty: &Type, prog: &TypedProgram) -> Option<u64> {
-    let name = match ty {
-        Type::Own(_, inner) => match inner.as_ref() {
-            Type::Named(n, args) if args.is_empty() => n.as_str(),
-            _ => return None,
-        },
-        Type::Named(n, args) if args.is_empty() => n.as_str(),
-        _ => return None,
-    };
-    prog.layouts
-        .iter()
-        .find(|l| l.name == name && matches!(l.kind, crate::sema::types::LayoutKind::Dma))
-        // plans/M10.md item A2b: `None` also covers a layout whose sizing is
-        // still deferred, which is the same answer this fn already gives for
-        // "no such `@layout(dma)` type" — every caller treats `None` as "no
-        // exact size here", never as zero.
-        .and_then(|l| l.size)
 }
 
 /// plans/M7.md item H2a: lower `reported.checked_le(bound)` to a compare
@@ -2355,7 +2423,7 @@ fn lower_mut_arg_place<'a>(
 /// `nested_mut_writebacks` (plans/M9.md item MM).
 fn bind_args<'a>(
     f: &TypedFn,
-    args: &'a [Option<TypedExpr>],
+    args: &'a [TypedCallArg],
     self_temp: Option<Temp>,
     b: &mut FnBuilder,
     caller_env: &mut LEnv,
@@ -2367,7 +2435,7 @@ fn bind_args<'a>(
     }
     let mut out = Vec::with_capacity(args.len());
     for (param, slot) in f.params.iter().zip(args.iter()) {
-        let t = match slot {
+        let t = match &slot.value {
             Some(e) if param.mode == AccessMode::Mut => {
                 let (t, wb) = lower_mut_arg_place(e, b, caller_env)?;
                 if let Some(place) = wb {
@@ -2425,7 +2493,7 @@ fn call_write_backs(
 fn lower_call(
     callee: &CalleeKey,
     receiver: &Option<Box<TypedExpr>>,
-    args: &[Option<TypedExpr>],
+    args: &[TypedCallArg],
     result_ty: &Type,
     b: &mut FnBuilder,
     env: &mut LEnv,
@@ -2538,7 +2606,7 @@ fn lower_call(
 fn lower_init_call(
     f: &TypedFn,
     key: &str,
-    args: &[Option<TypedExpr>],
+    args: &[TypedCallArg],
     result_ty: &Type,
     b: &mut FnBuilder,
     env: &mut LEnv,
@@ -2548,7 +2616,7 @@ fn lower_init_call(
         .as_ref()
         .map(|(_, t)| t.clone())
         .ok_or_else(|| LowerError::internal("`init` has no receiver type"))?;
-    let self_temp = b.fresh(self_ty);
+    let self_temp = b.fresh(self_ty.clone());
     let mut nested_mut_writebacks = Vec::new();
     let arg_temps = bind_args(f, args, Some(self_temp), b, env, &mut nested_mut_writebacks)?;
     let write_backs = call_write_backs(f, Some(self_temp), &arg_temps);
@@ -2561,6 +2629,11 @@ fn lower_init_call(
         key: key.to_string(),
         args: call_args,
     });
+    // 05-library.md §7: mint after init write-back — explicit Inst, not a
+    // codegen key.contains("SlotMap") special case.
+    if mwir::is_slotmap_type(&self_ty) {
+        b.emit(Inst::SlotMapMint { map: self_temp });
+    }
     for (place, t) in nested_mut_writebacks {
         lower_place_write(place, t, b, env)?;
     }
@@ -2732,32 +2805,19 @@ fn lower_from_conversion(
     Ok(dst)
 }
 
-/// plans/M13.md item M: when a use site coerced
-/// `Result[QueuePermit, CapacityError]` to `QueuePermit`, the typed
-/// node carries the success type but the temp still holds a Result —
-/// project the Ok payload.
+/// plans/M13.md item M: see `lower_shared::needs_collapse_reserve_permit`.
 fn collapse_reserve_permit_if_needed(
     expr_ty: &Type,
     src: Temp,
     b: &mut FnBuilder<'_, '_>,
 ) -> Result<Temp, LowerError> {
-    let is_permit = matches!(expr_ty, Type::Named(n, t) if n == "QueuePermit" && t.is_empty());
-    if !is_permit {
-        return Ok(src);
-    }
-    let src_ty = &b.temp_types[src.0];
-    let is_reserve_result = match src_ty {
-        Type::Result(ok, err) => {
-            matches!(&**ok, Type::Named(n, t) if n == "QueuePermit" && t.is_empty())
-                && matches!(&**err, Type::Named(n, t) if n == "CapacityError" && t.is_empty())
-        }
-        _ => false,
-    };
-    if !is_reserve_result {
+    if !lower_shared::needs_collapse_reserve_permit(expr_ty, &b.temp_types[src.0]) {
         return Ok(src);
     }
     let dst = b.fresh(expr_ty.clone());
-    b.emit(Inst::EnumPayload { dst, src, index: 0 });
+    lower_shared::emit_collapse_reserve_permit(dst, src, |inst| {
+        b.emit(inst);
+    });
     Ok(dst)
 }
 
@@ -3223,7 +3283,7 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
         } => {
             let idx = variant_index(b.prog(), enum_name, variant)?;
             let mut arg_temps = Vec::with_capacity(args.len());
-            for a in args {
+            for a in args.iter().filter_map(|a| a.value.as_ref()) {
                 arg_temps.push(lower_expr(a, b, env)?);
             }
             let dst = b.fresh(expr.ty.clone());
@@ -3469,7 +3529,16 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
                         }
                     };
                     let dst = b.fresh(expr.ty.clone());
-                    b.emit(Inst::DeviceReset { dst, device, queue });
+                    let depth = lower_queue::virtqueue_depth_of(&b.temp_types[queue.0])
+                        .map_err(LowerError::internal)?;
+                    lower_queue::expand_device_reset(
+                        dst,
+                        device,
+                        queue,
+                        depth,
+                        &mut LowerQueueSink(b),
+                    )
+                    .map_err(LowerError::internal)?;
                     Ok(dst)
                 }
                 other => Err(LowerError::internal(format!(
@@ -3610,44 +3679,21 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
                     // plans/M7.md item E4 / decision 20: package header/
                     // status into the control pool and record the payload
                     // address. Payload length is the `@layout(dma)` size.
-                    let permit = args.iter().find(|(l, _)| l == "permit").ok_or_else(|| {
-                        LowerError::internal(
-                            "`prepare_block` reached lowering without `permit=`".to_string(),
-                        )
-                    })?;
-                    let header = args.iter().find(|(l, _)| l == "header").ok_or_else(|| {
-                        LowerError::internal(
-                            "`prepare_block` reached lowering without `header=`".to_string(),
-                        )
-                    })?;
-                    let payload = args.iter().find(|(l, _)| l == "payload").ok_or_else(|| {
-                        LowerError::internal(
-                            "`prepare_block` reached lowering without `payload=`".to_string(),
-                        )
-                    })?;
-                    let status = args.iter().find(|(l, _)| l == "status").ok_or_else(|| {
-                        LowerError::internal(
-                            "`prepare_block` reached lowering without `status=`".to_string(),
-                        )
-                    })?;
-                    let device_writes_arg = args
-                        .iter()
-                        .find(|(l, _)| l == "device_writes_payload")
-                        .ok_or_else(|| {
-                            LowerError::internal(
-                                "`prepare_block` reached lowering without `device_writes_payload=`"
-                                    .to_string(),
-                            )
-                        })?;
-                    let device_writes = match &device_writes_arg.1.kind {
-                        TypedExprKind::Bool(v) => *v,
-                        _ => {
-                            return Err(LowerError::unimplemented(
-                                "`prepare_block`'s `device_writes_payload=` as a non-literal bool \
-                                 (revision 0.1 requires a literal `true`/`false`)",
-                            ));
+                    let parts = lower_shared::unpack_prepare_block_args(args).map_err(|e| {
+                        match e {
+                            lower_shared::PrepareBlockUnpackError::Missing(label) => {
+                                LowerError::internal(format!(
+                                    "`prepare_block` reached lowering without `{label}`"
+                                ))
+                            }
+                            lower_shared::PrepareBlockUnpackError::NonLiteralDeviceWrites => {
+                                LowerError::unimplemented(
+                                    "`prepare_block`'s `device_writes_payload=` as a non-literal bool \
+                                     (revision 0.1 requires a literal `true`/`false`)",
+                                )
+                            }
                         }
-                    };
+                    })?;
                     let queue = match receiver {
                         Some(q) => lower_expr(q, b, env)?,
                         None => {
@@ -3657,35 +3703,46 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
                             ));
                         }
                     };
-                    let permit_t = lower_expr(&permit.1, b, env)?;
-                    let header_t = lower_expr(&header.1, b, env)?;
-                    let payload_t = lower_expr(&payload.1, b, env)?;
-                    let status_t = lower_expr(&status.1, b, env)?;
+                    let permit_t = lower_expr(parts.permit, b, env)?;
+                    let header_t = lower_expr(parts.header, b, env)?;
+                    let payload_t = lower_expr(parts.payload, b, env)?;
+                    let status_t = lower_expr(parts.status, b, env)?;
                     let payload_len =
-                        layout_dma_size(&payload.1.ty, b.prog()).ok_or_else(|| {
-                            LowerError::internal(
-                            "`prepare_block`'s payload type has no `@layout(dma)` size in this \
-                             program"
-                                .to_string(),
-                        )
-                        })?;
-                    if payload_len == 0 || payload_len % 512 != 0 {
-                        return Err(LowerError::unimplemented(&format!(
-                            "`prepare_block` with payload layout size {payload_len}: the virtio-blk \
-                             model requires a positive multiple of 512 (SECTOR_SIZE)"
-                        )));
-                    }
+                        lower_shared::prepare_block_payload_len(&parts.payload.ty, b.prog())
+                            .map_err(|e| {
+                                match e {
+                                lower_shared::PreparePayloadLenError::NoDmaSize => {
+                                    LowerError::internal(
+                                        "`prepare_block`'s payload type has no `@layout(dma)` size \
+                                         in this program"
+                                            .to_string(),
+                                    )
+                                }
+                                lower_shared::PreparePayloadLenError::BadSectorMultiple(n) => {
+                                    LowerError::unimplemented(&format!(
+                                        "`prepare_block` with payload layout size {n}: the \
+                                         virtio-blk model requires a positive multiple of 512 \
+                                         (SECTOR_SIZE)"
+                                    ))
+                                }
+                            }
+                            })?;
                     let dst = b.fresh(expr.ty.clone());
-                    b.emit(Inst::QueuePrepare {
+                    let _ = permit_t; // proof-only at runtime (decision 20)
+                    let depth = lower_queue::virtqueue_depth_of(&b.temp_types[queue.0])
+                        .map_err(LowerError::internal)?;
+                    lower_queue::expand_prepare(
                         dst,
                         queue,
-                        permit: permit_t,
-                        header: header_t,
-                        payload: payload_t,
-                        status: status_t,
-                        device_writes,
-                        payload_len: payload_len as u32,
-                    });
+                        header_t,
+                        payload_t,
+                        status_t,
+                        parts.device_writes,
+                        payload_len as u32,
+                        depth,
+                        &mut LowerQueueSink(b),
+                    )
+                    .map_err(LowerError::internal)?;
                     Ok(dst)
                 }
                 "VirtQueue.reserve" => {
@@ -3739,12 +3796,16 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
                     };
                     let operation = lower_expr(&op.1, b, env)?;
                     let dst = b.fresh(expr.ty.clone());
-                    b.emit(Inst::QueuePublish {
+                    let depth = lower_queue::virtqueue_depth_of(&b.temp_types[queue.0])
+                        .map_err(LowerError::internal)?;
+                    lower_queue::expand_publish(
                         dst,
                         queue,
                         operation,
-                        steps: crate::virtqueue::PUBLISH_WRITE_ORDER,
-                    });
+                        depth,
+                        &mut LowerQueueSink(b),
+                    )
+                    .map_err(LowerError::internal)?;
                     Ok(dst)
                 }
                 "VirtQueue.reject" => {
@@ -3794,10 +3855,10 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
                         }
                     };
                     let _ = args;
-                    b.emit(Inst::QueueDrain {
-                        queue,
-                        max: max_val,
-                    });
+                    let depth = lower_queue::virtqueue_depth_of(&b.temp_types[queue.0])
+                        .map_err(LowerError::internal)?;
+                    lower_queue::expand_drain(queue, max_val, depth, &mut LowerQueueSink(b))
+                        .map_err(LowerError::internal)?;
                     let dst = b.fresh(Type::Unit);
                     b.emit(Inst::ConstUnit { dst });
                     Ok(dst)
@@ -3812,7 +3873,10 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
                             ));
                         }
                     };
-                    b.emit(Inst::QueueSuppressInterrupts { queue });
+                    let depth = lower_queue::virtqueue_depth_of(&b.temp_types[queue.0])
+                        .map_err(LowerError::internal)?;
+                    lower_queue::expand_suppress(queue, depth, &mut LowerQueueSink(b))
+                        .map_err(LowerError::internal)?;
                     let dst = b.fresh(Type::Unit);
                     b.emit(Inst::ConstUnit { dst });
                     Ok(dst)
@@ -3834,11 +3898,8 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
                     };
                     let receipt = lower_expr(&receipt_arg.1, b, env)?;
                     let dst = b.fresh(expr.ty.clone());
-                    b.emit(Inst::QueueClaim {
-                        dst,
-                        queue,
-                        receipt,
-                    });
+                    lower_queue::expand_claim(dst, queue, receipt, &mut LowerQueueSink(b))
+                        .map_err(LowerError::internal)?;
                     Ok(dst)
                 }
                 "VirtQueue.recover" => {
@@ -3858,11 +3919,10 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
                     };
                     let receipt = lower_expr(&receipt_arg.1, b, env)?;
                     let dst = b.fresh(expr.ty.clone());
-                    b.emit(Inst::QueueRecover {
-                        dst,
-                        queue,
-                        receipt,
-                    });
+                    let depth = lower_queue::virtqueue_depth_of(&b.temp_types[queue.0])
+                        .map_err(LowerError::internal)?;
+                    lower_queue::expand_recover(dst, queue, receipt, depth, &mut LowerQueueSink(b))
+                        .map_err(LowerError::internal)?;
                     Ok(dst)
                 }
                 "VirtQueue.reclaim" => {
@@ -3881,7 +3941,10 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
                     };
                     let _ = args;
                     let dst = b.fresh(expr.ty.clone());
-                    b.emit(Inst::QueueReclaim { dst, queue });
+                    let depth = lower_queue::virtqueue_depth_of(&b.temp_types[queue.0])
+                        .map_err(LowerError::internal)?;
+                    lower_queue::expand_reclaim(dst, queue, depth, &mut LowerQueueSink(b))
+                        .map_err(LowerError::internal)?;
                     Ok(dst)
                 }
                 other => Err(LowerError::internal(format!(
@@ -4890,6 +4953,7 @@ mod builder_tests {
 mod integration_tests {
     use super::*;
     use crate::sema;
+    use crate::syntax::ast::Span;
     use crate::syntax::{lexer, parser};
 
     fn typed_program(src: &str) -> TypedProgram {
@@ -5272,6 +5336,7 @@ pub fn check():
             &[(
                 "register".to_string(),
                 TypedExpr {
+                    span: Span::default(),
                     ty: Type::Named(
                         "Static".to_string(),
                         vec![crate::sema::types::TypeArg::Type(Type::Named(

@@ -3,7 +3,7 @@
 //! After the M12 representation rung the image report publishes
 //! `PlacedStatics count=N fixed=<list> spans=<k>`, and `cargo test`
 //! (wired into `xtask check`) asserts the ratchet
-//! `N ≤ FIXED_SET_LEN + spans`.
+//! `N ≤ fixed_set_len() + spans`.
 //!
 //! ## Counting rule (decision 890 / residual of item E)
 //!
@@ -21,7 +21,7 @@
 //! - **N** — `|fixed ∩ present| +` live `INIT_SPAN{0..spans-1}` `+`
 //!   any name outside both classes (so a new emitter cannot hide)
 //!
-//! Ratchet: `N ≤ FIXED_SET_LEN + spans`. Equality holds when every fixed
+//! Ratchet: `N ≤ fixed_set_len() + spans`. Equality holds when every fixed
 //! name is present and nothing unexpected appears.
 //!
 //! ## Absent-name lock
@@ -30,33 +30,21 @@
 //! in items C–E. A unit test scans every golden `rtconfig.txt` so they
 //! cannot return silently.
 
+use crate::census;
 use crate::layout::PlacedStatic;
 use crate::rtconfig::{INIT_SPAN_POOL_COUNT, MB_POOL_COUNT};
 
 /// Machine pages + runtime overlays (excluding the MB pool and live
-/// init spans). Order is the report's `fixed=` list order when all are
-/// present — alphabetical, matching `PlacedStatic` emission.
-pub const FIXED_CORE_NAMES: &[&str] = &[
-    "CLOCK",
-    "CONSOLE_DATA",
-    "CONSOLE_RING",
-    "EXIT",
-    "GROUPS",
-    "MACHINE_INFO",
-    "PARK",
-    "PENDING",
-    "RELEASE",
-    "RINGS_CTL",
-    "RINGS_DATA",
-    "RT",
-    "SCHED",
-    "TEST_LINE_BUF",
-    "WAKE",
-];
+/// init spans). From `ledger/census.toml` `[placed_static]`.
+pub fn fixed_core_names() -> &'static [String] {
+    &census::data().placed_static_fixed_core_names
+}
 
-/// `FIXED_CORE_NAMES.len() + MB_POOL_COUNT * 2` — the closed fixed-set
+/// `fixed_core_names().len() + MB_POOL_COUNT * 2` — the closed fixed-set
 /// size the ratchet compares against.
-pub const FIXED_SET_LEN: usize = FIXED_CORE_NAMES.len() + MB_POOL_COUNT * 2;
+pub fn fixed_set_len() -> usize {
+    fixed_core_names().len() + MB_POOL_COUNT * 2
+}
 
 /// One image's census summary (report line + ratchet inputs).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,9 +68,9 @@ impl Census {
         )
     }
 
-    /// `count ≤ FIXED_SET_LEN + spans`.
+    /// `count ≤ fixed_set_len() + spans`.
     pub fn within_ratchet(&self) -> bool {
-        self.count <= FIXED_SET_LEN + self.spans
+        self.count <= fixed_set_len() + self.spans
     }
 }
 
@@ -97,7 +85,7 @@ pub enum Class {
 }
 
 pub fn classify(name: &str) -> Class {
-    if FIXED_CORE_NAMES.iter().any(|&n| n == name) {
+    if fixed_core_names().iter().any(|n| n == name) {
         return Class::Fixed;
     }
     if let Some(rest) = name.strip_prefix("MB") {
@@ -206,11 +194,11 @@ mod tests {
 
     #[test]
     fn fixed_set_len_matches_core_plus_mb_pool() {
-        assert_eq!(FIXED_CORE_NAMES.len(), 15);
+        assert_eq!(fixed_core_names().len(), 15);
         assert_eq!(MB_POOL_COUNT, 32);
-        assert_eq!(FIXED_SET_LEN, 79);
+        assert_eq!(fixed_set_len(), 79);
         // Closed: every core name classifies as Fixed.
-        for &n in FIXED_CORE_NAMES {
+        for n in fixed_core_names() {
             assert_eq!(classify(n), Class::Fixed, "{n}");
         }
         for i in 0..MB_POOL_COUNT {
@@ -229,7 +217,7 @@ mod tests {
     #[test]
     fn census_excludes_init_span_placeholders_from_count() {
         let mut placed = Vec::new();
-        for &n in FIXED_CORE_NAMES {
+        for n in fixed_core_names() {
             placed.push(ps(n));
         }
         for i in 0..MB_POOL_COUNT {
@@ -241,19 +229,18 @@ mod tests {
         }
         let spans = 2;
         let c = summarize(&placed, spans);
-        assert_eq!(c.fixed.len(), FIXED_SET_LEN);
+        assert_eq!(c.fixed.len(), fixed_set_len());
         assert_eq!(c.spans, spans);
         // 79 fixed + 2 live spans; 6 placeholders excluded.
-        assert_eq!(c.count, FIXED_SET_LEN + spans);
+        assert_eq!(c.count, fixed_set_len() + spans);
         assert!(c.within_ratchet());
         assert_eq!(
             c.render_line(),
             format!(
                 "PlacedStatics count={} fixed={} spans={spans}",
-                FIXED_SET_LEN + spans,
+                fixed_set_len() + spans,
                 {
-                    let mut names: Vec<String> =
-                        FIXED_CORE_NAMES.iter().map(|s| (*s).to_string()).collect();
+                    let mut names: Vec<String> = fixed_core_names().iter().cloned().collect();
                     for i in 0..MB_POOL_COUNT {
                         names.push(format!("MB{i}_CTL"));
                         names.push(format!("MB{i}_DATA"));
@@ -267,12 +254,12 @@ mod tests {
 
     #[test]
     fn unexpected_name_on_full_fixed_set_breaks_the_ratchet() {
-        // The numeric ratchet catches growth past FIXED_SET_LEN + spans
+        // The numeric ratchet catches growth past fixed_set_len() + spans
         // (e.g. full fixed set + a resurrected RING0_DATA). A lone
         // unexpected name on a sparse image is caught by the closed-set
         // golden scan instead.
         let mut full = Vec::new();
-        for &n in FIXED_CORE_NAMES {
+        for n in fixed_core_names() {
             full.push(ps(n));
         }
         for i in 0..MB_POOL_COUNT {
@@ -281,7 +268,7 @@ mod tests {
         }
         full.push(ps("RING0_DATA"));
         let c = summarize(&full, 0);
-        assert_eq!(c.count, FIXED_SET_LEN + 1);
+        assert_eq!(c.count, fixed_set_len() + 1);
         assert!(!c.within_ratchet());
     }
 
@@ -394,9 +381,10 @@ mod tests {
                 ));
                 continue;
             };
-            if n > FIXED_SET_LEN + k {
+            let limit = fixed_set_len();
+            if n > limit + k {
                 failures.push(format!(
-                    "{}: census ratchet failed: N={n} > FIXED_SET_LEN ({FIXED_SET_LEN}) + spans ({k})",
+                    "{}: census ratchet failed: N={n} > fixed_set_len ({limit}) + spans ({k})",
                     case.file_name().unwrap().to_string_lossy()
                 ));
             }

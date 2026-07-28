@@ -69,7 +69,12 @@ construct, read, write, or pattern-bind a non-`pub` field.
 
 A fixed prelude is always in scope: `Option`, `Some`, `None`, `Result`, `Ok`,
 `Err`, `panic`, `CallError`, `Admission`. Scalar type names are builtin.
-Everything else is imported.
+Compiler-recognized intrinsic and hardware type names resolve without an
+import. The toolchain may also auto-bind selected `core` names
+(`Duration`/`Instant` and their constructors; the auto-visible stdlib
+enums such as `Target`/`BootError`/`DriverMode`/`CompletionOutcome`/
+`Admission`/`CapacityError`) without a source import; everything else is
+imported.
 
 ### 2.1 The build root
 

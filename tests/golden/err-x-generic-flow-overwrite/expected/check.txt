@@ -1,2 +1,2 @@
-error[move]: `b.item` still holds a live resource; move it or finish it before overwriting at 10:5
+error[move]: `b.item` still holds a live resource; move it or finish it before overwriting at 10:7
   instantiated at tests/golden/err-x-generic-flow-overwrite/input.wr:13

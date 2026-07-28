@@ -26,6 +26,7 @@ use std::time::{Duration, Instant};
 use wrela_compiler::eval;
 use wrela_compiler::layout;
 use wrela_compiler::loader;
+use wrela_compiler::lower;
 use wrela_compiler::placement;
 use wrela_compiler::report;
 use wrela_compiler::rtconfig;
@@ -33,7 +34,6 @@ use wrela_compiler::sema;
 use wrela_compiler::sema::typed::{TestKind, TypedProgram};
 use wrela_compiler::syntax::ast::Module;
 use wrela_compiler::syntax::{lexer, parser, printer};
-use wrela_compiler::{codegen, lower};
 
 const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed|layout-types|flowwir|mwir|asm|image|report|rtconfig> [--timings] <file.wr>\n       wrela test <file.wr> [--vmm <path>]\n       wrela build <file.wr> [--out-dir <dir>]\n       wrela version";
 
@@ -820,11 +820,11 @@ fn build_rtconfig(
     }
 }
 
-/// Single-file / whole-closure / runtime-bearing load for report/build/
-/// image stages (plans/M10.md item A2d): no imports and not runtime-
-/// bearing → one module; no imports but runtime-bearing → root +
-/// `core.runtime`; any import → `load_closure` (which itself ensures
-/// runtime when needed).
+/// Report/build/image load: delegates to [`check_closure`], then adapts
+/// to the `(programs, file_paths, modules)` triple. `file_paths` is the
+/// checked root plus `core.runtime` when present (same as the former
+/// runtime-bearing branch); import-bearing closures also recover every
+/// module's real file from `load_closure` so report digests stay complete.
 fn load_build_closure(
     path: &str,
     module: Module,
@@ -836,81 +836,23 @@ fn load_build_closure(
     ),
     (),
 > {
-    if module.imports.is_empty() && !loader::module_is_runtime_bearing(&module) {
-        match sema::check_typed(&module, path) {
-            Ok(program) => {
-                let addr = module.path.join(".");
-                let mut programs = BTreeMap::new();
-                let mut file_paths = BTreeMap::new();
-                let mut modules_by_addr = BTreeMap::new();
-                file_paths.insert(addr.clone(), Path::new(path).to_path_buf());
-                modules_by_addr.insert(addr.clone(), module);
-                programs.insert(addr, program);
-                Ok((programs, file_paths, modules_by_addr))
-            }
-            Err(e) => {
-                print_sema_error(&e);
-                Err(())
-            }
+    let had_imports = !module.imports.is_empty();
+    let checked = check_closure(path, module)?;
+    let mut file_paths = BTreeMap::new();
+    file_paths.insert(checked.root.clone(), Path::new(path).to_path_buf());
+    if checked.programs.contains_key("core.runtime") {
+        if let Ok((_, runtime_loaded)) = loader::load_runtime_module() {
+            file_paths.insert("core.runtime".to_string(), runtime_loaded.file);
         }
-    } else if module.imports.is_empty() {
-        let checked = load_runtime_bearing_singleton(path, module)?;
-        let mut file_paths = BTreeMap::new();
-        file_paths.insert(checked.root.clone(), Path::new(path).to_path_buf());
-        if checked.programs.contains_key("core.runtime") {
-            if let Ok((_, runtime_loaded)) = loader::load_runtime_module() {
-                file_paths.insert("core.runtime".to_string(), runtime_loaded.file);
-            }
-        }
-        Ok((checked.programs, file_paths, checked.modules))
-    } else {
-        match loader::load_closure(Path::new(path)) {
-            Ok(loaded) => {
-                let paths: BTreeMap<Vec<String>, String> = loaded
-                    .modules
-                    .iter()
-                    .map(|(k, m)| (k.clone(), m.file.display().to_string()))
-                    .collect();
-                let file_paths: BTreeMap<String, PathBuf> = loaded
-                    .modules
-                    .iter()
-                    .map(|(k, m)| (k.join("."), m.file.clone()))
-                    .collect();
-                let modules: BTreeMap<Vec<String>, _> = loaded
-                    .modules
-                    .into_iter()
-                    .map(|(k, m)| (k, m.module))
-                    .collect();
-                let modules_by_addr: BTreeMap<String, Module> = modules
-                    .iter()
-                    .map(|(k, m)| (k.join("."), m.clone()))
-                    .collect();
-                match sema::check_program_typed(&modules, &paths) {
-                    Ok(progs) => {
-                        let programs: BTreeMap<String, TypedProgram> =
-                            progs.into_iter().map(|(k, p)| (k.join("."), p)).collect();
-                        Ok((programs, file_paths, modules_by_addr))
-                    }
-                    Err(e) => {
-                        print_sema_error(&e);
-                        Err(())
-                    }
-                }
-            }
-            Err(loader::LoadError::Lex(e)) => {
-                print_lex_error(&e);
-                Err(())
-            }
-            Err(loader::LoadError::Parse(e)) => {
-                print_parse_error(&e);
-                Err(())
-            }
-            Err(loader::LoadError::Build(e)) => {
-                print_sema_error(&e);
-                Err(())
+    }
+    if had_imports {
+        if let Ok(loaded) = loader::load_closure(Path::new(path)) {
+            for (k, m) in loaded.modules {
+                file_paths.insert(k.join("."), m.file);
             }
         }
     }
+    Ok((checked.programs, file_paths, checked.modules))
 }
 
 fn dump(args: &[String]) -> ExitCode {
@@ -1077,11 +1019,8 @@ fn dump(args: &[String]) -> ExitCode {
                 dump_time = dump_start.elapsed();
             }
         },
-        // plans/M7.md item B: the identical single-file/whole-closure fork
-        // `check` above uses (a module with no imports keeps the exact
-        // single-file path; any import loads the whole closure through the
-        // loader), one step further — every `@layout` type in the build
-        // closure, laid out and printed (`run_layout_types_stage`).
+        // plans/M7.md item B: every `@layout` type in the build closure,
+        // laid out and printed — same `check_closure` fork as typed/mwir.
         "layout-types" => match lex_result {
             Ok(tokens) => {
                 let parse_start = Instant::now();
@@ -1089,44 +1028,18 @@ fn dump(args: &[String]) -> ExitCode {
                 parse_time = parse_start.elapsed();
                 let dump_start = Instant::now();
                 match parsed {
-                    Ok(module) if module.imports.is_empty() => {
-                        match sema::check_typed(&module, &path) {
-                            Ok(program) => {
-                                let key = module.path.join(".");
-                                let programs = BTreeMap::from([(key.clone(), &program)]);
-                                run_layout_types_stage(&[(key, module.clone())], &programs)
-                            }
-                            Err(e) => print_sema_error(&e),
-                        }
-                    }
-                    Ok(_) => match loader::load_closure(Path::new(&path)) {
-                        Ok(program) => {
-                            let paths: BTreeMap<Vec<String>, String> = program
-                                .modules
+                    Ok(module) => match check_closure(&path, module) {
+                        Ok(checked) => {
+                            let programs: BTreeMap<String, &TypedProgram> = checked
+                                .programs
                                 .iter()
-                                .map(|(k, m)| (k.clone(), m.file.display().to_string()))
+                                .map(|(k, p)| (k.clone(), p))
                                 .collect();
-                            let modules: BTreeMap<Vec<String>, _> = program
-                                .modules
-                                .into_iter()
-                                .map(|(k, m)| (k, m.module))
-                                .collect();
-                            match sema::check_program_typed(&modules, &paths) {
-                                Ok(checked) => {
-                                    let programs: BTreeMap<String, &TypedProgram> =
-                                        checked.iter().map(|(k, p)| (k.join("."), p)).collect();
-                                    let ordered: Vec<(String, Module)> = modules
-                                        .into_iter()
-                                        .map(|(k, m)| (k.join("."), m))
-                                        .collect();
-                                    run_layout_types_stage(&ordered, &programs);
-                                }
-                                Err(e) => print_sema_error(&e),
-                            }
+                            let ordered: Vec<(String, Module)> =
+                                checked.modules.into_iter().collect();
+                            run_layout_types_stage(&ordered, &programs);
                         }
-                        Err(loader::LoadError::Lex(e)) => print_lex_error(&e),
-                        Err(loader::LoadError::Parse(e)) => print_parse_error(&e),
-                        Err(loader::LoadError::Build(e)) => print_sema_error(&e),
+                        Err(()) => {}
                     },
                     Err(e) => print_parse_error(&e),
                 }
@@ -1752,71 +1665,13 @@ fn test_cmd(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     }
-    // plans/M7.md item E1: stamp capacity before lower.
-    // plans/M10.md item A2d: whole-closure lower with force-rooted
-    // runtime helpers (same reachable set `try_layout_program` uses).
-    let capacity = eval::image_checks::blk_capacity_sectors(&graph);
-    let reachable =
-        lower::guest_reachable_keys_closure(&checked.programs, &lower::LowerOpts::default());
-    let lower_opts = lower::LowerOpts {
-        emit_comptime_tests: false,
-        only: Some(reachable),
-    };
-    let mut mwir_programs = Vec::with_capacity(checked.programs.len());
-    let mut flow_fns = BTreeMap::new();
-    for typed in checked.programs.values() {
-        let mut stamped = typed.clone();
-        stamped.blk_capacity_sectors = capacity;
-        match lower::lower_program_with(&stamped, &lower_opts) {
-            Ok(p) => mwir_programs.push(p),
-            Err(e) => {
-                for l in &comptime_lines {
-                    println!("{l}");
-                }
-                print_line_diagnostic(&format!(
-                    "error[unimplemented]: the runtime test tier could not lower this program: {}",
-                    e.message
-                ));
-                return ExitCode::FAILURE;
-            }
-        }
-        match wrela_compiler::flowwir_lower::lower_program_with(&stamped, &lower_opts) {
-            Ok(p) => flow_fns.extend(p.fns),
-            Err(e) => {
-                for l in &comptime_lines {
-                    println!("{l}");
-                }
-                print_line_diagnostic(&format!(
-                    "error[unimplemented]: the runtime test tier could not lower this program's \
-                     async fns: {}",
-                    e.message
-                ));
-                return ExitCode::FAILURE;
-            }
-        }
-    }
-    let mwir_program = layout::merge_mwir_programs(mwir_programs);
-    let flow_program = wrela_compiler::flowwir::FlowWirProgram { fns: flow_fns };
-    let program = {
-        let mut p = program;
-        p.blk_capacity_sectors = capacity;
-        p
-    };
-    let method_index = match layout::actor_method_index_tables(&modules, &layout_ctx) {
-        Ok(m) => m,
-        Err(e) => {
-            for l in &comptime_lines {
-                println!("{l}");
-            }
-            print_line_diagnostic(&format!("error[unimplemented]: {}", e.message));
-            return ExitCode::FAILURE;
-        }
-    };
-    // plans/M6.md decision 11b: resolve every runtime test's own
-    // `Actor[T]` params against this image's own declared instances
-    // *before* ever laying out the image — an ambiguity/absence here is
-    // exactly the same `error[build]` category `image_checks::check_sealed`
-    // already uses for graph-shaped mistakes.
+    // One-check → one-lower: swap live rtconfig before the single
+    // CodegenProgram (`layout::lower_and_codegen_image`).
+    let async_tests: std::collections::BTreeSet<String> = runtime_tests
+        .iter()
+        .filter(|name| program.fns.get(*name).is_some_and(|f| f.is_async))
+        .cloned()
+        .collect();
     let test_args = match layout::resolve_runtime_test_args(&program, &runtime_tests, &graph) {
         Ok(a) => a,
         Err(msg) => {
@@ -1827,80 +1682,36 @@ fn test_cmd(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let group_arena_capacity = layout::count_with_group_sites(&modules);
-    let enqueue_specs = match layout::mailbox_enqueue_specs(&graph, &modules, &layout_ctx) {
-        Ok(s) => s,
-        Err(msg) => {
-            for l in &comptime_lines {
-                println!("{l}");
-            }
-            print_line_diagnostic(&format!("error[build]: {msg}"));
-            return ExitCode::FAILURE;
-        }
-    };
-    let codegen_program = match codegen::codegen_program_with_async(
-        &mwir_program,
-        &flow_program,
+    let compiled = match layout::lower_and_codegen_image(
+        &modules,
+        &checked.programs,
         &layout_ctx,
-        &method_index,
-        group_arena_capacity,
-        &enqueue_specs,
+        &graph,
+        &runtime_tests,
+        &async_tests,
     ) {
-        Ok(p) => p,
+        Ok(c) => c,
         Err(e) => {
             for l in &comptime_lines {
                 println!("{l}");
             }
             print_line_diagnostic(&format!(
-                "error[unimplemented]: the runtime test tier could not compile this program: {}",
-                e.message
+                "error[unimplemented]: the runtime test tier could not compile this program: {e}"
             ));
-            return ExitCode::FAILURE;
-        }
-    };
-    // Park-and-resume wiring: each async fn's persistent frame bytes
-    // (sizes every turn area) and which runtime tests are async (the
-    // entry driver's scheduler loop wraps exactly those — a sync test's
-    // return value must never be misread as a TURN_STATUS_* word).
-    let async_frames = match codegen::async_frame_sizes(&flow_program, &layout_ctx) {
-        Ok(m) => m,
-        Err(e) => {
-            for l in &comptime_lines {
-                println!("{l}");
-            }
-            print_line_diagnostic(&format!(
-                "error[unimplemented]: the runtime test tier could not size this program's \
-                 async frames: {}",
-                e.message
-            ));
-            return ExitCode::FAILURE;
-        }
-    };
-    let async_tests: std::collections::BTreeSet<String> = runtime_tests
-        .iter()
-        .filter(|name| program.fns.get(*name).is_some_and(|f| f.is_async))
-        .cloned()
-        .collect();
-    let group_child_index = match codegen::compute_group_child_indices(&flow_program) {
-        Ok((m, _)) => m,
-        Err(e) => {
-            for l in &comptime_lines {
-                println!("{l}");
-            }
-            print_line_diagnostic(&format!("error[unimplemented]: {}", e.message));
             return ExitCode::FAILURE;
         }
     };
     let boot = layout::BootCtx {
         graph: &graph,
-        modules: &modules,
-        programs: &checked.programs,
-        layout_ctx: &layout_ctx,
-        async_frames: &async_frames,
-        group_child_index: &group_child_index,
+        modules: &compiled.modules,
+        programs: &compiled.programs,
+        layout_ctx: &compiled.layout_ctx,
+        async_frames: &compiled.async_frames,
+        group_child_index: &compiled.group_child_index,
+        flow: &compiled.flow,
     };
     let mut image_layout = match layout::layout_test_image(
-        &codegen_program,
+        &compiled.program,
         &runtime_tests,
         &async_tests,
         Some(boot),
@@ -1920,7 +1731,7 @@ fn test_cmd(args: &[String]) -> ExitCode {
     };
     // plans/M7.md item E1: BlkDevice/BlkQueue from configure + pools.
     {
-        if let Err(e) = layout::attach_blk_report(&mut image_layout, &graph, &checked.programs) {
+        if let Err(e) = layout::attach_blk_report(&mut image_layout, &graph, &compiled.programs) {
             for l in &comptime_lines {
                 println!("{l}");
             }
@@ -1956,22 +1767,24 @@ fn test_cmd(args: &[String]) -> ExitCode {
     }
     let source_digest = report::sha256_hex(source.as_bytes());
     let image_digest = report::sha256_hex(&image_layout.blob);
-    let mut report_text = format!(
-        "Machine revision={}\nInput path={path} sha256={source_digest}\nImage sha256={image_digest}\n",
-        wrela_machine::MACHINE_REVISION_STR
-    );
-    for s in &image_layout.sections {
-        report_text.push_str(&format!(
-            "Section name={} base={:#x} size={}\n",
-            s.name, s.base, s.size
-        ));
-    }
-    report_text.push_str(&format!("Entry base={:#x}\n", image_layout.entry));
-    // Every remaining line the VMM's `parse_report` consumes — secondary
-    // core entries (item C1), cross-core rings (item C3), the Blk* device
-    // lines (M7 item E1) and the ISR host injects (M7 item G) — from the
-    // one writer `xtask`'s own hand-built reports share.
-    layout::append_vmm_runtime_lines(&mut report_text, &image_layout);
+    // Structured VMM report → `wrela_machine::report::render` (shared schema
+    // with the VMM parser). Ring lines are still appended separately:
+    // `RequestRing` is lossy vs the live `Ring kind=…` spelling.
+    let mut parsed = layout::parsed_runtime_tail(&image_layout);
+    parsed.entry = image_layout.entry;
+    parsed.image_sha256 = image_digest;
+    parsed.input_digests = vec![(path.clone(), source_digest)];
+    parsed.exec_sections = image_layout
+        .sections
+        .iter()
+        .map(|s| wrela_machine::report::ReportSection {
+            name: s.name.to_string(),
+            base: s.base,
+            size: s.size,
+        })
+        .collect();
+    let mut report_text = wrela_machine::report::render(&parsed);
+    layout::append_ring_vmm_lines(&mut report_text, &image_layout);
     if let Err(e) = std::fs::write(&report_path, &report_text) {
         eprintln!("error: cannot write {}: {e}", report_path.display());
         return ExitCode::FAILURE;

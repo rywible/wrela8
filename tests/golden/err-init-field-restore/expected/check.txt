@@ -1,1 +1,1 @@
-error[init]: `self.packet` must be fully initialized/restored before `self` is used whole or the function returns at 15:5
+error[init]: `self.packet` must be fully initialized/restored before `self` is used whole or the function returns at 16:9

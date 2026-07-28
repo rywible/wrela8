@@ -157,24 +157,19 @@
 //! (`Reloc::AbortFixed`/`Reloc::AbortVal`) exactly like an ordinary
 //! call — never inlined, never returned from.
 //!
-//! - **`__wrela_abort(x0: msg_ptr, x1: msg_len) -> noreturn`** — every
-//!   abort whose *entire* message is fixed at compile time (every
-//!   ordinary/wrapping-overflow, div/rem-by-zero, div `MIN/-1`,
-//!   negation-overflow, `.to[T]()` out-of-range, `<<` lost-bits, and
-//!   `assert`/`panic`/match-fallthrough message). `msg_ptr` is a byte
-//!   offset into the rodata section (an unresolved `ADRP`+`ADD` pair at
-//!   this stage, `Reloc::Rodata`); `msg_len` is the message's own byte
-//!   length, an ordinary immediate (`load_imm`).
-//! - **`__wrela_abort_val(x0: prefix_ptr, x1: prefix_len, x2: value,
-//!   x3: value_signed, x4: suffix_ptr, x5: suffix_len) -> noreturn`** —
-//!   the two messages whose own wording embeds a *runtime* value
-//!   (`eval::value::eval_shift`'s `"shift count {c} is out of range for
-//!   a {bits}-bit type"`, `eval::interp`'s `"index {i} out of bounds
-//!   (length {len})"`). `prefix`/`suffix` are the fixed text either side
-//!   of the interpolated value (`"shift count "` / `" is out of range
-//!   for a {bits}-bit type"` with `bits` already baked in as a compile-
-//!   time constant; `"index "` / `" out of bounds (length {len})"` with
-//!   `len` baked in the same way) — both rodata refs, same as above.
+//! - **`__wrela_abort(x0: *Bytes) -> noreturn`** — every abort whose
+//!   *entire* message is fixed at compile time (every ordinary/wrapping-
+//!   overflow, div/rem-by-zero, div `MIN/-1`, negation-overflow,
+//!   `.to[T]()` out-of-range, `<<` lost-bits, and `assert`/`panic`/
+//!   match-fallthrough message). Callers carve a 16-byte `(base, len)`
+//!   slot on the stack (`base` = rodata `ADRP`+`ADD`, `len` = byte
+//!   length), pass its address in `x0`, and `BL` (noreturn).
+//! - **`__wrela_abort_val(x0: *Bytes prefix, x1: value, x2: value_signed,
+//!   x3: *Bytes suffix) -> noreturn`** — the two messages whose own
+//!   wording embeds a *runtime* value (`eval::value::eval_shift`'s
+//!   `"shift count {c} is out of range for a {bits}-bit type"`,
+//!   `eval::interp`'s `"index {i} out of bounds (length {len})"`).
+//!   `prefix`/`suffix` are stack `Bytes` slots (same shape as abort);
 //!   `value` is the operand's own live register value, already in this
 //!   module's canonical 64-bit sign/zero-extended form (see below);
 //!   `value_signed` (`0`/`1`) tells the runtime whether to render it as
@@ -685,11 +680,9 @@ pub(crate) fn is_aggregate(ty: &Type) -> bool {
         // plans/M7.md item E4 / decision 19: `own[P] T` is one opaque word
         // (a guest pool-slot address), passed by value like a capability.
         Type::Own(..) => false,
-        // plans/M10.md item B4 / decision 595: unbounded `Bytes` is a
-        // two-word (base, len) handle passed in two consecutive argument
-        // registers — not a by-pointer aggregate. Source cannot observe
-        // the address; only BytesIndexGet / console append consume it.
-        Type::Bytes(None) => false,
+        // Unbounded `Bytes` is a 16-byte (base, len) slot passed by
+        // pointer like every other non-scalar — one ABI rule.
+        Type::Bytes(None) => true,
         // plans/M6.md item D (verification fix, decision 11b's own boot
         // exercised this for the first time): the M6 builtin-pseudo-type
         // vehicle (`mwir::size_of`'s own doc comment has the full list) is
@@ -753,12 +746,6 @@ pub(crate) fn is_aggregate(ty: &Type) -> bool {
         Type::Bytes(Some(_)) => true,
         _ => false,
     }
-}
-
-/// plans/M10.md item B4: unbounded `Bytes` occupies two argument registers
-/// (base, then len).
-fn is_bytes_handle(ty: &Type) -> bool {
-    matches!(strip_wrappers(ty), Type::Bytes(None))
 }
 
 /// plans/M10.md item E2 / decision 669: `Option[GroupId]` is niche-packed
@@ -947,202 +934,34 @@ impl Frame {
 // --- field/payload offset helpers -------------------------------------------
 
 /// The byte offset and size of logical field/element `index` within an
-/// already-built aggregate of type `base_ty` (`Project`/`SetField`'s
-/// own "compile-time-known-offset" scope: a struct field, a tuple
-/// component, or a fixed-array element).
+/// Thin wrapper: offset authority lives in `mwir::field_offset`.
 fn field_offset_size(
     base_ty: &Type,
     index: usize,
     layout: &LayoutCtx,
 ) -> Result<(usize, usize), CodegenError> {
-    match strip_wrappers(base_ty) {
-        Type::Tuple(elems) => {
-            let mut off = 0usize;
-            for e in &elems[..index] {
-                off += mwir::size_of(e, layout).map_err(|e| CodegenError::unimplemented(&e))?;
-            }
-            let sz = mwir::size_of(&elems[index], layout)
-                .map_err(|e| CodegenError::unimplemented(&e))?;
-            Ok((off, sz))
+    mwir::field_offset(base_ty, index, layout).map_err(|e| {
+        if e.contains("not a literal") || e.contains("not implemented") {
+            CodegenError::unimplemented(&e)
+        } else {
+            CodegenError::internal(e)
         }
-        Type::Array(elem, _) => {
-            let sz = mwir::size_of(elem, layout).map_err(|e| CodegenError::unimplemented(&e))?;
-            Ok((sz * index, sz))
-        }
-        // plans/M9.md item C1: slot 0 = occupied length (usize); slots
-        // 1..=N = byte payload. Each occupies one SLOT.
-        Type::String(n_expr) => {
-            let n = crate::sema::bodies::literal_array_len(n_expr).ok_or_else(|| {
-                CodegenError::unimplemented("a `String[..N]` capacity that is not a literal is")
-            })?;
-            let n = usize::try_from(n)
-                .map_err(|_| CodegenError::internal("String capacity out of range".to_string()))?;
-            if index > n {
-                return Err(CodegenError::internal(format!(
-                    "`String[..{n}]` project index {index} out of range"
-                )));
-            }
-            let _ = layout;
-            Ok((8 * index, 8))
-        }
-        // plans/M10.md item B4: word 0 = base (not source-visible as a
-        // field), word 1 = capacity (`Bytes.len`).
-        Type::Bytes(None) => {
-            if index > 1 {
-                return Err(CodegenError::internal(format!(
-                    "`Bytes` project index {index} out of range"
-                )));
-            }
-            let _ = layout;
-            Ok((8 * index, 8))
-        }
-        Type::Named(name, targs) => {
-            // plans/M7.md item E4: `IoCompletion[P]` is a real aggregate
-            // (payload + status + written_len), not a sealed one-word
-            // authority type.
-            if name == "IoCompletion" {
-                let Some(crate::sema::types::TypeArg::Type(payload)) = targs.first() else {
-                    return Err(CodegenError::internal(
-                        "`IoCompletion` with no payload type".to_string(),
-                    ));
-                };
-                let fields = [
-                    payload.clone(),
-                    Type::Result(
-                        Box::new(Type::Unit),
-                        Box::new(Type::Named("IoError".to_string(), vec![])),
-                    ),
-                    Type::Named(
-                        "Untrusted".to_string(),
-                        vec![crate::sema::types::TypeArg::Type(Type::Usize)],
-                    ),
-                ];
-                if index >= fields.len() {
-                    return Err(CodegenError::internal(format!(
-                        "`IoCompletion` field index {index} out of range"
-                    )));
-                }
-                let mut off = 0usize;
-                for f in &fields[..index] {
-                    off += mwir::size_of(f, layout).map_err(|e| CodegenError::unimplemented(&e))?;
-                }
-                let sz = mwir::size_of(&fields[index], layout)
-                    .map_err(|e| CodegenError::unimplemented(&e))?;
-                return Ok((off, sz));
-            }
-            // plans/M7.md item G, decision 18: look up by rendered type.
-            let key = if targs.is_empty() {
-                name.clone()
-            } else {
-                crate::sema::types::render_type(&Type::Named(name.clone(), targs.to_vec()))
-            };
-            let fields = layout
-                .structs
-                .get(&key)
-                .ok_or_else(|| CodegenError::internal(format!("unknown struct `{key}`")))?;
-            let mut off = 0usize;
-            for f in &fields[..index] {
-                off += mwir::size_of(f, layout).map_err(|e| CodegenError::unimplemented(&e))?;
-            }
-            let sz = mwir::size_of(&fields[index], layout)
-                .map_err(|e| CodegenError::unimplemented(&e))?;
-            Ok((off, sz))
-        }
-        other => Err(CodegenError::internal(format!(
-            "`Project`/`SetField` base is not an aggregate type: {other:?}"
-        ))),
-    }
+    })
 }
 
-/// The byte offset of enum payload slot `index`, past the 8-byte tag —
-/// module doc has no room to restate this, so the reasoning lives here:
-/// `EnumPayload`/`MakeEnum` never carry *which variant* is live, only
-/// `base`/`src`'s own enum type, so a specific payload slot's offset is
-/// computed the same way regardless of which variant actually built the
-/// value (mirroring `mwir::size_of`'s own "every variant's payload
-/// lives at the identical fixed offset" invariant one level down): slot
-/// `j`'s own width is the *widest* field at position `j` across every
-/// variant that has one there. This is exact for every enum the
-/// required golden corpus uses (`Option`/`Result`/every user enum
-/// tested all have at most one payload field per variant, so there is
-/// only ever slot `0` to place) and is a reasoned, disclosed
-/// generalization — not golden-proven — for a hypothetical multi-field
-/// variant.
+/// Thin wrapper: offset authority lives in `mwir::enum_payload_offset`.
 fn enum_payload_offset(
     base_ty: &Type,
     index: usize,
     layout: &LayoutCtx,
 ) -> Result<usize, CodegenError> {
-    const TAG: usize = 8;
-    let variants: Vec<Vec<Type>> = match strip_wrappers(base_ty) {
-        // plans/M10.md item E2: niche-packed — payload occupies the same
-        // word as the discriminant (0 = None). Offset 0, not past a tag.
-        Type::Option(inner)
-            if matches!(
-                strip_wrappers(inner),
-                Type::Named(name, _) if name == "GroupId"
-            ) =>
-        {
-            return Ok(0);
+    mwir::enum_payload_offset(base_ty, index, layout).map_err(|e| {
+        if e.contains("not implemented") {
+            CodegenError::unimplemented(&e)
+        } else {
+            CodegenError::internal(e)
         }
-        Type::Option(inner) => vec![Vec::new(), vec![(**inner).clone()]],
-        Type::Result(ok, err) => vec![vec![(**ok).clone()], vec![(**err).clone()]],
-        // plans/M7.md item Z2: `CallError[E]` (02-language.md §9.4's own
-        // five-variant composition, `sema::bodies::compose_call_error`) is
-        // the one enum this machine carries as an *instantiated*
-        // `Type::Named`, so the generic-instantiation rejection in the arm
-        // below would refuse it — leaving the offset authority a hole in
-        // exactly the place the `Err(e) -> Err(CallError.Op(e))`
-        // recomposition needs one. Its variant list is compiler-known and
-        // fixed: the identical order `sema::matches::shape_of` builds,
-        // which is what `CALL_ERROR_TAG_CANCELLED` is numbered against and
-        // what `mwir::size_of`'s own `CallError` arm sizes. Named here so
-        // the recomposition derives `Op`'s payload offset instead of
-        // assuming it.
-        Type::Named(name, targs) if name == "CallError" => {
-            let Some(crate::sema::types::TypeArg::Type(e_ty)) = targs.first() else {
-                return Err(CodegenError::internal(
-                    "`CallError` with no error type argument",
-                ));
-            };
-            // plans/M13.md item H / decision 4: NotAdmitted(Admission, args).
-            // Item I / decision 6: PeerFailed deleted.
-            let args_ty = crate::sema::bodies::not_admitted_args_type(targs);
-            vec![
-                vec![e_ty.clone()],                                              // Op(E)
-                Vec::new(),                                                      // Cancelled
-                Vec::new(),                                                      // DeadlineExceeded
-                vec![Type::Named("Admission".to_string(), Vec::new()), args_ty], // NotAdmitted
-            ]
-        }
-        Type::Named(name, targs) => {
-            if !targs.is_empty() {
-                return Err(CodegenError::unimplemented(
-                    "payload access on an instantiated generic enum",
-                ));
-            }
-            layout
-                .enums
-                .get(name)
-                .ok_or_else(|| CodegenError::internal(format!("unknown enum `{name}`")))?
-                .clone()
-        }
-        other => Err(CodegenError::internal(format!(
-            "`EnumPayload` base is not an enum type: {other:?}"
-        )))?,
-    };
-    let mut off = TAG;
-    for j in 0..index {
-        let mut widest = 0usize;
-        for v in &variants {
-            if let Some(ty) = v.get(j) {
-                let sz = mwir::size_of(ty, layout).map_err(|e| CodegenError::unimplemented(&e))?;
-                widest = widest.max(sz);
-            }
-        }
-        off += widest;
-    }
-    Ok(off)
+    })
 }
 
 // --- per-fn emission context -------------------------------------------------
@@ -1360,23 +1179,36 @@ impl<'a> FnCtx<'a> {
         });
     }
 
-    /// `__wrela_abort(x0=msg_ptr, x1=msg_len)` — interns `message`,
-    /// loads its rodata address into `x0`, its length into `x1`, calls.
+    /// `__wrela_abort(x0=*Bytes)` — interns `message`, builds a stack
+    /// `(base, len)` slot, passes its address (noreturn; no SP restore).
     fn abort_fixed(&mut self, message: &str) {
         let bytes = message.as_bytes().to_vec();
         let len = bytes.len();
         let idx = self.rodata.intern(bytes);
-        self.load_rodata_addr(0, idx);
-        self.load_imm(1, len as i64);
+        // Noreturn path: carve a 16-byte Bytes slot below the live frame.
+        self.push(
+            encode::enc_sub_imm(31, 31, 16, true),
+            "sub sp, sp, #16  ; abort Bytes slot".to_string(),
+        );
+        self.load_rodata_addr(X_A, idx);
+        self.push(
+            encode::enc_str_x_imm(X_A, 31, 0),
+            format!("str {}, [sp]  ; Bytes.base", reg_name(X_A)),
+        );
+        self.load_imm(X_A, len as i64);
+        self.push(
+            encode::enc_str_x_imm(X_A, 31, 8),
+            format!("str {}, [sp, #8]  ; Bytes.len", reg_name(X_A)),
+        );
+        self.push(
+            encode::enc_add_imm(0, 31, 0, true),
+            "add x0, sp, #0  ; *Bytes".to_string(),
+        );
         let word = self.cur_word();
         self.push(encode::enc_bl(0), "bl <__wrela_abort>".to_string());
         self.relocs.push(Reloc::AbortFixed { word });
     }
 
-    /// `__wrela_abort_val(x0=prefix_ptr, x1=prefix_len, x2=value,
-    /// x3=value_signed, x4=suffix_ptr, x5=suffix_len)`. `value_reg` must
-    /// not be `x0..x5` (every call site below uses `X_A`/`X_B`/... which
-    /// never collide).
     /// plans/M6.md decision 6: "a checkpoint is a short fixed sequence
     /// (load pending word, test, branch to the scheduler's service path)".
     /// Always exactly 7 words, regardless of anything about the call site
@@ -1408,13 +1240,14 @@ impl<'a> FnCtx<'a> {
         self.relocs.push(Reloc::CheckpointService { word });
     }
 
+    /// `__wrela_abort_val(x0=*prefix, x1=value, x2=signed, x3=*suffix)`.
+    /// `value_reg` must not be clobbered before the stash (call sites use
+    /// `X_A`/`X_B`/... outside x0..x3).
     fn abort_val(&mut self, prefix: &str, value_reg: u8, signed: bool, suffix: &str) {
-        // `value_reg` may itself be clobbered by the moves below if it
-        // aliases x0..x5 — every call site uses a scratch register
-        // outside that range, so stash it in x2 first regardless.
+        // Stash value before carving stack / building Bytes slots.
         self.push(
-            encode::enc_mov_reg(2, value_reg, true),
-            format!("mov x2, {}", reg_name(value_reg)),
+            encode::enc_mov_reg(X_B, value_reg, true),
+            format!("mov {}, {}", reg_name(X_B), reg_name(value_reg)),
         );
         let prefix_bytes = prefix.as_bytes().to_vec();
         let prefix_len = prefix_bytes.len();
@@ -1422,11 +1255,43 @@ impl<'a> FnCtx<'a> {
         let suffix_bytes = suffix.as_bytes().to_vec();
         let suffix_len = suffix_bytes.len();
         let suffix_idx = self.rodata.intern(suffix_bytes);
-        self.load_rodata_addr(0, prefix_idx);
-        self.load_imm(1, prefix_len as i64);
-        self.load_imm(3, signed as i64);
-        self.load_rodata_addr(4, suffix_idx);
-        self.load_imm(5, suffix_len as i64);
+        self.push(
+            encode::enc_sub_imm(31, 31, 32, true),
+            "sub sp, sp, #32  ; abort_val prefix+suffix Bytes".to_string(),
+        );
+        self.load_rodata_addr(X_A, prefix_idx);
+        self.push(
+            encode::enc_str_x_imm(X_A, 31, 0),
+            format!("str {}, [sp]  ; prefix.base", reg_name(X_A)),
+        );
+        self.load_imm(X_A, prefix_len as i64);
+        self.push(
+            encode::enc_str_x_imm(X_A, 31, 8),
+            format!("str {}, [sp, #8]  ; prefix.len", reg_name(X_A)),
+        );
+        self.load_rodata_addr(X_A, suffix_idx);
+        self.push(
+            encode::enc_str_x_imm(X_A, 31, 16),
+            format!("str {}, [sp, #16]  ; suffix.base", reg_name(X_A)),
+        );
+        self.load_imm(X_A, suffix_len as i64);
+        self.push(
+            encode::enc_str_x_imm(X_A, 31, 24),
+            format!("str {}, [sp, #24]  ; suffix.len", reg_name(X_A)),
+        );
+        self.push(
+            encode::enc_add_imm(0, 31, 0, true),
+            "add x0, sp, #0  ; *prefix".to_string(),
+        );
+        self.push(
+            encode::enc_mov_reg(1, X_B, true),
+            format!("mov x1, {}", reg_name(X_B)),
+        );
+        self.load_imm(2, signed as i64);
+        self.push(
+            encode::enc_add_imm(3, 31, 16, true),
+            "add x3, sp, #16  ; *suffix".to_string(),
+        );
         let word = self.cur_word();
         self.push(encode::enc_bl(0), "bl <__wrela_abort_val>".to_string());
         self.relocs.push(Reloc::AbortVal { word });
@@ -2062,40 +1927,18 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
                     by_ptr.insert(i);
                 }
             }
-            // plans/M10.md item B4: Bytes handles consume two consecutive
-            // argument registers, so the physical register cursor is not
-            // identical to the logical arg index.
-            let mut reg: u8 = 0;
+            // One ABI rule: scalar → xN; non-scalar → pointer to caller slot.
             for (i, arg) in args.iter().enumerate() {
-                let arg_ty = &f.temp_types[arg.0];
-                if is_bytes_handle(arg_ty) {
-                    if reg > 7 {
-                        return Err(CodegenError::unimplemented(
-                            "more than 8 call arguments (Bytes handle needs two registers)",
-                        ));
-                    }
-                    let off = ctx.frame.off(*arg);
-                    ctx.load_slot(reg, off);
-                    ctx.load_slot(reg + 1, off + 8);
-                    reg += 2;
-                    continue;
-                }
-                if reg > 8 {
+                if i > 8 {
                     return Err(CodegenError::unimplemented("more than 8 call arguments"));
                 }
                 if by_ptr.contains(&i) {
-                    ctx.addr_of_slot(reg, ctx.frame.off(*arg));
+                    ctx.addr_of_slot(i as u8, ctx.frame.off(*arg));
                 } else {
-                    ctx.load_slot(reg, ctx.frame.off(*arg));
+                    ctx.load_slot(i as u8, ctx.frame.off(*arg));
                 }
-                reg += 1;
             }
             let dst_ty = f.temp_types[dst.0].clone();
-            if is_bytes_handle(&dst_ty) {
-                return Err(CodegenError::unimplemented(
-                    "returning an unbounded `Bytes` handle is",
-                ));
-            }
             if is_aggregate(&dst_ty) {
                 ctx.addr_of_slot(8, ctx.frame.off(*dst));
             }
@@ -2106,11 +1949,6 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
         }
         Inst::Return { value } => {
             if let Some(v) = value {
-                if is_bytes_handle(&f.ret) {
-                    return Err(CodegenError::unimplemented(
-                        "returning an unbounded `Bytes` handle is",
-                    ));
-                }
                 if is_aggregate(&f.ret) {
                     let ret_ptr_off = ctx.frame.ret_ptr_off.ok_or_else(|| {
                         CodegenError::internal("`Return` with a value but no ret_ptr slot")
@@ -2313,6 +2151,9 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
                 format!("str {}, [{}]", reg_name(X_B), reg_name(X_A)),
             );
         }
+        Inst::SlotMapMint { map } => {
+            emit_slotmap_mint_id(*map, ctx)?;
+        }
         Inst::MmioWrite {
             base,
             offset,
@@ -2336,502 +2177,54 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             };
             ctx.push(enc, format!("{mnem} {rt}, [{}, #{off}]", reg_name(X_A)));
         }
-        // plans/M7.md item E4 / decision 20: package into the control-pool
-        // area after the ring, then mint QueueOp = desc head 0.
-        Inst::QueuePrepare {
+        Inst::MemLoad {
             dst,
-            queue,
-            permit: _,
-            header,
-            payload,
-            status,
-            device_writes,
-            payload_len,
+            base,
+            offset,
+            width,
         } => {
-            emit_queue_prepare(
-                ctx,
-                f,
-                *dst,
-                *queue,
-                *header,
-                *payload,
-                *status,
-                *device_writes,
-                *payload_len,
-            )?;
+            emit_mem_load(ctx, *dst, *base, *offset, *width)?;
         }
-        // plans/M7.md item E3/E4 / decision 16/20: sealed write order with
-        // real DRAM stores against pool-backed addresses.
-        Inst::QueuePublish {
-            dst,
-            queue,
-            operation,
-            steps: _,
+        Inst::MemStore {
+            base,
+            offset,
+            value,
+            width,
         } => {
-            emit_queue_publish(ctx, f, *dst, *queue, *operation)?;
+            emit_mem_store(ctx, *base, *offset, *value, *width)?;
         }
-        Inst::QueueDrain { queue, max } => {
-            emit_queue_drain(ctx, f, *queue, *max)?;
+        Inst::PtrOffset { dst, base, offset } => {
+            ctx.load_slot(X_A, ctx.frame.off(*base));
+            if *offset == 0 {
+                ctx.store_slot(X_A, ctx.frame.off(*dst));
+            } else {
+                ctx.load_imm(X_B, *offset as i64);
+                ctx.push(
+                    encode::enc_add_reg(X_C, X_A, X_B, true),
+                    format!(
+                        "add {}, {}, {}",
+                        reg_name(X_C),
+                        reg_name(X_A),
+                        reg_name(X_B)
+                    ),
+                );
+                ctx.store_slot(X_C, ctx.frame.off(*dst));
+            }
         }
-        Inst::QueueSuppressInterrupts { queue } => {
-            emit_queue_suppress_interrupts(ctx, f, *queue)?;
+        Inst::TurnAddrFromId { dst, id } => {
+            ctx.load_slot(X_A, ctx.frame.off(*id));
+            push_turn_addr_from_id(ctx, X_A, X_B);
+            ctx.store_slot(X_A, ctx.frame.off(*dst));
         }
-        Inst::QueueClaim {
-            dst,
-            queue,
-            receipt,
-        } => {
-            emit_queue_claim(ctx, f, *dst, *queue, *receipt)?;
-        }
-        Inst::QueueRecover {
-            dst,
-            queue,
-            receipt,
-        } => {
-            emit_queue_recover(ctx, f, *dst, *queue, *receipt)?;
-        }
-        Inst::QueueReclaim { dst, queue } => {
-            emit_queue_reclaim(ctx, f, *dst, *queue)?;
-        }
-        Inst::DeviceReset { dst, device, queue } => {
-            emit_device_reset(ctx, f, *dst, *device, *queue)?;
+        Inst::Abort { message } => {
+            ctx.abort_fixed(message);
         }
     }
     Ok(())
 }
 
-/// Descriptor-table depth of a `VirtQueue[..N]` temp, or a named error.
-fn virtqueue_depth_of(ty: &Type) -> Result<u16, CodegenError> {
-    let Type::Named(name, targs) = ty else {
-        return Err(CodegenError::internal(format!(
-            "queue temp is `{}`, not `VirtQueue[..N]`",
-            crate::sema::types::render_type(ty)
-        )));
-    };
-    if name != "VirtQueue" {
-        return Err(CodegenError::internal(format!(
-            "queue temp is `{name}`, not `VirtQueue[..N]`"
-        )));
-    }
-    let Some(crate::sema::types::TypeArg::Bound(expr)) = targs.first() else {
-        return Err(CodegenError::internal(
-            "`VirtQueue` with no bound depth".to_string(),
-        ));
-    };
-    let text = match expr {
-        crate::syntax::ast::Expr::Int(_, t) => t.as_str(),
-        _ => {
-            return Err(CodegenError::unimplemented(
-                "`VirtQueue[..N]` whose depth is not an integer literal (const-name depths need \
-                 folding before codegen)",
-            ));
-        }
-    };
-    let n: u64 = text.parse().map_err(|_| {
-        CodegenError::internal(format!("`VirtQueue[..{text}]` depth is not a u64 literal"))
-    })?;
-    u16::try_from(n)
-        .map_err(|_| CodegenError::internal(format!("`VirtQueue[..{n}]` depth does not fit u16")))
-}
-
-/// `prepare_block`: write header/status into packaging, record meta, mint
-/// QueueOp = absolute meta address (decision 22). Ring head stays 0.
-#[allow(clippy::too_many_arguments)]
-fn emit_queue_prepare(
-    ctx: &mut FnCtx,
-    f: &MwirFn,
-    dst: Temp,
-    queue: Temp,
-    header: Temp,
-    payload: Temp,
-    status: Temp,
-    device_writes: bool,
-    payload_len: u32,
-) -> Result<(), CodegenError> {
-    let depth = virtqueue_depth_of(&f.temp_types[queue.0])?;
-    let placed = crate::virtqueue::place_ring(0, depth).ok_or_else(|| {
-        CodegenError::internal(format!("place_ring(0, {depth}) refused a proven depth"))
-    })?;
-    let meta = crate::virtqueue::meta_offset(placed.bytes);
-    let header_off = meta + crate::virtqueue::SLOT_META_BYTES;
-    let status_off = header_off + crate::virtqueue::REQ_HEADER_SIZE;
-
-    // X_C = pool base (queue word).
-    ctx.load_slot(X_C, ctx.frame.off(queue));
-    // X_D = header destination = pool + header_off.
-    ctx.load_imm(X_D, header_off as i64);
-    ctx.push(
-        encode::enc_add_reg(X_D, X_C, X_D, true),
-        format!(
-            "add {}, {}, {}",
-            reg_name(X_D),
-            reg_name(X_C),
-            reg_name(X_D)
-        ),
-    );
-    // Pack BlkReqHeader: frame ABI is three 8-byte slots (kind, reserved,
-    // sector); device layout is u32/u32/u64 at +0/+4/+8.
-    let hdr_base = ctx.frame.off(header);
-    ctx.load_slot(X_A, hdr_base); // kind
-    ctx.push(
-        encode::enc_str_w_imm(X_A, X_D, 0),
-        format!("str w{}, [{}, #0]", X_A, reg_name(X_D)),
-    );
-    ctx.load_slot(X_A, hdr_base + 8); // reserved
-    ctx.push(
-        encode::enc_str_w_imm(X_A, X_D, 4),
-        format!("str w{}, [{}, #4]", X_A, reg_name(X_D)),
-    );
-    ctx.load_slot(X_A, hdr_base + 16); // sector
-    ctx.push(
-        encode::enc_str_x_imm(X_A, X_D, 8),
-        format!("str {}, [{}, #8]", reg_name(X_A), reg_name(X_D)),
-    );
-
-    // Status byte at pool + status_off.
-    ctx.load_imm(X_D, status_off as i64);
-    ctx.push(
-        encode::enc_add_reg(X_D, X_C, X_D, true),
-        format!(
-            "add {}, {}, {}",
-            reg_name(X_D),
-            reg_name(X_C),
-            reg_name(X_D)
-        ),
-    );
-    ctx.load_slot(X_A, ctx.frame.off(status));
-    ctx.push(
-        encode::enc_strb_imm(X_A, X_D, 0),
-        format!("strb w{}, [{}, #0]", X_A, reg_name(X_D)),
-    );
-
-    // Meta base = pool + meta.
-    ctx.load_imm(X_D, meta as i64);
-    ctx.push(
-        encode::enc_add_reg(X_D, X_C, X_D, true),
-        format!(
-            "add {}, {}, {}",
-            reg_name(X_D),
-            reg_name(X_C),
-            reg_name(X_D)
-        ),
-    );
-    // payload addr
-    ctx.load_slot(X_A, ctx.frame.off(payload));
-    ctx.store_ptr(X_A, X_D, crate::virtqueue::SLOT_META_PAYLOAD as usize);
-    // header addr
-    ctx.load_imm(X_A, header_off as i64);
-    ctx.push(
-        encode::enc_add_reg(X_A, X_C, X_A, true),
-        format!(
-            "add {}, {}, {}",
-            reg_name(X_A),
-            reg_name(X_C),
-            reg_name(X_A)
-        ),
-    );
-    ctx.store_ptr(X_A, X_D, crate::virtqueue::SLOT_META_HEADER as usize);
-    // status addr
-    ctx.load_imm(X_A, status_off as i64);
-    ctx.push(
-        encode::enc_add_reg(X_A, X_C, X_A, true),
-        format!(
-            "add {}, {}, {}",
-            reg_name(X_A),
-            reg_name(X_C),
-            reg_name(X_A)
-        ),
-    );
-    ctx.store_ptr(X_A, X_D, crate::virtqueue::SLOT_META_STATUS as usize);
-    // payload_len
-    ctx.load_imm(X_A, payload_len as i64);
-    ctx.store_ptr(X_A, X_D, crate::virtqueue::SLOT_META_PAYLOAD_LEN as usize);
-    // flags = DEVICE_WRITES? | INFLIGHT (RESOLVED cleared)
-    let flags = crate::virtqueue::SLOT_FLAG_INFLIGHT
-        | if device_writes {
-            crate::virtqueue::SLOT_FLAG_DEVICE_WRITES
-        } else {
-            0
-        };
-    ctx.load_imm(X_A, flags as i64);
-    ctx.store_ptr(X_A, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
-    // Stamp the queue's live reset epoch into the slot (plans/M7.md item H2b).
-    // X_C still holds the pool base from above.
-    ctx.load_imm(
-        X_A,
-        (placed.bytes + crate::virtqueue::SLOT_BOOK_EPOCH) as i64,
-    );
-    ctx.push(
-        encode::enc_add_reg(X_A, X_C, X_A, true),
-        format!(
-            "add {}, {}, {}",
-            reg_name(X_A),
-            reg_name(X_C),
-            reg_name(X_A)
-        ),
-    );
-    ctx.load_ptr(X_A, X_A, 0);
-    ctx.store_ptr(X_A, X_D, crate::virtqueue::SLOT_META_EPOCH as usize);
-    // Clear waiter / reply_stage for a fresh op. plans/M10.md item 0c3:
-    // two of the nine zero tests the item enumerated, and they split.
-    // `SLOT_META_WAITER` is one `u32` with unused padding above it, so
-    // `str wzr` is the honest width. `SLOT_META_REPLY_STAGE` is two live
-    // `u32` halves of one word whose `None` is `0` for both, so one
-    // 64-bit `str xzr` clears exactly the right thing and the instruction
-    // stays literally identical — the same argument 0c1 made for the
-    // waker's two halves.
-    ctx.push(
-        encode::enc_str_w_imm(X_ZR, X_D, crate::virtqueue::SLOT_META_WAITER as u16),
-        format!(
-            "str wzr, [{}, #{}]",
-            reg_name(X_D),
-            crate::virtqueue::SLOT_META_WAITER
-        ),
-    );
-    ctx.store_ptr(X_ZR, X_D, crate::virtqueue::SLOT_META_REPLY_STAGE as usize);
-    // QueueOp = absolute meta address (X_D).
-    ctx.store_slot(X_D, ctx.frame.off(dst));
-    Ok(())
-}
-
-/// `publish`: write_descriptors → publish_available → notify_queue.
-fn emit_queue_publish(
-    ctx: &mut FnCtx,
-    f: &MwirFn,
-    dst: Temp,
-    queue: Temp,
-    operation: Temp,
-) -> Result<(), CodegenError> {
-    let depth = virtqueue_depth_of(&f.temp_types[queue.0])?;
-    let placed = crate::virtqueue::place_ring(0, depth).ok_or_else(|| {
-        CodegenError::internal(format!("place_ring(0, {depth}) refused a proven depth"))
-    })?;
-    let meta = crate::virtqueue::meta_offset(placed.bytes);
-    // X_C = pool base; X_D = meta (QueueOp word — absolute address).
-    ctx.load_slot(X_C, ctx.frame.off(queue));
-    ctx.load_slot(X_D, ctx.frame.off(operation));
-
-    // Load packaging.
-    ctx.load_ptr(X_A, X_D, crate::virtqueue::SLOT_META_HEADER as usize); // header addr → will reuse
-    // Spill header/payload/status/len/flags into frame-adjacent? Use
-    // registers carefully: after each desc write we reload from meta.
-    // Desc 0 (header): NEXT, device-readable, len=16, next=1
-    // X_A already header addr. Write desc[0].
-    emit_desc_entry(
-        ctx,
-        /*pool*/ X_C,
-        /*desc_index*/ 0,
-        /*addr_reg*/ X_A,
-        /*len*/ crate::virtqueue::REQ_HEADER_SIZE as u32,
-        /*flags*/ crate::virtqueue::DESC_F_NEXT,
-        /*next*/ 1,
-        placed.desc,
-    )?;
-
-    // Desc 1 (payload)
-    ctx.load_ptr(X_A, X_D, crate::virtqueue::SLOT_META_PAYLOAD as usize);
-    ctx.load_ptr(X_B, X_D, crate::virtqueue::SLOT_META_PAYLOAD_LEN as usize);
-    ctx.load_ptr(0, X_D, crate::virtqueue::SLOT_META_FLAGS as usize); // flags → x0 temporarily
-    // data flags: NEXT | (WRITE if device_writes)
-    // Build flags in X_SCRATCH: start NEXT, OR WRITE if bit0 of meta flags.
-    // Reload meta base — X_D still holds it if nothing clobbered it.
-    // emit_desc_entry clobbers X_A/X_B/X_C? It uses pool reg — keep X_C as pool.
-    // After first emit_desc, X_C should still be pool if emit_desc doesn't clobber.
-    // Re-load pool and meta to be safe.
-    ctx.load_slot(X_C, ctx.frame.off(queue));
-    ctx.load_slot(X_D, ctx.frame.off(operation));
-    ctx.load_ptr(X_A, X_D, crate::virtqueue::SLOT_META_PAYLOAD as usize);
-    ctx.load_ptr(X_B, X_D, crate::virtqueue::SLOT_META_PAYLOAD_LEN as usize);
-    let data_flags_base = crate::virtqueue::DESC_F_NEXT;
-    // flags = NEXT | ((meta_flags & DEVICE_WRITES) << 1) — mask so INFLIGHT
-    // does not become a spurious WRITE bit.
-    ctx.load_ptr(0, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
-    ctx.load_imm(1, crate::virtqueue::SLOT_FLAG_DEVICE_WRITES as i64);
-    ctx.push(
-        encode::enc_and_reg(0, 0, 1, true),
-        format!("and {}, {}, {}", reg_name(0), reg_name(0), reg_name(1)),
-    );
-    ctx.push(
-        encode::enc_lsl_imm(0, 0, 1, true),
-        format!("lsl {}, {}, #1", reg_name(0), reg_name(0)),
-    );
-    ctx.load_imm(1, data_flags_base as i64);
-    ctx.push(
-        encode::enc_orr_reg(0, 0, 1, true),
-        format!("orr {}, {}, {}", reg_name(0), reg_name(0), reg_name(1)),
-    );
-    // x0 = data flags, x1 = len (from X_B), xA = addr. emit_desc with len in reg?
-    // Refactor emit_desc to take len as u32 immediate — payload_len is known
-    // at prepare but publish reads it from meta. Use the register len.
-    emit_desc_entry_len_reg(
-        ctx,
-        X_C,
-        1,
-        X_A,
-        X_B, // len reg
-        0,   // flags reg
-        2,   // next
-        placed.desc,
-    )?;
-
-    // Desc 2 (status): WRITE only, len=1, next=0
-    ctx.load_slot(X_C, ctx.frame.off(queue));
-    ctx.load_slot(X_D, ctx.frame.off(operation));
-    let _ = meta; // geometry used for ring offsets below
-    ctx.load_ptr(X_A, X_D, crate::virtqueue::SLOT_META_STATUS as usize);
-    emit_desc_entry(
-        ctx,
-        X_C,
-        2,
-        X_A,
-        crate::virtqueue::REQ_STATUS_SIZE as u32,
-        crate::virtqueue::DESC_F_WRITE,
-        0,
-        placed.desc,
-    )?;
-
-    // publish_available: avail.ring[avail.idx % depth] = head (0); then
-    // avail.idx++.
-    ctx.load_slot(X_C, ctx.frame.off(queue));
-    ctx.load_imm(X_D, placed.avail as i64);
-    ctx.push(
-        encode::enc_add_reg(X_D, X_C, X_D, true),
-        format!(
-            "add {}, {}, {}",
-            reg_name(X_D),
-            reg_name(X_C),
-            reg_name(X_D)
-        ),
-    );
-    // Load avail.idx (u16 at +2)
-    ctx.push(
-        encode::enc_ldrh_imm(X_A, X_D, 2),
-        format!("ldrh w{}, [{}, #2]", X_A, reg_name(X_D)),
-    );
-    // slot = idx & (depth-1)
-    ctx.load_imm(X_B, (depth as u64 - 1) as i64);
-    ctx.push(
-        encode::enc_and_reg(X_B, X_A, X_B, true),
-        format!(
-            "and {}, {}, {}",
-            reg_name(X_B),
-            reg_name(X_A),
-            reg_name(X_B)
-        ),
-    );
-    // ring entry addr = avail + 4 + 2*slot
-    ctx.push(
-        encode::enc_lsl_imm(X_B, X_B, 1, true),
-        format!("lsl {}, {}, #1", reg_name(X_B), reg_name(X_B)),
-    );
-    ctx.load_imm(0, 4);
-    ctx.push(
-        encode::enc_add_reg(X_B, X_B, 0, true),
-        format!("add {}, {}, {}", reg_name(X_B), reg_name(X_B), reg_name(0)),
-    );
-    ctx.push(
-        encode::enc_add_reg(X_B, X_D, X_B, true),
-        format!(
-            "add {}, {}, {}",
-            reg_name(X_B),
-            reg_name(X_D),
-            reg_name(X_B)
-        ),
-    );
-    // store head 0 as u16
-    ctx.load_imm(0, 0);
-    ctx.push(
-        encode::enc_strh_imm(0, X_B, 0),
-        format!("strh w{}, [{}, #0]", 0, reg_name(X_B)),
-    );
-    // avail.idx++
-    ctx.load_imm(X_B, 1);
-    ctx.push(
-        encode::enc_add_reg(X_A, X_A, X_B, true),
-        format!(
-            "add {}, {}, {}",
-            reg_name(X_A),
-            reg_name(X_A),
-            reg_name(X_B)
-        ),
-    );
-    ctx.push(
-        encode::enc_strh_imm(X_A, X_D, 2),
-        format!("strh w{}, [{}, #2]", X_A, reg_name(X_D)),
-    );
-
-    // notify_queue: store 1 to doorbell
-    ctx.load_slot(X_C, ctx.frame.off(queue));
-    ctx.load_imm(X_D, placed.doorbell as i64);
-    ctx.push(
-        encode::enc_add_reg(X_D, X_C, X_D, true),
-        format!(
-            "add {}, {}, {}",
-            reg_name(X_D),
-            reg_name(X_C),
-            reg_name(X_D)
-        ),
-    );
-    ctx.load_imm(X_A, 1);
-    ctx.store_ptr(X_A, X_D, 0);
-
-    // Receipt word = operation (meta absolute address).
-    ctx.load_slot(X_A, ctx.frame.off(operation));
-    ctx.store_slot(X_A, ctx.frame.off(dst));
-    Ok(())
-}
-
-/// `suppress_interrupts`: store `VIRTQ_AVAIL_F_NO_INTERRUPT` into avail.flags.
-fn emit_queue_suppress_interrupts(
-    ctx: &mut FnCtx,
-    f: &MwirFn,
-    queue: Temp,
-) -> Result<(), CodegenError> {
-    let depth = virtqueue_depth_of(&f.temp_types[queue.0])?;
-    let placed = crate::virtqueue::place_ring(0, depth).ok_or_else(|| {
-        CodegenError::internal(format!("place_ring(0, {depth}) refused a proven depth"))
-    })?;
-    ctx.load_slot(X_C, ctx.frame.off(queue));
-    ctx.load_imm(X_D, placed.avail as i64);
-    ctx.push(
-        encode::enc_add_reg(X_D, X_C, X_D, true),
-        format!(
-            "add {}, {}, {}",
-            reg_name(X_D),
-            reg_name(X_C),
-            reg_name(X_D)
-        ),
-    );
-    ctx.load_imm(X_A, crate::virtqueue::AVAIL_F_NO_INTERRUPT as i64);
-    ctx.push(
-        encode::enc_strh_imm(X_A, X_D, 0),
-        format!("strh w{}, [{}, #0]", X_A, reg_name(X_D)),
-    );
-    Ok(())
-}
-
-/// Used-ring walk for one completion (single-flight). `max` is the source
-/// bound; revision 0.1 never has more than one in flight, so one resolve
-/// per call is the whole drain. Validation faults abort by name.
-///
-/// When the used ring is quiet, this emits one 06 §5 park (clock + short
-/// deadline + `PARK_MMIO`) so the VMM's doorbell poll can run before the
-/// bottom half claims — the same shape the hand-assembled blk conformance
-/// guest uses after ringing the doorbell. A completion on that park
-/// suppresses the sleep; an empty ring after the park returns without
-/// resolving (claim then fails closed by name).
-/// The one index→address rule, emitted from `codegen.rs` (plans/M10.md
-/// item 0c3): `id_reg` holds an `Option[TurnId]` already known nonzero and
-/// comes back holding `turns_base + (id - 1) * turn_stride` — the exact
-/// value `layout::RuntimePlacement::turn_addr` computes, and the exact
-/// value `layout::push_turn_addr_from_id` emits for the hand-assembled
-/// routines. `scratch` is clobbered.
-///
-/// The `- 1` lives here and in `TurnId::index` and nowhere else. Both
-/// constants arrive as relocated four-word `load_imm`s because codegen runs
-/// *before* the layout pass that computes them (`compute_runtime_tables`
-/// consumes `codegen::async_frame_sizes`), which is why this is a `mul` by
-/// a relocated stride rather than an `lsl` by a build-time shift.
+/// `Option[TurnId]` → absolute turn-area address via layout relocs.
+/// The `- 1` lives here and in `TurnId::index` and nowhere else.
 fn push_turn_addr_from_id(ctx: &mut FnCtx, id_reg: u8, scratch: u8) {
     ctx.push(
         encode::enc_sub_imm(id_reg, id_reg, 1, true),
@@ -2869,445 +2262,12 @@ fn push_turn_addr_from_id(ctx: &mut FnCtx, id_reg: u8, scratch: u8) {
     );
 }
 
-fn emit_queue_drain(
-    ctx: &mut FnCtx,
-    f: &MwirFn,
-    queue: Temp,
-    max: u16,
-) -> Result<(), CodegenError> {
-    let _ = max; // source bound; single-flight processes at most one
-    let depth = virtqueue_depth_of(&f.temp_types[queue.0])?;
-    let placed = crate::virtqueue::place_ring(0, depth).ok_or_else(|| {
-        CodegenError::internal(format!("place_ring(0, {depth}) refused a proven depth"))
-    })?;
-    let meta_off = crate::virtqueue::meta_offset(placed.bytes);
-    let comp_off = crate::virtqueue::completion_offset(placed.bytes);
-    let book_off = placed.bytes; // last_used u64
-
-    // X_C = pool
-    ctx.load_slot(X_C, ctx.frame.off(queue));
-    // X_D = book (last_used)
-    ctx.load_imm(X_D, book_off as i64);
-    ctx.push(
-        encode::enc_add_reg(X_D, X_C, X_D, true),
-        format!(
-            "add {}, {}, {}",
-            reg_name(X_D),
-            reg_name(X_C),
-            reg_name(X_D)
-        ),
-    );
-    ctx.load_ptr(X_A, X_D, 0); // last_used
-    // X_B = used.idx
-    ctx.load_imm(X_E, placed.used as i64);
-    ctx.push(
-        encode::enc_add_reg(X_E, X_C, X_E, true),
-        format!(
-            "add {}, {}, {}",
-            reg_name(X_E),
-            reg_name(X_C),
-            reg_name(X_E)
-        ),
-    );
-    ctx.push(
-        encode::enc_ldrh_imm(X_B, X_E, 2),
-        format!("ldrh w{}, [{}, #2]", X_B, reg_name(X_E)),
-    );
-    // pending = used_idx - last (both as u16 in low half)
-    ctx.push(
-        encode::enc_sub_reg(0, X_B, X_A, true),
-        format!("sub {}, {}, {}", reg_name(0), reg_name(X_B), reg_name(X_A)),
-    );
-    // if pending != 0, skip the empty→park→recheck path
-    let skip_empty = ctx.emit_skip(SkipKind::Cbnz(0));
-    // Used ring quiet: yield once so the host can poll the doorbell
-    // (06 §5; VMM blk conformance parks after publish for the same reason).
-    emit_doorbell_poll_park(ctx);
-    // Recheck used.idx vs last_used after the park.
-    ctx.load_slot(X_C, ctx.frame.off(queue));
-    ctx.load_imm(X_D, book_off as i64);
-    ctx.push(
-        encode::enc_add_reg(X_D, X_C, X_D, true),
-        format!(
-            "add {}, {}, {}",
-            reg_name(X_D),
-            reg_name(X_C),
-            reg_name(X_D)
-        ),
-    );
-    ctx.load_ptr(X_A, X_D, 0);
-    ctx.load_imm(X_E, placed.used as i64);
-    ctx.push(
-        encode::enc_add_reg(X_E, X_C, X_E, true),
-        format!(
-            "add {}, {}, {}",
-            reg_name(X_E),
-            reg_name(X_C),
-            reg_name(X_E)
-        ),
-    );
-    ctx.push(
-        encode::enc_ldrh_imm(X_B, X_E, 2),
-        format!("ldrh w{}, [{}, #2]", X_B, reg_name(X_E)),
-    );
-    ctx.push(
-        encode::enc_sub_reg(0, X_B, X_A, true),
-        format!("sub {}, {}, {}", reg_name(0), reg_name(X_B), reg_name(X_A)),
-    );
-    let skip_still_empty = ctx.emit_skip(SkipKind::Cbnz(0));
-    let done_from_empty = ctx.emit_skip(SkipKind::Cond(Cond::Al));
-    ctx.patch_skip(skip_still_empty, SkipKind::Cbnz(0));
-    ctx.patch_skip(skip_empty, SkipKind::Cbnz(0));
-
-    // slot = last & (depth-1)
-    ctx.load_imm(X_B, (depth as u64 - 1) as i64);
-    ctx.push(
-        encode::enc_and_reg(X_B, X_A, X_B, true),
-        format!(
-            "and {}, {}, {}",
-            reg_name(X_B),
-            reg_name(X_A),
-            reg_name(X_B)
-        ),
-    );
-    // entry = used + 4 + slot*8 → X_F
-    ctx.push(
-        encode::enc_lsl_imm(X_B, X_B, 3, true),
-        format!("lsl {}, {}, #3", reg_name(X_B), reg_name(X_B)),
-    );
-    ctx.load_imm(0, 4);
-    ctx.push(
-        encode::enc_add_reg(X_B, X_B, 0, true),
-        format!("add {}, {}, {}", reg_name(X_B), reg_name(X_B), reg_name(0)),
-    );
-    ctx.push(
-        encode::enc_add_reg(X_F, X_E, X_B, true),
-        format!(
-            "add {}, {}, {}",
-            reg_name(X_F),
-            reg_name(X_E),
-            reg_name(X_B)
-        ),
-    );
-    // id (u32) → X_B, len (u32) → x0
-    ctx.push(
-        encode::enc_ldr_w_imm(X_B, X_F, 0),
-        format!("ldr w{}, [{}, #0]", X_B, reg_name(X_F)),
-    );
-    ctx.push(
-        encode::enc_ldr_w_imm(0, X_F, 4),
-        format!("ldr w{}, [{}, #4]", 0, reg_name(X_F)),
-    );
-
-    // --- validate id (unknown / stale-by-epoch / duplicate) ---
-    // Order matches `virtqueue::validate_completion_id` so a reset that
-    // leaves INFLIGHT set still surfaces as StaleId, not DuplicateId.
-    ctx.load_imm(X_F, crate::virtqueue::EXPECTED_HEAD as i64);
-    ctx.push(
-        encode::enc_cmp_reg(X_B, X_F, true),
-        format!("cmp {}, {}", reg_name(X_B), reg_name(X_F)),
-    );
-    let id_ok = ctx.emit_skip(SkipKind::Cond(Cond::Eq));
-    ctx.abort_fixed(crate::virtqueue::CompletionFault::UnknownId { id: 0 }.abort_message());
-    ctx.patch_skip(id_ok, SkipKind::Cond(Cond::Eq));
-
-    // meta → X_D; live epoch → X_F; stamped slot epoch → X_A
-    ctx.load_slot(X_C, ctx.frame.off(queue));
-    ctx.load_imm(X_D, meta_off as i64);
-    ctx.push(
-        encode::enc_add_reg(X_D, X_C, X_D, true),
-        format!(
-            "add {}, {}, {}",
-            reg_name(X_D),
-            reg_name(X_C),
-            reg_name(X_D)
-        ),
-    );
-    ctx.load_imm(X_F, (book_off + crate::virtqueue::SLOT_BOOK_EPOCH) as i64);
-    ctx.push(
-        encode::enc_add_reg(X_F, X_C, X_F, true),
-        format!(
-            "add {}, {}, {}",
-            reg_name(X_F),
-            reg_name(X_C),
-            reg_name(X_F)
-        ),
-    );
-    ctx.load_ptr(X_F, X_F, 0); // current_epoch
-    ctx.load_ptr(X_A, X_D, crate::virtqueue::SLOT_META_EPOCH as usize);
-    ctx.push(
-        encode::enc_cmp_reg(X_A, X_F, true),
-        format!("cmp {}, {}", reg_name(X_A), reg_name(X_F)),
-    );
-    let epoch_ok = ctx.emit_skip(SkipKind::Cond(Cond::Eq));
-    ctx.abort_fixed(
-        crate::virtqueue::CompletionFault::StaleId {
-            id: 0,
-            slot_epoch: 0,
-            current_epoch: 0,
-        }
-        .abort_message(),
-    );
-    ctx.patch_skip(epoch_ok, SkipKind::Cond(Cond::Eq));
-
-    ctx.load_ptr(X_B, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
-    ctx.load_imm(X_F, crate::virtqueue::SLOT_FLAG_INFLIGHT as i64);
-    ctx.push(
-        encode::enc_and_reg(X_F, X_B, X_F, true),
-        format!(
-            "and {}, {}, {}",
-            reg_name(X_F),
-            reg_name(X_B),
-            reg_name(X_F)
-        ),
-    );
-    let inflight_ok = ctx.emit_skip(SkipKind::Cbnz(X_F));
-    ctx.abort_fixed(crate::virtqueue::CompletionFault::DuplicateId { id: 0 }.abort_message());
-    ctx.patch_skip(inflight_ok, SkipKind::Cbnz(X_F));
-
-    // --- length ---
-    // x0 = used.len; payload_len in X_E; device_writes bit in X_F
-    ctx.load_ptr(X_E, X_D, crate::virtqueue::SLOT_META_PAYLOAD_LEN as usize);
-    ctx.load_imm(X_F, crate::virtqueue::SLOT_FLAG_DEVICE_WRITES as i64);
-    ctx.push(
-        encode::enc_and_reg(X_F, X_B, X_F, true),
-        format!(
-            "and {}, {}, {}",
-            reg_name(X_F),
-            reg_name(X_B),
-            reg_name(X_F)
-        ),
-    );
-    ctx.push(
-        encode::enc_cmp_imm(0, 1, true),
-        format!("cmp {}, #1", reg_name(0)),
-    );
-    let len_ge1 = ctx.emit_skip(SkipKind::Cond(Cond::Cs)); // used.len >= 1 (HS)
-    ctx.abort_fixed(
-        crate::virtqueue::CompletionFault::BadLength {
-            reported: 0,
-            capacity: 0,
-        }
-        .abort_message(),
-    );
-    ctx.patch_skip(len_ge1, SkipKind::Cond(Cond::Cs));
-    // buffer_facing = used.len - 1 → X_A
-    ctx.load_imm(X_A, 1);
-    ctx.push(
-        encode::enc_sub_reg(X_A, 0, X_A, true),
-        format!("sub {}, {}, {}", reg_name(X_A), reg_name(0), reg_name(X_A)),
-    );
-    // if device_writes: buffer_facing <= payload_len; else buffer_facing == 0
-    let is_write = ctx.emit_skip(SkipKind::Cbnz(X_F)); // skip OUT path when DEVICE_WRITES
-    // OUT path
-    ctx.push(
-        encode::enc_cmp_imm(X_A, 0, true),
-        format!("cmp {}, #0", reg_name(X_A)),
-    );
-    let out_ok = ctx.emit_skip(SkipKind::Cond(Cond::Eq));
-    ctx.abort_fixed(
-        crate::virtqueue::CompletionFault::BadLength {
-            reported: 0,
-            capacity: 0,
-        }
-        .abort_message(),
-    );
-    ctx.patch_skip(out_ok, SkipKind::Cond(Cond::Eq));
-    let after_len = ctx.emit_skip(SkipKind::Cond(Cond::Al));
-    ctx.patch_skip(is_write, SkipKind::Cbnz(X_F));
-    // IN path: buffer_facing <= payload_len
-    ctx.push(
-        encode::enc_cmp_reg(X_A, X_E, true),
-        format!("cmp {}, {}", reg_name(X_A), reg_name(X_E)),
-    );
-    let in_ok = ctx.emit_skip(SkipKind::Cond(Cond::Ls));
-    ctx.abort_fixed(
-        crate::virtqueue::CompletionFault::BadLength {
-            reported: 0,
-            capacity: 0,
-        }
-        .abort_message(),
-    );
-    ctx.patch_skip(in_ok, SkipKind::Cond(Cond::Ls));
-    ctx.patch_skip(after_len, SkipKind::Cond(Cond::Al));
-
-    // --- build IoCompletion in stash ---
-    // Reload meta/pool; X_A still buffer_facing
-    ctx.load_slot(X_C, ctx.frame.off(queue));
-    ctx.load_imm(X_D, meta_off as i64);
-    ctx.push(
-        encode::enc_add_reg(X_D, X_C, X_D, true),
-        format!(
-            "add {}, {}, {}",
-            reg_name(X_D),
-            reg_name(X_C),
-            reg_name(X_D)
-        ),
-    );
-    // Spill buffer_facing to X_E
-    ctx.push(
-        encode::enc_mov_reg(X_E, X_A, true),
-        format!("mov {}, {}", reg_name(X_E), reg_name(X_A)),
-    );
-    // status byte
-    ctx.load_ptr(X_A, X_D, crate::virtqueue::SLOT_META_STATUS as usize);
-    ctx.push(
-        encode::enc_ldrb_imm(X_B, X_A, 0),
-        format!("ldrb w{}, [{}, #0]", X_B, reg_name(X_A)),
-    );
-    // payload own handle
-    ctx.load_ptr(X_F, X_D, crate::virtqueue::SLOT_META_PAYLOAD as usize);
-    // comp base → X_A
-    ctx.load_imm(X_A, comp_off as i64);
-    ctx.push(
-        encode::enc_add_reg(X_A, X_C, X_A, true),
-        format!(
-            "add {}, {}, {}",
-            reg_name(X_A),
-            reg_name(X_C),
-            reg_name(X_A)
-        ),
-    );
-    ctx.store_ptr(X_F, X_A, 0); // payload
-    // status Result: tag 0 if STATUS_OK else 1
-    ctx.push(
-        encode::enc_cmp_imm(X_B, 0, true),
-        format!("cmp {}, #0", reg_name(X_B)),
-    );
-    ctx.load_imm(X_F, 0);
-    ctx.load_imm(0, 1);
-    ctx.push(
-        encode::enc_csel(X_F, X_F, 0, Cond::Eq, true),
-        format!(
-            "csel {}, {}, {}, eq",
-            reg_name(X_F),
-            reg_name(X_F),
-            reg_name(0)
-        ),
-    );
-    ctx.store_ptr(X_F, X_A, 8); // Result tag
-    ctx.store_ptr(X_ZR, X_A, 16); // Ok(unit) / Err(OutOfRange=0)
-    ctx.store_ptr(X_E, X_A, 24); // written_len
-
-    // flags: clear INFLIGHT, set RESOLVED
-    ctx.load_ptr(X_B, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
-    ctx.load_imm(X_F, crate::virtqueue::SLOT_FLAG_INFLIGHT as i64);
-    ctx.push(
-        encode::enc_bic_reg(X_B, X_B, X_F, true),
-        format!(
-            "bic {}, {}, {}",
-            reg_name(X_B),
-            reg_name(X_B),
-            reg_name(X_F)
-        ),
-    );
-    ctx.load_imm(X_F, crate::virtqueue::SLOT_FLAG_RESOLVED as i64);
-    ctx.push(
-        encode::enc_orr_reg(X_B, X_B, X_F, true),
-        format!(
-            "orr {}, {}, {}",
-            reg_name(X_B),
-            reg_name(X_B),
-            reg_name(X_F)
-        ),
-    );
-    ctx.store_ptr(X_B, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
-
-    // Copy to reply_stage if registered; wake waiter if registered.
-    //
-    // plans/M10.md item 0c3: both slot-meta fields hold indices now, not
-    // addresses. `SLOT_META_REPLY_STAGE` is the `(TurnId, byte offset
-    // within that turn area)` pair decision 565 gives every
-    // frame-interior reference — the offset is `Frame::reply_stage_off`,
-    // per *caller* fn, and this drain is a different fn entirely, so no
-    // bare `TurnId` could recover it. `SLOT_META_WAITER` is a bare
-    // `Option[TurnId]`. Both live in DMA-pool memory, which is exactly why
-    // decision 560 fixed `TurnId` as a `u32`: legal wherever a `u32` is,
-    // so `SLOT_META_BYTES` stays 64 and no DMA pool layout moves.
-    //
-    // `ldr w` / `cbz w` throughout: an `x` load of the `TurnId` half would
-    // read the offset half (or, for the waiter, the unused padding above
-    // it) as high bits.
-    ctx.push(
-        encode::enc_ldr_w_imm(X_F, X_D, crate::virtqueue::SLOT_META_REPLY_STAGE as u16),
-        format!(
-            "ldr w{X_F}, [{}, #{}]",
-            reg_name(X_D),
-            crate::virtqueue::SLOT_META_REPLY_STAGE
-        ),
-    );
-    let no_stage = ctx.emit_skip(SkipKind::CbzW(X_F));
-    ctx.push(
-        encode::enc_ldr_w_imm(X_E, X_D, crate::virtqueue::SLOT_META_REPLY_STAGE as u16 + 4),
-        format!(
-            "ldr w{X_E}, [{}, #{}]",
-            reg_name(X_D),
-            crate::virtqueue::SLOT_META_REPLY_STAGE + 4
-        ),
-    );
-    push_turn_addr_from_id(ctx, X_F, X_B);
-    ctx.push(
-        encode::enc_add_reg(X_F, X_F, X_E, true),
-        format!(
-            "add {}, {}, {}",
-            reg_name(X_F),
-            reg_name(X_F),
-            reg_name(X_E)
-        ),
-    );
-    // copy 32 bytes X_A → X_F
-    for w in [0usize, 8, 16, 24] {
-        ctx.load_ptr(X_B, X_A, w);
-        ctx.store_ptr(X_B, X_F, w);
+fn emit_mem_addr(ctx: &mut FnCtx, base: Temp, offset: u64) {
+    ctx.load_slot(X_A, ctx.frame.off(base));
+    if offset == 0 {
+        return;
     }
-    ctx.patch_skip(no_stage, SkipKind::CbzW(X_F));
-
-    ctx.push(
-        encode::enc_ldr_w_imm(X_F, X_D, crate::virtqueue::SLOT_META_WAITER as u16),
-        format!(
-            "ldr w{X_F}, [{}, #{}]",
-            reg_name(X_D),
-            crate::virtqueue::SLOT_META_WAITER
-        ),
-    );
-    let no_waiter = ctx.emit_skip(SkipKind::CbzW(X_F));
-    push_turn_addr_from_id(ctx, X_F, X_B);
-    ctx.load_imm(X_B, 1);
-    ctx.push(
-        encode::enc_str_x_imm(X_B, X_F, OFF_TURN_RESUME_READY as u16),
-        format!(
-            "str {}, [{}, #{OFF_TURN_RESUME_READY}]",
-            reg_name(X_B),
-            reg_name(X_F)
-        ),
-    );
-    // The "consumed" store, still a zero test on the same field: `str wzr`
-    // clears exactly the four bytes the `Option[TurnId]` occupies, and the
-    // 1-based niche (decision 567) keeps `0` meaning "nobody waiting".
-    ctx.push(
-        encode::enc_str_w_imm(X_ZR, X_D, crate::virtqueue::SLOT_META_WAITER as u16),
-        format!(
-            "str wzr, [{}, #{}]",
-            reg_name(X_D),
-            crate::virtqueue::SLOT_META_WAITER
-        ),
-    );
-    ctx.patch_skip(no_waiter, SkipKind::CbzW(X_F));
-
-    // last_used++
-    ctx.load_slot(X_C, ctx.frame.off(queue));
-    ctx.load_imm(X_D, book_off as i64);
-    ctx.push(
-        encode::enc_add_reg(X_D, X_C, X_D, true),
-        format!(
-            "add {}, {}, {}",
-            reg_name(X_D),
-            reg_name(X_C),
-            reg_name(X_D)
-        ),
-    );
-    ctx.load_ptr(X_A, X_D, 0);
-    ctx.load_imm(X_B, 1);
+    ctx.load_imm(X_B, offset as i64);
     ctx.push(
         encode::enc_add_reg(X_A, X_A, X_B, true),
         format!(
@@ -3317,587 +2277,66 @@ fn emit_queue_drain(
             reg_name(X_B)
         ),
     );
-    ctx.store_ptr(X_A, X_D, 0);
-
-    ctx.patch_skip(done_from_empty, SkipKind::Cond(Cond::Al));
-    Ok(())
 }
 
-/// `RunningDevice.reset(queue=mut q)` (plans/M7.md item H2b / decision 23):
-/// establish quiescence with the device, then bump the queue's live epoch
-/// (fail closed on wrap) and copy the device word through. Does not
-/// reclaim DMA or clear the used ring — a completion stamped with the
-/// prior epoch is `StaleId` on the next drain.
-///
-/// **The quiesce comes first** (plans/M8.md item F / decision 36).
-/// 03-hardware.md §9 orders it that way — "reset establishes quiescence,
-/// and only then is memory reclaimed" — and the order is load-bearing
-/// rather than stylistic: the host-written quiesce count is what a later
-/// `reclaim` gates on, so it must already be true by the time any guest
-/// code can observe the new epoch. The store to `QUIESCE_MMIO_ADDR` names
-/// this queue's own count word; the VMM refuses any other address, stops
-/// its model using the ring, and only then increments the count.
-fn emit_device_reset(
+fn emit_mem_load(
     ctx: &mut FnCtx,
-    f: &MwirFn,
     dst: Temp,
-    device: Temp,
-    queue: Temp,
+    base: Temp,
+    offset: u64,
+    width: u8,
 ) -> Result<(), CodegenError> {
-    let depth = virtqueue_depth_of(&f.temp_types[queue.0])?;
-    let placed = crate::virtqueue::place_ring(0, depth).ok_or_else(|| {
-        CodegenError::internal(format!("place_ring(0, {depth}) refused a proven depth"))
-    })?;
-    let epoch_off = placed.bytes + crate::virtqueue::SLOT_BOOK_EPOCH;
-    let quiesced_off = placed.bytes + crate::virtqueue::SLOT_BOOK_QUIESCED;
-
-    // Quiescence first: X_A = &quiesce count, stored to QUIESCE_MMIO_ADDR.
-    ctx.load_slot(X_C, ctx.frame.off(queue));
-    ctx.load_imm(X_A, quiesced_off as i64);
-    ctx.push(
-        encode::enc_add_reg(X_A, X_C, X_A, true),
-        format!(
-            "add {}, {}, {}",
-            reg_name(X_A),
-            reg_name(X_C),
-            reg_name(X_A)
-        ),
-    );
-    ctx.load_imm(X_B, wrela_machine::mmio::QUIESCE_MMIO_ADDR as i64);
-    ctx.store_ptr(X_A, X_B, 0);
-
-    // X_C = pool; X_D = &current_epoch
-    ctx.load_slot(X_C, ctx.frame.off(queue));
-    ctx.load_imm(X_D, epoch_off as i64);
-    ctx.push(
-        encode::enc_add_reg(X_D, X_C, X_D, true),
-        format!(
-            "add {}, {}, {}",
-            reg_name(X_D),
-            reg_name(X_C),
-            reg_name(X_D)
-        ),
-    );
-    ctx.load_ptr(X_A, X_D, 0);
-    // Exhaustion retires rather than wrap (03-hardware.md §4).
-    ctx.load_imm(X_B, -1);
-    ctx.push(
-        encode::enc_cmp_reg(X_A, X_B, true),
-        format!("cmp {}, {}", reg_name(X_A), reg_name(X_B)),
-    );
-    let not_max = ctx.emit_skip(SkipKind::Cond(Cond::Ne));
-    ctx.abort_fixed(
-        "driver fault: reset epoch exhausted (03-hardware.md §4: identities never wrap)",
-    );
-    ctx.patch_skip(not_max, SkipKind::Cond(Cond::Ne));
-    ctx.load_imm(X_B, 1);
-    ctx.push(
-        encode::enc_add_reg(X_A, X_A, X_B, true),
-        format!(
-            "add {}, {}, {}",
-            reg_name(X_A),
-            reg_name(X_A),
-            reg_name(X_B)
-        ),
-    );
-    ctx.store_ptr(X_A, X_D, 0);
-    // Running -> Running: device word is unchanged (authority-only on v1).
-    ctx.load_slot(X_A, ctx.frame.off(device));
-    ctx.store_slot(X_A, ctx.frame.off(dst));
+    emit_mem_addr(ctx, base, offset);
+    let (enc, mnem) = match width {
+        1 => (encode::enc_ldrb_imm(X_B, X_A, 0), "ldrb"),
+        2 => (encode::enc_ldrh_imm(X_B, X_A, 0), "ldrh"),
+        4 => (encode::enc_ldr_w_imm(X_B, X_A, 0), "ldr"),
+        8 => (encode::enc_ldr_x_imm(X_B, X_A, 0), "ldr"),
+        w => {
+            return Err(CodegenError::internal(format!(
+                "MemLoad width {w} (want 1/2/4/8)"
+            )));
+        }
+    };
+    let rt = if width == 8 {
+        reg_name(X_B)
+    } else {
+        format!("w{X_B}")
+    };
+    ctx.push(enc, format!("{mnem} {rt}, [{}]", reg_name(X_A)));
+    ctx.store_slot(X_B, ctx.frame.off(dst));
     Ok(())
 }
 
-/// One 06 §5 park so the VMM's doorbell poll can run: read the clock,
-/// write `now + 20ms` to `OFF_NEXT_DEADLINE`, trap on `PARK_MMIO`. A blk
-/// completion on that park suppresses the sleep (same numbers as the
-/// hand-assembled conformance guest in `wrela-vmm`).
-fn emit_doorbell_poll_park(ctx: &mut FnCtx) {
-    ctx.load_imm(X_A, wrela_machine::mmio::CLOCK_MMIO_ADDR as i64);
-    ctx.load_ptr(X_B, X_A, 0);
-    ctx.load_imm(X_C, 20_000_000);
-    ctx.push(
-        encode::enc_add_reg(X_B, X_B, X_C, true),
-        format!(
-            "add {}, {}, {}",
-            reg_name(X_B),
-            reg_name(X_B),
-            reg_name(X_C)
-        ),
-    );
-    let deadline_addr =
-        wrela_machine::layout::MACHINE_INFO_BASE + wrela_machine::machine_info::OFF_NEXT_DEADLINE;
-    ctx.load_imm(X_A, deadline_addr as i64);
-    ctx.store_ptr(X_B, X_A, 0);
-    ctx.load_imm(X_A, wrela_machine::mmio::PARK_MMIO_ADDR as i64);
-    ctx.store_ptr(X_B, X_A, 0);
-}
-
-/// Sync claim of a drain-resolved receipt's IoCompletion stash (decision 22).
-/// `receipt` holds the meta absolute address (same word publish minted).
-fn emit_queue_claim(
+fn emit_mem_store(
     ctx: &mut FnCtx,
-    f: &MwirFn,
-    dst: Temp,
-    queue: Temp,
-    receipt: Temp,
+    base: Temp,
+    offset: u64,
+    value: Temp,
+    width: u8,
 ) -> Result<(), CodegenError> {
-    let _ = queue; // pool is recoverable from meta; kept for API symmetry
-    let _ = f;
-    // X_D = meta (receipt word)
-    ctx.load_slot(X_D, ctx.frame.off(receipt));
-    // flags must include RESOLVED
-    ctx.load_ptr(X_A, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
-    ctx.load_imm(X_B, crate::virtqueue::SLOT_FLAG_RESOLVED as i64);
-    ctx.push(
-        encode::enc_and_reg(X_A, X_A, X_B, true),
-        format!(
-            "and {}, {}, {}",
-            reg_name(X_A),
-            reg_name(X_A),
-            reg_name(X_B)
-        ),
-    );
-    let ok = ctx.emit_skip(SkipKind::Cbnz(X_A));
-    ctx.abort_fixed("driver fault: claim of a receipt that is not RESOLVED");
-    ctx.patch_skip(ok, SkipKind::Cbnz(X_A));
-    // stash = meta + SLOT_META_BYTES + header + status pad
-    let stash_delta = crate::virtqueue::SLOT_META_BYTES + crate::virtqueue::REQ_HEADER_SIZE + 8;
-    ctx.load_imm(X_A, stash_delta as i64);
-    ctx.push(
-        encode::enc_add_reg(X_A, X_D, X_A, true),
-        format!(
-            "add {}, {}, {}",
-            reg_name(X_A),
-            reg_name(X_D),
-            reg_name(X_A)
-        ),
-    );
-    // Copy 32-byte IoCompletion stash → dst
-    let dst_off = ctx.frame.off(dst);
-    for w in [0usize, 8, 16, 24] {
-        ctx.load_ptr(X_B, X_A, w);
-        ctx.store_slot(X_B, dst_off + w);
-    }
-    // Clear RESOLVED so a second claim aborts (single resolve).
-    ctx.load_ptr(X_A, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
-    ctx.load_imm(X_B, crate::virtqueue::SLOT_FLAG_RESOLVED as i64);
-    ctx.push(
-        encode::enc_bic_reg(X_A, X_A, X_B, true),
-        format!(
-            "bic {}, {}, {}",
-            reg_name(X_A),
-            reg_name(X_A),
-            reg_name(X_B)
-        ),
-    );
-    ctx.store_ptr(X_A, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
+    emit_mem_addr(ctx, base, offset);
+    ctx.load_slot(X_B, ctx.frame.off(value));
+    let (enc, mnem) = match width {
+        1 => (encode::enc_strb_imm(X_B, X_A, 0), "strb"),
+        2 => (encode::enc_strh_imm(X_B, X_A, 0), "strh"),
+        4 => (encode::enc_str_w_imm(X_B, X_A, 0), "str"),
+        8 => (encode::enc_str_x_imm(X_B, X_A, 0), "str"),
+        w => {
+            return Err(CodegenError::internal(format!(
+                "MemStore width {w} (want 1/2/4/8)"
+            )));
+        }
+    };
+    let rt = if width == 8 {
+        reg_name(X_B)
+    } else {
+        format!("w{X_B}")
+    };
+    ctx.push(enc, format!("{mnem} {rt}, [{}]", reg_name(X_A)));
     Ok(())
 }
 
-/// `VirtQueue.recover(receipt=take r)` (plans/M8.md item G / decision 17):
-/// the emitted form of `virtqueue::recover_outcome`, ladder for ladder.
-/// `receipt` holds the meta absolute address (the word publish minted);
-/// `queue` holds the control-pool base, which is where the queue's live
-/// epoch lives.
-///
-/// No payload is produced — 03-hardware.md §9 forbids reclaiming possibly
-/// device-owned memory, so the meta's payload word is left where it is.
-/// Both `INFLIGHT` and `RESOLVED` are cleared afterwards, so a second
-/// resolution of the same slot meets the fail-closed abort rather than a
-/// stale answer — the runtime half of §5's "resolves exactly once".
-///
-/// plans/M8.md item F / decision 37: the slot is **quarantined** rather
-/// than merely retired. `SLOT_FLAG_QUARANTINED` goes up and the queue's
-/// live host-written quiesce count is copied into
-/// `SLOT_BOOK_QUARANTINE_STAMP`, so `reclaim` can tell "the device has
-/// been stopped since this buffer was abandoned" from "it has not".
-/// Quarantine is unconditional across all three outcomes on purpose: a
-/// `Completed` slot's descriptor did come back, but making the gate depend
-/// on the outcome would put the fail-open reading one branch away, and
-/// nothing in §9 asks for it.
-fn emit_queue_recover(
-    ctx: &mut FnCtx,
-    f: &MwirFn,
-    dst: Temp,
-    queue: Temp,
-    receipt: Temp,
-) -> Result<(), CodegenError> {
-    let depth = virtqueue_depth_of(&f.temp_types[queue.0])?;
-    let placed = crate::virtqueue::place_ring(0, depth).ok_or_else(|| {
-        CodegenError::internal(format!("place_ring(0, {depth}) refused a proven depth"))
-    })?;
-    let epoch_off = placed.bytes + crate::virtqueue::SLOT_BOOK_EPOCH;
-
-    // X_D = meta (receipt word); X_C = pool.
-    ctx.load_slot(X_D, ctx.frame.off(receipt));
-    ctx.load_slot(X_C, ctx.frame.off(queue));
-    // X_E = live epoch.
-    ctx.load_imm(X_E, epoch_off as i64);
-    ctx.push(
-        encode::enc_add_reg(X_E, X_C, X_E, true),
-        format!(
-            "add {}, {}, {}",
-            reg_name(X_E),
-            reg_name(X_C),
-            reg_name(X_E)
-        ),
-    );
-    ctx.load_ptr(X_E, X_E, 0);
-    // X_A = stamped slot epoch; X_B = flags.
-    ctx.load_ptr(X_A, X_D, crate::virtqueue::SLOT_META_EPOCH as usize);
-    ctx.load_ptr(X_B, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
-
-    // Result accumulates in X_F.
-    // 1. stale epoch -> Unknown.
-    ctx.push(
-        encode::enc_cmp_reg(X_A, X_E, true),
-        format!("cmp {}, {}", reg_name(X_A), reg_name(X_E)),
-    );
-    let epoch_live = ctx.emit_skip(SkipKind::Cond(Cond::Eq));
-    ctx.load_imm(X_F, crate::virtqueue::OUTCOME_UNKNOWN as i64);
-    let done_stale = ctx.emit_skip(SkipKind::Cond(Cond::Al));
-    ctx.patch_skip(epoch_live, SkipKind::Cond(Cond::Eq));
-
-    // 2. still INFLIGHT -> Unknown.
-    ctx.load_imm(X_A, crate::virtqueue::SLOT_FLAG_INFLIGHT as i64);
-    ctx.push(
-        encode::enc_and_reg(X_A, X_B, X_A, true),
-        format!(
-            "and {}, {}, {}",
-            reg_name(X_A),
-            reg_name(X_B),
-            reg_name(X_A)
-        ),
-    );
-    let not_inflight = ctx.emit_skip(SkipKind::Cbz(X_A));
-    ctx.load_imm(X_F, crate::virtqueue::OUTCOME_UNKNOWN as i64);
-    let done_inflight = ctx.emit_skip(SkipKind::Cond(Cond::Al));
-    ctx.patch_skip(not_inflight, SkipKind::Cbz(X_A));
-
-    // 3. RESOLVED -> read the device status byte; anything else is a fault.
-    ctx.load_imm(X_A, crate::virtqueue::SLOT_FLAG_RESOLVED as i64);
-    ctx.push(
-        encode::enc_and_reg(X_A, X_B, X_A, true),
-        format!(
-            "and {}, {}, {}",
-            reg_name(X_A),
-            reg_name(X_B),
-            reg_name(X_A)
-        ),
-    );
-    let resolved = ctx.emit_skip(SkipKind::Cbnz(X_A));
-    ctx.abort_fixed(crate::virtqueue::RecoverOutcome::not_recoverable_abort_message());
-    ctx.patch_skip(resolved, SkipKind::Cbnz(X_A));
-    ctx.load_ptr(X_A, X_D, crate::virtqueue::SLOT_META_STATUS as usize);
-    ctx.push(
-        encode::enc_ldrb_imm(X_A, X_A, 0),
-        format!("ldrb w{}, [{}, #0]", X_A, reg_name(X_A)),
-    );
-    ctx.push(
-        encode::enc_cmp_imm(X_A, 0, true),
-        format!("cmp {}, #0", reg_name(X_A)),
-    );
-    ctx.load_imm(X_F, crate::virtqueue::OUTCOME_COMPLETED as i64);
-    ctx.load_imm(X_A, crate::virtqueue::OUTCOME_NOT_COMPLETED as i64);
-    ctx.push(
-        encode::enc_csel(X_F, X_F, X_A, Cond::Eq, true),
-        format!(
-            "csel {}, {}, {}, eq",
-            reg_name(X_F),
-            reg_name(X_F),
-            reg_name(X_A)
-        ),
-    );
-
-    ctx.patch_skip(done_stale, SkipKind::Cond(Cond::Al));
-    ctx.patch_skip(done_inflight, SkipKind::Cond(Cond::Al));
-
-    // Retire the slot: clear INFLIGHT and RESOLVED so a second resolution
-    // of this receipt meets the fail-closed abort above.
-    ctx.load_ptr(X_B, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
-    ctx.load_imm(
-        X_A,
-        (crate::virtqueue::SLOT_FLAG_INFLIGHT | crate::virtqueue::SLOT_FLAG_RESOLVED) as i64,
-    );
-    ctx.push(
-        encode::enc_bic_reg(X_B, X_B, X_A, true),
-        format!(
-            "bic {}, {}, {}",
-            reg_name(X_B),
-            reg_name(X_B),
-            reg_name(X_A)
-        ),
-    );
-    // Quarantine the payload (plans/M8.md item F): raise QUARANTINED and
-    // stamp the queue's live host-written quiesce count, which is what
-    // `reclaim` compares against. X_C still holds the control-pool base.
-    ctx.load_imm(X_A, crate::virtqueue::SLOT_FLAG_QUARANTINED as i64);
-    ctx.push(
-        encode::enc_orr_reg(X_B, X_B, X_A, true),
-        format!(
-            "orr {}, {}, {}",
-            reg_name(X_B),
-            reg_name(X_B),
-            reg_name(X_A)
-        ),
-    );
-    ctx.store_ptr(X_B, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
-
-    ctx.load_imm(
-        X_A,
-        (placed.bytes + crate::virtqueue::SLOT_BOOK_QUIESCED) as i64,
-    );
-    ctx.push(
-        encode::enc_add_reg(X_A, X_C, X_A, true),
-        format!(
-            "add {}, {}, {}",
-            reg_name(X_A),
-            reg_name(X_C),
-            reg_name(X_A)
-        ),
-    );
-    ctx.load_ptr(X_A, X_A, 0);
-    ctx.load_imm(
-        X_B,
-        (placed.bytes + crate::virtqueue::SLOT_BOOK_QUARANTINE_STAMP) as i64,
-    );
-    ctx.push(
-        encode::enc_add_reg(X_B, X_C, X_B, true),
-        format!(
-            "add {}, {}, {}",
-            reg_name(X_B),
-            reg_name(X_C),
-            reg_name(X_B)
-        ),
-    );
-    ctx.store_ptr(X_A, X_B, 0);
-
-    ctx.store_slot(X_F, ctx.frame.off(dst));
-    Ok(())
-}
-
-/// `VirtQueue.reclaim(pool=P, payload=T)` (plans/M8.md item F / decision
-/// 37): 03-hardware.md §9's "and only then is memory reclaimed", as a
-/// gate and a load.
-///
-/// The queue is single-flight, so the quarantined slot is the queue's one
-/// meta record at a fixed offset from the control-pool base — no receipt
-/// is needed (and none exists: `recover` consumed it, §5's
-/// resolve-exactly-once). Three steps, in this order:
-///
-/// 1. `SLOT_FLAG_QUARANTINED` must be up. Nothing quarantined means
-///    `recover` never ran on this queue, or a previous `reclaim` already
-///    took the payload — either way there is no handle to hand back, and
-///    inventing one is precisely the aliasing bug this gate exists to
-///    prevent.
-/// 2. The queue's **host-written** quiesce count must have moved since
-///    `recover` stamped it. Equal counts mean no device quiescence has
-///    happened in between, so the buffer may still be device-owned: §9's
-///    "it never reclaims possibly device-owned memory", refused by name.
-/// 3. Only then: the payload word out of the meta record into `dst`, the
-///    quarantine flag down, and the meta's payload word cleared so the
-///    address exists in exactly one place afterwards.
-fn emit_queue_reclaim(
-    ctx: &mut FnCtx,
-    f: &MwirFn,
-    dst: Temp,
-    queue: Temp,
-) -> Result<(), CodegenError> {
-    let depth = virtqueue_depth_of(&f.temp_types[queue.0])?;
-    let placed = crate::virtqueue::place_ring(0, depth).ok_or_else(|| {
-        CodegenError::internal(format!("place_ring(0, {depth}) refused a proven depth"))
-    })?;
-    let meta_off = crate::virtqueue::meta_offset(placed.bytes);
-
-    // X_C = control-pool base; X_D = the queue's one meta record.
-    ctx.load_slot(X_C, ctx.frame.off(queue));
-    ctx.load_imm(X_D, meta_off as i64);
-    ctx.push(
-        encode::enc_add_reg(X_D, X_C, X_D, true),
-        format!(
-            "add {}, {}, {}",
-            reg_name(X_D),
-            reg_name(X_C),
-            reg_name(X_D)
-        ),
-    );
-
-    // 1. quarantined?
-    ctx.load_ptr(X_B, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
-    ctx.load_imm(X_A, crate::virtqueue::SLOT_FLAG_QUARANTINED as i64);
-    ctx.push(
-        encode::enc_and_reg(X_A, X_B, X_A, true),
-        format!(
-            "and {}, {}, {}",
-            reg_name(X_A),
-            reg_name(X_B),
-            reg_name(X_A)
-        ),
-    );
-    let quarantined = ctx.emit_skip(SkipKind::Cbnz(X_A));
-    ctx.abort_fixed(crate::virtqueue::ReclaimGate::NotQuarantined.abort_message());
-    ctx.patch_skip(quarantined, SkipKind::Cbnz(X_A));
-
-    // 2. has the host quiesced the device since the quarantine?
-    ctx.load_imm(
-        X_A,
-        (placed.bytes + crate::virtqueue::SLOT_BOOK_QUIESCED) as i64,
-    );
-    ctx.push(
-        encode::enc_add_reg(X_A, X_C, X_A, true),
-        format!(
-            "add {}, {}, {}",
-            reg_name(X_A),
-            reg_name(X_C),
-            reg_name(X_A)
-        ),
-    );
-    ctx.load_ptr(X_A, X_A, 0);
-    ctx.load_imm(
-        X_E,
-        (placed.bytes + crate::virtqueue::SLOT_BOOK_QUARANTINE_STAMP) as i64,
-    );
-    ctx.push(
-        encode::enc_add_reg(X_E, X_C, X_E, true),
-        format!(
-            "add {}, {}, {}",
-            reg_name(X_E),
-            reg_name(X_C),
-            reg_name(X_E)
-        ),
-    );
-    ctx.load_ptr(X_E, X_E, 0);
-    ctx.push(
-        encode::enc_cmp_reg(X_A, X_E, true),
-        format!("cmp {}, {}", reg_name(X_A), reg_name(X_E)),
-    );
-    let quiesced = ctx.emit_skip(SkipKind::Cond(Cond::Ne));
-    ctx.abort_fixed(crate::virtqueue::ReclaimGate::NotQuiesced.abort_message());
-    ctx.patch_skip(quiesced, SkipKind::Cond(Cond::Ne));
-
-    // 3. hand the payload back, exactly once.
-    ctx.load_ptr(X_A, X_D, crate::virtqueue::SLOT_META_PAYLOAD as usize);
-    ctx.store_slot(X_A, ctx.frame.off(dst));
-    ctx.load_imm(X_A, crate::virtqueue::SLOT_FLAG_QUARANTINED as i64);
-    ctx.push(
-        encode::enc_bic_reg(X_B, X_B, X_A, true),
-        format!(
-            "bic {}, {}, {}",
-            reg_name(X_B),
-            reg_name(X_B),
-            reg_name(X_A)
-        ),
-    );
-    ctx.store_ptr(X_B, X_D, crate::virtqueue::SLOT_META_FLAGS as usize);
-    ctx.load_imm(X_A, 0);
-    ctx.store_ptr(X_A, X_D, crate::virtqueue::SLOT_META_PAYLOAD as usize);
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn emit_desc_entry(
-    ctx: &mut FnCtx,
-    pool_reg: u8,
-    desc_index: u16,
-    addr_reg: u8,
-    len: u32,
-    flags: u16,
-    next: u16,
-    desc_base_off: u64,
-) -> Result<(), CodegenError> {
-    // desc_addr = pool + desc_base_off + index*16. Use X_TMP = 1 as scratch
-    // for the descriptor entry pointer — but addr_reg might be X_A; pool X_C.
-    // Scratch: use register 1 (X_B) only if addr_reg isn't X_B.
-    let entry = if addr_reg == X_B { 0u8 } else { X_B };
-    ctx.load_imm(entry, (desc_base_off + desc_index as u64 * 16) as i64);
-    ctx.push(
-        encode::enc_add_reg(entry, pool_reg, entry, true),
-        format!(
-            "add {}, {}, {}",
-            reg_name(entry),
-            reg_name(pool_reg),
-            reg_name(entry)
-        ),
-    );
-    ctx.push(
-        encode::enc_str_x_imm(addr_reg, entry, 0),
-        format!("str {}, [{}, #0]", reg_name(addr_reg), reg_name(entry)),
-    );
-    // len as u32 — materialize into a free reg
-    let len_reg = if addr_reg == 0 { X_A } else { 0 };
-    ctx.load_imm(len_reg, len as i64);
-    ctx.push(
-        encode::enc_str_w_imm(len_reg, entry, 8),
-        format!("str w{}, [{}, #8]", len_reg, reg_name(entry)),
-    );
-    ctx.load_imm(len_reg, flags as i64);
-    ctx.push(
-        encode::enc_strh_imm(len_reg, entry, 12),
-        format!("strh w{}, [{}, #12]", len_reg, reg_name(entry)),
-    );
-    ctx.load_imm(len_reg, next as i64);
-    ctx.push(
-        encode::enc_strh_imm(len_reg, entry, 14),
-        format!("strh w{}, [{}, #14]", len_reg, reg_name(entry)),
-    );
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn emit_desc_entry_len_reg(
-    ctx: &mut FnCtx,
-    pool_reg: u8,
-    desc_index: u16,
-    addr_reg: u8,
-    len_reg: u8,
-    flags_reg: u8,
-    next: u16,
-    desc_base_off: u64,
-) -> Result<(), CodegenError> {
-    // Find a scratch that isn't pool/addr/len/flags.
-    let used = [pool_reg, addr_reg, len_reg, flags_reg];
-    let entry = (0u8..8).find(|r| !used.contains(r)).ok_or_else(|| {
-        CodegenError::internal("no scratch register for descriptor entry pointer".to_string())
-    })?;
-    ctx.load_imm(entry, (desc_base_off + desc_index as u64 * 16) as i64);
-    ctx.push(
-        encode::enc_add_reg(entry, pool_reg, entry, true),
-        format!(
-            "add {}, {}, {}",
-            reg_name(entry),
-            reg_name(pool_reg),
-            reg_name(entry)
-        ),
-    );
-    ctx.push(
-        encode::enc_str_x_imm(addr_reg, entry, 0),
-        format!("str {}, [{}, #0]", reg_name(addr_reg), reg_name(entry)),
-    );
-    ctx.push(
-        encode::enc_str_w_imm(len_reg, entry, 8),
-        format!("str w{}, [{}, #8]", len_reg, reg_name(entry)),
-    );
-    ctx.push(
-        encode::enc_strh_imm(flags_reg, entry, 12),
-        format!("strh w{}, [{}, #12]", flags_reg, reg_name(entry)),
-    );
-    let next_reg = (0u8..8)
-        .find(|r| !used.contains(r) && *r != entry)
-        .ok_or_else(|| CodegenError::internal("no scratch for desc next".to_string()))?;
-    ctx.load_imm(next_reg, next as i64);
-    ctx.push(
-        encode::enc_strh_imm(next_reg, entry, 14),
-        format!("strh w{}, [{}, #14]", next_reg, reg_name(entry)),
-    );
-    Ok(())
-}
-
-/// A register's transfer width in bytes, from its declared scalar type
-/// alone (03-hardware.md §2: "The compiler and target ABI check width,
-/// alignment, non-overlap, bounds, and endianness"). Fails closed on a
-/// signed register (no sign-extending load is emitted, and silently
-/// zero-extending one would be a wrong answer, not a missing feature) and
-/// on an offset outside the unsigned-immediate encoder's scaled reach.
 fn mmio_access_width(ty: &Type, offset: u64) -> Result<u16, CodegenError> {
     let width = match strip_wrappers(ty) {
         Type::U8 => 1,
@@ -5136,23 +3575,22 @@ fn emit_prologue(f: &MwirFn, frame: &Frame, ctx: &mut FnCtx) -> Result<(), Codeg
     let mut next_reg = 0u8;
     if let Some((self_temp, mode)) = f.receiver {
         let self_ty = &f.temp_types[self_temp.0];
-        // plans/M9.md item E: `Instant`/`Duration` are scalar newtypes
-        // (`is_aggregate` false) with real `read self` methods. Call
-        // sites already pass them by value; the prologue must not
-        // dereference the tick count as a pointer (FAR = nanos).
+        // One ABI rule: scalar → xN; non-scalar (or `mut`) → pointer.
         if is_aggregate(self_ty) || mode == AccessMode::Mut {
             let self_ptr_off = frame
                 .self_ptr_off
                 .ok_or_else(|| CodegenError::internal("receiver present but no self_ptr slot"))?;
             ctx.store_slot(next_reg, self_ptr_off);
-            let size = frame.size_of_temp(self_temp);
-            let dst_off = frame.off(self_temp);
-            let mut w = 0;
-            while w < size {
-                ctx.load_ptr(X_A, next_reg, w);
-                ctx.store_slot(X_A, dst_off + w);
-                w += 8;
-            }
+            // Never place `InterruptCell` words in the frame copy — ops
+            // address the live `self_ptr` cell; copying them in would only
+            // create a stale shadow the epilogue must then carefully skip.
+            copy_self_fields_skipping_interrupt_cells(
+                f,
+                frame,
+                self_temp,
+                ctx,
+                SelfFieldCopy::LiveToFrame,
+            )?;
         } else {
             ctx.store_slot(next_reg, frame.off(self_temp));
         }
@@ -5164,20 +3602,6 @@ fn emit_prologue(f: &MwirFn, frame: &Frame, ctx: &mut FnCtx) -> Result<(), Codeg
             return Err(CodegenError::unimplemented("more than 8 call arguments"));
         }
         let ty = &f.temp_types[p.0];
-        // plans/M10.md item B4: unbounded `Bytes` arrives as two words in
-        // consecutive registers (base, len) — store both into the frame.
-        if is_bytes_handle(ty) {
-            if next_reg > 7 {
-                return Err(CodegenError::unimplemented(
-                    "more than 8 call arguments (Bytes handle needs two registers)",
-                ));
-            }
-            let dst_off = frame.off(*p);
-            ctx.store_slot(next_reg, dst_off);
-            ctx.store_slot(next_reg + 1, dst_off + 8);
-            next_reg += 2;
-            continue;
-        }
         // Aggregates and `mut` params (even scalars) arrive as pointers
         // (plans/M9.md item CC): copy in, and for `mut` also save the
         // pointer for the epilogue write-back.
@@ -5220,7 +3644,13 @@ fn emit_prologue(f: &MwirFn, frame: &Frame, ctx: &mut FnCtx) -> Result<(), Codeg
 fn emit_epilogue(f: &MwirFn, frame: &Frame, ctx: &mut FnCtx) -> Result<(), CodegenError> {
     if let Some((self_temp, mode)) = f.receiver {
         if mode == AccessMode::Mut {
-            write_back_self_skipping_interrupt_cells(f, frame, self_temp, ctx)?;
+            copy_self_fields_skipping_interrupt_cells(
+                f,
+                frame,
+                self_temp,
+                ctx,
+                SelfFieldCopy::FrameToLive,
+            )?;
         }
     }
     // Non-receiver `mut` params: copy the local slot back through the
@@ -5358,31 +3788,37 @@ fn emit_interrupt_cell_rmw(
     Ok(())
 }
 
-/// `mut self` write-back that leaves `InterruptCell` fields alone — the
-/// live word is authoritative (ISR/ordinary ops already STLR'd it).
-/// Writing the frame copy back would stomp an ISR update that landed at a
-/// checkpoint during this turn.
-fn write_back_self_skipping_interrupt_cells(
+/// Direction of a `mut self` field walk that never touches `InterruptCell`
+/// words — those live only at `self_ptr + field_off` (decision 17).
+enum SelfFieldCopy {
+    /// Prologue: live aggregate → frame slots (skip InterruptCell holes).
+    LiveToFrame,
+    /// Epilogue: frame slots → live aggregate (same skip — never stomp an
+    /// ISR update that landed mid-turn).
+    FrameToLive,
+}
+
+/// Shared prologue/epilogue walk: copy every non-`InterruptCell` field
+/// word; leave InterruptCell frame holes alone so they are never a
+/// second source of truth.
+fn copy_self_fields_skipping_interrupt_cells(
     f: &MwirFn,
     frame: &Frame,
     self_temp: Temp,
     ctx: &mut FnCtx,
+    dir: SelfFieldCopy,
 ) -> Result<(), CodegenError> {
     let self_ptr_off = frame
         .self_ptr_off
         .ok_or_else(|| CodegenError::internal("mut receiver but no self_ptr slot"))?;
+    // Live base in X_A for FrameToLive; for LiveToFrame the prologue just
+    // stored the incoming pointer at `self_ptr_off` and still holds it in
+    // the ABI register — reload from the save slot so both directions
+    // share one path.
     ctx.load_slot(X_A, self_ptr_off);
     let self_ty = &f.temp_types[self_temp.0];
     let Type::Named(name, targs) = strip_wrappers(self_ty) else {
-        // Non-named receiver: fall back to whole-aggregate write-back.
-        let size = frame.size_of_temp(self_temp);
-        let src_off = frame.off(self_temp);
-        let mut w = 0;
-        while w < size {
-            ctx.load_slot(X_B, src_off + w);
-            ctx.store_ptr(X_B, X_A, w);
-            w += 8;
-        }
+        copy_self_aggregate_words(frame, self_temp, ctx, dir)?;
         return Ok(());
     };
     // plans/M7.md item G, decision 18: instantiated drivers
@@ -5399,20 +3835,13 @@ fn write_back_self_skipping_interrupt_cells(
     // `internal error: unknown struct \`Cell\`` reachable from ordinary
     // source (`Cell.fill`).
     if ctx.layout.enums.contains_key(name.as_str()) || ctx.layout.enums.contains_key(&layout_key) {
-        let size = frame.size_of_temp(self_temp);
-        let src_off = frame.off(self_temp);
-        let mut w = 0;
-        while w < size {
-            ctx.load_slot(X_B, src_off + w);
-            ctx.store_ptr(X_B, X_A, w);
-            w += 8;
-        }
+        copy_self_aggregate_words(frame, self_temp, ctx, dir)?;
         return Ok(());
     }
     let fields = ctx.layout.structs.get(&layout_key).ok_or_else(|| {
         CodegenError::internal(format!("unknown struct `{layout_key}` in layout ctx"))
     })?;
-    let src_base = frame.off(self_temp);
+    let frame_base = frame.off(self_temp);
     let mut off = 0usize;
     for field_ty in fields {
         let sz =
@@ -5423,8 +3852,16 @@ fn write_back_self_skipping_interrupt_cells(
         ) {
             let mut w = 0;
             while w < sz {
-                ctx.load_slot(X_B, src_base + off + w);
-                ctx.store_ptr(X_B, X_A, off + w);
+                match dir {
+                    SelfFieldCopy::LiveToFrame => {
+                        ctx.load_ptr(X_B, X_A, off + w);
+                        ctx.store_slot(X_B, frame_base + off + w);
+                    }
+                    SelfFieldCopy::FrameToLive => {
+                        ctx.load_slot(X_B, frame_base + off + w);
+                        ctx.store_ptr(X_B, X_A, off + w);
+                    }
+                }
                 w += 8;
             }
         }
@@ -5433,26 +3870,48 @@ fn write_back_self_skipping_interrupt_cells(
     Ok(())
 }
 
-// --- per-fn driver: two passes, prologue length measured up front ----------
-
-fn is_slotmap_init_key(key: &str) -> bool {
-    key.contains("SlotMap[") && key.ends_with(".init")
+fn copy_self_aggregate_words(
+    frame: &Frame,
+    self_temp: Temp,
+    ctx: &mut FnCtx,
+    dir: SelfFieldCopy,
+) -> Result<(), CodegenError> {
+    let size = frame.size_of_temp(self_temp);
+    let frame_off = frame.off(self_temp);
+    let mut w = 0;
+    while w < size {
+        match dir {
+            SelfFieldCopy::LiveToFrame => {
+                ctx.load_ptr(X_B, X_A, w);
+                ctx.store_slot(X_B, frame_off + w);
+            }
+            SelfFieldCopy::FrameToLive => {
+                ctx.load_slot(X_B, frame_off + w);
+                ctx.store_ptr(X_B, X_A, w);
+            }
+        }
+        w += 8;
+    }
+    Ok(())
 }
+
+// --- per-fn driver: two passes, prologue length measured up front ----------
 
 /// 05-library.md §7: mint a fresh non-wrapping `SlotMap` instance id into
 /// field 0 (`map_id`), overwriting the body's placeholder `0`. Mirrors
 /// `eval::interp::run_init`'s counter; the guest counter lives at
 /// `machine_info::OFF_SLOTMAP_NEXT_ID` (zero at boot → first id is 1).
-fn emit_slotmap_mint_id(f: &MwirFn, frame: &Frame, ctx: &mut FnCtx<'_>) -> Result<(), CodegenError> {
-    let Some((self_temp, _)) = f.receiver else {
-        return Err(CodegenError::internal("SlotMap.init without receiver"));
-    };
-    let addr = wrela_machine::layout::MACHINE_INFO_BASE
-        + wrela_machine::machine_info::OFF_SLOTMAP_NEXT_ID;
+fn emit_slotmap_mint_id(map: Temp, ctx: &mut FnCtx<'_>) -> Result<(), CodegenError> {
+    let addr =
+        wrela_machine::layout::MACHINE_INFO_BASE + wrela_machine::machine_info::OFF_SLOTMAP_NEXT_ID;
     ctx.load_imm(X_A, addr as i64);
     ctx.push(
         encode::enc_ldr_x_imm(X_B, X_A, 0),
-        format!("ldr {}, [{}]  ; SlotMap next id", reg_name(X_B), reg_name(X_A)),
+        format!(
+            "ldr {}, [{}]  ; SlotMap next id",
+            reg_name(X_B),
+            reg_name(X_A)
+        ),
     );
     ctx.push(
         encode::enc_add_imm(X_C, X_B, 1, true),
@@ -5468,13 +3927,13 @@ fn emit_slotmap_mint_id(f: &MwirFn, frame: &Frame, ctx: &mut FnCtx<'_>) -> Resul
         encode::enc_str_x_imm(X_C, X_A, 0),
         format!("str {}, [{}]", reg_name(X_C), reg_name(X_A)),
     );
-    // `map_id` is field 0 — first 8 bytes of the self aggregate.
-    ctx.store_slot(X_C, frame.off(self_temp));
+    // `map_id` is field 0 — first 8 bytes of the aggregate.
+    ctx.store_slot(X_C, ctx.frame.off(map));
     Ok(())
 }
 
 fn emit_fn(
-    key: &str,
+    _key: &str,
     f: &MwirFn,
     layout: &LayoutCtx,
     rodata: &mut RodataPool,
@@ -5541,9 +4000,6 @@ fn emit_fn(
         emit_one(inst, f, &mut ctx)?;
     }
     debug_assert_eq!(ctx.words.len(), word_offsets[f.body.len()]);
-    if is_slotmap_init_key(key) {
-        emit_slotmap_mint_id(f, &frame, &mut ctx)?;
-    }
     emit_epilogue(f, &frame, &mut ctx)?;
 
     Ok(CodegenFn {
@@ -6391,22 +4847,20 @@ fn emit_async_entry(
     let mut next_reg = 0u8;
     if let Some((self_temp, mode)) = f.receiver {
         let self_ty = &f.temp_types[self_temp.0];
-        // plans/M9.md item E: scalar `read self` (Instant/Duration) by
-        // value — same rule as `emit_prologue`.
+        // Same ABI rule as `emit_prologue` (InterruptCell skip-walk shared).
         if is_aggregate(self_ty) || mode == AccessMode::Mut {
             let self_ptr_off = ctx
                 .frame
                 .self_ptr_off
                 .ok_or_else(|| CodegenError::internal("receiver present but no self_ptr slot"))?;
             ctx.store_slot(next_reg, self_ptr_off);
-            let size = ctx.frame.size_of_temp(self_temp);
-            let dst_off = ctx.frame.off(self_temp);
-            let mut w = 0;
-            while w < size {
-                ctx.load_ptr(X_A, next_reg, w);
-                ctx.store_slot(X_A, dst_off + w);
-                w += 8;
-            }
+            copy_self_fields_skipping_interrupt_cells(
+                f,
+                &ctx.frame,
+                self_temp,
+                ctx,
+                SelfFieldCopy::LiveToFrame,
+            )?;
         } else {
             ctx.store_slot(next_reg, ctx.frame.off(self_temp));
         }
@@ -6418,19 +4872,6 @@ fn emit_async_entry(
             return Err(CodegenError::unimplemented("more than 8 call arguments"));
         }
         let ty = &f.temp_types[p.0];
-        // plans/M10.md item B4: same two-register Bytes handle as emit_prologue.
-        if is_bytes_handle(ty) {
-            if next_reg > 7 {
-                return Err(CodegenError::unimplemented(
-                    "more than 8 call arguments (Bytes handle needs two registers)",
-                ));
-            }
-            let dst_off = ctx.frame.off(*p);
-            ctx.store_slot(next_reg, dst_off);
-            ctx.store_slot(next_reg + 1, dst_off + 8);
-            next_reg += 2;
-            continue;
-        }
         if is_aggregate(ty) || *mode == AccessMode::Mut {
             if *mode == AccessMode::Mut {
                 let (pt, ptr_off) = mut_ptr_iter.next().ok_or_else(|| {
@@ -6544,7 +4985,13 @@ fn emit_async_epilogue(f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError> 
         if mode == AccessMode::Mut {
             // plans/M7.md item G, decision 17: same InterruptCell skip as
             // the sync epilogue — live cells are not frame-owned.
-            write_back_self_skipping_interrupt_cells(f, ctx.frame, self_temp, ctx)?;
+            copy_self_fields_skipping_interrupt_cells(
+                f,
+                ctx.frame,
+                self_temp,
+                ctx,
+                SelfFieldCopy::FrameToLive,
+            )?;
         }
     }
     for (p, ptr_off) in &ctx.frame.mut_param_ptr_offs {
@@ -9435,22 +7882,43 @@ pub fn emit_boot_init_call(slot: &BootInitSlotSpec) -> CodegenFn {
         );
         let ok_fixup = words.len();
         push(&mut words, 0, "cbz x9, .ok".to_string());
+        // `__wrela_abort(x0=*Bytes)` — stack slot, then BL (noreturn).
+        push(
+            &mut words,
+            encode::enc_sub_imm(31, 31, 16, true),
+            "sub sp, sp, #16  ; abort Bytes slot".to_string(),
+        );
         let word_adrp = words.len();
         push(
             &mut words,
-            encode::enc_adrp(0, 0),
-            format!("adrp x0, rodata+{msg_off}"),
+            encode::enc_adrp(10, 0),
+            format!("adrp x10, rodata+{msg_off}"),
         );
         push(
             &mut words,
-            encode::enc_add_imm(0, 0, 0, true),
-            format!("add x0, x0, #rodata+{msg_off}"),
+            encode::enc_add_imm(10, 10, 0, true),
+            format!("add x10, x10, #rodata+{msg_off}"),
         );
         relocs.push(Reloc::Rodata {
             word_adrp,
             byte_offset: msg_off,
         });
-        load_imm(&mut words, 1, msg_len as u64, "abort msg len");
+        push(
+            &mut words,
+            encode::enc_str_x_imm(10, 31, 0),
+            "str x10, [sp]  ; Bytes.base".to_string(),
+        );
+        load_imm(&mut words, 10, msg_len as u64, "abort msg len");
+        push(
+            &mut words,
+            encode::enc_str_x_imm(10, 31, 8),
+            "str x10, [sp, #8]  ; Bytes.len".to_string(),
+        );
+        push(
+            &mut words,
+            encode::enc_add_imm(0, 31, 0, true),
+            "add x0, sp, #0  ; *Bytes".to_string(),
+        );
         let abort_word = words.len();
         push(
             &mut words,
@@ -9859,6 +8327,8 @@ pub fn emit_test_call_stub(test_key: &str, args: &[u64]) -> CodegenFn {
 
 /// M11 K / decision 851: append interned `test <name>: ` prefix via
 /// `__wrela_console_append_bytes`. Inject overwrites `__test_prefix_i`.
+/// Bytes is by-pointer: stack slot `(base, capacity)`, `x0 = &*slot`,
+/// `x1 = copy_len`.
 pub fn emit_test_prefix_stub(rodata_off: usize, len: u64) -> CodegenFn {
     fn push(words: &mut Vec<(u32, String)>, w: u32, text: String) {
         words.push((w, text));
@@ -9891,35 +8361,49 @@ pub fn emit_test_prefix_stub(rodata_off: usize, len: u64) -> CodegenFn {
     }
     let mut words: Vec<(u32, String)> = Vec::new();
     let mut relocs: Vec<Reloc> = Vec::new();
+    // 16-byte Bytes slot at [sp], LR at [sp,#16].
     push(
         &mut words,
-        encode::enc_sub_imm(31, 31, 16, true),
-        "sub sp, sp, #16".into(),
+        encode::enc_sub_imm(31, 31, 32, true),
+        "sub sp, sp, #32".into(),
     );
     push(
         &mut words,
-        encode::enc_str_x_imm(30, 31, 0),
-        "str x30, [sp]".into(),
+        encode::enc_str_x_imm(30, 31, 16),
+        "str x30, [sp, #16]".into(),
     );
     let word_adrp = words.len();
     push(
         &mut words,
-        encode::enc_adrp(0, 0),
-        format!("adrp x0, rodata+{rodata_off:#x}"),
+        encode::enc_adrp(9, 0),
+        format!("adrp x9, rodata+{rodata_off:#x}"),
     );
     push(
         &mut words,
-        encode::enc_add_imm(0, 0, 0, true),
-        format!("add x0, x0, #rodata+{rodata_off:#x}"),
+        encode::enc_add_imm(9, 9, 0, true),
+        format!("add x9, x9, #rodata+{rodata_off:#x}"),
     );
     relocs.push(Reloc::Rodata {
         word_adrp,
         byte_offset: rodata_off,
     });
-    // Bytes ABI is (ptr, capacity) in x0/x1; the copy length is x2
-    // (harness `bl_console_append_bytes` sets x1 = x2 = len).
-    load_imm(&mut words, 1, len, "prefix Bytes.capacity");
-    load_imm(&mut words, 2, len, "prefix copy len");
+    push(
+        &mut words,
+        encode::enc_str_x_imm(9, 31, 0),
+        "str x9, [sp]  ; Bytes.base".into(),
+    );
+    load_imm(&mut words, 9, len, "Bytes.capacity");
+    push(
+        &mut words,
+        encode::enc_str_x_imm(9, 31, 8),
+        "str x9, [sp, #8]  ; Bytes.len".into(),
+    );
+    push(
+        &mut words,
+        encode::enc_add_imm(0, 31, 0, true),
+        "add x0, sp, #0  ; *Bytes".into(),
+    );
+    load_imm(&mut words, 1, len, "copy len");
     let bl = words.len();
     push(
         &mut words,
@@ -9932,17 +8416,17 @@ pub fn emit_test_prefix_stub(rodata_off: usize, len: u64) -> CodegenFn {
     });
     push(
         &mut words,
-        encode::enc_ldr_x_imm(30, 31, 0),
-        "ldr x30, [sp]".into(),
+        encode::enc_ldr_x_imm(30, 31, 16),
+        "ldr x30, [sp, #16]".into(),
     );
     push(
         &mut words,
-        encode::enc_add_imm(31, 31, 16, true),
-        "add sp, sp, #16".into(),
+        encode::enc_add_imm(31, 31, 32, true),
+        "add sp, sp, #32".into(),
     );
     push(&mut words, encode::enc_ret(30), "ret".into());
     CodegenFn {
-        frame_size: 16,
+        frame_size: 32,
         code: words,
         relocs,
     }

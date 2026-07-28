@@ -26,38 +26,39 @@ Program
     Temp t23 ty=u64
     Body
       0000: Call key=struct:SlotMap[u64, 2].init dst=t2 args=[t1] write_backs=[0:t1]
-      0001: Copy dst=t3 src=t1
-      0002: ConstInt dst=t4 ty=u64 value=10
-      0003: Copy dst=t5 src=t4
-      0004: Call key=struct:SlotMap[u64, 2].insert dst=t6 args=[t3,t5] write_backs=[0:t3]
-      0005: EnumTag dst=t8 src=t6
-      0006: ConstInt dst=t9 ty=u64 value=0
-      0007: Compare op=== ty=u64 dst=t10 lhs=t8 rhs=t9
-      0008: EnumPayload dst=t11 src=t6 index=0
-      0009: Copy dst=t7 src=t11
-      0010: ConstBool dst=t12 value=true
-      0011: BoolAnd dst=t13 lhs=t10 rhs=t12
-      0012: JumpIfFalse cond=t13 target=0021
-      0013: Call key=struct:SlotMap[u64, 2].contains dst=t14 args=[t3,t7]
-      0014: JumpIfFalse cond=t14 target=0018
-      0015: ConstInt dst=t15 ty=u64 value=1
-      0016: Return value=t15
-      0017: Jump target=0018
-      0018: ConstInt dst=t16 ty=u64 value=0
-      0019: Return value=t16
-      0020: Jump target=0032
-      0021: EnumTag dst=t17 src=t6
-      0022: ConstInt dst=t18 ty=u64 value=1
-      0023: Compare op=== ty=u64 dst=t19 lhs=t17 rhs=t18
-      0024: EnumPayload dst=t20 src=t6 index=0
-      0025: ConstBool dst=t21 value=true
-      0026: BoolAnd dst=t22 lhs=t19 rhs=t21
-      0027: JumpIfFalse cond=t22 target=0031
-      0028: ConstInt dst=t23 ty=u64 value=0
-      0029: Return value=t23
-      0030: Jump target=0032
-      0031: AssertFail message="match: no arm matched (exhaustiveness already proved this cannot happen)"
-      0032: Return
+      0001: SlotMapMint map=t1
+      0002: Copy dst=t3 src=t1
+      0003: ConstInt dst=t4 ty=u64 value=10
+      0004: Copy dst=t5 src=t4
+      0005: Call key=struct:SlotMap[u64, 2].insert dst=t6 args=[t3,t5] write_backs=[0:t3]
+      0006: EnumTag dst=t8 src=t6
+      0007: ConstInt dst=t9 ty=u64 value=0
+      0008: Compare op=== ty=u64 dst=t10 lhs=t8 rhs=t9
+      0009: EnumPayload dst=t11 src=t6 index=0
+      0010: Copy dst=t7 src=t11
+      0011: ConstBool dst=t12 value=true
+      0012: BoolAnd dst=t13 lhs=t10 rhs=t12
+      0013: JumpIfFalse cond=t13 target=0022
+      0014: Call key=struct:SlotMap[u64, 2].contains dst=t14 args=[t3,t7]
+      0015: JumpIfFalse cond=t14 target=0019
+      0016: ConstInt dst=t15 ty=u64 value=1
+      0017: Return value=t15
+      0018: Jump target=0019
+      0019: ConstInt dst=t16 ty=u64 value=0
+      0020: Return value=t16
+      0021: Jump target=0033
+      0022: EnumTag dst=t17 src=t6
+      0023: ConstInt dst=t18 ty=u64 value=1
+      0024: Compare op=== ty=u64 dst=t19 lhs=t17 rhs=t18
+      0025: EnumPayload dst=t20 src=t6 index=0
+      0026: ConstBool dst=t21 value=true
+      0027: BoolAnd dst=t22 lhs=t19 rhs=t21
+      0028: JumpIfFalse cond=t22 target=0032
+      0029: ConstInt dst=t23 ty=u64 value=0
+      0030: Return value=t23
+      0031: Jump target=0033
+      0032: AssertFail message="match: no arm matched (exhaustiveness already proved this cannot happen)"
+      0033: Return
   Fn key=struct:SlotMap[u64, 2].contains ret=bool temps=20 receiver=t0:read params=[t1]
     Temp t0 ty=SlotMap[u64, 2]
     Temp t1 ty=Key

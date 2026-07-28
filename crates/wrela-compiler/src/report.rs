@@ -141,11 +141,25 @@
 
 use std::collections::BTreeMap;
 
+use wrela_machine::report as machine_report;
+
 use crate::eval::image::{self, ImageDeclRef, ImageGraph, TypedProgramEnums};
 use crate::eval::quota;
 use crate::eval::value::Value;
 use crate::placement::{self, PlacementTable};
 use crate::sema::types;
+
+/// Structured `--stage=report` facts before text render. Overlapping
+/// identity lines (`Machine revision`, `Input`) share spellings with
+/// [`machine_report::ParsedReport`] via `machine_report::line_*` helpers;
+/// graph / placement / exact-bytes sections remain compiler-owned.
+#[derive(Debug, Clone)]
+pub struct ImageReportDoc<'a> {
+    pub inputs: &'a [BuildInput],
+    pub enums: &'a BTreeMap<String, Vec<String>>,
+    pub graph: &'a ImageGraph,
+    pub placement: &'a PlacementTable,
+}
 
 /// This crate's own static version string (`wrela-compiler`'s own
 /// `Cargo.toml` — `bin/wrela.rs`'s `version` subcommand reads the
@@ -267,7 +281,7 @@ fn render_pool_args(program: &TypedProgramEnums, args: &[image::DeclArg], out: &
     }
 }
 
-/// Renders the whole `ImageReport` (plans/M4.md item D). `inputs` must
+/// Builds the structured report value, then renders it. `inputs` must
 /// already carry one entry per file in the build closure — this function
 /// does no I/O and trusts its caller (`bin/wrela.rs::run_report_stage`,
 /// `xtask`'s own determinism oracle) to have read and hashed every real
@@ -284,7 +298,19 @@ pub fn render(
     graph: &ImageGraph,
     placement: &PlacementTable,
 ) -> Result<String, String> {
-    let program = TypedProgramEnums { enums };
+    Ok(render_doc(&ImageReportDoc {
+        inputs,
+        enums,
+        graph,
+        placement,
+    }))
+}
+
+/// Renders a structured [`ImageReportDoc`] (plans/M4.md item D). Identity
+/// lines that overlap the VMM schema go through `wrela_machine::report`
+/// Kind spellings so emitter and parser share one source.
+pub fn render_doc(doc: &ImageReportDoc<'_>) -> String {
+    let program = TypedProgramEnums { enums: doc.enums };
     let mut out = String::new();
     out.push_str("ImageReport v0\n");
 
@@ -293,9 +319,9 @@ pub fn render(
     image::push_line(
         &mut out,
         1,
-        &format!("Machine revision={}", wrela_machine::MACHINE_REVISION_STR),
+        &machine_report::line_machine_revision(wrela_machine::MACHINE_REVISION_STR),
     );
-    if let Some(target) = &graph.target {
+    if let Some(target) = &doc.graph.target {
         image::push_line(
             &mut out,
             1,
@@ -325,16 +351,16 @@ pub fn render(
         1,
         &format!("Quota max_exhaustive_cases={}", quota::MAX_EXHAUSTIVE_CASES),
     );
-    for inp in inputs {
+    for inp in doc.inputs {
         image::push_line(
             &mut out,
             1,
-            &format!("Input path={} sha256={}", inp.path, inp.digest),
+            &machine_report::line_input(&inp.path, &inp.digest),
         );
     }
 
     // --- 2. the image --------------------------------------------------------
-    if let Some(name) = &graph.name {
+    if let Some(name) = &doc.graph.name {
         image::push_line(
             &mut out,
             1,
@@ -344,7 +370,7 @@ pub fn render(
             ),
         );
     }
-    if let Some(target) = &graph.target {
+    if let Some(target) = &doc.graph.target {
         image::push_line(
             &mut out,
             1,
@@ -359,7 +385,7 @@ pub fn render(
     // one's own args discover along the way, held until section 5. ---------
     let mut edges: Vec<(ImageDeclRef, ImageDeclRef)> = Vec::new();
 
-    for (i, d) in graph.devices.iter().enumerate() {
+    for (i, d) in doc.graph.devices.iter().enumerate() {
         image::push_line(
             &mut out,
             1,
@@ -376,7 +402,7 @@ pub fn render(
             &mut edges,
         );
     }
-    for (i, d) in graph.drivers.iter().enumerate() {
+    for (i, d) in doc.graph.drivers.iter().enumerate() {
         image::push_line(
             &mut out,
             1,
@@ -393,7 +419,7 @@ pub fn render(
             &mut edges,
         );
     }
-    for (i, d) in graph.actors.iter().enumerate() {
+    for (i, d) in doc.graph.actors.iter().enumerate() {
         image::push_line(
             &mut out,
             1,
@@ -439,7 +465,7 @@ pub fn render(
     // line (`layout::render_layout_section`) carries the *resolved* device
     // — this one carries the declaration exactly as source wrote it,
     // driver spelling included.
-    for (name, d) in &graph.pools {
+    for (name, d) in &doc.graph.pools {
         image::push_line(
             &mut out,
             1,
@@ -450,7 +476,7 @@ pub fn render(
         );
         render_pool_args(&program, &d.args, &mut out);
     }
-    for (name, d) in &graph.dma_pools {
+    for (name, d) in &doc.graph.dma_pools {
         image::push_line(
             &mut out,
             1,
@@ -463,7 +489,7 @@ pub fn render(
     }
 
     // --- 7. failure policy -----------------------------------------------------
-    for (i, s) in graph.on_failures.iter().enumerate() {
+    for (i, s) in doc.graph.on_failures.iter().enumerate() {
         let policy = s
             .args
             .iter()
@@ -491,12 +517,12 @@ pub fn render(
     }
 
     // --- 8a. placement (04 §3 / plans/M8.md item B) -----------------------
-    placement::render_placement_section(&mut out, placement);
+    placement::render_placement_section(&mut out, doc.placement);
 
     // --- 8b/9. the exact-bytes section (appended by the caller) and
     // registered layout asserts (never reached): see module doc ------------
 
-    Ok(out)
+    out
 }
 
 /// Appends the exact-bytes section (module doc, section 8b) to an

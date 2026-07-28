@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/check_pool_two_devices.wr sha256=36aca8d495c39ad80c8b859d9e24d16953b2c44b6ce7126878a7eaf6f576596b
-  Input path=<generated> sha256=48e8deae52035a461e030a8d6ac95797c39a772df687a494abf356ec66901a4d
+  Input path=<generated> sha256=47c2a2b7d8c6316023519eaf9854474c0ce2926b337d6dacbbf0a5dca0164b15
   Name value=pool-two-devices
   Target value=Target.wrela_machine_v1
   Device index=0 type=BlockHw
@@ -64,10 +64,10 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=89040
-  Section name=rodata base=0x40515c20 size=263
-  Section name=abort base=0x40515d28 size=120
-  Section name=checkpoint base=0x40515da0 size=28
+  Section name=code base=0x40500050 size=107004
+  Section name=rodata base=0x4051a250 size=455
+  Section name=abort base=0x4051a418 size=120
+  Section name=checkpoint base=0x4051a490 size=28
   Section name=rtdata base=0x40540000 size=32
   Section name=devregs base=0x40540020 size=16
   Section name=pooldata base=0x40540030 size=32
@@ -77,7 +77,7 @@ ImageReport v0
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
   PlacedStatic name=EXIT type=ParkMmio addr=0x8001000 size=8
   PlacedStatic name=GROUPS type=GroupArena addr=0x4057f778 size=96
-  PlacedStatic name=INIT_SPAN0 type=InitSpan0Words addr=0x4057f738 size=8
+  PlacedStatic name=INIT_SPAN0 type=InitSpan0Words addr=0x40540000 size=16
   PlacedStatic name=INIT_SPAN1 type=InitSpan1Words addr=0x4057f740 size=8
   PlacedStatic name=INIT_SPAN2 type=InitSpan2Words addr=0x4057f748 size=8
   PlacedStatic name=INIT_SPAN3 type=InitSpan3Words addr=0x4057f750 size=8

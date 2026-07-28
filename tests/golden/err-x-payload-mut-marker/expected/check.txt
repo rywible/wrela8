@@ -1,1 +1,1 @@
-error[access]: `mut` is not a legal marker here; a payload value is either unmarked or `take` at 10:17
+error[move]: `b` is a resource; use `take` to move it here (an implicit copy is not allowed) at 10:26

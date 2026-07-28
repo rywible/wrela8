@@ -28,11 +28,11 @@
 //! differential oracle (`cargo xtask diff-eval`): compiled code must agree
 //! with it on every pure program.
 
+pub mod census;
 pub mod codegen;
 pub mod emitted_a64_census;
 pub mod encode;
 pub mod eval;
-pub mod field_visibility_census;
 pub mod flowwir;
 pub mod flowwir_lower;
 pub mod guest_fn_key_census;
@@ -40,6 +40,8 @@ pub mod internal_error_census;
 pub mod layout;
 pub mod loader;
 pub mod lower;
+pub mod lower_queue;
+pub mod lower_shared;
 pub mod mwir;
 pub mod placed_static_census;
 pub mod placement;

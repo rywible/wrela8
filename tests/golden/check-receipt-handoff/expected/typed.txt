@@ -64,7 +64,8 @@ Program
                   Field name=queue ty=VirtQueue[..8]
                     Local name=self ty=BlkDriver
                 Arg label=payload
-                  Local name=buffer ty=own[BlockPayloads] DmaBlock
+                  Take ty=own[BlockPayloads] DmaBlock
+                    Local name=buffer ty=own[BlockPayloads] DmaBlock
                 Arg label=error
                   EnumConstruct enum=IoError variant=OutOfRange ty=IoError
         Let name=permit ty=Result[QueuePermit, CapacityError]
@@ -80,7 +81,8 @@ Program
               Field name=queue ty=VirtQueue[..8]
                 Local name=self ty=BlkDriver
             Arg label=permit
-              Local name=permit ty=QueuePermit
+              Take ty=QueuePermit
+                Local name=permit ty=QueuePermit
             Arg label=header
               StructLiteral name=BlkReqHeader ty=BlkReqHeader
                 Field name=kind
@@ -90,7 +92,8 @@ Program
                 Field name=sector
                   Local name=lba ty=u64
             Arg label=payload
-              Local name=buffer ty=own[BlockPayloads] DmaBlock
+              Take ty=own[BlockPayloads] DmaBlock
+                Local name=buffer ty=own[BlockPayloads] DmaBlock
             Arg label=device_writes_payload
               Bool value=true ty=bool
             Arg label=status
@@ -103,7 +106,8 @@ Program
               Field name=queue ty=VirtQueue[..8]
                 Local name=self ty=BlkDriver
             Arg label=operation
-              Local name=operation ty=QueueOp[own[BlockPayloads] DmaBlock, true]
+              Take ty=QueueOp[own[BlockPayloads] DmaBlock, true]
+                Local name=operation ty=QueueOp[own[BlockPayloads] DmaBlock, true]
     Init ret=Result[unit, BootError]
       Receiver mode=mut ty=BlkDriver
       Param name=cap mode=take ty=DeviceCap[VirtioBlock]
@@ -112,7 +116,8 @@ Program
         Let name=claimed ty=DriverClaimedDevice[VirtioBlock]
           Intrinsic key=Device.claim type_arg=VirtioBlock ty=DriverClaimedDevice[VirtioBlock]
             Arg label=cap
-              Local name=cap ty=DeviceCap[VirtioBlock]
+              Take ty=DeviceCap[VirtioBlock]
+                Local name=cap ty=DeviceCap[VirtioBlock]
         Assign
           Field name=irq_regs ty=Mmio[VirtioIrqMmio]
             Local name=self ty=BlkDriver
@@ -123,7 +128,8 @@ Program
           Try ty=FeaturesAcceptedDevice[VirtioBlock]
             Intrinsic key=Device.negotiate type_arg=VirtioBlock ty=Result[FeaturesAcceptedDevice[VirtioBlock], BootError]
               Receiver
-                Local name=claimed ty=DriverClaimedDevice[VirtioBlock]
+                Take ty=DriverClaimedDevice[VirtioBlock]
+                  Local name=claimed ty=DriverClaimedDevice[VirtioBlock]
               Arg label=required
                 List ty=[Feature; 1]
                   EnumConstruct enum=Feature variant=Flush ty=Feature
@@ -136,7 +142,8 @@ Program
           Try ty=VirtQueue[..8]
             Intrinsic key=VirtQueue.configure type_arg=VirtioBlock ty=Result[VirtQueue[..8], BootError]
               Arg label=pool
-                Local name=control_pool ty=DmaPool[BlockControl, 512]
+                Take ty=DmaPool[BlockControl, 512]
+                  Local name=control_pool ty=DmaPool[BlockControl, 512]
               Arg label=device
                 Local name=negotiated ty=FeaturesAcceptedDevice[VirtioBlock]
               Arg label=index
@@ -152,7 +159,8 @@ Program
             Local name=self ty=BlkDriver
           Intrinsic key=Device.start type_arg=VirtioBlock ty=RunningDevice[VirtioBlock]
             Receiver
-              Local name=negotiated ty=QueuesConfiguredDevice[VirtioBlock]
+              Take ty=QueuesConfiguredDevice[VirtioBlock]
+                Local name=negotiated ty=QueuesConfiguredDevice[VirtioBlock]
         Return
           EnumConstruct enum=Result variant=Ok ty=Result[unit, BootError]
             Unit ty=unit

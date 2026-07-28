@@ -51,10 +51,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::sema::generics;
 use crate::sema::typed::{
-    CalleeKey, TestDecl, TestKind, TypedClosureBody, TypedClosureParam, TypedConst, TypedDeferBody,
-    TypedElif, TypedEnum, TypedExpr, TypedExprKind, TypedFn, TypedForIter, TypedMatchArm,
-    TypedParam, TypedPattern, TypedPatternKind, TypedProgram, TypedStmt, TypedStmtKind,
-    TypedStruct,
+    CalleeKey, TestDecl, TestKind, TypedCallArg, TypedClosureBody, TypedClosureParam, TypedConst,
+    TypedDeferBody, TypedElif, TypedEnum, TypedExpr, TypedExprKind, TypedFn, TypedForIter,
+    TypedMatchArm, TypedParam, TypedPattern, TypedPatternKind, TypedProgram, TypedStmt,
+    TypedStmtKind, TypedStruct,
 };
 use crate::sema::types::{
     self, Classification, DeclMember, DeclParam, DeclVariantPayload, Type, TypeArg,
@@ -327,10 +327,10 @@ pub(crate) struct ModuleCtx {
     /// the end of `check`) so the ring geometry has one source of truth.
     pub(crate) virtqueue_configures: RefCell<Vec<(String, u16)>>,
     /// plans/M13.md item M / decision 1: spans where
-    /// `Result[QueuePermit, CapacityError]` from `VirtQueue.reserve` was
-    /// coerced to `QueuePermit`. `reserve_proof` must succeed whenever
-    /// this is non-empty; otherwise the site may keep the Result (and
-    /// item L refuses silent `Err` discard).
+    /// `VirtQueue.reserve` was typed as `QueuePermit` because the use
+    /// site expected a permit (`check_virtqueue_reserve`). `reserve_proof`
+    /// must succeed whenever this is non-empty; otherwise the site may
+    /// keep the Result (and item L refuses silent `Err` discard).
     pub(crate) reserve_permit_demands: RefCell<Vec<Span>>,
     /// plans/M13.md item N: sync loops that omit `@budget`, pending the
     /// observation-discharge check after bodies are typed.
@@ -734,7 +734,7 @@ pub(crate) struct FnCtx {
     /// every `if`/`elif`/`else`/`while`/`for`/`match`-arm suite; folding
     /// the map into that push/pop is the one place a future construct
     /// cannot forget.
-    quarantined_by_queue: BTreeMap<String, (String, String)>,
+    pub(crate) quarantined_by_queue: BTreeMap<String, (String, String)>,
     /// plans/M13.md item K: when `ret_ty` is private `Result[T]` (error
     /// set still the declare-time marker), accumulate every `Err` /
     /// `?` error source reaching `return`. `None` for ordinary signatures.
@@ -1156,7 +1156,7 @@ pub(crate) fn is_layout_assert_fn(f: &ast::FnItem) -> bool {
 /// `ImageReport` (named `ImageReport` after import, possibly aliased —
 /// identified by the fixed field set decision 220 freezes), returning
 /// `unit`. Attribute takes no arguments.
-fn check_layout_assert_fn(
+pub(crate) fn check_layout_assert_fn(
     f: &ast::FnItem,
     d: &types::DeclFn,
     mctx: &ModuleCtx,
@@ -1642,7 +1642,10 @@ fn check_enum_bodies(e: &ast::EnumItem, mctx: &ModuleCtx) -> Result<Option<Typed
                 f.span,
             ));
         }
-        let receiver = f.receiver.as_ref().map(|r| (r.mode, self_ty.clone()));
+        let receiver = f
+            .receiver
+            .as_ref()
+            .map(|r| (r.mode.unwrap_or(AccessMode::Read), self_ty.clone()));
         let ret =
             finalize_inferred_ret(&fd.ret, fctx.inferred_errors, &f.name, Some(&e.name), mctx);
         let tf = TypedFn {
@@ -1791,7 +1794,10 @@ pub(crate) fn check_struct_members(
                         ));
                     }
                 }
-                let receiver = f.receiver.as_ref().map(|r| (r.mode, self_ty.clone()));
+                let receiver = f
+                    .receiver
+                    .as_ref()
+                    .map(|r| (r.mode.unwrap_or(AccessMode::Read), self_ty.clone()));
                 let ret = finalize_inferred_ret(
                     &fd.ret,
                     fctx.inferred_errors,
@@ -1828,7 +1834,7 @@ pub(crate) fn check_struct_members(
                     mctx,
                 );
                 init = Some(TypedFn {
-                    receiver: Some((i.receiver.mode, self_ty.clone())),
+                    receiver: Some((i.receiver.mode.unwrap_or(AccessMode::Mut), self_ty.clone())),
                     params,
                     ret,
                     body,
@@ -2119,7 +2125,7 @@ fn collect_format_string_returns(
 
 // --- statements --------------------------------------------------------
 
-fn check_stmts(
+pub(crate) fn check_stmts(
     stmts: &[Stmt],
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
@@ -2138,13 +2144,16 @@ fn check_stmt(stmt: &Stmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedSt
         Stmt::Match(m) => check_match(m, fctx, mctx),
         Stmt::For(f) => check_for(f, fctx, mctx),
         Stmt::While(w) => check_while(w, fctx, mctx),
-        Stmt::Break(_) => Ok(TypedStmt {
+        Stmt::Break(span) => Ok(TypedStmt {
+            span: *span,
             kind: TypedStmtKind::Break,
         }),
-        Stmt::Continue(_) => Ok(TypedStmt {
+        Stmt::Continue(span) => Ok(TypedStmt {
+            span: *span,
             kind: TypedStmtKind::Continue,
         }),
-        Stmt::Pass(_) => Ok(TypedStmt {
+        Stmt::Pass(span) => Ok(TypedStmt {
+            span: *span,
             kind: TypedStmtKind::Pass,
         }),
         Stmt::Return(span, e) => check_return(*span, e, fctx, mctx),
@@ -2152,7 +2161,8 @@ fn check_stmt(stmt: &Stmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedSt
         Stmt::Defer(d) => check_defer(d, fctx, mctx),
         Stmt::With(w) => check_with(w, fctx, mctx),
         Stmt::Send(span, e) => check_send_stmt(*span, e, fctx, mctx),
-        Stmt::Expr(_span, e) => Ok(TypedStmt {
+        Stmt::Expr(span, e) => Ok(TypedStmt {
+            span: *span,
             kind: TypedStmtKind::ExprStmt(check_expr(e, None, fctx, mctx)?),
         }),
         // plans/M3.md item D: `sema::specialize` runs before this pass
@@ -2204,6 +2214,7 @@ fn check_comptime_assert(
         None => None,
     };
     Ok(TypedStmt {
+        span,
         kind: TypedStmtKind::ComptimeAssert {
             span,
             cond,
@@ -2232,6 +2243,7 @@ fn check_if(i: &IfStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedStmt,
         None => None,
     };
     Ok(TypedStmt {
+        span: i.span,
         kind: TypedStmtKind::If {
             cond,
             then_branch,
@@ -2246,6 +2258,7 @@ fn check_while(w: &WhileStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<Type
     let cond = check_expr(&w.cond, Some(&Type::Bool), fctx, mctx)?;
     let body = scoped(fctx, |fctx| check_stmts(&w.body, fctx, mctx))?;
     Ok(TypedStmt {
+        span: w.span,
         kind: TypedStmtKind::While { cond, body, budget },
     })
 }
@@ -2303,6 +2316,7 @@ fn check_match(m: &MatchStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<Type
         check_no_silent_err_discard(&sty, &arms, &m.arms, m.span)?;
     }
     Ok(TypedStmt {
+        span: m.span,
         kind: TypedStmtKind::Match { scrutinee, arms },
     })
 }
@@ -2603,7 +2617,7 @@ fn walk_typed_expr_locals(e: &TypedExpr, f: &mut dyn FnMut(&str)) {
                 walk_typed_expr_locals(r, f);
             }
             for a in args {
-                if let Some(t) = a {
+                if let Some(t) = &a.value {
                     walk_typed_expr_locals(t, f);
                 }
             }
@@ -2611,7 +2625,9 @@ fn walk_typed_expr_locals(e: &TypedExpr, f: &mut dyn FnMut(&str)) {
         TypedExprKind::CallValue(callee, args) => {
             walk_typed_expr_locals(callee, f);
             for a in args {
-                walk_typed_expr_locals(a, f);
+                if let Some(t) = &a.value {
+                    walk_typed_expr_locals(t, f);
+                }
             }
         }
         TypedExprKind::Intrinsic { receiver, args, .. } => {
@@ -2634,7 +2650,9 @@ fn walk_typed_expr_locals(e: &TypedExpr, f: &mut dyn FnMut(&str)) {
         }
         TypedExprKind::EnumConstruct { args, .. } => {
             for a in args {
-                walk_typed_expr_locals(a, f);
+                if let Some(t) = &a.value {
+                    walk_typed_expr_locals(t, f);
+                }
             }
         }
         TypedExprKind::Is(scrut, _) => walk_typed_expr_locals(scrut, f),
@@ -2690,6 +2708,7 @@ fn check_return(
             let ret_ty = fctx.ret_ty.clone();
             let te = check_expr(expr, Some(&ret_ty), fctx, mctx)?;
             Ok(TypedStmt {
+                span,
                 kind: TypedStmtKind::Return(Some(te)),
             })
         }
@@ -2704,6 +2723,7 @@ fn check_return(
                 ));
             }
             Ok(TypedStmt {
+                span,
                 kind: TypedStmtKind::Return(None),
             })
         }
@@ -2732,11 +2752,17 @@ fn check_assert(
         None => None,
     };
     Ok(TypedStmt {
+        span: a.span,
         kind: TypedStmtKind::Assert { cond, message },
     })
 }
 
 fn check_for(f: &ForStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedStmt, SemaError> {
+    // Peel a surface `take` so the iterable types as an array/range, then
+    // re-wrap the typed node — access requires `TypedExprKind::Take` on
+    // `for take x in take arr` (the AST marker is not otherwise visible
+    // on `TypedForIter::Expr`).
+    let iterable_taken = matches!(&f.iterable, Expr::Unary(_, UnaryOp::Take, _));
     let raw_iterable: &Expr = match &f.iterable {
         Expr::Unary(_, UnaryOp::Take, inner) => inner.as_ref(),
         other => other,
@@ -2769,6 +2795,15 @@ fn check_for(f: &ForStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedStm
             match &te.ty {
                 Type::Array(elem, _) => {
                     let ety = (**elem).clone();
+                    let te = if iterable_taken {
+                        TypedExpr {
+                            span: expr_span(&f.iterable),
+                            ty: te.ty.clone(),
+                            kind: TypedExprKind::Take(Box::new(te)),
+                        }
+                    } else {
+                        te
+                    };
                     (ety, TypedForIter::Expr(te))
                 }
                 _ => {
@@ -2792,6 +2827,7 @@ fn check_for(f: &ForStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedStm
     })?;
     let budget = resolve_loop_budget(f.budget.as_ref(), f.span, fctx, mctx)?;
     Ok(TypedStmt {
+        span: f.span,
         kind: TypedStmtKind::For {
             name: f.name.clone(),
             elem_ty,
@@ -3028,6 +3064,7 @@ fn check_defer(d: &DeferStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<Type
         DeferBody::Suite(stmts) => TypedDeferBody::Suite(check_stmts(stmts, fctx, mctx)?),
     };
     Ok(TypedStmt {
+        span: d.span,
         kind: TypedStmtKind::Defer(body),
     })
 }
@@ -3075,6 +3112,7 @@ fn check_assign(
                 check_compound_assign(a.op, &target_t, &a.value, a.span, fctx, mctx)?
             };
             return Ok(TypedStmt {
+                span: a.span,
                 kind: TypedStmtKind::Assign {
                     target: target_t,
                     value: value_t,
@@ -3101,6 +3139,7 @@ fn check_assign(
         };
         bind_local(fctx, name, ty.clone(), a.span)?;
         return Ok(TypedStmt {
+            span: a.span,
             kind: TypedStmtKind::Let {
                 name: name.clone(),
                 ty,
@@ -3117,6 +3156,7 @@ fn check_assign(
         check_compound_assign(a.op, &target_t, &a.value, a.span, fctx, mctx)?
     };
     Ok(TypedStmt {
+        span: a.span,
         kind: TypedStmtKind::Assign {
             target: target_t,
             value: value_t,
@@ -3187,12 +3227,14 @@ pub(crate) fn check_pattern(
 ) -> Result<TypedPattern, SemaError> {
     match p {
         Pattern::Wildcard(_) => Ok(TypedPattern {
+            span: p.span(),
             ty: scrutinee.clone(),
             kind: TypedPatternKind::Wildcard,
         }),
-        Pattern::Literal(_span, expr) => {
+        Pattern::Literal(span, expr) => {
             let te = check_expr(expr, Some(scrutinee), fctx, mctx)?;
             Ok(TypedPattern {
+                span: *span,
                 ty: scrutinee.clone(),
                 kind: TypedPatternKind::Literal(Box::new(te)),
             })
@@ -3200,13 +3242,15 @@ pub(crate) fn check_pattern(
         Pattern::Binding(span, name) => {
             bind_local(fctx, name, scrutinee.clone(), *span)?;
             Ok(TypedPattern {
+                span: *span,
                 ty: scrutinee.clone(),
                 kind: TypedPatternKind::Binding(name.clone()),
             })
         }
-        Pattern::Take(_span, inner) => {
+        Pattern::Take(span, inner) => {
             let tp = check_pattern(inner, scrutinee, fctx, mctx)?;
             Ok(TypedPattern {
+                span: *span,
                 ty: scrutinee.clone(),
                 kind: TypedPatternKind::Take(Box::new(tp)),
             })
@@ -3234,6 +3278,7 @@ pub(crate) fn check_pattern(
                 typed_payload.push(check_pattern(sp, ty, fctx, mctx)?);
             }
             Ok(TypedPattern {
+                span: *span,
                 ty: scrutinee.clone(),
                 kind: TypedPatternKind::Variant {
                     enum_name: resolved_enum_name(scrutinee),
@@ -3267,6 +3312,7 @@ pub(crate) fn check_pattern(
                 typed_items.push(check_pattern(sp, ty, fctx, mctx)?);
             }
             Ok(TypedPattern {
+                span: *span,
                 ty: scrutinee.clone(),
                 kind: TypedPatternKind::Tuple(typed_items),
             })
@@ -3297,11 +3343,12 @@ pub(crate) fn check_pattern(
                 typed_items.push(check_pattern(sp, elem, fctx, mctx)?);
             }
             Ok(TypedPattern {
+                span: *span,
                 ty: scrutinee.clone(),
                 kind: TypedPatternKind::Array(typed_items),
             })
         }
-        Pattern::Or(_span, alts) => {
+        Pattern::Or(span, alts) => {
             // Same-bindings-same-types across alternatives is item G's
             // job (exhaustiveness); each alternative is independently
             // well-formed against the scrutinee here.
@@ -3310,6 +3357,7 @@ pub(crate) fn check_pattern(
                 typed_alts.push(check_pattern(alt, scrutinee, fctx, mctx)?);
             }
             Ok(TypedPattern {
+                span: *span,
                 ty: scrutinee.clone(),
                 kind: TypedPatternKind::Or(typed_alts),
             })
@@ -3381,10 +3429,7 @@ pub(crate) fn string_capacity_fits(n: i128) -> bool {
 }
 
 /// Resolves a pattern's (or a leading-dot expression's) variant payload
-/// types against the scrutinee/expected type: `Option`/`Result` are
-/// builtin sums handled directly (their variants never route through
-/// `mctx.enums`); a user enum's variants come from `mctx`. Anything else
-/// cannot carry a variant pattern/construction.
+/// types against the scrutinee/expected type via [`crate::sema::sum::sum_ctors`].
 fn variant_payload_types_for(
     scrutinee: &Type,
     enum_name: Option<&str>,
@@ -3392,149 +3437,46 @@ fn variant_payload_types_for(
     span: Span,
     mctx: &ModuleCtx,
 ) -> Result<Vec<Type>, SemaError> {
-    match scrutinee {
-        Type::Option(inner) => {
-            if let Some(n) = enum_name {
-                if n != "Option" {
-                    return Err(type_error(
-                        format!("expected an `Option` pattern, found `{n}`"),
-                        span,
-                    ));
-                }
-            }
-            match variant {
-                "Some" => Ok(vec![(**inner).clone()]),
-                "None" => Ok(vec![]),
-                other => Err(type_error(
-                    format!("`Option` has no variant `{other}`"),
-                    span,
-                )),
-            }
-        }
-        Type::Result(ok, err) => {
-            if let Some(n) = enum_name {
-                if n != "Result" {
-                    return Err(type_error(
-                        format!("expected a `Result` pattern, found `{n}`"),
-                        span,
-                    ));
-                }
-            }
-            match variant {
-                "Ok" => Ok(vec![(**ok).clone()]),
-                "Err" => Ok(vec![(**err).clone()]),
-                other => Err(type_error(
-                    format!("`Result` has no variant `{other}`"),
-                    span,
-                )),
-            }
-        }
-        // `CallError[E]` (plans/M6.md item A, 02-language.md §9.4): a
-        // fixed, compiler-known five-variant sum (the
-        // `builtin_enum_variants` precedent, extended to carry payload
-        // types — `Target`/`Failure`'s own fieldless variants need none).
-        // `Admission`/`Peer` are opaque builtin payload types (M7 grows
-        // their fields; pattern-matching the *variant* is all M6 needs).
-        // plans/M13.md item H / decision 4: `NotAdmitted` carries
-        // `(Admission, take-args-tuple)` — the tuple is monomorphized per
-        // call signature as CallError's optional second type argument.
-        Type::Named(name, targs) if name == "CallError" => {
-            if let Some(n) = enum_name {
-                if n != "CallError" {
-                    return Err(type_error(
-                        format!("expected a `CallError` pattern, found `{n}`"),
-                        span,
-                    ));
-                }
-            }
-            let Some(TypeArg::Type(e_ty)) = targs.first() else {
-                return Err(type_error(
-                    "`CallError` is missing its error argument".to_string(),
-                    span,
-                ));
+    let sum_name = match scrutinee {
+        Type::Option(_) => Some("Option"),
+        Type::Result(_, _) => Some("Result"),
+        Type::Named(name, _) => Some(name.as_str()),
+        _ => None,
+    };
+    if let (Some(expected_name), Some(n)) = (sum_name, enum_name) {
+        if n != expected_name {
+            let article = match expected_name {
+                "Option" | "Result" | "CallError" => "an",
+                _ => "a",
             };
-            match variant {
-                "Op" => Ok(vec![e_ty.clone()]),
-                "Cancelled" => Ok(vec![]),
-                "DeadlineExceeded" => Ok(vec![]),
-                // plans/M13.md item I / decision 6: `PeerFailed` deleted
-                // (unobservable under crash-only).
-                "NotAdmitted" => Ok(vec![
-                    Type::Named("Admission".to_string(), vec![]),
-                    not_admitted_args_type(targs),
-                ]),
-                other => Err(type_error(
-                    format!("`CallError` has no variant `{other}`"),
-                    span,
-                )),
-            }
+            return Err(type_error(
+                format!("expected {article} `{expected_name}` pattern, found `{n}`"),
+                span,
+            ));
         }
-        // plans/M8.md item G / plans/M9.md item I: an auto-visible stdlib
-        // enum (`CompletionOutcome`, `BootError`, `DriverMode`, `Target`,
-        // `Failure`) may have no `DeclEnum` in `mctx.enums` — its variants
-        // live in `sema::stdlib_enums`. Every one of them is fieldless, so
-        // the payload answer is always the empty vector; this arm exists so
-        // `match o: case .Unknown:` type-checks the same way a module-
-        // declared enum's does, with no per-enum special case.
-        Type::Named(name, targs)
-            if targs.is_empty() && crate::sema::stdlib_enums::is_auto_visible(name) =>
-        {
-            if let Some(n) = enum_name {
-                if n != name {
-                    return Err(type_error(
-                        format!("expected a `{name}` pattern, found `{n}`"),
-                        span,
-                    ));
-                }
-            }
-            // plans/M9.md item QQ: load failures are `error[build]`, not panic.
-            let variants = crate::sema::stdlib_enums::variant_strs(name)?.ok_or_else(|| {
-                type_error(format!("enum `{name}` has no variant `{variant}`"), span)
-            })?;
-            if variants.contains(&variant) {
-                Ok(vec![])
-            } else {
-                Err(type_error(
-                    format!("enum `{name}` has no variant `{variant}`"),
-                    span,
-                ))
-            }
+    }
+    let ctors = match crate::sema::sum::sum_ctors(scrutinee, mctx) {
+        Ok(c) => c,
+        Err(e) => {
+            // Preserve the call-site span; sum_ctors uses a zero span.
+            return Err(SemaError::at(e.category, e.message, span));
         }
-        Type::Named(name, targs) => {
-            if let Some(n) = enum_name {
-                if n != name {
-                    return Err(type_error(
-                        format!("expected a `{name}` pattern, found `{n}`"),
-                        span,
-                    ));
-                }
-            }
-            // A generic enum instantiation (item H): substitute + enqueue
-            // it, then read the (now concrete) variant off the
-            // substituted declaration instead of the declared one.
-            let e = if targs.is_empty() {
-                match mctx.enums.get(name) {
-                    Some(e) => std::borrow::Cow::Borrowed(&e.decl),
-                    None => return Err(type_error(format!("`{name}` is not an enum"), span)),
-                }
-            } else {
-                std::borrow::Cow::Owned(generics::instantiate_enum(mctx, name, targs, span)?)
+    };
+    match ctors.into_iter().find(|(name, _)| name == variant) {
+        Some((_, payloads)) => Ok(payloads),
+        None => {
+            let label = match scrutinee {
+                Type::Option(_) => "`Option`".to_string(),
+                Type::Result(_, _) => "`Result`".to_string(),
+                Type::Named(name, _) if name == "CallError" => "`CallError`".to_string(),
+                Type::Named(name, _) => format!("enum `{name}`"),
+                _ => types::render_type(scrutinee),
             };
-            let Some(dv) = e.variants.iter().find(|v| v.name == variant) else {
-                return Err(type_error(
-                    format!("enum `{name}` has no variant `{variant}`"),
-                    span,
-                ));
-            };
-            Ok(decl_variant_payload_types(dv))
+            Err(type_error(
+                format!("{label} has no variant `{variant}`"),
+                span,
+            ))
         }
-        other => Err(type_error(
-            format!(
-                "cannot match a variant pattern against type `{}`",
-                types::render_type(other)
-            ),
-            span,
-        )),
     }
 }
 
@@ -3571,7 +3513,8 @@ pub(crate) fn check_expr(
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
 ) -> Result<TypedExpr, SemaError> {
-    let actual = synth_expr(expr, expected, fctx, mctx)?;
+    let mut actual = synth_expr(expr, expected, fctx, mctx)?;
+    actual.span = expr_span(expr);
     if let Some(exp) = expected {
         if !types_eq(&actual.ty, exp) {
             // plans/M13.md item K: private `Result[T]` accepts any
@@ -3587,15 +3530,16 @@ pub(crate) fn check_expr(
             // plans/M13.md item M / decision 1: proof-conditioned collapse
             // for `VirtQueue.reserve` — a use site that expects
             // `QueuePermit` may take `Result[QueuePermit, CapacityError]`
-            // from `reserve`; the whole-image proof must then succeed
-            // (`reserve_proof`), or the site must instead consume the
-            // Result (item L refuses silent discard).
+            // (including a local bound from `reserve`); the whole-image
+            // proof must then succeed (`reserve_proof`). Direct
+            // `reserve` calls with the same expected type also collapse
+            // inside `check_virtqueue_reserve`.
             if is_queue_permit(exp) && is_reserve_capacity_result(&actual.ty) {
-                mctx.reserve_permit_demands.borrow_mut().push(expr.span());
-                return Ok(TypedExpr {
-                    ty: exp.clone(),
-                    kind: actual.kind,
-                });
+                mctx.reserve_permit_demands
+                    .borrow_mut()
+                    .push(expr_span(expr));
+                actual.ty = exp.clone();
+                return Ok(actual);
             }
             // plans/M7.md item H2a: an `Untrusted[T]` is never silently
             // coerced to a plain `T`. Prefer the mechanism's own wording
@@ -3615,6 +3559,10 @@ pub(crate) fn check_expr(
         }
     }
     Ok(actual)
+}
+
+fn expr_span(e: &Expr) -> Span {
+    e.span()
 }
 
 fn is_queue_permit(ty: &Type) -> bool {
@@ -3662,11 +3610,13 @@ fn synth_expr(
                     ));
                 }
                 return Ok(TypedExpr {
+                    span: *span,
                     ty: Type::String(n_expr.clone()),
                     kind: TypedExprKind::Str(text.clone()),
                 });
             }
             Ok(TypedExpr {
+                span: *span,
                 ty: Type::Static(Box::new(Type::Str)),
                 kind: TypedExprKind::Str(text.clone()),
             })
@@ -3678,20 +3628,24 @@ fn synth_expr(
                 len.to_string(),
             ))))));
             Ok(TypedExpr {
+                span: *span,
                 ty,
                 kind: TypedExprKind::BStr(text.clone()),
             })
         }
-        Expr::Char(_span, text) => Ok(TypedExpr {
+        Expr::Char(span, text) => Ok(TypedExpr {
+            span: *span,
             ty: Type::Char,
             kind: TypedExprKind::Char(text.clone()),
         }),
         Expr::FStr(f) => check_fstr(f, fctx, mctx),
-        Expr::Bool(_span, v) => Ok(TypedExpr {
+        Expr::Bool(span, v) => Ok(TypedExpr {
+            span: *span,
             ty: Type::Bool,
             kind: TypedExprKind::Bool(*v),
         }),
-        Expr::Unit(_span) => Ok(TypedExpr {
+        Expr::Unit(span) => Ok(TypedExpr {
+            span: *span,
             ty: Type::Unit,
             kind: TypedExprKind::Unit,
         }),
@@ -3715,15 +3669,17 @@ fn synth_expr(
             }
             let ty = it.ty.clone();
             Ok(TypedExpr {
+                span: *span,
                 ty,
                 kind: TypedExprKind::BitNot(Box::new(it)),
             })
         }
         Expr::Unary(span, UnaryOp::Await, inner) => check_await(inner, *span, fctx, mctx),
-        Expr::Unary(_span, UnaryOp::Take, inner) => {
+        Expr::Unary(span, UnaryOp::Take, inner) => {
             let it = check_expr(inner, expected, fctx, mctx)?;
             let ty = it.ty.clone();
             Ok(TypedExpr {
+                span: *span,
                 ty,
                 kind: TypedExprKind::Take(Box::new(it)),
             })
@@ -3734,34 +3690,38 @@ fn synth_expr(
             "a range is only a value directly inside `for`".to_string(),
             *span,
         )),
-        Expr::Is(_span, scrutinee, pattern) => {
+        Expr::Is(span, scrutinee, pattern) => {
             let st = check_expr(scrutinee, None, fctx, mctx)?;
             let sty = st.ty.clone();
             let pt = check_pattern(pattern, &sty, fctx, mctx)?;
             Ok(TypedExpr {
+                span: *span,
                 ty: Type::Bool,
                 kind: TypedExprKind::Is(Box::new(st), Box::new(pt)),
             })
         }
-        Expr::Not(_span, inner) => {
+        Expr::Not(span, inner) => {
             let it = check_expr(inner, Some(&Type::Bool), fctx, mctx)?;
             Ok(TypedExpr {
+                span: *span,
                 ty: Type::Bool,
                 kind: TypedExprKind::Not(Box::new(it)),
             })
         }
-        Expr::And(_span, l, r) => {
+        Expr::And(span, l, r) => {
             let lt = check_expr(l, Some(&Type::Bool), fctx, mctx)?;
             let rt = check_expr(r, Some(&Type::Bool), fctx, mctx)?;
             Ok(TypedExpr {
+                span: *span,
                 ty: Type::Bool,
                 kind: TypedExprKind::And(Box::new(lt), Box::new(rt)),
             })
         }
-        Expr::Or(_span, l, r) => {
+        Expr::Or(span, l, r) => {
             let lt = check_expr(l, Some(&Type::Bool), fctx, mctx)?;
             let rt = check_expr(r, Some(&Type::Bool), fctx, mctx)?;
             Ok(TypedExpr {
+                span: *span,
                 ty: Type::Bool,
                 kind: TypedExprKind::Or(Box::new(lt), Box::new(rt)),
             })
@@ -3778,6 +3738,7 @@ fn synth_expr(
             let typed_args = check_variant_args(&payload_types, args, *span, fctx, mctx)?;
             let enum_name = resolved_enum_name(&exp);
             Ok(TypedExpr {
+                span: *span,
                 ty: exp,
                 kind: TypedExprKind::EnumConstruct {
                     enum_name,
@@ -3828,6 +3789,7 @@ fn synth_int_literal(
         }
     };
     Ok(TypedExpr {
+        span: span,
         ty,
         kind: TypedExprKind::Int(text.to_string()),
     })
@@ -3852,6 +3814,7 @@ fn synth_float_literal(
         None => Type::F64,
     };
     Ok(TypedExpr {
+        span: span,
         ty,
         kind: TypedExprKind::Float(text.to_string()),
     })
@@ -3866,18 +3829,21 @@ fn synth_name(
 ) -> Result<TypedExpr, SemaError> {
     if let Some(ty) = fctx.lookup_local(name) {
         return Ok(TypedExpr {
+            span: span,
             ty,
             kind: TypedExprKind::Local(name.to_string()),
         });
     }
     if let Some(ty) = mctx.consts.get(name) {
         return Ok(TypedExpr {
+            span: span,
             ty: ty.clone(),
             kind: TypedExprKind::Const(name.to_string()),
         });
     }
     if let Some(info) = mctx.statics.get(name) {
         return Ok(TypedExpr {
+            span: span,
             ty: info.ty.clone(),
             kind: TypedExprKind::Static(name.to_string()),
         });
@@ -3887,6 +3853,7 @@ fn synth_name(
             return Err(unimplemented_at("generic instantiation is", span));
         }
         return Ok(TypedExpr {
+            span: span,
             ty: fn_value_type(&f.decl),
             kind: TypedExprKind::FnRef(CalleeKey::Fn(name.to_string())),
         });
@@ -3897,6 +3864,7 @@ fn synth_name(
     match name {
         "None" => match expected {
             Some(t @ Type::Option(_)) => Ok(TypedExpr {
+                span: span,
                 ty: t.clone(),
                 kind: TypedExprKind::EnumConstruct {
                     enum_name: "Option".to_string(),
@@ -3949,6 +3917,7 @@ fn check_field_expr(
                 if let Some((_, d)) = s.assoc_fn(name) {
                     let key = CalleeKey::Method(bname.clone(), name.to_string());
                     return Ok(TypedExpr {
+                        span: span,
                         ty: fn_value_type(d),
                         kind: TypedExprKind::FnRef(key),
                     });
@@ -3976,6 +3945,7 @@ fn check_field_expr(
                     }
                     let key = CalleeKey::Method(bname.clone(), name.to_string());
                     return Ok(TypedExpr {
+                        span: span,
                         ty: fn_value_type(d),
                         kind: TypedExprKind::FnRef(key),
                     });
@@ -4004,6 +3974,7 @@ fn check_field_expr(
                         // exporter's spelling). Same rule as
                         // `check_struct_construction` — one spelling.
                         return Ok(TypedExpr {
+                            span: span,
                             ty: Type::Named(bname.clone(), targs),
                             kind: TypedExprKind::EnumConstruct {
                                 enum_name: bname.clone(),
@@ -4031,6 +4002,7 @@ fn check_field_expr(
             if let Some(variants) = crate::sema::stdlib_enums::variant_strs(bname.as_str())? {
                 if variants.contains(&name) {
                     return Ok(TypedExpr {
+                        span: span,
                         ty: Type::Named(bname.clone(), vec![]),
                         kind: TypedExprKind::EnumConstruct {
                             enum_name: bname.clone(),
@@ -4097,6 +4069,7 @@ fn check_field_expr(
             // via the same order size_of uses.
             let _ = index;
             return Ok(TypedExpr {
+                span: span,
                 ty: field_ty,
                 kind: TypedExprKind::Field(Box::new(base_t), name.to_string()),
             });
@@ -4108,6 +4081,7 @@ fn check_field_expr(
     if matches!(&base_ty, Type::String(_)) {
         if name == "len" {
             return Ok(TypedExpr {
+                span: span,
                 ty: Type::Usize,
                 kind: TypedExprKind::Field(Box::new(base_t), name.to_string()),
             });
@@ -4126,6 +4100,7 @@ fn check_field_expr(
     if matches!(&base_ty, Type::Bytes(None)) {
         if name == "len" {
             return Ok(TypedExpr {
+                span: span,
                 ty: Type::Usize,
                 kind: TypedExprKind::Field(Box::new(base_t), name.to_string()),
             });
@@ -4156,6 +4131,7 @@ fn check_field_expr(
             if let Some(ty) = s.field_ty(name) {
                 check_field_privacy(sname, name, &s, span, mctx)?;
                 return Ok(TypedExpr {
+                    span: span,
                     ty,
                     kind: TypedExprKind::Field(Box::new(base_t), name.to_string()),
                 });
@@ -4183,7 +4159,7 @@ fn check_field_expr(
 /// pattern-bind). Generated `core.__image_runtime` tables stay exempt —
 /// handwritten `core.runtime` indexes them by design (same carve-out the
 /// G1 census used).
-fn check_field_privacy(
+pub(crate) fn check_field_privacy(
     type_name: &str,
     field: &str,
     s: &StructInfo,
@@ -4268,6 +4244,7 @@ fn synth_index(
                 idx_t
             };
             Ok(TypedExpr {
+                span: span,
                 ty: (**elem).clone(),
                 kind: TypedExprKind::Index(Box::new(base_t), Box::new(idx_t)),
             })
@@ -4292,6 +4269,7 @@ fn synth_index(
                 idx_t
             };
             Ok(TypedExpr {
+                span: span,
                 ty: Type::U8,
                 kind: TypedExprKind::Index(Box::new(base_t), Box::new(idx_t)),
             })
@@ -4318,6 +4296,7 @@ fn synth_index(
                 idx_t
             };
             Ok(TypedExpr {
+                span: span,
                 ty: Type::U8,
                 kind: TypedExprKind::Index(Box::new(base_t), Box::new(idx_t)),
             })
@@ -4353,6 +4332,7 @@ fn synth_tuple(
             typed_items.push(check_expr(item, Some(ety), fctx, mctx)?);
         }
         return Ok(TypedExpr {
+            span: span,
             ty: Type::Tuple(exp_elems),
             kind: TypedExprKind::Tuple(typed_items),
         });
@@ -4363,6 +4343,7 @@ fn synth_tuple(
     }
     let elems = typed_items.iter().map(|t| t.ty.clone()).collect();
     Ok(TypedExpr {
+        span: span,
         ty: Type::Tuple(elems),
         kind: TypedExprKind::Tuple(typed_items),
     })
@@ -4391,6 +4372,7 @@ fn synth_list(
             typed_items.push(check_expr(item, Some(&elem), fctx, mctx)?);
         }
         return Ok(TypedExpr {
+            span: span,
             ty: Type::Array(Box::new(elem), len_expr),
             kind: TypedExprKind::List(typed_items),
         });
@@ -4410,6 +4392,7 @@ fn synth_list(
     }
     let len = Expr::Int(span, items.len().to_string());
     Ok(TypedExpr {
+        span: span,
         ty: Type::Array(Box::new(elem_ty), Box::new(len)),
         kind: TypedExprKind::List(typed_items),
     })
@@ -4469,6 +4452,7 @@ fn synth_array_repeat(
     }
     let len = count.clone();
     Ok(TypedExpr {
+        span: span,
         ty: Type::Array(Box::new(elem_ty), Box::new(len)),
         kind: TypedExprKind::List(typed_items),
     })
@@ -4711,10 +4695,12 @@ fn check_unary_neg(
                 }
             };
             let literal = TypedExpr {
+                span: span,
                 ty: ty.clone(),
                 kind: TypedExprKind::Int(text.clone()),
             };
             Ok(TypedExpr {
+                span: span,
                 ty,
                 kind: TypedExprKind::Neg(Box::new(literal)),
             })
@@ -4723,6 +4709,7 @@ fn check_unary_neg(
             let te = synth_float_literal(inner.span(), text, expected)?;
             let ty = te.ty.clone();
             Ok(TypedExpr {
+                span: span,
                 ty,
                 kind: TypedExprKind::Neg(Box::new(te)),
             })
@@ -4732,6 +4719,7 @@ fn check_unary_neg(
             if (is_integer_scalar(&it.ty) && is_signed_scalar(&it.ty)) || is_float_scalar(&it.ty) {
                 let ty = it.ty.clone();
                 Ok(TypedExpr {
+                    span: span,
                     ty,
                     kind: TypedExprKind::Neg(Box::new(it)),
                 })
@@ -4809,6 +4797,7 @@ fn check_string_add(
         ));
     }
     Ok(Some(TypedExpr {
+        span: span,
         ty: Type::String(Box::new(Expr::Int(span, sum.to_string()))),
         kind: TypedExprKind::Binary(BinOp::Add, Box::new(lt), Box::new(rt)),
     }))
@@ -4828,6 +4817,7 @@ fn coerce_text_literal_to_string(te: TypedExpr, span: Span) -> Result<TypedExpr,
             };
             let n = crate::eval::value::decode_str(text).len();
             Ok(TypedExpr {
+                span: span,
                 ty: Type::String(Box::new(Expr::Int(span, n.to_string()))),
                 kind: te.kind,
             })
@@ -4971,6 +4961,7 @@ fn build_binop_expr(
         Add | Sub | Mul | Div | Rem => {
             if is_numeric_scalar(&ty) {
                 return Ok(TypedExpr {
+                    span: span,
                     ty,
                     kind: TypedExprKind::Binary(op, Box::new(l), Box::new(r)),
                 });
@@ -4986,6 +4977,7 @@ fn build_binop_expr(
                 };
                 let (ret_ty, key) = resolve_operator_method(name, targs, method, &ty, mctx, span)?;
                 return Ok(TypedExpr {
+                    span: span,
                     ty: ret_ty,
                     kind: TypedExprKind::OpCall(key, Box::new(l), Box::new(r)),
                 });
@@ -5002,6 +4994,7 @@ fn build_binop_expr(
         AddW | SubW | MulW => {
             if is_integer_scalar(&ty) {
                 Ok(TypedExpr {
+                    span: span,
                     ty,
                     kind: TypedExprKind::Binary(op, Box::new(l), Box::new(r)),
                 })
@@ -5018,6 +5011,7 @@ fn build_binop_expr(
         Shl | Shr | BitAnd | BitOr | BitXor => {
             if is_integer_scalar(&ty) {
                 Ok(TypedExpr {
+                    span: span,
                     ty,
                     kind: TypedExprKind::Binary(op, Box::new(l), Box::new(r)),
                 })
@@ -5035,6 +5029,7 @@ fn build_binop_expr(
         Lt | Le | Gt | Ge => {
             if is_numeric_scalar(&ty) || matches!(ty, Type::Char) {
                 return Ok(TypedExpr {
+                    span: span,
                     ty: Type::Bool,
                     kind: TypedExprKind::Binary(op, Box::new(l), Box::new(r)),
                 });
@@ -5050,6 +5045,7 @@ fn build_binop_expr(
                         ));
                     }
                     return Ok(TypedExpr {
+                        span: span,
                         ty: Type::Bool,
                         kind: TypedExprKind::OpCall(key, Box::new(l), Box::new(r)),
                     });
@@ -5078,6 +5074,7 @@ fn build_binop_expr(
                 ));
             }
             Ok(TypedExpr {
+                span: span,
                 ty: Type::Bool,
                 kind: TypedExprKind::Binary(op, Box::new(l), Box::new(r)),
             })
@@ -5155,7 +5152,7 @@ fn resolve_operator_method(
     let receiver_read = d
         .receiver
         .as_ref()
-        .map(|r| r.mode == AccessMode::Read)
+        .map(|r| matches!(r.mode, None | Some(AccessMode::Read)))
         .unwrap_or(false);
     let shape_ok = receiver_read
         && d.generics.is_empty()
@@ -5203,6 +5200,7 @@ fn check_try(
                 }
                 fctx.record_inferred_error(*t_err);
                 Ok(TypedExpr {
+                    span: span,
                     ty: *t_ok,
                     kind: TypedExprKind::Try(Box::new(inner_t), None),
                 })
@@ -5210,12 +5208,14 @@ fn check_try(
             Type::Result(_, ret_err) => {
                 if types_eq(&t_err, &ret_err) || call_error_e_compatible(&t_err, &ret_err) {
                     Ok(TypedExpr {
+                        span: span,
                         ty: *t_ok,
                         kind: TypedExprKind::Try(Box::new(inner_t), None),
                     })
                 } else if let Some((conv_ret, key)) = try_from_conversion(&t_err, &ret_err, mctx) {
                     if types_eq(&conv_ret, &ret_err) {
                         Ok(TypedExpr {
+                            span: span,
                             ty: *t_ok,
                             kind: TypedExprKind::Try(Box::new(inner_t), Some(key)),
                         })
@@ -5247,6 +5247,7 @@ fn check_try(
         },
         Type::Option(t_inner) => match &fctx.ret_ty {
             Type::Option(_) => Ok(TypedExpr {
+                span: span,
                 ty: *t_inner,
                 kind: TypedExprKind::Try(Box::new(inner_t), None),
             }),
@@ -5351,6 +5352,7 @@ fn check_closure(
     fctx.pop_scope();
     let (params, body) = result?;
     Ok(TypedExpr {
+        span: c.span,
         ty: Type::Fn(exp_params, exp_ret),
         kind: TypedExprKind::Closure { params, body },
     })
@@ -5418,6 +5420,7 @@ fn call_fn_value(
         Type::Fn(params, ret) => {
             let typed_args = check_positional_args(&params, args, span, fctx, mctx)?;
             Ok(TypedExpr {
+                span: span,
                 ty: *ret,
                 kind: TypedExprKind::CallValue(Box::new(callee), typed_args),
             })
@@ -5536,6 +5539,7 @@ fn check_call_index(
                 type_error("`.to` target must be a scalar type".to_string(), ispan)
             })?;
             return Ok(TypedExpr {
+                span: call_span,
                 ty: target,
                 kind: TypedExprKind::ToScalar(Box::new(base_t)),
             });
@@ -5662,6 +5666,7 @@ fn check_call_index(
                         &type_args,
                     ));
                     return Ok(TypedExpr {
+                        span: call_span,
                         ty: fi.decl.ret,
                         kind: TypedExprKind::Call {
                             callee: key,
@@ -5700,7 +5705,7 @@ fn check_call_index(
 
 /// The builder's own opaque `Image` type (the same type an `@image` fn
 /// declares as its return type, `types::resolve_named`'s own new arm).
-fn image_type() -> Type {
+pub(crate) fn image_type() -> Type {
     Type::Named("Image".to_string(), vec![])
 }
 
@@ -5712,7 +5717,7 @@ fn image_type() -> Type {
 /// tell them apart structurally). Never resolvable as a source type
 /// annotation (no `resolve_named` arm) — it only ever appears as an
 /// inferred local's type.
-fn image_decl_type() -> Type {
+pub(crate) fn image_decl_type() -> Type {
     Type::Named("ImageDecl".to_string(), vec![])
 }
 
@@ -5741,7 +5746,7 @@ type IntrinsicArgs = Vec<(String, TypedExpr)>;
 /// never referenced as a value) — recorded as a `PoolName` leaf instead
 /// of falling through to `synth_name`'s ordinary lookup, which would
 /// (correctly, for anything else) reject it.
-fn check_intrinsic_args(
+pub(crate) fn check_intrinsic_args(
     args: &[Arg],
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
@@ -5768,6 +5773,7 @@ fn check_intrinsic_args(
                         || fctx.local_pools.contains(pool_name) =>
                 {
                     TypedExpr {
+                        span: a.span,
                         ty: Type::Named("PoolName".to_string(), vec![]),
                         kind: TypedExprKind::PoolName(pool_name.clone()),
                     }
@@ -5826,7 +5832,10 @@ fn resolve_intrinsic_type_arg(e: &Expr, fctx: &FnCtx, mctx: &ModuleCtx) -> Resul
 /// plans/M7.md item G, decision 18: also accepts `BlkDriver[DriverMode.Irq]`
 /// (an `Expr::Index` whose base is the struct name) and enqueues the
 /// instantiation so the mode-specialized members exist.
-fn resolve_intrinsic_struct_type_arg(e: &Expr, mctx: &ModuleCtx) -> Result<Type, SemaError> {
+pub(crate) fn resolve_intrinsic_struct_type_arg(
+    e: &Expr,
+    mctx: &ModuleCtx,
+) -> Result<Type, SemaError> {
     match e {
         Expr::Name(span, name) => {
             let Some(s) = mctx.structs.get(name) else {
@@ -5882,6 +5891,7 @@ fn check_image_bracket_intrinsic(
     let type_arg = resolve_intrinsic_type_arg(&targs[0], fctx, mctx)?;
     let iargs = check_intrinsic_args(args, fctx, mctx)?;
     Ok(TypedExpr {
+        span: ispan,
         ty: image_decl_type(),
         kind: TypedExprKind::Intrinsic {
             key: format!("Image.{mname}"),
@@ -5946,6 +5956,7 @@ fn check_call_by_name(
     }
     if let Some(ty) = fctx.lookup_local(name) {
         let callee_t = TypedExpr {
+            span: call_span,
             ty,
             kind: TypedExprKind::Local(name.to_string()),
         };
@@ -5953,6 +5964,7 @@ fn check_call_by_name(
     }
     if let Some(c) = mctx.consts.get(name) {
         let callee_t = TypedExpr {
+            span: call_span,
             ty: c.clone(),
             kind: TypedExprKind::Const(name.to_string()),
         };
@@ -5973,6 +5985,7 @@ fn check_call_by_name(
             let key =
                 CalleeKey::FnInstance(generics::canonical_key(InstKind::Fn, name, &type_args));
             return Ok(TypedExpr {
+                span: call_span,
                 ty: fi.decl.ret,
                 kind: TypedExprKind::Call {
                     callee: key,
@@ -5984,6 +5997,7 @@ fn check_call_by_name(
         let typed_args =
             check_call_args(&f.ast.params, &f.decl.params, args, call_span, fctx, mctx)?;
         return Ok(TypedExpr {
+            span: call_span,
             ty: resolved_ret(&f.decl.ret, None, name, mctx),
             kind: TypedExprKind::Call {
                 callee: CalleeKey::Fn(name.to_string()),
@@ -6017,11 +6031,15 @@ fn check_call_by_name(
             let it = check_expr(&args[0].value, inner_expected.as_ref(), fctx, mctx)?;
             let ty = Type::Option(Box::new(it.ty.clone()));
             Ok(TypedExpr {
+                span: call_span,
                 ty,
                 kind: TypedExprKind::EnumConstruct {
                     enum_name: "Option".to_string(),
                     variant: "Some".to_string(),
-                    args: vec![it],
+                    args: vec![TypedCallArg {
+                        mode: args[0].mode,
+                        value: Some(it),
+                    }],
                 },
             })
         }
@@ -6047,11 +6065,15 @@ fn check_call_by_name(
             })?;
             let ty = Type::Result(Box::new(t_typed.ty.clone()), Box::new(e_ty));
             Ok(TypedExpr {
+                span: call_span,
                 ty,
                 kind: TypedExprKind::EnumConstruct {
                     enum_name: "Result".to_string(),
                     variant: "Ok".to_string(),
-                    args: vec![t_typed],
+                    args: vec![TypedCallArg {
+                        mode: args[0].mode,
+                        value: Some(t_typed),
+                    }],
                 },
             })
         }
@@ -6077,11 +6099,15 @@ fn check_call_by_name(
             fctx.record_inferred_error(e_typed.ty.clone());
             let ty = Type::Result(Box::new(t_ty), Box::new(e_typed.ty.clone()));
             Ok(TypedExpr {
+                span: call_span,
                 ty,
                 kind: TypedExprKind::EnumConstruct {
                     enum_name: "Result".to_string(),
                     variant: "Err".to_string(),
-                    args: vec![e_typed],
+                    args: vec![TypedCallArg {
+                        mode: args[0].mode,
+                        value: Some(e_typed),
+                    }],
                 },
             })
         }
@@ -6096,6 +6122,7 @@ fn check_call_by_name(
                 mctx,
             )?;
             Ok(TypedExpr {
+                span: call_span,
                 ty: Type::Never,
                 kind: TypedExprKind::Panic(Box::new(mt)),
             })
@@ -6107,6 +6134,7 @@ fn check_call_by_name(
         "Image" => {
             let iargs = check_intrinsic_args(args, fctx, mctx)?;
             Ok(TypedExpr {
+                span: call_span,
                 ty: image_type(),
                 kind: TypedExprKind::Intrinsic {
                     key: "Image".to_string(),
@@ -6135,6 +6163,7 @@ fn check_call_by_name(
                 ));
             }
             Ok(TypedExpr {
+                span: call_span,
                 ty: Type::Named("Instant".to_string(), vec![]),
                 kind: TypedExprKind::Intrinsic {
                     key: "now".to_string(),
@@ -6237,6 +6266,7 @@ fn check_method_generic_call(
         &type_args,
     ));
     Ok(TypedExpr {
+        span: call_span,
         ty: decl.ret,
         kind: TypedExprKind::Call {
             callee: key,
@@ -6280,6 +6310,7 @@ fn check_call_by_field(
                         check_call_args(&af.params, &d.params, args, call_span, fctx, mctx)?;
                     let key = CalleeKey::Method(bname.clone(), name.to_string());
                     return Ok(TypedExpr {
+                        span: call_span,
                         ty: resolved_ret(&d.ret, Some(bname), name, mctx),
                         kind: TypedExprKind::Call {
                             callee: key,
@@ -6323,6 +6354,7 @@ fn check_call_by_field(
                         check_call_args(&af.params, &d.params, args, call_span, fctx, mctx)?;
                     let key = CalleeKey::Method(bname.clone(), name.to_string());
                     return Ok(TypedExpr {
+                        span: call_span,
                         ty: resolved_ret(&d.ret, Some(bname), name, mctx),
                         kind: TypedExprKind::Call {
                             callee: key,
@@ -6348,6 +6380,7 @@ fn check_call_by_field(
                     // plans/M9.md item DD / decision 9: local key, not
                     // `e.name` — see the fieldless arm in `check_field_expr`.
                     return Ok(TypedExpr {
+                        span: call_span,
                         ty: Type::Named(bname.clone(), targs),
                         kind: TypedExprKind::EnumConstruct {
                             enum_name: bname.clone(),
@@ -6431,7 +6464,9 @@ fn check_call_by_field(
     // path (VirtQueue is a sealed builtin, never a DeclStruct).
     if let Type::Named(q, _) = &base_ty {
         if q == "VirtQueue" {
-            return check_virtqueue_method(base_t, name, args, fspan, call_span, fctx, mctx);
+            return check_virtqueue_method(
+                base_t, name, args, fspan, call_span, expected, fctx, mctx,
+            );
         }
     }
     // plans/M7.md item C: an `Mmio[L]` itself has no methods — the only
@@ -6577,6 +6612,7 @@ fn check_call_by_field(
                     )
                 };
                 return Ok(TypedExpr {
+                    span: call_span,
                     ty: resolved_ret(&d.ret, Some(sname), name, mctx),
                     kind: TypedExprKind::Call {
                         callee: key,
@@ -6614,6 +6650,7 @@ fn check_call_by_field(
                     let typed_args =
                         check_call_args(&mf.params, &d.params, args, call_span, fctx, mctx)?;
                     return Ok(TypedExpr {
+                        span: call_span,
                         ty: resolved_ret(&d.ret, Some(sname), name, mctx),
                         kind: TypedExprKind::Call {
                             callee: CalleeKey::Method(sname.clone(), name.to_string()),
@@ -6644,6 +6681,7 @@ fn check_call_by_field(
                 }
                 if let Some(k) = types::scalar_format_bound(other) {
                     return Ok(TypedExpr {
+                        span: call_span,
                         ty: Type::String(Box::new(Expr::Int(call_span, k.to_string()))),
                         kind: TypedExprKind::Call {
                             callee: CalleeKey::Method(
@@ -6909,6 +6947,7 @@ fn check_mmio_access(
     let mut intrinsic_args = vec![(
         "register".to_string(),
         TypedExpr {
+            span: call_span,
             ty: Type::Static(Box::new(Type::Str)),
             kind: TypedExprKind::Str(register.to_string()),
         },
@@ -6964,6 +7003,7 @@ fn check_mmio_access(
     };
 
     Ok(TypedExpr {
+        span: call_span,
         ty,
         kind: TypedExprKind::Intrinsic {
             key: format!("Mmio.{op}"),
@@ -7018,7 +7058,7 @@ pub(crate) fn untrusted_type(inner: Type) -> Type {
 }
 
 /// Is `ty` the marked wrapper `Untrusted[_]`?
-fn is_untrusted_type(ty: &Type) -> bool {
+pub(crate) fn is_untrusted_type(ty: &Type) -> bool {
     matches!(ty, Type::Named(name, _) if name == "Untrusted")
 }
 
@@ -7036,7 +7076,7 @@ fn untrusted_payload(ty: &Type) -> Option<&Type> {
 
 /// 03-hardware.md §8's rejection for an ordinary use of a marked value:
 /// names the use and the one transition that would clear it.
-fn untrusted_use_error(use_kind: &str, span: Span) -> SemaError {
+pub(crate) fn untrusted_use_error(use_kind: &str, span: Span) -> SemaError {
     type_error(
         format!(
             "`Untrusted[T]` cannot be used as {use_kind} until checked-narrowed — write \
@@ -7145,6 +7185,7 @@ fn check_untrusted_narrowing(
     }
     let bound = check_expr(&arg.value, Some(inner), fctx, mctx)?;
     Ok(TypedExpr {
+        span: call_span,
         ty: Type::Result(Box::new(inner.clone()), Box::new(Type::Unit)),
         kind: TypedExprKind::Intrinsic {
             key: "Untrusted.checked_le".to_string(),
@@ -7155,2172 +7196,12 @@ fn check_untrusted_narrowing(
     })
 }
 
-// --- plans/M7.md item H1: 03-hardware.md §9's sealed transport ------------
-//
-// The bring-up chain, and the two of its operations this item makes real.
-//
-// ## The chain, and what a state *is*
-//
-// `Reset -> Acknowledged -> DriverClaimed -> FeaturesNegotiated ->
-// FeaturesAccepted -> QueuesConfigured -> Running`, one builtin type per
-// state (`eval::image_checks::PROTOCOL_STATE_TYPES`), each carrying the
-// device type — `RunningDevice[VirtioBlock]` is the docs' own spelling and
-// the other six follow it. Every one is a resource, which is not a
-// decoration: §9's "each fallible transition **consumes** its input state"
-// *is* the resource rule, and the only reason a transition can consume one
-// is that it is never implicitly copied.
-//
-// ## `claim`, and why it emits nothing on this target
-//
-// `VirtioBlock.claim(cap=take cap)` consumes the `DeviceCap[D]` and yields
-// `DriverClaimedDevice[D]` — the docs' own comment on the line is "reset +
-// acknowledge", i.e. the three status writes a real virtio transport needs
-// to walk `Reset -> Acknowledged -> DriverClaimed`. **This machine has no
-// status register to write.** 06-machine.md §3: "no discovery ... the VMM
-// preconfigures every device, queue, and shared-memory window the report
-// declares — device topology is a *build output*, not a probed fact", and
-// "cold boot is a design property: there is nothing to negotiate". The VMM
-// has no `MagicValue`/`DeviceID`/`Status` register file at all
-// (`wrela-vmm::devices`' module doc). So on machine v1 `claim` is a pure
-// authority transition: it carries the device's base address forward and
-// emits no access. That is a target fact, recorded, not an omission — and
-// it is exactly why the *first* MMIO this compiler ever emits is the
-// driver's own ISR partition rather than a status write.
-//
-// ## `map_partition`, and how it feeds item C's rule instead of dodging it
-//
-// `claimed.map_partition(VirtioIrqMmio)` yields `Mmio[VirtioIrqMmio]`.
-// 03 §2: "a driver **or sealed protocol** partitions its claim into
-// declared, non-overlapping layouts ... minting a layout consumes those
-// byte ranges from the claim". Item C built the *rule* over a driver's
-// declared `Mmio[L]` **fields**; this is the *operation*, so the operation
-// is constrained to that same set: `map_partition(L)` is legal only inside
-// a `@driver` that declares `Mmio[L]` in a field. A partition the no-alias
-// rule never saw therefore cannot exist, and the `devregs` window that
-// backs the claim is sized from the identical set
-// (`layout::device_register_windows`).
-//
-// ## What is deliberately not here
-//
-// `negotiate`/`start`/`read_capacity_sectors`/`take_irq`/`VirtQueue.configure`
-// are each a named rejection carrying the state they would consume, the
-// state they would produce, and what is actually missing. `negotiate` in
-// particular is *not* merely unimplemented: on this machine the accepted
-// feature set is decided before the guest runs (item F's VMM-side
-// `negotiate`, against the image's declared `required_features`), and
-// nothing carries that result into the guest — there is no declared window
-// for it and no plan item has claimed one. Failing closed says so.
-
-/// The device type an `Mmio`/state type argument names, if it names one.
-fn device_type_arg(targs: &[types::TypeArg]) -> Option<&str> {
-    match targs.first() {
-        Some(types::TypeArg::Type(Type::Named(d, _))) => Some(d.as_str()),
-        _ => None,
-    }
-}
-
-/// `<Device>.claim(cap=take cap)` (03-hardware.md §9).
-fn check_device_claim(
-    device: &str,
-    args: &[Arg],
-    fspan: Span,
-    call_span: Span,
-    fctx: &mut FnCtx,
-    mctx: &ModuleCtx,
-) -> Result<TypedExpr, SemaError> {
-    let [arg] = args else {
-        return Err(type_error(
-            format!(
-                "`{device}.claim(cap=take cap)` takes exactly one argument, the `DeviceCap[{device}]` \
-                 the image minted; found {}",
-                args.len()
-            ),
-            call_span,
-        ));
-    };
-    if arg.label.as_deref() != Some("cap") {
-        return Err(type_error(
-            format!(
-                "`{device}.claim`'s own argument is labelled `cap=` (03-hardware.md §9's own \
-                 spelling: `{device}.claim(cap=take cap)`)"
-            ),
-            arg.span,
-        ));
-    }
-    if arg.mode != AccessMode::Take {
-        return Err(type_error(
-            format!(
-                "`{device}.claim` consumes the capability: write `cap=take ...` \
-                 (03-hardware.md §9 — each transition consumes its input)"
-            ),
-            arg.span,
-        ));
-    }
-    let expected = Type::Named(
-        "DeviceCap".to_string(),
-        vec![types::TypeArg::Type(Type::Named(
-            device.to_string(),
-            vec![],
-        ))],
-    );
-    let cap = check_expr(&arg.value, Some(&expected), fctx, mctx)?;
-    let cap_ty = unwrap_own(cap.ty.clone());
-    let Type::Named(cap_name, cap_targs) = &cap_ty else {
-        return Err(type_error(
-            format!(
-                "`{device}.claim`'s own `cap=` is a `DeviceCap[{device}]`; found `{}`",
-                types::render_type(&cap.ty)
-            ),
-            arg.span,
-        ));
-    };
-    if cap_name != "DeviceCap" || device_type_arg(cap_targs) != Some(device) {
-        return Err(type_error(
-            format!(
-                "`{device}.claim`'s own `cap=` is a `DeviceCap[{device}]` — authority over *this* \
-                 device (03-hardware.md §1); found `{}`",
-                types::render_type(&cap.ty)
-            ),
-            arg.span,
-        ));
-    }
-    let _ = fspan;
-    Ok(TypedExpr {
-        ty: Type::Named(
-            "DriverClaimedDevice".to_string(),
-            vec![types::TypeArg::Type(Type::Named(
-                device.to_string(),
-                vec![],
-            ))],
-        ),
-        kind: TypedExprKind::Intrinsic {
-            key: "Device.claim".to_string(),
-            receiver: None,
-            type_arg: Some(Type::Named(device.to_string(), vec![])),
-            args: vec![("cap".to_string(), cap)],
-        },
-    })
-}
-
-/// A method call on one of 03 §9's bring-up states.
-#[allow(clippy::too_many_arguments)]
-fn check_device_state_call(
-    state_expr: TypedExpr,
-    state: &str,
-    targs: &[types::TypeArg],
-    method: &str,
-    args: &[Arg],
-    fspan: Span,
-    call_span: Span,
-    fctx: &mut FnCtx,
-    mctx: &ModuleCtx,
-) -> Result<TypedExpr, SemaError> {
-    let rendered = types::render_type(&state_expr.ty);
-    let device = device_type_arg(targs).unwrap_or("?").to_string();
-    match method {
-        "map_partition" => {
-            check_map_partition(state_expr, &rendered, args, fspan, call_span, fctx, mctx)
-        }
-        // plans/M7.md item E1, decision 14: `negotiate` is a **build-time**
-        // fact. Both sides (the image's `required_features`, and
-        // `virtqueue::DEVICE_FEATURES`) are build outputs; an unofferable
-        // required feature fails the *build*, and the guest's call is a
-        // pure authority transition that always yields
-        // `Ok(FeaturesAcceptedDevice[D])`. The call-site `required=`/
-        // `optional=` arrays are shape-checked here; the bits themselves
-        // are checked against the model when the image seals
-        // (`check_blk_device_features`).
-        "negotiate" => check_device_negotiate(
-            state_expr, state, &device, &rendered, args, fspan, call_span, fctx, mctx,
-        ),
-        "start" => check_device_start(
-            state_expr, state, &device, &rendered, args, fspan, call_span,
-        ),
-        "reset" => check_device_reset(
-            state_expr, state, &device, &rendered, args, fspan, call_span, fctx, mctx,
-        ),
-        "read_capacity_sectors" => check_device_read_capacity(
-            state_expr, state, &device, &rendered, args, fspan, call_span,
-        ),
-        "take_irq" => {
-            if !args.is_empty() {
-                return Err(type_error(
-                    format!(
-                        "`{rendered}.take_irq()` takes no arguments; found {}",
-                        args.len()
-                    ),
-                    call_span,
-                ));
-            }
-            let _ = fspan;
-            Ok(TypedExpr {
-                ty: Type::Named("IrqCap".to_string(), vec![types::TypeArg::Type(Type::U32)]),
-                kind: TypedExprKind::Intrinsic {
-                    key: "Device.take_irq".to_string(),
-                    receiver: Some(Box::new(state_expr)),
-                    type_arg: None,
-                    args: Vec::new(),
-                },
-            })
-        }
-        other => Err(type_error(
-            format!(
-                "`{rendered}` has no operation `{other}`; 03-hardware.md §9's bring-up chain \
-                 gives a claimed device `map_partition`, `negotiate`, `read_capacity_sectors`, \
-                 `take_irq` and `start`; `reset` consumes a `RunningDevice` (plans/M7.md item H2b)"
-            ),
-            fspan,
-        )),
-    }
-}
-
-fn boot_error_ty() -> Type {
-    Type::Named("BootError".to_string(), vec![])
-}
-
-fn device_state_ty(state: &str, device: &str) -> Type {
-    Type::Named(
-        state.to_string(),
-        vec![types::TypeArg::Type(Type::Named(
-            device.to_string(),
-            vec![],
-        ))],
-    )
-}
-
-/// `claimed.negotiate(required=..., optional=...)` — DriverClaimed ->
-/// FeaturesAccepted (Result). plans/M7.md decision 14.
-#[allow(clippy::too_many_arguments)]
-fn check_device_negotiate(
-    state_expr: TypedExpr,
-    state: &str,
-    device: &str,
-    rendered: &str,
-    args: &[Arg],
-    fspan: Span,
-    call_span: Span,
-    fctx: &mut FnCtx,
-    mctx: &ModuleCtx,
-) -> Result<TypedExpr, SemaError> {
-    if state != "DriverClaimedDevice" {
-        return Err(type_error(
-            format!(
-                "`{rendered}.negotiate(...)` consumes a `DriverClaimedDevice[{device}]` \
-                 (03-hardware.md §9: `DriverClaimed -> FeaturesAccepted`); found `{rendered}`"
-            ),
-            fspan,
-        ));
-    }
-    if args.len() != 2 {
-        return Err(type_error(
-            format!(
-                "`{rendered}.negotiate(required=..., optional=...)` takes exactly two labelled \
-                 arguments; found {}",
-                args.len()
-            ),
-            call_span,
-        ));
-    }
-    let mut required = None;
-    let mut optional = None;
-    for arg in args {
-        match arg.label.as_deref() {
-            Some("required") => {
-                if required.is_some() {
-                    return Err(type_error(
-                        "`negotiate`'s `required=` appears twice".to_string(),
-                        arg.span,
-                    ));
-                }
-                if arg.mode != AccessMode::Read {
-                    return Err(type_error(
-                        format!(
-                            "`negotiate`'s `required=` is a feature list, not a moved value: \
-                             drop the `{}`",
-                            arg.mode.as_str()
-                        ),
-                        arg.span,
-                    ));
-                }
-                required = Some(check_expr(&arg.value, None, fctx, mctx)?);
-            }
-            Some("optional") => {
-                if optional.is_some() {
-                    return Err(type_error(
-                        "`negotiate`'s `optional=` appears twice".to_string(),
-                        arg.span,
-                    ));
-                }
-                if arg.mode != AccessMode::Read {
-                    return Err(type_error(
-                        format!(
-                            "`negotiate`'s `optional=` is a feature list, not a moved value: \
-                             drop the `{}`",
-                            arg.mode.as_str()
-                        ),
-                        arg.span,
-                    ));
-                }
-                optional = Some(check_expr(&arg.value, None, fctx, mctx)?);
-            }
-            Some(other) => {
-                return Err(type_error(
-                    format!(
-                        "`negotiate`'s own arguments are labelled `required=` and `optional=`; \
-                         `{other}=` names no parameter"
-                    ),
-                    arg.span,
-                ));
-            }
-            None => {
-                return Err(type_error(
-                    "`negotiate(required=..., optional=...)` requires labelled arguments \
-                     (03-hardware.md §9 / docs/language/examples/virtio-storage.wr)"
-                        .to_string(),
-                    arg.span,
-                ));
-            }
-        }
-    }
-    let (Some(required), Some(optional)) = (required, optional) else {
-        return Err(type_error(
-            format!(
-                "`{rendered}.negotiate` needs both `required=` and `optional=` \
-                 (03-hardware.md §9)"
-            ),
-            call_span,
-        ));
-    };
-    // Feature lists are arrays (or empty-looking literals). Their element
-    // type is a user enum of feature names; the *bits* are checked at
-    // image seal, not here — this is the shape half.
-    for (label, expr) in [("required", &required), ("optional", &optional)] {
-        match &expr.ty {
-            Type::Array(_, _) => {}
-            other => {
-                return Err(type_error(
-                    format!(
-                        "`negotiate`'s `{label}=` is a feature list (`[...]`); found `{}`",
-                        types::render_type(other)
-                    ),
-                    call_span,
-                ));
-            }
-        }
-    }
-    let _ = fspan;
-    let accepted = device_state_ty("FeaturesAcceptedDevice", device);
-    Ok(TypedExpr {
-        ty: Type::Result(Box::new(accepted), Box::new(boot_error_ty())),
-        kind: TypedExprKind::Intrinsic {
-            key: "Device.negotiate".to_string(),
-            receiver: Some(Box::new(state_expr)),
-            type_arg: Some(Type::Named(device.to_string(), vec![])),
-            args: vec![
-                ("required".to_string(), required),
-                ("optional".to_string(), optional),
-            ],
-        },
-    })
-}
-
-/// `negotiated.start()` — QueuesConfigured -> Running (infallible on
-/// this machine: the queue was already placed at configure).
-fn check_device_start(
-    state_expr: TypedExpr,
-    state: &str,
-    device: &str,
-    rendered: &str,
-    args: &[Arg],
-    fspan: Span,
-    call_span: Span,
-) -> Result<TypedExpr, SemaError> {
-    if state != "QueuesConfiguredDevice" {
-        return Err(type_error(
-            format!(
-                "`{rendered}.start()` consumes a `QueuesConfiguredDevice[{device}]` \
-                 (03-hardware.md §9's final `-> Running` transition); found `{rendered}`. \
-                 Call `VirtQueue.configure(...)` first"
-            ),
-            fspan,
-        ));
-    }
-    if !args.is_empty() {
-        return Err(type_error(
-            format!(
-                "`{rendered}.start()` takes no arguments; found {}",
-                args.len()
-            ),
-            call_span,
-        ));
-    }
-    Ok(TypedExpr {
-        ty: device_state_ty("RunningDevice", device),
-        kind: TypedExprKind::Intrinsic {
-            key: "Device.start".to_string(),
-            receiver: Some(Box::new(state_expr)),
-            type_arg: Some(Type::Named(device.to_string(), vec![])),
-            args: Vec::new(),
-        },
-    })
-}
-
-/// `running.reset(queue=mut q)` — Running -> Running with a new epoch
-/// (plans/M7.md item H2b / decision 23). Full device reset on machine v1;
-/// per-queue reset is a typed rejection on `VirtQueue.reset`.
-#[allow(clippy::too_many_arguments)]
-fn check_device_reset(
-    state_expr: TypedExpr,
-    state: &str,
-    device: &str,
-    rendered: &str,
-    args: &[Arg],
-    fspan: Span,
-    call_span: Span,
-    fctx: &mut FnCtx,
-    mctx: &ModuleCtx,
-) -> Result<TypedExpr, SemaError> {
-    if state != "RunningDevice" {
-        return Err(type_error(
-            format!(
-                "`{rendered}.reset(...)` consumes a `RunningDevice[{device}]` \
-                 (03-hardware.md §9: reset consumes `Running`, producing a new epoch); \
-                 found `{rendered}`"
-            ),
-            fspan,
-        ));
-    }
-    let [arg] = args else {
-        return Err(type_error(
-            format!(
-                "`{rendered}.reset(queue=mut q)` takes exactly one labelled argument; found {}",
-                args.len()
-            ),
-            call_span,
-        ));
-    };
-    if arg.label.as_deref() != Some("queue") {
-        return Err(type_error(
-            format!(
-                "`{rendered}.reset`'s own argument is labelled `queue=` (plans/M7.md item H2b: \
-                 the epoch lives in the queue's control-pool bookkeeping)"
-            ),
-            arg.span,
-        ));
-    }
-    if arg.mode != AccessMode::Mut {
-        return Err(type_error(
-            format!(
-                "`{rendered}.reset` mutates the queue's live epoch in place: write `queue=mut ...`"
-            ),
-            arg.span,
-        ));
-    }
-    let queue = check_expr(&arg.value, None, fctx, mctx)?;
-    let queue_ty = unwrap_own(queue.ty.clone());
-    let Type::Named(qname, _) = &queue_ty else {
-        return Err(type_error(
-            format!(
-                "`{rendered}.reset`'s `queue=` is a `VirtQueue[..N]`; found `{}`",
-                types::render_type(&queue.ty)
-            ),
-            arg.span,
-        ));
-    };
-    if qname != "VirtQueue" {
-        return Err(type_error(
-            format!(
-                "`{rendered}.reset`'s `queue=` is a `VirtQueue[..N]`; found `{}`",
-                types::render_type(&queue.ty)
-            ),
-            arg.span,
-        ));
-    }
-    let _ = fspan;
-    Ok(TypedExpr {
-        ty: device_state_ty("RunningDevice", device),
-        kind: TypedExprKind::Intrinsic {
-            key: "Device.reset".to_string(),
-            receiver: Some(Box::new(state_expr)),
-            type_arg: Some(Type::Named(device.to_string(), vec![])),
-            args: vec![("queue".to_string(), queue)],
-        },
-    })
-}
-
-/// `negotiated.read_capacity_sectors()` — capacity is an image-declared,
-/// report-carried fact (`BlkDevice capacity_sectors=`). The guest call
-/// lowers to that build constant (decision recorded with decision 14);
-/// there is no config register to read on this machine.
-fn check_device_read_capacity(
-    state_expr: TypedExpr,
-    state: &str,
-    device: &str,
-    rendered: &str,
-    args: &[Arg],
-    fspan: Span,
-    call_span: Span,
-) -> Result<TypedExpr, SemaError> {
-    if state != "FeaturesAcceptedDevice" && state != "QueuesConfiguredDevice" {
-        return Err(type_error(
-            format!(
-                "`{rendered}.read_capacity_sectors()` is a virtio-blk config read on a \
-                 features-accepted (or queues-configured) device; found `{rendered}`"
-            ),
-            fspan,
-        ));
-    }
-    if !args.is_empty() {
-        return Err(type_error(
-            format!(
-                "`{rendered}.read_capacity_sectors()` takes no arguments; found {}",
-                args.len()
-            ),
-            call_span,
-        ));
-    }
-    let _ = device;
-    Ok(TypedExpr {
-        ty: Type::Result(Box::new(Type::U64), Box::new(boot_error_ty())),
-        kind: TypedExprKind::Intrinsic {
-            key: "Device.read_capacity_sectors".to_string(),
-            receiver: Some(Box::new(state_expr)),
-            type_arg: None,
-            args: Vec::new(),
-        },
-    })
-}
-
-/// `<state>.map_partition(L)` (03-hardware.md §2/§9).
-fn check_map_partition(
-    state_expr: TypedExpr,
-    rendered: &str,
-    args: &[Arg],
-    fspan: Span,
-    call_span: Span,
-    fctx: &mut FnCtx,
-    mctx: &ModuleCtx,
-) -> Result<TypedExpr, SemaError> {
-    let [arg] = args else {
-        return Err(type_error(
-            format!(
-                "`{rendered}.map_partition(L)` takes exactly one argument, the `@layout(mmio)` \
-                 type to map; found {}",
-                args.len()
-            ),
-            call_span,
-        ));
-    };
-    if let Some(label) = &arg.label {
-        return Err(type_error(
-            format!("`map_partition(L)`'s layout is positional; `{label}=` names no parameter"),
-            arg.span,
-        ));
-    }
-    if arg.mode != AccessMode::Read {
-        return Err(type_error(
-            format!(
-                "`map_partition(L)`'s argument is a *type*, not a value: drop the `{}`",
-                arg.mode.as_str()
-            ),
-            arg.span,
-        ));
-    }
-    let Expr::Name(_, layout_name) = &arg.value else {
-        return Err(type_error(
-            "`map_partition(L)`'s argument names an `@layout(mmio)` type (03-hardware.md §2), \
-             not a value"
-                .to_string(),
-            arg.span,
-        ));
-    };
-    match mctx.layouts.get(layout_name.as_str()) {
-        Some(l) if l.kind == types::LayoutKind::Mmio => {}
-        _ => {
-            return Err(type_error(
-                format!(
-                    "`map_partition({layout_name})` requires `{layout_name}` to be an \
-                     `@layout(mmio)` struct (03-hardware.md §2: a typed register layout)"
-                ),
-                arg.span,
-            ));
-        }
-    }
-    // 03 §2's partition rule, wired to item C's own check rather than
-    // restated: the layouts a `@driver` mints are exactly the ones its
-    // declared `Mmio[L]` fields name, `check_mmio_claims` proves *those*
-    // pairwise disjoint, and `layout::device_register_windows` sizes the
-    // claim's window from the same set. A `map_partition` of anything else
-    // would be a live layout no rule ever ranged over.
-    let Some(Type::Named(owner, _)) = fctx.lookup_local("self").map(unwrap_own) else {
-        return Err(type_error(
-            format!(
-                "`{rendered}.map_partition({layout_name})` partitions a `@driver`'s own claim \
-                 (03-hardware.md §2), so it is only callable from inside one"
-            ),
-            call_span,
-        ));
-    };
-    let structs: std::collections::BTreeMap<String, &types::DeclStruct> = mctx
-        .structs
-        .iter()
-        .map(|(n, s)| (n.clone(), &s.decl))
-        .collect();
-    // The nesting table item I's sweep made this walk need: a layout
-    // reached through a wrapper struct *or* an enum variant payload, which
-    // is why enums are here beside structs (`types::components_by_name`'s
-    // own content, built from this pass's own already-declared tables).
-    let components: std::collections::BTreeMap<String, &[(Type, Span)]> = mctx
-        .structs
-        .iter()
-        .map(|(n, s)| (n.clone(), s.decl.component_types.as_slice()))
-        .chain(
-            mctx.enums
-                .iter()
-                .map(|(n, e)| (n.clone(), e.component_types.as_slice())),
-        )
-        .collect();
-    let Some(mints) = types::mmio_mints_of(&owner, &structs, &components) else {
-        return Err(type_error(
-            format!(
-                "`map_partition({layout_name})` partitions a `@driver`'s own claim, and \
-                 `{owner}` is not a `@driver` (03-hardware.md §2)"
-            ),
-            call_span,
-        ));
-    };
-    if !mints.iter().any(|m| m == layout_name) {
-        return Err(type_error(
-            format!(
-                "`@driver` `{owner}` maps `{layout_name}`, but declares no field of type \
-                 `Mmio[{layout_name}]`. A driver's declared `Mmio[L]` fields *are* its partition \
-                 of the claim (03-hardware.md §2), and they are what the no-alias rule and the \
-                 device's own register window are both derived from — a partition mapped outside \
-                 that set would be a live layout no rule ever saw{}",
-                if mints.is_empty() {
-                    String::new()
-                } else {
-                    format!(
-                        "; `{owner}` declares {}",
-                        mints
-                            .iter()
-                            .map(|m| format!("`Mmio[{m}]`"))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )
-                }
-            ),
-            call_span,
-        ));
-    }
-    let _ = fspan;
-    Ok(TypedExpr {
-        ty: Type::Named(
-            "Mmio".to_string(),
-            vec![types::TypeArg::Type(Type::Named(
-                layout_name.clone(),
-                vec![],
-            ))],
-        ),
-        kind: TypedExprKind::Intrinsic {
-            key: "Device.map_partition".to_string(),
-            receiver: Some(Box::new(state_expr)),
-            type_arg: Some(Type::Named(layout_name.clone(), vec![])),
-            args: Vec::new(),
-        },
-    })
-}
-
-/// Is `key` one of item H1's sealed-transport intrinsics, including item
-/// G's `take_irq`? Same three-consumer discipline as
-/// `is_mmio_access_intrinsic` above.
-pub fn is_device_transport_intrinsic(key: &str) -> bool {
-    matches!(
-        key,
-        "Device.claim"
-            | "Device.map_partition"
-            | "Device.negotiate"
-            | "Device.start"
-            | "Device.reset"
-            | "Device.read_capacity_sectors"
-            | "Device.take_irq"
-            | "VirtQueue.configure"
-    )
-}
-
-/// plans/M7.md item E2/E3/E4 / G fail-closed keys — used by lower and
-/// flowwir so an unimplemented queue/IRQ op names its owner rather than
-/// falling into a generic "intrinsic" rejection.
-pub fn is_queue_op_deferred(key: &str) -> Option<&'static str> {
-    match key {
-        "VirtQueue.poll_sources" | "VirtQueue.completions_pending" => {
-            Some("plans/M7.md item G (`poll_sources` / `completions_pending`)")
-        }
-        _ => None,
-    }
-}
-
-/// Is `key` one of item E2/E3/E4's live queue operations?
-pub fn is_queue_op_intrinsic(key: &str) -> bool {
-    matches!(
-        key,
-        "VirtQueue.reserve"
-            | "VirtQueue.prepare_block"
-            | "VirtQueue.publish"
-            | "VirtQueue.reject"
-            | "VirtQueue.drain"
-            | "VirtQueue.suppress_interrupts"
-            | "VirtQueue.claim"
-            | "VirtQueue.recover"
-            | "VirtQueue.reclaim"
-    )
-}
-
-/// A method call on a `VirtQueue[..N]` value (03-hardware.md §4).
-fn check_virtqueue_method(
-    queue: TypedExpr,
-    name: &str,
-    args: &[Arg],
-    fspan: Span,
-    call_span: Span,
-    fctx: &mut FnCtx,
-    mctx: &ModuleCtx,
-) -> Result<TypedExpr, SemaError> {
-    match name {
-        "reserve" => {
-            check_virtqueue_reserve(queue, args, fspan, call_span, fctx, mctx)
-        }
-        "prepare_block" => check_virtqueue_prepare_block(queue, args, fspan, call_span, fctx, mctx),
-        "publish" => check_virtqueue_publish(queue, args, fspan, call_span, fctx, mctx),
-        "reject" => check_virtqueue_reject(queue, args, fspan, call_span, fctx, mctx),
-        "drain" => check_virtqueue_drain(queue, args, fspan, call_span, fctx, mctx),
-        "reset" => Err(type_error(
-            "`VirtQueue.reset` is per-queue reset, which requires the `RingReset` feature \
-             this device model does not offer (03-hardware.md §9: \"per-queue reset (when \
-             negotiated)\"; plans/M7.md item H2b / decision 23: machine v1 does full \
-             `RunningDevice.reset(queue=mut ...)` only — see `golden/err-device-required-unoffered`)"
-                .to_string(),
-            fspan,
-        )),
-        "suppress_interrupts" => {
-            check_virtqueue_suppress_interrupts(queue, args, fspan, call_span, fctx, mctx)
-        }
-        "claim" => check_virtqueue_claim(queue, args, fspan, call_span, fctx, mctx),
-        "recover" => check_virtqueue_recover(queue, args, fspan, call_span, fctx, mctx),
-        "reclaim" => check_virtqueue_reclaim(queue, args, fspan, call_span, fctx, mctx),
-        "poll_sources" | "completions_pending" => Err(unimplemented_at(
-            &format!("`VirtQueue.{name}(...)` — plans/M7.md item G (`{name}`) is"),
-            call_span,
-        )),
-        other => Err(type_error(
-            format!(
-                "`VirtQueue[..N]` has no method `{other}`; 03-hardware.md §4/§5/§9 give \
-                 `reserve`, `prepare_block`, `publish`, `reject`, `drain`, \
-                 `suppress_interrupts`, `claim`, `recover`, and `reclaim`"
-            ),
-            fspan,
-        )),
-    }
-}
-
-/// `queue.reserve(descriptors=3)` — declared
-/// `Result[QueuePermit, CapacityError]`; collapses to `QueuePermit` at
-/// use sites when `sema::reserve_proof` admits the image (item M).
-fn check_virtqueue_reserve(
-    queue: TypedExpr,
-    args: &[Arg],
-    fspan: Span,
-    call_span: Span,
-    fctx: &mut FnCtx,
-    mctx: &ModuleCtx,
-) -> Result<TypedExpr, SemaError> {
-    let depth = virtqueue_type_depth(&queue.ty, mctx).ok_or_else(|| {
-        type_error(
-            "`reserve` needs a `VirtQueue[..N]` whose depth is a comptime-known \
-             nonzero power of two (03-hardware.md §4)"
-                .to_string(),
-            call_span,
-        )
-    })?;
-    if depth == 0 || !depth.is_power_of_two() {
-        return Err(type_error(
-            format!("`reserve` on `VirtQueue[..{depth}]`: depth must be a nonzero power of two"),
-            call_span,
-        ));
-    }
-    if args.len() != 1 {
-        return Err(type_error(
-            format!(
-                "`VirtQueue.reserve(descriptors=N)` takes exactly one labelled argument; \
-                 found {}",
-                args.len()
-            ),
-            call_span,
-        ));
-    }
-    let arg = &args[0];
-    if arg.label.as_deref() != Some("descriptors") {
-        return Err(type_error(
-            "`VirtQueue.reserve`'s own argument is labelled `descriptors=` \
-             (03-hardware.md §4)"
-                .to_string(),
-            arg.span,
-        ));
-    }
-    if arg.mode != AccessMode::Read {
-        return Err(type_error(
-            format!(
-                "`reserve`'s `descriptors=` is a count, not a moved value: drop the `{}`",
-                arg.mode.as_str()
-            ),
-            arg.span,
-        ));
-    }
-    let desc_expr = check_expr(&arg.value, Some(&Type::Usize), fctx, mctx)?;
-    let desc_val = virtqueue_depth_value(&desc_expr, mctx).ok_or_else(|| {
-        type_error(
-            "`reserve`'s `descriptors=` must be a comptime-known integer \
-             (03-hardware.md §4)"
-                .to_string(),
-            arg.span,
-        )
-    })?;
-    if desc_val == 0 || desc_val > u64::from(u16::MAX) {
-        return Err(type_error(
-            format!("`reserve(descriptors={desc_val})` is not a usable descriptor count"),
-            arg.span,
-        ));
-    }
-    if desc_val != u64::from(crate::virtqueue::DESCRIPTORS_PER_BLK_OP) {
-        return Err(type_error(
-            format!(
-                "`reserve(descriptors={desc_val})`: machine v1's virtio-blk operation \
-                 uses exactly {} descriptors (header + data + status)",
-                crate::virtqueue::DESCRIPTORS_PER_BLK_OP
-            ),
-            arg.span,
-        ));
-    }
-    let _ = fspan;
-    // plans/M13.md item M / decision 1: `reserve`'s declared type is
-    // `Result[QueuePermit, CapacityError]`. Whole-image proof success
-    // collapses it to `QueuePermit` at use sites that expect a permit
-    // (`check_expr` coercion + `reserve_proof`); failure leaves the
-    // Result and item L refuses silent `Err` discard.
-    // Encode the resolved depth as a literal Bound on `type_arg` so
-    // `sema::reserve_proof` never has to re-resolve a const name.
-    Ok(TypedExpr {
-        ty: Type::Result(
-            Box::new(Type::Named("QueuePermit".to_string(), vec![])),
-            Box::new(Type::Named("CapacityError".to_string(), vec![])),
-        ),
-        kind: TypedExprKind::Intrinsic {
-            key: "VirtQueue.reserve".to_string(),
-            receiver: Some(Box::new(queue)),
-            type_arg: Some(Type::Named(
-                "VirtQueue".to_string(),
-                vec![types::TypeArg::Bound(Expr::Int(
-                    call_span,
-                    depth.to_string(),
-                ))],
-            )),
-            args: vec![("descriptors".to_string(), desc_expr)],
-        },
-    })
-}
-
-/// plans/M8.md item G, decision 18: the one wording for 03-hardware.md §9's
-/// no-auto-retry rule, shared by the two sites that can commit the
-/// violation (`prepare_block` builds the operation; `publish` issues it).
-/// One message, two sites — a hoisted `prepare_block` and an inlined one
-/// are the same mistake and read the same way.
-fn no_auto_retry_message(site: &str) -> String {
-    format!(
-        "`{site}` re-issues an operation declared `idempotent=false` inside a \
-         `CompletionOutcome.Unknown` arm — 03-hardware.md §9: \"Source must not auto-retry a \
-         non-idempotent operation on `Unknown`\". The first attempt may already have taken \
-         effect, so retrying it can apply the operation twice. Either establish quiescence \
-         first (quarantine the device and pool, or go target-fatal — 03 §9), or, if re-running \
-         this exact operation is provably harmless, declare it `idempotent=true` at its \
-         `prepare_block`"
-    )
-}
-
-/// `queue.prepare_block(permit=take ..., header=..., payload=take ...,
-/// device_writes_payload=..., status=..., idempotent=...)` — yields a
-/// `QueueOp[P, <idempotent>]`.
-fn check_virtqueue_prepare_block(
-    queue: TypedExpr,
-    args: &[Arg],
-    fspan: Span,
-    call_span: Span,
-    fctx: &mut FnCtx,
-    mctx: &ModuleCtx,
-) -> Result<TypedExpr, SemaError> {
-    if args.len() != 6 {
-        return Err(type_error(
-            format!(
-                "`VirtQueue.prepare_block(permit=take ..., header=..., payload=take ..., \
-                 device_writes_payload=..., status=..., idempotent=...)` takes exactly six \
-                 labelled arguments; found {}",
-                args.len()
-            ),
-            call_span,
-        ));
-    }
-    let mut permit = None;
-    let mut header = None;
-    let mut payload = None;
-    let mut device_writes = None;
-    let mut status = None;
-    let mut idempotent: Option<bool> = None;
-    for arg in args {
-        match arg.label.as_deref() {
-            Some("permit") => {
-                if permit.is_some() {
-                    return Err(type_error(
-                        "`prepare_block`'s `permit=` appears twice".to_string(),
-                        arg.span,
-                    ));
-                }
-                if arg.mode != AccessMode::Take {
-                    return Err(type_error(
-                        "`prepare_block` consumes the permit: write `permit=take ...` \
-                         (03-hardware.md §4)"
-                            .to_string(),
-                        arg.span,
-                    ));
-                }
-                let expected = Type::Named("QueuePermit".to_string(), vec![]);
-                permit = Some(check_expr(&arg.value, Some(&expected), fctx, mctx)?);
-            }
-            Some("header") => {
-                if header.is_some() {
-                    return Err(type_error(
-                        "`prepare_block`'s `header=` appears twice".to_string(),
-                        arg.span,
-                    ));
-                }
-                if arg.mode != AccessMode::Read {
-                    return Err(type_error(
-                        format!(
-                            "`prepare_block`'s `header=` is a `@layout(dma)` value, not a moved \
-                             handle: drop the `{}`",
-                            arg.mode.as_str()
-                        ),
-                        arg.span,
-                    ));
-                }
-                let h = check_expr(&arg.value, None, fctx, mctx)?;
-                require_layout_dma(&h.ty, "header", arg.span, mctx)?;
-                header = Some(h);
-            }
-            Some("payload") => {
-                if payload.is_some() {
-                    return Err(type_error(
-                        "`prepare_block`'s `payload=` appears twice".to_string(),
-                        arg.span,
-                    ));
-                }
-                if arg.mode != AccessMode::Take {
-                    return Err(type_error(
-                        "`prepare_block` consumes the transfer payload: write `payload=take ...` \
-                         (03-hardware.md §3/§4)"
-                            .to_string(),
-                        arg.span,
-                    ));
-                }
-                let p = check_expr(&arg.value, None, fctx, mctx)?;
-                match &p.ty {
-                    Type::Own(_, inner) => {
-                        require_layout_dma(inner, "payload", arg.span, mctx)?;
-                    }
-                    other => {
-                        return Err(type_error(
-                            format!(
-                                "`prepare_block`'s `payload=` is an `own[P] T` transfer handle \
-                                 (03-hardware.md §3); found `{}`",
-                                types::render_type(other)
-                            ),
-                            arg.span,
-                        ));
-                    }
-                }
-                payload = Some(p);
-            }
-            Some("device_writes_payload") => {
-                if device_writes.is_some() {
-                    return Err(type_error(
-                        "`prepare_block`'s `device_writes_payload=` appears twice".to_string(),
-                        arg.span,
-                    ));
-                }
-                if arg.mode != AccessMode::Read {
-                    return Err(type_error(
-                        format!(
-                            "`prepare_block`'s `device_writes_payload=` is a bool, not a moved \
-                             value: drop the `{}`",
-                            arg.mode.as_str()
-                        ),
-                        arg.span,
-                    ));
-                }
-                device_writes = Some(check_expr(&arg.value, Some(&Type::Bool), fctx, mctx)?);
-            }
-            Some("status") => {
-                if status.is_some() {
-                    return Err(type_error(
-                        "`prepare_block`'s `status=` appears twice".to_string(),
-                        arg.span,
-                    ));
-                }
-                if arg.mode != AccessMode::Read {
-                    return Err(type_error(
-                        format!(
-                            "`prepare_block`'s `status=` is a `@layout(dma)` value, not a moved \
-                             handle: drop the `{}`",
-                            arg.mode.as_str()
-                        ),
-                        arg.span,
-                    ));
-                }
-                let s = check_expr(&arg.value, None, fctx, mctx)?;
-                require_layout_dma(&s.ty, "status", arg.span, mctx)?;
-                status = Some(s);
-            }
-            // plans/M8.md item G, decision 18: 03-hardware.md §9's
-            // no-auto-retry rule needs to know whether re-running this
-            // operation is harmless, and **nothing in the compiler can
-            // work that out** — a write of fixed bytes to a fixed sector
-            // is idempotent, an append is not, and both spell the same
-            // `prepare_block`. So the author declares it, here, at the one
-            // place the operation is constructed. Required, not defaulted:
-            // a default in either direction is the compiler guessing.
-            Some("idempotent") => {
-                if idempotent.is_some() {
-                    return Err(type_error(
-                        "`prepare_block`'s `idempotent=` appears twice".to_string(),
-                        arg.span,
-                    ));
-                }
-                if arg.mode != AccessMode::Read {
-                    return Err(type_error(
-                        format!(
-                            "`prepare_block`'s `idempotent=` is a declaration, not a moved \
-                             value: drop the `{}`",
-                            arg.mode.as_str()
-                        ),
-                        arg.span,
-                    ));
-                }
-                let Expr::Bool(_, v) = &arg.value else {
-                    return Err(type_error(
-                        "`prepare_block`'s `idempotent=` is a declaration the operation's type \
-                         carries, so it must be the literal `true` or `false` \
-                         (03-hardware.md §9)"
-                            .to_string(),
-                        arg.span,
-                    ));
-                };
-                idempotent = Some(*v);
-            }
-            Some(other) => {
-                return Err(type_error(
-                    format!(
-                        "`prepare_block`'s own arguments are labelled `permit=`, `header=`, \
-                         `payload=`, `device_writes_payload=`, `status=`, `idempotent=`; \
-                         `{other}=` names no parameter"
-                    ),
-                    arg.span,
-                ));
-            }
-            None => {
-                return Err(type_error(
-                    "`prepare_block(...)` requires labelled arguments".to_string(),
-                    arg.span,
-                ));
-            }
-        }
-    }
-    let (
-        Some(permit),
-        Some(header),
-        Some(payload),
-        Some(device_writes),
-        Some(status),
-        Some(idempotent),
-    ) = (permit, header, payload, device_writes, status, idempotent)
-    else {
-        return Err(type_error(
-            "`prepare_block` needs `permit=`, `header=`, `payload=`, `device_writes_payload=`, \
-             `status=` and `idempotent=`"
-                .to_string(),
-            call_span,
-        ));
-    };
-    if !idempotent && fctx.in_unknown_outcome_arm() {
-        return Err(type_error(
-            no_auto_retry_message("prepare_block"),
-            call_span,
-        ));
-    }
-    let payload_ty = payload.ty.clone();
-    let _ = (fspan, &queue);
-    Ok(TypedExpr {
-        ty: Type::Named(
-            "QueueOp".to_string(),
-            vec![
-                types::TypeArg::Type(payload_ty),
-                // The declaration rides on the operation's *type*, so a
-                // `publish` that never sees the `prepare_block` site (one
-                // hoisted out of the arm, say) still knows the answer.
-                // `Span::default()` keeps two identically-declared
-                // operations structurally equal.
-                types::TypeArg::Const(Expr::Bool(Span::default(), idempotent)),
-            ],
-        ),
-        kind: TypedExprKind::Intrinsic {
-            key: "VirtQueue.prepare_block".to_string(),
-            receiver: Some(Box::new(queue)),
-            type_arg: None,
-            args: vec![
-                ("permit".to_string(), permit),
-                ("header".to_string(), header),
-                ("payload".to_string(), payload),
-                ("device_writes_payload".to_string(), device_writes),
-                ("status".to_string(), status),
-            ],
-        },
-    })
-}
-
-fn require_layout_dma(
-    ty: &Type,
-    role: &str,
-    span: Span,
-    mctx: &ModuleCtx,
-) -> Result<(), SemaError> {
-    let Type::Named(name, targs) = ty else {
-        return Err(type_error(
-            format!(
-                "`prepare_block`'s `{role}=` must be a `@layout(dma)` struct; found `{}`",
-                types::render_type(ty)
-            ),
-            span,
-        ));
-    };
-    if !targs.is_empty() {
-        return Err(type_error(
-            format!(
-                "`prepare_block`'s `{role}=` must be a `@layout(dma)` struct; found `{}`",
-                types::render_type(ty)
-            ),
-            span,
-        ));
-    }
-    match mctx.layouts.get(name.as_str()) {
-        Some(l) if l.kind == types::LayoutKind::Dma => Ok(()),
-        _ => Err(type_error(
-            format!("`prepare_block`'s `{role}=` must be a `@layout(dma)` struct; `{name}` is not"),
-            span,
-        )),
-    }
-}
-
-/// `queue.publish(operation=take ...)` — 03-hardware.md §5 / decision 15:
-/// writes the ring in normative order and yields `Receipt[P]` for the
-/// packaged payload brand.
-fn check_virtqueue_publish(
-    queue: TypedExpr,
-    args: &[Arg],
-    fspan: Span,
-    call_span: Span,
-    fctx: &mut FnCtx,
-    mctx: &ModuleCtx,
-) -> Result<TypedExpr, SemaError> {
-    if args.len() != 1 {
-        return Err(type_error(
-            format!(
-                "`VirtQueue.publish(operation=take ...)` takes exactly one labelled argument; \
-                 found {}",
-                args.len()
-            ),
-            call_span,
-        ));
-    }
-    let arg = &args[0];
-    if arg.label.as_deref() != Some("operation") {
-        return Err(type_error(
-            "`VirtQueue.publish`'s own argument is labelled `operation=` (03-hardware.md §4/§5)"
-                .to_string(),
-            arg.span,
-        ));
-    }
-    if arg.mode != AccessMode::Take {
-        return Err(type_error(
-            "`publish` consumes the prepared operation: write `operation=take ...` \
-             (03-hardware.md §4/§5)"
-                .to_string(),
-            arg.span,
-        ));
-    }
-    let op = check_expr(&arg.value, None, fctx, mctx)?;
-    // plans/M8.md item G, decision 18: the operation's own type carries the
-    // author's idempotence declaration, so this catches a `prepare_block`
-    // hoisted out of the arm just as surely as one written inside it.
-    if let Type::Named(n, targs) = &op.ty {
-        if n == "QueueOp"
-            && matches!(
-                targs.get(1),
-                Some(types::TypeArg::Const(Expr::Bool(_, false)))
-            )
-            && fctx.in_unknown_outcome_arm()
-        {
-            return Err(type_error(no_auto_retry_message("publish"), call_span));
-        }
-    }
-    let payload_ty = match &op.ty {
-        Type::Named(n, targs) if n == "QueueOp" => match targs.first() {
-            Some(types::TypeArg::Type(p)) => p.clone(),
-            _ => {
-                return Err(type_error(
-                    "`publish`'s `operation=` is a `QueueOp[P]`; found a `QueueOp` with no \
-                     payload brand"
-                        .to_string(),
-                    arg.span,
-                ));
-            }
-        },
-        other => {
-            return Err(type_error(
-                format!(
-                    "`publish`'s `operation=` is a `QueueOp[P]` (03-hardware.md §4); found `{}`",
-                    types::render_type(other)
-                ),
-                arg.span,
-            ));
-        }
-    };
-    let _ = (fspan, &queue);
-    Ok(TypedExpr {
-        ty: Type::Named(
-            "Receipt".to_string(),
-            vec![types::TypeArg::Type(payload_ty)],
-        ),
-        kind: TypedExprKind::Intrinsic {
-            key: "VirtQueue.publish".to_string(),
-            receiver: Some(Box::new(queue)),
-            type_arg: None,
-            args: vec![("operation".to_string(), op)],
-        },
-    })
-}
-
-/// `queue.reject(payload=take p, error=...)` — 03-hardware.md §5:
-/// pre-commit failure returns `P` via a resolved receipt.
-fn check_virtqueue_reject(
-    queue: TypedExpr,
-    args: &[Arg],
-    fspan: Span,
-    call_span: Span,
-    fctx: &mut FnCtx,
-    mctx: &ModuleCtx,
-) -> Result<TypedExpr, SemaError> {
-    if args.len() != 2 {
-        return Err(type_error(
-            format!(
-                "`VirtQueue.reject(payload=take ..., error=...)` takes exactly two labelled \
-                 arguments; found {}",
-                args.len()
-            ),
-            call_span,
-        ));
-    }
-    let mut payload = None;
-    let mut error = None;
-    for arg in args {
-        match arg.label.as_deref() {
-            Some("payload") => {
-                if payload.is_some() {
-                    return Err(type_error(
-                        "`reject`'s `payload=` appears twice".to_string(),
-                        arg.span,
-                    ));
-                }
-                if arg.mode != AccessMode::Take {
-                    return Err(type_error(
-                        "`reject` returns the payload through the receipt: write \
-                         `payload=take ...` (03-hardware.md §5)"
-                            .to_string(),
-                        arg.span,
-                    ));
-                }
-                payload = Some(check_expr(&arg.value, None, fctx, mctx)?);
-            }
-            Some("error") => {
-                if error.is_some() {
-                    return Err(type_error(
-                        "`reject`'s `error=` appears twice".to_string(),
-                        arg.span,
-                    ));
-                }
-                if arg.mode != AccessMode::Read {
-                    return Err(type_error(
-                        format!(
-                            "`reject`'s `error=` is an `IoError` value, not a moved handle: \
-                             drop the `{}`",
-                            arg.mode.as_str()
-                        ),
-                        arg.span,
-                    ));
-                }
-                let expected = Type::Named("IoError".to_string(), vec![]);
-                error = Some(check_expr(&arg.value, Some(&expected), fctx, mctx)?);
-            }
-            Some(other) => {
-                return Err(type_error(
-                    format!(
-                        "`reject`'s own arguments are labelled `payload=` and `error=`; \
-                         `{other}=` names no parameter"
-                    ),
-                    arg.span,
-                ));
-            }
-            None => {
-                return Err(type_error(
-                    "`reject(...)` requires labelled arguments".to_string(),
-                    arg.span,
-                ));
-            }
-        }
-    }
-    let (Some(payload), Some(error)) = (payload, error) else {
-        return Err(type_error(
-            "`reject` needs `payload=` and `error=`".to_string(),
-            call_span,
-        ));
-    };
-    let _ = (fspan, &queue);
-    Ok(TypedExpr {
-        ty: Type::Named(
-            "Receipt".to_string(),
-            vec![types::TypeArg::Type(payload.ty.clone())],
-        ),
-        kind: TypedExprKind::Intrinsic {
-            key: "VirtQueue.reject".to_string(),
-            receiver: Some(Box::new(queue)),
-            type_arg: None,
-            args: vec![
-                ("payload".to_string(), payload),
-                ("error".to_string(), error),
-            ],
-        },
-    })
-}
-
-/// `queue.drain(max=N)` — bounded used-ring walk (03-hardware.md §4/§6).
-fn check_virtqueue_drain(
-    queue: TypedExpr,
-    args: &[Arg],
-    fspan: Span,
-    call_span: Span,
-    fctx: &mut FnCtx,
-    mctx: &ModuleCtx,
-) -> Result<TypedExpr, SemaError> {
-    let _ = fspan;
-    let depth = virtqueue_type_depth(&queue.ty, mctx).ok_or_else(|| {
-        type_error(
-            "`drain` needs a `VirtQueue[..N]` whose depth is a comptime-known nonzero power of two"
-                .to_string(),
-            call_span,
-        )
-    })?;
-    if args.len() != 1 {
-        return Err(type_error(
-            format!(
-                "`VirtQueue.drain(max=N)` takes exactly one labelled argument; found {}",
-                args.len()
-            ),
-            call_span,
-        ));
-    }
-    let arg = &args[0];
-    if arg.label.as_deref() != Some("max") {
-        return Err(type_error(
-            "`VirtQueue.drain`'s own argument is labelled `max=` (03-hardware.md §6)".to_string(),
-            arg.span,
-        ));
-    }
-    if arg.mode != AccessMode::Read {
-        return Err(type_error(
-            format!(
-                "`drain`'s `max=` is a bound, not a moved value: drop the `{}`",
-                arg.mode.as_str()
-            ),
-            arg.span,
-        ));
-    }
-    let max_expr = check_expr(&arg.value, Some(&Type::Usize), fctx, mctx)?;
-    let max_val = virtqueue_depth_value(&max_expr, mctx).ok_or_else(|| {
-        type_error(
-            "`drain`'s `max=` must be a comptime-known integer (03-hardware.md §6)".to_string(),
-            arg.span,
-        )
-    })?;
-    if max_val == 0 || max_val > depth {
-        return Err(type_error(
-            format!("`drain(max={max_val})` on `VirtQueue[..{depth}]`: max must be in 1..={depth}"),
-            arg.span,
-        ));
-    }
-    Ok(TypedExpr {
-        ty: Type::Unit,
-        kind: TypedExprKind::Intrinsic {
-            key: "VirtQueue.drain".to_string(),
-            receiver: Some(Box::new(queue)),
-            type_arg: Some(Type::Named(
-                "VirtQueue".to_string(),
-                vec![types::TypeArg::Bound(Expr::Int(
-                    call_span,
-                    max_val.to_string(),
-                ))],
-            )),
-            args: vec![("max".to_string(), max_expr)],
-        },
-    })
-}
-
-/// `queue.claim(receipt=take r) -> IoCompletion[P]` — plans/M7.md item E4 /
-/// decision 22: sync claim of a drain-resolved receipt (bottom-half dual
-/// of `await receipt`).
-fn check_virtqueue_claim(
-    queue: TypedExpr,
-    args: &[Arg],
-    fspan: Span,
-    call_span: Span,
-    fctx: &mut FnCtx,
-    mctx: &ModuleCtx,
-) -> Result<TypedExpr, SemaError> {
-    let _ = fspan;
-    if args.len() != 1 {
-        return Err(type_error(
-            format!(
-                "`VirtQueue.claim(receipt=take ...)` takes exactly one labelled argument; found {}",
-                args.len()
-            ),
-            call_span,
-        ));
-    }
-    let arg = &args[0];
-    if arg.label.as_deref() != Some("receipt") {
-        return Err(type_error(
-            "`VirtQueue.claim`'s own argument is labelled `receipt=` (plans/M7.md item E4)"
-                .to_string(),
-            arg.span,
-        ));
-    }
-    if arg.mode != AccessMode::Take {
-        return Err(type_error(
-            "`claim` consumes the receipt: write `receipt=take ...` (03-hardware.md §5)"
-                .to_string(),
-            arg.span,
-        ));
-    }
-    let receipt = check_expr(&arg.value, None, fctx, mctx)?;
-    let Type::Named(n, targs) = &receipt.ty else {
-        return Err(type_error(
-            format!(
-                "`claim`'s `receipt=` must be a `Receipt[P]`; found `{}`",
-                types::render_type(&receipt.ty)
-            ),
-            arg.span,
-        ));
-    };
-    if n != "Receipt" {
-        return Err(type_error(
-            format!(
-                "`claim`'s `receipt=` must be a `Receipt[P]`; found `{}`",
-                types::render_type(&receipt.ty)
-            ),
-            arg.span,
-        ));
-    }
-    let Some(types::TypeArg::Type(payload)) = targs.first() else {
-        return Err(type_error(
-            "`Receipt` with no payload type argument".to_string(),
-            arg.span,
-        ));
-    };
-    let payload = payload.clone();
-    Ok(TypedExpr {
-        ty: Type::Named(
-            "IoCompletion".to_string(),
-            vec![types::TypeArg::Type(payload)],
-        ),
-        kind: TypedExprKind::Intrinsic {
-            key: "VirtQueue.claim".to_string(),
-            receiver: Some(Box::new(queue)),
-            type_arg: None,
-            args: vec![("receipt".to_string(), receipt)],
-        },
-    })
-}
-
-/// `queue.recover(receipt=take r) -> CompletionOutcome` — plans/M8.md item
-/// G / decision 12: 03-hardware.md §5's `Recovery` transition, and the one
-/// producer of §9's `CompletionOutcome`.
-///
-/// **Why this is not a second `claim`.** `claim` is the *resolved* path: it
-/// consumes the receipt and returns the payload with the completion, which
-/// is only sound because the device provably returned the descriptor in the
-/// current epoch. `recover` is the *abandon* path §9 describes ("cancelling
-/// in-flight work is a driver protocol, not a dropped future"): it consumes
-/// the receipt — receipts resolve exactly once and dropping one is illegal
-/// in every state (§5) — reports what is known about the operation's effect,
-/// and deliberately returns **no payload**, because after a reset the buffer
-/// is possibly device-owned and §9 forbids reclaiming it. Reclaim is
-/// quarantine's job (plans/M8.md item F); until it lands the pool slot is
-/// simply retired, which is the fail-closed half of the same sentence.
-fn check_virtqueue_recover(
-    queue: TypedExpr,
-    args: &[Arg],
-    fspan: Span,
-    call_span: Span,
-    fctx: &mut FnCtx,
-    mctx: &ModuleCtx,
-) -> Result<TypedExpr, SemaError> {
-    let _ = fspan;
-    if args.len() != 1 {
-        return Err(type_error(
-            format!(
-                "`VirtQueue.recover(receipt=take ...)` takes exactly one labelled argument; \
-                 found {}",
-                args.len()
-            ),
-            call_span,
-        ));
-    }
-    let arg = &args[0];
-    if arg.label.as_deref() != Some("receipt") {
-        return Err(type_error(
-            "`VirtQueue.recover`'s own argument is labelled `receipt=` (03-hardware.md §5)"
-                .to_string(),
-            arg.span,
-        ));
-    }
-    if arg.mode != AccessMode::Take {
-        return Err(type_error(
-            "`recover` consumes the receipt: write `receipt=take ...` (03-hardware.md §5: \
-             a receipt resolves exactly once)"
-                .to_string(),
-            arg.span,
-        ));
-    }
-    let receipt = check_expr(&arg.value, None, fctx, mctx)?;
-    match &receipt.ty {
-        Type::Named(n, _) if n == "Receipt" => {}
-        other => {
-            return Err(type_error(
-                format!(
-                    "`recover`'s `receipt=` must be a `Receipt[P]`; found `{}`",
-                    types::render_type(other)
-                ),
-                arg.span,
-            ));
-        }
-    }
-    // plans/M8.md item H attack 1: remember the receipt's `own[P] T` brand
-    // on this queue place so a later `reclaim` cannot declare a different
-    // pool and mint a confused handle.
-    if let Some(key) = virtqueue_place_key(&queue) {
-        if let Some(brand) = receipt_own_brand(&receipt.ty) {
-            fctx.quarantined_by_queue.insert(key, brand);
-        }
-    }
-    Ok(TypedExpr {
-        ty: Type::Named("CompletionOutcome".to_string(), vec![]),
-        kind: TypedExprKind::Intrinsic {
-            key: "VirtQueue.recover".to_string(),
-            receiver: Some(Box::new(queue)),
-            type_arg: None,
-            args: vec![("receipt".to_string(), receipt)],
-        },
-    })
-}
-
-/// `queue.reclaim(pool=P, payload=T) -> own[P] T` — plans/M8.md item F /
-/// **decision 37**: 03-hardware.md §9's "affected regions and DMA slots
-/// are quarantined, per-queue reset ... or full reset establishes
-/// quiescence, and **only then is memory reclaimed**".
-///
-/// **Why two declaring arguments and no receipt.** `recover` already
-/// consumed the receipt (§5: a receipt resolves exactly once, and dropping
-/// one is illegal in every state), and with it the only value that carried
-/// the payload's brand — so the handle's type has to be *declared* here,
-/// exactly as `img.dma_pool[T](name=P, ...)` declares the same pair when
-/// the pool is created. Both arguments are bare names with no value form:
-/// `pool=` is a bound pool name (02-language.md §4) and `payload=` names
-/// the `@layout(dma)` struct the slot holds. They are resolved through the
-/// ordinary `own[P] T` resolver, so an undeclared pool and a non-`dma`
-/// payload are the same two diagnostics they are in any annotation.
-///
-/// **What the declaration cannot lie about.** The address handed back is
-/// the quarantined slot's own payload word, so the *bytes* are always the
-/// abandoned buffer's; the declaration decides which pool the language
-/// believes the handle belongs to. plans/M8.md item H attack 1 closes the
-/// pool-brand half at build time: `pool=`/`payload=` must match the
-/// `own[P] T` brand of the `recover` that quarantined this queue's slot in
-/// the same function (same `match` arm). A wrong brand would otherwise
-/// survive any path that never reaches a later `publish`/`Receipt` store.
-/// Checking the handle against the queue's *device* stays the deliberate
-/// trade item P recorded as decision 27 — that is a different sentence.
-fn check_virtqueue_reclaim(
-    queue: TypedExpr,
-    args: &[Arg],
-    fspan: Span,
-    call_span: Span,
-    fctx: &mut FnCtx,
-    mctx: &ModuleCtx,
-) -> Result<TypedExpr, SemaError> {
-    let _ = fspan;
-    let (pool, payload) = reclaim_declaration(args, call_span)?;
-    // Shape first: undeclared pool / non-dma payload keep the diagnostics
-    // they have in any `own[P] T` annotation (`golden/err-reclaim-payload-not-dma`).
-    let ast_ty = ast::Type::Own(Box::new(ast::OwnType {
-        span: call_span,
-        pool: vec![pool.1.clone()],
-        inner: ast::Type::Named(NamedType {
-            span: payload.0,
-            name: payload.1.clone(),
-            args: vec![],
-        }),
-    }));
-    let ty = mctx.resolve_type(&ast_ty, &fctx.local_pools)?;
-    match mctx.layouts.get(payload.1.as_str()) {
-        Some(l) if l.kind == types::LayoutKind::Dma => {}
-        _ => {
-            return Err(type_error(
-                format!(
-                    "`reclaim`'s `payload=` must be a `@layout(dma)` struct; `{}` is not \
-                     (03-hardware.md §3: a transfer payload is `own[P] T` where `T` is \
-                     `@layout(dma)`)",
-                    payload.1
-                ),
-                payload.0,
-            ));
-        }
-    }
-    // Brand second (plans/M8.md item H attack 1): the declaration must
-    // match the `own[P] T` `recover` quarantined on this queue place.
-    let Some(key) = virtqueue_place_key(&queue) else {
-        return Err(type_error(
-            "`reclaim` needs a named `VirtQueue` place (a local or a field) so its \
-             `pool=` can be checked against the brand `recover` quarantined on that \
-             queue (plans/M8.md item H; 04-compiler.md §1: DMA ownership transitions \
-             are valid)"
-                .to_string(),
-            call_span,
-        ));
-    };
-    let Some((expected_pool, expected_payload)) = fctx.quarantined_by_queue.remove(&key) else {
-        return Err(type_error(
-            "`reclaim` on this queue has no preceding `recover` in this scope whose \
-             receipt brands a pool; write `recover` first, then \
-             `reclaim(pool=<that brand>, payload=...)` (plans/M8.md item H / \
-             03-hardware.md §9)"
-                .to_string(),
-            call_span,
-        ));
-    };
-    if pool.1 != expected_pool {
-        return Err(type_error(
-            format!(
-                "`reclaim`'s `pool={}` does not match the pool brand recovered on this \
-                 queue (`{expected_pool}`); the handle would be `own[{}]` pointing at \
-                 `{expected_pool}`'s bytes (03-hardware.md §9 / 04-compiler.md §1: DMA \
-                 ownership transitions are valid)",
-                pool.1, pool.1
-            ),
-            pool.0,
-        ));
-    }
-    if payload.1 != expected_payload {
-        return Err(type_error(
-            format!(
-                "`reclaim`'s `payload={}` does not match the payload type recovered on \
-                 this queue (`{expected_payload}`) (03-hardware.md §9)",
-                payload.1
-            ),
-            payload.0,
-        ));
-    }
-    Ok(TypedExpr {
-        ty,
-        kind: TypedExprKind::Intrinsic {
-            key: "VirtQueue.reclaim".to_string(),
-            receiver: Some(Box::new(queue)),
-            type_arg: None,
-            args: Vec::new(),
-        },
-    })
-}
-
-/// Place key for a `VirtQueue` receiver — a local name, or `root.field`
-/// for a field of a local (the `self.queue` spelling every flagship uses).
-fn virtqueue_place_key(queue: &TypedExpr) -> Option<String> {
-    match &queue.kind {
-        TypedExprKind::Local(n) => Some(n.clone()),
-        TypedExprKind::Field(base, field) => match &base.kind {
-            TypedExprKind::Local(root) => Some(format!("{root}.{field}")),
-            _ => virtqueue_place_key(base).map(|p| format!("{p}.{field}")),
-        },
-        _ => None,
-    }
-}
-
-/// `Receipt[own[P] T]` → `(P, T)` — the brand `recover` quarantines and
-/// `reclaim` must re-declare. Anything else yields `None` (a receipt that
-/// does not carry an `own` payload cannot justify a reclaim brand).
-fn receipt_own_brand(ty: &Type) -> Option<(String, String)> {
-    let Type::Named(n, args) = ty else {
-        return None;
-    };
-    if n != "Receipt" {
-        return None;
-    }
-    let Some(types::TypeArg::Type(Type::Own(pool, inner))) = args.first() else {
-        return None;
-    };
-    match inner.as_ref() {
-        Type::Named(payload, _) => Some((pool.clone(), payload.clone())),
-        _ => None,
-    }
-}
-
-/// The `pool=P, payload=T` pair `reclaim` declares, as two bare names.
-/// Shared by `bodies` (which resolves them) and `access` (which only needs
-/// the shape to keep a move tracked), so the two passes cannot disagree
-/// about what a well-formed `reclaim` looks like.
-pub(crate) fn reclaim_declaration(
-    args: &[Arg],
-    call_span: Span,
-) -> Result<((Span, String), (Span, String)), SemaError> {
-    let mut pool: Option<(Span, String)> = None;
-    let mut payload: Option<(Span, String)> = None;
-    for a in args {
-        let slot = match a.label.as_deref() {
-            Some("pool") => &mut pool,
-            Some("payload") => &mut payload,
-            _ => {
-                return Err(type_error(
-                    "`VirtQueue.reclaim(pool=..., payload=...)` takes exactly those two \
-                     labelled arguments (03-hardware.md §9)"
-                        .to_string(),
-                    a.span,
-                ));
-            }
-        };
-        if slot.is_some() {
-            return Err(type_error(
-                format!(
-                    "duplicate `{}=` argument",
-                    a.label.as_deref().unwrap_or("?")
-                ),
-                a.span,
-            ));
-        }
-        if a.mode != AccessMode::Read {
-            return Err(type_error(
-                "`reclaim`'s `pool=`/`payload=` are declarations, not values: they take no \
-                 access mode"
-                    .to_string(),
-                a.span,
-            ));
-        }
-        match &a.value {
-            Expr::Name(span, name) => *slot = Some((*span, name.clone())),
-            other => {
-                return Err(type_error(
-                    "`reclaim`'s `pool=`/`payload=` are bare names — a declared pool and a \
-                     `@layout(dma)` struct"
-                        .to_string(),
-                    other.span(),
-                ));
-            }
-        }
-    }
-    match (pool, payload) {
-        (Some(p), Some(t)) => Ok((p, t)),
-        _ => Err(type_error(
-            "`VirtQueue.reclaim(pool=..., payload=...)` needs both: the pool the quarantined \
-             slot belongs to and the `@layout(dma)` payload it holds (03-hardware.md §9)"
-                .to_string(),
-            call_span,
-        )),
-    }
-}
-
-/// `queue.suppress_interrupts()` — set `VIRTQ_AVAIL_F_NO_INTERRUPT` (poll builds).
-fn check_virtqueue_suppress_interrupts(
-    queue: TypedExpr,
-    args: &[Arg],
-    fspan: Span,
-    call_span: Span,
-    _fctx: &mut FnCtx,
-    _mctx: &ModuleCtx,
-) -> Result<TypedExpr, SemaError> {
-    let _ = fspan;
-    if !args.is_empty() {
-        return Err(type_error(
-            format!(
-                "`VirtQueue.suppress_interrupts()` takes no arguments; found {}",
-                args.len()
-            ),
-            call_span,
-        ));
-    }
-    Ok(TypedExpr {
-        ty: Type::Unit,
-        kind: TypedExprKind::Intrinsic {
-            key: "VirtQueue.suppress_interrupts".to_string(),
-            receiver: Some(Box::new(queue)),
-            type_arg: None,
-            args: Vec::new(),
-        },
-    })
-}
-
-/// Depth bound on a `VirtQueue[..N]` type, resolving a const name through
-/// `mctx.const_values` the same way `virtqueue_depth_value` does for a
-/// typed expression.
-fn virtqueue_type_depth(ty: &Type, mctx: &ModuleCtx) -> Option<u64> {
-    let Type::Named(name, targs) = ty else {
-        return None;
-    };
-    if name != "VirtQueue" {
-        return None;
-    }
-    let types::TypeArg::Bound(expr) = targs.first()? else {
-        return None;
-    };
-    match expr {
-        Expr::Int(_, text) => parse_int_literal(text).and_then(|v| u64::try_from(v).ok()),
-        Expr::Name(_, n) => {
-            let init = mctx.const_values.get(n)?;
-            match init {
-                Expr::Int(_, text) => parse_int_literal(text).and_then(|v| u64::try_from(v).ok()),
-                _ => None,
-            }
-        }
-        _ => None,
-    }
-}
-
-/// `VirtQueue.configure(pool=take control_pool, device=mut negotiated,
-/// index=0, depth=QDEPTH)?` — FeaturesAccepted -> QueuesConfigured, and
-/// the `DmaShared` mint item D left named (03-hardware.md §3/§4).
-fn check_virtqueue_configure(
-    args: &[Arg],
-    fspan: Span,
-    call_span: Span,
-    fctx: &mut FnCtx,
-    mctx: &ModuleCtx,
-) -> Result<TypedExpr, SemaError> {
-    if args.len() != 4 {
-        return Err(type_error(
-            format!(
-                "`VirtQueue.configure(pool=take ..., device=mut ..., index=..., depth=...)` \
-                 takes exactly four labelled arguments; found {}",
-                args.len()
-            ),
-            call_span,
-        ));
-    }
-    let mut pool = None;
-    let mut device = None;
-    let mut device_local: Option<String> = None;
-    let mut index = None;
-    let mut depth = None;
-    for arg in args {
-        match arg.label.as_deref() {
-            Some("pool") => {
-                if pool.is_some() {
-                    return Err(type_error(
-                        "`VirtQueue.configure`'s `pool=` appears twice".to_string(),
-                        arg.span,
-                    ));
-                }
-                if arg.mode != AccessMode::Take {
-                    return Err(type_error(
-                        "`VirtQueue.configure` consumes the DMA pool: write `pool=take ...` \
-                         (03-hardware.md §3: the queue owns the shared control memory minted \
-                         out of it)"
-                            .to_string(),
-                        arg.span,
-                    ));
-                }
-                pool = Some(check_expr(&arg.value, None, fctx, mctx)?);
-            }
-            Some("device") => {
-                if device.is_some() {
-                    return Err(type_error(
-                        "`VirtQueue.configure`'s `device=` appears twice".to_string(),
-                        arg.span,
-                    ));
-                }
-                if arg.mode != AccessMode::Mut {
-                    return Err(type_error(
-                        "`VirtQueue.configure` takes the device by `mut` so the local becomes \
-                         `QueuesConfiguredDevice[D]` after the call (03-hardware.md §9): write \
-                         `device=mut ...`"
-                            .to_string(),
-                        arg.span,
-                    ));
-                }
-                if let Expr::Name(_, n) = &arg.value {
-                    device_local = Some(n.clone());
-                }
-                device = Some(check_expr(&arg.value, None, fctx, mctx)?);
-            }
-            Some("index") => {
-                if index.is_some() {
-                    return Err(type_error(
-                        "`VirtQueue.configure`'s `index=` appears twice".to_string(),
-                        arg.span,
-                    ));
-                }
-                if arg.mode != AccessMode::Read {
-                    return Err(type_error(
-                        format!(
-                            "`VirtQueue.configure`'s `index=` is a queue index, not a moved \
-                             value: drop the `{}`",
-                            arg.mode.as_str()
-                        ),
-                        arg.span,
-                    ));
-                }
-                index = Some(check_expr(&arg.value, Some(&Type::Usize), fctx, mctx)?);
-            }
-            Some("depth") => {
-                if depth.is_some() {
-                    return Err(type_error(
-                        "`VirtQueue.configure`'s `depth=` appears twice".to_string(),
-                        arg.span,
-                    ));
-                }
-                if arg.mode != AccessMode::Read {
-                    return Err(type_error(
-                        format!(
-                            "`VirtQueue.configure`'s `depth=` is a queue depth, not a moved \
-                             value: drop the `{}`",
-                            arg.mode.as_str()
-                        ),
-                        arg.span,
-                    ));
-                }
-                depth = Some(check_expr(&arg.value, Some(&Type::Usize), fctx, mctx)?);
-            }
-            Some(other) => {
-                return Err(type_error(
-                    format!(
-                        "`VirtQueue.configure`'s own arguments are labelled `pool=`, `device=`, \
-                         `index=`, `depth=`; `{other}=` names no parameter"
-                    ),
-                    arg.span,
-                ));
-            }
-            None => {
-                return Err(type_error(
-                    "`VirtQueue.configure(...)` requires labelled arguments \
-                     (docs/language/examples/virtio-storage.wr)"
-                        .to_string(),
-                    arg.span,
-                ));
-            }
-        }
-    }
-    let (Some(pool), Some(device_expr), Some(index), Some(depth_expr)) =
-        (pool, device, index, depth)
-    else {
-        return Err(type_error(
-            "`VirtQueue.configure` needs `pool=`, `device=`, `index=` and `depth=`".to_string(),
-            call_span,
-        ));
-    };
-    // Pool must be a DmaPool[P, N].
-    let pool_ty = unwrap_own(pool.ty.clone());
-    let Type::Named(pool_name, pool_targs) = &pool_ty else {
-        return Err(type_error(
-            format!(
-                "`VirtQueue.configure`'s `pool=` is a `DmaPool[P, N]`; found `{}`",
-                types::render_type(&pool.ty)
-            ),
-            call_span,
-        ));
-    };
-    if pool_name != "DmaPool" {
-        return Err(type_error(
-            format!(
-                "`VirtQueue.configure`'s `pool=` is a `DmaPool[P, N]`; found `{}`",
-                types::render_type(&pool.ty)
-            ),
-            call_span,
-        ));
-    }
-    let Some(types::TypeArg::Pool(pool_id)) = pool_targs.first() else {
-        return Err(type_error(
-            "`VirtQueue.configure`'s `DmaPool` names no pool".to_string(),
-            call_span,
-        ));
-    };
-    // Device must be FeaturesAcceptedDevice[D].
-    let device_ty = unwrap_own(device_expr.ty.clone());
-    let Type::Named(dev_state, dev_targs) = &device_ty else {
-        return Err(type_error(
-            format!(
-                "`VirtQueue.configure`'s `device=` is a `FeaturesAcceptedDevice[D]`; found `{}`",
-                types::render_type(&device_expr.ty)
-            ),
-            call_span,
-        ));
-    };
-    if dev_state != "FeaturesAcceptedDevice" {
-        return Err(type_error(
-            format!(
-                "`VirtQueue.configure`'s `device=` is a `FeaturesAcceptedDevice[D]` \
-                 (03-hardware.md §9: FeaturesAccepted -> QueuesConfigured); found `{}`",
-                types::render_type(&device_expr.ty)
-            ),
-            call_span,
-        ));
-    }
-    let device_name = device_type_arg(dev_targs).unwrap_or("?").to_string();
-    // Depth must be a comptime-known nonzero power of two. Prefer a
-    // literal; a module const name is accepted when its value is a
-    // literal int (the common `const QDEPTH: usize = 128` spelling).
-    let depth_val = virtqueue_depth_value(&depth_expr, mctx).ok_or_else(|| {
-        type_error(
-            "`VirtQueue.configure`'s `depth=` must be a comptime-known nonzero power of two \
-             (VIRTIO 1.2 §2.6); a runtime value would make the ring geometry — which the \
-             report, the placer and the VMM all read from one derivation — disagree with \
-             itself"
-                .to_string(),
-            call_span,
-        )
-    })?;
-    if depth_val == 0 || !depth_val.is_power_of_two() || depth_val > u16::MAX as u64 {
-        return Err(type_error(
-            format!(
-                "`VirtQueue.configure`'s `depth={depth_val}` is not a nonzero power of two that \
-                 fits virtio's 16-bit queue depth (VIRTIO 1.2 §2.6)"
-            ),
-            call_span,
-        ));
-    }
-    // index must be 0 on machine v1 (one queue).
-    if let TypedExprKind::Int(text) = &index.kind {
-        if let Some(v) = parse_int_literal(text) {
-            if v != 0 {
-                return Err(type_error(
-                    format!(
-                        "`VirtQueue.configure`'s `index={v}`: machine v1's `blk` has exactly one \
-                         queue (index 0)"
-                    ),
-                    call_span,
-                ));
-            }
-        }
-    }
-    // Flow-type the mut device local to QueuesConfiguredDevice[D].
-    if let Some(local) = &device_local {
-        let queued = device_state_ty("QueuesConfiguredDevice", &device_name);
-        if !fctx.retype_local(local, queued) {
-            return Err(type_error(
-                "`VirtQueue.configure`'s `device=mut ...` must name a local so its type can \
-                 become `QueuesConfiguredDevice[D]` after the call (03-hardware.md §9)"
-                    .to_string(),
-                call_span,
-            ));
-        }
-    } else {
-        return Err(type_error(
-            "`VirtQueue.configure`'s `device=mut ...` must name a local so its type can \
-             become `QueuesConfiguredDevice[D]` after the call (03-hardware.md §9)"
-                .to_string(),
-            call_span,
-        ));
-    }
-    let _ = (fspan, pool_id);
-    // Record for layout/report: one derivation of (pool, depth).
-    mctx.virtqueue_configures
-        .borrow_mut()
-        .push((pool_id.clone(), depth_val as u16));
-    let queue_ty = Type::Named(
-        "VirtQueue".to_string(),
-        vec![types::TypeArg::Bound(Expr::Int(
-            call_span,
-            depth_val.to_string(),
-        ))],
-    );
-    Ok(TypedExpr {
-        ty: Type::Result(Box::new(queue_ty), Box::new(boot_error_ty())),
-        kind: TypedExprKind::Intrinsic {
-            key: "VirtQueue.configure".to_string(),
-            receiver: None,
-            type_arg: Some(Type::Named(device_name, vec![])),
-            args: vec![
-                ("pool".to_string(), pool),
-                ("device".to_string(), device_expr),
-                ("index".to_string(), index),
-                ("depth".to_string(), depth_expr),
-            ],
-        },
-    })
-}
-
-/// A comptime depth for `VirtQueue.configure`: a literal int, or a
-/// module `const` whose initializer is a literal int.
-fn virtqueue_depth_value(expr: &TypedExpr, mctx: &ModuleCtx) -> Option<u64> {
-    match &expr.kind {
-        TypedExprKind::Int(text) => parse_int_literal(text).and_then(|v| u64::try_from(v).ok()),
-        TypedExprKind::Const(name) => {
-            let init = mctx.const_values.get(name)?;
-            match init {
-                Expr::Int(_, text) => parse_int_literal(text).and_then(|v| u64::try_from(v).ok()),
-                _ => None,
-            }
-        }
-        _ => None,
-    }
-}
-
-/// plans/M7.md item G: `IrqCap.bind` / `IrqCap.unmask` — the two
-/// operations 03-hardware.md §6's worked example names on an `IrqCap`.
-pub fn is_irq_cap_intrinsic(key: &str) -> bool {
-    matches!(key, "IrqCap.bind" | "IrqCap.unmask")
-}
-
-/// plans/M7.md item G, decision 17: `InterruptCell[T]` ops + constructor.
-pub fn is_interrupt_cell_intrinsic(key: &str) -> bool {
-    matches!(
-        key,
-        "InterruptCell.new"
-            | "InterruptCell.load_acquire"
-            | "InterruptCell.store_release"
-            | "InterruptCell.swap_acquire"
-            | "InterruptCell.fetch_or_release"
-    )
-}
-
-/// plans/M7.md item G: `wake(Driver.method)`.
-pub fn is_wake_intrinsic(key: &str) -> bool {
-    key == "wake"
-}
-
-/// Is `ty` an `InterruptCell[_]`?
-pub fn is_interrupt_cell_type(ty: &Type) -> bool {
-    matches!(unwrap_own(ty.clone()), Type::Named(n, _) if n == "InterruptCell")
-}
+// --- sealed transport: see `sema::transport` ----------------------------
+use super::transport::*;
+pub use super::transport::{
+    is_device_transport_intrinsic, is_interrupt_cell_intrinsic, is_interrupt_cell_type,
+    is_irq_cap_intrinsic, is_queue_op_deferred, is_queue_op_intrinsic, is_wake_intrinsic,
+};
 
 // --- plans/M7.md item G: IrqCap.bind / IrqCap.unmask (03-hardware.md §6) ---
 //
@@ -9362,6 +7243,7 @@ fn check_irq_cap_call(
             }
             let _ = fspan;
             Ok(TypedExpr {
+                span: call_span,
                 ty: Type::Unit,
                 kind: TypedExprKind::Intrinsic {
                     key: "IrqCap.unmask".to_string(),
@@ -9418,6 +7300,7 @@ fn check_irq_bind(
     let handler = resolve_irq_bind_handler(&arg.value, arg.span, fctx, mctx)?;
     let _ = fspan;
     Ok(TypedExpr {
+        span: call_span,
         ty: Type::Unit,
         kind: TypedExprKind::Intrinsic {
             key: "IrqCap.bind".to_string(),
@@ -9570,6 +7453,7 @@ fn irq_handler_fnref(
         )
     };
     Ok(TypedExpr {
+        span: span,
         ty: fn_value_type(d),
         kind: TypedExprKind::FnRef(key),
     })
@@ -9662,6 +7546,7 @@ fn check_interrupt_cell_new(
         vec![types::TypeArg::Type(value.ty.clone())],
     );
     Ok(TypedExpr {
+        span: call_span,
         ty,
         kind: TypedExprKind::Intrinsic {
             key: "InterruptCell.new".to_string(),
@@ -9697,6 +7582,7 @@ fn check_interrupt_cell_call(
                 ));
             }
             Ok(TypedExpr {
+                span: call_span,
                 ty: elem_ty,
                 kind: TypedExprKind::Intrinsic {
                     key: "InterruptCell.load_acquire".to_string(),
@@ -9740,6 +7626,7 @@ fn check_interrupt_cell_call(
                 elem_ty
             };
             Ok(TypedExpr {
+                span: call_span,
                 ty: ret_ty,
                 kind: TypedExprKind::Intrinsic {
                     key: format!("InterruptCell.{method}"),
@@ -9822,6 +7709,7 @@ fn check_array_map_take(
     }
     match name {
         "map_take" => Ok(TypedExpr {
+            span: call_span,
             ty: Type::Array(Box::new((**ret).clone()), Box::new(len.clone())),
             kind: TypedExprKind::Intrinsic {
                 key: "Array.map_take".to_string(),
@@ -9852,6 +7740,7 @@ fn check_array_map_take(
                 ));
             }
             Ok(TypedExpr {
+                span: call_span,
                 ty: Type::Result(
                     Box::new(Type::Array(Box::new((**ok).clone()), Box::new(len.clone()))),
                     Box::new((**err).clone()),
@@ -9908,6 +7797,7 @@ fn check_wake_call(
     }
     let target = resolve_wake_target(&arg.value, arg.span, fctx, mctx)?;
     Ok(TypedExpr {
+        span: call_span,
         ty: Type::Unit,
         kind: TypedExprKind::Intrinsic {
             key: "wake".to_string(),
@@ -9990,1678 +7880,9 @@ fn resolve_wake_target(
     Ok(handler)
 }
 
-// --- plans/M6.md item A: the actor/async surface --------------------------
-//
-// `Actor[T]` calls (`await`/`send`), `with group(...)`/`g.start`/
-// `g.join_all`, and the cross-await path rule (02-language.md §9.2/§9.4/
-// §9.5). Every construct outside this exact shape stays fail-closed,
-// named, exactly like the rest of decision 7's set.
-
-fn actor_error(message: String, span: Span) -> SemaError {
-    SemaError::at("actor", message, span)
-}
-
-/// The CallError composition table, verbatim (02-language.md §9.4):
-/// `declared R -> Result[R, CallError[never]]`; `declared Result[T, E] ->
-/// Result[T, CallError[E]]`. `CallError` is carried as a plain
-/// `Type::Named("CallError", [TypeArg::Type(E)])` — the `Option`/`Result`
-/// precedent stops at two fixed builtin sums; `CallError`'s own five
-/// variants (`Op`/`Cancelled`/`DeadlineExceeded`/`NotAdmitted`/
-/// `PeerFailed`) are instead recognized directly wherever a scrutinee's
-/// type says `CallError` by name (`variant_payload_types_for`/
-/// `matches::shape_of`), the same "builtin_enum_variants precedent" the
-/// plan names — a fixed, compiler-known variant/payload table, just with
-/// non-empty payloads unlike `Target`/`Failure`'s fieldless ones.
-/// Variant erasure (decision 8) ships nothing at M6: no whole-image
-/// analysis proves any variant unreachable yet, so every composition
-/// keeps the full five-variant `CallError[E]` — recorded, not silently
-/// approximated (the plan's own "record what you shipped").
-///
-/// plans/M13.md item H / decision 4: when the call has `take` arguments,
-/// `CallError` grows a second type argument — the take-args tuple — so
-/// `NotAdmitted`'s pattern payload is `(Admission, args)` monomorphized
-/// per signature. Calls with no `take` args keep the one-argument form
-/// (second payload types as `()`).
-pub(crate) fn compose_call_error(raw: &Type, take_arg_tys: &[Type]) -> Type {
-    let e_ty = match raw {
-        Type::Result(_, e) => (**e).clone(),
-        _ => Type::Never,
-    };
-    let ok_ty = match raw {
-        Type::Result(t, _) => (**t).clone(),
-        other => other.clone(),
-    };
-    Type::Result(
-        Box::new(ok_ty),
-        Box::new(call_error_type(e_ty, take_arg_tys)),
-    )
-}
-
-/// `CallError[E]` or `CallError[E, Args]` (item H) for a composed await.
-pub(crate) fn call_error_type(e_ty: Type, take_arg_tys: &[Type]) -> Type {
-    let mut targs = vec![TypeArg::Type(e_ty)];
-    if !take_arg_tys.is_empty() {
-        targs.push(TypeArg::Type(Type::Tuple(take_arg_tys.to_vec())));
-    }
-    Type::Named("CallError".to_string(), targs)
-}
-
-/// `NotAdmitted`'s take-args tuple type from a `CallError`'s type arguments
-/// (absent / empty → `()`).
-pub(crate) fn not_admitted_args_type(targs: &[TypeArg]) -> Type {
-    match targs.get(1) {
-        Some(TypeArg::Type(t)) => t.clone(),
-        _ => Type::Tuple(vec![]),
-    }
-}
-
-/// `CallError` equality for `?` / `from`: same `E`, Args may differ.
-/// A `from(take e: CallError[E])` must accept a site-monomorphized
-/// `CallError[E, (T,)]` (item H + item I).
-pub(crate) fn call_error_e_compatible(a: &Type, b: &Type) -> bool {
-    match (a, b) {
-        (Type::Named(n1, a1), Type::Named(n2, a2)) if n1 == "CallError" && n2 == "CallError" => {
-            match (a1.first(), a2.first()) {
-                (Some(TypeArg::Type(e1)), Some(TypeArg::Type(e2))) => types_eq(e1, e2),
-                _ => false,
-            }
-        }
-        _ => false,
-    }
-}
-
-/// `compose_call_error`'s exact inverse — the declared reply type behind
-/// an already-composed `await` result: `Result[T, CallError[never]]` ->
-/// `T`; `Result[T, CallError[E]]` (E != `never`) -> `Result[T, E]`.
-/// `None` for anything that is not a composed actor-call result at all.
-///
-/// plans/M7.md item Z1 (decision 9b) needs this to size an async fn's own
-/// reply staging slot (`codegen::Frame::reply_stage_off`) and to decide,
-/// per `await` site, whether the wide transport is needed at all: the
-/// composed type is already in the FlowWir frame, so inverting it is
-/// strictly cheaper than threading the declared type through
-/// `flowwir_lower` as a second, drift-prone copy of the same fact.
-///
-/// It lives here, immediately under the composition it inverts, for the
-/// same "one shared definition" reason `sema::types::validate_message_shape`
-/// calls `codegen::is_aggregate` directly rather than copying it: the day
-/// the table above changes, both halves are on the same screen and cannot
-/// silently disagree.
-///
-/// **The pair is NOT total, and the exception is load-bearing** (found by
-/// plans/M7.md item I's sweep; this comment used to claim
-/// `decompose_call_error(&compose_call_error(t)) == Some(t)` for every
-/// `t`, which is false). `compose_call_error` is not injective: `t = T`
-/// and `t = Result[T, never]` both compose to `Result[T, CallError[never]]`,
-/// because §9.4's two rows genuinely collide when `E` is `never`. This
-/// answers `T` for that composed type, so a `Result[T, never]` reply
-/// round-tripped to the *wrong* declared type — and item Z1's transport
-/// then read the two ends of one `await` through two different
-/// predicates (this one caller-side, `codegen::is_aggregate(&f.ret)`
-/// callee-side), which turned the ambiguity into a shifted payload for an
-/// aggregate `T` and a write through a null `x8` for a scalar one. The
-/// collision is refused at the declaration now
-/// (`sema::types::validate_message_shape`, `golden/err-actor-reply-never-error`),
-/// which is what restores totality over every reply shape that can reach
-/// here — a `never` nested any deeper (`Result[T, Option[never]]`)
-/// composes and decomposes correctly and is untouched.
-pub(crate) fn decompose_call_error(composed: &Type) -> Option<Type> {
-    let Type::Result(t, e) = composed else {
-        return None;
-    };
-    let Type::Named(name, targs) = &**e else {
-        return None;
-    };
-    if name != "CallError" {
-        return None;
-    }
-    let Some(TypeArg::Type(inner)) = targs.first() else {
-        return None;
-    };
-    if matches!(inner, Type::Never) {
-        Some((**t).clone())
-    } else {
-        Some(Type::Result(t.clone(), Box::new(inner.clone())))
-    }
-}
-
-/// `CallError[E]`'s own variant *numbering* — 02-language.md §9.4 declares
-/// the order (`Op`, `Cancelled`, `DeadlineExceeded`, `NotAdmitted`,
-/// `PeerFailed`) and `variant_payload_types_for`/`matches::shape_of` above
-/// build exactly that order when they type an arm's payload; this is the
-/// same table read as an index, which is what a lowered `match`'s own tag
-/// comparison needs. `None` for a name that is not a `CallError` variant
-/// at all (sema has already rejected those, so a lowering caller treats it
-/// as a producer bug).
-///
-/// It lives here, beside the composition, because `CallError` is the one
-/// enum this compiler knows *without* a declaration: it is carried as an
-/// instantiated `Type::Named("CallError", [E])` and therefore appears in
-/// no `TypedProgram::enums` map, so every consumer that would otherwise
-/// look the numbering up has to be told it. Consumers, all cross-checked
-/// against this order: `codegen::CALL_ERROR_TAG_CANCELLED` (= 1),
-/// `codegen::enum_payload_offset`'s own `CallError` arm, and
-/// `flowwir_lower::variant_index`.
-pub(crate) fn call_error_variant_index(variant: &str) -> Option<usize> {
-    match variant {
-        "Op" => Some(0),
-        "Cancelled" => Some(1),
-        "DeadlineExceeded" => Some(2),
-        "NotAdmitted" => Some(3),
-        _ => None,
-    }
-}
-
-/// Message-value restrictions (02-language.md §9.3): a `mut` loan or a
-/// lent closure is rejected, named; `take` of a resource is M7 (fail
-/// closed, named, distinct from the flat rejection — the plan's own
-/// "distinct message from the flat rejection"); `take` of plain data (not
-/// a resource) and a bare `Static[T]`/plain-data argument are both fine,
-/// same as an ordinary call. Otherwise identical to `check_call_args`
-/// (label/positional binding, defaults) — duplicated rather than
-/// threaded through it because `check_call_args` does not return which
-/// source `Arg` (and so which `AccessMode`) filled which slot, and this
-/// needs exactly that to apply the restriction per argument.
-fn check_message_args(
-    ast_params: &[ast::Param],
-    decl_params: &[DeclParam],
-    args: &[Arg],
-    call_span: Span,
-    fctx: &mut FnCtx,
-    mctx: &ModuleCtx,
-) -> Result<Vec<Option<TypedExpr>>, SemaError> {
-    let mut bound = vec![false; decl_params.len()];
-    let mut slots: Vec<Option<TypedExpr>> = (0..decl_params.len()).map(|_| None).collect();
-    let mut cursor = 0usize;
-    for a in args {
-        if a.mode == AccessMode::Mut {
-            return Err(actor_error(
-                "a message argument cannot be a `mut` loan (02-language.md §9.3)".to_string(),
-                a.span,
-            ));
-        }
-        let idx = match &a.label {
-            Some(lbl) => {
-                let Some(i) = decl_params.iter().position(|p| &p.name == lbl) else {
-                    return Err(type_error(
-                        format!("unknown parameter label `{lbl}`"),
-                        a.span,
-                    ));
-                };
-                i
-            }
-            None => {
-                while cursor < bound.len() && bound[cursor] {
-                    cursor += 1;
-                }
-                if cursor >= decl_params.len() {
-                    return Err(type_error("too many arguments".to_string(), a.span));
-                }
-                let i = cursor;
-                cursor += 1;
-                i
-            }
-        };
-        if bound[idx] {
-            return Err(type_error(
-                format!("argument `{}` bound more than once", decl_params[idx].name),
-                a.span,
-            ));
-        }
-        bound[idx] = true;
-        let pty = decl_params[idx].ty.clone();
-        let vt = check_expr(&a.value, Some(&pty), fctx, mctx)?;
-        if matches!(vt.ty, Type::Fn(..)) {
-            return Err(actor_error(
-                format!(
-                    "a message argument cannot be a closure (`{}`, 02-language.md §9.3)",
-                    decl_params[idx].name
-                ),
-                a.span,
-            ));
-        }
-        if matches!(&vt.ty, Type::Named(n, _) if n == "Actor") {
-            return Err(actor_error(
-                format!(
-                    "an `Actor[T]` handle cannot appear in a message (`{}`, 02-language.md §9.1)",
-                    decl_params[idx].name
-                ),
-                a.span,
-            ));
-        }
-        // 02-language.md §9.3: resources move into messages only with
-        // `take`. Unmarked/`read` used to typecheck and leave the sender
-        // initialized while the mailbox held a copy — double ownership.
-        if is_resource_type(&vt.ty, mctx) {
-            if a.mode != AccessMode::Take {
-                return Err(actor_error(
-                    format!(
-                        "a message argument that is a resource must be moved with `take` \
-                         (`{}`, 02-language.md §9.3)",
-                        decl_params[idx].name
-                    ),
-                    a.span,
-                ));
-            }
-            // plans/M7.md item E4 / 03-hardware.md §5: a handoff may
-            // `take` an `own[P] T` transfer payload into an awaitable
-            // driver call. Other resource takes in messages stay closed.
-            if !matches!(&vt.ty, Type::Own(..)) {
-                return Err(unimplemented_at(
-                    "`take` of a non-`own` resource in a message is",
-                    a.span,
-                ));
-            }
-        }
-        slots[idx] = Some(vt);
-    }
-    for (i, p) in decl_params.iter().enumerate() {
-        if !bound[i] && ast_params[i].default.is_none() {
-            return Err(type_error(
-                format!("missing argument for parameter `{}`", p.name),
-                call_span,
-            ));
-        }
-    }
-    Ok(slots)
-}
-
-/// `await expr` (02-language.md §9.4/§9.5 + 03-hardware.md §3/§5): an
-/// actor-handle method call, a group's `join_all()`, or a `Receipt[P]`
-/// value (plans/M7.md item E4: `completion = await receipt`).
-fn check_await(
-    inner: &Expr,
-    await_span: Span,
-    fctx: &mut FnCtx,
-    mctx: &ModuleCtx,
-) -> Result<TypedExpr, SemaError> {
-    if !fctx.in_async {
-        return Err(actor_error(
-            "`await` requires an `async fn`/method — a plain `fn` never suspends \
-             (02-language.md §5)"
-                .to_string(),
-            await_span,
-        ));
-    }
-    // plans/M7.md item E4: `await receipt` — not a call.
-    if !matches!(inner, Expr::Call(..)) {
-        let inner_t = check_expr(inner, None, fctx, mctx)?;
-        if let Type::Named(n, targs) = &inner_t.ty {
-            if n == "Receipt" {
-                let Some(types::TypeArg::Type(payload)) = targs.first() else {
-                    return Err(type_error(
-                        "`Receipt` with no payload type argument".to_string(),
-                        await_span,
-                    ));
-                };
-                return Ok(TypedExpr {
-                    ty: Type::Named(
-                        "IoCompletion".to_string(),
-                        vec![types::TypeArg::Type(payload.clone())],
-                    ),
-                    kind: TypedExprKind::Await(Box::new(inner_t)),
-                });
-            }
-        }
-        return Err(actor_error(
-            "`await` requires an actor call, a group's `join_all()`, or a `Receipt[P]` \
-             (03-hardware.md §3: `completion = await receipt`)"
-                .to_string(),
-            await_span,
-        ));
-    }
-    let Expr::Call(callee_expr, call_span, args) = inner else {
-        unreachable!("checked above");
-    };
-    let Expr::Field(base, fspan, method_name) = callee_expr.as_ref() else {
-        return Err(actor_error(
-            "`await` requires a method call through an actor handle or a group's `join_all()` \
-             (M6 scope)"
-                .to_string(),
-            *call_span,
-        ));
-    };
-    if method_name == "join_all" {
-        if let Expr::Name(_, gname) = base.as_ref() {
-            if fctx.lookup_local(gname) == Some(Type::Named("Group".to_string(), vec![])) {
-                return check_await_group_join(gname, args, *call_span, fctx);
-            }
-        }
-    }
-    check_await_actor_call(base, *fspan, method_name, args, *call_span, fctx, mctx)
-}
-
-fn check_await_actor_call(
-    base: &Expr,
-    fspan: Span,
-    method_name: &str,
-    args: &[Arg],
-    call_span: Span,
-    fctx: &mut FnCtx,
-    mctx: &ModuleCtx,
-) -> Result<TypedExpr, SemaError> {
-    let base_t = check_expr(base, None, fctx, mctx)?;
-    let Type::Named(outer, targs) = &base_t.ty else {
-        return Err(actor_error(
-            "`await` requires a method call through an `Actor[T]` handle".to_string(),
-            call_span,
-        ));
-    };
-    if outer != "Actor" {
-        return Err(actor_error(
-            "`await` requires a method call through an `Actor[T]` handle".to_string(),
-            call_span,
-        ));
-    }
-    let Some(TypeArg::Type(Type::Named(actor_name, _))) = targs.first() else {
-        return Err(actor_error(
-            "`await` requires a method call through an `Actor[T]` handle".to_string(),
-            call_span,
-        ));
-    };
-    let Some(s) = mctx.structs.get(actor_name.as_str()) else {
-        return Err(actor_error(
-            format!("unknown actor type `{actor_name}`"),
-            fspan,
-        ));
-    };
-    let Some((mf, d)) = s.method(method_name) else {
-        return Err(missing_method_error(
-            format!("type `{actor_name}` has no method `{method_name}`"),
-            actor_name,
-            method_name,
-            fspan,
-        ));
-    };
-    if !mf.is_pub {
-        return Err(actor_error(
-            format!(
-                "`{method_name}` on `{actor_name}` is not `pub` — only a public method is \
-                 callable through `Actor[T]`"
-            ),
-            fspan,
-        ));
-    }
-    if !d.generics.is_empty() {
-        // Method-owned generics on an actor-message target: ordinary
-        // (non-message) method calls instantiate (item Q); the message
-        // path still needs take/handoff composition against the
-        // substituted signature — fail closed until that lands.
-        return Err(unimplemented_at("generic instantiation is", call_span));
-    }
-    let typed_args = check_message_args(&mf.params, &d.params, args, call_span, fctx, mctx)?;
-    // plans/M13.md item H / decision 4: `NotAdmitted` hands back the
-    // call's `take` arguments as an owned tuple — collect their types in
-    // declaration order for CallError's optional second type argument.
-    let take_arg_tys: Vec<Type> = d
-        .params
-        .iter()
-        .zip(typed_args.iter())
-        .filter(|(p, _)| p.mode == AccessMode::Take)
-        .filter_map(|(_, slot)| slot.as_ref().map(|t| t.ty.clone()))
-        .collect();
-    let call = TypedExpr {
-        ty: d.ret.clone(),
-        kind: TypedExprKind::Call {
-            callee: CalleeKey::Method(actor_name.clone(), method_name.to_string()),
-            receiver: Some(Box::new(base_t)),
-            args: typed_args,
-        },
-    };
-    // 03-hardware.md §5, the handoff calling convention (plans/M8.md item
-    // E, decision 32). "Any public synchronous `@driver` method with
-    // exactly one `take p: P` parameter and result `Receipt[P]` receives
-    // the handoff calling convention" — a *different* convention from
-    // 02 §9.4's composed awaitable, and §5 states its result by name:
-    // `Receipt[P]`, not `Result[Receipt[P], CallError[never]]`. The
-    // receipt is the caller's endpoint on work the device has not done
-    // yet; the failure vocabulary that matters to it is the receipt's own
-    // state machine (`Resolved` / `Recovery`), reached by `await`ing it,
-    // not `CallError`.
-    let composed = if s.decl.is_driver && crate::sema::handoff::is_handoff_signature(d) {
-        d.ret.clone()
-    } else {
-        compose_call_error(&d.ret, &take_arg_tys)
-    };
-    Ok(TypedExpr {
-        ty: composed,
-        kind: TypedExprKind::Await(Box::new(call)),
-    })
-}
-
-fn check_await_group_join(
-    gname: &str,
-    args: &[Arg],
-    call_span: Span,
-    fctx: &mut FnCtx,
-) -> Result<TypedExpr, SemaError> {
-    if !args.is_empty() {
-        return Err(type_error(
-            "`join_all` takes no arguments".to_string(),
-            call_span,
-        ));
-    }
-    let Some((child_ty, count)) = fctx.group_children.get(gname).cloned() else {
-        return Err(actor_error(
-            format!("group `{gname}` has no children started (`g.start`) before `join_all`"),
-            call_span,
-        ));
-    };
-    let len_expr = Expr::Int(call_span, count.to_string());
-    let group_ty = Type::Named("Group".to_string(), vec![]);
-    let receiver = Box::new(TypedExpr {
-        ty: group_ty.clone(),
-        kind: TypedExprKind::Local(gname.to_string()),
-    });
-    let raw = Type::Array(Box::new(child_ty.clone()), Box::new(len_expr.clone()));
-    let intrinsic = TypedExpr {
-        ty: raw,
-        kind: TypedExprKind::Intrinsic {
-            key: "Group.join_all".to_string(),
-            receiver: Some(receiver),
-            type_arg: None,
-            args: vec![],
-        },
-    };
-    let composed = Type::Array(
-        Box::new(compose_call_error(&child_ty, &[])),
-        Box::new(len_expr),
-    );
-    Ok(TypedExpr {
-        ty: composed,
-        kind: TypedExprKind::Await(Box::new(intrinsic)),
-    })
-}
-
-/// `send actor.method(...)` (02-language.md §9.4), reached both from the
-/// expression form (`Expr::Send`) and, for diagnostics only, from the
-/// always-rejected bare statement form (`check_send_stmt`). `inner` is
-/// always a call (the ast's own comment on both `Expr::Send`/`Stmt::Send`).
-fn check_send(
-    inner: &Expr,
-    send_span: Span,
-    fctx: &mut FnCtx,
-    mctx: &ModuleCtx,
-) -> Result<TypedExpr, SemaError> {
-    if !fctx.in_async {
-        return Err(actor_error(
-            "`send` requires an `async fn`/method context (M6 scope)".to_string(),
-            send_span,
-        ));
-    }
-    let Expr::Call(callee_expr, call_span, args) = inner else {
-        return Err(actor_error(
-            "`send` requires a call expression".to_string(),
-            send_span,
-        ));
-    };
-    let Expr::Field(base, fspan, method_name) = callee_expr.as_ref() else {
-        return Err(actor_error(
-            "`send` requires a method call through an actor handle".to_string(),
-            *call_span,
-        ));
-    };
-    check_send_call(base, *fspan, method_name, args, *call_span, fctx, mctx)
-}
-
-fn check_send_call(
-    base: &Expr,
-    fspan: Span,
-    method_name: &str,
-    args: &[Arg],
-    call_span: Span,
-    fctx: &mut FnCtx,
-    mctx: &ModuleCtx,
-) -> Result<TypedExpr, SemaError> {
-    let base_t = check_expr(base, None, fctx, mctx)?;
-    let Type::Named(outer, targs) = &base_t.ty else {
-        return Err(actor_error(
-            "`send` requires a method call through an `Actor[T]` handle".to_string(),
-            call_span,
-        ));
-    };
-    if outer != "Actor" {
-        return Err(actor_error(
-            "`send` requires a method call through an `Actor[T]` handle".to_string(),
-            call_span,
-        ));
-    }
-    let Some(TypeArg::Type(Type::Named(actor_name, _))) = targs.first() else {
-        return Err(actor_error(
-            "`send` requires a method call through an `Actor[T]` handle".to_string(),
-            call_span,
-        ));
-    };
-    let Some(s) = mctx.structs.get(actor_name.as_str()) else {
-        return Err(actor_error(
-            format!("unknown actor type `{actor_name}`"),
-            fspan,
-        ));
-    };
-    let Some((mf, d)) = s.method(method_name) else {
-        return Err(missing_method_error(
-            format!("type `{actor_name}` has no method `{method_name}`"),
-            actor_name,
-            method_name,
-            fspan,
-        ));
-    };
-    if !mf.is_pub {
-        return Err(actor_error(
-            format!(
-                "`{method_name}` on `{actor_name}` is not `pub` — only a public method is \
-                 callable through `Actor[T]`"
-            ),
-            fspan,
-        ));
-    }
-    if d.ret != Type::Unit {
-        return Err(actor_error(
-            format!(
-                "`send`'s target method must return `unit`, found `{}` (02-language.md §9.4)",
-                types::render_type(&d.ret)
-            ),
-            fspan,
-        ));
-    }
-    if !d.generics.is_empty() {
-        return Err(unimplemented_at("generic instantiation is", call_span));
-    }
-    let typed_args = check_message_args(&mf.params, &d.params, args, call_span, fctx, mctx)?;
-    // plans/M13.md item J / decision 5: `send` is `Result[unit, CallError[never]]`
-    // (with take-args as CallError's optional second type argument, same
-    // shape as an awaited unit-returning call). Whole-image erasure leaves
-    // `NotAdmitted` as the one reachable variant; the bare `Rejected` type
-    // is deleted.
-    let take_arg_tys: Vec<Type> = d
-        .params
-        .iter()
-        .zip(typed_args.iter())
-        .filter(|(p, _)| p.mode == AccessMode::Take)
-        .filter_map(|(_, slot)| slot.as_ref().map(|t| t.ty.clone()))
-        .collect();
-    let call = TypedExpr {
-        ty: Type::Unit,
-        kind: TypedExprKind::Call {
-            callee: CalleeKey::Method(actor_name.clone(), method_name.to_string()),
-            receiver: Some(Box::new(base_t)),
-            args: typed_args,
-        },
-    };
-    let ty = Type::Result(
-        Box::new(Type::Unit),
-        Box::new(call_error_type(Type::Never, &take_arg_tys)),
-    );
-    Ok(TypedExpr {
-        ty,
-        kind: TypedExprKind::Send(Box::new(call)),
-    })
-}
-
-/// A bare `send` statement (02-language.md §9.4's proof-conditioned
-/// form). The call itself is fully typed here, exactly like the
-/// expression form; whether the *bare statement* is legal is the
-/// whole-image question `sema::send_proof` answers once every module is
-/// typed (plans/M6.md item G) — a mailbox capacity lives in the `@image`
-/// fn, which no body-checking pass can see. The `send` keyword's own
-/// span rides along on the node so that late rejection still reports a
-/// real `at L:C` (`TypedStmtKind::BareSend`'s own doc comment).
-///
-/// Item A's floor — reject every bare `send` here, unconditionally —
-/// is what this replaces; a genuine mistake in the call itself (unknown
-/// method, bad message argument, a non-`unit` reply, `send` outside an
-/// `async fn`) still reports its own error from `check_send` first,
-/// before the proof ever runs.
-fn check_send_stmt(
-    span: Span,
-    e: &Expr,
-    fctx: &mut FnCtx,
-    mctx: &ModuleCtx,
-) -> Result<TypedStmt, SemaError> {
-    let expr = check_send(e, span, fctx, mctx)?;
-    Ok(TypedStmt {
-        kind: TypedStmtKind::BareSend { span, expr },
-    })
-}
-
-/// `g.start(callee, args...)`'s own callee argument (02-language.md
-/// §9.5) — the dumbest doc-consistent callee set (recorded, per the
-/// plan's own "decide the dumbest doc-consistent callee set"): a bare
-/// same-module top-level `async fn` name, or `self.method` naming an
-/// `async fn` method on the enclosing struct. Both are recognized
-/// directly (not through `synth_name`'s ordinary lookup — an async
-/// fn/method is never otherwise a callable value, see `TypedExprKind::GroupChild`'s
-/// own doc comment) so no bound-method-value machinery is needed.
-fn resolve_group_child_callee(
-    callee_expr: &Expr,
-    fctx: &FnCtx,
-    mctx: &ModuleCtx,
-) -> Result<(CalleeKey, Vec<ast::Param>, Vec<DeclParam>, Type), SemaError> {
-    match callee_expr {
-        Expr::Name(span, fname) => {
-            let Some(fi) = mctx.fns.get(fname) else {
-                return Err(actor_error(
-                    format!("`{fname}` is not a fn in this module"),
-                    *span,
-                ));
-            };
-            if !fi.decl.is_async {
-                return Err(unimplemented_at(
-                    "`g.start`'s callee must be `async fn` (a sync fn as a group child) is",
-                    *span,
-                ));
-            }
-            if !fi.decl.generics.is_empty() {
-                return Err(unimplemented_at("generic instantiation is", *span));
-            }
-            Ok((
-                CalleeKey::Fn(fname.clone()),
-                fi.ast.params.clone(),
-                fi.decl.params.clone(),
-                fi.decl.ret.clone(),
-            ))
-        }
-        Expr::Field(recv, span, method) if matches!(recv.as_ref(), Expr::Name(_, n) if n == "self") =>
-        {
-            let Some(self_ty) = fctx.lookup_local("self") else {
-                return Err(actor_error("`self` is not bound here".to_string(), *span));
-            };
-            let Type::Named(sname, _) = &self_ty else {
-                return Err(actor_error(
-                    "`self` is not a struct here".to_string(),
-                    *span,
-                ));
-            };
-            let Some(s) = mctx.structs.get(sname.as_str()) else {
-                return Err(actor_error(format!("unknown type `{sname}`"), *span));
-            };
-            let Some((mf, d)) = s.method(method) else {
-                return Err(missing_method_error(
-                    format!("type `{sname}` has no method `{method}`"),
-                    sname,
-                    method,
-                    *span,
-                ));
-            };
-            if !d.is_async {
-                return Err(unimplemented_at(
-                    "`g.start`'s callee must be `async fn` (a sync method as a group child) is",
-                    *span,
-                ));
-            }
-            if !d.generics.is_empty() {
-                return Err(unimplemented_at("generic instantiation is", *span));
-            }
-            Ok((
-                CalleeKey::Method(sname.clone(), method.clone()),
-                mf.params.clone(),
-                d.params.clone(),
-                d.ret.clone(),
-            ))
-        }
-        other => Err(unimplemented_at(
-            "`g.start`'s callee must be a bare fn name or `self.method` — anything else is",
-            other.span(),
-        )),
-    }
-}
-
-fn check_group_start(
-    base_t: TypedExpr,
-    args: &[Arg],
-    call_span: Span,
-    fctx: &mut FnCtx,
-    mctx: &ModuleCtx,
-) -> Result<TypedExpr, SemaError> {
-    let Some((callee_arg, rest)) = args.split_first() else {
-        return Err(type_error(
-            "`g.start` needs a callee argument".to_string(),
-            call_span,
-        ));
-    };
-    if callee_arg.label.is_some() {
-        return Err(type_error(
-            "`g.start`'s callee argument must not be labeled".to_string(),
-            callee_arg.span,
-        ));
-    }
-    if !matches!(&base_t.kind, TypedExprKind::Local(_)) {
-        return Err(actor_error(
-            "`g.start`'s receiver must be a group local".to_string(),
-            call_span,
-        ));
-    }
-    // The running child count/unified return type is *not* accumulated
-    // here (a mutation every pass that re-invokes `bodies::check_expr`
-    // on just this one call — `matches.rs`/`flow.rs`'s own re-derived
-    // `fctx`, neither of which replays the whole preceding body through
-    // `bodies::check_expr` — would have to reproduce identically): it is
-    // computed once, up front, by `compute_group_children` (a pure
-    // static scan over the raw `with`-body), and `check_with` seeds
-    // `fctx.group_children` with that *before* this body is ever walked.
-    // This call only needs its own callee's shape to build its own typed
-    // node.
-    let (callee_key, ast_params, decl_params, ret) =
-        resolve_group_child_callee(&callee_arg.value, fctx, mctx)?;
-    let typed_args = check_call_args(&ast_params, &decl_params, rest, call_span, fctx, mctx)?;
-    let callee_fn_ty = Type::Fn(
-        decl_params.iter().map(|p| (p.mode, p.ty.clone())).collect(),
-        Box::new(ret),
-    );
-    let child_node = TypedExpr {
-        ty: callee_fn_ty,
-        kind: TypedExprKind::GroupChild(callee_key),
-    };
-    let mut iargs = vec![("callee".to_string(), child_node)];
-    for (p, slot) in decl_params.iter().zip(typed_args.into_iter()) {
-        if let Some(v) = slot {
-            iargs.push((p.name.clone(), v));
-        }
-    }
-    Ok(TypedExpr {
-        ty: Type::Unit,
-        kind: TypedExprKind::Intrinsic {
-            key: "Group.start".to_string(),
-            receiver: Some(Box::new(base_t)),
-            type_arg: None,
-            args: iargs,
-        },
-    })
-}
-
-/// One `with group(...) as g:` block's own children, computed once, up
-/// front, as a **pure** static scan over the raw `with`-body (no
-/// dependence on walk order or on `fctx`'s own mutable state, besides a
-/// read-only `self`-type lookup for a `self.method` callee) — see
-/// `check_group_start`'s own doc comment for why this must not be
-/// incremental: `matches.rs`/`flow.rs` both re-derive their own separate
-/// `fctx` and re-invoke `bodies::check_expr` on individual sub-
-/// expressions out of full sequence (a plain assignment's inferred
-/// type, a `match` scrutinee), never replaying the whole preceding body
-/// through it — a pure, order-independent scan is the one shape every
-/// pass can call identically and get the same answer. `Ok(None)` means
-/// no `g.start` call addressing `gname` was found in `body` at all
-/// (`join_all`'s own "no children started" error, not this function's).
-pub(crate) fn compute_group_children(
-    body: &[Stmt],
-    gname: &str,
-    fctx: &FnCtx,
-    mctx: &ModuleCtx,
-) -> Result<Option<(Type, usize)>, SemaError> {
-    let mut starts: Vec<&[Arg]> = Vec::new();
-    scan_group_starts_stmts(body, gname, &mut starts);
-    if starts.is_empty() {
-        return Ok(None);
-    }
-    if let Some(loop_span) = group_starts_inside_loop(body, gname) {
-        return Err(actor_error(
-            format!(
-                "`{gname}.start` cannot appear inside a loop: a group's child count is the number \
-                 of *static* `g.start` sites (it is what `join_all`'s own array length and the \
-                 group's admission accounting are built from), so one site running twice starts a \
-                 child nothing is waiting for — lift the `g.start` out of the loop (M6 scope, \
-                 plans/M6.md item H2)"
-            ),
-            loop_span,
-        ));
-    }
-    let mut result_ty: Option<Type> = None;
-    for args in &starts {
-        let Some(callee_arg) = args.first() else {
-            return Err(type_error(
-                "`g.start` needs a callee argument".to_string(),
-                Span::default(),
-            ));
-        };
-        let (_, _, _, ret) = resolve_group_child_callee(&callee_arg.value, fctx, mctx)?;
-        match &result_ty {
-            Some(existing) if *existing != ret => {
-                return Err(actor_error(
-                    format!(
-                        "group `{gname}`'s children must share one return type (M6 scope); \
-                         found `{}` and `{}`",
-                        types::render_type(existing),
-                        types::render_type(&ret)
-                    ),
-                    callee_arg.span,
-                ));
-            }
-            _ => result_ty = Some(ret),
-        }
-    }
-    Ok(Some((
-        result_ty.expect("starts is non-empty"),
-        starts.len(),
-    )))
-}
-
-fn scan_group_starts_stmts<'a>(stmts: &'a [Stmt], gname: &str, out: &mut Vec<&'a [Arg]>) {
-    for s in stmts {
-        scan_group_starts_stmt(s, gname, out);
-    }
-}
-
-/// plans/M6.md item H2: does a `g.start` for `gname` sit inside a loop?
-///
-/// Everything downstream treats the number of *static* `g.start` sites as
-/// the number of child activations — `join_all`'s own array length, the
-/// group arena's admission accounting, and (since H2) the declared
-/// `capacity` check. A `g.start` in a loop breaks that identity: it is one
-/// static site that runs N times, so the program compiled clean, started
-/// two children, and then deadlocked in `join_all` waiting on a count of
-/// one. Rejected by name instead, which is the same discipline decision 5
-/// already applies to a bare `send` ("outside any loop... so each executes
-/// at most once per root turn").
-///
-/// Written as its own walk that delegates to `scan_group_starts_stmts`
-/// once it is inside a loop body, rather than threading a depth counter
-/// through that scanner's fifteen arms: the question is only ever asked
-/// about whole loop bodies, and reusing the existing scanner keeps the two
-/// from disagreeing about what a `g.start` even is.
-fn group_starts_inside_loop(stmts: &[Stmt], gname: &str) -> Option<Span> {
-    fn in_loop_body(body: &[Stmt], gname: &str) -> Option<Span> {
-        let mut found = Vec::new();
-        scan_group_starts_stmts(body, gname, &mut found);
-        // The offending `g.start`'s own first argument carries the only
-        // span this scanner ever sees (`Arg::span`); a zero-argument
-        // `g.start` is already a "needs a callee argument" error one
-        // layer up, so the fallback is unreachable in practice.
-        found
-            .first()
-            .map(|args| args.first().map(|a| a.span).unwrap_or_default())
-    }
-    for s in stmts {
-        let hit = match s {
-            Stmt::While(w) => in_loop_body(&w.body, gname),
-            Stmt::For(f) => in_loop_body(&f.body, gname),
-            Stmt::If(i) => group_starts_inside_loop(&i.then_branch, gname)
-                .or_else(|| {
-                    i.elifs
-                        .iter()
-                        .find_map(|e| group_starts_inside_loop(&e.body, gname))
-                })
-                .or_else(|| {
-                    i.else_branch
-                        .as_ref()
-                        .and_then(|b| group_starts_inside_loop(b, gname))
-                }),
-            Stmt::Match(m) => m
-                .arms
-                .iter()
-                .find_map(|a| group_starts_inside_loop(&a.body, gname)),
-            Stmt::With(w) => group_starts_inside_loop(&w.body, gname),
-            Stmt::Defer(d) => match &d.body {
-                DeferBody::Suite(s) => group_starts_inside_loop(s, gname),
-                DeferBody::Expr(_) => None,
-            },
-            Stmt::ComptimeIf(c) => group_starts_inside_loop(&c.then_branch, gname).or_else(|| {
-                c.else_branch
-                    .as_ref()
-                    .and_then(|b| group_starts_inside_loop(b, gname))
-            }),
-            _ => None,
-        };
-        if hit.is_some() {
-            return hit;
-        }
-    }
-    None
-}
-
-fn scan_group_starts_stmt<'a>(s: &'a Stmt, gname: &str, out: &mut Vec<&'a [Arg]>) {
-    match s {
-        Stmt::Assign(a) => {
-            scan_group_starts_expr(&a.target, gname, out);
-            scan_group_starts_expr(&a.value, gname, out);
-        }
-        Stmt::If(i) => {
-            scan_group_starts_expr(&i.cond, gname, out);
-            scan_group_starts_stmts(&i.then_branch, gname, out);
-            for elif in &i.elifs {
-                scan_group_starts_expr(&elif.cond, gname, out);
-                scan_group_starts_stmts(&elif.body, gname, out);
-            }
-            if let Some(b) = &i.else_branch {
-                scan_group_starts_stmts(b, gname, out);
-            }
-        }
-        Stmt::Match(m) => {
-            scan_group_starts_expr(&m.scrutinee, gname, out);
-            for arm in &m.arms {
-                if let Some(g) = &arm.guard {
-                    scan_group_starts_expr(g, gname, out);
-                }
-                scan_group_starts_stmts(&arm.body, gname, out);
-            }
-        }
-        Stmt::For(f) => {
-            scan_group_starts_expr(&f.iterable, gname, out);
-            scan_group_starts_stmts(&f.body, gname, out);
-        }
-        Stmt::While(w) => {
-            scan_group_starts_expr(&w.cond, gname, out);
-            scan_group_starts_stmts(&w.body, gname, out);
-        }
-        Stmt::Break(_) | Stmt::Continue(_) | Stmt::Pass(_) => {}
-        Stmt::Return(_, e) => {
-            if let Some(e) = e {
-                scan_group_starts_expr(e, gname, out);
-            }
-        }
-        Stmt::Assert(a) => {
-            scan_group_starts_expr(&a.cond, gname, out);
-            if let Some(m) = &a.message {
-                scan_group_starts_expr(m, gname, out);
-            }
-        }
-        Stmt::Defer(d) => match &d.body {
-            DeferBody::Expr(e) => scan_group_starts_expr(e, gname, out),
-            DeferBody::Suite(s) => scan_group_starts_stmts(s, gname, out),
-        },
-        Stmt::With(w) => {
-            scan_group_starts_expr(&w.expr, gname, out);
-            scan_group_starts_stmts(&w.body, gname, out);
-        }
-        Stmt::Send(_, e) => scan_group_starts_expr(e, gname, out),
-        Stmt::Expr(_, e) => scan_group_starts_expr(e, gname, out),
-        Stmt::ComptimeIf(c) => {
-            scan_group_starts_expr(&c.cond, gname, out);
-            scan_group_starts_stmts(&c.then_branch, gname, out);
-            if let Some(b) = &c.else_branch {
-                scan_group_starts_stmts(b, gname, out);
-            }
-        }
-        Stmt::ComptimeAssert(_, e, m) => {
-            scan_group_starts_expr(e, gname, out);
-            if let Some(m) = m {
-                scan_group_starts_expr(m, gname, out);
-            }
-        }
-    }
-}
-
-fn scan_group_starts_expr<'a>(e: &'a Expr, gname: &str, out: &mut Vec<&'a [Arg]>) {
-    if let Expr::Call(callee, _, args) = e {
-        if let Expr::Field(base, _, method) = callee.as_ref() {
-            if method == "start" {
-                if let Expr::Name(_, bn) = base.as_ref() {
-                    if bn == gname {
-                        out.push(args);
-                    }
-                }
-            }
-        }
-    }
-    match e {
-        Expr::Field(b, _, _) => scan_group_starts_expr(b, gname, out),
-        Expr::Index(b, _, args) => {
-            scan_group_starts_expr(b, gname, out);
-            for a in args {
-                scan_group_starts_expr(a, gname, out);
-            }
-        }
-        Expr::Call(callee, _, args) => {
-            scan_group_starts_expr(callee, gname, out);
-            for a in args {
-                scan_group_starts_expr(&a.value, gname, out);
-            }
-        }
-        Expr::Unary(_, _, i) => scan_group_starts_expr(i, gname, out),
-        Expr::Try(_, i) => scan_group_starts_expr(i, gname, out),
-        Expr::Binary(_, _, l, r) => {
-            scan_group_starts_expr(l, gname, out);
-            scan_group_starts_expr(r, gname, out);
-        }
-        Expr::Range(_, a, b, _) => {
-            scan_group_starts_expr(a, gname, out);
-            scan_group_starts_expr(b, gname, out);
-        }
-        Expr::Is(_, s, _) => scan_group_starts_expr(s, gname, out),
-        Expr::Not(_, i) => scan_group_starts_expr(i, gname, out),
-        Expr::And(_, l, r) | Expr::Or(_, l, r) => {
-            scan_group_starts_expr(l, gname, out);
-            scan_group_starts_expr(r, gname, out);
-        }
-        Expr::DotVariant(_, _, args) => {
-            for a in args {
-                scan_group_starts_expr(&a.value, gname, out);
-            }
-        }
-        Expr::Closure(c) => match &c.body {
-            ClosureBody::Expr(e) => scan_group_starts_expr(e, gname, out),
-            ClosureBody::Suite(s) => scan_group_starts_stmts(s, gname, out),
-        },
-        Expr::Send(_, i) => scan_group_starts_expr(i, gname, out),
-        Expr::Tuple(_, items) | Expr::List(_, items) => {
-            for i in items {
-                scan_group_starts_expr(i, gname, out);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// `with group(capacity=.., deadline=..) [as g]:` (02-language.md §9.5,
-/// §10). The scoped `pool` form of `with` (02-language.md §10's other
-/// intrinsic scope) stays fail-closed — the M6 honest-scope line only
-/// lifts `group`.
-///
-/// plans/M8.md item R, decision 16: the two rejections below are told
-/// apart by name. `with pool` is the language's *other* intrinsic scope,
-/// unimplemented — `error[unimplemented]`, the fail-closed category, and
-/// the only reason 04-compiler.md §3's own group-vs-pool comparison
-/// cannot be written as one pair of same-shaped goldens today. Any other
-/// constructor is not a `with` form at all (02 §10: "There are no other
-/// `with` forms and no user-declared scope protocols") — a permanent
-/// `error[type]`, never a fail-closed one, so no reader is left waiting
-/// for a milestone that will never come. Before this split, every
-/// non-`group` constructor was blamed on `with pool` by name, which was a
-/// wrong answer for `with anything_else(...)`; `pool` itself never
-/// reached here at all (`intrinsics::is_bare_resolvable` / item I).
-fn check_with(w: &WithStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedStmt, SemaError> {
-    let Expr::Call(ctor, _cspan, cargs) = &w.expr else {
-        return Err(unimplemented_at("`with` is", w.span));
-    };
-    let Expr::Name(_, ctor_name) = ctor.as_ref() else {
-        return Err(unimplemented_at("`with` is", w.span));
-    };
-    if ctor_name == "pool" {
-        return Err(unimplemented_at("`with pool` (scoped pools) is", w.span));
-    }
-    if ctor_name != "group" {
-        return Err(type_error(
-            format!(
-                "`with {ctor_name}(...)` is not a `with` form: `with` opens exactly two \
-                 intrinsic suspend-safe scopes, `group` and scoped `pool`, and there are no \
-                 others (02-language.md §10 — an acquire/release API is an ordinary function \
-                 used with `defer`, or a closure-taking function)"
-            ),
-            w.span,
-        ));
-    }
-    if !fctx.in_async {
-        return Err(actor_error(
-            "`with group` requires an `async fn`/method context — a plain `fn` never \
-             suspends (02-language.md §5)"
-                .to_string(),
-            w.span,
-        ));
-    }
-    let mut capacity = None;
-    let mut deadline = None;
-    for a in cargs {
-        match a.label.as_deref() {
-            Some("capacity") => {
-                capacity = Some(check_expr(&a.value, Some(&Type::Usize), fctx, mctx)?);
-            }
-            Some("deadline") => {
-                deadline = Some(check_deadline_expr(&a.value, fctx, mctx)?);
-            }
-            Some(other) => {
-                return Err(type_error(
-                    format!("`group` has no argument `{other}`"),
-                    a.span,
-                ));
-            }
-            None => {
-                return Err(type_error(
-                    "`group`'s arguments must be labeled (`capacity=`/`deadline=`)".to_string(),
-                    a.span,
-                ));
-            }
-        }
-    }
-    let mut child_count = 0usize;
-    let body = scoped(fctx, |fctx| {
-        if let Some(name) = &w.as_name {
-            fctx.insert_local(name.clone(), Type::Named("Group".to_string(), vec![]));
-            if let Some(children) = compute_group_children(&w.body, name, fctx, mctx)? {
-                child_count = children.1;
-                fctx.group_children.insert(name.clone(), children);
-            }
-        }
-        check_stmts(&w.body, fctx, mctx)
-    })?;
-    check_group_capacity(capacity.as_ref(), child_count, w.span)?;
-    if let Some(name) = &w.as_name {
-        fctx.group_children.remove(name);
-    }
-    Ok(TypedStmt {
-        kind: TypedStmtKind::WithGroup {
-            capacity,
-            deadline,
-            as_name: w.as_name.clone(),
-            body,
-        },
-    })
-}
-
-/// plans/M6.md item H2: a group admits "up to `capacity` child
-/// activations (default zero)" — 02-language.md §9.5, verbatim.
-///
-/// Before this check the declared capacity was inert: it type-checked as
-/// a `Usize` and was stored into the group arena at `OFF_GROUP_CAPACITY`,
-/// which **nothing ever read**, so `capacity=0` (and an omitted capacity,
-/// the documented default) started and completed a child anyway. The
-/// adversarial sweep found it; `boot-group-join` could not, because it
-/// declares `capacity=2` with exactly two children, so enforced and
-/// ignored look identical there.
-///
-/// Enforced statically rather than at admission time, deliberately. The
-/// runtime alternative — refuse the activation and hand back
-/// `NotAdmitted` — needs a `CallError` composition that does not exist at
-/// M6 (item H3 is the same missing piece surfacing at a mailbox), so the
-/// only honest runtime option available today would be an abort. A build
-/// error is both dumber and strictly more useful, and it is exact:
-/// `compute_group_children` rejects a `g.start` in a loop, so the static
-/// site count IS the activation count.
-fn check_group_capacity(
-    capacity: Option<&TypedExpr>,
-    child_count: usize,
-    span: Span,
-) -> Result<(), SemaError> {
-    if child_count == 0 {
-        return Ok(()); // a bare deadline scope: nothing to admit.
-    }
-    let Some(cap_expr) = capacity else {
-        return Err(actor_error(
-            format!(
-                "this `with group` starts {child_count} child activation(s) but declares no \
-                 `capacity=`, and a group's default capacity is zero (02-language.md §9.5) — add \
-                 `capacity={child_count}`"
-            ),
-            span,
-        ));
-    };
-    let TypedExprKind::Int(text) = &cap_expr.kind else {
-        return Err(unimplemented_at(
-            "a `with group` capacity that is not an integer literal is",
-            span,
-        ));
-    };
-    let declared: usize = text.parse().map_err(|_| {
-        type_error(
-            format!("`capacity={text}` is not a valid group capacity"),
-            span,
-        )
-    })?;
-    if child_count > declared {
-        return Err(actor_error(
-            format!(
-                "this `with group` declares `capacity={declared}` but starts {child_count} child \
-                 activation(s) (02-language.md §9.5: a group admits up to `capacity` children) — \
-                 raise the capacity or start fewer children"
-            ),
-            span,
-        ));
-    }
-    Ok(())
-}
-
-/// A group's `deadline=` argument (02-language.md §9.5): `now()` alone,
-/// or `now() + ms(...)` — the only two shapes the docs' own examples use.
-/// Handled directly rather than through `check_binary`/`build_binop_expr`
-/// (which require both operands to share one type, decision 4's own
-/// same-type-operand rule — `Instant + Duration` is deliberately not a
-/// uniform-type op): the primitive `Binary` node is reused for the sum
-/// (mirrors its own doc comment's "builtin scalar op" precedent, extended
-/// here to the two other builtin primitive-shaped types this milestone
-/// adds), confined to this one call site.
-fn check_deadline_expr(
-    e: &Expr,
-    fctx: &mut FnCtx,
-    mctx: &ModuleCtx,
-) -> Result<TypedExpr, SemaError> {
-    let instant_ty = Type::Named("Instant".to_string(), vec![]);
-    match e {
-        Expr::Binary(_span, BinOp::Add, l, r) => {
-            let lt = check_expr(l, None, fctx, mctx)?;
-            if lt.ty != instant_ty {
-                return Err(type_error(
-                    "a group deadline must start from `now()`".to_string(),
-                    l.span(),
-                ));
-            }
-            let rt = check_expr(r, None, fctx, mctx)?;
-            if rt.ty != Type::Named("Duration".to_string(), vec![]) {
-                return Err(type_error(
-                    "a group deadline's offset must be a duration (`ms(...)`)".to_string(),
-                    r.span(),
-                ));
-            }
-            Ok(TypedExpr {
-                ty: instant_ty,
-                kind: TypedExprKind::Binary(BinOp::Add, Box::new(lt), Box::new(rt)),
-            })
-        }
-        other => {
-            let t = check_expr(other, None, fctx, mctx)?;
-            if t.ty != instant_ty {
-                return Err(type_error(
-                    format!(
-                        "a group deadline must be an `Instant` (`now()` or `now() + ms(...)`), \
-                         found `{}`",
-                        types::render_type(&t.ty)
-                    ),
-                    other.span(),
-                ));
-            }
-            Ok(t)
-        }
-    }
-}
-
-/// Cross-await access rule (02-language.md §9.2): "a whole-value access
-/// rooted at the current actor (`self.fs.cache`) may live across `await`
-/// ... but an access rooted in an external argument may not." 04 §1:
-/// "whole-value accesses surviving `await` are rooted at the current
-/// actor turn." The operative verbs are *live across* / *surviving* —
-/// the rule is about a path that predates a suspension and is used after
-/// it, not about every field access that happens to sit lexically after
-/// an `await` in the same body (plans/M9.md item J2d / decision 525).
-///
-/// Approximation: a straight-line forward scan over an async body's
-/// already-typed statements, threading one `seen_await` flag
-/// (conservatively shared across sibling branches — an `await` in one
-/// `if` arm taints every statement lexically after the whole `if`, even
-/// along a sibling arm that itself had none; over-rejects a little,
-/// never under-rejects) plus the set of locals whose binding is observed
-/// *after* that flag is set (Let / match-arm / for / `with ... as` /
-/// post-await Assign-to-local). Any `Field`-chain (`x.a.b`) whose root
-/// is not `self` and is not in that post-await set, found once
-/// `seen_await` is set, is rejected — a bare local reference (no field)
-/// is unaffected, since only a *nested* access is the "whole-value
-/// access" §9.2 restricts. A value bound from the await itself
-/// (`completion = await receipt`; 03 §3) is in the post-await set and
-/// is allowed; an external argument / pre-await local that spans is not.
-///
-/// **Loop back edges** (plans/M9.md item RR): a forward scan alone is not
-/// conservative over a loop. In
-///
-/// ```text
-/// while i < n:
-///     total = total + input.value   # <- runs again after the await below
-///     r = await self.peer.get()
-/// ```
-///
-/// `input.value` sits lexically *before* the only `await`, so a pure
-/// forward scan never has `seen_await` set when it reaches the access —
-/// yet every iteration after the first reads `input` on the far side of
-/// the previous iteration's suspension, which is exactly what §9.2
-/// forbids (the unrolled two-iteration spelling of the same program is
-/// rejected). So a `while`/`for` whose body can suspend enters that body
-/// with `seen_await` already set and the post-await exemption cleared:
-/// the back edge is treated as a suspension the whole body follows.
-/// `loop_body_suspends` answers "can this body suspend" by replaying this
-/// same scan in `probe` mode, so there is exactly one walk to keep in
-/// step with the grammar rather than a second shadow traversal.
-///
-/// This keeps the over-reject/never-under-reject direction the rest of
-/// the approximation promises: a body that provably runs once still pays
-/// the loop rule, which is the safe side.
-struct CrossAwaitScan {
-    seen_await: bool,
-    /// Locals bound after `seen_await` became true — they do not span
-    /// any suspension observed so far on this forward scan.
-    after_await: BTreeSet<String>,
-    /// `loop_body_suspends`'s own mode: walk purely to discover whether a
-    /// suspension is reachable, reporting nothing. Two effects, both
-    /// required for the probe to be a *predicate* rather than a second
-    /// checker: the `Field` arm never raises (a probe must not decide the
-    /// diagnostic — the real scan that follows does, with the right
-    /// state), and the loop arms skip their own probe (the answer to "does
-    /// this body contain an await" does not depend on the back-edge rule,
-    /// and skipping keeps a nest of `d` loops linear instead of `2^d`).
-    probe: bool,
-}
-
-fn check_cross_await(body: &[TypedStmt]) -> Result<(), SemaError> {
-    let mut state = CrossAwaitScan {
-        seen_await: false,
-        after_await: BTreeSet::new(),
-        probe: false,
-    };
-    scan_await_cross_stmts(body, &mut state)
-}
-
-/// Can `body` reach a suspension? Replays the ordinary scan in `probe`
-/// mode, which cannot fail, so the `Err` arm is genuinely unreachable
-/// rather than swallowed.
-fn loop_body_suspends(body: &[TypedStmt]) -> bool {
-    let mut probe = CrossAwaitScan {
-        seen_await: false,
-        after_await: BTreeSet::new(),
-        probe: true,
-    };
-    let scanned = scan_await_cross_stmts(body, &mut probe);
-    debug_assert!(scanned.is_ok(), "a probe-mode scan never reports");
-    probe.seen_await
-}
-
-/// Shared by the `While` and `For` arms: model the loop's back edge
-/// before walking the body (this fn's own `CrossAwaitScan` doc comment).
-fn enter_loop_body(body: &[TypedStmt], state: &mut CrossAwaitScan) {
-    if state.probe || !loop_body_suspends(body) {
-        return;
-    }
-    state.seen_await = true;
-    state.after_await.clear();
-}
-
-fn scan_await_cross_stmts(
-    stmts: &[TypedStmt],
-    state: &mut CrossAwaitScan,
-) -> Result<(), SemaError> {
-    for s in stmts {
-        scan_await_cross_stmt(s, state)?;
-    }
-    Ok(())
-}
-
-fn typed_pattern_bindings(p: &TypedPattern, out: &mut BTreeSet<String>) {
-    match &p.kind {
-        TypedPatternKind::Wildcard | TypedPatternKind::Literal(_) => {}
-        TypedPatternKind::Binding(name) => {
-            out.insert(name.clone());
-        }
-        TypedPatternKind::Take(inner) => typed_pattern_bindings(inner, out),
-        TypedPatternKind::Variant { payload, .. } => {
-            for sp in payload {
-                typed_pattern_bindings(sp, out);
-            }
-        }
-        TypedPatternKind::Tuple(items) | TypedPatternKind::Array(items) => {
-            for i in items {
-                typed_pattern_bindings(i, out);
-            }
-        }
-        TypedPatternKind::Or(alts) => {
-            for a in alts {
-                typed_pattern_bindings(a, out);
-            }
-        }
-    }
-}
-
-fn scan_await_cross_stmt(s: &TypedStmt, state: &mut CrossAwaitScan) -> Result<(), SemaError> {
-    match &s.kind {
-        TypedStmtKind::Let { name, value, .. } => {
-            scan_await_cross_expr(value, state)?;
-            if state.seen_await {
-                state.after_await.insert(name.clone());
-            }
-            Ok(())
-        }
-        TypedStmtKind::Assign { target, value } => {
-            scan_await_cross_expr(target, state)?;
-            scan_await_cross_expr(value, state)?;
-            // A post-await rebind replaces whatever spanned; subsequent
-            // field access is on the new value, which did not span.
-            if state.seen_await {
-                if let TypedExprKind::Local(name) = &target.kind {
-                    state.after_await.insert(name.clone());
-                }
-            }
-            Ok(())
-        }
-        TypedStmtKind::If {
-            cond,
-            then_branch,
-            elifs,
-            else_branch,
-        } => {
-            scan_await_cross_expr(cond, state)?;
-            scan_await_cross_stmts(then_branch, state)?;
-            for elif in elifs {
-                scan_await_cross_expr(&elif.cond, state)?;
-                scan_await_cross_stmts(&elif.body, state)?;
-            }
-            if let Some(b) = else_branch {
-                scan_await_cross_stmts(b, state)?;
-            }
-            Ok(())
-        }
-        TypedStmtKind::Match { scrutinee, arms } => {
-            scan_await_cross_expr(scrutinee, state)?;
-            for arm in arms {
-                // Pattern bindings introduced once an await is already
-                // in view (including `match await ...: case .Ok(x):`) do
-                // not span; bindings entered before any await still can.
-                if state.seen_await {
-                    typed_pattern_bindings(&arm.pattern, &mut state.after_await);
-                }
-                if let Some(g) = &arm.guard {
-                    scan_await_cross_expr(g, state)?;
-                }
-                scan_await_cross_stmts(&arm.body, state)?;
-            }
-            Ok(())
-        }
-        TypedStmtKind::For {
-            name, iter, body, ..
-        } => {
-            match iter {
-                TypedForIter::Range(a, b, _) => {
-                    scan_await_cross_expr(a, state)?;
-                    scan_await_cross_expr(b, state)?;
-                }
-                TypedForIter::Expr(e) => scan_await_cross_expr(e, state)?,
-            }
-            enter_loop_body(body, state);
-            // The loop variable is rebound by the header on every
-            // iteration, *before* the body runs — so it never spans the
-            // back edge, and it belongs in the exemption set even when
-            // `enter_loop_body` just cleared it. An `await` inside the
-            // body still clears it again, which is right: past that
-            // suspension this iteration's binding does span.
-            if state.seen_await {
-                state.after_await.insert(name.clone());
-            }
-            scan_await_cross_stmts(body, state)
-        }
-        TypedStmtKind::While { cond, body, .. } => {
-            scan_await_cross_expr(cond, state)?;
-            enter_loop_body(body, state);
-            scan_await_cross_stmts(body, state)
-        }
-        TypedStmtKind::Break | TypedStmtKind::Continue | TypedStmtKind::Pass => Ok(()),
-        TypedStmtKind::Return(value) => match value {
-            Some(e) => scan_await_cross_expr(e, state),
-            None => Ok(()),
-        },
-        TypedStmtKind::Assert { cond, message } => {
-            scan_await_cross_expr(cond, state)?;
-            if let Some(m) = message {
-                scan_await_cross_expr(m, state)?;
-            }
-            Ok(())
-        }
-        TypedStmtKind::ComptimeAssert { cond, message, .. } => {
-            scan_await_cross_expr(cond, state)?;
-            if let Some(m) = message {
-                scan_await_cross_expr(m, state)?;
-            }
-            Ok(())
-        }
-        // A `defer` body runs at cleanup time, not inline in the forward
-        // sequence this scan tracks — 02-language.md §10 already forbids
-        // `await` inside one (`scan_defer_forbidden`), so it never itself
-        // straddles a suspension.
-        TypedStmtKind::Defer(_) => Ok(()),
-        TypedStmtKind::ExprStmt(e) => scan_await_cross_expr(e, state),
-        // plans/M6.md item G: a bare `send`'s message arguments are
-        // ordinary expressions and obey 02-language.md §9.2 exactly like
-        // any other call's.
-        TypedStmtKind::BareSend { expr, .. } => scan_await_cross_expr(expr, state),
-        TypedStmtKind::WithGroup {
-            capacity,
-            deadline,
-            as_name,
-            body,
-        } => {
-            if let Some(c) = capacity {
-                scan_await_cross_expr(c, state)?;
-            }
-            if let Some(d) = deadline {
-                scan_await_cross_expr(d, state)?;
-            }
-            if state.seen_await {
-                if let Some(n) = as_name {
-                    state.after_await.insert(n.clone());
-                }
-            }
-            scan_await_cross_stmts(body, state)
-        }
-    }
-}
-
-fn root_local_name(e: &TypedExpr) -> Option<&str> {
-    match &e.kind {
-        TypedExprKind::Local(name) => Some(name.as_str()),
-        TypedExprKind::Field(base, _) | TypedExprKind::Index(base, _) => root_local_name(base),
-        _ => None,
-    }
-}
-
-fn scan_await_cross_expr(e: &TypedExpr, state: &mut CrossAwaitScan) -> Result<(), SemaError> {
-    match &e.kind {
-        TypedExprKind::Int(_)
-        | TypedExprKind::Float(_)
-        | TypedExprKind::Str(_)
-        | TypedExprKind::BStr(_)
-        | TypedExprKind::Char(_)
-        | TypedExprKind::Bool(_)
-        | TypedExprKind::Unit
-        | TypedExprKind::Local(_)
-        | TypedExprKind::Const(_)
-        | TypedExprKind::Static(_)
-        | TypedExprKind::FnRef(_)
-        | TypedExprKind::PoolName(_)
-        | TypedExprKind::GroupChild(_) => Ok(()),
-        TypedExprKind::Field(base, _) => {
-            if state.seen_await && !state.probe {
-                if let Some(root) = root_local_name(e) {
-                    if root != "self" && !state.after_await.contains(root) {
-                        // No real `L:C` is available here (decision 1:
-                        // the typed tree carries no spans at all) —
-                        // `omit_location` (`SemaError`'s own multi-line
-                        // exception field, `sema::mod`'s doc comment)
-                        // suppresses the misleading `at 0:0` a bare
-                        // `SemaError::at` would otherwise print.
-                        return Err(SemaError {
-                            category: "actor",
-                            message: format!(
-                                "`{root}`-rooted access cannot span an `await` — only a \
-                                 self-rooted path may (02-language.md §9.2)"
-                            ),
-                            line: 0,
-                            col: 0,
-                            extra_lines: Vec::new(),
-                            omit_location: true,
-                            missing_method: None,
-                        });
-                    }
-                }
-            }
-            scan_await_cross_expr(base, state)
-        }
-        TypedExprKind::Index(base, idx) => {
-            // Same §9.2 rule as Field: an external-rooted nested access
-            // (including `input[0]`) must not span `await`. Field was
-            // checked; Index only recursed — a bypass.
-            if state.seen_await && !state.probe {
-                if let Some(root) = root_local_name(e) {
-                    if root != "self" && !state.after_await.contains(root) {
-                        return Err(SemaError {
-                            category: "actor",
-                            message: format!(
-                                "`{root}`-rooted access cannot span an `await` — only a \
-                                 self-rooted path may (02-language.md §9.2)"
-                            ),
-                            line: 0,
-                            col: 0,
-                            extra_lines: Vec::new(),
-                            omit_location: true,
-                            missing_method: None,
-                        });
-                    }
-                }
-            }
-            scan_await_cross_expr(base, state)?;
-            scan_await_cross_expr(idx, state)
-        }
-        TypedExprKind::Call { receiver, args, .. } => {
-            if let Some(r) = receiver {
-                scan_await_cross_expr(r, state)?;
-            }
-            for a in args.iter().flatten() {
-                scan_await_cross_expr(a, state)?;
-            }
-            Ok(())
-        }
-        TypedExprKind::CallValue(callee, args) => {
-            scan_await_cross_expr(callee, state)?;
-            for a in args {
-                scan_await_cross_expr(a, state)?;
-            }
-            Ok(())
-        }
-        TypedExprKind::ToScalar(inner)
-        | TypedExprKind::Neg(inner)
-        | TypedExprKind::BitNot(inner)
-        | TypedExprKind::Take(inner)
-        | TypedExprKind::Not(inner) => scan_await_cross_expr(inner, state),
-        TypedExprKind::Try(inner, _) => scan_await_cross_expr(inner, state),
-        TypedExprKind::Binary(_, l, r) | TypedExprKind::OpCall(_, l, r) => {
-            scan_await_cross_expr(l, state)?;
-            scan_await_cross_expr(r, state)
-        }
-        TypedExprKind::Is(inner, _) => scan_await_cross_expr(inner, state),
-        TypedExprKind::And(l, r) | TypedExprKind::Or(l, r) => {
-            scan_await_cross_expr(l, state)?;
-            scan_await_cross_expr(r, state)
-        }
-        TypedExprKind::EnumConstruct { args, .. } => {
-            for a in args {
-                scan_await_cross_expr(a, state)?;
-            }
-            Ok(())
-        }
-        TypedExprKind::Closure { .. } => Ok(()), // a lending call is synchronous (02 §9.2) — never itself spans an await.
-        TypedExprKind::Tuple(items) | TypedExprKind::List(items) => {
-            for i in items {
-                scan_await_cross_expr(i, state)?;
-            }
-            Ok(())
-        }
-        TypedExprKind::StructLiteral { fields, .. } => {
-            for (_, v) in fields {
-                scan_await_cross_expr(v, state)?;
-            }
-            Ok(())
-        }
-        TypedExprKind::Panic(msg) => scan_await_cross_expr(msg, state),
-        TypedExprKind::Intrinsic { receiver, args, .. } => {
-            if let Some(r) = receiver {
-                scan_await_cross_expr(r, state)?;
-            }
-            for (_, a) in args {
-                scan_await_cross_expr(a, state)?;
-            }
-            Ok(())
-        }
-        TypedExprKind::Await(inner) => {
-            scan_await_cross_expr(inner, state)?;
-            state.seen_await = true;
-            // A name bound from an earlier await does not span *that*
-            // await, but it does span this one, so the exemption is
-            // per-suspension and cannot accumulate.
-            state.after_await.clear();
-            Ok(())
-        }
-        TypedExprKind::Send(inner) => scan_await_cross_expr(inner, state),
-    }
-}
+// --- actor/async surface: see `sema::actor` ----------------------------
+pub use super::actor::*;
+use super::actor::*;
 
 /// `img.driver(A, ...)` / `img.actor(A, ...)` / `img.on_failure(...)` /
 /// `img.check_layout(f)` / `img.seal()` — every builder method called
@@ -11674,7 +7895,7 @@ fn scan_await_cross_expr(e: &TypedExpr, state: &mut CrossAwaitScan) -> Result<()
 /// "no method" diagnostic below, which is exactly right (the shape 05
 /// §9 gives is the only one item B accepts, decision 5's "accept the
 /// shape the worked examples use and fail closed on anything else").
-fn check_image_method_intrinsic(
+pub(crate) fn check_image_method_intrinsic(
     name: &str,
     args: &[Arg],
     call_span: Span,
@@ -11698,6 +7919,7 @@ fn check_image_method_intrinsic(
             let type_arg = resolve_intrinsic_struct_type_arg(&first.value, mctx)?;
             let iargs = check_intrinsic_args(&args[1..], fctx, mctx)?;
             Ok(TypedExpr {
+                span: call_span,
                 ty: image_decl_type(),
                 kind: TypedExprKind::Intrinsic {
                     key: format!("Image.{name}"),
@@ -11716,6 +7938,7 @@ fn check_image_method_intrinsic(
                 ));
             }
             Ok(TypedExpr {
+                span: call_span,
                 ty: Type::Unit,
                 kind: TypedExprKind::Intrinsic {
                     key: "Image.on_failure".to_string(),
@@ -11768,6 +7991,7 @@ fn check_image_method_intrinsic(
                 }
             }
             Ok(TypedExpr {
+                span: call_span,
                 ty: Type::Unit,
                 kind: TypedExprKind::Intrinsic {
                     key: "Image.check_layout".to_string(),
@@ -11785,6 +8009,7 @@ fn check_image_method_intrinsic(
                 ));
             }
             Ok(TypedExpr {
+                span: call_span,
                 ty: image_type(),
                 kind: TypedExprKind::Intrinsic {
                     key: "Image.seal".to_string(),
@@ -11809,7 +8034,7 @@ fn check_image_method_intrinsic(
 /// `handle()` genuinely needs its own receiver's *value* — which
 /// declaration it names — so it is the one case `receiver` on
 /// `TypedExprKind::Intrinsic` is ever actually read.
-fn check_image_decl_method_intrinsic(
+pub(crate) fn check_image_decl_method_intrinsic(
     receiver: TypedExpr,
     name: &str,
     args: &[Arg],
@@ -11832,6 +8057,7 @@ fn check_image_decl_method_intrinsic(
     }
     let _ = (fctx, mctx); // no further checking needed: the receiver is already typed.
     Ok(TypedExpr {
+        span: call_span,
         ty: image_decl_type(),
         kind: TypedExprKind::Intrinsic {
             key: "ImageDecl.handle".to_string(),
@@ -11842,7 +8068,7 @@ fn check_image_decl_method_intrinsic(
     })
 }
 
-fn check_struct_construction(
+pub(crate) fn check_struct_construction(
     local_name: &str,
     s: &StructInfo,
     targs: &[TypeArg],
@@ -11898,6 +8124,7 @@ fn check_struct_construction(
         // will recognize as "allocate `Self`, then run this with the
         // fresh value as `self`".
         return Ok(TypedExpr {
+            span: call_span,
             ty: ret_ty,
             kind: TypedExprKind::Call {
                 callee: key,
@@ -11908,6 +8135,7 @@ fn check_struct_construction(
     }
     let fields = check_struct_literal(local_name, s, args, call_span, fctx, mctx)?;
     Ok(TypedExpr {
+        span: call_span,
         ty: self_ty,
         kind: TypedExprKind::StructLiteral {
             name: local_name.to_string(),
@@ -11916,13 +8144,28 @@ fn check_struct_construction(
     })
 }
 
+/// Re-attach an AST arg access mode onto a struct-literal field value.
+/// `TypedExprKind::StructLiteral` has no mode slot (unlike `TypedCallArg`),
+/// so `take` must become `TypedExprKind::Take` here or flow treats the
+/// place as an implicit copy.
+fn wrap_struct_field_mode(mode: AccessMode, value: TypedExpr, span: Span) -> TypedExpr {
+    match mode {
+        AccessMode::Take => TypedExpr {
+            span,
+            ty: value.ty.clone(),
+            kind: TypedExprKind::Take(Box::new(value)),
+        },
+        AccessMode::Read | AccessMode::Mut => value,
+    }
+}
+
 /// A struct without `init` builds from its named-field literal
 /// (02-language.md §7.1): every field exactly once unless defaulted,
 /// positional only for a one-field struct. Returns only the explicitly
 /// supplied fields, declaration order (plans/M3.md item A) — an omitted,
 /// defaulted field is elided; its default lives once on
 /// `typed::TypedStruct::field_defaults`.
-fn check_struct_literal(
+pub(crate) fn check_struct_literal(
     local_name: &str,
     s: &StructInfo,
     args: &[Arg],
@@ -11942,6 +8185,10 @@ fn check_struct_literal(
     if fields.len() == 1 && args.len() == 1 && args[0].label.is_none() {
         check_field_privacy(local_name, &fields[0].0, s, args[0].span, mctx)?;
         let vt = check_expr(&args[0].value, Some(&fields[0].1), fctx, mctx)?;
+        // Arg.mode carries `take` (AST marker); StructLiteral has no
+        // per-field mode slot, so re-wrap for flow/access (same as
+        // transport::with_arg_mode / TypedCallArg.mode on Call).
+        let vt = wrap_struct_field_mode(args[0].mode, vt, args[0].span);
         return Ok(vec![(fields[0].0.clone(), vt)]);
     }
     let mut bound = vec![false; fields.len()];
@@ -11966,6 +8213,7 @@ fn check_struct_literal(
         check_field_privacy(local_name, label, s, a.span, mctx)?;
         let fty = fields[idx].1.clone();
         let vt = check_expr(&a.value, Some(&fty), fctx, mctx)?;
+        let vt = wrap_struct_field_mode(a.mode, vt, a.span);
         slots[idx] = Some(vt);
     }
     for (i, (name, _, has_default)) in fields.iter().enumerate() {
@@ -11992,16 +8240,21 @@ fn check_struct_literal(
 /// (`typed::TypedParam::default`, typed once on the callee's own
 /// declaration — never re-typed per call site, since a default may
 /// reference the callee's own `self`).
-fn check_call_args(
+pub(crate) fn check_call_args(
     ast_params: &[ast::Param],
     decl_params: &[DeclParam],
     args: &[Arg],
     call_span: Span,
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
-) -> Result<Vec<Option<TypedExpr>>, SemaError> {
+) -> Result<Vec<TypedCallArg>, SemaError> {
     let mut bound = vec![false; decl_params.len()];
-    let mut slots: Vec<Option<TypedExpr>> = (0..decl_params.len()).map(|_| None).collect();
+    let mut slots: Vec<TypedCallArg> = (0..decl_params.len())
+        .map(|_| TypedCallArg {
+            mode: AccessMode::Read,
+            value: None,
+        })
+        .collect();
     let mut cursor = 0usize;
     for a in args {
         let idx = match &a.label {
@@ -12052,7 +8305,10 @@ fn check_call_args(
             }
         }
         let vt = check_expr(&a.value, Some(&pty), fctx, mctx)?;
-        slots[idx] = Some(vt);
+        slots[idx] = TypedCallArg {
+            mode: a.mode,
+            value: Some(vt),
+        };
     }
     for (i, p) in decl_params.iter().enumerate() {
         if !bound[i] && ast_params[i].default.is_none() {
@@ -12069,13 +8325,13 @@ fn check_call_args(
 /// (a closure/named-function reference): unlike a real call, there are
 /// no parameter names to label against, and a raw `fn` type carries no
 /// defaults — every slot is always explicit.
-fn check_positional_args(
+pub(crate) fn check_positional_args(
     params: &[(AccessMode, Type)],
     args: &[Arg],
     call_span: Span,
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
-) -> Result<Vec<TypedExpr>, SemaError> {
+) -> Result<Vec<TypedCallArg>, SemaError> {
     if args.len() != params.len() {
         return Err(arity_error(params.len(), args.len(), call_span));
     }
@@ -12087,7 +8343,10 @@ fn check_positional_args(
                 a.span,
             ));
         }
-        out.push(check_expr(&a.value, Some(ty), fctx, mctx)?);
+        out.push(TypedCallArg {
+            mode: a.mode,
+            value: Some(check_expr(&a.value, Some(ty), fctx, mctx)?),
+        });
     }
     Ok(out)
 }
@@ -12102,7 +8361,7 @@ fn check_positional_args(
 /// mismatched expected type is a precise `error[type]`; associated
 /// functions / method-owned type params on a generic enum still refuse
 /// elsewhere with the existing `unimplemented` boundary.
-fn resolve_enum_for_variant_construction<'a>(
+pub(crate) fn resolve_enum_for_variant_construction<'a>(
     enum_name: &str,
     info: &'a EnumInfo,
     expected: Option<&Type>,
@@ -12136,19 +8395,22 @@ fn resolve_enum_for_variant_construction<'a>(
 /// pattern payloads "bind positionally regardless of whether the variant
 /// was declared with named fields" (02-language.md §7.2). A variant's
 /// payload never has defaults, so every slot is always explicit.
-fn check_variant_args(
+pub(crate) fn check_variant_args(
     payload: &[Type],
     args: &[Arg],
     call_span: Span,
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
-) -> Result<Vec<TypedExpr>, SemaError> {
+) -> Result<Vec<TypedCallArg>, SemaError> {
     if args.len() != payload.len() {
         return Err(arity_error(payload.len(), args.len(), call_span));
     }
     let mut out = Vec::with_capacity(args.len());
     for (a, ty) in args.iter().zip(payload.iter()) {
-        out.push(check_expr(&a.value, Some(ty), fctx, mctx)?);
+        out.push(TypedCallArg {
+            mode: a.mode,
+            value: Some(check_expr(&a.value, Some(ty), fctx, mctx)?),
+        });
     }
     Ok(out)
 }
@@ -12336,7 +8598,7 @@ fn scan_expr_await(e: &Expr) -> Option<Span> {
 
 // --- shared error helpers --------------------------------------------------
 
-fn type_error(message: String, span: Span) -> SemaError {
+pub(crate) fn type_error(message: String, span: Span) -> SemaError {
     SemaError::at("type", message, span)
 }
 
@@ -12346,7 +8608,7 @@ fn type_error(message: String, span: Span) -> SemaError {
 /// recognize this exact shape without parsing `message` back apart. The
 /// rendered `message`/category/span are unaffected — the field is metadata
 /// only, never printed.
-fn missing_method_error(
+pub(crate) fn missing_method_error(
     message: String,
     type_name: &str,
     method_name: &str,
@@ -12357,7 +8619,7 @@ fn missing_method_error(
     e
 }
 
-fn arity_error(expected: usize, found: usize, span: Span) -> SemaError {
+pub(crate) fn arity_error(expected: usize, found: usize, span: Span) -> SemaError {
     type_error(
         format!("expected {expected} argument(s), found {found}"),
         span,
@@ -12473,11 +8735,19 @@ mod tests {
         let span = Span::default();
         assert!(matches!(
             synth_float_literal(span, "1.0", Some(&Type::F32)),
-            Ok(TypedExpr { ty: Type::F32, .. })
+            Ok(TypedExpr {
+                span: _,
+                ty: Type::F32,
+                ..
+            })
         ));
         assert!(matches!(
             synth_float_literal(span, "1.0", Some(&Type::F64)),
-            Ok(TypedExpr { ty: Type::F64, .. })
+            Ok(TypedExpr {
+                span: _,
+                ty: Type::F64,
+                ..
+            })
         ));
         assert!(
             synth_float_literal(span, "1.0", Some(&Type::U8)).is_err(),
@@ -12485,7 +8755,11 @@ mod tests {
         );
         assert!(matches!(
             synth_float_literal(span, "1.0", None),
-            Ok(TypedExpr { ty: Type::F64, .. })
+            Ok(TypedExpr {
+                span: _,
+                ty: Type::F64,
+                ..
+            })
         ));
     }
 
@@ -12558,254 +8832,6 @@ mod tests {
         assert!(
             !types_eq(&shared_a, &shared_other),
             "DmaShared with distinct Pool args must not compare equal"
-        );
-    }
-
-    // --- plans/M6.md item A: the CallError composition table + path-
-    // rooting classification (pure logic, unit-tested directly per the
-    // item's own instruction) --------------------------------------------
-
-    fn call_error_of(e: &Type) -> Type {
-        Type::Named("CallError".to_string(), vec![TypeArg::Type(e.clone())])
-    }
-
-    /// The table verbatim (02-language.md §9.4): "declared R -> Result[R,
-    /// CallError[never]]".
-    #[test]
-    fn compose_call_error_wraps_a_plain_declared_type() {
-        let composed = compose_call_error(&Type::U64, &[]);
-        assert_eq!(
-            composed,
-            Type::Result(Box::new(Type::U64), Box::new(call_error_of(&Type::Never)))
-        );
-    }
-
-    /// "declared Result[T, E] -> Result[T, CallError[E]]".
-    #[test]
-    fn compose_call_error_rewraps_a_declared_result() {
-        let declared = Type::Result(
-            Box::new(Type::U32),
-            Box::new(Type::Named("FsError".to_string(), vec![])),
-        );
-        let composed = compose_call_error(&declared, &[]);
-        assert_eq!(
-            composed,
-            Type::Result(
-                Box::new(Type::U32),
-                Box::new(call_error_of(&Type::Named("FsError".to_string(), vec![])))
-            )
-        );
-    }
-
-    /// `Option`/`Static`/a bare user struct all fall through the same
-    /// "declared R" branch as any other non-`Result` type — the table has
-    /// only two cases, not one per shape.
-    #[test]
-    fn compose_call_error_treats_every_non_result_type_uniformly() {
-        let cases = vec![
-            Type::Unit,
-            Type::Option(Box::new(Type::U8)),
-            Type::Named("Widget".to_string(), vec![]),
-            Type::Static(Box::new(Type::Str)),
-        ];
-        for ty in cases {
-            let composed = compose_call_error(&ty, &[]);
-            match composed {
-                Type::Result(ok, err) => {
-                    assert_eq!(*ok, ty, "the declared type itself must be the Ok payload");
-                    assert_eq!(
-                        *err,
-                        call_error_of(&Type::Never),
-                        "error side is CallError[never]"
-                    );
-                }
-                other => panic!("composition must always be a Result, got {other:?}"),
-            }
-        }
-    }
-
-    /// Applying the table twice must not collapse or double-wrap (a
-    /// sanity check that the function is a pure, idempotent-shaped
-    /// mapping over its input, not a stateful rewrite).
-    #[test]
-    fn compose_call_error_is_a_pure_function_of_its_input() {
-        let a = compose_call_error(&Type::U64, &[]);
-        let b = compose_call_error(&Type::U64, &[]);
-        assert_eq!(a, b);
-    }
-
-    /// plans/M13.md item H: take-arg types become CallError's second
-    /// type argument so `NotAdmitted` patterns bind `(Admission, args)`.
-    #[test]
-    fn compose_call_error_carries_take_arg_tuple() {
-        let composed = compose_call_error(&Type::U64, &[Type::U32, Type::U64]);
-        let Type::Result(_, err) = composed else {
-            panic!("expected Result");
-        };
-        let Type::Named(name, targs) = *err else {
-            panic!("expected CallError");
-        };
-        assert_eq!(name, "CallError");
-        assert_eq!(targs.len(), 2);
-        assert_eq!(
-            not_admitted_args_type(&targs),
-            Type::Tuple(vec![Type::U32, Type::U64])
-        );
-    }
-
-    /// `root_local_name` (the cross-await path-rooting classifier,
-    /// 02-language.md §9.2): a bare local's own root is itself; a nested
-    /// field chain's root is whatever `Local` sits at the bottom,
-    /// regardless of chain depth; anything else (a literal, a call) has
-    /// no local root at all.
-    #[test]
-    fn root_local_name_finds_the_bottom_of_a_field_chain() {
-        let self_local = TypedExpr {
-            ty: Type::Unit,
-            kind: TypedExprKind::Local("self".to_string()),
-        };
-        assert_eq!(root_local_name(&self_local), Some("self"));
-
-        let one_level = TypedExpr {
-            ty: Type::Unit,
-            kind: TypedExprKind::Field(Box::new(self_local.clone()), "fs".to_string()),
-        };
-        assert_eq!(
-            root_local_name(&one_level),
-            Some("self"),
-            "a one-level field access still roots at self"
-        );
-
-        let two_level = TypedExpr {
-            ty: Type::Unit,
-            kind: TypedExprKind::Field(Box::new(one_level), "cache".to_string()),
-        };
-        assert_eq!(
-            root_local_name(&two_level),
-            Some("self"),
-            "self.fs.cache must still root at self regardless of chain depth"
-        );
-
-        let external = TypedExpr {
-            ty: Type::Unit,
-            kind: TypedExprKind::Local("input".to_string()),
-        };
-        let external_field = TypedExpr {
-            ty: Type::Unit,
-            kind: TypedExprKind::Field(Box::new(external), "value".to_string()),
-        };
-        assert_eq!(root_local_name(&external_field), Some("input"));
-
-        let external_idx_base = TypedExpr {
-            ty: Type::Unit,
-            kind: TypedExprKind::Local("input".to_string()),
-        };
-        let external_index = TypedExpr {
-            ty: Type::U64,
-            kind: TypedExprKind::Index(
-                Box::new(external_idx_base),
-                Box::new(TypedExpr {
-                    ty: Type::Usize,
-                    kind: TypedExprKind::Int("0".to_string()),
-                }),
-            ),
-        };
-        assert_eq!(
-            root_local_name(&external_index),
-            Some("input"),
-            "bare `input[0]` must root at `input` (Index is not a Field bypass)"
-        );
-
-        let no_root = TypedExpr {
-            ty: Type::U64,
-            kind: TypedExprKind::Int("1".to_string()),
-        };
-        assert_eq!(
-            root_local_name(&no_root),
-            None,
-            "a literal has no local root at all"
-        );
-    }
-
-    /// `check_cross_await` (02-language.md §9.2): a self-rooted access on
-    /// both sides of an `await` is legal; an external-rooted path that
-    /// *spans* the await (bound before, field-used after) is rejected;
-    /// a local bound *from* the await's result and then field-accessed
-    /// is legal — it does not span (03 §3 / plans/M9.md item J2d).
-    #[test]
-    fn check_cross_await_accepts_self_and_rejects_external_paths() {
-        fn field(base_name: &str, field_name: &str) -> TypedExpr {
-            TypedExpr {
-                ty: Type::U64,
-                kind: TypedExprKind::Field(
-                    Box::new(TypedExpr {
-                        ty: Type::Unit,
-                        kind: TypedExprKind::Local(base_name.to_string()),
-                    }),
-                    field_name.to_string(),
-                ),
-            }
-        }
-        fn let_stmt(name: &str, value: TypedExpr) -> TypedStmt {
-            TypedStmt {
-                kind: TypedStmtKind::Let {
-                    name: name.to_string(),
-                    ty: value.ty.clone(),
-                    value,
-                },
-            }
-        }
-        let await_node = TypedExpr {
-            ty: Type::Unit,
-            kind: TypedExprKind::Await(Box::new(TypedExpr {
-                ty: Type::Unit,
-                kind: TypedExprKind::Local("dummy".to_string()),
-            })),
-        };
-
-        // self-rooted before and after the await: legal.
-        let self_ok = vec![
-            let_stmt("before", field("self", "cache")),
-            let_stmt("suspend", await_node.clone()),
-            let_stmt("after", field("self", "cache")),
-        ];
-        assert!(
-            check_cross_await(&self_ok).is_ok(),
-            "a self-rooted access spanning an await must be accepted"
-        );
-
-        // external-rooted, only *after* the await, never bound after it:
-        // rejected (the name is an argument / pre-await local).
-        let external_after = vec![
-            let_stmt("suspend", await_node.clone()),
-            let_stmt("bad", field("input", "value")),
-        ];
-        assert!(
-            check_cross_await(&external_after).is_err(),
-            "an external-rooted access after an await must be rejected"
-        );
-
-        // external-rooted, but entirely *before* the await: legal (the
-        // rule is about spanning the suspension, not about touching an
-        // external root at all).
-        let external_before = vec![
-            let_stmt("fine", field("input", "value")),
-            let_stmt("suspend", await_node.clone()),
-        ];
-        assert!(
-            check_cross_await(&external_before).is_ok(),
-            "an external-rooted access entirely before an await must be accepted"
-        );
-
-        // Bound from the await itself, then field-accessed: legal — the
-        // local does not span the suspension (03-hardware.md §3).
-        let bound_from_await = vec![
-            let_stmt("completion", await_node),
-            let_stmt("status", field("completion", "status")),
-        ];
-        assert!(
-            check_cross_await(&bound_from_await).is_ok(),
-            "a local bound from the await result must be field-accessible after it"
         );
     }
 }

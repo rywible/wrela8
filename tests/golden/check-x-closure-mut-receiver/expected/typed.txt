@@ -22,5 +22,6 @@ Program
           CallValue ty=u64
             Callee
               Local name=body ty=fn(mut Item) -> u64
-            Field name=slot ty=Item
-              Local name=self ty=Table
+            Arg mode=mut
+              Field name=slot ty=Item
+                Local name=self ty=Table

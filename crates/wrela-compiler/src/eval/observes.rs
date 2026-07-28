@@ -12,10 +12,12 @@ use std::collections::BTreeSet;
 
 use crate::sema::SemaError;
 use crate::sema::typed::{
-    CalleeKey, TypedDeferBody, TypedExpr, TypedExprKind, TypedFn, TypedForIter, TypedInstantiation,
+    TypedDeferBody, TypedExpr, TypedExprKind, TypedFn, TypedForIter, TypedInstantiation,
     TypedProgram, TypedStmt, TypedStmtKind, UnboundedSyncLoop,
 };
 use crate::syntax::ast::Span;
+
+use super::walk::{self, Visitor};
 
 /// Why a fn's observes bit is set — enough for the typed-dump chain.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -499,13 +501,14 @@ fn expr_observes(
                 .is_some_and(|r| expr_observes(r, observes, static_addrs))
                 || args
                     .iter()
-                    .flatten()
+                    .filter_map(|a| a.value.as_ref())
                     .any(|a| expr_observes(a, observes, static_addrs))
         }
         TypedExprKind::CallValue(f, args) => {
             expr_observes(f, observes, static_addrs)
                 || args
                     .iter()
+                    .filter_map(|a| a.value.as_ref())
                     .any(|a| expr_observes(a, observes, static_addrs))
         }
         TypedExprKind::Field(base, _)
@@ -530,9 +533,11 @@ fn expr_observes(
         | TypedExprKind::Or(l, r) => {
             expr_observes(l, observes, static_addrs) || expr_observes(r, observes, static_addrs)
         }
-        TypedExprKind::EnumConstruct { args, .. }
-        | TypedExprKind::Tuple(args)
-        | TypedExprKind::List(args) => args
+        TypedExprKind::EnumConstruct { args, .. } => args
+            .iter()
+            .filter_map(|a| a.value.as_ref())
+            .any(|a| expr_observes(a, observes, static_addrs)),
+        TypedExprKind::Tuple(args) | TypedExprKind::List(args) => args
             .iter()
             .any(|a| expr_observes(a, observes, static_addrs)),
         TypedExprKind::StructLiteral { fields, .. } => fields
@@ -638,179 +643,34 @@ fn scan_stmts(
     callees: &mut BTreeSet<String>,
     leaf: &mut Option<ObservesReason>,
 ) {
-    for s in stmts {
-        match &s.kind {
-            TypedStmtKind::Assign { target, value } => {
-                if leaf.is_none() && target_is_park_write(target, static_addrs) {
-                    *leaf = Some(ObservesReason::LeafParkWrite);
-                }
-                scan_expr(value, static_addrs, callees, leaf);
-                scan_expr(target, static_addrs, callees, leaf);
-            }
-            TypedStmtKind::Let { value, .. } | TypedStmtKind::ExprStmt(value) => {
-                scan_expr(value, static_addrs, callees, leaf);
-            }
-            TypedStmtKind::If {
-                cond,
-                then_branch,
-                elifs,
-                else_branch,
-            } => {
-                scan_expr(cond, static_addrs, callees, leaf);
-                scan_stmts(then_branch, static_addrs, callees, leaf);
-                for e in elifs {
-                    scan_expr(&e.cond, static_addrs, callees, leaf);
-                    scan_stmts(&e.body, static_addrs, callees, leaf);
-                }
-                if let Some(b) = else_branch {
-                    scan_stmts(b, static_addrs, callees, leaf);
+    struct ObsVisitor<'a> {
+        static_addrs: &'a BTreeMap<String, u64>,
+        callees: &'a mut BTreeSet<String>,
+        leaf: &'a mut Option<ObservesReason>,
+    }
+    impl Visitor for ObsVisitor<'_> {
+        fn pre_stmt(&mut self, s: &TypedStmt) {
+            if let TypedStmtKind::Assign { target, .. } = &s.kind {
+                if self.leaf.is_none() && target_is_park_write(target, self.static_addrs) {
+                    *self.leaf = Some(ObservesReason::LeafParkWrite);
                 }
             }
-            TypedStmtKind::Match { scrutinee, arms } => {
-                scan_expr(scrutinee, static_addrs, callees, leaf);
-                for a in arms {
-                    scan_stmts(&a.body, static_addrs, callees, leaf);
-                }
+        }
+        fn pre_expr(&mut self, expr: &TypedExpr) {
+            if self.leaf.is_none() && expr_is_pending_read(expr, self.static_addrs) {
+                *self.leaf = Some(ObservesReason::LeafPendingRead);
             }
-            TypedStmtKind::While { cond, body, .. } => {
-                scan_expr(cond, static_addrs, callees, leaf);
-                scan_stmts(body, static_addrs, callees, leaf);
-            }
-            TypedStmtKind::For { iter, body, .. } => {
-                match iter {
-                    TypedForIter::Range(a, b, _) => {
-                        scan_expr(a, static_addrs, callees, leaf);
-                        scan_expr(b, static_addrs, callees, leaf);
-                    }
-                    TypedForIter::Expr(e) => scan_expr(e, static_addrs, callees, leaf),
-                }
-                scan_stmts(body, static_addrs, callees, leaf);
-            }
-            TypedStmtKind::Return(Some(e)) => scan_expr(e, static_addrs, callees, leaf),
-            TypedStmtKind::Assert { cond, message } => {
-                scan_expr(cond, static_addrs, callees, leaf);
-                if let Some(m) = message {
-                    scan_expr(m, static_addrs, callees, leaf);
-                }
-            }
-            TypedStmtKind::BareSend { expr, .. } => scan_expr(expr, static_addrs, callees, leaf),
-            TypedStmtKind::WithGroup {
-                capacity,
-                deadline,
-                body,
-                ..
-            } => {
-                if let Some(e) = capacity {
-                    scan_expr(e, static_addrs, callees, leaf);
-                }
-                if let Some(e) = deadline {
-                    scan_expr(e, static_addrs, callees, leaf);
-                }
-                scan_stmts(body, static_addrs, callees, leaf);
-            }
-            TypedStmtKind::Defer(TypedDeferBody::Expr(e)) => {
-                scan_expr(e, static_addrs, callees, leaf);
-            }
-            TypedStmtKind::Defer(TypedDeferBody::Suite(b)) => {
-                scan_stmts(b, static_addrs, callees, leaf);
-            }
-            TypedStmtKind::ComptimeAssert { cond, message, .. } => {
-                scan_expr(cond, static_addrs, callees, leaf);
-                if let Some(m) = message {
-                    scan_expr(m, static_addrs, callees, leaf);
-                }
-            }
-            _ => {}
+        }
+        fn on_callee(&mut self, key: String) {
+            self.callees.insert(key);
         }
     }
-}
-
-fn scan_expr(
-    expr: &TypedExpr,
-    static_addrs: &BTreeMap<String, u64>,
-    callees: &mut BTreeSet<String>,
-    leaf: &mut Option<ObservesReason>,
-) {
-    if leaf.is_none() && expr_is_pending_read(expr, static_addrs) {
-        *leaf = Some(ObservesReason::LeafPendingRead);
-    }
-    match &expr.kind {
-        TypedExprKind::Call {
-            callee,
-            receiver,
-            args,
-        } => {
-            callees.insert(callee_spelling(callee));
-            if let Some(r) = receiver {
-                scan_expr(r, static_addrs, callees, leaf);
-            }
-            for a in args.iter().flatten() {
-                scan_expr(a, static_addrs, callees, leaf);
-            }
-        }
-        TypedExprKind::CallValue(f, args) => {
-            scan_expr(f, static_addrs, callees, leaf);
-            for a in args {
-                scan_expr(a, static_addrs, callees, leaf);
-            }
-        }
-        TypedExprKind::Field(base, _)
-        | TypedExprKind::ToScalar(base)
-        | TypedExprKind::Neg(base)
-        | TypedExprKind::BitNot(base)
-        | TypedExprKind::Take(base)
-        | TypedExprKind::Not(base)
-        | TypedExprKind::Await(base)
-        | TypedExprKind::Send(base)
-        | TypedExprKind::Panic(base) => scan_expr(base, static_addrs, callees, leaf),
-        TypedExprKind::Try(inner, _) | TypedExprKind::Is(inner, _) => {
-            scan_expr(inner, static_addrs, callees, leaf);
-        }
-        TypedExprKind::Index(base, idx) => {
-            scan_expr(base, static_addrs, callees, leaf);
-            scan_expr(idx, static_addrs, callees, leaf);
-        }
-        TypedExprKind::Binary(_, l, r)
-        | TypedExprKind::OpCall(_, l, r)
-        | TypedExprKind::And(l, r)
-        | TypedExprKind::Or(l, r) => {
-            scan_expr(l, static_addrs, callees, leaf);
-            scan_expr(r, static_addrs, callees, leaf);
-        }
-        TypedExprKind::EnumConstruct { args, .. }
-        | TypedExprKind::Tuple(args)
-        | TypedExprKind::List(args) => {
-            for a in args {
-                scan_expr(a, static_addrs, callees, leaf);
-            }
-        }
-        TypedExprKind::StructLiteral { fields, .. } => {
-            for (_, e) in fields {
-                scan_expr(e, static_addrs, callees, leaf);
-            }
-        }
-        TypedExprKind::Closure { body, .. } => match body {
-            crate::sema::typed::TypedClosureBody::Expr(e) => {
-                scan_expr(e, static_addrs, callees, leaf);
-            }
-            crate::sema::typed::TypedClosureBody::Suite(stmts) => {
-                scan_stmts(stmts, static_addrs, callees, leaf);
-            }
-        },
-        TypedExprKind::Intrinsic { args, .. } => {
-            for (_, a) in args {
-                scan_expr(a, static_addrs, callees, leaf);
-            }
-        }
-        TypedExprKind::FnRef(key) => {
-            callees.insert(callee_spelling(key));
-        }
-        _ => {}
-    }
-}
-
-fn callee_spelling(key: &CalleeKey) -> String {
-    key.spelling()
+    let mut v = ObsVisitor {
+        static_addrs,
+        callees,
+        leaf,
+    };
+    walk::walk_stmts(stmts, &mut v);
 }
 
 fn expr_is_pending_read(expr: &TypedExpr, static_addrs: &BTreeMap<String, u64>) -> bool {

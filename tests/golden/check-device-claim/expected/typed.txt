@@ -56,7 +56,8 @@ Program
         Let name=claimed ty=DriverClaimedDevice[VirtioBlock]
           Intrinsic key=Device.claim type_arg=VirtioBlock ty=DriverClaimedDevice[VirtioBlock]
             Arg label=cap
-              Local name=cap ty=DeviceCap[VirtioBlock]
+              Take ty=DeviceCap[VirtioBlock]
+                Local name=cap ty=DeviceCap[VirtioBlock]
         Assign
           Field name=irq_regs ty=Mmio[VirtioIrqMmio]
             Local name=self ty=BlkDriver

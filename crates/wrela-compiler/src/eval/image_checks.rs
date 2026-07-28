@@ -1148,8 +1148,9 @@ fn own_handles_in_struct(s: &crate::sema::typed::TypedStruct, out: &mut Vec<(Str
 }
 
 /// Every `own[P] T` spelled anywhere in the build closure's *declaration*
-/// surface: const types, fn signatures, struct fields, and every
-/// `init`/method/assoc fn of a struct or a generic instantiation.
+/// surface: const types, fn signatures, struct fields, **enum** variant
+/// payloads and methods/assoc fns, and every `init`/method/assoc fn of a
+/// struct or a generic instantiation.
 ///
 /// Deliberately not a body walk, and that is exact rather than a hedge:
 /// nothing in this language constructs an `own[P] T` — no literal, no
@@ -1169,6 +1170,19 @@ fn own_handles_in_closure(programs: &BTreeMap<String, TypedProgram>) -> Vec<(Str
         }
         for s in p.structs.values() {
             own_handles_in_struct(s, &mut out);
+        }
+        for e in p.enums.values() {
+            for payloads in &e.variant_payload_types {
+                for t in payloads {
+                    own_handles_in_type(t, &mut out);
+                }
+            }
+            for f in e.methods.values() {
+                own_handles_in_fn(f, &mut out);
+            }
+            for f in e.assoc_fns.values() {
+                own_handles_in_fn(f, &mut out);
+            }
         }
         for inst in p.instantiations.values() {
             match inst {
@@ -2545,22 +2559,25 @@ fn collect_irq_ops_expr(
             if let Some(r) = receiver {
                 collect_irq_ops_expr(r, driver, vector, site, binds, take_irq);
             }
-            for a in args.iter().flatten() {
+            for a in args.iter().filter_map(|a| a.value.as_ref()) {
                 collect_irq_ops_expr(a, driver, vector, site, binds, take_irq);
             }
         }
         TypedExprKind::CallValue(f, args) => {
             collect_irq_ops_expr(f, driver, vector, site, binds, take_irq);
-            for a in args {
+            for a in args.iter().filter_map(|a| a.value.as_ref()) {
                 collect_irq_ops_expr(a, driver, vector, site, binds, take_irq);
             }
         }
         TypedExprKind::Try(inner, _) => {
             collect_irq_ops_expr(inner, driver, vector, site, binds, take_irq);
         }
-        TypedExprKind::EnumConstruct { args, .. }
-        | TypedExprKind::Tuple(args)
-        | TypedExprKind::List(args) => {
+        TypedExprKind::EnumConstruct { args, .. } => {
+            for a in args.iter().filter_map(|a| a.value.as_ref()) {
+                collect_irq_ops_expr(a, driver, vector, site, binds, take_irq);
+            }
+        }
+        TypedExprKind::Tuple(args) | TypedExprKind::List(args) => {
             for a in args {
                 collect_irq_ops_expr(a, driver, vector, site, binds, take_irq);
             }

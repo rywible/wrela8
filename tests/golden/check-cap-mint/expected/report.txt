@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/check_cap_mint.wr sha256=ca9cb433e65c357a9066afca01004c98f05fabf97d2c3a191928a5589482aa70
-  Input path=<generated> sha256=25af4c94d45b87f07bfbf239d5fefe8b5101411862215201c417214c8ffea26a
+  Input path=<generated> sha256=d44d1957de1811bc66faad44d60817c851605f8b85ea6337d9126cd5780cd1b4
   Name value=cap-mint
   Target value=Target.wrela_machine_v1
   Device index=0 type=BlockHw
@@ -50,10 +50,10 @@ ImageReport v0
   Section name=pages base=0x40000000 size=28672
   Section name=stacks base=0x40010000 size=3145728
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=88860
-  Section name=rodata base=0x40515b70 size=263
-  Section name=abort base=0x40515c78 size=120
-  Section name=checkpoint base=0x40515cf0 size=28
+  Section name=code base=0x40500050 size=106844
+  Section name=rodata base=0x4051a1b0 size=455
+  Section name=abort base=0x4051a378 size=120
+  Section name=checkpoint base=0x4051a3f0 size=28
   Section name=rtdata base=0x40540000 size=32
   Section name=devregs base=0x40540020 size=8
   Entry base=0x40500000
@@ -62,7 +62,7 @@ ImageReport v0
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
   PlacedStatic name=EXIT type=ParkMmio addr=0x8001000 size=8
   PlacedStatic name=GROUPS type=GroupArena addr=0x4057f778 size=96
-  PlacedStatic name=INIT_SPAN0 type=InitSpan0Words addr=0x4057f738 size=8
+  PlacedStatic name=INIT_SPAN0 type=InitSpan0Words addr=0x40540000 size=16
   PlacedStatic name=INIT_SPAN1 type=InitSpan1Words addr=0x4057f740 size=8
   PlacedStatic name=INIT_SPAN2 type=InitSpan2Words addr=0x4057f748 size=8
   PlacedStatic name=INIT_SPAN3 type=InitSpan3Words addr=0x4057f750 size=8

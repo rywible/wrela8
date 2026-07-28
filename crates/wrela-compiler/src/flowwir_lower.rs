@@ -76,12 +76,14 @@ use crate::eval::value;
 use crate::flowwir::{
     AwaitKind, FlowInst, FlowWirFn, FlowWirProgram, FrameLayout, State, Transition,
 };
+use crate::lower_queue::{self, QueueSink};
+use crate::lower_shared;
 use crate::mwir::{self, Inst, Temp};
 use crate::sema::bodies;
 use crate::sema::typed::{
-    CalleeKey, TypedDeferBody, TypedElif, TypedExpr, TypedExprKind, TypedFn, TypedForIter,
-    TypedMatchArm, TypedPattern, TypedPatternKind, TypedProgram, TypedStmt, TypedStmtKind,
-    TypedStruct,
+    CalleeKey, TypedCallArg, TypedDeferBody, TypedElif, TypedExpr, TypedExprKind, TypedFn,
+    TypedForIter, TypedMatchArm, TypedPattern, TypedPatternKind, TypedProgram, TypedStmt,
+    TypedStmtKind, TypedStruct,
 };
 use crate::sema::types::Type;
 use crate::syntax::ast::{AccessMode, BinOp};
@@ -272,6 +274,23 @@ impl<'p> FlowBuilder<'p> {
     }
 }
 
+struct FlowQueueSink<'a, 'p>(&'a mut FlowBuilder<'p>);
+
+impl QueueSink for FlowQueueSink<'_, '_> {
+    fn fresh(&mut self, ty: Type) -> Temp {
+        self.0.fresh(ty)
+    }
+    fn emit(&mut self, inst: Inst) -> usize {
+        self.0.emit_mwir(inst)
+    }
+    fn here(&mut self) -> usize {
+        self.0.here()
+    }
+    fn patch(&mut self, idx: usize, target: usize) {
+        self.0.patch(idx, target)
+    }
+}
+
 /// One enclosing loop's own bookkeeping — `Intra` (no `await` anywhere in
 /// the loop, mirrors `lower.rs::LoopCtx` verbatim: local fixups patched
 /// once the loop's own end/cond position is known) or `Inter` (the loop
@@ -307,7 +326,10 @@ fn expr_contains_await(e: &TypedExpr) -> bool {
         }
         TypedExprKind::Call { receiver, args, .. } => {
             receiver.as_deref().is_some_and(expr_contains_await)
-                || args.iter().flatten().any(expr_contains_await)
+                || args
+                    .iter()
+                    .filter_map(|a| a.value.as_ref())
+                    .any(expr_contains_await)
         }
         _ => false,
     }
@@ -451,36 +473,12 @@ fn field_index(prog: &TypedProgram, base_ty: &Type, field_name: &str) -> Result<
         .ok_or_else(|| FlowError::internal(format!("unknown field `{field_name}`")))
 }
 
-/// Declared offset of `field` in a `@layout(runtime)` type (plans/M10.md
-/// item A2c). Mirrors `lower::runtime_layout_field_offset`.
 fn runtime_layout_field_offset_flow(
     prog: &TypedProgram,
     layout: &str,
     field: &str,
 ) -> Result<u64, FlowError> {
-    Ok(runtime_layout_field_flow(prog, layout, field)?.offset)
-}
-
-fn runtime_layout_field_flow(
-    prog: &TypedProgram,
-    layout: &str,
-    field: &str,
-) -> Result<crate::sema::types::LayoutField, FlowError> {
-    let Some(l) = prog.layouts.iter().find(|l| l.name == layout) else {
-        return Err(FlowError::internal(format!(
-            "placed-static field access through `{layout}`, which has no layout table entry"
-        )));
-    };
-    for e in &l.entries {
-        if let crate::sema::types::LayoutEntry::Field(f) = e {
-            if f.name == field {
-                return Ok(f.clone());
-            }
-        }
-    }
-    Err(FlowError::internal(format!(
-        "`{layout}` declares no field `{field}` (the checker already refused this)"
-    )))
+    lower_shared::runtime_layout_field_offset(prog, layout, field).map_err(FlowError::internal)
 }
 
 /// `STATIC.array_field[i]` place parts (plans/M10.md item B1).
@@ -488,40 +486,10 @@ fn placed_array_field_index_flow(
     array_place: &TypedExpr,
     prog: &TypedProgram,
 ) -> Result<Option<(TypedExpr, u64, u64, usize)>, FlowError> {
-    let TypedExprKind::Field(static_base, fname) = &array_place.kind else {
-        return Ok(None);
-    };
-    let TypedExprKind::Static(sname) = &static_base.kind else {
-        return Ok(None);
-    };
-    let layout_name = match bodies::unwrap_own(static_base.ty.clone()) {
-        Type::Named(n, _) => n,
-        other => {
-            return Err(FlowError::internal(format!(
-                "placed static `{sname}` has non-named type {other:?}"
-            )));
-        }
-    };
-    let field = runtime_layout_field_flow(prog, &layout_name, fname)?;
-    let len = eval_array_len_with_prog(prog, &array_place.ty)?;
-    if len == 0 {
-        return Err(FlowError::internal(format!(
-            "placed array field `{layout_name}.{fname}` has length 0"
-        )));
-    }
-    if field.size % len as u64 != 0 {
-        return Err(FlowError::internal(format!(
-            "placed array field `{layout_name}.{fname}` size {} is not divisible by len {len}",
-            field.size
-        )));
-    }
-    let elem_stride = field.size / len as u64;
-    Ok(Some((
-        (**static_base).clone(),
-        field.offset,
-        elem_stride,
-        len,
-    )))
+    lower_shared::placed_array_field_index(array_place, prog, |ty| {
+        eval_array_len_with_prog(prog, ty).map_err(|e| e.message.clone())
+    })
+    .map_err(FlowError::internal)
 }
 
 fn variant_index(prog: &TypedProgram, enum_name: &str, variant: &str) -> Result<usize, FlowError> {
@@ -1284,14 +1252,14 @@ fn build_await_kind(
 /// a disclosed simplification, not a proven equivalence.
 fn lower_aligned_args<'a>(
     f: &TypedFn,
-    args: &'a [Option<TypedExpr>],
+    args: &'a [TypedCallArg],
     b: &mut FlowBuilder,
     env: &mut FEnv,
     nested_mut_writebacks: &mut Vec<(&'a TypedExpr, Temp)>,
 ) -> Result<Vec<Temp>, FlowError> {
     let mut out = Vec::with_capacity(args.len());
     for (param, slot) in f.params.iter().zip(args.iter()) {
-        let t = match slot {
+        let t = match &slot.value {
             Some(e) if param.mode == AccessMode::Mut => {
                 let (t, wb) = lower_mut_arg_place(e, b, env)?;
                 if let Some(place) = wb {
@@ -1346,7 +1314,7 @@ fn flow_call_write_backs(
 fn lower_flow_call(
     callee: &CalleeKey,
     receiver: &Option<Box<TypedExpr>>,
-    args: &[Option<TypedExpr>],
+    args: &[TypedCallArg],
     _result_ty: &Type,
     b: &mut FlowBuilder,
     env: &mut FEnv,
@@ -2323,29 +2291,19 @@ fn lower_mut_arg_place<'a>(
 
 // --- expressions (await-free contexts only) ---------------------------------
 
-/// plans/M13.md item M: see `lower::collapse_reserve_permit_if_needed`.
+/// plans/M13.md item M: see `lower_shared::needs_collapse_reserve_permit`.
 fn collapse_reserve_permit_if_needed(
     expr_ty: &Type,
     src: Temp,
     b: &mut FlowBuilder<'_>,
 ) -> Result<Temp, FlowError> {
-    let is_permit = matches!(expr_ty, Type::Named(n, t) if n == "QueuePermit" && t.is_empty());
-    if !is_permit {
-        return Ok(src);
-    }
-    let src_ty = &b.temp_types[src.0];
-    let is_reserve_result = match src_ty {
-        Type::Result(ok, err) => {
-            matches!(&**ok, Type::Named(n, t) if n == "QueuePermit" && t.is_empty())
-                && matches!(&**err, Type::Named(n, t) if n == "CapacityError" && t.is_empty())
-        }
-        _ => false,
-    };
-    if !is_reserve_result {
+    if !lower_shared::needs_collapse_reserve_permit(expr_ty, &b.temp_types[src.0]) {
         return Ok(src);
     }
     let dst = b.fresh(expr_ty.clone());
-    b.emit_mwir(Inst::EnumPayload { dst, src, index: 0 });
+    lower_shared::emit_collapse_reserve_permit(dst, src, |inst| {
+        b.emit_mwir(inst);
+    });
     Ok(dst)
 }
 
@@ -2736,36 +2694,16 @@ fn lower_flow_queue_op(
 ) -> Result<Temp, FlowError> {
     match key {
         "VirtQueue.prepare_block" => {
-            let permit = args
-                .iter()
-                .find(|(l, _)| l == "permit")
-                .ok_or_else(|| FlowError::internal("`prepare_block` without `permit=`"))?;
-            let header = args
-                .iter()
-                .find(|(l, _)| l == "header")
-                .ok_or_else(|| FlowError::internal("`prepare_block` without `header=`"))?;
-            let payload = args
-                .iter()
-                .find(|(l, _)| l == "payload")
-                .ok_or_else(|| FlowError::internal("`prepare_block` without `payload=`"))?;
-            let status = args
-                .iter()
-                .find(|(l, _)| l == "status")
-                .ok_or_else(|| FlowError::internal("`prepare_block` without `status=`"))?;
-            let device_writes_arg = args
-                .iter()
-                .find(|(l, _)| l == "device_writes_payload")
-                .ok_or_else(|| {
-                    FlowError::internal("`prepare_block` without `device_writes_payload=`")
-                })?;
-            let device_writes = match &device_writes_arg.1.kind {
-                TypedExprKind::Bool(v) => *v,
-                _ => {
-                    return Err(FlowError::unimplemented(
-                        "`prepare_block`'s `device_writes_payload=` as a non-literal bool is",
-                    ));
+            let parts = lower_shared::unpack_prepare_block_args(args).map_err(|err| match err {
+                lower_shared::PrepareBlockUnpackError::Missing(label) => {
+                    FlowError::internal(format!("`prepare_block` without `{label}`"))
                 }
-            };
+                lower_shared::PrepareBlockUnpackError::NonLiteralDeviceWrites => {
+                    FlowError::unimplemented(
+                        "`prepare_block`'s `device_writes_payload=` as a non-literal bool is",
+                    )
+                }
+            })?;
             let queue = match receiver {
                 Some(q) => lower_expr_flat(q, b, env)?,
                 None => {
@@ -2774,31 +2712,38 @@ fn lower_flow_queue_op(
                     ));
                 }
             };
-            let permit_t = lower_expr_flat(&permit.1, b, env)?;
-            let header_t = lower_expr_flat(&header.1, b, env)?;
-            let payload_t = lower_expr_flat(&payload.1, b, env)?;
-            let status_t = lower_expr_flat(&status.1, b, env)?;
-            let payload_len =
-                crate::lower::layout_dma_size(&payload.1.ty, b.prog).ok_or_else(|| {
-                    FlowError::internal("`prepare_block` payload has no `@layout(dma)` size")
+            let permit_t = lower_expr_flat(parts.permit, b, env)?;
+            let header_t = lower_expr_flat(parts.header, b, env)?;
+            let payload_t = lower_expr_flat(parts.payload, b, env)?;
+            let status_t = lower_expr_flat(parts.status, b, env)?;
+            let payload_len = lower_shared::prepare_block_payload_len(&parts.payload.ty, b.prog)
+                .map_err(|err| match err {
+                    lower_shared::PreparePayloadLenError::NoDmaSize => {
+                        FlowError::internal("`prepare_block` payload has no `@layout(dma)` size")
+                    }
+                    lower_shared::PreparePayloadLenError::BadSectorMultiple(n) => {
+                        FlowError::unimplemented(format!(
+                            "`prepare_block` with payload layout size {n}: virtio-blk requires \
+                             a positive multiple of 512"
+                        ))
+                    }
                 })?;
-            if payload_len == 0 || payload_len % 512 != 0 {
-                return Err(FlowError::unimplemented(format!(
-                    "`prepare_block` with payload layout size {payload_len}: virtio-blk requires \
-                     a positive multiple of 512"
-                )));
-            }
             let dst = b.fresh(e.ty.clone());
-            b.emit_mwir(Inst::QueuePrepare {
+            let _ = permit_t;
+            let depth = lower_queue::virtqueue_depth_of(&b.temp_types[queue.0])
+                .map_err(FlowError::internal)?;
+            lower_queue::expand_prepare(
                 dst,
                 queue,
-                permit: permit_t,
-                header: header_t,
-                payload: payload_t,
-                status: status_t,
-                device_writes,
-                payload_len: payload_len as u32,
-            });
+                header_t,
+                payload_t,
+                status_t,
+                parts.device_writes,
+                payload_len as u32,
+                depth,
+                &mut FlowQueueSink(b),
+            )
+            .map_err(FlowError::internal)?;
             Ok(dst)
         }
         "VirtQueue.reserve" => {
@@ -2839,12 +2784,10 @@ fn lower_flow_queue_op(
             };
             let operation = lower_expr_flat(&op.1, b, env)?;
             let dst = b.fresh(e.ty.clone());
-            b.emit_mwir(Inst::QueuePublish {
-                dst,
-                queue,
-                operation,
-                steps: crate::virtqueue::PUBLISH_WRITE_ORDER,
-            });
+            let depth = lower_queue::virtqueue_depth_of(&b.temp_types[queue.0])
+                .map_err(FlowError::internal)?;
+            lower_queue::expand_publish(dst, queue, operation, depth, &mut FlowQueueSink(b))
+                .map_err(FlowError::internal)?;
             Ok(dst)
         }
         "VirtQueue.reject" => {
@@ -2886,10 +2829,10 @@ fn lower_flow_queue_op(
                 }
             };
             let _ = args;
-            b.emit_mwir(Inst::QueueDrain {
-                queue,
-                max: max_val,
-            });
+            let depth = lower_queue::virtqueue_depth_of(&b.temp_types[queue.0])
+                .map_err(FlowError::internal)?;
+            lower_queue::expand_drain(queue, max_val, depth, &mut FlowQueueSink(b))
+                .map_err(FlowError::internal)?;
             let dst = b.fresh(Type::Unit);
             b.emit_mwir(Inst::ConstUnit { dst });
             Ok(dst)
@@ -2905,7 +2848,10 @@ fn lower_flow_queue_op(
             };
             let _ = type_arg;
             let _ = args;
-            b.emit_mwir(Inst::QueueSuppressInterrupts { queue });
+            let depth = lower_queue::virtqueue_depth_of(&b.temp_types[queue.0])
+                .map_err(FlowError::internal)?;
+            lower_queue::expand_suppress(queue, depth, &mut FlowQueueSink(b))
+                .map_err(FlowError::internal)?;
             let dst = b.fresh(Type::Unit);
             b.emit_mwir(Inst::ConstUnit { dst });
             Ok(dst)

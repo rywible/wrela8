@@ -68,24 +68,11 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-/// Runner-authored: this process itself could not produce a trustworthy
-/// answer (bad report/image, HVF error, timeout, I/O failure, a malformed
-/// or unreadable `--replay` log, an unwritable `--record` destination) —
-/// never the guest's own outcome (module doc's own "guest-authored" vs
-/// "runner-authored" distinction).
-const EXIT_VMM_FAILURE: u8 = 2;
-
-/// Runner-authored: `--replay` completed but disagreed with its own
-/// recording (`record::replay`'s own non-empty `Divergence` list) — a
-/// determinism finding, distinct from both an ordinary guest outcome
-/// (`0`/`1`) and a bare VMM failure (`EXIT_VMM_FAILURE`), so a caller
-/// checking `$? == 0` can never mistake a diverged replay for a
-/// successful one.
-const EXIT_REPLAY_DIVERGENCE: u8 = 3;
+use wrela_machine::vmm_process::{EXIT_REPLAY_DIVERGENCE, EXIT_VMM_FAILURE};
 
 fn usage() -> ! {
     eprintln!("usage: wrela-vmm <report> <img> [--record <path>] [--replay <path>]");
-    std::process::exit(EXIT_VMM_FAILURE as i32);
+    std::process::exit(EXIT_VMM_FAILURE);
 }
 
 fn main() -> ExitCode {
@@ -119,7 +106,7 @@ fn main() -> ExitCode {
     };
     if record_path.is_some() && replay_path.is_some() {
         eprintln!("wrela-vmm: --record and --replay are mutually exclusive");
-        return ExitCode::from(EXIT_VMM_FAILURE);
+        return ExitCode::from(EXIT_VMM_FAILURE as u8);
     }
     let report_path = PathBuf::from(report);
     let img_path = PathBuf::from(img);
@@ -129,7 +116,7 @@ fn main() -> ExitCode {
             Ok(t) => t,
             Err(e) => {
                 eprintln!("wrela-vmm: cannot read {}: {e}", replay_path.display());
-                return ExitCode::from(EXIT_VMM_FAILURE);
+                return ExitCode::from(EXIT_VMM_FAILURE as u8);
             }
         };
         let recorded = match wrela_vmm::record::RecordFile::parse(&text) {
@@ -139,7 +126,7 @@ fn main() -> ExitCode {
                     "wrela-vmm: malformed record file {}: {e}",
                     replay_path.display()
                 );
-                return ExitCode::from(EXIT_VMM_FAILURE);
+                return ExitCode::from(EXIT_VMM_FAILURE as u8);
             }
         };
         return match wrela_vmm::record::replay(&report_path, &img_path, &recorded) {
@@ -167,17 +154,26 @@ fn main() -> ExitCode {
                 }
                 // Fail-closed (verification's own finding, plans/M6.md item
                 // E): a caller must never see `$? == 0` on a diverged
-                // replay — `ExitCode::from(EXIT_REPLAY_DIVERGENCE)` is
+                // replay — `ExitCode::from(EXIT_REPLAY_DIVERGENCE as u8)` is
                 // returned here (never conflated with the ordinary `0`/`1`
                 // guest-outcome range or silently coerced to `SUCCESS` by
                 // any later refactor); the process-level contract is
                 // pinned by `tests::replay_divergence_and_record_failures_exit_nonzero_through_the_real_binary`
                 // (`lib.rs`) and `xtask`'s own `repro_replay_exit_code_contract`.
-                ExitCode::from(EXIT_REPLAY_DIVERGENCE)
+                ExitCode::from(EXIT_REPLAY_DIVERGENCE as u8)
             }
             Err(e) => {
                 eprintln!("wrela-vmm: {e}");
-                ExitCode::from(EXIT_VMM_FAILURE)
+                // Strict mid-boot choice-log aborts are determinism
+                // findings (`EXIT_REPLAY_DIVERGENCE`), not "boot never
+                // produced an answer" (`EXIT_VMM_FAILURE`) — module doc
+                // above; xtask's clock/admission/blk tamper oracles pin it.
+                match e {
+                    wrela_vmm::VmmError::ReplayDivergence(_) => {
+                        ExitCode::from(EXIT_REPLAY_DIVERGENCE as u8)
+                    }
+                    _ => ExitCode::from(EXIT_VMM_FAILURE as u8),
+                }
             }
         };
     }
@@ -194,13 +190,13 @@ fn main() -> ExitCode {
                 let recorded = wrela_vmm::record::RecordFile::from_outcome(&outcome);
                 if let Err(e) = std::fs::write(&record_path, recorded.to_text()) {
                     eprintln!("wrela-vmm: cannot write {}: {e}", record_path.display());
-                    return ExitCode::from(EXIT_VMM_FAILURE);
+                    return ExitCode::from(EXIT_VMM_FAILURE as u8);
                 }
             }
             use std::io::Write;
             let mut stdout = std::io::stdout();
             if stdout.write_all(&outcome.transcript).is_err() {
-                return ExitCode::from(EXIT_VMM_FAILURE);
+                return ExitCode::from(EXIT_VMM_FAILURE as u8);
             }
             // Guest-authored (module doc above): the guest's own reported
             // `machine_info::OFF_EXIT_CODE` value collapses to `0`/`1`
@@ -219,7 +215,7 @@ fn main() -> ExitCode {
         }
         Err(e) => {
             eprintln!("wrela-vmm: {e}");
-            ExitCode::from(EXIT_VMM_FAILURE)
+            ExitCode::from(EXIT_VMM_FAILURE as u8)
         }
     }
 }

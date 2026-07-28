@@ -128,8 +128,8 @@ pub const DESCRIPTORS_PER_BLK_OP: u16 = 3;
 /// "payload writes before publication, publication before doorbell";
 /// the sealed ops named there are `write_descriptors`,
 /// `publish_available`, `notify_queue`). plans/M7.md item E3 / decision
-/// 16: this slice is what `Inst::QueuePublish` carries into the mwir
-/// dump — the oracle that the order lives in `publish`, not in
+/// 16: normative order of the lowered `VirtQueue.publish` MemStore
+/// sequence — oracle that the order lives in `publish`, not in
 /// `prepare_block` (decision 15).
 pub const PUBLISH_WRITE_ORDER: &[&str] =
     &["write_descriptors", "publish_available", "notify_queue"];
@@ -177,8 +177,8 @@ pub const SLOT_META_EPOCH: u64 = 40;
 /// bytes at +52 are now unused padding, and `SLOT_META_BYTES` is
 /// unchanged, so no DMA pool layout moves and `verify_pool_windows` is
 /// untouched. Written by `codegen::emit_await_suspend`'s `Receipt` arm and
-/// zeroed on a fresh op; read (and cleared) by `codegen::emit_queue_drain`,
-/// which is the one place in `codegen.rs` that dereferences a `TurnId`.
+/// zeroed on a fresh op; read (and cleared) by lowered `VirtQueue.drain`
+/// (`TurnAddrFromId`), the one path that dereferences a `TurnId`.
 pub const SLOT_META_WAITER: u64 = 48;
 /// plans/M10.md item 0c3 (decision 565): where the drain writes this op's
 /// `IoCompletion` — two adjacent `u32`s in the one word it always
@@ -372,7 +372,7 @@ impl RecoverOutcome {
 }
 
 /// The whole of `VirtQueue.recover`'s decision, as one pure function
-/// (plans/M8.md item G / decision 17). `codegen::emit_queue_recover` emits
+/// (plans/M8.md item G / decision 17). `lower_queue::expand_recover` emits
 /// exactly this ladder; the unit tests below are its oracle.
 ///
 /// - **`Unknown`** — the stamped epoch is not the queue's live epoch
@@ -412,7 +412,7 @@ pub fn recover_outcome(
 }
 
 /// What `VirtQueue.reclaim` is allowed to do with the quarantined slot
-/// (plans/M8.md item F / decision 37). `codegen::emit_queue_reclaim`
+/// (plans/M8.md item F / decision 37). `lower_queue::expand_reclaim`
 /// emits this ladder, compare for compare.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReclaimGate {
@@ -524,7 +524,7 @@ mod tests {
 
     #[test]
     fn publish_write_order_is_descriptors_then_available_then_doorbell() {
-        // 03-hardware.md §3's normative order, pinned for Inst::QueuePublish.
+        // 03-hardware.md §3's normative order, pinned for publish lowering.
         assert_eq!(
             PUBLISH_WRITE_ORDER,
             &["write_descriptors", "publish_available", "notify_queue"]

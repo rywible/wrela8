@@ -1,5 +1,5 @@
 Program
-  Fn key=BlkDriver.init ret=Result[unit, BootError] temps=30 receiver=t0:mut params=[t1:take,t2:take]
+  Fn key=BlkDriver.init ret=Result[unit, BootError] temps=38 receiver=t0:mut params=[t1:take,t2:take]
     Temp t0 ty=BlkDriver
     Temp t1 ty=DeviceCap[VirtioBlock]
     Temp t2 ty=DmaPool[BlockControl, 512]
@@ -28,8 +28,16 @@ Program
     Temp t25 ty=RunningDevice[VirtioBlock]
     Temp t26 ty=VirtQueue[..8]
     Temp t27 ty=RunningDevice[VirtioBlock]
-    Temp t28 ty=unit
-    Temp t29 ty=Result[unit, BootError]
+    Temp t28 ty=u64
+    Temp t29 ty=u64
+    Temp t30 ty=u64
+    Temp t31 ty=u64
+    Temp t32 ty=u64
+    Temp t33 ty=bool
+    Temp t34 ty=u64
+    Temp t35 ty=u64
+    Temp t36 ty=unit
+    Temp t37 ty=Result[unit, BootError]
     Body
       0000: Copy dst=t3 src=t1
       0001: Copy dst=t4 src=t3
@@ -65,9 +73,22 @@ Program
       0031: SetField base=t0 index=1 value=t24
       0032: Project dst=t25 base=t0 index=1
       0033: Project dst=t26 base=t0 index=2
-      0034: DeviceReset dst=t27 device=t25 queue=t26
-      0035: SetField base=t0 index=1 value=t27
-      0036: ConstUnit dst=t28
-      0037: MakeEnum dst=t29 tag=0 payload=[t28]
-      0038: Return value=t29
-      0039: Return
+      0034: PtrOffset dst=t28 base=t26 offset=0xf8
+      0035: ConstInt dst=t29 ty=u64 value=134234112
+      0036: MemStore base=t29 offset=0x0 value=t28 width=8
+      0037: PtrOffset dst=t30 base=t26 offset=0xf0
+      0038: MemLoad dst=t31 base=t30 offset=0x0 width=8
+      0039: ConstInt dst=t32 ty=u64 value=-1
+      0040: Compare op=!= ty=u64 dst=t33 lhs=t31 rhs=t32
+      0041: JumpIfFalse cond=t33 target=0043
+      0042: Jump target=0044
+      0043: Abort message="driver fault: reset epoch exhausted (03-hardware.md §4: identities never wrap)"
+      0044: ConstInt dst=t34 ty=u64 value=1
+      0045: ArithWrapping op=+% ty=u64 dst=t35 lhs=t31 rhs=t34
+      0046: MemStore base=t30 offset=0x0 value=t35 width=8
+      0047: Copy dst=t27 src=t25
+      0048: SetField base=t0 index=1 value=t27
+      0049: ConstUnit dst=t36
+      0050: MakeEnum dst=t37 tag=0 payload=[t36]
+      0051: Return value=t37
+      0052: Return
