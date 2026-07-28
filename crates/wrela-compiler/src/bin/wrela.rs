@@ -630,13 +630,13 @@ fn build_report(
                                 }
                                 report::render_exact_bytes_section(&mut text, &layout_types)
                                     .map_err(|e| render_sema_error(&e))?;
-                                let img = match layout::try_layout_program(
+                                let img = match layout::try_layout_with_codegen(
                                     programs,
                                     &layout_ctx,
                                     &graph,
                                     modules,
                                 ) {
-                                    Ok(Some(image_layout)) => {
+                                    Ok(Some((image_layout, codegen))) => {
                                         // plans/M11.md item D: generate the
                                         // facts-only config from the live
                                         // RuntimeTables (post-stripe, with
@@ -657,6 +657,20 @@ fn build_report(
                                             );
                                         }
                                         layout::render_layout_section(&mut text, &image_layout);
+                                        // plans/M18.md item R: short Cost
+                                        // summary after layout (owners
+                                        // only). Same CodegenProgram layout
+                                        // already built — no second lower.
+                                        // Missing table fails the build.
+                                        report::append_cost_summary(&mut text, &codegen).map_err(
+                                            |e| {
+                                                if e.ends_with('\n') {
+                                                    format!("error[build]: {e}")
+                                                } else {
+                                                    format!("error[build]: {e}\n")
+                                                }
+                                            },
+                                        )?;
                                         // plans/M9.md item H: run registered
                                         // `@layout_assert` fns against a real
                                         // ImageReport after layout (04 §8).

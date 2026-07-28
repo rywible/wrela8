@@ -77,6 +77,10 @@
 //!    over-approximation is "declared in the closure" rather than an
 //!    invented reachability rule. Narrowing it belongs to the item that
 //!    makes `Mmio[L]` bind a layout to a device.
+//! 8c. **Cost summary** (plans/M18.md item R, 04 §6): after a successful
+//!    layout, `append_cost_summary` adds version/digest/total plus three
+//!    Owner lines. Scored from the same `CodegenProgram` layout built;
+//!    omitted when layout soft-fails (`Ok(None)`). Not Terms.
 //! 9. Registered layout asserts: recorded in the raw `--stage=image`
 //!    graph dump, then **run** after layout against a real stdlib
 //!    `ImageReport` value (`eval::layout_assert`, plans/M9.md item H).
@@ -143,6 +147,8 @@ use std::collections::BTreeMap;
 
 use wrela_machine::report as machine_report;
 
+use crate::codegen::CodegenProgram;
+use crate::cost::{self, CostReport};
 use crate::eval::image::{self, ImageDeclRef, ImageGraph, TypedProgramEnums};
 use crate::eval::quota;
 use crate::eval::value::Value;
@@ -556,6 +562,34 @@ pub fn render_exact_bytes_section(
     Ok(())
 }
 
+/// Append the short Cost summary (plans/M18.md item R / 04 §6): version,
+/// table digest, program total, and per-owner schedule totals. Owners
+/// only — no Fn lines, no Terms (those live on `--stage=cost`).
+///
+/// Loads `wrela-cost-v1` via [`cost::load_default`]; missing/malformed
+/// table → `Err` (fail closed). Caller scores the same `CodegenProgram`
+/// layout already produced (no second lower).
+pub fn append_cost_summary(out: &mut String, program: &CodegenProgram) -> Result<(), String> {
+    let table = cost::load_default()?;
+    let report = cost::score_program(program, &table)?;
+    out.push_str(&format_cost_summary(&report));
+    Ok(())
+}
+
+/// Format the owners-only Cost block (depth-1 under `ImageReport v0`).
+pub fn format_cost_summary(report: &CostReport) -> String {
+    let app = report.owner_totals.get("app").copied().unwrap_or(0);
+    let runtime = report.owner_totals.get("runtime").copied().unwrap_or(0);
+    let driver = report.owner_totals.get("driver").copied().unwrap_or(0);
+    format!(
+        "  Cost version={} digest={} total={}\n\
+           \x20   Owner name=app proxy_cycles={app}\n\
+           \x20   Owner name=runtime proxy_cycles={runtime}\n\
+           \x20   Owner name=driver proxy_cycles={driver}\n",
+        report.version, report.digest, report.total_proxy_cycles,
+    )
+}
+
 // --- the digest (plans/M4.md item D, decision 9): one hardcoded SHA-256
 // shared with the VMM via `wrela_machine::sha256` (06 §3 / §8). ---------
 
@@ -779,5 +813,70 @@ mod tests {
         let a = render(&inputs, &enums, &g, &PlacementTable::default()).unwrap();
         let b = render(&inputs, &enums, &g, &PlacementTable::default()).unwrap();
         assert_eq!(a, b);
+    }
+
+    /// plans/M18.md item R: short Cost summary is owners-only and always
+    /// names the three buckets (zeros ok).
+    #[test]
+    fn cost_summary_contains_version_and_owners() {
+        use crate::codegen::CodegenFn;
+        use crate::cost::rule::{CostRule, EmittedWord};
+        use std::collections::BTreeMap;
+
+        let mut fns = BTreeMap::new();
+        fns.insert(
+            "checked_add".to_string(),
+            CodegenFn {
+                frame_size: 0,
+                code: vec![EmittedWord::new(
+                    0,
+                    String::new(),
+                    CostRule::Alu,
+                    Some(1),
+                    &[0, 0],
+                )],
+                relocs: Vec::new(),
+            },
+        );
+        let program = CodegenProgram {
+            fns,
+            rodata: Vec::new(),
+        };
+        let mut out = String::from("ImageReport v0\n");
+        append_cost_summary(&mut out, &program).expect("default cost table");
+        assert!(
+            out.contains("Cost version=1"),
+            "missing Cost version line:\n{out}"
+        );
+        assert!(out.contains("Owner name=app proxy_cycles="));
+        assert!(out.contains("Owner name=runtime proxy_cycles="));
+        assert!(out.contains("Owner name=driver proxy_cycles="));
+        assert!(!out.contains("Term rule="));
+        assert!(!out.contains("Fn key="));
+    }
+
+    #[test]
+    fn format_cost_summary_aggregates_owners() {
+        use std::collections::BTreeMap;
+        let report = CostReport {
+            version: 1,
+            digest: "deadbeef".to_string(),
+            issue_width: 4,
+            total_proxy_cycles: 30,
+            owner_totals: BTreeMap::from([
+                ("app".to_string(), 10u64),
+                ("runtime".to_string(), 12u64),
+                ("driver".to_string(), 8u64),
+            ]),
+            fns: vec![],
+        };
+        let text = format_cost_summary(&report);
+        assert_eq!(
+            text,
+            "  Cost version=1 digest=deadbeef total=30\n\
+               \x20   Owner name=app proxy_cycles=10\n\
+               \x20   Owner name=runtime proxy_cycles=12\n\
+               \x20   Owner name=driver proxy_cycles=8\n"
+        );
     }
 }

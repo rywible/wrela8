@@ -3648,12 +3648,15 @@ pub(super) fn apply_resume_remaps(program: &mut CodegenProgram, wiring: &Runtime
     }
 }
 
-pub fn try_layout_program(
+/// Same as [`try_layout_program`], but also returns the `CodegenProgram`
+/// layout already built — so the image report can score proxy-cycles
+/// without a second lower (plans/M18.md item R).
+pub fn try_layout_with_codegen(
     programs: &BTreeMap<String, TypedProgram>,
     layout_ctx: &LayoutCtx,
     graph: &ImageGraph,
     modules: &BTreeMap<String, Module>,
-) -> Result<Option<ImageLayout>, String> {
+) -> Result<Option<(ImageLayout, CodegenProgram)>, String> {
     let empty_tests: &[String] = &[];
     let empty_async = BTreeSet::new();
     // Item W / fallible-`init` refusals must fail `wrela build` even when
@@ -3698,9 +3701,18 @@ pub fn try_layout_program(
     .and_then(|mut layout| {
         attach_blk_report(&mut layout, graph, &compiled.programs)?;
         layout.placed_statics = collect_placed_statics(&compiled.programs)?;
-        Ok(Some(layout))
+        Ok(Some((layout, compiled.program)))
     })
     .or_else(|e| Err(e.message))
+}
+
+pub fn try_layout_program(
+    programs: &BTreeMap<String, TypedProgram>,
+    layout_ctx: &LayoutCtx,
+    graph: &ImageGraph,
+    modules: &BTreeMap<String, Module>,
+) -> Result<Option<ImageLayout>, String> {
+    Ok(try_layout_with_codegen(programs, layout_ctx, graph, modules)?.map(|(layout, _)| layout))
 }
 
 /// Every `@placed` static across the build closure, name-sorted, with the
@@ -3755,7 +3767,18 @@ mod tests {
     fn fn_words(words: &[u32]) -> CodegenFn {
         CodegenFn {
             frame_size: 16,
-            code: words.iter().map(|w| crate::cost::EmittedWord::new(*w, String::new(), crate::cost::CostRule::Alu, None, &[])).collect(),
+            code: words
+                .iter()
+                .map(|w| {
+                    crate::cost::EmittedWord::new(
+                        *w,
+                        String::new(),
+                        crate::cost::CostRule::Alu,
+                        None,
+                        &[],
+                    )
+                })
+                .collect(),
             relocs: Vec::new(),
         }
     }
@@ -3903,7 +3926,19 @@ pub fn t():
             "__wrela_hand_asm_caller".into(),
             crate::codegen::CodegenFn {
                 frame_size: 16,
-                code: a.words.iter().map(|w| crate::cost::EmittedWord::new(*w, String::new(), crate::cost::CostRule::Alu, None, &[])).collect(),
+                code: a
+                    .words
+                    .iter()
+                    .map(|w| {
+                        crate::cost::EmittedWord::new(
+                            *w,
+                            String::new(),
+                            crate::cost::CostRule::Alu,
+                            None,
+                            &[],
+                        )
+                    })
+                    .collect(),
                 relocs: a.relocs,
             },
         );
@@ -5453,7 +5488,13 @@ fn two():
             "f".to_string(),
             crate::codegen::CodegenFn {
                 frame_size: 0,
-                code: vec![crate::cost::EmittedWord::new(encode::enc_ret(30), "ret".to_string(), crate::cost::CostRule::Branch, None, &[30])],
+                code: vec![crate::cost::EmittedWord::new(
+                    encode::enc_ret(30),
+                    "ret".to_string(),
+                    crate::cost::CostRule::Branch,
+                    None,
+                    &[30],
+                )],
                 relocs: Vec::new(),
             },
         );
