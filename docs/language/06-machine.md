@@ -117,29 +117,44 @@ the power story.
 
 ### Machine v1
 
-The complete, closed device set of machine v1 — each a virtio-family
-contract whose driver ships in the stdlib and whose model ships in the VMM:
+The complete, closed device set of machine v1. Every row is a **device**
+(VMM model + report/conformance, and record/replay where applicable).
+Only some devices earn a guest `@driver` ([03](03-hardware.md)); the
+rest expose a sealed thin guest surface. Say **virtio** only where the
+shipped contract is virtio. There are no other devices and no device
+hotplug in machine v1. A future device is an additive machine revision
+under [§10](#10-conformance).
 
-| Device | Contract |
-|---|---|
-| `blk` | virtio-blk, split ring, `Flush`, per-queue reset. |
-| `console` | virtio-console: serial streams, log capture in tests. |
-| `clock` | Paravirtual monotonic clock + wall reference; backs `now()`. |
-| `entropy` | virtio-rng, recorded under replay. |
-| `input` | virtio-input: keyboard, pointer, touch, tablet events. |
-| `display` | See §7 — framebuffer push, not a GPU. |
+The stdlib ships `@driver`s for queue devices under the reserved alias
+`drivers` ([02 §2.1](02-language.md#21-the-build-root)); thin
+devices use sealed language/runtime surfaces (`now()`, console ring
+helpers, and — when M17 lands — the entropy effect). Appliance authors
+typically do not write `@driver`s; the `@driver` machinery is how those
+stdlib queue drivers are themselves written and checked.
 
-There are no other devices and no device hotplug in machine v1. A future
-device is an additive machine revision under [§10](#10-conformance).
-Appliance authors do not write drivers; the `@driver` machinery
-([03](03-hardware.md)) is how the stdlib drivers are themselves written
-and checked.
+#### Thin device contracts (no `@driver`)
+
+| Device | Contract | Guest surface |
+|---|---|---|
+| `clock` | trapping monotonic MMIO (not virtio) | `now()` / `core.time` |
+| `console` | fixed console-ring + VMM drain (**not** virtio-console) | runtime / optional `core` helpers |
+| `entropy` | recorded entropy source (**not** virtio-rng); **lands M17** | sealed runtime effect (no `@driver`) |
+
+#### Queue device contracts (`@driver` in `stdlib/drivers/`)
+
+| Device | Contract | Guest surface |
+|---|---|---|
+| `blk` | **virtio-blk**, split ring, `Flush`, per-queue reset | `drivers.blk` |
+| `input` | pixels rung (queue/`@driver` when scheduled) | `drivers.*` |
+| `display` | See §7 — framebuffer push, not a GPU; pixels rung | `drivers.*` |
 
 ### Future revisions
 
 The following contracts are preserved as written for a future additive
 machine revision ([§10](#10-conformance)); they are **non-normative until
-revised** — outside machine-v1 conformance:
+revised** — outside machine-v1 conformance. When revised they are
+expected to be queue/`@driver`-class unless a later design says
+otherwise:
 
 | Device | Contract |
 |---|---|

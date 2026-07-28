@@ -675,7 +675,7 @@ note = """
 
 The scope of the gap, unchanged by the descheduling: 06 §7's whole section — framebuffers as blob resources the VMM scans out directly, the tile scatter-gather list a frame actor submits, one doorbell per flush, vsync on the frame vector — plus the sentence this clause is named for, "CI can assert golden-image digests through the VMM". Nothing of it exists: `wrela-vmm` models one device family (`blk`), and 06 §6's `display` and `input` contracts have no driver in `stdlib/` and no model in the VMM.
 
-Two consequences worth stating rather than leaving to be rediscovered. (1) 06 §10 names the golden-image display tests as part of the machine conformance suite, so **machine v1 is not conformant while this is a gap** — in the company of `input` (this clause) and, until M17 lands, `entropy` (thin recorded-source device; not a `@driver`; owner M17 after the 2026-07-28 ladder insert). `net`/`sound` are outside machine-v1 after M13 item D. (2) `hardware.dma.pool-reachability`'s symmetric half (a device refused access to another device's pool, observed *by* the second device) is a unit oracle only, and becomes a boot when any second device model exists — this one or another.
+Two consequences worth stating rather than leaving to be rediscovered. (1) 06 §10 names the golden-image display tests as part of the machine conformance suite, so **machine v1 is not conformant while this is a gap** — in the company of `input` (this clause) and, until M17 lands, `entropy` (thin recorded-source device; not a `@driver`; owner **M17** after the 2026-07-28 ladder insert). `net`/`sound` are outside machine-v1 after M13 item D. **Display and input stay on the pixels intention** (not M16–M19). (2) `hardware.dma.pool-reachability`'s symmetric half (a device refused access to another device's pool, observed *by* the second device) is a unit oracle only, and becomes a boot when any second device model exists — this one or another.
 
 Flips when a frame is actually computed in the guest, scanned out through a display model, and its digest pinned as a golden that replay reproduces.
 """
@@ -2414,3 +2414,23 @@ status = "gap"
 note = """05-library.md §3: `Completion[T]` is a sealed single-resolution awaitable resource. Only `IoCompletion[P]` exists today; the user-facing generic is unclaused without this row (2026-07-26 census survivor).
 
 **Disposition (plans/M13.md item E.4 / non-goals):** item R named the underlying single-resolution cell (`actors.resolution.one-cell`); shipping the user-facing type is consumer-gated. Flips to `test` when a consumer needs `Completion[T]` and a golden pins mint + single resolve."""
+
+# --- M16 item A: stdlib maturity ledger opens (decisions 1110–1116) --------
+
+[[clause]]
+id = "stdlib.drivers.package"
+doc = "02-language.md#2.1"
+status = "gap"
+note = """plans/M16.md item A / decisions 1110–1116: reserved alias `drivers` → `stdlib/drivers/` beside `core` (02 §2.1; stdlib layout). Package tree holds **only** `@driver` modules. Opened as gap; flips toward `test` as loader+path land (item B) and owned boot goldens import `drivers.blk` (item D)."""
+
+[[clause]]
+id = "stdlib.suite.comptime"
+doc = "02-language.md#12.2"
+status = "gap"
+note = """plans/M16.md item A: dual-tier in-wrela coverage — comptime `@test` / `@test(exhaustive)` under `stdlib/tests/` over pure `core`, wired into `cargo xtask check` as lane `stdlib-test` (fail closed if empty). Opened as gap; flips at items E/F."""
+
+[[clause]]
+id = "stdlib.drivers.blk-relocated"
+doc = "06-machine.md#6"
+status = "gap"
+note = """plans/M16.md item A: virtio-blk `@driver` body relocates from inlined golden sources into `stdlib/drivers/blk.wr` (`drivers.blk`). Opened as gap; flips at items C/D when owned boot goldens import and match their transcript pins."""

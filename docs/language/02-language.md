@@ -85,11 +85,11 @@ its file path; walking that agreement upward from the root file anchors
 the package root. The build's module graph is the transitive import
 closure of the root — exactly the graph [04 §1](04-compiler.md)'s Closure
 obligations are checked over; an unimported module is not part of the
-build. The toolchain's `core` package resolves under the reserved alias
-`core` with no declaration; revision 0.1 ships no other acquirable
-package, no lockfile, and no package acquisition. The image itself
-declares its name and target, comptime-checked, so no build fact lives
-outside the program.
+build. The toolchain's `core` and `drivers` packages resolve under the
+reserved aliases `core` and `drivers` with no declaration; revision
+0.1 ships no other acquirable packages, no lockfile, and no package
+acquisition. The image itself declares its name and target,
+comptime-checked, so no build fact lives outside the program.
 
 Revision 0.1 has no build configuration file of any kind: comptime
 quotas and reporting thresholds are language-defined constants, and
