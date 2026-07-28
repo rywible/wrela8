@@ -1374,9 +1374,8 @@ fn boot_image_core_inner(
     // guest halts.
     let transcript = drain_console(host_ram);
     // Decision 1065: evidence length is the sealed N, not CORE_SLOTS.
-    // Packing slots above N share the machine-info page with
-    // `OFF_TEST_LINE_BUF` (0x100) until a later layout move — reading
-    // them as marks would observe harness scratch, not bring-up.
+    // Marks pack 0x68..0x168; line buf lives at 0x218 — no overlap.
+    // Length N (not CORE_SLOTS) is the sealed bring-up count.
     let core_marks = (0..cores_declared)
         .map(|c| read_core_mark(host_ram, c))
         .collect::<Vec<u64>>();

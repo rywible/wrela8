@@ -8,14 +8,14 @@ ImageReport v0
   Quota max_exhaustive_cases=65536
   Input path=core/image_report.wr sha256=7abde3292fbefa4cd47b167ad19ed31ab9e08a7267f0dc3d40b1414b80b416bf
   Input path=examples/check_layout_assert_passes.wr sha256=9c5d86d2757cbb161e5438dca439af74d1f071c91d807ba95a67b5e48447207c
-  Input path=<generated> sha256=a1a05e137449e80a4206508c3dedb6a3cfd087435e477b2e2811ecf3cb802ba6
+  Input path=<generated> sha256=cb924b3d1378ef4edaa4382494f50d67b7af0fc551cd19dc198327f1ef0bce21
   Name value=layout-assert-ok
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Store
     Mailbox value=4
   OnFailure index=0 policy=Failure.Halt
   Placement id=actor#0 type=Store core=0 source=inferred work=0 work_source=unproved bytes=96 bytes_state=8 bytes_mailbox=88 bytes_pool=0
-  Layout name=MachineInfoPage kind=runtime endian=little size=536 padding=432
+  Layout name=MachineInfoPage kind=runtime endian=little size=536 padding=200
     Padding offset=0x0 size=40
     Field name=next_deadline type=u64 offset=0x28 size=8
     Field name=exit_code type=u64 offset=0x30 size=8
@@ -25,8 +25,8 @@ ImageReport v0
     Field name=ring_data_bump type=u64 offset=0x50 size=8
     Field name=ring_desc_bump type=u64 offset=0x58 size=8
     Field name=line_start type=u64 offset=0x60 size=8
-    Field name=core_marks type=[u64; VCPUS] offset=0x68 size=24
-    Padding offset=0x80 size=384
+    Field name=core_marks type=[u64; CORE_SLOTS] offset=0x68 size=256
+    Padding offset=0x168 size=152
     Field name=vector0_observed type=u64 offset=0x200 size=8
     Field name=abort_latch type=u64 offset=0x208 size=8
     Field name=test_next type=u64 offset=0x210 size=8
@@ -34,8 +34,8 @@ ImageReport v0
     Field name=now_ns type=u64 offset=0x0 size=8
   Layout name=ParkMmio kind=runtime endian=little size=8 padding=0
     Field name=word type=u64 offset=0x0 size=8
-  Layout name=PendingPage kind=runtime endian=little size=24 padding=0
-    Field name=words type=[u64; PENDING_WORD_COUNT] offset=0x0 size=24
+  Layout name=PendingPage kind=runtime endian=little size=256 padding=0
+    Field name=words type=[u64; CORE_SLOTS] offset=0x0 size=256
   Layout name=ConsoleRingPage kind=runtime endian=little size=6672 padding=2564
     Field name=desc_words type=[u64; DESC_WORD_COUNT] offset=0x0 size=4096
     Field name=avail_flags_idx type=u32 offset=0x1000 size=4
@@ -49,10 +49,10 @@ ImageReport v0
   Cores count=1
   CoreStack core=0 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=108388
-  Section name=rodata base=0x4051a7b8 size=455
-  Section name=abort base=0x4051a980 size=120
-  Section name=checkpoint base=0x4051a9f8 size=28
+  Section name=code base=0x40500050 size=108268
+  Section name=rodata base=0x4051a740 size=456
+  Section name=abort base=0x4051a908 size=120
+  Section name=checkpoint base=0x4051a980 size=28
   Section name=rtdata base=0x40540000 size=184
   Entry base=0x40500000
   PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
@@ -134,13 +134,13 @@ ImageReport v0
   PlacedStatic name=MB9_CTL type=MbCtl addr=0x4057fa38 size=24
   PlacedStatic name=MB9_DATA type=Mb9Data addr=0x4057fa18 size=8
   PlacedStatic name=PARK type=ParkMmio addr=0x8002000 size=8
-  PlacedStatic name=PENDING type=PendingPage addr=0x40007000 size=24
+  PlacedStatic name=PENDING type=PendingPage addr=0x40007000 size=256
   PlacedStatic name=RELEASE type=ParkMmio addr=0x8003000 size=8
   PlacedStatic name=RINGS_CTL type=RingsCtl addr=0x4057ffe0 size=24
   PlacedStatic name=RINGS_DATA type=RingsData addr=0x4057fff8 size=8
   PlacedStatic name=RT type=RuntimeTables addr=0x40540000 size=80
   PlacedStatic name=SCHED type=SchedStripe addr=0x405400a0 size=24
-  PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000100 size=21
+  PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000218 size=21
   PlacedStatic name=WAKE type=WakeTables addr=0x4057ffd8 size=8
   PlacedStatics count=80 fixed=CLOCK,CONSOLE_DATA,CONSOLE_RING,EXIT,GROUPS,MACHINE_INFO,MB0_CTL,MB0_DATA,MB10_CTL,MB10_DATA,MB11_CTL,MB11_DATA,MB12_CTL,MB12_DATA,MB13_CTL,MB13_DATA,MB14_CTL,MB14_DATA,MB15_CTL,MB15_DATA,MB16_CTL,MB16_DATA,MB17_CTL,MB17_DATA,MB18_CTL,MB18_DATA,MB19_CTL,MB19_DATA,MB1_CTL,MB1_DATA,MB20_CTL,MB20_DATA,MB21_CTL,MB21_DATA,MB22_CTL,MB22_DATA,MB23_CTL,MB23_DATA,MB24_CTL,MB24_DATA,MB25_CTL,MB25_DATA,MB26_CTL,MB26_DATA,MB27_CTL,MB27_DATA,MB28_CTL,MB28_DATA,MB29_CTL,MB29_DATA,MB2_CTL,MB2_DATA,MB30_CTL,MB30_DATA,MB31_CTL,MB31_DATA,MB3_CTL,MB3_DATA,MB4_CTL,MB4_DATA,MB5_CTL,MB5_DATA,MB6_CTL,MB6_DATA,MB7_CTL,MB7_DATA,MB8_CTL,MB8_DATA,MB9_CTL,MB9_DATA,PARK,PENDING,RELEASE,RINGS_CTL,RINGS_DATA,RT,SCHED,TEST_LINE_BUF,WAKE spans=1
   Actor name=Store mailbox=4 slot=16 frame=64 state=8

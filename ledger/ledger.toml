@@ -1713,7 +1713,7 @@ tests = [
   "golden/check-cores-stacks-high",
   "golden/check-placement-cores-2",
 ]
-note = """06-machine.md §1 / plans/M15.md item D (decisions 1040–1046): the report publishes sealed `Cores count=N` and per-core `CoreStack` lines (high-DRAM stacks via `core_stack_base_n`; `IMAGE_BASE` stays fixed; former low `Section name=stacks size=3145728` retired). Soft packing ceiling is `CORE_SLOTS`, not a published machine max. `wrela_machine` fixed core-count constant deleted (grep-clean in crates/). Stage-1 boot goldens under baton still land at item G; VMM create-N at item F."""
+note = """06-machine.md §1 / plans/M15.md item D (decisions 1040–1046): the report publishes sealed `Cores count=N` and per-core `CoreStack` lines (high-DRAM stacks via `core_stack_base_n`; `IMAGE_BASE` stays fixed; former low `Section name=stacks size=3145728` retired). Soft packing ceiling is `CORE_SLOTS`, not a published machine max. `wrela_machine` fixed core-count constant deleted (grep-clean in crates/). Layout packing (item F discovery): `OFF_TEST_LINE_BUF` moved 0x100 → 0x218 so `CORE_SLOTS=32` marks at 0x68..0x168 no longer overlap the harness scratch; `vector0_observed` stays @ 0x200. Stage-1 boot goldens under baton still land at item G; VMM create-N at item F."""
 
 [[clause]]
 id = "machine.vmm.host-cores-refuse"

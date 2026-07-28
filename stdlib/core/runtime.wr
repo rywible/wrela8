@@ -562,8 +562,10 @@ const LINE_BUF_SIZE: usize = 21
 struct TestLineBuf:
     bytes: [u8; LINE_BUF_SIZE]
 
-# MACHINE_INFO_BASE + OFF_TEST_LINE_BUF (0x40000000 + 0x100).
-@placed(0x40000100)
+# MACHINE_INFO_BASE + OFF_TEST_LINE_BUF (0x40000000 + 0x218).
+# After test_next @ 0x210 — CORE_SLOTS marks at 0x68 pack through 0x168
+# and must not overlap this scratch (plans/M15.md item F layout fix).
+@placed(0x40000218)
 static TEST_LINE_BUF: TestLineBuf
 
 fn ascii_digit(d: u64) -> u8:

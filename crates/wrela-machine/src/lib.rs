@@ -286,16 +286,17 @@ pub mod machine_info {
         core as u64 + 1
     }
 
-    /// Offset 0x100 (256), size 256 bytes: a scratch line buffer the
+    /// Offset 0x218 (536), size 256 bytes: a scratch line buffer the
     /// runtime harness composes a decimal integer's ASCII digits into
     /// (`__wrela_fmt_dec`, used by the summary line's pass/fail counts and
     /// by `__wrela_abort_val`'s own runtime-value interpolation) before
     /// handing the bytes to `__wrela_ring_write` — comfortably larger
     /// than any digit sequence a 64-bit value ever needs (at most 20
-    /// digits plus a sign). Placed well past every field above, this
-    /// page's own "remainder is unused padding, reserved for later
-    /// fields" convention (module doc, above).
-    pub const OFF_TEST_LINE_BUF: u64 = 0x100;
+    /// digits plus a sign). Placed after `OFF_SLOTMAP_NEXT_ID` (0x210+8)
+    /// so `CORE_SLOTS` core-mark words at 0x68 can pack through 0x168
+    /// without overlapping this scratch (plans/M15.md item F layout fix;
+    /// formerly 0x100, which collided once marks grew to 32).
+    pub const OFF_TEST_LINE_BUF: u64 = 0x218;
     pub const TEST_LINE_BUF_SIZE: u64 = 256;
 
     /// Offset 0x200 (512): plans/M6.md item E's own vector-observation
@@ -309,8 +310,9 @@ pub mod machine_info {
     /// line. Item F's real group-cancellation delivery is expected to grow
     /// this routine's body into real cancellation work; the counter itself
     /// may stay alongside it as a cheap observability hook, or retire —
-    /// either way this offset is reserved now, past `OFF_TEST_LINE_BUF`'s
-    /// own 256-byte scratch region, so nothing else needs to move.
+    /// either way this offset stays fixed so `CORE_SLOTS` marks (ending
+    /// at 0x168) and the post-`test_next` line-buf scratch do not force
+    /// a move.
     pub const OFF_VECTOR0_OBSERVED: u64 = 0x200;
 
     /// Offset 0x208 (520): plans/M10.md item B1 / decision 591 — one-word
@@ -896,21 +898,20 @@ mod tests {
         assert!(machine_info::OFF_RING_DATA_BUMP + 8 <= machine_info::OFF_RING_DESC_BUMP);
         assert!(machine_info::OFF_RING_DESC_BUMP + 8 <= machine_info::OFF_LINE_START);
         assert!(machine_info::OFF_LINE_START + 8 <= machine_info::OFF_CORE_MARK);
-        // CORE_SLOTS marks fit before vector0_observed; the legacy
-        // OFF_TEST_LINE_BUF scratch (0x100) sits inside that packing
-        // window and is unused once guest arrays grow to CORE_SLOTS (E).
-        assert!(
-            machine_info::OFF_CORE_MARK
-                + CORE_SLOTS as u64 * machine_info::CORE_MARK_STRIDE
-                <= machine_info::OFF_VECTOR0_OBSERVED
-        );
-        assert!(
-            machine_info::OFF_TEST_LINE_BUF + machine_info::TEST_LINE_BUF_SIZE
-                <= machine_info::OFF_VECTOR0_OBSERVED
-        );
+        // CORE_SLOTS marks end at 0x168 ≤ vector0_observed @ 0x200 (M15
+        // decision 3). Line buf sits after test_next @ 0x210+8 (= 0x218)
+        // so it no longer overlaps the mark packing window.
+        let marks_end = machine_info::OFF_CORE_MARK
+            + CORE_SLOTS as u64 * machine_info::CORE_MARK_STRIDE;
+        assert!(marks_end <= machine_info::OFF_VECTOR0_OBSERVED);
+        assert!(marks_end <= machine_info::OFF_TEST_LINE_BUF);
         assert!(machine_info::OFF_VECTOR0_OBSERVED + 8 <= machine_info::OFF_ABORT_LATCH);
         assert!(machine_info::OFF_ABORT_LATCH + 8 <= machine_info::OFF_SLOTMAP_NEXT_ID);
-        assert!(machine_info::OFF_SLOTMAP_NEXT_ID + 8 <= layout::MACHINE_INFO_SIZE);
+        assert!(machine_info::OFF_SLOTMAP_NEXT_ID + 8 <= machine_info::OFF_TEST_LINE_BUF);
+        assert!(
+            machine_info::OFF_TEST_LINE_BUF + machine_info::TEST_LINE_BUF_SIZE
+                <= layout::MACHINE_INFO_SIZE
+        );
     }
 
     /// plans/M8.md item C1: every core's own mark word is distinct, inside
