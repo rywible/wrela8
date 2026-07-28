@@ -3070,6 +3070,38 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
                 });
                 return Ok(dst);
             }
+            // Exact `Bytes[N]` is slot-per-byte (mwir::size_of / M17 layout
+            // fact). Literal index → Project slot `i` (no length prefix —
+            // unlike `String[..N]`). Needed by plans/M17.md item G's
+            // `b[0]..b[7]` touch on `entropy[8]()` results.
+            if let Type::Bytes(Some(n_expr)) = &base_ty {
+                let cap = eval_len_expr(n_expr)?;
+                let i = match &idx_expr.kind {
+                    TypedExprKind::Int(text) => {
+                        let raw = value::parse_int_literal(text)
+                            .ok_or_else(|| LowerError::internal("invalid integer literal text"))?;
+                        usize::try_from(raw)
+                            .map_err(|_| LowerError::internal("Bytes index out of range"))?
+                    }
+                    _ => {
+                        return Err(LowerError::unimplemented(
+                            "indexing `Bytes[N]` with a non-literal index is",
+                        ));
+                    }
+                };
+                if i >= cap {
+                    return Err(LowerError::internal(format!(
+                        "Bytes index {i} out of length {cap}"
+                    )));
+                }
+                let dst = b.fresh(expr.ty.clone());
+                b.emit(Inst::Project {
+                    dst,
+                    base: base_temp,
+                    index: i,
+                });
+                return Ok(dst);
+            }
             // plans/M9.md item C1: `String[..N][i]` with a literal index
             // projects slot `1+i` after a compile-time capacity check.
             // Dynamic indices (and occupied-length runtime checks beyond

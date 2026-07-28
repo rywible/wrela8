@@ -1,0 +1,41 @@
+module examples.boot_entropy
+
+# plans/M17.md item G / 05-library.md §5: entropy[N]() is a sealed
+# runtime fill. Sync actor method so entropy reaches MWIR Inst::Entropy
+# → EntropyRead (docs-win: sealed runtime effects lower from sync
+# bodies, not only FlowWir). Peer shape: boot-instant-monotonic.
+# Transcript pins a stable success line — never raw entropy bytes.
+
+@actor
+pub struct EntropyProbe:
+    pad: u64
+
+    pub fn sample(mut self) -> u64:
+        b = entropy[8]()
+        # Touch every index so the fill is observed; values stay private.
+        assert b[0] == b[0], "entropy:ok"
+        assert b[1] == b[1], "entropy:ok"
+        assert b[2] == b[2], "entropy:ok"
+        assert b[3] == b[3], "entropy:ok"
+        assert b[4] == b[4], "entropy:ok"
+        assert b[5] == b[5], "entropy:ok"
+        assert b[6] == b[6], "entropy:ok"
+        assert b[7] == b[7], "entropy:ok"
+        return 1
+
+@test(runtime)
+async fn entropy_ok(c: Actor[EntropyProbe]):
+    r = await c.sample()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
+    match r:
+        case .Ok(v):
+            assert v == 1, "sample returned 1"
+        case .Err(_):
+            assert false, "sample rejected"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="boot-entropy", target=Target.wrela_machine_v1)
+    c = img.actor(EntropyProbe, mailbox=8)
+    img.on_failure(policy=Failure.Halt)
+    return img.seal()

@@ -1,0 +1,6 @@
+Module path=examples.boot_entropy
+  Struct EntropyProbe resource
+    field pad: u64
+    fn sample(mut self) -> u64
+  AsyncFn entropy_ok(c: read Actor[EntropyProbe]) -> unit
+  Fn build() -> Image

@@ -2477,5 +2477,5 @@ note = """plans/M17.md item F / decisions 1270–1274: flipped. 05 §5 names `en
 id = "compiler.effects.sealed-runtime-sync"
 doc = "05-library.md#5"
 status = "test"
-tests = ["golden/boot-instant-monotonic", "golden/check-entropy-sync-mwir"]
-note = """plans/M17.md item Es / decisions 1260–1268: flipped. MWIR `Inst::Now`/`Inst::Entropy` lower from sync bodies; shared `emit_now`/`emit_entropy` with FlowWir. Sync `boot-instant-monotonic` Focused boot green (byte-identical transcript). Dump-only `check-entropy-sync-mwir` pins sync `entropy[8]()` MWIR/asm. Item G's sync `boot-entropy` may finish the runtime entropy witness cite."""
+tests = ["golden/boot-instant-monotonic", "golden/check-entropy-sync-mwir", "golden/boot-entropy"]
+note = """plans/M17.md item Es / decisions 1260–1268: flipped. MWIR `Inst::Now`/`Inst::Entropy` lower from sync bodies; shared `emit_now`/`emit_entropy` with FlowWir. Sync `boot-instant-monotonic` Focused boot green (byte-identical transcript). Dump-only `check-entropy-sync-mwir` pins sync `entropy[8]()` MWIR/asm. Item G: sync `boot-entropy` Focused boot green — `entropy[8]()` in a sync actor method, touches `b[0]..b[7]`, stable transcript (no raw entropy bytes)."""

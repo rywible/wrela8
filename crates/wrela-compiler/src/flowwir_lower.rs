@@ -2623,14 +2623,48 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
                 return Ok(dst);
             }
             let base_temp = lower_expr_flat(base, b, env)?;
+            let base_ty = bodies::unwrap_own(base.ty.clone());
             // plans/M10.md item B4: unbounded `Bytes` packed-byte index.
-            if matches!(bodies::unwrap_own(base.ty.clone()), Type::Bytes(None)) {
+            if matches!(base_ty, Type::Bytes(None)) {
                 let idx_temp = lower_expr_flat(idx_expr, b, env)?;
                 let dst = b.fresh(e.ty.clone());
                 b.emit_mwir(Inst::BytesIndexGet {
                     dst,
                     base: base_temp,
                     index: idx_temp,
+                });
+                return Ok(dst);
+            }
+            // Exact `Bytes[N]` slot-per-byte (M17 layout fact / item G).
+            // Literal index → Project slot `i`, same as sync `lower.rs`.
+            if let Type::Bytes(Some(n_expr)) = &base_ty {
+                let cap = bodies::literal_array_len(n_expr)
+                    .ok_or_else(|| FlowError::unimplemented("a non-literal Bytes length is"))?;
+                let cap = usize::try_from(cap)
+                    .map_err(|_| FlowError::internal("Bytes length out of range"))?;
+                let i = match &idx_expr.kind {
+                    TypedExprKind::Int(text) => {
+                        let raw = value::parse_int_literal(text)
+                            .ok_or_else(|| FlowError::internal("invalid integer literal text"))?;
+                        usize::try_from(raw)
+                            .map_err(|_| FlowError::internal("Bytes index out of range"))?
+                    }
+                    _ => {
+                        return Err(FlowError::unimplemented(
+                            "indexing `Bytes[N]` with a non-literal index is",
+                        ));
+                    }
+                };
+                if i >= cap {
+                    return Err(FlowError::internal(format!(
+                        "Bytes index {i} out of length {cap}"
+                    )));
+                }
+                let dst = b.fresh(e.ty.clone());
+                b.emit_mwir(Inst::Project {
+                    dst,
+                    base: base_temp,
+                    index: i,
                 });
                 return Ok(dst);
             }

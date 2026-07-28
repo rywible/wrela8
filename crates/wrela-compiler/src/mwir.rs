@@ -1271,6 +1271,18 @@ pub fn field_offset(
             }
             Ok((8 * index, 8))
         }
+        // Exact `Bytes[N]` is slot-per-byte (layout fact / M17): project
+        // index `i` is byte slot `i` — one SLOT each, no length prefix.
+        Type::Bytes(Some(n_expr)) => {
+            let n = crate::sema::bodies::literal_array_len(n_expr).ok_or_else(|| {
+                "a `Bytes[N]` length that is not a literal is not supported".to_string()
+            })?;
+            let n = usize::try_from(n).map_err(|_| "Bytes length out of range".to_string())?;
+            if index >= n {
+                return Err(format!("`Bytes[{n}]` project index {index} out of range"));
+            }
+            Ok((8 * index, 8))
+        }
         Type::Named(name, targs) => {
             // plans/M7.md item E4: `IoCompletion[P]` is a real aggregate
             // (payload + status + written_len), not a sealed one-word
