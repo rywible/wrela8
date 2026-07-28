@@ -3,16 +3,16 @@ module examples.boot_instant_monotonic
 # plans/M9.md item E / 05-library.md §5: Instant is opaque and monotonic.
 # now() lowers to the ClockRead MMIO trap; two successive reads must not
 # go backwards. Pins the value relationship, not a wall-clock absolute.
-# sample is async so `now()` reaches FlowWir's Now → ClockRead path
-# (sync actor bodies have no Now lowering; every prior now() site is a
-# group deadline inside an async fn).
+# plans/M17.md item Es: sample is a sync fn so `now()` reaches MWIR
+# Inst::Now → ClockRead (docs-win: sealed runtime effects lower from
+# sync bodies, not only FlowWir).
 
 @actor
 pub struct ClockProbe:
     first: u64
     second: u64
 
-    pub async fn sample(mut self) -> u64:
+    pub fn sample(mut self) -> u64:
         a = now()
         b = now()
         # Instant.less_than is the total order; equal ticks are fine.

@@ -850,8 +850,7 @@ struct Frame {
     /// plans/M17.md item E / freeze 5: packed scratch for `entropy[N]()` —
     /// contiguous `n` bytes the VMM fills, then expanded into the
     /// slot-per-byte `Bytes[N]` destination. `None` when the fn never
-    /// emits `FlowInst::Entropy` (sync MWIR `Inst::Entropy` will pass a
-    /// size through the same slot once Es lands).
+    /// emits `FlowInst::Entropy` / `Inst::Entropy`.
     entropy_scratch_off: Option<usize>,
     /// Reserved packed size at `entropy_scratch_off` (max `n` over Entropy
     /// ops in this fn).
@@ -2219,6 +2218,11 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
                 format!("str {}, [{}]", reg_name(X_B), reg_name(X_A)),
             );
         }
+        // plans/M17.md item Es / freeze 4: shared emitters with FlowWir.
+        Inst::Now { dst } => {
+            emit_now(*dst, ctx);
+        }
+        Inst::Entropy { dst, n } => emit_entropy(*dst, *n, ctx)?,
         Inst::SlotMapMint { map } => {
             emit_slotmap_mint_id(*map, ctx)?;
         }
@@ -4006,8 +4010,9 @@ fn emit_fn(
     layout: &LayoutCtx,
     rodata: &mut RodataPool,
 ) -> Result<CodegenFn, CodegenError> {
-    // A sync fn never awaits, so it never stages a reply (0).
-    let frame = build_frame(f, layout, 0, 0, 0)?;
+    // A sync fn never awaits, so it never stages a reply (0). Entropy
+    // scratch is reserved when the body emits `Inst::Entropy` (item Es).
+    let frame = build_frame(f, layout, 0, mwir_entropy_scratch_size(f), 0)?;
 
     let empty: [usize; 0] = [];
     let mut probe_pro = FnCtx {
@@ -4831,6 +4836,20 @@ fn flow_entropy_scratch_size(f: &FlowWirFn) -> usize {
         .unwrap_or(0)
 }
 
+/// plans/M17.md item Es / freeze 5: max packed scratch bytes across every
+/// sync MWIR `Inst::Entropy` in this fn (shared region; ops run one at a
+/// time). Parallel to `flow_entropy_scratch_size`.
+fn mwir_entropy_scratch_size(f: &MwirFn) -> usize {
+    f.body
+        .iter()
+        .filter_map(|op| match op {
+            Inst::Entropy { n, .. } => Some(*n as usize),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0)
+}
+
 /// plans/M7.md item Z1 (decision 9b): how many bytes this fn's own reply
 /// staging slot needs — the widest *declared* reply over its own
 /// `Await{ActorCall}` sites that is an aggregate, or 0 if it has none (by
@@ -5294,9 +5313,9 @@ fn emit_self_path(
 /// exit handler (item E) is what actually returns monotonic ns and logs
 /// the read (`machine.clock.trap-logged`), this fn only issues the load.
 ///
-/// Shared by FlowWir (`FlowInst::Now`) and — once plans/M17.md item Es
-/// lands — sync MWIR (`Inst::Now` via `emit_one`). Do not duplicate the
-/// load sequence at either call site.
+/// Shared by FlowWir (`FlowInst::Now`) and sync MWIR (`Inst::Now` via
+/// `emit_one`, plans/M17.md item Es). Do not duplicate the load sequence
+/// at either call site.
 fn emit_now(dst: Temp, ctx: &mut FnCtx) {
     ctx.load_imm(X_A, wrela_machine::mmio::CLOCK_MMIO_ADDR as i64);
     ctx.load_ptr(X_B, X_A, 0);
@@ -5309,9 +5328,9 @@ fn emit_now(dst: Temp, ctx: &mut FnCtx) {
 /// 3. Trapping store to `ENTROPY_MMIO_ADDR`.
 /// 4. Expand scratch bytes into `Bytes[N]` slot-per-byte `dst`.
 ///
-/// Shared by FlowWir (`FlowInst::Entropy`) and — once item Es lands —
-/// sync MWIR (`Inst::Entropy` via `emit_one`). Do not duplicate this
-/// sequence at either call site.
+/// Shared by FlowWir (`FlowInst::Entropy`) and sync MWIR (`Inst::Entropy`
+/// via `emit_one`, item Es). Do not duplicate this sequence at either
+/// call site.
 fn emit_entropy(dst: Temp, n: u64, ctx: &mut FnCtx) -> Result<(), CodegenError> {
     let scratch_off = ctx.frame.entropy_scratch_off.ok_or_else(|| {
         CodegenError::internal("entropy scratch not reserved in frame (codegen bug)")

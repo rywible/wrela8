@@ -2471,7 +2471,6 @@ note = """plans/M17.md item A / decisions 1214–1215: 05 §5 names `entropy[N](
 [[clause]]
 id = "compiler.effects.sealed-runtime-sync"
 doc = "05-library.md#5"
-status = "gap"
-note = """plans/M17.md item A / decisions 1216–1217: 05 §5 states sealed runtime effects (`now()`, `entropy[N]()`) are legal in any runtime body (sync or async) — only comptime/ISR refuse. Opened as `gap` for the sync MWIR docs-win.
-
-**Flip when** item Es lands MWIR `Now`/`Entropy` + sync `boot-instant-monotonic` + sync `boot-entropy`."""
+status = "test"
+tests = ["golden/boot-instant-monotonic", "golden/check-entropy-sync-mwir"]
+note = """plans/M17.md item Es / decisions 1260–1268: flipped. MWIR `Inst::Now`/`Inst::Entropy` lower from sync bodies; shared `emit_now`/`emit_entropy` with FlowWir. Sync `boot-instant-monotonic` Focused boot green (byte-identical transcript). Dump-only `check-entropy-sync-mwir` pins sync `entropy[8]()` MWIR/asm. Item G's sync `boot-entropy` may finish the runtime entropy witness cite."""

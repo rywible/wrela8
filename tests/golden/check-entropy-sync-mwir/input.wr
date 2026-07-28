@@ -1,0 +1,8 @@
+module examples.check_entropy_sync_mwir
+
+# plans/M17.md item Es: sync MWIR floor for `entropy[N]()`. Dump-only
+# (no HVF) — proves Intrinsic entropy lowers to Inst::Entropy and the
+# shared emit_entropy trap sequence, not FlowWir-only.
+
+pub fn take_entropy() -> Bytes[8]:
+    return entropy[8]()

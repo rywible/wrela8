@@ -1,0 +1,7 @@
+Program
+  Fn key=take_entropy ret=Bytes[8] temps=1
+    Temp t0 ty=Bytes[8]
+    Body
+      0000: Entropy dst=t0 n=8
+      0001: Return value=t0
+      0002: Return

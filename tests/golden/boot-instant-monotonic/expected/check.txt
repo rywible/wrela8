@@ -2,6 +2,6 @@ Module path=examples.boot_instant_monotonic
   Struct ClockProbe resource
     field first: u64
     field second: u64
-    async fn sample(mut self) -> u64
+    fn sample(mut self) -> u64
   AsyncFn monotonic(c: read Actor[ClockProbe]) -> unit
   Fn build() -> Image

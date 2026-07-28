@@ -3989,6 +3989,26 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
             b.emit(Inst::ConstUnit { dst });
             Ok(dst)
         }
+        // plans/M17.md item Es / freeze 4: sealed runtime effects lower
+        // from sync bodies (docs-win for 05 §5). Parallel to FlowWir's
+        // `now`/`entropy` arms; must not fall into the `@image` catch-all.
+        TypedExprKind::Intrinsic { key, .. } if key.as_str() == "now" => {
+            let dst = b.fresh(expr.ty.clone());
+            b.emit(Inst::Now { dst });
+            Ok(dst)
+        }
+        TypedExprKind::Intrinsic {
+            key,
+            const_arg,
+            ..
+        } if key.as_str() == "entropy" => {
+            let n = const_arg.ok_or_else(|| {
+                LowerError::internal("`entropy` Intrinsic missing const_arg (sema bug)".to_string())
+            })?;
+            let dst = b.fresh(expr.ty.clone());
+            b.emit(Inst::Entropy { dst, n });
+            Ok(dst)
+        }
         TypedExprKind::Intrinsic { .. } => Err(LowerError::unimplemented(
             "an `@image` builder intrinsic (reachable only inside the one `@image` fn, which is never lowered) is",
         )),
@@ -5086,6 +5106,37 @@ pub fn add_one(x: u64) -> u64:
                 .any(|i| matches!(i, Inst::ArithChecked { .. }))
         );
         assert!(matches!(f.body.last(), Some(Inst::Return { .. })));
+    }
+
+    /// plans/M17.md item Es: sync MWIR lowers `now()` / `entropy[N]()`
+    /// rather than falling into the `@image` builder catch-all.
+    #[test]
+    fn lowers_now_and_entropy_intrinsics() {
+        let program = typed_program(
+            "module examples.lower_sealed_runtime
+
+pub fn tick() -> Instant:
+    return now()
+
+pub fn bits() -> Bytes[8]:
+    return entropy[8]()
+",
+        );
+        let mwir = lower_program(&program).expect("must lower cleanly");
+        let tick = mwir.fns.get("tick").expect("tick lowered");
+        assert!(
+            tick.body.iter().any(|i| matches!(i, Inst::Now { .. })),
+            "tick body must emit Inst::Now: {:?}",
+            tick.body
+        );
+        let bits = mwir.fns.get("bits").expect("bits lowered");
+        assert!(
+            bits.body
+                .iter()
+                .any(|i| matches!(i, Inst::Entropy { n: 8, .. })),
+            "bits body must emit Inst::Entropy n=8: {:?}",
+            bits.body
+        );
     }
 
     #[test]

@@ -656,6 +656,21 @@ pub enum Inst {
         driver: String,
     },
 
+    /// `now()` (plans/M17.md item Es / freeze 4): sealed runtime clock
+    /// read — non-suspending. Parallel to `flowwir::FlowInst::Now`;
+    /// codegen calls the shared `emit_now` helper.
+    Now {
+        dst: Temp,
+    },
+    /// `entropy[N]()` (plans/M17.md item Es / freeze 4): sealed runtime
+    /// entropy fill — non-suspending. `n` is the comptime length
+    /// (`1..=ENTROPY_LEN_MAX`); parallel to `flowwir::FlowInst::Entropy`.
+    /// Codegen calls the shared `emit_entropy` helper.
+    Entropy {
+        dst: Temp,
+        n: u64,
+    },
+
     /// 05-library.md §7: mint a fresh non-wrapping `SlotMap` instance id
     /// into field 0 (`map_id`) of `map`. Emitted from lower at every
     /// `SlotMap` construction site (after `init`), never recognized by
@@ -1713,6 +1728,8 @@ pub(crate) fn fmt_inst(inst: &Inst) -> String {
         ),
         Inst::Dmb { option } => format!("Dmb option={option}"),
         Inst::Wake { driver } => format!("Wake driver={driver}"),
+        Inst::Now { dst } => format!("Now dst={dst}"),
+        Inst::Entropy { dst, n } => format!("Entropy dst={dst} n={n}"),
         Inst::SlotMapMint { map } => format!("SlotMapMint map={map}"),
         Inst::MakeAggregate { dst, elems } => {
             format!("MakeAggregate dst={dst} elems=[{}]", join_temps(elems))
