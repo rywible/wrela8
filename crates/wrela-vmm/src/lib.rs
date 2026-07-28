@@ -279,7 +279,9 @@ mod boot;
 mod exit_loop;
 
 pub use boot::boot_image;
-pub(crate) use boot::{boot_image_core, host_cores_refuse};
+pub(crate) use boot::boot_image_core;
+#[cfg(test)]
+pub(crate) use boot::host_cores_refuse;
 #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
 pub(crate) use boot::{
     boot_image_core_with_delayed_raise, core_sp_tops_from_report,
