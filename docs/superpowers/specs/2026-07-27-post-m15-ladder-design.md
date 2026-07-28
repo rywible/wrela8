@@ -1,10 +1,11 @@
 # Post-M15 ladder: stdlib maturity, entropy, perf deferred
 
-**Status:** design approved 2026-07-27; **activated 2026-07-28** as
-[plans/M16.md](../../../plans/M16.md) (stdlib maturity). M17 (entropy)
-remains unactivated — no `plans/M17.md` until that rung activates. ROADMAP
-ladder: M16 stdlib maturity → M17 entropy → M18 cycle proxy → M19 opt
-shelf → pixels (intention).
+**Status:** design approved 2026-07-27; **M16 COMPLETE**
+([plans/M16.md](../../../plans/M16.md), stdlib maturity);
+**M17 activated 2026-07-28** as
+[plans/M17.md](../../../plans/M17.md) (entropy). ROADMAP ladder: M16
+stdlib maturity → M17 entropy → M18 cycle proxy → M19 opt shelf →
+pixels (intention).
 
 **Context (historical):** at design time M15 was ACTIVE and ROADMAP placed
 the cycle proxy at M16 / playground at M17. This design inserted two rungs
@@ -88,14 +89,14 @@ virtio or not.
 ## Ladder
 
 ```text
-M15 (COMPLETE) → M16 Stdlib maturity (ACTIVE) → M17 Entropy
+M15 (COMPLETE) → M16 Stdlib maturity (COMPLETE) → M17 Entropy (ACTIVE)
                → M18 Cycle proxy → M19 Opt shelf
                → pixels (intention)
 ```
 
 ROADMAP and ledger owner strings that said M16/M17 for proxy/shelf were
-renumbered to M18/M19 at M16 activation. `plans/M17.md` is still written
-only when that rung activates.
+renumbered to M18/M19 at M16 activation. `plans/M17.md` activated
+2026-07-28 (freezes 1–12 / decisions 1200–1209).
 
 ### M16 — Stdlib maturity
 
@@ -237,13 +238,15 @@ needed.
 
 These are deliberately plan-time, not design-time:
 
-- Exact entropy effect name and lowering (MMIO address vs other small path).
+- Exact entropy effect name and lowering — **frozen in M17**
+  ([plans/M17.md](../../../plans/M17.md); freezes 1–12).
 - Exact `xtask` lane name and stdlib test discovery root.
 - Whether console floor gains small `core` helpers in M16 or stays
   runtime-only.
 - Whether M16 re-pins any blk transcript (ledger cite) vs byte-identical
   move.
-- At M17 activation: confirm entropy still warrants its own rung vs fold.
+- ~~At M17 activation: confirm entropy still warrants its own rung vs fold.~~
+  **Closed at M17 activation:** own rung confirmed.
 
 ## Success
 
