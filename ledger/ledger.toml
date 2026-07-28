@@ -661,7 +661,9 @@ doc = "04-compiler.md#5"
 status = "gap"
 note = """plans/M19.md item A / decisions 1410–1411: 04 §5 requires semantics independent of mode — both `dev` and `release` stay correct under ordinary oracles (`diff-eval`, goldens, validate). Opened as `gap`.
 
-**Flip when** item G proves the chosen semantic oracle green under both modes (or documents that the default path already covers one and adds an explicit `dev` pass)."""
+**Wired (item G / decisions 1470–1473):** dedicated dual-mode unit `opts::correct::tests::dev_and_release_agree_on_semantic_test_slice` (helper `assert_dev_release_agree_on_test_slice`) on representative goldens `check-tests-arith` + `check-tests-program` — eval `@test` reports must agree under `dev`/`release` and match `expected/test.txt`; both modes must lower+codegen with `emit_comptime_tests`. Not a doubled full `diff-eval` (decision 1470); `diff-eval` already uses product-default `release`. Status stays `gap` until item L flips.
+
+**Flip when** item L cites `opts::correct::tests::dev_and_release_agree_on_semantic_test_slice` (and helper) as `test`."""
 
 [[clause]]
 id = "compiler.bench.compiler-lane-locked"

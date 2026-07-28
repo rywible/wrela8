@@ -7,6 +7,7 @@
 //! `const` slice — not a plugin registry (freeze 1402 / 1406). Edit +
 //! re-rank here; nowhere else.
 
+pub mod correct;
 pub mod win;
 
 /// Compile mode: `Dev` leaves opts off; `Release` runs `RELEASE_OPTS`
