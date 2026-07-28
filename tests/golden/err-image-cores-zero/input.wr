@@ -1,0 +1,9 @@
+module examples.err_image_cores_zero
+
+# plans/M15.md item B / image.cores.authoring: `cores=` must be ≥ 1.
+
+@image
+pub fn build() -> Image:
+    img = Image(name="cores-zero", target=Target.wrela_machine_v1, cores=0)
+    img.on_failure(policy=Failure.Halt)
+    return img.seal()

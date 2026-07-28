@@ -1,0 +1,21 @@
+module examples.err_image_cores_above_slots
+
+# plans/M15.md item B / image.cores.authoring: seal refuses N > CORE_SLOTS
+# (soft page-packing ceiling; not "the machine has 32 cores").
+
+@actor
+pub struct Store:
+    count: u32
+
+    init(mut self):
+        self.count = 0
+
+    pub fn get(read self) -> u32:
+        return self.count
+
+@image
+pub fn build() -> Image:
+    img = Image(name="cores-above-slots", target=Target.wrela_machine_v1, cores=33)
+    store = img.actor(Store, mailbox=4)
+    img.on_failure(policy=Failure.Halt)
+    return img.seal()

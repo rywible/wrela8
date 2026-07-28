@@ -1,0 +1,1 @@
+error[build]: `Image(..., cores=33)` exceeds CORE_SLOTS (32) — soft page-packing ceiling, not a published machine maximum

@@ -1,0 +1,2 @@
+error[comptime]: `Image(..., cores=0)` — cores must be a comptime usize ≥ 1 (05-library.md §9)
+  while evaluating `build`

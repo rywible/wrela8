@@ -1,0 +1,20 @@
+module examples.check_image_cores_explicit
+
+# plans/M15.md item B / image.cores.authoring: explicit `cores=2` seals N=2.
+
+@actor
+pub struct Store:
+    count: u32
+
+    init(mut self):
+        self.count = 0
+
+    pub fn get(read self) -> u32:
+        return self.count
+
+@image
+pub fn build() -> Image:
+    img = Image(name="cores-explicit", target=Target.wrela_machine_v1, cores=2)
+    store = img.actor(Store, mailbox=4)
+    img.on_failure(policy=Failure.Halt)
+    return img.seal()

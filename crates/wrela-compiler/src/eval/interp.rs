@@ -2122,8 +2122,12 @@ fn eval_intrinsic<'a, 'p>(
 
     match key {
         "Image" => {
+            // plans/M15.md item B / 05-library.md §9: `Image(name, target,
+            // cores=N?)` — optional comptime usize ≥ 1 (default 1); unknown
+            // labels are a comptime error (close the silent-drop hole).
             let mut name_v = None;
             let mut target_v = None;
+            let mut cores: Option<usize> = None;
             for (label, a) in args {
                 let v = eval_expr(a, env, dstack, loop_marker, ctx)?;
                 match label.as_str() {
@@ -2139,7 +2143,32 @@ fn eval_intrinsic<'a, 'p>(
                             value: v,
                         })
                     }
-                    _ => {}
+                    "cores" => {
+                        let Some(n) = value::as_i128(&v) else {
+                            return Err(ctx.abandon(
+                                "`Image(..., cores=...)` requires a comptime usize \
+                                 (05-library.md §9)",
+                            ));
+                        };
+                        if n < 1 {
+                            return Err(ctx.abandon(format!(
+                                "`Image(..., cores={n})` — cores must be a comptime usize ≥ 1 \
+                                 (05-library.md §9)"
+                            )));
+                        }
+                        let Ok(n) = usize::try_from(n) else {
+                            return Err(ctx.abandon(format!(
+                                "`Image(..., cores={n})` does not fit a host `usize`"
+                            )));
+                        };
+                        cores = Some(n);
+                    }
+                    other => {
+                        return Err(ctx.abandon(format!(
+                            "`Image(...)` has no `{other}=` argument (05-library.md §9 spells it \
+                             `Image(name=..., target=..., cores=N?)`)"
+                        )));
+                    }
                 }
             }
             let (Some(name_v), Some(target_v)) = (name_v, target_v) else {
@@ -2148,7 +2177,11 @@ fn eval_intrinsic<'a, 'p>(
             if ctx.image.is_some() {
                 return Err(ctx.abandon("`Image(...)` was already called once in this evaluation"));
             }
-            ctx.image = Some(ImageGraph::new(name_v, target_v));
+            let mut g = ImageGraph::new(name_v, target_v);
+            if let Some(n) = cores {
+                g.cores = n;
+            }
+            ctx.image = Some(g);
             Ok(Value::Unit)
         }
         "Image.device" | "Image.driver" | "Image.actor" | "Image.pool" | "Image.dma_pool" => {

@@ -1692,9 +1692,15 @@ note = "plans/M8.md item A / ROADMAP M8 (2026-07-24 human decision): the machine
 [[clause]]
 id = "image.cores.authoring"
 doc = "05-library.md#9"
-status = "gap"
-tests = []
-note = """05-library.md §9 / plans/M15.md item A (decisions 1010–1014): `Image(name=..., target=..., cores=N?)` — optional comptime `usize` N ≥ 1, default 1; unknown `Image(...)` labels are a build error; N is a sealed image fact, not a machine revision. Flip at items B/G when authoring + goldens land."""
+status = "test"
+tests = [
+  "golden/check-image-cores-default",
+  "golden/check-image-cores-explicit",
+  "golden/err-image-cores-zero",
+  "golden/err-image-cores-unknown-label",
+  "golden/err-image-cores-above-slots",
+]
+note = """05-library.md §9 / plans/M15.md item B (decisions 1020–1025): `Image(name=..., target=..., cores=N?)` — optional comptime `usize` N ≥ 1, default 1; unknown `Image(...)` labels are a comptime error (silent-drop closed); seal refuses N > CORE_SLOTS with a packing-ceiling diagnostic. ImageGraph.cores always set. Stage-1 boot goldens under baton still land at item G."""
 
 [[clause]]
 id = "image.report.cores-and-stacks"

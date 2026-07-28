@@ -71,6 +71,29 @@ fn build_error(message: String) -> SemaError {
     }
 }
 
+/// 05-library.md §9 / plans/M15.md item B: sealed `Image(..., cores=N)`
+/// must satisfy `1 ≤ N ≤ CORE_SLOTS`. `CORE_SLOTS` is a soft page-packing
+/// ceiling (machine-info / pending arrays), not a published machine max —
+/// the diagnostic names the constant the same way layout names
+/// `RTDATA_SIZE_MAX`.
+fn check_cores(graph: &ImageGraph) -> Result<(), SemaError> {
+    if graph.cores < 1 {
+        return Err(build_error(format!(
+            "`Image` sealed with cores={} — cores must be a comptime usize ≥ 1 (05-library.md §9)",
+            graph.cores
+        )));
+    }
+    if graph.cores > wrela_machine::CORE_SLOTS {
+        return Err(build_error(format!(
+            "`Image(..., cores={})` exceeds CORE_SLOTS ({}) — soft page-packing ceiling, not a \
+             published machine maximum",
+            graph.cores,
+            wrela_machine::CORE_SLOTS
+        )));
+    }
+    Ok(())
+}
+
 fn build_error_with_lines(message: String, extra_lines: Vec<String>) -> SemaError {
     SemaError {
         category: "build",
@@ -96,6 +119,9 @@ pub fn check_sealed(
     owner: &TypedProgram,
     programs: &BTreeMap<String, TypedProgram>,
 ) -> Result<(), SemaError> {
+    // plans/M15.md item B / 05-library.md §9: cores ≥ 1 and ≤ CORE_SLOTS
+    // (soft page-packing ceiling — same spirit as RTDATA_SIZE_MAX).
+    check_cores(graph)?;
     check_construction_dag(graph)?;
     // plans/M7.md item D self-audit finding: this used to be handed the
     // `@image` fn's *own module's* declared pools only, while
@@ -2631,6 +2657,42 @@ mod tests {
             ty,
             value,
         }
+    }
+
+    // --- cores (plans/M15.md item B) --------------------------------------
+
+    #[test]
+    fn cores_default_passes_seal_bounds() {
+        let g = ImageGraph::default();
+        assert_eq!(g.cores, 1);
+        assert!(check_cores(&g).is_ok());
+    }
+
+    #[test]
+    fn cores_above_slots_names_the_packing_ceiling() {
+        let mut g = ImageGraph::default();
+        g.cores = wrela_machine::CORE_SLOTS + 1;
+        let err = check_cores(&g).expect_err("N > CORE_SLOTS must fail");
+        assert_eq!(err.category, "build");
+        assert!(err.message.contains("CORE_SLOTS"), "{}", err.message);
+        assert!(
+            err.message.contains("soft page-packing ceiling"),
+            "{}",
+            err.message
+        );
+        assert!(
+            !err.message.contains("machine has"),
+            "must not claim a published machine max: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn cores_zero_is_rejected_at_seal() {
+        let mut g = ImageGraph::default();
+        g.cores = 0;
+        let err = check_cores(&g).expect_err("cores=0 must fail at seal");
+        assert!(err.message.contains("≥ 1") || err.message.contains(">= 1"), "{}", err.message);
     }
 
     // --- construction DAG -------------------------------------------------

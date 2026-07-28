@@ -131,10 +131,13 @@ pub struct LayoutAssertDecl {
 /// keyed exactly like `pools` and disjoint from it — 05-library.md §9's
 /// "bind the previously unbound pool name `P` exactly once" is one rule
 /// over one name space, not two (`bind_pool_name`, below).
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ImageGraph {
     pub name: Option<TypedValue>,
     pub target: Option<TypedValue>,
+    /// Sealed image core count (`Image(..., cores=N?)`; default 1).
+    /// Always set — never an optional hole (plans/M15.md item B).
+    pub cores: usize,
     pub devices: Vec<DeviceDecl>,
     pub drivers: Vec<DriverDecl>,
     pub actors: Vec<ActorDecl>,
@@ -143,6 +146,24 @@ pub struct ImageGraph {
     pub on_failures: Vec<OnFailureDecl>,
     pub layout_asserts: Vec<LayoutAssertDecl>,
     pub sealed: bool,
+}
+
+impl Default for ImageGraph {
+    fn default() -> ImageGraph {
+        ImageGraph {
+            name: None,
+            target: None,
+            cores: 1,
+            devices: Vec::new(),
+            drivers: Vec::new(),
+            actors: Vec::new(),
+            pools: BTreeMap::new(),
+            dma_pools: BTreeMap::new(),
+            on_failures: Vec::new(),
+            layout_asserts: Vec::new(),
+            sealed: false,
+        }
+    }
 }
 
 impl ImageGraph {
@@ -423,6 +444,8 @@ pub fn dump(enums: &BTreeMap<String, Vec<String>>, graph: &ImageGraph) -> String
             ),
         );
     }
+    // Always present: `ImageGraph.cores` defaults to 1 (05 §9 / M15 item B).
+    push_line(&mut out, 1, &format!("Cores count={}", graph.cores));
     for (i, d) in graph.devices.iter().enumerate() {
         push_line(
             &mut out,
@@ -633,6 +656,26 @@ mod tests {
         let g = ImageGraph::default();
         let enums = BTreeMap::new();
         let text = dump(&enums, &g);
-        assert_eq!(text, "ImageGraph v0\n  Sealed value=false\n");
+        assert_eq!(
+            text,
+            "ImageGraph v0\n  Cores count=1\n  Sealed value=false\n"
+        );
+    }
+
+    #[test]
+    fn cores_default_is_one() {
+        let g = ImageGraph::default();
+        assert_eq!(g.cores, 1);
+        let g2 = ImageGraph::new(
+            tv(
+                Type::Static(Box::new(Type::Str)),
+                Value::Str(b"img".to_vec()),
+            ),
+            tv(
+                Type::Named("Target".to_string(), vec![]),
+                Value::Enum(0, vec![]),
+            ),
+        );
+        assert_eq!(g2.cores, 1);
     }
 }

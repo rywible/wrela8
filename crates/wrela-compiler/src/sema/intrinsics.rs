@@ -74,8 +74,8 @@
 /// one reachable `@image` fn — and the test below asserts that equality
 /// in both directions.
 pub const IMAGE_BUILDER_SURFACE: &[&str] = &[
-    // `Image(name, target)` — the one builder intrinsic called by bare
-    // name; produces the resource builder.
+    // `Image(name, target, cores=N?)` — the one builder intrinsic called by
+    // bare name; produces the resource builder (optional cores defaults to 1).
     "Image",
     // `img.device[D](transport=..., required_features=...)`
     "Image.device",

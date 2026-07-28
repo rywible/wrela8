@@ -35,6 +35,13 @@ pub const MACHINE_REVISION_STR: &str = "wrela-machine-v1";
 /// (ROADMAP M8 / 06 §1: `vCPUs = flagship core count − 1 housekeeping core`).
 pub const VCPUS: usize = 3;
 
+/// Soft page-packing ceiling for sealed `Image(..., cores=N)` (06 §1 /
+/// plans/M15.md). Not a published machine maximum — seal refuses
+/// `N > CORE_SLOTS` the same way layout refuses an oversize rtdata against
+/// `RTDATA_SIZE_MAX`. Item D deletes `VCPUS`; until then both constants
+/// coexist.
+pub const CORE_SLOTS: usize = 32;
+
 /// Guest-physical memory layout (06-machine.md §2). Flagship profile: one
 /// fixed layout, published here per machine revision, that the compiler's
 /// emission and the VMM's boot both consume — no discovery, no negotiation
@@ -756,6 +763,15 @@ mod tests {
         assert!(layout::IMAGE_BASE < dram_end);
         // Sanity: there is a real image budget left, not a sliver.
         assert!(dram_end - layout::IMAGE_BASE > 512 * (1 << 20));
+    }
+
+    #[test]
+    fn core_slots_is_the_soft_packing_ceiling() {
+        // plans/M15.md item B: soft page-packing ceiling, not a published
+        // machine max. Fits machine-info core_marks before vector0_observed
+        // @ 0x200: OFF_CORE_MARK (0x68) + 32*8 = 0x168.
+        assert_eq!(crate::CORE_SLOTS, 32);
+        assert!(crate::CORE_SLOTS > crate::VCPUS);
     }
 
     #[test]

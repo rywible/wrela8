@@ -1,0 +1,9 @@
+ImageGraph v0
+  Name value=cores-explicit
+  Target value=Target.wrela_machine_v1
+  Cores count=2
+  Actor index=0 type=Store
+    Arg label=mailbox value=4
+  OnFailure index=0
+    Arg label=policy value=Failure.Halt
+  Sealed value=true

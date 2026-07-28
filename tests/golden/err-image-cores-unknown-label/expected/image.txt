@@ -1,0 +1,2 @@
+error[comptime]: `Image(...)` has no `foo=` argument (05-library.md §9 spells it `Image(name=..., target=..., cores=N?)`)
+  while evaluating `build`
