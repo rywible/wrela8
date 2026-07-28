@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/boot_device_bringup.wr sha256=524081e2808ff209502d1bb150abb7c68d21de2c8c0dbd85305ff1fe16f3e1a8
+  Input path=examples/boot_device_bringup.wr sha256=f0fd7c597349a3e3189f51c9d68643f9fbb33a3266957602c2e83621d3fad8b9
   Input path=<generated> sha256=bbb2422e76679f83c50885e97011afc2cededd6eecba3643b9702c4cfd672638
   Name value=boot-device-bringup
   Target value=Target.wrela_machine_v1

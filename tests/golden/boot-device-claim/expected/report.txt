@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/boot_device_claim.wr sha256=46e0cd76c7f1301a416c57733feb1102ec71e586444ec33b7b4eeff62fd04a04
+  Input path=examples/boot_device_claim.wr sha256=88cf58e8bb62b835c232576c24ea3289d3ca96d19c8cf693182dc9ae50346a3c
   Input path=<generated> sha256=bbb2422e76679f83c50885e97011afc2cededd6eecba3643b9702c4cfd672638
   Name value=boot-device-claim
   Target value=Target.wrela_machine_v1

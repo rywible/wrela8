@@ -9,6 +9,12 @@ module examples.boot_irq_isr
 # Every value below is hand-computed. What each assertion would catch is
 # on the line. The vacuity twin is `err-boot-irq-isr-runs`.
 
+# M16 Wave D3: project-shape conversion. Layout/`@driver` bodies stay
+# local — any `from drivers.blk import …` is refused by A1b while this
+# module also declares `BlkDriver` / shared layout names that `drivers.blk`
+# exports (plans/M9.md item A1b). Full layout import also needs same-module
+# `Mmio[L]` + pub layout fields. Specialized local `@driver` kept.
+
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:
     @offset(0x060) interrupt_status: ReadOnly[u32]
