@@ -1051,7 +1051,7 @@ intentions — not M19 deliverables.
 Depends on M18's score + proxy A/B (COMPLETE; no physical calibration).
 Flipped: `compiler.opts.compile-mode`, `compiler.opts.proxy-win-corpus`,
 `compiler.opts.dev-correct`. Cost-corpus proxy Δ (`dev` → `release`)
-recorded in [plans/M19.md](plans/M19.md) evidence block (SUM −749).
+recorded in [plans/M19.md](plans/M19.md) evidence block (SUM −965).
 
 ### Recorded language intentions (not yet scheduled)
 

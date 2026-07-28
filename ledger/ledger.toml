@@ -661,7 +661,7 @@ tests = [
   "unit:bounds_elide_alone_wins_cost_bounds_elide",
   "unit:narrow_imm_alone_wins_some_cost_case",
 ]
-note = """plans/M19.md item L (2026-07-28): FLIPPED from `gap` to `test`. Corpus proxy win rule under M18's ISA proxy-cycle ranking: no fixed cost-* case may rise under `release` vs `dev`; ≥1 must strictly fall; scored in context of the full pipeline. Oracle `opts::win::tests::assert_release_wins_cost_corpus_oracle` (+ convolution singles). Physical / host wall-time never gates opts."""
+note = """plans/M19.md item L (2026-07-28): FLIPPED from `gap` to `test`. Corpus proxy win rule under M18's ISA proxy-cycle ranking: no fixed cost-* case may rise under `release` vs `dev`; ≥1 must strictly fall; scored in context of the full pipeline. Oracle `opts::win::tests::assert_release_wins_cost_corpus_oracle` (+ convolution singles) via `cost::stage` — the same emit path as `wrela dump --stage=cost` (force-rooted `core.runtime` included when the case is runtime-bearing). Physical / host wall-time never gates opts."""
 
 [[clause]]
 id = "compiler.opts.dev-correct"

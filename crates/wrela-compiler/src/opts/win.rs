@@ -4,16 +4,14 @@
 //! two opt-list configs by `total_proxy_cycles` only, and assert the
 //! freeze-1403 win rule: candidate must not raise any case and must
 //! strictly lower at least one.
+//!
+//! Scoring uses the same emit path as `wrela dump --stage=cost`
+//! (`cost::stage`) so force-rooted `core.runtime` is in the totals when
+//! a case is runtime-bearing — the surface opts are gated on.
 
 use std::path::{Path, PathBuf};
 
-use crate::codegen::codegen_program;
-use crate::cost::score::score_program;
-use crate::cost::table::load_default;
-use crate::lower::lower_program;
-use crate::mwir;
-use crate::sema;
-use crate::syntax::{lexer, parser};
+use crate::cost::stage::score_cost_stage_path;
 
 use super::{CompileMode, OptId, RELEASE_OPTS, apply_mode, apply_opts};
 
@@ -87,19 +85,13 @@ pub fn discover_cost_corpus() -> Vec<PathBuf> {
     paths
 }
 
-/// Lower+codegen+score `src` under an explicit opt list.
-pub fn score_src_under_opts(src: &str, opts: &[OptId]) -> u64 {
-    let tokens = lexer::lex(src).expect("lex");
-    let module = parser::parse(tokens).expect("parse");
-    let typed = sema::check_typed(&module, "<win>").expect("check");
-    let layout = mwir::build_layout_ctx(&module, &Default::default()).expect("layout");
-    let table = load_default().expect("wrela-cost-v1");
-
+/// Lower+codegen+score `path` under an explicit opt list, via the
+/// dump `--stage=cost` pipeline (force-roots included when relevant).
+pub fn score_path_under_opts(path: &Path, opts: &[OptId]) -> u64 {
     apply_opts(opts);
-    let mwir = lower_program(&typed).expect("lower");
-    let prog = codegen_program(&mwir, &layout).expect("codegen");
-    let report = score_program(&prog, &table).expect("score");
-    report.total_proxy_cycles
+    score_cost_stage_path(path).unwrap_or_else(|e| {
+        panic!("cost-stage score {}: {e}", path.display());
+    })
 }
 
 /// Score every cost-* case under `baseline` vs `candidate` opt lists
@@ -116,12 +108,9 @@ pub fn compare_opt_lists(baseline: &[OptId], candidate: &[OptId]) -> CorpusCompa
     let mut candidate_sum = 0u64;
 
     for path in &corpus {
-        let src = std::fs::read_to_string(path).unwrap_or_else(|e| {
-            panic!("read {}: {e}", path.display());
-        });
         let name = case_name(path);
-        let b = score_src_under_opts(&src, baseline);
-        let c = score_src_under_opts(&src, candidate);
+        let b = score_path_under_opts(path, baseline);
+        let c = score_path_under_opts(path, candidate);
         baseline_sum = baseline_sum.saturating_add(b);
         candidate_sum = candidate_sum.saturating_add(c);
         cases.push(CaseDelta {
@@ -241,7 +230,7 @@ mod tests {
     }
 
     /// plans/M19.md item E / decisions 1450–1451: release vs dev on the
-    /// full cost-* corpus.
+    /// full cost-* corpus (dump `--stage=cost` pipeline).
     #[test]
     fn assert_release_wins_cost_corpus_oracle() {
         let cmp = assert_release_wins_cost_corpus();
@@ -253,6 +242,27 @@ mod tests {
         }
         assert!(table.contains("SUM"));
         assert!(cmp.sum_delta() < 0, "corpus sum must fall under release");
+        // Runtime-bearing case must see force-rooted runtime (not the
+        // thin 6-cycle probe-only path).
+        let runtime = cmp
+            .cases
+            .iter()
+            .find(|c| c.name == "cost-runtime")
+            .expect("cost-runtime in corpus");
+        assert!(
+            runtime.baseline > 100 && runtime.candidate > 100,
+            "cost-runtime must include force-rooted runtime totals, got \
+             dev={} release={}",
+            runtime.baseline,
+            runtime.candidate
+        );
+        assert!(
+            runtime.candidate < runtime.baseline,
+            "cost-runtime must fall under release (NarrowImm on runtime \
+             immediates), got {} → {}",
+            runtime.baseline,
+            runtime.candidate
+        );
     }
 
     /// Decision 1453: BoundsElide alone wins on cost-bounds-elide.
@@ -260,9 +270,8 @@ mod tests {
     fn bounds_elide_alone_wins_cost_bounds_elide() {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/golden/cost-bounds-elide/input.wr");
-        let src = std::fs::read_to_string(&path).expect("read cost-bounds-elide");
-        let dev = score_src_under_opts(&src, &[]);
-        let alone = score_src_under_opts(&src, &[OptId::BoundsElide]);
+        let dev = score_path_under_opts(&path, &[]);
+        let alone = score_path_under_opts(&path, &[OptId::BoundsElide]);
         apply_mode(CompileMode::Release);
         assert!(
             alone < dev,
@@ -278,10 +287,9 @@ mod tests {
         let corpus = discover_cost_corpus();
         let mut wins = Vec::new();
         for path in &corpus {
-            let src = std::fs::read_to_string(path).expect("read");
             let name = case_name(path);
-            let dev = score_src_under_opts(&src, &[]);
-            let alone = score_src_under_opts(&src, &[OptId::NarrowImm]);
+            let dev = score_path_under_opts(path, &[]);
+            let alone = score_path_under_opts(path, &[OptId::NarrowImm]);
             if alone < dev {
                 wins.push(format!("{name}: {alone} < {dev}"));
             }
