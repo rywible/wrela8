@@ -95,6 +95,7 @@ one-line summary, commit sha. Newest last.
 - 06-machine.md §1 — M15 item A / decisions 1010–1014: delete "3 vCPUs, always"; sealed image `cores=N` (default 1); soft packing ceiling is not a machine max; VMM refuses short host. Ledger opens `image.cores.authoring`, `image.report.cores-and-stacks`, `machine.vmm.host-cores-refuse` (all gap). — (this commit)
 - 01-model.md §7 — M15 item A: "new device or core count is a machine revision" → devices / map rules; core count is a sealed image fact. — (this commit)
 - 02-language.md §9.1 — M15 item A: placement on the image's N cores (`0 .. N-1`), not "the machine's three cores". — (this commit)
+- 01-model.md §1/§2 — M15 item A follow-up: drop leftover "3 cores" / "three cores"; sealed image N (cite `image.cores.authoring`). — (this commit)
 - 04-compiler.md §3 — M15 item A: placement domain N (default 1; `core ≥ N` build error); publish/acquire ordering still promised (barriers land H–K). — (this commit)
 - 05-library.md §9 — M15 item A: `Image(name, target, cores=N?)`; unknown labels are a build error. — (this commit)
 - docs/language/README.md — M15 item A: one-liner drops "3 vCPUs"; sealed image N (default 1); devices/map rules are the machine revision. — (this commit)

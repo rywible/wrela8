@@ -19,8 +19,8 @@ closed stack makes true:
 
 - the complete code graph is known at build time;
 - the actor and task set is finite and bounded;
-- the machine — 3 cores, one memory map, one closed virtio device set — is
-  a versioned contract, not a discovered environment;
+- the machine — N cores sealed by the image, one memory map, one closed
+  virtio device set — is a versioned contract, not a discovered environment;
 - hardware bindings and resource budgets are build inputs; and
 - no code enters the image after it is sealed.
 
@@ -34,13 +34,13 @@ teardown paths wired by the image. The compiler rejects a build whose
 reachability is not closed. There is no dynamic loader, JIT, runtime dispatch,
 `dyn` type, or unbounded task creation.
 
-An image has one address space and the machine's three cores, each running
-one cooperative event loop. Every actor lives on exactly one core, assigned
-at build time; within a core nothing runs simultaneously, and across cores
-the only interaction is the same typed message channels, lowered to
-generated bounded rings. Placement does **not** eliminate asynchronous
-interleaving, compiler reordering, DMA concurrency, or interrupt delivery;
-those remain explicit parts of the model.
+An image has one address space and its sealed N cores, each running one
+cooperative event loop. Every actor lives on exactly one core, assigned at
+build time; within a core nothing runs simultaneously, and across cores the
+only interaction is the same typed message channels, lowered to generated
+bounded rings. Placement does **not** eliminate asynchronous interleaving,
+compiler reordering, DMA concurrency, or interrupt delivery; those remain
+explicit parts of the model.
 
 The result of `@image build()` is a typed graph: device bindings, actor
 instances, mailboxes, pools, task slots, interrupt vectors, and the
