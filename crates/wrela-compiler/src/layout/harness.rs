@@ -782,30 +782,55 @@ pub(super) fn push_abort_tail(a: &mut Asm, addrs: &HarnessAddrs) {
 /// abort.
 pub(super) fn build_abort_tail_codegen_fn() -> crate::codegen::CodegenFn {
     let addr = machine_layout::MACHINE_INFO_BASE + mi::OFF_TEST_CONTINUATION;
-    let mut words: Vec<(u32, String)> = Vec::new();
+    use crate::cost::{CostRule, EmittedWord};
+    let mut words: Vec<EmittedWord> = Vec::new();
     let bits = addr;
     let h0 = (bits & 0xFFFF) as u16;
     let h1 = ((bits >> 16) & 0xFFFF) as u16;
     let h2 = ((bits >> 32) & 0xFFFF) as u16;
     let h3 = ((bits >> 48) & 0xFFFF) as u16;
-    words.push((
+    words.push(EmittedWord::new(
         encode::enc_movz(9, h0, 0, true),
         format!("movz x9, #{h0:#x}"),
+        CostRule::MovWide,
+        Some(9),
+        &[],
     ));
-    words.push((
+    words.push(EmittedWord::new(
         encode::enc_movk(9, h1, 16, true),
         format!("movk x9, #{h1:#x}, lsl #16"),
+        CostRule::MovWide,
+        Some(9),
+        &[],
     ));
-    words.push((
+    words.push(EmittedWord::new(
         encode::enc_movk(9, h2, 32, true),
         format!("movk x9, #{h2:#x}, lsl #32"),
+        CostRule::MovWide,
+        Some(9),
+        &[],
     ));
-    words.push((
+    words.push(EmittedWord::new(
         encode::enc_movk(9, h3, 48, true),
         format!("movk x9, #{h3:#x}, lsl #48"),
+        CostRule::MovWide,
+        Some(9),
+        &[],
     ));
-    words.push((encode::enc_ldr_x_imm(9, 9, 0), "ldr x9, [x9]".to_string()));
-    words.push((encode::enc_br(9), "br x9".to_string()));
+    words.push(EmittedWord::new(
+        encode::enc_ldr_x_imm(9, 9, 0),
+        "ldr x9, [x9]".to_string(),
+        CostRule::Load,
+        Some(9),
+        &[9],
+    ));
+    words.push(EmittedWord::new(
+        encode::enc_br(9),
+        "br x9".to_string(),
+        CostRule::Branch,
+        None,
+        &[9],
+    ));
     crate::codegen::CodegenFn {
         frame_size: 0,
         code: words,
@@ -1139,8 +1164,8 @@ pub fn layout_test_image(
     let mut fn_word_base: BTreeMap<String, usize> = BTreeMap::new();
     for (key, f) in &program.fns {
         fn_word_base.insert(key.clone(), code_words.len());
-        for (w, _text) in &f.code {
-            code_words.push(*w);
+        for ew in &f.code {
+            code_words.push(ew.word);
         }
     }
     for name in runtime_tests {
@@ -2209,7 +2234,13 @@ mod harness_jit {
     fn install_abort_tail_floor_replaces_the_stub_with_the_long_jump() {
         let stub = crate::codegen::CodegenFn {
             frame_size: 16,
-            code: vec![(encode::enc_ret(30), "ret".to_string())],
+            code: vec![crate::cost::EmittedWord::new(
+                encode::enc_ret(30),
+                "ret".to_string(),
+                crate::cost::CostRule::Branch,
+                None,
+                &[30],
+            )],
             relocs: Vec::new(),
         };
         let mut fns = BTreeMap::new();
@@ -2226,18 +2257,18 @@ mod harness_jit {
         assert!(tail.relocs.is_empty(), "the floor tail relocates nothing");
         assert_eq!(tail.code.len(), 6, "four immediate words, LDR, BR");
         assert!(
-            !tail.code.iter().any(|(w, _)| *w == encode::enc_ret(30)),
+            !tail.code.iter().any(|ew| ew.word == encode::enc_ret(30)),
             "the compiled `ret` stub must be gone — an abort that returns \
              would resume the failing test instead of landing"
         );
-        assert_eq!(tail.code[4].0, encode::enc_ldr_x_imm(9, 9, 0));
-        assert_eq!(tail.code[5].0, encode::enc_br(9));
+        assert_eq!(tail.code[4].word, encode::enc_ldr_x_imm(9, 9, 0));
+        assert_eq!(tail.code[5].word, encode::enc_br(9));
 
         // MOVZ/MOVK: imm16 at bits[20:5], shift/16 at bits[22:21].
         let mut addr = 0u64;
-        for (w, _) in &tail.code[..4] {
-            let imm16 = ((*w >> 5) & 0xFFFF) as u64;
-            let shift = ((*w >> 21) & 0x3) * 16;
+        for ew in &tail.code[..4] {
+            let imm16 = ((ew.word >> 5) & 0xFFFF) as u64;
+            let shift = ((ew.word >> 21) & 0x3) * 16;
             addr |= imm16 << shift;
         }
         assert_eq!(

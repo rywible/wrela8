@@ -2460,8 +2460,8 @@ pub fn layout_program(
     let mut fn_word_base: BTreeMap<String, usize> = BTreeMap::new();
     for (key, f) in &program.fns {
         fn_word_base.insert(key.clone(), code_words.len());
-        for (w, _text) in &f.code {
-            code_words.push(*w);
+        for ew in &f.code {
+            code_words.push(ew.word);
         }
     }
     let rodata_bytes: Vec<u8> = rodata_entries
@@ -3755,7 +3755,7 @@ mod tests {
     fn fn_words(words: &[u32]) -> CodegenFn {
         CodegenFn {
             frame_size: 16,
-            code: words.iter().map(|w| (*w, String::new())).collect(),
+            code: words.iter().map(|w| crate::cost::EmittedWord::new(*w, String::new(), crate::cost::CostRule::Alu, None, &[])).collect(),
             relocs: Vec::new(),
         }
     }
@@ -3903,7 +3903,7 @@ pub fn t():
             "__wrela_hand_asm_caller".into(),
             crate::codegen::CodegenFn {
                 frame_size: 16,
-                code: a.words.iter().map(|w| (*w, String::new())).collect(),
+                code: a.words.iter().map(|w| crate::cost::EmittedWord::new(*w, String::new(), crate::cost::CostRule::Alu, None, &[])).collect(),
                 relocs: a.relocs,
             },
         );
@@ -5453,7 +5453,7 @@ fn two():
             "f".to_string(),
             crate::codegen::CodegenFn {
                 frame_size: 0,
-                code: vec![(encode::enc_ret(30), "ret".to_string())],
+                code: vec![crate::cost::EmittedWord::new(encode::enc_ret(30), "ret".to_string(), crate::cost::CostRule::Branch, None, &[30])],
                 relocs: Vec::new(),
             },
         );
