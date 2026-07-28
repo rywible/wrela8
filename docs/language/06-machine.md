@@ -128,9 +128,9 @@ under [§10](#10-conformance).
 The stdlib ships `@driver`s for queue devices under the reserved alias
 `drivers` ([02 §2.1](02-language.md#21-the-build-root)); thin
 devices use sealed language/runtime surfaces (`now()`, console ring
-helpers, and — when M17 lands — the entropy effect). Appliance authors
-typically do not write `@driver`s; the `@driver` machinery is how those
-stdlib queue drivers are themselves written and checked.
+helpers, and `entropy[N]()`). Appliance authors typically do not write
+`@driver`s; the `@driver` machinery is how those stdlib queue drivers are
+themselves written and checked.
 
 #### Thin device contracts (no `@driver`)
 
@@ -138,7 +138,7 @@ stdlib queue drivers are themselves written and checked.
 |---|---|---|
 | `clock` | trapping monotonic MMIO (not virtio) | `now()` / `core.time` |
 | `console` | fixed console-ring + VMM drain (**not** virtio-console) | runtime / optional `core` helpers |
-| `entropy` | recorded entropy source (**not** virtio-rng); **lands M17** | sealed runtime effect (no `@driver`) |
+| `entropy` | recorded entropy source (**not** virtio-rng) | `entropy[N]()` |
 
 #### Queue device contracts (`@driver` in `stdlib/drivers/`)
 

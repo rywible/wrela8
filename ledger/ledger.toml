@@ -2441,3 +2441,37 @@ doc = "06-machine.md#6"
 status = "test"
 tests = ["golden/boot-blk-roundtrip", "golden/check-drivers-blk-import"]
 note = """plans/M16.md item A; flipped D1 / decisions 1140–1146: virtio-blk `@driver` body lives in `stdlib/drivers/blk.wr` (`drivers.blk`). Flagship `boot-blk-roundtrip` imports and matches its transcript pin (`expected/test.txt` byte-identical; `expected/report.txt` re-pinned for `Input path=drivers/blk.wr`). Remaining owned boot goldens migrate in later D shards."""
+
+# --- M17 item A: entropy ledger opens (decisions 1210–1217) --------
+
+[[clause]]
+id = "machine.entropy.trap-logged"
+doc = "06-machine.md#6"
+status = "gap"
+note = """plans/M17.md item A / decisions 1210–1211: 06 §6 thin row names `entropy` as a recorded entropy source (**not** virtio-rng) with guest surface `entropy[N]()`. Opened as `gap` — no VMM trap or guest path yet.
+
+**Flip when** items G+H prove a `.wr` guest issues the park-shaped fill and the choice is logged (citability bar = `machine.clock.trap-logged`'s M6 flip)."""
+
+[[clause]]
+id = "machine.entropy.replay"
+doc = "06-machine.md#8"
+status = "gap"
+note = """plans/M17.md item A / decisions 1212–1213: entropy joins the choice-sequence record/replay surface (06 §8) via `ChoiceEntry::EntropyRead`. Opened as `gap`.
+
+**Flip when** item H's `xtask repro` entropy tamper lane is green (may share note text with `machine.replay.choice-sequence` growth — still its own id so the entropy surface is findable)."""
+
+[[clause]]
+id = "library.entropy.effect"
+doc = "05-library.md#5"
+status = "gap"
+note = """plans/M17.md item A / decisions 1214–1215: 05 §5 names `entropy[N]() -> Bytes[N]` (`N` literal `1..=64`), sealed, comptime/ISR illegal, recorded/replayed through `EntropyRead`. Opened as `gap`.
+
+**Flip when** items E+F land sema/err goldens + this 05 text."""
+
+[[clause]]
+id = "compiler.effects.sealed-runtime-sync"
+doc = "05-library.md#5"
+status = "gap"
+note = """plans/M17.md item A / decisions 1216–1217: 05 §5 states sealed runtime effects (`now()`, `entropy[N]()`) are legal in any runtime body (sync or async) — only comptime/ISR refuse. Opened as `gap` for the sync MWIR docs-win.
+
+**Flip when** item Es lands MWIR `Now`/`Entropy` + sync `boot-instant-monotonic` + sync `boot-entropy`."""

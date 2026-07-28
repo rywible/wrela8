@@ -125,6 +125,12 @@ forbidden in comptime and ISR context — and is recorded/replayed. Targets
 guarantee a monotonic horizon beyond every declared deadline. Wall time is a
 separate capability, never used for scheduling.
 
+`entropy[N]() -> Bytes[N]` is a sealed effect: `N` is a comptime integer
+literal in `1..=64`, the call returns exactly `N` bytes of entropy, and it
+is forbidden in comptime and ISR context — recorded and replayed through
+`EntropyRead`. Sealed runtime effects (`now()`, `entropy[N]()`) are legal in
+any runtime body (sync or async); only comptime and ISR refuse them.
+
 ## 6. Bytes, formatting, validation
 
 Types implementing the static `Format` contract declare a compile-time
