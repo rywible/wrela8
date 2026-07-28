@@ -1,0 +1,38 @@
+module examples.cost_bounds_elide
+
+# Capstone proxy smoke (plans/M18.md item J): straight-line fn with many
+# literal `[T; N]` indices. Elide-on (default) drops bounds cmp/abort_val
+# words; elide-off restores them so the scoreboard total rises.
+
+pub fn hot(a: [u64; 32]) -> u64:
+    s0: u64 = a[0] +% a[1]
+    s1: u64 = a[2] +% a[3]
+    s2: u64 = a[4] +% a[5]
+    s3: u64 = a[6] +% a[7]
+    s4: u64 = a[8] +% a[9]
+    s5: u64 = a[10] +% a[11]
+    s6: u64 = a[12] +% a[13]
+    s7: u64 = a[14] +% a[15]
+    s8: u64 = a[16] +% a[17]
+    s9: u64 = a[18] +% a[19]
+    s10: u64 = a[20] +% a[21]
+    s11: u64 = a[22] +% a[23]
+    s12: u64 = a[24] +% a[25]
+    s13: u64 = a[26] +% a[27]
+    s14: u64 = a[28] +% a[29]
+    s15: u64 = a[30] +% a[31]
+    t0: u64 = s0 +% s1
+    t1: u64 = s2 +% s3
+    t2: u64 = s4 +% s5
+    t3: u64 = s6 +% s7
+    t4: u64 = s8 +% s9
+    t5: u64 = s10 +% s11
+    t6: u64 = s12 +% s13
+    t7: u64 = s14 +% s15
+    u0: u64 = t0 +% t1
+    u1: u64 = t2 +% t3
+    u2: u64 = t4 +% t5
+    u3: u64 = t6 +% t7
+    v0: u64 = u0 +% u1
+    v1: u64 = u2 +% u3
+    return v0 +% v1
