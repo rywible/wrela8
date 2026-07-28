@@ -25,9 +25,12 @@ For `mut Option[T]`, `take()` returns the owned `Option[T]` and leaves
 ## 2. Actor handles and calls
 
 `Actor[T]` identifies one image actor instance and exposes only `T`'s public
-actor methods. It is minted and installed by image construction; it cannot
-appear in a message, reply, collection, or mutable input, and no numeric
-actor ID is source-visible.
+actor methods. It is minted and installed by image construction and never
+rebound: it cannot appear in a message, reply, collection, or mutable input,
+its computed class is `!crosses_actor` ([04 §7](04-compiler.md)), and no
+numeric actor ID is source-visible. That mobility class, with the handle DAG
+of [02 §12.1](02-language.md), keeps every actor-call await acyclic without a
+wait-for-graph analyzer ([04 §1](04-compiler.md)).
 
 `Static[T]` is a copyable read-only handle to immutable image data, minted by
 image construction or literals. It may cross actor boundaries, lends

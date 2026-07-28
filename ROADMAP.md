@@ -72,11 +72,12 @@ beyond the active milestone. A milestone's *first deliverable* is its plan
 code exists, the shape decisions that milestone freezes, and explicit
 non-goals. Plans are written when a milestone activates, never earlier
 (each milestone manufactures the facts the next plan needs), and become
-history when it completes. Active plan: none — M13 is COMPLETE
-([plans/M13.md](plans/M13.md)); next is M14 (progress, constructively)
-and **not activated** (no `plans/M14.md` yet). M12 is COMPLETE
-([plans/M12.md](plans/M12.md)). M11 is COMPLETE
-([plans/M11.md](plans/M11.md)).
+history when it completes. Active plan: none — M14 is COMPLETE (doc cut:
+constructive progress theorem; no `plans/M14.md` — capability cut, not a
+build-out; forward-ref golden still `image.graph.handle-dag` gap). M13 is
+COMPLETE ([plans/M13.md](plans/M13.md)). Next is M15 (cycle proxy) and
+**not activated**. M12 is COMPLETE ([plans/M12.md](plans/M12.md)). M11 is
+COMPLETE ([plans/M11.md](plans/M11.md)).
 
 ### M1 — Parse everything
 Full grammar → stable AST dumps (`wrela dump --stage=ast`). Includes
@@ -620,13 +621,16 @@ Detail: [plans/M13.md](plans/M13.md). The load-bearing pieces:
   tension, and **M14's upward-edge sentence** (preserve or replace),
   accept/reject spaces.
 
-### M14 — Progress, constructively (no graph analyzer)
-Settled 2026-07-26 (human decision, superseding the same day's earlier
-draft of this rung as a build-time wait-for-graph analysis): **the
-graph analyzer does not get built.** That decision stands. What this
-rung is — stated in the same register as M13's crash-only cut, because
-it is the same shape of decision — is a **capability cut**, not a
-documentation of an accident.
+### M14 — Progress, constructively (no graph analyzer) — COMPLETE
+**Done (2026-07-27).** Normative cut landed (04 §1 Progress rewrite;
+02 §12.1 handle-cycle permission deleted; upward-edge sentence frozen;
+ledger retargeted). Remaining honesty pin: `image.graph.handle-dag`
+(forward-ref source golden). Settled 2026-07-26 (human decision,
+superseding the same day's earlier draft of this rung as a build-time
+wait-for-graph analysis): **the graph analyzer does not get built.**
+That decision stands. What this rung is — stated in the same register
+as M13's crash-only cut, because it is the same shape of decision —
+is a **capability cut**, not a documentation of an accident.
 
 **The cut (02 §12.1, named).** Normative text today says: "Construction
 edges (moves, initialization order) must form a DAG; **handle edges
@@ -1021,8 +1025,8 @@ Plan when activated.
   *What descheduling leaves open, stated rather than implied.*
   `machine.display.golden-frames` is a gap **no rung owns**, recorded as
   such in the clause's own note (`compiler.progress.wait-for-graph` was
-  the same shape until 2026-07-26 gave it rung M14 — progress,
-  constructively; this one still waits here). 06 §10 lists the golden-image display tests in the machine
+  the same shape until 2026-07-26 gave it rung M14 — now COMPLETE as a
+  constructive theorem; this one still waits here). 06 §10 lists the golden-image display tests in the machine
   conformance suite, so machine v1 is not conformant until this lands —
   a set M13 item D narrows: `net` and `sound` move to future machine
   revisions, leaving display and input (this bullet's own subjects) and

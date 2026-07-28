@@ -47,12 +47,44 @@ and every return-promise is a reply type or verified `Receipt`; every
 handoff-shaped driver method installs the caller endpoint atomically with
 admission and every handler path performs exactly one producer transition.
 
-**Progress.** The unified wait-for graph — actor turns, tasks, replies,
-receipts and their bottom-half producers, admission slots, permits, pools,
-cleanup and recovery nodes — is acyclic, except where a sealed primitive
-proves an external event (timer, hardware completion) resolves a node without
-acquiring anything in the cycle. Diagnostics print the full cycle. Every
-async loop back edge is a checkpoint or carries a proven
+**Progress.** Progress is proved constructively, per wait-edge kind — there
+is no unified wait-for-graph analyzer. Downward edges are handles; **upward
+edges are resolutions or vectors**: a client reaches a driver by handle
+(request); the driver answers by resolving the client's parked call or
+receipt (reply); the device reaches the driver by vector
+([06 §7](06-machine.md)). The ISR gate may respell the device→driver edge; it
+must preserve or replace this upward-edge rule.
+
+Disposition of every FlowWir suspension kind (`AwaitKind`):
+
+- **Actor-call await.** Cycles only if handles cycle. Handles are a DAG by
+  [02 §12.1](02-language.md) (construction and handle edges alike) plus the
+  `Actor[T]` mobility class (`!crosses_actor`, never rebound —
+  [05 §2](05-library.md)).
+- **Group join.** Reduces to the same handle-DAG case: a join waits on
+  children whose outbound edges are themselves actor-call or receipt awaits.
+- **Receipt await.** Rides device progress under the sealed external-event
+  carve-out (a timer or hardware completion resolves the node without
+  acquiring anything that could close a wait cycle) and the
+  deadline/quarantine backstop ([03 §9](03-hardware.md)).
+
+Non-suspension edges earlier drafts put on a wait-for graph:
+
+- **Admission** is fail-fast `NotAdmitted`, never a wait
+  ([02 §9.4](02-language.md)).
+- **Permits and pools.** No blocking acquire exists: `reserve` is
+  synchronous fail-fast-or-proven ([03 §4](03-hardware.md)), and a driver
+  never awaits a permit its own bottom half produces. A hand-spelled permit
+  retry loop dies by the loop-discharge theorem below plus turn
+  non-reentrancy ([02 §9.2](02-language.md)) as a budget-trip abandonment,
+  not a deadlock.
+- **Cleanup and recovery** run generated teardown on the owning driver's
+  existing bottom-half `@task` ([§4](#4-cancellation-and-recovery-mechanics));
+  they do not introduce a new wait edge among actors.
+- **Starvation** is discharged by FIFO-per-mailbox + round-robin
+  ([§2](#2-scheduling-semantics)) plus the same loop theorem.
+
+Every async loop back edge is a checkpoint or carries a proven
 `@budget(bound=...)`; every synchronous and ISR-bound loop has a proven
 finite cost; a checkpoint is rejected while a non-suspend-safe access is
 live. Revision 0.1's synchronous discharge of the loop half is
@@ -65,6 +97,9 @@ discharge by observation, not by name. When a proven `@budget` makes an
 async loop's checkpoints elidable, the report discloses that optimization;
 it is not a semantic — the legality rule (budget or suspension) is
 unchanged. ISR-bound discharge and cycle/latency proofs remain later.
+
+A future construct that would rebind a handle or introduce a blocking
+acquire is refused fail-closed, naming this progress rule.
 
 **Hardware.** Capability provenance and roles match on every hardware
 operation; device and vector ownership is exclusive; MMIO partitions never
@@ -121,18 +156,19 @@ escape and liveness analysis:
 
 Groups and pools are one region model with two binding disciplines, and
 they are deliberately not one construct. A group's region is **anonymous
-and inferred**: placement fills it (rule 4 above), its close is a join —
-a node in the wait-for graph, with cancellation and deadline inheritance
-flowing through it — and nothing about it appears in types. A pool is
+and inferred**: placement fills it (rule 4 above), its close is a join
+whose wait disposition is the group-join case of §1's progress theorem,
+with cancellation flowing through it — and nothing about it appears in
+types. A pool is
 **nominal and declared**: source names it, `own[P] T` carries the
 binding through signatures and across actor boundaries at compile time,
-it never participates in the wait-for graph, and its reclaim obligations
+it never participates in a wait edge, and its reclaim obligations
 are its own (a DMA pool's reclaim is gated on device quiescence, not on
 scope exit; reset reuses slots without touching any concurrency
 machinery). A scoped pool is a named, typed window over the same region
 machinery a group gets implicitly — not a group with a budget. The two
 constructs encode different promises made at different binding times;
-sharing a surface would either drag pools into the progress analysis or
+sharing a surface would either drag pools into the progress theorem or
 hide two semantics behind one keyword.
 
 Frame layout is state-sensitive: values live in mutually exclusive
@@ -174,7 +210,7 @@ pending; lets unrelated work run while the driver establishes quiescence;
 and resolves `Cancelled` to the parent only when the cleanup graph is empty
 and every child is consumed. The cancelled frame never resumes; recovery
 work runs on that `@task`, not in source destructors, and is included in
-actor, budget, and wait-for analyses.
+actor and budget analyses and §1's progress theorem.
 
 ## 5. Optimization: the as-if rules
 
@@ -184,7 +220,7 @@ ownership, cancellation, DMA, ISR, fault, or capacity rules.
 
 The compiler maintains three verified whole-image representations:
 `SemanticWir` (specialized, structured operations and proofs), `FlowWir`
-(typed SSA retaining ownership, capacity, wait-for, and checkpoint facts —
+(typed SSA retaining ownership, capacity, progress, and checkpoint facts —
 the only serialized IR, where ordinary optimization happens), and
 `MachineWir` (AArch64 ABI, layout, and every machine-level fact). The
 toolchain's **own backend** lowers MachineWir to Cortex-A76-tuned machine

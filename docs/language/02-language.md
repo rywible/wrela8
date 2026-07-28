@@ -605,8 +605,10 @@ program can try.
 A struct marked `@actor` (application and service logic) or `@driver`
 (hardware authority; [03](03-hardware.md)) is an actor: the sole owner of its
 mutable fields. Other actors hold generated `Actor[T]` handles minted by the
-image — every possible call edge is a build-time fact. Handles cannot appear
-in messages, replies, or runtime collections.
+image — every possible call edge is a build-time fact. Handles are
+`@image`-wiring-only and never rebound: they cannot appear in messages,
+replies, runtime collections, or any mutable place that could replace the
+image-minted binding.
 
 Every actor also has exactly one build-time **core** on the machine's three
 cores — inferred deterministically ([04 §3](04-compiler.md)) or set with
@@ -912,10 +914,14 @@ pub fn build() -> Image:
     return img.seal()
 ```
 
-Construction edges (moves, initialization order) must form a DAG; handle
-edges may be cyclic. Boot allocates everything, initializes in dependency
-order, then atomically opens mailboxes. `@layout_assert` functions run after
-layout against the read-only `ImageReport` and can fail the build.
+Construction and handle edges (moves, initialization order, and every
+`Actor[T]` wiring) must form a DAG. Handles are minted only by `@image`
+wiring and are never rebound — they cannot appear in a message, reply,
+collection, or mutable place ([§9.1](#91-actor-roots),
+[05 §2](05-library.md)). Boot allocates everything, initializes in
+dependency order, then atomically opens mailboxes. `@layout_assert`
+functions run after layout against the read-only `ImageReport` and can
+fail the build.
 
 ### 12.2 Tests
 

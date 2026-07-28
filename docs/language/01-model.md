@@ -103,8 +103,9 @@ depend on.
 ## 4. What the compiler is
 
 Everything else in earlier drafts of this specification — region classes,
-frame layout, mailbox capacity derivation, provenance brands, wait-for graphs,
-scheduling policy — is the compiler's obligation, not the user's vocabulary.
+frame layout, mailbox capacity derivation, provenance brands, progress
+proofs, scheduling policy — is the compiler's obligation, not the user's
+vocabulary.
 The user never names those things; the compiler proves them, and the build
 report shows its work. Contracts are compiler output, not user ceremony —
 the compiler computes them, the report displays them, the source omits them.
@@ -115,9 +116,11 @@ The compiler MUST prove, before emitting an artifact:
    a frame, or the image itself; total footprint has a build-time ceiling.
 2. **Aliasing**: exclusive access never overlaps; no reference outlives its
    source; nothing borrowed crosses `await` or an actor boundary.
-3. **Progress**: the unified wait-for graph over turns, tasks, replies,
-   receipts, permits, and cleanup is acyclic; every loop is a checkpoint or
-   has a proven bound; every mailbox and in-flight request count is finite.
+3. **Progress**: proved constructively per wait-edge kind
+   ([04 §1](04-compiler.md)) — handles form a DAG, upward edges are
+   resolutions or vectors, and every FlowWir suspension has a named
+   disposition; every loop is a checkpoint or has a proven bound; every
+   mailbox and in-flight request count is finite.
 4. **Hardware**: capabilities are never fabricated; CPU code never touches
    device-owned DMA; ISR-bound functions stay inside the ISR effect set;
    nothing device-owned is reclaimed before quiescence.
