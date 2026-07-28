@@ -412,11 +412,12 @@ fn run_image_stage(programs: &BTreeMap<String, TypedProgram>) {
             match eval::interp::eval_image(program, fn_name) {
                 Ok(graph) => match eval::image_checks::check_sealed(&graph, program, programs) {
                     Ok(()) => {
-                        let enum_variants: BTreeMap<String, Vec<String>> = program
-                            .enums
-                            .iter()
-                            .map(|(k, e)| (k.clone(), e.variants.clone()))
-                            .collect();
+                        let mut enum_variants: BTreeMap<String, Vec<String>> = BTreeMap::new();
+                        for (k, e) in program.enums.iter().chain(program.imported.enums.iter()) {
+                            enum_variants
+                                .entry(k.clone())
+                                .or_insert_with(|| e.variants.clone());
+                        }
                         print!("{}", eval::image::dump(&enum_variants, &graph));
                     }
                     Err(e) => print_sema_error(&e),
@@ -564,11 +565,17 @@ fn build_report(
                         layout::enrich_layout_ctx_with_instantiations(&mut layout_ctx, programs);
                         let placement = placement::place(&graph, modules, &layout_ctx, graph.cores)
                             .map_err(|e| format!("error[build]: {e}\n"))?;
-                        let enum_variants: BTreeMap<String, Vec<String>> = program
-                            .enums
-                            .iter()
-                            .map(|(k, e)| (k.clone(), e.variants.clone()))
-                            .collect();
+                        // Own + imported enums: an `@image` module that
+                        // only *imports* `Feature` (etc.) still needs
+                        // variant names for `required_features=` report
+                        // lines — otherwise render falls back to `Enum.?`
+                        // (plans/M16.md item D1 / drivers.blk import).
+                        let mut enum_variants: BTreeMap<String, Vec<String>> = BTreeMap::new();
+                        for (k, e) in program.enums.iter().chain(program.imported.enums.iter()) {
+                            enum_variants
+                                .entry(k.clone())
+                                .or_insert_with(|| e.variants.clone());
+                        }
                         match report::render(&inputs, &enum_variants, &graph, &placement) {
                             Ok(mut text) => {
                                 let name = first_field_value(&text, "Name value=")

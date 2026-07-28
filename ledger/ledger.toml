@@ -2420,8 +2420,13 @@ note = """05-library.md §3: `Completion[T]` is a sealed single-resolution await
 [[clause]]
 id = "stdlib.drivers.package"
 doc = "02-language.md#2.1"
-status = "gap"
-note = """plans/M16.md item A / decisions 1110–1116: reserved alias `drivers` → `stdlib/drivers/` beside `core` (02 §2.1; stdlib layout). Package tree holds **only** `@driver` modules. Opened as gap; item B landed loader+path (`stdlib_drivers_root`, `err-stdlib-drivers-missing`); full flip to `test` waits on D's import-from-boot."""
+status = "test"
+tests = [
+  "golden/boot-blk-roundtrip",
+  "golden/check-drivers-blk-import",
+  "golden/err-stdlib-drivers-missing",
+]
+note = """plans/M16.md item A / decisions 1110–1116; finished D1 / 1140–1146: reserved alias `drivers` → `stdlib/drivers/` beside `core` (02 §2.1; stdlib layout). Package tree holds **only** `@driver` modules. Loader+path (`stdlib_drivers_root`, `err-stdlib-drivers-missing`) from item B; flagship boot golden imports `drivers.blk`."""
 
 [[clause]]
 id = "stdlib.suite.comptime"
@@ -2432,5 +2437,6 @@ note = """plans/M16.md item A: dual-tier in-wrela coverage — comptime `@test` 
 [[clause]]
 id = "stdlib.drivers.blk-relocated"
 doc = "06-machine.md#6"
-status = "gap"
-note = """plans/M16.md item A: virtio-blk `@driver` body relocates from inlined golden sources into `stdlib/drivers/blk.wr` (`drivers.blk`). Opened as gap; flips at items C/D when owned boot goldens import and match their transcript pins."""
+status = "test"
+tests = ["golden/boot-blk-roundtrip", "golden/check-drivers-blk-import"]
+note = """plans/M16.md item A; flipped D1 / decisions 1140–1146: virtio-blk `@driver` body lives in `stdlib/drivers/blk.wr` (`drivers.blk`). Flagship `boot-blk-roundtrip` imports and matches its transcript pin (`expected/test.txt` byte-identical; `expected/report.txt` re-pinned for `Input path=drivers/blk.wr`). Remaining owned boot goldens migrate in later D shards."""

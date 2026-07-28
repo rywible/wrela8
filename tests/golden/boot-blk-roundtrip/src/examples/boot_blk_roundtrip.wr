@@ -1,0 +1,93 @@
+module examples.boot_blk_roundtrip
+
+# plans/M7.md item E4 flagship (decision 22): HVF boot driven by the
+# driver's own bottom half — not by messaging a `@driver` (that floor
+# stays; `err-image-driver-message` unchanged).
+#
+# Sequence: init publishes a write of MAGIC; the device IRQ wakes `@task`
+# drain; drain validates, claims the completion, clears the buffer, and
+# publishes a read; the second IRQ's drain claims, runs both `checked_le`
+# outcomes on the live `written_len`, and asserts the hand-computed word.
+#
+# Hand-computed payload word: 0xC0FFEE00BEEF42A1.
+# Vacuity twin: `err-boot-blk-roundtrip` inverts the read-back assert.
+#
+# `await receipt` is typed and lowered but not executed here — the
+# caller-side messaging that would park on it is the named M6-D floor.
+#
+# plans/M16.md item D1 / decisions 1140–1146: layouts + `@driver` body
+# live in `drivers.blk`; pools redeclared locally (not importable).
+
+from drivers.blk import (
+    BlkDriver,
+    VirtioIrqMmio,
+    BlkReqHeader,
+    BlkReqStatus,
+    DmaBlock,
+    VirtioBlock,
+    Feature,
+    QDEPTH,
+    SECTOR,
+    BLK_T_IN,
+    BLK_T_OUT,
+    MAGIC,
+    PHASE_WRITE,
+    PHASE_READ,
+    PHASE_DONE,
+)
+
+pool BlockControl
+pool BlockPayloads
+
+@actor
+pub struct Ledger:
+    marks: u64
+
+    pub fn mark(mut self, n: u64) -> unit:
+        self.marks = self.marks * 10 + n
+        return unit
+
+    pub fn read_marks(read self) -> u64:
+        return self.marks
+
+@test(runtime)
+async fn blk_write_read_roundtrip(led: Actor[Ledger]):
+    # Two checkpoints: write IRQ+drain then read IRQ+drain. Surviving
+    # with marks 42 means every assert in both drain phases held.
+    a = await led.mark(n=4)
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
+    match a:
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "mark rejected"
+    b = await led.mark(n=2)
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
+    match b:
+        case .Ok(_):
+            pass
+        case .Err(_):
+            assert false, "mark rejected"
+    m = await led.read_marks()
+    @discard(reason="migrated: deliberate Err discard (M13 item L)")
+    match m:
+        case .Ok(v):
+            assert v == 42, "two marks after write-drain and read-drain checkpoints"
+        case .Err(_):
+            assert false, "read_marks rejected"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="boot-blk-roundtrip", target=Target.wrela_machine_v1)
+    blk = img.device[VirtioBlock](
+        transport=0x2000,
+        capacity_sectors=16,
+        required_features=[Feature.Flush],
+        vector=1,
+    )
+    control = img.dma_pool[BlkReqHeader](name=BlockControl, device=blk, count=32)
+    payloads = img.dma_pool[DmaBlock](name=BlockPayloads, device=blk, count=1)
+    disk = img.driver(BlkDriver, device=blk, buffer=take payloads)
+    led = img.actor(Ledger, mailbox=8)
+    img.on_failure(policy=Failure.Halt)
+    return img.seal()

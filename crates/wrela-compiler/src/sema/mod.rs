@@ -1656,6 +1656,17 @@ fn close_typed_type_reachability(
 
 /// Copy completed `@layout` tables from an exporter onto importers that
 /// imported a `@placed` static (plans/M11.md item E / decision 785).
+/// plans/M11.md item E / decision 785: after layouts are completed on
+/// the exporter, copy them onto importers that pulled in `@placed`
+/// statics (lower's placed-field path reads `TypedProgram::layouts`).
+///
+/// plans/M16.md item D1: also copy each imported name's own layout row
+/// when the exporter declares one (`@layout(dma)` / `mmio` types such as
+/// `DmaBlock`). Guest lower of a spliced `@driver` method calls
+/// `prepare_block_payload_len` against the *importer's* `TypedProgram`,
+/// which must see those sizes — importing the type alone left
+/// `prog.layouts` empty and failed closed with
+/// "`prepare_block`'s payload type has no `@layout(dma)` size".
 fn splice_imported_static_layouts(
     programs: &mut BTreeMap<Vec<String>, typed::TypedProgram>,
     bindings: &BTreeMap<Vec<String>, imports::ImportBindings>,
@@ -1672,10 +1683,20 @@ fn splice_imported_static_layouts(
         let Some(src) = programs.get(&exporter) else {
             continue;
         };
-        if !src.statics.contains_key(&target_name) {
+        let layouts: Vec<_> = if src.statics.contains_key(&target_name) {
+            // Placed-static import: bring the exporter's whole layout
+            // table (overlay structs the static's type mentions).
+            src.layouts.clone()
+        } else {
+            src.layouts
+                .iter()
+                .filter(|l| l.name == target_name)
+                .cloned()
+                .collect()
+        };
+        if layouts.is_empty() {
             continue;
         }
-        let layouts = src.layouts.clone();
         let dst = programs.get_mut(&importer).expect("importer key");
         for layout in layouts {
             if !dst.layouts.iter().any(|l| l.name == layout.name) {

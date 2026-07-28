@@ -3,9 +3,13 @@
 # redesign). Temporary duplication until Wave D migrates boot goldens.
 #
 # Frozen pub export set: VirtioIrqMmio, BlkReqHeader, BlkReqStatus,
-# DmaBlock, VirtioBlock, Feature, BlkDriver. Pool brands BlockControl /
-# BlockPayloads are declared here (grammar forbids `pub pool`; they are
-# not importable names — Wave D redeclares or binds by string identity).
+# DmaBlock, VirtioBlock, Feature, BlkDriver, plus the consts method
+# bodies name (QDEPTH / SECTOR / BLK_T_* / MAGIC / PHASE_*) — importers
+# must import those consts so A1b's splice makes them evaluable under
+# the importer's TypedProgram (guest lower of spliced `@driver` methods).
+# Pool brands BlockControl / BlockPayloads are declared here (grammar
+# forbids `pub pool`; they are not importable names — Wave D redeclares
+# or binds by string identity).
 module blk
 
 @layout(mmio, endian=little)
@@ -34,15 +38,15 @@ pub struct VirtioBlock:
 pub enum Feature:
     Flush
 
-const QDEPTH: usize = 8
-const SECTOR: usize = 512
-const BLK_T_IN: u32 = 0
-const BLK_T_OUT: u32 = 1
-const MAGIC: u64 = 0xC0FFEE00BEEF42A1
+pub const QDEPTH: usize = 8
+pub const SECTOR: usize = 512
+pub const BLK_T_IN: u32 = 0
+pub const BLK_T_OUT: u32 = 1
+pub const MAGIC: u64 = 0xC0FFEE00BEEF42A1
 # phase: 1 = write in flight; 2 = read in flight; 3 = done
-const PHASE_WRITE: u32 = 1
-const PHASE_READ: u32 = 2
-const PHASE_DONE: u32 = 3
+pub const PHASE_WRITE: u32 = 1
+pub const PHASE_READ: u32 = 2
+pub const PHASE_DONE: u32 = 3
 
 pool BlockControl
 pool BlockPayloads

@@ -6,7 +6,8 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/boot_blk_roundtrip.wr sha256=bdb08789276d7debf7b4890715b12bebc596b1a4d10a817e1287394b448ff7cf
+  Input path=drivers/blk.wr sha256=7c0c0c16c444c96f75084a3daa26955557f52d115421048fdd538200e29c8f37
+  Input path=examples/boot_blk_roundtrip.wr sha256=f8fe07d2e2b52f2da300d378c239232a70ae2978ba6e263a930b7f8df1973cae
   Input path=<generated> sha256=0eb1b93a43b49e818efedabfee320bced5f673956f5da860a0a4d937a6956d6e
   Name value=boot-blk-roundtrip
   Target value=Target.wrela_machine_v1
