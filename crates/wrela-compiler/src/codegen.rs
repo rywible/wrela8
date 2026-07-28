@@ -343,7 +343,7 @@
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::cost::{CostRule, EmittedWord};
+use crate::cost::{CostRule, EmittedWord, MemRef};
 use crate::encode::{self, Cond};
 use crate::mwir::{self, Inst, LayoutCtx, MwirFn, MwirProgram, Temp};
 use crate::sema::types::Type;
@@ -1044,14 +1044,41 @@ struct FnCtx<'a> {
     /// `TURN_RECORD_SIZE` for async fns (the frame slots sit immediately
     /// past the turn record within the turn area).
     slot_bias: usize,
+    /// Sequence for Cold-unique MemRefs when a Load/Store address is not
+    /// a proven `[base, #imm]` (cost hard-cut item B).
+    cold_seq: u64,
 }
 
 impl<'a> FnCtx<'a> {
     // Best-effort dest/src regs at emit time; `dst=None` / empty `srcs` OK when unknown
     // (scoreboard treats missing operands as no register deps). Never parse mnemonics.
+    // Load/Store without a proven address get a unique Cold MemRef; Adrp stays untagged.
     fn push(&mut self, word: u32, text: String, rule: CostRule, dst: Option<u8>, srcs: &[u8]) {
-        self.words
-            .push(EmittedWord::new(word, text, rule, dst, srcs));
+        let mem = match rule {
+            CostRule::Load | CostRule::Store => Some(self.alloc_unique_cold()),
+            _ => None,
+        };
+        self.push_mem(word, text, rule, dst, srcs, mem);
+    }
+
+    fn push_mem(
+        &mut self,
+        word: u32,
+        text: String,
+        rule: CostRule,
+        dst: Option<u8>,
+        srcs: &[u8],
+        mem: Option<MemRef>,
+    ) {
+        let mut ew = EmittedWord::new(word, text, rule, dst, srcs);
+        ew.mem = mem;
+        self.words.push(ew);
+    }
+
+    fn alloc_unique_cold(&mut self) -> MemRef {
+        let seq = self.cold_seq;
+        self.cold_seq = self.cold_seq.wrapping_add(1);
+        MemRef::cold_unique(seq)
     }
 
     fn cur_word(&self) -> usize {
@@ -1063,24 +1090,28 @@ impl<'a> FnCtx<'a> {
     fn load_slot(&mut self, reg: u8, off: usize) {
         let off = (off + self.slot_bias) as u16;
         let base = self.slot_base;
-        self.push(
+        let mem = MemRef::for_base_imm(base, off as u64);
+        self.push_mem(
             encode::enc_ldr_x_imm(reg, base, off),
             format!("ldr {}, [{}, #{off}]", reg_name(reg), reg_name(base)),
             CostRule::Load,
             Some(reg),
             &[base],
+            Some(mem),
         );
     }
 
     fn store_slot(&mut self, reg: u8, off: usize) {
         let off = (off + self.slot_bias) as u16;
         let base = self.slot_base;
-        self.push(
+        let mem = MemRef::for_base_imm(base, off as u64);
+        self.push_mem(
             encode::enc_str_x_imm(reg, base, off),
             format!("str {}, [{}, #{off}]", reg_name(reg), reg_name(base)),
             CostRule::Store,
             None,
             &[reg, base],
+            Some(mem),
         );
     }
 
@@ -1090,7 +1121,8 @@ impl<'a> FnCtx<'a> {
     /// `sp`).
     fn load_ptr(&mut self, reg: u8, base_reg: u8, byte_off: usize) {
         let byte_off = byte_off as u16;
-        self.push(
+        let mem = MemRef::for_base_imm(base_reg, byte_off as u64);
+        self.push_mem(
             encode::enc_ldr_x_imm(reg, base_reg, byte_off),
             format!(
                 "ldr {}, [{}, #{byte_off}]",
@@ -1100,12 +1132,14 @@ impl<'a> FnCtx<'a> {
             CostRule::Load,
             Some(reg),
             &[base_reg],
+            Some(mem),
         );
     }
 
     fn store_ptr(&mut self, reg: u8, base_reg: u8, byte_off: usize) {
         let byte_off = byte_off as u16;
-        self.push(
+        let mem = MemRef::for_base_imm(base_reg, byte_off as u64);
+        self.push_mem(
             encode::enc_str_x_imm(reg, base_reg, byte_off),
             format!(
                 "str {}, [{}, #{byte_off}]",
@@ -1115,6 +1149,7 @@ impl<'a> FnCtx<'a> {
             CostRule::Store,
             None,
             &[reg, base_reg],
+            Some(mem),
         );
     }
 
@@ -1125,12 +1160,14 @@ impl<'a> FnCtx<'a> {
     /// closed-emitter scan (plans/M10.md item F0) does not grow a new
     /// top-level emitter row.
     fn load_byte_imm(&mut self, rt: u8, rn: u8, byte_off: u16) {
-        self.push(
+        let mem = MemRef::for_base_imm(rn, byte_off as u64);
+        self.push_mem(
             encode::enc_ldrb_imm(rt, rn, byte_off),
             format!("ldrb w{rt}, [{}, #{byte_off}]", reg_name(rn)),
             CostRule::Load,
             Some(rt),
             &[rn],
+            Some(mem),
         );
     }
 
@@ -1386,20 +1423,22 @@ impl<'a> FnCtx<'a> {
             &[31],
         );
         self.load_rodata_addr(X_A, idx);
-        self.push(
+        self.push_mem(
             encode::enc_str_x_imm(X_A, 31, 0),
             format!("str {}, [sp]  ; Bytes.base", reg_name(X_A)),
             CostRule::Store,
             None,
             &[X_A, 31],
+            Some(MemRef::stack(0)),
         );
         self.load_imm(X_A, len as i64);
-        self.push(
+        self.push_mem(
             encode::enc_str_x_imm(X_A, 31, 8),
             format!("str {}, [sp, #8]  ; Bytes.len", reg_name(X_A)),
             CostRule::Store,
             None,
             &[X_A, 31],
+            Some(MemRef::stack(8)),
         );
         self.push(
             encode::enc_add_imm(0, 31, 0, true),
@@ -1434,12 +1473,13 @@ impl<'a> FnCtx<'a> {
     fn checkpoint(&mut self) {
         let addr = wrela_machine::pending::core_word_addr(0);
         self.load_imm(X_A, addr as i64);
-        self.push(
+        self.push_mem(
             encode::enc_ldr_x_imm(X_B, X_A, 0),
             format!("ldr {}, [{}]", reg_name(X_B), reg_name(X_A)),
             CostRule::Load,
             Some(X_B),
             &[X_A],
+            Some(MemRef::for_base_imm(X_A, 0)),
         );
         self.push(
             encode::enc_cbz(X_B, 8, true),
@@ -1485,36 +1525,40 @@ impl<'a> FnCtx<'a> {
             &[31],
         );
         self.load_rodata_addr(X_A, prefix_idx);
-        self.push(
+        self.push_mem(
             encode::enc_str_x_imm(X_A, 31, 0),
             format!("str {}, [sp]  ; prefix.base", reg_name(X_A)),
             CostRule::Store,
             None,
             &[X_A, 31],
+            Some(MemRef::stack(0)),
         );
         self.load_imm(X_A, prefix_len as i64);
-        self.push(
+        self.push_mem(
             encode::enc_str_x_imm(X_A, 31, 8),
             format!("str {}, [sp, #8]  ; prefix.len", reg_name(X_A)),
             CostRule::Store,
             None,
             &[X_A, 31],
+            Some(MemRef::stack(8)),
         );
         self.load_rodata_addr(X_A, suffix_idx);
-        self.push(
+        self.push_mem(
             encode::enc_str_x_imm(X_A, 31, 16),
             format!("str {}, [sp, #16]  ; suffix.base", reg_name(X_A)),
             CostRule::Store,
             None,
             &[X_A, 31],
+            Some(MemRef::stack(16)),
         );
         self.load_imm(X_A, suffix_len as i64);
-        self.push(
+        self.push_mem(
             encode::enc_str_x_imm(X_A, 31, 24),
             format!("str {}, [sp, #24]  ; suffix.len", reg_name(X_A)),
             CostRule::Store,
             None,
             &[X_A, 31],
+            Some(MemRef::stack(24)),
         );
         self.push(
             encode::enc_add_imm(0, 31, 0, true),
@@ -4654,6 +4698,7 @@ fn emit_fn(
         relocs: Vec::new(),
         slot_base: X_SP,
         slot_bias: 0,
+        cold_seq: 0,
     };
     emit_prologue(f, &frame, &mut probe_pro)?;
     let prologue_len = probe_pro.words.len();
@@ -4670,6 +4715,7 @@ fn emit_fn(
             relocs: Vec::new(),
             slot_base: X_SP,
             slot_bias: 0,
+            cold_seq: 0,
         };
         // plans/M11.md decision 740: no checkpoint on sync loop back-edges.
         emit_one(inst, f, &mut probe)?;
@@ -4692,6 +4738,7 @@ fn emit_fn(
         relocs: Vec::new(),
         slot_base: X_SP,
         slot_bias: 0,
+        cold_seq: 0,
     };
     emit_prologue(f, &frame, &mut ctx)?;
     debug_assert_eq!(ctx.words.len(), prologue_len);
@@ -8640,6 +8687,7 @@ fn emit_flowwir_fn(
         relocs: Vec::new(),
         slot_base: X_FRAME,
         slot_bias: TURN_RECORD_SIZE as usize,
+        cold_seq: 0,
     };
     emit_async_entry(
         &synthetic,
@@ -8660,6 +8708,7 @@ fn emit_flowwir_fn(
             relocs: Vec::new(),
             slot_base: X_FRAME,
             slot_bias: TURN_RECORD_SIZE as usize,
+            cold_seq: 0,
         };
         emit_flat_entry(
             entry,
@@ -8699,6 +8748,7 @@ fn emit_flowwir_fn(
         relocs: Vec::new(),
         slot_base: X_FRAME,
         slot_bias: TURN_RECORD_SIZE as usize,
+        cold_seq: 0,
     };
     emit_async_epilogue(&synthetic, &mut probe_epi)?;
     word_offsets[total + 1] = acc + probe_epi.words.len();
@@ -8712,6 +8762,7 @@ fn emit_flowwir_fn(
         relocs: Vec::new(),
         slot_base: X_FRAME,
         slot_bias: TURN_RECORD_SIZE as usize,
+        cold_seq: 0,
     };
     emit_async_entry(&synthetic, fn_key, &mut ctx, state_temp, &resume_target)?;
     debug_assert_eq!(ctx.words.len(), prologue_len);
@@ -10808,6 +10859,82 @@ mod tests {
         assert_eq!(adds.rule, CostRule::Alu);
         assert_eq!(adds.dst, Some(X_C));
         assert_eq!(adds.src_slice(), &[X_A, X_B]);
+    }
+
+    #[test]
+    fn sync_frame_load_store_tagged_stack() {
+        // cost hard-cut item B: proven SP-relative slot traffic → Stack.
+        let (mwir_program, layout) = compile(
+            "module examples.codegen_memref_stack\n\npub fn answer() -> u64:\n    return 42\n",
+        );
+        let program = codegen_program(&mwir_program, &layout).expect("codegen_program");
+        let f = &program.fns["answer"];
+        let mem_ops: Vec<&EmittedWord> = f
+            .code
+            .iter()
+            .filter(|ew| matches!(ew.rule, CostRule::Load | CostRule::Store))
+            .collect();
+        assert!(!mem_ops.is_empty());
+        for ew in mem_ops {
+            let mem = ew.mem.expect("load/store must be tagged");
+            assert_eq!(
+                mem.class,
+                crate::cost::MemClass::Stack,
+                "sp-relative {} should be Stack: {}",
+                ew.rule.as_str(),
+                ew.text
+            );
+        }
+    }
+
+    #[test]
+    fn adrp_has_no_memref() {
+        // cost hard-cut item B: Adrp never carries a MemRef.
+        // Narrow checked add emits inline abort stubs that ADRP rodata messages.
+        let (mwir_program, layout) = compile(
+            "module examples.codegen_memref_adrp\n\npub fn add(a: u8, b: u8) -> u8:\n    return a + b\n",
+        );
+        let program = codegen_program(&mwir_program, &layout).expect("codegen_program");
+        let f = &program.fns["add"];
+        let adrps: Vec<&EmittedWord> = f
+            .code
+            .iter()
+            .filter(|ew| ew.rule == CostRule::Adrp)
+            .collect();
+        assert!(!adrps.is_empty(), "expected adrp in abort stubs");
+        for ew in &adrps {
+            assert_eq!(ew.mem, None, "adrp must not carry MemRef: {}", ew.text);
+        }
+    }
+
+    #[test]
+    fn memref_for_base_imm_non_sp_is_cold_in_codegen_helpers() {
+        // Proven [x28, #imm] (async slot base) classifies as Cold, not Stack.
+        assert_eq!(
+            MemRef::for_base_imm(X_FRAME, 64).class,
+            crate::cost::MemClass::Cold
+        );
+        assert_eq!(
+            MemRef::for_base_imm(X_SP, 16),
+            MemRef::stack(16)
+        );
+    }
+
+    #[test]
+    fn unknown_load_via_push_gets_unique_cold() {
+        // Raw FnCtx::push of Load/Store (no proven base+imm) → unique Cold.
+        // Checked add overflow path emits `bl <__wrela_abort>`; the
+        // register-indirect device/pending forms use push → unique. Here
+        // we lock the allocator shape that push uses.
+        let u0 = MemRef::cold_unique(0);
+        let u1 = MemRef::cold_unique(1);
+        assert_eq!(u0.class, crate::cost::MemClass::Cold);
+        assert_ne!(u0.key, u1.key);
+        assert_ne!(u0.key & (1u64 << 63), 0);
+        // Contrast: proven non-SP base+imm is stable (no high bit).
+        let stable = MemRef::for_base_imm(X_A, 0);
+        assert_eq!(stable.class, crate::cost::MemClass::Cold);
+        assert_eq!(stable.key & (1u64 << 63), 0);
     }
 
     #[test]
