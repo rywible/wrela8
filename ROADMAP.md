@@ -72,18 +72,19 @@ beyond the active milestone. A milestone's *first deliverable* is its plan
 code exists, the shape decisions that milestone freezes, and explicit
 non-goals. Plans are written when a milestone activates, never earlier
 (each milestone manufactures the facts the next plan needs), and become
-history when it completes. Active plan:
-[plans/M18.md](plans/M18.md) (cycle proxy; differential only). M17 is
-COMPLETE ([plans/M17.md](plans/M17.md); thin entropy device + sync MWIR
-floor). M16 is COMPLETE ([plans/M16.md](plans/M16.md); stdlib maturity).
-M15 is COMPLETE ([plans/M15.md](plans/M15.md); variable cores + true
-concurrent vCPUs; barrier clause remains gap per
+history when it completes. Active plan: **none**. M18 is COMPLETE
+([plans/M18.md](plans/M18.md); cycle proxy — differential ISA ranking
+only). M17 is COMPLETE ([plans/M17.md](plans/M17.md); thin entropy
+device + sync MWIR floor). M16 is COMPLETE ([plans/M16.md](plans/M16.md);
+stdlib maturity). M15 is COMPLETE ([plans/M15.md](plans/M15.md);
+variable cores + true concurrent vCPUs; barrier clause remains gap per
 [plans/BLOCKED.md](plans/BLOCKED.md)). M14 is COMPLETE (doc cut:
 constructive progress theorem; no `plans/M14.md` — capability cut, not a
 build-out; forward-ref golden still `image.graph.handle-dag` gap). M13 is
-COMPLETE ([plans/M13.md](plans/M13.md)). Optimization playground is M19 —
-not activated. M12 is COMPLETE ([plans/M12.md](plans/M12.md)). M11 is
-COMPLETE ([plans/M11.md](plans/M11.md)). Ladder design:
+COMPLETE ([plans/M13.md](plans/M13.md)). Next is M19 (optimization
+harness) — draft [plans/M19.md](plans/M19.md), not activated. M12 is
+COMPLETE ([plans/M12.md](plans/M12.md)). M11 is COMPLETE
+([plans/M11.md](plans/M11.md)). Ladder design:
 [docs/superpowers/specs/2026-07-27-post-m15-ladder-design.md](docs/superpowers/specs/2026-07-27-post-m15-ladder-design.md).
 
 ### M1 — Parse everything
@@ -886,8 +887,8 @@ into M16 remains a human call at activation if entropy is truly tiny —
 default is split. Plan when activated. Non-goals: input/display;
 net/sound; virtio-rng rings; `stdlib/drivers/` changes.
 
-### M18 — The cycle proxy — ACTIVE
-**Activated 2026-07-28.** Detail: [plans/M18.md](plans/M18.md).
+### M18 — The cycle proxy — COMPLETE
+**Closed 2026-07-28.** Detail: [plans/M18.md](plans/M18.md).
 
 **Prerequisite discharged (2026-07-28):** the M13 ISR gate chose **keep**
 — ISR / `InterruptCell` paths are not scheduled to vanish. **Shape
@@ -895,10 +896,8 @@ frozen 2026-07-28 (human):** differential **ISA** proxy only — **no
 physical calibration**, no `profile` / `bench guest` work, **not an A76
 (or Apple) microarchitecture model**.
 
-Today `compiler.costs.predicted-vs-measured` is a gap: nothing emits a
-stable predicted cost artifact to golden or A/B. This milestone builds a
-deterministic **proxy-cycle** score for **ranking** emitted code. One
-question only:
+This milestone shipped a deterministic **proxy-cycle** score for
+**ranking** emitted code. One question only:
 
 > Given two semantically equivalent emitted programs, which ranks lower
 > under `wrela-cost-v1`?
@@ -908,8 +907,10 @@ wall-clock on Pi 5, Mac, or anything else. Cache sizes, predictors, and
 µarch details change real time; they must not be required to preserve
 **rank direction** for the emissions we care about (fewer / cheaper ops,
 shorter true data deps → lower proxy on every conforming host). Absolute
-accuracy vs silicon is out of scope; physical disposal stays with the
-cleverness budget / M19 when a spend lands.
+accuracy vs silicon is out of scope. Physical / host wall-time is
+**not** part of the optimization process (see cleverness budget / M19);
+optional offline research may retune `wrela-cost-v1` on proxy misrank
+suspicion only.
 
 **Target the sealed ISA stream, not a chip.** The machine’s guest ISA is
 the ARMv8.2-A + NEON baseline (06 §1 — intersection of A76 and Apple
@@ -954,10 +955,10 @@ function.
 **No physical calibration.** Do not amplify cases until wall-time deltas
 beat noise; do not tune `wrela-cost-v1` against `bench guest` / `profile`
 on any host. Proxy regressions are golden diffs. Proxy wins have no
-minimum size and are **not** physical evidence. If a later budget spend’s
-physical Δ **disagrees in direction** with proxy order, that is an M19 /
-spend event (pin, fix the ISA model, or mark unscored) — not an M18
-host-calibration loop. Leave `profile` untouched.
+minimum size and are **not** physical evidence. Host wall-time is
+out of the opt loop (M19 / cleverness budget). If offline research ever
+suggests the proxy misranks, retune `wrela-cost-v1` deliberately — never
+calibrate M18 against HVF. Leave `profile` untouched for the ruler.
 
 **Semantic counts stay exact.** Choice entries, exits, transcript bytes,
 exit status: exact match or bug (correctness oracles beside the proxy).
@@ -985,7 +986,7 @@ sites — not async loops (checkpoints drown the delta) and not sync loops
 Held out of the differential corpus used to sanity-check the scorer.
 **Proxy smoke:** off/on must improve **rank** (lower schedule total) or
 the model is wrong. **Landing** still pays the cleverness budget and may
-wait for M19; physical disagree/unmeasurable does not block M18 close.
+wait for M19's mode harness; host timing does not block M18 close.
 Never tune `wrela-cost-v1` against the held-out case.
 
 Flips: `compiler.costs.predicted-vs-measured`. Opens only what the dump
@@ -997,40 +998,57 @@ cache/L2/L3/branch-mispredict models; `profile` juxtaposition; `@budget`
 proofs; WCET; exit-rate report lines; multicore contention; DVFS/thermal;
 in-compiler ML; anything beyond the capstone smoke.
 
-### M19 — The optimization playground
-M18 is the ruler. M19 is the shelf where purchases sit — not the purchases.
+### M19 — The optimization harness — not activated
+**Detail (draft for review):** [plans/M19.md](plans/M19.md). Activates
+with that plan's item 0. M18 is the ruler (COMPLETE); M19 is the
+**in-code harness** that uses it — not an evidence table, not purchases,
+not a physical-measurement loop.
 
-**What lands (three things).**
+**What lands.**
 
-1. **Evidence table.** Checked-in rows (e.g. `bench/optimizations.toml`):
-   id, module, recording, proxy Δ, physical Δ, lock. `cargo xtask check`
-   refuses an enabled opt with a missing row.
-2. **Opts off still correct.** Clever steps are ordinary named calls in a
-   fixed order, each skippable. With them all off, goldens and `diff-eval`
-   still pass. No pass manager, plugins, or query system.
-3. **Opts on covered by `check`, not by a production sandwich.** Miscompiles
-   are caught where this project already catches them: `diff-eval`, boot
-   goldens, and existing structural `validate` / layout verifies under
-   `cargo xtask check` (and fuzz) with opts on. Production `wrela build`
-   keeps only the cheap structural checks it already runs
-   (`verify_section_sizes` and kin) — it does not re-verify IR after every
-   clever step. Ill-formed IR from an opt is a CI failure; well-formed
-   wrong code is a `diff-eval`/golden failure. If turning an opt off breaks
-   semantics, it is a bug fix or a doc rule — not an optimization.
+1. **Two compile modes, hardcoded.** `dev` = every named opt off;
+   `release` = every named opt on, in a fixed call order that lives in
+   the compiler (ordinary named functions — no pass manager, no recipe
+   TOML, no plugin system). Default product path is `release`.
+2. **Proxy is the only profitability oracle.** Against the fixed cost
+   corpus: the release pipeline vs `dev` (and a candidate pipeline vs the
+   current release set) must **not raise any case's proxy total** and must
+   **strictly lower at least one**. Losers are deleted or reworked — not
+   kept disabled "for later." Convolution matters: score the full
+   pipeline in context, not isolated toy wins. Pass reordering stays in
+   scope as an offline edit of the in-code order + re-rank; M19 does
+   **not** ship a searcher.
+3. **Both modes stay correct.** `dev` and `release` both pass existing
+   oracles (`diff-eval`, goldens, validate / layout verifies under
+   `cargo xtask check`). Semantics must not depend on opts. Production
+   `wrela build` keeps only the cheap structural checks it already runs
+   — it does not re-verify IR after every clever step. Ill-formed IR from
+   an opt is a CI failure; well-formed wrong code is a `diff-eval`/golden
+   failure.
 
-Done when a later spend can add a function + a table row without inventing
-process. M18's capstone is the smoke test if it landed; do not invent a
-second toy opt to prove the shelf.
+**Physical / host wall-time is out of this process.** Optional offline
+research may inform retuning `wrela-cost-v1` when a *proxy* misrank is
+suspected — that improves the ruler; it is never a land gate, never a
+`check` column, never wired into the harness.
 
-**Non-goals.** Register allocation, isel catalogs, fusion, weighted
-search, recipe frameworks, SelectionDAG, "host all future lanes,"
-world's-fastest exit criteria, cost proofs. Those are budget spends that
-use this shelf. Three spend lanes (floor / search / specialization) live
-in the cleverness-budget section below — doctrine, not M19 deliverables.
+Done when a later spend can add a named function to the release order,
+prove the corpus proxy win rule, and leave `dev`/`release` green —
+without inventing process. M19 ships **two** smoke opts so convolution
+is real: M18's bounds-elide plus **narrow immediate materialization**
+(`FnCtx::load_imm` skips zero `MOVK` halfwords; naive four-word form
+stays `dev`). Close records the cost-corpus proxy Δ (`dev` → `release`).
+Do not invent a third opt to prove the harness.
 
-Depends on M18's score + proxy A/B (not on physical calibration — M18
-ships none). Opens: evidence-table and opts-off clauses.
-Plan when activated.
+**Non-goals.** `optimizations.toml` / evidence rows; physical A/B or
+`profile`/`bench guest` as opt gates; offline pass-order searcher;
+register allocation; isel catalogs; fusion; weighted search; recipe
+frameworks; SelectionDAG; cost proofs; exit-rate report lines;
+"host all future lanes"; world's-fastest exit criteria. Those (where
+still wanted) are later spends that use this harness, or recorded
+intentions — not M19 deliverables.
+
+Depends on M18's score + proxy A/B (COMPLETE; no physical calibration).
+Opens: compile-mode and proxy-win-corpus clauses (ids in the plan).
 
 ### Recorded language intentions (not yet scheduled)
 
@@ -1266,35 +1284,49 @@ Plan when activated.
 
 ## The cleverness budget (permanent)
 
-Cleverness is a resource, acquired only through a profile. An optimization
-lands only with all three, no matter how obviously fast it is:
+Cleverness is a resource, acquired only through the **cycle proxy**
+(M18). An optimization lands only when all of the following hold, no
+matter how obviously fast it looks on a host:
 
-1. a flame graph / counter profile from a named, replayable workload;
-2. a before/after measurement on that same recording; and
-3. a **lock** — a bench threshold or `@budget`/layout assertion — so the
-   win cannot silently regress.
+1. it is a **named skippable call** in the fixed in-code release pipeline
+   (M19 harness — ordinary functions in a fixed order; `dev` turns them
+   all off, `release` turns them all on);
+2. enabling it **in context** (full release pipeline vs without it, or
+   vs `dev`) does **not raise** proxy-cycles on any case in the fixed
+   cost corpus and **strictly lowers** at least one — losers are scraped
+   or reworked, not kept around disabled; and
+3. correctness oracles stay green with opts on (`release`) and with all
+   opts off (`dev`) — `diff-eval`, goldens, validate. Semantics must not
+   depend on opts.
 
-After M19, landings also need an **evidence row** in the optimization
-table (proxy Δ, physical Δ, module, off-switch) — no row, no enablement.
+**Physical / host wall-time is not part of this process.** Flame graphs,
+`profile` guest timings, and `bench guest` A/B are optional offline
+research that may inform a deliberate retune of `wrela-cost-v1` when a
+*proxy* misrank is suspected. They are never a land gate, never an
+evidence-table column, and never something `cargo xtask check` demands
+for an opt. Do not build physical measurement into the optimization
+loop.
 
-Measurement has two lanes, and the budget governs both equally. The
-**guest lane** — how fast wrela code runs — needs the VMM and
-record/replay, so it lands at M5. The **compiler lane** — how fast wrela
-code *compiles* — needs nothing but the compiler and a clock, so it lands
-at M1 (`wrela --timings`, `xtask bench compiler` over the corpus, locked
-thresholds). No interning, arenas, parallelism, or incrementality in the
-compiler until its own bench shows the hot spot. Working hypothesis, made
-falsifiable by the lock: the dumb compiler is already fast, because the
-things that make compilers slow — LLVM, incremental machinery, heavy
-optimization passes — are exactly the things this one does not have.
+The **compiler lane** — how fast wrela code *compiles* — is separate and
+still locked by `wrela --timings` / `xtask bench compiler` (M1). No
+interning, arenas, parallelism, or incrementality in the compiler until
+*that* bench shows the hot spot. Working hypothesis, falsifiable by the
+compiler lock: the dumb compiler is already fast, because the things that
+make compilers slow — LLVM, incremental machinery, heavy optimization
+passes — are exactly the things this one does not have. Guest wall-time
+lanes (`bench guest`, `profile`) remain available as **product / VMM**
+measurement (boot thresholds, transcript identity); they do not gate
+compiler opts.
 
-**Spend shape.** *Floor* (always-on local truths), *search* (bounded choice
-under the proxy), *specialization* (recording-weighted, off until paid).
-Do not mix them. The naive pipeline stays the reference; opts are named
-skippable calls; correctness must not depend on them; miscompiles are
-`check` oracles (`diff-eval`, goldens, validate), not a mandatory
-production verify sandwich; single-ISA recipes are fine; a general mid-end
-is not; ML may emit tables offline and must not run in the compiler.
+**Spend shape.** *Floor* (always-on local truths under `release`),
+*search* (bounded choice under the proxy — offline; not an in-compiler
+enumerator at M19), *specialization* (recording-weighted ideas stay off
+until paid under the same proxy win rule). Do not mix them. The naive
+pipeline (`dev`) stays the reference; opts are named skippable calls;
+miscompiles are `check` oracles (`diff-eval`, goldens, validate), not a
+mandatory production verify sandwich; single-ISA recipes are fine; a
+general mid-end is not; ML may emit tables offline and must not run in
+the compiler.
 
 Rules that follow:
 
@@ -1308,12 +1340,11 @@ Rules that follow:
   density, the doorbell ABI, and image/frame layout rules bake into the
   machine spec and are revised deliberately, not patched.
 - Known future hot spots (compositor inner loop, naive codegen quality,
-  and — once M11 lands — the scheduler, which runs between every turn and
-  is unreachable by this budget until ImageStatic specialization is
-  dissolved into ordinary wrela) wait their turn like everything else: the
-  profile says when, and until then dumb code calling stdlib SIMD ops is
-  the answer. After M19 they land as table rows, not as silent pipeline
-  edits.
+  scheduler dispatch) wait their turn: the **proxy corpus** says when a
+  candidate wins in context, and until then dumb code calling stdlib SIMD
+  ops is the answer. After M19 they land as named calls in the release
+  order, not as silent pipeline edits and not as table rows with physical
+  columns.
 - **Where I/O effort is worth spending, and where it is not.** For
   storage, the software path is already below the device's noise floor — a
   ~1 µs round trip against a 10–80 µs NVMe read is 1–5%, so optimizing it
@@ -1323,10 +1354,9 @@ Rules that follow:
   wins actually are — **note (2026-07-26): `net` is outside machine-v1
   conformance after M13 item D** (future machine revision); this bullet
   and the M8 bandwidth arithmetic (~2M descriptors/sec/core, VFIO/vDPA)
-  reason about that future revision, not the v1 contract M18/M19 will
-  first measure against. Check which regime a workload is in *before*
-  profiling it, or the profile will faithfully measure something that
-  does not matter.
+  reason about that future revision, not the v1 contract M18/M19 first
+  rank under the proxy. Prefer proxy-visible emission wins on the paths
+  that dominate; do not invent host-timing theatre for noise-floor work.
 - **The win is the tail, not the mean** — and this reframes what "beating a
   general-purpose OS" means. Throughput parity with a tuned Linux is
   achievable and unremarkable. What a general-purpose OS cannot offer is a
@@ -1336,11 +1366,10 @@ Rules that follow:
   and it is the claim to defend. M18 makes ranking that path's *emissions*
   repeatable (zero-variance proxy A/B), but its proxy does **not** prove
   the tail at build time — that claim waits for the separate cost-proof
-  work recorded above, and physical timing stays a budget/M19 concern.
-  Measure tails, not averages; a benchmark reporting only a mean is
-  measuring the half of the story wrela does not win on.
+  work recorded above. Do not smuggle physical timing back in as a
+  substitute for that proof.
 - **The scheduler's own spend order** (recorded so it is not improvised
-  the first time someone profiles a boot). Each step manufactures the
+  the first time someone wants a faster boot). Each step manufactures the
   evidence the next one needs: (1) M10 — console/abort as wrela, uniform
   turns, floor locked; ImageStatic specialization remains as the
   recorded interim; (2) M11 — generated config + generic `runtime.wr`;
@@ -1348,19 +1377,18 @@ Rules that follow:
   ordinary wrela `match` by construction; (3) M12–M13 — the
   representation rung (data ladders die, the census ratchets) and the
   vocabulary milestone (discarded `CallError` is refused in runtime and
-  app code alike); (4) **measure** — `bench guest` over byte-identical
-  transcripts gives the exact before/after; M18's zero-variance
-  proxy-score diff is available **beside** that physical run for ranking
-  candidates, never instead of it and never as M18 calibration;
-  (5) the two dumb wins, if and only if the profile asks for them —
-  populate the already-reserved ready-queue table (O(actors) scan → O(1)
-  pop, no layout change, the slots are placed already) and lower a dense
-  comptime-known `match` to a jump table (one codegen change that lifts
-  every `match` in the language, not a bespoke scheduler hack); (6) only
-  then consider fusion, as a FlowWir → mwir *lowering* validated by
-  `diff-eval`, never a rewrite. Nothing in this list needs `WFE`, an
-  interrupt controller, or a global state machine — see M10's settled
-  rejections.
+  app code alike); (4) **rank** — M18's zero-variance proxy-score diff
+  over the cost corpus (and, after M19, `dev` vs `release`) decides
+  candidate order; `bench guest` may still lock product boot thresholds
+  but does **not** gate opts; (5) the two dumb wins, if and only if the
+  proxy win rule admits them — populate the already-reserved ready-queue
+  table (O(actors) scan → O(1) pop, no layout change, the slots are
+  placed already) and lower a dense comptime-known `match` to a jump
+  table (one codegen change that lifts every `match` in the language, not
+  a bespoke scheduler hack); (6) only then consider fusion, as a
+  FlowWir → mwir *lowering* validated by `diff-eval`, never a rewrite.
+  Nothing in this list needs `WFE`, an interrupt controller, or a global
+  state machine — see M10's settled rejections.
 
 Also permanently out: abstractions serving futures that are not ledger
 clauses; incremental/parallel/cached anything in the compiler until a
