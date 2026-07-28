@@ -48,10 +48,10 @@ ImageReport v0
   Cores count=1
   CoreStack core=0 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=109176
-  Section name=rodata base=0x4051aac8 size=551
-  Section name=abort base=0x4051acf0 size=120
-  Section name=checkpoint base=0x4051ad68 size=28
+  Section name=code base=0x40500050 size=109272
+  Section name=rodata base=0x4051ab28 size=551
+  Section name=abort base=0x4051ad50 size=120
+  Section name=checkpoint base=0x4051adc8 size=28
   Section name=rtdata base=0x40540000 size=1144
   Entry base=0x40500000
   PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8

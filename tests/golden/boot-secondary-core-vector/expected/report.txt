@@ -50,14 +50,14 @@ ImageReport v0
   CoreStack core=1 base=0x7fe00000 size=0x100000
   CoreStack core=2 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=112032
-  Section name=rodata base=0x4051b5f0 size=635
-  Section name=abort base=0x4051b86c size=120
-  Section name=checkpoint base=0x4051b8e4 size=28
+  Section name=code base=0x40500050 size=112128
+  Section name=rodata base=0x4051b650 size=635
+  Section name=abort base=0x4051b8cc size=120
+  Section name=checkpoint base=0x4051b944 size=28
   Section name=rtdata base=0x40540000 size=1368
   Entry base=0x40500000
-  CoreEntry core=1 base=0x4051b1c4
-  CoreEntry core=2 base=0x4051b214
+  CoreEntry core=1 base=0x4051b224
+  CoreEntry core=2 base=0x4051b274
   PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672

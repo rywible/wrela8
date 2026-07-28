@@ -118,6 +118,18 @@ pub const EXCEPTIONS: &[(&str, &str)] = &[
          recorded/replayed through the recorder's `ClockRead` choice entry — wrela source can \
          express neither the prohibition nor the choice-point binding.",
     ),
+    // --- plans/M15.md item H: runtime-only cross-core barriers ---------
+    (
+        "dmb.ishld",
+        "plans/M15.md item H / 04 §3 acquire barrier: one inlined DMB ISHLD word. Same \
+         runtime-wr-only gate as `dmb.ishst`.",
+    ),
+    (
+        "dmb.ishst",
+        "plans/M15.md item H / 04 §3 publish barrier: one inlined DMB ISHST word. Legal only \
+         inside stdlib/core/runtime.wr — not an author-facing 05 §9 surface; wrela has no fence \
+         expression form.",
+    ),
     // --- 05 §7: sealed array whole-consumption -------------------------
     (
         "Array.map_take",

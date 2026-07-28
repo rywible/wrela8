@@ -22,7 +22,7 @@ total = 205
 "sema/typed.rs" = 1
 
 [emitted_a64]
-encode_enc_site_total = 449
+encode_enc_site_total = 451
 floor_sum_of_rows = 67
 floor_words = 52
 image_static_sum_of_rows = 0
@@ -34,7 +34,7 @@ non_inventory = ["layout.rs::patch_bl", "layout.rs::patch_load_imm_words", "layo
 wrapper_emitters = []
 
 [emitted_a64.encode_enc_sites_by_file]
-"codegen.rs" = 400
+"codegen.rs" = 402
 "layout.rs" = 8
 "layout/harness.rs" = 41
 

@@ -63,10 +63,10 @@ ImageReport v0
   Cores count=1
   CoreStack core=0 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=112512
-  Section name=rodata base=0x4051b7d0 size=1055
-  Section name=abort base=0x4051bbf0 size=120
-  Section name=checkpoint base=0x4051bc68 size=28
+  Section name=code base=0x40500050 size=112608
+  Section name=rodata base=0x4051b830 size=1055
+  Section name=abort base=0x4051bc50 size=120
+  Section name=checkpoint base=0x4051bcc8 size=28
   Section name=rtdata base=0x40540000 size=2328
   Section name=devregs base=0x40540918 size=272
   Entry base=0x40500000

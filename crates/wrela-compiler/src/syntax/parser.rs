@@ -2663,11 +2663,14 @@ impl Parser {
         match attr.name.as_str() {
             "budget" => self.parse_loop_after_budget(attr),
             "discard" => self.parse_match_after_discard(attr),
+            // plans/M15.md item H: standalone `@dmb(ishst|ishld)` — no
+            // following statement; sema owns the runtime-wr-only gate.
+            "dmb" => Ok(Stmt::Dmb(attr)),
             other => Err(self.error_at(
                 attr.span,
                 format!(
-                    "only `@budget(...)` or `@discard(...)` may be a statement attribute \
-                     (02-language.md §13); found `@{other}`"
+                    "only `@budget(...)`, `@discard(...)`, or `@dmb(...)` may be a statement \
+                     attribute (02-language.md §13); found `@{other}`"
                 ),
             )),
         }
@@ -4013,6 +4016,7 @@ fn dump_stmt(stmt: &Stmt, depth: usize, strip: bool, out: &mut String) {
         Stmt::Break(s) => push_line(out, depth, &hdr(strip, "Break", *s)),
         Stmt::Continue(s) => push_line(out, depth, &hdr(strip, "Continue", *s)),
         Stmt::Pass(s) => push_line(out, depth, &hdr(strip, "Pass", *s)),
+        Stmt::Dmb(a) => dump_attrs(std::slice::from_ref(a), depth, strip, out),
         Stmt::Return(s, value) => {
             push_line(out, depth, &hdr(strip, "Return", *s));
             if let Some(v) = value {

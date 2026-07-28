@@ -915,6 +915,9 @@ pub(crate) const SEMA_CATEGORIES: &[&str] = &[
     // discharge — `error[sema]` when a synchronous for/while lacks the
     // attribute (02-language.md §8.1).
     "sema",
+    // plans/M15.md item H: `@dmb` runtime-wr-only refuse —
+    // `error[intrinsic]` outside `stdlib/core/runtime.wr`.
+    "intrinsic",
 ];
 
 /// One full run of the pipeline the sema fuzzer exercises: lex, then (on

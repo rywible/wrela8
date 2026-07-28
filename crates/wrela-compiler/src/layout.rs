@@ -1387,7 +1387,7 @@ fn collect_bind_handlers_stmts(stmts: &[crate::syntax::ast::Stmt], out: &mut Vec
                     collect_bind_handlers_expr(m, out);
                 }
             }
-            Stmt::Break(_) | Stmt::Continue(_) | Stmt::Return(_, None) | Stmt::Pass(_) => {}
+            Stmt::Break(_) | Stmt::Continue(_) | Stmt::Return(_, None) | Stmt::Pass(_) | Stmt::Dmb(_) => {}
         }
     }
 }

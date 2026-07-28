@@ -329,6 +329,7 @@ fn subst_stmt(s: &Stmt, subst: &Subst) -> Stmt {
         | Stmt::Continue(_)
         | Stmt::Return(_, None)
         | Stmt::Pass(_)
+        | Stmt::Dmb(_)
         | Stmt::ComptimeIf(_) => s.clone(),
     }
 }

@@ -1,0 +1,6 @@
+module examples.err_dmb_outside_runtime
+
+# plans/M15.md item H: `@dmb` is runtime.wr-only — refuse elsewhere.
+pub fn fence() -> unit:
+    @dmb(ishst)
+    return

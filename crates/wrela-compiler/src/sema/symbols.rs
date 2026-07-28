@@ -520,7 +520,7 @@ impl<'a> Resolver<'a> {
                 self.resolve_expr(&w.cond)?;
                 self.scoped(|r| r.resolve_stmts(&w.body))
             }
-            Stmt::Break(_) | Stmt::Continue(_) | Stmt::Pass(_) => Ok(()),
+            Stmt::Break(_) | Stmt::Continue(_) | Stmt::Pass(_) | Stmt::Dmb(_) => Ok(()),
             Stmt::Return(_span, e) => match e {
                 Some(e) => self.resolve_expr(e),
                 None => Ok(()),

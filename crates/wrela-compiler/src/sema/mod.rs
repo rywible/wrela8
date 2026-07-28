@@ -837,7 +837,10 @@ fn check_program_typed_tables(
 
     let mut mctxs: BTreeMap<Vec<String>, bodies::ModuleCtx> = BTreeMap::new();
     for (key, module) in &specialized {
-        let mctx = bodies::build_module_ctx(module, &decl_items_map[key], &imported_types[key]);
+        let mut mctx = bodies::build_module_ctx(module, &decl_items_map[key], &imported_types[key]);
+        // plans/M15.md item H: loader key (e.g. `core.runtime`) — not the
+        // file's own `module runtime` address — gates `@dmb`.
+        mctx.loader_key = key.clone();
         mctxs.insert(key.clone(), mctx);
     }
 

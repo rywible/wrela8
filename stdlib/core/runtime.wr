@@ -936,6 +936,8 @@ pub fn __wrela_rt_xsend(edge: usize, method: u64, arg0: u64, arg1: u64, waker_tu
         t = 0
     RINGS_CTL.edges[edge].tail = t
     RINGS_CTL.edges[edge].count = count +% 1
+    # plans/M15.md item H: publish barrier before pending raise.
+    @dmb(ishst)
     dst = __wrela_ring_dst_core(edge)
     PENDING.words[dst] = PENDING.words[dst] | 1
     return 0
@@ -963,6 +965,8 @@ pub fn __wrela_rt_xreply(edge: usize, turn_and_tag: u64, reply: u64):
         t = 0
     RINGS_CTL.edges[edge].tail = t
     RINGS_CTL.edges[edge].count = count +% 1
+    # plans/M15.md item H: publish barrier before pending raise.
+    @dmb(ishst)
     dst = __wrela_ring_dst_core(edge)
     PENDING.words[dst] = PENDING.words[dst] | 1
     return
@@ -984,6 +988,8 @@ pub fn __wrela_rt_drain(core: usize) -> u64:
         edge = __wrela_drain_reply_edge(core, ri)
         @budget(bound=256)
         while RINGS_CTL.edges[edge].count != 0:
+            # plans/M15.md item H: acquire barrier before payload loads.
+            @dmb(ishld)
             head = RINGS_CTL.edges[edge].head
             base = (head *% 2).to[usize]()
             row = edge *% RING_STRIDE_WORDS
@@ -1011,6 +1017,8 @@ pub fn __wrela_rt_drain(core: usize) -> u64:
         edge = __wrela_drain_request_edge(core, qi)
         @budget(bound=256)
         while RINGS_CTL.edges[edge].count != 0:
+            # plans/M15.md item H: acquire barrier before payload loads.
+            @dmb(ishld)
             slot_words = __wrela_ring_slot_words(edge)
             head = RINGS_CTL.edges[edge].head
             base = (head *% slot_words.to[u64]()).to[usize]()

@@ -994,7 +994,7 @@ pub(crate) fn scan_group_starts_stmt<'a>(s: &'a Stmt, gname: &str, out: &mut Vec
             scan_group_starts_expr(&w.cond, gname, out);
             scan_group_starts_stmts(&w.body, gname, out);
         }
-        Stmt::Break(_) | Stmt::Continue(_) | Stmt::Pass(_) => {}
+        Stmt::Break(_) | Stmt::Continue(_) | Stmt::Pass(_) | Stmt::Dmb(_) => {}
         Stmt::Return(_, e) => {
             if let Some(e) = e {
                 scan_group_starts_expr(e, gname, out);

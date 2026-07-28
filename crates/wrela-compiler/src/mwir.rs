@@ -640,6 +640,12 @@ pub enum Inst {
         width: u8,
         value: Temp,
     },
+    /// plans/M15.md item H: one inlined `DMB ISHST` / `DMB ISHLD` word
+    /// (`@dmb(ishst)` / `@dmb(ishld)`). No call / no BL.
+    Dmb {
+        /// `"ishst"` or `"ishld"` — frozen spellings from plans/M15.md item H.
+        option: String,
+    },
     /// plans/M7.md item G: `wake(Driver.task)` — sticky store of 1 into
     /// that driver's wake-pending word in `rtdata`. Layout patches the
     /// address. Mask–arm–recheck: the bit is level-triggered; a wake
@@ -1705,6 +1711,7 @@ pub(crate) fn fmt_inst(inst: &Inst) -> String {
         } => format!(
             "InterruptCellFetchOrRelease dst={dst} field_off={field_off} width={width} value={value}"
         ),
+        Inst::Dmb { option } => format!("Dmb option={option}"),
         Inst::Wake { driver } => format!("Wake driver={driver}"),
         Inst::SlotMapMint { map } => format!("SlotMapMint map={map}"),
         Inst::MakeAggregate { dst, elems } => {

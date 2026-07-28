@@ -585,6 +585,7 @@ pub fn count_with_group_sites(modules: &BTreeMap<String, Module>) -> u64 {
                 | Stmt::Continue(_)
                 | Stmt::Return(_, _)
                 | Stmt::Pass(_)
+                | Stmt::Dmb(_)
                 | Stmt::Assert(_)
                 | Stmt::Send(_, _)
                 | Stmt::Expr(_, _)

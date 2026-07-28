@@ -1072,7 +1072,7 @@ fn scan_stmt_self(
             scan_expr_self(&w.cond, sname, mctx, effects, acc);
             scan_stmts_self(&w.body, sname, mctx, effects, acc);
         }
-        Stmt::Break(_) | Stmt::Continue(_) | Stmt::Pass(_) => {}
+        Stmt::Break(_) | Stmt::Continue(_) | Stmt::Pass(_) | Stmt::Dmb(_) => {}
         Stmt::Return(_, e) => {
             if let Some(e) = e {
                 scan_expr_self(e, sname, mctx, effects, acc);

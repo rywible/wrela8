@@ -2130,6 +2130,19 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             )?;
             ctx.store_slot(X_C, dst_off);
         }
+        // plans/M15.md item H: one DMB word, no BL.
+        Inst::Dmb { option } => {
+            let (enc, mnem) = match option.as_str() {
+                "ishst" => (encode::enc_dmb_ishst(), "dmb ishst"),
+                "ishld" => (encode::enc_dmb_ishld(), "dmb ishld"),
+                other => {
+                    return Err(CodegenError::internal(format!(
+                        "unknown Dmb option `{other}` (expected ishst|ishld)"
+                    )));
+                }
+            };
+            ctx.push(enc, mnem.to_string());
+        }
         // plans/M7.md item G: sticky store of 1 into the driver's
         // wake-pending word. Level-triggered: a wake before/during/after
         // the bottom half's cell observation remains set until the

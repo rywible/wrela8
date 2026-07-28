@@ -907,6 +907,7 @@ fn print_stmt(stmt: &Stmt, indent: usize, out: &mut String) {
         Stmt::Break(_) => push_line(out, indent, "break"),
         Stmt::Continue(_) => push_line(out, indent, "continue"),
         Stmt::Pass(_) => push_line(out, indent, "pass"),
+        Stmt::Dmb(a) => print_attrs(std::slice::from_ref(a), indent, out),
         Stmt::Return(_, value) => match value {
             Some(v) => push_line(out, indent, &format!("return {}", print_expr(v, indent))),
             None => push_line(out, indent, "return"),

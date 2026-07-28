@@ -273,6 +273,26 @@ pub fn enc_stlxr_x(rs: u8, rt: u8, rn: u8) -> u32 {
     0xc800fc00 | (reg(rs) << 16) | (reg(rn) << 5) | reg(rt)
 }
 
+// --- Barriers: DMB (plans/M15.md item H, decisions 1080–1085) ------------
+//
+// ARM ARM "DMB": `1101 0101 0000 0011 0011 CRm[3:0] 1 01 11111`
+// (`0xD50330BF` with CRm in bits [11:8]). Option encodings (CRm):
+// ISHST=0b1010, ISHLD=0b1001. Ground truth is `as -arch arm64` on macOS
+// (same method as the InterruptCell block above). Runtime-only
+// `@dmb(ishst)` / `@dmb(ishld)` emit these; no `DMB SY` by default.
+
+/// `DMB ISHST` — inner-shareable store barrier.
+/// `as`: `dmb ishst` = `0xd5033abf`.
+pub fn enc_dmb_ishst() -> u32 {
+    0xd5033abf
+}
+
+/// `DMB ISHLD` — inner-shareable load barrier.
+/// `as`: `dmb ishld` = `0xd50339bf`.
+pub fn enc_dmb_ishld() -> u32 {
+    0xd50339bf
+}
+
 // --- Loads/stores: register pair, signed offset (LDP/STP) -----------------
 //
 // ARM ARM "LDP/STP (signed offset)": `opc[31:30] 101 0 010 L[22]
@@ -954,6 +974,13 @@ mod tests {
         assert_eq!(enc_ldr_w_imm(0, 1, 0), 0xb9400020);
         assert_eq!(enc_strb_imm(0, 1, 0), 0x39000020);
         assert_eq!(enc_ldrb_imm(0, 1, 0), 0x39400020);
+    }
+
+    /// plans/M15.md item H: DMB ISHST / ISHLD against `as -arch arm64`.
+    #[test]
+    fn dmb_ishst_and_ishld_match_arm_arm() {
+        assert_eq!(enc_dmb_ishst(), 0xd5033abf);
+        assert_eq!(enc_dmb_ishld(), 0xd50339bf);
     }
 
     /// plans/M7.md item G: every InterruptCell encoder word, pinned against

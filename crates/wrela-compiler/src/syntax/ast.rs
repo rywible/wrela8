@@ -787,6 +787,10 @@ pub enum Stmt {
     /// always a call expression.
     Send(Span, Expr),
     Expr(Span, Expr),
+    /// `@dmb(ishst)` / `@dmb(ishld)` — runtime-only data-memory barrier
+    /// (plans/M15.md item H, decisions 1080–1085). Standalone statement
+    /// attribute; sema refuses outside `stdlib/core/runtime.wr`.
+    Dmb(Attr),
     ComptimeIf(ComptimeIfStmt),
     ComptimeAssert(Span, Expr, Option<Expr>),
 }

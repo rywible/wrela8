@@ -344,6 +344,10 @@ pub(crate) struct ModuleCtx {
     /// item G3): field visibility compares the use-site module against
     /// each struct's declaring module.
     pub(crate) module_path: String,
+    /// Loader closure key for this module (plans/M15.md item H): equals
+    /// `module.path` for ordinary packages; `["core","runtime"]` for the
+    /// auto-injected stdlib runtime. `@dmb` is legal only on that key.
+    pub(crate) loader_key: Vec<String>,
     /// Local spelling → dotted declaring module for every struct in
     /// `structs` (own declarations + spliced / HH-reachable imports).
     pub(crate) struct_decl_module: BTreeMap<String, String>,
@@ -577,6 +581,7 @@ pub(crate) fn build_module_ctx(
         unbounded_sync_loops: RefCell::new(Vec::new()),
         inferred_rets: RefCell::new(BTreeMap::new()),
         module_path,
+        loader_key: module.path.clone(),
         struct_decl_module,
         fn_decl_module,
         visibility_home: RefCell::new(None),
@@ -2165,6 +2170,7 @@ fn check_stmt(stmt: &Stmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedSt
             span: *span,
             kind: TypedStmtKind::ExprStmt(check_expr(e, None, fctx, mctx)?),
         }),
+        Stmt::Dmb(attr) => check_dmb(attr, mctx),
         // plans/M3.md item D: `sema::specialize` runs before this pass
         // (`mod.rs::check_typed`) and eliminates every `comptime if`
         // node from the tree it hands to `collect`/`resolve`/`declare`/
@@ -2179,6 +2185,80 @@ fn check_stmt(stmt: &Stmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedSt
             check_comptime_assert(*span, cond, message, fctx, mctx)
         }
     }
+}
+
+/// `@dmb(ishst)` / `@dmb(ishld)` (plans/M15.md item H, decisions 1080–1085).
+/// Legal only inside the auto-injected `stdlib/core/runtime.wr` (loader
+/// key `core.runtime`). Lowers to one DMB word; not an author-facing
+/// 05 §9 intrinsic.
+fn check_dmb(attr: &ast::Attr, mctx: &ModuleCtx) -> Result<TypedStmt, SemaError> {
+    let runtime_ok = mctx.loader_key.len() == crate::loader::RUNTIME_MODULE_KEY.len()
+        && mctx
+            .loader_key
+            .iter()
+            .zip(crate::loader::RUNTIME_MODULE_KEY.iter())
+            .all(|(a, b)| a == *b);
+    if !runtime_ok {
+        return Err(SemaError::at(
+            "intrinsic",
+            "`@dmb` is legal only inside `stdlib/core/runtime.wr` (plans/M15.md item H)"
+                .to_string(),
+            attr.span,
+        ));
+    }
+    if attr.args.len() != 1 {
+        return Err(SemaError::at(
+            "intrinsic",
+            "`@dmb` takes exactly one argument: `ishst` or `ishld`".to_string(),
+            attr.span,
+        ));
+    }
+    let arg = &attr.args[0];
+    if arg.label.is_some() || arg.mode != AccessMode::Read {
+        return Err(SemaError::at(
+            "intrinsic",
+            "`@dmb` takes a positional barrier option (`ishst` or `ishld`), not a labeled \
+             or `mut`/`take` argument"
+                .to_string(),
+            arg.span,
+        ));
+    }
+    let key = match &arg.value {
+        Expr::Name(_, name) if name == "ishst" => "dmb.ishst",
+        Expr::Name(_, name) if name == "ishld" => "dmb.ishld",
+        _ => {
+            return Err(SemaError::at(
+                "intrinsic",
+                "`@dmb` option must be `ishst` or `ishld`".to_string(),
+                arg.span,
+            ));
+        }
+    };
+    // Two literal `key:` sites so plans/M9.md item AA's intrinsic surface
+    // census sees both spellings (plans/M15.md item H).
+    let kind = match key {
+        "dmb.ishst" => TypedExprKind::Intrinsic {
+            key: "dmb.ishst".to_string(),
+            receiver: None,
+            type_arg: None,
+            args: Vec::new(),
+        },
+        "dmb.ishld" => TypedExprKind::Intrinsic {
+            key: "dmb.ishld".to_string(),
+            receiver: None,
+            type_arg: None,
+            args: Vec::new(),
+        },
+        _ => unreachable!("option gated above"),
+    };
+    Ok(TypedStmt {
+        span: attr.span,
+        kind: TypedStmtKind::ExprStmt(TypedExpr {
+            span: attr.span,
+            ty: Type::Unit,
+            kind,
+        }),
+    })
 }
 
 /// `comptime assert` (plans/M3.md item D, decision 8): typed exactly
@@ -8467,7 +8547,7 @@ fn scan_stmt_forbidden(s: &Stmt) -> Option<(&'static str, Span)> {
         }),
         Stmt::For(f) => scan_expr_forbidden(&f.iterable).or_else(|| scan_stmts_forbidden(&f.body)),
         Stmt::While(w) => scan_expr_forbidden(&w.cond).or_else(|| scan_stmts_forbidden(&w.body)),
-        Stmt::Break(_) | Stmt::Continue(_) | Stmt::Pass(_) => None,
+        Stmt::Break(_) | Stmt::Continue(_) | Stmt::Pass(_) | Stmt::Dmb(_) => None,
         Stmt::Return(_, e) => e.as_ref().and_then(scan_expr_forbidden),
         Stmt::Assert(a) => scan_expr_forbidden(&a.cond)
             .or_else(|| a.message.as_ref().and_then(scan_expr_forbidden)),
@@ -8575,7 +8655,7 @@ fn scan_stmt_await(s: &Stmt) -> Option<Span> {
         Stmt::ComptimeAssert(_, e, m) => {
             scan_expr_await(e).or_else(|| m.as_ref().and_then(scan_expr_await))
         }
-        Stmt::Break(_) | Stmt::Continue(_) | Stmt::Pass(_) => None,
+        Stmt::Break(_) | Stmt::Continue(_) | Stmt::Pass(_) | Stmt::Dmb(_) => None,
     }
 }
 
