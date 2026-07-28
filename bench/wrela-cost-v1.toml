@@ -1,31 +1,34 @@
 # bench/wrela-cost-v1.toml — ISA ranking model (not A76 absolute).
 #
-# Coarse ISA op-class latencies for **differential** proxy-cycle ranking
-# only (plans/M18.md). Not an A76 SOG port map, not host wall time, not a
-# physical calibration table.
-#
-# Explicit non-models for M18:
-#   - no cache / L1 / L2 / L3
-#   - no branch mispredict
-#   - no chip-specific decode width (issue_width is a model parameter)
-#
-# Absolute cycle numbers may differ across conforming hosts; rank direction
-# for "fewer/cheaper ops, shorter true deps" must not require those.
+# Coarse ISA op-class latencies + dual-port / mem-reuse knobs for
+# **differential** proxy-cycle ranking only. Not an A76 SOG port map,
+# not host wall time, not a physical cache geometry table (no L1/L2/L3
+# sizes). Hard-cut schema version=2 — no `issue_width`.
 
-version = 1
-# Optional model parameter (not "real decode width of chip X"). Default 4.
-issue_width = 4
+version = 2
+
+[ports]
+alu = 2
+mem = 2
+max_issue_per_cycle = 2
+branch_penalty = 3
+# Count of recent Load/Store ops in this fn — NOT bytes of cache.
+mem_reuse_window = 8
+# Distinct keys tolerated in the window before working_set_surcharge.
+mem_working_set_cap = 4
 
 # CostRule key → latency in proxy-cycles (u64). Every CostRule::ALL key
-# must be present; the parser rejects missing keys.
+# must be present; the parser rejects missing keys. Load/Store leftovers
+# are untagged-mem fallbacks (scorer treats missing MemRef as cold miss /
+# store_cold).
 [latency]
 alu = 1
-load = 4          # architectural "load use" style; not L1 size
-store = 1
+load = 12
+store = 2
 branch = 1
-call = 1
+call = 4
 abort = 1
-abort_val = 1
+abort_val = 3
 mov_wide = 1
 mul = 3
 sdiv = 12
@@ -34,3 +37,12 @@ adrp = 1
 barrier = 1
 system = 1
 neon = 1
+
+[mem]
+load_stack_hit = 1
+load_stack_miss = 4
+load_cold_hit = 4
+load_cold_miss = 12
+store_stack = 1
+store_cold = 2
+working_set_surcharge = 2
