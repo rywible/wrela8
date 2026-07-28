@@ -78,9 +78,10 @@
 //!    invented reachability rule. Narrowing it belongs to the item that
 //!    makes `Mmio[L]` bind a layout to a device.
 //! 8c. **Cost summary** (plans/M18.md item R, 04 §6): after a successful
-//!    layout, `append_cost_summary` adds version/digest/total plus three
-//!    Owner lines. Scored from the same `CodegenProgram` layout built;
-//!    omitted when layout soft-fails (`Ok(None)`). Not Terms.
+//!    layout, `append_cost_summary` adds version/digest/total/ghz plus
+//!    three Owner lines and (when placement is non-empty) Core + Shared
+//!    lines. Scored from the same `CodegenProgram` layout built; omitted
+//!    when layout soft-fails (`Ok(None)`). Not Terms / Placeable.
 //! 9. Registered layout asserts: recorded in the raw `--stage=image`
 //!    graph dump, then **run** after layout against a real stdlib
 //!    `ImageReport` value (`eval::layout_assert`, plans/M9.md item H).
@@ -148,6 +149,7 @@ use std::collections::BTreeMap;
 use wrela_machine::report as machine_report;
 
 use crate::codegen::CodegenProgram;
+use crate::cost::dump as cost_dump;
 use crate::cost::{self, CostReport};
 use crate::eval::image::{self, ImageDeclRef, ImageGraph, TypedProgramEnums};
 use crate::eval::quota;
@@ -563,31 +565,47 @@ pub fn render_exact_bytes_section(
 }
 
 /// Append the short Cost summary (plans/M18.md item R / 04 §6): version,
-/// table digest, program total, and per-owner schedule totals. Owners
-/// only — no Fn lines, no Terms (those live on `--stage=cost`).
+/// table digest, program total, ghz, per-owner schedule totals, and
+/// (when placement is non-empty) Core + Shared lines. No Fn/Term/
+/// Placeable lines (those live on `--stage=cost`).
 ///
 /// Loads `wrela-cost-v1` via [`cost::load_default`]; missing/malformed
 /// table → `Err` (fail closed). Caller scores the same `CodegenProgram`
 /// layout already produced (no second lower).
-pub fn append_cost_summary(out: &mut String, program: &CodegenProgram) -> Result<(), String> {
+pub fn append_cost_summary(
+    out: &mut String,
+    program: &CodegenProgram,
+    placement: &PlacementTable,
+    ghz: f64,
+) -> Result<(), String> {
     let table = cost::load_default()?;
     let report = cost::score_program(program, &table)?;
-    out.push_str(&format_cost_summary(&report));
+    out.push_str(&format_cost_summary(&report, placement, ghz)?);
     Ok(())
 }
 
-/// Format the owners-only Cost block (depth-1 under `ImageReport v0`).
-pub fn format_cost_summary(report: &CostReport) -> String {
+/// Format the Cost block (depth-1 under `ImageReport v0`): owners plus
+/// optional Core/Shared attribution. No Placeable lines.
+pub fn format_cost_summary(
+    report: &CostReport,
+    placement: &PlacementTable,
+    ghz: f64,
+) -> Result<String, String> {
     let app = report.owner_totals.get("app").copied().unwrap_or(0);
     let runtime = report.owner_totals.get("runtime").copied().unwrap_or(0);
     let driver = report.owner_totals.get("driver").copied().unwrap_or(0);
-    format!(
-        "  Cost version={} digest={} total={}\n\
+    let mut out = format!(
+        "  Cost version={} digest={} total={} ghz={}\n\
            \x20   Owner name=app proxy_cycles={app}\n\
            \x20   Owner name=runtime proxy_cycles={runtime}\n\
            \x20   Owner name=driver proxy_cycles={driver}\n",
-        report.version, report.digest, report.total_proxy_cycles,
-    )
+        report.version,
+        report.digest,
+        report.total_proxy_cycles,
+        cost::fmt_compact(ghz),
+    );
+    cost_dump::append_core_block(&mut out, 2, report, placement, ghz, false)?;
+    Ok(out)
 }
 
 // --- the digest (plans/M4.md item D, decision 9): one hardcoded SHA-256
@@ -843,16 +861,24 @@ mod tests {
             rodata: Vec::new(),
         };
         let mut out = String::from("ImageReport v0\n");
-        append_cost_summary(&mut out, &program).expect("default cost table");
+        append_cost_summary(
+            &mut out,
+            &program,
+            &PlacementTable::default(),
+            cost::DEFAULT_GHZ,
+        )
+        .expect("default cost table");
         assert!(
             out.contains("Cost version=1"),
             "missing Cost version line:\n{out}"
         );
+        assert!(out.contains("ghz=2.4"), "missing ghz:\n{out}");
         assert!(out.contains("Owner name=app proxy_cycles="));
         assert!(out.contains("Owner name=runtime proxy_cycles="));
         assert!(out.contains("Owner name=driver proxy_cycles="));
         assert!(!out.contains("Term rule="));
         assert!(!out.contains("Fn key="));
+        assert!(!out.contains("Placeable "));
     }
 
     #[test]
@@ -870,10 +896,43 @@ mod tests {
             ]),
             fns: vec![],
         };
-        let text = format_cost_summary(&report);
+        // Default placement has cores=1 → Core + Shared lines appear.
+        let text = format_cost_summary(&report, &PlacementTable::default(), cost::DEFAULT_GHZ)
+            .expect("format");
         assert_eq!(
             text,
-            "  Cost version=1 digest=deadbeef total=30\n\
+            "  Cost version=1 digest=deadbeef total=30 ghz=2.4\n\
+               \x20   Owner name=app proxy_cycles=10\n\
+               \x20   Owner name=runtime proxy_cycles=12\n\
+               \x20   Owner name=driver proxy_cycles=8\n\
+               \x20   Core n=0 proxy_cycles=0 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn=n/a\n\
+               \x20   Shared proxy_cycles=0\n"
+        );
+    }
+
+    #[test]
+    fn format_cost_summary_omits_cores_when_placement_empty() {
+        use std::collections::BTreeMap;
+        let report = CostReport {
+            version: 1,
+            digest: "deadbeef".to_string(),
+            issue_width: 4,
+            total_proxy_cycles: 30,
+            owner_totals: BTreeMap::from([
+                ("app".to_string(), 10u64),
+                ("runtime".to_string(), 12u64),
+                ("driver".to_string(), 8u64),
+            ]),
+            fns: vec![],
+        };
+        let empty = PlacementTable {
+            entries: Vec::new(),
+            cores: 0,
+        };
+        let text = format_cost_summary(&report, &empty, cost::DEFAULT_GHZ).expect("format");
+        assert_eq!(
+            text,
+            "  Cost version=1 digest=deadbeef total=30 ghz=2.4\n\
                \x20   Owner name=app proxy_cycles=10\n\
                \x20   Owner name=runtime proxy_cycles=12\n\
                \x20   Owner name=driver proxy_cycles=8\n"

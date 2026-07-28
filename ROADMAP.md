@@ -1093,6 +1093,12 @@ recorded in [plans/M19.md](plans/M19.md) evidence block (SUM −965).
   exact `profile`/`repro` comparison — valuable and dumb, but it is report
   work, not the cycle proxy. Schedule when a named device recording needs
   the line; do not smuggle it into the scorer milestone.
+- **Per-core / turn-path cost capacity report** (recorded 2026-07-28;
+  report-only). Proxy cycles + fixed GHz (`--ghz=` override, default 2.4)
+  → Core/Shared attribution and `max_entry_fn` turns/sec. Does **not** feed
+  `Placement.work` / change packing; does **not** gate opts (land gate
+  remains sum-of-fn proxy totals / M19 corpus). Frame/vsync critical-path
+  math stays with pixels (later).
 - **06 §5 ISR hot-path MMIO carve-out** (recorded 2026-07-28 with the ISR
   gate keep decision). 06 §5 says MMIO exists only on setup/reset; 03 §6's
   ISR example does hot-path `interrupt_status` / `interrupt_ack`. Preferred

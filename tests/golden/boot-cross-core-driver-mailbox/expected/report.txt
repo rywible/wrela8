@@ -166,7 +166,11 @@ ImageReport v0
   Rings count=4 stride=64 padding=80 bytes=352
   Totals actors=1 drivers=1 ready_queue=3 group_arena=0 bytes=2176
   DeviceRegs device=device#0 type=Hw driver=Stub base=0x40540880 size=8
-  Cost version=1 digest=46282f52bdf2ba37 total=17466
+  Cost version=1 digest=46282f52bdf2ba37 total=17466 ghz=2.4
     Owner name=app proxy_cycles=1291
     Owner name=runtime proxy_cycles=16175
     Owner name=driver proxy_cycles=0
+    Core n=0 proxy_cycles=79 max_turn_proxy=37 turns_per_sec=64864864.8648648635 ms_per_turn=0.0000154167
+    Core n=1 proxy_cycles=137 max_turn_proxy=104 turns_per_sec=23076923.0769230761 ms_per_turn=0.0000433333
+    Core n=2 proxy_cycles=11 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn=n/a
+    Shared proxy_cycles=17239

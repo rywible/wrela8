@@ -35,7 +35,7 @@ use wrela_compiler::sema::typed::{TestKind, TypedProgram};
 use wrela_compiler::syntax::ast::Module;
 use wrela_compiler::syntax::{lexer, parser, printer};
 
-const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed|layout-types|flowwir|mwir|asm|cost|image|report|rtconfig> [--timings] [--omit-dmb] [--mode=dev|release] <file.wr>\n       wrela test <file.wr> [--vmm <path>] [--omit-dmb] [--mode=dev|release]\n       wrela build <file.wr> [--out-dir <dir>] [--omit-dmb] [--mode=dev|release]\n       wrela version";
+const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed|layout-types|flowwir|mwir|asm|cost|image|report|rtconfig> [--timings] [--omit-dmb] [--mode=dev|release] [--ghz=<n>] <file.wr>\n       wrela test <file.wr> [--vmm <path>] [--omit-dmb] [--mode=dev|release] [--ghz=<n>]\n       wrela build <file.wr> [--out-dir <dir>] [--omit-dmb] [--mode=dev|release] [--ghz=<n>]\n       wrela version";
 
 // Set by every diagnostic printer while `dump` runs; cleared at the
 // start of each `dump` invocation. Plans/M9.md item NN: `dump` exits
@@ -505,6 +505,7 @@ fn build_report(
     programs: &BTreeMap<String, TypedProgram>,
     file_paths: &BTreeMap<String, std::path::PathBuf>,
     modules: &BTreeMap<String, Module>,
+    ghz: f64,
 ) -> Result<BuildReport, String> {
     let candidates: Vec<(&String, &String)> = programs
         .iter()
@@ -662,15 +663,16 @@ fn build_report(
                                         // only). Same CodegenProgram layout
                                         // already built — no second lower.
                                         // Missing table fails the build.
-                                        report::append_cost_summary(&mut text, &codegen).map_err(
-                                            |e| {
-                                                if e.ends_with('\n') {
-                                                    format!("error[build]: {e}")
-                                                } else {
-                                                    format!("error[build]: {e}\n")
-                                                }
-                                            },
-                                        )?;
+                                        report::append_cost_summary(
+                                            &mut text, &codegen, &placement, ghz,
+                                        )
+                                        .map_err(|e| {
+                                            if e.ends_with('\n') {
+                                                format!("error[build]: {e}")
+                                            } else {
+                                                format!("error[build]: {e}\n")
+                                            }
+                                        })?;
                                         // plans/M9.md item H: run registered
                                         // `@layout_assert` fns against a real
                                         // ImageReport after layout (04 §8).
@@ -756,8 +758,9 @@ fn run_report_stage(
     programs: &BTreeMap<String, TypedProgram>,
     file_paths: &BTreeMap<String, std::path::PathBuf>,
     modules: &BTreeMap<String, Module>,
+    ghz: f64,
 ) {
-    match build_report(programs, file_paths, modules) {
+    match build_report(programs, file_paths, modules, ghz) {
         Ok(r) => print!("{}", r.text),
         Err(diag) => {
             eprint!("{diag}");
@@ -891,6 +894,7 @@ fn dump(args: &[String]) -> ExitCode {
     let mut omit_dmb = false;
     // plans/M19.md item C / freeze 1401: default release.
     let mut mode = wrela_compiler::opts::CompileMode::Release;
+    let mut ghz = wrela_compiler::cost::DEFAULT_GHZ;
     for a in args {
         if let Some(s) = a.strip_prefix("--stage=") {
             stage = Some(s.to_string());
@@ -913,6 +917,14 @@ fn dump(args: &[String]) -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
+        } else if let Some(g) = a.strip_prefix("--ghz=") {
+            match wrela_compiler::cost::parse_ghz(g) {
+                Ok(v) => ghz = v,
+                Err(_) => {
+                    eprintln!("{USAGE}");
+                    return ExitCode::FAILURE;
+                }
+            }
         } else if path.is_none() {
             path = Some(a.clone());
         } else {
@@ -1360,12 +1372,59 @@ fn dump(args: &[String]) -> ExitCode {
                                                 ) {
                                                     Ok(codegen_program) => {
                                                         if dump_cost {
+                                                            // Soft placement: when `@image`
+                                                            // is available, attribute cores;
+                                                            // otherwise empty (cores=0) so
+                                                            // legacy no-image dumps omit
+                                                            // Core/Placeable/Shared.
+                                                            let placement = {
+                                                                let root = &checked.programs
+                                                                    [&checked.root];
+                                                                match &root.image_fn {
+                                                                    Some(name) => {
+                                                                        match eval::interp::eval_image(
+                                                                            root, name,
+                                                                        ) {
+                                                                            Ok(graph) => {
+                                                                                placement::place(
+                                                                                    &graph,
+                                                                                    &checked.modules,
+                                                                                    &layout_ctx,
+                                                                                    graph.cores,
+                                                                                )
+                                                                                .unwrap_or_else(
+                                                                                    |_| {
+                                                                                        placement::PlacementTable {
+                                                                                            entries: Vec::new(),
+                                                                                            cores: 0,
+                                                                                        }
+                                                                                    },
+                                                                                )
+                                                                            }
+                                                                            Err(_) => {
+                                                                                placement::PlacementTable {
+                                                                                    entries: Vec::new(),
+                                                                                    cores: 0,
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                    None => {
+                                                                        placement::PlacementTable {
+                                                                            entries: Vec::new(),
+                                                                            cores: 0,
+                                                                        }
+                                                                    }
+                                                                }
+                                                            };
                                                             match wrela_compiler::cost::load_default()
                                                             {
                                                                 Ok(table) => {
                                                                     match wrela_compiler::cost::dump(
                                                                         &codegen_program,
                                                                         &table,
+                                                                        &placement,
+                                                                        ghz,
                                                                     ) {
                                                                         Ok(text) => print!("{text}"),
                                                                         Err(e) => {
@@ -1461,7 +1520,7 @@ fn dump(args: &[String]) -> ExitCode {
                     // whole-closure fork `image` above already makes.
                     Ok(module) => match load_build_closure(&path, module) {
                         Ok((programs, file_paths, modules_by_addr)) => {
-                            run_report_stage(&programs, &file_paths, &modules_by_addr);
+                            run_report_stage(&programs, &file_paths, &modules_by_addr, ghz);
                         }
                         Err(()) => {}
                     },
@@ -1615,6 +1674,7 @@ fn test_cmd(args: &[String]) -> ExitCode {
     let mut omit_dmb = false;
     // plans/M19.md item C / freeze 1401: default release.
     let mut mode = wrela_compiler::opts::CompileMode::Release;
+    let mut _ghz = wrela_compiler::cost::DEFAULT_GHZ;
     let mut i = 0;
     while i < args.len() {
         if args[i] == "--vmm" {
@@ -1644,6 +1704,14 @@ fn test_cmd(args: &[String]) -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
+        } else if let Some(g) = args[i].strip_prefix("--ghz=") {
+            match wrela_compiler::cost::parse_ghz(g) {
+                Ok(v) => _ghz = v,
+                Err(_) => {
+                    eprintln!("{USAGE}");
+                    return ExitCode::FAILURE;
+                }
+            }
         } else if path.is_none() {
             path = Some(args[i].clone());
         } else {
@@ -2001,6 +2069,7 @@ fn build_cmd(args: &[String]) -> ExitCode {
     let mut omit_dmb = false;
     // plans/M19.md item C / freeze 1401: default release.
     let mut mode = wrela_compiler::opts::CompileMode::Release;
+    let mut ghz = wrela_compiler::cost::DEFAULT_GHZ;
     let mut i = 0;
     while i < args.len() {
         let a = &args[i];
@@ -2029,6 +2098,14 @@ fn build_cmd(args: &[String]) -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
+        } else if let Some(g) = a.strip_prefix("--ghz=") {
+            match wrela_compiler::cost::parse_ghz(g) {
+                Ok(v) => ghz = v,
+                Err(_) => {
+                    eprintln!("{USAGE}");
+                    return ExitCode::FAILURE;
+                }
+            }
         } else if path.is_none() {
             path = Some(a.clone());
         } else {
@@ -2073,7 +2150,7 @@ fn build_cmd(args: &[String]) -> ExitCode {
         Err(()) => return ExitCode::FAILURE,
     };
 
-    let r = match build_report(&programs, &file_paths, &modules_by_addr) {
+    let r = match build_report(&programs, &file_paths, &modules_by_addr, ghz) {
         Ok(r) => r,
         Err(diag) => {
             eprint!("{diag}");

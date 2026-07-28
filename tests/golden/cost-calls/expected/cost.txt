@@ -1,5 +1,5 @@
-Cost version=1 digest=46282f52bdf2ba37 issue_width=4
-  Assumptions ignore_cache=1 ignore_mispredict=1 target=isa_baseline
+Cost version=1 digest=46282f52bdf2ba37 issue_width=4 ghz=2.4
+  Assumptions ignore_cache=1 ignore_mispredict=1 target=isa_baseline ghz_model=1 turn_path=max_entry_fn
   Composition sum_of_fn_schedules=1
   Total proxy_cycles=46
   Owner name=app proxy_cycles=46

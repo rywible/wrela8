@@ -2,7 +2,9 @@
 //! + scoreboard. Differential rank only — not host wall time, not A76 SOG.
 
 pub mod ab;
+pub mod attr;
 pub mod dump;
+pub mod ghz;
 pub mod owner;
 pub mod rule;
 pub mod score;
@@ -10,7 +12,9 @@ pub mod stage;
 pub mod table;
 
 pub use ab::{CostOpts, rank_cmp, score_with_opts};
+pub use attr::{CoreBucket, CoreCostReport, PlaceableTurn, attribute_cores};
 pub use dump::dump;
+pub use ghz::{DEFAULT_GHZ, fmt_compact, ms_per_turn, parse_ghz, turns_per_sec};
 pub use owner::classify_owner;
 pub use rule::{CostRule, EmittedWord};
 pub use score::{CostReport, FnCost, score_program};

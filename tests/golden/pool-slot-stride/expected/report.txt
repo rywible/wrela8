@@ -166,7 +166,9 @@ ImageReport v0
   Pool name=Scratch kind=dma payload=Tiny slots=1 slot_bytes=1 base=0x40540044 size=1 align=1 coherency=coherent device=device#0
   BlkPool name=Control device=device#0 base=0x40540020 size=0x24
   BlkPool name=Scratch device=device#0 base=0x40540044 size=0x1
-  Cost version=1 digest=46282f52bdf2ba37 total=15902
+  Cost version=1 digest=46282f52bdf2ba37 total=15902 ghz=2.4
     Owner name=app proxy_cycles=885
     Owner name=runtime proxy_cycles=15017
     Owner name=driver proxy_cycles=0
+    Core n=0 proxy_cycles=41 max_turn_proxy=19 turns_per_sec=126315789.4736842066 ms_per_turn=0.0000079167
+    Shared proxy_cycles=15861

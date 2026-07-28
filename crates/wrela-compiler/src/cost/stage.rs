@@ -16,8 +16,8 @@ use crate::flowwir_lower;
 use crate::loader::{self, LoadError};
 use crate::lower::{self, LowerOpts};
 use crate::rtconfig;
-use crate::sema::{self, SemaError};
 use crate::sema::typed::TypedProgram;
+use crate::sema::{self, SemaError};
 use crate::syntax::ast::Module;
 use crate::syntax::{lexer, parser};
 
@@ -95,10 +95,7 @@ pub fn load_cost_stage_closure(path: &Path) -> Result<CostStageClosure, String> 
     })
 }
 
-fn load_runtime_bearing_singleton(
-    path: &str,
-    module: Module,
-) -> Result<CostStageClosure, String> {
+fn load_runtime_bearing_singleton(path: &str, module: Module) -> Result<CostStageClosure, String> {
     let (runtime_key, runtime_loaded) = loader::load_runtime_module().map_err(load_err)?;
     let root_key = module.path.clone();
     let runtime_path = runtime_loaded.file.display().to_string();
@@ -148,8 +145,7 @@ fn load_runtime_bearing_singleton(
 /// TLS already.
 pub fn codegen_cost_stage(path: &Path) -> Result<CodegenProgram, String> {
     let checked = load_cost_stage_closure(path)?;
-    let reachable =
-        lower::guest_reachable_keys_closure(&checked.programs, &LowerOpts::default());
+    let reachable = lower::guest_reachable_keys_closure(&checked.programs, &LowerOpts::default());
     let lower_opts = LowerOpts {
         emit_comptime_tests: false,
         only: Some(reachable),
@@ -168,21 +164,18 @@ pub fn codegen_cost_stage(path: &Path) -> Result<CodegenProgram, String> {
 
     let mut layout_ctx = crate::layout::merge_layout_ctx(&checked.modules).map_err(sema_err)?;
     crate::layout::enrich_layout_ctx_with_instantiations(&mut layout_ctx, &checked.programs);
-    let method_index =
-        crate::layout::actor_method_index_tables(&checked.modules, &layout_ctx)
-            .map_err(|e| e.message)?;
+    let method_index = crate::layout::actor_method_index_tables(&checked.modules, &layout_ctx)
+        .map_err(|e| e.message)?;
     let group_arena_capacity = crate::layout::count_with_group_sites(&checked.modules);
 
     let enqueue_specs = {
         let root = &checked.programs[&checked.root];
         match &root.image_fn {
             Some(name) => match crate::eval::interp::eval_image(root, name) {
-                Ok(graph) => crate::layout::mailbox_enqueue_specs(
-                    &graph,
-                    &checked.modules,
-                    &layout_ctx,
-                )
-                .unwrap_or_default(),
+                Ok(graph) => {
+                    crate::layout::mailbox_enqueue_specs(&graph, &checked.modules, &layout_ctx)
+                        .unwrap_or_default()
+                }
                 Err(_) => Vec::new(),
             },
             None => Vec::new(),

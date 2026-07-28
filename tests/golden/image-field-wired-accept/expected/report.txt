@@ -150,7 +150,9 @@ ImageReport v0
   Actor name=Worker mailbox=8 slot=16 frame=64 state=16
   Turns count=2 stride=64 bytes=128
   Totals actors=2 drivers=0 ready_queue=3 group_arena=0 bytes=552
-  Cost version=1 digest=46282f52bdf2ba37 total=16290
+  Cost version=1 digest=46282f52bdf2ba37 total=16290 ghz=2.4
     Owner name=app proxy_cycles=880
     Owner name=runtime proxy_cycles=15410
     Owner name=driver proxy_cycles=0
+    Core n=0 proxy_cycles=36 max_turn_proxy=36 turns_per_sec=66666666.6666666642 ms_per_turn=0.000015
+    Shared proxy_cycles=16254
