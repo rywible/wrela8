@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/boot_cross_core_driver_mailbox.wr sha256=6dd9f6ed2596711da94bf8e544a70a01e6286343998b920579a8a3d27f388b01
+  Input path=examples/boot_cross_core_driver_mailbox.wr sha256=2c433a3f5c993cfaf1c20c514772c4275ac5496016eb9b7f2c9da89e0a2e53e7
   Input path=<generated> sha256=604366a23cd6311ed95b46451b365ce6397b27ac63d013d1678b6c13855fe5e3
   Name value=cross-core-driver-mailbox
   Target value=Target.wrela_machine_v1
@@ -53,7 +53,10 @@ ImageReport v0
   Layout name=TestLineBuf kind=runtime endian=little size=21 padding=0
     Field name=bytes type=[u8; LINE_BUF_SIZE] offset=0x0 size=21
   Section name=pages base=0x40000000 size=28672
-  Section name=stacks base=0x40010000 size=3145728
+  Cores count=3
+  CoreStack core=0 base=0x7fd00000 size=0x100000
+  CoreStack core=1 base=0x7fe00000 size=0x100000
+  CoreStack core=2 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
   Section name=code base=0x40500050 size=117388
   Section name=rodata base=0x4051cae0 size=687

@@ -11,7 +11,8 @@ ImageReport v0
   Target value=Target.wrela_machine_v1
   OnFailure index=0 policy=Failure.Halt
   Section name=pages base=0x40000000 size=28672
-  Section name=stacks base=0x40010000 size=3145728
+  Cores count=1
+  CoreStack core=0 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
   Section name=code base=0x40500050 size=412
   Section name=rodata base=0x405001f0 size=26

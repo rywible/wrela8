@@ -154,13 +154,13 @@ pub struct BootOutcome {
     pub choices: Vec<record::ChoiceEntry>,
     pub exits: u64,
     /// plans/M8.md item C1: each core's own guest-written bring-up mark
-    /// (`machine_info::OFF_CORE_MARK`), `VCPUS` of them, in core order —
-    /// `core_mark_running(n)` for a core that reached its own event loop,
-    /// `0` for one that never ran. A single-core image leaves all three at
-    /// `0` (it releases nothing and writes no mark); `check_core_marks`
-    /// has already refused any boot where a *released* core is missing its
-    /// own mark, so this field is evidence for a test to read, never a
-    /// condition a caller has to remember to check.
+    /// (`machine_info::OFF_CORE_MARK`), one word per packing slot in
+    /// bring-up order — `core_mark_running(n)` for a core that reached its
+    /// own event loop, `0` for one that never ran. A single-core image
+    /// leaves marks at `0` (it releases nothing and writes no mark);
+    /// `check_core_marks` has already refused any boot where a *released*
+    /// core is missing its own mark, so this field is evidence for a test
+    /// to read, never a condition a caller has to remember to check.
     pub core_marks: Vec<u64>,
 }
 
@@ -1403,7 +1403,7 @@ pub fn build() -> Image:
         use wrela_machine::{layout as machine_layout, machine_info, mmio, pending};
 
         const DELTA_NS: u64 = 3_000_000; // 3ms — short, but a real, observable sleep.
-        let sp_top = machine_layout::core_stack_base(0) + machine_layout::CORE_STACK_SIZE;
+        let sp_top = machine_layout::core_stack_base_n(0, 1) + machine_layout::CORE_STACK_SIZE;
 
         let mut w = Vec::new();
         w.extend(load_imm_words(9, sp_top));
@@ -1508,7 +1508,7 @@ pub fn build() -> Image:
         use wrela_machine::{layout as machine_layout, machine_info, pending};
 
         const LOOP_BOUND: u64 = 200_000_000;
-        let sp_top = machine_layout::core_stack_base(0) + machine_layout::CORE_STACK_SIZE;
+        let sp_top = machine_layout::core_stack_base_n(0, 1) + machine_layout::CORE_STACK_SIZE;
         // M11 I: production checkpoint section is a floor trampoline + wrela
         // body in `code`. This conformance guest is hand-built, so embed a
         // self-contained simple-path clone (observed++ / pending clear) —
@@ -1667,7 +1667,7 @@ pub fn build() -> Image:
         use wrela_machine::{layout as machine_layout, machine_info, mmio, pending};
 
         const DELTA_NS: u64 = 2_000_000; // 2ms
-        let sp_top = machine_layout::core_stack_base(0) + machine_layout::CORE_STACK_SIZE;
+        let sp_top = machine_layout::core_stack_base_n(0, 1) + machine_layout::CORE_STACK_SIZE;
 
         let mut w = Vec::new();
         w.extend(load_imm_words(9, sp_top));
@@ -1988,7 +1988,7 @@ pub fn build() -> Image:
         let expect_first = u64::from_le_bytes(payload[0..8].try_into().unwrap());
         let expect_last = u64::from_le_bytes(payload[504..512].try_into().unwrap());
 
-        let sp_top = machine_layout::core_stack_base(0) + machine_layout::CORE_STACK_SIZE;
+        let sp_top = machine_layout::core_stack_base_n(0, 1) + machine_layout::CORE_STACK_SIZE;
 
         // Pass 1 with placeholder addresses purely to measure the entry
         // sequence's own word count — its length is addr-value-independent
@@ -2643,7 +2643,8 @@ pub fn build() -> Image:
         // Core 0 by the entry driver, cores 1 and 2 by their own entry
         // blocks — each its own value, so a core running another core's
         // block cannot pass this.
-        assert_eq!(outcome.core_marks, vec![1, 2, 3]);
+        assert_eq!(&outcome.core_marks[..3], &[1, 2, 3]);
+        assert!(outcome.core_marks[3..].iter().all(|&m| m == 0));
 
         // The single-core control: same shape, no `core=` anywhere, so
         // nothing is released and no core marks itself.
@@ -2657,7 +2658,7 @@ pub fn build() -> Image:
             String::from_utf8_lossy(&single.transcript),
             "test boots: ok\n1 passed, 0 failed\n"
         );
-        assert_eq!(single.core_marks, vec![0, 0, 0]);
+        assert!(single.core_marks.iter().all(|&m| m == 0));
     }
 
     /// The mark is `core + 1`, never a bare `1`, for one reason: a
@@ -2805,7 +2806,7 @@ pub fn build() -> Image:
                 "CoreEntry core=0 base=0x40500100\n",
             ),
             (
-                "a core outside 0..VCPUS",
+                "a core outside the contiguous secondary set",
                 "CoreEntry core=3 base=0x40500100\n",
             ),
             (
@@ -3014,7 +3015,8 @@ pub fn build() -> Image:
         }
         // (5) Ring base overlapping a per-core stack.
         {
-            let stack = wrela_machine::layout::core_stack_base(1);
+            // head declares CoreEntry 1+2 ⇒ default Cores count=3.
+            let stack = wrela_machine::layout::core_stack_base_n(1, 3);
             let text = format!(
                 "{head}{cores}\
                  Ring kind=request src=0 dst=1 target=A cap=4 slot=16 bytes=88 base={stack:#x}\n"

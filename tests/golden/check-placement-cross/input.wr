@@ -36,7 +36,7 @@ pub struct Heavy:
 
 @image
 pub fn build() -> Image:
-    img = Image(name="placement-cross", target=Target.wrela_machine_v1)
+    img = Image(name="placement-cross", target=Target.wrela_machine_v1, cores=3)
     light = img.actor(Light, mailbox=2, core=1)
     heavy = img.actor(Heavy, mailbox=32)
     img.on_failure(policy=Failure.Halt)

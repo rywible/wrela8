@@ -83,7 +83,10 @@ pub(super) fn push_halt(words: &mut Vec<u32>, exit_code: u64) {
 
 pub(super) fn build_entry_stub() -> Vec<u32> {
     let mut words = Vec::new();
-    let sp_top = machine_layout::core_stack_base(0) + machine_layout::CORE_STACK_SIZE;
+    // Production stub: single-core high-DRAM stack (plans/M15.md item D).
+    // Actor images use `build_primary_entry_trampoline` with the sealed N.
+    let sp_top =
+        machine_layout::core_stack_base_n(0, 1) + machine_layout::CORE_STACK_SIZE;
     push_load_imm(&mut words, SCRATCH_A, sp_top as i64);
     words.push(encode::enc_add_imm(X_SP, SCRATCH_A, 0, true)); // `mov sp, x9`
     push_halt(&mut words, EXIT_CODE_NO_RUNTIME);
@@ -179,7 +182,7 @@ pub(super) fn inject_rt_cross_core_fns(
                  `ImageForceRootOpts::with_wiring` before `layout_test_image`"
             )));
         };
-        let sp = crate::codegen::emit_secondary_sp_install(core);
+        let sp = crate::codegen::emit_secondary_sp_install(core, wiring.tables.cores);
         let sp_len = sp.len();
         for r in &mut f.relocs {
             shift_reloc_words(r, sp_len);
@@ -895,9 +898,10 @@ pub(super) fn inject_test_runner_fns(
 /// `build_entry_driver` (94 Unclassified).
 ///
 /// Returns `(asm, continuation_load_imm_marker)`.
-pub(super) fn build_primary_entry_trampoline(start: usize) -> (Asm, usize) {
+pub(super) fn build_primary_entry_trampoline(start: usize, n_cores: usize) -> (Asm, usize) {
     let mut a = Asm::new(start);
-    let sp_top = machine_layout::core_stack_base(0) + machine_layout::CORE_STACK_SIZE;
+    let n = n_cores.max(1);
+    let sp_top = machine_layout::core_stack_base_n(0, n) + machine_layout::CORE_STACK_SIZE;
     a.load_imm(9, sp_top);
     a.push(encode::enc_add_imm(31, 9, 0, true)); // mov sp, x9
     let cont_marker = a.load_imm_placeholder(9);
@@ -1203,7 +1207,8 @@ pub fn layout_test_image(
     // M11 K: harness is checkpoint + thin primary-entry trampoline.
     let entry_start = checkpoint_start + checkpoint_asm.words.len();
     let core_entry_starts: Vec<(usize, usize)> = Vec::new();
-    let (entry_asm, cont_marker) = build_primary_entry_trampoline(entry_start);
+    let n_cores = wiring.as_ref().map(|w| w.tables.cores).unwrap_or(1).max(1);
+    let (entry_asm, cont_marker) = build_primary_entry_trampoline(entry_start, n_cores);
 
     let mut harness_words: Vec<u32> = Vec::new();
     let mut harness_relocs: Vec<Reloc> = Vec::new();
@@ -1850,6 +1855,11 @@ pub fn layout_test_image(
         _ => Vec::new(),
     };
     let _ = core_entry_starts;
+    let cores = wiring
+        .as_ref()
+        .map(|w| w.tables.cores)
+        .unwrap_or(1)
+        .max(1);
     Ok(ImageLayout {
         blob,
         entry: harness_base + (entry_start as u64) * 4,
@@ -1863,6 +1873,7 @@ pub fn layout_test_image(
         blk: None, // filled by attach_blk_report after layout
         irq_host_injects,
         core_entries,
+        cores,
         placed_statics: Vec::new(),
     })
 }
@@ -1926,7 +1937,7 @@ pub(crate) fn emitted_a64_census_live_counts() -> std::collections::BTreeMap<&'s
     // M10 H: emit_boot_init measured in codegen::emitted_a64_census_specialization_live_counts.
     // M11 K: build_entry_driver deleted; primary trampoline is floor.
     {
-        let (asm, _) = build_primary_entry_trampoline(0);
+        let (asm, _) = build_primary_entry_trampoline(0, 1);
         insert(&mut out, "build_primary_entry_trampoline", asm.words.len());
     }
     // Test-only residue of item C (cfg(test) helper).

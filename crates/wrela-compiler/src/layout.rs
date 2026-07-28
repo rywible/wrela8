@@ -55,7 +55,7 @@
 //!   always-present section). vCPU 0 starts executing here (06-machine.md
 //!   §3). At M5-D, since no test-running runtime exists yet (item E owns
 //!   it), entry does exactly two things: (1) install core 0's own initial
-//!   stack pointer (`sp = core_stack_base(0) + CORE_STACK_SIZE` —
+//!   stack pointer (`sp = core_stack_base_n(0, N) + CORE_STACK_SIZE` —
 //!   `wrela-machine`'s own documented convention for what every codegen'd
 //!   fn's prologue already assumes is live on entry) via a `MOVZ`+3×`MOVK`
 //!   materialize into a scratch register, then `ADD sp, Xn, #0` (the
@@ -284,6 +284,10 @@ pub struct ImageLayout {
     /// `mmio::RELEASE_MMIO_ADDR`. Empty for every single-core image, which
     /// is why no pre-C1 report golden gains a line.
     pub core_entries: Vec<(usize, u64)>,
+    /// Sealed bring-up count (`Image(..., cores=N)` / `PlacementTable.cores`),
+    /// plans/M15.md item D. Drives report `Cores`/`CoreStack` and high-DRAM
+    /// SP install. Always ≥ 1.
+    pub cores: usize,
     /// plans/M10.md item A2c / decision 588: every `@placed` static in the
     /// build closure, name-sorted. Empty when the image declares none —
     /// so no pre-A2c report golden gains a line.
@@ -3092,6 +3096,7 @@ pub fn layout_program(
             .collect(),
         _ => Vec::new(),
     };
+    let cores = wiring.as_ref().map(|w| w.tables.cores).unwrap_or(1).max(1);
     Ok(ImageLayout {
         blob,
         entry: entry_base,
@@ -3102,6 +3107,7 @@ pub fn layout_program(
         blk: None, // filled by attach_blk_report after layout
         irq_host_injects,
         core_entries,
+        cores,
         placed_statics: Vec::new(), // filled by try_layout_program from TypedPrograms
     })
 }
@@ -5196,6 +5202,7 @@ fn two():
             device_regs: Vec::new(),
             irq_host_injects: Vec::new(),
             core_entries: Vec::new(),
+            cores: 1,
             placed_statics: Vec::new(),
             pools: vec![
                 PoolPlacement {

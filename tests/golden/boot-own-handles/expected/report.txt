@@ -54,7 +54,8 @@ ImageReport v0
     Field name=word type=u64 offset=0x0 size=8
     Field name=pad type=u64 offset=0x8 size=8
   Section name=pages base=0x40000000 size=28672
-  Section name=stacks base=0x40010000 size=3145728
+  Cores count=1
+  CoreStack core=0 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
   Section name=code base=0x40500050 size=110520
   Section name=rodata base=0x4051b008 size=697

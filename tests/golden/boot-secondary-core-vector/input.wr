@@ -34,7 +34,7 @@ async fn secondary_vector(o: Actor[Off]):
 
 @image
 pub fn build() -> Image:
-    img = Image(name="boot-secondary-core-vector", target=Target.wrela_machine_v1)
+    img = Image(name="boot-secondary-core-vector", target=Target.wrela_machine_v1, cores=3)
     off = img.actor(Off, mailbox=4, core=1)
     img.on_failure(policy=Failure.Halt)
     return img.seal()

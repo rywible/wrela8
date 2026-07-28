@@ -101,7 +101,7 @@ fn synthesize_report(program: &TypedProgram, layout: &ImageLayout) -> Result<Val
             .to_string()
     })?;
     let (pages_base, pages_size) = pages_region();
-    let (stacks_base, stacks_size) = stacks_region();
+    let (stacks_base, stacks_size) = stacks_region(layout.cores);
     let code = layout
         .sections
         .iter()
@@ -204,9 +204,12 @@ fn pages_region() -> (u64, u64) {
     (base, end - base)
 }
 
-fn stacks_region() -> (u64, u64) {
+/// Contiguous high-DRAM stack slab for sealed N (`core_stack_base_n(0, N)`
+/// .. DRAM_END), plans/M15.md item D.
+fn stacks_region(n_cores: usize) -> (u64, u64) {
+    let n = n_cores.max(1);
     (
-        machine_layout::STACKS_BASE,
-        wrela_machine::VCPUS as u64 * machine_layout::CORE_STACK_SIZE,
+        machine_layout::core_stack_base_n(0, n),
+        n as u64 * machine_layout::CORE_STACK_SIZE,
     )
 }

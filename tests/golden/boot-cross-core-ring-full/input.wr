@@ -64,7 +64,7 @@ async fn ring_full_rejects(t: Actor[Tally]):
 
 @image
 pub fn build() -> Image:
-    img = Image(name="cross-core-ring-full", target=Target.wrela_machine_v1)
+    img = Image(name="cross-core-ring-full", target=Target.wrela_machine_v1, cores=3)
     t = img.actor(Tally, mailbox=1, core=1)
     img.on_failure(policy=Failure.Halt)
     return img.seal()

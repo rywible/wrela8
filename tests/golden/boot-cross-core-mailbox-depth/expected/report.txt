@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/boot_cross_core_mailbox_depth.wr sha256=25213ebd0eb4dbdf5f9588f8435f6cb8d669a5c529a9e37189584ea5f62940ef
+  Input path=examples/boot_cross_core_mailbox_depth.wr sha256=7862c4a5835c5d3f290d0d3e155dd870a1c62828ad7842a2d62a828cc61f2109
   Input path=<generated> sha256=27de2276a6ac195fffba564ac7f6a302796d00feada9daa98bf228870b2c69b9
   Name value=cross-core-mailbox-depth
   Target value=Target.wrela_machine_v1
@@ -53,7 +53,10 @@ ImageReport v0
   Layout name=TestLineBuf kind=runtime endian=little size=21 padding=0
     Field name=bytes type=[u8; LINE_BUF_SIZE] offset=0x0 size=21
   Section name=pages base=0x40000000 size=28672
-  Section name=stacks base=0x40010000 size=3145728
+  Cores count=3
+  CoreStack core=0 base=0x7fd00000 size=0x100000
+  CoreStack core=1 base=0x7fe00000 size=0x100000
+  CoreStack core=2 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
   Section name=code base=0x40500050 size=122344
   Section name=rodata base=0x4051de38 size=840

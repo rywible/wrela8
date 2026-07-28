@@ -86,7 +86,7 @@ async fn cross_core_send_into_driver_mailbox(p: Actor[Probe], d: Actor[Stub]):
 
 @image
 pub fn build() -> Image:
-    img = Image(name="cross-core-driver-mailbox", target=Target.wrela_machine_v1)
+    img = Image(name="cross-core-driver-mailbox", target=Target.wrela_machine_v1, cores=3)
     hw = img.device[Hw](transport=0x1000, required_features=[Feature.Flush])
     stub = img.driver(Stub, device=hw, mailbox=4)
     probe = img.actor(Probe, mailbox=4, core=1, disk=stub)

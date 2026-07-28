@@ -19,6 +19,14 @@ pub fn append_vmm_runtime_lines(out: &mut String, layout: &ImageLayout) {
     // through `wrela_machine::report` so emitter and parser share spellings.
     // Ring lines stay local: `RequestRing` is lossy vs live `Ring kind=…`.
     let parsed = parsed_runtime_tail(layout);
+    out.push_str(&wrela_machine::report::line_cores(parsed.cores));
+    out.push('\n');
+    for s in &parsed.core_stacks {
+        out.push_str(&wrela_machine::report::line_core_stack(
+            s.core, s.base, s.size,
+        ));
+        out.push('\n');
+    }
     for e in &parsed.core_entries {
         out.push_str(&wrela_machine::report::line_core_entry(e.core, e.base));
         out.push('\n');
@@ -102,6 +110,14 @@ pub fn parsed_runtime_tail(layout: &ImageLayout) -> wrela_machine::report::Parse
             pools,
         }
     });
+    let cores = layout.cores.max(1);
+    let core_stacks = (0..cores)
+        .map(|core| wrela_machine::report::CoreStack {
+            core,
+            base: machine_layout::core_stack_base_n(core, cores),
+            size: machine_layout::CORE_STACK_SIZE,
+        })
+        .collect();
     ParsedReport {
         entry: 0,
         image_sha256: String::new(),
@@ -110,6 +126,8 @@ pub fn parsed_runtime_tail(layout: &ImageLayout) -> wrela_machine::report::Parse
         blk,
         irq_injects,
         core_entries,
+        cores,
+        core_stacks,
         request_rings: Vec::new(),
     }
 }
@@ -275,27 +293,20 @@ pub fn attach_blk_report(
 
 // --- report rendering (decision 7's own Layout section) -------------------
 
-/// The two fixed, always-present machine regions below `IMAGE_BASE`
-/// (module doc's own "pages"/"stacks" reporting note): the machine-info
-/// page plus the console ring/data pages, combined into one `pages` fact,
-/// and the three reserved per-core stacks as one `stacks` fact.
+/// The fixed machine region below `IMAGE_BASE`: machine-info page plus
+/// console ring/data pages, combined into one `pages` fact. Live stacks
+/// are report-owned in high DRAM (`Cores` / `CoreStack`, plans/M15.md
+/// item D) — the former low `stacks` section is omitted.
 fn pages_region() -> (u64, u64) {
     let base = machine_layout::MACHINE_INFO_BASE;
     let end = console::DATA_BASE + console::DATA_SIZE;
     (base, end - base)
 }
 
-fn stacks_region() -> (u64, u64) {
-    (
-        machine_layout::STACKS_BASE,
-        wrela_machine::VCPUS as u64 * machine_layout::CORE_STACK_SIZE,
-    )
-}
-
 /// Appends the `Layout` section (decision 7) to an already-rendered report
-/// buffer: `pages`/`stacks` (fixed machine constants, every build) then
-/// every section `layout` actually placed (`entry`/`code`/`rodata`?/
-/// `abort`), then the separate `Entry base=0x...` fact.
+/// buffer: `pages`, sealed `Cores`/`CoreStack` (high DRAM), every section
+/// `layout` actually placed (`entry`/`code`/`rodata`?/`abort`), then the
+/// separate `Entry base=0x...` fact.
 pub fn render_layout_section(out: &mut String, layout: &ImageLayout) {
     let (pages_base, pages_size) = pages_region();
     push_line(
@@ -303,12 +314,24 @@ pub fn render_layout_section(out: &mut String, layout: &ImageLayout) {
         1,
         &format!("Section name=pages base={pages_base:#x} size={pages_size}"),
     );
-    let (stacks_base, stacks_size) = stacks_region();
+    let n_cores = layout.cores.max(1);
     push_line(
         out,
         1,
-        &format!("Section name=stacks base={stacks_base:#x} size={stacks_size}"),
+        &wrela_machine::report::line_cores(n_cores),
     );
+    for core in 0..n_cores {
+        let base = machine_layout::core_stack_base_n(core, n_cores);
+        push_line(
+            out,
+            1,
+            &wrela_machine::report::line_core_stack(
+                core,
+                base,
+                machine_layout::CORE_STACK_SIZE,
+            ),
+        );
+    }
     for s in &layout.sections {
         push_line(
             out,

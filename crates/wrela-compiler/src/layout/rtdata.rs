@@ -188,7 +188,8 @@ pub struct RuntimeTables {
     /// number.
     pub rings_padding: u64,
     /// How many cores this image brings up (`placement::PlacementTable::
-    /// cores` — `1` for every single-core image, `VCPUS` for a cross-core
+    /// cores` — sealed `Image(..., cores=N)` (plans/M15.md); was historically
+    /// `1` or a fixed machine constant for a cross-core
     /// graph). plans/M8.md item C1: the scheduler's own per-core state is
     /// **striped by this count** — one ready-queue table and one
     /// round-robin cursor per live core, never one global set shared

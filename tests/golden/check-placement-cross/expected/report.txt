@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/check_placement_cross.wr sha256=d7e6e0f78fa1b42563f7eb7c1ee4676010e791755e5acdd09f4f90846d0ffda4
+  Input path=examples/check_placement_cross.wr sha256=d155d632a719e33894f05675e999e135404f3bace8551fecd47b920f2af90772
   Input path=<generated> sha256=ca7830050ff646b4d28f142e7008b9adab932fe91bd942bf2b6450ee3d24b795
   Name value=placement-cross
   Target value=Target.wrela_machine_v1
@@ -48,7 +48,10 @@ ImageReport v0
   Layout name=TestLineBuf kind=runtime endian=little size=21 padding=0
     Field name=bytes type=[u8; LINE_BUF_SIZE] offset=0x0 size=21
   Section name=pages base=0x40000000 size=28672
-  Section name=stacks base=0x40010000 size=3145728
+  Cores count=3
+  CoreStack core=0 base=0x7fd00000 size=0x100000
+  CoreStack core=1 base=0x7fe00000 size=0x100000
+  CoreStack core=2 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
   Section name=code base=0x40500050 size=111932
   Section name=rodata base=0x4051b590 size=507

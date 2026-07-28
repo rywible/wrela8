@@ -1,0 +1,23 @@
+module examples.check_cores_stacks_high
+
+# plans/M15.md item D / image.report.cores-and-stacks: report-only pin that
+# sealed cores publish high-DRAM CoreStack lines and omit the former low
+# `Section name=stacks base=0x40010000` fact. N=1 is enough for the stack
+# address oracle; multi-core bring-up boots land at item G.
+
+@actor
+pub struct Store:
+    count: u32
+
+    init(mut self):
+        self.count = 0
+
+    pub fn get(read self) -> u32:
+        return self.count
+
+@image
+pub fn build() -> Image:
+    img = Image(name="cores-stacks-high", target=Target.wrela_machine_v1, cores=1)
+    store = img.actor(Store, mailbox=4)
+    img.on_failure(policy=Failure.Halt)
+    return img.seal()
