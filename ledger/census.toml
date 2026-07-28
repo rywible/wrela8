@@ -222,6 +222,14 @@ path = "check-enum-method-properties/expected/asm.txt"
 keys = ["State.consume", "State.double_score", "State.finish", "State.fresh", "State.score", "State.start", "bump_state", "p_assoc", "p_chain", "p_mut_param", "p_no_clobber", "p_sibling", "p_take", "p_variant_change"]
 
 [[guest_fn_key.required]]
+path = "check-entropy-sync-mwir/expected/asm.txt"
+keys = ["take_entropy"]
+
+[[guest_fn_key.required]]
+path = "check-entropy-sync-mwir/expected/mwir.txt"
+keys = ["take_entropy"]
+
+[[guest_fn_key.required]]
 path = "check-enum-methods/expected/asm.txt"
 keys = ["Cell.empty", "Cell.fill", "Cell.into_n", "Cell.value", "mut_path", "take_path", "guest_methods"]
 

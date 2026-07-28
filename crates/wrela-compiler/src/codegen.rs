@@ -5352,8 +5352,8 @@ fn emit_entropy(dst: Temp, n: u64, ctx: &mut FnCtx) -> Result<(), CodegenError> 
     ctx.addr_of_slot(X_A, scratch_off);
     ctx.load_imm(
         X_B,
-        (wrela_machine::layout::MACHINE_INFO_BASE
-            + wrela_machine::machine_info::OFF_ENTROPY_DEST) as i64,
+        (wrela_machine::layout::MACHINE_INFO_BASE + wrela_machine::machine_info::OFF_ENTROPY_DEST)
+            as i64,
     );
     ctx.store_ptr(X_A, X_B, 0);
 

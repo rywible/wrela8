@@ -1718,17 +1718,16 @@ fn splice_imported_static_layouts(
         // (plans/M17.md item H / boot-entropy-hex). Importing the fn name
         // alone left `prog.layouts` empty and failed closed with
         // "placed-static field access through `MachineInfoPage`…".
-        let layouts: Vec<_> = if src.statics.contains_key(&target_name)
-            || src.fns.contains_key(&target_name)
-        {
-            src.layouts.clone()
-        } else {
-            src.layouts
-                .iter()
-                .filter(|l| l.name == target_name)
-                .cloned()
-                .collect()
-        };
+        let layouts: Vec<_> =
+            if src.statics.contains_key(&target_name) || src.fns.contains_key(&target_name) {
+                src.layouts.clone()
+            } else {
+                src.layouts
+                    .iter()
+                    .filter(|l| l.name == target_name)
+                    .cloned()
+                    .collect()
+            };
         if layouts.is_empty() {
             continue;
         }

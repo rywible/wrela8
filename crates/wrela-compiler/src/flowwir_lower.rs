@@ -2532,11 +2532,7 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
             b.emit(FlowInst::Now { dst });
             Ok(dst)
         }
-        TypedExprKind::Intrinsic {
-            key,
-            const_arg,
-            ..
-        } if key.as_str() == "entropy" => {
+        TypedExprKind::Intrinsic { key, const_arg, .. } if key.as_str() == "entropy" => {
             let n = const_arg.ok_or_else(|| {
                 FlowError::internal("`entropy` Intrinsic missing const_arg (sema bug)")
             })?;

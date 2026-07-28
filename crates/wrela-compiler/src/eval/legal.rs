@@ -55,8 +55,7 @@ use std::collections::BTreeSet;
 
 use crate::sema::SemaError;
 use crate::sema::typed::{
-    TypedExpr, TypedExprKind, TypedFn, TypedForIter, TypedInstantiation, TypedProgram, TypedStmt,
-    TypedStmtKind,
+    TypedExpr, TypedExprKind, TypedFn, TypedInstantiation, TypedProgram, TypedStmt, TypedStmtKind,
 };
 use crate::syntax::ast::Span;
 
@@ -1601,6 +1600,7 @@ fn lookup_typed_fn<'a>(program: &'a TypedProgram, key: &str) -> Option<&'a Typed
 mod tests {
     use super::*;
     use crate::sema;
+    use crate::sema::typed::TypedForIter;
     use crate::syntax::{lexer, parser};
 
     fn typed_program(src: &str) -> TypedProgram {

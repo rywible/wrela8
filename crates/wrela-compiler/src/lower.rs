@@ -4029,11 +4029,7 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
             b.emit(Inst::Now { dst });
             Ok(dst)
         }
-        TypedExprKind::Intrinsic {
-            key,
-            const_arg,
-            ..
-        } if key.as_str() == "entropy" => {
+        TypedExprKind::Intrinsic { key, const_arg, .. } if key.as_str() == "entropy" => {
             let n = const_arg.ok_or_else(|| {
                 LowerError::internal("`entropy` Intrinsic missing const_arg (sema bug)".to_string())
             })?;

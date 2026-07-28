@@ -72,16 +72,16 @@ beyond the active milestone. A milestone's *first deliverable* is its plan
 code exists, the shape decisions that milestone freezes, and explicit
 non-goals. Plans are written when a milestone activates, never earlier
 (each milestone manufactures the facts the next plan needs), and become
-history when it completes. Active plan:
-[plans/M17.md](plans/M17.md) (entropy). M16 is COMPLETE
-([plans/M16.md](plans/M16.md); stdlib maturity). M15 is COMPLETE
-([plans/M15.md](plans/M15.md); variable cores + true concurrent vCPUs;
-barrier clause remains gap per [plans/BLOCKED.md](plans/BLOCKED.md)).
-M14 is COMPLETE (doc cut:
+history when it completes. Active plan: **none**. M17 is COMPLETE
+([plans/M17.md](plans/M17.md); thin entropy device + sync MWIR floor).
+M16 is COMPLETE ([plans/M16.md](plans/M16.md); stdlib maturity). M15 is
+COMPLETE ([plans/M15.md](plans/M15.md); variable cores + true concurrent
+vCPUs; barrier clause remains gap per
+[plans/BLOCKED.md](plans/BLOCKED.md)). M14 is COMPLETE (doc cut:
 constructive progress theorem; no `plans/M14.md` — capability cut, not a
 build-out; forward-ref golden still `image.graph.handle-dag` gap). M13 is
-COMPLETE ([plans/M13.md](plans/M13.md)). Cycle proxy is M18; optimization
-playground is M19 — neither activated.
+COMPLETE ([plans/M13.md](plans/M13.md)). Next is M18 (cycle proxy) —
+not activated; optimization playground is M19 — neither activated.
 M12 is COMPLETE ([plans/M12.md](plans/M12.md)). M11 is COMPLETE
 ([plans/M11.md](plans/M11.md)). Ladder design:
 [docs/superpowers/specs/2026-07-27-post-m15-ladder-design.md](docs/superpowers/specs/2026-07-27-post-m15-ladder-design.md).
@@ -857,8 +857,9 @@ and matches its pin; 06/README/ROADMAP no longer claim every device has
 a stdlib `@driver` or that console/entropy are virtio; ledger clauses
 for packaging + suite opened/flipped as the plan names.
 
-### M17 — Entropy
-Thin entropy **device** — not a `@driver`, not virtio-rng rings.
+### M17 — Entropy — COMPLETE
+**Done (2026-07-28).** Thin entropy **device** — not a `@driver`, not
+virtio-rng rings. Detail: [plans/M17.md](plans/M17.md).
 
 **Owns:**
 

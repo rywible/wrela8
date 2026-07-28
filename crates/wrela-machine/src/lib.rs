@@ -944,9 +944,7 @@ mod tests {
                 <= machine_info::OFF_ENTROPY_DEST
         );
         assert!(machine_info::OFF_ENTROPY_DEST + 8 <= machine_info::OFF_ENTROPY_LEN);
-        assert!(
-            machine_info::OFF_ENTROPY_LEN + 8 <= layout::MACHINE_INFO_SIZE
-        );
+        assert!(machine_info::OFF_ENTROPY_LEN + 8 <= layout::MACHINE_INFO_SIZE);
         assert!(machine_info::ENTROPY_LEN_MAX == 64);
     }
 

@@ -381,7 +381,10 @@ pub const UNPRODUCED_CONSUMER_KEYS: &[(&str, &str)] = &[
 /// bijection with the key surface: `group` / `pool` are `with`-
 /// constructors, not intrinsic keys.
 pub fn is_bare_resolvable(name: &str) -> bool {
-    matches!(name, "Image" | "now" | "entropy" | "wake" | "group" | "pool")
+    matches!(
+        name,
+        "Image" | "now" | "entropy" | "wake" | "group" | "pool"
+    )
 }
 
 /// The whole written-down surface: 05 §9's builder names plus the
@@ -685,6 +688,9 @@ mod tests {
         // A `#[cfg(test)]` fixture asserting `wake` is ISR-legal. A test
         // fixture is not surface.
         ("wrela-compiler/src/eval/legal.rs", "wake"),
+        // A `#[cfg(test)]` fixture asserting `entropy` is ISR-forbidden
+        // (plans/M17.md item E / close). A test fixture is not surface.
+        ("wrela-compiler/src/eval/legal.rs", "entropy"),
         // Wave 7 artifact split: sealed-transport / actor call checkers.
         ("wrela-compiler/src/sema/transport.rs", "Device.claim"),
         ("wrela-compiler/src/sema/transport.rs", "Device.take_irq"),

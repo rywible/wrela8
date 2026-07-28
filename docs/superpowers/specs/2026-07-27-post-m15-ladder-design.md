@@ -2,10 +2,10 @@
 
 **Status:** design approved 2026-07-27; **M16 COMPLETE**
 ([plans/M16.md](../../../plans/M16.md), stdlib maturity);
-**M17 activated 2026-07-28** as
-[plans/M17.md](../../../plans/M17.md) (entropy). ROADMAP ladder: M16
-stdlib maturity → M17 entropy → M18 cycle proxy → M19 opt shelf →
-pixels (intention).
+**M17 COMPLETE 2026-07-28**
+([plans/M17.md](../../../plans/M17.md), thin entropy device). ROADMAP
+ladder: M16 → M17 → M18 cycle proxy → M19 opt shelf → pixels
+(intention).
 
 **Context (historical):** at design time M15 was ACTIVE and ROADMAP placed
 the cycle proxy at M16 / playground at M17. This design inserted two rungs
