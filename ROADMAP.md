@@ -1247,7 +1247,7 @@ Opens: compile-mode and proxy-win-corpus clauses (ids in the plan).
   rung 9 of the ladder. They are now off it, and the reason is not that
   the work is hard: it is that nothing else needs it.   Every remaining rung
   — stdlib maturity, entropy, the cycle proxy, the optimization
-  playground — is compiler and machine work, and a compositor would
+  harness — is compiler and machine work, and a compositor would
   interrupt that rather than inform it. Pixels is the one item whose
   dependencies all point *backwards* with nothing pointing back: the
   compositor is guest wrela source, so it wants the stdlib's closed SIMD
@@ -1255,9 +1255,10 @@ Opens: compile-mode and proxy-win-corpus clauses (ids in the plan).
   04 §6 already calls a backend obligation because "the flagship's
   compositor is its hottest loop"), and its inner loop is a named future
   hot spot (see the cleverness budget), so it wants the cycle proxy and
-  the playground — with which "tune only after a frame exists to measure"
+  the harness — with which "tune only after a frame exists to measure"
   stops being a deferral and becomes an ordinary budget purchase scored by
-  the proxy, registered as evidence, and disposed by the frame recording.
+  the proxy corpus win rule under `dev`/`release` (no evidence table,
+  no physical Δ land gate).
 
   *What descheduling leaves open, stated rather than implied.*
   `machine.display.golden-frames` is a gap **no rung owns**, recorded as
