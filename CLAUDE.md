@@ -29,6 +29,8 @@ wrela machine. Flagship: wrela OS on Raspberry Pi 5 / 1 GiB.
   the commit.
 - `cargo xtask corpus` — every ```wrela block in the docs must lex (and,
   from M1, parse). The docs are test inputs; drift is a failure.
+- `cargo xtask stdlib-test` — comptime `@test`/`@test(exhaustive)` under
+  `stdlib/tests/`; fail closed if empty. Wired into `check`.
 - `cargo xtask fuzz [lexer|parser|sema|eval|lower|async|imports]
   [--iters N] [--seed S]` — deterministic in-tree fuzzer, no external
   engine. All seven lanes are live: seeded splitmix64, random bytes /

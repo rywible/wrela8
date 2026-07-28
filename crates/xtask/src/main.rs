@@ -106,6 +106,14 @@
 //!              bearing golden is already the whole population either
 //!              name covers at this milestone's scale).
 //!   ledger     verify spec-coverage ledger (ledger/ledger.toml)
+//!   stdlib-test
+//!              plans/M16.md item F / decisions 1160–1166: discover every
+//!              `stdlib/tests/**/*.wr`, load+check in-process, count
+//!              comptime/`@test(exhaustive)` fns, run `eval::run_tests`.
+//!              Fail closed on a missing/empty suite root or zero
+//!              discovered comptime tests (`wrela test` alone can exit 0
+//!              on `0 passed, 0 failed`). Wired into `check` after
+//!              `roundtrip`, before `repro`.
 //!   diff-eval  evaluator-vs-backend differential      (fails closed today)
 //!   profile    replay a recorded workload under counters (fails closed today)
 //!   bench      cargo xtask bench compiler|build|guest; the compiler lane
@@ -181,11 +189,13 @@ mod bench;
 mod corpus;
 mod fuzz;
 mod golden;
+mod stdlib_test;
 
 use bench::*;
 use corpus::*;
 use fuzz::*;
 use golden::*;
+use stdlib_test::*;
 
 pub(crate) fn root() -> PathBuf {
     // crates/xtask -> repo root
@@ -220,6 +230,10 @@ fn main() -> ExitCode {
         Some("roundtrip") => roundtrip(),
         Some("report-determinism") => report_determinism(),
         Some("ledger") => ledger(),
+        // plans/M16.md item F / decisions 1160–1166: comptime stdlib
+        // suite under `stdlib/tests/` — in-process load/check/`run_tests`,
+        // fail closed on zero discovered comptime/exhaustive `@test`s.
+        Some("stdlib-test") => stdlib_test(),
         // plans/M5.md decision 10, item D: `repro` is the same
         // twice-fresh-build byte-compare `report_determinism` already runs
         // in `check` (grown, item D, to cover image bytes as well as
@@ -241,7 +255,7 @@ fn main() -> ExitCode {
         Some("bench") => bench(&args[1..]),
         _ => {
             eprintln!(
-                "usage: cargo xtask <check|golden [--update]|corpus [--sema]|fuzz [lexer|parser|sema|eval|lower|async|imports] [--iters N] [--seed S]|roundtrip|report-determinism|ledger|repro|diff-eval|diff-blk|profile|bench <compiler|build|guest>>"
+                "usage: cargo xtask <check|golden [--update]|corpus [--sema]|fuzz [lexer|parser|sema|eval|lower|async|imports] [--iters N] [--seed S]|roundtrip|report-determinism|ledger|stdlib-test|repro|diff-eval|diff-blk|profile|bench <compiler|build|guest>>"
             );
             return ExitCode::FAILURE;
         }
@@ -316,6 +330,10 @@ fn check() -> Result<(), String> {
     // `diff-eval`/`profile`/`bench guest` themselves stayed unwired before
     // their own items landed.
     roundtrip()?;
+    // plans/M16.md item F / decisions 1160–1166: comptime `@test` suite
+    // under `stdlib/tests/` — after roundtrip (cheap parse/sema oracles),
+    // before repro (HVF record/replay). Fail closed on an empty suite.
+    stdlib_test()?;
     // plans/M8.md item C3's finding, acted on 2026-07-25. `report_determinism`
     // above proves the *build* is byte-reproducible; `repro` is what proves
     // the **replay** oracles still work — and it is where all four tamper
@@ -2799,6 +2817,8 @@ fn ledger() -> Result<(), String> {
                                 | "fuzz"
                                 | "roundtrip"
                                 | "report-determinism"
+                                // plans/M16.md item F / decisions 1160–1166.
+                                | "stdlib-test"
                         ) {
                             return Err(format!("clause `{id}`: unknown xtask check `{cmd}`"));
                         }

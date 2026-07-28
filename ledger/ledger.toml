@@ -2431,8 +2431,9 @@ note = """plans/M16.md item A / decisions 1110–1116; finished D1 / 1140–1146
 [[clause]]
 id = "stdlib.suite.comptime"
 doc = "02-language.md#12.2"
-status = "gap"
-note = """plans/M16.md item A: dual-tier in-wrela coverage — comptime `@test` / `@test(exhaustive)` under `stdlib/tests/` over pure `core`, wired into `cargo xtask check` as lane `stdlib-test` (fail closed if empty). Opened as gap; flips at items E/F."""
+status = "test"
+tests = ["xtask:stdlib-test", "unit:empty_stdlib_tests_root_fails_closed"]
+note = """plans/M16.md items E/F / decisions 1150–1155 + 1160–1166: dual-tier in-wrela coverage — comptime `@test` / `@test(exhaustive)` under `stdlib/tests/` over pure `core`, wired into `cargo xtask check` as lane `stdlib-test` (fail closed if empty). Empty-root refusal locked by `empty_stdlib_tests_root_fails_closed`."""
 
 [[clause]]
 id = "stdlib.drivers.blk-relocated"
