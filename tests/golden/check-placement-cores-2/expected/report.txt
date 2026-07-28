@@ -52,13 +52,13 @@ ImageReport v0
   CoreStack core=0 base=0x7fe00000 size=0x100000
   CoreStack core=1 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=111440
-  Section name=rodata base=0x4051b3a0 size=508
-  Section name=abort base=0x4051b59c size=120
-  Section name=checkpoint base=0x4051b614 size=28
+  Section name=code base=0x40500050 size=80936
+  Section name=rodata base=0x40513c78 size=508
+  Section name=abort base=0x40513e74 size=120
+  Section name=checkpoint base=0x40513eec size=28
   Section name=rtdata base=0x40540000 size=1824
   Entry base=0x40500000
-  CoreEntry core=1 base=0x4051b350
+  CoreEntry core=1 base=0x40513c34
   PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
@@ -151,7 +151,7 @@ ImageReport v0
   Actor name=Heavy mailbox=32 slot=48 frame=64 state=8
   Turns count=2 stride=64 bytes=128
   Totals actors=2 drivers=0 ready_queue=3 group_arena=0 bytes=1824
-  Cost version=1 digest=46282f52bdf2ba37 total=18592
-    Owner name=app proxy_cycles=1049
-    Owner name=runtime proxy_cycles=17543
+  Cost version=1 digest=46282f52bdf2ba37 total=16580
+    Owner name=app proxy_cycles=944
+    Owner name=runtime proxy_cycles=15636
     Owner name=driver proxy_cycles=0

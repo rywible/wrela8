@@ -62,10 +62,10 @@ ImageReport v0
   Cores count=1
   CoreStack core=0 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=106768
-  Section name=rodata base=0x4051a160 size=431
-  Section name=abort base=0x4051a310 size=120
-  Section name=checkpoint base=0x4051a388 size=28
+  Section name=code base=0x40500050 size=77652
+  Section name=rodata base=0x40512fa8 size=431
+  Section name=abort base=0x40513158 size=120
+  Section name=checkpoint base=0x405131d0 size=28
   Section name=rtdata base=0x40540000 size=24
   Section name=devregs base=0x40540018 size=8
   Section name=pooldata base=0x40540020 size=37
@@ -166,7 +166,7 @@ ImageReport v0
   Pool name=Scratch kind=dma payload=Tiny slots=1 slot_bytes=1 base=0x40540044 size=1 align=1 coherency=coherent device=device#0
   BlkPool name=Control device=device#0 base=0x40540020 size=0x24
   BlkPool name=Scratch device=device#0 base=0x40540044 size=0x1
-  Cost version=1 digest=46282f52bdf2ba37 total=17849
-    Owner name=app proxy_cycles=988
-    Owner name=runtime proxy_cycles=16861
+  Cost version=1 digest=46282f52bdf2ba37 total=15902
+    Owner name=app proxy_cycles=885
+    Owner name=runtime proxy_cycles=15017
     Owner name=driver proxy_cycles=0

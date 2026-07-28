@@ -39,50 +39,44 @@ Program
     0012: f94013e9  ldr x9, [sp, #32]
     0013: f9400bea  ldr x10, [sp, #16]
     0014: ab0a012b  adds x11, x9, x10
-    0015: 54000183  b.cc #48
+    0015: 54000123  b.cc #36
     0016: d10043ff  sub sp, sp, #16  ; abort Bytes slot
     0017: 90000009  adrp x9, rodata+0x0
     0018: 91000129  add x9, x9, rodata+0x0
     0019: f90003e9  str x9, [sp]  ; Bytes.base
     0020: d2800349  movz x9, #0x1a
-    0021: f2a00009  movk x9, #0x0, lsl #16
-    0022: f2c00009  movk x9, #0x0, lsl #32
-    0023: f2e00009  movk x9, #0x0, lsl #48
-    0024: f90007e9  str x9, [sp, #8]  ; Bytes.len
-    0025: 910003e0  add x0, sp, #0  ; *Bytes
-    0026: 94000000  bl <__wrela_abort>
-    0027: f90017eb  str x11, [sp, #40]
-    0028: f94017e9  ldr x9, [sp, #40]
-    0029: f90003e9  str x9, [sp, #0]
-    0030: f94007e9  ldr x9, [sp, #8]
-    0031: f9001be9  str x9, [sp, #48]
-    0032: f9401be9  ldr x9, [sp, #48]
-    0033: f9400fea  ldr x10, [sp, #24]
-    0034: ab0a012b  adds x11, x9, x10
-    0035: 54000183  b.cc #48
-    0036: d10043ff  sub sp, sp, #16  ; abort Bytes slot
-    0037: 90000009  adrp x9, rodata+0x0
-    0038: 91000129  add x9, x9, rodata+0x0
-    0039: f90003e9  str x9, [sp]  ; Bytes.base
-    0040: d2800349  movz x9, #0x1a
-    0041: f2a00009  movk x9, #0x0, lsl #16
-    0042: f2c00009  movk x9, #0x0, lsl #32
-    0043: f2e00009  movk x9, #0x0, lsl #48
-    0044: f90007e9  str x9, [sp, #8]  ; Bytes.len
-    0045: 910003e0  add x0, sp, #0  ; *Bytes
-    0046: 94000000  bl <__wrela_abort>
-    0047: f9001feb  str x11, [sp, #56]
-    0048: f9401fe9  ldr x9, [sp, #56]
-    0049: f90007e9  str x9, [sp, #8]
-    0050: 14000001  b #4
-    0051: f94023e9  ldr x9, [sp, #64]
-    0052: f94003ea  ldr x10, [sp, #0]
-    0053: f900012a  str x10, [x9, #0]
-    0054: f94007ea  ldr x10, [sp, #8]
-    0055: f900052a  str x10, [x9, #8]
-    0056: f94027fe  ldr lr, [sp, #72]
-    0057: 910143ff  add sp, sp, #80
-    0058: d65f03c0  ret
+    0021: f90007e9  str x9, [sp, #8]  ; Bytes.len
+    0022: 910003e0  add x0, sp, #0  ; *Bytes
+    0023: 94000000  bl <__wrela_abort>
+    0024: f90017eb  str x11, [sp, #40]
+    0025: f94017e9  ldr x9, [sp, #40]
+    0026: f90003e9  str x9, [sp, #0]
+    0027: f94007e9  ldr x9, [sp, #8]
+    0028: f9001be9  str x9, [sp, #48]
+    0029: f9401be9  ldr x9, [sp, #48]
+    0030: f9400fea  ldr x10, [sp, #24]
+    0031: ab0a012b  adds x11, x9, x10
+    0032: 54000123  b.cc #36
+    0033: d10043ff  sub sp, sp, #16  ; abort Bytes slot
+    0034: 90000009  adrp x9, rodata+0x0
+    0035: 91000129  add x9, x9, rodata+0x0
+    0036: f90003e9  str x9, [sp]  ; Bytes.base
+    0037: d2800349  movz x9, #0x1a
+    0038: f90007e9  str x9, [sp, #8]  ; Bytes.len
+    0039: 910003e0  add x0, sp, #0  ; *Bytes
+    0040: 94000000  bl <__wrela_abort>
+    0041: f9001feb  str x11, [sp, #56]
+    0042: f9401fe9  ldr x9, [sp, #56]
+    0043: f90007e9  str x9, [sp, #8]
+    0044: 14000001  b #4
+    0045: f94023e9  ldr x9, [sp, #64]
+    0046: f94003ea  ldr x10, [sp, #0]
+    0047: f900012a  str x10, [x9, #0]
+    0048: f94007ea  ldr x10, [sp, #8]
+    0049: f900052a  str x10, [x9, #8]
+    0050: f94027fe  ldr lr, [sp, #72]
+    0051: 910143ff  add sp, sp, #80
+    0052: d65f03c0  ret
   Fn key=Point.sum frame=64 bytes
     0000: d10103ff  sub sp, sp, #64
     0001: f9001bfe  str lr, [sp, #48]
@@ -99,70 +93,55 @@ Program
     0012: f9400be9  ldr x9, [sp, #16]
     0013: f9400fea  ldr x10, [sp, #24]
     0014: ab0a012b  adds x11, x9, x10
-    0015: 54000183  b.cc #48
+    0015: 54000123  b.cc #36
     0016: d10043ff  sub sp, sp, #16  ; abort Bytes slot
     0017: 90000009  adrp x9, rodata+0x0
     0018: 91000129  add x9, x9, rodata+0x0
     0019: f90003e9  str x9, [sp]  ; Bytes.base
     0020: d2800349  movz x9, #0x1a
-    0021: f2a00009  movk x9, #0x0, lsl #16
-    0022: f2c00009  movk x9, #0x0, lsl #32
-    0023: f2e00009  movk x9, #0x0, lsl #48
-    0024: f90007e9  str x9, [sp, #8]  ; Bytes.len
-    0025: 910003e0  add x0, sp, #0  ; *Bytes
-    0026: 94000000  bl <__wrela_abort>
-    0027: f90013eb  str x11, [sp, #32]
-    0028: f94013e0  ldr x0, [sp, #32]
-    0029: 14000002  b #8
-    0030: 14000001  b #4
-    0031: f9401bfe  ldr lr, [sp, #48]
-    0032: 910103ff  add sp, sp, #64
-    0033: d65f03c0  ret
+    0021: f90007e9  str x9, [sp, #8]  ; Bytes.len
+    0022: 910003e0  add x0, sp, #0  ; *Bytes
+    0023: 94000000  bl <__wrela_abort>
+    0024: f90013eb  str x11, [sp, #32]
+    0025: f94013e0  ldr x0, [sp, #32]
+    0026: 14000002  b #8
+    0027: 14000001  b #4
+    0028: f9401bfe  ldr lr, [sp, #48]
+    0029: 910103ff  add sp, sp, #64
+    0030: d65f03c0  ret
   Fn key=make_and_sum frame=96 bytes
     0000: d10183ff  sub sp, sp, #96
     0001: f9002ffe  str lr, [sp, #88]
     0002: d2800069  movz x9, #0x3
-    0003: f2a00009  movk x9, #0x0, lsl #16
-    0004: f2c00009  movk x9, #0x0, lsl #32
-    0005: f2e00009  movk x9, #0x0, lsl #48
-    0006: f9000be9  str x9, [sp, #16]
-    0007: d2800089  movz x9, #0x4
-    0008: f2a00009  movk x9, #0x0, lsl #16
-    0009: f2c00009  movk x9, #0x0, lsl #32
-    0010: f2e00009  movk x9, #0x0, lsl #48
-    0011: f9000fe9  str x9, [sp, #24]
-    0012: 910003e0  add x0, sp, #0
-    0013: f9400be1  ldr x1, [sp, #16]
-    0014: f9400fe2  ldr x2, [sp, #24]
-    0015: 94000000  bl <Point.init>
-    0016: f90013e0  str x0, [sp, #32]
-    0017: f94003e9  ldr x9, [sp, #0]
-    0018: f90017e9  str x9, [sp, #40]
-    0019: f94007e9  ldr x9, [sp, #8]
-    0020: f9001be9  str x9, [sp, #48]
-    0021: d2800029  movz x9, #0x1
-    0022: f2a00009  movk x9, #0x0, lsl #16
-    0023: f2c00009  movk x9, #0x0, lsl #32
-    0024: f2e00009  movk x9, #0x0, lsl #48
-    0025: f9001fe9  str x9, [sp, #56]
-    0026: d2800029  movz x9, #0x1
-    0027: f2a00009  movk x9, #0x0, lsl #16
-    0028: f2c00009  movk x9, #0x0, lsl #32
-    0029: f2e00009  movk x9, #0x0, lsl #48
-    0030: f90023e9  str x9, [sp, #64]
-    0031: 9100a3e0  add x0, sp, #40
-    0032: f9401fe1  ldr x1, [sp, #56]
-    0033: f94023e2  ldr x2, [sp, #64]
-    0034: 94000000  bl <Point.shift>
-    0035: f90027e0  str x0, [sp, #72]
-    0036: 9100a3e0  add x0, sp, #40
-    0037: 94000000  bl <Point.sum>
-    0038: f9002be0  str x0, [sp, #80]
-    0039: f9402be0  ldr x0, [sp, #80]
-    0040: 14000002  b #8
-    0041: 14000001  b #4
-    0042: f9402ffe  ldr lr, [sp, #88]
-    0043: 910183ff  add sp, sp, #96
-    0044: d65f03c0  ret
+    0003: f9000be9  str x9, [sp, #16]
+    0004: d2800089  movz x9, #0x4
+    0005: f9000fe9  str x9, [sp, #24]
+    0006: 910003e0  add x0, sp, #0
+    0007: f9400be1  ldr x1, [sp, #16]
+    0008: f9400fe2  ldr x2, [sp, #24]
+    0009: 94000000  bl <Point.init>
+    0010: f90013e0  str x0, [sp, #32]
+    0011: f94003e9  ldr x9, [sp, #0]
+    0012: f90017e9  str x9, [sp, #40]
+    0013: f94007e9  ldr x9, [sp, #8]
+    0014: f9001be9  str x9, [sp, #48]
+    0015: d2800029  movz x9, #0x1
+    0016: f9001fe9  str x9, [sp, #56]
+    0017: d2800029  movz x9, #0x1
+    0018: f90023e9  str x9, [sp, #64]
+    0019: 9100a3e0  add x0, sp, #40
+    0020: f9401fe1  ldr x1, [sp, #56]
+    0021: f94023e2  ldr x2, [sp, #64]
+    0022: 94000000  bl <Point.shift>
+    0023: f90027e0  str x0, [sp, #72]
+    0024: 9100a3e0  add x0, sp, #40
+    0025: 94000000  bl <Point.sum>
+    0026: f9002be0  str x0, [sp, #80]
+    0027: f9402be0  ldr x0, [sp, #80]
+    0028: 14000002  b #8
+    0029: 14000001  b #4
+    0030: f9402ffe  ldr lr, [sp, #88]
+    0031: 910183ff  add sp, sp, #96
+    0032: d65f03c0  ret
   Rodata
     0: offset=0x0 arithmetic overflow in `+`

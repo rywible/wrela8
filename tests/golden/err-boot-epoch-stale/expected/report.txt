@@ -77,10 +77,10 @@ ImageReport v0
   Cores count=1
   CoreStack core=0 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=116656
-  Section name=rodata base=0x4051c800 size=973
-  Section name=abort base=0x4051cbd0 size=120
-  Section name=checkpoint base=0x4051cc48 size=28
+  Section name=code base=0x40500050 size=84744
+  Section name=rodata base=0x40514b58 size=973
+  Section name=abort base=0x40514f28 size=120
+  Section name=checkpoint base=0x40514fa0 size=28
   Section name=rtdata base=0x40540000 size=1344
   Section name=devregs base=0x40540540 size=104
   Section name=pooldata base=0x405405a8 size=1024
@@ -187,7 +187,7 @@ ImageReport v0
   BlkDevice device=device#0 capacity_sectors=16 features=0x100000200 vector=1
   BlkQueue index=0 size=8 desc=0x405405a8 avail=0x40540628 used=0x40540640 doorbell=0x40540688
   BlkAccounting descriptors_per_op=3 queue_depth=8 occupancy_bound=2
-  Cost version=1 digest=46282f52bdf2ba37 total=19938
-    Owner name=app proxy_cycles=2653
-    Owner name=runtime proxy_cycles=17189
-    Owner name=driver proxy_cycles=96
+  Cost version=1 digest=46282f52bdf2ba37 total=17856
+    Owner name=app proxy_cycles=2454
+    Owner name=runtime proxy_cycles=15311
+    Owner name=driver proxy_cycles=91

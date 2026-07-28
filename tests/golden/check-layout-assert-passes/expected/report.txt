@@ -49,10 +49,10 @@ ImageReport v0
   Cores count=1
   CoreStack core=0 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=108364
-  Section name=rodata base=0x4051a7a0 size=456
-  Section name=abort base=0x4051a968 size=120
-  Section name=checkpoint base=0x4051a9e0 size=28
+  Section name=code base=0x40500050 size=78644
+  Section name=rodata base=0x40513388 size=456
+  Section name=abort base=0x40513550 size=120
+  Section name=checkpoint base=0x405135c8 size=28
   Section name=rtdata base=0x40540000 size=184
   Entry base=0x40500000
   PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
@@ -146,7 +146,7 @@ ImageReport v0
   Actor name=Store mailbox=4 slot=16 frame=64 state=8
   Turns count=1 stride=64 bytes=64
   Totals actors=1 drivers=0 ready_queue=2 group_arena=0 bytes=184
-  Cost version=1 digest=46282f52bdf2ba37 total=18092
-    Owner name=app proxy_cycles=990
-    Owner name=runtime proxy_cycles=17102
+  Cost version=1 digest=46282f52bdf2ba37 total=16120
+    Owner name=app proxy_cycles=886
+    Owner name=runtime proxy_cycles=15234
     Owner name=driver proxy_cycles=0

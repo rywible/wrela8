@@ -56,10 +56,10 @@ ImageReport v0
   Cores count=1
   CoreStack core=0 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=108940
-  Section name=rodata base=0x4051a9e0 size=456
-  Section name=abort base=0x4051aba8 size=120
-  Section name=checkpoint base=0x4051ac20 size=28
+  Section name=code base=0x40500050 size=79092
+  Section name=rodata base=0x40513548 size=456
+  Section name=abort base=0x40513710 size=120
+  Section name=checkpoint base=0x40513788 size=28
   Section name=rtdata base=0x40540000 size=400
   Section name=pooldata base=0x40540190 size=256
   Entry base=0x40500000
@@ -156,7 +156,7 @@ ImageReport v0
   Turns count=1 stride=64 bytes=64
   Totals actors=1 drivers=1 ready_queue=2 group_arena=0 bytes=400
   Pool name=Buffers kind=image payload=u32 slots=4 slot_bytes=64 base=0x40540190 size=256 align=8 coherency=coherent device=none
-  Cost version=1 digest=46282f52bdf2ba37 total=18206
-    Owner name=app proxy_cycles=1042
-    Owner name=runtime proxy_cycles=17164
+  Cost version=1 digest=46282f52bdf2ba37 total=16225
+    Owner name=app proxy_cycles=937
+    Owner name=runtime proxy_cycles=15288
     Owner name=driver proxy_cycles=0

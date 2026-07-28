@@ -58,15 +58,15 @@ ImageReport v0
   CoreStack core=1 base=0x7fe00000 size=0x100000
   CoreStack core=2 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=117516
-  Section name=rodata base=0x4051cb60 size=687
-  Section name=abort base=0x4051ce10 size=120
-  Section name=checkpoint base=0x4051ce88 size=28
+  Section name=code base=0x40500050 size=85216
+  Section name=rodata base=0x40514d30 size=687
+  Section name=abort base=0x40514fe0 size=120
+  Section name=checkpoint base=0x40515058 size=28
   Section name=rtdata base=0x40540000 size=2176
   Section name=devregs base=0x40540880 size=8
   Entry base=0x40500000
-  CoreEntry core=1 base=0x4051cabc
-  CoreEntry core=2 base=0x4051cb0c
+  CoreEntry core=1 base=0x40514ca8
+  CoreEntry core=2 base=0x40514cec
   PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
@@ -166,7 +166,7 @@ ImageReport v0
   Rings count=4 stride=64 padding=80 bytes=352
   Totals actors=1 drivers=1 ready_queue=3 group_arena=0 bytes=2176
   DeviceRegs device=device#0 type=Hw driver=Stub base=0x40540880 size=8
-  Cost version=1 digest=46282f52bdf2ba37 total=19587
-    Owner name=app proxy_cycles=1450
-    Owner name=runtime proxy_cycles=18137
+  Cost version=1 digest=46282f52bdf2ba37 total=17466
+    Owner name=app proxy_cycles=1291
+    Owner name=runtime proxy_cycles=16175
     Owner name=driver proxy_cycles=0
