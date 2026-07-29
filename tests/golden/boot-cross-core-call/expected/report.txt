@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_cross_core_call.wr sha256=6282510394e28c3cec25abcc21983018defd377ece233d078f8de4cba3dca12a
-  Input path=<generated> sha256=f7b728e36707ee501abb3d9bb387196824c47e8d99431368ffc46bd5735b0333
+  Input path=<generated> sha256=5dc8e67a37868284ca0841aa8b5b65ad3709909578748c73c71e1dc560810a7c
   Name value=cross-core-send
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Off
@@ -44,20 +44,28 @@ ImageReport v0
     Field name=bytes type=[u8; DATA_SIZE] offset=0x0 size=16384
   Layout name=TestLineBuf kind=runtime endian=little size=21 padding=0
     Field name=bytes type=[u8; LINE_BUF_SIZE] offset=0x0 size=21
+  Layout name=Lane1Counters kind=runtime endian=little size=1048 padding=0
+    Field name=turns type=u64 offset=0x0 size=8
+    Field name=run_one_hits type=u64 offset=0x8 size=8
+    Field name=messages type=u64 offset=0x10 size=8
+    Field name=method_hits type=[u64; METHOD_CALL_POOL_COUNT] offset=0x18 size=1024
+  Layout name=Lane2Counters kind=runtime endian=little size=8200 padding=0
+    Field name=enabled type=u64 offset=0x0 size=8
+    Field name=hits type=[u64; BLOCK_POOL_COUNT] offset=0x8 size=8192
   Section name=pages base=0x40000000 size=28672
   Cores count=3
   CoreStack core=0 base=0x7fd00000 size=0x100000
   CoreStack core=1 base=0x7fe00000 size=0x100000
   CoreStack core=2 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=81336
-  Section name=rodata base=0x40513e08 size=592
-  Section name=abort base=0x40514058 size=120
-  Section name=checkpoint base=0x405140d0 size=28
+  Section name=code base=0x40500050 size=82892
+  Section name=rodata base=0x40514420 size=647
+  Section name=abort base=0x405146a8 size=120
+  Section name=checkpoint base=0x40514720 size=28
   Section name=rtdata base=0x40540000 size=1368
   Entry base=0x40500000
-  CoreEntry core=1 base=0x40513af4
-  CoreEntry core=2 base=0x40513b38
+  CoreEntry core=1 base=0x40514108
+  CoreEntry core=2 base=0x4051414c
   PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
@@ -71,6 +79,8 @@ ImageReport v0
   PlacedStatic name=INIT_SPAN5 type=InitSpan5Words addr=0x4057f780 size=8
   PlacedStatic name=INIT_SPAN6 type=InitSpan6Words addr=0x4057f788 size=8
   PlacedStatic name=INIT_SPAN7 type=InitSpan7Words addr=0x4057f790 size=8
+  PlacedStatic name=LANE1 type=Lane1Counters addr=0x40008000 size=1048
+  PlacedStatic name=LANE2 type=Lane2Counters addr=0x40008800 size=8200
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=536
   PlacedStatic name=MB0_CTL type=MbCtl addr=0x40540448 size=24
   PlacedStatic name=MB0_DATA type=Mb0Data addr=0x40540408 size=64
@@ -145,7 +155,7 @@ ImageReport v0
   PlacedStatic name=SCHED type=SchedStripe addr=0x40540460 size=72
   PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000218 size=21
   PlacedStatic name=WAKE type=WakeTables addr=0x4057fff8 size=8
-  PlacedStatics count=80 fixed=CLOCK,CONSOLE_DATA,CONSOLE_RING,EXIT,GROUPS,MACHINE_INFO,MB0_CTL,MB0_DATA,MB10_CTL,MB10_DATA,MB11_CTL,MB11_DATA,MB12_CTL,MB12_DATA,MB13_CTL,MB13_DATA,MB14_CTL,MB14_DATA,MB15_CTL,MB15_DATA,MB16_CTL,MB16_DATA,MB17_CTL,MB17_DATA,MB18_CTL,MB18_DATA,MB19_CTL,MB19_DATA,MB1_CTL,MB1_DATA,MB20_CTL,MB20_DATA,MB21_CTL,MB21_DATA,MB22_CTL,MB22_DATA,MB23_CTL,MB23_DATA,MB24_CTL,MB24_DATA,MB25_CTL,MB25_DATA,MB26_CTL,MB26_DATA,MB27_CTL,MB27_DATA,MB28_CTL,MB28_DATA,MB29_CTL,MB29_DATA,MB2_CTL,MB2_DATA,MB30_CTL,MB30_DATA,MB31_CTL,MB31_DATA,MB3_CTL,MB3_DATA,MB4_CTL,MB4_DATA,MB5_CTL,MB5_DATA,MB6_CTL,MB6_DATA,MB7_CTL,MB7_DATA,MB8_CTL,MB8_DATA,MB9_CTL,MB9_DATA,PARK,PENDING,RELEASE,RINGS_CTL,RINGS_DATA,RT,SCHED,TEST_LINE_BUF,WAKE spans=1
+  PlacedStatics count=82 fixed=CLOCK,CONSOLE_DATA,CONSOLE_RING,EXIT,GROUPS,MACHINE_INFO,MB0_CTL,MB0_DATA,MB10_CTL,MB10_DATA,MB11_CTL,MB11_DATA,MB12_CTL,MB12_DATA,MB13_CTL,MB13_DATA,MB14_CTL,MB14_DATA,MB15_CTL,MB15_DATA,MB16_CTL,MB16_DATA,MB17_CTL,MB17_DATA,MB18_CTL,MB18_DATA,MB19_CTL,MB19_DATA,MB1_CTL,MB1_DATA,MB20_CTL,MB20_DATA,MB21_CTL,MB21_DATA,MB22_CTL,MB22_DATA,MB23_CTL,MB23_DATA,MB24_CTL,MB24_DATA,MB25_CTL,MB25_DATA,MB26_CTL,MB26_DATA,MB27_CTL,MB27_DATA,MB28_CTL,MB28_DATA,MB29_CTL,MB29_DATA,MB2_CTL,MB2_DATA,MB30_CTL,MB30_DATA,MB31_CTL,MB31_DATA,MB3_CTL,MB3_DATA,MB4_CTL,MB4_DATA,MB5_CTL,MB5_DATA,MB6_CTL,MB6_DATA,MB7_CTL,MB7_DATA,MB8_CTL,MB8_DATA,MB9_CTL,MB9_DATA,PARK,PENDING,RELEASE,RINGS_CTL,RINGS_DATA,RT,SCHED,TEST_LINE_BUF,WAKE spans=1
   Actor name=Off mailbox=4 slot=16 frame=64 state=8
   Turn fn=runs_off_core frame=288
   Ring kind=request src=0 dst=1 target=Off cap=4 slot=16 bytes=88 base=0x405404d8
@@ -153,11 +163,12 @@ ImageReport v0
   Turns count=2 stride=512 bytes=1024
   Rings count=2 stride=64 padding=48 bytes=176
   Totals actors=1 drivers=0 ready_queue=2 group_arena=0 bytes=1368
-  Cost version=2 digest=ffc153b826203a27 total=35906 ghz=2.4
-    Owner name=app proxy_cycles=2468
-    Owner name=runtime proxy_cycles=33438
+  Cost version=2 digest=ffc153b826203a27 total=33562 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=33562
+    Owner name=app proxy_cycles=2396
+    Owner name=runtime proxy_cycles=31166
     Owner name=driver proxy_cycles=0
     Core n=0 proxy_cycles=0 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn_model=n/a
-    Core n=1 proxy_cycles=110 max_turn_proxy=41 turns_per_sec=58536585.3658536598 ms_per_turn_model=0.0000170833
+    Core n=1 proxy_cycles=107 max_turn_proxy=40 turns_per_sec=60000000 ms_per_turn_model=0.0000166667
     Core n=2 proxy_cycles=26 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn_model=n/a
-    Shared proxy_cycles=35770
+    Shared proxy_cycles=33429
