@@ -595,12 +595,14 @@ tests = [
   "golden/cost-calls",
   "golden/cost-bounds-elide",
   "golden/cost-runtime",
+  "golden/cost-branchy",
+  "golden/cost-mem-locality",
   "golden/image-basic",
   "unit:bounds_elide_on_ranks_strictly_below_off",
   "unit:load_committed_table",
   "unit:cost_summary_contains_version_and_owners",
 ]
-note = """plans/M18.md item L (2026-07-28): FLIPPED from `gap` to `test`. Umbrella for the ISA **proxy-cycle ranking** surface (04 §5 / 06 §1): `--stage=cost` goldens, short report Cost summary, `wrela-cost-v1` table load, and proxy off/on **rank** A/B. Value remains **differential ISA ranking only** — not predicted-vs-physical wall-clock, not A76 SOG ports, not host calibration against `bench guest` / `profile`, not exit-rate report lines (06 §5). `cargo xtask profile` stays a measurement report, not this clause's oracle. Sub-clauses: `compiler.costs.stage-dump`, `compiler.costs.v1-table`, `compiler.costs.proxy-ab`, `compiler.costs.report-summary`."""
+note = """plans/M18.md item L (2026-07-28): FLIPPED from `gap` to `test`. Umbrella for the ISA **proxy-cycle ranking** surface (04 §5 / 06 §1): `--stage=cost` goldens (incl. hard-cut witnesses `cost-branchy` / `cost-mem-locality`), short report Cost summary, `wrela-cost-v1` table load (`version=2` dual ports ∩ `max_issue_per_cycle` + mem reuse — not flat `issue_width`), and proxy off/on **rank** A/B. Value remains **differential ISA ranking only** — not predicted-vs-physical wall-clock, not A76 SOG ports, not host calibration against `bench guest` / `profile`, not exit-rate report lines (06 §5). Normative proxy soundness (04 §5): a proxy win must never imply a real-machine loss. `cargo xtask profile` stays a measurement report, not this clause's oracle. Sub-clauses: `compiler.costs.stage-dump`, `compiler.costs.v1-table`, `compiler.costs.proxy-ab`, `compiler.costs.report-summary`."""
 
 [[clause]]
 id = "compiler.costs.stage-dump"
@@ -611,22 +613,24 @@ tests = [
   "golden/cost-calls",
   "golden/cost-bounds-elide",
   "golden/cost-runtime",
+  "golden/cost-branchy",
+  "golden/cost-mem-locality",
 ]
-note = """plans/M18.md item L (2026-07-28): flipped. `wrela dump --stage=cost` emits Terms (rule counts) + scoreboard schedule totals + owners from the final asm-pipeline stream. Still differential ISA ranking only (not physical). Umbrella: `compiler.costs.predicted-vs-measured`."""
+note = """plans/M18.md item L (2026-07-28): flipped. `wrela dump --stage=cost` emits Terms (rule counts) + dual-port scoreboard schedule totals + owners from the final asm-pipeline stream; header is `version=2` ports / mem knobs (no `issue_width`). Hard-cut witnesses: `golden/cost-branchy` (branch + `branch_penalty`), `golden/cost-mem-locality` (MemRef stack reuse vs colder working set). Still differential ISA ranking only (not physical). Umbrella: `compiler.costs.predicted-vs-measured`."""
 
 [[clause]]
 id = "compiler.costs.v1-table"
 doc = "04-compiler.md#5"
 status = "test"
 tests = ["unit:load_committed_table", "unit:parse_and_digest_stable"]
-note = """plans/M18.md item L (2026-07-28): flipped. Versioned `bench/wrela-cost-v1.toml` loads via `cost::table` (per-CostRule latency + optional model `issue_width`). ISA ranking table — not A76 SOG ports, not host calibration. Umbrella: `compiler.costs.predicted-vs-measured`."""
+note = """plans/M18.md item L (2026-07-28): flipped; hard-cut note-update (cost-model item H). Versioned `bench/wrela-cost-v1.toml` loads via `cost::table` as schema **`version=2`**: `[ports]` (`alu` / `mem` / `max_issue_per_cycle` / `branch_penalty` / `mem_reuse_window` / `mem_working_set_cap`), `[latency]` every CostRule key (incl. hardened `abort_val`), `[mem]` hit/miss/store/working-set surcharge. **Rejects** documenting or parsing flat `issue_width`-only scoring as the live ILP model (`issue_width` is refused). ISA ranking table — not A76 SOG ports, not host calibration, no real L1/L2/L3 KB. Umbrella: `compiler.costs.predicted-vs-measured`."""
 
 [[clause]]
 id = "compiler.costs.proxy-ab"
 doc = "04-compiler.md#5"
 status = "test"
 tests = ["unit:bounds_elide_on_ranks_strictly_below_off", "golden/cost-bounds-elide"]
-note = """plans/M18.md item L (2026-07-28): flipped. Off/on **rank** oracle (`cost::ab::bounds_elide_on_ranks_strictly_below_off`): elide-on schedule total strictly below elide-off — never wall time. Capstone dump `golden/cost-bounds-elide`. Still differential ISA ranking only (not physical). Umbrella: `compiler.costs.predicted-vs-measured`."""
+note = """plans/M18.md item L (2026-07-28): flipped. Off/on **rank** oracle (`cost::ab::bounds_elide_on_ranks_strictly_below_off`): elide-on schedule total strictly below elide-off under the live `version=2` table — never wall time. Capstone dump `golden/cost-bounds-elide`. Still differential ISA ranking only (not physical). Umbrella: `compiler.costs.predicted-vs-measured`."""
 
 [[clause]]
 id = "compiler.costs.report-summary"
@@ -637,7 +641,7 @@ tests = [
   "unit:cost_summary_contains_version_and_owners",
   "unit:format_cost_summary_aggregates_owners",
 ]
-note = """plans/M18.md item L (2026-07-28): flipped. Image report short Cost summary by default (version, digest, totals by owner) via `report::append_cost_summary` — not per-Term lines (those on `--stage=cost`); not exit-rate lines (06 §5). Still differential ISA ranking only (not physical). Umbrella: `compiler.costs.predicted-vs-measured`."""
+note = """plans/M18.md item L (2026-07-28): flipped. Image report short Cost summary by default (`version=2`, digest, totals by owner) via `report::append_cost_summary` — not per-Term lines / not ports.* header lines (those on `--stage=cost`); not exit-rate lines (06 §5). Still differential ISA ranking only (not physical). Umbrella: `compiler.costs.predicted-vs-measured`."""
 
 [[clause]]
 id = "compiler.opts.compile-mode"

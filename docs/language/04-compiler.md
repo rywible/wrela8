@@ -245,15 +245,24 @@ backend's soak time.
 
 **Proxy-cycle ranking.** After codegen (runtime included), every emitted
 word carries an emit-time op-class tag (`CostRule`) and its dest/src
-registers. A versioned parameter file (`wrela-cost-v1`) gives per-rule
-latencies and an optional model `issue_width`. A dumb register scoreboard
-over the final stream yields a **schedule length** per function — the
-proxy total. The value is **differential**: given two semantically
-equivalent emissions, which ranks lower? Absolute cycles on Apple vs Pi
-(or any host) may differ with cache and µarch; rank for fewer/cheaper ops
-and shorter true data deps must not require those. The model is not an
-A76 SOG port map, is not calibrated to host wall clocks, and does not
-discharge `@budget` or cost proofs. Stable dump: `wrela dump --stage=cost`
+registers (loads/stores may also carry a `MemRef`: Stack vs Cold). A
+versioned parameter file (`wrela-cost-v1`, schema `version=2`) gives
+per-rule latencies plus dual issue ports (`alu` / `mem`), a global
+`max_issue_per_cycle` cap (ports ∩ that cap), a mem reuse window with
+working-set cap and surcharge (stores invalidate; a missing MemRef is a
+cold miss), `branch_penalty`, and hardened `abort_val`. A dumb dual-port
+register scoreboard over the final stream yields a **schedule length**
+per function — the proxy total (`call` clears the mem window). Totals are
+path-insensitive Σ per function. The value is **differential**: given two
+semantically equivalent emissions, which ranks lower? Absolute cycles on
+Apple vs Pi (or any host) may differ with cache and µarch; rank for
+fewer/cheaper ops and shorter true data deps must not require those.
+**Proxy soundness (normative):** a proxy win must never imply a
+real-machine loss (same or better only); when unsure, prefer under-credit
+/ over-cost. The model is not an A76 SOG port map, is not calibrated to
+host wall clocks, has no real L1/L2/L3 KB geometry, no PGO frequencies,
+and does not discharge `@budget` or cost proofs. Flat `issue_width`-only
+scoring is not the live model. Stable dump: `wrela dump --stage=cost`
 (Terms = rule counts, plus schedule totals and owners). The image report
 carries only a short summary ([§6](#6)). This ranking is the optimization
 ruler (M18); modes below consume it and do not replace it.
