@@ -26,6 +26,7 @@ pub struct FnCost {
 pub struct CostReport {
     pub version: u64,
     pub digest: String,
+    /// Copied from `CostTable` for the dump/report header (item D).
     pub alu_ports: u64,
     pub mem_ports: u64,
     pub max_issue_per_cycle: u64,
