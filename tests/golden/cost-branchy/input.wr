@@ -1,0 +1,26 @@
+module examples.cost_branchy
+
+# Cost-stage golden (cost-model hard-cut item E) — control-flow heavy so
+# branch terms + branch_penalty=3 matter in the schedule (not a
+# straight-line ALU-only body).
+
+pub fn classify(x: u64) -> u64:
+    if x < 10:
+        return 0
+    elif x < 20:
+        return 1
+    elif x < 30:
+        return 2
+    elif x < 40:
+        return 3
+    elif x < 50:
+        return 4
+    else:
+        return 5
+
+pub fn countdown(n: u64) -> u64:
+    i: u64 = n
+    @budget(bound=1000000)
+    while i > 0:
+        i = i - 1
+    return i

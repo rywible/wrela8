@@ -1,0 +1,17 @@
+Cost version=2 ports.alu=2 ports.mem=2 max_issue_per_cycle=2 branch_penalty=3 mem_reuse_window=8 mem_working_set_cap=4 digest=ffc153b826203a27 ghz=2.4
+  Assumptions ignore_cache=1 ignore_mispredict=1 target=isa_baseline ghz_model=1 turn_path=max_entry_fn
+  Composition sum_of_fn_schedules=1
+  Total proxy_cycles=355
+  Owner name=app proxy_cycles=355
+  Owner name=runtime proxy_cycles=0
+  Owner name=driver proxy_cycles=0
+  Fn key=reuse_stack owner=app proxy_cycles=136
+    Term rule=alu count=17
+    Term rule=branch count=3
+    Term rule=load count=48
+    Term rule=store count=34
+  Fn key=scatter_slots owner=app proxy_cycles=219
+    Term rule=alu count=9
+    Term rule=branch count=3
+    Term rule=load count=38
+    Term rule=store count=30
