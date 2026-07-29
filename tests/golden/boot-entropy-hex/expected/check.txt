@@ -41,6 +41,22 @@ Module path=runtime
   Struct TestLineBuf data
     field bytes: [u8; LINE_BUF_SIZE]
   Static TEST_LINE_BUF: TestLineBuf placed=0x40000218
+  Struct Lane1Counters data
+    field turns: u64
+    field run_one_hits: u64
+    field messages: u64
+    field method_hits: [u64; METHOD_CALL_POOL_COUNT]
+  Static LANE1: Lane1Counters placed=0x40008000
+  Fn __wrela_lane1_method_flat(root: read usize, method: read usize) -> usize
+  Fn __wrela_lane1_record_method(root: read usize, method: read usize) -> unit
+  Fn __wrela_lane1_append_u64(value: read u64) -> u64
+  Fn __wrela_lane1_dump() -> unit
+  Struct Lane2Counters data
+    field enabled: u64
+    field hits: [u64; BLOCK_POOL_COUNT]
+  Static LANE2: Lane2Counters placed=0x40008800
+  Fn __wrela_block_hit(id: read usize) -> unit
+  Fn __wrela_lane2_dump() -> unit
   Fn ascii_digit(d: read u64) -> u8
   Fn __wrela_fmt_dec(value: read u64, is_signed: read u64) -> u64
   Fn copy_line_buf_range(bump: read usize, n: read usize) -> unit
