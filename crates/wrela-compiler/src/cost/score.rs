@@ -26,7 +26,13 @@ pub struct FnCost {
 pub struct CostReport {
     pub version: u64,
     pub digest: String,
-    pub issue_width: u64,
+    /// Copied from `CostTable` for the dump/report header (item D).
+    pub alu_ports: u64,
+    pub mem_ports: u64,
+    pub max_issue_per_cycle: u64,
+    pub branch_penalty: u64,
+    pub mem_reuse_window: u64,
+    pub mem_working_set_cap: u64,
     /// Sum of per-fn schedule lengths (compositionality; dump header states it).
     pub total_proxy_cycles: u64,
     /// Sum of fn `proxy_cycles` per owner bucket (`app` / `runtime` / `driver`).
@@ -66,9 +72,13 @@ pub fn score_program(program: &CodegenProgram, table: &CostTable) -> Result<Cost
     Ok(CostReport {
         version: table.version,
         digest: table.table_digest(),
-        // Interim: CostReport still exposes issue_width until dump/scorer
-        // hard-cut (items C/D). Map from max_issue_per_cycle.
-        issue_width: table.max_issue_per_cycle,
+        // Header knobs only — schedule algorithm rewrite is item C.
+        alu_ports: table.alu_ports,
+        mem_ports: table.mem_ports,
+        max_issue_per_cycle: table.max_issue_per_cycle,
+        branch_penalty: table.branch_penalty,
+        mem_reuse_window: table.mem_reuse_window,
+        mem_working_set_cap: table.mem_working_set_cap,
         total_proxy_cycles,
         owner_totals,
         fns,

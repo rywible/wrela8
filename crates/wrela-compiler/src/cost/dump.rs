@@ -30,10 +30,15 @@ fn format_report(
         &mut out,
         0,
         &format!(
-            "Cost version={} digest={} issue_width={} ghz={}",
+            "Cost version={} ports.alu={} ports.mem={} max_issue_per_cycle={} branch_penalty={} mem_reuse_window={} mem_working_set_cap={} digest={} ghz={}",
             report.version,
+            report.alu_ports,
+            report.mem_ports,
+            report.max_issue_per_cycle,
+            report.branch_penalty,
+            report.mem_reuse_window,
+            report.mem_working_set_cap,
             report.digest,
-            report.issue_width,
             fmt_compact(ghz)
         ),
     );
@@ -155,9 +160,14 @@ mod tests {
     fn report(fns: Vec<FnCost>) -> CostReport {
         let total: u64 = fns.iter().map(|f| f.proxy_cycles).sum();
         CostReport {
-            version: 1,
+            version: 2,
             digest: "test".to_string(),
-            issue_width: 4,
+            alu_ports: 2,
+            mem_ports: 2,
+            max_issue_per_cycle: 2,
+            branch_penalty: 3,
+            mem_reuse_window: 8,
+            mem_working_set_cap: 4,
             total_proxy_cycles: total,
             owner_totals: BTreeMap::from([("app".to_string(), total)]),
             fns,
@@ -187,6 +197,13 @@ mod tests {
             cores: 0,
         };
         let text = format_report(&report, &placement, DEFAULT_GHZ).expect("ok");
+        assert!(
+            text.starts_with(
+                "Cost version=2 ports.alu=2 ports.mem=2 max_issue_per_cycle=2 branch_penalty=3 mem_reuse_window=8 mem_working_set_cap=4 digest=test ghz=2.4\n"
+            ),
+            "got:\n{text}"
+        );
+        assert!(!text.contains("issue_width"), "got:\n{text}");
         assert!(text.contains("ghz=2.4"), "got:\n{text}");
         assert!(text.contains("ghz_model=1 turn_path=max_entry_fn"));
         assert!(!text.contains("Core n="), "got:\n{text}");

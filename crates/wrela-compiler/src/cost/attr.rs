@@ -237,9 +237,14 @@ mod tests {
     fn report(fns: Vec<FnCost>) -> CostReport {
         let total: u64 = fns.iter().map(|f| f.proxy_cycles).sum();
         CostReport {
-            version: 1,
+            version: 2,
             digest: "test".to_string(),
-            issue_width: 4,
+            alu_ports: 2,
+            mem_ports: 2,
+            max_issue_per_cycle: 2,
+            branch_penalty: 3,
+            mem_reuse_window: 8,
+            mem_working_set_cap: 4,
             total_proxy_cycles: total,
             owner_totals: BTreeMap::new(),
             fns,

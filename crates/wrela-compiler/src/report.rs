@@ -869,7 +869,7 @@ mod tests {
         )
         .expect("default cost table");
         assert!(
-            out.contains("Cost version=1"),
+            out.contains("Cost version=2"),
             "missing Cost version line:\n{out}"
         );
         assert!(out.contains("ghz=2.4"), "missing ghz:\n{out}");
@@ -885,9 +885,14 @@ mod tests {
     fn format_cost_summary_aggregates_owners() {
         use std::collections::BTreeMap;
         let report = CostReport {
-            version: 1,
+            version: 2,
             digest: "deadbeef".to_string(),
-            issue_width: 4,
+            alu_ports: 2,
+            mem_ports: 2,
+            max_issue_per_cycle: 2,
+            branch_penalty: 3,
+            mem_reuse_window: 8,
+            mem_working_set_cap: 4,
             total_proxy_cycles: 30,
             owner_totals: BTreeMap::from([
                 ("app".to_string(), 10u64),
@@ -901,7 +906,7 @@ mod tests {
             .expect("format");
         assert_eq!(
             text,
-            "  Cost version=1 digest=deadbeef total=30 ghz=2.4\n\
+            "  Cost version=2 digest=deadbeef total=30 ghz=2.4\n\
                \x20   Owner name=app proxy_cycles=10\n\
                \x20   Owner name=runtime proxy_cycles=12\n\
                \x20   Owner name=driver proxy_cycles=8\n\
@@ -914,9 +919,14 @@ mod tests {
     fn format_cost_summary_omits_cores_when_placement_empty() {
         use std::collections::BTreeMap;
         let report = CostReport {
-            version: 1,
+            version: 2,
             digest: "deadbeef".to_string(),
-            issue_width: 4,
+            alu_ports: 2,
+            mem_ports: 2,
+            max_issue_per_cycle: 2,
+            branch_penalty: 3,
+            mem_reuse_window: 8,
+            mem_working_set_cap: 4,
             total_proxy_cycles: 30,
             owner_totals: BTreeMap::from([
                 ("app".to_string(), 10u64),
@@ -932,7 +942,7 @@ mod tests {
         let text = format_cost_summary(&report, &empty, cost::DEFAULT_GHZ).expect("format");
         assert_eq!(
             text,
-            "  Cost version=1 digest=deadbeef total=30 ghz=2.4\n\
+            "  Cost version=2 digest=deadbeef total=30 ghz=2.4\n\
                \x20   Owner name=app proxy_cycles=10\n\
                \x20   Owner name=runtime proxy_cycles=12\n\
                \x20   Owner name=driver proxy_cycles=8\n"
