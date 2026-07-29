@@ -1,13 +1,16 @@
 //! Dual-port register scoreboard over a `CodegenProgram` (cost hard-cut
-//! item C). Differential proxy-cycles only — path-insensitive, no real
-//! cache geometry, no mispredict model beyond `branch_penalty`.
+//! item C; integrity item L block-split). Differential proxy-cycles only —
+//! path-insensitive, no real cache geometry, no mispredict model beyond
+//! `branch_penalty`.
+//!
+//! Per-fn flat total = Σ s(b) over mechanical basic blocks (`f≡1`).
 
 use std::collections::{BTreeMap, VecDeque};
 
 use crate::codegen::{CodegenFn, CodegenProgram};
 
 use super::owner::classify_owner;
-use super::rule::{CostRule, EmittedWord, MEM_SP_REG, MemClass, MemRef};
+use super::rule::{CostRule, EmittedWord, MemClass, MemRef, MEM_SP_REG};
 use super::table::CostTable;
 
 /// Per-fn scoreboard result.
@@ -64,15 +67,13 @@ struct WinEntry {
 
 /// Score every function with a dual-port in-order scoreboard.
 ///
-/// Per fn: `ready[0..32] = 0`, `flags_ready = 0`, `control_ready = 0`;
-/// for each word in order, issue at the first cycle where GPR deps,
-/// NZCV (when `FlagEffect::Read`), and post-branch `control_ready` are
-/// satisfied, the rule's port is free, and
-/// `issues_this_cycle < max_issue_per_cycle`; retire at
-/// `start + latency` (branch adds `branch_penalty`; Load/Store use the
-/// mem hit/miss model). Branch finish also advances `control_ready` so
-/// mid-stream penalties serialize fallthrough. Fn total = max retire
-/// time (0 if empty). Program total = sum of fn totals.
+/// Per fn: split the word stream into mechanical basic blocks (branch
+/// targets + fallthrough), score each block from a cold scoreboard, and
+/// take `proxy_cycles = Σ s(b)` (`f≡1` flat). Within a block: issue when
+/// GPR deps, NZCV (when `FlagEffect::Read`), and post-branch
+/// `control_ready` allow, the rule's port is free, and
+/// `issues_this_cycle < max_issue_per_cycle`; retire at `start + latency`.
+/// Program total = sum of fn totals.
 pub fn score_program(program: &CodegenProgram, table: &CostTable) -> Result<CostReport, String> {
     let mut fns = Vec::with_capacity(program.fns.len());
     let mut total_proxy_cycles = 0u64;
@@ -113,9 +114,75 @@ pub fn score_program(program: &CodegenProgram, table: &CostTable) -> Result<Cost
     })
 }
 
+/// Half-open word-index ranges `[start, end)` of mechanical basic blocks
+/// in a codegen stream (integrity item L). Leaders: index 0, every
+/// PC-relative branch target, and the fallthrough word after any
+/// `CostRule::Branch`.
+pub fn basic_block_ranges(code: &[EmittedWord]) -> Vec<(usize, usize)> {
+    let n = code.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let mut leader = vec![false; n];
+    leader[0] = true;
+    for (i, ew) in code.iter().enumerate() {
+        if ew.rule != CostRule::Branch {
+            continue;
+        }
+        if i + 1 < n {
+            leader[i + 1] = true;
+        }
+        if let Some(t) = branch_target_index(ew.word, i) {
+            if t < n {
+                leader[t] = true;
+            }
+        }
+    }
+    let mut starts: Vec<usize> = (0..n).filter(|&i| leader[i]).collect();
+    starts.sort_unstable();
+    starts.dedup();
+    let mut ranges = Vec::with_capacity(starts.len());
+    for (k, &start) in starts.iter().enumerate() {
+        let end = starts.get(k + 1).copied().unwrap_or(n);
+        ranges.push((start, end));
+    }
+    ranges
+}
+
+/// Scoreboard schedule length `s(b)` for each basic block, in layout order.
+pub fn block_schedule_lengths(code: &[EmittedWord], table: &CostTable) -> Result<Vec<u64>, String> {
+    let mut out = Vec::new();
+    for (start, end) in basic_block_ranges(code) {
+        let (s, _) = score_words(&code[start..end], table)?;
+        out.push(s);
+    }
+    Ok(out)
+}
+
 fn score_fn(f: &CodegenFn, table: &CostTable) -> Result<(u64, BTreeMap<String, u64>), String> {
     let mut terms: BTreeMap<String, u64> = BTreeMap::new();
     if f.code.is_empty() {
+        return Ok((0, terms));
+    }
+    let mut proxy_cycles = 0u64;
+    for (start, end) in basic_block_ranges(&f.code) {
+        let (s, block_terms) = score_words(&f.code[start..end], table)?;
+        proxy_cycles = proxy_cycles.saturating_add(s);
+        for (k, v) in block_terms {
+            *terms.entry(k).or_insert(0) += v;
+        }
+    }
+    Ok((proxy_cycles, terms))
+}
+
+/// Dual-port in-order scoreboard over a straight-line word slice.
+/// Returns `(schedule_length, term_counts)`.
+fn score_words(
+    code: &[EmittedWord],
+    table: &CostTable,
+) -> Result<(u64, BTreeMap<String, u64>), String> {
+    let mut terms: BTreeMap<String, u64> = BTreeMap::new();
+    if code.is_empty() {
         return Ok((0, terms));
     }
 
@@ -130,7 +197,7 @@ fn score_fn(f: &CodegenFn, table: &CostTable) -> Result<(u64, BTreeMap<String, u
     let mut window: VecDeque<WinEntry> = VecDeque::new();
     let win_cap = table.mem_reuse_window.max(1) as usize;
 
-    for ew in &f.code {
+    for ew in code {
         *terms.entry(ew.rule.as_str().to_string()).or_insert(0) += 1;
         check_mem_base_in_srcs(ew)?;
 
@@ -190,6 +257,34 @@ fn score_fn(f: &CodegenFn, table: &CostTable) -> Result<(u64, BTreeMap<String, u
     }
 
     Ok((max_retire, terms))
+}
+
+/// PC-relative branch target as a word index, or `None` for register
+/// branches / undecodable encodings.
+fn branch_target_index(word: u32, from: usize) -> Option<usize> {
+    let word_delta = if word & 0xFC00_0000 == 0x1400_0000 {
+        // B: op=0, `0001_01 imm26`
+        sign_extend(word & 0x03FF_FFFF, 26)
+    } else if word & 0xFF00_0000 == 0x5400_0000 {
+        // B.cond: `0101_0100 imm19 0 cond`
+        sign_extend((word >> 5) & 0x7FFFF, 19)
+    } else if word & 0x7E00_0000 == 0x3400_0000 {
+        // CBZ / CBNZ: `sf 0110_10 op imm19 Rt`
+        sign_extend((word >> 5) & 0x7FFFF, 19)
+    } else {
+        return None;
+    };
+    let target = from as i64 + word_delta;
+    if target < 0 {
+        None
+    } else {
+        Some(target as usize)
+    }
+}
+
+fn sign_extend(value: u32, bits: u32) -> i64 {
+    let shift = 32 - bits;
+    ((value << shift) as i32 >> shift) as i64
 }
 
 /// Non-unique MemRef must list its base in `srcs` (integrity item C).
@@ -337,7 +432,7 @@ fn src_ready(ew: &EmittedWord, ready: &[u64; 32]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cost::rule::{CostRule, FlagEffect, MEM_SP_REG, MemRef};
+    use crate::cost::rule::{CostRule, FlagEffect, MemRef, MEM_SP_REG};
     use crate::cost::table::parse;
 
     const TABLE: &str = r#"
@@ -965,5 +1060,79 @@ working_set_surcharge = 2
         // Cold unique: no base requirement — still scores.
         let unique = prog("f", vec![load_cold_unique(1, 0)]);
         assert!(score_program(&unique, &table).is_ok());
+    }
+
+    fn word_enc(enc: u32, rule: CostRule, dst: Option<u8>, srcs: &[u8]) -> EmittedWord {
+        EmittedWord::new(enc, String::new(), rule, dst, srcs)
+    }
+
+    /// Leaders at 0, fallthrough after branch, and PC-relative targets.
+    #[test]
+    fn basic_blocks_split_on_branch_targets_and_fallthrough() {
+        use crate::encode::{enc_b, enc_b_cond, Cond};
+        // Layout: 0:alu  1:b.eq ->4  2:alu  3:b ->5  4:alu  5:alu
+        let code = vec![
+            word_enc(0, CostRule::Alu, Some(1), &[0]),
+            word_enc(enc_b_cond(Cond::Eq, 12), CostRule::Branch, None, &[])
+                .with_flags(FlagEffect::Read), // +3 words → idx 4
+            word_enc(0, CostRule::Alu, Some(2), &[1]),
+            word_enc(enc_b(8), CostRule::Branch, None, &[]), // +2 words → idx 5
+            word_enc(0, CostRule::Alu, Some(3), &[0]),
+            word_enc(0, CostRule::Alu, Some(4), &[0]),
+        ];
+        let ranges = basic_block_ranges(&code);
+        assert_eq!(ranges, vec![(0, 2), (2, 4), (4, 5), (5, 6)]);
+    }
+
+    /// Under f≡1, Σ s(b) equals the per-fn schedule `score_fn` / dump flat uses.
+    #[test]
+    fn flat_equiv_block_sum_matches_fn_schedule() {
+        use crate::encode::{enc_b, enc_b_cond, Cond};
+        let table = parse(TABLE).expect("table");
+
+        let cases: Vec<(&str, Vec<EmittedWord>)> = vec![
+            ("empty", Vec::new()),
+            (
+                "straight",
+                vec![
+                    word(CostRule::Alu, Some(1), &[0, 0]),
+                    word(CostRule::Alu, Some(2), &[1, 1]),
+                    load_stack(3, 8),
+                ],
+            ),
+            (
+                "mid_branch",
+                vec![
+                    word(CostRule::Branch, None, &[]),
+                    word(CostRule::Alu, Some(1), &[2, 2]),
+                ],
+            ),
+            (
+                "diamond",
+                vec![
+                    word_flags(CostRule::Alu, None, &[1, 2], FlagEffect::Write),
+                    word_enc(enc_b_cond(Cond::Eq, 12), CostRule::Branch, None, &[])
+                        .with_flags(FlagEffect::Read),
+                    word_enc(0, CostRule::Alu, Some(3), &[0]),
+                    word_enc(enc_b(8), CostRule::Branch, None, &[]),
+                    word_enc(0, CostRule::Alu, Some(4), &[0]),
+                    word_enc(0, CostRule::Alu, Some(5), &[0]),
+                ],
+            ),
+        ];
+
+        for (name, code) in cases {
+            let p = prog("f", code.clone());
+            let report = score_program(&p, &table).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let fn_sched = report.fns[0].proxy_cycles;
+            let blocks = block_schedule_lengths(&code, &table)
+                .unwrap_or_else(|e| panic!("{name} blocks: {e}"));
+            let sum: u64 = blocks.iter().sum();
+            assert_eq!(
+                sum, fn_sched,
+                "{name}: Σ s(b)={sum} (blocks {blocks:?}) != fn schedule {fn_sched}"
+            );
+            assert_eq!(report.total_proxy_cycles, fn_sched);
+        }
     }
 }
