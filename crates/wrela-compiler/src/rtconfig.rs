@@ -146,6 +146,15 @@ pub const MB_POOL_COUNT: usize = 32;
 /// Flat method-call stub pool (decision 831). `runtime.wr` imports every
 /// `__method_N` so `__wrela_call_method` bodies can Call them.
 pub const METHOD_CALL_POOL_COUNT: usize = 128;
+/// Integrity Phase 2 Item M — Lane 2 in-guest block-counter pool. Codegen
+/// fails closed if exhausted. Transcript bound (when `--block-count` is on)
+/// reserves [`BLOCK_BOUND_PRINT_PAIRS`] hit pairs, not the full pool — the
+/// dump emits non-zero entries only; boot-actors stays well under that.
+pub const BLOCK_POOL_COUNT: usize = 1024;
+/// Worst-case non-zero `id:count,` pairs reserved in the transcript bound
+/// under `--block-count` (Item M). Must stay ≤ console DATA_SIZE headroom
+/// after Lane 1.
+pub const BLOCK_BOUND_PRINT_PAIRS: usize = 128;
 /// Boot `init` call stub pool (decision 812).
 pub const BOOT_CALL_POOL_COUNT: usize = 32;
 /// Coalesced init-span overlay pool (M12 item E / decisions 883–885).
@@ -571,6 +580,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     push_const(&mut out, "N_MAILBOXES", extras.mailboxes.len());
     push_const(&mut out, "MB_POOL_COUNT", MB_POOL_COUNT);
     push_const(&mut out, "METHOD_CALL_POOL_COUNT", METHOD_CALL_POOL_COUNT);
+    push_const(&mut out, "BLOCK_POOL_COUNT", BLOCK_POOL_COUNT);
     push_const(&mut out, "N_METHODS", n_methods);
     push_const(&mut out, "TURNS_BASE", RTDATA_BASE as usize);
     // M12 item E: `N_INIT_SLOTS` names the coalesced live span count

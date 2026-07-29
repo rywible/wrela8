@@ -367,6 +367,31 @@ fn omit_dmb() -> bool {
     OMIT_DMB.with(|c| c.get())
 }
 
+// Integrity Phase 2 Item M — Lane 2 in-guest block counters. Test-only
+// emission mode (omit-dmb precedent): when set, codegen injects a
+// `__wrela_block_hit(id)` call at every basic-block leader; the guest
+// dumps the hit vector at exit. Never a production knob. Cleared at the
+// start of every CLI command; `NEXT_BLOCK_ID` resets with the flag.
+thread_local! {
+    static BLOCK_COUNT: Cell<bool> = const { Cell::new(false) };
+    static NEXT_BLOCK_ID: Cell<u32> = const { Cell::new(0) };
+}
+
+/// Integrity Phase 2 Item M: enable/disable Lane 2 block-counter emission.
+pub fn set_block_count(enabled: bool) {
+    BLOCK_COUNT.with(|c| c.set(enabled));
+    NEXT_BLOCK_ID.with(|c| c.set(0));
+}
+
+fn block_count() -> bool {
+    BLOCK_COUNT.with(|c| c.get())
+}
+
+/// Whether Lane 2 block-counter emission is enabled (layout transcript bound).
+pub fn block_count_enabled() -> bool {
+    block_count()
+}
+
 // plans/M19.md item B / decision 1421 + item I / 1485–1486: TLS knob for
 // narrow-immediate materialization. Default **off**; `opts::apply_mode
 // (Release)` turns it on when `OptId::NarrowImm` is in `RELEASE_OPTS`.
@@ -450,6 +475,23 @@ impl CodegenError {
             message: format!("internal error: {}", msg.into()),
         }
     }
+}
+
+fn alloc_block_id() -> Result<u32, CodegenError> {
+    let id = NEXT_BLOCK_ID.with(|c| {
+        let id = c.get();
+        c.set(id.saturating_add(1));
+        id
+    });
+    if id as usize >= crate::rtconfig::BLOCK_POOL_COUNT {
+        return Err(CodegenError {
+            message: format!(
+                "block-count pool exhausted (BLOCK_POOL_COUNT={})",
+                crate::rtconfig::BLOCK_POOL_COUNT
+            ),
+        });
+    }
+    Ok(id)
 }
 
 // --- output shape ------------------------------------------------------------
@@ -1488,6 +1530,14 @@ impl<'a> FnCtx<'a> {
             word,
             key: key.to_string(),
         });
+    }
+
+    /// Integrity Phase 2 Item M: fixed-width `movz/movk` of `id` into x0
+    /// then `bl <__wrela_block_hit>`. Fixed 5 words so two-pass sizing
+    /// stays identical under NarrowImm.
+    fn emit_block_hit(&mut self, id: u32) {
+        self.load_imm_naive(0, id as i64);
+        self.bl_symbolic_call("__wrela_block_hit", &[0]);
     }
 
     /// `__wrela_abort(x0=*Bytes)` — interns `message`, builds a stack
@@ -4823,6 +4873,12 @@ fn emit_fn(
     // scratch is reserved when the body emits `Inst::Entropy` (item Es).
     let frame = build_frame(f, layout, 0, mwir_entropy_scratch_size(f), 0)?;
 
+    let block_ids = if block_count() && crate::cost::owner::classify_owner(_key) == "app" {
+        assign_mwir_block_ids(&f.body)?
+    } else {
+        vec![None; f.body.len()]
+    };
+
     let empty: [usize; 0] = [];
     let mut probe_pro = FnCtx {
         frame: &frame,
@@ -4840,7 +4896,7 @@ fn emit_fn(
 
     let dummy_targets = vec![0usize; f.body.len() + 1];
     let mut counts = Vec::with_capacity(f.body.len());
-    for inst in f.body.iter() {
+    for (i, inst) in f.body.iter().enumerate() {
         let mut probe = FnCtx {
             frame: &frame,
             layout,
@@ -4853,6 +4909,9 @@ fn emit_fn(
             cold_seq: 0,
         };
         // plans/M11.md decision 740: no checkpoint on sync loop back-edges.
+        if let Some(id) = block_ids[i] {
+            probe.emit_block_hit(id);
+        }
         emit_one(inst, f, &mut probe)?;
         counts.push(probe.words.len());
     }
@@ -4877,11 +4936,14 @@ fn emit_fn(
     };
     emit_prologue(f, &frame, &mut ctx)?;
     debug_assert_eq!(ctx.words.len(), prologue_len);
-    for inst in f.body.iter() {
+    for (i, inst) in f.body.iter().enumerate() {
         // plans/M11.md decision 740: sync loop back-edges carry trip
         // counters only — no `FnCtx::checkpoint` (M10 decision 597
         // dissolved for console helpers; multi-core layout ownership
         // of `Reloc::CheckpointService` stays async-only).
+        if let Some(id) = block_ids[i] {
+            ctx.emit_block_hit(id);
+        }
         emit_one(inst, f, &mut ctx)?;
     }
     debug_assert_eq!(ctx.words.len(), word_offsets[f.body.len()]);
@@ -4892,6 +4954,58 @@ fn emit_fn(
         code: ctx.words,
         relocs: ctx.relocs,
     })
+}
+
+/// Integrity Phase 2 Item M: dumb leader set for a flat MWIR body —
+/// index 0, every branch target, and the fallthrough after a branch /
+/// return. Same shape Item L uses for block-split `s(b)`.
+fn mwir_block_leaders(body: &[Inst]) -> Vec<bool> {
+    let n = body.len();
+    let mut leaders = vec![false; n];
+    if n == 0 {
+        return leaders;
+    }
+    leaders[0] = true;
+    for (i, inst) in body.iter().enumerate() {
+        match inst {
+            Inst::Jump { target } => {
+                if *target < n {
+                    leaders[*target] = true;
+                }
+                if i + 1 < n {
+                    leaders[i + 1] = true;
+                }
+            }
+            Inst::JumpIfFalse { target, .. } => {
+                if *target < n {
+                    leaders[*target] = true;
+                }
+                if i + 1 < n {
+                    leaders[i + 1] = true;
+                }
+            }
+            Inst::Return { .. } => {
+                if i + 1 < n {
+                    leaders[i + 1] = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    leaders
+}
+
+fn assign_mwir_block_ids(body: &[Inst]) -> Result<Vec<Option<u32>>, CodegenError> {
+    let mut ids = vec![None; body.len()];
+    if !block_count() {
+        return Ok(ids);
+    }
+    for (i, is_leader) in mwir_block_leaders(body).into_iter().enumerate() {
+        if is_leader {
+            ids[i] = Some(alloc_block_id()?);
+        }
+    }
+    Ok(ids)
 }
 
 // ============================================================================
@@ -8820,6 +8934,11 @@ fn emit_flowwir_fn(
     let (frame, state_temp) = build_frame_flow(f, layout)?;
     let (state_flat_base, resume_target, flat) = flatten(f);
     let total = flat.len();
+    let block_ids = if block_count() && crate::cost::owner::classify_owner(fn_key) == "app" {
+        assign_flat_block_ids(&flat, &state_flat_base)?
+    } else {
+        vec![None; flat.len()]
+    };
 
     let synthetic = MwirFn {
         receiver: f.receiver,
@@ -8874,6 +8993,9 @@ fn emit_flowwir_fn(
             slot_bias: TURN_RECORD_SIZE as usize,
             cold_seq: 0,
         };
+        if let Some(id) = block_ids[i] {
+            probe.emit_block_hit(id);
+        }
         emit_flat_entry(
             entry,
             i,
@@ -8931,6 +9053,9 @@ fn emit_flowwir_fn(
     emit_async_entry(&synthetic, fn_key, &mut ctx, state_temp, &resume_target)?;
     debug_assert_eq!(ctx.words.len(), prologue_len);
     for (i, entry) in flat.iter().enumerate() {
+        if let Some(id) = block_ids[i] {
+            ctx.emit_block_hit(id);
+        }
         emit_flat_entry(
             entry,
             i,
@@ -8955,6 +9080,114 @@ fn emit_flowwir_fn(
         code: ctx.words,
         relocs: ctx.relocs,
     })
+}
+
+/// Integrity Phase 2 Item M: leaders on a flattened FlowWir stream.
+fn flat_block_leaders(flat: &[FlatEntry], state_flat_base: &[usize]) -> Vec<bool> {
+    let n = flat.len();
+    let mut leaders = vec![false; n];
+    if n == 0 {
+        return leaders;
+    }
+    leaders[0] = true;
+    for &b in state_flat_base {
+        if b < n {
+            leaders[b] = true;
+        }
+    }
+    for (i, entry) in flat.iter().enumerate() {
+        match entry {
+            FlatEntry::Op(FlowInst::Mwir(Inst::Jump { target })) => {
+                if *target < n {
+                    leaders[*target] = true;
+                }
+                if i + 1 < n {
+                    leaders[i + 1] = true;
+                }
+            }
+            FlatEntry::Op(FlowInst::Mwir(Inst::JumpIfFalse { target, .. })) => {
+                if *target < n {
+                    leaders[*target] = true;
+                }
+                if i + 1 < n {
+                    leaders[i + 1] = true;
+                }
+            }
+            FlatEntry::Op(FlowInst::Mwir(Inst::Return { .. })) => {
+                if i + 1 < n {
+                    leaders[i + 1] = true;
+                }
+            }
+            FlatEntry::Trans(Transition::Jump(state)) => {
+                if let Some(&t) = state_flat_base.get(*state) {
+                    if t < n {
+                        leaders[t] = true;
+                    }
+                }
+                if i + 1 < n {
+                    leaders[i + 1] = true;
+                }
+            }
+            FlatEntry::Trans(Transition::Branch {
+                then_state,
+                else_state,
+                ..
+            }) => {
+                if let Some(&t) = state_flat_base.get(*then_state) {
+                    if t < n {
+                        leaders[t] = true;
+                    }
+                }
+                if let Some(&e) = state_flat_base.get(*else_state) {
+                    if e < n {
+                        leaders[e] = true;
+                    }
+                }
+                if i + 1 < n {
+                    leaders[i + 1] = true;
+                }
+            }
+            FlatEntry::Trans(
+                Transition::Return(_) | Transition::Await { .. } | Transition::Abort { .. },
+            ) => {
+                if i + 1 < n {
+                    leaders[i + 1] = true;
+                }
+            }
+            FlatEntry::AwaitResume { resume_state, .. } => {
+                leaders[i] = true;
+                if let Some(&t) = state_flat_base.get(*resume_state) {
+                    if t < n {
+                        leaders[t] = true;
+                    }
+                }
+                if i + 1 < n {
+                    leaders[i + 1] = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    leaders
+}
+
+fn assign_flat_block_ids(
+    flat: &[FlatEntry],
+    state_flat_base: &[usize],
+) -> Result<Vec<Option<u32>>, CodegenError> {
+    let mut ids = vec![None; flat.len()];
+    if !block_count() {
+        return Ok(ids);
+    }
+    for (i, is_leader) in flat_block_leaders(flat, state_flat_base)
+        .into_iter()
+        .enumerate()
+    {
+        if is_leader {
+            ids[i] = Some(alloc_block_id()?);
+        }
+    }
+    Ok(ids)
 }
 
 /// Every async fn's own persistent frame byte count (its `Frame::size` —
@@ -10182,6 +10415,9 @@ pub fn codegen_program_with_async(
     // image has no mailbox roots (dump without an `@image`, sync-only).
     _enqueue_specs: &[(String, u64, u64)],
 ) -> Result<CodegenProgram, CodegenError> {
+    if block_count() {
+        NEXT_BLOCK_ID.with(|c| c.set(0));
+    }
     let mut rodata = RodataPool::new();
     rodata.seed(&mwir.rodata);
     let (child_index, max_children) = compute_group_child_indices(flow)?;
@@ -10213,6 +10449,9 @@ pub fn codegen_program(
     mwir: &MwirProgram,
     layout: &LayoutCtx,
 ) -> Result<CodegenProgram, CodegenError> {
+    if block_count() {
+        NEXT_BLOCK_ID.with(|c| c.set(0));
+    }
     let mut rodata = RodataPool::new();
     rodata.seed(&mwir.rodata);
     let mut fns = BTreeMap::new();
@@ -11005,6 +11244,91 @@ mod tests {
             intact_words - mutated_words,
             2,
             "exactly two DMB words must disappear under omit-dmb"
+        );
+    }
+
+    /// Integrity Phase 2 Item M: `--block-count` injects
+    /// `bl <__wrela_block_hit>` at every MWIR leader; off leaves asm alone.
+    #[test]
+    fn block_count_emits_hit_calls_at_leaders() {
+        let mwir = MwirProgram {
+            fns: BTreeMap::from([(
+                "branchy".to_string(),
+                MwirFn {
+                    receiver: None,
+                    params: vec![],
+                    ret: Type::Unit,
+                    temp_types: vec![Type::Bool],
+                    body: vec![
+                        Inst::ConstBool {
+                            dst: Temp(0),
+                            value: true,
+                        },
+                        Inst::JumpIfFalse {
+                            cond: Temp(0),
+                            target: 3,
+                        },
+                        Inst::Jump { target: 4 },
+                        Inst::ConstBool {
+                            dst: Temp(0),
+                            value: false,
+                        },
+                        Inst::Return { value: None },
+                    ],
+                },
+            )]),
+            rodata: vec![],
+        };
+        let layout = LayoutCtx::default();
+
+        set_block_count(false);
+        let off = codegen_program(&mwir, &layout).expect("off");
+        let off_dump = dump(&off);
+        assert!(
+            !off_dump.contains("bl <__wrela_block_hit>"),
+            "default must not instrument:\n{off_dump}"
+        );
+
+        set_block_count(true);
+        let on_a = codegen_program(&mwir, &layout).expect("on a");
+        let on_b = codegen_program(&mwir, &layout).expect("on b");
+        set_block_count(false);
+        let on_dump = dump(&on_a);
+        assert_eq!(
+            dump(&on_a),
+            dump(&on_b),
+            "block-count emission must be deterministic across two runs"
+        );
+        let hits = on_dump.matches("bl <__wrela_block_hit>").count();
+        // leaders: 0, 2 (after JumpIfFalse), 3 (target), 4 (after Jump / Return)
+        assert_eq!(hits, 4, "expected one hit call per leader:\n{on_dump}");
+        assert!(
+            on_a.fns["branchy"].code.len() > off.fns["branchy"].code.len(),
+            "instrumented body must grow"
+        );
+    }
+
+    #[test]
+    fn mwir_block_leaders_marks_targets_and_fallthrough() {
+        let body = vec![
+            Inst::ConstBool {
+                dst: Temp(0),
+                value: true,
+            },
+            Inst::JumpIfFalse {
+                cond: Temp(0),
+                target: 3,
+            },
+            Inst::Jump { target: 4 },
+            Inst::ConstBool {
+                dst: Temp(0),
+                value: false,
+            },
+            Inst::Return { value: None },
+        ];
+        assert_eq!(
+            mwir_block_leaders(&body),
+            vec![true, false, true, true, true]
         );
     }
 

@@ -147,6 +147,7 @@ TURNS_BASE,
     N_MAILBOXES,
     MB_POOL_COUNT,
     METHOD_CALL_POOL_COUNT,
+    BLOCK_POOL_COUNT,
     MB0_CTL,
     MB1_CTL,
     MB2_CTL,
@@ -693,6 +694,67 @@ pub fn __wrela_lane1_dump():
                     _ = __wrela_lane1_append_u64(c)
             mi = mi +% 1
         root = root +% 1
+    TEST_LINE_BUF.bytes[0] = 10
+    _ = __wrela_console_append_line_buf(1)
+    _ = __wrela_line_commit()
+    return
+
+# ---------------------------------------------------------------------------
+# Integrity Phase 2 Item M — Lane 2 in-guest block counters.
+# Placed after LANE1 in the device-page growth window. Hits are indexed by
+# stable codegen-assigned leader ids (BTreeMap fn order × leaders-in-order).
+# Dump is a no-op unless `--block-count` emission set `enabled`.
+# ---------------------------------------------------------------------------
+
+@layout(runtime, endian=little)
+struct Lane2Counters:
+    enabled: u64
+    hits: [u64; BLOCK_POOL_COUNT]
+
+@placed(0x40008800)
+static LANE2: Lane2Counters
+
+pub fn __wrela_block_hit(id: usize):
+    if id >= BLOCK_POOL_COUNT:
+        return
+    LANE2.enabled = 1
+    LANE2.hits[id] = LANE2.hits[id] +% 1
+    return
+
+# Compact Lane 2 block (one console line after Lane 1, when enabled):
+#   lane2 hits=<id>:<count>,...   (non-zero only, ascending id)
+pub fn __wrela_lane2_dump():
+    if LANE2.enabled == 0:
+        return
+    __wrela_line_begin()
+    # "lane2 hits="
+    TEST_LINE_BUF.bytes[0] = 108
+    TEST_LINE_BUF.bytes[1] = 97
+    TEST_LINE_BUF.bytes[2] = 110
+    TEST_LINE_BUF.bytes[3] = 101
+    TEST_LINE_BUF.bytes[4] = 50
+    TEST_LINE_BUF.bytes[5] = 32
+    TEST_LINE_BUF.bytes[6] = 104
+    TEST_LINE_BUF.bytes[7] = 105
+    TEST_LINE_BUF.bytes[8] = 116
+    TEST_LINE_BUF.bytes[9] = 115
+    TEST_LINE_BUF.bytes[10] = 61
+    _ = __wrela_console_append_line_buf(11)
+    first: u64 = 1
+    i: usize = 0
+    @budget(bound=1024)
+    while i < BLOCK_POOL_COUNT:
+        c = LANE2.hits[i]
+        if c != 0:
+            if first == 0:
+                TEST_LINE_BUF.bytes[0] = 44
+                _ = __wrela_console_append_line_buf(1)
+            first = 0
+            _ = __wrela_lane1_append_u64(i.to[u64]())
+            TEST_LINE_BUF.bytes[0] = 58
+            _ = __wrela_console_append_line_buf(1)
+            _ = __wrela_lane1_append_u64(c)
+        i = i +% 1
     TEST_LINE_BUF.bytes[0] = 10
     _ = __wrela_console_append_line_buf(1)
     _ = __wrela_line_commit()
@@ -1809,6 +1871,8 @@ pub fn __wrela_rt_summary_and_halt():
     _ = __wrela_line_commit()
     # Lane 1 counter block trails the summary (well-formedness allows it).
     __wrela_lane1_dump()
+    # Lane 2 block-hit vector (no-op unless `--block-count` enabled emission).
+    __wrela_lane2_dump()
     code: u64 = 0
     if MACHINE_INFO.test_failed != 0:
         code = 1
@@ -1834,6 +1898,12 @@ pub fn __wrela_rt_primary_boot():
     while zi < METHOD_CALL_POOL_COUNT:
         LANE1.method_hits[zi] = 0
         zi = zi +% 1
+    LANE2.enabled = 0
+    zj: usize = 0
+    @budget(bound=1024)
+    while zj < BLOCK_POOL_COUNT:
+        LANE2.hits[zj] = 0
+        zj = zj +% 1
     if N_CORES > 1:
         MACHINE_INFO.core_marks[0] = 1
         RELEASE.word = N_CORES.to[u64]()
