@@ -250,13 +250,14 @@ fn main() -> ExitCode {
         // xtask report-determinism` rather than a bare synonym for it.
         Some("repro") => repro(),
         Some("diff-eval") => diff_eval(),
+        Some("diff-block-count") => diff_block_count(),
         Some("diff-blk") => diff_blk(),
         Some("profile") => profile(),
         Some("fuzz") => fuzz(&args[1..]),
         Some("bench") => bench(&args[1..]),
         _ => {
             eprintln!(
-                "usage: cargo xtask <check|golden [--update]|corpus [--sema]|fuzz [lexer|parser|sema|eval|lower|async|imports] [--iters N] [--seed S]|roundtrip|report-determinism|ledger|stdlib-test|repro|diff-eval|diff-blk|profile|bench <compiler|build|guest>>"
+                "usage: cargo xtask <check|golden [--update]|corpus [--sema]|fuzz [lexer|parser|sema|eval|lower|async|imports] [--iters N] [--seed S]|roundtrip|report-determinism|ledger|stdlib-test|repro|diff-eval|diff-block-count|diff-blk|profile|bench <compiler|build|guest>>"
             );
             return ExitCode::FAILURE;
         }
@@ -3025,6 +3026,138 @@ fn ledger() -> Result<(), String> {
     for g in &gaps {
         println!("  gap: {g}");
     }
+    Ok(())
+}
+
+// --- diff-block-count (Integrity Phase 2 Item N) ----------------------------
+//
+// Lane 2 guest `lane2 hits=` transcript vs Lane 3 host DRAM snapshot of
+// the placed `LANE2` page, on control case `boot-actors` under
+// `--block-count`. Fail closed — never skip, never treat empty==empty as
+// agreement. Not wired into `check` (Phase 2 item Q owns the expensive
+// gate); Cheap for this item is `cargo xtask diff-block-count`.
+
+/// Exact libtest path for the HVF control-case agreement (must match
+/// `cargo test -p wrela-vmm --lib -- --list`).
+const DIFF_BLOCK_COUNT_TEST: &str =
+    "tests::block_count_lane2_agrees_with_host_dram_on_boot_actors";
+
+/// Integrity Phase 2 Item N: Lane 2 / Lane 3 agreement on `boot-actors`.
+fn diff_block_count() -> Result<(), String> {
+    if !(cfg!(target_os = "macos") && cfg!(target_arch = "aarch64")) {
+        return fail_closed(
+            "diff-block-count",
+            "needs Hypervisor.framework (macOS/aarch64); refuse to fake a pass on other hosts",
+        );
+    }
+
+    // Fail-closed parse/agree units (no HVF) — catch stub agreement early.
+    run(
+        Command::new("cargo").args([
+            "test",
+            "-q",
+            "-p",
+            "wrela-vmm",
+            "--lib",
+            "lane3::",
+            "--",
+            "--test-threads=1",
+        ]),
+        "diff-block-count: lane3 parse/agree units",
+    )?;
+
+    // HVF control-case agreement: codesign the libtest binary (same
+    // entitlement surface as `test_wrela_vmm_signed`), then run only the
+    // named oracle. `cargo test` without codesign cannot call HVF.
+    let output = Command::new("cargo")
+        .current_dir(root())
+        .args(["test", "-p", "wrela-vmm", "--lib", "--no-run"])
+        .output()
+        .map_err(|e| format!("cargo test -p wrela-vmm --no-run: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "diff-block-count: cargo test --no-run failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let mut executables: Vec<PathBuf> = Vec::new();
+    for line in stderr.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix("Executable ") else {
+            continue;
+        };
+        let (Some(open), Some(close)) = (rest.rfind('('), rest.rfind(')')) else {
+            continue;
+        };
+        if close > open {
+            executables.push(root().join(&rest[open + 1..close]));
+        }
+    }
+    if executables.is_empty() {
+        return Err(
+            "diff-block-count: cargo test --no-run found no test executable(s) to sign"
+                .to_string(),
+        );
+    }
+    let mut ran = 0usize;
+    for exe in &executables {
+        let mut cmd = Command::new("codesign");
+        cmd.args(["--force", "--sign", "-", "--entitlements"]);
+        cmd.arg(root().join("crates/wrela-vmm/entitlements.plist"));
+        cmd.arg(exe);
+        run(&mut cmd, "codesign wrela-vmm test binary")?;
+
+        let out = Command::new(exe)
+            .arg(DIFF_BLOCK_COUNT_TEST)
+            .arg("--exact")
+            .arg("--test-threads=1")
+            .arg("--nocapture")
+            .output()
+            .map_err(|e| format!("run {}: {e}", exe.display()))?;
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        print!("{stdout}");
+        eprint!("{stderr}");
+        // Fail closed: libtest prints `running N tests` — N must be 1.
+        // A filter miss (`running 0 tests` + exit 0) must never green.
+        let ran_here = stdout
+            .lines()
+            .find_map(|l| l.strip_prefix("running ")?.strip_suffix(" tests")?.parse::<usize>().ok())
+            .or_else(|| {
+                stdout.lines().find_map(|l| {
+                    l.strip_prefix("running ")?
+                        .strip_suffix(" test")?
+                        .parse::<usize>()
+                        .ok()
+                })
+            })
+            .unwrap_or(0);
+        if ran_here == 0 {
+            return Err(format!(
+                "diff-block-count: HVF oracle did not run (filter `{DIFF_BLOCK_COUNT_TEST}` \
+                 matched 0 tests in {}); refuse to fake a pass",
+                exe.display()
+            ));
+        }
+        if !out.status.success() {
+            return Err(format!(
+                "diff-block-count: HVF oracle failed (exit {:?})",
+                out.status.code()
+            ));
+        }
+        ran += ran_here;
+    }
+    if ran == 0 {
+        return fail_closed(
+            "diff-block-count",
+            "no HVF oracle iterations ran",
+        );
+    }
+    println!(
+        "diff-block-count: Lane 2 guest dump agrees with Lane 3 host DRAM hit map \
+         on control case boot-actors (--block-count) ({ran} test(s))"
+    );
     Ok(())
 }
 

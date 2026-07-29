@@ -1641,6 +1641,10 @@ fn boot_image_core_inner(
     let core_marks = (0..cores_declared)
         .map(|c| read_core_mark(host_ram, c))
         .collect::<Vec<u64>>();
+    // Integrity Phase 2 Item N: Lane 3 host snapshot of the placed LANE2
+    // page — compared to the guest `lane2 hits=` dump by the agreement
+    // oracle (`lane3::agree_lane2_vs_host`).
+    let lane2_hits = crate::lane3::read_lane2_hits(host_ram);
     let (choices, divergences) = record::finish_chooser(shared.chooser)?;
     Ok((
         BootOutcome {
@@ -1649,6 +1653,7 @@ fn boot_image_core_inner(
             choices,
             exits: shared.exits,
             core_marks,
+            lane2_hits,
         },
         divergences,
     ))

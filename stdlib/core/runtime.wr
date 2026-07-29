@@ -715,6 +715,11 @@ struct Lane2Counters:
 static LANE2: Lane2Counters
 
 pub fn __wrela_block_hit(id: usize):
+    # enabled: 0 = off (no emission this boot yet), 1 = counting,
+    # 2 = frozen after `__wrela_lane2_dump` (Item N: dump must match the
+    # host DRAM snapshot at halt; refuse post-dump increments).
+    if LANE2.enabled == 2:
+        return
     if id >= BLOCK_POOL_COUNT:
         return
     LANE2.enabled = 1
@@ -726,6 +731,9 @@ pub fn __wrela_block_hit(id: usize):
 pub fn __wrela_lane2_dump():
     if LANE2.enabled == 0:
         return
+    # Freeze before printing so post-dump app code cannot move the vector
+    # under the dump / Lane 3 host DRAM agreement (Integrity Item N).
+    LANE2.enabled = 2
     __wrela_line_begin()
     # "lane2 hits="
     TEST_LINE_BUF.bytes[0] = 108

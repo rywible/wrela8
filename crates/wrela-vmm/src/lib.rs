@@ -196,6 +196,12 @@ pub struct BootOutcome {
     /// for a test to read, never a condition a caller has to remember to
     /// check.
     pub core_marks: Vec<u64>,
+    /// Integrity Phase 2 Item N — Lane 3 host hit map: non-zero
+    /// `(block_id, count)` pairs read from the placed `LANE2` page in
+    /// guest DRAM after halt (`lane3::read_lane2_hits`). Empty when Lane 2
+    /// emission was off (`enabled == 0`). Compared against the guest's
+    /// `lane2 hits=` transcript line by `lane3::agree_lane2_vs_host`.
+    pub lane2_hits: Vec<(u32, u64)>,
 }
 
 /// Re-exports of the shared image-report schema (`wrela_machine::report`).
@@ -277,6 +283,7 @@ pub(crate) fn guest_dram_offset(guest: u64, nbytes: u64, what: &str) -> Result<u
 
 mod boot;
 mod exit_loop;
+pub mod lane3;
 
 pub use boot::boot_image;
 pub(crate) use boot::boot_image_core;
@@ -3532,5 +3539,41 @@ pub fn build() -> Image:
             wrela_machine::MACHINE_REVISION_STR
         );
         assert!(parse_report(&text).expect("parses").blk.is_none());
+    }
+
+    /// Integrity Phase 2 Item N: on control case `boot-actors` under
+    /// `--block-count`, the guest `lane2 hits=` transcript line must equal
+    /// the VMM's host DRAM snapshot of the placed `LANE2` page (Lane 3).
+    /// Fail closed — empty vectors are not agreement.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn block_count_lane2_agrees_with_host_dram_on_boot_actors() {
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("crates/wrela-vmm → repo root");
+        let src_path = repo_root.join("tests/golden/boot-actors/input.wr");
+        let src = std::fs::read_to_string(&src_path).unwrap_or_else(|e| {
+            panic!("read {}: {e}", src_path.display());
+        });
+
+        wrela_compiler::codegen::set_block_count(true);
+        let (image, report) = compile_test_image(&src);
+        wrela_compiler::codegen::set_block_count(false);
+
+        let outcome = boot_blob(&image.blob, &report, "lane3-boot-actors");
+        assert_eq!(
+            outcome.exit_code, 0,
+            "boot-actors under --block-count must exit 0; transcript:\n{}",
+            String::from_utf8_lossy(&outcome.transcript)
+        );
+        let transcript = String::from_utf8_lossy(&outcome.transcript);
+        crate::lane3::agree_lane2_vs_host(&transcript, &outcome.lane2_hits).unwrap_or_else(|e| {
+            panic!("{e}\nfull transcript:\n{transcript}");
+        });
+        assert!(
+            !outcome.lane2_hits.is_empty(),
+            "Lane 3 hit map must be non-empty on boot-actors"
+        );
     }
 }
