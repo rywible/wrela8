@@ -188,9 +188,9 @@ ImageReport v0
   BlkDevice device=device#0 capacity_sectors=16 features=0x100000200 vector=1
   BlkQueue index=0 size=8 desc=0x405409c8 avail=0x40540a48 used=0x40540a60 doorbell=0x40540aa8
   BlkAccounting descriptors_per_op=3 queue_depth=8 occupancy_bound=2
-  Cost version=1 digest=46282f52bdf2ba37 total=19325 ghz=2.4
-    Owner name=app proxy_cycles=3868
-    Owner name=runtime proxy_cycles=15350
-    Owner name=driver proxy_cycles=107
-    Core n=0 proxy_cycles=2782 max_turn_proxy=1901 turns_per_sec=1262493.424513414 ms_per_turn=0.0007920833
-    Shared proxy_cycles=16543
+  Cost version=2 digest=ffc153b826203a27 total=31377 ghz=2.4
+    Owner name=app proxy_cycles=6610
+    Owner name=runtime proxy_cycles=24507
+    Owner name=driver proxy_cycles=260
+    Core n=0 proxy_cycles=4538 max_turn_proxy=3053 turns_per_sec=786112.0209629872 ms_per_turn=0.0012720833
+    Shared proxy_cycles=26839
