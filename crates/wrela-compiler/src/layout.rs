@@ -5438,7 +5438,8 @@ fn two():
         let failed_len = 7 + 2 * DEADLOCK_MSG.len() as u64 + 20 + 1;
         // + lane1 scalar line + hits over-approx (METHOD_CALL_POOL_COUNT pairs).
         const LANE1_SCALAR: u64 = 12 + 20 + 9 + 20 + 10 + 20 + 1;
-        let lane1_hits = 11 + (crate::rtconfig::METHOD_CALL_POOL_COUNT as u64) * (20 + 1 + 20 + 1) + 1;
+        let lane1_hits =
+            11 + (crate::rtconfig::METHOD_CALL_POOL_COUNT as u64) * (20 + 1 + 20 + 1) + 1;
         assert_eq!(
             bound.worst_case_bytes,
             16 + failed_len + 57 + LANE1_SCALAR + lane1_hits

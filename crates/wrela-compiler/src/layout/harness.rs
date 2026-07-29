@@ -1041,9 +1041,8 @@ pub fn compute_transcript_bound(
     const LANE1_SCALAR_LINE_BYTES: u64 = 12 + 20 + 9 + 20 + 10 + 20 + 1; // turns/run_one/messages
     const LANE1_HITS_PREFIX: u64 = 11; // "lane1 hits="
     const LANE1_HIT_PAIR: u64 = 20 + 1 + 20 + 1; // flat:count,
-    let lane1_hits_bytes = LANE1_HITS_PREFIX
-        + (crate::rtconfig::METHOD_CALL_POOL_COUNT as u64) * LANE1_HIT_PAIR
-        + 1;
+    let lane1_hits_bytes =
+        LANE1_HITS_PREFIX + (crate::rtconfig::METHOD_CALL_POOL_COUNT as u64) * LANE1_HIT_PAIR + 1;
     worst_case_bytes += LANE1_SCALAR_LINE_BYTES + lane1_hits_bytes;
     TranscriptBound {
         lines: runtime_tests.len() as u64 + 1 + LANE1_LINES,

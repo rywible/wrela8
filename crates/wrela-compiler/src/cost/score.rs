@@ -34,11 +34,18 @@ pub struct CostReport {
     pub mem_reuse_window: u64,
     pub mem_working_set_cap: u64,
     /// Sum of per-fn schedule lengths (compositionality; dump header states it).
+    /// Equals the `flat` workload row (`f≡1`).
     pub total_proxy_cycles: u64,
     /// Sum of fn `proxy_cycles` per owner bucket (`app` / `runtime` / `driver`).
     pub owner_totals: BTreeMap<String, u64>,
     /// Stable order: `BTreeMap` key order of `program.fns`.
     pub fns: Vec<FnCost>,
+    /// `workloads.toml` digest when multi-W compose ran; `None` if not attached.
+    pub workloads_digest: Option<String>,
+    /// Per-workload proxy totals (`flat` always after compose; measured W when `f` available).
+    pub workload_totals: BTreeMap<String, u64>,
+    /// Measured-W coverage: name → (matched_hits, total_hits).
+    pub workload_coverage: BTreeMap<String, (u64, u64)>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -100,6 +107,9 @@ pub fn score_program(program: &CodegenProgram, table: &CostTable) -> Result<Cost
         total_proxy_cycles,
         owner_totals,
         fns,
+        workloads_digest: None,
+        workload_totals: BTreeMap::new(),
+        workload_coverage: BTreeMap::new(),
     })
 }
 
@@ -944,20 +954,14 @@ working_set_surcharge = 2
             vec![word(CostRule::Load, Some(1), &[0]).with_mem(MemRef::stack(8))],
         );
         let err = score_program(&bad_stack, &table).expect_err("stack base");
-        assert!(
-            err.contains("base register"),
-            "unexpected err: {err}"
-        );
+        assert!(err.contains("base register"), "unexpected err: {err}");
         // Cold stable MemRef but srcs omit packed base 28.
         let bad_cold = prog(
             "f",
             vec![word(CostRule::Load, Some(1), &[0]).with_mem(MemRef::cold_stable(28, 16))],
         );
         let err = score_program(&bad_cold, &table).expect_err("cold base");
-        assert!(
-            err.contains("base register"),
-            "unexpected err: {err}"
-        );
+        assert!(err.contains("base register"), "unexpected err: {err}");
         // Cold unique: no base requirement — still scores.
         let unique = prog("f", vec![load_cold_unique(1, 0)]);
         assert!(score_program(&unique, &table).is_ok());

@@ -565,21 +565,26 @@ pub fn render_exact_bytes_section(
 }
 
 /// Append the short Cost summary (plans/M18.md item R / 04 §6): version,
-/// table digest, program total, ghz, per-owner schedule totals, and
-/// (when placement is non-empty) Core + Shared lines. No Fn/Term/
-/// Placeable lines (those live on `--stage=cost`).
+/// table digest, program total, ghz, multi-W rows, per-owner schedule
+/// totals, and (when placement is non-empty) Core + Shared lines. No
+/// Fn/Term/Placeable lines (those live on `--stage=cost`).
 ///
-/// Loads `wrela-cost-v1` via [`cost::load_default`]; missing/malformed
-/// table → `Err` (fail closed). Caller scores the same `CodegenProgram`
-/// layout already produced (no second lower).
+/// Loads `wrela-cost-v1` via [`cost::load_default`] and
+/// `workloads.toml` (+ sibling `lane1-freq.txt` when `source` is set);
+/// missing/malformed table or workloads → `Err` (fail closed). Caller
+/// scores the same `CodegenProgram` layout already produced (no second
+/// lower).
 pub fn append_cost_summary(
     out: &mut String,
     program: &CodegenProgram,
     placement: &PlacementTable,
     ghz: f64,
+    source: Option<&std::path::Path>,
 ) -> Result<(), String> {
     let table = cost::load_default()?;
-    let report = cost::score_program(program, &table)?;
+    let mut report = cost::score_program(program, &table)?;
+    let attach = cost::WorkloadAttach::load_default_for(source)?;
+    cost::attach_workloads(&mut report, &attach);
     out.push_str(&format_cost_summary(&report, placement, ghz)?);
     Ok(())
 }
@@ -594,16 +599,24 @@ pub fn format_cost_summary(
     let app = report.owner_totals.get("app").copied().unwrap_or(0);
     let runtime = report.owner_totals.get("runtime").copied().unwrap_or(0);
     let driver = report.owner_totals.get("driver").copied().unwrap_or(0);
-    let mut out = format!(
-        "  Cost version={} digest={} total={} ghz={}\n\
-           \x20   Owner name=app proxy_cycles={app}\n\
-           \x20   Owner name=runtime proxy_cycles={runtime}\n\
-           \x20   Owner name=driver proxy_cycles={driver}\n",
+    let mut header = format!(
+        "  Cost version={} digest={} total={} ghz={}",
         report.version,
         report.digest,
         report.total_proxy_cycles,
         cost::fmt_compact(ghz),
     );
+    if let Some(wd) = &report.workloads_digest {
+        header.push_str(&format!(" workloads_digest={wd}"));
+    }
+    header.push('\n');
+    let mut out = header;
+    cost_dump::append_workload_rows(&mut out, 2, report);
+    out.push_str(&format!(
+        "    Owner name=app proxy_cycles={app}\n\
+         \x20   Owner name=runtime proxy_cycles={runtime}\n\
+         \x20   Owner name=driver proxy_cycles={driver}\n"
+    ));
     cost_dump::append_core_block(&mut out, 2, report, placement, ghz, false)?;
     Ok(out)
 }
@@ -866,6 +879,7 @@ mod tests {
             &program,
             &PlacementTable::default(),
             cost::DEFAULT_GHZ,
+            None,
         )
         .expect("default cost table");
         assert!(
@@ -873,6 +887,7 @@ mod tests {
             "missing Cost version line:\n{out}"
         );
         assert!(out.contains("ghz=2.4"), "missing ghz:\n{out}");
+        assert!(out.contains("Workload name=flat proxy_cycles="));
         assert!(out.contains("Owner name=app proxy_cycles="));
         assert!(out.contains("Owner name=runtime proxy_cycles="));
         assert!(out.contains("Owner name=driver proxy_cycles="));
@@ -900,13 +915,17 @@ mod tests {
                 ("driver".to_string(), 8u64),
             ]),
             fns: vec![],
+            workloads_digest: Some("wdigest".to_string()),
+            workload_totals: BTreeMap::from([("flat".to_string(), 30u64)]),
+            workload_coverage: BTreeMap::new(),
         };
         // Default placement has cores=1 → Core + Shared lines appear.
         let text = format_cost_summary(&report, &PlacementTable::default(), cost::DEFAULT_GHZ)
             .expect("format");
         assert_eq!(
             text,
-            "  Cost version=2 digest=deadbeef total=30 ghz=2.4\n\
+            "  Cost version=2 digest=deadbeef total=30 ghz=2.4 workloads_digest=wdigest\n\
+               \x20   Workload name=flat proxy_cycles=30\n\
                \x20   Owner name=app proxy_cycles=10\n\
                \x20   Owner name=runtime proxy_cycles=12\n\
                \x20   Owner name=driver proxy_cycles=8\n\
@@ -934,6 +953,9 @@ mod tests {
                 ("driver".to_string(), 8u64),
             ]),
             fns: vec![],
+            workloads_digest: None,
+            workload_totals: BTreeMap::new(),
+            workload_coverage: BTreeMap::new(),
         };
         let empty = PlacementTable {
             entries: Vec::new(),
@@ -943,6 +965,7 @@ mod tests {
         assert_eq!(
             text,
             "  Cost version=2 digest=deadbeef total=30 ghz=2.4\n\
+               \x20   Workload name=flat proxy_cycles=30\n\
                \x20   Owner name=app proxy_cycles=10\n\
                \x20   Owner name=runtime proxy_cycles=12\n\
                \x20   Owner name=driver proxy_cycles=8\n"

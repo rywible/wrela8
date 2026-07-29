@@ -1,8 +1,8 @@
 //! Pinned workload set (`bench/workloads.toml`).
 //!
 //! Named workloads with integer weights for multi-W proxy ranking. `[flat]`
-//! is required (`f≡1` policy row). Parse + digest only — score compose and
-//! Lane 1 counters live elsewhere.
+//! is required (`f≡1` policy row). Parse + digest here; score compose is
+//! `cost::compose` (integrity Item J).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

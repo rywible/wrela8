@@ -1,23 +1,42 @@
-//! Stable text dump for `--stage=cost` (plans/M18.md items D+E).
+//! Stable text dump for `--stage=cost` (plans/M18.md items D+E;
+//! integrity Item J multi-W rows).
+
+use std::path::Path;
 
 use crate::codegen::CodegenProgram;
 use crate::placement::PlacementTable;
 
 use super::attr::attribute_cores;
+use super::compose::{WorkloadAttach, attach_workloads};
 use super::ghz::{self, fmt_compact};
 use super::score::{CostReport, score_program};
 use super::table::CostTable;
+use super::workload::FLAT_NAME;
 
-/// Score `program` then format the cost dump (owners, optional per-core
-/// attribution, then Fn/Term lines).
+/// Score `program`, attach multi-W rows from `attach`, then format.
 pub fn dump(
     program: &CodegenProgram,
     table: &CostTable,
     placement: &PlacementTable,
     ghz: f64,
+    attach: &WorkloadAttach,
 ) -> Result<String, String> {
-    let report = score_program(program, table)?;
+    let mut report = score_program(program, table)?;
+    attach_workloads(&mut report, attach);
     format_report(&report, placement, ghz)
+}
+
+/// Convenience: load default workloads (+ sibling `lane1-freq.txt` when
+/// `source` is set) then dump.
+pub fn dump_for_source(
+    program: &CodegenProgram,
+    table: &CostTable,
+    placement: &PlacementTable,
+    ghz: f64,
+    source: Option<&Path>,
+) -> Result<String, String> {
+    let attach = WorkloadAttach::load_default_for(source)?;
+    dump(program, table, placement, ghz, &attach)
 }
 
 fn format_report(
@@ -26,22 +45,22 @@ fn format_report(
     ghz: f64,
 ) -> Result<String, String> {
     let mut out = String::new();
-    push_line(
-        &mut out,
-        0,
-        &format!(
-            "Cost version={} ports.alu={} ports.mem={} max_issue_per_cycle={} branch_penalty={} mem_reuse_window={} mem_working_set_cap={} digest={} ghz={}",
-            report.version,
-            report.alu_ports,
-            report.mem_ports,
-            report.max_issue_per_cycle,
-            report.branch_penalty,
-            report.mem_reuse_window,
-            report.mem_working_set_cap,
-            report.digest,
-            fmt_compact(ghz)
-        ),
+    let mut header = format!(
+        "Cost version={} ports.alu={} ports.mem={} max_issue_per_cycle={} branch_penalty={} mem_reuse_window={} mem_working_set_cap={} digest={} ghz={}",
+        report.version,
+        report.alu_ports,
+        report.mem_ports,
+        report.max_issue_per_cycle,
+        report.branch_penalty,
+        report.mem_reuse_window,
+        report.mem_working_set_cap,
+        report.digest,
+        fmt_compact(ghz)
     );
+    if let Some(wd) = &report.workloads_digest {
+        header.push_str(&format!(" workloads_digest={wd}"));
+    }
+    push_line(&mut out, 0, &header);
     push_line(
         &mut out,
         1,
@@ -53,6 +72,7 @@ fn format_report(
         1,
         &format!("Total proxy_cycles={}", report.total_proxy_cycles),
     );
+    append_workload_rows(&mut out, 1, report);
     for name in ["app", "runtime", "driver"] {
         let cycles = report.owner_totals.get(name).copied().unwrap_or(0);
         push_line(
@@ -76,6 +96,42 @@ fn format_report(
         }
     }
     Ok(out)
+}
+
+/// Emit `Workload name=…` rows. Flat first; other names sorted.
+/// Measured W get a nested `coverage=matched/total` line.
+pub(crate) fn append_workload_rows(out: &mut String, depth: usize, report: &CostReport) {
+    if report.workload_totals.is_empty() {
+        push_line(
+            out,
+            depth,
+            &format!(
+                "Workload name={FLAT_NAME} proxy_cycles={}",
+                report.total_proxy_cycles
+            ),
+        );
+        return;
+    }
+    if let Some(cycles) = report.workload_totals.get(FLAT_NAME) {
+        push_line(
+            out,
+            depth,
+            &format!("Workload name={FLAT_NAME} proxy_cycles={cycles}"),
+        );
+    }
+    for (name, cycles) in &report.workload_totals {
+        if name == FLAT_NAME {
+            continue;
+        }
+        push_line(
+            out,
+            depth,
+            &format!("Workload name={name} proxy_cycles={cycles}"),
+        );
+        if let Some(&(matched, total)) = report.workload_coverage.get(name) {
+            push_line(out, depth + 1, &format!("coverage={matched}/{total}"));
+        }
+    }
 }
 
 /// Append Core / Shared / optional Placeable lines after owners.
@@ -142,8 +198,10 @@ fn push_line(out: &mut String, depth: usize, line: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cost::compose::WorkloadAttach;
     use crate::cost::ghz::DEFAULT_GHZ;
     use crate::cost::score::FnCost;
+    use crate::cost::workload::parse as parse_workloads;
     use crate::eval::image::ImageDeclRef;
     use crate::placement::{PlacementEntry, PlacementSource};
     use std::collections::BTreeMap;
@@ -171,6 +229,9 @@ mod tests {
             total_proxy_cycles: total,
             owner_totals: BTreeMap::from([("app".to_string(), total)]),
             fns,
+            workloads_digest: None,
+            workload_totals: BTreeMap::new(),
+            workload_coverage: BTreeMap::new(),
         }
     }
 
@@ -191,18 +252,26 @@ mod tests {
 
     #[test]
     fn legacy_empty_placement_omits_core_block() {
-        let report = report(vec![fn_cost("add", 10)]);
+        let mut report = report(vec![fn_cost("add", 10)]);
+        let set = parse_workloads("[flat]\nweight = 1\n").unwrap();
+        attach_workloads(
+            &mut report,
+            &WorkloadAttach {
+                set,
+                frequencies: BTreeMap::new(),
+            },
+        );
         let placement = PlacementTable {
             entries: Vec::new(),
             cores: 0,
         };
         let text = format_report(&report, &placement, DEFAULT_GHZ).expect("ok");
+        assert!(text.contains("workloads_digest="), "got:\n{text}");
         assert!(
-            text.starts_with(
-                "Cost version=2 ports.alu=2 ports.mem=2 max_issue_per_cycle=2 branch_penalty=3 mem_reuse_window=8 mem_working_set_cap=4 digest=test ghz=2.4\n"
-            ),
+            text.contains("Workload name=flat proxy_cycles=10"),
             "got:\n{text}"
         );
+        assert!(!text.contains("Workload name=boot-actors"), "got:\n{text}");
         assert!(!text.contains("issue_width"), "got:\n{text}");
         assert!(text.contains("ghz=2.4"), "got:\n{text}");
         assert!(text.contains(
@@ -212,6 +281,38 @@ mod tests {
         assert!(!text.contains("Shared proxy_cycles="), "got:\n{text}");
         assert!(!text.contains("Placeable "), "got:\n{text}");
         assert!(text.contains("Fn key=add"));
+    }
+
+    #[test]
+    fn measured_workload_row_and_coverage() {
+        let mut report = report(vec![
+            fn_cost("Ledger.mark", 88),
+            fn_cost("Worker.slow", 833),
+        ]);
+        let set = parse_workloads("[flat]\nweight = 1\n[boot-actors]\nweight = 10\n").unwrap();
+        let mut frequencies = BTreeMap::new();
+        frequencies.insert(
+            "boot-actors".to_string(),
+            BTreeMap::from([
+                ("Ledger.mark".to_string(), 3u64),
+                ("Worker.slow".to_string(), 1u64),
+            ]),
+        );
+        attach_workloads(&mut report, &WorkloadAttach { set, frequencies });
+        let placement = PlacementTable {
+            entries: Vec::new(),
+            cores: 0,
+        };
+        let text = format_report(&report, &placement, DEFAULT_GHZ).expect("ok");
+        assert!(
+            text.contains("Workload name=flat proxy_cycles=921"),
+            "got:\n{text}"
+        );
+        assert!(
+            text.contains("Workload name=boot-actors proxy_cycles=1097"),
+            "got:\n{text}"
+        );
+        assert!(text.contains("coverage=4/4"), "got:\n{text}");
     }
 
     #[test]

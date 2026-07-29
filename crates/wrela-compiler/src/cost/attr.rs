@@ -248,6 +248,9 @@ mod tests {
             total_proxy_cycles: total,
             owner_totals: BTreeMap::new(),
             fns,
+            workloads_digest: None,
+            workload_totals: BTreeMap::new(),
+            workload_coverage: BTreeMap::new(),
         }
     }
 

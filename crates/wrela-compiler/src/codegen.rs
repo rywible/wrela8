@@ -11147,12 +11147,7 @@ mod tests {
     #[test]
     fn push_shape_load_unique_cold_empty_srcs_ok() {
         // Unique-cold path still ok when tagged (address unknown / pessimistic).
-        check_push_shape(
-            CostRule::Load,
-            Some(0),
-            &[],
-            Some(&MemRef::cold_unique(0)),
-        );
+        check_push_shape(CostRule::Load, Some(0), &[], Some(&MemRef::cold_unique(0)));
     }
 
     #[test]
@@ -11180,12 +11175,7 @@ mod tests {
 
     #[test]
     fn push_shape_store_unique_cold_exempt_from_base() {
-        check_push_shape(
-            CostRule::Store,
-            None,
-            &[0],
-            Some(&MemRef::cold_unique(3)),
-        );
+        check_push_shape(CostRule::Store, None, &[0], Some(&MemRef::cold_unique(3)));
     }
 
     #[test]
