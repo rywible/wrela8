@@ -412,6 +412,10 @@ pub const RUNTIME_WIRING_FORCE_ROOT_KEYS: &[&str] = &[
     "__wrela_irq_mask",
     "__wrela_irq_invoke",
     "__wrela_wake_invoke",
+    // Integrity Phase 2 Item I — Lane 1 counters (seeded: force-root list
+    // is not transitively closed after `seed_image_force_roots`).
+    "__wrela_lane1_method_flat",
+    "__wrela_lane1_record_method",
 ];
 
 /// Test-runner helpers force-rooted for `@test(runtime)` images (M11 K).
@@ -428,6 +432,9 @@ pub const RUNTIME_TEST_FORCE_ROOT_KEYS: &[&str] = &[
     "__wrela_test_append_prefix",
     "__wrela_test_suspends",
     "__wrela_test_turn_index",
+    // Integrity Phase 2 Item I — Lane 1 counter dump surface.
+    "__wrela_lane1_dump",
+    "__wrela_lane1_append_u64",
 ];
 
 /// Optional seeds for the single image lower (wiring / test-runner).

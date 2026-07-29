@@ -958,9 +958,9 @@ const MAX_DECIMAL_DIGITS: u64 = 20;
 /// static-bound half of the fix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TranscriptBound {
-    /// One descriptor per test's own line, plus one for the summary —
-    /// exact, not an over-approximation (module doc's own "one descriptor
-    /// per LINE" invariant makes this a hard equality, never a bound).
+    /// One descriptor per test's own line, plus one for the summary, plus
+    /// two for the Lane 1 counter dump (`lane1 turns=…` / `lane1 hits=…`) —
+    /// exact for the test+summary half; lane1 is a fixed +2.
     pub lines: u64,
     /// Every test's own worst-case line length, summed, plus the
     /// summary's own exact worst case (`worst_case_test_line_bytes`/
@@ -1033,8 +1033,20 @@ pub fn compute_transcript_bound(
     for name in runtime_tests {
         worst_case_bytes += worst_case_test_line_bytes(name, longest_msg);
     }
+    // Integrity Phase 2 Item I: two trailing `lane1 …` lines from
+    // `__wrela_lane1_dump` (scalars + compact hits). Hits worst-case is
+    // METHOD_CALL_POOL_COUNT `flat:count,` pairs (20+1+20+1 each) under
+    // a fixed `lane1 hits=` prefix — over-approx, never under.
+    const LANE1_LINES: u64 = 2;
+    const LANE1_SCALAR_LINE_BYTES: u64 = 12 + 20 + 9 + 20 + 10 + 20 + 1; // turns/run_one/messages
+    const LANE1_HITS_PREFIX: u64 = 11; // "lane1 hits="
+    const LANE1_HIT_PAIR: u64 = 20 + 1 + 20 + 1; // flat:count,
+    let lane1_hits_bytes = LANE1_HITS_PREFIX
+        + (crate::rtconfig::METHOD_CALL_POOL_COUNT as u64) * LANE1_HIT_PAIR
+        + 1;
+    worst_case_bytes += LANE1_SCALAR_LINE_BYTES + lane1_hits_bytes;
     TranscriptBound {
-        lines: runtime_tests.len() as u64 + 1,
+        lines: runtime_tests.len() as u64 + 1 + LANE1_LINES,
         worst_case_bytes,
     }
 }

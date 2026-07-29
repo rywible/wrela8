@@ -1,2 +1,4 @@
 test turns: ok
 1 passed, 0 failed
+lane1 turns=7 run_one=11 messages=7
+lane1 hits=0:3,1:1,2:3,3:2,4:2
