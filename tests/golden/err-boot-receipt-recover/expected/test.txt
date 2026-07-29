@@ -1,2 +1,4 @@
 test recover_reports_completed_then_unknown: FAILED assertion failed: VACUITY: phase 2 must reach the Unknown arm
 0 passed, 1 failed
+lane1 turns=0 run_one=0 messages=1
+lane1 hits=

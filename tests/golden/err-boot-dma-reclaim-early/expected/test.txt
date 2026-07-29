@@ -1,2 +1,4 @@
 test a_quarantined_block_comes_back_after_quiescence: FAILED driver fault: reclaim before quiescence (03-hardware.md §9: no reclaim precedes quiescence)
 0 passed, 1 failed
+lane1 turns=0 run_one=0 messages=1
+lane1 hits=

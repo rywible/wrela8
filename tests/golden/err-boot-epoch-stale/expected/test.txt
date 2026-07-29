@@ -1,2 +1,4 @@
 test epoch_stale_aborts: FAILED driver fault: stale used-ring id (03-hardware.md §4)
 0 passed, 1 failed
+lane1 turns=0 run_one=0 messages=1
+lane1 hits=

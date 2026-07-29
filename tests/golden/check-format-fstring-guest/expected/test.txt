@@ -1,2 +1,4 @@
 test guest_fmt: ok
 1 passed, 0 failed
+lane1 turns=1 run_one=1 messages=1
+lane1 hits=0:1

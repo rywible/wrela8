@@ -1,2 +1,4 @@
 test publish_acquire: ok
 1 passed, 0 failed
+lane1 turns=8192 run_one=24576 messages=8192
+lane1 hits=0:8192

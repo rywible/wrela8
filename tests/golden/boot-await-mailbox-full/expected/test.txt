@@ -1,2 +1,4 @@
 test await_into_full_mailbox: ok
 1 passed, 0 failed
+lane1 turns=0 run_one=0 messages=2
+lane1 hits=

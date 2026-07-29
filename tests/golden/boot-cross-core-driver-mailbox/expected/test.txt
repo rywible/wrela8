@@ -1,2 +1,4 @@
 test cross_core_send_into_driver_mailbox: ok
 1 passed, 0 failed
+lane1 turns=3 run_one=5 messages=3
+lane1 hits=0:1,1:1,2:1

@@ -1,2 +1,4 @@
 test cleanup_runs_in_reverse: ok
 1 passed, 0 failed
+lane1 turns=1 run_one=2 messages=1
+lane1 hits=0:1

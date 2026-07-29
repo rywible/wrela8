@@ -3,3 +3,5 @@ test test_fails: FAILED assertion failed: wrong on purpose
 test test_quota_exceeded: FAILED step quota exceeded (20000 steps)
 test test_needs_the_machine: ok
 2 passed, 2 failed
+lane1 turns=0 run_one=0 messages=0
+lane1 hits=

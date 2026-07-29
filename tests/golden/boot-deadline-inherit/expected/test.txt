@@ -1,2 +1,4 @@
 test inner_cancels_at_the_outer_deadline: ok
 1 passed, 0 failed
+lane1 turns=2 run_one=3 messages=2
+lane1 hits=0:1,1:1

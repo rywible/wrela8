@@ -3,3 +3,5 @@ test t_constructed: ok
 test t_settled: ok
 test guest_alias_pattern: ok
 4 passed, 0 failed
+lane1 turns=0 run_one=0 messages=0
+lane1 hits=

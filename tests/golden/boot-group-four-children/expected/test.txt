@@ -1,2 +1,4 @@
 test test_join_four: ok
 1 passed, 0 failed
+lane1 turns=4 run_one=8 messages=4
+lane1 hits=0:4

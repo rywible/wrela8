@@ -1,2 +1,4 @@
 test struct_replies: ok
 1 passed, 0 failed
+lane1 turns=8 run_one=11 messages=8
+lane1 hits=0:1,1:1,2:2,3:3,4:1,5:1,6:1,7:1

@@ -1111,6 +1111,37 @@ mod tests {
         boot_blob(&image.blob, &report, tag)
     }
 
+    /// Guest `@test(runtime)` transcripts always end with the Lane 1 dump
+    /// (`lane1 turns=…` / `lane1 hits=…`). Oracles pin the semantic
+    /// summary and the trailer shape, not the counter values.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn assert_guest_transcript(transcript: &[u8], summary: &str) {
+        let t = String::from_utf8_lossy(transcript);
+        assert!(
+            t.starts_with(summary),
+            "transcript missing expected summary\n  got: {t:?}\n  want prefix: {summary:?}"
+        );
+        let rest = &t[summary.len()..];
+        let mut lines = rest.lines();
+        let turns = lines.next().unwrap_or("");
+        let hits = lines.next().unwrap_or("");
+        assert!(
+            turns.starts_with("lane1 turns=")
+                && turns.contains(" run_one=")
+                && turns.contains(" messages="),
+            "expected lane1 turns trailer, got {turns:?} (full: {t:?})"
+        );
+        assert!(
+            hits.starts_with("lane1 hits="),
+            "expected lane1 hits trailer, got {hits:?} (full: {t:?})"
+        );
+        assert!(
+            lines.next().is_none(),
+            "unexpected transcript after lane1: {t:?}"
+        );
+        assert!(t.ends_with('\n'), "transcript must end with newline: {t:?}");
+    }
+
     /// (a) The two-hop await chain: root -> Outer -> Inner. The root
     /// turn parks awaiting `Outer.relay`; Outer's turn parks awaiting
     /// `Inner.get` (a nested suspension — Outer's own waker chain is
@@ -1163,9 +1194,9 @@ pub fn build() -> Image:
     return img.seal()
 "#;
         let outcome = boot_source(src, "chain");
-        assert_eq!(
-            String::from_utf8_lossy(&outcome.transcript),
-            "test chain: ok\n1 passed, 0 failed\n"
+        assert_guest_transcript(
+            &outcome.transcript,
+            "test chain: ok\n1 passed, 0 failed\n",
         );
         assert_eq!(outcome.exit_code, 0);
     }
@@ -1241,9 +1272,9 @@ pub fn build() -> Image:
     return img.seal()
 "#;
         let outcome = boot_source(src, "fifo");
-        assert_eq!(
-            String::from_utf8_lossy(&outcome.transcript),
-            "test fifo: ok\n1 passed, 0 failed\n"
+        assert_guest_transcript(
+            &outcome.transcript,
+            "test fifo: ok\n1 passed, 0 failed\n",
         );
         assert_eq!(outcome.exit_code, 0);
     }
@@ -1339,9 +1370,9 @@ pub fn build() -> Image:
     return img.seal()
 "#;
         let outcome = boot_source(src, "interleave");
-        assert_eq!(
-            String::from_utf8_lossy(&outcome.transcript),
-            "test interleave: ok\n1 passed, 0 failed\n"
+        assert_guest_transcript(
+            &outcome.transcript,
+            "test interleave: ok\n1 passed, 0 failed\n",
         );
         assert_eq!(outcome.exit_code, 0);
     }
@@ -1414,11 +1445,9 @@ pub fn build() -> Image:
         patch(&mut blob, stuck.turn + OFF_TURN_SUSPENDED, 1);
 
         let outcome = boot_blob(&blob, &report, "deadlock");
-        let transcript = String::from_utf8_lossy(&outcome.transcript).into_owned();
-        assert_eq!(
-            transcript,
-            format!("test stuck: FAILED {DEADLOCK_MSG}\n0 passed, 1 failed\n"),
-            "the named deadlock line, on the failing root turn's own test line"
+        assert_guest_transcript(
+            &outcome.transcript,
+            &format!("test stuck: FAILED {DEADLOCK_MSG}\n0 passed, 1 failed\n"),
         );
         assert_eq!(outcome.exit_code, 1, "fail closed: the image exits nonzero");
     }
@@ -2757,9 +2786,9 @@ pub fn build() -> Image:
     #[test]
     fn three_cores_come_up_on_a_cross_core_image_over_hvf() {
         let outcome = boot_source(CROSS_CORE_SRC, "c1-three-cores");
-        assert_eq!(
-            String::from_utf8_lossy(&outcome.transcript),
-            "test boots: ok\n1 passed, 0 failed\n"
+        assert_guest_transcript(
+            &outcome.transcript,
+            "test boots: ok\n1 passed, 0 failed\n",
         );
         assert_eq!(outcome.exit_code, 0);
         // Core 0 by the entry driver, cores 1 and 2 by their own entry
@@ -2778,9 +2807,9 @@ pub fn build() -> Image:
                 .replace(", core=1", ""),
             "c1-single-core",
         );
-        assert_eq!(
-            String::from_utf8_lossy(&single.transcript),
-            "test boots: ok\n1 passed, 0 failed\n"
+        assert_guest_transcript(
+            &single.transcript,
+            "test boots: ok\n1 passed, 0 failed\n",
         );
         assert_eq!(single.core_marks, vec![0]);
     }
@@ -2791,9 +2820,9 @@ pub fn build() -> Image:
     #[test]
     fn two_cores_come_up_under_baton_over_hvf() {
         let outcome = boot_source(TWO_CORE_SRC, "f-two-cores");
-        assert_eq!(
-            String::from_utf8_lossy(&outcome.transcript),
-            "test boots: ok\n1 passed, 0 failed\n"
+        assert_guest_transcript(
+            &outcome.transcript,
+            "test boots: ok\n1 passed, 0 failed\n",
         );
         assert_eq!(outcome.exit_code, 0);
         assert_eq!(outcome.core_marks, vec![1, 2]);
