@@ -95,7 +95,7 @@ category = "floor"
 note = "decision 852; SP + OFF_TEST_CONTINUATION arm + BL boot + brk"
 
 [placed_static]
-fixed_core_names = ["CLOCK", "CONSOLE_DATA", "CONSOLE_RING", "EXIT", "GROUPS", "MACHINE_INFO", "PARK", "PENDING", "RELEASE", "RINGS_CTL", "RINGS_DATA", "RT", "SCHED", "TEST_LINE_BUF", "WAKE"]
+fixed_core_names = ["CLOCK", "CONSOLE_DATA", "CONSOLE_RING", "EXIT", "GROUPS", "LANE1", "LANE2", "MACHINE_INFO", "PARK", "PENDING", "RELEASE", "RINGS_CTL", "RINGS_DATA", "RT", "SCHED", "TEST_LINE_BUF", "WAKE"]
 
 [[guest_fn_key.zero_fn_dumps]]
 path = "err-boot-dma-region-handoff-group/expected/asm.txt"

@@ -194,9 +194,9 @@ mod tests {
 
     #[test]
     fn fixed_set_len_matches_core_plus_mb_pool() {
-        assert_eq!(fixed_core_names().len(), 15);
+        assert_eq!(fixed_core_names().len(), 17);
         assert_eq!(MB_POOL_COUNT, 32);
-        assert_eq!(fixed_set_len(), 79);
+        assert_eq!(fixed_set_len(), 81);
         // Closed: every core name classifies as Fixed.
         for n in fixed_core_names() {
             assert_eq!(classify(n), Class::Fixed, "{n}");
@@ -231,7 +231,7 @@ mod tests {
         let c = summarize(&placed, spans);
         assert_eq!(c.fixed.len(), fixed_set_len());
         assert_eq!(c.spans, spans);
-        // 79 fixed + 2 live spans; 6 placeholders excluded.
+        // 81 fixed + 2 live spans; 6 placeholders excluded.
         assert_eq!(c.count, fixed_set_len() + spans);
         assert!(c.within_ratchet());
         assert_eq!(
