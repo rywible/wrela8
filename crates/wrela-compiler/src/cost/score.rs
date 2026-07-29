@@ -57,12 +57,15 @@ struct WinEntry {
 
 /// Score every function with a dual-port in-order scoreboard.
 ///
-/// Per fn: `ready[0..32] = 0`; for each word in order, issue at the first
-/// cycle where deps are ready, the rule's port is free, and
+/// Per fn: `ready[0..32] = 0`, `flags_ready = 0`, `control_ready = 0`;
+/// for each word in order, issue at the first cycle where GPR deps,
+/// NZCV (when `FlagEffect::Read`), and post-branch `control_ready` are
+/// satisfied, the rule's port is free, and
 /// `issues_this_cycle < max_issue_per_cycle`; retire at
 /// `start + latency` (branch adds `branch_penalty`; Load/Store use the
-/// mem hit/miss model). Fn total = max retire time (0 if empty).
-/// Program total = sum of fn totals.
+/// mem hit/miss model). Branch finish also advances `control_ready` so
+/// mid-stream penalties serialize fallthrough. Fn total = max retire
+/// time (0 if empty). Program total = sum of fn totals.
 pub fn score_program(program: &CodegenProgram, table: &CostTable) -> Result<CostReport, String> {
     let mut fns = Vec::with_capacity(program.fns.len());
     let mut total_proxy_cycles = 0u64;
@@ -107,6 +110,8 @@ fn score_fn(f: &CodegenFn, table: &CostTable) -> Result<(u64, BTreeMap<String, u
     }
 
     let mut ready = [0u64; 32];
+    let mut flags_ready = 0u64;
+    let mut control_ready = 0u64;
     let mut cycle = 0u64;
     let mut alu_used = 0u64;
     let mut mem_used = 0u64;
@@ -118,7 +123,11 @@ fn score_fn(f: &CodegenFn, table: &CostTable) -> Result<(u64, BTreeMap<String, u
     for ew in &f.code {
         *terms.entry(ew.rule.as_str().to_string()).or_insert(0) += 1;
 
-        let data_ready = src_ready(ew, &ready);
+        let mut data_ready = src_ready(ew, &ready);
+        data_ready = data_ready.max(control_ready);
+        if ew.flags.reads() {
+            data_ready = data_ready.max(flags_ready);
+        }
         let port = port_for(ew.rule);
 
         // Advance to a cycle where deps, port, and global issue cap allow.
@@ -147,6 +156,13 @@ fn score_fn(f: &CodegenFn, table: &CostTable) -> Result<(u64, BTreeMap<String, u
                 ready[i] = finish;
             }
         }
+        if ew.flags.writes() {
+            flags_ready = finish;
+        }
+        if ew.rule == CostRule::Branch {
+            // Fallthrough waits on lat + branch_penalty (already in finish).
+            control_ready = finish;
+        }
         max_retire = max_retire.max(finish);
 
         match port {
@@ -165,7 +181,9 @@ fn score_fn(f: &CodegenFn, table: &CostTable) -> Result<(u64, BTreeMap<String, u
 
 fn port_for(rule: CostRule) -> Port {
     match rule {
-        CostRule::Load | CostRule::Store | CostRule::Adrp => Port::Mem,
+        // Adrp is address materialization (ALU-class); loads/stores alone
+        // take the mem port (integrity item B).
+        CostRule::Load | CostRule::Store => Port::Mem,
         _ => Port::Alu,
     }
 }
@@ -298,7 +316,7 @@ fn src_ready(ew: &EmittedWord, ready: &[u64; 32]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cost::rule::{CostRule, MemRef};
+    use crate::cost::rule::{CostRule, FlagEffect, MemRef};
     use crate::cost::table::parse;
 
     const TABLE: &str = r#"
@@ -338,6 +356,10 @@ working_set_surcharge = 2
 
     fn word(rule: CostRule, dst: Option<u8>, srcs: &[u8]) -> EmittedWord {
         EmittedWord::new(0, String::new(), rule, dst, srcs)
+    }
+
+    fn word_flags(rule: CostRule, dst: Option<u8>, srcs: &[u8], flags: FlagEffect) -> EmittedWord {
+        word(rule, dst, srcs).with_flags(flags)
     }
 
     fn load_stack(dst: u8, offset: u64) -> EmittedWord {
@@ -634,7 +656,7 @@ working_set_surcharge = 2
             vec![
                 load_stack(1, 8),
                 word(CostRule::Alu, Some(1), &[1, 1]),
-                word(CostRule::Call, None, &[]),
+                word(CostRule::Call, Some(0), &[]),
                 load_stack(2, 8),
                 word(CostRule::Alu, Some(3), &[2, 2]),
             ],
@@ -729,5 +751,104 @@ working_set_surcharge = 2
             a.total_proxy_cycles,
             b.total_proxy_cycles
         );
+    }
+
+    /// Call clobber: consumer of x0 waits on call retire (dst=Some(0)).
+    #[test]
+    fn call_result_waits_on_call_retire() {
+        let table = parse(TABLE).expect("table");
+        let with_dep = prog(
+            "f",
+            vec![
+                word(CostRule::Call, Some(0), &[]),
+                word(CostRule::Alu, Some(1), &[0, 0]),
+            ],
+        );
+        let r = score_program(&with_dep, &table).expect("score");
+        // call@0 → finish 4 (x0 ready); alu use x0 @4 → 5.
+        assert_eq!(r.total_proxy_cycles, 5);
+        // Independent alu dual-issues with call; max retire is call's 4.
+        let no_dep = prog(
+            "f",
+            vec![
+                word(CostRule::Call, Some(0), &[]),
+                word(CostRule::Alu, Some(1), &[2, 2]),
+            ],
+        );
+        let b = score_program(&no_dep, &table).expect("score");
+        assert_eq!(b.total_proxy_cycles, 4);
+        assert!(r.total_proxy_cycles > b.total_proxy_cycles);
+    }
+
+    /// cmp (Write flags) → b.cond (Read flags) must serialize on NZCV.
+    #[test]
+    fn cmp_to_bcond_waits_on_flags() {
+        let table = parse(TABLE).expect("table");
+        let ordered = prog(
+            "f",
+            vec![
+                word_flags(CostRule::Alu, None, &[1, 2], FlagEffect::Write),
+                word_flags(CostRule::Branch, None, &[], FlagEffect::Read),
+            ],
+        );
+        let r = score_program(&ordered, &table).expect("score");
+        // cmp@0→1; branch waits on flags@1, lat+penalty → finish 1+4=5.
+        assert_eq!(r.total_proxy_cycles, 5);
+        // Without flag edge, branch issues at 0 (dual with cmp under max_issue=2)
+        // and finishes at 4 — shorter than ordered.
+        let unordered = prog(
+            "f",
+            vec![
+                word(CostRule::Alu, None, &[1, 2]),
+                word(CostRule::Branch, None, &[]),
+            ],
+        );
+        let b = score_program(&unordered, &table).expect("score");
+        assert_eq!(b.total_proxy_cycles, 4);
+        assert!(r.total_proxy_cycles > b.total_proxy_cycles);
+    }
+
+    /// Mid-stream branch: followers wait on control-ready (lat+penalty).
+    #[test]
+    fn mid_stream_branch_delays_followers() {
+        let table = parse(TABLE).expect("table");
+        let mid = prog(
+            "f",
+            vec![
+                word(CostRule::Branch, None, &[]),
+                word(CostRule::Alu, Some(1), &[2, 2]),
+            ],
+        );
+        let r = score_program(&mid, &table).expect("score");
+        // branch@0 → finish 4 (= control_ready); alu issues at 4 → 5.
+        assert_eq!(r.total_proxy_cycles, 5);
+        // Trailing branch alone is still 4 (penalty only on max_retire).
+        let alone = prog("f", vec![word(CostRule::Branch, None, &[])]);
+        let a = score_program(&alone, &table).expect("score");
+        assert_eq!(a.total_proxy_cycles, 4);
+        assert!(r.total_proxy_cycles > a.total_proxy_cycles);
+    }
+
+    /// Adrp is ALU-port: dual-issues with an independent load under the cap.
+    #[test]
+    fn adrp_dual_issues_with_load() {
+        let table = parse(TABLE).expect("table");
+        let mixed = prog(
+            "f",
+            vec![word(CostRule::Adrp, Some(1), &[]), load_cold_unique(2, 0)],
+        );
+        let r = score_program(&mixed, &table).expect("score");
+        // Both issue cycle 0 (alu+mem); retire = max(1, 12) = 12.
+        assert_eq!(r.total_proxy_cycles, 12);
+        // Two Adrps alone: alu_ports=2, max_issue=2 → both cycle 0, retire 1.
+        let two_adrp = prog(
+            "f",
+            vec![
+                word(CostRule::Adrp, Some(1), &[]),
+                word(CostRule::Adrp, Some(2), &[]),
+            ],
+        );
+        let a = score_program(&two_adrp, &table).expect("score");
+        assert_eq!(a.total_proxy_cycles, 1);
     }
 }

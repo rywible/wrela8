@@ -141,6 +141,28 @@ impl MemRef {
     }
 }
 
+/// NZCV flag side-effect declared at emit (integrity item B). Never
+/// inferred from mnemonics (freeze 1303).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FlagEffect {
+    #[default]
+    None,
+    /// Writes NZCV (cmp / adds / subs / …).
+    Write,
+    /// Reads NZCV (b.cond / cset / …).
+    Read,
+}
+
+impl FlagEffect {
+    pub fn writes(self) -> bool {
+        matches!(self, FlagEffect::Write)
+    }
+
+    pub fn reads(self) -> bool {
+        matches!(self, FlagEffect::Read)
+    }
+}
+
 /// One machine word in the final asm stream, tagged at emit time
 /// (plans/M18.md freeze 1303). Scoreboard uses `rule` + regs; asm dump
 /// prints only `word` + `text`.
@@ -155,6 +177,8 @@ pub struct EmittedWord {
     /// Load/Store memory identity when tagged at emit; `None` for Adrp
     /// and untagged sites (scorer treats missing as cold miss).
     pub mem: Option<MemRef>,
+    /// NZCV read/write at emit (integrity item B).
+    pub flags: FlagEffect,
 }
 
 impl EmittedWord {
@@ -176,11 +200,17 @@ impl EmittedWord {
             srcs: arr,
             src_len: n as u8,
             mem: None,
+            flags: FlagEffect::None,
         }
     }
 
     pub fn with_mem(mut self, mem: MemRef) -> EmittedWord {
         self.mem = Some(mem);
+        self
+    }
+
+    pub fn with_flags(mut self, flags: FlagEffect) -> EmittedWord {
+        self.flags = flags;
         self
     }
 
@@ -238,6 +268,7 @@ mod tests {
     fn emitted_word_new_has_no_mem() {
         let ew = EmittedWord::new(0, String::new(), CostRule::Adrp, None, &[]);
         assert_eq!(ew.mem, None);
+        assert_eq!(ew.flags, FlagEffect::None);
     }
 
     #[test]
@@ -245,5 +276,13 @@ mod tests {
         let ew = EmittedWord::new(0, String::new(), CostRule::Load, Some(0), &[31])
             .with_mem(MemRef::stack(8));
         assert_eq!(ew.mem, Some(MemRef::stack(8)));
+    }
+
+    #[test]
+    fn emitted_word_with_flags_sets_nzcv() {
+        let ew = EmittedWord::new(0, String::new(), CostRule::Alu, None, &[0, 1])
+            .with_flags(FlagEffect::Write);
+        assert!(ew.flags.writes());
+        assert!(!ew.flags.reads());
     }
 }
