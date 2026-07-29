@@ -887,7 +887,12 @@ mod tests {
         let report = CostReport {
             version: 1,
             digest: "deadbeef".to_string(),
-            issue_width: 4,
+            alu_ports: 2,
+            mem_ports: 2,
+            max_issue_per_cycle: 2,
+            branch_penalty: 3,
+            mem_reuse_window: 8,
+            mem_working_set_cap: 4,
             total_proxy_cycles: 30,
             owner_totals: BTreeMap::from([
                 ("app".to_string(), 10u64),
@@ -916,7 +921,12 @@ mod tests {
         let report = CostReport {
             version: 1,
             digest: "deadbeef".to_string(),
-            issue_width: 4,
+            alu_ports: 2,
+            mem_ports: 2,
+            max_issue_per_cycle: 2,
+            branch_penalty: 3,
+            mem_reuse_window: 8,
+            mem_working_set_cap: 4,
             total_proxy_cycles: 30,
             owner_totals: BTreeMap::from([
                 ("app".to_string(), 10u64),

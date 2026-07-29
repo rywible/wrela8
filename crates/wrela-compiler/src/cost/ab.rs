@@ -64,16 +64,22 @@ mod tests {
     use crate::opts::{CompileMode, apply_mode};
 
     const TABLE: &str = r#"
-version = 1
-issue_width = 4
+version = 2
+[ports]
+alu = 2
+mem = 2
+max_issue_per_cycle = 2
+branch_penalty = 3
+mem_reuse_window = 8
+mem_working_set_cap = 4
 [latency]
 alu = 1
-load = 4
-store = 1
+load = 12
+store = 2
 branch = 1
-call = 1
+call = 4
 abort = 1
-abort_val = 1
+abort_val = 3
 mov_wide = 1
 mul = 3
 sdiv = 12
@@ -82,6 +88,14 @@ adrp = 1
 barrier = 1
 system = 1
 neon = 1
+[mem]
+load_stack_hit = 1
+load_stack_miss = 4
+load_cold_hit = 4
+load_cold_miss = 12
+store_stack = 1
+store_cold = 2
+working_set_surcharge = 2
 "#;
 
     fn word(rule: CostRule, dst: Option<u8>, srcs: &[u8]) -> EmittedWord {
