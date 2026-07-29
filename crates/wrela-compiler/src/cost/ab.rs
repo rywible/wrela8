@@ -1,10 +1,13 @@
 //! Proxy A/B harness (plans/M18.md items H+J, decisions 1370–1374 /
-//! 1385–1389; plans/M19.md item D / 1440–1449).
+//! 1385–1389; plans/M19.md item D / 1440–1449; integrity Item E).
 //!
 //! Rank two emissions by scoreboard total only — no wall time, no host
 //! calibration. Capstone smoke: lower under `CompileMode::Release`
 //! (BoundsElide on) vs `Dev` (elide off) via `opts::apply_mode`, then
 //! score — release must rank strictly below dev.
+//!
+//! Corpus oracle (integrity E): every `tests/golden/cost-*/input.wr`
+//! scored with BoundsElide on vs off; per-fn `on.proxy <= off.proxy`.
 //!
 //! Cost tags / scoreboard stay always-on in both modes (freeze 1408);
 //! modes flip emission, not instrumentation.
@@ -60,8 +63,10 @@ mod tests {
     use super::*;
     use crate::codegen::CodegenFn;
     use crate::cost::rule::{CostRule, EmittedWord};
+    use crate::cost::stage::codegen_cost_stage;
     use crate::cost::table::{load_default, parse};
-    use crate::opts::{CompileMode, apply_mode};
+    use crate::opts::win::discover_cost_corpus;
+    use crate::opts::{CompileMode, OptId, apply_mode, apply_opts};
 
     const TABLE: &str = r#"
 version = 2
@@ -261,5 +266,80 @@ pub fn hot(a: [u64; 32]) -> u64:
             dev.total_proxy_cycles
         );
         assert_eq!(rank_cmp(&release, &dev), Ordering::Less);
+    }
+
+    /// Integrity Item E: every `cost-*` golden, BoundsElide on vs off,
+    /// per-fn proxy must be monotonic (`on <= off`). Fail closed if the
+    /// corpus is empty. Isolates BoundsElide (NarrowImm held off).
+    #[test]
+    fn bounds_elide_corpus_per_fn_on_leq_off() {
+        let corpus = discover_cost_corpus();
+        assert!(
+            !corpus.is_empty(),
+            "cost corpus empty: expected tests/golden/cost-*/input.wr"
+        );
+
+        let table = load_default().expect("wrela-cost-v1");
+
+        for path in &corpus {
+            let case = path
+                .parent()
+                .and_then(|p| p.file_name())
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string());
+
+            apply_opts(&[OptId::BoundsElide]);
+            let on_prog = codegen_cost_stage(path).unwrap_or_else(|e| {
+                panic!("codegen BoundsElide-on {case}: {e}");
+            });
+            let on = score_with_opts(
+                &on_prog,
+                &table,
+                CostOpts {
+                    mode: CompileMode::Release,
+                },
+            )
+            .unwrap_or_else(|e| panic!("score BoundsElide-on {case}: {e}"));
+
+            apply_opts(&[]);
+            let off_prog = codegen_cost_stage(path).unwrap_or_else(|e| {
+                panic!("codegen BoundsElide-off {case}: {e}");
+            });
+            let off = score_with_opts(
+                &off_prog,
+                &table,
+                CostOpts {
+                    mode: CompileMode::Dev,
+                },
+            )
+            .unwrap_or_else(|e| panic!("score BoundsElide-off {case}: {e}"));
+
+            let off_by_key: BTreeMap<&str, u64> = off
+                .fns
+                .iter()
+                .map(|f| (f.key.as_str(), f.proxy_cycles))
+                .collect();
+            assert_eq!(
+                on.fns.len(),
+                off.fns.len(),
+                "{case}: fn count on={} off={}",
+                on.fns.len(),
+                off.fns.len()
+            );
+            for f_on in &on.fns {
+                let off_proxy = off_by_key.get(f_on.key.as_str()).unwrap_or_else(|| {
+                    panic!("{case}: fn {:?} present with BoundsElide on but missing off", f_on.key);
+                });
+                assert!(
+                    f_on.proxy_cycles <= *off_proxy,
+                    "{case} fn {:?}: BoundsElide-on proxy {} > off {}",
+                    f_on.key,
+                    f_on.proxy_cycles,
+                    off_proxy
+                );
+            }
+        }
+
+        apply_mode(CompileMode::Release);
     }
 }
