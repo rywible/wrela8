@@ -343,7 +343,7 @@
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::cost::{CostRule, EmittedWord, FlagEffect, MemRef};
+use crate::cost::{CostRule, EmittedWord, FlagEffect, MEM_SP_REG, MemClass, MemRef};
 use crate::encode::{self, Cond};
 use crate::mwir::{self, Inst, LayoutCtx, MwirFn, MwirProgram, Temp};
 use crate::sema::types::Type;
@@ -1049,10 +1049,67 @@ struct FnCtx<'a> {
     cold_seq: u64,
 }
 
+/// Integrity item D: structural emit-tag shape checked at `FnCtx::push` /
+/// `push_mem` (and `push_flags`). Fail closed — never silently under-tag.
+///
+/// - `Call` ⇒ `dst == Some(0)` (x0 return / clobber)
+/// - `Load` with a known (non-unique) address MemRef ⇒ ≥1 src
+/// - `Store` with non-unique MemRef ⇒ that MemRef's base ∈ srcs
+/// - Unique-cold MemRefs stay exempt (pessimistic address unknown)
+fn check_push_shape(rule: CostRule, dst: Option<u8>, srcs: &[u8], mem: Option<&MemRef>) {
+    match rule {
+        CostRule::Call => {
+            assert_eq!(
+                dst,
+                Some(0),
+                "Call must declare dst=Some(0) (x0 return/clobber)"
+            );
+        }
+        CostRule::Load => {
+            if let Some(m) = mem {
+                if !memref_is_unique_cold(m) {
+                    assert!(
+                        !srcs.is_empty(),
+                        "Load with known address MemRef needs ≥1 src (address base)"
+                    );
+                }
+            }
+        }
+        CostRule::Store => {
+            if let Some(m) = mem {
+                if let Some(base) = memref_nonunique_base(m) {
+                    assert!(
+                        srcs.iter().any(|&r| r == base),
+                        "Store with non-unique MemRef requires base reg {base} ∈ srcs (got {srcs:?})"
+                    );
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn memref_is_unique_cold(m: &MemRef) -> bool {
+    m.class == MemClass::Cold && (m.key & (1u64 << 63)) != 0
+}
+
+/// Base register for Stack / cold_stable MemRefs; `None` for unique cold.
+fn memref_nonunique_base(m: &MemRef) -> Option<u8> {
+    if memref_is_unique_cold(m) {
+        None
+    } else if m.class == MemClass::Stack {
+        Some(MEM_SP_REG)
+    } else {
+        // cold_stable: base in bits [48..56)
+        Some(((m.key >> 48) & 0xFF) as u8)
+    }
+}
+
 impl<'a> FnCtx<'a> {
     // Best-effort dest/src regs at emit time; `dst=None` / empty `srcs` OK when unknown
     // (scoreboard treats missing operands as no register deps). Never parse mnemonics.
     // Load/Store without a proven address get a unique Cold MemRef; Adrp stays untagged.
+    // Integrity item D: structural asserts on Call/Load/Store tag shape at push time.
     fn push(&mut self, word: u32, text: String, rule: CostRule, dst: Option<u8>, srcs: &[u8]) {
         let mem = match rule {
             CostRule::Load | CostRule::Store => Some(self.alloc_unique_cold()),
@@ -1071,6 +1128,8 @@ impl<'a> FnCtx<'a> {
         srcs: &[u8],
         flags: FlagEffect,
     ) {
+        // Flag-setting Alu/Branch paths — not Load/Store/Call; still shape-check.
+        check_push_shape(rule, dst, srcs, None);
         let mut ew = EmittedWord::new(word, text, rule, dst, srcs);
         ew.flags = flags;
         self.words.push(ew);
@@ -1085,6 +1144,12 @@ impl<'a> FnCtx<'a> {
         srcs: &[u8],
         mem: Option<MemRef>,
     ) {
+        // Untagged Load/Store → unique cold (pessimistic); proven tags keep their MemRef.
+        let mem = match (rule, mem) {
+            (CostRule::Load | CostRule::Store, None) => Some(self.alloc_unique_cold()),
+            (_, m) => m,
+        };
+        check_push_shape(rule, dst, srcs, mem.as_ref());
         let mut ew = EmittedWord::new(word, text, rule, dst, srcs);
         ew.mem = mem;
         self.words.push(ew);
@@ -11035,6 +11100,107 @@ mod tests {
         let stable = MemRef::for_base_imm(X_A, 0);
         assert_eq!(stable.class, crate::cost::MemClass::Cold);
         assert_eq!(stable.key & (1u64 << 63), 0);
+    }
+
+    // --- integrity item D: push / push_mem structural asserts ------------
+
+    #[test]
+    fn push_shape_call_requires_x0_dst() {
+        check_push_shape(CostRule::Call, Some(0), &[], None);
+        check_push_shape(CostRule::Call, Some(0), &[1, 2], None);
+    }
+
+    #[test]
+    #[should_panic(expected = "Call must declare dst=Some(0)")]
+    fn push_shape_call_without_x0_dst_fails() {
+        check_push_shape(CostRule::Call, None, &[], None);
+    }
+
+    #[test]
+    #[should_panic(expected = "Call must declare dst=Some(0)")]
+    fn push_shape_call_wrong_dst_fails() {
+        check_push_shape(CostRule::Call, Some(1), &[], None);
+    }
+
+    #[test]
+    fn push_shape_load_known_addr_needs_src() {
+        check_push_shape(
+            CostRule::Load,
+            Some(0),
+            &[MEM_SP_REG],
+            Some(&MemRef::stack(8)),
+        );
+        check_push_shape(
+            CostRule::Load,
+            Some(0),
+            &[X_A],
+            Some(&MemRef::for_base_imm(X_A, 0)),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Load with known address")]
+    fn push_shape_load_known_addr_without_src_fails() {
+        check_push_shape(CostRule::Load, Some(0), &[], Some(&MemRef::stack(8)));
+    }
+
+    #[test]
+    fn push_shape_load_unique_cold_empty_srcs_ok() {
+        // Unique-cold path still ok when tagged (address unknown / pessimistic).
+        check_push_shape(
+            CostRule::Load,
+            Some(0),
+            &[],
+            Some(&MemRef::cold_unique(0)),
+        );
+    }
+
+    #[test]
+    fn push_shape_store_nonunique_requires_base_in_srcs() {
+        check_push_shape(
+            CostRule::Store,
+            None,
+            &[0, MEM_SP_REG],
+            Some(&MemRef::stack(16)),
+        );
+        check_push_shape(
+            CostRule::Store,
+            None,
+            &[1, X_FRAME],
+            Some(&MemRef::for_base_imm(X_FRAME, 64)),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "base reg")]
+    fn push_shape_store_nonunique_missing_base_fails() {
+        // Stack MemRef base is SP (31); srcs only carry the stored value.
+        check_push_shape(CostRule::Store, None, &[0], Some(&MemRef::stack(8)));
+    }
+
+    #[test]
+    fn push_shape_store_unique_cold_exempt_from_base() {
+        check_push_shape(
+            CostRule::Store,
+            None,
+            &[0],
+            Some(&MemRef::cold_unique(3)),
+        );
+    }
+
+    #[test]
+    fn push_shape_untagged_load_store_helpers_unique() {
+        // Document the coerce: missing MemRef on Load/Store is treated as
+        // unique cold by push_mem; shape check then exempts empty-src Loads.
+        assert!(memref_is_unique_cold(&MemRef::cold_unique(0)));
+        assert!(!memref_is_unique_cold(&MemRef::stack(0)));
+        assert!(!memref_is_unique_cold(&MemRef::for_base_imm(X_A, 0)));
+        assert_eq!(memref_nonunique_base(&MemRef::stack(24)), Some(MEM_SP_REG));
+        assert_eq!(
+            memref_nonunique_base(&MemRef::for_base_imm(X_FRAME, 8)),
+            Some(X_FRAME)
+        );
+        assert_eq!(memref_nonunique_base(&MemRef::cold_unique(1)), None);
     }
 
     #[test]
