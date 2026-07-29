@@ -1194,10 +1194,7 @@ pub fn build() -> Image:
     return img.seal()
 "#;
         let outcome = boot_source(src, "chain");
-        assert_guest_transcript(
-            &outcome.transcript,
-            "test chain: ok\n1 passed, 0 failed\n",
-        );
+        assert_guest_transcript(&outcome.transcript, "test chain: ok\n1 passed, 0 failed\n");
         assert_eq!(outcome.exit_code, 0);
     }
 
@@ -1272,10 +1269,7 @@ pub fn build() -> Image:
     return img.seal()
 "#;
         let outcome = boot_source(src, "fifo");
-        assert_guest_transcript(
-            &outcome.transcript,
-            "test fifo: ok\n1 passed, 0 failed\n",
-        );
+        assert_guest_transcript(&outcome.transcript, "test fifo: ok\n1 passed, 0 failed\n");
         assert_eq!(outcome.exit_code, 0);
     }
 
@@ -2786,10 +2780,7 @@ pub fn build() -> Image:
     #[test]
     fn three_cores_come_up_on_a_cross_core_image_over_hvf() {
         let outcome = boot_source(CROSS_CORE_SRC, "c1-three-cores");
-        assert_guest_transcript(
-            &outcome.transcript,
-            "test boots: ok\n1 passed, 0 failed\n",
-        );
+        assert_guest_transcript(&outcome.transcript, "test boots: ok\n1 passed, 0 failed\n");
         assert_eq!(outcome.exit_code, 0);
         // Core 0 by the entry driver, cores 1 and 2 by their own entry
         // blocks — each its own value, so a core running another core's
@@ -2807,10 +2798,7 @@ pub fn build() -> Image:
                 .replace(", core=1", ""),
             "c1-single-core",
         );
-        assert_guest_transcript(
-            &single.transcript,
-            "test boots: ok\n1 passed, 0 failed\n",
-        );
+        assert_guest_transcript(&single.transcript, "test boots: ok\n1 passed, 0 failed\n");
         assert_eq!(single.core_marks, vec![0]);
     }
 
@@ -2820,10 +2808,7 @@ pub fn build() -> Image:
     #[test]
     fn two_cores_come_up_under_baton_over_hvf() {
         let outcome = boot_source(TWO_CORE_SRC, "f-two-cores");
-        assert_guest_transcript(
-            &outcome.transcript,
-            "test boots: ok\n1 passed, 0 failed\n",
-        );
+        assert_guest_transcript(&outcome.transcript, "test boots: ok\n1 passed, 0 failed\n");
         assert_eq!(outcome.exit_code, 0);
         assert_eq!(outcome.core_marks, vec![1, 2]);
     }
