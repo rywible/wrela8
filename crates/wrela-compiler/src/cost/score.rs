@@ -170,13 +170,7 @@ fn port_for(rule: CostRule) -> Port {
     }
 }
 
-fn can_issue(
-    port: Port,
-    alu_used: u64,
-    mem_used: u64,
-    issues: u64,
-    table: &CostTable,
-) -> bool {
+fn can_issue(port: Port, alu_used: u64, mem_used: u64, issues: u64, table: &CostTable) -> bool {
     let port_free = match port {
         Port::Alu => alu_used < table.alu_ports,
         Port::Mem => mem_used < table.mem_ports,
@@ -201,10 +195,14 @@ fn word_latency(
 
     if matches!(ew.rule, CostRule::Load) {
         if let Some(m) = ew.mem {
-            push_window(window, win_cap, WinEntry {
-                mem: m,
-                grants_hit: true,
-            });
+            push_window(
+                window,
+                win_cap,
+                WinEntry {
+                    mem: m,
+                    grants_hit: true,
+                },
+            );
             lat = lat.saturating_add(working_set_surcharge(window, table));
         }
         // Missing MemRef: cold miss already charged; no window push.
@@ -402,10 +400,7 @@ working_set_surcharge = 2
         let table = parse(TABLE).expect("table");
         let with_load = prog(
             "f",
-            vec![
-                load_stack(1, 0),
-                word(CostRule::Alu, Some(2), &[1, 1]),
-            ],
+            vec![load_stack(1, 0), word(CostRule::Alu, Some(2), &[1, 1])],
         );
         let without_load = prog(
             "f",
@@ -487,8 +482,11 @@ working_set_surcharge = 2
     #[test]
     fn report_copies_port_knobs_from_table() {
         let table = parse(TABLE).expect("table");
-        let r = score_program(&prog("f", vec![word(CostRule::Alu, Some(1), &[0, 0])]), &table)
-            .expect("score");
+        let r = score_program(
+            &prog("f", vec![word(CostRule::Alu, Some(1), &[0, 0])]),
+            &table,
+        )
+        .expect("score");
         assert_eq!(r.version, 2);
         assert_eq!(r.alu_ports, 2);
         assert_eq!(r.mem_ports, 2);
@@ -516,10 +514,7 @@ working_set_surcharge = 2
         let r = score_program(&three, &table).expect("score");
         assert_eq!(r.total_proxy_cycles, 13);
         // Two loads finish in one cycle: retire = 12.
-        let two = prog(
-            "f",
-            vec![load_cold_unique(1, 0), load_cold_unique(2, 1)],
-        );
+        let two = prog("f", vec![load_cold_unique(1, 0), load_cold_unique(2, 1)]);
         let r2 = score_program(&two, &table).expect("score");
         assert_eq!(r2.total_proxy_cycles, 12);
         assert!(r.total_proxy_cycles > r2.total_proxy_cycles);
