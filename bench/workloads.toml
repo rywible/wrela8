@@ -1,0 +1,16 @@
+# bench/workloads.toml — pinned workload set for multi-W proxy ranking.
+#
+# Relock discipline matches thresholds.toml: change only deliberately, in its
+# own commit, with a before/after digest cited. The parser digests sorted
+# `name=weight` lines (FNV-1a); unknown keys and a missing `[flat]` fail closed.
+#
+# `[flat]` is the static ruler: f ≡ 1 (policy, not measured). Named workloads
+# carry measured f (Lane 1 method/turn counters, later block counts). Overall
+# gate uses these weights for veto-then-rank (Phase 2); this file is schema
+# + digest only until score compose lands.
+
+[flat]
+weight = 1
+
+[boot-actors]
+weight = 10
