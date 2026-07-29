@@ -146,6 +146,7 @@ TURNS_BASE,
     TURN_STRIDE,
     N_MAILBOXES,
     MB_POOL_COUNT,
+    METHOD_CALL_POOL_COUNT,
     MB0_CTL,
     MB1_CTL,
     MB2_CTL,
@@ -568,6 +569,135 @@ struct TestLineBuf:
 @placed(0x40000218)
 static TEST_LINE_BUF: TestLineBuf
 
+# ---------------------------------------------------------------------------
+# Integrity Phase 2 Item I — Lane 1 scheduler counters.
+# Placed in the reserved device-page growth window (0x40008000..0x40010000);
+# DRAM-mapped, zero at boot. Method hits are indexed by the same flat
+# `__method_N` order `__wrela_call_method` uses (sum of prior mailboxes'
+# method_count + local mi). Dump is a deterministic transcript block.
+# ---------------------------------------------------------------------------
+
+@layout(runtime, endian=little)
+struct Lane1Counters:
+    turns: u64
+    run_one_hits: u64
+    messages: u64
+    method_hits: [u64; METHOD_CALL_POOL_COUNT]
+
+@placed(0x40008000)
+static LANE1: Lane1Counters
+
+# Flat method index matching `__wrela_call_method`'s `__method_N` numbering.
+pub fn __wrela_lane1_method_flat(root: usize, method: usize) -> usize:
+    flat: usize = 0
+    r: usize = 0
+    @budget(bound=32)
+    while r < root:
+        if r < N_MAILBOXES:
+            flat = flat +% __wrela_mb_method_count(r)
+        r = r +% 1
+    return flat +% method
+
+pub fn __wrela_lane1_record_method(root: usize, method: usize):
+    flat = __wrela_lane1_method_flat(root, method)
+    if flat >= METHOD_CALL_POOL_COUNT:
+        return
+    LANE1.method_hits[flat] = LANE1.method_hits[flat] +% 1
+    return
+
+pub fn __wrela_lane1_append_u64(value: u64) -> u64:
+    digs = __wrela_fmt_dec(value, 0)
+    return __wrela_console_append_line_buf(digs.to[usize]())
+
+# Compact Lane 1 block (two console lines, after the summary):
+#   lane1 turns=<t> run_one=<r> messages=<m>
+#   lane1 hits=<flat>:<count>,...   (non-zero only, ascending flat)
+pub fn __wrela_lane1_dump():
+    __wrela_line_begin()
+    # "lane1 turns="
+    TEST_LINE_BUF.bytes[0] = 108
+    TEST_LINE_BUF.bytes[1] = 97
+    TEST_LINE_BUF.bytes[2] = 110
+    TEST_LINE_BUF.bytes[3] = 101
+    TEST_LINE_BUF.bytes[4] = 49
+    TEST_LINE_BUF.bytes[5] = 32
+    TEST_LINE_BUF.bytes[6] = 116
+    TEST_LINE_BUF.bytes[7] = 117
+    TEST_LINE_BUF.bytes[8] = 114
+    TEST_LINE_BUF.bytes[9] = 110
+    TEST_LINE_BUF.bytes[10] = 115
+    TEST_LINE_BUF.bytes[11] = 61
+    _ = __wrela_console_append_line_buf(12)
+    _ = __wrela_lane1_append_u64(LANE1.turns)
+    # " run_one="
+    TEST_LINE_BUF.bytes[0] = 32
+    TEST_LINE_BUF.bytes[1] = 114
+    TEST_LINE_BUF.bytes[2] = 117
+    TEST_LINE_BUF.bytes[3] = 110
+    TEST_LINE_BUF.bytes[4] = 95
+    TEST_LINE_BUF.bytes[5] = 111
+    TEST_LINE_BUF.bytes[6] = 110
+    TEST_LINE_BUF.bytes[7] = 101
+    TEST_LINE_BUF.bytes[8] = 61
+    _ = __wrela_console_append_line_buf(9)
+    _ = __wrela_lane1_append_u64(LANE1.run_one_hits)
+    # " messages="
+    TEST_LINE_BUF.bytes[0] = 32
+    TEST_LINE_BUF.bytes[1] = 109
+    TEST_LINE_BUF.bytes[2] = 101
+    TEST_LINE_BUF.bytes[3] = 115
+    TEST_LINE_BUF.bytes[4] = 115
+    TEST_LINE_BUF.bytes[5] = 97
+    TEST_LINE_BUF.bytes[6] = 103
+    TEST_LINE_BUF.bytes[7] = 101
+    TEST_LINE_BUF.bytes[8] = 115
+    TEST_LINE_BUF.bytes[9] = 61
+    _ = __wrela_console_append_line_buf(10)
+    _ = __wrela_lane1_append_u64(LANE1.messages)
+    TEST_LINE_BUF.bytes[0] = 10
+    _ = __wrela_console_append_line_buf(1)
+    _ = __wrela_line_commit()
+    # hits line
+    __wrela_line_begin()
+    TEST_LINE_BUF.bytes[0] = 108
+    TEST_LINE_BUF.bytes[1] = 97
+    TEST_LINE_BUF.bytes[2] = 110
+    TEST_LINE_BUF.bytes[3] = 101
+    TEST_LINE_BUF.bytes[4] = 49
+    TEST_LINE_BUF.bytes[5] = 32
+    TEST_LINE_BUF.bytes[6] = 104
+    TEST_LINE_BUF.bytes[7] = 105
+    TEST_LINE_BUF.bytes[8] = 116
+    TEST_LINE_BUF.bytes[9] = 115
+    TEST_LINE_BUF.bytes[10] = 61
+    _ = __wrela_console_append_line_buf(11)
+    first: u64 = 1
+    root: usize = 0
+    @budget(bound=32)
+    while root < N_MAILBOXES:
+        n = __wrela_mb_method_count(root)
+        mi: usize = 0
+        @budget(bound=128)
+        while mi < n:
+            flat = __wrela_lane1_method_flat(root, mi)
+            if flat < METHOD_CALL_POOL_COUNT:
+                c = LANE1.method_hits[flat]
+                if c != 0:
+                    if first == 0:
+                        TEST_LINE_BUF.bytes[0] = 44
+                        _ = __wrela_console_append_line_buf(1)
+                    first = 0
+                    _ = __wrela_lane1_append_u64(flat.to[u64]())
+                    TEST_LINE_BUF.bytes[0] = 58
+                    _ = __wrela_console_append_line_buf(1)
+                    _ = __wrela_lane1_append_u64(c)
+            mi = mi +% 1
+        root = root +% 1
+    TEST_LINE_BUF.bytes[0] = 10
+    _ = __wrela_console_append_line_buf(1)
+    _ = __wrela_line_commit()
+    return
+
 fn ascii_digit(d: u64) -> u8:
     if d == 0:
         return 48
@@ -888,6 +1018,7 @@ const TURN_STATUS_CANCELLED: u64 = 2
 pub fn __wrela_rt_run_one(core: usize) -> u64:
     drained = __wrela_try_drain(core)
     if drained != 0:
+        LANE1.run_one_hits = LANE1.run_one_hits +% 1
         return 1
     n = __wrela_select_count(core)
     rr_pass: usize = 0
@@ -911,6 +1042,7 @@ pub fn __wrela_rt_run_one(core: usize) -> u64:
                     if nxt >= n:
                         nxt = 0
                     SCHED.cores[core].rr_cursor = nxt.to[u64]()
+                    LANE1.run_one_hits = LANE1.run_one_hits +% 1
                     return 1
             i = i +% 1
         rr_pass = rr_pass +% 1
@@ -919,6 +1051,7 @@ pub fn __wrela_rt_run_one(core: usize) -> u64:
         @budget(bound=256)
         while s < N_CHILD_SITES:
             if __wrela_child_poll(s) != 0:
+                LANE1.run_one_hits = LANE1.run_one_hits +% 1
                 return 1
             s = s +% 1
     return 0
@@ -1197,6 +1330,7 @@ pub fn __wrela_rt_enqueue(root: usize, method: u64, arg0: u64, arg1: u64, waker_
         t = 0
     __wrela_mb_set_tail(root, t)
     __wrela_mb_set_count(root, count +% 1)
+    LANE1.messages = LANE1.messages +% 1
     return 0
 
 # Handle-identity → enqueue (drain request lane).
@@ -1366,6 +1500,7 @@ pub fn __wrela_rt_select(root: usize) -> u64:
         __wrela_mb_set_head(root, h)
         c = __wrela_mb_get_count(root)
         __wrela_mb_set_count(root, c -% 1)
+        LANE1.turns = LANE1.turns +% 1
     mi: usize = method.to[usize]()
     n_methods = __wrela_mb_method_count(root)
     if n_methods == 0:
@@ -1386,6 +1521,7 @@ pub fn __wrela_rt_select(root: usize) -> u64:
         slot_off = RT.turns[waker_ti].reply_slot_off.to[u64]()
         turn_base = TURNS_BASE +% ((slot_turn -% 1).to[usize]() *% TURN_STRIDE)
         stage = (turn_base +% slot_off.to[usize]()).to[u64]()
+    __wrela_lane1_record_method(root, mi)
     status_or_reply = __wrela_call_method(root, mi, arg0, arg1, stage)
     is_async = __wrela_method_suspends(root, mi)
     if is_async != 0:
@@ -1671,6 +1807,8 @@ pub fn __wrela_rt_summary_and_halt():
     _ = __wrela_console_append_line_buf(digs2.to[usize]())
     _ = __wrela_append_failed_tail_literal()
     _ = __wrela_line_commit()
+    # Lane 1 counter block trails the summary (well-formedness allows it).
+    __wrela_lane1_dump()
     code: u64 = 0
     if MACHINE_INFO.test_failed != 0:
         code = 1
@@ -1688,6 +1826,14 @@ pub fn __wrela_rt_primary_boot():
     MACHINE_INFO.line_start = 0
     MACHINE_INFO.abort_latch = 0
     MACHINE_INFO.test_next = 0
+    LANE1.turns = 0
+    LANE1.run_one_hits = 0
+    LANE1.messages = 0
+    zi: usize = 0
+    @budget(bound=128)
+    while zi < METHOD_CALL_POOL_COUNT:
+        LANE1.method_hits[zi] = 0
+        zi = zi +% 1
     if N_CORES > 1:
         MACHINE_INFO.core_marks[0] = 1
         RELEASE.word = N_CORES.to[u64]()

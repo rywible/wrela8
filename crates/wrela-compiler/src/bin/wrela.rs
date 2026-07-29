@@ -2005,16 +2005,40 @@ fn test_cmd(args: &[String]) -> ExitCode {
     // and faulted the guest at `pc=0x0` instead
     // (`layout::build_entry_driver`'s own note); recognizing the shape
     // here is the reporting half of the same fix.
-    let boot_failed = t_lines.len() == 2 && t_lines[0].starts_with("FAILED ");
-    let well_formed = boot_failed
-        || (t_lines.len() == runtime_tests.len() + 1
-            && t_lines
-                .iter()
-                .zip(runtime_tests.iter())
-                .all(|(line, name)| line.starts_with(&format!("test {name}: "))));
-    let Some((runtime_passed, runtime_failed)) =
-        (if well_formed { t_lines.last() } else { None }).and_then(|l| parse_summary_line(l))
-    else {
+    //
+    // Integrity Phase 2 Item I: optional trailing `lane1 …` counter lines
+    // after the summary (guest dumps them from `__wrela_lane1_dump`).
+    let boot_failed = t_lines.len() >= 2
+        && t_lines[0].starts_with("FAILED ")
+        && parse_summary_line(t_lines[1]).is_some()
+        && t_lines[2..].iter().all(|l| l.starts_with("lane1 "));
+    let summary_idx = if boot_failed {
+        Some(1usize)
+    } else if t_lines.len() >= runtime_tests.len() + 1
+        && t_lines
+            .iter()
+            .zip(runtime_tests.iter())
+            .all(|(line, name)| line.starts_with(&format!("test {name}: ")))
+        && parse_summary_line(t_lines[runtime_tests.len()]).is_some()
+        && t_lines[runtime_tests.len() + 1..]
+            .iter()
+            .all(|l| l.starts_with("lane1 "))
+    {
+        Some(runtime_tests.len())
+    } else {
+        None
+    };
+    let Some(summary_i) = summary_idx else {
+        for l in &comptime_lines {
+            println!("{l}");
+        }
+        print_line_diagnostic(&format!(
+            "error[build]: the wrela VMM's own transcript is not well-formed (expected {} test line(s) then a summary):\n{transcript}",
+            runtime_tests.len()
+        ));
+        return ExitCode::FAILURE;
+    };
+    let Some((runtime_passed, runtime_failed)) = parse_summary_line(t_lines[summary_i]) else {
         for l in &comptime_lines {
             println!("{l}");
         }
@@ -2028,12 +2052,15 @@ fn test_cmd(args: &[String]) -> ExitCode {
     for l in &comptime_lines {
         println!("{l}");
     }
-    for l in &t_lines[..t_lines.len() - 1] {
+    for l in &t_lines[..summary_i] {
         println!("{l}");
     }
     let passed = comptime_passed + runtime_passed;
     let failed = comptime_failed + runtime_failed;
     println!("{passed} passed, {failed} failed");
+    for l in &t_lines[summary_i + 1..] {
+        println!("{l}");
+    }
     if failed > 0 {
         ExitCode::FAILURE
     } else {
