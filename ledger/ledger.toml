@@ -602,7 +602,7 @@ tests = [
   "unit:load_committed_table",
   "unit:cost_summary_contains_version_and_owners",
 ]
-note = """plans/M18.md item L (2026-07-28): FLIPPED from `gap` to `test`. Umbrella for the ISA **proxy-cycle ranking** surface (04 §5 / 06 §1): `--stage=cost` goldens (incl. hard-cut witnesses `cost-branchy` / `cost-mem-locality`), short report Cost summary, `wrela-cost-v1` table load (`version=2` dual ports ∩ `max_issue_per_cycle` + mem reuse — not flat `issue_width`), and proxy off/on **rank** A/B. Value remains **differential ISA ranking only** — not predicted-vs-physical wall-clock, not A76 SOG ports, not host calibration against `bench guest` / `profile`, not exit-rate report lines (06 §5). Normative proxy soundness (04 §5): a proxy win must never imply a real-machine loss; live total is `cost(P, W_flat)` (`f≡1`); dump Assumptions carry `valid_for=static_shape_opts` + `workload=flat` — land-gate for static-shape opts only until real-W `f×s` rows exist. `cargo xtask profile` stays a measurement report, not this clause's oracle. Sub-clauses: `compiler.costs.stage-dump`, `compiler.costs.v1-table`, `compiler.costs.proxy-ab`, `compiler.costs.report-summary`."""
+note = """plans/M18.md item L (2026-07-28): FLIPPED from `gap` to `test`. Umbrella for the ISA **proxy-cycle ranking** surface (04 §5 / 06 §1): `--stage=cost` goldens (incl. hard-cut witnesses `cost-branchy` / `cost-mem-locality`), short report Cost summary, `wrela-cost-v1` table load (`version=2` dual ports ∩ `max_issue_per_cycle` + mem reuse — not flat `issue_width`), and proxy off/on **rank** A/B. Value remains **differential ISA ranking only** — not predicted-vs-physical wall-clock, not A76 SOG ports, not host calibration against `bench guest` / `profile`, not exit-rate report lines (06 §5). Normative proxy soundness (04 §5): a proxy win must never imply a real-machine loss. Unified cost is `cost(P, W) = Σ f_W(b)×s(b)`; live dump always includes the flat row `cost(P, W_flat)` (`f≡1`) with Assumptions `valid_for=static_shape_opts` + `workload=flat`; named measured W rows + coverage honesty + veto-then-rank overall are Phase 2 (sub-clauses `compiler.costs.workloads` / `multi-w-compose` / `compiler.opts.proxy-win-overall`). `cargo xtask profile` stays a measurement report, not this clause's oracle. Sub-clauses: `compiler.costs.stage-dump`, `compiler.costs.v1-table`, `compiler.costs.proxy-ab`, `compiler.costs.report-summary`, `compiler.costs.workloads`, `compiler.costs.multi-w-compose`."""
 
 [[clause]]
 id = "compiler.costs.stage-dump"
@@ -616,7 +616,7 @@ tests = [
   "golden/cost-branchy",
   "golden/cost-mem-locality",
 ]
-note = """plans/M18.md item L (2026-07-28): flipped. `wrela dump --stage=cost` emits Terms (rule counts) + dual-port scoreboard schedule totals + owners from the final asm-pipeline stream; header is `version=2` ports / mem knobs (no `issue_width`). Assumptions line includes `valid_for=static_shape_opts` + `workload=flat` (flat = `cost(P, W_flat)`). Core rate fields print `ms_per_turn_model` / `turn_path=max_entry_method` (model, not measured wall). Hard-cut witnesses: `golden/cost-branchy` (branch + `branch_penalty`), `golden/cost-mem-locality` (MemRef stack reuse vs colder working set). Still differential ISA ranking only (not physical). Umbrella: `compiler.costs.predicted-vs-measured`."""
+note = """plans/M18.md item L (2026-07-28): flipped. `wrela dump --stage=cost` emits Terms (rule counts) + dual-port scoreboard schedule totals + owners from the final asm-pipeline stream; header is `version=2` ports / mem knobs (no `issue_width`). Assumptions line includes `valid_for=static_shape_opts` + `workload=flat` (flat = `cost(P, W_flat)`). Core rate fields print `ms_per_turn_model` / `turn_path=max_entry_method` (model, not measured wall). Hard-cut witnesses: `golden/cost-branchy` (branch + `branch_penalty`), `golden/cost-mem-locality` (MemRef stack reuse vs colder working set). **Note-update (integrity Item O, 2026-07-28):** header may carry `workloads_digest=…`; dump emits `Workload name=flat` always and measured named-W rows + nested `coverage=matched/total` when an `f` vector is attached (see `compiler.costs.multi-w-compose`). Still differential ISA ranking only (not physical). Umbrella: `compiler.costs.predicted-vs-measured`."""
 
 [[clause]]
 id = "compiler.costs.v1-table"
@@ -644,6 +644,43 @@ tests = [
 note = """plans/M18.md item L (2026-07-28): flipped. Image report short Cost summary by default (`version=2`, digest, totals by owner) via `report::append_cost_summary` — not per-Term lines / not ports.* header lines (those on `--stage=cost`); not exit-rate lines (06 §5). Still differential ISA ranking only (not physical). Umbrella: `compiler.costs.predicted-vs-measured`."""
 
 [[clause]]
+id = "compiler.costs.workloads"
+doc = "04-compiler.md#5"
+status = "test"
+tests = [
+  "unit:parse_and_digest_stable",
+  "unit:digest_independent_of_source_order",
+  "unit:reject_missing_flat",
+  "unit:reject_unknown_key_in_table",
+  "unit:load_committed_workloads",
+]
+note = """Integrity Item O (2026-07-28) / Item H: pinned workload set `bench/workloads.toml` is normative for multi-W ranking (04 §5). Required `[flat]` weight (`f≡1` policy row) plus named measured workloads (committed: `[boot-actors] weight = 10`). Parser (`cost::workload`) fail-closed on missing flat / unknown keys / non-table top-level / weight < 1; stable FNV-1a digest over sorted `name=weight` lines (order-independent). Dump header prints `workloads_digest` when the set loads. Relock discipline matches `thresholds.toml`. Umbrella: `compiler.costs.predicted-vs-measured`."""
+
+[[clause]]
+id = "compiler.costs.multi-w-compose"
+doc = "04-compiler.md#5"
+status = "test"
+tests = [
+  "unit:flat_row_equals_total_and_boot_actors_fxs",
+  "unit:uncovered_hits_reduce_coverage",
+  "unit:measured_workload_row_and_coverage",
+  "unit:flat_equiv_block_sum_matches_fn_schedule",
+]
+note = """Integrity Item O (2026-07-28) / Items J+L: multi-W dump compose. Always emit `Workload name=flat proxy_cycles=…` (= program `total_proxy_cycles`, `f≡1`). Named W with a measured frequency vector: method-grain `Σ f(fn)×s(fn)` (block-grain `Σ f(b)×s(b)` when Lane-2 `f` is attached; under `f≡1`, `Σ s(b)` matches the prior per-fn schedule — ratchet `flat_equiv_block_sum_matches_fn_schedule`). **Coverage honesty:** measured rows print nested `coverage=matched/total`; uncovered hits reduce matched and must not be silently omitted (`uncovered_hits_reduce_coverage`). Frequency sources: Lane 1 method/turn transcript counters (committed `lane1-freq.txt` fixture for offline dump); Lane 2 `--block-count` in-guest block hits; Lane 3 VMM agreement on a named control. Pure cost-* without an `f` vector: flat row alone (+ digest) is OK. Umbrella: `compiler.costs.predicted-vs-measured`."""
+
+[[clause]]
+id = "compiler.opts.proxy-win-overall"
+doc = "04-compiler.md#5"
+status = "test"
+tests = [
+  "unit:overall_vetoes_when_non_flat_rises",
+  "unit:overall_flat_rise_alone_does_not_veto",
+  "unit:overall_rank_loss_when_weighted_mean_non_negative",
+  "unit:load_pinned_workloads_has_flat_and_boot_actors",
+]
+note = """Integrity Item O (2026-07-28) / Item K: overall land-gate for frequency-dependent opts (04 §5). `opts::win::compare_overall` loads pinned weights from `bench/workloads.toml`, compares candidate vs baseline per-W proxy totals, **vetoes** if any non-`flat` W rises (ε=0; flat may rise without veto), else **ranks** by the weight-mean of relative deltas `(cand−base)/base` — wins iff mean < 0. Device-wait / host wall timing never enters. Flat cost-* corpus gate remains `compiler.opts.proxy-win-corpus`. Evidence shape: per-W table from `format_overall_table`."""
+
+[[clause]]
 id = "compiler.opts.compile-mode"
 doc = "04-compiler.md#5"
 status = "test"
@@ -665,7 +702,7 @@ tests = [
   "unit:bounds_elide_alone_wins_cost_bounds_elide",
   "unit:narrow_imm_alone_wins_some_cost_case",
 ]
-note = """plans/M19.md item L (2026-07-28): FLIPPED from `gap` to `test`. Corpus proxy win rule under M18's ISA proxy-cycle ranking: no fixed cost-* case may rise under `release` vs `dev`; ≥1 must strictly fall; scored in context of the full pipeline. Oracle `opts::win::tests::assert_release_wins_cost_corpus_oracle` (+ convolution singles) via `cost::stage` — the same emit path as `wrela dump --stage=cost` (force-rooted `core.runtime` included when the case is runtime-bearing). Flat `W_flat` total only — valid land-gate evidence for static-shape opts (`valid_for=static_shape_opts`); frequency-dependent opts wait on real-W `f×s` rows. Physical / host wall-time never gates opts."""
+note = """plans/M19.md item L (2026-07-28): FLIPPED from `gap` to `test`. Corpus proxy win rule under M18's ISA proxy-cycle ranking: no fixed cost-* case may rise under `release` vs `dev`; ≥1 must strictly fall; scored in context of the full pipeline. Oracle `opts::win::tests::assert_release_wins_cost_corpus_oracle` (+ convolution singles) via `cost::stage` — the same emit path as `wrela dump --stage=cost` (force-rooted `core.runtime` included when the case is runtime-bearing). Flat `W_flat` total — valid land-gate evidence for **static-shape** opts (`valid_for=static_shape_opts`). **Note-update (integrity Item O, 2026-07-28):** frequency-dependent opts land under veto-then-rank overall (`compiler.opts.proxy-win-overall`) across the pinned `workloads.toml` set; this clause stays the flat corpus gate. Physical / host wall-time never gates opts."""
 
 [[clause]]
 id = "compiler.opts.dev-correct"

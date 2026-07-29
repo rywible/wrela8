@@ -259,22 +259,34 @@ Apple vs Pi (or any host) may differ with cache and µarch; rank for
 fewer/cheaper ops and shorter true data deps must not require those.
 **Proxy soundness (normative):** a proxy win must never imply a
 real-machine loss (same or better only); when unsure, prefer under-credit
-/ over-cost. The live dump total is the **flat** workload —
-`cost(P, W_flat)` — every static word once (`f≡1`); dump Assumptions
-print `valid_for=static_shape_opts` and `workload=flat`. That soundness
-claim and the release land-gate apply only to **static-shape** opts
-(delete or shorten the stream without changing dynamic shape) until named
-real-workload rows exist. Frequency-dependent opts (guard, outline,
-specialize, unroll-as-dynamic-win) need a later multi-workload unification
-`cost(P, W) = Σ f_W(b) × s(b)` over a pinned workload set with
-veto-then-rank overall — previewed here, not live. The model is not an
-A76 SOG port map, is not calibrated to host wall clocks, has no real
-L1/L2/L3 KB geometry, no PGO frequencies, and does not discharge
+/ over-cost. The unified cost is
+`cost(P, W) = Σ_b f_W(b) × s(b)` — schedule length `s(b)` times a
+workload frequency `f_W(b)`. The **flat** workload `W_flat` is policy
+`f≡1` (every static word / block once); dump Assumptions still print
+`valid_for=static_shape_opts` and `workload=flat` for that row. Named
+workloads are pinned in `bench/workloads.toml` (required `[flat]` weight
+plus measured names such as `[boot-actors]`); the dump header carries
+that file's digest. Measured rows compose `Σ f×s` (method grain today;
+block grain when Lane-2 `f` is attached) and print a nested
+`coverage=matched/total` — **coverage honesty:** uncovered hits shrink
+the matched side and must not be silently dropped; `W_flat` remains the
+mass/coverage backstop. Frequency measurement has three lanes: **Lane 1**
+scheduler method/turn counters in the guest runtime transcript; **Lane 2**
+test-only in-guest basic-block hit counters (`--block-count`); **Lane 3**
+host/VMM agreement that Lane-2 vectors match on a named control case.
+Static-shape opts (delete or shorten the stream without changing dynamic
+shape) may land on the flat land-gate alone. Frequency-dependent opts
+(guard, outline, specialize, unroll-as-dynamic-win) land only under
+**veto-then-rank overall** across the pinned set: veto if any non-flat
+measured W rises (ε=0), else rank by the weight-mean of relative deltas
+`(cand−base)/base` — never by device-wait wall timing. The model is not
+an A76 SOG port map, is not calibrated to host wall clocks, has no real
+L1/L2/L3 KB geometry, no host PGO as a gate input, and does not discharge
 `@budget` or cost proofs. Flat `issue_width`-only scoring is not the live
 model. Stable dump: `wrela dump --stage=cost` (Terms = rule counts, plus
-schedule totals and owners). The image report carries only a short summary
-([§6](#6)). This ranking is the optimization ruler (M18); modes below
-consume it and do not replace it.
+schedule totals, owners, and `Workload` rows). The image report carries
+only a short summary ([§6](#6)). This ranking is the optimization ruler
+(M18); modes below consume it and do not replace it.
 
 **Compile modes.** The compiler has exactly two product modes: `dev`
 (every named optimization off) and `release` (every named optimization
@@ -282,14 +294,17 @@ on). The default product path is `release`. Each optimization is an
 ordinary named function in a fixed in-code call order — skippable by
 mode, never a recipe file, evidence table, or plugin. Profitability is
 scored only under the proxy-cycle ranking above, always **in context** of
-the full pipeline: on the fixed cost corpus, a candidate pipeline must
-not raise any case's proxy total and must strictly lower at least one.
-Losers are deleted or reworked, not kept disabled. Host wall-time, flame
-graphs, `profile`, and `bench guest` A/B are out of this process — optional
-offline research may retune `wrela-cost-v1` on suspected proxy misrank,
-but they never gate landing and are never a `check` column. Semantics
-must not depend on which mode is selected; both modes stay correct under
-the ordinary oracles.
+the full pipeline. For the fixed cost-* corpus under `W_flat`, a
+candidate pipeline must not raise any case's flat proxy total and must
+strictly lower at least one (static-shape land-gate). When measured
+workloads are in scope, the overall gate is veto-then-rank across the
+pinned `workloads.toml` set as above. Losers are deleted or reworked,
+not kept disabled. Host wall-time, flame graphs, `profile`, and
+`bench guest` A/B are out of this process — optional offline research
+may retune `wrela-cost-v1` on suspected proxy misrank, but they never
+gate landing and are never a `check` column. Semantics must not depend
+on which mode is selected; both modes stay correct under the ordinary
+oracles.
 
 **Actor as-if.** A call through an actor handle is always a logical admission
 under capacity and FIFO rules. Subject to that, the compiler may use direct
