@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/check_driver_mode_poll.wr sha256=2e45a5a101bd79f8e459d90bf34b2fae7e05c59a1dca9c4ef99031eb2b75507c
-  Input path=<generated> sha256=72f260c53ced8d64e37f00ba7c755784270e68da45b7ce4b39a455bd94e02d6a
+  Input path=<generated> sha256=1257b5714aaf03d8408ecb1e5f394ad5b5f31f379084f8d7209fef6ed209bfde
   Name value=check-driver-mode-poll
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock
@@ -46,6 +46,14 @@ ImageReport v0
     Field name=bytes type=[u8; DATA_SIZE] offset=0x0 size=16384
   Layout name=TestLineBuf kind=runtime endian=little size=21 padding=0
     Field name=bytes type=[u8; LINE_BUF_SIZE] offset=0x0 size=21
+  Layout name=Lane1Counters kind=runtime endian=little size=1048 padding=0
+    Field name=turns type=u64 offset=0x0 size=8
+    Field name=run_one_hits type=u64 offset=0x8 size=8
+    Field name=messages type=u64 offset=0x10 size=8
+    Field name=method_hits type=[u64; METHOD_CALL_POOL_COUNT] offset=0x18 size=1024
+  Layout name=Lane2Counters kind=runtime endian=little size=8200 padding=0
+    Field name=enabled type=u64 offset=0x0 size=8
+    Field name=hits type=[u64; BLOCK_POOL_COUNT] offset=0x8 size=8192
   Layout name=VirtioIrqMmio kind=mmio endian=little size=104 padding=96
     Padding offset=0x0 size=96
     Field name=interrupt_status type=ReadOnly[u32] offset=0x60 size=4
@@ -54,10 +62,10 @@ ImageReport v0
   Cores count=1
   CoreStack core=0 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=77848
-  Section name=rodata base=0x40513068 size=456
-  Section name=abort base=0x40513230 size=120
-  Section name=checkpoint base=0x405132a8 size=28
+  Section name=code base=0x40500050 size=79404
+  Section name=rodata base=0x40513680 size=511
+  Section name=abort base=0x40513880 size=120
+  Section name=checkpoint base=0x405138f8 size=28
   Section name=rtdata base=0x40540000 size=48
   Section name=devregs base=0x40540030 size=8
   Entry base=0x40500000
@@ -74,6 +82,8 @@ ImageReport v0
   PlacedStatic name=INIT_SPAN5 type=InitSpan5Words addr=0x4057f768 size=8
   PlacedStatic name=INIT_SPAN6 type=InitSpan6Words addr=0x4057f770 size=8
   PlacedStatic name=INIT_SPAN7 type=InitSpan7Words addr=0x4057f778 size=8
+  PlacedStatic name=LANE1 type=Lane1Counters addr=0x40008000 size=1048
+  PlacedStatic name=LANE2 type=Lane2Counters addr=0x40008800 size=8200
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=536
   PlacedStatic name=MB0_CTL type=MbCtl addr=0x4057f800 size=24
   PlacedStatic name=MB0_DATA type=Mb0Data addr=0x4057f7e0 size=8
@@ -148,14 +158,15 @@ ImageReport v0
   PlacedStatic name=SCHED type=SchedStripe addr=0x40540080 size=16
   PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000218 size=21
   PlacedStatic name=WAKE type=WakeTables addr=0x40540028 size=8
-  PlacedStatics count=80 fixed=CLOCK,CONSOLE_DATA,CONSOLE_RING,EXIT,GROUPS,MACHINE_INFO,MB0_CTL,MB0_DATA,MB10_CTL,MB10_DATA,MB11_CTL,MB11_DATA,MB12_CTL,MB12_DATA,MB13_CTL,MB13_DATA,MB14_CTL,MB14_DATA,MB15_CTL,MB15_DATA,MB16_CTL,MB16_DATA,MB17_CTL,MB17_DATA,MB18_CTL,MB18_DATA,MB19_CTL,MB19_DATA,MB1_CTL,MB1_DATA,MB20_CTL,MB20_DATA,MB21_CTL,MB21_DATA,MB22_CTL,MB22_DATA,MB23_CTL,MB23_DATA,MB24_CTL,MB24_DATA,MB25_CTL,MB25_DATA,MB26_CTL,MB26_DATA,MB27_CTL,MB27_DATA,MB28_CTL,MB28_DATA,MB29_CTL,MB29_DATA,MB2_CTL,MB2_DATA,MB30_CTL,MB30_DATA,MB31_CTL,MB31_DATA,MB3_CTL,MB3_DATA,MB4_CTL,MB4_DATA,MB5_CTL,MB5_DATA,MB6_CTL,MB6_DATA,MB7_CTL,MB7_DATA,MB8_CTL,MB8_DATA,MB9_CTL,MB9_DATA,PARK,PENDING,RELEASE,RINGS_CTL,RINGS_DATA,RT,SCHED,TEST_LINE_BUF,WAKE spans=1
+  PlacedStatics count=82 fixed=CLOCK,CONSOLE_DATA,CONSOLE_RING,EXIT,GROUPS,MACHINE_INFO,MB0_CTL,MB0_DATA,MB10_CTL,MB10_DATA,MB11_CTL,MB11_DATA,MB12_CTL,MB12_DATA,MB13_CTL,MB13_DATA,MB14_CTL,MB14_DATA,MB15_CTL,MB15_DATA,MB16_CTL,MB16_DATA,MB17_CTL,MB17_DATA,MB18_CTL,MB18_DATA,MB19_CTL,MB19_DATA,MB1_CTL,MB1_DATA,MB20_CTL,MB20_DATA,MB21_CTL,MB21_DATA,MB22_CTL,MB22_DATA,MB23_CTL,MB23_DATA,MB24_CTL,MB24_DATA,MB25_CTL,MB25_DATA,MB26_CTL,MB26_DATA,MB27_CTL,MB27_DATA,MB28_CTL,MB28_DATA,MB29_CTL,MB29_DATA,MB2_CTL,MB2_DATA,MB30_CTL,MB30_DATA,MB31_CTL,MB31_DATA,MB3_CTL,MB3_DATA,MB4_CTL,MB4_DATA,MB5_CTL,MB5_DATA,MB6_CTL,MB6_DATA,MB7_CTL,MB7_DATA,MB8_CTL,MB8_DATA,MB9_CTL,MB9_DATA,PARK,PENDING,RELEASE,RINGS_CTL,RINGS_DATA,RT,SCHED,TEST_LINE_BUF,WAKE spans=1
   Driver name=BlkDriver[DriverMode.Poll] state=24
   Turns count=0 stride=0 bytes=0
   Totals actors=0 drivers=1 ready_queue=1 group_arena=0 bytes=48
   DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver[DriverMode.Poll] base=0x40540030 size=8
-  Cost version=2 digest=ffc153b826203a27 total=34106 ghz=2.4
-    Owner name=app proxy_cycles=2113
-    Owner name=runtime proxy_cycles=31993
+  Cost version=2 digest=ffc153b826203a27 total=31877 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=31877
+    Owner name=app proxy_cycles=2035
+    Owner name=runtime proxy_cycles=29842
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=213 max_turn_proxy=109 turns_per_sec=22018348.6238532104 ms_per_turn_model=0.0000454167
-    Shared proxy_cycles=33893
+    Core n=0 proxy_cycles=205 max_turn_proxy=105 turns_per_sec=22857142.8571428582 ms_per_turn_model=0.00004375
+    Shared proxy_cycles=31672

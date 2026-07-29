@@ -1,11 +1,12 @@
-Cost version=2 ports.alu=2 ports.mem=2 max_issue_per_cycle=2 branch_penalty=3 mem_reuse_window=8 mem_working_set_cap=4 digest=ffc153b826203a27 ghz=2.4
+Cost version=2 ports.alu=2 ports.mem=2 max_issue_per_cycle=2 branch_penalty=3 mem_reuse_window=8 mem_working_set_cap=4 digest=ffc153b826203a27 ghz=2.4 workloads_digest=ad0a87410c842eff
   Assumptions ignore_cache=1 ignore_mispredict=1 target=isa_baseline ghz_model=1 turn_path=max_entry_method valid_for=static_shape_opts workload=flat
   Composition sum_of_fn_schedules=1
-  Total proxy_cycles=104
-  Owner name=app proxy_cycles=104
+  Total proxy_cycles=106
+  Workload name=flat proxy_cycles=106
+  Owner name=app proxy_cycles=106
   Owner name=runtime proxy_cycles=0
   Owner name=driver proxy_cycles=0
-  Fn key=add_one owner=app proxy_cycles=34
+  Fn key=add_one owner=app proxy_cycles=35
     Term rule=abort count=1
     Term rule=adrp count=1
     Term rule=alu count=6
@@ -19,7 +20,7 @@ Cost version=2 ports.alu=2 ports.mem=2 max_issue_per_cycle=2 branch_penalty=3 me
     Term rule=call count=2
     Term rule=load count=4
     Term rule=store count=4
-  Fn key=double owner=app proxy_cycles=35
+  Fn key=double owner=app proxy_cycles=36
     Term rule=abort count=1
     Term rule=adrp count=1
     Term rule=alu count=7

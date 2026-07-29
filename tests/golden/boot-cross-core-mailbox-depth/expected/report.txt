@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_cross_core_mailbox_depth.wr sha256=b7b2aa63bdb55dcc860be517914eb31298135a65244c81a506aa286112d3d796
-  Input path=<generated> sha256=edaa33253314f940ce5ad75b6d019ca7f471294ed67bab2be9621042504d23a9
+  Input path=<generated> sha256=ed3eda6684489d70520d8b58885393396048742af94223601bea76d68bd852dc
   Name value=cross-core-mailbox-depth
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Sink
@@ -52,20 +52,28 @@ ImageReport v0
     Field name=bytes type=[u8; DATA_SIZE] offset=0x0 size=16384
   Layout name=TestLineBuf kind=runtime endian=little size=21 padding=0
     Field name=bytes type=[u8; LINE_BUF_SIZE] offset=0x0 size=21
+  Layout name=Lane1Counters kind=runtime endian=little size=1048 padding=0
+    Field name=turns type=u64 offset=0x0 size=8
+    Field name=run_one_hits type=u64 offset=0x8 size=8
+    Field name=messages type=u64 offset=0x10 size=8
+    Field name=method_hits type=[u64; METHOD_CALL_POOL_COUNT] offset=0x18 size=1024
+  Layout name=Lane2Counters kind=runtime endian=little size=8200 padding=0
+    Field name=enabled type=u64 offset=0x0 size=8
+    Field name=hits type=[u64; BLOCK_POOL_COUNT] offset=0x8 size=8192
   Section name=pages base=0x40000000 size=28672
   Cores count=3
   CoreStack core=0 base=0x7fd00000 size=0x100000
   CoreStack core=1 base=0x7fe00000 size=0x100000
   CoreStack core=2 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=88884
-  Section name=rodata base=0x40515b88 size=862
-  Section name=abort base=0x40515ee8 size=120
-  Section name=checkpoint base=0x40515f60 size=28
+  Section name=code base=0x40500050 size=90440
+  Section name=rodata base=0x40516198 size=917
+  Section name=abort base=0x40516530 size=120
+  Section name=checkpoint base=0x405165a8 size=28
   Section name=rtdata base=0x40540000 size=4992
   Entry base=0x40500000
-  CoreEntry core=1 base=0x40515afc
-  CoreEntry core=2 base=0x40515b40
+  CoreEntry core=1 base=0x40516110
+  CoreEntry core=2 base=0x40516154
   PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
@@ -79,6 +87,8 @@ ImageReport v0
   PlacedStatic name=INIT_SPAN5 type=InitSpan5Words addr=0x4057f780 size=8
   PlacedStatic name=INIT_SPAN6 type=InitSpan6Words addr=0x4057f788 size=8
   PlacedStatic name=INIT_SPAN7 type=InitSpan7Words addr=0x4057f790 size=8
+  PlacedStatic name=LANE1 type=Lane1Counters addr=0x40008000 size=1048
+  PlacedStatic name=LANE2 type=Lane2Counters addr=0x40008800 size=8200
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=536
   PlacedStatic name=MB0_CTL type=MbCtl addr=0x40541020 size=24
   PlacedStatic name=MB0_DATA type=Mb0Data addr=0x40541008 size=24
@@ -153,7 +163,7 @@ ImageReport v0
   PlacedStatic name=SCHED type=SchedStripe addr=0x405410f8 size=120
   PlacedStatic name=TEST_LINE_BUF type=TestLineBuf addr=0x40000218 size=21
   PlacedStatic name=WAKE type=WakeTables addr=0x4057fff8 size=8
-  PlacedStatics count=82 fixed=CLOCK,CONSOLE_DATA,CONSOLE_RING,EXIT,GROUPS,MACHINE_INFO,MB0_CTL,MB0_DATA,MB10_CTL,MB10_DATA,MB11_CTL,MB11_DATA,MB12_CTL,MB12_DATA,MB13_CTL,MB13_DATA,MB14_CTL,MB14_DATA,MB15_CTL,MB15_DATA,MB16_CTL,MB16_DATA,MB17_CTL,MB17_DATA,MB18_CTL,MB18_DATA,MB19_CTL,MB19_DATA,MB1_CTL,MB1_DATA,MB20_CTL,MB20_DATA,MB21_CTL,MB21_DATA,MB22_CTL,MB22_DATA,MB23_CTL,MB23_DATA,MB24_CTL,MB24_DATA,MB25_CTL,MB25_DATA,MB26_CTL,MB26_DATA,MB27_CTL,MB27_DATA,MB28_CTL,MB28_DATA,MB29_CTL,MB29_DATA,MB2_CTL,MB2_DATA,MB30_CTL,MB30_DATA,MB31_CTL,MB31_DATA,MB3_CTL,MB3_DATA,MB4_CTL,MB4_DATA,MB5_CTL,MB5_DATA,MB6_CTL,MB6_DATA,MB7_CTL,MB7_DATA,MB8_CTL,MB8_DATA,MB9_CTL,MB9_DATA,PARK,PENDING,RELEASE,RINGS_CTL,RINGS_DATA,RT,SCHED,TEST_LINE_BUF,WAKE spans=3
+  PlacedStatics count=84 fixed=CLOCK,CONSOLE_DATA,CONSOLE_RING,EXIT,GROUPS,MACHINE_INFO,MB0_CTL,MB0_DATA,MB10_CTL,MB10_DATA,MB11_CTL,MB11_DATA,MB12_CTL,MB12_DATA,MB13_CTL,MB13_DATA,MB14_CTL,MB14_DATA,MB15_CTL,MB15_DATA,MB16_CTL,MB16_DATA,MB17_CTL,MB17_DATA,MB18_CTL,MB18_DATA,MB19_CTL,MB19_DATA,MB1_CTL,MB1_DATA,MB20_CTL,MB20_DATA,MB21_CTL,MB21_DATA,MB22_CTL,MB22_DATA,MB23_CTL,MB23_DATA,MB24_CTL,MB24_DATA,MB25_CTL,MB25_DATA,MB26_CTL,MB26_DATA,MB27_CTL,MB27_DATA,MB28_CTL,MB28_DATA,MB29_CTL,MB29_DATA,MB2_CTL,MB2_DATA,MB30_CTL,MB30_DATA,MB31_CTL,MB31_DATA,MB3_CTL,MB3_DATA,MB4_CTL,MB4_DATA,MB5_CTL,MB5_DATA,MB6_CTL,MB6_DATA,MB7_CTL,MB7_DATA,MB8_CTL,MB8_DATA,MB9_CTL,MB9_DATA,PARK,PENDING,RELEASE,RINGS_CTL,RINGS_DATA,RT,SCHED,TEST_LINE_BUF,WAKE spans=3
   Actor name=Sink mailbox=1 slot=24 frame=64 state=8
   Actor name=Near mailbox=4 slot=16 frame=304 state=8
   Actor name=Far mailbox=4 slot=16 frame=272 state=8
@@ -167,11 +177,12 @@ ImageReport v0
   Turns count=4 stride=1024 bytes=4096
   Rings count=6 stride=64 padding=192 bytes=528
   Totals actors=3 drivers=0 ready_queue=4 group_arena=0 bytes=4992
-  Cost version=2 digest=ffc153b826203a27 total=40198 ghz=2.4
-    Owner name=app proxy_cycles=4382
-    Owner name=runtime proxy_cycles=35816
+  Cost version=2 digest=ffc153b826203a27 total=37607 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=37607
+    Owner name=app proxy_cycles=4317
+    Owner name=runtime proxy_cycles=33290
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=473 max_turn_proxy=473 turns_per_sec=5073995.7716701906 ms_per_turn_model=0.0001970833
-    Core n=1 proxy_cycles=257 max_turn_proxy=75 turns_per_sec=32000000 ms_per_turn_model=0.00003125
-    Core n=2 proxy_cycles=359 max_turn_proxy=333 turns_per_sec=7207207.2072072076 ms_per_turn_model=0.00013875
-    Shared proxy_cycles=39109
+    Core n=0 proxy_cycles=487 max_turn_proxy=487 turns_per_sec=4928131.4168377826 ms_per_turn_model=0.0002029167
+    Core n=1 proxy_cycles=246 max_turn_proxy=71 turns_per_sec=33802816.9014084488 ms_per_turn_model=0.0000295833
+    Core n=2 proxy_cycles=365 max_turn_proxy=339 turns_per_sec=7079646.017699115 ms_per_turn_model=0.00014125
+    Shared proxy_cycles=36509
