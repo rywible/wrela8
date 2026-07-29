@@ -139,6 +139,36 @@ impl MemRef {
             MemRef::cold_stable(base_reg, imm)
         }
     }
+
+    /// Base register for a non-unique MemRef (Stack → SP; Cold stable →
+    /// packed base). Cold unique has no reusable base — `None`.
+    pub fn base_reg(self) -> Option<u8> {
+        match self.class {
+            MemClass::Stack => Some(MEM_SP_REG),
+            MemClass::Cold => {
+                if self.key & (1u64 << 63) != 0 {
+                    None
+                } else {
+                    Some((self.key >> 48) as u8)
+                }
+            }
+        }
+    }
+
+    /// Fail closed when a non-unique MemRef's base is absent from `srcs`
+    /// (integrity item C). Unique Cold keys skip the check.
+    pub fn require_base_in_srcs(self, srcs: &[u8]) -> Result<(), String> {
+        let Some(base) = self.base_reg() else {
+            return Ok(());
+        };
+        if srcs.contains(&base) {
+            Ok(())
+        } else {
+            Err(format!(
+                "MemRef base register {base} not in srcs {srcs:?}"
+            ))
+        }
+    }
 }
 
 /// NZCV flag side-effect declared at emit (integrity item B). Never
@@ -284,5 +314,24 @@ mod tests {
             .with_flags(FlagEffect::Write);
         assert!(ew.flags.writes());
         assert!(!ew.flags.reads());
+    }
+
+    #[test]
+    fn memref_base_reg_stack_and_cold_stable() {
+        assert_eq!(MemRef::stack(24).base_reg(), Some(MEM_SP_REG));
+        assert_eq!(MemRef::cold_stable(28, 16).base_reg(), Some(28));
+        assert_eq!(MemRef::cold_unique(0).base_reg(), None);
+    }
+
+    #[test]
+    fn memref_require_base_in_srcs_fail_closed() {
+        let stack = MemRef::stack(8);
+        assert!(stack.require_base_in_srcs(&[MEM_SP_REG, 0]).is_ok());
+        assert!(stack.require_base_in_srcs(&[0, 1]).is_err());
+        let cold = MemRef::cold_stable(28, 16);
+        assert!(cold.require_base_in_srcs(&[28]).is_ok());
+        assert!(cold.require_base_in_srcs(&[0]).is_err());
+        // Unique: no base check.
+        assert!(MemRef::cold_unique(3).require_base_in_srcs(&[]).is_ok());
     }
 }
