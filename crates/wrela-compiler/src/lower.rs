@@ -368,6 +368,9 @@ pub const RUNTIME_WIRING_FORCE_ROOT_KEYS: &[&str] = &[
     "__wrela_try_enqueue",
     "__wrela_enqueue_root",
     "__wrela_rt_enqueue",
+    // plans/lane1-per-core.md item A: the `__enqueue_N` trampolines' one
+    // shared "derive my own core from the baked root" hop.
+    "__wrela_enqueue_local",
     "__wrela_call_method",
     "__wrela_deliver_reply",
     "__wrela_invoke_xreply",
@@ -437,6 +440,13 @@ pub const RUNTIME_TEST_FORCE_ROOT_KEYS: &[&str] = &[
     // Integrity Phase 2 Item I — Lane 1 counter dump surface.
     "__wrela_lane1_dump",
     "__wrela_lane1_append_u64",
+    // plans/lane1-per-core.md item A: the per-core row folds the dump reads
+    // (decision 1502). Seeded, like every helper here: the list is not
+    // transitively closed.
+    "__wrela_lane1_sum_turns",
+    "__wrela_lane1_sum_run_one",
+    "__wrela_lane1_sum_messages",
+    "__wrela_lane1_sum_method_hits",
     // Integrity Phase 2 Item M — Lane 2 block-counter dump (no-op unless enabled).
     "__wrela_lane2_dump",
 ];

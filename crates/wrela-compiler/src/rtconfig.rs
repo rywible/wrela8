@@ -902,7 +902,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     out.push('\n');
 
     // (core, RR slot) → mailbox-root index (decision 833). Runtime
-    // `__wrela_try_select` Calls `__wrela_rt_select(root)`.
+    // `__wrela_try_select` Calls `__wrela_rt_select(core, root)`.
     out.push_str("pub fn __wrela_select_root(core: usize, slot: usize) -> usize:\n");
     out.push_str("    match core:\n");
     for (core, actors) in extras.select_by_core.iter().enumerate() {
@@ -1290,7 +1290,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     out.push('\n');
 
     // Handle → mailbox-root index (decision 833). Runtime
-    // `__wrela_try_enqueue` Calls `__wrela_rt_enqueue(root, …)`.
+    // `__wrela_try_enqueue` Calls `__wrela_rt_enqueue(core, root, …)`.
     out.push_str("pub fn __wrela_enqueue_root(handle: usize) -> usize:\n");
     out.push_str("    match handle:\n");
     for (i, h) in extras.enqueue_handles.iter().enumerate() {

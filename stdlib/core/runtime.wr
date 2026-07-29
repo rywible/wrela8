@@ -572,34 +572,53 @@ static TEST_LINE_BUF: TestLineBuf
 
 # ---------------------------------------------------------------------------
 # Integrity Phase 2 Item I — Lane 1 scheduler counters.
-# Placed in the reserved device-page growth window (0x40008000..0x40010000);
-# DRAM-mapped, zero at boot. Method hits are indexed by the same flat
-# `__method_N` order `__wrela_call_method` uses (sum of prior mailboxes'
-# method_count + local mi). Dump is a deterministic transcript block.
+# Method hits are indexed by the same flat `__method_N` order
+# `__wrela_call_method` uses (sum of prior mailboxes' method_count + local mi).
+# Dump is a deterministic transcript block.
 # ---------------------------------------------------------------------------
 
-# HAZARD (recorded 2026-07-29; fix plan plans/lane1-per-core.md).
-# Every update below is a non-atomic read-modify-write on this ONE shared
-# static, executed by whichever core drains (`__wrela_rt_run_one`,
-# `__wrela_rt_select`, `__wrela_rt_enqueue`, `__wrela_lane1_record_method`).
-# Since plans/M15.md item I deleted the baton, two cores draining different
-# mailboxes run concurrently, so an increment CAN BE LOST. A `@dmb` does not
-# help: a barrier orders visibility, not read-modify-write atomicity, and this
-# language exposes no atomic add. Consequences, so this is not silent:
-#   * multi-core Lane 1 counts may UNDER-REPORT;
-#   * ledger.toml:697 makes Lane 1 a cost-model frequency source, so an
-#     under-count biases `sum f(fn) x s(fn)` toward "measuring less".
-# The fix is ownership, not locking: one row per core, summed at dump
-# (decision 1500-1502). Single-core images are unaffected — one writer.
-@layout(runtime, endian=little)
-struct Lane1Counters:
-    turns: u64
-    run_one_hits: u64
-    messages: u64
-    method_hits: [u64; METHOD_CALL_POOL_COUNT]
+# plans/lane1-per-core.md item A (decisions 1500–1502): ONE ROW PER CORE,
+# summed at dump. Every update below used to be a non-atomic read-modify-write
+# on one shared static, executed by whichever core drains
+# (`__wrela_rt_run_one`, `__wrela_rt_select`, `__wrela_rt_enqueue`,
+# `__wrela_lane1_record_method`). Since plans/M15.md item I deleted the baton,
+# two cores draining different mailboxes run concurrently, so an increment
+# COULD BE LOST — and ledger.toml:697 makes Lane 1 a cost-model frequency
+# source, so a lost increment biases `sum f(fn) x s(fn)` toward "measuring
+# less". A `@dmb` cannot fix it: a barrier orders visibility, not
+# read-modify-write atomicity, and this language exposes no atomic add
+# (decision 1500 rejects adding one to buy mutual exclusion this design does
+# not need). The fix is ownership: each core writes only `cores[core]`, so
+# there is no concurrent RMW left to make atomic, and `__wrela_lane1_dump`
+# folds the rows in core order (decision 1502). Decision 1501 sizes the stripe
+# by the generated `N_CORES`, not `CORE_SLOTS`, so a one-core image keeps
+# exactly one row and its previous byte size.
+# One array per counter, indexed by core — not `[Lane1Counters; N_CORES]`.
+# `lower.rs`'s `placed_array_field_index` resolves exactly **one** array-field
+# index into a placed static, so `LANE1.cores[core].method_hits[flat]` does not
+# lower at all ("an array length expression that is not a literal is not
+# implemented yet") and the generic array path is not a placed-memory store.
+# Transposing keeps every access single-level, and keeps the byte layout of a
+# one-core image identical to the pre-stripe `Lane1Counters`
+# (turns@0x0, run_one_hits@0x8, messages@0x10, method_hits@0x18).
+const LANE1_METHOD_HITS_LEN: usize = N_CORES * METHOD_CALL_POOL_COUNT
 
-@placed(0x40008000)
-static LANE1: Lane1Counters
+@layout(runtime, endian=little)
+struct Lane1Stripe:
+    turns: [u64; N_CORES]
+    run_one_hits: [u64; N_CORES]
+    messages: [u64; N_CORES]
+    method_hits: [u64; LANE1_METHOD_HITS_LEN]
+
+# In the reserved device-page growth window (0x40008000..0x40010000);
+# DRAM-mapped, zero at boot. Placed **above** the fixed-size LANE2 page on
+# purpose: the stripe is `N_CORES` rows wide, so its extent is image-dependent,
+# and growing it must not walk into LANE2 — whose base the host pins as a
+# constant in `crates/wrela-vmm/src/lane3.rs`. `collect_placed_statics`'s
+# device-window verifier refuses an image whose rows would leave the window,
+# rather than letting a row overwrite the next static.
+@placed(0x4000b000)
+static LANE1: Lane1Stripe
 
 # Flat method index matching `__wrela_call_method`'s `__method_N` numbering.
 pub fn __wrela_lane1_method_flat(root: usize, method: usize) -> usize:
@@ -612,16 +631,63 @@ pub fn __wrela_lane1_method_flat(root: usize, method: usize) -> usize:
         r = r +% 1
     return flat +% method
 
-pub fn __wrela_lane1_record_method(root: usize, method: usize):
+# `core` is the core running this turn — threaded from `__wrela_rt_select`,
+# never re-derived here (decision 1500: the writer owns its row). Out of range
+# is impossible by construction; fail closed loudly rather than default to row
+# 0, which would reintroduce the shared read-modify-write.
+pub fn __wrela_lane1_record_method(core: usize, root: usize, method: usize):
+    if core >= N_CORES:
+        MACHINE_INFO.test_failed = MACHINE_INFO.test_failed +% 1
+        return
     flat = __wrela_lane1_method_flat(root, method)
     if flat >= METHOD_CALL_POOL_COUNT:
         return
-    LANE1.method_hits[flat] = LANE1.method_hits[flat] +% 1
+    hi = core *% METHOD_CALL_POOL_COUNT +% flat
+    LANE1.method_hits[hi] = LANE1.method_hits[hi] +% 1
     return
 
 pub fn __wrela_lane1_append_u64(value: u64) -> u64:
     digs = __wrela_fmt_dec(value, 0)
     return __wrela_console_append_line_buf(digs.to[usize]())
+
+# Fold the per-core rows, in core order (decision 1502). The emitted text keeps
+# its shape — what changed is where a count comes from, not what it means — so
+# a single-core image dumps exactly the bytes it dumped before item A.
+pub fn __wrela_lane1_sum_turns() -> u64:
+    total: u64 = 0
+    c: usize = 0
+    @budget(bound=CORE_SLOTS)
+    while c < N_CORES:
+        total = total +% LANE1.turns[c]
+        c = c +% 1
+    return total
+
+pub fn __wrela_lane1_sum_run_one() -> u64:
+    total: u64 = 0
+    c: usize = 0
+    @budget(bound=CORE_SLOTS)
+    while c < N_CORES:
+        total = total +% LANE1.run_one_hits[c]
+        c = c +% 1
+    return total
+
+pub fn __wrela_lane1_sum_messages() -> u64:
+    total: u64 = 0
+    c: usize = 0
+    @budget(bound=CORE_SLOTS)
+    while c < N_CORES:
+        total = total +% LANE1.messages[c]
+        c = c +% 1
+    return total
+
+pub fn __wrela_lane1_sum_method_hits(flat: usize) -> u64:
+    total: u64 = 0
+    c: usize = 0
+    @budget(bound=CORE_SLOTS)
+    while c < N_CORES:
+        total = total +% LANE1.method_hits[c *% METHOD_CALL_POOL_COUNT +% flat]
+        c = c +% 1
+    return total
 
 # Compact Lane 1 block (two console lines, after the summary):
 #   lane1 turns=<t> run_one=<r> messages=<m>
@@ -642,7 +708,7 @@ pub fn __wrela_lane1_dump():
     TEST_LINE_BUF.bytes[10] = 115
     TEST_LINE_BUF.bytes[11] = 61
     _ = __wrela_console_append_line_buf(12)
-    _ = __wrela_lane1_append_u64(LANE1.turns)
+    _ = __wrela_lane1_append_u64(__wrela_lane1_sum_turns())
     # " run_one="
     TEST_LINE_BUF.bytes[0] = 32
     TEST_LINE_BUF.bytes[1] = 114
@@ -654,7 +720,7 @@ pub fn __wrela_lane1_dump():
     TEST_LINE_BUF.bytes[7] = 101
     TEST_LINE_BUF.bytes[8] = 61
     _ = __wrela_console_append_line_buf(9)
-    _ = __wrela_lane1_append_u64(LANE1.run_one_hits)
+    _ = __wrela_lane1_append_u64(__wrela_lane1_sum_run_one())
     # " messages="
     TEST_LINE_BUF.bytes[0] = 32
     TEST_LINE_BUF.bytes[1] = 109
@@ -667,7 +733,7 @@ pub fn __wrela_lane1_dump():
     TEST_LINE_BUF.bytes[8] = 115
     TEST_LINE_BUF.bytes[9] = 61
     _ = __wrela_console_append_line_buf(10)
-    _ = __wrela_lane1_append_u64(LANE1.messages)
+    _ = __wrela_lane1_append_u64(__wrela_lane1_sum_messages())
     TEST_LINE_BUF.bytes[0] = 10
     _ = __wrela_console_append_line_buf(1)
     _ = __wrela_line_commit()
@@ -695,7 +761,7 @@ pub fn __wrela_lane1_dump():
         while mi < n:
             flat = __wrela_lane1_method_flat(root, mi)
             if flat < METHOD_CALL_POOL_COUNT:
-                c = LANE1.method_hits[flat]
+                c = __wrela_lane1_sum_method_hits(flat)
                 if c != 0:
                     if first == 0:
                         TEST_LINE_BUF.bytes[0] = 44
@@ -1098,6 +1164,9 @@ const TURN_STATUS_SUSPENDED: u64 = 1
 const TURN_STATUS_CANCELLED: u64 = 2
 
 # Per-core scheduler tick. ABI: x0 = core on entry; returns 1 if work ran.
+# `core` indexes `SCHED.cores` and every `LANE1` counter array, all `N_CORES`
+# wide, so an
+# out-of-range core aborts on the index rather than defaulting to row 0.
 pub fn __wrela_rt_run_one(core: usize) -> u64:
     drained = __wrela_try_drain(core)
     if drained != 0:
@@ -1105,7 +1174,7 @@ pub fn __wrela_rt_run_one(core: usize) -> u64:
         # counting calls makes this tick count depend on how the producer's
         # publishes happened to interleave with this consumer's polls (see
         # `__wrela_rt_drain`). Counting messages is interleaving-invariant.
-        LANE1.run_one_hits = LANE1.run_one_hits +% drained
+        LANE1.run_one_hits[core] = LANE1.run_one_hits[core] +% drained
         return 1
     n = __wrela_select_count(core)
     rr_pass: usize = 0
@@ -1129,7 +1198,7 @@ pub fn __wrela_rt_run_one(core: usize) -> u64:
                     if nxt >= n:
                         nxt = 0
                     SCHED.cores[core].rr_cursor = nxt.to[u64]()
-                    LANE1.run_one_hits = LANE1.run_one_hits +% 1
+                    LANE1.run_one_hits[core] = LANE1.run_one_hits[core] +% 1
                     return 1
             i = i +% 1
         rr_pass = rr_pass +% 1
@@ -1138,7 +1207,7 @@ pub fn __wrela_rt_run_one(core: usize) -> u64:
         @budget(bound=256)
         while s < N_CHILD_SITES:
             if __wrela_child_poll(s) != 0:
-                LANE1.run_one_hits = LANE1.run_one_hits +% 1
+                LANE1.run_one_hits[core] = LANE1.run_one_hits[core] +% 1
                 return 1
             s = s +% 1
     return 0
@@ -1335,7 +1404,7 @@ pub fn __wrela_rt_drain(core: usize) -> u64:
             if slot_words >= 4:
                 arg1 = RINGS_DATA.words[row +% base +% 3]
             handle = __wrela_ring_target_handle(edge)
-            rejected = __wrela_try_enqueue(handle, method, arg0, arg1, wt, wc)
+            rejected = __wrela_try_enqueue(core, handle, method, arg0, arg1, wt, wc)
             if rejected != 0:
                 # Mailbox full — leave the ring slot; try again next tick.
                 return moved
@@ -1412,8 +1481,18 @@ pub fn __wrela_xreply_7(turn_and_tag: u64, reply: u64):
 const REPLY_TAG_OK: u64 = 0
 const CALL_ERROR_TAG_CANCELLED: u64 = 1
 
-# Admission: bounded ring insert. ABI matches former emit_rt_enqueue.
-pub fn __wrela_rt_enqueue(root: usize, method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+# Admission: bounded ring insert. ABI matches former emit_rt_enqueue, plus the
+# leading `core` plans/lane1-per-core.md item A threads for the Lane 1 row: the
+# admitting core owns `LANE1`'s `core` slot, and it is always the core that owns
+# `root` (`layout.rs::resolve_cross_core_edge` keeps a direct
+# `__rt_enqueue_<Actor>` Call only for a same-core edge; every cross-core send
+# rides a ring and is admitted by the destination core's own drain). Passed in
+# rather than re-derived here so the caller that *knows* which core is running
+# says so (decision 1500), and refused rather than defaulted below.
+pub fn __wrela_rt_enqueue(core: usize, root: usize, method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    if core >= N_CORES:
+        MACHINE_INFO.test_failed = MACHINE_INFO.test_failed +% 1
+        return 1
     if root >= N_MAILBOXES:
         return 1
     if root == NO_EDGE:
@@ -1437,81 +1516,91 @@ pub fn __wrela_rt_enqueue(root: usize, method: u64, arg0: u64, arg1: u64, waker_
         t = 0
     __wrela_mb_set_tail(root, t)
     __wrela_mb_set_count(root, count +% 1)
-    LANE1.messages = LANE1.messages +% 1
+    LANE1.messages[core] = LANE1.messages[core] +% 1
     return 0
 
-# Handle-identity → enqueue (drain request lane).
-pub fn __wrela_try_enqueue(handle: usize, method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+# Handle-identity → enqueue (drain request lane). `core` is the draining core
+# (`__wrela_rt_drain`'s own argument), which owns every mailbox its request
+# rings target.
+pub fn __wrela_try_enqueue(core: usize, handle: usize, method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
     root = __wrela_enqueue_root(handle)
     if root == NO_EDGE:
         return 1
-    return __wrela_rt_enqueue(root, method, arg0, arg1, waker_turn, waker_core)
+    return __wrela_rt_enqueue(core, root, method, arg0, arg1, waker_turn, waker_core)
 
 # Fixed trampolines so layout can alias `rt_enqueue <Actor>` → `__enqueue_N`.
+# The Call ABI is codegen's (method, arg0, arg1, waker_turn, waker_core) and
+# carries no core, so this one helper supplies the baked root's owning core —
+# which *is* the core executing the trampoline, by `resolve_cross_core_edge`'s
+# same-core rule (see `__wrela_rt_enqueue`). One shared derivation site rather
+# than thirty-two copies of the same ladder call.
+pub fn __wrela_enqueue_local(root: usize, method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
+    return __wrela_rt_enqueue(__wrela_mb_core(root), root, method, arg0, arg1, waker_turn, waker_core)
+
 pub fn __enqueue_0(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
-    return __wrela_rt_enqueue(0, method, arg0, arg1, waker_turn, waker_core)
+    return __wrela_enqueue_local(0, method, arg0, arg1, waker_turn, waker_core)
 pub fn __enqueue_1(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
-    return __wrela_rt_enqueue(1, method, arg0, arg1, waker_turn, waker_core)
+    return __wrela_enqueue_local(1, method, arg0, arg1, waker_turn, waker_core)
 pub fn __enqueue_2(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
-    return __wrela_rt_enqueue(2, method, arg0, arg1, waker_turn, waker_core)
+    return __wrela_enqueue_local(2, method, arg0, arg1, waker_turn, waker_core)
 pub fn __enqueue_3(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
-    return __wrela_rt_enqueue(3, method, arg0, arg1, waker_turn, waker_core)
+    return __wrela_enqueue_local(3, method, arg0, arg1, waker_turn, waker_core)
 pub fn __enqueue_4(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
-    return __wrela_rt_enqueue(4, method, arg0, arg1, waker_turn, waker_core)
+    return __wrela_enqueue_local(4, method, arg0, arg1, waker_turn, waker_core)
 pub fn __enqueue_5(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
-    return __wrela_rt_enqueue(5, method, arg0, arg1, waker_turn, waker_core)
+    return __wrela_enqueue_local(5, method, arg0, arg1, waker_turn, waker_core)
 pub fn __enqueue_6(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
-    return __wrela_rt_enqueue(6, method, arg0, arg1, waker_turn, waker_core)
+    return __wrela_enqueue_local(6, method, arg0, arg1, waker_turn, waker_core)
 pub fn __enqueue_7(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
-    return __wrela_rt_enqueue(7, method, arg0, arg1, waker_turn, waker_core)
+    return __wrela_enqueue_local(7, method, arg0, arg1, waker_turn, waker_core)
 pub fn __enqueue_8(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
-    return __wrela_rt_enqueue(8, method, arg0, arg1, waker_turn, waker_core)
+    return __wrela_enqueue_local(8, method, arg0, arg1, waker_turn, waker_core)
 pub fn __enqueue_9(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
-    return __wrela_rt_enqueue(9, method, arg0, arg1, waker_turn, waker_core)
+    return __wrela_enqueue_local(9, method, arg0, arg1, waker_turn, waker_core)
 pub fn __enqueue_10(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
-    return __wrela_rt_enqueue(10, method, arg0, arg1, waker_turn, waker_core)
+    return __wrela_enqueue_local(10, method, arg0, arg1, waker_turn, waker_core)
 pub fn __enqueue_11(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
-    return __wrela_rt_enqueue(11, method, arg0, arg1, waker_turn, waker_core)
+    return __wrela_enqueue_local(11, method, arg0, arg1, waker_turn, waker_core)
 pub fn __enqueue_12(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
-    return __wrela_rt_enqueue(12, method, arg0, arg1, waker_turn, waker_core)
+    return __wrela_enqueue_local(12, method, arg0, arg1, waker_turn, waker_core)
 pub fn __enqueue_13(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
-    return __wrela_rt_enqueue(13, method, arg0, arg1, waker_turn, waker_core)
+    return __wrela_enqueue_local(13, method, arg0, arg1, waker_turn, waker_core)
 pub fn __enqueue_14(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
-    return __wrela_rt_enqueue(14, method, arg0, arg1, waker_turn, waker_core)
+    return __wrela_enqueue_local(14, method, arg0, arg1, waker_turn, waker_core)
 pub fn __enqueue_15(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
-    return __wrela_rt_enqueue(15, method, arg0, arg1, waker_turn, waker_core)
+    return __wrela_enqueue_local(15, method, arg0, arg1, waker_turn, waker_core)
 pub fn __enqueue_16(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
-    return __wrela_rt_enqueue(16, method, arg0, arg1, waker_turn, waker_core)
+    return __wrela_enqueue_local(16, method, arg0, arg1, waker_turn, waker_core)
 pub fn __enqueue_17(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
-    return __wrela_rt_enqueue(17, method, arg0, arg1, waker_turn, waker_core)
+    return __wrela_enqueue_local(17, method, arg0, arg1, waker_turn, waker_core)
 pub fn __enqueue_18(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
-    return __wrela_rt_enqueue(18, method, arg0, arg1, waker_turn, waker_core)
+    return __wrela_enqueue_local(18, method, arg0, arg1, waker_turn, waker_core)
 pub fn __enqueue_19(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
-    return __wrela_rt_enqueue(19, method, arg0, arg1, waker_turn, waker_core)
+    return __wrela_enqueue_local(19, method, arg0, arg1, waker_turn, waker_core)
 pub fn __enqueue_20(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
-    return __wrela_rt_enqueue(20, method, arg0, arg1, waker_turn, waker_core)
+    return __wrela_enqueue_local(20, method, arg0, arg1, waker_turn, waker_core)
 pub fn __enqueue_21(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
-    return __wrela_rt_enqueue(21, method, arg0, arg1, waker_turn, waker_core)
+    return __wrela_enqueue_local(21, method, arg0, arg1, waker_turn, waker_core)
 pub fn __enqueue_22(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
-    return __wrela_rt_enqueue(22, method, arg0, arg1, waker_turn, waker_core)
+    return __wrela_enqueue_local(22, method, arg0, arg1, waker_turn, waker_core)
 pub fn __enqueue_23(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
-    return __wrela_rt_enqueue(23, method, arg0, arg1, waker_turn, waker_core)
+    return __wrela_enqueue_local(23, method, arg0, arg1, waker_turn, waker_core)
 pub fn __enqueue_24(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
-    return __wrela_rt_enqueue(24, method, arg0, arg1, waker_turn, waker_core)
+    return __wrela_enqueue_local(24, method, arg0, arg1, waker_turn, waker_core)
 pub fn __enqueue_25(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
-    return __wrela_rt_enqueue(25, method, arg0, arg1, waker_turn, waker_core)
+    return __wrela_enqueue_local(25, method, arg0, arg1, waker_turn, waker_core)
 pub fn __enqueue_26(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
-    return __wrela_rt_enqueue(26, method, arg0, arg1, waker_turn, waker_core)
+    return __wrela_enqueue_local(26, method, arg0, arg1, waker_turn, waker_core)
 pub fn __enqueue_27(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
-    return __wrela_rt_enqueue(27, method, arg0, arg1, waker_turn, waker_core)
+    return __wrela_enqueue_local(27, method, arg0, arg1, waker_turn, waker_core)
 pub fn __enqueue_28(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
-    return __wrela_rt_enqueue(28, method, arg0, arg1, waker_turn, waker_core)
+    return __wrela_enqueue_local(28, method, arg0, arg1, waker_turn, waker_core)
 pub fn __enqueue_29(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
-    return __wrela_rt_enqueue(29, method, arg0, arg1, waker_turn, waker_core)
+    return __wrela_enqueue_local(29, method, arg0, arg1, waker_turn, waker_core)
 pub fn __enqueue_30(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
-    return __wrela_rt_enqueue(30, method, arg0, arg1, waker_turn, waker_core)
+    return __wrela_enqueue_local(30, method, arg0, arg1, waker_turn, waker_core)
 pub fn __enqueue_31(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
-    return __wrela_rt_enqueue(31, method, arg0, arg1, waker_turn, waker_core)
+    return __wrela_enqueue_local(31, method, arg0, arg1, waker_turn, waker_core)
 
 # Invoke cross-core reply trampoline by edge index.
 pub fn __wrela_invoke_xreply(edge: usize, turn_and_tag: u64, reply: u64):
@@ -1563,7 +1652,13 @@ pub fn __wrela_deliver_reply(root: usize, ti: usize, reply: u64, tag: u64):
     return
 
 # Select + dispatch one mailbox root. Returns 1 if a turn(-slice) ran.
-pub fn __wrela_rt_select(root: usize) -> u64:
+# `core` is the selecting core, threaded from `__wrela_try_select` for the
+# Lane 1 row (plans/lane1-per-core.md item A): only the core that owns `root`'s
+# RR slot ever selects it, so that core alone writes `LANE1`'s `core` slot.
+pub fn __wrela_rt_select(core: usize, root: usize) -> u64:
+    if core >= N_CORES:
+        MACHINE_INFO.test_failed = MACHINE_INFO.test_failed +% 1
+        return 0
     if root >= N_MAILBOXES:
         return 0
     if root == NO_EDGE:
@@ -1607,7 +1702,7 @@ pub fn __wrela_rt_select(root: usize) -> u64:
         __wrela_mb_set_head(root, h)
         c = __wrela_mb_get_count(root)
         __wrela_mb_set_count(root, c -% 1)
-        LANE1.turns = LANE1.turns +% 1
+        LANE1.turns[core] = LANE1.turns[core] +% 1
     mi: usize = method.to[usize]()
     n_methods = __wrela_mb_method_count(root)
     if n_methods == 0:
@@ -1628,7 +1723,7 @@ pub fn __wrela_rt_select(root: usize) -> u64:
         slot_off = RT.turns[waker_ti].reply_slot_off.to[u64]()
         turn_base = TURNS_BASE +% ((slot_turn -% 1).to[usize]() *% TURN_STRIDE)
         stage = (turn_base +% slot_off.to[usize]()).to[u64]()
-    __wrela_lane1_record_method(root, mi)
+    __wrela_lane1_record_method(core, root, mi)
     status_or_reply = __wrela_call_method(root, mi, arg0, arg1, stage)
     is_async = __wrela_method_suspends(root, mi)
     if is_async != 0:
@@ -1660,7 +1755,7 @@ pub fn __wrela_try_select(core: usize, slot: usize) -> u64:
     root = __wrela_select_root(core, slot)
     if root == NO_EDGE:
         return 0
-    return __wrela_rt_select(root)
+    return __wrela_rt_select(core, root)
 
 # ---------------------------------------------------------------------------
 # M11 item H: boot_init + secondary_core_entry (decisions 810–815).
@@ -1935,12 +2030,18 @@ pub fn __wrela_rt_primary_boot():
     MACHINE_INFO.line_start = 0
     MACHINE_INFO.abort_latch = 0
     MACHINE_INFO.test_next = 0
-    LANE1.turns = 0
-    LANE1.run_one_hits = 0
-    LANE1.messages = 0
+    # Every row, not just row 0 (plans/lane1-per-core.md item A) — and before
+    # `RELEASE.word` below hands the secondaries their rows.
+    zc: usize = 0
+    @budget(bound=CORE_SLOTS)
+    while zc < N_CORES:
+        LANE1.turns[zc] = 0
+        LANE1.run_one_hits[zc] = 0
+        LANE1.messages[zc] = 0
+        zc = zc +% 1
     zi: usize = 0
-    @budget(bound=128)
-    while zi < METHOD_CALL_POOL_COUNT:
+    @budget(bound=4096)
+    while zi < LANE1_METHOD_HITS_LEN:
         LANE1.method_hits[zi] = 0
         zi = zi +% 1
     LANE2.enabled = 0

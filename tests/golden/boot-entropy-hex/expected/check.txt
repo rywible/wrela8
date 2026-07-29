@@ -41,15 +41,20 @@ Module path=runtime
   Struct TestLineBuf data
     field bytes: [u8; LINE_BUF_SIZE]
   Static TEST_LINE_BUF: TestLineBuf placed=0x40000218
-  Struct Lane1Counters data
-    field turns: u64
-    field run_one_hits: u64
-    field messages: u64
-    field method_hits: [u64; METHOD_CALL_POOL_COUNT]
-  Static LANE1: Lane1Counters placed=0x40008000
+  Const LANE1_METHOD_HITS_LEN: usize
+  Struct Lane1Stripe data
+    field turns: [u64; N_CORES]
+    field run_one_hits: [u64; N_CORES]
+    field messages: [u64; N_CORES]
+    field method_hits: [u64; LANE1_METHOD_HITS_LEN]
+  Static LANE1: Lane1Stripe placed=0x4000b000
   Fn __wrela_lane1_method_flat(root: read usize, method: read usize) -> usize
-  Fn __wrela_lane1_record_method(root: read usize, method: read usize) -> unit
+  Fn __wrela_lane1_record_method(core: read usize, root: read usize, method: read usize) -> unit
   Fn __wrela_lane1_append_u64(value: read u64) -> u64
+  Fn __wrela_lane1_sum_turns() -> u64
+  Fn __wrela_lane1_sum_run_one() -> u64
+  Fn __wrela_lane1_sum_messages() -> u64
+  Fn __wrela_lane1_sum_method_hits(flat: read usize) -> u64
   Fn __wrela_lane1_dump() -> unit
   Struct Lane2Counters data
     field enabled: u64
@@ -99,8 +104,9 @@ Module path=runtime
   Fn __wrela_xreply_7(turn_and_tag: read u64, reply: read u64) -> unit
   Const REPLY_TAG_OK: u64
   Const CALL_ERROR_TAG_CANCELLED: u64
-  Fn __wrela_rt_enqueue(root: read usize, method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
-  Fn __wrela_try_enqueue(handle: read usize, method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __wrela_rt_enqueue(core: read usize, root: read usize, method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __wrela_try_enqueue(core: read usize, handle: read usize, method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
+  Fn __wrela_enqueue_local(root: read usize, method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
   Fn __enqueue_0(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
   Fn __enqueue_1(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
   Fn __enqueue_2(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
@@ -135,7 +141,7 @@ Module path=runtime
   Fn __enqueue_31(method: read u64, arg0: read u64, arg1: read u64, waker_turn: read u64, waker_core: read u64) -> u64
   Fn __wrela_invoke_xreply(edge: read usize, turn_and_tag: read u64, reply: read u64) -> unit
   Fn __wrela_deliver_reply(root: read usize, ti: read usize, reply: read u64, tag: read u64) -> unit
-  Fn __wrela_rt_select(root: read usize) -> u64
+  Fn __wrela_rt_select(core: read usize, root: read usize) -> u64
   Fn __wrela_try_select(core: read usize, slot: read usize) -> u64
   Fn __wrela_rt_boot_init() -> unit
   Fn __wrela_rt_secondary_entry(core: read usize) -> unit

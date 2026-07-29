@@ -53,11 +53,11 @@ ImageReport v0
     Field name=bytes type=[u8; DATA_SIZE] offset=0x0 size=16384
   Layout name=TestLineBuf kind=runtime endian=little size=21 padding=0
     Field name=bytes type=[u8; LINE_BUF_SIZE] offset=0x0 size=21
-  Layout name=Lane1Counters kind=runtime endian=little size=1048 padding=0
-    Field name=turns type=u64 offset=0x0 size=8
-    Field name=run_one_hits type=u64 offset=0x8 size=8
-    Field name=messages type=u64 offset=0x10 size=8
-    Field name=method_hits type=[u64; METHOD_CALL_POOL_COUNT] offset=0x18 size=1024
+  Layout name=Lane1Stripe kind=runtime endian=little size=1048 padding=0
+    Field name=turns type=[u64; N_CORES] offset=0x0 size=8
+    Field name=run_one_hits type=[u64; N_CORES] offset=0x8 size=8
+    Field name=messages type=[u64; N_CORES] offset=0x10 size=8
+    Field name=method_hits type=[u64; LANE1_METHOD_HITS_LEN] offset=0x18 size=1024
   Layout name=Lane2Counters kind=runtime endian=little size=8200 padding=0
     Field name=enabled type=u64 offset=0x0 size=8
     Field name=hits type=[u64; BLOCK_POOL_COUNT] offset=0x8 size=8192
@@ -70,10 +70,10 @@ ImageReport v0
   Cores count=1
   CoreStack core=0 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=79232
-  Section name=rodata base=0x405135d0 size=486
-  Section name=abort base=0x405137b8 size=120
-  Section name=checkpoint base=0x40513830 size=28
+  Section name=code base=0x40500050 size=80788
+  Section name=rodata base=0x40513be8 size=486
+  Section name=abort base=0x40513dd0 size=120
+  Section name=checkpoint base=0x40513e48 size=28
   Section name=rtdata base=0x40540000 size=24
   Section name=devregs base=0x40540018 size=8
   Section name=pooldata base=0x40540020 size=37
@@ -91,7 +91,7 @@ ImageReport v0
   PlacedStatic name=INIT_SPAN5 type=InitSpan5Words addr=0x4057f760 size=8
   PlacedStatic name=INIT_SPAN6 type=InitSpan6Words addr=0x4057f768 size=8
   PlacedStatic name=INIT_SPAN7 type=InitSpan7Words addr=0x4057f770 size=8
-  PlacedStatic name=LANE1 type=Lane1Counters addr=0x40008000 size=1048
+  PlacedStatic name=LANE1 type=Lane1Stripe addr=0x4000b000 size=1048
   PlacedStatic name=LANE2 type=Lane2Counters addr=0x40008800 size=8200
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=536
   PlacedStatic name=MB0_CTL type=MbCtl addr=0x4057f7f8 size=24
@@ -176,10 +176,10 @@ ImageReport v0
   Pool name=Scratch kind=dma payload=Tiny slots=1 slot_bytes=1 base=0x40540044 size=1 align=1 coherency=coherent device=device#0
   BlkPool name=Control device=device#0 base=0x40540020 size=0x24
   BlkPool name=Scratch device=device#0 base=0x40540044 size=0x1
-  Cost version=2 digest=ca6c6ea1a27ab060 total=25776 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=25776
+  Cost version=2 digest=ca6c6ea1a27ab060 total=26216 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=26216
     Owner name=app proxy_cycles=1333
-    Owner name=runtime proxy_cycles=24443
+    Owner name=runtime proxy_cycles=24883
     Owner name=driver proxy_cycles=0
     Core n=0 proxy_cycles=71 max_turn_proxy=34 turns_per_sec=70588235.2941176444 ms_per_turn_model=0.0000141667
-    Shared proxy_cycles=25705
+    Shared proxy_cycles=26145

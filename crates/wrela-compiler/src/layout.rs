@@ -3760,7 +3760,63 @@ fn collect_placed_statics(
         }
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
+    verify_device_window_statics(&out)?;
     Ok(out)
+}
+
+/// The reserved device-page growth window (`wrela-machine`'s own map:
+/// `0x4000_8000 .. 0x4001_0000`), where `runtime.wr` parks the counter pages.
+const DEVICE_WINDOW_LO: u64 = 0x4000_8000;
+const DEVICE_WINDOW_HI: u64 = 0x4001_0000;
+
+/// Every `@placed` static inside the device-page growth window must fit inside
+/// it and touch no other static there.
+///
+/// plans/lane1-per-core.md item A made `LANE1` `N_CORES` rows wide, so for the
+/// first time a static in this window has an image-dependent extent: at
+/// `METHOD_CALL_POOL_COUNT = 128` a row is 1048 bytes, and enough cores walk
+/// the stripe off the end of the window. Nothing else would notice — a placed
+/// static is just an address plus a layout type, and the guest would quietly
+/// increment a counter on top of whatever came next. So this refuses, naming
+/// the two statics and the window, instead of approximating (CLAUDE.md: fail
+/// closed).
+///
+/// Scoped to this window on purpose, **not** generalized to all placed
+/// statics: `INIT_SPAN{k}` overlays deliberately alias the rtdata state they
+/// zero (`RT` / actor state — `boot_init`'s coalesced spans), so a global
+/// non-overlap rule would be false. Inside the growth window there are no
+/// overlays, only pages.
+fn verify_device_window_statics(placed: &[PlacedStatic]) -> Result<(), LayoutError> {
+    let mut in_window: Vec<&PlacedStatic> = placed
+        .iter()
+        .filter(|p| p.addr >= DEVICE_WINDOW_LO && p.addr < DEVICE_WINDOW_HI)
+        .collect();
+    in_window.sort_by_key(|p| p.addr);
+    for p in &in_window {
+        let end = p.addr.saturating_add(p.size);
+        if end > DEVICE_WINDOW_HI {
+            return Err(LayoutError::new(format!(
+                "placed static `{}` (`{}`) spans {:#x}..{:#x}, past the end of the reserved \
+                 device-page window ({DEVICE_WINDOW_LO:#x}..{DEVICE_WINDOW_HI:#x}) — this image \
+                 declares too many cores for the per-core `LANE1` stripe \
+                 (plans/lane1-per-core.md item A: one {}-byte row per core); place fewer cores",
+                p.name, p.ty, p.addr, end, p.size
+            )));
+        }
+    }
+    for pair in in_window.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        let a_end = a.addr.saturating_add(a.size);
+        if a_end > b.addr {
+            return Err(LayoutError::new(format!(
+                "placed statics `{}` (`{}`, {:#x}..{:#x}) and `{}` (`{}`, at {:#x}) overlap in the \
+                 reserved device-page window ({DEVICE_WINDOW_LO:#x}..{DEVICE_WINDOW_HI:#x}) — a \
+                 per-core stripe grew into the next page; place fewer cores",
+                a.name, a.ty, a.addr, a_end, b.name, b.ty, b.addr
+            )));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -5209,6 +5265,66 @@ fn two():
         let err = verify_pool_windows(&sections, &overlapping).expect_err("A and B overlap");
         assert!(
             err.message.contains("overlapping windows"),
+            "{}",
+            err.message
+        );
+    }
+
+    /// plans/lane1-per-core.md item A. `LANE1_ROW` is one `Lane1Stripe` row:
+    /// three `u64` counters + `METHOD_CALL_POOL_COUNT` method-hit words, the
+    /// size the report publishes for a one-core image.
+    const LANE1_ROW: u64 = 3 * 8 + (crate::rtconfig::METHOD_CALL_POOL_COUNT as u64) * 8;
+
+    fn window_static(name: &str, addr: u64, size: u64) -> PlacedStatic {
+        PlacedStatic {
+            name: name.to_string(),
+            ty: format!("{name}Ty"),
+            addr,
+            size,
+        }
+    }
+
+    #[test]
+    fn device_window_accepts_the_live_lane_pages() {
+        assert_eq!(LANE1_ROW, 1048);
+        for cores in [1u64, 2, 3, 19] {
+            let placed = vec![
+                window_static("LANE2", 0x4000_8800, 8200),
+                window_static("LANE1", 0x4000_b000, cores * LANE1_ROW),
+                // Outside the window: never considered.
+                window_static("RT", 0x4054_0000, 3072),
+            ];
+            verify_device_window_statics(&placed)
+                .unwrap_or_else(|e| panic!("cores={cores}: {}", e.message));
+        }
+    }
+
+    #[test]
+    fn device_window_refuses_a_stripe_that_reaches_the_next_page() {
+        // The pre-item-A address: two rows already walk into `LANE2`, which is
+        // exactly why the stripe moved above it.
+        let placed = vec![
+            window_static("LANE1", 0x4000_8000, 2 * LANE1_ROW),
+            window_static("LANE2", 0x4000_8800, 8200),
+        ];
+        let err = verify_device_window_statics(&placed).expect_err("LANE1 reaches LANE2");
+        assert!(
+            err.message.contains("overlap") && err.message.contains("LANE2"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn device_window_refuses_a_stripe_past_the_end_of_the_window() {
+        let placed = vec![
+            window_static("LANE2", 0x4000_8800, 8200),
+            window_static("LANE1", 0x4000_b000, 20 * LANE1_ROW),
+        ];
+        let err = verify_device_window_statics(&placed).expect_err("20 rows leave the window");
+        assert!(
+            err.message
+                .contains("past the end of the reserved device-page window"),
             "{}",
             err.message
         );
