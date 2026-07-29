@@ -167,9 +167,9 @@ ImageReport v0
   Pool name=BlockControl kind=dma payload=BlkReqHeader slots=8 slot_bytes=16 base=0x40540da8 size=128 align=8 coherency=coherent device=device#0
   Pool name=Scratch kind=image payload=u32 slots=4 slot_bytes=64 base=0x40540e28 size=256 align=8 coherency=coherent device=none
   BlkPool name=BlockControl device=device#0 base=0x40540da8 size=0x80
-  Cost version=2 digest=ffc153b826203a27 total=28171 ghz=2.4
-    Owner name=app proxy_cycles=3347
-    Owner name=runtime proxy_cycles=24824
+  Cost version=2 digest=ffc153b826203a27 total=37564 ghz=2.4
+    Owner name=app proxy_cycles=4301
+    Owner name=runtime proxy_cycles=33263
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=967 max_turn_proxy=737 turns_per_sec=3256445.0474898238 ms_per_turn=0.0003070833
-    Shared proxy_cycles=27204
+    Core n=0 proxy_cycles=1134 max_turn_proxy=876 turns_per_sec=2739726.0273972601 ms_per_turn_model=0.000365
+    Shared proxy_cycles=36430

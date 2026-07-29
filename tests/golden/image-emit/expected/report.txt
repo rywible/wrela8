@@ -19,9 +19,9 @@ ImageReport v0
   Section name=abort base=0x405001a4 size=120
   Section name=checkpoint base=0x4050021c size=4
   Entry base=0x40500000
-  Cost version=2 digest=ffc153b826203a27 total=67 ghz=2.4
-    Owner name=app proxy_cycles=67
+  Cost version=2 digest=ffc153b826203a27 total=99 ghz=2.4
+    Owner name=app proxy_cycles=99
     Owner name=runtime proxy_cycles=0
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=0 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn=n/a
-    Shared proxy_cycles=67
+    Core n=0 proxy_cycles=0 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn_model=n/a
+    Shared proxy_cycles=99

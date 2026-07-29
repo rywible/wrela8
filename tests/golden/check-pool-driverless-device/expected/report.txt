@@ -159,9 +159,9 @@ ImageReport v0
   DeviceRegs device=device#0 type=BlockHw driver=BlkDriver base=0x40540020 size=8
   Pool name=Control kind=dma payload=Hdr slots=2 slot_bytes=8 base=0x40540028 size=16 align=8 coherency=coherent device=device#1
   BlkPool name=Control device=device#1 base=0x40540028 size=0x10
-  Cost version=2 digest=ffc153b826203a27 total=25442 ghz=2.4
-    Owner name=app proxy_cycles=1394
-    Owner name=runtime proxy_cycles=24048
+  Cost version=2 digest=ffc153b826203a27 total=33965 ghz=2.4
+    Owner name=app proxy_cycles=1972
+    Owner name=runtime proxy_cycles=31993
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=69 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn=n/a
-    Shared proxy_cycles=25373
+    Core n=0 proxy_cycles=72 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn_model=n/a
+    Shared proxy_cycles=33893
