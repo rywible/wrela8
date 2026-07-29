@@ -1,9 +1,15 @@
-//! `wrela-vmm <report> <img> [--record <path>] [--replay <path>]` — the
+//! `wrela-vmm <report> <img> [--record <path>] [--replay <path>] [--dump-lane2 <path>]` — the
 //! one small, codesigned binary that actually calls Hypervisor.framework
 //! (plans/M5.md item E: "the binary that needs signing is whichever
 //! actually calls HVF ... keeps xtask itself unsigned and the signed
 //! surface one small binary"). Prints the captured console transcript to
 //! stdout, byte-for-byte, and nothing else.
+//!
+//! `--dump-lane2 <path>` (Integrity Phase 2 Item N): after a successful
+//! plain boot or `--record`, writes the host DRAM Lane 3 hit map as one
+//! `lane3 hits=<id>:<count>,…` line (same compact form as the guest's
+//! `lane2 hits=` dump). Never printed on stdout — transcript contract
+//! stays byte-identical for goldens.
 //!
 //! ## The exit-code contract (fail-closed; a caller — `xtask`, CI,
 //! `wrela test`'s runtime tier — must be able to trust `$?` alone, never
@@ -71,7 +77,9 @@ use std::process::ExitCode;
 use wrela_machine::vmm_process::{EXIT_REPLAY_DIVERGENCE, EXIT_VMM_FAILURE};
 
 fn usage() -> ! {
-    eprintln!("usage: wrela-vmm <report> <img> [--record <path>] [--replay <path>]");
+    eprintln!(
+        "usage: wrela-vmm <report> <img> [--record <path>] [--replay <path>] [--dump-lane2 <path>]"
+    );
     std::process::exit(EXIT_VMM_FAILURE);
 }
 
@@ -80,6 +88,7 @@ fn main() -> ExitCode {
     let mut positional: Vec<String> = Vec::new();
     let mut record_path: Option<PathBuf> = None;
     let mut replay_path: Option<PathBuf> = None;
+    let mut dump_lane2_path: Option<PathBuf> = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -97,6 +106,13 @@ fn main() -> ExitCode {
                     None => usage(),
                 }
             }
+            "--dump-lane2" => {
+                i += 1;
+                match args.get(i) {
+                    Some(p) => dump_lane2_path = Some(PathBuf::from(p)),
+                    None => usage(),
+                }
+            }
             other => positional.push(other.to_string()),
         }
         i += 1;
@@ -106,6 +122,10 @@ fn main() -> ExitCode {
     };
     if record_path.is_some() && replay_path.is_some() {
         eprintln!("wrela-vmm: --record and --replay are mutually exclusive");
+        return ExitCode::from(EXIT_VMM_FAILURE as u8);
+    }
+    if dump_lane2_path.is_some() && replay_path.is_some() {
+        eprintln!("wrela-vmm: --dump-lane2 is not supported with --replay");
         return ExitCode::from(EXIT_VMM_FAILURE as u8);
     }
     let report_path = PathBuf::from(report);
@@ -190,6 +210,18 @@ fn main() -> ExitCode {
                 let recorded = wrela_vmm::record::RecordFile::from_outcome(&outcome);
                 if let Err(e) = std::fs::write(&record_path, recorded.to_text()) {
                     eprintln!("wrela-vmm: cannot write {}: {e}", record_path.display());
+                    return ExitCode::from(EXIT_VMM_FAILURE as u8);
+                }
+            }
+            if let Some(dump_path) = dump_lane2_path {
+                // Integrity Phase 2 Item N: host DRAM Lane 3 hit map for
+                // the agreement oracle (`xtask diff-block-count`).
+                let body = format!(
+                    "lane3 hits={}\n",
+                    wrela_vmm::lane3::format_hits(&outcome.lane2_hits)
+                );
+                if let Err(e) = std::fs::write(&dump_path, body) {
+                    eprintln!("wrela-vmm: cannot write {}: {e}", dump_path.display());
                     return ExitCode::from(EXIT_VMM_FAILURE as u8);
                 }
             }
