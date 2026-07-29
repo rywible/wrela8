@@ -259,13 +259,22 @@ Apple vs Pi (or any host) may differ with cache and µarch; rank for
 fewer/cheaper ops and shorter true data deps must not require those.
 **Proxy soundness (normative):** a proxy win must never imply a
 real-machine loss (same or better only); when unsure, prefer under-credit
-/ over-cost. The model is not an A76 SOG port map, is not calibrated to
-host wall clocks, has no real L1/L2/L3 KB geometry, no PGO frequencies,
-and does not discharge `@budget` or cost proofs. Flat `issue_width`-only
-scoring is not the live model. Stable dump: `wrela dump --stage=cost`
-(Terms = rule counts, plus schedule totals and owners). The image report
-carries only a short summary ([§6](#6)). This ranking is the optimization
-ruler (M18); modes below consume it and do not replace it.
+/ over-cost. The live dump total is the **flat** workload —
+`cost(P, W_flat)` — every static word once (`f≡1`); dump Assumptions
+print `valid_for=static_shape_opts` and `workload=flat`. That soundness
+claim and the release land-gate apply only to **static-shape** opts
+(delete or shorten the stream without changing dynamic shape) until named
+real-workload rows exist. Frequency-dependent opts (guard, outline,
+specialize, unroll-as-dynamic-win) need a later multi-workload unification
+`cost(P, W) = Σ f_W(b) × s(b)` over a pinned workload set with
+veto-then-rank overall — previewed here, not live. The model is not an
+A76 SOG port map, is not calibrated to host wall clocks, has no real
+L1/L2/L3 KB geometry, no PGO frequencies, and does not discharge
+`@budget` or cost proofs. Flat `issue_width`-only scoring is not the live
+model. Stable dump: `wrela dump --stage=cost` (Terms = rule counts, plus
+schedule totals and owners). The image report carries only a short summary
+([§6](#6)). This ranking is the optimization ruler (M18); modes below
+consume it and do not replace it.
 
 **Compile modes.** The compiler has exactly two product modes: `dev`
 (every named optimization off) and `release` (every named optimization

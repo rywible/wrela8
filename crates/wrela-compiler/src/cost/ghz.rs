@@ -6,7 +6,7 @@
 /// Default clock for Pi 5 flagship (1 GiB).
 pub const DEFAULT_GHZ: f64 = 2.4;
 
-/// Compact display for GHz / turns_per_sec / ms_per_turn in dumps.
+/// Compact display for GHz / turns_per_sec / ms_per_turn_model in dumps.
 /// Trims trailing zeros after a fixed precision (stable across hosts).
 pub fn fmt_compact(v: f64) -> String {
     if !v.is_finite() {

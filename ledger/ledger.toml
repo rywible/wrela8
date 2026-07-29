@@ -602,7 +602,7 @@ tests = [
   "unit:load_committed_table",
   "unit:cost_summary_contains_version_and_owners",
 ]
-note = """plans/M18.md item L (2026-07-28): FLIPPED from `gap` to `test`. Umbrella for the ISA **proxy-cycle ranking** surface (04 §5 / 06 §1): `--stage=cost` goldens (incl. hard-cut witnesses `cost-branchy` / `cost-mem-locality`), short report Cost summary, `wrela-cost-v1` table load (`version=2` dual ports ∩ `max_issue_per_cycle` + mem reuse — not flat `issue_width`), and proxy off/on **rank** A/B. Value remains **differential ISA ranking only** — not predicted-vs-physical wall-clock, not A76 SOG ports, not host calibration against `bench guest` / `profile`, not exit-rate report lines (06 §5). Normative proxy soundness (04 §5): a proxy win must never imply a real-machine loss. `cargo xtask profile` stays a measurement report, not this clause's oracle. Sub-clauses: `compiler.costs.stage-dump`, `compiler.costs.v1-table`, `compiler.costs.proxy-ab`, `compiler.costs.report-summary`."""
+note = """plans/M18.md item L (2026-07-28): FLIPPED from `gap` to `test`. Umbrella for the ISA **proxy-cycle ranking** surface (04 §5 / 06 §1): `--stage=cost` goldens (incl. hard-cut witnesses `cost-branchy` / `cost-mem-locality`), short report Cost summary, `wrela-cost-v1` table load (`version=2` dual ports ∩ `max_issue_per_cycle` + mem reuse — not flat `issue_width`), and proxy off/on **rank** A/B. Value remains **differential ISA ranking only** — not predicted-vs-physical wall-clock, not A76 SOG ports, not host calibration against `bench guest` / `profile`, not exit-rate report lines (06 §5). Normative proxy soundness (04 §5): a proxy win must never imply a real-machine loss; live total is `cost(P, W_flat)` (`f≡1`); dump Assumptions carry `valid_for=static_shape_opts` + `workload=flat` — land-gate for static-shape opts only until real-W `f×s` rows exist. `cargo xtask profile` stays a measurement report, not this clause's oracle. Sub-clauses: `compiler.costs.stage-dump`, `compiler.costs.v1-table`, `compiler.costs.proxy-ab`, `compiler.costs.report-summary`."""
 
 [[clause]]
 id = "compiler.costs.stage-dump"
@@ -616,7 +616,7 @@ tests = [
   "golden/cost-branchy",
   "golden/cost-mem-locality",
 ]
-note = """plans/M18.md item L (2026-07-28): flipped. `wrela dump --stage=cost` emits Terms (rule counts) + dual-port scoreboard schedule totals + owners from the final asm-pipeline stream; header is `version=2` ports / mem knobs (no `issue_width`). Hard-cut witnesses: `golden/cost-branchy` (branch + `branch_penalty`), `golden/cost-mem-locality` (MemRef stack reuse vs colder working set). Still differential ISA ranking only (not physical). Umbrella: `compiler.costs.predicted-vs-measured`."""
+note = """plans/M18.md item L (2026-07-28): flipped. `wrela dump --stage=cost` emits Terms (rule counts) + dual-port scoreboard schedule totals + owners from the final asm-pipeline stream; header is `version=2` ports / mem knobs (no `issue_width`). Assumptions line includes `valid_for=static_shape_opts` + `workload=flat` (flat = `cost(P, W_flat)`). Core rate fields print `ms_per_turn_model` / `turn_path=max_entry_method` (model, not measured wall). Hard-cut witnesses: `golden/cost-branchy` (branch + `branch_penalty`), `golden/cost-mem-locality` (MemRef stack reuse vs colder working set). Still differential ISA ranking only (not physical). Umbrella: `compiler.costs.predicted-vs-measured`."""
 
 [[clause]]
 id = "compiler.costs.v1-table"
@@ -665,7 +665,7 @@ tests = [
   "unit:bounds_elide_alone_wins_cost_bounds_elide",
   "unit:narrow_imm_alone_wins_some_cost_case",
 ]
-note = """plans/M19.md item L (2026-07-28): FLIPPED from `gap` to `test`. Corpus proxy win rule under M18's ISA proxy-cycle ranking: no fixed cost-* case may rise under `release` vs `dev`; ≥1 must strictly fall; scored in context of the full pipeline. Oracle `opts::win::tests::assert_release_wins_cost_corpus_oracle` (+ convolution singles) via `cost::stage` — the same emit path as `wrela dump --stage=cost` (force-rooted `core.runtime` included when the case is runtime-bearing). Physical / host wall-time never gates opts."""
+note = """plans/M19.md item L (2026-07-28): FLIPPED from `gap` to `test`. Corpus proxy win rule under M18's ISA proxy-cycle ranking: no fixed cost-* case may rise under `release` vs `dev`; ≥1 must strictly fall; scored in context of the full pipeline. Oracle `opts::win::tests::assert_release_wins_cost_corpus_oracle` (+ convolution singles) via `cost::stage` — the same emit path as `wrela dump --stage=cost` (force-rooted `core.runtime` included when the case is runtime-bearing). Flat `W_flat` total only — valid land-gate evidence for static-shape opts (`valid_for=static_shape_opts`); frequency-dependent opts wait on real-W `f×s` rows. Physical / host wall-time never gates opts."""
 
 [[clause]]
 id = "compiler.opts.dev-correct"

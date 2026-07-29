@@ -45,7 +45,7 @@ fn format_report(
     push_line(
         &mut out,
         1,
-        "Assumptions ignore_cache=1 ignore_mispredict=1 target=isa_baseline ghz_model=1 turn_path=max_entry_fn",
+        "Assumptions ignore_cache=1 ignore_mispredict=1 target=isa_baseline ghz_model=1 turn_path=max_entry_method valid_for=static_shape_opts workload=flat",
     );
     push_line(&mut out, 1, "Composition sum_of_fn_schedules=1");
     push_line(
@@ -107,7 +107,7 @@ pub(crate) fn append_core_block(
             out,
             depth,
             &format!(
-                "Core n={} proxy_cycles={} max_turn_proxy={} turns_per_sec={} ms_per_turn={}",
+                "Core n={} proxy_cycles={} max_turn_proxy={} turns_per_sec={} ms_per_turn_model={}",
                 c.n, c.proxy_cycles, c.max_turn_proxy, tps, mpt
             ),
         );
@@ -205,7 +205,9 @@ mod tests {
         );
         assert!(!text.contains("issue_width"), "got:\n{text}");
         assert!(text.contains("ghz=2.4"), "got:\n{text}");
-        assert!(text.contains("ghz_model=1 turn_path=max_entry_fn"));
+        assert!(text.contains(
+            "ghz_model=1 turn_path=max_entry_method valid_for=static_shape_opts workload=flat"
+        ));
         assert!(!text.contains("Core n="), "got:\n{text}");
         assert!(!text.contains("Shared proxy_cycles="), "got:\n{text}");
         assert!(!text.contains("Placeable "), "got:\n{text}");
@@ -228,7 +230,7 @@ mod tests {
             at_1.contains("turns_per_sec=416666.6666666667"),
             "got:\n{at_1}"
         );
-        assert!(at_24.contains("ms_per_turn=0.001"), "got:\n{at_24}");
+        assert!(at_24.contains("ms_per_turn_model=0.001"), "got:\n{at_24}");
         assert!(at_1.contains("Placeable id=actor#0"));
         assert!(at_1.contains("method=Foo.hot"));
         assert!(at_24.contains("Shared proxy_cycles=0"));
@@ -243,7 +245,7 @@ mod tests {
         };
         let text = format_report(&report, &placement, DEFAULT_GHZ).expect("ok");
         assert!(
-            text.contains("turns_per_sec=n/a ms_per_turn=n/a"),
+            text.contains("turns_per_sec=n/a ms_per_turn_model=n/a"),
             "got:\n{text}"
         );
         assert!(text.contains("method=-"), "got:\n{text}");
