@@ -135,7 +135,10 @@ fn int_shape(ty: &Type) -> Option<(u32, bool)> {
     }
 }
 
-fn int_bounds(ty: &Type) -> Option<(i128, i128)> {
+/// Inclusive `(min, max)` for an integer scalar type; `None` for anything
+/// else. `sema::bodies` and `eval::image_checks` both decode ranges
+/// through this one table.
+pub(crate) fn int_bounds(ty: &Type) -> Option<(i128, i128)> {
     match ty {
         Type::U8 => Some((0, u8::MAX as i128)),
         Type::U16 => Some((0, u16::MAX as i128)),
@@ -211,7 +214,8 @@ pub fn make_int(ty: &Type, v: i128) -> Value {
 }
 
 /// Parses an integer literal's raw source text (`0x`/`0o`/`0b`/decimal,
-/// `_` separators) — mirrors `sema::bodies::parse_int_literal` exactly
+/// `_` separators). `sema::bodies` re-exports this one, so every
+/// `bodies::parse_int_literal` caller decodes through the same code.
 /// (the literal is already range-checked by sema; this only decodes the
 /// digits).
 pub fn parse_int_literal(text: &str) -> Option<i128> {

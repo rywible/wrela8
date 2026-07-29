@@ -20,6 +20,11 @@ pub struct FnCost {
     /// Owner bucket: `app` / `runtime` / `driver` (item G).
     pub owner: String,
     pub proxy_cycles: u64,
+    /// Emitted machine words in this fn (= Σ `terms`). Static footprint
+    /// side condition: the scoreboard cannot price I-cache/ITLB, so the
+    /// gate refuses to certify a candidate that grows this (soundness
+    /// item 2 — schedule wins must not be bought with more words).
+    pub words: u64,
     /// `CostRule::as_str()` → count of words with that rule.
     pub terms: BTreeMap<String, u64>,
 }
@@ -39,6 +44,8 @@ pub struct CostReport {
     /// Sum of per-fn schedule lengths (compositionality; dump header states it).
     /// Equals the `flat` workload row (`f≡1`).
     pub total_proxy_cycles: u64,
+    /// Σ per-fn `words` — the program's static footprint proxy.
+    pub total_words: u64,
     /// Sum of fn `proxy_cycles` per owner bucket (`app` / `runtime` / `driver`).
     pub owner_totals: BTreeMap<String, u64>,
     /// Stable order: `BTreeMap` key order of `program.fns`.
@@ -83,15 +90,19 @@ pub fn score_program(program: &CodegenProgram, table: &CostTable) -> Result<Cost
         ("driver".to_string(), 0u64),
     ]);
 
+    let mut total_words = 0u64;
     for (key, f) in &program.fns {
         let (proxy_cycles, terms) = score_fn(f, table)?;
+        let words = f.code.len() as u64;
         total_proxy_cycles = total_proxy_cycles.saturating_add(proxy_cycles);
+        total_words = total_words.saturating_add(words);
         let owner = classify_owner(key).to_string();
         *owner_totals.entry(owner.clone()).or_insert(0) += proxy_cycles;
         fns.push(FnCost {
             key: key.clone(),
             owner,
             proxy_cycles,
+            words,
             terms,
         });
     }
@@ -106,6 +117,7 @@ pub fn score_program(program: &CodegenProgram, table: &CostTable) -> Result<Cost
         mem_reuse_window: table.mem_reuse_window,
         mem_working_set_cap: table.mem_working_set_cap,
         total_proxy_cycles,
+        total_words,
         owner_totals,
         fns,
         workloads_digest: None,
@@ -398,6 +410,14 @@ fn push_window(window: &mut VecDeque<WinEntry>, win_cap: usize, entry: WinEntry)
     }
 }
 
+/// Surcharge for a window holding more distinct keys than the cap.
+///
+/// Scales with the overflow: `(distinct − cap) × working_set_surcharge`.
+/// A flat charge would price a fn touching 5 distinct addresses the same
+/// as one touching 500 — i.e. **under-cost** footprint growth, the one
+/// direction 04 §5's proxy soundness rule forbids. Overflow is bounded by
+/// `mem_reuse_window − mem_working_set_cap`, so this stays a coarse
+/// monotone nudge, not a cache geometry model.
 fn working_set_surcharge(window: &VecDeque<WinEntry>, table: &CostTable) -> u64 {
     let mut keys: Vec<(u8, u64)> = window
         .iter()
@@ -411,11 +431,9 @@ fn working_set_surcharge(window: &VecDeque<WinEntry>, table: &CostTable) -> u64 
         .collect();
     keys.sort_unstable();
     keys.dedup();
-    if (keys.len() as u64) > table.mem_working_set_cap {
-        table.mem.working_set_surcharge
-    } else {
-        0
-    }
+    let distinct = keys.len() as u64;
+    let over = distinct.saturating_sub(table.mem_working_set_cap);
+    over.saturating_mul(table.mem.working_set_surcharge)
 }
 
 fn src_ready(ew: &EmittedWord, ready: &[u64; 32]) -> u64 {
@@ -563,9 +581,133 @@ working_set_surcharge = 2
         let p = prog("empty", Vec::new());
         let r = score_program(&p, &table).expect("score");
         assert_eq!(r.total_proxy_cycles, 0);
+        assert_eq!(r.total_words, 0);
         assert_eq!(r.fns.len(), 1);
         assert_eq!(r.fns[0].proxy_cycles, 0);
+        assert_eq!(r.fns[0].words, 0);
         assert!(r.fns[0].terms.is_empty());
+    }
+
+    /// `words` is the emitted word count and equals Σ Terms.
+    #[test]
+    fn words_equals_word_count_and_term_sum() {
+        let table = parse(TABLE).expect("table");
+        let p = prog(
+            "f",
+            vec![
+                word(CostRule::Alu, Some(1), &[0, 0]),
+                load_stack(2, 8),
+                word(CostRule::Branch, None, &[]),
+                word(CostRule::Alu, Some(3), &[2, 2]),
+            ],
+        );
+        let r = score_program(&p, &table).expect("score");
+        assert_eq!(r.fns[0].words, 4);
+        assert_eq!(r.total_words, 4);
+        let term_sum: u64 = r.fns[0].terms.values().sum();
+        assert_eq!(term_sum, r.fns[0].words, "Σ Terms must equal words");
+    }
+
+    /// Surcharge scales with overflow: 6 distinct keys over cap=4 costs
+    /// strictly more than 5 distinct, which costs more than at-cap.
+    #[test]
+    fn working_set_surcharge_scales_with_overflow() {
+        let table = parse(TABLE).expect("table");
+        // Serial chain so every load's surcharge lands on the critical path.
+        fn chain(offsets: &[u64]) -> Vec<EmittedWord> {
+            let mut code = Vec::new();
+            for (i, &off) in offsets.iter().enumerate() {
+                let dst = (i as u8) + 1;
+                code.push(load_stack(dst, off));
+                code.push(word(CostRule::Alu, Some(dst), &[dst, dst]));
+            }
+            code
+        }
+        let at_cap = prog("f", chain(&[0, 8, 16, 24]));
+        let over_1 = prog("f", chain(&[0, 8, 16, 24, 32]));
+        let over_2 = prog("f", chain(&[0, 8, 16, 24, 32, 40]));
+        let a = score_program(&at_cap, &table).expect("at cap");
+        let b = score_program(&over_1, &table).expect("over 1");
+        let c = score_program(&over_2, &table).expect("over 2");
+        assert!(
+            b.total_proxy_cycles > a.total_proxy_cycles,
+            "5 distinct {} must exceed 4 distinct {}",
+            b.total_proxy_cycles,
+            a.total_proxy_cycles
+        );
+        // The scaling claim: the 6th distinct key costs strictly more than
+        // the 5th did — a flat surcharge would make these deltas equal.
+        let delta_5 = b.total_proxy_cycles - a.total_proxy_cycles;
+        let delta_6 = c.total_proxy_cycles - b.total_proxy_cycles;
+        assert!(
+            delta_6 > delta_5,
+            "surcharge must scale: Δ6 {delta_6} should exceed Δ5 {delta_5}"
+        );
+    }
+
+    /// Soundness oracle (monotonicity): appending a dead, independent word
+    /// must never *lower* a schedule. A model that rewards adding work is
+    /// one an opt can win by growing the stream.
+    #[test]
+    fn dead_word_never_lowers_schedule() {
+        use crate::encode::{Cond, enc_b, enc_b_cond};
+        let table = parse(TABLE).expect("table");
+
+        let cases: Vec<(&str, Vec<EmittedWord>)> = vec![
+            ("empty", Vec::new()),
+            (
+                "straight",
+                vec![
+                    word(CostRule::Alu, Some(1), &[0, 0]),
+                    word(CostRule::Alu, Some(2), &[1, 1]),
+                    load_stack(3, 8),
+                ],
+            ),
+            (
+                "mem_heavy",
+                vec![
+                    load_stack(1, 0),
+                    load_stack(2, 8),
+                    load_stack(3, 16),
+                    load_stack(4, 24),
+                    load_stack(5, 32),
+                ],
+            ),
+            (
+                "diamond",
+                vec![
+                    word_flags(CostRule::Alu, None, &[1, 2], FlagEffect::Write),
+                    word_enc(enc_b_cond(Cond::Eq, 12), CostRule::Branch, None, &[])
+                        .with_flags(FlagEffect::Read),
+                    word_enc(0, CostRule::Alu, Some(3), &[0]),
+                    word_enc(enc_b(8), CostRule::Branch, None, &[]),
+                    word_enc(0, CostRule::Alu, Some(4), &[0]),
+                    word_enc(0, CostRule::Alu, Some(5), &[0]),
+                ],
+            ),
+        ];
+
+        // Dead: writes an otherwise-unused reg, reads an unwritten one.
+        let dead = word(CostRule::Alu, Some(20), &[21, 21]);
+        for (name, code) in cases {
+            let base = score_program(&prog("f", code.clone()), &table)
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            let mut grown = code.clone();
+            grown.push(dead.clone());
+            let after = score_program(&prog("f", grown), &table)
+                .unwrap_or_else(|e| panic!("{name} grown: {e}"));
+            assert!(
+                after.total_proxy_cycles >= base.total_proxy_cycles,
+                "{name}: dead word lowered schedule {} -> {}",
+                base.total_proxy_cycles,
+                after.total_proxy_cycles
+            );
+            assert_eq!(
+                after.total_words,
+                base.total_words + 1,
+                "{name}: words must count the added dead word"
+            );
+        }
     }
 
     #[test]

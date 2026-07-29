@@ -109,6 +109,21 @@ impl SemaError {
             missing_method: None,
         }
     }
+
+    /// A diagnostic with no source location — rendered without the
+    /// ` at L:C` suffix. For facts about the whole image (sealed-layout
+    /// and boot checks) that no single span owns.
+    pub(crate) fn nowhere(category: &'static str, message: String) -> SemaError {
+        SemaError {
+            category,
+            message,
+            line: 0,
+            col: 0,
+            extra_lines: Vec::new(),
+            omit_location: true,
+            missing_method: None,
+        }
+    }
 }
 
 /// The fail-closed diagnostic (decision 7): `error[unimplemented]:
@@ -1160,10 +1175,16 @@ fn splice_imported_decls(
                 && pa.enums.get(&a.1) == pb.enums.get(&b.1)
         };
         let mut shadow: BTreeMap<(Vec<String>, Vec<String>), String> = BTreeMap::new();
+        // Every binding that points at the same exporter asks the identical
+        // question, so scan each (importer, exporter) pair once. `shadow`
+        // cannot serve as the visited set: it only gains a key when a witness
+        // is *found*, so the pairs with no shadowing — the overwhelming
+        // majority — would rescan the whole name list per binding.
+        let mut examined: BTreeSet<(Vec<String>, Vec<String>)> = BTreeSet::new();
         for (m, bs) in bindings {
             for b in bs.values() {
                 let n = &b.target_module;
-                if n == m || shadow.contains_key(&(m.clone(), n.clone())) {
+                if n == m || !examined.insert((m.clone(), n.clone())) {
                     continue;
                 }
                 let mut visible: BTreeSet<String> = declared.get(n).cloned().unwrap_or_default();
@@ -1236,14 +1257,6 @@ fn splice_imported_decls(
         let struct_entry = src.structs.get(&target_name).cloned();
         let enum_entry = src.enums.get(&target_name).cloned();
         let static_entry = src.statics.get(&target_name).cloned();
-        // Layout types named by an imported static's type (and nested
-        // field types) — lower's placed-field path needs them on the
-        // importer's TypedProgram (plans/M11.md item E / decision 785).
-        let layout_entries: Vec<types::LayoutType> = if static_entry.is_some() {
-            src.layouts.clone()
-        } else {
-            Vec::new()
-        };
         // plans/M17.md item H: importing a runtime helper whose body
         // touches placed statics / module consts (`MACHINE_INFO`,
         // `TEST_LINE_BUF`, `DATA_SIZE`, …) must land those on the
@@ -1332,8 +1345,8 @@ fn splice_imported_decls(
                 dst.consts.entry(name).or_insert(c);
             }
             // Layouts are copied after `complete_layouts` (see
-            // `splice_imported_static_layouts`) so sizes are real.
-            let _ = layout_entries;
+            // `splice_imported_static_layouts`) so sizes are real — this
+            // loop deliberately does not touch `src.layouts`.
             for (ikey, mut inst) in inst_entries {
                 typed::rekey_instantiation(&mut inst, &subs);
                 let new_key = typed::rekey_canonical_key(&ikey, &subs);
@@ -1732,8 +1745,13 @@ fn splice_imported_static_layouts(
             continue;
         }
         let dst = programs.get_mut(&importer).expect("importer key");
+        // Name set instead of a rescan of `dst.layouts` per candidate: the
+        // whole-table splice above means this loop is entered once per
+        // binding, so the rescan was quadratic in the table size. Push
+        // order — and therefore the resulting table — is unchanged.
+        let mut have: BTreeSet<String> = dst.layouts.iter().map(|l| l.name.clone()).collect();
         for layout in layouts {
-            if !dst.layouts.iter().any(|l| l.name == layout.name) {
+            if have.insert(layout.name.clone()) {
                 dst.layouts.push(layout);
             }
         }

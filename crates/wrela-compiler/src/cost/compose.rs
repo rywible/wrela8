@@ -76,6 +76,16 @@ pub fn attach_workloads(report: &mut CostReport, attach: &WorkloadAttach) {
 
 /// `Σ f(fn)×s(fn)` over method keys present in both `freq` and scored fns.
 /// Coverage: matched hit sum / total hit sum in `freq`.
+///
+/// **Uncovered hits are charged, not dropped.** A measured key with no
+/// scored fn is priced at `uncovered_charge` — the maximum per-fn schedule
+/// in the program (see `uncovered_charge`). Contributing 0 would make any
+/// transform that removes a method key from the scored set (rename,
+/// outline, specialize-and-clone, or the handler fusion 04 §5's actor
+/// as-if explicitly permits) delete that key's whole `f×s` mass and read
+/// as a strict improvement — a proxy win bought by measuring less. 04 §5's
+/// soundness rule says prefer over-cost when unsure, so the unknown is
+/// priced at the most expensive thing in the program.
 pub fn method_grain_fxs(
     fns: &[FnCost],
     freq: &BTreeMap<String, u64>,
@@ -88,17 +98,29 @@ pub fn method_grain_fxs(
     for f in fns {
         by_key.insert(f.key.as_str(), f.proxy_cycles);
     }
+    let charge = uncovered_charge(fns);
     let mut cycles = 0u64;
     let mut matched = 0u64;
     let mut total = 0u64;
     for (key, &f) in freq {
         total = total.saturating_add(f);
-        if let Some(&s) = by_key.get(key.as_str()) {
-            cycles = cycles.saturating_add(f.saturating_mul(s));
-            matched = matched.saturating_add(f);
+        match by_key.get(key.as_str()) {
+            Some(&s) => {
+                cycles = cycles.saturating_add(f.saturating_mul(s));
+                matched = matched.saturating_add(f);
+            }
+            None => cycles = cycles.saturating_add(f.saturating_mul(charge)),
         }
     }
     (cycles, matched, total)
+}
+
+/// Over-cost floor for a measured hit with no scored fn: the maximum
+/// per-fn schedule length in the program (0 for an empty program — there
+/// is nothing to charge). Deliberately pessimistic and self-contained:
+/// no cross-run state, and losing coverage can never look cheap.
+pub fn uncovered_charge(fns: &[FnCost]) -> u64 {
+    fns.iter().map(|f| f.proxy_cycles).max().unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -113,12 +135,14 @@ mod tests {
             key: key.to_string(),
             owner: "app".to_string(),
             proxy_cycles: cycles,
+            words: cycles,
             terms: BTreeMap::new(),
         }
     }
 
     fn bare_report(fns: Vec<FnCost>) -> CostReport {
         let total: u64 = fns.iter().map(|f| f.proxy_cycles).sum();
+        let words: u64 = fns.iter().map(|f| f.words).sum();
         CostReport {
             version: 2,
             digest: "t".to_string(),
@@ -129,6 +153,7 @@ mod tests {
             mem_reuse_window: 8,
             mem_working_set_cap: 4,
             total_proxy_cycles: total,
+            total_words: words,
             owner_totals: BTreeMap::new(),
             fns,
             workloads_digest: None,
@@ -184,7 +209,48 @@ Worker.report=2
         let set = parse_workloads("[flat]\nweight = 1\n[w]\nweight = 1\n").unwrap();
         let freq = parse_freq("workload=w\nFoo.bar=2\nMissing.m=3\n").unwrap();
         attach_workloads(&mut report, &WorkloadAttach::from_parts(set, freq));
-        assert_eq!(report.workload_totals["w"], 20);
+        // 2×10 matched + 3×10 uncovered (charged at max fn schedule = 10).
+        assert_eq!(report.workload_totals["w"], 50);
         assert_eq!(report.workload_coverage["w"], (2, 5));
+    }
+
+    /// The fusion/rename hole: dropping a hot method key from the scored
+    /// set must **raise** `Σ f×s`, never lower it.
+    #[test]
+    fn vanished_hot_key_raises_total_and_drops_coverage() {
+        let set = parse_workloads("[flat]\nweight = 1\n[w]\nweight = 1\n").unwrap();
+        let freq_text = "workload=w\nHot.method=5\nCold.method=1\n";
+
+        let mut before = bare_report(vec![fn_cost("Hot.method", 100), fn_cost("Cold.method", 10)]);
+        attach_workloads(
+            &mut before,
+            &WorkloadAttach::from_parts(set.clone(), parse_freq(freq_text).unwrap()),
+        );
+
+        // Same program with `Hot.method` fused away under a new key.
+        let mut after = bare_report(vec![
+            fn_cost("Hot.method$fused", 100),
+            fn_cost("Cold.method", 10),
+        ]);
+        attach_workloads(
+            &mut after,
+            &WorkloadAttach::from_parts(set, parse_freq(freq_text).unwrap()),
+        );
+
+        assert_eq!(before.workload_coverage["w"], (6, 6));
+        assert_eq!(after.workload_coverage["w"], (1, 6));
+        assert!(
+            after.workload_totals["w"] >= before.workload_totals["w"],
+            "losing coverage must not look cheap: {} -> {}",
+            before.workload_totals["w"],
+            after.workload_totals["w"]
+        );
+    }
+
+    #[test]
+    fn uncovered_charge_is_max_fn_schedule() {
+        let fns = vec![fn_cost("a", 3), fn_cost("b", 41), fn_cost("c", 7)];
+        assert_eq!(uncovered_charge(&fns), 41);
+        assert_eq!(uncovered_charge(&[]), 0);
     }
 }

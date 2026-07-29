@@ -250,16 +250,35 @@ versioned parameter file (`wrela-cost-v1`, schema `version=2`) gives
 per-rule latencies plus dual issue ports (`alu` / `mem`), a global
 `max_issue_per_cycle` cap (ports ∩ that cap), a mem reuse window with
 working-set cap and surcharge (stores invalidate; a missing MemRef is a
-cold miss), `branch_penalty`, and hardened `abort_val`. A dumb dual-port
+cold miss), `branch_penalty`, and hardened `abort_val`. The surcharge is
+charged **per distinct key over the cap**, not once flat, so a growing
+working set cannot be priced like a small one. `branch_penalty` is a
+fetch-redirect cost only and is **not** a mispredict penalty: the model
+has no predictor, so it must not credit branch removal (if-conversion)
+with cycles a predicted branch never cost. A dumb dual-port
 register scoreboard over the final stream yields a **schedule length**
 per function — the proxy total (`call` clears the mem window). Totals are
-path-insensitive Σ per function. The value is **differential**: given two
+path-insensitive Σ per function. Each function also carries its emitted
+**word count**, the static footprint proxy. The value is
+**differential**: given two
 semantically equivalent emissions, which ranks lower? Absolute cycles on
 Apple vs Pi (or any host) may differ with cache and µarch; rank for
 fewer/cheaper ops and shorter true data deps must not require those.
 **Proxy soundness (normative):** a proxy win must never imply a
 real-machine loss (same or better only); when unsure, prefer under-credit
-/ over-cost. The unified cost is
+/ over-cost. Three consequences are normative rather than advisory,
+because each names a way the cycle number alone can improve while the
+machine does not. (i) The scoreboard is **in-order over an
+out-of-order** core, so reordering it rewards may already be free on the
+flagship; a candidate may therefore never pay for schedule with **more
+emitted words**, and word count is a side condition on every gate below,
+not a term in the score. Since nothing here prices I-cache or ITLB
+footprint, growth is **refused, not priced** — a footprint model is what
+would unlock it. (ii) A measured hit whose method has no scored function
+is charged at the **maximum function schedule in the program**, never
+zero: dropping a key (rename, outline, fusion) must cost, or the ruler
+rewards measuring less. (iii) Measured **coverage may not fall** between
+baseline and candidate. The unified cost is
 `cost(P, W) = Σ_b f_W(b) × s(b)` — schedule length `s(b)` times a
 workload frequency `f_W(b)`. The **flat** workload `W_flat` is policy
 `f≡1` (every static word / block once); dump Assumptions still print
@@ -269,8 +288,12 @@ plus measured names such as `[boot-actors]`); the dump header carries
 that file's digest. Measured rows compose `Σ f×s` (method grain today;
 block grain when Lane-2 `f` is attached) and print a nested
 `coverage=matched/total` — **coverage honesty:** uncovered hits shrink
-the matched side and must not be silently dropped; `W_flat` remains the
-mass/coverage backstop. Frequency measurement has three lanes: **Lane 1**
+the matched side, must not be silently dropped, and are charged at the
+program's maximum function schedule so that losing coverage can never
+read as cheaper; `W_flat` remains the mass/coverage backstop. Comparing
+two sides whose coverage denominators differ is an error, not a rank:
+they were measured against different frequency vectors.
+Frequency measurement has three lanes: **Lane 1**
 scheduler method/turn counters in the guest runtime transcript; **Lane 2**
 test-only in-guest basic-block hit counters (`--block-count`); **Lane 3**
 host/VMM agreement that Lane-2 vectors match on a named control case.
@@ -278,15 +301,23 @@ Static-shape opts (delete or shorten the stream without changing dynamic
 shape) may land on the flat land-gate alone. Frequency-dependent opts
 (guard, outline, specialize, unroll-as-dynamic-win) land only under
 **veto-then-rank overall** across the pinned set: veto if any non-flat
-measured W rises (ε=0), else rank by the weight-mean of relative deltas
-`(cand−base)/base` — never by device-wait wall timing. The model is not
+measured W rises (ε=0), if any measured coverage falls, or if the static
+word count grows; else rank by the weight-mean of relative deltas
+`(cand−base)/base` — never by device-wait wall timing. Every veto reason
+that fires is reported, not just the first. The model is not
 an A76 SOG port map, is not calibrated to host wall clocks, has no real
 L1/L2/L3 KB geometry, no host PGO as a gate input, and does not discharge
 `@budget` or cost proofs. Flat `issue_width`-only scoring is not the live
 model. Stable dump: `wrela dump --stage=cost` (Terms = rule counts, plus
 schedule totals, owners, and `Workload` rows). The image report carries
-only a short summary ([§6](#6)). This ranking is the optimization ruler
-(M18); modes below consume it and do not replace it.
+only a short summary ([§6](#6)). **Ruler oracles (normative):** the
+ranking is itself under test, not only the code it ranks. A semantically
+neutral change must never rank as a win (**null-opt** — renaming every
+scored function key is the canonical case, since it is exactly the shape
+fusion and outlining take), and adding a dead instruction must never
+lower a schedule (**monotonicity**). A ruler that fails either is wrong
+whatever it says about the emissions under it. This ranking is the
+optimization ruler (M18); modes below consume it and do not replace it.
 
 **Compile modes.** The compiler has exactly two product modes: `dev`
 (every named optimization off) and `release` (every named optimization
@@ -295,8 +326,11 @@ ordinary named function in a fixed in-code call order — skippable by
 mode, never a recipe file, evidence table, or plugin. Profitability is
 scored only under the proxy-cycle ranking above, always **in context** of
 the full pipeline. For the fixed cost-* corpus under `W_flat`, a
-candidate pipeline must not raise any case's flat proxy total and must
-strictly lower at least one (static-shape land-gate). When measured
+candidate pipeline must not raise any case's flat proxy total, must not
+raise any case's emitted word count, and must strictly lower at least one
+proxy total (static-shape land-gate). The word condition restates the
+category: a static-shape opt deletes or shortens the stream, so one that
+grows it is misfiled, not merely unlucky. When measured
 workloads are in scope, the overall gate is veto-then-rank across the
 pinned `workloads.toml` set as above. Losers are deleted or reworked,
 not kept disabled. Host wall-time, flame graphs, `profile`, and

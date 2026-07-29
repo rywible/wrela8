@@ -5,12 +5,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::sema::typed::TypedProgram;
+use crate::sema::SemaError;
 use crate::sema::types::{
     DeclField, DeclItem, DeclMember, DeclStruct, Type, TypeArg, components_by_name,
     declared_layout_kind, push_line, render_type,
 };
-use crate::sema::{SemaError, unimplemented_at};
 use crate::syntax::ast::{self, Attr, Expr, GenericArg, Item, Member, Module, Span, StructItem};
 use crate::syntax::printer;
 
@@ -164,21 +163,16 @@ impl LayoutType {
     pub fn require_size(&self, context: &str) -> Result<u64, SemaError> {
         match self.size {
             Some(size) => Ok(size),
-            None => Err(SemaError {
-                category: "type",
-                message: format!(
+            None => Err(SemaError::nowhere(
+                "type",
+                format!(
                     "`@layout` type `{}` has no computed size at {context}: its array length is a \
                      `const` name, so `sema::types::check_layouts` deferred its sizing and \
                      `complete_layouts` (which resolves the length after const evaluation) never \
                      ran on it (03-hardware.md §3.1, plans/M10.md item A2b)",
                     self.name
                 ),
-                line: 0,
-                col: 0,
-                extra_lines: Vec::new(),
-                omit_location: true,
-                missing_method: None,
-            }),
+            )),
         }
     }
 }
@@ -550,7 +544,7 @@ fn layout_field_bytes(
             span,
         ));
     }
-    if crate::eval::image_checks::is_sealed_authority_type_name(&n.name) {
+    if crate::sema::classes::name_holds_authority(&n.name) {
         let kind_text = crate::eval::image_checks::sealed_authority_kind(&n.name);
         return Err(match kind {
             LayoutKind::Wire => layout_error(
@@ -1462,82 +1456,57 @@ pub fn validate_placed_statics(
             continue;
         };
         let Type::Named(type_name, targs) = &s.ty else {
-            return Err(SemaError {
-                category: "type",
-                message: format!(
+            return Err(SemaError::nowhere(
+                "type",
+                format!(
                     "`static {}` has type `{}`, but `@placed` requires a `@layout(runtime)` type \
                      (03-hardware.md §3.1)",
                     s.name,
                     render_type(&s.ty)
                 ),
-                line: 0,
-                col: 0,
-                extra_lines: Vec::new(),
-                omit_location: true,
-                missing_method: None,
-            });
+            ));
         };
         if !targs.is_empty() {
-            return Err(SemaError {
-                category: "type",
-                message: format!(
+            return Err(SemaError::nowhere(
+                "type",
+                format!(
                     "`static {}` has type `{}`, but `@placed` requires a non-generic \
                      `@layout(runtime)` type (03-hardware.md §3.1)",
                     s.name,
                     render_type(&s.ty)
                 ),
-                line: 0,
-                col: 0,
-                extra_lines: Vec::new(),
-                omit_location: true,
-                missing_method: None,
-            });
+            ));
         }
         let Some(layout) = layouts.iter().find(|l| l.name == *type_name) else {
-            return Err(SemaError {
-                category: "type",
-                message: format!(
+            return Err(SemaError::nowhere(
+                "type",
+                format!(
                     "`static {}` has type `{type_name}`, which is not a `@layout` type; \
                      `@placed` requires a `@layout(runtime)` type (03-hardware.md §3.1)",
                     s.name
                 ),
-                line: 0,
-                col: 0,
-                extra_lines: Vec::new(),
-                omit_location: true,
-                missing_method: None,
-            });
+            ));
         };
         if layout.kind != LayoutKind::Runtime {
-            return Err(SemaError {
-                category: "type",
-                message: format!(
+            return Err(SemaError::nowhere(
+                "type",
+                format!(
                     "`static {}` has type `{type_name}` (`@layout({})`), but `@placed` requires \
                      a `@layout(runtime)` type (03-hardware.md §3.1)",
                     s.name,
                     layout.kind.as_str()
                 ),
-                line: 0,
-                col: 0,
-                extra_lines: Vec::new(),
-                omit_location: true,
-                missing_method: None,
-            });
+            ));
         }
         if let Some(earlier) = by_addr.insert(s.addr, s.name.clone()) {
-            return Err(SemaError {
-                category: "type",
-                message: format!(
+            return Err(SemaError::nowhere(
+                "type",
+                format!(
                     "`static {}` and `static {earlier}` both claim `@placed({:#x})`; \
                      03-hardware.md §3.1 allows at most one placed static per address",
                     s.name, s.addr
                 ),
-                line: 0,
-                col: 0,
-                extra_lines: Vec::new(),
-                omit_location: true,
-                missing_method: None,
-            });
+            ));
         }
     }
     Ok(())

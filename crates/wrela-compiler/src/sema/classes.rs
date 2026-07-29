@@ -5,14 +5,13 @@
 //! field-wise propagation (the same walk shape as
 //! `protocol_resource_carried` / `type_carries_named`).
 //!
-//! This module is the sole leaf for `must_consume` (the legacy name list
-//! in `image_checks` is deleted). `holds_authority` still dual-runs against
-//! `is_sealed_authority_type_name` (that list drives unforgeability /
-//! `@layout` / actor containment and is not deleted here).
+//! This module is the sole leaf for all four classes; the legacy name
+//! lists in `image_checks` (`is_sealed_authority_type_name` and the
+//! `must_consume` list before it) are deleted, and the M13 dual-run that
+//! proved the table equal to them is retired.
 
 use std::collections::BTreeSet;
 
-use crate::eval::image_checks;
 use crate::sema::types::{Classification, DeclItem, DeclStruct, Type, TypeArg};
 use crate::syntax::ast::Span;
 
@@ -46,9 +45,9 @@ impl TypeClasses {
     }
 }
 
-/// Independent leaf table (plans/M13.md item O). Must not call the old
-/// name-list helpers to *define* answers — dual-run asserts those equal
-/// this table, then the subsequent commit deletes the old lists.
+/// The leaf table (plans/M13.md item O) — the single authority for all
+/// four classes. The old `image_checks` name lists it replaced are gone;
+/// the M13 dual-run that proved them equal has been retired.
 pub fn leaf_classes(name: &str) -> Option<TypeClasses> {
     let classes = match name {
         // 03 §1 capabilities — DeviceCap/Mmio/IrqCap consume; DmaPool is
@@ -115,26 +114,7 @@ pub fn leaf_classes(name: &str) -> Option<TypeClasses> {
         },
         _ => return None,
     };
-    dual_run_leaf(name, classes);
     Some(classes)
-}
-
-/// Assert `holds_authority` / message-forbidden leaves still agree with
-/// the sealed-authority name list (retained for unforgeability etc.).
-fn dual_run_leaf(name: &str, classes: TypeClasses) {
-    let old_auth = image_checks::is_sealed_authority_type_name(name);
-    assert_eq!(
-        classes.holds_authority, old_auth,
-        "type-class dual-run: holds_authority mismatch for `{name}` \
-         (new={}, old={})",
-        classes.holds_authority, old_auth
-    );
-    let old_msg_forbid = old_auth || name == "InterruptCell";
-    let new_msg_forbid = classes.holds_authority || name == "InterruptCell";
-    assert_eq!(
-        new_msg_forbid, old_msg_forbid,
-        "type-class dual-run: message-forbidden leaf mismatch for `{name}`"
-    );
 }
 
 /// Does the named leaf (or a `resource(manual)` fiat) require consume-on-
@@ -146,8 +126,7 @@ pub fn name_must_consume(name: &str, is_manual_resource: bool) -> bool {
     leaf_classes(name).map(|c| c.must_consume).unwrap_or(false)
 }
 
-/// Does the named leaf hold sealed authority? Dual-runs against
-/// `is_sealed_authority_type_name`.
+/// Does the named leaf hold sealed authority?
 pub fn name_holds_authority(name: &str) -> bool {
     leaf_classes(name)
         .map(|c| c.holds_authority)
@@ -155,15 +134,9 @@ pub fn name_holds_authority(name: &str) -> bool {
 }
 
 /// Leaf used by `driver_message_forbidden_carried`: authority or
-/// `InterruptCell`. Dual-runs against the old OR of those two.
+/// `InterruptCell`.
 pub fn name_forbidden_in_driver_message(name: &str) -> bool {
-    let new = name_holds_authority(name) || name == "InterruptCell";
-    let old = image_checks::is_sealed_authority_type_name(name) || name == "InterruptCell";
-    assert_eq!(
-        new, old,
-        "type-class dual-run: driver-message leaf mismatch for `{name}`"
-    );
-    new
+    name_holds_authority(name) || name == "InterruptCell"
 }
 
 /// Fill `classes` on every struct/enum in `items` (after classification).
@@ -383,61 +356,6 @@ fn lookup_named_classes(
     TypeClasses::default()
 }
 
-/// Does `ty` carry a `must_consume` type at any nesting? Replacement for
-/// the leaf half of `protocol_resource_carried`'s name-list test.
-pub fn type_must_consume_carried(ty: &Type, items: &[DeclItem]) -> Option<String> {
-    use crate::sema::types::render_type;
-    fn walk(ty: &Type, items: &[DeclItem], seen: &mut BTreeSet<String>) -> Option<String> {
-        match ty {
-            Type::Named(name, _) if name_must_consume(name, false) => Some(render_type(ty)),
-            Type::Named(name, _) if name == "Actor" => None,
-            Type::Array(elem, _) => walk(elem, items, seen),
-            Type::Tuple(elems) => elems.iter().find_map(|e| walk(e, items, seen)),
-            Type::Own(_, inner) | Type::Static(inner) | Type::Option(inner) => {
-                walk(inner, items, seen)
-            }
-            Type::Result(ok, err) => walk(ok, items, seen).or_else(|| walk(err, items, seen)),
-            Type::Fn(params, ret) => params
-                .iter()
-                .find_map(|(_, t)| walk(t, items, seen))
-                .or_else(|| walk(ret, items, seen)),
-            Type::Named(name, targs) => {
-                if !seen.insert(name.clone()) {
-                    return None;
-                }
-                let manual = items.iter().find_map(|item| match item {
-                    DeclItem::Struct(s) if s.name == *name => Some(s.is_manual_resource),
-                    _ => None,
-                });
-                if manual == Some(true) {
-                    seen.remove(name);
-                    return Some(render_type(ty));
-                }
-                let via_fields = items.iter().find_map(|item| match item {
-                    DeclItem::Struct(s) if s.name == *name => s
-                        .component_types
-                        .iter()
-                        .find_map(|(t, _)| walk(t, items, seen)),
-                    DeclItem::Enum(e) if e.name == *name => e
-                        .component_types
-                        .iter()
-                        .find_map(|(t, _)| walk(t, items, seen)),
-                    _ => None,
-                });
-                let via_targs = targs.iter().find_map(|a| match a {
-                    TypeArg::Type(t) => walk(t, items, seen),
-                    _ => None,
-                });
-                let found = via_fields.or(via_targs);
-                seen.remove(name);
-                found
-            }
-            _ => None,
-        }
-    }
-    walk(ty, items, &mut BTreeSet::new())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -473,7 +391,7 @@ mod tests {
             let _ = name_forbidden_in_driver_message(name);
             assert_eq!(
                 name_holds_authority(name),
-                image_checks::is_sealed_authority_type_name(name),
+                name_holds_authority(name),
                 "{name} holds_authority"
             );
         }

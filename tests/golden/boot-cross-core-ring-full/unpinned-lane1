@@ -1,0 +1,29 @@
+This case does not pin the guest's `lane1 ...` trailer.
+
+Why (measured 2026-07-29, 10 boots per case on one machine):
+  boot-cross-core-ring-full   2/10 reproduce the pinned trailer
+  every other boot-cross-core-* case, boot-cores-2, boot-cores-3   10/10
+
+The test's own assertions (`admitted == 1`, `rejected == 1`) are
+deterministic and still pinned -- they are what this golden exists to
+prove, and they pass every run. Only the Lane 1 counters are dropped.
+
+Root cause, recorded in stdlib/core/runtime.wr above `__wrela_rt_drain`:
+this case asserts a *rejection*, so it deliberately halts with one
+admitted-but-unprocessed message outstanding. The Lane 1 counters are
+written by whichever core drains (`__wrela_rt_enqueue` / `rt_select` /
+`rt_run_one`) and read by core 0 at `__wrela_rt_summary_and_halt`, with no
+happens-before edge between them -- so whether core 1 was scheduled to
+drain first is pure host timing. plans/M15.md item I deleted the Condvar
+baton that used to serialize this; item J, the interleaving enumerator
+that would have made it reproducible, was cut.
+
+The pin was already re-pinned once to a different draw of the same race
+(a2579154 pinned `run_one=0 hits=`; 82314ed6 changed it to `run_one=1
+hits=0:1`), which is what a pin chasing nondeterminism looks like.
+
+Delete this marker when either remedy runtime.wr names lands:
+  * a bounded quiesce-before-halt step in the entry driver, or
+  * per-core Lane 1 striping summed at dump (the counters are also a
+    non-atomic read-modify-write on shared @placed state today, so two
+    cores draining concurrently can lose an increment even with a join).

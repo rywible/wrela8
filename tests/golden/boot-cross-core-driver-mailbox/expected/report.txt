@@ -66,15 +66,15 @@ ImageReport v0
   CoreStack core=1 base=0x7fe00000 size=0x100000
   CoreStack core=2 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=86772
-  Section name=rodata base=0x40515348 size=742
-  Section name=abort base=0x40515630 size=120
-  Section name=checkpoint base=0x405156a8 size=28
+  Section name=code base=0x40500050 size=86796
+  Section name=rodata base=0x40515360 size=742
+  Section name=abort base=0x40515648 size=120
+  Section name=checkpoint base=0x405156c0 size=28
   Section name=rtdata base=0x40540000 size=2176
   Section name=devregs base=0x40540880 size=8
   Entry base=0x40500000
-  CoreEntry core=1 base=0x405152bc
-  CoreEntry core=2 base=0x40515300
+  CoreEntry core=1 base=0x405152d4
+  CoreEntry core=2 base=0x40515318
   PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
@@ -176,12 +176,12 @@ ImageReport v0
   Rings count=4 stride=64 padding=80 bytes=352
   Totals actors=1 drivers=1 ready_queue=3 group_arena=0 bytes=2176
   DeviceRegs device=device#0 type=Hw driver=Stub base=0x40540880 size=8
-  Cost version=2 digest=ffc153b826203a27 total=35559 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=35559
-    Owner name=app proxy_cycles=3241
-    Owner name=runtime proxy_cycles=32318
+  Cost version=2 digest=ca6c6ea1a27ab060 total=28788 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=28788
+    Owner name=app proxy_cycles=2557
+    Owner name=runtime proxy_cycles=26231
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=147 max_turn_proxy=66 turns_per_sec=36363636.363636367 ms_per_turn_model=0.0000275
-    Core n=1 proxy_cycles=438 max_turn_proxy=371 turns_per_sec=6469002.6954177897 ms_per_turn_model=0.0001545833
-    Core n=2 proxy_cycles=26 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn_model=n/a
-    Shared proxy_cycles=34948
+    Core n=0 proxy_cycles=127 max_turn_proxy=56 turns_per_sec=42857142.8571428582 ms_per_turn_model=0.0000233333
+    Core n=1 proxy_cycles=410 max_turn_proxy=356 turns_per_sec=6741573.0337078655 ms_per_turn_model=0.0001483333
+    Core n=2 proxy_cycles=17 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn_model=n/a
+    Shared proxy_cycles=28234

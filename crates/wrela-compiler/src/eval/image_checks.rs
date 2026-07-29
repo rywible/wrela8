@@ -1458,26 +1458,6 @@ pub(crate) fn is_protocol_state_type_name(name: &str) -> bool {
 /// `@layout` may hold one; an `@actor` may not hold one and a `@driver`
 /// may; and `mwir::size_of`/`codegen::is_aggregate` carry it as one
 /// opaque 8-byte word.
-pub(crate) fn is_sealed_authority_type_name(name: &str) -> bool {
-    is_capability_type_name(name)
-        || is_protocol_state_type_name(name)
-        // plans/M7.md item E1: `VirtQueue[..N]` is sealed authority over
-        // one split ring (03-hardware.md §4) — unforgeable, a resource,
-        // one opaque word at runtime (the control-pool base the ring
-        // lives in). Not one of §1's four capabilities and not a §9
-        // bring-up state, but every structural rule asks the same
-        // question of it.
-        || name == "VirtQueue"
-        // plans/M7.md item E2: the permit `reserve` yields and the
-        // operation `prepare_block` yields (03-hardware.md §4) — sealed
-        // resources, one opaque word each, never constructible from source.
-        || name == "QueuePermit"
-        || name == "QueueOp"
-        // plans/M7.md item E3: `Receipt[P]` (03-hardware.md §5) — the
-        // sealed resource state machine for published work. One opaque
-        // word (caller endpoint); never constructible from source.
-        || name == "Receipt"
-}
 
 /// The noun phrase (with its normative citation) a diagnostic uses for one
 /// of those names, so a rule shared by both lists still says which of the
@@ -1523,27 +1503,14 @@ fn int_value_as_i128(v: &Value) -> Option<i128> {
     })
 }
 
-fn int_bounds(ty: &Type) -> Option<(i128, i128)> {
-    Some(match ty {
-        Type::U8 => (0, u8::MAX as i128),
-        Type::U16 => (0, u16::MAX as i128),
-        Type::U32 => (0, u32::MAX as i128),
-        Type::U64 => (0, u64::MAX as i128),
-        Type::Usize => (0, u64::MAX as i128),
-        Type::I8 => (i8::MIN as i128, i8::MAX as i128),
-        Type::I16 => (i16::MIN as i128, i16::MAX as i128),
-        Type::I32 => (i32::MIN as i128, i32::MAX as i128),
-        Type::I64 => (i64::MIN as i128, i64::MAX as i128),
-        Type::Isize => (i64::MIN as i128, i64::MAX as i128),
-        _ => return None,
-    })
-}
-
 fn value_fits_param_type(arg: &DeclArg, param_ty: &Type) -> bool {
     if &arg.ty == param_ty {
         return true;
     }
-    match (int_value_as_i128(&arg.value), int_bounds(param_ty)) {
+    match (
+        int_value_as_i128(&arg.value),
+        crate::eval::value::int_bounds(param_ty),
+    ) {
         (Some(v), Some((lo, hi))) => v >= lo && v <= hi,
         _ => false,
     }

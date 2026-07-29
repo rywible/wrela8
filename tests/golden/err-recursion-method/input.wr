@@ -1,0 +1,19 @@
+module examples.err_recursion_method
+
+# The same rule through a struct method rather than a module-level fn —
+# `Walker.step` is a node in the very same call graph, keyed
+# `Walker.step`, so a self-call reachable from a runtime root is rejected
+# identically.
+
+struct Walker:
+    depth: u64
+
+    fn step(self, n: u64) -> u64:
+        if n == 0:
+            return self.depth
+        return self.step(n - 1)
+
+@test(runtime)
+fn drives_the_cycle():
+    w = Walker(depth=1)
+    _ = w.step(3)

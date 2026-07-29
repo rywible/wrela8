@@ -665,9 +665,14 @@ pub fn lower_program_with(
     program: &TypedProgram,
     opts: &crate::lower::LowerOpts,
 ) -> Result<FlowWirProgram, FlowError> {
-    let reachable = match &opts.only {
-        Some(set) => set.clone(),
-        None => crate::lower::guest_reachable_keys(program, opts),
+    // Every use below is a `.contains()` — borrow, don't deep-clone.
+    let computed;
+    let reachable: &std::collections::BTreeSet<String> = match &opts.only {
+        Some(set) => set,
+        None => {
+            computed = crate::lower::guest_reachable_keys(program, opts);
+            &computed
+        }
     };
     let mut fns = BTreeMap::new();
     for (name, f) in &program.fns {
@@ -2411,15 +2416,6 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
                 }
             }
             // plans/M10.md item B4: `Bytes.len` is handle word 1.
-            if matches!(base_ty, Type::Bytes(None)) && name == "len" {
-                let dst = b.fresh(e.ty.clone());
-                b.emit_mwir(Inst::Project {
-                    dst,
-                    base: base_temp,
-                    index: 1,
-                });
-                return Ok(dst);
-            }
             let idx = field_index(b.prog, &base_ty, name)?;
             let dst = b.fresh(e.ty.clone());
             b.emit_mwir(Inst::Project {

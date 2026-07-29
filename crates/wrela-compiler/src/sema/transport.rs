@@ -1,15 +1,13 @@
 //! Sealed-transport checkers (plans/M7.md item H1, 03-hardware.md §9).
 //! Extracted from `bodies.rs` along the artifact boundary.
 
-use std::collections::{BTreeMap, BTreeSet};
-
 use crate::sema::bodies::{
     FnCtx, ModuleCtx, check_expr, parse_int_literal, type_error, unwrap_own,
 };
-use crate::sema::typed::{CalleeKey, TypedCallArg, TypedExpr, TypedExprKind};
-use crate::sema::types::{self, DeclMember, DeclParam, Type, TypeArg};
+use crate::sema::typed::{TypedExpr, TypedExprKind};
+use crate::sema::types::{self, Type};
 use crate::sema::{SemaError, unimplemented_at};
-use crate::syntax::ast::{self, AccessMode, Arg, BinOp, Expr, Member, NamedType, Span, Stmt};
+use crate::syntax::ast::{self, AccessMode, Arg, Expr, NamedType, Span};
 
 // --- plans/M7.md item H1: 03-hardware.md §9's sealed transport ------------
 //

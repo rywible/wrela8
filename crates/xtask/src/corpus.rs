@@ -2,29 +2,17 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::{Duration, Instant};
 
-use wrela_compiler::codegen;
-use wrela_compiler::eval;
-use wrela_compiler::flowwir;
-use wrela_compiler::flowwir_lower;
-use wrela_compiler::layout;
 use wrela_compiler::loader;
-use wrela_compiler::lower;
-use wrela_compiler::mwir;
-use wrela_compiler::placement;
-use wrela_compiler::report;
 use wrela_compiler::sema;
-use wrela_compiler::sema::typed::TestKind;
 use wrela_compiler::syntax::ast::Module;
-use wrela_compiler::syntax::lexer::{self, Token, TokenKind};
+use wrela_compiler::syntax::lexer::{self};
 use wrela_compiler::syntax::parser::{self, Parsed};
 use wrela_compiler::syntax::printer;
 
 use crate::corpus_sema_census;
 use crate::corpus_sema_context;
-use crate::{golden_case_dirs, root};
+use crate::root;
 
 // --- corpus ---------------------------------------------------------------
 //

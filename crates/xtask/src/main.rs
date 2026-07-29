@@ -15,7 +15,7 @@
 //!              prints the verbose per-block report for humans; the gate
 //!              itself is the same path `check` runs. A standing guard
 //!              refuses any wrap that discards fence item text.
-//!   fuzz       cargo xtask fuzz [lexer|parser|sema|eval|lower|async]
+//!   fuzz       cargo xtask fuzz [lexer|parser|sema|eval|lower|async|imports|report]
 //!              [--iters N] [--seed S]; deterministic in-tree fuzzer
 //!              (plans/M1.md items B/E, plans/M2.md item I, plans/M3.md
 //!              item F, plans/M5.md item G, plans/M7.md item Y). All six
@@ -165,21 +165,16 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::time::{Duration, Instant};
 
-use wrela_compiler::codegen;
 use wrela_compiler::eval;
-use wrela_compiler::flowwir;
-use wrela_compiler::flowwir_lower;
 use wrela_compiler::layout;
 use wrela_compiler::loader;
-use wrela_compiler::lower;
-use wrela_compiler::mwir;
 use wrela_compiler::opts::{self, CompileMode};
 use wrela_compiler::placement;
 use wrela_compiler::report;
 use wrela_compiler::sema;
 use wrela_compiler::sema::typed::TestKind;
 use wrela_compiler::syntax::ast::Module;
-use wrela_compiler::syntax::lexer::{self, Token, TokenKind};
+use wrela_compiler::syntax::lexer::{self};
 use wrela_compiler::syntax::parser::{self, Parsed};
 use wrela_compiler::syntax::printer;
 
@@ -257,7 +252,7 @@ fn main() -> ExitCode {
         Some("bench") => bench(&args[1..]),
         _ => {
             eprintln!(
-                "usage: cargo xtask <check|golden [--update]|corpus [--sema]|fuzz [lexer|parser|sema|eval|lower|async|imports] [--iters N] [--seed S]|roundtrip|report-determinism|ledger|stdlib-test|repro|diff-eval|diff-block-count|diff-blk|profile|bench <compiler|build|guest>>"
+                "usage: cargo xtask <check|golden [--update]|corpus [--sema]|fuzz [lexer|parser|sema|eval|lower|async|imports|report] [--iters N] [--seed S]|roundtrip|report-determinism|ledger|stdlib-test|repro|diff-eval|diff-block-count|diff-blk|profile|bench <compiler|build|guest>>"
             );
             return ExitCode::FAILURE;
         }
@@ -322,6 +317,9 @@ fn check() -> Result<(), String> {
     // single-file; four reachable `internal error:` finds this milestone
     // all needed an import.
     fuzz_imports_smoke()?;
+    // The VMM's own trust boundary (adversarial audit): forged report
+    // text, which no compiler-side lane can ever generate.
+    fuzz_report_smoke()?;
     // (Historical note, kept for the record: this call was briefly and
     // deliberately absent — the lane's first exercise reproduced a real,
     // pinned `sema::bodies` finding, golden/err-mwir-if-else-scope-leak,
@@ -819,26 +817,17 @@ fn repro_test_image() -> Result<(), String> {
 /// path, no `xtask:<command>`).
 fn repro_choice_log_roundtrip(vmm: &Path) -> Result<(), String> {
     let (img_bytes, report_text) = boot_hello_test_image()?;
-    let tmp_dir = root().join("target/repro-choice-log-tmp");
-    if tmp_dir.exists() {
-        std::fs::remove_dir_all(&tmp_dir)
-            .map_err(|e| format!("remove {}: {e}", tmp_dir.display()))?;
-    }
-    std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("create {}: {e}", tmp_dir.display()))?;
-    let img_path = tmp_dir.join("boot.img");
-    let report_path = tmp_dir.join("boot.report.txt");
-    let record_path = tmp_dir.join("boot.record.txt");
-    std::fs::write(&img_path, &img_bytes).map_err(|e| format!("write img: {e}"))?;
-    std::fs::write(&report_path, &report_text).map_err(|e| format!("write report: {e}"))?;
+    let (tmp_dir, img_path, report_path, record_path) =
+        stage_repro_dir("target/repro-choice-log-tmp", &img_bytes, &report_text)?;
 
-    let record_out = Command::new(vmm)
-        .arg(&report_path)
-        .arg(&img_path)
-        .arg("--record")
-        .arg(&record_path)
-        .output()
-        .map_err(|e| format!("run wrela-vmm --record: {e}"))?;
-    let record_exit = record_out.status.code().unwrap_or(-1);
+    let (_, record_exit) = run_vmm_mode(
+        vmm,
+        &report_path,
+        &img_path,
+        "--record",
+        &record_path,
+        "--record",
+    )?;
     if record_exit != 0 && record_exit != 1 {
         let _ = std::fs::remove_dir_all(&tmp_dir);
         return Err(format!(
@@ -855,14 +844,14 @@ fn repro_choice_log_roundtrip(vmm: &Path) -> Result<(), String> {
         );
     }
 
-    let replay_out = Command::new(vmm)
-        .arg(&report_path)
-        .arg(&img_path)
-        .arg("--replay")
-        .arg(&record_path)
-        .output()
-        .map_err(|e| format!("run wrela-vmm --replay: {e}"))?;
-    let replay_exit = replay_out.status.code().unwrap_or(-1);
+    let (replay_out, replay_exit) = run_vmm_mode(
+        vmm,
+        &report_path,
+        &img_path,
+        "--replay",
+        &record_path,
+        "--replay",
+    )?;
     let _ = std::fs::remove_dir_all(&tmp_dir);
     // A clean (non-diverging) replay mirrors the guest's own exit code
     // exactly like a plain boot (`boot-hello` deliberately fails one
@@ -906,17 +895,11 @@ fn repro_replay_exit_code_contract(vmm: &Path) -> Result<(), String> {
     use wrela_machine::vmm_process::{EXIT_REPLAY_DIVERGENCE, EXIT_VMM_FAILURE};
 
     let (img_bytes, report_text) = boot_hello_test_image()?;
-    let tmp_dir = root().join("target/repro-exit-code-contract-tmp");
-    if tmp_dir.exists() {
-        std::fs::remove_dir_all(&tmp_dir)
-            .map_err(|e| format!("remove {}: {e}", tmp_dir.display()))?;
-    }
-    std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("create {}: {e}", tmp_dir.display()))?;
-    let img_path = tmp_dir.join("boot.img");
-    let report_path = tmp_dir.join("boot.report.txt");
-    let record_path = tmp_dir.join("boot.record.txt");
-    std::fs::write(&img_path, &img_bytes).map_err(|e| format!("write img: {e}"))?;
-    std::fs::write(&report_path, &report_text).map_err(|e| format!("write report: {e}"))?;
+    let (tmp_dir, img_path, report_path, record_path) = stage_repro_dir(
+        "target/repro-exit-code-contract-tmp",
+        &img_bytes,
+        &report_text,
+    )?;
 
     let fail = |tmp_dir: &Path, msg: String| -> Result<(), String> {
         let _ = std::fs::remove_dir_all(tmp_dir);
@@ -924,14 +907,14 @@ fn repro_replay_exit_code_contract(vmm: &Path) -> Result<(), String> {
     };
 
     // --- record: a plain boot's own guest-authored exit code -------------
-    let record_out = Command::new(vmm)
-        .arg(&report_path)
-        .arg(&img_path)
-        .arg("--record")
-        .arg(&record_path)
-        .output()
-        .map_err(|e| format!("run wrela-vmm --record: {e}"))?;
-    let record_exit = record_out.status.code().unwrap_or(-1);
+    let (_, record_exit) = run_vmm_mode(
+        vmm,
+        &report_path,
+        &img_path,
+        "--record",
+        &record_path,
+        "--record",
+    )?;
     if record_exit != 0 && record_exit != 1 {
         return fail(
             &tmp_dir,
@@ -943,14 +926,14 @@ fn repro_replay_exit_code_contract(vmm: &Path) -> Result<(), String> {
     }
 
     // --- clean replay: reflects the identical guest-authored outcome ----
-    let clean_replay = Command::new(vmm)
-        .arg(&report_path)
-        .arg(&img_path)
-        .arg("--replay")
-        .arg(&record_path)
-        .output()
-        .map_err(|e| format!("run wrela-vmm --replay: {e}"))?;
-    let clean_exit = clean_replay.status.code().unwrap_or(-1);
+    let (_, clean_exit) = run_vmm_mode(
+        vmm,
+        &report_path,
+        &img_path,
+        "--replay",
+        &record_path,
+        "--replay",
+    )?;
     if clean_exit != record_exit {
         return fail(
             &tmp_dir,
@@ -979,14 +962,14 @@ fn repro_replay_exit_code_contract(vmm: &Path) -> Result<(), String> {
     let tampered_path = tmp_dir.join("tampered.record.txt");
     std::fs::write(&tampered_path, &tampered_text)
         .map_err(|e| format!("write tampered record: {e}"))?;
-    let diverged_replay = Command::new(vmm)
-        .arg(&report_path)
-        .arg(&img_path)
-        .arg("--replay")
-        .arg(&tampered_path)
-        .output()
-        .map_err(|e| format!("run wrela-vmm --replay (tampered): {e}"))?;
-    let diverged_exit = diverged_replay.status.code().unwrap_or(-1);
+    let (diverged_replay, diverged_exit) = run_vmm_mode(
+        vmm,
+        &report_path,
+        &img_path,
+        "--replay",
+        &tampered_path,
+        "--replay (tampered)",
+    )?;
     if diverged_exit != EXIT_REPLAY_DIVERGENCE {
         return fail(
             &tmp_dir,
@@ -1010,14 +993,14 @@ fn repro_replay_exit_code_contract(vmm: &Path) -> Result<(), String> {
     let malformed_path = tmp_dir.join("malformed.record.txt");
     std::fs::write(&malformed_path, b"not a choice log at all\n")
         .map_err(|e| format!("write malformed record: {e}"))?;
-    let malformed_replay = Command::new(vmm)
-        .arg(&report_path)
-        .arg(&img_path)
-        .arg("--replay")
-        .arg(&malformed_path)
-        .output()
-        .map_err(|e| format!("run wrela-vmm --replay (malformed): {e}"))?;
-    let malformed_exit = malformed_replay.status.code().unwrap_or(-1);
+    let (_, malformed_exit) = run_vmm_mode(
+        vmm,
+        &report_path,
+        &img_path,
+        "--replay",
+        &malformed_path,
+        "--replay (malformed)",
+    )?;
     if malformed_exit != EXIT_VMM_FAILURE {
         return fail(
             &tmp_dir,
@@ -1030,14 +1013,14 @@ fn repro_replay_exit_code_contract(vmm: &Path) -> Result<(), String> {
 
     // --- --record to an unwritable path: must exit EXIT_VMM_FAILURE ------
     let unwritable_path = tmp_dir.join("no-such-subdir").join("rec.txt");
-    let unwritable_record = Command::new(vmm)
-        .arg(&report_path)
-        .arg(&img_path)
-        .arg("--record")
-        .arg(&unwritable_path)
-        .output()
-        .map_err(|e| format!("run wrela-vmm --record (unwritable): {e}"))?;
-    let unwritable_exit = unwritable_record.status.code().unwrap_or(-1);
+    let (_, unwritable_exit) = run_vmm_mode(
+        vmm,
+        &report_path,
+        &img_path,
+        "--record",
+        &unwritable_path,
+        "--record (unwritable)",
+    )?;
     let _ = std::fs::remove_dir_all(&tmp_dir);
     if unwritable_exit != EXIT_VMM_FAILURE {
         return Err(format!(
@@ -1082,26 +1065,17 @@ fn repro_replay_exit_code_contract(vmm: &Path) -> Result<(), String> {
 fn repro_deadline_cancel_replay_is_clock_log_driven(vmm: &Path) -> Result<(), String> {
     use wrela_machine::vmm_process::EXIT_REPLAY_DIVERGENCE;
     let (img_bytes, report_text) = golden_test_image("boot-deadline-cancel")?;
-    let tmp_dir = root().join("target/repro-deadline-cancel-tmp");
-    if tmp_dir.exists() {
-        std::fs::remove_dir_all(&tmp_dir)
-            .map_err(|e| format!("remove {}: {e}", tmp_dir.display()))?;
-    }
-    std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("create {}: {e}", tmp_dir.display()))?;
-    let img_path = tmp_dir.join("boot.img");
-    let report_path = tmp_dir.join("boot.report.txt");
-    let record_path = tmp_dir.join("boot.record.txt");
-    std::fs::write(&img_path, &img_bytes).map_err(|e| format!("write img: {e}"))?;
-    std::fs::write(&report_path, &report_text).map_err(|e| format!("write report: {e}"))?;
+    let (tmp_dir, img_path, report_path, record_path) =
+        stage_repro_dir("target/repro-deadline-cancel-tmp", &img_bytes, &report_text)?;
 
-    let record_out = Command::new(vmm)
-        .arg(&report_path)
-        .arg(&img_path)
-        .arg("--record")
-        .arg(&record_path)
-        .output()
-        .map_err(|e| format!("run wrela-vmm --record: {e}"))?;
-    let record_exit = record_out.status.code().unwrap_or(-1);
+    let (record_out, record_exit) = run_vmm_mode(
+        vmm,
+        &report_path,
+        &img_path,
+        "--record",
+        &record_path,
+        "--record",
+    )?;
     if record_exit != 0 {
         let _ = std::fs::remove_dir_all(&tmp_dir);
         return Err(format!(
@@ -1121,14 +1095,14 @@ fn repro_deadline_cancel_replay_is_clock_log_driven(vmm: &Path) -> Result<(), St
         ));
     }
 
-    let replay_out = Command::new(vmm)
-        .arg(&report_path)
-        .arg(&img_path)
-        .arg("--replay")
-        .arg(&record_path)
-        .output()
-        .map_err(|e| format!("run wrela-vmm --replay: {e}"))?;
-    let replay_exit = replay_out.status.code().unwrap_or(-1);
+    let (replay_out, replay_exit) = run_vmm_mode(
+        vmm,
+        &report_path,
+        &img_path,
+        "--replay",
+        &record_path,
+        "--replay",
+    )?;
     if replay_exit != record_exit {
         let _ = std::fs::remove_dir_all(&tmp_dir);
         return Err(format!(
@@ -1160,14 +1134,14 @@ fn repro_deadline_cancel_replay_is_clock_log_driven(vmm: &Path) -> Result<(), St
     }
     let tampered_path = tmp_dir.join("boot.tampered.txt");
     std::fs::write(&tampered_path, &tampered).map_err(|e| format!("write tampered: {e}"))?;
-    let tampered_out = Command::new(vmm)
-        .arg(&report_path)
-        .arg(&img_path)
-        .arg("--replay")
-        .arg(&tampered_path)
-        .output()
-        .map_err(|e| format!("run wrela-vmm --replay (tampered): {e}"))?;
-    let tampered_exit = tampered_out.status.code().unwrap_or(-1);
+    let (tampered_out, tampered_exit) = run_vmm_mode(
+        vmm,
+        &report_path,
+        &img_path,
+        "--replay",
+        &tampered_path,
+        "--replay (tampered)",
+    )?;
     let _ = std::fs::remove_dir_all(&tmp_dir);
     if tampered_exit != EXIT_REPLAY_DIVERGENCE {
         return Err(format!(
@@ -1197,26 +1171,17 @@ fn repro_deadline_cancel_replay_is_clock_log_driven(vmm: &Path) -> Result<(), St
 fn repro_entropy_replay_is_choice_log_driven(vmm: &Path) -> Result<(), String> {
     use wrela_machine::vmm_process::EXIT_REPLAY_DIVERGENCE;
     let (img_bytes, report_text) = golden_test_image("boot-entropy-hex")?;
-    let tmp_dir = root().join("target/repro-entropy-tmp");
-    if tmp_dir.exists() {
-        std::fs::remove_dir_all(&tmp_dir)
-            .map_err(|e| format!("remove {}: {e}", tmp_dir.display()))?;
-    }
-    std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("create {}: {e}", tmp_dir.display()))?;
-    let img_path = tmp_dir.join("boot.img");
-    let report_path = tmp_dir.join("boot.report.txt");
-    let record_path = tmp_dir.join("boot.record.txt");
-    std::fs::write(&img_path, &img_bytes).map_err(|e| format!("write img: {e}"))?;
-    std::fs::write(&report_path, &report_text).map_err(|e| format!("write report: {e}"))?;
+    let (tmp_dir, img_path, report_path, record_path) =
+        stage_repro_dir("target/repro-entropy-tmp", &img_bytes, &report_text)?;
 
-    let record_out = Command::new(vmm)
-        .arg(&report_path)
-        .arg(&img_path)
-        .arg("--record")
-        .arg(&record_path)
-        .output()
-        .map_err(|e| format!("run wrela-vmm --record: {e}"))?;
-    let record_exit = record_out.status.code().unwrap_or(-1);
+    let (record_out, record_exit) = run_vmm_mode(
+        vmm,
+        &report_path,
+        &img_path,
+        "--record",
+        &record_path,
+        "--record",
+    )?;
     if record_exit != 0 {
         let _ = std::fs::remove_dir_all(&tmp_dir);
         return Err(format!(
@@ -1235,14 +1200,14 @@ fn repro_entropy_replay_is_choice_log_driven(vmm: &Path) -> Result<(), String> {
         ));
     }
 
-    let replay_out = Command::new(vmm)
-        .arg(&report_path)
-        .arg(&img_path)
-        .arg("--replay")
-        .arg(&record_path)
-        .output()
-        .map_err(|e| format!("run wrela-vmm --replay: {e}"))?;
-    let replay_exit = replay_out.status.code().unwrap_or(-1);
+    let (replay_out, replay_exit) = run_vmm_mode(
+        vmm,
+        &report_path,
+        &img_path,
+        "--replay",
+        &record_path,
+        "--replay",
+    )?;
     if replay_exit != record_exit {
         let _ = std::fs::remove_dir_all(&tmp_dir);
         return Err(format!(
@@ -1311,14 +1276,14 @@ fn repro_entropy_replay_is_choice_log_driven(vmm: &Path) -> Result<(), String> {
     }
     let tampered_path = tmp_dir.join("boot.tampered.txt");
     std::fs::write(&tampered_path, &tampered).map_err(|e| format!("write tampered: {e}"))?;
-    let tampered_out = Command::new(vmm)
-        .arg(&report_path)
-        .arg(&img_path)
-        .arg("--replay")
-        .arg(&tampered_path)
-        .output()
-        .map_err(|e| format!("run wrela-vmm --replay (tampered): {e}"))?;
-    let tampered_exit = tampered_out.status.code().unwrap_or(-1);
+    let (tampered_out, tampered_exit) = run_vmm_mode(
+        vmm,
+        &report_path,
+        &img_path,
+        "--replay",
+        &tampered_path,
+        "--replay (tampered)",
+    )?;
     let _ = std::fs::remove_dir_all(&tmp_dir);
     if tampered_exit != EXIT_REPLAY_DIVERGENCE {
         return Err(format!(
@@ -1367,26 +1332,17 @@ fn repro() -> Result<(), String> {
 fn repro_cross_core_mailbox_depth_admissions(vmm: &Path) -> Result<(), String> {
     const CASE: &str = "boot-cross-core-mailbox-depth";
     let (img_bytes, report_text) = golden_test_image(CASE)?;
-    let tmp_dir = root().join("target/repro-mailbox-depth-tmp");
-    if tmp_dir.exists() {
-        std::fs::remove_dir_all(&tmp_dir)
-            .map_err(|e| format!("remove {}: {e}", tmp_dir.display()))?;
-    }
-    std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("create {}: {e}", tmp_dir.display()))?;
-    let img_path = tmp_dir.join("boot.img");
-    let report_path = tmp_dir.join("boot.report.txt");
-    let record_path = tmp_dir.join("boot.record.txt");
-    std::fs::write(&img_path, &img_bytes).map_err(|e| format!("write img: {e}"))?;
-    std::fs::write(&report_path, &report_text).map_err(|e| format!("write report: {e}"))?;
+    let (tmp_dir, img_path, report_path, record_path) =
+        stage_repro_dir("target/repro-mailbox-depth-tmp", &img_bytes, &report_text)?;
 
-    let record_out = Command::new(vmm)
-        .arg(&report_path)
-        .arg(&img_path)
-        .arg("--record")
-        .arg(&record_path)
-        .output()
-        .map_err(|e| format!("run wrela-vmm --record: {e}"))?;
-    let record_exit = record_out.status.code().unwrap_or(-1);
+    let (record_out, record_exit) = run_vmm_mode(
+        vmm,
+        &report_path,
+        &img_path,
+        "--record",
+        &record_path,
+        "--record",
+    )?;
     if record_exit != 0 {
         let _ = std::fs::remove_dir_all(&tmp_dir);
         return Err(format!(
@@ -1417,14 +1373,14 @@ fn repro_cross_core_mailbox_depth_admissions(vmm: &Path) -> Result<(), String> {
             admissions
         ));
     }
-    let replay_out = Command::new(vmm)
-        .arg(&report_path)
-        .arg(&img_path)
-        .arg("--replay")
-        .arg(&record_path)
-        .output()
-        .map_err(|e| format!("run wrela-vmm --replay: {e}"))?;
-    let replay_exit = replay_out.status.code().unwrap_or(-1);
+    let (replay_out, replay_exit) = run_vmm_mode(
+        vmm,
+        &report_path,
+        &img_path,
+        "--replay",
+        &record_path,
+        "--replay",
+    )?;
     let _ = std::fs::remove_dir_all(&tmp_dir);
     if replay_exit != record_exit {
         return Err(format!(
@@ -1474,26 +1430,17 @@ fn repro_cross_core_admission_replay(vmm: &Path) -> Result<(), String> {
     use wrela_machine::vmm_process::EXIT_REPLAY_DIVERGENCE;
     const CASE: &str = "boot-cross-core-admission-order";
     let (img_bytes, report_text) = golden_test_image(CASE)?;
-    let tmp_dir = root().join("target/repro-admission-tmp");
-    if tmp_dir.exists() {
-        std::fs::remove_dir_all(&tmp_dir)
-            .map_err(|e| format!("remove {}: {e}", tmp_dir.display()))?;
-    }
-    std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("create {}: {e}", tmp_dir.display()))?;
-    let img_path = tmp_dir.join("boot.img");
-    let report_path = tmp_dir.join("boot.report.txt");
-    let record_path = tmp_dir.join("boot.record.txt");
-    std::fs::write(&img_path, &img_bytes).map_err(|e| format!("write img: {e}"))?;
-    std::fs::write(&report_path, &report_text).map_err(|e| format!("write report: {e}"))?;
+    let (tmp_dir, img_path, report_path, record_path) =
+        stage_repro_dir("target/repro-admission-tmp", &img_bytes, &report_text)?;
 
-    let record_out = Command::new(vmm)
-        .arg(&report_path)
-        .arg(&img_path)
-        .arg("--record")
-        .arg(&record_path)
-        .output()
-        .map_err(|e| format!("run wrela-vmm --record: {e}"))?;
-    let record_exit = record_out.status.code().unwrap_or(-1);
+    let (record_out, record_exit) = run_vmm_mode(
+        vmm,
+        &report_path,
+        &img_path,
+        "--record",
+        &record_path,
+        "--record",
+    )?;
     if record_exit != 0 {
         let _ = std::fs::remove_dir_all(&tmp_dir);
         return Err(format!(
@@ -1542,14 +1489,14 @@ fn repro_cross_core_admission_replay(vmm: &Path) -> Result<(), String> {
     }
 
     // (2) Replay is clean: zero divergence, same guest-authored exit code.
-    let replay_out = Command::new(vmm)
-        .arg(&report_path)
-        .arg(&img_path)
-        .arg("--replay")
-        .arg(&record_path)
-        .output()
-        .map_err(|e| format!("run wrela-vmm --replay: {e}"))?;
-    let replay_exit = replay_out.status.code().unwrap_or(-1);
+    let (replay_out, replay_exit) = run_vmm_mode(
+        vmm,
+        &report_path,
+        &img_path,
+        "--replay",
+        &record_path,
+        "--replay",
+    )?;
     if replay_exit != record_exit {
         let _ = std::fs::remove_dir_all(&tmp_dir);
         return Err(format!(
@@ -1812,14 +1759,14 @@ fn repro_blk_completion_replay(vmm: &Path) -> Result<(), String> {
     std::fs::write(&img_path, &img_bytes).map_err(|e| format!("write img: {e}"))?;
     std::fs::write(&report_path, &report_text).map_err(|e| format!("write report: {e}"))?;
 
-    let record_out = Command::new(vmm)
-        .arg(&report_path)
-        .arg(&img_path)
-        .arg("--record")
-        .arg(&record_path)
-        .output()
-        .map_err(|e| format!("run wrela-vmm --record: {e}"))?;
-    let record_exit = record_out.status.code().unwrap_or(-1);
+    let (record_out, record_exit) = run_vmm_mode(
+        vmm,
+        &report_path,
+        &img_path,
+        "--record",
+        &record_path,
+        "--record",
+    )?;
     if record_exit != 0 {
         let _ = std::fs::remove_dir_all(&tmp_dir);
         return Err(format!(
@@ -1839,14 +1786,14 @@ fn repro_blk_completion_replay(vmm: &Path) -> Result<(), String> {
         ));
     }
 
-    let replay_out = Command::new(vmm)
-        .arg(&report_path)
-        .arg(&img_path)
-        .arg("--replay")
-        .arg(&record_path)
-        .output()
-        .map_err(|e| format!("run wrela-vmm --replay: {e}"))?;
-    let replay_exit = replay_out.status.code().unwrap_or(-1);
+    let (replay_out, replay_exit) = run_vmm_mode(
+        vmm,
+        &report_path,
+        &img_path,
+        "--replay",
+        &record_path,
+        "--replay",
+    )?;
     if replay_exit != record_exit {
         let _ = std::fs::remove_dir_all(&tmp_dir);
         return Err(format!(
@@ -1880,14 +1827,14 @@ fn repro_blk_completion_replay(vmm: &Path) -> Result<(), String> {
     }
     let tampered_path = tmp_dir.join("blk.tampered.txt");
     std::fs::write(&tampered_path, &tampered).map_err(|e| format!("write tampered: {e}"))?;
-    let tampered_out = Command::new(vmm)
-        .arg(&report_path)
-        .arg(&img_path)
-        .arg("--replay")
-        .arg(&tampered_path)
-        .output()
-        .map_err(|e| format!("run wrela-vmm --replay (tampered): {e}"))?;
-    let tampered_exit = tampered_out.status.code().unwrap_or(-1);
+    let (tampered_out, tampered_exit) = run_vmm_mode(
+        vmm,
+        &report_path,
+        &img_path,
+        "--replay",
+        &tampered_path,
+        "--replay (tampered)",
+    )?;
     let stderr = String::from_utf8_lossy(&tampered_out.stderr).to_string();
     let _ = std::fs::remove_dir_all(&tmp_dir);
     if tampered_exit != EXIT_REPLAY_DIVERGENCE {
@@ -2314,6 +2261,51 @@ pub(crate) fn build_runtime_test_image(
 struct VmmBoot {
     transcript: String,
     exit_code_class: i32,
+}
+
+/// One repro lane's scratch directory, freshly created, with the image and
+/// report already written into it. Every lane staged these by hand — the
+/// only thing that ever differed was the directory name.
+fn stage_repro_dir(
+    dir_name: &str,
+    img_bytes: &[u8],
+    report_text: &str,
+) -> Result<(PathBuf, PathBuf, PathBuf, PathBuf), String> {
+    let tmp_dir = root().join(dir_name);
+    if tmp_dir.exists() {
+        std::fs::remove_dir_all(&tmp_dir)
+            .map_err(|e| format!("remove {}: {e}", tmp_dir.display()))?;
+    }
+    std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("create {}: {e}", tmp_dir.display()))?;
+    let img_path = tmp_dir.join("boot.img");
+    let report_path = tmp_dir.join("boot.report.txt");
+    let record_path = tmp_dir.join("boot.record.txt");
+    std::fs::write(&img_path, img_bytes).map_err(|e| format!("write img: {e}"))?;
+    std::fs::write(&report_path, report_text).map_err(|e| format!("write report: {e}"))?;
+    Ok((tmp_dir, img_path, report_path, record_path))
+}
+
+/// Spawn the signed `wrela-vmm` on a staged image, with one trailing
+/// mode flag pair (`--record <path>` / `--replay <path>`), and return its
+/// output plus the exit code every caller computes anyway. `what` names the
+/// invocation in the spawn-failure message only.
+fn run_vmm_mode(
+    vmm: &Path,
+    report_path: &Path,
+    img_path: &Path,
+    mode: &str,
+    mode_path: &Path,
+    what: &str,
+) -> Result<(std::process::Output, i32), String> {
+    let out = Command::new(vmm)
+        .arg(report_path)
+        .arg(img_path)
+        .arg(mode)
+        .arg(mode_path)
+        .output()
+        .map_err(|e| format!("run wrela-vmm {what}: {e}"))?;
+    let code = out.status.code().unwrap_or(-1);
+    Ok((out, code))
 }
 
 fn run_vmm(vmm: &Path, report_path: &Path, img_path: &Path) -> Result<VmmBoot, String> {

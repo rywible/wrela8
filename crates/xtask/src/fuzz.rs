@@ -2,18 +2,14 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::{Duration, Instant};
 
 use wrela_compiler::codegen;
 use wrela_compiler::eval;
 use wrela_compiler::flowwir;
 use wrela_compiler::flowwir_lower;
 use wrela_compiler::layout;
-use wrela_compiler::loader;
 use wrela_compiler::lower;
 use wrela_compiler::mwir;
-use wrela_compiler::placement;
 use wrela_compiler::report;
 use wrela_compiler::sema;
 use wrela_compiler::sema::typed::TestKind;
@@ -22,8 +18,8 @@ use wrela_compiler::syntax::lexer::{self, Token, TokenKind};
 use wrela_compiler::syntax::parser::{self, Parsed};
 use wrela_compiler::syntax::printer;
 
-use crate::corpus::{extract_doc_blocks, extract_example_files};
-use crate::{fail_closed, golden_case_dirs, root};
+use crate::corpus::extract_doc_blocks;
+use crate::{golden_case_dirs, root};
 
 // --- fuzz -------------------------------------------------------------
 //
@@ -94,7 +90,8 @@ pub(crate) fn fuzz(args: &[String]) -> Result<(), String> {
                 || a == "eval"
                 || a == "lower"
                 || a == "async"
-                || a == "imports" =>
+                || a == "imports"
+                || a == "report" =>
         {
             (a.as_str(), &args[1..])
         }
@@ -136,9 +133,14 @@ pub(crate) fn fuzz(args: &[String]) -> Result<(), String> {
             let seed = parse_flag_u64(rest, "--seed")?.unwrap_or(FUZZ_IMPORTS_DEEP_SEED);
             fuzz_imports(iters, seed)
         }
+        "report" => {
+            let iters = parse_flag_u64(rest, "--iters")?.unwrap_or(FUZZ_REPORT_DEEP_ITERS);
+            let seed = parse_flag_u64(rest, "--seed")?.unwrap_or(FUZZ_REPORT_DEEP_SEED);
+            fuzz_report(iters, seed)
+        }
         other => Err(format!(
             "fuzz: unknown target `{other}` (expected `lexer`, `parser`, `sema`, `eval`, \
-             `lower`, `async`, or `imports`)"
+             `lower`, `async`, `imports`, or `report`)"
         )),
     }
 }
@@ -2164,44 +2166,16 @@ pub(crate) fn fuzz_eval_smoke() -> Result<(), String> {
 // in `lower.rs`/`codegen.rs`; a root cause in `sema`/`eval` is pinned and
 // reported instead (out of this lane's own scope).
 //
-// Live finding, disclosed rather than routed around (plans/M5.md item G's
-// own "pin as golden per house rule BEFORE fixing... if the root cause is
-// in sema/eval, pin + report, don't fix out-of-scope"): this lane's very
-// first real exercise found a genuine, reproducible `sema::bodies` over-
-// acceptance bug, pinned at `golden/err-mwir-if-else-scope-leak` — an
-// `if`/`else` whose two branches each declare their own explicitly-typed
-// local under the identical name (`value: u64 = 1` / `value: u64 = 2`,
-// each syntactically its own fresh, block-scoped declaration, not 02
-// §8.1's own documented bare-assignment "definite-init merge" idiom) is
-// wrongly accepted by `check_typed` — its own `--stage=typed` dump shows
-// the `else` branch's declaration demoted to a plain `Assign` onto the
-// `then` branch's local, and the name survives, wrongly, past the end of
-// the whole `if`/`else` for the trailing `return value` to read. This is a
-// real defect in `sema::bodies`'s own scope handling, not a lowering gap:
-// `lower.rs`'s own per-block `LEnv` push/pop is what actually behaves
-// correctly here (its own "should be unreachable for a `check_typed`-
-// accepted program" internal guard is exactly what surfaces the upstream
-// bug). Root cause confirmed out of this session's own permitted scope
-// (`sema/`/`eval/` logic — CLAUDE.md/task rules), so it is pinned and
-// reported, not fixed here.
-//
-// Severity, measured directly rather than assumed: this shape is common
-// enough in the existing corpus (`value` is an extremely frequent local
-// name across the real `tests/golden/*/input.wr` seed set) that a single
-// 1-4-op mutation reaches it almost immediately at *every* seed tried —
-// 1 through 20, inclusive, every one crashed within 3000 iterations (seed
-// 7 crashed at iteration *0*, i.e. the very first mutated input already
-// triggered it). There is consequently no seed/iteration budget, however
-// small, that currently gives an honest "clean" smoke or deep run — every
-// seed reproduces the *same* already-pinned, already-reported bug, not a
-// spread of distinct ones a bigger corpus or a different seed could dodge.
-// Per plans/M5.md item G's own explicit "fix or report finds first"
-// instruction (before the required 3-fresh-seed deep-clean check), this
-// session reports rather than fakes a clean run: `fuzz_lower_smoke` is
-// therefore NOT called from `check()` (see that call site's own comment),
-// and `FUZZ_LOWER_DEEP_ITERS`/`FUZZ_LOWER_DEEP_SEED` below describe the
-// budget this lane is *sized* for once the sema fix lands, not a budget it
-// currently completes.
+// History, kept because the golden it produced is still the regression
+// lock: this lane's first real exercise found a `sema::bodies` over-
+// acceptance bug — an `if`/`else` whose two branches each declared their
+// own explicitly-typed local under the identical name leaked that name
+// past the end of the whole `if`/`else`. It was pinned at
+// `golden/err-mwir-if-else-scope-leak` before being fixed (commit
+// 5766861, `sema.names.resolution`); that golden now expects the
+// `error[name]: unknown name` the fix produces. The lane has been wired
+// into `check()` since M5-G finalization and runs clean at its deep
+// budget on fresh seeds.
 //
 // Per-iteration cost, measured anyway (aggregated across seeds 1-30's own
 // pre-crash prefixes, `target/fuzz/xtask` debug build, authoring machine —
@@ -2222,13 +2196,7 @@ pub(crate) fn fuzz_eval_smoke() -> Result<(), String> {
 // is fixed.
 pub(crate) const FUZZ_LOWER_DEEP_ITERS: u64 = 2_000_000;
 pub(crate) const FUZZ_LOWER_DEEP_SEED: u64 = 1;
-// `#[allow(dead_code)]`: not yet read by `check()` (`fuzz_lower_smoke`'s own
-// doc comment explains why) — deliberately kept, not deleted, so wiring
-// the smoke call back in once the blocking sema fix lands is a one-line
-// change with its own budget already named here.
-#[allow(dead_code)]
 pub(crate) const FUZZ_LOWER_SMOKE_SEEDS: &[u64] = &[1, 2];
-#[allow(dead_code)]
 pub(crate) const FUZZ_LOWER_SMOKE_ITERS_PER_SEED: u64 = 1_000;
 
 /// What a successful `layout::layout_test_image` attempt contributes to
@@ -2772,24 +2740,9 @@ pub(crate) fn fuzz_lower(iters: u64, seed: u64) -> Result<(), String> {
 }
 
 /// Same shape as every other lane's own `_smoke` fn (2 fixed seeds, 1_000
-/// iterations apiece) — but, unlike every other lane's, **not** called from
-/// `check()` yet (hence `#[allow(dead_code)]` below). `FUZZ_LOWER_DEEP_ITERS`'s
-/// own doc comment (above) records why: this lane's very first real
-/// exercise found a genuine, pinned, out-of-scope `sema::bodies` bug
-/// (`golden/err-mwir-if-else-scope-leak`) that the first of these two fixed
-/// smoke seeds already reproduces well inside 1_000 iterations (seed=1 at
-/// iteration 708, on the corpus as of this commit — `run_lower_fuzz`
-/// returns on that `Err` before `fuzz_lower_smoke`'s own loop ever reaches
-/// seed=2, whose own first reproduction of the identical bug happens to
-/// land at iteration 2134, past this particular smoke budget, on this same
-/// corpus) — and every seed 1 through 20 tried this session reproduces it
-/// within 3_000 iterations regardless, so there is no seed choice here that
-/// would make this call honest today, only ones that happen to delay it
-/// past whatever budget is picked. Callable directly (`cargo xtask fuzz
-/// lower --iters 1000 --seed 1`) for verification; wire it into `check()`
-/// (one line, right where every other `fuzz_*_smoke` call already sits)
-/// the moment the sema fix lands.
-#[allow(dead_code)]
+/// iterations apiece), and — like every other lane's — called from
+/// `check()`. Also callable directly for verification: `cargo xtask fuzz
+/// lower --iters 1000 --seed 1`.
 pub(crate) fn fuzz_lower_smoke() -> Result<(), String> {
     let seed_inputs = corpus_seed_inputs()?;
     with_silenced_panic_hook(|| {
@@ -3901,6 +3854,318 @@ pub(crate) fn fuzz_imports_smoke() -> Result<(), String> {
     with_silenced_panic_hook(|| {
         for &seed in FUZZ_IMPORTS_SMOKE_SEEDS {
             run_imports_fuzz(FUZZ_IMPORTS_SMOKE_ITERS_PER_SEED, seed)?;
+        }
+        Ok(())
+    })
+}
+
+// ===========================================================================
+// The `report` lane (adversarial audit, 2026-07-29).
+//
+// Every lane above this one targets the compiler's own front/middle end,
+// which means nothing in the fuzzer ever touched the VMM's actual trust
+// boundary: `wrela_machine::report::parse_report`, 1600+ lines of
+// deliberately adversarial parsing whose own comments name forged reports
+// as the threat model, had four unit tests and no fuzz coverage at all. A
+// random `.wr` source can never produce a malformed report, so no existing
+// lane can reach this code.
+//
+// The generator emits a *well-formed* VMM-facing report and then mutates
+// one field, so mutations land on real structure rather than on noise
+// (the same corpus-mutation principle the `async` lane uses, for the same
+// reason: no random byte stream ever spells a valid report). The oracle is
+// three-part, and deliberately stronger than "did not panic":
+//
+//   1. `parse_report` must never panic and never report an `internal
+//      error:` — either is a bug, not an outcome.
+//   2. An **accepted** report must independently re-satisfy the structural
+//      invariants the VMM then trusts. This is the half that matters: the
+//      `cap`/`slot` floor defect was an *accepted* report carrying
+//      `cap = u64::MAX`, which the VMM turned into a loop bound. A lane
+//      that only watched for panics would have sailed straight past it.
+//   3. Rejections must be plain `String` diagnostics (fail closed), which
+//      is automatic given (1).
+//
+// Measured reach (plans/M9.md item PP) is printed as accepted/rejected
+// counts, so a generator that degenerates into "clean about nothing" —
+// every mutation rejected at line 1 — is visible in the output instead of
+// reading as a green run.
+
+pub(crate) const FUZZ_REPORT_DEEP_ITERS: u64 = 200_000;
+pub(crate) const FUZZ_REPORT_DEEP_SEED: u64 = 1;
+pub(crate) const FUZZ_REPORT_SMOKE_SEEDS: &[u64] = &[1, 2];
+pub(crate) const FUZZ_REPORT_SMOKE_ITERS_PER_SEED: u64 = 1_000;
+
+/// A well-formed VMM-facing report: the identity preamble, one `rtdata`
+/// section wide enough to hold the rings, two cores with their entries and
+/// high-DRAM stacks, and one request/reply ring pair. Every address is
+/// derived from `wrela_machine::layout` rather than hardcoded, so a layout
+/// change moves the generator with it.
+fn report_fuzz_baseline() -> String {
+    use wrela_machine::layout as ml;
+    use wrela_machine::report::EMPTY_SHA256;
+
+    let cores = 2usize;
+    // `rtdata` sits above IMAGE_BASE and below the high-DRAM stacks.
+    let rtdata_base = ml::RTDATA_BASE;
+    let rtdata_size = 0x1000u64;
+    let entry = ml::IMAGE_BASE;
+    let mut s = String::new();
+    s.push_str(&format!(
+        "Machine revision={}\n",
+        wrela_machine::MACHINE_REVISION_STR
+    ));
+    s.push_str(&format!("Input path=<fuzz> sha256={EMPTY_SHA256}\n"));
+    s.push_str(&format!("Image sha256={EMPTY_SHA256}\n"));
+    s.push_str(&format!(
+        "Section name=rtcode base={:#x} size={}\n",
+        entry, 0x1000
+    ));
+    s.push_str(&format!(
+        "Section name=rtdata base={rtdata_base:#x} size={rtdata_size}\n"
+    ));
+    s.push_str(&format!("Entry base={entry:#x}\n"));
+    s.push_str(&format!("Cores count={cores}\n"));
+    s.push_str(&format!("CoreEntry core=1 base={:#x}\n", entry + 0x40));
+    for c in 0..cores {
+        s.push_str(&format!(
+            "CoreStack core={c} base={:#x} size={}\n",
+            ml::core_stack_base_n(c, cores),
+            ml::CORE_STACK_SIZE
+        ));
+    }
+    s.push_str("Actor name=Root\n");
+    // cap*slot + 24 == bytes, and both rings sit inside `rtdata`.
+    let cap = 4u64;
+    let slot = 16u64;
+    let bytes = cap * slot + 24;
+    s.push_str(&format!(
+        "Ring kind=request src=1 dst=0 target=Root cap={cap} slot={slot} bytes={bytes} \
+         base={:#x}\n",
+        rtdata_base
+    ));
+    s.push_str(&format!(
+        "Ring kind=reply src=0 dst=1 target=- cap={cap} slot={slot} bytes={bytes} base={:#x}\n",
+        rtdata_base + 0x200
+    ));
+    s
+}
+
+/// Every invariant an *accepted* `ParsedReport` must independently satisfy
+/// before the VMM is allowed to trust it. Returns the violated rule's own
+/// name, or `None`.
+///
+/// These re-derive, rather than re-call, the parser's own checks — a check
+/// that simply asked the parser whether it was happy would be vacuous.
+fn report_accepted_invariants(p: &wrela_machine::report::ParsedReport) -> Option<String> {
+    use wrela_machine::layout as ml;
+    let dram_end = ml::dram_end();
+
+    if p.cores < 1 || p.cores > wrela_machine::CORE_SLOTS {
+        return Some(format!(
+            "accepted `Cores count={}` outside 1..=CORE_SLOTS",
+            p.cores
+        ));
+    }
+    if p.entry < ml::DRAM_BASE || p.entry >= dram_end || p.entry % 4 != 0 {
+        return Some(format!(
+            "accepted `Entry base={:#x}`: outside DRAM or misaligned",
+            p.entry
+        ));
+    }
+    for e in &p.core_entries {
+        if e.core == 0 || e.core >= p.cores {
+            return Some(format!(
+                "accepted `CoreEntry core={}` outside 1..cores",
+                e.core
+            ));
+        }
+    }
+    for r in &p.request_rings {
+        if r.src >= p.cores || r.dst >= p.cores {
+            return Some(format!(
+                "accepted `Ring src={} dst={}` naming a core outside 0..{}",
+                r.src, r.dst, p.cores
+            ));
+        }
+        // The defect this lane exists to catch: `cap` is a loop bound and
+        // a modulus in `wrela_vmm::exit_loop::AdmissionWitness`, so an
+        // accepted capacity must be something guest DRAM could physically
+        // hold. `slot >= 1` makes `cap <= bytes <= DRAM_SIZE` structural.
+        if r.capacity == 0 || r.capacity > ml::DRAM_SIZE {
+            return Some(format!(
+                "accepted `Ring cap={}`: not a capacity guest DRAM can hold (this is the value \
+                 the admission witness uses as a loop bound)",
+                r.capacity
+            ));
+        }
+        // `count_addr` is dereferenced host-side via `guest_dram_offset`.
+        if r.count_addr < ml::DRAM_BASE || r.count_addr.saturating_add(8) > dram_end {
+            return Some(format!(
+                "accepted ring `count_addr={:#x}` outside guest DRAM",
+                r.count_addr
+            ));
+        }
+    }
+    for s in &p.exec_sections {
+        if s.base < ml::DRAM_BASE || s.base.saturating_add(s.size) > dram_end {
+            return Some(format!(
+                "accepted exec `Section name={} base={:#x} size={}` outside guest DRAM (this \
+                 range is handed to `hv_vm_protect`)",
+                s.name, s.base, s.size
+            ));
+        }
+    }
+    None
+}
+
+/// One mutation of the baseline report text. Deliberately structure-aware:
+/// swap a field's value for an adversarial one, duplicate a whole line, or
+/// drop a line — the three shapes a forged report actually takes.
+fn mutate_report(rng: &mut Rng, base: &str) -> String {
+    const NASTY: &[&str] = &[
+        "0",
+        "1",
+        "18446744073709551615",
+        "9223372036854775808",
+        "0x0",
+        "0xffffffffffffffff",
+        "0x40500001",
+        "-1",
+        "",
+        "0x0x40500000",
+        "4294967296",
+        "33",
+    ];
+    let mut lines: Vec<String> = base.lines().map(|l| l.to_string()).collect();
+    if lines.is_empty() {
+        return base.to_string();
+    }
+    match rng.gen_range(4) {
+        // Duplicate a line — the `Entry base=` last-wins defect's own shape.
+        0 => {
+            let i = rng.gen_range(lines.len());
+            let dup = lines[i].clone();
+            lines.insert(i, dup);
+        }
+        // Drop a line.
+        1 => {
+            let i = rng.gen_range(lines.len());
+            lines.remove(i);
+        }
+        // Replace one `key=value`'s value with an adversarial token.
+        2 => {
+            let i = rng.gen_range(lines.len());
+            let line = lines[i].clone();
+            let fields: Vec<usize> = line
+                .char_indices()
+                .filter(|(_, c)| *c == '=')
+                .map(|(i, _)| i)
+                .collect();
+            if !fields.is_empty() {
+                let eq = fields[rng.gen_range(fields.len())];
+                let tail = &line[eq + 1..];
+                let end = tail.find(' ').map(|j| eq + 1 + j).unwrap_or(line.len());
+                let nasty = NASTY[rng.gen_range(NASTY.len())];
+                lines[i] = format!("{}{}{}", &line[..=eq], nasty, &line[end..]);
+            }
+        }
+        // Append a whole extra line copied from elsewhere in the report.
+        _ => {
+            let i = rng.gen_range(lines.len());
+            lines.push(lines[i].clone());
+        }
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
+}
+
+fn run_report_fuzz(iters: u64, seed: u64) -> Result<(), String> {
+    let base = report_fuzz_baseline();
+    // The unmutated baseline must parse — otherwise every "rejected" below
+    // is measuring the generator, not the parser (the `clean about
+    // nothing` failure mode plans/M9.md item PP names).
+    let parsed_base = wrela_machine::report::parse_report(&base).map_err(|e| {
+        format!("fuzz report: the baseline report must parse, but it was rejected: {e}")
+    })?;
+    if let Some(bad) = report_accepted_invariants(&parsed_base) {
+        return Err(format!(
+            "fuzz report: the baseline violates its own oracle: {bad}"
+        ));
+    }
+
+    let mut rng = Rng::new(seed);
+    let (mut accepted, mut rejected) = (0u64, 0u64);
+    for i in 0..iters {
+        let input = mutate_report(&mut rng, &base);
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            wrela_machine::report::parse_report(&input)
+        }));
+        match outcome {
+            Err(_) => {
+                return report_fuzz_failure(
+                    "report",
+                    "report-crash-",
+                    seed,
+                    i,
+                    &input,
+                    "parse_report panicked (a panic on a forged report is a bug, not a rejection)",
+                );
+            }
+            Ok(Ok(parsed)) => {
+                accepted += 1;
+                if let Some(bad) = report_accepted_invariants(&parsed) {
+                    return report_fuzz_failure(
+                        "report",
+                        "report-accept-",
+                        seed,
+                        i,
+                        &input,
+                        &format!("parse_report ACCEPTED a report the VMM cannot trust: {bad}"),
+                    );
+                }
+            }
+            Ok(Err(msg)) => {
+                rejected += 1;
+                if msg.contains("internal error:") {
+                    return report_fuzz_failure(
+                        "report",
+                        "report-internal-",
+                        seed,
+                        i,
+                        &input,
+                        &format!("parse_report reported an internal error: {msg}"),
+                    );
+                }
+            }
+        }
+    }
+    // Measured reach (plans/M9.md item PP): if `accepted` collapses to 0
+    // the lane is proving nothing about the accept path, which is exactly
+    // where the `cap` defect lived.
+    println!(
+        "fuzz report: {iters} iteration(s), seed {seed}: no panic, no internal error, no \
+         untrustworthy accept ({accepted} accepted, {rejected} rejected)"
+    );
+    if accepted == 0 {
+        return Err(
+            "fuzz report: every mutation was rejected — the lane is clean about nothing (the \
+             generator or the mutator has drifted away from well-formed reports)"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn fuzz_report(iters: u64, seed: u64) -> Result<(), String> {
+    with_silenced_panic_hook(|| run_report_fuzz(iters, seed))
+}
+
+pub(crate) fn fuzz_report_smoke() -> Result<(), String> {
+    with_silenced_panic_hook(|| {
+        for &seed in FUZZ_REPORT_SMOKE_SEEDS {
+            run_report_fuzz(FUZZ_REPORT_SMOKE_ITERS_PER_SEED, seed)?;
         }
         Ok(())
     })

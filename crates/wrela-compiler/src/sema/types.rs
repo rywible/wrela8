@@ -3279,7 +3279,7 @@ pub fn is_builtin_type_name(name: &str) -> bool {
             // plans/M10.md item E2 / decision 669: 1-based group arena
             // index; `Option[GroupId]` niche at 0.
             | "GroupId"
-    ) || crate::eval::image_checks::is_sealed_authority_type_name(name)
+    ) || crate::sema::classes::name_holds_authority(name)
 }
 
 fn resolve_named(
@@ -3961,7 +3961,7 @@ fn classify_named(
         in_progress.remove(&key);
         memo.insert(key, c);
         return Ok(c);
-    } else if crate::eval::image_checks::is_sealed_authority_type_name(name) {
+    } else if crate::sema::classes::name_holds_authority(name) {
         // 03-hardware.md §1, its own first words: hardware operations
         // require "unforgeable **resource** values". A capability is a
         // resource by fiat, exactly like `@actor`/`@driver`/`resource
@@ -4012,7 +4012,7 @@ fn classify_named(
 /// fuller `bodies::is_resource_type` after classification is final.
 fn message_param_ty_is_resource(ty: &Type, structs: &BTreeMap<String, &DeclStruct>) -> bool {
     resource_propagates(ty, &mut |name, _args| {
-        if crate::eval::image_checks::is_sealed_authority_type_name(name) {
+        if crate::sema::classes::name_holds_authority(name) {
             return true;
         }
         structs

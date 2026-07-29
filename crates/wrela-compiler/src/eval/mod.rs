@@ -204,17 +204,12 @@ fn check_consts(program: &TypedProgram, legality: &legal::Legality) -> Result<()
             legal::require_legal(legality, callee, &format!("const {name}"), Span::default())?;
         }
         if let Some(reason) = &scan.illegal {
-            return Err(SemaError {
-                category: "comptime",
-                message: format!(
+            return Err(SemaError::nowhere(
+                "comptime",
+                format!(
                     "`const {name}` requires a comptime-legal initializer, but it directly uses {reason}"
                 ),
-                line: 0,
-                col: 0,
-                extra_lines: Vec::new(),
-                omit_location: true,
-                missing_method: None,
-            });
+            ));
         }
         interp::eval_const(program, name).map_err(to_sema_error)?;
     }

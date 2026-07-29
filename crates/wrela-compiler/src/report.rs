@@ -909,6 +909,7 @@ mod tests {
             mem_reuse_window: 8,
             mem_working_set_cap: 4,
             total_proxy_cycles: 30,
+            total_words: 30,
             owner_totals: BTreeMap::from([
                 ("app".to_string(), 10u64),
                 ("runtime".to_string(), 12u64),
@@ -947,6 +948,7 @@ mod tests {
             mem_reuse_window: 8,
             mem_working_set_cap: 4,
             total_proxy_cycles: 30,
+            total_words: 30,
             owner_totals: BTreeMap::from([
                 ("app".to_string(), 10u64),
                 ("runtime".to_string(), 12u64),

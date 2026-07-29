@@ -1318,19 +1318,14 @@ pub fn check_wake_sites(program: &TypedProgram) -> Result<(), SemaError> {
         }
     }
     if let Some(key) = bad {
-        return Err(SemaError {
-            category: "type",
-            message: format!(
+        return Err(SemaError::nowhere(
+            "type",
+            format!(
                 "`wake` in `{key}` is outside an ISR and outside a `@task` — 03-hardware.md §6: \
                  `wake` is an ISR effect (and a bottom half may re-wake itself); ordinary code \
                  cannot"
             ),
-            line: 0,
-            col: 0,
-            extra_lines: Vec::new(),
-            omit_location: true,
-            missing_method: None,
-        });
+        ));
     }
     Ok(())
 }
@@ -1364,32 +1359,22 @@ pub fn check_bottom_half(program: &TypedProgram) -> Result<(), SemaError> {
             return Ok(());
         }
         if f.is_async {
-            return Err(SemaError {
-                category: "type",
-                message: format!(
+            return Err(SemaError::nowhere(
+                "type",
+                format!(
                     "`@task` `{key}` is `async` — 03-hardware.md §6/§7: the bottom half never \
                      stays active while waiting (submission turns are not re-entered)"
                 ),
-                line: 0,
-                col: 0,
-                extra_lines: Vec::new(),
-                omit_location: true,
-                missing_method: None,
-            });
+            ));
         }
         if let Some(reason) = bottom_half_forbidden_of(f) {
-            return Err(SemaError {
-                category: "type",
-                message: format!(
+            return Err(SemaError::nowhere(
+                "type",
+                format!(
                     "`@task` `{key}` {reason} — 03-hardware.md §6/§7: the bottom half drains a \
                      level signal and re-wakes if work remains; it does not await"
                 ),
-                line: 0,
-                col: 0,
-                extra_lines: Vec::new(),
-                omit_location: true,
-                missing_method: None,
-            });
+            ));
         }
         Ok(())
     };

@@ -483,7 +483,7 @@ fn resolve_fn<'p>(program: &'p TypedProgram, key: &CalleeKey) -> Option<&'p Type
 /// so the bare name is dug out of the spelling — a miss there is
 /// reported by the caller's own fallback unless that bare name really is
 /// one of the recorded cross-module ones.
-fn callee_decl_name(key: &CalleeKey) -> String {
+pub(crate) fn callee_decl_name(key: &CalleeKey) -> String {
     let raw = match key {
         CalleeKey::Fn(name) => name.clone(),
         CalleeKey::Method(sname, _) => sname.clone(),

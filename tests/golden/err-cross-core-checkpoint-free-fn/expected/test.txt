@@ -1,4 +1,4 @@
 test lost_wake: ok
 1 passed, 0 failed
-lane1 turns=2 run_one=4 messages=2
+lane1 turns=2 run_one=5 messages=2
 lane1 hits=0:1,1:1

@@ -350,14 +350,36 @@ impl AdmissionWitness {
     }
 
     /// Pure observation rule (unit-tested via `admission_witness_*`).
+    ///
+    /// **Every input word here is guest-written.** `counts` and `heads`
+    /// come straight out of guest DRAM (`observe_admissions`, below, reads
+    /// them from the ring's own occupancy/head words in `rtdata`), so this
+    /// function is a host-side parser of hostile data and is written that
+    /// way: no unchecked arithmetic on a head, and no loop whose trip count
+    /// a guest word can choose. The prior shape violated both —
+    /// `(now_h + cap - was_h)` overflowed `u64` outright for a head of
+    /// `u64::MAX` (a debug-build panic that aborted the VMM from guest
+    /// data, a silent wrap in release that corrupted the choice log), and
+    /// the resulting delta then drove the push loop with no ceiling
+    /// (adversarial audit).
     pub(crate) fn observe(
         &mut self,
         counts: &[u64],
         heads: &[u64],
         core: usize,
     ) -> Result<Vec<(String, String)>, String> {
-        debug_assert_eq!(counts.len(), self.rings.len());
-        debug_assert_eq!(heads.len(), self.rings.len());
+        // A real check, not a `debug_assert`: these lengths index `counts`
+        // and `heads` directly just below, and a `debug_assert` vanishes in
+        // release exactly where the raw indexing would panic.
+        if counts.len() != self.rings.len() || heads.len() != self.rings.len() {
+            return Err(format!(
+                "admission witness: {} ring(s) declared but {} count word(s) and {} head word(s) \
+                 were read",
+                self.rings.len(),
+                counts.len(),
+                heads.len()
+            ));
+        }
         let mut admitted = Vec::new();
         for (i, ring) in self.rings.iter().enumerate() {
             let now_c = counts[i];
@@ -365,15 +387,27 @@ impl AdmissionWitness {
             let now_h = heads[i];
             let was_h = self.last_head[i];
             if ring.dst == core {
+                // `capacity` is `Ring cap=` and the parser guarantees it is
+                // nonzero (`cap`/`slot` floors), so the reductions below
+                // never divide by zero.
+                let cap = ring.capacity.max(1);
                 let n = if ring.capacity > 1 {
-                    let cap = ring.capacity;
-                    let mut d = (now_h + cap - was_h) % cap;
+                    // Reduce both heads into `0..cap` *before* any
+                    // arithmetic, then take the difference by comparison
+                    // rather than by `now_h + cap - was_h`. For a
+                    // well-formed pair (both already `< cap`) this is
+                    // bit-identical to the old expression; for a hostile
+                    // head it simply cannot overflow.
+                    let now_r = now_h % cap;
+                    let was_r = was_h % cap;
+                    let mut d = if now_r >= was_r {
+                        now_r - was_r
+                    } else {
+                        cap - (was_r - now_r)
+                    };
                     // Full-wrap of exactly `cap` leaves head unchanged.
                     if d == 0 && was_c > now_c && now_h == was_h {
                         d = was_c - now_c;
-                        if d > cap {
-                            d = cap;
-                        }
                     }
                     d
                 } else if now_c < was_c {
@@ -381,6 +415,12 @@ impl AdmissionWitness {
                 } else {
                     0
                 };
+                // A ring cannot admit more messages than it has slots, so
+                // the trip count is the ring's own capacity — never a
+                // number a guest-written count/head word picked. Without
+                // this, the `now_c < was_c` branch above (cap-1 rings,
+                // where both operands are guest words) walks up to ~2^64.
+                let n = n.min(cap);
                 for _ in 0..n {
                     admitted.push((ring.target.clone(), format!("core{}", ring.src)));
                 }

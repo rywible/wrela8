@@ -57,13 +57,13 @@ ImageReport v0
   CoreStack core=0 base=0x7fe00000 size=0x100000
   CoreStack core=1 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=82440
-  Section name=rodata base=0x40514258 size=641
-  Section name=abort base=0x405144dc size=120
-  Section name=checkpoint base=0x40514554 size=28
+  Section name=code base=0x40500050 size=82464
+  Section name=rodata base=0x40514270 size=641
+  Section name=abort base=0x405144f4 size=120
+  Section name=checkpoint base=0x4051456c size=28
   Section name=rtdata base=0x40540000 size=1344
   Entry base=0x40500000
-  CoreEntry core=1 base=0x40513f88
+  CoreEntry core=1 base=0x40513fa0
   PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
@@ -161,11 +161,11 @@ ImageReport v0
   Turns count=2 stride=512 bytes=1024
   Rings count=2 stride=64 padding=48 bytes=176
   Totals actors=1 drivers=0 ready_queue=2 group_arena=0 bytes=1344
-  Cost version=2 digest=ffc153b826203a27 total=33380 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=33380
-    Owner name=app proxy_cycles=2396
-    Owner name=runtime proxy_cycles=30984
+  Cost version=2 digest=ca6c6ea1a27ab060 total=27030 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=27030
+    Owner name=app proxy_cycles=1769
+    Owner name=runtime proxy_cycles=25261
     Owner name=driver proxy_cycles=0
     Core n=0 proxy_cycles=0 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn_model=n/a
-    Core n=1 proxy_cycles=107 max_turn_proxy=40 turns_per_sec=60000000 ms_per_turn_model=0.0000166667
-    Shared proxy_cycles=33273
+    Core n=1 proxy_cycles=88 max_turn_proxy=34 turns_per_sec=70588235.2941176444 ms_per_turn_model=0.0000141667
+    Shared proxy_cycles=26942

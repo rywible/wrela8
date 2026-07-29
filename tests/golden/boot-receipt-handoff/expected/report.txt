@@ -92,10 +92,10 @@ ImageReport v0
   Cores count=1
   CoreStack core=0 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=95824
-  Section name=rodata base=0x405176a0 size=1574
-  Section name=abort base=0x40517cc8 size=120
-  Section name=checkpoint base=0x40517d40 size=28
+  Section name=code base=0x40500050 size=95848
+  Section name=rodata base=0x405176b8 size=1574
+  Section name=abort base=0x40517ce0 size=120
+  Section name=checkpoint base=0x40517d58 size=28
   Section name=rtdata base=0x40540000 size=6664
   Section name=devregs base=0x40541a08 size=104
   Section name=pooldata base=0x40541a70 size=1024
@@ -207,10 +207,10 @@ ImageReport v0
   BlkDevice device=device#0 capacity_sectors=16 features=0x100000200 vector=1
   BlkQueue index=0 size=8 desc=0x40541a70 avail=0x40541af0 used=0x40541b08 doorbell=0x40541b50
   BlkAccounting descriptors_per_op=3 queue_depth=8 occupancy_bound=2
-  Cost version=2 digest=ffc153b826203a27 total=41643 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=41643
-    Owner name=app proxy_cycles=9551
-    Owner name=runtime proxy_cycles=31896
-    Owner name=driver proxy_cycles=196
-    Core n=0 proxy_cycles=6461 max_turn_proxy=1537 turns_per_sec=1561483.4092387769 ms_per_turn_model=0.0006404167
-    Shared proxy_cycles=35182
+  Cost version=2 digest=ca6c6ea1a27ab060 total=35885 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=35885
+    Owner name=app proxy_cycles=9703
+    Owner name=runtime proxy_cycles=25948
+    Owner name=driver proxy_cycles=234
+    Core n=0 proxy_cycles=7366 max_turn_proxy=1535 turns_per_sec=1563517.9153094462 ms_per_turn_model=0.0006395833
+    Shared proxy_cycles=28519

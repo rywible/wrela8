@@ -355,36 +355,6 @@ fn subst_member_ast(m: &Member, subst: &Subst) -> Member {
     }
 }
 
-/// `pub(crate)` reuse for `flow.rs`'s own best-effort place typing
-/// (decision 10's minimal-footprint rule, the same pattern the rest of
-/// this file's `pub(crate)` surface follows): substitutes a single
-/// unsubstituted field type using a struct's own generics zipped against
-/// a use site's concrete type arguments — a type-only `Subst` (no consts;
-/// a field's own type never needs one, only an array/`Bytes` *length*
-/// might, and `place_type`'s callers only ever ask "is this field's type
-/// a resource", never its size) so a resource classification through an
-/// instantiated generic struct's field (`Box[DmaBlock].item`, not just a
-/// bare generic parameter) is answered correctly instead of silently
-/// falling back to "unknown" the moment a use site's type arguments are
-/// non-empty.
-pub(crate) fn subst_field_type(
-    field_ty: &Type,
-    generics: &[DeclGenericParam],
-    targs: &[TypeArg],
-) -> Type {
-    let mut types = BTreeMap::new();
-    for (g, a) in generics.iter().zip(targs.iter()) {
-        if let TypeArg::Type(t) = a {
-            types.insert(g.name.clone(), t.clone());
-        }
-    }
-    let subst = Subst {
-        types,
-        consts: BTreeMap::new(),
-    };
-    subst_type(field_ty, &subst)
-}
-
 // --- const argument evaluation (plans/M3.md item B) ---------------------
 //
 // M2-H's own literal/const-name/fieldless-variant-only subset (decision
@@ -1467,6 +1437,14 @@ pub(crate) fn check(
 ) -> Result<BTreeMap<String, TypedInstantiation>, SemaError> {
     let mut processed: BTreeSet<String> = BTreeSet::new();
     let mut typed_instantiations: BTreeMap<String, TypedInstantiation> = BTreeMap::new();
+    // Private plain-`self` effect inference is a fixpoint over every
+    // private method body in the module, and its only input is `mctx`,
+    // whose `structs`/`enums` are plain fields — through a `&ModuleCtx`
+    // they cannot change while this loop runs. So it is computed once here
+    // rather than once per instantiation: `access.rs`'s own note above
+    // `private_candidates` makes exactly this argument for the
+    // declaration-side call.
+    let effects = access::infer_effects_over(mctx);
     loop {
         let next = {
             let q = mctx.generics_queue.borrow();
@@ -1479,7 +1457,7 @@ pub(crate) fn check(
         };
         processed.insert(key.clone());
         *mctx.current_chain.borrow_mut() = entry.chain.clone();
-        let result = check_one_instantiation(mctx, &entry);
+        let result = check_one_instantiation(mctx, &entry, &effects);
         *mctx.current_chain.borrow_mut() = Vec::new();
         match result {
             Ok(typed_inst) => {
@@ -1494,6 +1472,7 @@ pub(crate) fn check(
 fn check_one_instantiation(
     mctx: &ModuleCtx,
     entry: &QueuedInstantiation,
+    effects: &access::EffectMap,
 ) -> Result<TypedInstantiation, SemaError> {
     let call_span = *entry
         .chain
@@ -1505,7 +1484,7 @@ fn check_one_instantiation(
     // applied by skipping Struct instantiation walks).
     let home = instantiation_visibility_home(mctx, entry);
     *mctx.visibility_home.borrow_mut() = Some(home);
-    let result = check_one_instantiation_inner(mctx, entry, call_span);
+    let result = check_one_instantiation_inner(mctx, entry, call_span, effects);
     *mctx.visibility_home.borrow_mut() = None;
     result
 }
@@ -1544,6 +1523,7 @@ fn check_one_instantiation_inner(
     mctx: &ModuleCtx,
     entry: &QueuedInstantiation,
     call_span: Span,
+    effects: &access::EffectMap,
 ) -> Result<TypedInstantiation, SemaError> {
     match entry.kind {
         InstKind::Fn => {
@@ -1565,7 +1545,6 @@ fn check_one_instantiation_inner(
                 instantiate_method(mctx, receiver, &entry.name, &entry.args, call_span)?;
             let mini = method_instantiation_struct_info(mctx, receiver, &ast, &decl, call_span)?;
             let mut ts = bodies::check_struct_members(&mini, receiver.clone(), mctx)?;
-            let effects = access::infer_effects_over(mctx);
             access::check_typed_struct(&mut ts, mctx, &effects)?;
             flow::check_typed_struct(&ts, mctx, &effects)?;
             matches::check_struct(&ts, mctx)?;
@@ -1581,7 +1560,6 @@ fn check_one_instantiation_inner(
             let si = instantiate_struct(mctx, &entry.name, &entry.args, call_span)?;
             let self_ty = Type::Named(entry.name.clone(), entry.args.clone());
             let mut ts = bodies::check_struct_members(&si, self_ty.clone(), mctx)?;
-            let effects = access::infer_effects_over(mctx);
             access::check_typed_struct(&mut ts, mctx, &effects)?;
             flow::check_typed_struct(&ts, mctx, &effects)?;
             matches::check_struct(&ts, mctx)?;

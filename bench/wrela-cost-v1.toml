@@ -11,7 +11,16 @@ version = 2
 alu = 2
 mem = 2
 max_issue_per_cycle = 2
-branch_penalty = 3
+# Fetch-redirect only — NOT a mispredict penalty. The model has no branch
+# predictor and can never argue a branch is mispredicted, so charging
+# mispredict cost here would over-credit *removing* a branch: it would
+# make if-conversion (b.cond -> csel) look like a multi-cycle win, when on
+# a predicted branch the real machine is unchanged at best and worse at
+# hand (both arms always execute, serialized on NZCV). Proxy soundness
+# (04 §5) says under-credit when unsure, so the credit for deleting a
+# branch is `latency.branch` alone. The knob itself stays live and is
+# exercised at a nonzero value by `score::tests::branch_pays_penalty`.
+branch_penalty = 0
 # Count of recent Load/Store ops in this fn — NOT bytes of cache.
 mem_reuse_window = 8
 # Distinct keys tolerated in the window before working_set_surcharge.
@@ -45,4 +54,7 @@ load_cold_hit = 4
 load_cold_miss = 12
 store_stack = 1
 store_cold = 2
+# Charged per distinct key **over** mem_working_set_cap, not once flat: a
+# flat charge prices 5 live addresses the same as 500, which under-costs
+# footprint growth — the one direction 04 §5 forbids.
 working_set_surcharge = 2

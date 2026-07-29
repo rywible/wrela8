@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 
 use crate::sema::bodies::{
     FnCtx, ModuleCtx, check_call_args, check_expr, check_stmts, is_resource_type,
-    missing_method_error, parse_int_literal, scoped, type_error, types_eq,
+    missing_method_error, scoped, type_error, types_eq,
 };
 use crate::sema::typed::{
     CalleeKey, TypedCallArg, TypedExpr, TypedExprKind, TypedForIter, TypedPattern,
@@ -1359,7 +1359,7 @@ pub(crate) fn check_deadline_expr(
 /// This keeps the over-reject/never-under-reject direction the rest of
 /// the approximation promises: a body that provably runs once still pays
 /// the loop rule, which is the safe side.
-struct CrossAwaitScan {
+pub(crate) struct CrossAwaitScan {
     seen_await: bool,
     /// Locals bound after `seen_await` became true — they do not span
     /// any suspension observed so far on this forward scan.
@@ -1614,18 +1614,13 @@ pub(crate) fn scan_await_cross_expr(
                         // exception field, `sema::mod`'s doc comment)
                         // suppresses the misleading `at 0:0` a bare
                         // `SemaError::at` would otherwise print.
-                        return Err(SemaError {
-                            category: "actor",
-                            message: format!(
+                        return Err(SemaError::nowhere(
+                            "actor",
+                            format!(
                                 "`{root}`-rooted access cannot span an `await` — only a \
                                  self-rooted path may (02-language.md §9.2)"
                             ),
-                            line: 0,
-                            col: 0,
-                            extra_lines: Vec::new(),
-                            omit_location: true,
-                            missing_method: None,
-                        });
+                        ));
                     }
                 }
             }
@@ -1638,18 +1633,13 @@ pub(crate) fn scan_await_cross_expr(
             if state.seen_await && !state.probe {
                 if let Some(root) = root_local_name(e) {
                     if root != "self" && !state.after_await.contains(root) {
-                        return Err(SemaError {
-                            category: "actor",
-                            message: format!(
+                        return Err(SemaError::nowhere(
+                            "actor",
+                            format!(
                                 "`{root}`-rooted access cannot span an `await` — only a \
                                  self-rooted path may (02-language.md §9.2)"
                             ),
-                            line: 0,
-                            col: 0,
-                            extra_lines: Vec::new(),
-                            omit_location: true,
-                            missing_method: None,
-                        });
+                        ));
                     }
                 }
             }

@@ -230,6 +230,7 @@ mod tests {
             key: key.to_string(),
             owner: "app".to_string(),
             proxy_cycles: cycles,
+            words: cycles,
             terms: BTreeMap::new(),
         }
     }
@@ -246,6 +247,7 @@ mod tests {
             mem_reuse_window: 8,
             mem_working_set_cap: 4,
             total_proxy_cycles: total,
+            total_words: total,
             owner_totals: BTreeMap::new(),
             fns,
             workloads_digest: None,

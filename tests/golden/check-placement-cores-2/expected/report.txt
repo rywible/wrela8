@@ -60,13 +60,13 @@ ImageReport v0
   CoreStack core=0 base=0x7fe00000 size=0x100000
   CoreStack core=1 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=82492
-  Section name=rodata base=0x40514290 size=563
-  Section name=abort base=0x405144c4 size=120
-  Section name=checkpoint base=0x4051453c size=28
+  Section name=code base=0x40500050 size=82516
+  Section name=rodata base=0x405142a8 size=563
+  Section name=abort base=0x405144dc size=120
+  Section name=checkpoint base=0x40514554 size=28
   Section name=rtdata base=0x40540000 size=1824
   Entry base=0x40500000
-  CoreEntry core=1 base=0x40514248
+  CoreEntry core=1 base=0x40514260
   PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
@@ -161,11 +161,11 @@ ImageReport v0
   Actor name=Heavy mailbox=32 slot=48 frame=64 state=8
   Turns count=2 stride=64 bytes=128
   Totals actors=2 drivers=0 ready_queue=3 group_arena=0 bytes=1824
-  Cost version=2 digest=ffc153b826203a27 total=33186 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=33186
-    Owner name=app proxy_cycles=2030
-    Owner name=runtime proxy_cycles=31156
+  Cost version=2 digest=ca6c6ea1a27ab060 total=26832 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=26832
+    Owner name=app proxy_cycles=1440
+    Owner name=runtime proxy_cycles=25392
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=119 max_turn_proxy=40 turns_per_sec=60000000 ms_per_turn_model=0.0000166667
-    Core n=1 proxy_cycles=107 max_turn_proxy=40 turns_per_sec=60000000 ms_per_turn_model=0.0000166667
-    Shared proxy_cycles=32960
+    Core n=0 proxy_cycles=107 max_turn_proxy=36 turns_per_sec=66666666.6666666642 ms_per_turn_model=0.000015
+    Core n=1 proxy_cycles=88 max_turn_proxy=34 turns_per_sec=70588235.2941176444 ms_per_turn_model=0.0000141667
+    Shared proxy_cycles=26637

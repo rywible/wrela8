@@ -546,15 +546,6 @@ pub const IMAGE_RUNTIME_MODULE_KEY: &[&str] = &["core", "__image_runtime"];
 /// (`report::address_to_relative_path` of the dotted address).
 pub const RUNTIME_INPUT_PATH: &str = "core/runtime.wr";
 
-/// Drop `from core.__image_runtime import …` — retained for tests that
-/// still name the helper; batch-1 now injects a stub module instead
-/// (plans/M11.md item E / decision 780).
-pub fn defer_image_runtime_import(module: &mut Module) {
-    module
-        .imports
-        .retain(|imp| imp.path.as_slice() != IMAGE_RUNTIME_MODULE_KEY);
-}
-
 /// Inject the facts-only stub `core.__image_runtime` when absent
 /// (plans/M11.md item E / decision 780). Idempotent.
 pub fn ensure_image_runtime_stub(

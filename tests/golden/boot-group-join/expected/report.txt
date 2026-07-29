@@ -56,10 +56,10 @@ ImageReport v0
   Cores count=1
   CoreStack core=0 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=84164
-  Section name=rodata base=0x40514918 size=737
-  Section name=abort base=0x40514bfc size=120
-  Section name=checkpoint base=0x40514c74 size=28
+  Section name=code base=0x40500050 size=84188
+  Section name=rodata base=0x40514930 size=737
+  Section name=abort base=0x40514c14 size=120
+  Section name=checkpoint base=0x40514c8c size=28
   Section name=rtdata base=0x40540000 size=2288
   Entry base=0x40500000
   PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
@@ -158,10 +158,10 @@ ImageReport v0
   Turn fn=test_join frame=432
   Turns count=4 stride=512 bytes=2048
   Totals actors=1 drivers=0 ready_queue=2 group_arena=1 bytes=2288
-  Cost version=2 digest=ffc153b826203a27 total=34881 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=34881
-    Owner name=app proxy_cycles=4537
-    Owner name=runtime proxy_cycles=30344
+  Cost version=2 digest=ca6c6ea1a27ab060 total=28606 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=28606
+    Owner name=app proxy_cycles=3804
+    Owner name=runtime proxy_cycles=24802
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=37 max_turn_proxy=37 turns_per_sec=64864864.8648648635 ms_per_turn_model=0.0000154167
-    Shared proxy_cycles=34844
+    Core n=0 proxy_cycles=27 max_turn_proxy=27 turns_per_sec=88888888.8888888955 ms_per_turn_model=0.00001125
+    Shared proxy_cycles=28579

@@ -203,9 +203,21 @@ mod tests {
             "encode_enc_site_total ({}) != sum of per-file counts ({total})",
             encode_enc_site_count()
         );
+        // 453 -> 347, deliberately downward, in three steps and with no
+        // change to a single emitted word (every golden dump verified
+        // byte-for-byte identical against the pre-change binary):
+        //   * the five nested `load_imm`/`push` copies in the stub emitters
+        //     were lifted to one module-level pair;
+        //   * the dead `patch_cond`/`patch_cbz`/`patch_cbnz_w`/`bl_to`/
+        //     `b_to`/`load_rodata_addr_at`/`bl_console_append_*` `Asm`
+        //     helpers were deleted;
+        //   * 58 three-register ALU sites and 21 `cmp` sites collapsed onto
+        //     `FnCtx::{add_reg,mul_reg,orr_reg,and_reg,cmp_reg}`, and the
+        //     three identical park-and-return tails onto
+        //     `emit_park_and_return`.
         assert_eq!(
             encode_enc_site_count(),
-            453,
+            347,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }

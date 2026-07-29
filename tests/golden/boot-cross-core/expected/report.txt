@@ -61,14 +61,14 @@ ImageReport v0
   CoreStack core=1 base=0x7fe00000 size=0x100000
   CoreStack core=2 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=83352
-  Section name=rodata base=0x405145e8 size=641
-  Section name=abort base=0x4051486c size=120
-  Section name=checkpoint base=0x405148e4 size=28
+  Section name=code base=0x40500050 size=83376
+  Section name=rodata base=0x40514600 size=641
+  Section name=abort base=0x40514884 size=120
+  Section name=checkpoint base=0x405148fc size=28
   Section name=rtdata base=0x40540000 size=1792
   Entry base=0x40500000
-  CoreEntry core=1 base=0x40514560
-  CoreEntry core=2 base=0x405145a4
+  CoreEntry core=1 base=0x40514578
+  CoreEntry core=2 base=0x405145bc
   PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
@@ -164,12 +164,12 @@ ImageReport v0
   Turn fn=cross_core frame=288
   Turns count=3 stride=512 bytes=1536
   Totals actors=2 drivers=0 ready_queue=3 group_arena=0 bytes=1792
-  Cost version=2 digest=ffc153b826203a27 total=33729 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=33729
-    Owner name=app proxy_cycles=2477
-    Owner name=runtime proxy_cycles=31252
+  Cost version=2 digest=ca6c6ea1a27ab060 total=27298 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=27298
+    Owner name=app proxy_cycles=1840
+    Owner name=runtime proxy_cycles=25458
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=81 max_turn_proxy=40 turns_per_sec=60000000 ms_per_turn_model=0.0000166667
-    Core n=1 proxy_cycles=107 max_turn_proxy=40 turns_per_sec=60000000 ms_per_turn_model=0.0000166667
-    Core n=2 proxy_cycles=26 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn_model=n/a
-    Shared proxy_cycles=33515
+    Core n=0 proxy_cycles=71 max_turn_proxy=34 turns_per_sec=70588235.2941176444 ms_per_turn_model=0.0000141667
+    Core n=1 proxy_cycles=88 max_turn_proxy=34 turns_per_sec=70588235.2941176444 ms_per_turn_model=0.0000141667
+    Core n=2 proxy_cycles=17 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn_model=n/a
+    Shared proxy_cycles=27122

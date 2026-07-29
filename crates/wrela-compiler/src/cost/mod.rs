@@ -1,6 +1,41 @@
 //! Proxy-cycle ranking (plans/M18.md): emit-time CostRule tags + ISA table
 //! + scoreboard. Differential rank only — not host wall time, not A76 SOG.
 
+use std::path::{Path, PathBuf};
+
+/// `crates/wrela-compiler` -> repo root (same shape as xtask's own `root()`).
+/// Shared by this module's file-backed tables (`table.rs`, `workload.rs`).
+pub(crate) fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("repo root from crates/wrela-compiler")
+        .to_path_buf()
+}
+
+/// FNV-1a 64-bit — deterministic, std-only, fine for the table/workload
+/// digests this module prints.
+pub(crate) struct Fnv64(u64);
+
+impl Fnv64 {
+    pub(crate) fn new() -> Self {
+        Fnv64(0xcbf29ce484222325)
+    }
+
+    pub(crate) fn write(&mut self, bytes: &[u8]) {
+        let mut h = self.0;
+        for &b in bytes {
+            h ^= u64::from(b);
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        self.0 = h;
+    }
+
+    pub(crate) fn finish(self) -> u64 {
+        self.0
+    }
+}
+
 pub mod ab;
 pub mod attr;
 pub mod compose;
@@ -16,7 +51,7 @@ pub mod workload;
 
 pub use ab::{CostOpts, rank_cmp, score_with_opts};
 pub use attr::{CoreBucket, CoreCostReport, PlaceableTurn, attribute_cores};
-pub use compose::{WorkloadAttach, attach_workloads, method_grain_fxs};
+pub use compose::{WorkloadAttach, attach_workloads, method_grain_fxs, uncovered_charge};
 pub use dump::{dump, dump_for_source};
 pub use freq::{MethodFreq, sibling_freq_path};
 pub use ghz::{DEFAULT_GHZ, fmt_compact, ms_per_turn, parse_ghz, turns_per_sec};
@@ -24,7 +59,8 @@ pub use owner::classify_owner;
 pub use rule::{CostRule, EmittedWord, FlagEffect, MEM_SP_REG, MemClass, MemRef};
 pub use score::{CostReport, FnCost, basic_block_ranges, block_schedule_lengths, score_program};
 pub use stage::{
-    CostStageClosure, codegen_cost_stage, load_cost_stage_closure, score_cost_stage_path,
+    CostStageClosure, codegen_cost_stage, load_cost_stage_closure, report_cost_stage_path,
+    score_cost_stage_path,
 };
 pub use table::{
     CostTable, EXPECTED_VERSION, MemCosts, default_table_path, load_default, load_from_path, parse,

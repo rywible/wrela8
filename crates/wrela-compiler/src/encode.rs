@@ -108,8 +108,9 @@ impl Cond {
     /// The condition that fires exactly when `self` does not (used by the
     /// `CSET` alias, which is `CSINC Rd, XZR, XZR, invert(cond)` — ARM
     /// ARM's own alias rule, decision-free bit flip of the low bit for
-    /// every paired condition except `AL`/`NV`, which `CSET` never uses).
-    fn invert(self) -> Cond {
+    /// every paired condition except `AL`/`NV`, which `CSET` never uses;
+    /// also `codegen.rs`'s own abort-guard polarity flip).
+    pub(crate) fn invert(self) -> Cond {
         match self {
             Cond::Eq => Cond::Ne,
             Cond::Ne => Cond::Eq,

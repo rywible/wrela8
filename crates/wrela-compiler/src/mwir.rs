@@ -931,6 +931,39 @@ pub fn build_layout_ctx(
     Ok(ctx)
 }
 
+/// plans/M7.md item E4: `IoCompletion[P]`'s fields, in declaration order.
+///
+/// The order is load-bearing — it *is* the `Project` index — and it used to
+/// be written out independently in four places (`sema::bodies`'s field
+/// typing, `size_of` and `field_offset` below, and `lower::field_index`).
+/// `bodies` even computed the index and threw it away (`let _ = index;`)
+/// with a comment noting the four had to agree by hand. They now share this
+/// one table.
+pub(crate) fn io_completion_fields(
+    targs: &[crate::sema::types::TypeArg],
+) -> Result<[(&'static str, Type); 3], String> {
+    let Some(crate::sema::types::TypeArg::Type(payload)) = targs.first() else {
+        return Err("`IoCompletion` with no payload type argument".to_string());
+    };
+    Ok([
+        ("payload", payload.clone()),
+        (
+            "status",
+            Type::Result(
+                Box::new(Type::Unit),
+                Box::new(Type::Named("IoError".to_string(), vec![])),
+            ),
+        ),
+        (
+            "written_len",
+            Type::Named(
+                "Untrusted".to_string(),
+                vec![crate::sema::types::TypeArg::Type(Type::Usize)],
+            ),
+        ),
+    ])
+}
+
 /// The one 8-byte-slot layout rule (module doc's own "Aggregate layout"
 /// section). `Err` only for the disclosed generic-instantiation gap, or
 /// an array whose length is neither a literal nor resolvable (mirrors
@@ -1095,7 +1128,7 @@ pub fn size_of(ty: &Type, ctx: &LayoutCtx) -> Result<usize, String> {
                     // one opaque word (1-based arena index; 0 is reserved
                     // for the `Option[GroupId]` niche).
                     | "GroupId"
-            ) || crate::eval::image_checks::is_sealed_authority_type_name(name) =>
+            ) || crate::sema::classes::name_holds_authority(name) =>
         {
             // `Actor[T]` carries its type argument purely for the
             // type-checker's sake — the argument itself never contributes
@@ -1117,18 +1150,11 @@ pub fn size_of(ty: &Type, ctx: &LayoutCtx) -> Result<usize, String> {
         // 0 = payload (`P`), 1 = status (`Result[unit, IoError]`),
         // 2 = written_len (`Untrusted[usize]`).
         Type::Named(name, targs) if name == "IoCompletion" => {
-            let Some(crate::sema::types::TypeArg::Type(payload)) = targs.first() else {
-                return Err("`IoCompletion` with no payload type argument".to_string());
-            };
-            let status = Type::Result(
-                Box::new(Type::Unit),
-                Box::new(Type::Named("IoError".to_string(), vec![])),
-            );
-            let written = Type::Named(
-                "Untrusted".to_string(),
-                vec![crate::sema::types::TypeArg::Type(Type::Usize)],
-            );
-            Ok(size_of(payload, ctx)? + size_of(&status, ctx)? + size_of(&written, ctx)?)
+            let mut total = 0usize;
+            for (_, ty) in io_completion_fields(targs)? {
+                total += size_of(&ty, ctx)?;
+            }
+            Ok(total)
         }
         // plans/M13.md item H / decision 4: `NotAdmitted(Admission, args)`
         // widens the payload beyond one opaque slot when the call has
@@ -1288,28 +1314,15 @@ pub fn field_offset(
             // (payload + status + written_len), not a sealed one-word
             // authority type.
             if name == "IoCompletion" {
-                let Some(crate::sema::types::TypeArg::Type(payload)) = targs.first() else {
-                    return Err("`IoCompletion` with no payload type".to_string());
-                };
-                let fields = [
-                    payload.clone(),
-                    Type::Result(
-                        Box::new(Type::Unit),
-                        Box::new(Type::Named("IoError".to_string(), vec![])),
-                    ),
-                    Type::Named(
-                        "Untrusted".to_string(),
-                        vec![crate::sema::types::TypeArg::Type(Type::Usize)],
-                    ),
-                ];
+                let fields = io_completion_fields(targs)?;
                 if index >= fields.len() {
                     return Err(format!("`IoCompletion` field index {index} out of range"));
                 }
                 let mut off = 0usize;
-                for f in &fields[..index] {
-                    off += size_of(f, ctx)?;
+                for (_, ty) in &fields[..index] {
+                    off += size_of(ty, ctx)?;
                 }
-                let sz = size_of(&fields[index], ctx)?;
+                let sz = size_of(&fields[index].1, ctx)?;
                 return Ok((off, sz));
             }
             // plans/M7.md item G, decision 18: look up by rendered type.

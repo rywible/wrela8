@@ -26,7 +26,6 @@ use super::{
 };
 use crate::codegen::{CodegenProgram, Reloc};
 use crate::encode;
-use crate::encode::Cond;
 
 // --- scratch registers for stub emission (never x0..x8/x29/x30/sp) -----
 
@@ -479,6 +478,10 @@ pub const DEADLOCK_MSG: &str =
 /// hand-verifying the encoded bytes by eye (this module's own oracle for
 /// the hand-assembled routines below: real execution on this machine's own
 /// aarch64 CPU, `#[cfg(test)] mod harness_jit`, below).
+///
+/// Every consumer (`push_abort_tail` and the JIT self-tests) is
+/// `#[cfg(test)]`, so this bundle is too — plans/M11-L-findings.md L-19.
+#[cfg(test)]
 #[derive(Debug, Clone, Copy)]
 pub(super) struct HarnessAddrs {
     /// `machine_info::` field base — production: `machine_layout::MACHINE_INFO_BASE`.
@@ -497,9 +500,11 @@ pub(super) struct HarnessAddrs {
     /// unexercised by the JIT self-tests above (which never call the
     /// entry driver directly — a real MMIO trap needs a real VMM, item
     /// E's own boot golden is that routine's oracle).
+    #[allow(dead_code)]
     exit_mmio_addr: u64,
 }
 
+#[cfg(test)]
 impl HarnessAddrs {
     fn production() -> HarnessAddrs {
         HarnessAddrs {
@@ -549,19 +554,6 @@ impl Asm {
         self.start + self.words.len()
     }
 
-    /// The real guest-physical address of this fragment's own current
-    /// position — `abs()` converted from a word index to a byte address
-    /// against `harness_base` (always `machine_layout::IMAGE_BASE`, since
-    /// the combined harness section is always placed first, module doc's
-    /// own fixed emission order). Needed anywhere a *value a register
-    /// will later branch to* is materialized (the landing pad's own
-    /// continuation slot) — as opposed to a `BL`/`B`/`B.cond`'s own
-    /// PC-relative immediate, which `bl_to`/`b_to`/`patch_cond` already
-    /// compute correctly from plain word deltas and never need this.
-    fn addr(&self, harness_base: u64) -> u64 {
-        harness_base + (self.abs() as u64) * 4
-    }
-
     pub(super) fn push(&mut self, w: u32) {
         self.words.push(w);
     }
@@ -584,8 +576,8 @@ impl Asm {
     }
 
     /// Emits a placeholder `load_imm reg, #0` (four words), remembering
-    /// where it started so `patch_load_imm` can later overwrite it with
-    /// the real value once known — the entry driver's own forward
+    /// where it started so `patch_load_imm_words` can later overwrite it
+    /// with the real value once known — the entry driver's own forward
     /// reference for the landing pad's continuation address (module doc
     /// above): the value (the address of the *next* test's own setup)
     /// isn't known until after this test's whole pass-path block has been
@@ -594,38 +586,6 @@ impl Asm {
         let m = self.words.len();
         self.load_imm(reg, 0);
         m
-    }
-
-    fn patch_load_imm(&mut self, marker: usize, reg: u8, value: u64) {
-        let h0 = (value & 0xFFFF) as u16;
-        let h1 = ((value >> 16) & 0xFFFF) as u16;
-        let h2 = ((value >> 32) & 0xFFFF) as u16;
-        let h3 = ((value >> 48) & 0xFFFF) as u16;
-        self.words[marker] = encode::enc_movz(reg, h0, 0, true);
-        self.words[marker + 1] = encode::enc_movk(reg, h1, 16, true);
-        self.words[marker + 2] = encode::enc_movk(reg, h2, 32, true);
-        self.words[marker + 3] = encode::enc_movk(reg, h3, 48, true);
-    }
-
-    /// A local `BL` to another word already placed at absolute index
-    /// `target_abs` within this same combined section — no `Reloc`
-    /// needed (module doc above): both this call site's own position and
-    /// the callee's own start are already known Rust-side values by the
-    /// time any caller of this fn runs (module doc's own fixed emission
-    /// order: ring_write, fmt_dec, abort_fixed, abort_val, entry).
-    fn bl_to(&mut self, target_abs: usize) {
-        let this = self.abs();
-        let delta = (target_abs as i64 - this as i64) * 4;
-        self.push(encode::enc_bl(delta as i32));
-    }
-
-    /// `B` (not `BL`) to `target_abs` — used by the digit/copy loops'
-    /// own backward branch, where the target word is already known
-    /// (it was emitted earlier in this same fragment).
-    fn b_to(&mut self, target_abs: usize) {
-        let this = self.abs();
-        let delta = (target_abs as i64 - this as i64) * 4;
-        self.push(encode::enc_b(delta as i32));
     }
 
     /// A `BL` to an `@test(runtime)` fn — a real `Reloc::Call` (the target
@@ -641,90 +601,24 @@ impl Asm {
         });
     }
 
-    /// plans/M10.md item B4: `BL __wrela_console_append_bytes`.
-    /// Pre: `x0` holds `*Bytes` (pointer to a `(base, capacity)` slot).
-    /// Sets `x1 = len` (copy length; capacity is already in the slot).
-    // M11 K: last call sites lived in `build_entry_driver` (deleted).
-    #[allow(dead_code)]
-    fn bl_console_append_bytes(&mut self, len: u64) {
-        self.load_imm(1, len);
-        self.bl_call_key("__wrela_console_append_bytes");
-    }
-
-    /// plans/M10.md item B4: `BL __wrela_console_append_line_buf`.
-    /// Pre: `x0` holds the byte length written into `OFF_TEST_LINE_BUF`.
-    // M11 K: last call sites lived in `build_entry_driver` (deleted).
-    #[allow(dead_code)]
-    fn bl_console_append_line_buf(&mut self) {
-        self.bl_call_key("__wrela_console_append_line_buf");
-    }
-
-    /// `reg = &rodata[byte_offset]` (symbolic `ADRP`+`ADD`, `Reloc::Rodata`,
-    /// item D's own resolution unchanged) — `byte_offset` is an *already
-    /// interned* rodata entry's own offset (see `RodataAppend`, below);
-    /// this fn only ever emits code, never interns.
-    // M11 K: last call sites lived in `build_entry_driver` (deleted).
-    #[allow(dead_code)]
-    fn load_rodata_addr_at(&mut self, reg: u8, byte_offset: usize) {
-        let w = self.abs();
-        self.push(encode::enc_adrp(reg, 0));
-        self.push(encode::enc_add_imm(reg, reg, 0, true));
-        self.relocs.push(Reloc::Rodata {
-            word_adrp: w,
-            byte_offset,
-        });
-    }
-
     /// A forward conditional branch whose target isn't known yet — mirrors
     /// `codegen.rs`'s own `emit_skip`/`patch_skip` (`SkipKind`), a small,
     /// deliberate duplicate for the same reason `load_imm` is (this
-    /// module's fragments are not `FnCtx`s).
+    /// module's fragments are not `FnCtx`s). Only the JIT self-tests below
+    /// still build a fragment that needs one.
+    #[cfg(test)]
     fn skip_placeholder(&mut self) -> usize {
         let w = self.words.len();
         self.push(0);
         w
     }
 
-    #[allow(dead_code)] // entry no longer raises pending by hand (M11 E)
-    fn patch_cond(&mut self, marker: usize, cond: Cond) {
-        let target = self.abs();
-        let this = self.start + marker;
-        let delta = (target as i64 - this as i64) * 4;
-        self.words[marker] = encode::enc_b_cond(cond, delta as i32);
-    }
-
-    // M11 K: last call sites lived in `build_entry_driver` (deleted).
-    #[allow(dead_code)]
-    fn patch_cbz(&mut self, marker: usize, reg: u8) {
-        let target = self.abs();
-        let this = self.start + marker;
-        let delta = (target as i64 - this as i64) * 4;
-        self.words[marker] = encode::enc_cbz(reg, delta as i32, true);
-    }
-
+    #[cfg(test)]
     fn patch_cbnz(&mut self, marker: usize, reg: u8) {
         let target = self.abs();
         let this = self.start + marker;
         let delta = (target as i64 - this as i64) * 4;
         self.words[marker] = encode::enc_cbnz(reg, delta as i32, true);
-    }
-
-    /// The 32-bit forms, for the `u32` fields plans/M10.md item 0c1
-    /// introduced (`waker_turn`/`waker_core`, a reply-ring slot's
-    /// destination `TurnId`). `cbz w`/`cbnz w` tests exactly the four bytes
-    /// the field occupies — an `x` test here would fold the *adjacent*
-    /// field in as high bits, which is precisely the confusion decision
-    /// 557's two-`u32` encoding exists to avoid.
-
-    // M10 F deleted the last `patch_cbnz_w` call site (select hand-asm).
-    // Keep the 32-bit cbnz sibling next to `patch_cbz_w` for F2's reply-
-    // ring `u32` fields (decision 557); silence until that item uses it.
-    #[allow(dead_code)]
-    fn patch_cbnz_w(&mut self, marker: usize, reg: u8) {
-        let target = self.abs();
-        let this = self.start + marker;
-        let delta = (target as i64 - this as i64) * 4;
-        self.words[marker] = encode::enc_cbnz(reg, delta as i32, false);
     }
 }
 

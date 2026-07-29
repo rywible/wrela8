@@ -578,6 +578,19 @@ static TEST_LINE_BUF: TestLineBuf
 # method_count + local mi). Dump is a deterministic transcript block.
 # ---------------------------------------------------------------------------
 
+# HAZARD (recorded 2026-07-29; fix plan plans/lane1-per-core.md).
+# Every update below is a non-atomic read-modify-write on this ONE shared
+# static, executed by whichever core drains (`__wrela_rt_run_one`,
+# `__wrela_rt_select`, `__wrela_rt_enqueue`, `__wrela_lane1_record_method`).
+# Since plans/M15.md item I deleted the baton, two cores draining different
+# mailboxes run concurrently, so an increment CAN BE LOST. A `@dmb` does not
+# help: a barrier orders visibility, not read-modify-write atomicity, and this
+# language exposes no atomic add. Consequences, so this is not silent:
+#   * multi-core Lane 1 counts may UNDER-REPORT;
+#   * ledger.toml:697 makes Lane 1 a cost-model frequency source, so an
+#     under-count biases `sum f(fn) x s(fn)` toward "measuring less".
+# The fix is ownership, not locking: one row per core, summed at dump
+# (decision 1500-1502). Single-core images are unaffected — one writer.
 @layout(runtime, endian=little)
 struct Lane1Counters:
     turns: u64
@@ -1088,7 +1101,11 @@ const TURN_STATUS_CANCELLED: u64 = 2
 pub fn __wrela_rt_run_one(core: usize) -> u64:
     drained = __wrela_try_drain(core)
     if drained != 0:
-        LANE1.run_one_hits = LANE1.run_one_hits +% 1
+        # Add the message count, not 1: one drain call empties the ring, so
+        # counting calls makes this tick count depend on how the producer's
+        # publishes happened to interleave with this consumer's polls (see
+        # `__wrela_rt_drain`). Counting messages is interleaving-invariant.
+        LANE1.run_one_hits = LANE1.run_one_hits +% drained
         return 1
     n = __wrela_select_count(core)
     rr_pass: usize = 0
@@ -1241,6 +1258,26 @@ pub fn __wrela_rt_xreply(edge: usize, turn_and_tag: u64, reply: u64):
 # level-triggered, idempotent — so a park-vs-loop-head reorder or a raise
 # whose consumer never runs (e.g. ring-full reject) cannot strand the word
 # for the VMM baton (plans/M13.md risk note).
+# Returns the **number of messages drained**, not a 0/1 flag. Callers only
+# ever test it against zero, but the count is what makes `LANE1.run_one_hits`
+# deterministic: this fn drains a ring to empty in one call, so a flag would
+# make "one tick" mean one message when a producer publishes slowly and two
+# when it publishes in a burst. That difference is pure host interleaving
+# under concurrent record (plans/M15.md item I), and it is what made
+# `golden/boot-cross-core-admission-order` flake by exactly one between
+# runs (12 vs 13, ~1 run in 4). Messages drained is batching-invariant:
+# however the publishes interleave, the total is the same (adversarial
+# audit, 2026-07-29).
+#
+# This does **not** fix `golden/boot-cross-core-ring-full`, whose Lane 1
+# trailer varies in every field (`turns` 0/1, `run_one` 0/1/2, `messages`
+# 0/1, `hits` empty or `0:1`). That case is racy for a different and
+# deeper reason: it asserts a *rejection*, so it deliberately halts with
+# one admitted-but-unprocessed message outstanding, and whether core 1 is
+# ever scheduled to drain and run that turn before core 0 reaches
+# `__wrela_rt_summary_and_halt` is pure host timing. No counter definition
+# can settle that — it needs either a bounded quiesce-before-halt step in
+# the entry driver or a way for that one case not to pin the trailer.
 pub fn __wrela_rt_drain(core: usize) -> u64:
     moved: u64 = 0
     if core != 0:
@@ -1272,7 +1309,7 @@ pub fn __wrela_rt_drain(core: usize) -> u64:
             RINGS_CTL.edges[edge].head = h
             c = RINGS_CTL.edges[edge].count
             RINGS_CTL.edges[edge].count = c -% 1
-            moved = 1
+            moved = moved +% 1
         ri = ri +% 1
     n_req = __wrela_drain_request_count(core)
     qi: usize = 0
@@ -1309,7 +1346,7 @@ pub fn __wrela_rt_drain(core: usize) -> u64:
             RINGS_CTL.edges[edge].head = h
             c = RINGS_CTL.edges[edge].count
             RINGS_CTL.edges[edge].count = c -% 1
-            moved = 1
+            moved = moved +% 1
         qi = qi +% 1
     return moved
 

@@ -4,22 +4,19 @@ use std::collections::BTreeMap;
 
 use crate::eval::image::ImageGraph;
 use crate::eval::value::Value;
-use crate::flowwir::{AwaitKind, FlowInst, FlowWirProgram, Transition};
+use crate::flowwir::FlowWirProgram;
 use crate::mwir::LayoutCtx;
 use crate::sema::typed::TypedProgram;
 use crate::syntax::ast::Module;
 
 use super::place::place_runtime_tables;
 use super::rtdata::{
-    ActorRuntimeLayout, DriverRuntimeLayout, RingKind, RingLayout, RuntimeTables, TurnId,
-    actor_method_index_tables, compute_runtime_tables, count_with_group_sites, mailbox_root_names,
-    merge_actor_pub_methods,
+    RingKind, RuntimeTables, compute_runtime_tables, mailbox_root_names, merge_actor_pub_methods,
 };
 use super::{
-    DeviceRegs, GroupServiceCtx, IrqHostInject, IrqVectorEntry, LayoutError, PoolPlacement,
-    WakeDrainEntry, append_rodata, build_irq_host_injects, checkpoint_irq_shape,
-    closure_imported_types, closure_layout_types, cross_core_rings, driver_declares_task,
-    driver_task_method_names, group_service_shape, reject_unlowerable_cross_core_shapes,
+    DeviceRegs, LayoutError, PoolPlacement, append_rodata, checkpoint_irq_shape,
+    closure_imported_types, closure_layout_types, cross_core_rings,
+    reject_unlowerable_cross_core_shapes,
 };
 
 /// plans/M7.md item W: every struct's own declared `init`, in the shape

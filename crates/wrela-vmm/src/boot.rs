@@ -213,29 +213,25 @@ fn boot_image_core_inner(
         )));
     }
 
-    // --- hv_vm_create --------------------------------------------------------
-    let r = unsafe { hv_vm_create(std::ptr::null_mut()) };
-    if r != HV_SUCCESS {
-        return Err(VmmError::Hvf {
-            call: "hv_vm_create",
-            code: r,
-        });
-    }
-    // From here on, every early-return must still run `hv_vm_destroy` — a
-    // small RAII guard makes that automatic instead of repeated at every
-    // `return Err`.
-    struct VmGuard;
-    impl Drop for VmGuard {
-        fn drop(&mut self) {
-            unsafe {
-                hv_vm_destroy();
-            }
-        }
-    }
-    let _vm_guard = VmGuard;
-
     // --- host DRAM allocation (zeroed, 16 KiB aligned — Apple Silicon's own
     // page size, plenty for hv_vm_map's own alignment requirement) -----------
+    //
+    // Allocated — and its RAII guard declared — **before** `hv_vm_create`
+    // below, and that order is load-bearing rather than incidental. Rust
+    // drops in reverse declaration order, so the teardown this produces is
+    // the exact inverse of the setup: `_raise_guard` joins its thread, then
+    // `_vm_guard` runs `hv_vm_destroy` (tearing down the stage-2 mapping
+    // `hv_vm_map` installs just below), and only then does `_ram_guard`
+    // return these pages to the allocator. Declaring the VM guard first —
+    // as this fn used to — inverted that: `dealloc` handed a 1 GiB span
+    // back (in practice `munmap`ing it to the kernel) while
+    // Hypervisor.framework still had it mapped and wired, leaving the
+    // process with a live hypervisor mapping of memory the allocator was
+    // free to hand to someone else. No vCPU can run at that point (the
+    // scope below joins every core thread, each destroying its own vCPU),
+    // which is why it never crashed — but it is exactly the
+    // pointer-outlives-allocation window the `RaiseGuard` comment further
+    // down already reasons about, one guard over (adversarial audit).
     const PAGE_ALIGN: usize = 16 * 1024;
     let dram_size = machine_layout::DRAM_SIZE as usize;
     let layout = Layout::from_size_align(dram_size, PAGE_ALIGN)
@@ -261,6 +257,28 @@ fn boot_image_core_inner(
         ptr: host_ram,
         layout,
     };
+
+    // --- hv_vm_create --------------------------------------------------------
+    let r = unsafe { hv_vm_create(std::ptr::null_mut()) };
+    if r != HV_SUCCESS {
+        return Err(VmmError::Hvf {
+            call: "hv_vm_create",
+            code: r,
+        });
+    }
+    // From here on, every early-return must still run `hv_vm_destroy` — a
+    // small RAII guard makes that automatic instead of repeated at every
+    // `return Err`. Declared *after* `_ram_guard` so it drops *before* it
+    // (see that guard's own comment above).
+    struct VmGuard;
+    impl Drop for VmGuard {
+        fn drop(&mut self) {
+            unsafe {
+                hv_vm_destroy();
+            }
+        }
+    }
+    let _vm_guard = VmGuard;
 
     // W^X: map the whole reservation RW (never RWX). Executable sections
     // from the report are raised to RX via `hv_vm_protect` after the
@@ -624,6 +642,56 @@ fn boot_image_core_inner(
         Ok(())
     }
 
+    /// Decode a trapped MMIO access and enforce the whole guard every
+    /// protocol register shares: a decodable data abort, an 8-byte access,
+    /// and the expected direction. `require_mmword` above was this
+    /// extraction applied to one of the three checks; the other two were
+    /// written out at all six registers.
+    fn mmio_access(
+        esr: u64,
+        core: usize,
+        what: &str,
+        protocol: &str,
+        want_write: bool,
+    ) -> Result<DataAbort, VmmError> {
+        let Some(da) = decode_data_abort(esr) else {
+            return Err(VmmError::GuestFault(format!(
+                "core {core}: unhandled access shape at {what} (esr={esr:#x})"
+            )));
+        };
+        require_mmword(&da, core, what)?;
+        if want_write && !da.write {
+            return Err(VmmError::GuestFault(format!(
+                "core {core}: a load from {what} is not part of the {protocol} protocol"
+            )));
+        }
+        if !want_write && da.write {
+            return Err(VmmError::GuestFault(format!(
+                "core {core}: a store to {what} is not part of the {protocol} protocol"
+            )));
+        }
+        Ok(da)
+    }
+
+    /// The value the guest stored: `da.reg`'s contents, or zero when the
+    /// source register is `XZR` (SRT == 31, architecturally zero).
+    fn mmio_src_value(vcpu: u64, da: &DataAbort) -> Result<u64, VmmError> {
+        match da.reg {
+            Some(reg) => {
+                let mut v = 0u64;
+                let r = unsafe { hv_vcpu_get_reg(vcpu, hv_reg_xn(reg), &mut v) };
+                if r != HV_SUCCESS {
+                    return Err(VmmError::Hvf {
+                        call: "hv_vcpu_get_reg",
+                        code: r,
+                    });
+                }
+                Ok(v)
+            }
+            None => Ok(0),
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn handle_exit(
         core: usize,
@@ -643,46 +711,11 @@ fn boot_image_core_inner(
                 let esr = exit.exception.syndrome;
                 let ipa = exit.exception.physical_address;
                 if ipa == mmio::EXIT_MMIO_ADDR {
-                    let Some(da) = decode_data_abort(esr) else {
-                        return Err(VmmError::GuestFault(format!(
-                            "core {core}: unhandled access shape at EXIT_MMIO_ADDR (esr={esr:#x})"
-                        )));
-                    };
-                    require_mmword(&da, core, "EXIT_MMIO_ADDR")?;
-                    if !da.write {
-                        return Err(VmmError::GuestFault(format!(
-                            "core {core}: a load from EXIT_MMIO_ADDR is not part of the exit \
-                             protocol"
-                        )));
-                    }
-                    let value = match da.reg {
-                        Some(reg) => {
-                            let mut v = 0u64;
-                            let r = unsafe { hv_vcpu_get_reg(vcpu, hv_reg_xn(reg), &mut v) };
-                            if r != HV_SUCCESS {
-                                return Err(VmmError::Hvf {
-                                    call: "hv_vcpu_get_reg",
-                                    code: r,
-                                });
-                            }
-                            v
-                        }
-                        None => 0, // SRT == 31: XZR, architecturally zero.
-                    };
+                    let da = mmio_access(esr, core, "EXIT_MMIO_ADDR", "exit", true)?;
+                    let value = mmio_src_value(vcpu, &da)?;
                     Ok(Step::Halt(value))
                 } else if ipa == mmio::CLOCK_MMIO_ADDR {
-                    let Some(da) = decode_data_abort(esr) else {
-                        return Err(VmmError::GuestFault(format!(
-                            "core {core}: unhandled access shape at CLOCK_MMIO_ADDR (esr={esr:#x})"
-                        )));
-                    };
-                    require_mmword(&da, core, "CLOCK_MMIO_ADDR")?;
-                    if da.write {
-                        return Err(VmmError::GuestFault(format!(
-                            "core {core}: a store to CLOCK_MMIO_ADDR is not part of the clock \
-                             protocol"
-                        )));
-                    }
+                    let da = mmio_access(esr, core, "CLOCK_MMIO_ADDR", "clock", false)?;
                     // plans/M6.md item E, decision 9: the single point of
                     // choice — record produces a fresh live read, replay
                     // consumes the next logged one (never re-reading the
@@ -720,19 +753,7 @@ fn boot_image_core_inner(
                     // (ordinary stores), then this trapping store. VMM
                     // fills [dest, dest+len) via host_ram — not GuestMem
                     // (stack scratch is not a DMA pool window).
-                    let Some(da) = decode_data_abort(esr) else {
-                        return Err(VmmError::GuestFault(format!(
-                            "core {core}: unhandled access shape at ENTROPY_MMIO_ADDR \
-                             (esr={esr:#x})"
-                        )));
-                    };
-                    require_mmword(&da, core, "ENTROPY_MMIO_ADDR")?;
-                    if !da.write {
-                        return Err(VmmError::GuestFault(format!(
-                            "core {core}: a load from ENTROPY_MMIO_ADDR is not part of the \
-                             entropy protocol"
-                        )));
-                    }
+                    mmio_access(esr, core, "ENTROPY_MMIO_ADDR", "entropy", true)?;
                     let info_off =
                         (machine_layout::MACHINE_INFO_BASE - machine_layout::DRAM_BASE) as usize;
                     let dest = unsafe {
@@ -769,39 +790,14 @@ fn boot_image_core_inner(
                     // checked rather than assumed — a machine that starts
                     // cores nobody asked it to start is exactly the
                     // silent-wrong-answer this item exists to remove.
-                    let Some(da) = decode_data_abort(esr) else {
-                        return Err(VmmError::GuestFault(format!(
-                            "core {core}: unhandled access shape at RELEASE_MMIO_ADDR \
-                             (esr={esr:#x})"
-                        )));
-                    };
-                    require_mmword(&da, core, "RELEASE_MMIO_ADDR")?;
-                    if !da.write {
-                        return Err(VmmError::GuestFault(format!(
-                            "core {core}: a load from RELEASE_MMIO_ADDR is not part of the \
-                             release protocol"
-                        )));
-                    }
+                    let da = mmio_access(esr, core, "RELEASE_MMIO_ADDR", "release", true)?;
                     if core != 0 {
                         return Err(VmmError::GuestFault(format!(
                             "core {core} rang the release doorbell: only the boot core releases \
                              the others (06-machine.md §3)"
                         )));
                     }
-                    let value = match da.reg {
-                        Some(reg) => {
-                            let mut v = 0u64;
-                            let r = unsafe { hv_vcpu_get_reg(vcpu, hv_reg_xn(reg), &mut v) };
-                            if r != HV_SUCCESS {
-                                return Err(VmmError::Hvf {
-                                    call: "hv_vcpu_get_reg",
-                                    code: r,
-                                });
-                            }
-                            v
-                        }
-                        None => 0,
-                    };
+                    let value = mmio_src_value(vcpu, &da)?;
                     // Decision 1061: release value must equal report
                     // `Cores count` (already in `1..=CORE_SLOTS`).
                     if value != cores_declared as u64 {
@@ -838,33 +834,8 @@ fn boot_image_core_inner(
                     // reset traps here first, and the count word it will
                     // later gate a reclaim on is written *by the host*,
                     // after the model has actually stopped using the ring.
-                    let Some(da) = decode_data_abort(esr) else {
-                        return Err(VmmError::GuestFault(format!(
-                            "core {core}: unhandled access shape at QUIESCE_MMIO_ADDR \
-                             (esr={esr:#x})"
-                        )));
-                    };
-                    require_mmword(&da, core, "QUIESCE_MMIO_ADDR")?;
-                    if !da.write {
-                        return Err(VmmError::GuestFault(format!(
-                            "core {core}: a load from QUIESCE_MMIO_ADDR is not part of the \
-                             quiesce protocol"
-                        )));
-                    }
-                    let named = match da.reg {
-                        Some(reg) => {
-                            let mut v = 0u64;
-                            let r = unsafe { hv_vcpu_get_reg(vcpu, hv_reg_xn(reg), &mut v) };
-                            if r != HV_SUCCESS {
-                                return Err(VmmError::Hvf {
-                                    call: "hv_vcpu_get_reg",
-                                    code: r,
-                                });
-                            }
-                            v
-                        }
-                        None => 0,
-                    };
+                    let da = mmio_access(esr, core, "QUIESCE_MMIO_ADDR", "quiesce", true)?;
+                    let named = mmio_src_value(vcpu, &da)?;
                     {
                         let g = &mut *lock.lock().unwrap_or_else(|e| e.into_inner());
                         let Some(state) = g.blk.as_mut() else {
@@ -888,18 +859,7 @@ fn boot_image_core_inner(
                     // plans/M6.md item E, decision 7/06 §5: the park
                     // protocol's own doorbell (`mmio::PARK_MMIO_ADDR`'s
                     // own module doc has the whole contract).
-                    let Some(da) = decode_data_abort(esr) else {
-                        return Err(VmmError::GuestFault(format!(
-                            "core {core}: unhandled access shape at PARK_MMIO_ADDR (esr={esr:#x})"
-                        )));
-                    };
-                    require_mmword(&da, core, "PARK_MMIO_ADDR")?;
-                    if !da.write {
-                        return Err(VmmError::GuestFault(format!(
-                            "core {core}: a load from PARK_MMIO_ADDR is not part of the park \
-                             protocol"
-                        )));
-                    }
+                    mmio_access(esr, core, "PARK_MMIO_ADDR", "park", true)?;
                     // Advance PC now — the guest resumes right after its
                     // own trapping store the moment this vCPU is next run,
                     // whether or not this park ends up sleeping at all.

@@ -7,6 +7,8 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use super::{Fnv64, repo_root};
+
 /// Only key allowed inside a workload table.
 const WEIGHT_KEY: &str = "weight";
 
@@ -126,36 +128,6 @@ pub fn parse(text: &str) -> Result<WorkloadSet, String> {
     }
 
     Ok(WorkloadSet { weights })
-}
-
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("repo root from crates/wrela-compiler")
-        .to_path_buf()
-}
-
-/// FNV-1a 64-bit — deterministic, std-only, fine for workload digests.
-struct Fnv64(u64);
-
-impl Fnv64 {
-    fn new() -> Self {
-        Fnv64(0xcbf29ce484222325)
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        let mut h = self.0;
-        for &b in bytes {
-            h ^= u64::from(b);
-            h = h.wrapping_mul(0x100000001b3);
-        }
-        self.0 = h;
-    }
-
-    fn finish(self) -> u64 {
-        self.0
-    }
 }
 
 #[cfg(test)]

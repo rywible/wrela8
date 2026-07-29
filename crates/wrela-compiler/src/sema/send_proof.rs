@@ -166,6 +166,10 @@ struct MessageSite {
 struct CallOccurrence {
     holder: String,
     once_locally: bool,
+    /// The invoking expression's own span — the site
+    /// `check_sync_call_graph_acyclic` points its diagnostic at when this
+    /// occurrence turns out to close a recursive cycle.
+    span: Span,
 }
 
 #[derive(Debug, Default)]
@@ -176,6 +180,28 @@ struct Facts {
     /// Ordinary (non-message) call edges: holder key -> callee keys.
     /// Used only for the `g.start`-child reachability closure.
     edges: BTreeMap<String, BTreeSet<String>>,
+    /// The strictly narrower **frame-extending** subset of `edges`: holder
+    /// key -> callees whose body runs on the holder's own stack, which is
+    /// the only graph `check_sync_call_graph_acyclic` may reason about.
+    ///
+    /// `edges` is deliberately wider — it exists for `g.start`-child
+    /// reachability, where a mere *mention* of a callee is the point — and
+    /// two of the occurrences it records do not extend anybody's frame:
+    ///
+    ///   - a bare `FnRef`, which is a reference and not a call. `wake(f)`
+    ///     is spelled this way, and a `@task` bottom half that re-arms
+    ///     itself with `wake(Self.drain)` (03-hardware.md §6, exactly
+    ///     `golden/check-interrupt-cell`) is a *scheduling* self-edge: the
+    ///     `wake` returns immediately and the task runs later, on its own
+    ///     stack. Counting it as recursion would refuse the level-drain
+    ///     idiom the hardware chapter prescribes.
+    ///   - a `GroupChild`, i.e. the callee argument of `g.start(f)`, which
+    ///     starts a child task with its own frame rather than descending
+    ///     into the parent's.
+    ///
+    /// Message edges (`send`/`await` to an actor) were never in `edges` to
+    /// begin with, and are excluded here for the same reason.
+    sync_edges: BTreeMap<String, BTreeSet<String>>,
     /// Every key named as a `g.start` callee argument anywhere.
     group_children: BTreeSet<String>,
 }
@@ -189,6 +215,11 @@ struct Facts {
 /// diagnostic, matching sema's own fail-fast discipline everywhere else.
 pub(crate) fn check(programs: &BTreeMap<String, &TypedProgram>) -> Result<(), SemaError> {
     let facts = collect(programs);
+    // 04-compiler.md §1's memory obligation, second half (see
+    // `check_sync_call_graph_acyclic`). Runs first and unconditionally:
+    // unlike the bare-`send` proof below it needs no `@image` fn and no
+    // mailbox capacity, only the call edges `collect` just built.
+    check_sync_call_graph_acyclic(&facts, programs)?;
     if !facts.sites.iter().any(|s| s.bare.is_some()) {
         // Nothing to prove: no `@image` evaluation, no behaviour change,
         // no cost. Every program without a bare `send` statement takes
@@ -207,6 +238,242 @@ pub(crate) fn check(programs: &BTreeMap<String, &TypedProgram>) -> Result<(), Se
         }
     }
     Ok(())
+}
+
+// --- the recursion rejection (04-compiler.md §1 / 01-model.md §5) ---------
+
+/// Rejects every cycle in the **synchronous** call graph — 04-compiler.md
+/// §1's "unbounded recursion in either the sync or async call graph is
+/// rejected", and 01-model.md §5's safety claim that wrela "prevents ...
+/// unbounded runtime allocation and recursion".
+///
+/// This lived nowhere until an adversarial audit went looking for it. The
+/// sibling obligation in the *same sentence* — "task frames, stacks, pools
+/// ... have proven bounds" — was enforced (`eval::observes::
+/// check_loop_discharge` refuses a `while` without `@budget`), but
+/// `fn down(n: u64) -> u64: ... return down(n - 1)` checked clean and
+/// lowered to real A64. Mutual recursion likewise.
+///
+/// **Why this is a memory-safety rule and not a tidiness rule.** Nothing
+/// in the emitted code or the machine catches a blown stack. Prologues are
+/// a bare `sub sp, sp, #N` with no limit compare; `wrela-vmm`'s
+/// `boot_image_core` maps the whole 1 GiB DRAM reservation RW in one
+/// `hv_vm_map` and only raises declared *exec* sections to RX, so no page
+/// in a stack region is unmapped and there is no guard page to fault on;
+/// and `wrela_machine::layout::core_stack_base_n` packs the per-core 1 MiB
+/// stacks **contiguously** down from `DRAM_END`, so core `n`'s stack floor
+/// is exactly core `n-1`'s stack ceiling. A runaway recursion on core 1
+/// therefore walks SP straight down into core 0's live frames and silently
+/// corrupts another core's actor state — no fault, no abort, a green boot
+/// with wrong answers. That is precisely the "cross-actor shared mutable
+/// state" 01-model.md §5 claims to prevent.
+///
+/// **Scope: ordinary call edges only.** `Facts::edges` records exactly the
+/// `ordinary` invocations (`Call`/`FnRef`/`OpCall`/`Try`-conversion/
+/// `g.start` callee) and deliberately excludes message edges, which is the
+/// right graph here for the same reason it is the right graph for
+/// `group_child_closure`: a `send`/`await` to an actor does not extend the
+/// caller's frame — the message is admitted to a mailbox and run as its own
+/// turn on a fresh stack. A message cycle is a *mailbox* bound, not a stack
+/// bound, and it already has its own proof (`check`, above, plus
+/// `reserve_proof`). Rejecting message cycles here would refuse ordinary
+/// request/response protocols between two actors, which the language
+/// plainly intends to allow.
+///
+/// The graph is over `CalleeKey::spelling()`s merged across modules, the
+/// same keys `at_most_once` uses — so, exactly as documented there, two
+/// modules that each declare `fn helper` share one node. That over-counts
+/// edges and can only ever make this check *stricter*, never laxer, which
+/// is the safe direction for a rule whose failure mode is silent memory
+/// corruption.
+///
+/// **Scope: cycles reachable from a runtime entry point** (`runtime_roots`,
+/// below). This boundary is not a hedge — it is what keeps the rule from
+/// swallowing a different, deliberately-supported feature. Comptime
+/// evaluation runs in `eval::interp`, not on any guest stack, and it is
+/// bounded by its own `MAX_CALL_DEPTH = 1_000` quota (02-language.md §12,
+/// `comptime.eval.quotas`); `eval::legal::classify` says so outright —
+/// "recursion/cycles are legal by decision 7 (quotas bound them at eval
+/// time)" — and has unit tests pinning it. A `const` initialized by a
+/// recursive helper is therefore *already* bounded by a different
+/// mechanism, and rejecting it here would delete a documented capability
+/// to fix a hazard it does not have. Only a cycle some turn, test, or ISR
+/// can actually enter puts frames on the guest stack, and that is exactly
+/// what this rejects.
+fn check_sync_call_graph_acyclic(
+    facts: &Facts,
+    programs: &BTreeMap<String, &TypedProgram>,
+) -> Result<(), SemaError> {
+    let reachable = runtime_reachable(facts, programs);
+    if reachable.is_empty() {
+        return Ok(());
+    }
+    /// Iterative DFS colouring: `Grey` is "on the current path", `Black`
+    /// is "fully explored, no cycle reachable". A back edge to a `Grey`
+    /// node is a cycle. Deterministic by construction — `edges` is a
+    /// `BTreeMap` of `BTreeSet`s, so roots and neighbours are both walked
+    /// in sorted order and the *same* cycle wins every run.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Colour {
+        Grey,
+        Black,
+    }
+    let mut colour: BTreeMap<&str, Colour> = BTreeMap::new();
+    // The current DFS path, as node keys; `path[i+1]` is a callee of
+    // `path[i]`. Reconstructing the cycle from this is what lets the
+    // diagnostic name the whole loop rather than just one function.
+    let mut path: Vec<&str> = Vec::new();
+
+    // `Step::Enter` visits a node; `Step::Leave` pops it off the path and
+    // blackens it. An explicit stack rather than recursion, because a
+    // *recursive* cycle detector would itself blow the host stack on a
+    // deep call graph — the exact bug class this function exists to reject.
+    enum Step<'a> {
+        Enter(&'a str),
+        Leave(&'a str),
+    }
+
+    for root in facts.sync_edges.keys() {
+        if colour.contains_key(root.as_str()) || !reachable.contains(root.as_str()) {
+            continue;
+        }
+        let mut work: Vec<Step> = vec![Step::Enter(root.as_str())];
+        while let Some(step) = work.pop() {
+            match step {
+                Step::Leave(key) => {
+                    colour.insert(key, Colour::Black);
+                    debug_assert_eq!(path.last().copied(), Some(key));
+                    path.pop();
+                }
+                Step::Enter(key) => {
+                    match colour.get(key) {
+                        Some(Colour::Black) => continue,
+                        Some(Colour::Grey) => {
+                            // Back edge: `path` currently holds the cycle
+                            // from `key`'s first occurrence to its end,
+                            // and the caller closing it is `path.last()`.
+                            let from = path.last().copied().unwrap_or(key);
+                            let start = path.iter().position(|n| *n == key).unwrap_or(0);
+                            let mut cycle: Vec<&str> = path[start..].to_vec();
+                            cycle.push(key);
+                            return Err(recursion_rejection(facts, from, key, &cycle));
+                        }
+                        None => {}
+                    }
+                    colour.insert(key, Colour::Grey);
+                    path.push(key);
+                    work.push(Step::Leave(key));
+                    if let Some(callees) = facts.sync_edges.get(key) {
+                        // Reverse so the sorted order is what actually
+                        // gets explored first off the LIFO stack.
+                        for callee in callees.iter().rev() {
+                            if colour.get(callee.as_str()) != Some(&Colour::Black)
+                                && reachable.contains(callee.as_str())
+                            {
+                                work.push(Step::Enter(callee.as_str()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Every call-graph node a **runtime** entry point can reach through
+/// frame-extending calls. The roots are the places guest execution
+/// actually begins (04-compiler.md §2's per-core loops and the test
+/// harness):
+///
+///   - every `@test(runtime)` fn — `wrela test`'s own roots;
+///   - every method, associated fn and `init` of an `@actor` or `@driver`
+///     struct — an actor turn and a driver entry both start here;
+///   - every `@task` fn — a bottom half runs on its own stack, but that
+///     stack is still a guest stack.
+///
+/// Anything outside this closure is either dead in this build or reached
+/// only from a `const`/`@image` position, which `eval::interp` evaluates
+/// under its own call-depth quota rather than on a guest stack.
+///
+/// An empty set means the closure has no runtime entry at all (a pure
+/// library or a check-only fixture), and the caller returns early: there
+/// is no guest stack to overflow yet, and the rejection lands as soon as
+/// something roots the cycle.
+fn runtime_reachable(
+    facts: &Facts,
+    programs: &BTreeMap<String, &TypedProgram>,
+) -> BTreeSet<String> {
+    let mut work: Vec<String> = Vec::new();
+    for program in programs.values() {
+        for t in &program.tests {
+            if matches!(t.kind, crate::sema::typed::TestKind::Runtime) {
+                work.push(t.name.clone());
+            }
+        }
+        for (name, f) in &program.fns {
+            if f.is_task {
+                work.push(name.clone());
+            }
+        }
+        for (struct_name, st) in &program.structs {
+            if !st.is_actor && !st.is_driver {
+                continue;
+            }
+            for member in st.methods.keys().chain(st.assoc_fns.keys()) {
+                work.push(format!("{struct_name}.{member}"));
+            }
+            if st.init.is_some() {
+                work.push(format!("{struct_name}.init"));
+            }
+        }
+    }
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    while let Some(key) = work.pop() {
+        if !seen.insert(key.clone()) {
+            continue;
+        }
+        if let Some(callees) = facts.sync_edges.get(&key) {
+            for c in callees {
+                if !seen.contains(c) {
+                    work.push(c.clone());
+                }
+            }
+        }
+    }
+    seen
+}
+
+/// The diagnostic for one recursive cycle. `from -> to` is the back edge
+/// that closed it (and supplies the span — the actual call site a reader
+/// has to delete or bound); `cycle` is the whole loop, for the message.
+fn recursion_rejection(facts: &Facts, from: &str, to: &str, cycle: &[&str]) -> SemaError {
+    // Point at the offending call itself. Every edge in `edges` was
+    // recorded by `note_call`, which also pushed a `CallOccurrence`
+    // carrying that expression's span, so the lookup always succeeds for
+    // a real edge; `Span::default()` is the unreachable belt-and-braces.
+    let span = facts
+        .callers
+        .get(to)
+        .and_then(|occs| occs.iter().find(|o| o.holder == from))
+        .map(|o| o.span)
+        .unwrap_or_default();
+    let how = if cycle.len() <= 2 {
+        format!("`{to}` calls itself")
+    } else {
+        format!("`{}`", cycle.join("` -> `"))
+    };
+    SemaError::at(
+        "sema",
+        format!(
+            "recursive call: {how}. 04-compiler.md §1 rejects unbounded recursion in the call \
+             graph — this machine has no stack guard (per-core stacks are packed contiguously in \
+             high DRAM, so an overrun silently corrupts the next core's frames rather than \
+             faulting), so every call depth must be statically bounded. Rewrite the cycle as a \
+             `@budget(bound=N)` loop"
+        ),
+        span,
+    )
 }
 
 /// Every declared actor instance's own mailbox capacity, folded to the
@@ -485,7 +752,11 @@ struct Cx<'a> {
 }
 
 impl Cx<'_> {
-    fn note_call(&mut self, key: &CalleeKey, ordinary: bool) {
+    /// `ordinary`: not a message edge (goes into `edges`).
+    /// `extends_frame`: the callee's body runs on this holder's own stack
+    /// (also goes into `sync_edges` — see that field's own doc for the two
+    /// `ordinary`-but-not-frame-extending shapes).
+    fn note_call(&mut self, key: &CalleeKey, ordinary: bool, extends_frame: bool, span: Span) {
         let spelling = key.spelling();
         self.facts
             .callers
@@ -494,10 +765,19 @@ impl Cx<'_> {
             .push(CallOccurrence {
                 holder: self.holder.clone(),
                 once_locally: self.once,
+                span,
             });
         if ordinary {
             self.facts
                 .edges
+                .entry(self.holder.clone())
+                .or_default()
+                .insert(spelling.clone());
+        }
+        if extends_frame {
+            debug_assert!(ordinary, "a message edge never extends the caller's frame");
+            self.facts
+                .sync_edges
                 .entry(self.holder.clone())
                 .or_default()
                 .insert(spelling);
@@ -530,7 +810,7 @@ impl Cx<'_> {
             bare,
             once_locally: self.once,
         });
-        self.note_call(callee, false);
+        self.note_call(callee, false, false, inner.span);
         self.expr(recv);
         for a in args.iter().filter_map(|a| a.value.as_ref()) {
             self.expr(a);
@@ -671,7 +951,7 @@ impl Cx<'_> {
             | TypedExprKind::Const(_)
             | TypedExprKind::Static(_)
             | TypedExprKind::PoolName(_) => {}
-            TypedExprKind::FnRef(key) => self.note_call(key, true),
+            TypedExprKind::FnRef(key) => self.note_call(key, true, false, e.span),
             TypedExprKind::Field(base, _) => self.expr(base),
             TypedExprKind::Index(base, idx) => {
                 self.expr(base);
@@ -682,7 +962,7 @@ impl Cx<'_> {
                 receiver,
                 args,
             } => {
-                self.note_call(callee, true);
+                self.note_call(callee, true, true, e.span);
                 if let Some(r) = receiver {
                     self.expr(r);
                 }
@@ -705,7 +985,7 @@ impl Cx<'_> {
             TypedExprKind::Try(inner, conv) => {
                 self.expr(inner);
                 if let Some(key) = conv {
-                    self.note_call(key, true);
+                    self.note_call(key, true, true, e.span);
                 }
             }
             TypedExprKind::Binary(_, l, r) | TypedExprKind::And(l, r) | TypedExprKind::Or(l, r) => {
@@ -713,7 +993,7 @@ impl Cx<'_> {
                 self.expr(r);
             }
             TypedExprKind::OpCall(key, l, r) => {
-                self.note_call(key, true);
+                self.note_call(key, true, true, e.span);
                 self.expr(l);
                 self.expr(r);
             }
@@ -769,7 +1049,7 @@ impl Cx<'_> {
                 }
             }
             TypedExprKind::GroupChild(key) => {
-                self.note_call(key, true);
+                self.note_call(key, true, false, e.span);
                 self.facts.group_children.insert(key.spelling());
             }
         }

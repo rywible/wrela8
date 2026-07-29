@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use super::CostRule;
+use super::{CostRule, Fnv64, repo_root};
 
 /// Expected `version` field in `wrela-cost-v1.toml`.
 pub const EXPECTED_VERSION: u64 = 2;
@@ -274,37 +274,6 @@ fn req_u64_nonneg(
         return Err(format!("{section}.{key} must be >= 0, got {n}"));
     }
     Ok(n as u64)
-}
-
-fn repo_root() -> PathBuf {
-    // crates/wrela-compiler → repo root (same shape as xtask `root()`).
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("repo root from crates/wrela-compiler")
-        .to_path_buf()
-}
-
-/// FNV-1a 64-bit — deterministic, std-only, fine for table digests.
-struct Fnv64(u64);
-
-impl Fnv64 {
-    fn new() -> Self {
-        Fnv64(0xcbf29ce484222325)
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        let mut h = self.0;
-        for &b in bytes {
-            h ^= u64::from(b);
-            h = h.wrapping_mul(0x100000001b3);
-        }
-        self.0 = h;
-    }
-
-    fn finish(self) -> u64 {
-        self.0
-    }
 }
 
 #[cfg(test)]

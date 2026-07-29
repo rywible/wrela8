@@ -275,7 +275,7 @@ pub fn resolve_imports(
             // forbids. The exporting module could never have declared the
             // name in the first place (`symbols::collect` rejects it),
             // so this arm is specifically about the alias.
-            if crate::eval::image_checks::is_sealed_authority_type_name(&local_name) {
+            if crate::sema::classes::name_holds_authority(&local_name) {
                 let kind = crate::eval::image_checks::sealed_authority_kind(&local_name);
                 return Err(SemaError::at(
                     "name",

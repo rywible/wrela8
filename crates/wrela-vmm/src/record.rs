@@ -663,21 +663,6 @@ impl Chooser {
         matches!(self.mode, ChooserMode::Replay { .. })
     }
 
-    /// Peek at the next recorded non-Admission choice without consuming it
-    /// (replay only). Admissions live in the bag, not the positional cursor.
-    pub fn peek_replay(&self) -> Option<&ChoiceEntry> {
-        match &self.mode {
-            ChooserMode::Replay { log, idx, .. } => {
-                let mut i = *idx;
-                while i < log.len() && matches!(log[i], ChoiceEntry::Admission { .. }) {
-                    i += 1;
-                }
-                log.get(i)
-            }
-            ChooserMode::Record => None,
-        }
-    }
-
     /// Fail closed on the first divergence (live replay boots).
     pub fn strict(mut self) -> Chooser {
         self.strict = true;

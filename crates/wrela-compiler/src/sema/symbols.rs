@@ -61,7 +61,7 @@ pub fn collect(module: &Module) -> Result<SymbolTable, SemaError> {
         // four are the names an *unforgeable* rule is about. Rejected
         // here, at the one pass that already owns "what names does this
         // module declare".
-        if crate::eval::image_checks::is_sealed_authority_type_name(name) {
+        if crate::sema::classes::name_holds_authority(name) {
             let kind = crate::eval::image_checks::sealed_authority_kind(name);
             return Err(SemaError::at(
                 "name",

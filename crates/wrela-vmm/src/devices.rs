@@ -830,7 +830,6 @@ impl BlkDevice {
         // `GuestMem` accessor.
         mem.window_offset(addr, len as u64)?;
         Ok(Descriptor {
-            index,
             addr,
             len,
             flags,
@@ -1014,8 +1013,6 @@ impl std::fmt::Debug for GuestMem {
 /// One descriptor-table entry, already range-checked by `read_desc`.
 #[derive(Debug, Clone, Copy)]
 struct Descriptor {
-    #[allow(dead_code)]
-    index: u16,
     addr: u64,
     len: u32,
     flags: u16,

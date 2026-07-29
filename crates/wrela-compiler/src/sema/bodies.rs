@@ -63,7 +63,7 @@ use crate::sema::{SemaError, unimplemented_at};
 use crate::syntax::ast::{
     self, AccessMode, Arg, AssertStmt, AssignOp, AssignStmt, BinOp, ClosureBody, ClosureExpr,
     DeferBody, DeferStmt, Expr, ForStmt, IfStmt, Item, MatchArm, MatchStmt, Member, Module,
-    NamedType, Pattern, Span, Stmt, UnaryOp, VariantPayload, WhileStmt, WithStmt,
+    NamedType, Pattern, Span, Stmt, UnaryOp, VariantPayload, WhileStmt,
 };
 
 // --- item H: the generic-instantiation queue ------------------------------
@@ -1992,7 +1992,7 @@ fn collect_format_bound_returns(
         match &s.kind {
             TypedStmtKind::Return(Some(e)) => match &e.kind {
                 TypedExprKind::Int(text) => {
-                    let v = crate::eval::value::parse_int_literal(text).ok_or_else(|| {
+                    let v = parse_int_literal(text).ok_or_else(|| {
                         type_error(
                             "Format max_formatted_len must return an integer literal".to_string(),
                             span,
@@ -4130,38 +4130,19 @@ fn check_field_expr(
     // (`Untrusted[usize]`).
     if let Type::Named(n, targs) = &base_ty {
         if n == "IoCompletion" {
-            let Some(types::TypeArg::Type(payload)) = targs.first() else {
+            // One ordered table, shared with `mwir::{size_of, field_offset}`
+            // and `lower::field_index` (`mwir::io_completion_fields`).
+            let fields =
+                crate::mwir::io_completion_fields(targs).map_err(|e| type_error(e, span))?;
+            let Some((_, field_ty)) = fields.into_iter().find(|(f, _)| *f == name) else {
                 return Err(type_error(
-                    "`IoCompletion` with no payload type argument".to_string(),
+                    format!(
+                        "`IoCompletion[P]` has fields `payload`, `status`, and `written_len`; \
+                         found `{name}`"
+                    ),
                     span,
                 ));
             };
-            let field_ty = match name {
-                "payload" => payload.clone(),
-                "status" => Type::Result(
-                    Box::new(Type::Unit),
-                    Box::new(Type::Named("IoError".to_string(), vec![])),
-                ),
-                "written_len" => untrusted_type(Type::Usize),
-                other => {
-                    return Err(type_error(
-                        format!(
-                            "`IoCompletion[P]` has fields `payload`, `status`, and `written_len`; \
-                             found `{other}`"
-                        ),
-                        span,
-                    ));
-                }
-            };
-            let index: usize = match name {
-                "payload" => 0,
-                "status" => 1,
-                "written_len" => 2,
-                _ => unreachable!(),
-            };
-            // Reuse Field spelling; lower maps the name to Project index
-            // via the same order size_of uses.
-            let _ = index;
             return Ok(TypedExpr {
                 span: span,
                 ty: field_ty,
@@ -4680,22 +4661,9 @@ fn same_len_expr(a: &Expr, b: &Expr) -> bool {
     }
 }
 
-fn int_bounds(ty: &Type) -> Option<(i128, i128)> {
-    match ty {
-        Type::U8 => Some((0, u8::MAX as i128)),
-        Type::U16 => Some((0, u16::MAX as i128)),
-        Type::U32 => Some((0, u32::MAX as i128)),
-        Type::U64 | Type::Usize => Some((0, u64::MAX as i128)),
-        Type::I8 => Some((i8::MIN as i128, i8::MAX as i128)),
-        Type::I16 => Some((i16::MIN as i128, i16::MAX as i128)),
-        Type::I32 => Some((i32::MIN as i128, i32::MAX as i128)),
-        Type::I64 | Type::Isize => Some((i64::MIN as i128, i64::MAX as i128)),
-        _ => None,
-    }
-}
-
 fn check_int_range(value: i128, ty: &Type, span: Span) -> Result<(), SemaError> {
-    let (min, max) = int_bounds(ty).expect("check_int_range called with a non-integer type");
+    let (min, max) =
+        crate::eval::value::int_bounds(ty).expect("check_int_range called with a non-integer type");
     if value < min || value > max {
         return Err(type_error(
             format!(
@@ -4708,28 +4676,7 @@ fn check_int_range(value: i128, ty: &Type, span: Span) -> Result<(), SemaError> 
     Ok(())
 }
 
-pub(crate) fn parse_int_literal(text: &str) -> Option<i128> {
-    let cleaned: String = text.chars().filter(|c| *c != '_').collect();
-    let (radix, digits): (u32, &str) = if let Some(d) = cleaned
-        .strip_prefix("0x")
-        .or_else(|| cleaned.strip_prefix("0X"))
-    {
-        (16, d)
-    } else if let Some(d) = cleaned
-        .strip_prefix("0o")
-        .or_else(|| cleaned.strip_prefix("0O"))
-    {
-        (8, d)
-    } else if let Some(d) = cleaned
-        .strip_prefix("0b")
-        .or_else(|| cleaned.strip_prefix("0B"))
-    {
-        (2, d)
-    } else {
-        (10, cleaned.as_str())
-    };
-    i128::from_str_radix(digits, radix).ok()
-}
+pub(crate) use crate::eval::value::parse_int_literal;
 
 /// Decoded byte length of a byte-string literal's raw (still-escaped)
 /// source text (lexer.rs: "contents kept raw"): each escape (already
@@ -5188,7 +5135,7 @@ fn build_binop_expr(
 /// them.
 pub(crate) fn is_resource_type(ty: &Type, mctx: &ModuleCtx) -> bool {
     types::resource_propagates(ty, &mut |name, _args| {
-        if crate::eval::image_checks::is_sealed_authority_type_name(name) {
+        if crate::sema::classes::name_holds_authority(name) {
             return true;
         }
         mctx.structs
@@ -6366,7 +6313,7 @@ fn check_call_by_name(
 /// the generic shape it happens to share with something else. A no-op for
 /// every non-capability name, so a call site can ask unconditionally.
 fn capability_forgery_check(name: &str, attempt: &str, span: Span) -> Result<(), SemaError> {
-    if !crate::eval::image_checks::is_sealed_authority_type_name(name) {
+    if !crate::sema::classes::name_holds_authority(name) {
         return Ok(());
     }
     let kind = crate::eval::image_checks::sealed_authority_kind(name);
@@ -6398,7 +6345,7 @@ fn capability_name_in_type_expr(e: &Expr) -> Option<&str> {
         },
         _ => return None,
     };
-    crate::eval::image_checks::is_sealed_authority_type_name(name).then_some(name)
+    crate::sema::classes::name_holds_authority(name).then_some(name)
 }
 
 /// Call a method/associated fn that declares its own type parameters
@@ -7218,26 +7165,9 @@ pub fn is_mmio_access_intrinsic(key: &str) -> bool {
 // outcomes on a real used-ring length. A source-visible `Untrusted.mark`
 // constructor stays rejected.
 
-/// `Untrusted[<inner>]`.
-pub(crate) fn untrusted_type(inner: Type) -> Type {
-    Type::Named("Untrusted".to_string(), vec![types::TypeArg::Type(inner)])
-}
-
 /// Is `ty` the marked wrapper `Untrusted[_]`?
 pub(crate) fn is_untrusted_type(ty: &Type) -> bool {
     matches!(ty, Type::Named(name, _) if name == "Untrusted")
-}
-
-/// The payload type inside `Untrusted[T]`, when `ty` is one.
-#[allow(dead_code)] // reserved for the self-audit / table-driven guards
-fn untrusted_payload(ty: &Type) -> Option<&Type> {
-    match ty {
-        Type::Named(name, targs) if name == "Untrusted" => match targs.first() {
-            Some(types::TypeArg::Type(inner)) => Some(inner),
-            _ => None,
-        },
-        _ => None,
-    }
 }
 
 /// 03-hardware.md §8's rejection for an ordinary use of a marked value:
@@ -8056,8 +7986,9 @@ fn resolve_wake_target(
 }
 
 // --- actor/async surface: see `sema::actor` ----------------------------
-pub use super::actor::*;
-use super::actor::*;
+// Nothing in `actor` is more public than `pub(crate)`, so this is a
+// crate-internal re-export, not a `pub` one.
+pub(crate) use super::actor::*;
 
 /// `img.driver(A, ...)` / `img.actor(A, ...)` / `img.on_failure(...)` /
 /// `img.check_layout(f)` / `img.seal()` — every builder method called

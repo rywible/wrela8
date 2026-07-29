@@ -148,7 +148,10 @@ use crate::mwir::{self, LayoutCtx};
 use crate::sema::SemaError;
 use crate::sema::typed::TypedProgram;
 use crate::syntax::ast::Module;
-use wrela_machine::{console, layout as machine_layout};
+// `console` is used only by this file's own `#[cfg(test)]` module.
+#[cfg(test)]
+use wrela_machine::console;
+use wrela_machine::layout as machine_layout;
 
 /// Runtime emission + boot harness (plans/M10.md item K): floor stubs,
 /// specialized inject helpers, JIT materializers, and `layout_test_image`.
@@ -569,9 +572,7 @@ fn steer_rtdata_base(cursor: u64, tables: &RuntimeTables) -> Result<u64, LayoutE
 fn pad_to(blob: &mut Vec<u8>, image_base: u64, target_addr: u64) {
     let want = (target_addr - image_base) as usize;
     debug_assert!(blob.len() <= want);
-    while blob.len() < want {
-        blob.push(0);
-    }
+    blob.resize(want, 0);
 }
 
 // --- reloc resolution ------------------------------------------------------
@@ -740,13 +741,9 @@ fn resolve_cross_core_edge(
     // hand-asm drain never hit this path (glue `bl_call_key`, not
     // `Reloc::Call` through `program.fns`).
     // M11 G: generic `__wrela_rt_drain` / `__wrela_try_enqueue` are the
-    // same shape — not space-bearing, but must not redirect either.
-    if crate::codegen::symbol_is_synthetic(caller_key)
-        || caller_key.starts_with("__wrela_")
-        || caller_key.starts_with("__enqueue_")
-        || caller_key.starts_with("__method_")
-        || caller_key.starts_with("__resume_")
-    {
+    // same shape — not space-bearing, but must not redirect either. Both
+    // families are what `is_compiler_glue_symbol` means.
+    if crate::codegen::is_compiler_glue_symbol(caller_key) {
         return Ok(None);
     }
     let Some(target_actor) = crate::codegen::rt_enqueue_actor(target) else {
@@ -2456,7 +2453,8 @@ pub fn layout_program(
 
     let entry_words = build_entry_stub();
 
-    let mut code_words: Vec<u32> = Vec::new();
+    let mut code_words: Vec<u32> =
+        Vec::with_capacity(program.fns.values().map(|f| f.code.len()).sum());
     let mut fn_word_base: BTreeMap<String, usize> = BTreeMap::new();
     for (key, f) in &program.fns {
         fn_word_base.insert(key.clone(), code_words.len());
@@ -3034,7 +3032,16 @@ pub fn layout_program(
     let rtcode_words: Vec<u32> = Vec::new();
 
     // --- serialize -------------------------------------------------------
-    let mut blob = Vec::new();
+    // The section table already knows how far the blob reaches; reserve it
+    // once rather than growing a ~300 KB buffer by repeated doubling.
+    // `verify_section_sizes` below is what actually holds the two in sync.
+    let mut blob = Vec::with_capacity(
+        sections
+            .iter()
+            .map(|s| (s.base + s.size).saturating_sub(image_base) as usize)
+            .max()
+            .unwrap_or(0),
+    );
     for w in &entry_words {
         blob.extend_from_slice(&w.to_le_bytes());
     }

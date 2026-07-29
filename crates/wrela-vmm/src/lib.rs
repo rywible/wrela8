@@ -298,9 +298,7 @@ pub(crate) use boot::{
 #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
 pub(crate) use exit_loop::check_core_marks;
 #[cfg(test)]
-pub(crate) use exit_loop::{
-    AdmissionWitness, check_vector_in_range, drain_console, raise_vector, read_core_mark,
-};
+pub(crate) use exit_loop::{AdmissionWitness, check_vector_in_range, drain_console};
 
 #[cfg(target_os = "linux")]
 pub mod kvm {
@@ -727,17 +725,6 @@ mod tests {
     }
 
     /// Rounds `n` up to the next multiple of 8 — every `ActorAddrs` field
-    /// this item's own tests place is a `u64`, so the `rtdata` region's
-    /// own base must be 8-byte aligned (an unaligned 64-bit `LDR`/`STR`
-    /// can fault): a real image already gets this via `layout.rs`'s own
-    /// `round_up(cursor, 8)`; this test harness needs the identical
-    /// rounding since it lays out its own hand-built blob rather than
-    /// going through `layout_program`/`layout_test_image`.
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    fn round_up8(n: u64) -> u64 {
-        n.div_ceil(8) * 8
-    }
-
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn load_imm_words(reg: u8, value: u64) -> Vec<u32> {
         use wrela_compiler::encode;
@@ -3518,6 +3505,81 @@ pub fn build() -> Image:
             w.observe(&[0, 0, 0], &[2, 1, 1], 1).expect("ok"),
             Vec::new()
         );
+    }
+
+    /// Adversarial-audit regression (2026-07-29). `heads` is read straight
+    /// out of guest DRAM, so a guest can put anything at all in it. The
+    /// delta used to be `(now_h + cap - was_h) % cap`, which overflows a
+    /// u64 outright for `now_h = u64::MAX` — a debug-build panic that
+    /// aborted the VMM on guest data, and a silent wrap in release that
+    /// corrupted the choice log the whole replay oracle rests on.
+    #[test]
+    fn admission_witness_survives_a_hostile_ring_head() {
+        let mut w = AdmissionWitness::new(vec![RequestRing {
+            src: 0,
+            dst: 1,
+            target: "Sink".to_string(),
+            data_base: 0,
+            count_addr: 0,
+            capacity: 8,
+        }]);
+        // The exact word that used to panic. It must be absorbed, and it
+        // must never yield more admissions than the ring has slots.
+        let admitted = w.observe(&[1], &[u64::MAX], 1).expect("must not panic");
+        assert!(
+            admitted.len() <= 8,
+            "a ring of 8 slots cannot admit {} messages",
+            admitted.len()
+        );
+        // Still functional afterwards: an ordinary single-slot advance
+        // from that same hostile head is still counted as exactly one.
+        let next = u64::MAX.wrapping_add(1);
+        let admitted = w.observe(&[1], &[next], 1).expect("must not panic");
+        assert_eq!(admitted.len(), 1, "one head step is one admission");
+    }
+
+    /// The second leg: a cap-1 ring counts admissions from the *count*
+    /// words, which are guest-written too, so `was_c - now_c` was an
+    /// unbounded trip count for the push loop below it (one vCPU exit
+    /// allocating ~2^64 strings). Clamped to the ring's own capacity.
+    #[test]
+    fn admission_witness_clamps_a_hostile_count_shrink() {
+        let mut w = AdmissionWitness::new(vec![RequestRing {
+            src: 0,
+            dst: 1,
+            target: "Sink".to_string(),
+            data_base: 0,
+            count_addr: 0,
+            capacity: 1,
+        }]);
+        // Seed a huge occupancy, then drop it to zero: the shrink is
+        // u64::MAX, which must not become a trip count.
+        let _ = w.observe(&[u64::MAX], &[0], 1).expect("must not panic");
+        let admitted = w.observe(&[0], &[0], 1).expect("must not panic");
+        assert!(
+            admitted.len() <= 1,
+            "a cap-1 ring cannot admit {} messages in one exit",
+            admitted.len()
+        );
+    }
+
+    /// The length guards were `debug_assert`s sitting directly above raw
+    /// `counts[i]`/`heads[i]` indexing — i.e. they vanished in exactly the
+    /// build where the indexing would panic. Now a real error.
+    #[test]
+    fn admission_witness_rejects_a_short_observation() {
+        let mut w = AdmissionWitness::new(vec![RequestRing {
+            src: 0,
+            dst: 1,
+            target: "Sink".to_string(),
+            data_base: 0,
+            count_addr: 0,
+            capacity: 8,
+        }]);
+        let err = w
+            .observe(&[], &[], 1)
+            .expect_err("length mismatch must fail closed");
+        assert!(err.contains("ring(s) declared"), "got {err}");
     }
 
     /// plans/M15.md item I: under concurrent record a consumed ring may

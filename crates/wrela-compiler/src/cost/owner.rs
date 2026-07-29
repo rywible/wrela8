@@ -2,13 +2,11 @@
 
 /// Classify a fn key into `app` / `runtime` / `driver`.
 pub fn classify_owner(key: &str) -> &'static str {
-    if crate::codegen::symbol_is_synthetic(key)
-        || key.starts_with("__wrela_")
-        || key.contains("core.runtime")
-        || key.starts_with("__enqueue_")
-        || key.starts_with("__method_")
-        || key.starts_with("__resume_")
-    {
+    // `core.runtime` stays local to this bucket on purpose: it is a real
+    // source module, not glue, and folding it into the shared rule would
+    // move `layout.rs`'s cross-core redirect decision (and the cost
+    // goldens with it).
+    if crate::codegen::is_compiler_glue_symbol(key) || key.contains("core.runtime") {
         return "runtime";
     }
     if key.contains(".on_") {

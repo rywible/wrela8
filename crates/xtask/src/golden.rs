@@ -1,28 +1,9 @@
 //! `golden` subcommand and helpers (extracted from main.rs).
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, Instant};
 
-use wrela_compiler::codegen;
-use wrela_compiler::eval;
-use wrela_compiler::flowwir;
-use wrela_compiler::flowwir_lower;
-use wrela_compiler::layout;
-use wrela_compiler::loader;
-use wrela_compiler::lower;
-use wrela_compiler::mwir;
-use wrela_compiler::placement;
-use wrela_compiler::report;
-use wrela_compiler::sema;
-use wrela_compiler::sema::typed::TestKind;
-use wrela_compiler::syntax::ast::Module;
-use wrela_compiler::syntax::lexer::{self, Token, TokenKind};
-use wrela_compiler::syntax::parser::{self, Parsed};
-use wrela_compiler::syntax::printer;
-
-use crate::{fail_closed, golden_case_dirs, root, run};
+use crate::{golden_case_dirs, root, run};
 
 // --- golden ---------------------------------------------------------------
 //
@@ -53,6 +34,39 @@ pub(crate) fn hex_dump(bytes: &[u8]) -> String {
         let offset = i * 16;
         let hex: Vec<String> = chunk.iter().map(|b| format!("{b:02x}")).collect();
         out.push_str(&format!("{offset:08x}: {}\n", hex.join(" ")));
+    }
+    out
+}
+
+/// Does this case opt out of pinning the guest's `lane1 …` trailer?
+///
+/// plans/M15.md item I deleted the Condvar baton, so released cores run
+/// concurrently. The Lane 1 counters are written by whichever core drains
+/// (`runtime.wr`'s `__wrela_rt_enqueue` / `rt_select` / `rt_run_one`) and
+/// read by core 0 when it halts, with no happens-before edge between the
+/// two — so a case that halts with cross-core work still outstanding cannot
+/// pin them. `runtime.wr`'s own note above `__wrela_rt_drain` records this
+/// and names the remedy: "a bounded quiesce-before-halt step in the entry
+/// driver or a way for that one case not to pin the trailer". This is that
+/// second way, and it is deliberately **per case, not per core count**:
+/// measured over 10 boots each, `boot-cross-core-ring-full` passed 2/10
+/// while every other `boot-cross-core-*` case and `boot-cores-2`/`-3`
+/// passed 10/10, so exactly one case carries the marker. Delete the marker
+/// when the quiesce step lands.
+fn lane1_is_unpinned(case: &Path) -> bool {
+    case.join("unpinned-lane1").is_file()
+}
+
+/// Drop `lane1 …` lines. Both sides of a comparison go through this, so the
+/// rest of the transcript stays pinned byte for byte.
+fn strip_lane1_lines(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for line in text.lines() {
+        if line.trim_start().starts_with("lane1 ") {
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
     }
     out
 }
@@ -401,13 +415,24 @@ pub(crate) fn golden(update: bool) -> Result<(), String> {
             let mut actual = String::from_utf8_lossy(&out.stdout).into_owned();
             actual.push_str(&String::from_utf8_lossy(&out.stderr));
             cases += 1;
+            // An `unpinned-lane1` marker drops the Lane 1 trailer from this
+            // case's pinned surface (see `lane1_is_unpinned`). Applied to
+            // *both* sides, and to `--update`'s write, so the expectation
+            // file never carries a value that does not reproduce.
+            let drop_lane1 = lane1_is_unpinned(&case);
+            if drop_lane1 {
+                actual = strip_lane1_lines(&actual);
+            }
             if update {
                 std::fs::write(&exp, &actual)
                     .map_err(|e| format!("write {}: {e}", exp.display()))?;
                 continue;
             }
-            let expected = std::fs::read_to_string(&exp)
+            let mut expected = std::fs::read_to_string(&exp)
                 .map_err(|e| format!("read {}: {e}", exp.display()))?;
+            if drop_lane1 {
+                expected = strip_lane1_lines(&expected);
+            }
             if actual != expected {
                 failures.push(format!(
                     "{} [{stage}]: output differs from expectation\n--- expected\n{expected}--- actual\n{actual}",

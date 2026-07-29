@@ -1287,9 +1287,15 @@ pub fn lower_program_with(
     program: &TypedProgram,
     opts: &LowerOpts,
 ) -> Result<MwirProgram, LowerError> {
-    let reachable = match &opts.only {
-        Some(set) => set.clone(),
-        None => guest_reachable_keys(program, opts),
+    // Every use below is a `.contains()`, so borrow the caller's set rather
+    // than deep-cloning every key in it (this runs once per module, per pass).
+    let computed;
+    let reachable: &BTreeSet<String> = match &opts.only {
+        Some(set) => set,
+        None => {
+            computed = guest_reachable_keys(program, opts);
+            &computed
+        }
     };
     let mut lw = Lowerer {
         prog: program,
@@ -3063,16 +3069,6 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
                     return Ok(dst);
                 }
             }
-            // plans/M10.md item B4: `Bytes.len` is handle word 1 (capacity).
-            if matches!(base_ty, Type::Bytes(None)) && name == "len" {
-                let dst = b.fresh(expr.ty.clone());
-                b.emit(Inst::Project {
-                    dst,
-                    base: base_temp,
-                    index: 1,
-                });
-                return Ok(dst);
-            }
             let idx = field_index(b.prog(), &base_ty, name)?;
             let dst = b.fresh(expr.ty.clone());
             b.emit(Inst::Project {
@@ -4443,32 +4439,12 @@ fn resolve_struct<'p>(
 
 /// Plain declaration name a callee key hangs off — mirrors
 /// `eval::interp::callee_decl_name` for the `unresolvable` lookup.
-fn callee_decl_name(key: &CalleeKey) -> String {
-    let raw = match key {
-        CalleeKey::Fn(name) => name.clone(),
-        CalleeKey::Method(sname, _) => sname.clone(),
-        CalleeKey::FnInstance(k) | CalleeKey::MethodInstance(k, _) => k.clone(),
-    };
-    let no_prefix = raw
-        .strip_prefix("fn:")
-        .or_else(|| raw.strip_prefix("struct:"))
-        .or_else(|| raw.strip_prefix("method:"))
-        .unwrap_or(&raw);
-    // `method:Table.entry[u32]` → bare `Table` for unresolvable lookup.
-    let before_args = no_prefix.split('[').next().unwrap_or(no_prefix);
-    before_args
-        .split('.')
-        .next()
-        .unwrap_or(before_args)
-        .to_string()
-}
-
 /// Fail-closed miss for a Call/OpCall: prefer the import splice's own
 /// `unresolvable` note (decision 15), else name the real cause. Never
 /// blame "an unresolved generic instantiation" for a plain imported
 /// name that simply was not wired into lower (plans/M9.md item EE).
 fn missing_callee(prog: &TypedProgram, key: &CalleeKey) -> LowerError {
-    let name = callee_decl_name(key);
+    let name = crate::eval::interp::callee_decl_name(key);
     if let Some(note) = prog.imported.unresolvable.get(&name) {
         // Note is a complete sentence (`` `{name}` is declared… ``);
         // `named`, not `unimplemented` (plans/M9.md item D3).
@@ -4499,6 +4475,17 @@ fn missing_struct(prog: &TypedProgram, name: &str) -> LowerError {
 }
 
 fn field_index(prog: &TypedProgram, base_ty: &Type, field_name: &str) -> Result<usize, LowerError> {
+    // plans/M10.md item B4: `Bytes.len` is handle word 1 (capacity). A row
+    // here, not a special case at each `Field` lowering site — the general
+    // path below emits the identical `Project`.
+    if matches!(base_ty, Type::Bytes(None)) {
+        return match field_name {
+            "len" => Ok(1),
+            other => Err(LowerError::internal(format!(
+                "unknown Bytes field `{other}`"
+            ))),
+        };
+    }
     // plans/M9.md item C1: `String[..N].len` is slot 0.
     if matches!(base_ty, Type::String(_)) {
         return match field_name {
@@ -4513,14 +4500,15 @@ fn field_index(prog: &TypedProgram, base_ty: &Type, field_name: &str) -> Result<
     };
     // plans/M7.md item E4: IoCompletion is not a DeclStruct.
     if sname == "IoCompletion" {
-        return match field_name {
-            "payload" => Ok(0),
-            "status" => Ok(1),
-            "written_len" => Ok(2),
-            other => Err(LowerError::internal(format!(
-                "unknown IoCompletion field `{other}`"
-            ))),
-        };
+        // Same ordered table `mwir::{size_of, field_offset}` and
+        // `sema::bodies` use — the index *is* that order.
+        let fields = crate::mwir::io_completion_fields(targs).map_err(LowerError::internal)?;
+        return fields
+            .iter()
+            .position(|(f, _)| *f == field_name)
+            .ok_or_else(|| {
+                LowerError::internal(format!("unknown IoCompletion field `{field_name}`"))
+            });
     }
     let s = resolve_struct(prog, sname, targs).ok_or_else(|| missing_struct(prog, sname))?;
     s.fields

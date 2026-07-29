@@ -437,8 +437,33 @@ pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
                 size,
             });
         } else if let Some(rest) = line.strip_prefix("Entry base=") {
-            let digits = rest.trim_start_matches("0x");
-            entry = u64::from_str_radix(digits, 16).ok();
+            // Duplicate-checked like every other structural field
+            // (`Image sha256=`, `Cores count=`, `BlkDevice`, `BlkQueue
+            // index=0`, `Section name=`). `Entry` used to be the one
+            // outlier: a plain `entry = ...` assignment inside this loop,
+            // so a second line silently won. That mattered more than the
+            // other fields, not less — the entry address lives in the
+            // *report*, not the image, so `validate_report_digests` cannot
+            // see the tamper: the blob still hashes correctly while core 0
+            // starts somewhere else. The surviving invariants only pin
+            // alignment, DRAM containment, and exec-section membership, so
+            // a last-wins duplicate redirects boot to any 4-aligned
+            // instruction in image text — past a prologue, past runtime
+            // init — on an otherwise clean boot (adversarial audit).
+            //
+            // The `0x` prefix is required exactly once, rather than
+            // `trim_start_matches`d (which strips a repeated `0x0x…` and
+            // would accept two spellings of one address).
+            let rest = rest.trim();
+            if entry.is_some() {
+                return Err("more than one `Entry base=` line".to_string());
+            }
+            let digits = rest.strip_prefix("0x").ok_or_else(|| {
+                format!("`Entry base={rest}`: expected a `0x`-prefixed hex address")
+            })?;
+            let parsed =
+                u64::from_str_radix(digits, 16).map_err(|e| format!("`Entry base={rest}`: {e}"))?;
+            entry = Some(parsed);
         } else if let Some(rest) = line.strip_prefix("Cores count=") {
             // plans/M15.md item D / decision 3: sealed bring-up count.
             let n: u64 = rest.trim().parse().map_err(|e| {
@@ -535,6 +560,22 @@ pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
                      keep the mailbox path (04-compiler.md §3)"
                 ));
             }
+            // A zero `cap` or `slot` makes the `bytes == cap*slot+24`
+            // tripwire below **vacuous**, and that was the whole (and
+            // only) constraint on `cap`. With `slot=0`, `cap*slot` is 0
+            // for every capacity, so `bytes=24` matched `cap=u64::MAX` —
+            // and that forged capacity became the modulus and the
+            // push-loop bound in the VMM's `AdmissionWitness::observe`,
+            // i.e. ~2^63 allocations per vCPU exit. Refuse both floors
+            // here, the same way the `Rings` handler above already
+            // refuses `count=0`/`stride=0` (adversarial audit).
+            if capacity == 0 || slot == 0 {
+                return Err(format!(
+                    "`Ring cap={capacity} slot={slot}`: a live ring has at least one slot of at \
+                     least one byte; a zero here makes the `bytes = cap*slot+{RING_BOOKKEEPING_BYTES}` \
+                     check vacuous and would admit any capacity at all"
+                ));
+            }
             // plans/M8.md item H Target A: `bytes` is not decorative — it
             // is `cap * slot + 24` (slots plus head/tail/count). A triple
             // that does not add up would make `count_addr` disagree with
@@ -569,7 +610,21 @@ pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
                         data_base: base,
                         // Pre-M12 default; rewritten below when `Rings` meta
                         // is present (CTL-then-DATA packing).
-                        count_addr: base + capacity * slot + 16,
+                        //
+                        // Checked: `base` is raw report input, and the DRAM
+                        // containment check that would catch a wild one
+                        // lives in `validate_report_invariants`, which runs
+                        // *after* this loop — so `base = 0xffff…ffff` used
+                        // to overflow right here (found by `xtask fuzz
+                        // report` on its first run).
+                        count_addr: base
+                            .checked_add(expected_bytes.saturating_sub(8))
+                            .ok_or_else(|| {
+                                format!(
+                                    "`Ring kind={kind} base={base:#x} bytes={bytes}`: the \
+                                     occupancy word's address overflows a u64"
+                                )
+                            })?,
                         capacity,
                     });
                     ring_ranges.push(RingRange {
@@ -1433,29 +1488,64 @@ pub fn line_irq_host_inject(base: u64, offset: u64, status: u32, vector: u64) ->
     format!("IrqHostInject base={base:#x} offset={offset:#x} status={status:#x} vector={vector}")
 }
 
-pub fn line_blk_device(blk: &BlkConfig) -> String {
+// --- the one spelling of each overlapping `Blk*` Kind line ---------------
+//
+// These three take primitives rather than either side's struct, because the
+// compiler renders them from `layout::Blk*Report` and the VMM from the
+// `Blk*Config` parsed back out of a report. Both call *these*, so the two
+// sides cannot drift. (They did: until this was unified the compiler
+// printed `BlkPool size=` in hex and this file printed it in decimal, and
+// `BlkQueue index=` came from the queue on one side and was hardcoded `0`
+// on the other. `report_u64` accepts both spellings, so nothing had failed
+// — the drift was simply invisible.)
+
+pub fn blk_device_line(
+    device: u64,
+    capacity_sectors: u64,
+    features: u64,
+    vector: Option<u64>,
+) -> String {
     let mut s = format!(
-        "BlkDevice device=device#{} capacity_sectors={} features={:#x}",
-        blk.device, blk.capacity_sectors, blk.features
+        "BlkDevice device=device#{device} capacity_sectors={capacity_sectors} \
+         features={features:#x}"
     );
-    if let Some(v) = blk.vector {
+    if let Some(v) = vector {
         s.push_str(&format!(" vector={v}"));
     }
     s
 }
 
-pub fn line_blk_queue(q: &BlkQueueConfig) -> String {
+pub fn blk_queue_line(
+    index: u16,
+    size: u16,
+    desc: u64,
+    avail: u64,
+    used: u64,
+    doorbell: u64,
+) -> String {
     format!(
-        "BlkQueue index=0 size={} desc={:#x} avail={:#x} used={:#x} doorbell={:#x}",
-        q.size, q.desc, q.avail, q.used, q.doorbell
+        "BlkQueue index={index} size={size} desc={desc:#x} avail={avail:#x} \
+         used={used:#x} doorbell={doorbell:#x}"
     )
 }
 
+pub fn blk_pool_line(name: &str, device: u64, base: u64, size: u64) -> String {
+    format!("BlkPool name={name} device=device#{device} base={base:#x} size={size:#x}")
+}
+
+pub fn line_blk_device(blk: &BlkConfig) -> String {
+    blk_device_line(blk.device, blk.capacity_sectors, blk.features, blk.vector)
+}
+
+/// `BlkQueueConfig` carries no index of its own (a report declares one
+/// queue per device), so this passes `0` — the value this side has always
+/// printed.
+pub fn line_blk_queue(q: &BlkQueueConfig) -> String {
+    blk_queue_line(0, q.size, q.desc, q.avail, q.used, q.doorbell)
+}
+
 pub fn line_blk_pool(p: &PoolWindow) -> String {
-    format!(
-        "BlkPool name={} device=device#{} base={:#x} size={}",
-        p.name, p.device, p.base, p.size
-    )
+    blk_pool_line(&p.name, p.device, p.base, p.size)
 }
 
 /// Render Cores / CoreStack / CoreEntry / Blk* / IrqHostInject lines from a
@@ -1619,5 +1709,115 @@ mod tests {
         let err = parse_report(&text).expect_err("mismatch");
         assert!(err.starts_with("machine-revision-mismatch:"));
         assert!(err.contains("other-v9"));
+    }
+
+    /// Adversarial-audit regressions (2026-07-29). Each pins one forged
+    /// report the parser used to accept or panic on. All three shapes are
+    /// also reachable by `cargo xtask fuzz report`; these lock them by
+    /// name so a rewrite cannot quietly drop one.
+    mod forged {
+        use super::*;
+
+        /// A two-core report with one request ring, as the generator in
+        /// `xtask::fuzz`'s `report` lane builds it: valid unless `mangle`
+        /// makes it otherwise.
+        fn ring_report(cap: u64, slot: u64, bytes: u64, base: u64) -> String {
+            let n = 2usize;
+            format!(
+                "Machine revision={}\n\
+                 Input path=input.wr sha256={EMPTY_SHA256}\n\
+                 Image sha256={EMPTY_SHA256}\n\
+                 Section name=rtcode base=0x40500000 size=0x1000\n\
+                 Section name=rtdata base={rtdata:#x} size=0x1000\n\
+                 Entry base=0x40500000\n\
+                 Cores count=2\n\
+                 CoreEntry core=1 base=0x40500040\n\
+                 CoreStack core=0 base={s0:#x} size={stack:#x}\n\
+                 CoreStack core=1 base={s1:#x} size={stack:#x}\n\
+                 Actor name=Root\n\
+                 Ring kind=request src=1 dst=0 target=Root cap={cap} slot={slot} \
+                 bytes={bytes} base={base:#x}\n",
+                crate::MACHINE_REVISION_STR,
+                rtdata = crate::layout::RTDATA_BASE,
+                s0 = crate::layout::core_stack_base_n(0, n),
+                s1 = crate::layout::core_stack_base_n(1, n),
+                stack = crate::layout::CORE_STACK_SIZE,
+            )
+        }
+
+        /// `slot=0` made `bytes == cap*slot+24` vacuous, so `cap` — which
+        /// `wrela_vmm::exit_loop::AdmissionWitness` uses as a modulus and
+        /// a push-loop bound — was completely unconstrained.
+        #[test]
+        fn a_zero_slot_cannot_smuggle_an_unbounded_capacity() {
+            let text = ring_report(u64::MAX, 0, 24, crate::layout::RTDATA_BASE);
+            let err = parse_report(&text).expect_err("slot=0 must be refused");
+            assert!(err.contains("at least one slot"), "got {err}");
+            // The zero-capacity mirror image is refused by the same rule.
+            let text = ring_report(0, 16, 24, crate::layout::RTDATA_BASE);
+            assert!(parse_report(&text).is_err(), "cap=0 must be refused");
+            // …and the well-formed triple still parses.
+            let text = ring_report(4, 16, 4 * 16 + 24, crate::layout::RTDATA_BASE);
+            let parsed = parse_report(&text).expect("a well-formed ring still parses");
+            assert_eq!(parsed.request_rings.len(), 1);
+            assert_eq!(parsed.request_rings[0].capacity, 4);
+        }
+
+        /// A wild `Ring base=` overflowed `base + cap*slot + 16` before
+        /// the DRAM containment check (which runs after the parse loop)
+        /// could ever reject it. Found by `xtask fuzz report`, seed 7.
+        #[test]
+        fn a_ring_base_at_the_top_of_the_address_space_does_not_overflow() {
+            let text = ring_report(4, 16, 4 * 16 + 24, u64::MAX);
+            let err = parse_report(&text).expect_err("must be refused, never panic");
+            assert!(
+                err.contains("overflows") || err.contains("outside"),
+                "got {err}"
+            );
+        }
+
+        /// `Entry base=` was the one structural field with no duplicate
+        /// check, so a second line silently won — and because the entry
+        /// address lives in the *report*, the image digest still verified
+        /// while core 0 started somewhere else entirely.
+        #[test]
+        fn a_second_entry_line_cannot_silently_redirect_the_boot() {
+            let base = format!(
+                "Machine revision={}\n\
+                 Input path=input.wr sha256={EMPTY_SHA256}\n\
+                 Image sha256={EMPTY_SHA256}\n\
+                 Section name=rtcode base=0x40500000 size=0x1000\n\
+                 Entry base=0x40500000\n",
+                crate::MACHINE_REVISION_STR
+            );
+            assert_eq!(
+                parse_report(&base).expect("baseline parses").entry,
+                0x4050_0000
+            );
+            let forged = format!("{base}Entry base=0x40500abc\n");
+            let err = parse_report(&forged).expect_err("a duplicate Entry must be refused");
+            assert!(err.contains("more than one `Entry base=`"), "got {err}");
+        }
+
+        /// The prefix is required exactly once: `trim_start_matches("0x")`
+        /// used to strip a repeated prefix, giving one address two
+        /// spellings in a file whose whole job is to be unambiguous.
+        #[test]
+        fn entry_requires_exactly_one_0x_prefix() {
+            for spelling in ["0x0x40500000", "40500000", ""] {
+                let text = format!(
+                    "Machine revision={}\n\
+                     Input path=input.wr sha256={EMPTY_SHA256}\n\
+                     Image sha256={EMPTY_SHA256}\n\
+                     Section name=rtcode base=0x40500000 size=0x1000\n\
+                     Entry base={spelling}\n",
+                    crate::MACHINE_REVISION_STR
+                );
+                assert!(
+                    parse_report(&text).is_err(),
+                    "`Entry base={spelling}` must be refused"
+                );
+            }
+        }
     }
 }

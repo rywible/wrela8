@@ -7,26 +7,20 @@ use std::time::{Duration, Instant};
 
 use wrela_compiler::codegen;
 use wrela_compiler::eval;
-use wrela_compiler::flowwir;
-use wrela_compiler::flowwir_lower;
 use wrela_compiler::layout;
-use wrela_compiler::loader;
 use wrela_compiler::lower;
-use wrela_compiler::mwir;
-use wrela_compiler::placement;
 use wrela_compiler::report;
 use wrela_compiler::sema;
 use wrela_compiler::sema::typed::TestKind;
 use wrela_compiler::syntax::ast::Module;
-use wrela_compiler::syntax::lexer::{self, Token, TokenKind};
-use wrela_compiler::syntax::parser::{self, Parsed};
-use wrela_compiler::syntax::printer;
+use wrela_compiler::syntax::lexer::{self};
+use wrela_compiler::syntax::parser::{self};
 
 use crate::corpus::{extract_doc_blocks, extract_example_files};
 use crate::golden::{build_and_sign_vmm, golden_case_target};
 use crate::{
     GuestRecord, build_runtime_test_image, fail_closed, golden_case_dirs, parse_guest_record,
-    produce_report_and_image, root, run, typecheck_for_diff_eval,
+    produce_report_and_image, root, typecheck_for_diff_eval,
 };
 
 // --- bench: guest lane + profile (plans/M5.md item F, decision 14) ---------

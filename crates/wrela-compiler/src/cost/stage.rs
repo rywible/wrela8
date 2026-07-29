@@ -21,7 +21,7 @@ use crate::sema::{self, SemaError};
 use crate::syntax::ast::Module;
 use crate::syntax::{lexer, parser};
 
-use super::score::score_program;
+use super::score::{CostReport, score_program};
 use super::table::load_default;
 
 /// Checked multi-module closure ready for cost-stage lower/codegen.
@@ -193,10 +193,16 @@ pub fn codegen_cost_stage(path: &Path) -> Result<CodegenProgram, String> {
     .map_err(|e| e.message)
 }
 
-/// Score `path` under the current opt TLS (caller sets mode/opts first).
-pub fn score_cost_stage_path(path: &Path) -> Result<u64, String> {
+/// Full scored report for `path` under the current opt TLS (caller sets
+/// mode/opts first). The gate needs more than the cycle total — static
+/// word count and measured-W coverage are side conditions (04 §5).
+pub fn report_cost_stage_path(path: &Path) -> Result<CostReport, String> {
     let prog = codegen_cost_stage(path)?;
     let table = load_default()?;
-    let report = score_program(&prog, &table)?;
-    Ok(report.total_proxy_cycles)
+    score_program(&prog, &table)
+}
+
+/// Score `path` under the current opt TLS (caller sets mode/opts first).
+pub fn score_cost_stage_path(path: &Path) -> Result<u64, String> {
+    Ok(report_cost_stage_path(path)?.total_proxy_cycles)
 }

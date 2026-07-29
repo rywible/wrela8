@@ -10,8 +10,8 @@ use crate::eval::image::push_line;
 
 use super::place::place_runtime_tables;
 use super::{
-    BlkQueueReport, BlkReport, ImageLayout, LayoutError, RuntimeTables, Section, derive_blk_report,
-    mailbox_root_names, rings_reservation_bytes, verify_ring_windows,
+    BlkQueueReport, BlkReport, ImageLayout, LayoutError, derive_blk_report,
+    rings_reservation_bytes, verify_ring_windows,
 };
 
 pub fn append_vmm_runtime_lines(out: &mut String, layout: &ImageLayout) {
@@ -202,29 +202,22 @@ pub(crate) fn ring_report_lines(layout: &ImageLayout) -> Vec<String> {
 
 /// Shared `BlkDevice ...` line body (no trailing newline).
 pub(crate) fn fmt_blk_device(blk: &BlkReport) -> String {
-    format!(
-        "BlkDevice device=device#{} capacity_sectors={} features={:#x}{}",
-        blk.device,
+    wrela_machine::report::blk_device_line(
+        blk.device as u64,
         blk.capacity_sectors,
         blk.features,
-        match blk.vector {
-            Some(v) => format!(" vector={v}"),
-            None => String::new(),
-        }
+        blk.vector,
     )
 }
 
 /// Shared `BlkQueue ...` line body (no trailing newline).
 pub(crate) fn fmt_blk_queue(q: &BlkQueueReport) -> String {
-    format!(
-        "BlkQueue index={} size={} desc={:#x} avail={:#x} used={:#x} doorbell={:#x}",
-        q.index, q.size, q.desc, q.avail, q.used, q.doorbell
-    )
+    wrela_machine::report::blk_queue_line(q.index, q.size, q.desc, q.avail, q.used, q.doorbell)
 }
 
 /// Shared `BlkPool ...` line body (no trailing newline).
 pub(crate) fn fmt_blk_pool(name: &str, device: usize, base: u64, size: u64) -> String {
-    format!("BlkPool name={name} device=device#{device} base={base:#x} size={size:#x}")
+    wrela_machine::report::blk_pool_line(name, device as u64, base, size)
 }
 
 /// Shared `BlkAccounting ...` line body. The VMM hand-built path omits

@@ -1288,22 +1288,6 @@ impl RuntimePlacement {
         self.turns_base + (id.index() as u64) * self.turn_stride
     }
 
-    /// `log2(turn_stride)` — the shift the index→address rule scales an
-    /// index by, and the whole reason item 0a made the stride a power of
-    /// two. `0` for an image with no turns, which then never indexes (no
-    /// `rt_*` routine is emitted at all). (The one live emitter of the
-    /// rule, `codegen::push_turn_addr_from_id`, multiplies by a relocated
-    /// stride instead — see its doc; the dead harness twin that used this
-    /// shift was deleted in M10 item M, sweep find L-11.)
-    pub fn log2_turn_stride(&self) -> u8 {
-        if self.turn_stride == 0 {
-            0
-        } else {
-            debug_assert!(self.turn_stride.is_power_of_two());
-            self.turn_stride.trailing_zeros() as u8
-        }
-    }
-
     /// The `TurnId` of async fn `key`'s turn (`turn_owner`'s own rule): an
     /// actor method's turn is its actor's; a messageable driver's `pub async
     /// fn` parks in the driver's one turn (plans/M8.md item D —

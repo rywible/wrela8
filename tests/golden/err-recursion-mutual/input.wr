@@ -1,0 +1,15 @@
+module examples.err_recursion_mutual
+
+# The mutual case (04-compiler.md §1): no function calls itself, but the
+# cycle `ping -> pong -> ping` is just as unbounded. The diagnostic names
+# the whole cycle, not just the back edge, so the fn to break is obvious.
+
+fn ping(n: u64) -> u64:
+    return pong(n)
+
+fn pong(n: u64) -> u64:
+    return ping(n)
+
+@test(runtime)
+fn drives_the_cycle():
+    _ = ping(1)

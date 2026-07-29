@@ -65,10 +65,10 @@ ImageReport v0
   Cores count=1
   CoreStack core=0 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=79184
-  Section name=rodata base=0x405135a0 size=511
-  Section name=abort base=0x405137a0 size=120
-  Section name=checkpoint base=0x40513818 size=28
+  Section name=code base=0x40500050 size=79208
+  Section name=rodata base=0x405135b8 size=511
+  Section name=abort base=0x405137b8 size=120
+  Section name=checkpoint base=0x40513830 size=28
   Section name=rtdata base=0x40540000 size=32
   Section name=devregs base=0x40540020 size=8
   Section name=pooldata base=0x40540028 size=16
@@ -169,10 +169,10 @@ ImageReport v0
   DeviceRegs device=device#0 type=BlockHw driver=BlkDriver base=0x40540020 size=8
   Pool name=Control kind=dma payload=Hdr slots=2 slot_bytes=8 base=0x40540028 size=16 align=8 coherency=coherent device=device#1
   BlkPool name=Control device=device#1 base=0x40540028 size=0x10
-  Cost version=2 digest=ffc153b826203a27 total=31740 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=31740
-    Owner name=app proxy_cycles=1898
-    Owner name=runtime proxy_cycles=29842
+  Cost version=2 digest=ca6c6ea1a27ab060 total=25777 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=25777
+    Owner name=app proxy_cycles=1334
+    Owner name=runtime proxy_cycles=24443
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=68 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn_model=n/a
-    Shared proxy_cycles=31672
+    Core n=0 proxy_cycles=72 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn_model=n/a
+    Shared proxy_cycles=25705
