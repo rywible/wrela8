@@ -16,7 +16,7 @@ pub use attr::{CoreBucket, CoreCostReport, PlaceableTurn, attribute_cores};
 pub use dump::dump;
 pub use ghz::{DEFAULT_GHZ, fmt_compact, ms_per_turn, parse_ghz, turns_per_sec};
 pub use owner::classify_owner;
-pub use rule::{CostRule, EmittedWord, MEM_SP_REG, MemClass, MemRef};
+pub use rule::{CostRule, EmittedWord, FlagEffect, MEM_SP_REG, MemClass, MemRef};
 pub use score::{CostReport, FnCost, score_program};
 pub use stage::{
     CostStageClosure, codegen_cost_stage, load_cost_stage_closure, score_cost_stage_path,
