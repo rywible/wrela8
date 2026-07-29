@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, VecDeque};
 use crate::codegen::{CodegenFn, CodegenProgram};
 
 use super::owner::classify_owner;
-use super::rule::{CostRule, EmittedWord, MemClass, MemRef};
+use super::rule::{CostRule, EmittedWord, MEM_SP_REG, MemClass, MemRef};
 use super::table::CostTable;
 
 /// Per-fn scoreboard result.
@@ -122,6 +122,7 @@ fn score_fn(f: &CodegenFn, table: &CostTable) -> Result<(u64, BTreeMap<String, u
 
     for ew in &f.code {
         *terms.entry(ew.rule.as_str().to_string()).or_insert(0) += 1;
+        check_mem_base_in_srcs(ew)?;
 
         let mut data_ready = src_ready(ew, &ready);
         data_ready = data_ready.max(control_ready);
@@ -171,12 +172,22 @@ fn score_fn(f: &CodegenFn, table: &CostTable) -> Result<(u64, BTreeMap<String, u
         }
         issues = issues.saturating_add(1);
 
-        if ew.rule == CostRule::Call {
+        // Call clobber and SP writes (epoch) kill reuse — stack offsets
+        // after an SP adjust are a different epoch (integrity item C).
+        if ew.rule == CostRule::Call || ew.dst == Some(MEM_SP_REG) {
             window.clear();
         }
     }
 
     Ok((max_retire, terms))
+}
+
+/// Non-unique MemRef must list its base in `srcs` (integrity item C).
+fn check_mem_base_in_srcs(ew: &EmittedWord) -> Result<(), String> {
+    let Some(m) = ew.mem else {
+        return Ok(());
+    };
+    m.require_base_in_srcs(ew.src_slice())
 }
 
 fn port_for(rule: CostRule) -> Port {
@@ -316,7 +327,7 @@ fn src_ready(ew: &EmittedWord, ready: &[u64; 32]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cost::rule::{CostRule, FlagEffect, MemRef};
+    use crate::cost::rule::{CostRule, FlagEffect, MEM_SP_REG, MemRef};
     use crate::cost::table::parse;
 
     const TABLE: &str = r#"
@@ -850,5 +861,105 @@ working_set_surcharge = 2
         );
         let a = score_program(&two_adrp, &table).expect("score");
         assert_eq!(a.total_proxy_cycles, 1);
+    }
+
+    /// SP write clears the mem reuse window (epoch), like Call.
+    #[test]
+    fn sp_dst_clears_mem_reuse_window() {
+        let table = parse(TABLE).expect("table");
+        let hit = prog(
+            "f",
+            vec![
+                load_stack(1, 8),
+                word(CostRule::Alu, Some(1), &[1, 1]),
+                load_stack(2, 8),
+                word(CostRule::Alu, Some(3), &[2, 2]),
+            ],
+        );
+        let after_sp = prog(
+            "f",
+            vec![
+                load_stack(1, 8),
+                word(CostRule::Alu, Some(1), &[1, 1]),
+                // SP adjust: dst=31 clears reuse window.
+                word(CostRule::Alu, Some(MEM_SP_REG), &[MEM_SP_REG]),
+                load_stack(2, 8),
+                word(CostRule::Alu, Some(3), &[2, 2]),
+            ],
+        );
+        let a = score_program(&hit, &table).expect("hit");
+        let b = score_program(&after_sp, &table).expect("sp");
+        assert!(
+            b.total_proxy_cycles > a.total_proxy_cycles,
+            "sp-cleared reload {} should exceed hit {}",
+            b.total_proxy_cycles,
+            a.total_proxy_cycles
+        );
+    }
+
+    /// Store keeps other keys hittable; SP adjust then reload misses.
+    #[test]
+    fn store_then_sp_adjust_reload_misses() {
+        let table = parse(TABLE).expect("table");
+        // load key 8 → store other key → reload key 8 still hits.
+        let after_store = prog(
+            "f",
+            vec![
+                load_stack(1, 8),
+                word(CostRule::Alu, Some(1), &[1, 1]),
+                store_stack(16),
+                load_stack(2, 8),
+                word(CostRule::Alu, Some(3), &[2, 2]),
+            ],
+        );
+        // Same, but SP adjust between store and reload clears the epoch.
+        let after_sp = prog(
+            "f",
+            vec![
+                load_stack(1, 8),
+                word(CostRule::Alu, Some(1), &[1, 1]),
+                store_stack(16),
+                word(CostRule::Alu, Some(MEM_SP_REG), &[MEM_SP_REG]),
+                load_stack(2, 8),
+                word(CostRule::Alu, Some(3), &[2, 2]),
+            ],
+        );
+        let a = score_program(&after_store, &table).expect("store");
+        let b = score_program(&after_sp, &table).expect("sp");
+        assert!(
+            b.total_proxy_cycles > a.total_proxy_cycles,
+            "store→sp→reload miss {} should exceed store-only hit {}",
+            b.total_proxy_cycles,
+            a.total_proxy_cycles
+        );
+    }
+
+    /// Non-unique MemRef without base∈srcs fails closed.
+    #[test]
+    fn memref_base_not_in_srcs_fails_closed() {
+        let table = parse(TABLE).expect("table");
+        // Stack MemRef but srcs omit SP (31).
+        let bad_stack = prog(
+            "f",
+            vec![word(CostRule::Load, Some(1), &[0]).with_mem(MemRef::stack(8))],
+        );
+        let err = score_program(&bad_stack, &table).expect_err("stack base");
+        assert!(
+            err.contains("base register"),
+            "unexpected err: {err}"
+        );
+        // Cold stable MemRef but srcs omit packed base 28.
+        let bad_cold = prog(
+            "f",
+            vec![word(CostRule::Load, Some(1), &[0]).with_mem(MemRef::cold_stable(28, 16))],
+        );
+        let err = score_program(&bad_cold, &table).expect_err("cold base");
+        assert!(
+            err.contains("base register"),
+            "unexpected err: {err}"
+        );
+        // Cold unique: no base requirement — still scores.
+        let unique = prog("f", vec![load_cold_unique(1, 0)]);
+        assert!(score_program(&unique, &table).is_ok());
     }
 }
