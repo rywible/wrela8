@@ -10914,10 +10914,7 @@ mod tests {
             MemRef::for_base_imm(X_FRAME, 64).class,
             crate::cost::MemClass::Cold
         );
-        assert_eq!(
-            MemRef::for_base_imm(X_SP, 16),
-            MemRef::stack(16)
-        );
+        assert_eq!(MemRef::for_base_imm(X_SP, 16), MemRef::stack(16));
     }
 
     #[test]
