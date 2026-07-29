@@ -10,6 +10,7 @@ pub mod rule;
 pub mod score;
 pub mod stage;
 pub mod table;
+pub mod workload;
 
 pub use ab::{CostOpts, rank_cmp, score_with_opts};
 pub use attr::{CoreBucket, CoreCostReport, PlaceableTurn, attribute_cores};
@@ -24,3 +25,4 @@ pub use stage::{
 pub use table::{
     CostTable, EXPECTED_VERSION, MemCosts, default_table_path, load_default, load_from_path, parse,
 };
+pub use workload::{FLAT_NAME, WorkloadSet, default_workloads_path};
