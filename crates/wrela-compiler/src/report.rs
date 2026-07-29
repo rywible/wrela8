@@ -910,7 +910,7 @@ mod tests {
                \x20   Owner name=app proxy_cycles=10\n\
                \x20   Owner name=runtime proxy_cycles=12\n\
                \x20   Owner name=driver proxy_cycles=8\n\
-               \x20   Core n=0 proxy_cycles=0 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn=n/a\n\
+               \x20   Core n=0 proxy_cycles=0 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn_model=n/a\n\
                \x20   Shared proxy_cycles=0\n"
         );
     }
