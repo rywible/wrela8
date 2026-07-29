@@ -150,9 +150,9 @@ ImageReport v0
   Turns count=0 stride=0 bytes=0
   Totals actors=0 drivers=1 ready_queue=1 group_arena=0 bytes=32
   DeviceRegs device=device#0 type=BlockHw driver=BlkDriver base=0x40540020 size=8
-  Cost version=1 digest=46282f52bdf2ba37 total=15918 ghz=2.4
-    Owner name=app proxy_cycles=901
-    Owner name=runtime proxy_cycles=15017
+  Cost version=2 digest=ffc153b826203a27 total=25491 ghz=2.4
+    Owner name=app proxy_cycles=1443
+    Owner name=runtime proxy_cycles=24048
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=57 max_turn_proxy=23 turns_per_sec=104347826.0869565159 ms_per_turn=0.0000095833
-    Shared proxy_cycles=15861
+    Core n=0 proxy_cycles=118 max_turn_proxy=50 turns_per_sec=48000000 ms_per_turn=0.0000208333
+    Shared proxy_cycles=25373

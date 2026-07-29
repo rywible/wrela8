@@ -163,11 +163,11 @@ ImageReport v0
   Turns count=4 stride=512 bytes=2048
   Rings count=2 stride=96 padding=48 bytes=240
   Totals actors=3 drivers=0 ready_queue=4 group_arena=0 bytes=2728
-  Cost version=1 digest=46282f52bdf2ba37 total=17578 ghz=2.4
-    Owner name=app proxy_cycles=1428
-    Owner name=runtime proxy_cycles=16150
+  Cost version=2 digest=ffc153b826203a27 total=28644 ghz=2.4
+    Owner name=app proxy_cycles=2950
+    Owner name=runtime proxy_cycles=25694
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=262 max_turn_proxy=131 turns_per_sec=18320610.6870229021 ms_per_turn=0.0000545833
-    Core n=1 proxy_cycles=73 max_turn_proxy=39 turns_per_sec=61538461.5384615362 ms_per_turn=0.00001625
-    Core n=2 proxy_cycles=11 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn=n/a
-    Shared proxy_cycles=17232
+    Core n=0 proxy_cycles=766 max_turn_proxy=383 turns_per_sec=6266318.5378590077 ms_per_turn=0.0001595833
+    Core n=1 proxy_cycles=123 max_turn_proxy=68 turns_per_sec=35294117.6470588222 ms_per_turn=0.0000283333
+    Core n=2 proxy_cycles=15 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn=n/a
+    Shared proxy_cycles=27740

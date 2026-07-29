@@ -169,9 +169,9 @@ ImageReport v0
   Pool name=BlockControl kind=dma payload=BlkReqHeader slots=8 slot_bytes=16 base=0x40540150 size=128 align=8 coherency=coherent device=device#0
   Pool name=CacheBuffers kind=image payload=u32 slots=4 slot_bytes=64 base=0x405401d0 size=256 align=8 coherency=coherent device=none
   BlkPool name=BlockControl device=device#0 base=0x40540150 size=0x80
-  Cost version=1 digest=46282f52bdf2ba37 total=16252 ghz=2.4
-    Owner name=app proxy_cycles=964
-    Owner name=runtime proxy_cycles=15288
+  Cost version=2 digest=ffc153b826203a27 total=25968 ghz=2.4
+    Owner name=app proxy_cycles=1551
+    Owner name=runtime proxy_cycles=24417
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=120 max_turn_proxy=44 turns_per_sec=54545454.5454545468 ms_per_turn=0.0000183333
-    Shared proxy_cycles=16132
+    Core n=0 proxy_cycles=226 max_turn_proxy=83 turns_per_sec=28915662.6506024115 ms_per_turn=0.0000345833
+    Shared proxy_cycles=25742
