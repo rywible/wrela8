@@ -57,9 +57,9 @@ pub fn parse_lane2_hits_line(line: &str) -> Result<HitVec, String> {
     let mut out = Vec::new();
     let mut prev_id: Option<u32> = None;
     for part in rest.split(',') {
-        let (id_s, count_s) = part.split_once(':').ok_or_else(|| {
-            format!("lane2 hits: malformed pair {part:?} (want id:count)")
-        })?;
+        let (id_s, count_s) = part
+            .split_once(':')
+            .ok_or_else(|| format!("lane2 hits: malformed pair {part:?} (want id:count)"))?;
         let id: u32 = id_s
             .parse()
             .map_err(|e| format!("lane2 hits: bad id {id_s:?}: {e}"))?;
@@ -73,9 +73,7 @@ pub fn parse_lane2_hits_line(line: &str) -> Result<HitVec, String> {
         }
         if let Some(p) = prev_id {
             if id <= p {
-                return Err(format!(
-                    "lane2 hits: ids must ascend (saw {id} after {p})"
-                ));
+                return Err(format!("lane2 hits: ids must ascend (saw {id} after {p})"));
             }
         }
         prev_id = Some(id);
@@ -114,11 +112,9 @@ pub fn agree_lane2_vs_host(transcript: &str, host_hits: &[(u32, u64)]) -> Result
         );
     }
     if host_hits.is_empty() {
-        return Err(
-            "diff-block-count: Lane 3 host DRAM hit map is empty — VMM \
+        return Err("diff-block-count: Lane 3 host DRAM hit map is empty — VMM \
              snapshot saw LANE2.enabled=0 or all-zero hits (fail closed)"
-                .to_string(),
-        );
+            .to_string());
     }
     if guest.as_slice() != host_hits {
         return Err(format!(
@@ -170,8 +166,8 @@ mod tests {
 
     #[test]
     fn agree_fails_closed_on_mismatch() {
-        let err = agree_lane2_vs_host("lane2 hits=0:3,1:1\n", &[(0, 3), (1, 2)])
-            .expect_err("mismatch");
+        let err =
+            agree_lane2_vs_host("lane2 hits=0:3,1:1\n", &[(0, 3), (1, 2)]).expect_err("mismatch");
         assert!(err.contains("DISAGREEMENT"), "{err}");
     }
 

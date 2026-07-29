@@ -3563,7 +3563,8 @@ pub fn build() -> Image:
 
         let outcome = boot_blob(&image.blob, &report, "lane3-boot-actors");
         assert_eq!(
-            outcome.exit_code, 0,
+            outcome.exit_code,
+            0,
             "boot-actors under --block-count must exit 0; transcript:\n{}",
             String::from_utf8_lossy(&outcome.transcript)
         );

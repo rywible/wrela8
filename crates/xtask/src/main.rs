@@ -3039,8 +3039,7 @@ fn ledger() -> Result<(), String> {
 
 /// Exact libtest path for the HVF control-case agreement (must match
 /// `cargo test -p wrela-vmm --lib -- --list`).
-const DIFF_BLOCK_COUNT_TEST: &str =
-    "tests::block_count_lane2_agrees_with_host_dram_on_boot_actors";
+const DIFF_BLOCK_COUNT_TEST: &str = "tests::block_count_lane2_agrees_with_host_dram_on_boot_actors";
 
 /// Integrity Phase 2 Item N: Lane 2 / Lane 3 agreement on `boot-actors`.
 fn diff_block_count() -> Result<(), String> {
@@ -3096,8 +3095,7 @@ fn diff_block_count() -> Result<(), String> {
     }
     if executables.is_empty() {
         return Err(
-            "diff-block-count: cargo test --no-run found no test executable(s) to sign"
-                .to_string(),
+            "diff-block-count: cargo test --no-run found no test executable(s) to sign".to_string(),
         );
     }
     let mut ran = 0usize;
@@ -3123,7 +3121,12 @@ fn diff_block_count() -> Result<(), String> {
         // A filter miss (`running 0 tests` + exit 0) must never green.
         let ran_here = stdout
             .lines()
-            .find_map(|l| l.strip_prefix("running ")?.strip_suffix(" tests")?.parse::<usize>().ok())
+            .find_map(|l| {
+                l.strip_prefix("running ")?
+                    .strip_suffix(" tests")?
+                    .parse::<usize>()
+                    .ok()
+            })
             .or_else(|| {
                 stdout.lines().find_map(|l| {
                     l.strip_prefix("running ")?
@@ -3149,10 +3152,7 @@ fn diff_block_count() -> Result<(), String> {
         ran += ran_here;
     }
     if ran == 0 {
-        return fail_closed(
-            "diff-block-count",
-            "no HVF oracle iterations ran",
-        );
+        return fail_closed("diff-block-count", "no HVF oracle iterations ran");
     }
     println!(
         "diff-block-count: Lane 2 guest dump agrees with Lane 3 host DRAM hit map \

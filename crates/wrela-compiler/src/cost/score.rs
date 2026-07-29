@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, VecDeque};
 use crate::codegen::{CodegenFn, CodegenProgram};
 
 use super::owner::classify_owner;
-use super::rule::{CostRule, EmittedWord, MemClass, MemRef, MEM_SP_REG};
+use super::rule::{CostRule, EmittedWord, MEM_SP_REG, MemClass, MemRef};
 use super::table::CostTable;
 
 /// Per-fn scoreboard result.
@@ -432,7 +432,7 @@ fn src_ready(ew: &EmittedWord, ready: &[u64; 32]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cost::rule::{CostRule, FlagEffect, MemRef, MEM_SP_REG};
+    use crate::cost::rule::{CostRule, FlagEffect, MEM_SP_REG, MemRef};
     use crate::cost::table::parse;
 
     const TABLE: &str = r#"
@@ -1069,7 +1069,7 @@ working_set_surcharge = 2
     /// Leaders at 0, fallthrough after branch, and PC-relative targets.
     #[test]
     fn basic_blocks_split_on_branch_targets_and_fallthrough() {
-        use crate::encode::{enc_b, enc_b_cond, Cond};
+        use crate::encode::{Cond, enc_b, enc_b_cond};
         // Layout: 0:alu  1:b.eq ->4  2:alu  3:b ->5  4:alu  5:alu
         let code = vec![
             word_enc(0, CostRule::Alu, Some(1), &[0]),
@@ -1087,7 +1087,7 @@ working_set_surcharge = 2
     /// Under f≡1, Σ s(b) equals the per-fn schedule `score_fn` / dump flat uses.
     #[test]
     fn flat_equiv_block_sum_matches_fn_schedule() {
-        use crate::encode::{enc_b, enc_b_cond, Cond};
+        use crate::encode::{Cond, enc_b, enc_b_cond};
         let table = parse(TABLE).expect("table");
 
         let cases: Vec<(&str, Vec<EmittedWord>)> = vec![

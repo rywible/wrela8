@@ -274,9 +274,7 @@ impl OverallCompare {
     /// Weighted mean of relative deltas when not vetoed.
     pub fn weighted_mean_rel(&self) -> Option<f64> {
         match self.outcome {
-            OverallOutcome::Rank {
-                weighted_mean_rel,
-            } => Some(weighted_mean_rel),
+            OverallOutcome::Rank { weighted_mean_rel } => Some(weighted_mean_rel),
             OverallOutcome::Veto { .. } => None,
         }
     }
@@ -286,9 +284,7 @@ impl OverallCompare {
     pub fn wins(&self) -> bool {
         match self.outcome {
             OverallOutcome::Veto { .. } => false,
-            OverallOutcome::Rank {
-                weighted_mean_rel,
-            } => weighted_mean_rel < 0.0,
+            OverallOutcome::Rank { weighted_mean_rel } => weighted_mean_rel < 0.0,
         }
     }
 }
@@ -302,13 +298,8 @@ pub fn flat_only_totals(flat_proxy_cycles: u64) -> BTreeMap<String, u64> {
 
 /// Stub every pinned workload with the same total (stand-in until item J
 /// supplies measured `f×s` rows; useful for plumbing tests).
-pub fn stub_all_workload_totals(
-    proxy_cycles: u64,
-    set: &WorkloadSet,
-) -> BTreeMap<String, u64> {
-    set.names()
-        .map(|n| (n.to_string(), proxy_cycles))
-        .collect()
+pub fn stub_all_workload_totals(proxy_cycles: u64, set: &WorkloadSet) -> BTreeMap<String, u64> {
+    set.names().map(|n| (n.to_string(), proxy_cycles)).collect()
 }
 
 /// Load pinned weights from the committed `bench/workloads.toml`.
@@ -336,12 +327,14 @@ pub fn compare_overall(
         let weight = weights
             .weight(name)
             .ok_or_else(|| format!("overall: missing weight for `{name}`"))?;
-        let b = baseline.get(name).copied().ok_or_else(|| {
-            format!("overall: baseline missing workload `{name}`")
-        })?;
-        let c = candidate.get(name).copied().ok_or_else(|| {
-            format!("overall: candidate missing workload `{name}`")
-        })?;
+        let b = baseline
+            .get(name)
+            .copied()
+            .ok_or_else(|| format!("overall: baseline missing workload `{name}`"))?;
+        let c = candidate
+            .get(name)
+            .copied()
+            .ok_or_else(|| format!("overall: candidate missing workload `{name}`"))?;
         rows.push(WorkloadDelta {
             name: name.to_string(),
             weight,
@@ -384,10 +377,7 @@ pub fn compare_overall(
 /// Stable per-W evidence table (printed under `--nocapture`).
 pub fn format_overall_table(cmp: &OverallCompare, base_label: &str, cand_label: &str) -> String {
     let mut out = String::new();
-    out.push_str(&format!(
-        "workloads_digest={}\n",
-        cmp.workloads_digest
-    ));
+    out.push_str(&format!("workloads_digest={}\n", cmp.workloads_digest));
     out.push_str(&format!(
         "{:<16} {:>8} {:>12} {:>12} {:>10} {:>12}\n",
         "workload", "weight", base_label, cand_label, "Δ", "rel"
@@ -411,14 +401,9 @@ pub fn format_overall_table(cmp: &OverallCompare, base_label: &str, cand_label: 
     }
     match &cmp.outcome {
         OverallOutcome::Veto { risen } => {
-            out.push_str(&format!(
-                "outcome=veto risen={}\n",
-                risen.join(",")
-            ));
+            out.push_str(&format!("outcome=veto risen={}\n", risen.join(",")));
         }
-        OverallOutcome::Rank {
-            weighted_mean_rel,
-        } => {
+        OverallOutcome::Rank { weighted_mean_rel } => {
             out.push_str(&format!(
                 "outcome=rank weighted_mean_rel={weighted_mean_rel:+.6} wins={}\n",
                 cmp.wins()
@@ -600,10 +585,7 @@ mod tests {
     }
 
     fn totals(pairs: &[(&str, u64)]) -> BTreeMap<String, u64> {
-        pairs
-            .iter()
-            .map(|(n, v)| ((*n).to_string(), *v))
-            .collect()
+        pairs.iter().map(|(n, v)| ((*n).to_string(), *v)).collect()
     }
 
     #[test]
