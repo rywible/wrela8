@@ -416,6 +416,8 @@ pub const RUNTIME_WIRING_FORCE_ROOT_KEYS: &[&str] = &[
     // is not transitively closed after `seed_image_force_roots`).
     "__wrela_lane1_method_flat",
     "__wrela_lane1_record_method",
+    // Integrity Phase 2 Item M — Lane 2 block-hit helper (test-only emit).
+    "__wrela_block_hit",
 ];
 
 /// Test-runner helpers force-rooted for `@test(runtime)` images (M11 K).
@@ -435,6 +437,8 @@ pub const RUNTIME_TEST_FORCE_ROOT_KEYS: &[&str] = &[
     // Integrity Phase 2 Item I — Lane 1 counter dump surface.
     "__wrela_lane1_dump",
     "__wrela_lane1_append_u64",
+    // Integrity Phase 2 Item M — Lane 2 block-counter dump (no-op unless enabled).
+    "__wrela_lane2_dump",
 ];
 
 /// Optional seeds for the single image lower (wiring / test-runner).

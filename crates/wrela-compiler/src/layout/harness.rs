@@ -1037,6 +1037,8 @@ pub fn compute_transcript_bound(
     // `__wrela_lane1_dump` (scalars + compact hits). Hits worst-case is
     // METHOD_CALL_POOL_COUNT `flat:count,` pairs (20+1+20+1 each) under
     // a fixed `lane1 hits=` prefix — over-approx, never under.
+    // Item M: one `lane2 hits=` line only when `--block-count` is on
+    // (otherwise dump is a no-op and must not inflate the default bound).
     const LANE1_LINES: u64 = 2;
     const LANE1_SCALAR_LINE_BYTES: u64 = 12 + 20 + 9 + 20 + 10 + 20 + 1; // turns/run_one/messages
     const LANE1_HITS_PREFIX: u64 = 11; // "lane1 hits="
@@ -1044,8 +1046,17 @@ pub fn compute_transcript_bound(
     let lane1_hits_bytes =
         LANE1_HITS_PREFIX + (crate::rtconfig::METHOD_CALL_POOL_COUNT as u64) * LANE1_HIT_PAIR + 1;
     worst_case_bytes += LANE1_SCALAR_LINE_BYTES + lane1_hits_bytes;
+    let mut lines = runtime_tests.len() as u64 + 1 + LANE1_LINES;
+    if crate::codegen::block_count_enabled() {
+        const LANE2_HITS_PREFIX: u64 = 11; // "lane2 hits="
+        let lane2_hits_bytes = LANE2_HITS_PREFIX
+            + (crate::rtconfig::BLOCK_BOUND_PRINT_PAIRS as u64) * LANE1_HIT_PAIR
+            + 1;
+        worst_case_bytes += lane2_hits_bytes;
+        lines += 1;
+    }
     TranscriptBound {
-        lines: runtime_tests.len() as u64 + 1 + LANE1_LINES,
+        lines,
         worst_case_bytes,
     }
 }

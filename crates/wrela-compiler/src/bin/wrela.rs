@@ -35,7 +35,7 @@ use wrela_compiler::sema::typed::{TestKind, TypedProgram};
 use wrela_compiler::syntax::ast::Module;
 use wrela_compiler::syntax::{lexer, parser, printer};
 
-const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed|layout-types|flowwir|mwir|asm|cost|image|report|rtconfig> [--timings] [--omit-dmb] [--mode=dev|release] [--ghz=<n>] <file.wr>\n       wrela test <file.wr> [--vmm <path>] [--omit-dmb] [--mode=dev|release] [--ghz=<n>]\n       wrela build <file.wr> [--out-dir <dir>] [--omit-dmb] [--mode=dev|release] [--ghz=<n>]\n       wrela version";
+const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed|layout-types|flowwir|mwir|asm|cost|image|report|rtconfig> [--timings] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>] <file.wr>\n       wrela test <file.wr> [--vmm <path>] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>]\n       wrela build <file.wr> [--out-dir <dir>] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>]\n       wrela version";
 
 // Set by every diagnostic printer while `dump` runs; cleared at the
 // start of each `dump` invocation. Plans/M9.md item NN: `dump` exits
@@ -893,11 +893,14 @@ fn dump(args: &[String]) -> ExitCode {
     DUMP_HAD_DIAGNOSTIC.with(|c| c.set(false));
     // plans/M15.md item K: reset the mutation front-door every invocation.
     wrela_compiler::codegen::set_omit_dmb(false);
+    // Integrity Phase 2 Item M: reset Lane 2 block-count emission.
+    wrela_compiler::codegen::set_block_count(false);
 
     let mut stage = None;
     let mut path = None;
     let mut timings = false;
     let mut omit_dmb = false;
+    let mut block_count = false;
     // plans/M19.md item C / freeze 1401: default release.
     let mut mode = wrela_compiler::opts::CompileMode::Release;
     let mut ghz = wrela_compiler::cost::DEFAULT_GHZ;
@@ -910,6 +913,9 @@ fn dump(args: &[String]) -> ExitCode {
             // plans/M15.md item K / decision 1098: test-only barrier
             // deletion. Only the xtask golden runner passes this.
             omit_dmb = true;
+        } else if a == "--block-count" {
+            // Integrity Phase 2 Item M: test-only Lane 2 block counters.
+            block_count = true;
         } else if a == "--no-bounds-elide" {
             // plans/M19.md item C / decision 1430: removed; use --mode=dev.
             eprintln!("error: --no-bounds-elide was removed; use --mode=dev");
@@ -943,6 +949,7 @@ fn dump(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     };
     wrela_compiler::codegen::set_omit_dmb(omit_dmb);
+    wrela_compiler::codegen::set_block_count(block_count);
     wrela_compiler::opts::apply_mode(mode);
 
     let total_start = Instant::now();
@@ -1675,10 +1682,13 @@ fn find_vmm_binary(explicit: Option<&str>) -> Option<PathBuf> {
 fn test_cmd(args: &[String]) -> ExitCode {
     // plans/M15.md item K: reset the mutation front-door every invocation.
     wrela_compiler::codegen::set_omit_dmb(false);
+    // Integrity Phase 2 Item M: reset Lane 2 block-count emission.
+    wrela_compiler::codegen::set_block_count(false);
 
     let mut path: Option<String> = None;
     let mut vmm_arg: Option<String> = None;
     let mut omit_dmb = false;
+    let mut block_count = false;
     // plans/M19.md item C / freeze 1401: default release.
     let mut mode = wrela_compiler::opts::CompileMode::Release;
     let mut _ghz = wrela_compiler::cost::DEFAULT_GHZ;
@@ -1698,6 +1708,9 @@ fn test_cmd(args: &[String]) -> ExitCode {
             // deletion for the mutated arm of
             // boot-cross-core-publish-acquire. Only xtask golden passes it.
             omit_dmb = true;
+        } else if args[i] == "--block-count" {
+            // Integrity Phase 2 Item M: test-only Lane 2 block counters.
+            block_count = true;
         } else if args[i] == "--no-bounds-elide" {
             // plans/M19.md item C / decision 1430: removed; use --mode=dev.
             eprintln!("error: --no-bounds-elide was removed; use --mode=dev");
@@ -1732,6 +1745,7 @@ fn test_cmd(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     };
     wrela_compiler::codegen::set_omit_dmb(omit_dmb);
+    wrela_compiler::codegen::set_block_count(block_count);
     wrela_compiler::opts::apply_mode(mode);
 
     let source = match std::fs::read_to_string(&path) {
@@ -2015,10 +2029,16 @@ fn test_cmd(args: &[String]) -> ExitCode {
     //
     // Integrity Phase 2 Item I: optional trailing `lane1 …` counter lines
     // after the summary (guest dumps them from `__wrela_lane1_dump`).
+    // Item M: optional `lane2 …` when `--block-count` enabled emission.
+    let trailing_ok = |lines: &[&str]| {
+        lines
+            .iter()
+            .all(|l| l.starts_with("lane1 ") || l.starts_with("lane2 "))
+    };
     let boot_failed = t_lines.len() >= 2
         && t_lines[0].starts_with("FAILED ")
         && parse_summary_line(t_lines[1]).is_some()
-        && t_lines[2..].iter().all(|l| l.starts_with("lane1 "));
+        && trailing_ok(&t_lines[2..]);
     let summary_idx = if boot_failed {
         Some(1usize)
     } else if t_lines.len() >= runtime_tests.len() + 1
@@ -2027,9 +2047,7 @@ fn test_cmd(args: &[String]) -> ExitCode {
             .zip(runtime_tests.iter())
             .all(|(line, name)| line.starts_with(&format!("test {name}: ")))
         && parse_summary_line(t_lines[runtime_tests.len()]).is_some()
-        && t_lines[runtime_tests.len() + 1..]
-            .iter()
-            .all(|l| l.starts_with("lane1 "))
+        && trailing_ok(&t_lines[runtime_tests.len() + 1..])
     {
         Some(runtime_tests.len())
     } else {
@@ -2097,10 +2115,13 @@ fn test_cmd(args: &[String]) -> ExitCode {
 fn build_cmd(args: &[String]) -> ExitCode {
     // plans/M15.md item K: reset the mutation front-door every invocation.
     wrela_compiler::codegen::set_omit_dmb(false);
+    // Integrity Phase 2 Item M: reset Lane 2 block-count emission.
+    wrela_compiler::codegen::set_block_count(false);
 
     let mut path = None;
     let mut out_dir: Option<String> = None;
     let mut omit_dmb = false;
+    let mut block_count = false;
     // plans/M19.md item C / freeze 1401: default release.
     let mut mode = wrela_compiler::opts::CompileMode::Release;
     let mut ghz = wrela_compiler::cost::DEFAULT_GHZ;
@@ -2119,6 +2140,9 @@ fn build_cmd(args: &[String]) -> ExitCode {
         } else if a == "--omit-dmb" {
             // plans/M15.md item K / decision 1098: test-only front-door.
             omit_dmb = true;
+        } else if a == "--block-count" {
+            // Integrity Phase 2 Item M: test-only Lane 2 block counters.
+            block_count = true;
         } else if a == "--no-bounds-elide" {
             // plans/M19.md item C / decision 1430: removed; use --mode=dev.
             eprintln!("error: --no-bounds-elide was removed; use --mode=dev");
@@ -2153,6 +2177,7 @@ fn build_cmd(args: &[String]) -> ExitCode {
         return ExitCode::FAILURE;
     };
     wrela_compiler::codegen::set_omit_dmb(omit_dmb);
+    wrela_compiler::codegen::set_block_count(block_count);
     wrela_compiler::opts::apply_mode(mode);
 
     let source = match std::fs::read_to_string(&path) {
