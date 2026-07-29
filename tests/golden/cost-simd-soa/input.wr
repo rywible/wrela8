@@ -1,0 +1,14 @@
+module examples.cost_simd_soa
+
+struct Point:
+    x: u32
+    y: u32
+    z: u32
+    w: u32
+
+pub fn process_points(p0: Point, p1: Point) -> u32:
+    s0: u32 = p0.x +% p1.x
+    s1: u32 = p0.y +% p1.y
+    s2: u32 = p0.z +% p1.z
+    s3: u32 = p0.w +% p1.w
+    return s0 +% s1 +% s2 +% s3
