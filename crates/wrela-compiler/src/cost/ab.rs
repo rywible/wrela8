@@ -328,7 +328,10 @@ pub fn hot(a: [u64; 32]) -> u64:
             );
             for f_on in &on.fns {
                 let off_proxy = off_by_key.get(f_on.key.as_str()).unwrap_or_else(|| {
-                    panic!("{case}: fn {:?} present with BoundsElide on but missing off", f_on.key);
+                    panic!(
+                        "{case}: fn {:?} present with BoundsElide on but missing off",
+                        f_on.key
+                    );
                 });
                 assert!(
                     f_on.proxy_cycles <= *off_proxy,

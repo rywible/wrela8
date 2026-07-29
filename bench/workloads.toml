@@ -6,8 +6,9 @@
 #
 # `[flat]` is the static ruler: f ≡ 1 (policy, not measured). Named workloads
 # carry measured f (Lane 1 method/turn counters, later block counts). Overall
-# gate uses these weights for veto-then-rank (Phase 2); this file is schema
-# + digest only until score compose lands.
+# gate uses these weights for veto-then-rank (Phase 2). Score compose
+# (`cost::compose`) emits multi-W dump/report rows from this set + optional
+# `lane1-freq.txt` sidecars.
 
 [flat]
 weight = 1

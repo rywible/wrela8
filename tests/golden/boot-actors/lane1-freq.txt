@@ -1,0 +1,16 @@
+# Lane 1 method-grain frequencies for workload `boot-actors`.
+# Generated from tests/golden/boot-actors/expected/test.txt (Item I):
+#   lane1 hits=0:3,1:1,2:3,3:2,4:2
+# Flat index → method key (mailbox root order Ledger, Worker; decl order):
+#   0 → Ledger.mark
+#   1 → Ledger.read_marks
+#   2 → Worker.slow
+#   3 → Worker.quick
+#   4 → Worker.report
+# Dump loads this sidecar so `wrela dump --stage=cost` stays offline-deterministic.
+workload=boot-actors
+Ledger.mark=3
+Ledger.read_marks=1
+Worker.slow=3
+Worker.quick=2
+Worker.report=2

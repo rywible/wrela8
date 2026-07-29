@@ -3,7 +3,9 @@
 
 pub mod ab;
 pub mod attr;
+pub mod compose;
 pub mod dump;
+pub mod freq;
 pub mod ghz;
 pub mod owner;
 pub mod rule;
@@ -14,7 +16,9 @@ pub mod workload;
 
 pub use ab::{CostOpts, rank_cmp, score_with_opts};
 pub use attr::{CoreBucket, CoreCostReport, PlaceableTurn, attribute_cores};
-pub use dump::dump;
+pub use compose::{WorkloadAttach, attach_workloads, method_grain_fxs};
+pub use dump::{dump, dump_for_source};
+pub use freq::{MethodFreq, sibling_freq_path};
 pub use ghz::{DEFAULT_GHZ, fmt_compact, ms_per_turn, parse_ghz, turns_per_sec};
 pub use owner::classify_owner;
 pub use rule::{CostRule, EmittedWord, FlagEffect, MEM_SP_REG, MemClass, MemRef};

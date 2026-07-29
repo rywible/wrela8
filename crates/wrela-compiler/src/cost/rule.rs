@@ -164,9 +164,7 @@ impl MemRef {
         if srcs.contains(&base) {
             Ok(())
         } else {
-            Err(format!(
-                "MemRef base register {base} not in srcs {srcs:?}"
-            ))
+            Err(format!("MemRef base register {base} not in srcs {srcs:?}"))
         }
     }
 }

@@ -658,13 +658,19 @@ fn build_report(
                                             );
                                         }
                                         layout::render_layout_section(&mut text, &image_layout);
-                                        // plans/M18.md item R: short Cost
-                                        // summary after layout (owners
-                                        // only). Same CodegenProgram layout
-                                        // already built — no second lower.
-                                        // Missing table fails the build.
+                                        // plans/M18.md item R / integrity J:
+                                        // short Cost summary after layout
+                                        // (owners + multi-W rows). Same
+                                        // CodegenProgram — no second lower.
+                                        // Missing table/workloads fail closed.
+                                        let cost_source =
+                                            file_paths.get(module.as_str()).map(|p| p.as_path());
                                         report::append_cost_summary(
-                                            &mut text, &codegen, &placement, ghz,
+                                            &mut text,
+                                            &codegen,
+                                            &placement,
+                                            ghz,
+                                            cost_source,
                                         )
                                         .map_err(|e| {
                                             if e.ends_with('\n') {
@@ -1420,11 +1426,12 @@ fn dump(args: &[String]) -> ExitCode {
                                                             match wrela_compiler::cost::load_default()
                                                             {
                                                                 Ok(table) => {
-                                                                    match wrela_compiler::cost::dump(
+                                                                    match wrela_compiler::cost::dump_for_source(
                                                                         &codegen_program,
                                                                         &table,
                                                                         &placement,
                                                                         ghz,
+                                                                        Some(Path::new(&path)),
                                                                     ) {
                                                                         Ok(text) => print!("{text}"),
                                                                         Err(e) => {
