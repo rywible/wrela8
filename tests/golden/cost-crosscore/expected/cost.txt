@@ -2,64 +2,48 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
   Provenance T1=38 T2=19 T3=0 T4=10 T5=16 rows=83
   Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method valid_for=static_shape_opts workload=flat pseudo_lru=modelled_as_lru
   Composition sum_of_fn_schedules=1
-  Total proxy_cycles=4287
-  Workload name=flat proxy_cycles=4287
-  Workload name=boot-actors proxy_cycles=4073021
-    coverage=893/6647 grain=block
-  Owner name=app proxy_cycles=3094
-  Owner name=runtime proxy_cycles=1193
-  Owner name=driver proxy_cycles=0
-  Core n=0 proxy_cycles=1745 max_turn_proxy=704 turns_per_sec=3409090.9090909092 ms_per_turn_model=0.0002933333
-  Budget n=0 hot_text_bytes=11264 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 text_pages=3 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0
-  MeasuredBudget workload=boot-actors n=0 hot_text_bytes=7744 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 text_pages=3 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=5 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0
-  Shared proxy_cycles=2542
-  Placeable id=actor#0 type=Ledger core=0 turn_proxy=75 method=Ledger.mark
-  Placeable id=actor#1 type=Worker core=0 turn_proxy=704 method=Worker.slow
-  Fn key=Ledger.mark owner=app proxy_cycles=75
-    Term rule=abort count=2
-    Term rule=adrp count=2
-    Term rule=alu count=10
-    Term rule=branch count=5
+  Total proxy_cycles=3733
+  Workload name=flat proxy_cycles=3733
+  Owner name=app proxy_cycles=1626
+  Owner name=runtime proxy_cycles=1673
+  Owner name=driver proxy_cycles=434
+  Core n=0 proxy_cycles=898 max_turn_proxy=434 turns_per_sec=5529953.9170506913 ms_per_turn_model=0.0001808333
+  Budget n=0 hot_text_bytes=10496 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 text_pages=3 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0
+  Core n=1 proxy_cycles=55 max_turn_proxy=55 turns_per_sec=43636363.636363633 ms_per_turn_model=0.0000229167
+  Budget n=1 hot_text_bytes=10048 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 text_pages=3 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0
+  Shared proxy_cycles=2780
+  Placeable id=driver#0 type=Doorbell core=0 turn_proxy=434 method=Doorbell.on_irq
+  Placeable id=actor#0 type=Peer core=1 turn_proxy=55 method=Peer.publish
+  Fn key=Doorbell.drain owner=app proxy_cycles=387
+    Term rule=alu count=3
+    Term rule=branch count=2
     Term rule=load count=12
-    Term rule=mov_wide count=4
-    Term rule=mul count=1
-    Term rule=mul_high count=1
-    Term rule=store count=15
-  Fn key=Ledger.read_marks owner=app proxy_cycles=55
-    Term rule=alu count=2
+    Term rule=load_acquire count=1
+    Term rule=mov_wide count=1
+    Term rule=store count=11
+    Term rule=store_release count=1
+  Fn key=Doorbell.init owner=app proxy_cycles=77
+    Term rule=alu count=3
+    Term rule=branch count=2
+    Term rule=load count=20
+    Term rule=mov_wide count=8
+    Term rule=store count=23
+    Term rule=store_release count=1
+  Fn key=Doorbell.on_irq owner=driver proxy_cycles=434
+    Term rule=alu count=7
+    Term rule=branch count=4
+    Term rule=load count=20
+    Term rule=load_acquire count=1
+    Term rule=mov_wide count=9
+    Term rule=store count=19
+    Term rule=store_release count=1
+  Fn key=Peer.publish owner=app proxy_cycles=55
+    Term rule=alu count=3
     Term rule=branch count=3
-    Term rule=load count=5
-    Term rule=store count=4
-  Fn key=Worker.quick owner=app proxy_cycles=431
-    Term rule=abort count=1
-    Term rule=adrp count=1
-    Term rule=alu count=13
-    Term rule=branch count=19
-    Term rule=call count=3
-    Term rule=load count=33
-    Term rule=mov_wide count=30
-    Term rule=store count=43
-    Term rule=system count=1
-  Fn key=Worker.report owner=app proxy_cycles=480
-    Term rule=abort count=1
-    Term rule=adrp count=1
-    Term rule=alu count=14
-    Term rule=branch count=20
-    Term rule=call count=3
-    Term rule=load count=32
-    Term rule=mov_wide count=29
-    Term rule=store count=42
-    Term rule=system count=1
-  Fn key=Worker.slow owner=app proxy_cycles=704
-    Term rule=abort count=2
-    Term rule=adrp count=2
-    Term rule=alu count=24
-    Term rule=branch count=32
-    Term rule=call count=6
-    Term rule=load count=58
-    Term rule=mov_wide count=53
-    Term rule=store count=77
-    Term rule=system count=1
+    Term rule=call count=1
+    Term rule=load count=14
+    Term rule=mov_wide count=2
+    Term rule=store count=13
   Fn key=__wrela_abort owner=runtime proxy_cycles=86
     Term rule=alu count=5
     Term rule=branch count=5
@@ -121,6 +105,33 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=mov_wide count=38
     Term rule=mul count=5
     Term rule=store count=58
+  Fn key=__wrela_ring_capacity owner=runtime proxy_cycles=28
+    Term rule=abort count=1
+    Term rule=adrp count=1
+    Term rule=alu count=5
+    Term rule=branch count=5
+    Term rule=load count=3
+    Term rule=mov_wide count=3
+    Term rule=store count=6
+  Fn key=__wrela_ring_dst_core owner=runtime proxy_cycles=28
+    Term rule=abort count=1
+    Term rule=adrp count=1
+    Term rule=alu count=5
+    Term rule=branch count=5
+    Term rule=load count=3
+    Term rule=mov_wide count=3
+    Term rule=store count=6
+  Fn key=__wrela_rt_xreply owner=runtime proxy_cycles=424
+    Term rule=abort_val count=16
+    Term rule=adrp count=16
+    Term rule=alu count=86
+    Term rule=barrier count=1
+    Term rule=branch count=22
+    Term rule=call count=2
+    Term rule=load count=70
+    Term rule=mov_wide count=73
+    Term rule=mul count=10
+    Term rule=store count=91
   Fn key=__wrela_runtime_probe owner=runtime proxy_cycles=15
     Term rule=alu count=2
     Term rule=branch count=3
@@ -172,6 +183,16 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=mov_wide count=20
     Term rule=mul count=2
     Term rule=store count=30
+  Fn key=crosses owner=app proxy_cycles=361
+    Term rule=abort count=1
+    Term rule=adrp count=1
+    Term rule=alu count=12
+    Term rule=branch count=18
+    Term rule=call count=3
+    Term rule=load count=28
+    Term rule=mov_wide count=30
+    Term rule=store count=40
+    Term rule=system count=1
   Fn key=finish_abort owner=app proxy_cycles=57
     Term rule=alu count=3
     Term rule=branch count=3
@@ -179,13 +200,3 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=load count=9
     Term rule=mov_wide count=5
     Term rule=store count=11
-  Fn key=turns owner=app proxy_cycles=603
-    Term rule=abort count=7
-    Term rule=adrp count=7
-    Term rule=alu count=50
-    Term rule=branch count=38
-    Term rule=call count=5
-    Term rule=load count=63
-    Term rule=mov_wide count=58
-    Term rule=store count=100
-    Term rule=system count=1

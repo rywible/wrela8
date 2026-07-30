@@ -1,0 +1,133 @@
+module input
+
+# Cost-stage golden (plans/M20.md item M) — the `[crosscore]` terms
+# (item G, inventory rows 17/18/19/39): the `DMB` charge, the
+# placement-classified local-vs-remote load, the ordered accesses
+# `LDAR`/`STLR`, and the system word.
+#
+# THE MODULE IS CALLED `input` ON PURPOSE. `loader::anchor_package_root`
+# requires a module's last path segment to equal its file stem, and the
+# cost corpus is discovered as `tests/golden/cost-*/input.wr`
+# (`opts::win::discover_cost_corpus`). A `cost-*` case that needs
+# `from core.runtime import …` — and this one does, see below — must
+# therefore be `module input`. Every other `cost-*` case has no import
+# and is exempt from the anchor check.
+#
+# WHAT THIS PINS, PREDICTED FROM THE DOCS BEFORE THE CODE WAS RUN
+# (bench/a76-pi5.toml `[crosscore]` + `[sweep]`; `cost::crosscore`):
+#
+#   * **Row 18, snoop.** `classify_line` calls a load `Remote` when the
+#     image brings up a peer core **and** the word is a `LoadAcquire` —
+#     "the acquire half exists because another agent wrote the line".
+#     `cores = 2` here, and `InterruptCell::swap_acquire` /
+#     `fetch_or_release` are the only wrela surface that emits `LDAR`
+#     and `STLR`. Predicted: the driver methods carry `load_acquire`
+#     and `store_release` Terms and each `LDAR` is charged
+#     `[sweep.snoop_cost] = 312` **above** the memory model's leaf.
+#     Item G recorded that a plain cold load's remoteness is *not*
+#     statically classifiable, so `LDAR` is the only route to a nonzero
+#     snoop, and this case takes it.
+#   * **Row 17, barrier.** `@dmb` is legal only inside
+#     `stdlib/core/runtime.wr` (sema `check_dmb`), and the cost stage
+#     roots only what the source closure reaches — it does **not** seed
+#     `RUNTIME_WIRING_FORCE_ROOT_KEYS`. So the only way a `cost-*` case
+#     can reach a barrier at all is to *call* a runtime fn that carries
+#     one. `__wrela_rt_xreply` is the shallowest: it is the cross-core
+#     reply publish, it carries `@dmb(ishst)` before raising the pending
+#     word, and its body reaches exactly two generated-config helpers,
+#     which is why they are imported below. Predicted: a
+#     `Term rule=barrier count=1` on `__wrela_rt_xreply`, charged the
+#     swept `dmb_cost` **and** `serializes_window` — the ordering half,
+#     which is where nearly all of a barrier's real cost lives and which
+#     needs no magnitude (freeze 1633).
+#   * **Row 19, system.** The async dispatch of the `@test(runtime)`
+#     root emits the `BRK` trap: `Term rule=system`. It is not a
+#     system-**register** write, so `system_word_flushes` is false and
+#     the swept flush is not charged; the `serializes_window` half is.
+#   * **Row 39.** `load_acquire` / `store_release` take their plain
+#     twin's memory path plus a swept increment, both pinned at 0
+#     because both are `removal_sensitive`. So at the canonical point
+#     the ordered accesses cost exactly their plain twins **plus** the
+#     snoop the acquire earns from row 18 — which is the whole reason
+#     the two rows are separate.
+#
+# This is the case `opts::win`'s
+# `release_removes_no_ordering_words_and_the_corpus_has_none` names as
+# the one that will close item G's coverage gap, and the case item J
+# predicted would take the sweep's surviving-dimension count `k` past
+# `MAX_SWEPT_DIMS`.
+
+from core.runtime import __wrela_rt_xreply
+from core.__image_runtime import __wrela_ring_capacity, __wrela_ring_dst_core
+
+@layout(mmio, endian=little)
+struct RingIrqMmio:
+    @offset(0x060) interrupt_status: ReadOnly[u32]
+    @offset(0x064) interrupt_ack: WriteOnly[u32]
+
+struct RingDevice:
+    id: u32
+
+# The only wrela surface that emits `LDAR` / `STLR`: an `InterruptCell`
+# published by the ISR and consumed by the bottom half.
+@driver
+pub struct Doorbell:
+    regs: Mmio[RingIrqMmio]
+    irq: IrqCap[u32]
+    pending: InterruptCell[u32]
+    seen: u32
+
+    init(mut self, take cap: DeviceCap[RingDevice]):
+        claimed = RingDevice.claim(cap=take cap)
+        self.regs = claimed.map_partition(RingIrqMmio)
+        self.pending = InterruptCell(0)
+        self.seen = 0
+        irq = claimed.take_irq()
+        irq.bind(self.on_irq)
+        irq.unmask()
+        self.irq = take irq
+
+    fn on_irq(self):
+        status = self.regs.interrupt_status.read()
+        handled = status & 1
+        if handled != 0:
+            self.pending.fetch_or_release(handled)
+            self.regs.interrupt_ack.write(handled)
+            wake(Doorbell.drain)
+
+    @task
+    fn drain(mut self):
+        # `swap_acquire` is the `LDAR`: the line it reads was written by
+        # the ISR, which is why row 18 calls it remote in a 2-core image.
+        self.seen = self.pending.swap_acquire(0)
+
+@actor
+pub struct Peer:
+    n: u64
+
+    # Rooting the cross-core reply publish is what puts a `DMB` in the
+    # scored closure. The call is a live one so the fn is guest
+    # reachable; the ring is empty at this point, so it is also a no-op.
+    pub fn publish(mut self, turn_and_tag: u64, reply: u64) -> u64:
+        __wrela_rt_xreply(edge=0, turn_and_tag=turn_and_tag, reply=reply)
+        self.n = self.n +% 1
+        return self.n
+
+@test(runtime)
+async fn crosses(p: Actor[Peer]):
+    r = await p.publish(turn_and_tag=1, reply=2)
+    @discard(reason="cost-stage golden: the value is not the subject")
+    match r:
+        case .Ok(_):
+            pass
+        case .Err(_):
+            pass
+
+@image
+pub fn build() -> Image:
+    img = Image(name="cost-crosscore", target=Target.wrela_machine_v1, cores=2)
+    dev = img.device[RingDevice](transport=0x2000, vector=1)
+    door = img.driver(Doorbell, device=dev)
+    peer = img.actor(Peer, mailbox=4, core=1)
+    img.on_failure(policy=Failure.Halt)
+    return img.seal()

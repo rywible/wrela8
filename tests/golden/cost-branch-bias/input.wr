@@ -1,0 +1,126 @@
+module examples.cost_branch_bias
+
+# Cost-stage golden (plans/M20.md item M) — the branch model (item H,
+# inventory rows 21-27, `cost::branch`).
+#
+# WHAT THIS PINS, PREDICTED FROM THE DOCS BEFORE THE CODE WAS RUN — AND
+# IT IS DELIBERATELY A ROW OF ZEROES.
+#
+# 04 §5: "measured branch bias yields a mispredict estimate". The charge
+# is `ceil(mispredict_penalty x 2 x min(t,n)/(t+n))` over a branch's two
+# successors' **measured** block counts. Under `W_flat` (`f ≡ 1`) there
+# is no bias information at all, and item H makes "no data" structurally
+# distinct from a measured 0.5: `BlockCounts::Flat` short-circuits
+# before any count is read and returns `None`, so the flat row cannot
+# produce a `BranchBias` — it does not produce one that scales to zero.
+# **Predicted: every branch in this fn set is charged exactly the T1
+# `[latency.branch]` row, 1 cycle, and nothing else.**
+#
+# The two SOG §4.8 front-end terms that a per-fn word stream *can*
+# decide — row 23 (more than four branches in an aligned 32 B fetch
+# region) and row 25 (a loop of at most 32 B not inside one aligned
+# 32 B region) — are also predicted **0**, and for a reason about the
+# frame rather than about this source: every branch here is preceded by
+# the compare, the `cset`, the spill and the reload that materialised
+# its condition, so five branch words never fit inside eight, and no
+# loop body survives that frame at 32 bytes. Rows 24 and 26 charge 0 by
+# decision 1618 (undecidable from the word stream).
+#
+# So this case is the **maximally branchy** program the language can
+# express — an eight-arm match ladder, a counted loop, and a run of
+# checked arithmetic whose abort branches are the largest branch
+# population wrela emits — and the claim it pins is that even here the
+# flat row charges no mispredict and no front-end penalty. The oracle is
+# the ablation: moving `[branch] mispredict_penalty` or
+# `[sweep] range_cross_penalty` must leave every number below
+# unchanged, and moving `[latency.branch] lat` must move all of them.
+#
+# **WHICH HALF THIS IS, AND WHERE THE OTHER HALF ALREADY LIVES.** The
+# bias-derived half needs a committed `lane2-freq.txt` sidecar and item
+# C's bridge, and a `cost-*` case cannot have one: the sidecar's only
+# honest source is `cargo xtask gen-lane2-freq`, which **boots** the
+# case, and its workload name must be pinned in `bench/workloads.toml`.
+# Writing one by hand would be a fabricated measurement. That half is
+# therefore not duplicated here — it is already witnessed by
+# `tests/golden/boot-actors`, whose committed `lane2-freq.txt` gives 14
+# genuinely-biased branch words of 265 and 145 cycles of bias-derived
+# mispredict (`compiler.costs.branch-bias`). What this case adds is the
+# **flat** half over a program built to be as branchy as the language
+# allows: the row that says a `cost-*` case can never argue a
+# frequency-dependent branch opt, which is 04 §5's own rule.
+
+pub enum Tag:
+    A
+    B
+    C
+    D
+    E
+    F
+    G
+    H
+
+# Eight conditional arms: the densest branch ladder the language emits.
+pub fn ladder(t: Tag) -> u64:
+    match t:
+        case .A:
+            return 0
+        case .B:
+            return 1
+        case .C:
+            return 2
+        case .D:
+            return 3
+        case .E:
+            return 4
+        case .F:
+            return 5
+        case .G:
+            return 6
+        case .H:
+            return 7
+
+# A counted loop: the back edge is the one branch in the program with a
+# genuinely lopsided real-machine bias, and the flat row still charges
+# it nothing.
+pub fn spin(n: u64) -> u64:
+    i: u64 = n
+    acc: u64 = 0
+    @budget(bound=1000000)
+    while i > 0:
+        acc = acc +% i
+        i = i - 1
+    return acc
+
+# Nested conditionals: two branches per level, no straight-line run.
+pub fn nested(x: u64, y: u64) -> u64:
+    if x < y:
+        if x < 10:
+            return 1
+        elif x < 20:
+            return 2
+        else:
+            return 3
+    elif x > y:
+        if y < 10:
+            return 4
+        elif y < 20:
+            return 5
+        else:
+            return 6
+    return 7
+
+# Checked arithmetic: every statement emits an overflow-check branch to
+# the abort handler. In any run that does not abort these are always
+# not taken, so `min(t, n) = 0` and the bias-derived charge is exactly
+# zero whatever the swept penalty is — item H's abort-branch finding,
+# and the population it is about.
+pub fn checks(a: u64, b: u64) -> u64:
+    s0: u64 = a + b
+    s1: u64 = s0 + b
+    s2: u64 = s1 + b
+    s3: u64 = s2 + b
+    s4: u64 = s3 + b
+    s5: u64 = s4 + b
+    s6: u64 = s5 + b
+    s7: u64 = s6 + b
+    return s7

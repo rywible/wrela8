@@ -239,6 +239,18 @@ pub fn budget_overflow_growth(
 /// measured 23 text pages against a 48-entry L1 I-TLB on every `boot-*`
 /// core, so unlike the hot-text line this budget is comfortably inside
 /// today and an assertion about it is meaningful rather than universal.
+///
+/// **plans/M20.md decision 1635-M: that premise is now known to be
+/// falsifiable by a corpus case, and it costs the gate everything when it
+/// is.** Item M built the `cost-itlb-span` golden the plan asked for at
+/// full size — 13 actor methods, core 0 at 57 text pages against 48 — and
+/// this rule then refused **every** candidate at **every** point of the
+/// residual box, the identity included, because the breach is a property
+/// of the baseline. That is exactly the failure decision 1619 names for an
+/// absolute rule. Item M shipped a non-breaching span witness instead and
+/// left the choice here: retire this in favour of the delta rule (which
+/// already covers `over_itlb_pages`), or exclude a deliberately-breaching
+/// case from `discover_cost_corpus`. Not decided by a goldens item.
 pub fn itlb_absolute_breaches(budgets: &[CoreBudget]) -> Vec<&CoreBudget> {
     budgets.iter().filter(|b| b.over_itlb_pages > 0).collect()
 }
@@ -556,6 +568,19 @@ pub fn format_delta_table(cmp: &CorpusCompare, base_label: &str, cand_label: &st
 /// `[crosscore]` dimensions this corpus never reaches, taking `k` to 13–14
 /// and tripping this bound. That is left as a refusal to be dealt with
 /// deliberately, not pre-weakened here.
+///
+/// **plans/M20.md item M (2026-07-30): the collision landed, `k` is 14, and
+/// the bound is deliberately NOT raised here.** `cost-crosscore` reads
+/// `dmb_cost`, `snoop_cost`, `load_acquire_cost` and `store_release_cost`,
+/// so its probe reports 14 surviving dimensions and
+/// `release_wins_at_every_point_of_the_residual_box` refuses to rank —
+/// visibly, and by name. Raising the bound to 14 was **measured** rather
+/// than guessed before being reverted: at 14 the test ran **1916 s
+/// (31 m 58 s)** and still failed, on a different refusal (see
+/// [`itlb_absolute_breaches`]). 16384 corners x 2 sides x 15 cases is not a
+/// unit-test-lane cost, so which lane this gate belongs in is a structural
+/// call for the milestone close, not something a goldens item buys by
+/// editing this number.
 pub const MAX_SWEPT_DIMS: usize = 12;
 
 /// A dimension the sensitivity probe proved cannot matter for one case, so
@@ -2724,32 +2749,40 @@ mod tests {
         );
     }
 
-    /// The live corpus gate is unaffected: the `cost-*` corpus emits no
-    /// ordering word at all, so `release` vs `dev` carries 0 → 0 on every
-    /// ordering rule and the refusal is inert there. Recorded because it is
-    /// also the coverage gap item G reports — `cost-crosscore` (item M) is
-    /// the golden that will exercise this.
+    /// **Item G's coverage gap is closed** (plans/M20.md item M). Item G
+    /// reported that no `cost-*` case reached a `barrier` /
+    /// `load_acquire` / `store_release` / `system` word at all, so freeze
+    /// 1633's refusal was live but inert on the live corpus. The
+    /// `cost-crosscore` golden reaches all four, so this test now asserts
+    /// the opposite of what it used to: **some** case must carry ordering
+    /// words, every case must still carry a slot for each of the four
+    /// rules, and `release` must remove none of them anywhere.
     #[test]
-    fn release_removes_no_ordering_words_and_the_corpus_has_none() {
+    fn release_removes_no_ordering_words_and_the_corpus_reaches_them() {
         let cmp = compare_opt_lists(&[], RELEASE_OPTS);
+        let mut reached: BTreeMap<String, u64> = BTreeMap::new();
         for c in &cmp.cases {
             assert!(
                 c.ordering_removed().is_empty(),
                 "{}: release removed an ordering word",
                 c.name
             );
-            assert!(
-                c.baseline_ordering.values().all(|&n| n == 0),
-                "{}: the cost-* corpus is expected to reach no ordering word; \
-                 counts {:?} — if this fires, the coverage gap item G reported \
-                 has closed and the report should say so",
-                c.name,
-                c.baseline_ordering
-            );
             assert_eq!(
                 c.baseline_ordering.len(),
                 4,
                 "every crosscore rule must have a slot, present at 0"
+            );
+            for (rule, n) in &c.baseline_ordering {
+                *reached.entry(rule.to_string()).or_insert(0) += *n;
+            }
+        }
+        eprintln!("cost-* corpus ordering-word census: {reached:?}");
+        for rule in ["barrier", "load_acquire", "store_release", "system"] {
+            assert!(
+                reached.get(rule).copied().unwrap_or(0) > 0,
+                "the corpus must reach `{rule}`; item M's `cost-crosscore` is \
+                 the case that does, and if this fires the coverage gap item G \
+                 reported has re-opened: {reached:?}"
             );
         }
         apply_mode(CompileMode::Release);
@@ -2861,13 +2894,27 @@ mod tests {
     /// are still a column and are recorded here; the condition the corpus
     /// gate now enforces on the same run is the per-core budget delta.
     ///
-    /// The rule's coverage on this corpus is stated rather than assumed:
-    /// no `cost-*` case declares an `@image`, so each gets the default
-    /// one-core placement and every fn lands on core 0. Every case fits
-    /// that core entirely — `charge = 0`, nothing over — so the rule is
-    /// **live and silent** here rather than inert. It is asserted that way,
-    /// because a corpus that started breaching the budget would otherwise
-    /// change this gate's meaning without changing this test.
+    /// The rule's coverage on this corpus is stated rather than assumed,
+    /// and **plans/M20.md item M changed what that statement is**. Before
+    /// item M no `cost-*` case declared an `@image`, so every case got the
+    /// default one-core placement and fitted that core entirely: the rule
+    /// was live and *silent*. Item M added three image-bearing cases, two
+    /// of which exist precisely to break a budget —
+    /// `cost-icache-cliff` (92 800 B of hot text against a 64 KiB L1I) and
+    /// `cost-itlb-span` (229 568 B and 57 text pages against 48 I-TLB
+    /// entries, on core 0 only) — plus `cost-crosscore` and
+    /// `cost-itlb-span` at `cores = 2`. So the assertions here are now:
+    ///
+    /// * the **delta** rule still holds everywhere (no core's overflow
+    ///   grows from `dev` to `release`) — that is the rule freeze 1626
+    ///   installed and it is what this gate enforces;
+    /// * `within_budget()` is false on exactly the cases built to breach
+    ///   it, and true on every other, which is the coverage claim in its
+    ///   new form: the rule is live and **firing**, not merely silent.
+    ///
+    /// This is also the tree's only live demonstration of decision 1619's
+    /// central point — an *absolute* whole-budget veto would refuse those
+    /// two cases' identity, while the delta rule ranks them fine.
     #[test]
     fn release_words_are_reported_and_the_budget_is_the_live_condition() {
         let cmp = compare_opt_lists(&[], RELEASE_OPTS);
@@ -2893,20 +2940,37 @@ mod tests {
                 "{}: release grew a per-core budget overflow\n{table}",
                 c.name
             );
+            let cores = match c.name.as_str() {
+                // plans/M20.md item M's image-bearing cases.
+                "cost-crosscore" | "cost-itlb-span" => 2,
+                _ => 1,
+            };
             assert_eq!(
                 c.baseline_budgets.len(),
-                1,
-                "{}: expected the default one-core placement",
+                cores,
+                "{}: expected {cores} core(s) of placement",
                 c.name
             );
+            let breaches = matches!(c.name.as_str(), "cost-icache-cliff" | "cost-itlb-span");
             for b in c.baseline_budgets.iter().chain(c.candidate_budgets.iter()) {
-                assert!(
-                    b.within_budget(),
-                    "{}: this corpus fits its core; if that stops being true \
-                     the gate's coverage claim changes: {}",
-                    c.name,
-                    b.render()
-                );
+                if breaches && b.n == 0 {
+                    assert!(
+                        !b.within_budget(),
+                        "{}: this case exists to breach its core's budget; if it \
+                         stops doing so it has stopped being the witness item M \
+                         built it to be: {}",
+                        c.name,
+                        b.render()
+                    );
+                } else {
+                    assert!(
+                        b.within_budget(),
+                        "{}: this case fits its core; if that stops being true \
+                         the gate's coverage claim changes: {}",
+                        c.name,
+                        b.render()
+                    );
+                }
             }
         }
     }
