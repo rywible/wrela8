@@ -246,18 +246,20 @@ backend's soak time.
 **Proxy-cycle ranking.** After codegen (runtime included), every emitted
 word carries an emit-time op-class tag (`CostRule`) and its dest/src
 registers (loads/stores may also carry a `MemRef`: Stack vs Cold). A
-versioned parameter file (`wrela-cost-v1`, schema `version=2`) gives
-per-rule latencies plus dual issue ports (`alu` / `mem`), a global
-`max_issue_per_cycle` cap (ports ∩ that cap), a mem reuse window with
-working-set cap and surcharge (stores invalidate; a missing MemRef is a
-cold miss), `branch_penalty`, and hardened `abort_val`. The surcharge is
-charged **per distinct key over the cap**, not once flat, so a growing
-working set cannot be priced like a small one. `branch_penalty` is a
-fetch-redirect cost only and is **not** a mispredict penalty: the model
-has no predictor, so it must not credit branch removal (if-conversion)
-with cycles a predicted branch never cost. A dumb dual-port
-register scoreboard over the final stream yields a **schedule length**
-per function — the proxy total (`call` clears the mem window). Totals are
+versioned parameter file (`a76-pi5`, schema `version=3`) gives, per
+**instruction group** of the published A76 tables, a latency, a
+throughput, and the execution ports the group issues to, together with
+the pipeline set and dispatch constraints, real cache and TLB geometry
+with associativity and its pinned leaf latencies, the branch and
+alignment terms, the declared cross-core terms, and the residual sweep
+box — every row carrying its provenance tier and its source. The load
+latency it pins is the **first-level hit** path only; the miss path is the
+memory model's. The store latency it pins is to the **store buffer**, and
+a store splits into an address operation and a data operation that
+occupies a vector pipe, so store-heavy streams contend with FP/ASIMD.
+Groups the emitted stream does not contain are **absent**, not
+speculatively priced. A register scoreboard over the final stream yields
+a **schedule length** per function — the proxy total (`call` clears the mem window). Totals are
 path-insensitive Σ per function. Each function also carries its emitted
 **word count**, the static footprint proxy. The value is
 **differential**: given two
@@ -398,7 +400,7 @@ workloads are in scope, the overall gate is veto-then-rank across the
 pinned `workloads.toml` set as above. Losers are deleted or reworked,
 not kept disabled. Host wall-time, flame graphs, `profile`, and
 `bench guest` A/B are out of this process — optional offline research
-may retune `wrela-cost-v1` on suspected proxy misrank, but they never
+may retune `a76-pi5` on suspected proxy misrank, but they never
 gate landing and are never a `check` column. Semantics must not depend
 on which mode is selected; both modes stay correct under the ordinary
 oracles.

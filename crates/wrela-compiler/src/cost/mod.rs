@@ -67,6 +67,7 @@ pub use stage::{
     score_cost_stage_path,
 };
 pub use table::{
-    CostTable, EXPECTED_VERSION, MemCosts, default_table_path, load_default, load_from_path, parse,
+    CostTable, CrossRow, EXPECTED_VERSION, End, LatRow, MemCosts, PROFILE_NAME, Row, SweepRow,
+    Tier, default_table_path, load_default, load_from_path, parse, profile_ghz,
 };
 pub use workload::{FLAT_NAME, WorkloadSet, default_workloads_path};

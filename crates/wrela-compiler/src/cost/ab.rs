@@ -64,44 +64,15 @@ mod tests {
     use crate::codegen::CodegenFn;
     use crate::cost::rule::{CostRule, EmittedWord};
     use crate::cost::stage::codegen_cost_stage;
-    use crate::cost::table::{load_default, parse};
+    use crate::cost::table::load_default;
     use crate::opts::win::discover_cost_corpus;
     use crate::opts::{CompileMode, OptId, apply_mode, apply_opts};
 
-    const TABLE: &str = r#"
-version = 2
-[ports]
-alu = 2
-mem = 2
-max_issue_per_cycle = 2
-branch_penalty = 3
-mem_reuse_window = 8
-mem_working_set_cap = 4
-[latency]
-alu = 1
-load = 12
-store = 2
-branch = 1
-call = 4
-abort = 1
-abort_val = 3
-mov_wide = 1
-mul = 3
-sdiv = 12
-udiv = 12
-adrp = 1
-barrier = 1
-system = 1
-neon = 1
-[mem]
-load_stack_hit = 1
-load_stack_miss = 4
-load_cold_hit = 4
-load_cold_miss = 12
-store_stack = 1
-store_cold = 2
-working_set_surcharge = 2
-"#;
+    /// plans/M20.md item D: score against the committed profile, not an
+    /// inline v2 fixture.
+    fn table() -> CostTable {
+        load_default().expect("bench/a76-pi5.toml")
+    }
 
     fn word(rule: CostRule, dst: Option<u8>, srcs: &[u8]) -> EmittedWord {
         EmittedWord::new(0, String::new(), rule, dst, srcs)
@@ -173,7 +144,7 @@ pub fn hot(a: [u64; 32]) -> u64:
         let module = parser::parse(tokens).expect("parse");
         let typed = sema::check_typed(&module, "<test>").expect("check");
         let layout = mwir::build_layout_ctx(&module, &Default::default()).expect("layout");
-        let table = load_default().expect("wrela-cost-v1");
+        let table = load_default().expect("bench/a76-pi5.toml");
 
         apply_mode(mode);
         let mwir = lower_program(&typed).expect("lower");
@@ -183,7 +154,7 @@ pub fn hot(a: [u64; 32]) -> u64:
 
     #[test]
     fn identical_program_scored_twice_equal_totals() {
-        let table = parse(TABLE).expect("table");
+        let table = table();
         let p = prog(
             "f",
             vec![
@@ -202,7 +173,7 @@ pub fn hot(a: [u64; 32]) -> u64:
 
     #[test]
     fn dependent_chain_ranks_higher_than_independent_alus() {
-        let table = parse(TABLE).expect("table");
+        let table = table();
         // Program A: independent alus (same issue window).
         let a_prog = prog(
             "a",
@@ -279,7 +250,7 @@ pub fn hot(a: [u64; 32]) -> u64:
             "cost corpus empty: expected tests/golden/cost-*/input.wr"
         );
 
-        let table = load_default().expect("wrela-cost-v1");
+        let table = load_default().expect("bench/a76-pi5.toml");
 
         for path in &corpus {
             let case = path

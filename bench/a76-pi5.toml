@@ -1,0 +1,863 @@
+# bench/a76-pi5.toml — the pinned A76 / BCM2712 / Raspberry Pi 5 cost
+# profile, plus the residual-uncertainty sweep box (plans/M20.md item D,
+# decisions 1600-1604 / 1609, freezes 1621 / 1629 / 1630 / 1632 / 1633).
+#
+# This file replaces `bench/wrela-cost-v1.toml`, which item D deletes: two
+# tables would be two sources of truth. Schema `version = 3`; `version = 2`
+# no longer loads, and a `version = 2` table carrying any v3 section is
+# refused by name rather than half-parsed.
+#
+# RELOCK DISCIPLINE (copied from `bench/workloads.toml` /
+# `bench/thresholds.toml`). Change only deliberately, in its own commit,
+# citing the before/after `table_digest` **and** `provenance_digest`, and
+# the ledger clause id the change serves. `cost::table` digests the whole
+# canonical content, so every cost golden and every image report moves with
+# any edit here; that is the review surface, not a nuisance. Never widen a
+# bracket or lower a pinned value to make a candidate pass — that is the
+# `∃`-form search for a flattering assumption freeze 1624 forbids.
+#
+# PROVENANCE IS DATA, NOT DECORATION (decision 1602 / freeze 1629). Every
+# row carries `tier` and `source`:
+#
+#   T1  vendor, this core, normative — Cortex-A76 Software Optimization
+#       Guide PJDOC-466751330-7215 v8.0, cited as "SOG §x.y"
+#   T2  vendor, this core or cluster, descriptive — Cortex-A76 Core TRM
+#       (100798), DynamIQ Shared Unit TRM (100453), BCM2712 / Pi 5 spec
+#   T3  third-party measured **on this board** — the tinymembench random
+#       single-read curve on Raspberry Pi 5 / BCM2712
+#   T4  third-party measured or derived, generic A76 — 7-cpu.com,
+#       WikiChip, AnandTech microarchitecture coverage
+#   T5  unresolved, conflicting, **or unpriced by any source**
+#
+# `cost::table` **rejects a pinned T5 row** outright. A T5 magnitude may
+# exist only as a `[sweep.*]` dimension (or, transitionally, in
+# `[transitional]`, which is the quarantine section item F deletes and
+# which may contain *nothing but* T5 holdovers). That rule is what makes
+# decision 1602 machine-checked rather than commented: the model is forced
+# to admit that its most consequential number for a message-passing
+# machine — cross-core publish/acquire cost — is a range, instead of
+# quietly asserting 1 cycle as the v2 table did.
+#
+# THE OVER-COST RULE (decision 1609 / freeze 1623). Where the record gives
+# a bracket, the pinned value is the bracket's **pessimistic** end and the
+# bracket becomes a sweep dimension. "Pessimistic" is the end that costs
+# more — the maximum for a latency, the **minimum** for a capacity. One
+# family of terms is genuinely ambiguous: a term whose *removal* is the
+# win (a barrier, an ordered access, a call's callee residual). For those a
+# larger charge over-credits deletion, and barriers are correctness-
+# load-bearing (freeze 1633), so those rows carry
+# `removal_sensitive = true`, must pin the **low** end, and must state the
+# ambiguity in an `ambiguity` field. The parser enforces all three. The
+# conflict is therefore recorded as data rather than resolved silently.
+#
+# MODEL ONLY WHAT WRELA EMITS (freeze 1630). The `[latency]` groups are
+# exactly the SOG instruction groups the emitted stream contains, measured
+# from codegen's own encoder call sites. Deliberately absent, each because
+# no site emits it: extend-and-shift arithmetic, LSR/ASR/ROR-shifted
+# arithmetic, flagset logical (`ANDS`/`BICS`), `LDP`/`STP`, `BFM` insert,
+# and the W-form (32-bit) multiply-accumulate and divide groups — every
+# `enc_mul` / `enc_msub` / `enc_sdiv` / `enc_udiv` site in
+# `crates/wrela-compiler/src/codegen.rs` passes `sf = true`, and
+# `SMULH`/`UMULH` have no W-form at all.
+
+version = 3
+
+# ---------------------------------------------------------------------------
+# [profile] — the one profile there will be (freeze 1621).
+# ---------------------------------------------------------------------------
+
+[profile.name]
+value = "a76-pi5"
+tier = "T2"
+source = "Cortex-A76 / BCM2712 / Raspberry Pi 5 — the only profile (freeze 1621); the parser refuses any other name"
+
+# decision 1601: `ghz` lives here. `cost::ghz::DEFAULT_GHZ` is a fallback
+# for callers with no profile loaded, not a second source of truth. Held as
+# a string so it parses through `cost::ghz::parse_ghz` (fail closed on
+# non-finite / <= 0) and prints byte-identically through `fmt_compact`.
+[profile.ghz]
+value = "2.4"
+tier = "T2"
+source = "Raspberry Pi 5 / BCM2712 published stock clock (2.4 GHz); a display scale, never a host wall-clock calibration"
+
+# ---------------------------------------------------------------------------
+# [pipelines] — SOG §2.1's eight pipelines and §4.1's dispatch constraints.
+#
+# The port letters the §3.x tables use, reconciled against §2.1:
+#   I  = pipes 2-4 (two integer single-cycle + the single/multi-cycle pipe)
+#        => basic integer ALU throughput 3
+#   M  = pipe 4 only (shift-ALU, multiply, divide, CRC, SAD)
+#   L  = pipes 5-6 (the two load/store AGUs)
+#   D  = pipes 7-8 (store *data*, which is why store-heavy streams contend
+#        with FP/ASIMD — see [latency.store])
+#   B  = pipe 1
+#   V0 = pipe 7, V1 = pipe 8
+#
+# `alu_ports()` / `mem_ports()` / `max_issue_per_cycle()` are **derived**
+# from these rows, never restated: 3 = the pipes in `port_i`, 2 = the pipes
+# in `port_l`, 8 = `dispatch_uops`.
+# ---------------------------------------------------------------------------
+
+[pipelines.count]
+value = 8
+tier = "T1"
+source = "SOG §2.1 — eight pipelines, each accepting and completing one uop per cycle"
+
+[pipelines.dispatch_mops]
+value = 4
+tier = "T1"
+source = "SOG §4.1 — up to 4 Mops per cycle processed"
+
+[pipelines.dispatch_uops]
+value = 8
+tier = "T1"
+source = "SOG §4.1 — up to 8 uops per cycle dispatched, oversubscription resolved oldest-to-youngest"
+
+[pipelines.cap_b]
+value = 2
+tier = "T1"
+source = "SOG §4.1 — at most 2 uops to B per cycle"
+
+[pipelines.cap_s]
+value = 4
+tier = "T1"
+source = "SOG §4.1 — at most 4 uops to S (single-cycle integer) per cycle"
+
+[pipelines.cap_m]
+value = 2
+tier = "T1"
+source = "SOG §4.1 — at most 2 uops to M per cycle"
+
+[pipelines.cap_v_each]
+value = 2
+tier = "T1"
+source = "SOG §4.1 — at most 2 uops to each V pipe per cycle"
+
+[pipelines.cap_l_each]
+value = 2
+tier = "T1"
+source = "SOG §4.1 — at most 2 uops to each L pipe per cycle"
+
+# A bounded reorder depth, never a simulated ROB (decision 1606 / freeze
+# 1622).
+[pipelines.reorder_window]
+value = 128
+tier = "T4"
+source = "AnandTech + WikiChip A76 microarchitecture coverage — 128 in-flight instructions, 8 issue queues"
+
+[pipelines.port_i]
+value = "2-4"
+tier = "T1"
+source = "SOG §2.1 pipelines 2-4 reconciled with the §3.3-§3.10 port letters (integer ALU throughput 3)"
+
+[pipelines.port_m]
+value = "4"
+tier = "T1"
+source = "SOG §2.1 pipeline 4 — shift-ALU, multiply, divide, CRC, SAD"
+
+[pipelines.port_l]
+value = "5-6"
+tier = "T1"
+source = "SOG §2.1 pipelines 5-6 — the two load/store AGUs"
+
+[pipelines.port_d]
+value = "7-8"
+tier = "T1"
+source = "SOG §2.1 pipelines 7-8 carry store data (§3.10's D), so stores contend with FP/ASIMD"
+
+[pipelines.port_b]
+value = "1"
+tier = "T1"
+source = "SOG §2.1 pipeline 1 — branch"
+
+[pipelines.port_v0]
+value = "7"
+tier = "T1"
+source = "SOG §2.1 pipeline 7 — FP/ASIMD-0"
+
+[pipelines.port_v1]
+value = "8"
+tier = "T1"
+source = "SOG §2.1 pipeline 8 — FP/ASIMD-1"
+
+# ---------------------------------------------------------------------------
+# [latency.<group>] — one sub-table per SOG instruction group the emitted
+# stream actually contains (freeze 1630). `lat` is execution latency;
+# throughput is the rational `thru_num / thru_den`, so 3-per-cycle is
+# 3/1 and one-per-three-cycles is 1/3 — a single reciprocal integer cannot
+# express both directions and rounding 1/3 to 1 would be a discount.
+# `ports` is the port-letter string. `acc_lat` is the accumulator-operand
+# latency where the group has one; `m_pipe_stall` is the extra cycles the
+# uop holds pipe M against any other M uop; `m_pipe_block = 1` marks a
+# group that blocks subsequent uops of its own kind until it completes.
+# ---------------------------------------------------------------------------
+
+# Arithmetic basic / logical basic / conditional compare / conditional
+# select / move register / bitfield-move basic (`LSL`/`LSR`/`ASR` by
+# immediate are `UBFM`/`SBFM`) / variable shift. Every one of these is
+# 1 cycle, throughput 3, port I, so they share one row.
+[latency.alu]
+lat = 1
+thru_num = 3
+thru_den = 1
+ports = "I"
+tier = "T1"
+source = "SOG §3.4 arithmetic basic + logical basic + conditional compare + conditional select; §3.5 bitfield move basic + variable shift"
+
+# §3.9 states latency 4 **assumes an L1D hit**. The miss path is the cache
+# model's job (plans/M20.md item F), not this row's.
+[latency.load]
+lat = 4
+thru_num = 2
+thru_den = 1
+ports = "L"
+tier = "T1"
+source = "SOG §3.9 load register, immed (all forms) — latency 4 is the L1D-hit path only"
+note = "l1d hit only; L2/L3/DRAM leaves are [geometry] lat_l2 / lat_l3 / lat_dram"
+
+# §3.10: latency 1 is to the **store buffer**, not to cache. A store splits
+# at dispatch into an address uop (L) and a data uop that occupies a **V**
+# pipe, so store-heavy streams contend with FP/ASIMD — a contention the v2
+# two-port model could not express at all. The `ports` string carries the
+# split so item E can implement it.
+[latency.store]
+lat = 1
+thru_num = 2
+thru_den = 1
+ports = "L,D"
+tier = "T1"
+source = "SOG §3.10 store register (common forms) — buffered and committed in the background; address uop on L, data uop on D (a V pipe)"
+note = "store buffer, not cache; store-to-load forwarding is [sweep.store_to_load_forwarding]"
+
+[latency.branch]
+lat = 1
+thru_num = 1
+thru_den = 1
+ports = "B"
+tier = "T1"
+source = "SOG §3.3 branch immed / branch register / compare and branch"
+
+# `BL` is 1 cycle, throughput 1, ports I + B (T1). The v2 table charged
+# `call = 4` and `abort_val = 3` as unsourced proxies for *callee* cost —
+# which the Σ-over-fns composition already scores separately, so the proxy
+# was double-counting with no source behind it. The instruction gets its
+# T1 numbers; everything beyond it (prologue/epilogue, pipeline drain)
+# is the swept `call_overhead` residual, so neither direction of the
+# inline/outline question is favoured at the pinned point.
+[latency.call]
+lat = 1
+thru_num = 1
+thru_den = 1
+ports = "I,B"
+tier = "T1"
+source = "SOG §3.3 branch and link, immed"
+sweep_add = "call_overhead"
+
+[latency.abort]
+lat = 1
+thru_num = 1
+thru_den = 1
+ports = "I,B"
+tier = "T1"
+source = "SOG §3.3 branch and link, immed — the abort branch every check emits"
+sweep_add = "call_overhead"
+note = "charge the branch only; the abort handler never returns (dimension 20)"
+
+[latency.abort_val]
+lat = 1
+thru_num = 1
+thru_den = 1
+ports = "I,B"
+tier = "T1"
+source = "SOG §3.3 branch and link, immed — the value-carrying abort branch"
+sweep_add = "call_overhead"
+
+# `MOVZ`/`MOVK` are 1 cycle, throughput 3, port I. Stated plainly because
+# item K depends on it: **NarrowImm's win is fetch and footprint, not
+# latency.** Under this model a narrowed immediate sequence may score at or
+# near zero on cycles and win only on the I-side footprint term. That is a
+# finding about the ruler, not a licence to retune.
+[latency.mov_wide]
+lat = 1
+thru_num = 3
+thru_den = 1
+ports = "I"
+tier = "T1"
+source = "SOG §3.5 move immed (`MOVZ`, `MOVK`, `MOVN`)"
+
+# X-form only: every `enc_mul` / `enc_msub` site passes `sf = true`.
+# `MUL Xd, Xn, Xm` is `MADD Xd, Xn, Xm, XZR`, so it is this group.
+# §3.6 note 4: X-form MAC stalls pipe M **2 extra cycles** before another
+# M uop can issue.
+[latency.mul]
+lat = 4
+acc_lat = 3
+thru_num = 1
+thru_den = 3
+ports = "M"
+m_pipe_stall = 2
+tier = "T1"
+source = "SOG §3.6 multiply-accumulate, X-form + note 4"
+
+# §3.6 note 5: `SMULH`/`UMULH` stall pipe M **3 extra cycles**. These are
+# not incidental — `narrow_to_width` and the checked-multiply overflow
+# check both emit them (two `smulh`, three `umulh` sites).
+[latency.mul_high]
+lat = 5
+acc_lat = 3
+thru_num = 1
+thru_den = 4
+ports = "M"
+m_pipe_stall = 3
+tier = "T1"
+source = "SOG §3.6 multiply high (`SMULH`, `UMULH`) + note 5"
+
+# Divide is iterative with data-dependent early termination and **blocks
+# subsequent divides on pipe M until complete** (§3.6 note 1). X-form only
+# (`sf = true` at both sites), bracket 5-20, pinned pessimistic and swept.
+[latency.sdiv]
+lat = 20
+thru_num = 1
+thru_den = 20
+ports = "M"
+m_pipe_block = 1
+tier = "T1"
+source = "SOG §3.6 divide, X-form (5-20 cycles, throughput 1/20-1/5) + note 1"
+bracket_lo = 5
+bracket_hi = 20
+sweep = "divide_x_latency"
+
+[latency.udiv]
+lat = 20
+thru_num = 1
+thru_den = 20
+ports = "M"
+m_pipe_block = 1
+tier = "T1"
+source = "SOG §3.6 divide, X-form (5-20 cycles, throughput 1/20-1/5) + note 1"
+bracket_lo = 5
+bracket_hi = 20
+sweep = "divide_x_latency"
+
+[latency.adrp]
+lat = 1
+thru_num = 3
+thru_den = 1
+ports = "I"
+tier = "T1"
+source = "SOG §3.4 address generation (`ADR`, `ADRP`)"
+
+# Inventory row 35: FP/ASIMD data-processing is emitted only incidentally
+# (no live `CostRule::Neon` site exists today). The coarse row stays and is
+# **not** expanded into the §3.19-§3.21 group set (freeze 1630). Its value
+# is the over-cost direction for an unemitted row: the v2 table said 1,
+# which is the cheapest FP/ASIMD op there is.
+[latency.neon]
+lat = 4
+thru_num = 1
+thru_den = 1
+ports = "V0,V1"
+tier = "T1"
+source = "SOG §3.19-§3.21 FP/ASIMD data-processing, kept as one coarse row per dimension inventory row 35"
+note = "no live emit site; do not expand into per-group FP/ASIMD rows"
+
+# ---------------------------------------------------------------------------
+# [geometry] — real cache and TLB geometry, plus the pinned leaf latencies.
+#
+# The tinymembench random single-read curve on this exact board inflects at
+# 64 KiB, 512 KiB and 2 MiB, independently confirming L1D / L2 / L3 sizes on
+# BCM2712 rather than on generic A76 silicon. That curve is what replaces
+# hardware validation (freeze 1631).
+#
+# Each leaf latency is the **pessimistic** end of its bracket (decision
+# 1604 / 1609) and names its sweep dimension.
+# ---------------------------------------------------------------------------
+
+[geometry.l1i_bytes]
+value = 65536
+tier = "T2"
+source = "Cortex-A76 Core TRM 100798 — 64 KiB L1I, VIPT, pseudo-LRU"
+
+[geometry.l1i_line_bytes]
+value = 64
+tier = "T2"
+source = "Cortex-A76 Core TRM 100798"
+
+[geometry.l1i_ways]
+value = 4
+tier = "T2"
+source = "Cortex-A76 Core TRM 100798 — 4-way"
+
+[geometry.l1d_bytes]
+value = 65536
+tier = "T2"
+source = "Cortex-A76 Core TRM 100798 — 64 KiB L1D; confirmed on this board by the tinymembench curve (0.0 ns added through 64 KiB)"
+
+[geometry.l1d_line_bytes]
+value = 64
+tier = "T2"
+source = "Cortex-A76 Core TRM 100798"
+
+[geometry.l1d_ways]
+value = 4
+tier = "T2"
+source = "Cortex-A76 Core TRM 100798 — 4-way, pseudo-LRU (modelled as LRU; the approximation is named in the dump Assumptions by item F)"
+
+[geometry.l2_bytes]
+value = 524288
+tier = "T2"
+source = "Cortex-A76 Core TRM 100798 — 512 KiB per-core L2; confirmed by the tinymembench curve's inflection at 512 KiB"
+
+[geometry.l2_line_bytes]
+value = 64
+tier = "T2"
+source = "Cortex-A76 Core TRM 100798"
+
+[geometry.l2_ways]
+value = 8
+tier = "T2"
+source = "Cortex-A76 Core TRM 100798 — 8-way"
+
+# Strictly inclusive of L1D: an L1 miss that hits L2 is the `lat_l2` path,
+# and there is no victim path to model.
+[geometry.l2_inclusive_of_l1d]
+value = 1
+tier = "T2"
+source = "Cortex-A76 Core TRM 100798 — L2 is strictly inclusive of L1D"
+
+[geometry.l3_bytes]
+value = 2097152
+tier = "T2"
+source = "DSU TRM 100453 cache table + BCM2712 spec — 2 MiB shared L3; confirmed by the tinymembench curve's inflection at 2 MiB"
+
+[geometry.l3_line_bytes]
+value = 64
+tier = "T2"
+source = "DSU TRM 100453 cache table — all configurations use 64 B lines"
+
+[geometry.l3_ways]
+value = 16
+tier = "T2"
+source = "DSU TRM cache table — the 256 KiB / 512 KiB / 1 MiB / 2 MiB / 4 MiB configs are 16-way (1.5 MiB and 3 MiB are 12-way); BCM2712's 2 MiB is therefore 16-way"
+
+[geometry.itlb_l1_entries]
+value = 48
+tier = "T2"
+source = "Cortex-A76 Core TRM 100798 — 48-entry fully associative L1 I-TLB, 4 KiB-32 MiB pages"
+
+[geometry.dtlb_l1_entries]
+value = 48
+tier = "T2"
+source = "Cortex-A76 Core TRM 100798 — 48-entry fully associative L1 D-TLB, 4 KiB-512 MiB pages"
+
+[geometry.tlb_l2_entries]
+value = 1280
+tier = "T2"
+source = "Cortex-A76 Core TRM 100798 — 1280-entry multi-granule L2 TLB"
+
+[geometry.tlb_l2_ways]
+value = 5
+tier = "T2"
+source = "Cortex-A76 Core TRM 100798 — 5-way"
+
+# T1 gives 4 outright (SOG §3.9), and the T3 curve reports 0.0 ns *added*
+# through 64 KiB, so there is nothing to bracket.
+[geometry.lat_l1d_hit]
+value = 4
+tier = "T1"
+source = "SOG §3.9 load register, immed — 4 cycles on an L1D hit"
+
+[geometry.lat_l2]
+value = 11
+tier = "T4"
+source = "7-cpu.com A76 (11) against two sources reporting 9, bracketing the tinymembench curve's ~7-9 cycles added at 128 KiB-512 KiB"
+bracket_lo = 9
+bracket_hi = 11
+sweep = "l2_latency"
+
+[geometry.lat_l3]
+value = 35
+tier = "T4"
+source = "7-cpu.com A76 (35) against a vendor-adjacent 26-31 load-to-use for a 2-4 MiB DSU L3, bracketing the tinymembench curve's ~24-33 cycles added at 1-2 MiB"
+bracket_lo = 26
+bracket_hi = 35
+sweep = "l3_latency"
+
+# The tinymembench tail (118.7 ns saturated at 64 MiB) is DRAM **plus** a
+# page walk, because random single-read over 64 MiB with 4 KiB pages
+# overflows the 1280-entry L2 TLB. For a cost model that is the realistic
+# and conservative figure, so it is used and labelled rather than
+# corrected — and it is also the only bracket the model has on TLB walk
+# cost (see [sweep.tlb_walk_cost]).
+[geometry.lat_dram]
+value = 347
+tier = "T4"
+source = "7-cpu.com A76 (11 cycles + 140 ns ≈ 347) against the tinymembench curve's saturated ~289 cycles, which includes a page walk"
+bracket_lo = 289
+bracket_hi = 347
+sweep = "dram_latency"
+
+# ---------------------------------------------------------------------------
+# [branch] — the mispredict penalty plus SOG §4.8's front-end rules.
+#
+# The penalty may be real here, where the v2 table had to pin 0, only
+# because block-grain `f` (item C) gives every branch a taken ratio: item H
+# charges the penalty **scaled by bias**, so a well-predicted branch costs
+# ~0 whatever this number is. That is what resolves decision 1609's
+# ambiguity for this row and lets it pin the high end honestly.
+# ---------------------------------------------------------------------------
+
+[branch.mispredict_penalty]
+value = 14
+tier = "T4"
+source = "7-cpu.com measured + A76 microarchitecture write-ups agree on 14; a minority secondary source says 11"
+bracket_lo = 11
+bracket_hi = 14
+sweep = "mispredict_penalty"
+
+[branch.max_branches_per_32b]
+value = 4
+tier = "T1"
+source = "SOG §4.8 — avoid more than 4 branches per aligned 32-byte region"
+
+[branch.region_bytes]
+value = 2097152
+tier = "T1"
+source = "SOG §4.8 — keep a branch and its target within the same 2 MiB region"
+
+[branch.target_align_bytes]
+value = 32
+tier = "T1"
+source = "SOG §4.8 — align branch targets to 32 B"
+
+[branch.entry_align_bytes]
+value = 32
+tier = "T1"
+source = "SOG §4.8 — align subroutine entries to 32 B"
+
+[branch.loop_fit_bytes]
+value = 32
+tier = "T1"
+source = "SOG §4.8 — a loop of <= 32 instruction bytes should sit inside one aligned 32-byte region"
+
+# ---------------------------------------------------------------------------
+# [align] — SOG §4.5's two boundaries. The **mechanism** is T1 and pinned
+# here; the **magnitude** is unpriced (§4.5 names the boundaries and says
+# to avoid crossing them, but gives no cycle count), so the magnitudes are
+# T5 and live in the sweep box, not here. wrela's fixed frame uses
+# 8-byte-multiple slots, so both terms are statically decidable from the
+# frame layout — a rare alignment term needing no dynamic information.
+# ---------------------------------------------------------------------------
+
+[align.load_line_bytes]
+value = 64
+tier = "T1"
+source = "SOG §4.5 — avoid a load crossing a 64 B cache-line boundary; magnitude in [sweep.load_line_cross_penalty]"
+
+[align.store_boundary_bytes]
+value = 16
+tier = "T1"
+source = "SOG §4.5 — avoid a store crossing a 16 B boundary; magnitude in [sweep.store_boundary_cross_penalty]"
+
+# ---------------------------------------------------------------------------
+# [crosscore] — the barrier / snoop / ordered-access / system terms.
+#
+# T5 **by absence**: verified this pass, the SOG contains no barrier
+# (`DMB`/`DSB`/`ISB`), no load/store-exclusive, no system-register and no
+# prefetch instruction entry anywhere in its 46 pages — its instruction
+# tables run §3.3-§3.21 and its special considerations §4.1-§4.12 contain
+# no barrier section. Under decision 1602 these therefore **cannot be
+# pinned at all**. This section declares each term and names its sweep
+# dimension; it carries no magnitude, and the parser refuses one.
+#
+# That is uncomfortable in a specific way worth leaving written down: for a
+# message-passing machine on three cores, cross-core publish/acquire cost
+# is plausibly the single most consequential thing this ruler could
+# measure, and it is exactly what the vendor optimization guide does not
+# price. The v2 table asserted `barrier = 1` and `system = 1` with nothing
+# behind either. Item G implements the charge; item D's job is to make it
+# impossible to pin.
+#
+# `base` names the `[latency]` row a term is an increment **on**; a term
+# with no `base` is charged as its swept value outright.
+# ---------------------------------------------------------------------------
+
+[crosscore.dmb]
+rule = "barrier"
+sweep = "dmb_cost"
+tier = "T5"
+mechanism = "SOG §4.10 / ARM ARM: `DMB ishst` / `DMB ishld` order the inner-shareable domain; four `@dmb` sites at cross-core publish/acquire (stdlib/core/runtime.wr:1290, :1319 ishst; :1362, :1391 ishld)"
+source = "unpriced by absence: no barrier entry anywhere in SOG §3.3-§3.21 or §4.1-§4.12"
+
+[crosscore.snoop]
+sweep = "snoop_cost"
+tier = "T5"
+mechanism = "DSU TRM 100453: a load of a line another core wrote is served through the DSU. Local-vs-remote is a **static** classification from sealed placement (`PlacementTable::core_of`, decision 1603), which is the one place this model can be better than a general-purpose compiler's."
+source = "unpriced by absence: no coherency / snoop latency in any source found"
+
+[crosscore.sysreg_flush]
+rule = "system"
+sweep = "sysreg_flush_cost"
+tier = "T5"
+mechanism = "SOG §4.10 gives, per register, whether access is non-speculative, in-order, or carries a flush side-effect — T1 for *which*, unpriced for cost. wrela's `CostRule::System` word today is the async-dispatch `BRK` trap."
+source = "unpriced by absence: no system-register access cost in SOG §3.3-§3.21 or §4.1-§4.12"
+
+# The gap the plan's dimension inventory did not have a row for until item
+# D added one: codegen emits `STLR` (6 sites) and `LDAR` (4 sites) as the
+# ordered accesses paired with the four `@dmb` sites. These are **not** the
+# load/store-**exclusives** inventory row 34 rules out (`enc_ldaxr_w` is
+# genuinely unused), and the SOG prices them nowhere — so they are T5 by
+# absence exactly like `DMB`, and freeze 1632 requires them to have a row
+# rather than be omitted by oversight.
+[crosscore.load_acquire]
+rule = "load_acquire"
+base = "load"
+sweep = "load_acquire_cost"
+tier = "T5"
+mechanism = "`LDAR` — the acquire half of cross-core publish/acquire; ordered against later accesses"
+source = "unpriced by absence: no load-acquire entry in SOG §3.9 or anywhere in §3.3-§3.21"
+
+[crosscore.store_release]
+rule = "store_release"
+base = "store"
+sweep = "store_release_cost"
+tier = "T5"
+mechanism = "`STLR` — the release half of cross-core publish/acquire; ordered against earlier accesses"
+source = "unpriced by absence: no store-release entry in SOG §3.10 or anywhere in §3.3-§3.21"
+
+# ---------------------------------------------------------------------------
+# [sweep.<dimension>] — the residual-uncertainty box (decision 1604).
+#
+# A candidate must not lose at **any** point of this box (∀); no `∃`-form
+# win predicate exists in the API, because that form is a search for a
+# flattering assumption rather than a gate (freeze 1624). Item J owns the
+# sweep; item L owns the per-dimension assertion that each pinned value
+# really is its bracket's pessimistic end.
+#
+# `pessimistic` names which end over-costs, and the parser asserts `pinned`
+# equals it. `removal_sensitive = true` marks the family where a larger
+# charge over-credits *deletion* (freeze 1633): those must pin the low end
+# and must carry an `ambiguity` note. Cardinality at bracket endpoints
+# (2 points per dimension) is 2^17 = 131072 points.
+#
+# `[transitional]` knobs are deliberately **not** sweep dimensions: they
+# are unsourced v2 holdovers that item F deletes outright, not residual
+# uncertainty about the machine.
+# ---------------------------------------------------------------------------
+
+[sweep.l2_latency]
+lo = 9
+hi = 11
+pinned = 11
+pessimistic = "hi"
+tier = "T4"
+source = "7-cpu.com A76 (11) vs two sources reporting 9; the tinymembench curve on this board brackets ~7-9 added"
+
+[sweep.l3_latency]
+lo = 26
+hi = 35
+pinned = 35
+pessimistic = "hi"
+tier = "T4"
+source = "vendor-adjacent 26-31 load-to-use for a 2-4 MiB DSU L3 vs 7-cpu.com's 35; the tinymembench curve brackets ~24-33 added"
+
+[sweep.dram_latency]
+lo = 289
+hi = 347
+pinned = 347
+pessimistic = "hi"
+tier = "T4"
+source = "tinymembench saturated ~289 cycles (DRAM + page walk) vs 7-cpu.com's ~347"
+
+[sweep.mispredict_penalty]
+lo = 11
+hi = 14
+pinned = 14
+pessimistic = "hi"
+tier = "T4"
+source = "7-cpu.com measured + A76 write-ups agree 14; a minority secondary source says 11"
+
+[sweep.divide_x_latency]
+lo = 5
+hi = 20
+pinned = 20
+pessimistic = "hi"
+tier = "T1"
+source = "SOG §3.6 divide, X-form — 5-20 cycles with data-dependent early termination"
+
+[sweep.range_cross_penalty]
+lo = 1
+hi = 6
+pinned = 6
+pessimistic = "hi"
+tier = "T4"
+source = "range-crossing penalty: 6 cycles for 64-2048 B, 1 cycle at 4096 B"
+
+# Mechanism is T1 (§3.10: stores are buffered and committed in the
+# background, so a load of a slot a recent store wrote is satisfied by
+# forwarding) but the cost is unpriced. This is the **dominant pattern in a
+# spill-everything frame**, so it matters more here than on most machines.
+# Bracket: at least 1 cycle (it occupies its pipe) and no better than an
+# L1D hit (4) — forwarding cannot be assumed to beat the L1 path.
+[sweep.store_to_load_forwarding]
+lo = 1
+hi = 4
+pinned = 4
+pessimistic = "hi"
+tier = "T5"
+source = "mechanism SOG §3.10; magnitude unpriced by every source found. Bracket is an engineering bound, not a citation: >= 1 cycle, and no cheaper than the pinned L1D hit of 4"
+
+# The T3 curve's tail is the only bracket the model has: 118.7 ns saturated
+# at 64 MiB is DRAM **plus** a walk (4 KiB pages over 64 MiB overflow the
+# 1280-entry L2 TLB) and works out to ~289 cycles, while 7-cpu.com's
+# DRAM-alone figure is ~347. The record therefore shows no *positive*
+# residual at all, so the honest low end is 0 and the honest high end is
+# the largest residual those two figures can bracket: 347 - 289 = 58.
+[sweep.tlb_walk_cost]
+lo = 0
+hi = 58
+pinned = 58
+pessimistic = "hi"
+tier = "T5"
+source = "derived from the tinymembench Pi 5 tail (~289 cycles including a walk) against 7-cpu.com DRAM (~347): 347 - 289 = 58 is the largest residual the record brackets"
+
+# DECISION 1609 AMBIGUITY, RECORDED RATHER THAN RESOLVED SILENTLY. A large
+# `DMB` charge over-costs a program that uses barriers (safe) **and**
+# over-credits deleting one (unsafe). Barriers are correctness-load-bearing
+# — `machine.cross-core.publish-acquire-barrier` is already a known-risk
+# gap — so freeze 1633 makes "removal must never be profitable" the
+# binding constraint and the pinned point takes the **low** end. The
+# ∀ sweep still visits `hi`, and item G additionally installs the refusal
+# as a hard rule in the win oracle rather than as a hopeful coefficient.
+[sweep.dmb_cost]
+lo = 1
+hi = 64
+pinned = 1
+pessimistic = "lo"
+removal_sensitive = true
+ambiguity = "a larger charge over-credits barrier removal, which freeze 1633 forbids outright; the safe end for a term whose removal is the win is the small one, and the hard refusal lives in item G's win oracle"
+tier = "T5"
+source = "unpriced by absence (no barrier entry in the SOG). Bracket is an engineering bound, not a citation: >= 1 cycle for the word itself, and <= 64 — a barrier ordering against the shared DSU cannot plausibly be cheaper than an L3 access (35) and no source prices it above 64"
+
+[sweep.snoop_cost]
+lo = 0
+hi = 312
+pinned = 312
+pessimistic = "hi"
+tier = "T5"
+source = "unpriced by absence. Bracket is an engineering bound: 0 (a remote line already in L3 costs nothing extra) to 312 — a remote load is at worst the DRAM path, so the extra over L3 is bounded by 347 - 35"
+
+# Same removal-sensitivity as `dmb_cost`, one step further: wrela's
+# `CostRule::System` word is the async-dispatch `BRK` trap, and charging it
+# credits *deleting* a trap. "Emit every check" is core doctrine
+# (`compiler.codegen.naive-locked`), so the pinned point takes the low end.
+[sweep.sysreg_flush_cost]
+lo = 1
+hi = 64
+pinned = 1
+pessimistic = "lo"
+removal_sensitive = true
+ambiguity = "charging a flush credits removing the trap or system access that needs it; `compiler.codegen.naive-locked` makes emit-every-check doctrine, so the safe pinned end is the small one"
+tier = "T5"
+source = "unpriced by absence (SOG §4.10 gives which registers flush, never what a flush costs). Bracket is an engineering bound: >= 1 cycle, <= 64 by the same reasoning as `dmb_cost`"
+
+[sweep.load_acquire_cost]
+lo = 0
+hi = 64
+pinned = 0
+pessimistic = "lo"
+removal_sensitive = true
+ambiguity = "`LDAR` is the acquire half of cross-core publish/acquire; charging its ordering credits deleting it, which is the same correctness hazard freeze 1633 names for `DMB`"
+tier = "T5"
+source = "unpriced by absence: no load-acquire entry in the SOG. Bracket is an engineering bound: 0 extra over an ordinary load, up to 64 by the `dmb_cost` reasoning"
+
+[sweep.store_release_cost]
+lo = 0
+hi = 64
+pinned = 0
+pessimistic = "lo"
+removal_sensitive = true
+ambiguity = "`STLR` is the release half of cross-core publish/acquire; charging its ordering credits deleting it, which is the same correctness hazard freeze 1633 names for `DMB`"
+tier = "T5"
+source = "unpriced by absence: no store-release entry in the SOG. Bracket is an engineering bound: 0 extra over an ordinary store, up to 64 by the `dmb_cost` reasoning"
+
+# A **capacity**, so the pessimistic end is the *small* one: less cache
+# means more misses means more cost. The housekeeping Linux core shares
+# BCM2712's 2 MiB L3 (inventory row 38), so the effective share is
+# somewhere between half and all of it.
+[sweep.effective_l3_bytes]
+lo = 1048576
+hi = 2097152
+pinned = 1048576
+pessimistic = "lo"
+tier = "T5"
+source = "unpriced: no source apportions BCM2712's 2 MiB L3 between the wrela cores and the housekeeping Linux core. Bracket is an engineering bound: half the cache to all of it"
+
+[sweep.load_line_cross_penalty]
+lo = 1
+hi = 4
+pinned = 4
+pessimistic = "hi"
+tier = "T5"
+source = "mechanism SOG §4.5 (avoid a load crossing a 64 B line); magnitude unpriced. Bracket is an engineering bound: >= 1 cycle, and no worse than a second L1D access (4)"
+
+[sweep.store_boundary_cross_penalty]
+lo = 1
+hi = 4
+pinned = 4
+pessimistic = "hi"
+tier = "T5"
+source = "mechanism SOG §4.5 (avoid a store crossing a 16 B boundary); magnitude unpriced. Bracket is an engineering bound: >= 1 cycle, and no worse than a second L1D access (4)"
+
+# The residual the v2 table hid inside `call = 4` / `abort_val = 3`:
+# prologue/epilogue, pipeline drain, anything beyond the `BL` word itself.
+# Removal-sensitive because deleting a call is inlining: a large residual
+# over-credits inlining, a small one over-credits outlining, and neither
+# direction may be favoured at the pinned point. The ∀ sweep is the gate.
+[sweep.call_overhead]
+lo = 0
+hi = 16
+pinned = 0
+pessimistic = "lo"
+removal_sensitive = true
+ambiguity = "deleting a call is inlining and adding one is outlining; a large residual over-credits the first and a small one the second, so the pinned point favours neither and decision 1604's ∀ sweep decides"
+tier = "T5"
+source = "unpriced: the SOG prices `BL` (1 cycle, ports I+B) and nothing beyond it. Bracket is an engineering bound: 0 to 16 cycles of callee-side prologue/epilogue and drain"
+
+# ---------------------------------------------------------------------------
+# [transitional] — the quarantine. THREE KNOBS WITH NO v3 SOURCE.
+#
+# These are v2 scorer holdovers with no published-record basis at all. They
+# survive only because `cost/score.rs`'s reuse-window memory model still
+# reads them, and **plans/M20.md item F deletes this whole section** when it
+# replaces that model with reuse distance over real capacities and
+# associativity. Item F must delete the section, not migrate it.
+#
+# They are kept here, in a section that says what it is, rather than
+# smuggled into `[geometry]` where they would read as sourced geometry.
+# Every row must be tier T5 with exactly the holdover source string and
+# `deleted_by = "item F"` — the parser rejects anything else in here, which
+# is how this section stays a quarantine instead of becoming a loophole in
+# freeze 1629.
+# ---------------------------------------------------------------------------
+
+[transitional.mem_reuse_window]
+value = 8
+tier = "T5"
+source = "none — v2 scorer holdover"
+deleted_by = "item F"
+note = "count of recent Load/Store ops in this fn, not bytes of cache; superseded by reuse distance at 64 B line grain"
+
+[transitional.mem_working_set_cap]
+value = 4
+tier = "T5"
+source = "none — v2 scorer holdover"
+deleted_by = "item F"
+note = "distinct keys tolerated in the window before the surcharge; superseded by real capacity + associativity"
+
+[transitional.working_set_surcharge]
+value = 2
+tier = "T5"
+source = "none — v2 scorer holdover"
+deleted_by = "item F"
+note = "charged per distinct key over the cap. Item F keeps it only if a unit shows it still adds ranking information once reuse distance exists; otherwise it goes with the section"

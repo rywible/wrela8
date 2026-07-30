@@ -1,12 +1,13 @@
-Cost version=2 ports.alu=2 ports.mem=2 max_issue_per_cycle=2 branch_penalty=0 mem_reuse_window=8 mem_working_set_cap=4 digest=ca6c6ea1a27ab060 ghz=2.4 workloads_digest=ad0a87410c842eff
+Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reorder_window=128 digest=3d1fb3009124ded0 provenance=b2a8503fa4d07439 ghz=2.4 workloads_digest=ad0a87410c842eff
+  Provenance T1=38 T2=19 T3=0 T4=10 T5=19 rows=86
   Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method valid_for=static_shape_opts workload=flat
   Composition sum_of_fn_schedules=1
-  Total proxy_cycles=79
-  Workload name=flat proxy_cycles=79
-  Owner name=app proxy_cycles=79
+  Total proxy_cycles=143
+  Workload name=flat proxy_cycles=143
+  Owner name=app proxy_cycles=143
   Owner name=runtime proxy_cycles=0
   Owner name=driver proxy_cycles=0
-  Fn key=add_one owner=app proxy_cycles=25
+  Fn key=add_one owner=app proxy_cycles=44
     Term rule=abort count=1
     Term rule=adrp count=1
     Term rule=alu count=6
@@ -14,18 +15,19 @@ Cost version=2 ports.alu=2 ports.mem=2 max_issue_per_cycle=2 branch_penalty=0 me
     Term rule=load count=4
     Term rule=mov_wide count=2
     Term rule=store count=6
-  Fn key=combo owner=app proxy_cycles=28
+  Fn key=combo owner=app proxy_cycles=50
     Term rule=alu count=2
     Term rule=branch count=3
     Term rule=call count=2
     Term rule=load count=4
     Term rule=store count=4
-  Fn key=double owner=app proxy_cycles=26
+  Fn key=double owner=app proxy_cycles=49
     Term rule=abort count=1
     Term rule=adrp count=1
-    Term rule=alu count=7
+    Term rule=alu count=6
     Term rule=branch count=4
     Term rule=load count=4
     Term rule=mov_wide count=2
     Term rule=mul count=1
+    Term rule=mul_high count=1
     Term rule=store count=6

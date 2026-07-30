@@ -903,7 +903,7 @@ fn dump(args: &[String]) -> ExitCode {
     let mut block_count = false;
     // plans/M19.md item C / freeze 1401: default release.
     let mut mode = wrela_compiler::opts::CompileMode::Release;
-    let mut ghz = wrela_compiler::cost::DEFAULT_GHZ;
+    let mut ghz = wrela_compiler::cost::profile_ghz();
     for a in args {
         if let Some(s) = a.strip_prefix("--stage=") {
             stage = Some(s.to_string());
@@ -1291,7 +1291,7 @@ fn dump(args: &[String]) -> ExitCode {
         // root-only lower never sees them. Builds a whole-closure
         // LayoutCtx and dumps the merged codegen program.
         // plans/M18.md items D+E: `--stage=cost` shares this pipeline, then
-        // scores with `wrela-cost-v1` instead of printing asm text.
+        // scores with `bench/a76-pi5.toml` instead of printing asm text.
         "asm" | "cost" => {
             let dump_cost = stage == "cost";
             match lex_result {
@@ -1691,7 +1691,7 @@ fn test_cmd(args: &[String]) -> ExitCode {
     let mut block_count = false;
     // plans/M19.md item C / freeze 1401: default release.
     let mut mode = wrela_compiler::opts::CompileMode::Release;
-    let mut _ghz = wrela_compiler::cost::DEFAULT_GHZ;
+    let mut _ghz = wrela_compiler::cost::profile_ghz();
     let mut i = 0;
     while i < args.len() {
         if args[i] == "--vmm" {
@@ -2124,7 +2124,7 @@ fn build_cmd(args: &[String]) -> ExitCode {
     let mut block_count = false;
     // plans/M19.md item C / freeze 1401: default release.
     let mut mode = wrela_compiler::opts::CompileMode::Release;
-    let mut ghz = wrela_compiler::cost::DEFAULT_GHZ;
+    let mut ghz = wrela_compiler::cost::profile_ghz();
     let mut i = 0;
     while i < args.len() {
         let a = &args[i];

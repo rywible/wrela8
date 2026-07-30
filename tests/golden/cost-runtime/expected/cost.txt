@@ -1,77 +1,79 @@
-Cost version=2 ports.alu=2 ports.mem=2 max_issue_per_cycle=2 branch_penalty=0 mem_reuse_window=8 mem_working_set_cap=4 digest=ca6c6ea1a27ab060 ghz=2.4 workloads_digest=ad0a87410c842eff
+Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reorder_window=128 digest=3d1fb3009124ded0 provenance=b2a8503fa4d07439 ghz=2.4 workloads_digest=ad0a87410c842eff
+  Provenance T1=38 T2=19 T3=0 T4=10 T5=19 rows=86
   Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method valid_for=static_shape_opts workload=flat
   Composition sum_of_fn_schedules=1
-  Total proxy_cycles=2430
-  Workload name=flat proxy_cycles=2430
-  Owner name=app proxy_cycles=886
-  Owner name=runtime proxy_cycles=1544
+  Total proxy_cycles=4511
+  Workload name=flat proxy_cycles=4511
+  Owner name=app proxy_cycles=1582
+  Owner name=runtime proxy_cycles=2929
   Owner name=driver proxy_cycles=0
-  Fn key=__wrela_abort owner=runtime proxy_cycles=134
+  Fn key=__wrela_abort owner=runtime proxy_cycles=261
     Term rule=alu count=5
     Term rule=branch count=5
     Term rule=call count=6
     Term rule=load count=16
     Term rule=mov_wide count=4
     Term rule=store count=21
-  Fn key=__wrela_abort_tail owner=runtime proxy_cycles=8
+  Fn key=__wrela_abort_tail owner=runtime proxy_cycles=15
     Term rule=alu count=2
     Term rule=branch count=3
     Term rule=load count=1
     Term rule=store count=1
-  Fn key=__wrela_abort_val owner=runtime proxy_cycles=224
+  Fn key=__wrela_abort_val owner=runtime proxy_cycles=443
     Term rule=alu count=7
     Term rule=branch count=5
     Term rule=call count=9
     Term rule=load count=27
     Term rule=mov_wide count=4
     Term rule=store count=33
-  Fn key=__wrela_console_append_bytes owner=runtime proxy_cycles=181
+  Fn key=__wrela_console_append_bytes owner=runtime proxy_cycles=377
     Term rule=alu count=12
     Term rule=branch count=12
     Term rule=call count=1
     Term rule=load count=29
     Term rule=mov_wide count=7
     Term rule=store count=23
-  Fn key=__wrela_console_append_line_buf owner=runtime proxy_cycles=112
+  Fn key=__wrela_console_append_line_buf owner=runtime proxy_cycles=236
     Term rule=alu count=9
     Term rule=branch count=9
     Term rule=call count=1
     Term rule=load count=22
     Term rule=mov_wide count=6
     Term rule=store count=18
-  Fn key=__wrela_fmt_dec owner=runtime proxy_cycles=561
+  Fn key=__wrela_fmt_dec owner=runtime proxy_cycles=974
     Term rule=abort count=4
     Term rule=abort_val count=16
     Term rule=adrp count=20
-    Term rule=alu count=106
+    Term rule=alu count=104
     Term rule=branch count=30
     Term rule=call count=1
     Term rule=load count=87
     Term rule=mov_wide count=83
     Term rule=mul count=8
     Term rule=store count=120
-  Fn key=__wrela_line_begin owner=runtime proxy_cycles=36
+    Term rule=udiv count=2
+  Fn key=__wrela_line_begin owner=runtime proxy_cycles=79
     Term rule=alu count=2
     Term rule=branch count=3
     Term rule=load count=5
     Term rule=mov_wide count=2
     Term rule=store count=5
-  Fn key=__wrela_line_commit owner=runtime proxy_cycles=280
+  Fn key=__wrela_line_commit owner=runtime proxy_cycles=529
     Term rule=abort count=2
     Term rule=abort_val count=4
     Term rule=adrp count=6
-    Term rule=alu count=41
+    Term rule=alu count=38
     Term rule=branch count=10
     Term rule=load count=49
     Term rule=mov_wide count=38
-    Term rule=mul count=2
+    Term rule=mul count=5
     Term rule=store count=58
-  Fn key=__wrela_runtime_probe owner=runtime proxy_cycles=8
+  Fn key=__wrela_runtime_probe owner=runtime proxy_cycles=15
     Term rule=alu count=2
     Term rule=branch count=3
     Term rule=load count=1
     Term rule=store count=1
-  Fn key=append_failed_literal owner=app proxy_cycles=254
+  Fn key=append_failed_literal owner=app proxy_cycles=384
     Term rule=abort_val count=14
     Term rule=adrp count=14
     Term rule=alu count=58
@@ -81,7 +83,7 @@ Cost version=2 ports.alu=2 ports.mem=2 max_issue_per_cycle=2 branch_penalty=0 me
     Term rule=mov_wide count=64
     Term rule=mul count=7
     Term rule=store count=59
-  Fn key=append_newline_literal owner=app proxy_cycles=50
+  Fn key=append_newline_literal owner=app proxy_cycles=84
     Term rule=abort_val count=2
     Term rule=adrp count=2
     Term rule=alu count=10
@@ -91,13 +93,13 @@ Cost version=2 ports.alu=2 ports.mem=2 max_issue_per_cycle=2 branch_penalty=0 me
     Term rule=mov_wide count=10
     Term rule=mul count=1
     Term rule=store count=11
-  Fn key=ascii_digit owner=app proxy_cycles=203
+  Fn key=ascii_digit owner=app proxy_cycles=426
     Term rule=alu count=22
     Term rule=branch count=33
     Term rule=load count=42
     Term rule=mov_wide count=21
     Term rule=store count=33
-  Fn key=copy_bytes_range owner=app proxy_cycles=176
+  Fn key=copy_bytes_range owner=app proxy_cycles=326
     Term rule=abort count=1
     Term rule=abort_val count=4
     Term rule=adrp count=5
@@ -107,7 +109,7 @@ Cost version=2 ports.alu=2 ports.mem=2 max_issue_per_cycle=2 branch_penalty=0 me
     Term rule=mov_wide count=16
     Term rule=mul count=1
     Term rule=store count=31
-  Fn key=copy_line_buf_range owner=app proxy_cycles=145
+  Fn key=copy_line_buf_range owner=app proxy_cycles=249
     Term rule=abort count=1
     Term rule=abort_val count=4
     Term rule=adrp count=5
@@ -117,14 +119,14 @@ Cost version=2 ports.alu=2 ports.mem=2 max_issue_per_cycle=2 branch_penalty=0 me
     Term rule=mov_wide count=20
     Term rule=mul count=2
     Term rule=store count=30
-  Fn key=finish_abort owner=app proxy_cycles=50
+  Fn key=finish_abort owner=app proxy_cycles=98
     Term rule=alu count=3
     Term rule=branch count=3
     Term rule=call count=1
     Term rule=load count=9
     Term rule=mov_wide count=5
     Term rule=store count=11
-  Fn key=probe_seed owner=app proxy_cycles=8
+  Fn key=probe_seed owner=app proxy_cycles=15
     Term rule=alu count=2
     Term rule=branch count=3
     Term rule=load count=1

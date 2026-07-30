@@ -41,13 +41,18 @@ pub struct FnCost {
 pub struct CostReport {
     pub version: u64,
     pub digest: String,
-    /// Copied from `CostTable` for the dump/report header (item D).
-    pub alu_ports: u64,
-    pub mem_ports: u64,
-    pub max_issue_per_cycle: u64,
-    pub branch_penalty: u64,
-    pub mem_reuse_window: u64,
-    pub mem_working_set_cap: u64,
+    /// Provenance digest over the tier mix (freeze 1629).
+    pub provenance: String,
+    /// Human-readable tier mix for the dump's own summary line.
+    pub provenance_summary: String,
+    /// Copied from `CostTable` for the dump/report header (plans/M20.md
+    /// item D). The v2 port / reuse-window fields are gone: they were v2
+    /// concepts, and their replacements land in items E / F / H.
+    pub profile: String,
+    pub pipelines: u64,
+    pub dispatch_mops: u64,
+    pub dispatch_uops: u64,
+    pub reorder_window: u64,
     /// Sum of per-fn schedule lengths (compositionality; dump header states it).
     /// Equals the `flat` workload row (`f≡1`).
     pub total_proxy_cycles: u64,
@@ -117,12 +122,13 @@ pub fn score_program(program: &CodegenProgram, table: &CostTable) -> Result<Cost
     Ok(CostReport {
         version: table.version,
         digest: table.table_digest(),
-        alu_ports: table.alu_ports,
-        mem_ports: table.mem_ports,
-        max_issue_per_cycle: table.max_issue_per_cycle,
-        branch_penalty: table.branch_penalty,
-        mem_reuse_window: table.mem_reuse_window,
-        mem_working_set_cap: table.mem_working_set_cap,
+        provenance: table.provenance_digest(),
+        provenance_summary: table.provenance_summary(),
+        profile: table.profile_name().to_string(),
+        pipelines: table.pipelines(),
+        dispatch_mops: table.dispatch_mops(),
+        dispatch_uops: table.dispatch_uops(),
+        reorder_window: table.reorder_window(),
         total_proxy_cycles,
         total_words,
         owner_totals,
@@ -214,7 +220,7 @@ fn score_words(
     let mut issues = 0u64;
     let mut max_retire = 0u64;
     let mut window: VecDeque<WinEntry> = VecDeque::new();
-    let win_cap = table.mem_reuse_window.max(1) as usize;
+    let win_cap = table.mem_reuse_window().max(1) as usize;
 
     for ew in code {
         *terms.entry(ew.rule.as_str().to_string()).or_insert(0) += 1;
@@ -315,20 +321,23 @@ fn check_mem_base_in_srcs(ew: &EmittedWord) -> Result<(), String> {
 }
 
 fn port_for(rule: CostRule) -> Port {
-    match rule {
-        // Adrp is address materialization (ALU-class); loads/stores alone
-        // take the mem port (integrity item B).
-        CostRule::Load | CostRule::Store => Port::Mem,
-        _ => Port::Alu,
+    // Adrp is address materialization (ALU-class); loads/stores alone take
+    // the mem port (integrity item B), the ordered accesses (`LDAR`/`STLR`)
+    // with them. Item E replaces this two-port split with the eight SOG
+    // pipelines and the real port letters.
+    if rule.is_load() || rule.is_store() {
+        Port::Mem
+    } else {
+        Port::Alu
     }
 }
 
 fn can_issue(port: Port, alu_used: u64, mem_used: u64, issues: u64, table: &CostTable) -> bool {
     let port_free = match port {
-        Port::Alu => alu_used < table.alu_ports,
-        Port::Mem => mem_used < table.mem_ports,
+        Port::Alu => alu_used < table.alu_ports(),
+        Port::Mem => mem_used < table.mem_ports(),
     };
-    port_free && issues < table.max_issue_per_cycle
+    port_free && issues < table.max_issue_per_cycle()
 }
 
 fn word_latency(
@@ -337,16 +346,23 @@ fn word_latency(
     window: &mut VecDeque<WinEntry>,
     win_cap: usize,
 ) -> Result<u64, String> {
+    // `LDAR` / `STLR` take the same memory path as their plain twins plus
+    // their own swept cross-core increment (0 at the canonical point);
+    // item G replaces the flat add with the placement-classified charge.
     let mut lat = match ew.rule {
         CostRule::Branch => table
             .latency(CostRule::Branch)
-            .saturating_add(table.branch_penalty),
-        CostRule::Load => load_latency(ew.mem, table, window),
-        CostRule::Store => store_latency(ew.mem, table, window, win_cap),
+            .saturating_add(table.branch_penalty()),
+        r if r.is_load() => {
+            load_latency(ew.mem, table, window).saturating_add(table.crosscore_extra(r))
+        }
+        r if r.is_store() => {
+            store_latency(ew.mem, table, window, win_cap).saturating_add(table.crosscore_extra(r))
+        }
         other => table.latency(other),
     };
 
-    if matches!(ew.rule, CostRule::Load) {
+    if ew.rule.is_load() {
         if let Some(m) = ew.mem {
             push_window(
                 window,
@@ -361,7 +377,7 @@ fn word_latency(
         // Missing MemRef: cold miss already charged; no window push.
     }
 
-    if matches!(ew.rule, CostRule::Store) {
+    if ew.rule.is_store() {
         // store_latency already invalidated + pushed; surcharge after.
         if ew.mem.is_some() {
             lat = lat.saturating_add(working_set_surcharge(window, table));
@@ -373,14 +389,14 @@ fn word_latency(
 
 fn load_latency(mem: Option<MemRef>, table: &CostTable, window: &VecDeque<WinEntry>) -> u64 {
     let Some(m) = mem else {
-        return table.mem.load_cold_miss;
+        return table.mem().load_cold_miss;
     };
     let hit = window.iter().any(|e| e.grants_hit && e.mem == m);
     match (m.class, hit) {
-        (MemClass::Stack, true) => table.mem.load_stack_hit,
-        (MemClass::Stack, false) => table.mem.load_stack_miss,
-        (MemClass::Cold, true) => table.mem.load_cold_hit,
-        (MemClass::Cold, false) => table.mem.load_cold_miss,
+        (MemClass::Stack, true) => table.mem().load_stack_hit,
+        (MemClass::Stack, false) => table.mem().load_stack_miss,
+        (MemClass::Cold, true) => table.mem().load_cold_hit,
+        (MemClass::Cold, false) => table.mem().load_cold_miss,
     }
 }
 
@@ -391,13 +407,13 @@ fn store_latency(
     win_cap: usize,
 ) -> u64 {
     let Some(m) = mem else {
-        return table.mem.store_cold;
+        return table.mem().store_cold;
     };
     // Invalidate all prior entries for this key, then push (WS only).
     window.retain(|e| e.mem != m);
     let lat = match m.class {
-        MemClass::Stack => table.mem.store_stack,
-        MemClass::Cold => table.mem.store_cold,
+        MemClass::Stack => table.mem().store_stack,
+        MemClass::Cold => table.mem().store_cold,
     };
     push_window(
         window,
@@ -439,8 +455,8 @@ fn working_set_surcharge(window: &VecDeque<WinEntry>, table: &CostTable) -> u64 
     keys.sort_unstable();
     keys.dedup();
     let distinct = keys.len() as u64;
-    let over = distinct.saturating_sub(table.mem_working_set_cap);
-    over.saturating_mul(table.mem.working_set_surcharge)
+    let over = distinct.saturating_sub(table.mem_working_set_cap());
+    over.saturating_mul(table.mem().working_set_surcharge)
 }
 
 fn src_ready(ew: &EmittedWord, ready: &[u64; 32]) -> u64 {
@@ -458,42 +474,14 @@ fn src_ready(ew: &EmittedWord, ready: &[u64; 32]) -> u64 {
 mod tests {
     use super::*;
     use crate::cost::rule::{CostRule, FlagEffect, MEM_SP_REG, MemRef};
-    use crate::cost::table::parse;
 
-    const TABLE: &str = r#"
-version = 2
-[ports]
-alu = 2
-mem = 2
-max_issue_per_cycle = 2
-branch_penalty = 3
-mem_reuse_window = 8
-mem_working_set_cap = 4
-[latency]
-alu = 1
-load = 12
-store = 2
-branch = 1
-call = 4
-abort = 1
-abort_val = 3
-mov_wide = 1
-mul = 3
-sdiv = 12
-udiv = 12
-adrp = 1
-barrier = 1
-system = 1
-neon = 1
-[mem]
-load_stack_hit = 1
-load_stack_miss = 4
-load_cold_hit = 4
-load_cold_miss = 12
-store_stack = 1
-store_cold = 2
-working_set_surcharge = 2
-"#;
+    /// plans/M20.md item D: the v2 inline fixture is gone. These units now
+    /// score against the **committed** `bench/a76-pi5.toml`, so a profile
+    /// edit that breaks the scoreboard shows up here rather than only in a
+    /// golden. Items E / F / H replace this scoreboard outright.
+    fn table() -> CostTable {
+        crate::cost::table::load_default().expect("bench/a76-pi5.toml")
+    }
 
     fn word(rule: CostRule, dst: Option<u8>, srcs: &[u8]) -> EmittedWord {
         EmittedWord::new(0, String::new(), rule, dst, srcs)
@@ -533,7 +521,7 @@ working_set_surcharge = 2
 
     #[test]
     fn dependent_chain_longer_than_independent_pair() {
-        let table = parse(TABLE).expect("table");
+        let table = table();
         let dependent = prog(
             "dep",
             vec![
@@ -560,7 +548,7 @@ working_set_surcharge = 2
 
     #[test]
     fn eliding_load_use_shrinks_total() {
-        let table = parse(TABLE).expect("table");
+        let table = table();
         let with_load = prog(
             "f",
             vec![load_stack(1, 0), word(CostRule::Alu, Some(2), &[1, 1])],
@@ -584,7 +572,7 @@ working_set_surcharge = 2
 
     #[test]
     fn empty_fn_is_zero() {
-        let table = parse(TABLE).expect("table");
+        let table = table();
         let p = prog("empty", Vec::new());
         let r = score_program(&p, &table).expect("score");
         assert_eq!(r.total_proxy_cycles, 0);
@@ -598,7 +586,7 @@ working_set_surcharge = 2
     /// `words` is the emitted word count and equals Σ Terms.
     #[test]
     fn words_equals_word_count_and_term_sum() {
-        let table = parse(TABLE).expect("table");
+        let table = table();
         let p = prog(
             "f",
             vec![
@@ -619,7 +607,7 @@ working_set_surcharge = 2
     /// strictly more than 5 distinct, which costs more than at-cap.
     #[test]
     fn working_set_surcharge_scales_with_overflow() {
-        let table = parse(TABLE).expect("table");
+        let table = table();
         // Serial chain so every load's surcharge lands on the critical path.
         fn chain(offsets: &[u64]) -> Vec<EmittedWord> {
             let mut code = Vec::new();
@@ -658,7 +646,7 @@ working_set_surcharge = 2
     #[test]
     fn dead_word_never_lowers_schedule() {
         use crate::encode::{Cond, enc_b, enc_b_cond};
-        let table = parse(TABLE).expect("table");
+        let table = table();
 
         let cases: Vec<(&str, Vec<EmittedWord>)> = vec![
             ("empty", Vec::new()),
@@ -719,7 +707,7 @@ working_set_surcharge = 2
 
     #[test]
     fn score_sets_owner_from_classify() {
-        let table = parse(TABLE).expect("table");
+        let table = table();
         let code = vec![word(CostRule::Alu, Some(1), &[0, 0])];
         let mut fns = BTreeMap::new();
         fns.insert(
@@ -766,30 +754,36 @@ working_set_surcharge = 2
         );
     }
 
+    /// plans/M20.md item D: the report carries the **profile's** identity —
+    /// pipeline set, dispatch constraints, bounded reorder window, and both
+    /// digests — not the v2 port / reuse-window knobs.
     #[test]
-    fn report_copies_port_knobs_from_table() {
-        let table = parse(TABLE).expect("table");
+    fn report_copies_profile_identity_from_table() {
+        let table = table();
         let r = score_program(
             &prog("f", vec![word(CostRule::Alu, Some(1), &[0, 0])]),
             &table,
         )
         .expect("score");
-        assert_eq!(r.version, 2);
-        assert_eq!(r.alu_ports, 2);
-        assert_eq!(r.mem_ports, 2);
-        assert_eq!(r.max_issue_per_cycle, 2);
-        assert_eq!(r.branch_penalty, 3);
-        assert_eq!(r.mem_reuse_window, 8);
-        assert_eq!(r.mem_working_set_cap, 4);
+        assert_eq!(r.version, 3);
+        assert_eq!(r.profile, "a76-pi5");
+        assert_eq!(r.pipelines, 8);
+        assert_eq!(r.dispatch_mops, 4);
+        assert_eq!(r.dispatch_uops, 8);
+        assert_eq!(r.reorder_window, 128);
         assert_eq!(r.digest, table.table_digest());
+        assert_eq!(r.provenance, table.provenance_digest());
+        assert_eq!(r.provenance_summary, table.provenance_summary());
     }
 
-    /// max_issue=2 caps alu+mem: three independent mem ops need a second cycle.
+    /// Two AGUs cap mem issue: three independent mem ops need a second
+    /// cycle even though `dispatch_uops` is now 8 (`mem_ports`, derived
+    /// from `[pipelines] port_l` = pipes 5-6, is the binding constraint).
     #[test]
-    fn max_issue_caps_mem_dual_issue() {
-        let table = parse(TABLE).expect("table");
-        // Three independent cold loads: mem_ports=2 and max_issue=2 →
-        // two issue at cycle 0, third at cycle 1. Retire = 1+12 = 13.
+    fn mem_ports_cap_mem_dual_issue() {
+        let table = table();
+        // Three independent cold loads: mem_ports=2 → two issue at cycle 0,
+        // the third at cycle 1. Retire = 1 + load_cold_miss(35) = 36.
         let three = prog(
             "f",
             vec![
@@ -799,18 +793,18 @@ working_set_surcharge = 2
             ],
         );
         let r = score_program(&three, &table).expect("score");
-        assert_eq!(r.total_proxy_cycles, 13);
-        // Two loads finish in one cycle: retire = 12.
+        assert_eq!(r.total_proxy_cycles, 36);
+        // Two loads finish in one cycle: retire = 35.
         let two = prog("f", vec![load_cold_unique(1, 0), load_cold_unique(2, 1)]);
         let r2 = score_program(&two, &table).expect("score");
-        assert_eq!(r2.total_proxy_cycles, 12);
+        assert_eq!(r2.total_proxy_cycles, 35);
         assert!(r.total_proxy_cycles > r2.total_proxy_cycles);
     }
 
     #[test]
     fn alu_and_mem_can_dual_issue_under_cap() {
-        let table = parse(TABLE).expect("table");
-        // Independent alu + cold load: both cycle 0; retire = max(1, 12) = 12.
+        let table = table();
+        // Independent alu + cold load: both cycle 0; retire = max(1, 35) = 35.
         let mixed = prog(
             "f",
             vec![
@@ -819,29 +813,45 @@ working_set_surcharge = 2
             ],
         );
         let r = score_program(&mixed, &table).expect("score");
-        assert_eq!(r.total_proxy_cycles, 12);
+        assert_eq!(r.total_proxy_cycles, 35);
     }
 
+    /// plans/M20.md item D: the v2 `branch_penalty` knob is gone. `[branch]
+    /// mispredict_penalty` is a real 14 cycles in the profile now, but
+    /// `CostTable::branch_penalty()` is **0 until item H**: this scoreboard
+    /// has no branch bias, so charging the penalty unconditionally would
+    /// over-credit branch *removal*. A branch therefore costs exactly
+    /// `latency.branch` (T1: 1 cycle, port B) plus its control
+    /// serialization, which `mid_stream_branch_delays_followers` witnesses.
     #[test]
-    fn branch_pays_penalty() {
-        let table = parse(TABLE).expect("table");
+    fn branch_charges_latency_only_until_item_h() {
+        let table = table();
         let p = prog("f", vec![word(CostRule::Branch, None, &[])]);
         let r = score_program(&p, &table).expect("score");
-        // latency[branch]=1 + branch_penalty=3
-        assert_eq!(r.total_proxy_cycles, 4);
+        assert_eq!(r.total_proxy_cycles, 1);
+        assert_eq!(table.branch_penalty(), 0);
+        assert_eq!(
+            table.branch_row("mispredict_penalty").unwrap().value,
+            14,
+            "the profile pins the real penalty; item H charges it bias-scaled"
+        );
     }
 
+    /// `abort_val` is a `BL` (T1: lat 1, ports I + B) plus the swept
+    /// `call_overhead` residual, pinned at 0. The v2 table's unsourced 3
+    /// was a proxy for callee cost the Σ-over-fns composition already
+    /// scores separately.
     #[test]
     fn abort_val_uses_table_latency() {
-        let table = parse(TABLE).expect("table");
+        let table = table();
         let p = prog("f", vec![word(CostRule::AbortVal, None, &[0])]);
         let r = score_program(&p, &table).expect("score");
-        assert_eq!(r.total_proxy_cycles, 3);
+        assert_eq!(r.total_proxy_cycles, 1);
     }
 
     #[test]
     fn stack_hit_cheaper_than_miss() {
-        let table = parse(TABLE).expect("table");
+        let table = table();
         // Chain through alu so the second load's finish is on the critical path.
         let hit = prog(
             "f",
@@ -873,7 +883,7 @@ working_set_surcharge = 2
 
     #[test]
     fn store_kills_stack_hit() {
-        let table = parse(TABLE).expect("table");
+        let table = table();
         // load → load same key hits; load → store → load same key misses.
         let reuse = prog(
             "f",
@@ -906,7 +916,7 @@ working_set_surcharge = 2
 
     #[test]
     fn call_clears_mem_reuse_window() {
-        let table = parse(TABLE).expect("table");
+        let table = table();
         let hit = prog(
             "f",
             vec![
@@ -938,7 +948,7 @@ working_set_surcharge = 2
 
     #[test]
     fn cold_unique_always_misses() {
-        let table = parse(TABLE).expect("table");
+        let table = table();
         // Distinct cold uniques never hit each other — each pays load_cold_miss.
         let two = prog(
             "f",
@@ -950,8 +960,8 @@ working_set_surcharge = 2
             ],
         );
         let r = score_program(&two, &table).expect("score");
-        // load@0→12, alu@12→13 dual with 2nd load@12→24, alu@24→25.
-        assert_eq!(r.total_proxy_cycles, 25);
+        // load@0→35, alu@35→36 dual with 2nd load@35→70, alu@70→71.
+        assert_eq!(r.total_proxy_cycles, 71);
         // Contrast: repeating the same stack key would finish earlier on the
         // second load (hit=1 vs miss=12).
         let stack_hit = prog(
@@ -974,18 +984,18 @@ working_set_surcharge = 2
 
     #[test]
     fn missing_memref_is_cold_miss() {
-        let table = parse(TABLE).expect("table");
+        let table = table();
         let untagged = prog(
             "f",
             vec![word(CostRule::Load, Some(1), &[0])], // no MemRef
         );
         let r = score_program(&untagged, &table).expect("score");
-        assert_eq!(r.total_proxy_cycles, 12); // load_cold_miss
+        assert_eq!(r.total_proxy_cycles, 35); // load_cold_miss = lat_l3
     }
 
     #[test]
     fn working_set_surcharge_when_distinct_over_cap() {
-        let table = parse(TABLE).expect("table");
+        let table = table();
         // cap=4: five distinct stack keys → surcharge on the 5th.
         let over = prog(
             "f",
@@ -1021,7 +1031,7 @@ working_set_surcharge = 2
     /// Call clobber: consumer of x0 waits on call retire (dst=Some(0)).
     #[test]
     fn call_result_waits_on_call_retire() {
-        let table = parse(TABLE).expect("table");
+        let table = table();
         let with_dep = prog(
             "f",
             vec![
@@ -1030,8 +1040,8 @@ working_set_surcharge = 2
             ],
         );
         let r = score_program(&with_dep, &table).expect("score");
-        // call@0 → finish 4 (x0 ready); alu use x0 @4 → 5.
-        assert_eq!(r.total_proxy_cycles, 5);
+        // call@0 → finish 1 (x0 ready); alu use x0 @1 → 2.
+        assert_eq!(r.total_proxy_cycles, 2);
         // Independent alu dual-issues with call; max retire is call's 4.
         let no_dep = prog(
             "f",
@@ -1041,14 +1051,14 @@ working_set_surcharge = 2
             ],
         );
         let b = score_program(&no_dep, &table).expect("score");
-        assert_eq!(b.total_proxy_cycles, 4);
+        assert_eq!(b.total_proxy_cycles, 1);
         assert!(r.total_proxy_cycles > b.total_proxy_cycles);
     }
 
     /// cmp (Write flags) → b.cond (Read flags) must serialize on NZCV.
     #[test]
     fn cmp_to_bcond_waits_on_flags() {
-        let table = parse(TABLE).expect("table");
+        let table = table();
         let ordered = prog(
             "f",
             vec![
@@ -1057,10 +1067,10 @@ working_set_surcharge = 2
             ],
         );
         let r = score_program(&ordered, &table).expect("score");
-        // cmp@0→1; branch waits on flags@1, lat+penalty → finish 1+4=5.
-        assert_eq!(r.total_proxy_cycles, 5);
-        // Without flag edge, branch issues at 0 (dual with cmp under max_issue=2)
-        // and finishes at 4 — shorter than ordered.
+        // cmp@0→1; branch waits on flags@1, lat 1 → finish 2.
+        assert_eq!(r.total_proxy_cycles, 2);
+        // Without the flag edge, branch issues at 0 alongside cmp and
+        // finishes at 1 — shorter than ordered.
         let unordered = prog(
             "f",
             vec![
@@ -1069,14 +1079,14 @@ working_set_surcharge = 2
             ],
         );
         let b = score_program(&unordered, &table).expect("score");
-        assert_eq!(b.total_proxy_cycles, 4);
+        assert_eq!(b.total_proxy_cycles, 1);
         assert!(r.total_proxy_cycles > b.total_proxy_cycles);
     }
 
-    /// Mid-stream branch: followers wait on control-ready (lat+penalty).
+    /// Mid-stream branch: followers wait on control-ready.
     #[test]
     fn mid_stream_branch_delays_followers() {
-        let table = parse(TABLE).expect("table");
+        let table = table();
         let mid = prog(
             "f",
             vec![
@@ -1085,27 +1095,27 @@ working_set_surcharge = 2
             ],
         );
         let r = score_program(&mid, &table).expect("score");
-        // branch@0 → finish 4 (= control_ready); alu issues at 4 → 5.
-        assert_eq!(r.total_proxy_cycles, 5);
-        // Trailing branch alone is still 4 (penalty only on max_retire).
+        // branch@0 → finish 1 (= control_ready); alu issues at 1 → 2.
+        assert_eq!(r.total_proxy_cycles, 2);
+        // Trailing branch alone is 1.
         let alone = prog("f", vec![word(CostRule::Branch, None, &[])]);
         let a = score_program(&alone, &table).expect("score");
-        assert_eq!(a.total_proxy_cycles, 4);
+        assert_eq!(a.total_proxy_cycles, 1);
         assert!(r.total_proxy_cycles > a.total_proxy_cycles);
     }
 
     /// Adrp is ALU-port: dual-issues with an independent load under the cap.
     #[test]
     fn adrp_dual_issues_with_load() {
-        let table = parse(TABLE).expect("table");
+        let table = table();
         let mixed = prog(
             "f",
             vec![word(CostRule::Adrp, Some(1), &[]), load_cold_unique(2, 0)],
         );
         let r = score_program(&mixed, &table).expect("score");
-        // Both issue cycle 0 (alu+mem); retire = max(1, 12) = 12.
-        assert_eq!(r.total_proxy_cycles, 12);
-        // Two Adrps alone: alu_ports=2, max_issue=2 → both cycle 0, retire 1.
+        // Both issue cycle 0 (alu+mem); retire = max(1, 35) = 35.
+        assert_eq!(r.total_proxy_cycles, 35);
+        // Two Adrps alone: alu_ports=3 → both cycle 0, retire 1.
         let two_adrp = prog(
             "f",
             vec![
@@ -1120,7 +1130,7 @@ working_set_surcharge = 2
     /// SP write clears the mem reuse window (epoch), like Call.
     #[test]
     fn sp_dst_clears_mem_reuse_window() {
-        let table = parse(TABLE).expect("table");
+        let table = table();
         let hit = prog(
             "f",
             vec![
@@ -1154,7 +1164,7 @@ working_set_surcharge = 2
     /// Store keeps other keys hittable; SP adjust then reload misses.
     #[test]
     fn store_then_sp_adjust_reload_misses() {
-        let table = parse(TABLE).expect("table");
+        let table = table();
         // load key 8 → store other key → reload key 8 still hits.
         let after_store = prog(
             "f",
@@ -1191,7 +1201,7 @@ working_set_surcharge = 2
     /// Non-unique MemRef without base∈srcs fails closed.
     #[test]
     fn memref_base_not_in_srcs_fails_closed() {
-        let table = parse(TABLE).expect("table");
+        let table = table();
         // Stack MemRef but srcs omit SP (31).
         let bad_stack = prog(
             "f",
@@ -1237,7 +1247,7 @@ working_set_surcharge = 2
     #[test]
     fn flat_equiv_block_sum_matches_fn_schedule() {
         use crate::encode::{Cond, enc_b, enc_b_cond};
-        let table = parse(TABLE).expect("table");
+        let table = table();
 
         let cases: Vec<(&str, Vec<EmittedWord>)> = vec![
             ("empty", Vec::new()),

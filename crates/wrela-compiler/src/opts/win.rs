@@ -1167,14 +1167,15 @@ mod tests {
             let total: u64 = fns.iter().map(|f| f.proxy_cycles).sum();
             let words: u64 = fns.iter().map(|f| f.words).sum();
             let mut report = CostReport {
-                version: 2,
+                version: 3,
                 digest: "t".to_string(),
-                alu_ports: 2,
-                mem_ports: 2,
-                max_issue_per_cycle: 2,
-                branch_penalty: 0,
-                mem_reuse_window: 8,
-                mem_working_set_cap: 4,
+                provenance: "p".to_string(),
+                provenance_summary: "T1=1 T2=0 T3=0 T4=0 T5=0 rows=1".to_string(),
+                profile: "a76-pi5".to_string(),
+                pipelines: 8,
+                dispatch_mops: 4,
+                dispatch_uops: 8,
+                reorder_window: 128,
                 total_proxy_cycles: total,
                 total_words: words,
                 owner_totals: BTreeMap::new(),
