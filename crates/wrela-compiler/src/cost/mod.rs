@@ -62,10 +62,13 @@ pub use freq::{MethodFreq, sibling_freq_path};
 pub use ghz::{DEFAULT_GHZ, fmt_compact, ms_per_turn, parse_ghz, turns_per_sec};
 pub use owner::classify_owner;
 pub use rule::{CostRule, EmittedWord, FlagEffect, MEM_SP_REG, MemClass, MemRef};
-pub use score::{CostReport, FnCost, basic_block_ranges, block_schedule_lengths, score_program};
+pub use score::{
+    BranchBias, CostReport, CrossExtra, FnCost, MemState, basic_block_ranges,
+    block_schedule_lengths, score_program, score_program_at,
+};
 pub use stage::{
-    CostStageClosure, codegen_cost_stage, load_cost_stage_closure, report_cost_stage_path,
-    score_cost_stage_path,
+    CostStageClosure, codegen_cost_stage, codegen_cost_stage_with_placement,
+    load_cost_stage_closure, report_cost_stage_path, score_cost_stage_path,
 };
 pub use sweep::{SweepPoint, endpoint_corners};
 pub use table::{

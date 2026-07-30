@@ -167,10 +167,10 @@ ImageReport v0
   Totals actors=0 drivers=1 ready_queue=1 group_arena=0 bytes=48
   DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver[DriverMode.Irq] base=0x40540030 size=8
   IrqHostInject base=0x40540030 offset=0x60 status=0xa501 vector=1
-  Cost version=3 digest=3d1fb3009124ded0 total=50470 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=50470
-    Owner name=app proxy_cycles=2755
-    Owner name=runtime proxy_cycles=47407
-    Owner name=driver proxy_cycles=308
-    Core n=0 proxy_cycles=776 max_turn_proxy=308 turns_per_sec=7792207.7922077924 ms_per_turn_model=0.0001283333
-    Shared proxy_cycles=49694
+  Cost version=3 digest=3d1fb3009124ded0 total=34819 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=34819
+    Owner name=app proxy_cycles=1894
+    Owner name=runtime proxy_cycles=32770
+    Owner name=driver proxy_cycles=155
+    Core n=0 proxy_cycles=355 max_turn_proxy=155 turns_per_sec=15483870.9677419346 ms_per_turn_model=0.0000645833
+    Shared proxy_cycles=34464

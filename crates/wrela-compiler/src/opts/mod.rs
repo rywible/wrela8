@@ -125,7 +125,8 @@ pub fn add_one(x: u64) -> u64:
             "dev asm dump must name the fn:\n{asm}"
         );
         let table = load_default().expect("cost table");
-        let cost = score_program(&prog, &table).expect("cost under Dev");
+        let cost = score_program(&prog, &table, &crate::placement::PlacementTable::default())
+            .expect("cost under Dev");
         assert!(cost.total_proxy_cycles > 0, "dev cost dump must score > 0");
 
         apply_mode(CompileMode::Release);

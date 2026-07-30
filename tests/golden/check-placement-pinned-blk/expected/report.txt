@@ -165,10 +165,10 @@ ImageReport v0
   Turns count=1 stride=64 bytes=64
   Totals actors=1 drivers=1 ready_queue=2 group_arena=0 bytes=192
   DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x405400c0 size=8
-  Cost version=3 digest=3d1fb3009124ded0 total=50448 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=50448
-    Owner name=app proxy_cycles=2463
-    Owner name=runtime proxy_cycles=47985
+  Cost version=3 digest=3d1fb3009124ded0 total=34961 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=34961
+    Owner name=app proxy_cycles=1818
+    Owner name=runtime proxy_cycles=33143
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=176 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn_model=n/a
-    Shared proxy_cycles=50272
+    Core n=0 proxy_cycles=124 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn_model=n/a
+    Shared proxy_cycles=34837

@@ -168,10 +168,10 @@ ImageReport v0
   Turns count=1 stride=64 bytes=64
   Totals actors=1 drivers=1 ready_queue=2 group_arena=0 bytes=400
   Pool name=Buffers kind=image payload=u32 slots=4 slot_bytes=64 base=0x40540190 size=256 align=8 coherency=coherent device=none
-  Cost version=3 digest=3d1fb3009124ded0 total=50908 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=50908
-    Owner name=app proxy_cycles=2737
-    Owner name=runtime proxy_cycles=48171
+  Cost version=3 digest=3d1fb3009124ded0 total=35180 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=35180
+    Owner name=app proxy_cycles=1908
+    Owner name=runtime proxy_cycles=33272
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=450 max_turn_proxy=128 turns_per_sec=18750000 ms_per_turn_model=0.0000533333
-    Shared proxy_cycles=50458
+    Core n=0 proxy_cycles=214 max_turn_proxy=68 turns_per_sec=35294117.6470588222 ms_per_turn_model=0.0000283333
+    Shared proxy_cycles=34966

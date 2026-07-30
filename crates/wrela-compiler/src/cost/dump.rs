@@ -21,7 +21,7 @@ pub fn dump(
     ghz: f64,
     attach: &WorkloadAttach,
 ) -> Result<String, String> {
-    let mut report = score_program(program, table)?;
+    let mut report = score_program(program, table, placement)?;
     attach_workloads(&mut report, attach);
     format_report(&report, placement, ghz)
 }

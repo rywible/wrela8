@@ -369,6 +369,11 @@ pub struct CostTable {
     /// `base` latency row, for the ordered accesses (`LDAR` / `STLR`) that
     /// take the same memory path as their plain twins.
     crosscore_extra: BTreeMap<&'static str, u64>,
+    /// Derived: the `[sweep]` dimension name behind each `crosscore_extra`
+    /// entry, so the scorer can read the **swept** increment through a
+    /// `SweepPoint` instead of only the pinned scalar (plans/M20.md item E;
+    /// item G replaces the flat add with the placement-classified charge).
+    crosscore_extra_dim: BTreeMap<&'static str, String>,
     /// Derived from `[geometry]` + `[transitional]`.
     mem: MemCosts,
 }
@@ -392,6 +397,16 @@ impl CostTable {
             .get(rule.as_str())
             .copied()
             .unwrap_or(0)
+    }
+
+    /// `[sweep]` dimension behind `crosscore_extra(rule)`, or `None` for a
+    /// rule with no cross-core increment. The scorer reads the point's
+    /// value through this so item J's ∀ sweep actually moves the ordered
+    /// accesses instead of only their pinned end.
+    pub fn crosscore_extra_dim(&self, rule: CostRule) -> Option<&str> {
+        self.crosscore_extra_dim
+            .get(rule.as_str())
+            .map(String::as_str)
     }
 
     pub fn profile_name(&self) -> &str {
@@ -419,6 +434,13 @@ impl CostTable {
 
     pub fn reorder_window(&self) -> u64 {
         self.pipelines["reorder_window"].value
+    }
+
+    /// One `[pipelines]` row — the dispatch caps and the `port_*` pipe
+    /// ranges the scoreboard's port map is built from (plans/M20.md item
+    /// E). Same shape as `geometry` / `branch_row` / `align`.
+    pub fn pipeline_row(&self, key: &str) -> Option<&Row> {
+        self.pipelines.get(key)
     }
 
     /// Integer-ALU pipes — **derived** from `[pipelines] port_i` (pipes
@@ -878,6 +900,7 @@ pub fn parse(text: &str) -> Result<CostTable, String> {
     // make the table's identity ambiguous.
     let mut latencies: BTreeMap<&'static str, u64> = BTreeMap::new();
     let mut crosscore_extra: BTreeMap<&'static str, u64> = BTreeMap::new();
+    let mut crosscore_extra_dim: BTreeMap<&'static str, String> = BTreeMap::new();
     for (key, row) in &latency {
         let rule = CostRule::from_str(key)
             .ok_or_else(|| format!("unknown latency group `{key}` (not a CostRule key)"))?;
@@ -899,6 +922,7 @@ pub fn parse(text: &str) -> Result<CostTable, String> {
         };
         if c.base.is_some() {
             crosscore_extra.insert(rule.as_str(), sweep[&c.sweep].pinned);
+            crosscore_extra_dim.insert(rule.as_str(), c.sweep.clone());
         }
         if latencies
             .insert(rule.as_str(), base.saturating_add(sweep[&c.sweep].pinned))
@@ -956,6 +980,7 @@ pub fn parse(text: &str) -> Result<CostTable, String> {
         transitional,
         latencies,
         crosscore_extra,
+        crosscore_extra_dim,
         mem,
     })
 }
@@ -1055,8 +1080,9 @@ fn reject_pinned_t5(section: &str, name: &str, tier: Tier) -> Result<(), String>
     }
 }
 
-/// `"4"` -> `(4, 4)`; `"2-4"` -> `(2, 4)`.
-fn pipe_range(spec: &str) -> Option<(u64, u64)> {
+/// `"4"` -> `(4, 4)`; `"2-4"` -> `(2, 4)`. The scoreboard's port map reads
+/// the same ranges (plans/M20.md item E) rather than restating them.
+pub(crate) fn pipe_range(spec: &str) -> Option<(u64, u64)> {
     let (lo, hi) = match spec.split_once('-') {
         Some((a, b)) => (a.trim().parse::<u64>().ok()?, b.trim().parse::<u64>().ok()?),
         None => {
