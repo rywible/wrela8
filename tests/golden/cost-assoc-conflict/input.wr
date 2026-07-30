@@ -1,0 +1,64 @@
+module examples.cost_assoc_conflict
+
+# Cost-stage golden (plans/M20.md item M) — a **4-way conflict inside
+# capacity** in the L1D model (`cost::mem`, item F, inventory row 10).
+#
+# WHAT THIS PINS, PREDICTED FROM THE DOCS BEFORE THE CODE WAS RUN.
+#
+# `[geometry]` gives L1D 65536 B / 64 B lines / 4 ways = **256 sets**,
+# and `cost::mem` indexes a set as `line_index % sets` with the `Cold`
+# base register kept as a *tag* component rather than folded into the
+# index. So two accesses through different base registers at the same
+# immediate offset are two distinct lines that land in the **same set** —
+# which is exactly the cross-base congruence `cost::mem`'s module doc
+# justifies as "manufactures conflicts rather than hiding them".
+#
+# Codegen passes each `[u64; N]` parameter in its own register (x0, x1,
+# …) and copies it into the frame, so a fn with k array parameters emits
+# k copy-in streams based at k distinct registers. Each 192 B array is
+# three lines, so array j contributes `Cold(j,0)`, `Cold(j,1)`,
+# `Cold(j,2)` — k lines in each of sets 0, 1 and 2. The frame's own
+# first three lines (`Stack(0..2)`, frame bytes 0-191, which is where
+# the *first* array is copied to) fall in those same three sets, and
+# they are the lines the body re-reads.
+#
+# Predicted:
+#   * `conflict5` (five arrays): each of sets 0, 1, 2 holds five cold
+#     lines plus one frame line = six lines in four ways. The frame
+#     lines are evicted, so the three re-reads at the end cost
+#     `lat_l2 = 11` each instead of `lat_l1d_hit = 4`.
+#   * `capacity3` (three arrays): the same sets hold three cold lines
+#     plus one frame line = exactly four ways, nothing is evicted, and
+#     the same three re-reads cost 4.
+#   * Both fns touch a couple of dozen distinct lines against a
+#     1024-line L1D, so the difference is **entirely** associativity.
+#     A capacity-only model (the pre-M20 `mem_working_set_cap`) reports
+#     the two fns as identical; this one does not.
+#
+# The oracle is the pair, not either number: raising `[geometry]
+# l1d_ways` must move `conflict5` and leave `capacity3` alone.
+
+# Five 192 B arrays: five distinct cold base registers, three lines each,
+# all landing in L1D sets 0-2.
+pub fn conflict5(
+    a: [u64; 24],
+    b: [u64; 24],
+    c: [u64; 24],
+    d: [u64; 24],
+    e: [u64; 24],
+) -> u64:
+    s: u64 = a[0] +% b[0]
+    s = s +% c[0] +% d[0] +% e[0]
+    s = s +% a[0]
+    s = s +% a[8]
+    s = s +% a[16]
+    return s
+
+# The control: three arrays, so sets 0-2 stay at exactly four ways.
+pub fn capacity3(a: [u64; 24], b: [u64; 24], c: [u64; 24]) -> u64:
+    s: u64 = a[0] +% b[0]
+    s = s +% c[0]
+    s = s +% a[0]
+    s = s +% a[8]
+    s = s +% a[16]
+    return s

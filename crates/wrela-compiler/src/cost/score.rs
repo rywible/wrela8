@@ -2121,6 +2121,7 @@ mod tests {
         let mut stack = 0u64;
         let mut cold = 0u64;
         let mut charged = 0u64;
+        let mut untagged_ordered = 0u64;
         for path in &corpus {
             let case = path
                 .parent()
@@ -2155,7 +2156,30 @@ mod tests {
                         ew.access_bytes,
                         ew.text
                     );
-                    let m = ew.mem.expect("emitted load/store is always tagged");
+                    // plans/M20.md item M: `cost-crosscore` is the first
+                    // case to reach the **ordered** accesses, and the
+                    // `LDAR`/`STLR` emit sites carry no `MemRef` at all
+                    // (`ldar w11, [x9]` — a bare base register, no
+                    // immediate). That is recorded here rather than fixed:
+                    // it means row 39's "takes its plain twin's memory
+                    // path" is, on today's stream, the `Unresolved` path
+                    // (`lat_l3`) and not a `MemRef`-resolved one, and it
+                    // means §4.5 declines to decide them. Tagging those
+                    // sites is item G's surface, not this oracle's.
+                    // Everything else must still be tagged: an untagged
+                    // *plain* load/store is a defect and fails here.
+                    let Some(m) = ew.mem else {
+                        assert!(
+                            ew.rule.is_crosscore(),
+                            "{case}/{key}: emitted `{}` carries no MemRef — tag the \
+                             emit site, or the memory model scores it as Unresolved \
+                             and §4.5 declines to decide it: {}",
+                            ew.rule.as_str(),
+                            ew.text
+                        );
+                        untagged_ordered += 1;
+                        continue;
+                    };
                     match m.class {
                         MemClass::Stack => {
                             stack += 1;
@@ -2185,7 +2209,9 @@ mod tests {
         );
         eprintln!(
             "SOG §4.5 reach over the cost-* corpus: {stack} Stack accesses decided \
-             (0 straddling), {cold} Cold accesses not decided (decision 1611)"
+             (0 straddling), {cold} Cold accesses not decided (decision 1611), \
+             {untagged_ordered} ordered accesses (`LDAR`/`STLR`) carrying no MemRef \
+             at all (plans/M20.md item M)"
         );
     }
 

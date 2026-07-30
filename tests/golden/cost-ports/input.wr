@@ -1,0 +1,107 @@
+module examples.cost_ports
+
+# Cost-stage golden (plans/M20.md item M) — the A76 port map: SOG §2.1's
+# eight pipelines, §4.1's dispatch caps, and §3.10's store address/data
+# split.
+#
+# WHAT THIS PINS, PREDICTED FROM THE DOCS BEFORE THE CODE WAS RUN
+# (04 §5 "the A76 port map is the model"; bench/a76-pi5.toml
+# `[pipelines]` + `[latency.alu|load|store]`):
+#
+#   * `[latency.alu] ports = "I"`, `port_i = "2-4"` — one uop eligible
+#     for three pipes, so independent ALU words issue 3 per cycle.
+#   * `[latency.load] ports = "L"`, `port_l = "5-6"` — one uop on two
+#     AGUs, 2 loads per cycle.
+#   * `[latency.store] ports = "L,D"`, `port_d = "7-8"` — **one Mop,
+#     two uops**: an address uop on an AGU and a data uop on a vector
+#     pipe. A store therefore costs an AGU slot *and* a V slot, and
+#     spends two of the eight per-cycle uops rather than one.
+#   * `dispatch_mops = 4` caps Mops per cycle whatever the ports allow.
+#
+# The three fns are the same shape at three mixes: ALU-dominated,
+# load-dominated, store-dominated.
+#
+# WHICH OF THOSE CONSTRAINTS THIS CASE ACTUALLY DISCRIMINATES — measured
+# by ablating `bench/a76-pi5.toml` against these very fns, and recorded
+# here because two of the predictions above are **not** witnessable from
+# any stream wrela emits:
+#
+#   * `port_l` 2 AGUs -> 1: the whole case moves (roughly x1.9). The
+#     load/store AGUs are the binding port on every wrela fn, because
+#     the spill-everything frame makes memory the majority of the
+#     stream. **Witnessed.**
+#   * `dispatch_mops` 4 -> 1: `alu_wide` moves 83 -> 120 and
+#     `store_dense` 173 -> 176; `load_fan` does not move at all.
+#     **Witnessed.**
+#   * `port_i` 3 pipes -> 2: **nothing moves.** Every ALU word in this
+#     frame is separated from the next by the loads and the store that
+#     materialised its operands, so three independent ALU Mops never
+#     arrive in one dispatch window. The documented 3-wide integer issue
+#     is real in the model and unobservable on wrela's emitted stream.
+#   * `[latency.store] ports = "L,D"` -> `"L"` (drop the data uop):
+#     **nothing moves**, and that is a theorem rather than an accident.
+#     A store needs one L slot and one D slot, there are two pipes of
+#     each, so D can only bind in a block holding more stores than
+#     loads. `store_dense` below is that shape — every element is
+#     written from an immediate, so `MOVZ` + `STR` with no load at all —
+#     and it is the one place the vector pipes carrying store data are
+#     scarce: narrowing `port_d` from two pipes to one moves
+#     `store_dense` 173 -> 177 while nothing else in the case notices.
+#   * `dispatch_uops` 8 -> 4: **nothing moves** either. Two L pipes
+#     already cap this stream at four memory uops per cycle, so on a
+#     stream with no FP/ASIMD the uop budget and the AGU count are the
+#     same constraint.
+
+# Twelve independent ALU Mops over three live inputs: nothing here
+# depends on anything else here, so the only limits are issue width and
+# the dispatch Mop cap.
+pub fn alu_wide(a: u64, b: u64, c: u64) -> u64:
+    p0: u64 = a +% b
+    p1: u64 = b +% c
+    p2: u64 = c +% a
+    p3: u64 = a +% c
+    p4: u64 = b +% a
+    p5: u64 = c +% b
+    p6: u64 = a +% a
+    p7: u64 = b +% b
+    p8: u64 = c +% c
+    p9: u64 = p0 +% p1
+    p10: u64 = p2 +% p3
+    p11: u64 = p4 +% p5
+    q0: u64 = p6 +% p7
+    q1: u64 = p8 +% p9
+    q2: u64 = p10 +% p11
+    return q0 +% q1 +% q2
+
+# Store-dominated with no load to hide behind: every element is written
+# from an immediate, so the stream is `MOVZ` (port I) + `STR` (L + D)
+# and the vector pipes carrying store data are the scarce resource.
+pub fn store_dense(mut v: [u64; 16]) -> [u64; 16]:
+    v[0] = 1
+    v[1] = 2
+    v[2] = 3
+    v[3] = 4
+    v[4] = 5
+    v[5] = 6
+    v[6] = 7
+    v[7] = 8
+    v[8] = 9
+    v[9] = 10
+    v[10] = 11
+    v[11] = 12
+    v[12] = 13
+    v[13] = 14
+    v[14] = 15
+    v[15] = 16
+    return v
+
+# Load-dominated: twelve reads of one array, accumulated pairwise so the
+# loads stay independent of each other.
+pub fn load_fan(v: [u64; 12]) -> u64:
+    t0: u64 = v[0] +% v[1]
+    t1: u64 = v[2] +% v[3]
+    t2: u64 = v[4] +% v[5]
+    t3: u64 = v[6] +% v[7]
+    t4: u64 = v[8] +% v[9]
+    t5: u64 = v[10] +% v[11]
+    return t0 +% t1 +% t2 +% t3 +% t4 +% t5
