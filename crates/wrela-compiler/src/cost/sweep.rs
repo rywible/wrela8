@@ -15,9 +15,48 @@
 //! branch model (item H), and the ∀ sweep itself (item J). Item L asserts
 //! that each pinned value really is its bracket's pessimistic end.
 
-use std::collections::BTreeMap;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::table::CostTable;
+
+thread_local! {
+    /// `Some` while [`record_reads`] is running: the set of dimension names
+    /// [`SweepPoint::get`] has been asked for. `None` — the ordinary case —
+    /// costs one thread-local borrow per read and records nothing.
+    static READS: RefCell<Option<BTreeSet<String>>> = const { RefCell::new(None) };
+}
+
+/// Run `f` while recording every dimension name read through
+/// [`SweepPoint::get`], returning `f`'s value and that set.
+///
+/// **Why this exists.** Item J's sensitivity probe must decide which
+/// dimensions can be held at their pinned value without dropping one
+/// (decision 1604). "The total did not move when I nudged `d`" is evidence;
+/// "the model never read `d` at all while scoring this program" is a
+/// *reason* — a dimension no term reads cannot change a score at any point
+/// of the box, whatever the other dimensions are doing. The probe excludes
+/// only on the second, and cross-checks it against the first.
+///
+/// Nesting is a bug, not a mode: the inner call would silently steal the
+/// outer one's set, so it panics.
+pub fn record_reads<R>(f: impl FnOnce() -> R) -> (R, BTreeSet<String>) {
+    READS.with(|c| {
+        let mut slot = c.borrow_mut();
+        assert!(
+            slot.is_none(),
+            "cost::sweep::record_reads is already recording on this thread"
+        );
+        *slot = Some(BTreeSet::new());
+    });
+    let value = f();
+    let read = READS.with(|c| {
+        c.borrow_mut()
+            .take()
+            .expect("record_reads slot vanished mid-run")
+    });
+    (value, read)
+}
 
 /// One assignment of every residual-uncertainty dimension to a value.
 ///
@@ -53,6 +92,11 @@ impl SweepPoint {
     /// a term with no provenance, and silently substituting 0 would make it
     /// a discount (decision 1609).
     pub fn get(&self, dim: &str) -> u64 {
+        READS.with(|c| {
+            if let Some(set) = c.borrow_mut().as_mut() {
+                set.insert(dim.to_string());
+            }
+        });
         *self.values.get(dim).unwrap_or_else(|| {
             panic!(
                 "sweep point has no dimension `{dim}` (declared: {})",
@@ -237,6 +281,35 @@ mod tests {
             label.starts_with(&format!("{}=", dims[0])),
             "label should lead with the first sorted dimension, got: {label}"
         );
+    }
+
+    /// The read recorder sees exactly the dimensions asked for, and nothing
+    /// leaks outside the recorded scope.
+    #[test]
+    fn record_reads_sees_exactly_the_dimensions_asked_for() {
+        let table = load_default().expect("committed profile");
+        let p = SweepPoint::pinned(&table);
+        let (sum, read) = record_reads(|| p.get("l2_latency") + p.get("l3_latency"));
+        assert!(sum > 0);
+        assert_eq!(
+            read.iter().map(String::as_str).collect::<Vec<_>>(),
+            vec!["l2_latency", "l3_latency"]
+        );
+        // Outside the scope nothing is recorded, and a second scope starts
+        // empty rather than accumulating.
+        let _ = p.get("dram_latency");
+        let ((), again) = record_reads(|| {});
+        assert!(again.is_empty(), "recorder leaked across scopes: {again:?}");
+    }
+
+    // `#[should_panic]` first so `xtask ledger`'s `#[test]`-then-`fn` scan
+    // can see this name (the same shape `cost::crosscore` uses).
+    #[should_panic(expected = "already recording")]
+    #[test]
+    fn nested_recording_fails_closed() {
+        let table = load_default().expect("committed profile");
+        let p = SweepPoint::pinned(&table);
+        let _ = record_reads(|| record_reads(|| p.get("l2_latency")));
     }
 
     #[test]
