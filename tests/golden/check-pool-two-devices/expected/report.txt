@@ -183,10 +183,10 @@ ImageReport v0
   Pool name=ControlB kind=dma payload=Ctl slots=2 slot_bytes=8 base=0x40540040 size=16 align=8 coherency=coherent device=device#1
   BlkPool name=ControlA device=device#0 base=0x40540030 size=0x10
   BlkPool name=ControlB device=device#1 base=0x40540040 size=0x10
-  Cost version=2 digest=ca6c6ea1a27ab060 total=26379 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=26379
-    Owner name=app proxy_cycles=1404
-    Owner name=runtime proxy_cycles=24975
+  Cost version=3 digest=3d1fb3009124ded0 total=50000 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=50000
+    Owner name=app proxy_cycles=2633
+    Owner name=runtime proxy_cycles=47367
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=142 max_turn_proxy=34 turns_per_sec=70588235.2941176444 ms_per_turn_model=0.0000141667
-    Shared proxy_cycles=26237
+    Core n=0 proxy_cycles=346 max_turn_proxy=85 turns_per_sec=28235294.1176470593 ms_per_turn_model=0.0000354167
+    Shared proxy_cycles=49654

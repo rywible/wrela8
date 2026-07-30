@@ -163,10 +163,10 @@ ImageReport v0
   Turn fn=turns frame=560
   Turns count=3 stride=1024 bytes=3072
   Totals actors=2 drivers=0 ready_queue=3 group_arena=0 bytes=3488
-  Cost version=2 digest=ca6c6ea1a27ab060 total=29740 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=29740
-    Owner name=app proxy_cycles=3895
-    Owner name=runtime proxy_cycles=25845
+  Cost version=3 digest=3d1fb3009124ded0 total=57570 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=57570
+    Owner name=app proxy_cycles=8397
+    Owner name=runtime proxy_cycles=49173
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=1767 max_turn_proxy=778 turns_per_sec=3084832.9048843188 ms_per_turn_model=0.0003241667
-    Shared proxy_cycles=27973
+    Core n=0 proxy_cycles=4154 max_turn_proxy=1827 turns_per_sec=1313628.8998357963 ms_per_turn_model=0.00076125
+    Shared proxy_cycles=53416

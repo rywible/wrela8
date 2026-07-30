@@ -2548,7 +2548,7 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
                     ctx.push(
                         encode::enc_ldar_w(X_B, X_A),
                         format!("ldar w{}, [{}]", X_B, reg_name(X_A)),
-                        CostRule::Load,
+                        CostRule::LoadAcquire,
                         Some(X_B),
                         &[X_A],
                     );
@@ -2557,7 +2557,7 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
                     ctx.push(
                         encode::enc_ldar_x(X_B, X_A),
                         format!("ldar {}, [{}]", reg_name(X_B), reg_name(X_A)),
-                        CostRule::Load,
+                        CostRule::LoadAcquire,
                         Some(X_B),
                         &[X_A],
                     );
@@ -2582,7 +2582,7 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
                     ctx.push(
                         encode::enc_stlr_w(X_B, X_A),
                         format!("stlr w{}, [{}]", X_B, reg_name(X_A)),
-                        CostRule::Store,
+                        CostRule::StoreRelease,
                         Some(X_B),
                         &[X_A],
                     );
@@ -2591,7 +2591,7 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
                     ctx.push(
                         encode::enc_stlr_x(X_B, X_A),
                         format!("stlr {}, [{}]", reg_name(X_B), reg_name(X_A)),
-                        CostRule::Store,
+                        CostRule::StoreRelease,
                         Some(X_B),
                         &[X_A],
                     );
@@ -3527,7 +3527,7 @@ fn emit_arith_checked(
                         reg_name(X_A),
                         reg_name(X_B)
                     ),
-                    CostRule::Alu,
+                    CostRule::MulHigh,
                     Some(X_D),
                     &[X_A, X_B],
                 );
@@ -3548,7 +3548,7 @@ fn emit_arith_checked(
                         reg_name(X_A),
                         reg_name(X_B)
                     ),
-                    CostRule::Alu,
+                    CostRule::MulHigh,
                     Some(X_D),
                     &[X_A, X_B],
                 );
@@ -3591,10 +3591,22 @@ fn emit_arith_wrapping(
         .ok_or_else(|| CodegenError::internal(format!("`ArithWrapping` on non-integer {ty:?}")))?;
     ctx.load_slot(X_A, ctx.frame.off(lhs));
     ctx.load_slot(X_B, ctx.frame.off(rhs));
-    let (enc, mnem) = match op {
-        BinOp::AddW => (encode::enc_add_reg(X_C, X_A, X_B, true), "add"),
-        BinOp::SubW => (encode::enc_sub_reg(X_C, X_A, X_B, true), "sub"),
-        BinOp::MulW => (encode::enc_mul(X_C, X_A, X_B, true), "mul"),
+    // plans/M20.md item D: the wrapping `MUL` is the X-form
+    // multiply-accumulate group (SOG §3.6: lat 4, thru 1/3, port M, and it
+    // stalls pipe M 2 extra cycles), not the 1-cycle integer ALU group the
+    // shared push tagged all three arms as.
+    let (enc, mnem, rule) = match op {
+        BinOp::AddW => (
+            encode::enc_add_reg(X_C, X_A, X_B, true),
+            "add",
+            CostRule::Alu,
+        ),
+        BinOp::SubW => (
+            encode::enc_sub_reg(X_C, X_A, X_B, true),
+            "sub",
+            CostRule::Alu,
+        ),
+        BinOp::MulW => (encode::enc_mul(X_C, X_A, X_B, true), "mul", CostRule::Mul),
         other => {
             return Err(CodegenError::internal(format!(
                 "`ArithWrapping` with op `{}`",
@@ -3610,7 +3622,7 @@ fn emit_arith_wrapping(
             reg_name(X_A),
             reg_name(X_B)
         ),
-        CostRule::Alu,
+        rule,
         None,
         &[],
     );
@@ -3659,10 +3671,21 @@ fn emit_div_rem(
         ctx.patch_skip(skip_a, SkipKind::Cond(Cond::Ne));
         ctx.patch_skip(skip_b, SkipKind::Cond(Cond::Ne));
     }
-    let (enc, mnem) = if signed {
-        (encode::enc_sdiv(X_C, X_A, X_B, true), "sdiv")
+    // plans/M20.md item D: X-form (`sf = true`) divide, SOG §3.6 — 5-20
+    // cycles on pipe M, not the 1-cycle integer ALU group these two sites
+    // were tagged as before the A76 table distinguished them.
+    let (enc, mnem, rule) = if signed {
+        (
+            encode::enc_sdiv(X_C, X_A, X_B, true),
+            "sdiv",
+            CostRule::Sdiv,
+        )
     } else {
-        (encode::enc_udiv(X_C, X_A, X_B, true), "udiv")
+        (
+            encode::enc_udiv(X_C, X_A, X_B, true),
+            "udiv",
+            CostRule::Udiv,
+        )
     };
     ctx.push(
         enc,
@@ -3672,7 +3695,7 @@ fn emit_div_rem(
             reg_name(X_A),
             reg_name(X_B)
         ),
-        CostRule::Alu,
+        rule,
         None,
         &[],
     );
@@ -4067,7 +4090,7 @@ fn emit_interrupt_cell_rmw(
             ctx.push(
                 encode::enc_ldar_w(X_C, X_A),
                 format!("ldar w{}, [{}]", X_C, reg_name(X_A)),
-                CostRule::Load,
+                CostRule::LoadAcquire,
                 Some(X_C),
                 &[X_A],
             );
@@ -4076,7 +4099,7 @@ fn emit_interrupt_cell_rmw(
                     ctx.push(
                         encode::enc_stlr_w(X_B, X_A),
                         format!("stlr w{}, [{}]", X_B, reg_name(X_A)),
-                        CostRule::Store,
+                        CostRule::StoreRelease,
                         Some(X_B),
                         &[X_A],
                     );
@@ -4092,7 +4115,7 @@ fn emit_interrupt_cell_rmw(
                     ctx.push(
                         encode::enc_stlr_w(X_D, X_A),
                         format!("stlr w{}, [{}]", X_D, reg_name(X_A)),
-                        CostRule::Store,
+                        CostRule::StoreRelease,
                         Some(X_D),
                         &[X_A],
                     );
@@ -4103,7 +4126,7 @@ fn emit_interrupt_cell_rmw(
             ctx.push(
                 encode::enc_ldar_x(X_C, X_A),
                 format!("ldar {}, [{}]", reg_name(X_C), reg_name(X_A)),
-                CostRule::Load,
+                CostRule::LoadAcquire,
                 Some(X_C),
                 &[X_A],
             );
@@ -4112,7 +4135,7 @@ fn emit_interrupt_cell_rmw(
                     ctx.push(
                         encode::enc_stlr_x(X_B, X_A),
                         format!("stlr {}, [{}]", reg_name(X_B), reg_name(X_A)),
-                        CostRule::Store,
+                        CostRule::StoreRelease,
                         Some(X_B),
                         &[X_A],
                     );
@@ -4122,7 +4145,7 @@ fn emit_interrupt_cell_rmw(
                     ctx.push(
                         encode::enc_stlr_x(X_D, X_A),
                         format!("stlr {}, [{}]", reg_name(X_D), reg_name(X_A)),
-                        CostRule::Store,
+                        CostRule::StoreRelease,
                         Some(X_D),
                         &[X_A],
                     );
@@ -10157,7 +10180,7 @@ mod tests {
         let module = parser::parse(tokens).expect("parse");
         let typed = sema::check_typed(&module, "<test>").expect("check");
         let layout = mwir::build_layout_ctx(&module, &Default::default()).expect("layout");
-        let table = load_default().expect("wrela-cost-v1");
+        let table = load_default().expect("bench/a76-pi5.toml");
 
         // Hold BoundsElide fixed on (golden/default path).
         set_bounds_elide(true);

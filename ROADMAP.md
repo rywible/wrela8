@@ -915,7 +915,7 @@ This milestone shipped a deterministic **proxy-cycle** score for
 **ranking** emitted code. One question only:
 
 > Given two semantically equivalent emitted programs, which ranks lower
-> under `wrela-cost-v1`?
+> under `a76-pi5`?
 
 **The value is differential, not absolute.** Proxy-cycles are not claimed
 wall-clock on Pi 5, Mac, or anything else. Cache sizes, predictors, and
@@ -926,7 +926,7 @@ accuracy vs silicon was out of scope at M18; M20 models the flagship's
 cache sizes, predictor bias, and port map from the published record while
 keeping the wall-clock disclaimer. Physical / host wall-time is
 **not** part of the optimization process (see cleverness budget / M19);
-optional offline research may retune `wrela-cost-v1` on proxy misrank
+optional offline research may retune `a76-pi5` on proxy misrank
 suspicion only.
 
 **Target the sealed ISA stream — and, from M20, price it on the
@@ -940,11 +940,14 @@ timings, and the flagship's `@budget` / cost-proof story stays split from
 this ranking surface (06 §1 and 04 §5, landed M18 item A, re-worded at
 M20 item A).
 
-**`wrela-cost-v1`.** A versioned parameter file beside the machine
+**The pinned cost profile.** A versioned parameter file beside the machine
 constants (`bench/thresholds.toml`'s precedent): per-`CostRule` **latency**
 (and optional coarse throughput / a single model `issue_width`) for the
-baseline ISA op classes. Unit: the **v1 proxy-cycle** — defined by the
-file’s scheduler, not by a host. Digest seals the **cost dump / report
+baseline ISA op classes. Unit: the **proxy-cycle** — defined by the
+file’s scheduler, not by a host. M18's file was `bench/wrela-cost-v1.toml`
+(schema `version=2`); M20 item D replaced it with `bench/a76-pi5.toml`
+(`version=3`, per-row provenance tiers) and deleted it, because two tables
+would be two sources of truth. Everything below reads `a76-pi5`. Digest seals the **cost dump / report
 side** (and goldens); it does not reseal the unsigned image unless a
 later rule says so. Refine rows only when a pinned **proxy** misrank
 demands it — never by fitting wall time. This file is the **ranking
@@ -976,11 +979,11 @@ capstone; bounded search is a later budget spend on the same score
 function.
 
 **No physical calibration.** Do not amplify cases until wall-time deltas
-beat noise; do not tune `wrela-cost-v1` against `bench guest` / `profile`
+beat noise; do not tune `a76-pi5` against `bench guest` / `profile`
 on any host. Proxy regressions are golden diffs. Proxy wins have no
 minimum size and are **not** physical evidence. Host wall-time is
 out of the opt loop (M19 / cleverness budget). If offline research ever
-suggests the proxy misranks, retune `wrela-cost-v1` deliberately — never
+suggests the proxy misranks, retune `a76-pi5` deliberately — never
 calibrate M18 against HVF. Leave `profile` untouched for the ruler.
 
 **Semantic counts stay exact.** Choice entries, exits, transcript bytes,
@@ -995,7 +998,7 @@ and **not** on predicted-vs-physical pairing.
 from the flagship's `@budget` / cost-proof story (the ISA-level half of
 that split is what M20 item A re-bases onto the A76 model; the `@budget`
 half stands); ledger opens + flip note. (1) Emit
-tags+regs + `--stage=cost`. (2) `wrela-cost-v1` + scoreboard scorer. (3)
+tags+regs + `--stage=cost`. (2) the cost profile + scoreboard scorer. (3)
 Determinism / golden dumps + report summary. (4) Pass off/on proxy A/B.
 (5) Small differential corpus (rank order only). (6) Capstone below.
 Detail only for pinned *proxy* misranks.
@@ -1012,7 +1015,7 @@ Held out of the differential corpus used to sanity-check the scorer.
 **Proxy smoke:** off/on must improve **rank** (lower schedule total) or
 the model is wrong. **Landing** still pays the cleverness budget and may
 wait for M19's mode harness; host timing does not block M18 close.
-Never tune `wrela-cost-v1` against the held-out case.
+Never tune `a76-pi5` against the held-out case.
 
 Flips: `compiler.costs.predicted-vs-measured`. Opens only what the dump
 and scorer need. **Does not depend on `sema.bounds.loops`.** Normative
@@ -1055,7 +1058,7 @@ an evidence table, not purchases, not a physical-measurement loop.
    failure.
 
 **Physical / host wall-time is out of this process.** Optional offline
-research may inform retuning `wrela-cost-v1` when a *proxy* misrank is
+research may inform retuning `a76-pi5` when a *proxy* misrank is
 suspected — that improves the ruler; it is never a land gate, never a
 `check` column, never wired into the harness.
 
@@ -1340,7 +1343,7 @@ matter how obviously fast it looks on a host:
 
 **Physical / host wall-time is not part of this process.** Flame graphs,
 `profile` guest timings, and `bench guest` A/B are optional offline
-research that may inform a deliberate retune of `wrela-cost-v1` when a
+research that may inform a deliberate retune of `a76-pi5` when a
 *proxy* misrank is suspected. They are never a land gate, never an
 evidence-table column, and never something `cargo xtask check` demands
 for an opt. Do not build physical measurement into the optimization

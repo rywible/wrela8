@@ -45,22 +45,36 @@ fn format_report(
     ghz: f64,
 ) -> Result<String, String> {
     let mut out = String::new();
+    // plans/M20.md item D: the v2 `ports.* / max_issue_per_cycle /
+    // branch_penalty / mem_reuse_window / mem_working_set_cap` fields are
+    // gone — they were v2 concepts, and their replacements land in items
+    // E / F / H. What replaces them is the profile's identity: the pipeline
+    // set, the dispatch constraints, the bounded reorder window, and the
+    // **provenance digest** over the tier mix (freeze 1629).
     let mut header = format!(
-        "Cost version={} ports.alu={} ports.mem={} max_issue_per_cycle={} branch_penalty={} mem_reuse_window={} mem_working_set_cap={} digest={} ghz={}",
+        "Cost version={} profile={} pipelines={} dispatch_mops={} dispatch_uops={} reorder_window={} digest={} provenance={} ghz={}",
         report.version,
-        report.alu_ports,
-        report.mem_ports,
-        report.max_issue_per_cycle,
-        report.branch_penalty,
-        report.mem_reuse_window,
-        report.mem_working_set_cap,
+        report.profile,
+        report.pipelines,
+        report.dispatch_mops,
+        report.dispatch_uops,
+        report.reorder_window,
         report.digest,
+        report.provenance,
         fmt_compact(ghz)
     );
     if let Some(wd) = &report.workloads_digest {
         header.push_str(&format!(" workloads_digest={wd}"));
     }
     push_line(&mut out, 0, &header);
+    // The digest alone is opaque; the tier mix is the thing a reviewer
+    // actually reads to see whether the model rests on vendor-normative
+    // rows or on brackets, so it gets its own indented line.
+    push_line(
+        &mut out,
+        1,
+        &format!("Provenance {}", report.provenance_summary),
+    );
     push_line(
         &mut out,
         1,
@@ -219,14 +233,15 @@ mod tests {
     fn report(fns: Vec<FnCost>) -> CostReport {
         let total: u64 = fns.iter().map(|f| f.proxy_cycles).sum();
         CostReport {
-            version: 2,
+            version: 3,
             digest: "test".to_string(),
-            alu_ports: 2,
-            mem_ports: 2,
-            max_issue_per_cycle: 2,
-            branch_penalty: 3,
-            mem_reuse_window: 8,
-            mem_working_set_cap: 4,
+            provenance: "test-prov".to_string(),
+            provenance_summary: "T1=1 T2=0 T3=0 T4=0 T5=0 rows=1".to_string(),
+            profile: "a76-pi5".to_string(),
+            pipelines: 8,
+            dispatch_mops: 4,
+            dispatch_uops: 8,
+            reorder_window: 128,
             total_proxy_cycles: total,
             total_words: total,
             owner_totals: BTreeMap::from([("app".to_string(), total)]),

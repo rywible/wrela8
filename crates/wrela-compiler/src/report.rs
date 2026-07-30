@@ -569,7 +569,7 @@ pub fn render_exact_bytes_section(
 /// totals, and (when placement is non-empty) Core + Shared lines. No
 /// Fn/Term/Placeable lines (those live on `--stage=cost`).
 ///
-/// Loads `wrela-cost-v1` via [`cost::load_default`] and
+/// Loads `bench/a76-pi5.toml` via [`cost::load_default`] and
 /// `workloads.toml` (+ sibling `lane1-freq.txt` when `source` is set);
 /// missing/malformed table or workloads → `Err` (fail closed). Caller
 /// scores the same `CodegenProgram` layout already produced (no second
@@ -883,7 +883,7 @@ mod tests {
         )
         .expect("default cost table");
         assert!(
-            out.contains("Cost version=2"),
+            out.contains("Cost version=3"),
             "missing Cost version line:\n{out}"
         );
         assert!(out.contains("ghz=2.4"), "missing ghz:\n{out}");
@@ -900,14 +900,15 @@ mod tests {
     fn format_cost_summary_aggregates_owners() {
         use std::collections::BTreeMap;
         let report = CostReport {
-            version: 2,
+            version: 3,
             digest: "deadbeef".to_string(),
-            alu_ports: 2,
-            mem_ports: 2,
-            max_issue_per_cycle: 2,
-            branch_penalty: 3,
-            mem_reuse_window: 8,
-            mem_working_set_cap: 4,
+            provenance: "test-prov".to_string(),
+            provenance_summary: "T1=1 T2=0 T3=0 T4=0 T5=0 rows=1".to_string(),
+            profile: "a76-pi5".to_string(),
+            pipelines: 8,
+            dispatch_mops: 4,
+            dispatch_uops: 8,
+            reorder_window: 128,
             total_proxy_cycles: 30,
             total_words: 30,
             owner_totals: BTreeMap::from([
@@ -925,7 +926,7 @@ mod tests {
             .expect("format");
         assert_eq!(
             text,
-            "  Cost version=2 digest=deadbeef total=30 ghz=2.4 workloads_digest=wdigest\n\
+            "  Cost version=3 digest=deadbeef total=30 ghz=2.4 workloads_digest=wdigest\n\
                \x20   Workload name=flat proxy_cycles=30\n\
                \x20   Owner name=app proxy_cycles=10\n\
                \x20   Owner name=runtime proxy_cycles=12\n\
@@ -939,14 +940,15 @@ mod tests {
     fn format_cost_summary_omits_cores_when_placement_empty() {
         use std::collections::BTreeMap;
         let report = CostReport {
-            version: 2,
+            version: 3,
             digest: "deadbeef".to_string(),
-            alu_ports: 2,
-            mem_ports: 2,
-            max_issue_per_cycle: 2,
-            branch_penalty: 3,
-            mem_reuse_window: 8,
-            mem_working_set_cap: 4,
+            provenance: "test-prov".to_string(),
+            provenance_summary: "T1=1 T2=0 T3=0 T4=0 T5=0 rows=1".to_string(),
+            profile: "a76-pi5".to_string(),
+            pipelines: 8,
+            dispatch_mops: 4,
+            dispatch_uops: 8,
+            reorder_window: 128,
             total_proxy_cycles: 30,
             total_words: 30,
             owner_totals: BTreeMap::from([
@@ -966,7 +968,7 @@ mod tests {
         let text = format_cost_summary(&report, &empty, cost::DEFAULT_GHZ).expect("format");
         assert_eq!(
             text,
-            "  Cost version=2 digest=deadbeef total=30 ghz=2.4\n\
+            "  Cost version=3 digest=deadbeef total=30 ghz=2.4\n\
                \x20   Workload name=flat proxy_cycles=30\n\
                \x20   Owner name=app proxy_cycles=10\n\
                \x20   Owner name=runtime proxy_cycles=12\n\

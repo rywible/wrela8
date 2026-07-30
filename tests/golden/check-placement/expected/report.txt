@@ -161,10 +161,10 @@ ImageReport v0
   Actor name=Probe mailbox=4 slot=16 frame=64 state=8
   Turns count=2 stride=64 bytes=128
   Totals actors=2 drivers=0 ready_queue=3 group_arena=0 bytes=416
-  Cost version=2 digest=ca6c6ea1a27ab060 total=27092 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=27092
-    Owner name=app proxy_cycles=1404
-    Owner name=runtime proxy_cycles=25688
+  Cost version=3 digest=3d1fb3009124ded0 total=51470 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=51470
+    Owner name=app proxy_cycles=2633
+    Owner name=runtime proxy_cycles=48837
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=142 max_turn_proxy=34 turns_per_sec=70588235.2941176444 ms_per_turn_model=0.0000141667
-    Shared proxy_cycles=26950
+    Core n=0 proxy_cycles=346 max_turn_proxy=85 turns_per_sec=28235294.1176470593 ms_per_turn_model=0.0000354167
+    Shared proxy_cycles=51124
