@@ -895,6 +895,16 @@ fn dump(args: &[String]) -> ExitCode {
     wrela_compiler::codegen::set_omit_dmb(false);
     // Integrity Phase 2 Item M: reset Lane 2 block-count emission.
     wrela_compiler::codegen::set_block_count(false);
+    // plans/M20.md item C / decision 1608: bridge mode is on for every
+    // command. It emits **not one word** (proved by
+    // `unit:block_bridge_mode_leaves_the_word_stream_byte_identical`) — it
+    // only assigns the Lane 2 block ids and records each block's
+    // emitted-word span — and any path that composes a measured `f` vector
+    // at block grain needs those spans for the program it is about to
+    // score. Enabling it unconditionally is what keeps `--stage=cost`,
+    // `--stage=report`, `build` and `test` from each needing their own
+    // remember-to-turn-it-on.
+    wrela_compiler::codegen::set_block_bridge(true);
 
     let mut stage = None;
     let mut path = None;
@@ -1684,6 +1694,16 @@ fn test_cmd(args: &[String]) -> ExitCode {
     wrela_compiler::codegen::set_omit_dmb(false);
     // Integrity Phase 2 Item M: reset Lane 2 block-count emission.
     wrela_compiler::codegen::set_block_count(false);
+    // plans/M20.md item C / decision 1608: bridge mode is on for every
+    // command. It emits **not one word** (proved by
+    // `unit:block_bridge_mode_leaves_the_word_stream_byte_identical`) — it
+    // only assigns the Lane 2 block ids and records each block's
+    // emitted-word span — and any path that composes a measured `f` vector
+    // at block grain needs those spans for the program it is about to
+    // score. Enabling it unconditionally is what keeps `--stage=cost`,
+    // `--stage=report`, `build` and `test` from each needing their own
+    // remember-to-turn-it-on.
+    wrela_compiler::codegen::set_block_bridge(true);
 
     let mut path: Option<String> = None;
     let mut vmm_arg: Option<String> = None;
@@ -2128,6 +2148,16 @@ fn build_cmd(args: &[String]) -> ExitCode {
     wrela_compiler::codegen::set_omit_dmb(false);
     // Integrity Phase 2 Item M: reset Lane 2 block-count emission.
     wrela_compiler::codegen::set_block_count(false);
+    // plans/M20.md item C / decision 1608: bridge mode is on for every
+    // command. It emits **not one word** (proved by
+    // `unit:block_bridge_mode_leaves_the_word_stream_byte_identical`) — it
+    // only assigns the Lane 2 block ids and records each block's
+    // emitted-word span — and any path that composes a measured `f` vector
+    // at block grain needs those spans for the program it is about to
+    // score. Enabling it unconditionally is what keeps `--stage=cost`,
+    // `--stage=report`, `build` and `test` from each needing their own
+    // remember-to-turn-it-on.
+    wrela_compiler::codegen::set_block_bridge(true);
 
     let mut path = None;
     let mut out_dir: Option<String> = None;

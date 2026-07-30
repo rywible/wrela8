@@ -340,7 +340,7 @@
 //!   length, ...) — passed straight through as `mwir::size_of`'s own
 //!   `Err`, not re-worded.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::cost::{CostRule, EmittedWord, FlagEffect, MEM_SP_REG, MemClass, MemRef};
@@ -375,6 +375,8 @@ fn omit_dmb() -> bool {
 thread_local! {
     static BLOCK_COUNT: Cell<bool> = const { Cell::new(false) };
     static NEXT_BLOCK_ID: Cell<u32> = const { Cell::new(0) };
+    static BLOCK_BRIDGE: Cell<bool> = const { Cell::new(false) };
+    static BLOCK_SPANS: RefCell<Vec<BlockSpan>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Integrity Phase 2 Item M: enable/disable Lane 2 block-counter emission.
@@ -385,6 +387,117 @@ pub fn set_block_count(enabled: bool) {
 
 fn block_count() -> bool {
     BLOCK_COUNT.with(|c| c.get())
+}
+
+/// One Lane 2 block's identity **and** its emitted-word span — the bridge
+/// decision 1608 requires be proved rather than assumed.
+///
+/// `block_index` is the leader's ordinal **within its own fn** (0, 1, 2, …
+/// in MWIR / flattened-FlowWir order), not the global `id`. That is what
+/// makes `<fn_key>#<block_index>` survive across the two disjoint Lane 2
+/// id spaces plans/M20.md item C measured: `boot-actors` assigns 184 ids in
+/// the cost-stage closure `wrela dump --stage=cost` scores and 2527 in the
+/// `@test(runtime)` image the guest boots, so a global id indexes one
+/// program and not the other. `id` is recorded too, for the *offline*
+/// generator's id → key translation on the test-image closure only.
+///
+/// `word_start .. word_end` are half-open indices into the fn's own
+/// `CodegenFn::code`. Block 0's span starts at word 0 (it absorbs the
+/// prologue, which executes exactly as often as the first block) and the
+/// last block's span ends at `code.len()` (it absorbs the epilogue and any
+/// cancellation tail), so the spans **tile** the fn — the property
+/// `cost::bridge` checks and fails closed on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockSpan {
+    pub fn_key: String,
+    pub block_index: u32,
+    pub id: u32,
+    pub word_start: usize,
+    pub word_end: usize,
+}
+
+/// plans/M20.md item C / decision 1608: **bridge mode.** Assigns the same
+/// Lane 2 block ids `--block-count` assigns and records each block's
+/// emitted-word span, while emitting **not one extra word**.
+///
+/// Separate from `--block-count` on purpose. `--block-count` inserts a
+/// 5-word `__wrela_block_hit` call at every leader, which changes the very
+/// word stream `cost::score` prices — so a bridge built from an
+/// instrumented build would describe a program the cost model is not
+/// scoring. `unit:block_bridge_mode_leaves_the_word_stream_byte_identical`
+/// is the proof that bridge mode does not.
+/// Enabling clears the recorded spans and resets the id counter; **disabling
+/// does not**, so a caller can turn bridge mode off and still read
+/// [`block_spans`] for the build it just made — which is exactly what the
+/// cost stage does (codegen, then score, then compose). Stale spans from a
+/// different program cannot be mistaken for fresh ones: `cost::bridge`
+/// checks that every span names a fn of the program it is bridging and that
+/// the spans tile that fn's word range, and fails closed otherwise.
+pub fn set_block_bridge(enabled: bool) {
+    BLOCK_BRIDGE.with(|c| c.set(enabled));
+    if enabled {
+        BLOCK_SPANS.with(|s| s.borrow_mut().clear());
+        NEXT_BLOCK_ID.with(|c| c.set(0));
+    }
+}
+
+fn block_bridge() -> bool {
+    BLOCK_BRIDGE.with(|c| c.get())
+}
+
+/// The spans the most recent bridge-mode `codegen_program*` recorded, in
+/// `(fn, block_index)` order. Read-only snapshot; the TLS buffer is cleared
+/// by the next `set_block_bridge`.
+pub fn block_spans() -> Vec<BlockSpan> {
+    BLOCK_SPANS.with(|s| s.borrow().clone())
+}
+
+fn record_block_span(fn_key: &str, block_index: u32, id: u32, word_start: usize, word_end: usize) {
+    BLOCK_SPANS.with(|s| {
+        s.borrow_mut().push(BlockSpan {
+            fn_key: fn_key.to_string(),
+            block_index,
+            id,
+            word_start,
+            word_end,
+        })
+    });
+}
+
+/// Whether Lane 2 block **ids** are assigned this build — either because
+/// the guest counters are being emitted (`--block-count`) or because the
+/// cost stage is building the bridge. Emission itself is still gated on
+/// `block_count()` alone.
+fn block_ids_active() -> bool {
+    block_count() || block_bridge()
+}
+
+/// Turn one fn's `(leader → id)` vector plus its two-pass `word_offsets`
+/// prefix sum into tiling `BlockSpan`s (decision 1608's bridge, literally:
+/// `word_offsets[mwir_idx] → starting word index` is the only thing that
+/// relates the MWIR partition Lane 2 ids are assigned over to the
+/// emitted-word partition `s(b)` is computed over).
+///
+/// `block_ids[i]` is `Some` exactly at a leader. The span of leader `i`
+/// runs to the next leader's own word offset, so the non-leader
+/// instructions between them belong to the block they fall inside — which
+/// is what makes the spans tile. Two boundary rules, both because the
+/// prologue/epilogue are emitted words no MWIR index owns: block 0 starts
+/// at word 0 and the final block ends at `code_len`.
+fn record_spans(fn_key: &str, block_ids: &[Option<u32>], word_offsets: &[usize], code_len: usize) {
+    let leaders: Vec<(usize, u32)> = block_ids
+        .iter()
+        .enumerate()
+        .filter_map(|(i, id)| id.map(|id| (i, id)))
+        .collect();
+    for (n, &(mwir_idx, id)) in leaders.iter().enumerate() {
+        let word_start = if n == 0 { 0 } else { word_offsets[mwir_idx] };
+        let word_end = match leaders.get(n + 1) {
+            Some(&(next_idx, _)) => word_offsets[next_idx],
+            None => code_len,
+        };
+        record_block_span(fn_key, n as u32, id, word_start, word_end);
+    }
 }
 
 /// Whether Lane 2 block-counter emission is enabled (layout transcript bound).
@@ -406,7 +519,7 @@ const BLOCK_HIT_KEY: &str = "__wrela_block_hit";
 /// decision 1607: **every** owner (`app`, `runtime`, `driver`) is
 /// instrumented — the only exclusion is the counter helper itself.
 fn block_count_instruments(key: &str) -> bool {
-    block_count() && key != BLOCK_HIT_KEY
+    block_ids_active() && key != BLOCK_HIT_KEY
 }
 
 /// plans/M20.md item B: how many Lane 2 block ids the most recent
@@ -529,7 +642,12 @@ fn alloc_block_id() -> Result<u32, CodegenError> {
         c.set(id.saturating_add(1));
         id
     });
-    if id as usize >= crate::rtconfig::BLOCK_POOL_COUNT {
+    // The pool bounds the **guest's** `LANE2.hits` array, so it binds only
+    // when the guest is actually counting. Bridge mode (plans/M20.md item C)
+    // assigns the identical ids for an offline map with no guest array
+    // behind it, and must not turn an ordinary `wrela build` of a large
+    // program into a refusal.
+    if block_count() && id as usize >= crate::rtconfig::BLOCK_POOL_COUNT {
         return Err(CodegenError {
             message: format!(
                 "{FAIL_CLOSED_PREFIX}block-count pool exhausted (BLOCK_POOL_COUNT={})",
@@ -4414,7 +4532,9 @@ fn emit_fn(
         };
         // plans/M11.md decision 740: no checkpoint on sync loop back-edges.
         if let Some(id) = block_ids[i] {
-            probe.emit_block_hit(id);
+            if block_count() {
+                probe.emit_block_hit(id);
+            }
         }
         emit_one(inst, f, &mut probe)?;
         counts.push(probe.words.len());
@@ -4446,12 +4566,18 @@ fn emit_fn(
         // dissolved for console helpers; multi-core layout ownership
         // of `Reloc::CheckpointService` stays async-only).
         if let Some(id) = block_ids[i] {
-            ctx.emit_block_hit(id);
+            if block_count() {
+                ctx.emit_block_hit(id);
+            }
         }
         emit_one(inst, f, &mut ctx)?;
     }
     debug_assert_eq!(ctx.words.len(), word_offsets[f.body.len()]);
     emit_epilogue(f, &frame, &mut ctx)?;
+
+    if block_bridge() {
+        record_spans(_key, &block_ids, &word_offsets, ctx.words.len());
+    }
 
     Ok(CodegenFn {
         frame_size: frame.size,
@@ -4501,7 +4627,7 @@ fn mwir_block_leaders(body: &[Inst]) -> Vec<bool> {
 
 fn assign_mwir_block_ids(body: &[Inst]) -> Result<Vec<Option<u32>>, CodegenError> {
     let mut ids = vec![None; body.len()];
-    if !block_count() {
+    if !block_ids_active() {
         return Ok(ids);
     }
     for (i, is_leader) in mwir_block_leaders(body).into_iter().enumerate() {
@@ -8288,7 +8414,9 @@ fn emit_flowwir_fn(
             cold_seq: 0,
         };
         if let Some(id) = block_ids[i] {
-            probe.emit_block_hit(id);
+            if block_count() {
+                probe.emit_block_hit(id);
+            }
         }
         emit_flat_entry(
             entry,
@@ -8348,7 +8476,9 @@ fn emit_flowwir_fn(
     debug_assert_eq!(ctx.words.len(), prologue_len);
     for (i, entry) in flat.iter().enumerate() {
         if let Some(id) = block_ids[i] {
-            ctx.emit_block_hit(id);
+            if block_count() {
+                ctx.emit_block_hit(id);
+            }
         }
         emit_flat_entry(
             entry,
@@ -8367,6 +8497,10 @@ fn emit_flowwir_fn(
     debug_assert_eq!(ctx.words.len(), word_offsets[total + 1]);
     if gctx.arena_capacity > 0 {
         emit_async_cancelled_tail(&mut ctx);
+    }
+
+    if block_bridge() {
+        record_spans(fn_key, &block_ids, &word_offsets, ctx.words.len());
     }
 
     Ok(CodegenFn {
@@ -8470,7 +8604,7 @@ fn assign_flat_block_ids(
     state_flat_base: &[usize],
 ) -> Result<Vec<Option<u32>>, CodegenError> {
     let mut ids = vec![None; flat.len()];
-    if !block_count() {
+    if !block_ids_active() {
         return Ok(ids);
     }
     for (i, is_leader) in flat_block_leaders(flat, state_flat_base)
@@ -9515,8 +9649,11 @@ pub fn codegen_program_with_async(
     // image has no mailbox roots (dump without an `@image`, sync-only).
     _enqueue_specs: &[(String, u64, u64)],
 ) -> Result<CodegenProgram, CodegenError> {
-    if block_count() {
+    if block_ids_active() {
         NEXT_BLOCK_ID.with(|c| c.set(0));
+    }
+    if block_bridge() {
+        BLOCK_SPANS.with(|s| s.borrow_mut().clear());
     }
     let mut rodata = RodataPool::new();
     rodata.seed(&mwir.rodata);
@@ -9549,8 +9686,11 @@ pub fn codegen_program(
     mwir: &MwirProgram,
     layout: &LayoutCtx,
 ) -> Result<CodegenProgram, CodegenError> {
-    if block_count() {
+    if block_ids_active() {
         NEXT_BLOCK_ID.with(|c| c.set(0));
+    }
+    if block_bridge() {
+        BLOCK_SPANS.with(|s| s.borrow_mut().clear());
     }
     let mut rodata = RodataPool::new();
     rodata.seed(&mwir.rodata);
@@ -9938,6 +10078,26 @@ mod tests {
             "the error must name the bound it blew, got: {}",
             err.message
         );
+        set_block_count(false);
+    }
+
+    /// Bridge mode assigns ids for an **offline** map with no guest counter
+    /// array behind it, so `BLOCK_POOL_COUNT` — which sizes exactly that
+    /// array — must not bind there. Otherwise turning the bridge on for the
+    /// cost stage would turn an ordinary large build into a refusal.
+    #[test]
+    fn bridge_mode_alone_does_not_fail_closed_past_the_guest_pool() {
+        set_block_count(false);
+        set_block_bridge(true);
+        NEXT_BLOCK_ID.with(|c| c.set(crate::rtconfig::BLOCK_POOL_COUNT as u32));
+        let id = alloc_block_id().expect("bridge mode has no guest array to overflow");
+        assert_eq!(id as usize, crate::rtconfig::BLOCK_POOL_COUNT);
+        set_block_bridge(false);
+
+        // Control: with emission on, the same allocation is refused.
+        set_block_count(true);
+        NEXT_BLOCK_ID.with(|c| c.set(crate::rtconfig::BLOCK_POOL_COUNT as u32));
+        assert!(alloc_block_id().is_err(), "emission must still fail closed");
         set_block_count(false);
     }
 

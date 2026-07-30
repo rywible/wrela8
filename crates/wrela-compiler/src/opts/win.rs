@@ -1187,7 +1187,8 @@ mod tests {
             attach_workloads(
                 &mut report,
                 &WorkloadAttach::from_parts(set.clone(), freq.clone()),
-            );
+            )
+            .expect("attach");
             OverallSide::from_report(&report)
         };
 

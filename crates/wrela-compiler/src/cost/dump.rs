@@ -22,8 +22,8 @@ pub fn dump(
     attach: &WorkloadAttach,
 ) -> Result<String, String> {
     let mut report = score_program(program, table)?;
-    attach_workloads(&mut report, attach);
-    format_report(&report, placement, ghz)
+    attach_workloads(&mut report, attach)?;
+    format_report(&report, placement, ghz, Some(attach))
 }
 
 /// Convenience: load default workloads (+ sibling `lane1-freq.txt` when
@@ -35,7 +35,7 @@ pub fn dump_for_source(
     ghz: f64,
     source: Option<&Path>,
 ) -> Result<String, String> {
-    let attach = WorkloadAttach::load_default_for(source)?;
+    let attach = WorkloadAttach::load_default_for(source, program, table)?;
     dump(program, table, placement, ghz, &attach)
 }
 
@@ -43,6 +43,7 @@ fn format_report(
     report: &CostReport,
     placement: &PlacementTable,
     ghz: f64,
+    attach: Option<&WorkloadAttach>,
 ) -> Result<String, String> {
     let mut out = String::new();
     // plans/M20.md item D: the v2 `ports.* / max_issue_per_cycle /
@@ -86,7 +87,7 @@ fn format_report(
         1,
         &format!("Total proxy_cycles={}", report.total_proxy_cycles),
     );
-    append_workload_rows(&mut out, 1, report);
+    append_workload_rows(&mut out, 1, report, attach);
     for name in ["app", "runtime", "driver"] {
         let cycles = report.owner_totals.get(name).copied().unwrap_or(0);
         push_line(
@@ -113,8 +114,16 @@ fn format_report(
 }
 
 /// Emit `Workload name=…` rows. Flat first; other names sorted.
-/// Measured W get a nested `coverage=matched/total` line.
-pub(crate) fn append_workload_rows(out: &mut String, depth: usize, report: &CostReport) {
+/// Measured W get a nested `coverage=matched/total grain=<method|block>`
+/// line. The grain is on the review surface because a case may commit both
+/// sidecars and `attach_workloads` resolves that in favour of block grain —
+/// which must never be a silent choice (plans/M20.md item C).
+pub(crate) fn append_workload_rows(
+    out: &mut String,
+    depth: usize,
+    report: &CostReport,
+    attach: Option<&WorkloadAttach>,
+) {
     if report.workload_totals.is_empty() {
         push_line(
             out,
@@ -143,7 +152,12 @@ pub(crate) fn append_workload_rows(out: &mut String, depth: usize, report: &Cost
             &format!("Workload name={name} proxy_cycles={cycles}"),
         );
         if let Some(&(matched, total)) = report.workload_coverage.get(name) {
-            push_line(out, depth + 1, &format!("coverage={matched}/{total}"));
+            let grain = attach.and_then(|a| a.grain_of(name)).unwrap_or("method");
+            push_line(
+                out,
+                depth + 1,
+                &format!("coverage={matched}/{total} grain={grain}"),
+            );
         }
     }
 }
@@ -276,13 +290,16 @@ mod tests {
             &WorkloadAttach {
                 set,
                 frequencies: BTreeMap::new(),
+                block_frequencies: BTreeMap::new(),
+                bridge: None,
             },
-        );
+        )
+        .expect("attach");
         let placement = PlacementTable {
             entries: Vec::new(),
             cores: 0,
         };
-        let text = format_report(&report, &placement, DEFAULT_GHZ).expect("ok");
+        let text = format_report(&report, &placement, DEFAULT_GHZ, None).expect("ok");
         assert!(text.contains("workloads_digest="), "got:\n{text}");
         assert!(
             text.contains("Workload name=flat proxy_cycles=10"),
@@ -319,12 +336,18 @@ mod tests {
                 ("Worker.slow".to_string(), 1u64),
             ]),
         );
-        attach_workloads(&mut report, &WorkloadAttach { set, frequencies });
+        let attach = WorkloadAttach {
+            set,
+            frequencies,
+            block_frequencies: BTreeMap::new(),
+            bridge: None,
+        };
+        attach_workloads(&mut report, &attach).expect("attach");
         let placement = PlacementTable {
             entries: Vec::new(),
             cores: 0,
         };
-        let text = format_report(&report, &placement, DEFAULT_GHZ).expect("ok");
+        let text = format_report(&report, &placement, DEFAULT_GHZ, None).expect("ok");
         assert!(
             text.contains("Workload name=flat proxy_cycles=921"),
             "got:\n{text}"
@@ -343,8 +366,8 @@ mod tests {
             cores: 1,
             entries: vec![entry(ImageDeclRef::Actor(0), "Foo", 0)],
         };
-        let at_24 = format_report(&report, &placement, 2.4).expect("ok");
-        let at_1 = format_report(&report, &placement, 1.0).expect("ok");
+        let at_24 = format_report(&report, &placement, 2.4, None).expect("ok");
+        let at_1 = format_report(&report, &placement, 1.0, None).expect("ok");
         assert!(at_24.contains("ghz=2.4"), "got:\n{at_24}");
         assert!(at_1.contains("ghz=1"), "got:\n{at_1}");
         assert!(at_24.contains("turns_per_sec=1000000"), "got:\n{at_24}");
@@ -365,7 +388,7 @@ mod tests {
             cores: 1,
             entries: vec![entry(ImageDeclRef::Actor(0), "Empty", 0)],
         };
-        let text = format_report(&report, &placement, DEFAULT_GHZ).expect("ok");
+        let text = format_report(&report, &placement, DEFAULT_GHZ, None).expect("ok");
         assert!(
             text.contains("turns_per_sec=n/a ms_per_turn_model=n/a"),
             "got:\n{text}"

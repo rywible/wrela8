@@ -96,7 +96,10 @@ mod tests {
         );
         assert_eq!(
             site_count(),
-            206,
+            // 206 -> 207: plans/M20.md item C adds one producer-bug guard in
+            // `cost/bridge.rs` (score.rs must yield one schedule length per
+            // basic-block range).
+            207,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }
