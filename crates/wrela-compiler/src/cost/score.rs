@@ -103,6 +103,7 @@ use std::collections::BTreeMap;
 use crate::codegen::{CodegenFn, CodegenProgram};
 use crate::placement::PlacementTable;
 
+use super::branch::{BlockCounts, BranchTerms};
 use super::footprint::{self, CoreBudget, HotBlocks};
 use super::mem::MemState;
 use super::owner::classify_owner;
@@ -380,16 +381,12 @@ pub struct CrossExtra {
     pub serializes_window: bool,
 }
 
-/// Measured taken/total for one branch's block (item H).
+/// Measured taken/not-taken for one branch, live at item H.
 ///
-/// Placeholder: nothing constructs one yet. Under `W_flat` there is no
-/// bias information at all, which is exactly why item H charges zero
-/// there — no data, no charge (decision 1609).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BranchBias {
-    pub taken: u64,
-    pub total: u64,
-}
+/// Re-exported here because this is the path the rest of the tree already
+/// names it by; the type, its private fields, and the reason `None` is not a
+/// measured 0.5 all live with the model in [`super::branch`].
+pub use super::branch::BranchBias;
 
 // ---------------------------------------------------------------------------
 // The four seams
@@ -434,22 +431,29 @@ fn crosscore_extra(
     super::crosscore::charge(fn_key, ew, table, point, placement)
 }
 
-/// **Item H** owns this. The mispredict charge, scaled by measured
-/// per-block branch bias: a well-predicted branch costs ~0 whatever
-/// `[branch] mispredict_penalty` is, and a near-50/50 one costs the full
-/// swept penalty. Zero under `W_flat`, where there is no bias information
-/// — no data, no charge (decision 1609).
+/// **Item H's seam.** The mispredict charge, scaled by measured per-block
+/// branch bias: a well-predicted branch costs ~0 whatever `[branch]
+/// mispredict_penalty` is, and a near-50/50 one costs the full swept
+/// penalty. Zero under `W_flat` and zero for an unmeasured branch, where
+/// there is no bias information — no data, no charge (decision 1609).
 ///
-/// Today: zero, for the reason `CostTable::branch_penalty` records — this
-/// scoreboard cannot argue that a branch *is* mispredicted, so charging
-/// the penalty unconditionally would over-credit branch *removal*.
+/// Live: the model is [`crate::cost::branch`], which also owns SOG §4.8's
+/// front-end terms and records which of them a per-fn word stream can
+/// decide. `bias` arrives as `Option`, and `None` returns before the
+/// penalty is read at all — a measured 0.5 (the **full** penalty) and no
+/// data (zero) are as far apart as this term can put them, which is the
+/// point. This body is the seam; the reasoning and its oracles sit together
+/// in one file.
+///
+/// The penalty magnitude is read through `point` (`[sweep]
+/// mispredict_penalty`, 11-14 pinned at 14), never pinned here: it is T4.
 fn branch_mispredict_charge(
     table: &CostTable,
     point: &SweepPoint,
     bias: Option<BranchBias>,
 ) -> u64 {
-    let _ = (point, bias);
-    table.branch_penalty()
+    let _ = table;
+    super::branch::branch_mispredict_charge(point.get("mispredict_penalty"), bias)
 }
 
 /// **Item I** owns this. SOG §4.5's two boundaries: a load crossing a
@@ -571,23 +575,43 @@ pub fn score_program_at(
     placement: &PlacementTable,
     point: &SweepPoint,
 ) -> Result<CostReport, String> {
-    score_program_at_with_hot(program, table, placement, point, HotBlocks::All)
+    score_program_at_with_hot(
+        program,
+        table,
+        placement,
+        point,
+        HotBlocks::All,
+        BlockCounts::Flat,
+    )
 }
 
-/// Score at `point` with an explicit hot-text predicate — the per-core
-/// footprint term's only input beyond placement (plans/M20.md item F,
-/// decision 1603).
+/// Score at `point` with explicit measured-`f` inputs — the two places
+/// block-grain frequency enters the model, and the only ones.
 ///
-/// `HotBlocks::All` is `W_flat` (`f ≡ 1`), which makes the flat row a
-/// **static-footprint** row; item C passes `HotBlocks::Measured` once the
-/// block-grain `f` bridge exists. Everything else about scoring is
-/// unchanged, so wiring measured `f` in reshapes nothing.
+/// - `hot`: the per-core footprint term's hot-text predicate (item F,
+///   decision 1603). `HotBlocks::All` is `W_flat` (`f ≡ 1`), which makes the
+///   flat row a **static-footprint** row.
+/// - `counts`: per-block frequency for the branch model (item H).
+///   `BlockCounts::Flat` carries no counts at all, so the flat row charges
+///   **zero** mispredict — `f ≡ 1` is not bias information, and a naive
+///   ratio over it would be 0.5, i.e. the full penalty everywhere, which is
+///   backwards (see [`super::branch`]).
+///
+/// Both arrive as injected parameters rather than as a dependency on item
+/// C's bridge, so the branch and footprint terms are testable and mergeable
+/// without it. Item C wires the measured sides here, from the same
+/// `<fn_key>#<block_index>` sidecar: `HotBlocks::Measured(&|k, b| f(k, b) >
+/// 0)` and `BlockCounts::Measured(&|k, b| …)` returning the block's count
+/// together with the identity of the Lane 2 span it was measured on.
+/// Everything else about scoring is unchanged, so wiring measured `f` in
+/// reshapes nothing.
 pub fn score_program_at_with_hot(
     program: &CodegenProgram,
     table: &CostTable,
     placement: &PlacementTable,
     point: &SweepPoint,
     hot: HotBlocks<'_>,
+    counts: BlockCounts<'_>,
 ) -> Result<CostReport, String> {
     let machine = Machine::from_table(table)?;
     let mut fns = Vec::with_capacity(program.fns.len());
@@ -600,7 +624,7 @@ pub fn score_program_at_with_hot(
 
     let mut total_words = 0u64;
     for (key, f) in &program.fns {
-        let (proxy_cycles, terms) = score_fn(key, f, table, placement, point, &machine)?;
+        let (proxy_cycles, terms) = score_fn(key, f, table, placement, point, &machine, &counts)?;
         let words = f.code.len() as u64;
         total_proxy_cycles = total_proxy_cycles.saturating_add(proxy_cycles);
         total_words = total_words.saturating_add(words);
@@ -673,23 +697,43 @@ pub fn basic_block_ranges(code: &[EmittedWord]) -> Vec<(usize, usize)> {
 
 /// Scoreboard schedule length `s(b)` for each basic block, in layout
 /// order — the block-grain compose input (item C).
+///
+/// Flat: no measured per-block frequency, so no mispredict is charged here
+/// (item H's "no data, no charge"). Item C's `Σ f(b)×s(b)` becomes
+/// bias-aware by calling [`block_schedule_lengths_with_counts`] with the
+/// same vector it is weighting by, so the `s(b)` it multiplies and the fn
+/// total it is checked against are scored at the same point.
 pub fn block_schedule_lengths(
     fn_key: &str,
     code: &[EmittedWord],
     table: &CostTable,
     placement: &PlacementTable,
 ) -> Result<Vec<u64>, String> {
+    block_schedule_lengths_with_counts(fn_key, code, table, placement, &BlockCounts::Flat)
+}
+
+/// [`block_schedule_lengths`] with an explicit per-block frequency source.
+pub fn block_schedule_lengths_with_counts(
+    fn_key: &str,
+    code: &[EmittedWord],
+    table: &CostTable,
+    placement: &PlacementTable,
+    counts: &BlockCounts<'_>,
+) -> Result<Vec<u64>, String> {
     let machine = Machine::from_table(table)?;
     let point = SweepPoint::pinned(table);
+    let branch_terms = BranchTerms::compute(fn_key, code, table, &point, counts)?;
     let mut out = Vec::new();
     for (start, end) in basic_block_ranges(code) {
         let (s, _) = score_words(
             fn_key,
             &code[start..end],
+            start,
             table,
             placement,
             &point,
             &machine,
+            &branch_terms,
         )?;
         out.push(s);
     }
@@ -703,15 +747,28 @@ fn score_fn(
     placement: &PlacementTable,
     point: &SweepPoint,
     machine: &Machine,
+    counts: &BlockCounts<'_>,
 ) -> Result<(u64, BTreeMap<String, u64>), String> {
     let mut terms: BTreeMap<String, u64> = BTreeMap::new();
     if f.code.is_empty() {
         return Ok((0, terms));
     }
+    // Both branch halves are properties of the whole word stream — §4.8's
+    // fetch regions span block boundaries and a branch's successors are
+    // other blocks — so they are computed once per fn, before scheduling.
+    let branch_terms = BranchTerms::compute(key, &f.code, table, point, counts)?;
     let mut proxy_cycles = 0u64;
     for (start, end) in basic_block_ranges(&f.code) {
-        let (s, block_terms) =
-            score_words(key, &f.code[start..end], table, placement, point, machine)?;
+        let (s, block_terms) = score_words(
+            key,
+            &f.code[start..end],
+            start,
+            table,
+            placement,
+            point,
+            machine,
+            &branch_terms,
+        )?;
         proxy_cycles = proxy_cycles.saturating_add(s);
         for (k, v) in block_terms {
             *terms.entry(k).or_insert(0) += v;
@@ -726,13 +783,20 @@ fn score_fn(
 
 /// Dispatch / issue / retire over a straight-line word slice.
 /// Returns `(schedule_length, term_counts)`.
+///
+/// `word_base` is this slice's first word index **inside its fn**, which is
+/// how the per-fn branch terms (bias and SOG §4.8) are keyed: both are
+/// whole-stream properties, so they are computed once and looked up here.
+#[allow(clippy::too_many_arguments)]
 fn score_words(
     fn_key: &str,
     code: &[EmittedWord],
+    word_base: usize,
     table: &CostTable,
     placement: &PlacementTable,
     point: &SweepPoint,
     machine: &Machine,
+    branch_terms: &BranchTerms,
 ) -> Result<(u64, BTreeMap<String, u64>), String> {
     let mut terms: BTreeMap<String, u64> = BTreeMap::new();
     if code.is_empty() {
@@ -905,9 +969,17 @@ fn score_words(
 
         // --- latency: table + the four seams
         let mut lat = match ew.rule {
-            CostRule::Branch => {
-                exec_lat.saturating_add(branch_mispredict_charge(table, point, None))
-            }
+            // Item H: the bias-derived mispredict charge, plus the static
+            // SOG §4.8 front-end incidences attributed to this branch word.
+            // Both land on a branch, so both flow into this block's `s(b)`
+            // and therefore into `Σ f(b)×s(b)` without a second addend.
+            CostRule::Branch => exec_lat
+                .saturating_add(branch_mispredict_charge(
+                    table,
+                    point,
+                    branch_terms.bias_at(word_base + i),
+                ))
+                .saturating_add(branch_terms.frontend_at(word_base + i)),
             r if r.is_load() || r.is_store() => mem_access_latency(ew, &mut mem),
             _ => exec_lat,
         };
@@ -1049,7 +1121,11 @@ fn rule_latency(rule: CostRule, table: &CostTable, point: &SweepPoint) -> u64 {
 
 /// PC-relative branch target as a word index, or `None` for register
 /// branches / undecodable encodings.
-fn branch_target_index(word: u32, from: usize) -> Option<usize> {
+/// Word index a PC-relative branch targets, or `None` for a word this
+/// module cannot decode as one (`BR`, `RET`, a synthetic zero word).
+/// `pub(super)` so item H's branch model reads **this** CFG rather than
+/// building a second one.
+pub(super) fn branch_target_index(word: u32, from: usize) -> Option<usize> {
     let word_delta = if word & 0xFC00_0000 == 0x1400_0000 {
         // B: op=0, `0001_01 imm26`
         sign_extend(word & 0x03FF_FFFF, 26)
@@ -2363,24 +2439,36 @@ mod tests {
         assert_eq!(total(&mixed), 35);
     }
 
-    /// `[branch] mispredict_penalty` is a real 14 cycles in the profile,
-    /// but `branch_mispredict_charge` is **0 until item H**: this
-    /// scoreboard has no branch bias, so charging the penalty
-    /// unconditionally would over-credit branch *removal*.
+    /// The seam, from the scheduler's side (item H): `[branch]
+    /// mispredict_penalty` is a real 14 cycles in the profile, and the
+    /// charge is **bias-scaled** — zero with no data, the full penalty at a
+    /// measured 50/50. A lone branch word with no resolvable target has no
+    /// bias, so it still costs its T1 latency alone.
     #[test]
-    fn branch_charges_latency_only_until_item_h() {
+    fn branch_charges_the_mispredict_penalty_scaled_by_measured_bias() {
         let table = table();
         assert_eq!(
             total(&prog("f", vec![word(CostRule::Branch, None, &[])])),
-            1
+            1,
+            "no bias information ⇒ latency only"
         );
         let point = SweepPoint::pinned(&table);
         assert_eq!(branch_mispredict_charge(&table, &point, None), 0);
         assert_eq!(
             table.branch_row("mispredict_penalty").unwrap().value,
             14,
-            "the profile pins the real penalty; item H charges it bias-scaled"
+            "the profile pins the pessimistic end of the 11-14 bracket"
         );
+        // The seam reads its magnitude through the point, not the table.
+        let even = BranchBias::from_distinct_counts(5, 5).expect("bias");
+        assert_eq!(branch_mispredict_charge(&table, &point, Some(even)), 14);
+        assert_eq!(
+            branch_mispredict_charge(&table, &point.with("mispredict_penalty", 11), Some(even)),
+            11
+        );
+        // Well predicted ⇒ ~0 whatever the penalty is.
+        let skewed = BranchBias::from_distinct_counts(1, 999).expect("bias");
+        assert!(branch_mispredict_charge(&table, &point, Some(skewed)) <= 1);
     }
 
     /// `abort_val` is a `BL` (T1: lat 1, ports I + B) plus the swept
