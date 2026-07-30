@@ -1,12 +1,13 @@
 # Event-sourcing storage: the foundational store of wrela OS
 
 **Status:** design **PROPOSED** 2026-07-30, awaiting human review. Revised
-2026-07-30 after review round 1 (S4/S5 timestamp, S9 aggregates, S2 record
-sizing, S12 blobs). Not a plan; no milestone is activated by this document
-and no decision numbers are allocated here (the `S<n>` ids below become real
-numbered decisions when a plan is written). M20 is ACTIVE
-([plans/M20.md](../../../plans/M20.md), the A76 ruler) and nothing here
-interacts with it.
+twice on 2026-07-30 — round 1 (S4/S5 timestamp, S9 aggregates, S2 record
+sizing, S12 blobs) and round 2 (S4 `len`, S8 segment derivation, S10
+retention, S12 cap correction, new S13 integrity/encryption). Not a plan; no
+milestone is activated by this document and no decision numbers are
+allocated here (the `S<n>` ids below become real numbered decisions when a
+plan is written). M20 is ACTIVE ([plans/M20.md](../../../plans/M20.md), the
+A76 ruler) and nothing here interacts with it.
 
 **Context.** ROADMAP's crash-only failure decision (human, 2026-07-26)
 accepted bystander loss and paid for it with "a **durability requirement**
@@ -159,12 +160,15 @@ The envelope is deliberately tiny. Each field pays on every record forever:
 | --- | --- | --- |
 | `seq: u64` | **in** | Makes each record self-locating; enables binary-search recovery and distinguishes a stale record from a live one. |
 | `checksum: u32` | **in** | Torn-write detection, and the gate on the recovery search. FNV-1a specifically, matching the VMM recorder's `record::digest_hex`, so guest and host speak one digest and can cross-check. |
-| `kind: u8` | **in** | `Event \| Burn`. Required by S2's flush padding; leaves room for future record kinds. |
-| `len: u32` | **undecided** | Redundant if enum wire encoding is self-delimiting (tag determines variant extent). Decide with the enum encoding; do not include reflexively. |
+| `kind: u8` | **in** | `Event \| Burn \| Commit`. Required by S2's flush padding and S13's batch boundary; leaves room for future kinds. |
+| `len: u32` | **out** (review 2) | Three possible uses, none survive. *Decoding*: the payload is self-delimiting from the tag — `read_wire` "decodes only `@layout(wire)` types, checking the full encoded extent." *Validation*: the checksum already gates it; check then decode. *Forward compat*: does not exist (S3 fails closed on schema mismatch). Decisive: padding must be zeroed anyway for disk reproducibility, so checksumming the **whole fixed-size record** is free and gives the checksum a comptime-constant loop bound instead of a runtime trip count needing `@budget`. |
 | `timestamp` | **out** (human, review 1) | See S5. |
 | format version | **out** | Superblock's job, once. |
 | `prev_seq` | **out, permanently** | Existed only to thread per-aggregate streams. S9 deletes aggregates, so it has no consumer. This closes the design's only format-break risk. |
 | blob reference | **out** | A `BlobId` is app payload, not framing (S12). |
+
+Final envelope: `seq: u64` + `checksum: u32` + `kind: u8` = 13 bytes, padded
+to 16.
 
 ### S5. `seq` is the sole law of log order; no timestamp in the envelope
 
@@ -316,8 +320,20 @@ Segment-boundary triggering ties the snapshot to the only thing it exists to
 authorize (dropping that segment), is deterministic and replay-safe, needs
 no deadline-park dependency, and is self-pacing. Because every projection
 snapshots at the same `seq`, the truncation watermark is a **single number**.
-Segment size becomes the one knob trading recovery time against snapshot
-write amplification.
+
+**Segment size is derived, not picked** (review 2). The arithmetic shows why
+no constant is defensible: at 64-byte records with 4 MiB of projections,
+write amplification is `65536 / segment_records`, so holding snapshots to
+≤10% of log bytes wants ~40 MiB segments — but a 40 MiB tail read is most of
+a second of boot recovery on slow storage, and pulling recovery under 200 ms
+pushes amplification toward 40%. The tension is driven entirely by the ratio
+of projection memory to log write rate, which is a per-image fact.
+
+So the image declares a **recovery-time budget** ("recover in ≤ 250 ms") and
+the compiler derives segment size from projection bytes, `RECORD_BYTES`, and
+a device throughput figure — then reports the resulting write amplification.
+Same treatment as every other number in S3: a declared intent in, a build
+output and a review-surface number out.
 
 **Why the fence covers only the memcpy.** A table write is large — a
 1024 × 64 B table is 128 sectors — so it cannot happen synchronously in an
@@ -368,10 +384,26 @@ to a running system needs history that truncation destroyed — it can only
 start empty and be correct going forward. *You can run forever, but you can
 never ask a new question about the past.*
 
-That is the strongest argument for a retention policy that keeps **N
-segments beyond** the snapshot watermark rather than truncating right down
-to it. Retention depth is not "how much disk we have"; it is *how far back
-we can still answer a question we have not thought of yet.* This belongs in
+**Partial retention is a comfort blanket** (review 2). Keeping "a few extra
+segments beyond the watermark" is not enough history to backfill a
+meaningful new projection, but it looks like it might be. The honest
+position is binary:
+
+- **Retain everything** — never truncate, fail closed when full. Full
+  history; any new projection is backfillable.
+- **Truncate** — and accept that new projections start empty and are correct
+  going forward only.
+
+**v1 takes the first: never truncate.** When truncation eventually lands,
+retention-beyond-watermark is **zero** and "new projections start empty"
+becomes the documented contract rather than something softened with partial
+retention. The real escape hatch for "I need a new projection over old data"
+is archiving the log elsewhere before truncating and rebuilding offline —
+out of scope, but it is the honest answer to the question partial retention
+pretends to answer.
+
+Retention depth is not "how much disk we have"; it is *how far back we can
+still answer a question we have not thought of yet.* This belongs in
 normative text.
 
 **The bill for truncation**, up front: reclaiming segments makes the log
@@ -429,8 +461,21 @@ absurd.
 
 **Events are size-capped at build.** If `envelope + max_variant >
 MAX_EVENT_BYTES`, the build fails with "this variant belongs in a blob."
-Fails closed, and it is what makes S2's packing win reliable rather than
-accidental.
+
+*Correction (review 2): an earlier draft said this cap "sets `RECORD_BYTES`
+for everyone." It does not.* `RECORD_BYTES` is derived from the app's
+**actual** fattest variant; the cap only rejects builds above a ceiling, so a
+generous cap costs nothing. It is a guardrail against bulk data reaching the
+log by accident, not a tuning knob. **4 KiB** — comfortably above any
+structured event, comfortably below anything anyone would call a blob.
+
+What actually deserves attention is **variant size skew**, which the cap does
+not catch: one 4 KiB variant among forty 40-byte variants is legal and makes
+every event pay 4 KiB. The instrument is the report — emit the per-variant
+size table and the padding factor, and raise a `warning[performance]` (the
+class 04 §7's actor-chatter lint already establishes) when the fattest
+variant exceeds a multiple of the median. It fails soft, so a legitimately
+fat variant is not blocked, and it puts the number on the review surface.
 
 **Events reference blobs by `BlobId(u64)`, not by inline digest.** Thirty-two
 bytes of sha256 is a large fraction of a small event; a blob catalog
@@ -454,9 +499,85 @@ next to what S2 saves on records.
 It is still not a filesystem: no directories, no paths, no rename, no
 mutable extents.
 
-**This section is a sketch, not a design.** Blobs deserve their own pass,
-including the chunked async write path (a 30 MB blob must not stall a frame)
-and the interaction between slot reclaim and truncation.
+**Designed separately** in
+[2026-07-30-blob-tier-design.md](2026-07-30-blob-tier-design.md) (review 2).
+That pass supersedes the sketch above in one respect: reclamation turned out
+not to need an allocator at all. Because the catalog is a projection, a
+blob exists exactly when a committed event references it — so the free bitmap
+and slot generations are *folds*, a crash mid-write leaves nothing to clean
+up (the slot was never durably allocated), and there is no allocator journal,
+orphan sweep, or GC. The single ordering rule it adds — blob bytes durable
+before the referencing event is durable — is enforced structurally, since
+`commit()` yields the `BlobId` only after the blob's flush resolves.
+
+### S13. Integrity in v1; encryption deferred
+
+**Threat model first**, because it changes the answer more than any
+technical choice. 03 §10 puts "the wrela VMM and its device models; the host
+kernel" in the residual trusted base. So disk encryption with a key in guest
+memory defends against exactly one adversary: **someone who obtains the disk
+file but not the running system** (stolen card, exfiltrated backup). It does
+*not* defend against the host (in the TCB by construction) and it does *not*
+defend against the device owner — the console threat model — because the key
+must be reachable at boot, and 03 §10 forecloses the usual answer ("no
+third-party firmware or vendor blob in the path"), so there is no hardware
+root of trust to anchor it. Documentation must not imply otherwise.
+
+**Integrity is the property with value here** — "nobody can forge an event"
+matters more than "nobody can read one" for entitlements and achievements —
+and this design hands it over cheaply, because an append-only log with a
+monotonic `seq` is already a hash chain waiting to happen.
+
+**v1 ships the structure, not the cryptography** (human, review 2). A
+`Commit` record closes each flush batch, using the existing `kind` byte and
+a plain FNV hash over the batch. It earns its place on structure alone:
+today the durable tail is *inferred* ("last record with a valid checksum"),
+and a batch marker makes it **explicit** — binary-search for the tail, then
+walk back at most one batch to the last valid `Commit`; everything after is
+uncommitted and discarded. Better recovery boundary, no crypto.
+
+**The later upgrade is additive**: swap the batch hash to SHA-256 and chain
+each `Commit` to its predecessor, declared by a `scheme` field in the
+superblock. Structural format unchanged. SHA-256 in wrela is ~200 lines with
+`wrela_machine::sha256` available as a differential oracle.
+
+**Deferring encryption removes a language feature and a machine feature from
+the critical path**, which is the main reason to defer it:
+
+| Dependency | Status |
+| --- | --- |
+| Sealed `Secret[T]` | Ledger gap `values.marked.secret`: "No sealed `Secret[T]` exists — only a *name-based* Format refusal on a type spelled `Secret` … a real secret gets no protection at all, because there is nothing to protect it with." An encrypting store is literally ROADMAP's named flip condition for this clause. |
+| Secrets channel | 06 §3 lists "provisioned secrets channel" at boot; `machine_info`'s own comment says it "is stdlib-milestone territory, **not named as a field here yet**." No field exists. |
+| A crypto primitive | No hash of any kind in the stdlib. |
+
+**Futureproofing, so encryption stays additive** — nearly free, do it now:
+
+- a `scheme` field in the superblock, so a disk declares its own format;
+- the `kind` byte already has room;
+- a stream cipher preserves payload length, so per-record size never changes,
+  and an AEAD tag would ride in the `Commit` record rather than every
+  envelope;
+- **`seq` is never reused** — state this normatively. It is wanted anyway,
+  and it happens to be exactly the nonce-uniqueness invariant: deriving a
+  nonce as `(key_epoch || seq)` would make ciphertext a pure function of
+  (key, event sequence), keeping disk goldens stable with no dependency on
+  the recorded entropy stream. The design's core invariant *is* the
+  invariant encryption needs.
+
+**Recorded for whoever implements it**, so the analysis is not redone:
+ChaCha20-Poly1305 over AES — 06 §1 declares the ISA baseline as "ARMv8.2-A +
+NEON/ASIMD" and does **not** name the crypto extensions, so AES instructions
+would mean extending the contract, while constant-time software AES is
+genuinely hard and table-driven AES is cache-timing vulnerable; ChaCha is
+adds/XORs/rotates, constant-time by construction, and maps onto the existing
+closed SIMD set. Encrypt-then-MAC with the envelope in plaintext (recovery
+must read `seq` without a key). Encrypt snapshots and blobs too — a
+projection is often *more* revealing than the events, because it is the
+answer rather than the raw material. And `wrela dump` must decrypt with the
+test key so goldens stay reviewable: CLAUDE.md's ground truth #3 is "the
+golden diff is the review surface," and an encrypted dump is an unreviewable
+blob — running goldens with encryption off instead would leave the crypto
+path with no golden coverage at all.
 
 ### Latency note
 
@@ -464,11 +585,25 @@ A console is a 16.6 ms frame budget and storage must never stall a frame.
 Appends and async flushes are fine — that is what S6 does. The snapshot
 **burst** (S8) is the exposure: every projection written at one segment
 boundary, fenced memcpy plus an I/O burst, is exactly the shape that drops a
-frame. Likely resolution is scheduling rather than staggering — snapshot
-during vblank, hung off the vsync event the pixels rung will provide — which
-preserves the single-watermark simplicity. Flagged rather than settled: the
-burst decision was taken before this requirement was in view. Blob writes
-(S12) have the same exposure and the same likely answer.
+frame.
+
+**Settled in review 2: keep the burst, and stop worrying about it.** vblank
+scheduling is not a live option anyway — it needs the pixels rung's vsync
+event, and pixels is an unscheduled intention. But the real reason it is safe
+to defer is that **the disk format already supports the alternative**: S8
+stores each projection's own `applied_seq` in its own snapshot header, so
+chunking the fence (copy one projection, release, copy the next) needs no
+format change at all. It costs only the watermark becoming a min across
+projections instead of a single number, and it drops the max stall from
+*total* projection bytes to *largest* projection. That makes this a runtime
+policy decision, not a format decision, and therefore deferrable at zero
+risk.
+
+So: build the burst, and have the report price the fenced memcpy from total
+projection bytes — precisely the kind of number M20's A76 model exists to
+produce. If the priced stall is a meaningful fraction of 16.6 ms, that is the
+evidence to chunk, and chunking is a small additive change. Blob writes (S12)
+have the same exposure and the same answer.
 
 ## Findings: promises with no implementation
 
@@ -483,6 +618,8 @@ preconditions.
 | Host-file-backed disk | **Absent.** `BlkDevice` owns `disk: Vec<u8>`, zeroed per boot, no host file; `T_FLUSH` returns `STATUS_OK` and does nothing. | 06 §6, §8 |
 | A real blk driver | [stdlib/drivers/blk.wr](../../../stdlib/drivers/blk.wr) is a fixture, not a driver: one 512-byte `DmaBlock`, one in-flight op, a phase counter, `capacity_sectors = 16` hardcoded, no mailbox. | 03, 06 §6 |
 | Checksum primitive | No hash of any kind in the stdlib. | — |
+| Sealed `Secret[T]` | **Ledger gap** `values.marked.secret` — a name-based Format refusal on a type *spelled* `Secret`; a real secret gets no protection. Not a v1 dependency after S13. | 05 §6, 03 §8 |
+| Secrets channel | **Doc promise, no field.** `machine_info` reserves revision / wall seed / deadline / exit code / test scratch; the secrets channel is "not named as a field here yet." Not a v1 dependency after S13. | 06 §3, 02 §12 |
 | `db` package alias | `core` and `drivers` only; `drivers/` is documented as `@driver` modules **only**, so a plain `@actor` store cannot live there. | 02 §2.1 |
 | Normative sector size | **Absent.** 512 lives only as a VMM Rust constant; 06 never mentions sectors. See S2. | 06 §6 |
 | Guest-side deadline parking | **VMM side implemented** (`OFF_NEXT_DEADLINE`, `capped_park_deadline_ns`); guest side absent — `wrela-vmm/src/lib.rs` says in as many words that no `.wr` source can exercise a real deadline. Blocks a time-based linger only; not on the critical path. | 06 §5 |
@@ -535,41 +672,50 @@ Not a plan; the shape a plan would take.
    `read_wire`, FNV-1a, `db` alias.
 2. **Real device** — VMM file-backed disk, real flush, 06 §8 revision, blk
    driver rewrite, boot-golden migration.
-3. **The log** — superblock, envelope, append, batching, burn-slot padding,
-   binary-search recovery, `StorageFull`.
+3. **The log** — superblock (incl. the S13 `scheme` field), envelope, append,
+   batching, burn-slot padding, `Commit` records, binary-search recovery plus
+   the bounded walk-back to the last commit, `StorageFull`.
 4. **Projections** — `img.projection`, `Table`, select-where, comptime fold
    tests.
 5. **Snapshots** — A/B extents, segment trigger, fenced memcpy, recovery
    integration.
-6. **Later, evidence-gated** — truncation and segment reclaim (with the
-   keep-N-segments policy of S10); the blob tier (own design pass); vblank
-   snapshot scheduling; time-based linger; wall-clock capability for app
-   timestamps.
+6. **Later, evidence-gated** — truncation and segment reclaim (S10, and the
+   "new projections start empty" contract that comes with it); the blob tier
+   (own design pass); the SHA-256 hash chain (S13); encryption, behind sealed
+   `Secret[T]` and the secrets channel; chunked snapshot fencing / vblank
+   scheduling; time-based linger; wall-clock capability for app timestamps.
 
 Realistically two to three milestones through step 5.
 
 ## Open questions
 
-1. **Does `len` earn its place in the envelope?** Decide together with enum
-   wire encoding — redundant if the encoding is self-delimiting.
-2. **`MAX_EVENT_BYTES`.** The S12 build cap. Wants a number; it sets
-   `RECORD_BYTES` for everyone and therefore the packing ratio.
-3. **Snapshot burst versus vblank scheduling.** The burst decision predates
-   the frame-budget requirement; see the latency note.
-4. **Segment size**, and **how many segments to retain beyond the watermark**
-   (S10). The first trades recovery time against snapshot write
-   amplification; the second is how much "asking a new question about the
-   past" is worth.
+1. **The recovery-time budget** an image declares, from which S8 derives
+   segment size. This is now the only free number in the geometry, and it
+   wants a product answer ("boot in under N seconds") rather than a storage
+   one.
+2. **Device throughput figure** for that derivation. Declared per target,
+   or a conservative constant with the report showing sensitivity?
+3. **Variant-skew warning threshold** (S12) — what multiple of the median
+   variant size should raise `warning[performance]`.
 
 *Resolved in review round 1:* whether to reserve `prev_seq` (no — S9 deletes
 its only consumer); whether records pin to a sector (no — S2); whether the
 envelope carries a timestamp (no — S5).
+
+*Resolved in review round 2:* `len` in the envelope (no — S4); what
+`MAX_EVENT_BYTES` is for (a bulk guardrail at 4 KiB, not a tuning knob —
+S12); burst versus vblank (burst, deferrable at zero risk because the format
+already supports chunking — latency note); retention beyond the watermark
+(zero; v1 never truncates — S10); encryption (deferred; integrity structure
+only — S13).
 
 ## Non-goals
 
 A filesystem. Directories, paths, rename, mutable extents. A query language
 or planner. Joins, aggregation beyond count, ad-hoc queries. Indexes (until a
 profile). Migrations (v1 fails closed on schema mismatch). Aggregates as a
-first-class concept. Per-stream logs. Circular logs. Key compaction. Restart
-semantics beyond the existing crash-only policy. Replacing virtio-blk.
-Anything requiring a general device framework.
+first-class concept. Per-stream logs. Circular logs. Key compaction.
+Truncation (v1 never truncates — S10). Encryption, and any claim of
+anti-tamper against an attacker with physical access (S13). Restart semantics
+beyond the existing crash-only policy. Replacing virtio-blk. Anything
+requiring a general device framework.

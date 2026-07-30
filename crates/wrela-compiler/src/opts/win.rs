@@ -2057,7 +2057,6 @@ mod tests {
     /// win is a dispatch/issue-bandwidth effect and not a latency or memory
     /// one — the box varies every bracketed latency the model has, and on five
     /// of six cases NarrowImm's delta does not move across it at all.
-    #[test]
     /// **Deep lane.** `#[ignore]`d by default and run explicitly by
     /// `cargo xtask check`, matching how every `fuzz_*` lane already splits a
     /// smoke budget from a deep one (`crates/xtask/src/main.rs`). This test
@@ -2068,6 +2067,7 @@ mod tests {
     /// lane, and a whole-corpus ∀ gate belongs in the latter. Nothing about
     /// the oracle's strength changed — only which lane runs it.
     #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
+    #[test]
     fn narrow_imm_alone_wins_at_every_box_point() {
         let cmp = compare_opt_lists_over_box(&[], &[OptId::NarrowImm]).expect("sweep");
         assert_sweep_wins(&cmp, "NarrowImm", "dev");
@@ -3198,7 +3198,6 @@ mod tests {
 
     /// **The live ∀ sweep: `release` vs `dev`.** Records the per-point
     /// table, the nominal box cardinality and the surviving `k` per case.
-    #[test]
     /// **Deep lane.** `#[ignore]`d by default and run explicitly by
     /// `cargo xtask check`, matching how every `fuzz_*` lane already splits a
     /// smoke budget from a deep one (`crates/xtask/src/main.rs`). This test
@@ -3209,6 +3208,7 @@ mod tests {
     /// lane, and a whole-corpus ∀ gate belongs in the latter. Nothing about
     /// the oracle's strength changed — only which lane runs it.
     #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
+    #[test]
     fn release_wins_at_every_point_of_the_residual_box() {
         let cmp = compare_opt_lists_over_box(&[], RELEASE_OPTS).expect("sweep");
         let table = format_sweep_table(&cmp, "dev", "release");
