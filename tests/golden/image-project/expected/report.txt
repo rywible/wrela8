@@ -8,7 +8,7 @@ ImageReport v0
   Quota max_exhaustive_cases=65536
   Input path=actor.wr sha256=4b7a743e7f1ce408b38d01780e9c122cf81ead61b0922eac45cbbe9bef5ac1f5
   Input path=image.wr sha256=73c30b52367f4cd3f94ee05adba51e7aede76ce2efca34a251829cb18306f23c
-  Input path=<generated> sha256=8312c74911cb3b57cea16b290fa1c3eabdd1894e2f18d5e48666a43620edc82a
+  Input path=<generated> sha256=0c6e42ac8e0102de1e2ce61a7c086c352353574598212203fdf67c90bfe52a93
   Name value=project-appliance
   Target value=Target.wrela_machine_v1
   Driver index=0 type=Blk
@@ -168,10 +168,11 @@ ImageReport v0
   Turns count=1 stride=64 bytes=64
   Totals actors=1 drivers=1 ready_queue=2 group_arena=0 bytes=400
   Pool name=Buffers kind=image payload=u32 slots=4 slot_bytes=64 base=0x40540190 size=256 align=8 coherency=coherent device=none
-  Cost version=3 digest=3d1fb3009124ded0 total=35180 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=35180
-    Owner name=app proxy_cycles=1908
-    Owner name=runtime proxy_cycles=33272
+  Cost version=3 digest=043f8dc4b21c4b12 total=29281 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=29281
+    Owner name=app proxy_cycles=1639
+    Owner name=runtime proxy_cycles=27642
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=214 max_turn_proxy=68 turns_per_sec=35294117.6470588222 ms_per_turn_model=0.0000283333
-    Shared proxy_cycles=34966
+    Core n=0 proxy_cycles=173 max_turn_proxy=55 turns_per_sec=43636363.636363633 ms_per_turn_model=0.0000229167
+    Budget n=0 hot_text_bytes=89664 l1i_bytes=65536 over_l1i_lines=377 over_l2_lines=0 text_pages=22 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=5 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=2639
+    Shared proxy_cycles=29108

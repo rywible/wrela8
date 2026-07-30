@@ -583,9 +583,14 @@ pub fn append_cost_summary(
 ) -> Result<(), String> {
     let table = cost::load_default()?;
     let mut report = cost::score_program(program, &table, placement)?;
-    let attach = cost::WorkloadAttach::load_default_for(source)?;
-    cost::attach_workloads(&mut report, &attach);
-    out.push_str(&format_cost_summary(&report, placement, ghz)?);
+    let attach = cost::WorkloadAttach::load_default_for(source, program, &table, placement)?;
+    cost::attach_workloads(&mut report, &attach)?;
+    out.push_str(&format_cost_summary(
+        &report,
+        placement,
+        ghz,
+        Some(&attach),
+    )?);
     Ok(())
 }
 
@@ -595,6 +600,7 @@ pub fn format_cost_summary(
     report: &CostReport,
     placement: &PlacementTable,
     ghz: f64,
+    attach: Option<&cost::WorkloadAttach>,
 ) -> Result<String, String> {
     let app = report.owner_totals.get("app").copied().unwrap_or(0);
     let runtime = report.owner_totals.get("runtime").copied().unwrap_or(0);
@@ -611,7 +617,7 @@ pub fn format_cost_summary(
     }
     header.push('\n');
     let mut out = header;
-    cost_dump::append_workload_rows(&mut out, 2, report);
+    cost_dump::append_workload_rows(&mut out, 2, report, attach);
     out.push_str(&format!(
         "    Owner name=app proxy_cycles={app}\n\
          \x20   Owner name=runtime proxy_cycles={runtime}\n\
@@ -942,8 +948,9 @@ mod tests {
             }],
         };
         // Default placement has cores=1 → Core + Budget + Shared lines appear.
-        let text = format_cost_summary(&report, &PlacementTable::default(), cost::DEFAULT_GHZ)
-            .expect("format");
+        let text =
+            format_cost_summary(&report, &PlacementTable::default(), cost::DEFAULT_GHZ, None)
+                .expect("format");
         assert_eq!(
             text,
             "  Cost version=3 digest=deadbeef total=30 ghz=2.4 workloads_digest=wdigest\n\
@@ -987,7 +994,7 @@ mod tests {
             entries: Vec::new(),
             cores: 0,
         };
-        let text = format_cost_summary(&report, &empty, cost::DEFAULT_GHZ).expect("format");
+        let text = format_cost_summary(&report, &empty, cost::DEFAULT_GHZ, None).expect("format");
         assert_eq!(
             text,
             "  Cost version=3 digest=deadbeef total=30 ghz=2.4\n\

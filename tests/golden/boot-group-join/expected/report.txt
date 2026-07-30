@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_group_join.wr sha256=b93214d1506d4fc5110dbddc0779060e02c66faf36660e7e2819c85d31847826
-  Input path=<generated> sha256=4003b9bc6bf061670c897cd543730a3d793ef54b55b254b0aae08cd793ce57f5
+  Input path=<generated> sha256=4d036042693fb2588c4b27d2883e479e5a6af9d9f2025f8f9667e827a855b6b4
   Name value=boot-group-join
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Doubler
@@ -160,10 +160,11 @@ ImageReport v0
   Turn fn=test_join frame=432
   Turns count=4 stride=512 bytes=2048
   Totals actors=1 drivers=0 ready_queue=2 group_arena=1 bytes=2288
-  Cost version=3 digest=3d1fb3009124ded0 total=38568 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=38568
-    Owner name=app proxy_cycles=5316
-    Owner name=runtime proxy_cycles=33252
+  Cost version=3 digest=043f8dc4b21c4b12 total=32004 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=32004
+    Owner name=app proxy_cycles=4405
+    Owner name=runtime proxy_cycles=27599
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=53 max_turn_proxy=53 turns_per_sec=45283018.8679245263 ms_per_turn_model=0.0000220833
-    Shared proxy_cycles=38515
+    Core n=0 proxy_cycles=40 max_turn_proxy=40 turns_per_sec=60000000 ms_per_turn_model=0.0000166667
+    Budget n=0 hot_text_bytes=93312 l1i_bytes=65536 over_l1i_lines=434 over_l2_lines=0 text_pages=23 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=3038
+    Shared proxy_cycles=31964

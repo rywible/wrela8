@@ -105,6 +105,18 @@
 //!              separate "full corpus" form exists yet — every report-
 //!              bearing golden is already the whole population either
 //!              name covers at this milestone's scale).
+//!   gen-lane2-freq <case>
+//!              plans/M20.md item C: regenerate `tests/golden/<case>/
+//!              lane2-freq.txt`, the block-grain `f` sidecar. Builds the
+//!              `@test(runtime)` image under `--block-count`, boots it on
+//!              the codesigned `wrela-vmm` with `--dump-lane2` (the host
+//!              DRAM snapshot — Lane 2's normative sink under decision
+//!              1610, since the transcript line is capped), and translates
+//!              every snapshot id to `<fn_key>#<block_index>` through that
+//!              same build's own assignment map. An id with no key is a
+//!              fail-closed error, never a nearest-offset guess. Not part
+//!              of `check`: it *writes* a committed fixture, so it is run
+//!              deliberately and the diff is reviewed.
 //!   ledger     verify spec-coverage ledger (ledger/ledger.toml)
 //!   agnostic-sweep
 //!              plans/M20.md item A: fail closed if any of the cost
@@ -200,6 +212,7 @@ mod bench;
 mod corpus;
 mod fuzz;
 mod golden;
+mod lane2_freq;
 mod stdlib_test;
 
 use agnostic_sweep::*;
@@ -207,6 +220,7 @@ use bench::*;
 use corpus::*;
 use fuzz::*;
 use golden::*;
+use lane2_freq::*;
 use stdlib_test::*;
 
 pub(crate) fn root() -> PathBuf {
@@ -268,12 +282,17 @@ fn main() -> ExitCode {
         Some("diff-eval") => diff_eval(),
         Some("diff-block-count") => diff_block_count(),
         Some("diff-blk") => diff_blk(),
+        // plans/M20.md item C: the Lane 2 block-grain sidecar generator.
+        Some("gen-lane2-freq") => match args.get(1) {
+            Some(case) => gen_lane2_freq(case),
+            None => Err("usage: cargo xtask gen-lane2-freq <golden-case>".to_string()),
+        },
         Some("profile") => profile(),
         Some("fuzz") => fuzz(&args[1..]),
         Some("bench") => bench(&args[1..]),
         _ => {
             eprintln!(
-                "usage: cargo xtask <check|golden [--update]|corpus [--sema]|fuzz [lexer|parser|sema|eval|lower|async|imports|report] [--iters N] [--seed S]|roundtrip|report-determinism|ledger|agnostic-sweep|stdlib-test|repro|diff-eval|diff-block-count|diff-blk|profile|bench <compiler|build|guest>>"
+                "usage: cargo xtask <check|golden [--update]|corpus [--sema]|fuzz [lexer|parser|sema|eval|lower|async|imports|report] [--iters N] [--seed S]|roundtrip|report-determinism|ledger|agnostic-sweep|stdlib-test|repro|diff-eval|diff-block-count|diff-blk|gen-lane2-freq <case>|profile|bench <compiler|build|guest>>"
             );
             return ExitCode::FAILURE;
         }

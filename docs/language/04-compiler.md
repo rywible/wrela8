@@ -314,10 +314,31 @@ instrumenting `app`, `runtime`, and `driver` code alike, since the
 generated runtime is the largest scored owner and an app-only `f` would
 explain almost none of it; **Lane 3**
 host/VMM agreement that Lane-2 vectors match on a named control case.
+Lane 2's normative sink is the **host memory snapshot** taken after halt,
+not the guest transcript: the machine's console is a fixed, statically
+bounded surface ([02](02-machine.md) §12.2) and the number of hit blocks
+has no static bound, so the transcript's hit line is a **bounded
+diagnostic** — it carries at most a fixed number of pairs and must then
+report the count it dropped, so a dropped pair is loud rather than
+silent. A frequency vector is read from the snapshot. Lane 3 agreement is
+therefore over **the pairs the transcript actually carries**, and the
+dropped count must be independently accounted for by the snapshot, so a
+truncated line can never agree by being compared with itself.
+A measured block is identified by function key and block index within
+that function, never by a whole-program counter: the instrumented image
+and the scored program are different closures with disjoint counter
+spaces, so a raw index resolves against the wrong program. That identity
+is resolved to a word range offline, and the resolution is the bridge
+that must be proved rather than assumed.
 Widening what is instrumented never narrows what is scored: the coverage
 denominator is the **whole scored set**, never the instrumented subset —
 redefining it to the measured subset is the same "reward measuring less"
-failure as dropping an uncovered hit.
+failure as dropping an uncovered hit. A measured block whose function is
+absent from the scored program is an **uncovered** hit, charged at the
+program maximum like any other; when the measured image is much larger
+than the scored closure, that term may dominate the row, and the honest
+response is to report the coverage fraction, never to narrow what was
+measured.
 Static-shape opts (delete or shorten the stream without changing dynamic
 shape) may land on the flat land-gate alone. Frequency-dependent opts
 (guard, outline, specialize, unroll-as-dynamic-win) land only under

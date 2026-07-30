@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/image_helper_accept.wr sha256=7a3aba37285b78f4aaadb0d31b216d57880f4c4f7d40eb10d8d1ca0167822c04
-  Input path=<generated> sha256=88603dccf4485f1aed7eb209c808b737c6b563c84a571a4ea44a7ecdc79c6b19
+  Input path=<generated> sha256=0e88b70ba12d3c4125a4a96f738745435e7f851d1eb219275822c752f7939f0b
   Name value=helper-ok
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Store
@@ -157,10 +157,11 @@ ImageReport v0
   Actor name=Store mailbox=16 slot=16 frame=64 state=8
   Turns count=1 stride=64 bytes=64
   Totals actors=1 drivers=0 ready_queue=2 group_arena=0 bytes=376
-  Cost version=3 digest=3d1fb3009124ded0 total=34811 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=34811
-    Owner name=app proxy_cycles=1756
-    Owner name=runtime proxy_cycles=33055
+  Cost version=3 digest=043f8dc4b21c4b12 total=29023 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=29023
+    Owner name=app proxy_cycles=1520
+    Owner name=runtime proxy_cycles=27503
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=62 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn_model=n/a
-    Shared proxy_cycles=34749
+    Core n=0 proxy_cycles=54 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn_model=n/a
+    Budget n=0 hot_text_bytes=88832 l1i_bytes=65536 over_l1i_lines=364 over_l2_lines=0 text_pages=22 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=5 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=2548
+    Shared proxy_cycles=28969

@@ -148,6 +148,7 @@ TURNS_BASE,
     MB_POOL_COUNT,
     METHOD_CALL_POOL_COUNT,
     BLOCK_POOL_COUNT,
+    BLOCK_BOUND_PRINT_PAIRS,
     MB0_CTL,
     MB1_CTL,
     MB2_CTL,
@@ -838,7 +839,22 @@ pub fn __wrela_block_hit(id: usize):
     return
 
 # Compact Lane 2 block (one console line after Lane 1, when enabled):
-#   lane2 hits=<id>:<count>,...   (non-zero only, ascending id)
+#   lane2 hits=<id>:<count>,... truncated=<N>   (non-zero only, ascending id)
+#
+# plans/M20.md item C / decision 1610: this line is a **bounded, explicitly
+# truncating diagnostic**, not Lane 2's normative sink. At most
+# BLOCK_BOUND_PRINT_PAIRS pairs are printed; `truncated=<N>` then names how
+# many non-zero blocks were dropped, so a dropped pair is loud and never
+# silent. The marker prints unconditionally (N=0 when nothing was dropped) so
+# that its absence identifies a pre-1610 transcript rather than a complete
+# one. Real boots do truncate: measured non-zero blocks are 372 (boot-actors)
+# to 609 (boot-cross-core-mailbox-depth) against 128 printable pairs, and
+# console::DATA_SIZE (16 KiB) cannot bound 609 pairs at any honest per-pair
+# worst case. The **full** f vector comes from the host DRAM snapshot
+# (`wrela-vmm --dump-lane2`), which has no console bound; 04 §5 names the
+# snapshot as Lane 2's normative sink and this line as the diagnostic, and
+# Lane 3 agreement compares the snapshot against the pairs this line
+# actually carries.
 pub fn __wrela_lane2_dump():
     if LANE2.enabled == 0:
         return
@@ -861,20 +877,40 @@ pub fn __wrela_lane2_dump():
     _ = __wrela_console_append_line_buf(11)
     first: u64 = 1
     i: usize = 0
+    printed: usize = 0
+    dropped: u64 = 0
     # plans/M20.md item B: BLOCK_POOL_COUNT is 3072.
     @budget(bound=4096)
     while i < BLOCK_POOL_COUNT:
         c = LANE2.hits[i]
         if c != 0:
-            if first == 0:
-                TEST_LINE_BUF.bytes[0] = 44
+            if printed < BLOCK_BOUND_PRINT_PAIRS:
+                if first == 0:
+                    TEST_LINE_BUF.bytes[0] = 44
+                    _ = __wrela_console_append_line_buf(1)
+                first = 0
+                _ = __wrela_lane1_append_u64(i.to[u64]())
+                TEST_LINE_BUF.bytes[0] = 58
                 _ = __wrela_console_append_line_buf(1)
-            first = 0
-            _ = __wrela_lane1_append_u64(i.to[u64]())
-            TEST_LINE_BUF.bytes[0] = 58
-            _ = __wrela_console_append_line_buf(1)
-            _ = __wrela_lane1_append_u64(c)
+                _ = __wrela_lane1_append_u64(c)
+                printed = printed +% 1
+            else:
+                dropped = dropped +% 1
         i = i +% 1
+    # " truncated=" — always printed, N=0 when nothing was dropped.
+    TEST_LINE_BUF.bytes[0] = 32
+    TEST_LINE_BUF.bytes[1] = 116
+    TEST_LINE_BUF.bytes[2] = 114
+    TEST_LINE_BUF.bytes[3] = 117
+    TEST_LINE_BUF.bytes[4] = 110
+    TEST_LINE_BUF.bytes[5] = 99
+    TEST_LINE_BUF.bytes[6] = 97
+    TEST_LINE_BUF.bytes[7] = 116
+    TEST_LINE_BUF.bytes[8] = 101
+    TEST_LINE_BUF.bytes[9] = 100
+    TEST_LINE_BUF.bytes[10] = 61
+    _ = __wrela_console_append_line_buf(11)
+    _ = __wrela_lane1_append_u64(dropped)
     TEST_LINE_BUF.bytes[0] = 10
     _ = __wrela_console_append_line_buf(1)
     _ = __wrela_line_commit()

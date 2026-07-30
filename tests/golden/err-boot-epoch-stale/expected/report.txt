@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/err_boot_epoch_stale.wr sha256=b8c36a275d8a710bfe55f389b24e516a7e20d36315f77ce8f4912b627d91d0a8
-  Input path=<generated> sha256=a111862237ca54f27bf5786a0494297a7010932ea47eb3636e24b6443590d080
+  Input path=<generated> sha256=c3d2c159dfe90ffafd731bf1bc0a7a9de6911bf66f99bb04fc4ef7f240798d31
   Name value=err-boot-epoch-stale
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock
@@ -199,10 +199,11 @@ ImageReport v0
   BlkDevice device=device#0 capacity_sectors=16 features=0x100000200 vector=1
   BlkQueue index=0 size=8 desc=0x405405a8 avail=0x40540628 used=0x40540640 doorbell=0x40540688
   BlkAccounting descriptors_per_op=3 queue_depth=8 occupancy_bound=2
-  Cost version=3 digest=3d1fb3009124ded0 total=38012 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=38012
-    Owner name=app proxy_cycles=4531
-    Owner name=runtime proxy_cycles=33315
-    Owner name=driver proxy_cycles=166
-    Core n=0 proxy_cycles=2501 max_turn_proxy=1429 turns_per_sec=1679496.1511546536 ms_per_turn_model=0.0005954167
-    Shared proxy_cycles=35511
+  Cost version=3 digest=043f8dc4b21c4b12 total=31296 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=31296
+    Owner name=app proxy_cycles=3488
+    Owner name=runtime proxy_cycles=27666
+    Owner name=driver proxy_cycles=142
+    Core n=0 proxy_cycles=1785 max_turn_proxy=1099 turns_per_sec=2183803.457688808 ms_per_turn_model=0.0004579167
+    Budget n=0 hot_text_bytes=95424 l1i_bytes=65536 over_l1i_lines=467 over_l2_lines=0 text_pages=24 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=3269
+    Shared proxy_cycles=29511

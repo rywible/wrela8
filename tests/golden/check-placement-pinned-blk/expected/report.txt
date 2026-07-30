@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/check_placement_pinned_blk.wr sha256=3454f9263d07edf969c1d874230e4588f365f72e045f838031d4dcb96953d5ec
-  Input path=<generated> sha256=b407639d4207e7ff23ee71a03cd282fc9febe7445f17905f7aeff5a06c51764d
+  Input path=<generated> sha256=cc088845250a2e02bdf025f578129c40524448a19077573c7c8f21826499b6a6
   Name value=placement-pinned-blk
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock
@@ -165,10 +165,11 @@ ImageReport v0
   Turns count=1 stride=64 bytes=64
   Totals actors=1 drivers=1 ready_queue=2 group_arena=0 bytes=192
   DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x405400c0 size=8
-  Cost version=3 digest=3d1fb3009124ded0 total=34961 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=34961
-    Owner name=app proxy_cycles=1818
-    Owner name=runtime proxy_cycles=33143
+  Cost version=3 digest=043f8dc4b21c4b12 total=29141 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=29141
+    Owner name=app proxy_cycles=1574
+    Owner name=runtime proxy_cycles=27567
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=124 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn_model=n/a
-    Shared proxy_cycles=34837
+    Core n=0 proxy_cycles=108 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn_model=n/a
+    Budget n=0 hot_text_bytes=89152 l1i_bytes=65536 over_l1i_lines=369 over_l2_lines=0 text_pages=22 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=5 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=2583
+    Shared proxy_cycles=29033

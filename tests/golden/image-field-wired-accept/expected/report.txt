@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/image_field_wired_accept.wr sha256=26d86866674b2ddc030a76b21405c188f0a286afa685e534db3c59d92a43aa98
-  Input path=<generated> sha256=68a5d7ca5e25477a853ba4f49ff7c0e2fc9961fdff264800fa5f955a56a1dada
+  Input path=<generated> sha256=729b201d2321fcc12bd58cb57dda4d0103ff52473c4b265f781be6dc936277eb
   Name value=field-wired
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Ledger
@@ -162,10 +162,11 @@ ImageReport v0
   Actor name=Worker mailbox=8 slot=16 frame=64 state=16
   Turns count=2 stride=64 bytes=128
   Totals actors=2 drivers=0 ready_queue=3 group_arena=0 bytes=552
-  Cost version=3 digest=3d1fb3009124ded0 total=35323 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=35323
-    Owner name=app proxy_cycles=1773
-    Owner name=runtime proxy_cycles=33550
+  Cost version=3 digest=043f8dc4b21c4b12 total=29324 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=29324
+    Owner name=app proxy_cycles=1530
+    Owner name=runtime proxy_cycles=27794
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=79 max_turn_proxy=79 turns_per_sec=30379746.8354430385 ms_per_turn_model=0.0000329167
-    Shared proxy_cycles=35244
+    Core n=0 proxy_cycles=64 max_turn_proxy=64 turns_per_sec=37500000 ms_per_turn_model=0.0000266667
+    Budget n=0 hot_text_bytes=90048 l1i_bytes=65536 over_l1i_lines=383 over_l2_lines=0 text_pages=22 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=5 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=2681
+    Shared proxy_cycles=29260

@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_irq_isr.wr sha256=7a1abc2f2613b87e8c1860b3acc7db604c2505218008cc69bcd0e3f23e66ca6b
-  Input path=<generated> sha256=64ea3bf6994bdc81365fbcc54a8cb63d7a050cf5c7bb3128951356813c3b9406
+  Input path=<generated> sha256=da6fe146df8eef8bd58f837e551ef158b4a423a8974d25c35e68b53beac0ed27
   Name value=boot-irq-isr
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock
@@ -172,10 +172,11 @@ ImageReport v0
   Totals actors=1 drivers=1 ready_queue=2 group_arena=0 bytes=2336
   DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40540920 size=104
   IrqHostInject base=0x40540920 offset=0x60 status=0xa501 vector=1
-  Cost version=3 digest=3d1fb3009124ded0 total=37018 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=37018
-    Owner name=app proxy_cycles=3464
-    Owner name=runtime proxy_cycles=33396
-    Owner name=driver proxy_cycles=158
-    Core n=0 proxy_cycles=607 max_turn_proxy=158 turns_per_sec=15189873.4177215192 ms_per_turn_model=0.0000658333
-    Shared proxy_cycles=36411
+  Cost version=3 digest=043f8dc4b21c4b12 total=30573 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=30573
+    Owner name=app proxy_cycles=2731
+    Owner name=runtime proxy_cycles=27720
+    Owner name=driver proxy_cycles=122
+    Core n=0 proxy_cycles=458 max_turn_proxy=122 turns_per_sec=19672131.1475409828 ms_per_turn_model=0.0000508333
+    Budget n=0 hot_text_bytes=92480 l1i_bytes=65536 over_l1i_lines=421 over_l2_lines=0 text_pages=23 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=2947
+    Shared proxy_cycles=30115

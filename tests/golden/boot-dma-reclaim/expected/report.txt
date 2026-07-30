@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_dma_reclaim.wr sha256=d11522d644bba126886c4d8afe577147f1555b71740c89a1b62fa439bf3cdb59
-  Input path=<generated> sha256=cd0461ad015c613840291a512d25e5a2adfb738927275626627322cf1517e028
+  Input path=<generated> sha256=da4b56867c30778c4601b5bc2451d529a9c10ea08b0318a95fe2f5f3002cd94f
   Name value=boot-dma-reclaim
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock
@@ -199,10 +199,11 @@ ImageReport v0
   BlkDevice device=device#0 capacity_sectors=16 features=0x100000200 vector=1
   BlkQueue index=0 size=8 desc=0x405409b0 avail=0x40540a30 used=0x40540a48 doorbell=0x40540a90
   BlkAccounting descriptors_per_op=3 queue_depth=8 occupancy_bound=2
-  Cost version=3 digest=3d1fb3009124ded0 total=41789 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=41789
-    Owner name=app proxy_cycles=8226
-    Owner name=runtime proxy_cycles=33396
-    Owner name=driver proxy_cycles=167
-    Core n=0 proxy_cycles=5378 max_turn_proxy=4237 turns_per_sec=566438.5178192117 ms_per_turn_model=0.0017654167
-    Shared proxy_cycles=36411
+  Cost version=3 digest=043f8dc4b21c4b12 total=33924 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=33924
+    Owner name=app proxy_cycles=6061
+    Owner name=runtime proxy_cycles=27720
+    Owner name=driver proxy_cycles=143
+    Core n=0 proxy_cycles=3809 max_turn_proxy=3033 turns_per_sec=791295.746785361 ms_per_turn_model=0.00126375
+    Budget n=0 hot_text_bytes=102272 l1i_bytes=65536 over_l1i_lines=574 over_l2_lines=0 text_pages=25 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=4018
+    Shared proxy_cycles=30115

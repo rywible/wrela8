@@ -8,7 +8,7 @@ ImageReport v0
   Quota max_exhaustive_cases=65536
   Input path=core/io_error.wr sha256=c30f35780ff1d174d74787ddd4d3f51a3b8a0bd76c68e5036ec4bf76a511af81
   Input path=examples/boot_receipt_handoff.wr sha256=7b4a721735047624f93871f4f4afdfacfadbb2ee29aeb27199e7e644ca055b40
-  Input path=<generated> sha256=ca62ab6c3e6b2180554494684f1aa440615e768ab988d9ff16dc5991600e00b3
+  Input path=<generated> sha256=fdf8e2db6d3af8590ae3698d485b980f7f461e0e743cb177c173882b0a4710fa
   Name value=boot-receipt-handoff
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock
@@ -209,10 +209,11 @@ ImageReport v0
   BlkDevice device=device#0 capacity_sectors=16 features=0x100000200 vector=1
   BlkQueue index=0 size=8 desc=0x40541a70 avail=0x40541af0 used=0x40541b08 doorbell=0x40541b50
   BlkAccounting descriptors_per_op=3 queue_depth=8 occupancy_bound=2
-  Cost version=3 digest=3d1fb3009124ded0 total=43887 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=43887
-    Owner name=app proxy_cycles=9032
-    Owner name=runtime proxy_cycles=34690
-    Owner name=driver proxy_cycles=165
-    Core n=0 proxy_cycles=5861 max_turn_proxy=1772 turns_per_sec=1354401.8058690745 ms_per_turn_model=0.0007383333
-    Shared proxy_cycles=38026
+  Cost version=3 digest=043f8dc4b21c4b12 total=35365 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=35365
+    Owner name=app proxy_cycles=6634
+    Owner name=runtime proxy_cycles=28594
+    Owner name=driver proxy_cycles=137
+    Core n=0 proxy_cycles=4020 max_turn_proxy=1152 turns_per_sec=2083333.3333333333 ms_per_turn_model=0.00048
+    Budget n=0 hot_text_bytes=105024 l1i_bytes=65536 over_l1i_lines=617 over_l2_lines=0 text_pages=26 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=8 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=4319
+    Shared proxy_cycles=31345

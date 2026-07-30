@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_device_claim.wr sha256=88cf58e8bb62b835c232576c24ea3289d3ca96d19c8cf693182dc9ae50346a3c
-  Input path=<generated> sha256=7d2b5a4b05194c180524065456489718954b55929340dee8199722bc85dc0227
+  Input path=<generated> sha256=08e043c55429d4f4c0091c7c3311d2653b75140871cb90efee229f0ced1323f1
   Name value=boot-device-claim
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock
@@ -176,10 +176,11 @@ ImageReport v0
   Turns count=2 stride=1024 bytes=2048
   Totals actors=1 drivers=1 ready_queue=2 group_arena=0 bytes=2328
   DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x40540918 size=272
-  Cost version=3 digest=3d1fb3009124ded0 total=36930 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=36930
-    Owner name=app proxy_cycles=3594
-    Owner name=runtime proxy_cycles=33336
+  Cost version=3 digest=043f8dc4b21c4b12 total=30523 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=30523
+    Owner name=app proxy_cycles=2838
+    Owner name=runtime proxy_cycles=27685
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=579 max_turn_proxy=95 turns_per_sec=25263157.8947368413 ms_per_turn_model=0.0000395833
-    Shared proxy_cycles=36351
+    Core n=0 proxy_cycles=443 max_turn_proxy=75 turns_per_sec=32000000 ms_per_turn_model=0.00003125
+    Budget n=0 hot_text_bytes=92352 l1i_bytes=65536 over_l1i_lines=419 over_l2_lines=0 text_pages=23 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=2933
+    Shared proxy_cycles=30080

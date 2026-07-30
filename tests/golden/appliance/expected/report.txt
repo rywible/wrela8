@@ -10,7 +10,7 @@ ImageReport v0
   Input path=driver.wr sha256=30c55aa16de613fbb7166f3c955755c10ff2525bc1ff74c3f8a4377e6ca371eb
   Input path=image.wr sha256=56e24549178a76a7f80966d536be2704e14fb1a0414f745596122f2e9c7775b4
   Input path=stats.wr sha256=331b09394832cdd4194af3354870c8a0ce06f853c02692249c4be6618a4b4aee
-  Input path=<generated> sha256=ac2db58b4dc0bc50d1e4611ca648c90ca822019f232f494d467f76ccfdb7fa80
+  Input path=<generated> sha256=515851d58aee15e0525ad3ad94aeca595ef443a8e71f5675151db71782a16f79
   Name value=storage-appliance
   Target value=Target.wrela_machine_v1
   Device index=0 type=BlockHw
@@ -183,10 +183,11 @@ ImageReport v0
   Totals actors=2 drivers=1 ready_queue=3 group_arena=0 bytes=496
   DeviceRegs device=device#0 type=BlockHw driver=StorageDriver base=0x405401f0 size=8
   Pool name=CacheBuffers kind=image payload=u32 slots=8 slot_bytes=4096 base=0x405401f8 size=32768 align=8 coherency=coherent device=none
-  Cost version=3 digest=3d1fb3009124ded0 total=36000 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=36000
-    Owner name=app proxy_cycles=2199
-    Owner name=runtime proxy_cycles=33801
+  Cost version=3 digest=043f8dc4b21c4b12 total=29811 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=29811
+    Owner name=app proxy_cycles=1832
+    Owner name=runtime proxy_cycles=27979
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=505 max_turn_proxy=88 turns_per_sec=27272727.2727272734 ms_per_turn_model=0.0000366667
-    Shared proxy_cycles=35495
+    Core n=0 proxy_cycles=366 max_turn_proxy=67 turns_per_sec=35820895.5223880634 ms_per_turn_model=0.0000279167
+    Budget n=0 hot_text_bytes=91456 l1i_bytes=65536 over_l1i_lines=405 over_l2_lines=0 text_pages=23 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=5 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=2835
+    Shared proxy_cycles=29445

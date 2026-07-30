@@ -42,6 +42,7 @@ impl Fnv64 {
 
 pub mod ab;
 pub mod attr;
+pub mod bridge;
 pub mod compose;
 pub mod crosscore;
 pub mod dump;
@@ -59,10 +60,14 @@ pub mod workload;
 
 pub use ab::{CostOpts, rank_cmp, score_with_opts};
 pub use attr::{CoreBucket, CoreCostReport, PlaceableTurn, attribute_cores};
-pub use compose::{WorkloadAttach, attach_workloads, method_grain_fxs, uncovered_charge};
+pub use bridge::{BlockBridge, BridgedBlock, Resolved, make_key, split_key};
+pub use compose::{
+    BlockGrainMeasure, WorkloadAttach, attach_workloads, block_grain_fxs, method_grain_fxs,
+    uncovered_charge,
+};
 pub use dump::{dump, dump_for_source};
 pub use footprint::{CoreBudget, HotBlocks, PAGE_BYTES};
-pub use freq::{MethodFreq, sibling_freq_path};
+pub use freq::{BlockFreq, MethodFreq, sibling_block_freq_path, sibling_freq_path};
 pub use ghz::{DEFAULT_GHZ, fmt_compact, ms_per_turn, parse_ghz, turns_per_sec};
 pub use mem::{LineId, MemLevel, MemState, MemVerdict};
 pub use owner::classify_owner;

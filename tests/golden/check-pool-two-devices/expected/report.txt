@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/check_pool_two_devices.wr sha256=36aca8d495c39ad80c8b859d9e24d16953b2c44b6ce7126878a7eaf6f576596b
-  Input path=<generated> sha256=3a00912127b82713b25e04f4c79b98f4a0c7fa383c06a663e6484cf52d022a0f
+  Input path=<generated> sha256=b591444856e7b6d55fcd5a1a49e357aa3692346fd6e9bf205fc7f076c7ab50a3
   Name value=pool-two-devices
   Target value=Target.wrela_machine_v1
   Device index=0 type=BlockHw
@@ -183,10 +183,11 @@ ImageReport v0
   Pool name=ControlB kind=dma payload=Ctl slots=2 slot_bytes=8 base=0x40540040 size=16 align=8 coherency=coherent device=device#1
   BlkPool name=ControlA device=device#0 base=0x40540030 size=0x10
   BlkPool name=ControlB device=device#1 base=0x40540040 size=0x10
-  Cost version=3 digest=3d1fb3009124ded0 total=34686 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=34686
-    Owner name=app proxy_cycles=1942
-    Owner name=runtime proxy_cycles=32744
+  Cost version=3 digest=043f8dc4b21c4b12 total=29035 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=29035
+    Owner name=app proxy_cycles=1684
+    Owner name=runtime proxy_cycles=27351
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=248 max_turn_proxy=62 turns_per_sec=38709677.4193548411 ms_per_turn_model=0.0000258333
-    Shared proxy_cycles=34438
+    Core n=0 proxy_cycles=218 max_turn_proxy=55 turns_per_sec=43636363.636363633 ms_per_turn_model=0.0000229167
+    Budget n=0 hot_text_bytes=88320 l1i_bytes=65536 over_l1i_lines=356 over_l2_lines=0 text_pages=22 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=5 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=2492
+    Shared proxy_cycles=28817

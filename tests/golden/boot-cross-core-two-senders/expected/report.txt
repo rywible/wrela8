@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_cross_core_two_senders.wr sha256=58436133e2b6ba2ce353f9fc8c434d306c56219507776747f24d5de99ab8d82c
-  Input path=<generated> sha256=6dc660cfeee303786d42855722003eb34c851edfe0572279ec938401c7460c59
+  Input path=<generated> sha256=cf618599f6c147b2e73275993af29406442a91689dd15c823e84ba5795f1d1c9
   Name value=cross-core-two-senders
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Sink
@@ -175,12 +175,15 @@ ImageReport v0
   Turns count=4 stride=512 bytes=2048
   Rings count=2 stride=96 padding=48 bytes=240
   Totals actors=3 drivers=0 ready_queue=4 group_arena=0 bytes=2728
-  Cost version=3 digest=3d1fb3009124ded0 total=39181 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=39181
-    Owner name=app proxy_cycles=4092
-    Owner name=runtime proxy_cycles=35089
+  Cost version=3 digest=043f8dc4b21c4b12 total=31983 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=31983
+    Owner name=app proxy_cycles=3259
+    Owner name=runtime proxy_cycles=28724
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=1278 max_turn_proxy=639 turns_per_sec=3755868.5446009389 ms_per_turn_model=0.00026625
-    Core n=1 proxy_cycles=169 max_turn_proxy=79 turns_per_sec=30379746.8354430385 ms_per_turn_model=0.0000329167
-    Core n=2 proxy_cycles=28 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn_model=n/a
-    Shared proxy_cycles=37706
+    Core n=0 proxy_cycles=940 max_turn_proxy=470 turns_per_sec=5106382.978723404 ms_per_turn_model=0.0001958333
+    Budget n=0 hot_text_bytes=96192 l1i_bytes=65536 over_l1i_lines=479 over_l2_lines=0 text_pages=24 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=3353
+    Core n=1 proxy_cycles=139 max_turn_proxy=64 turns_per_sec=37500000 ms_per_turn_model=0.0000266667
+    Budget n=1 hot_text_bytes=95296 l1i_bytes=65536 over_l1i_lines=465 over_l2_lines=0 text_pages=24 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=3255
+    Core n=2 proxy_cycles=21 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn_model=n/a
+    Budget n=2 hot_text_bytes=94976 l1i_bytes=65536 over_l1i_lines=460 over_l2_lines=0 text_pages=24 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=3220
+    Shared proxy_cycles=30883

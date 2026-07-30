@@ -846,6 +846,27 @@ pub(super) fn build_primary_entry_trampoline(start: usize, n_cores: usize) -> (A
 /// line's interpolated value can ever be.
 const MAX_DECIMAL_DIGITS: u64 = 20;
 
+/// Widest decimal rendering of any value in `0..=max` — the honest digit
+/// count for a field with a **static** upper bound, as against
+/// [`MAX_DECIMAL_DIGITS`]' 20 for a field with none.
+///
+/// plans/M20.md item C / decision 1610 exists because this distinction was
+/// not being made: both Lane 1's flat method index (bounded by
+/// `METHOD_CALL_POOL_COUNT`) and Lane 2's block id (bounded by
+/// `BLOCK_POOL_COUNT`) were reserved at 20 digits, spending ~4 KiB of a 16
+/// KiB console on decimal places that cannot exist. The *count* fields stay
+/// at 20: they are `u64` guest counters with no static bound, so 20 is the
+/// honest worst case and there is no tightening left there.
+const fn decimal_digits(max: u64) -> u64 {
+    let mut n = 1;
+    let mut v = max;
+    while v >= 10 {
+        v /= 10;
+        n += 1;
+    }
+    n
+}
+
 /// The worst-case transcript shape `check_transcript_bound` (below)
 /// checks against `console::QUEUE_SIZE`/`console::DATA_SIZE` — module
 /// doc's own "M5-G adversarial-sweep find/fix" section names this as the
@@ -909,6 +930,40 @@ fn worst_case_summary_line_bytes() -> u64 {
     2 * MAX_DECIMAL_DIGITS + " passed, ".len() as u64 + " failed\n".len() as u64
 }
 
+/// Bytes reserved for Lane 1's `flat:count,` pair list.
+///
+/// A flat method index is `< METHOD_CALL_POOL_COUNT` so it needs
+/// `decimal_digits(COUNT - 1)` digits, not 20 (decision 1610's tightening
+/// applied to Lane 1 as well). Charging every pair a trailing `,` when only
+/// `n - 1` separators are ever printed keeps this an over-approximation by
+/// exactly one byte.
+pub const fn lane1_pair_bytes() -> u64 {
+    let n = crate::rtconfig::METHOD_CALL_POOL_COUNT as u64;
+    let id_digits = decimal_digits(n - 1);
+    n * (id_digits + 1 + MAX_DECIMAL_DIGITS + 1)
+}
+
+/// Bytes reserved for Lane 2's `id:count,` pair list — at most
+/// `BLOCK_BOUND_PRINT_PAIRS` pairs, because the guest dump now **stops**
+/// there and reports the remainder in the truncation marker (decision
+/// 1610). A Lane 2 id is `< BLOCK_POOL_COUNT`, so its digit count comes
+/// from that pool, not from `u64`.
+pub const fn lane2_pair_bytes() -> u64 {
+    let pairs = crate::rtconfig::BLOCK_BOUND_PRINT_PAIRS as u64;
+    let id_digits = decimal_digits(crate::rtconfig::BLOCK_POOL_COUNT as u64 - 1);
+    pairs * (id_digits + 1 + MAX_DECIMAL_DIGITS + 1)
+}
+
+/// Bytes reserved for Lane 2's truncation marker, ` truncated=<N>`.
+///
+/// Printed **unconditionally**, with `N = 0` when nothing was dropped, so
+/// that a dropped pair is loud and never silent and so that the absence of
+/// the marker identifies a pre-decision-1610 transcript rather than a
+/// complete one. `N` is bounded by `BLOCK_POOL_COUNT`.
+pub const fn lane2_marker_bytes() -> u64 {
+    " truncated=".len() as u64 + decimal_digits(crate::rtconfig::BLOCK_POOL_COUNT as u64)
+}
+
 /// Computes the exact worst-case shape `layout_test_image`'s own static
 /// bound check (below) enforces — a pure function of `program`/
 /// `runtime_tests` alone, callable standalone by unit tests without
@@ -929,10 +984,21 @@ pub fn compute_transcript_bound(
     }
     // Integrity Phase 2 Item I: two trailing `lane1 …` lines from
     // `__wrela_lane1_dump` (scalars + compact hits). Hits worst-case is
-    // METHOD_CALL_POOL_COUNT `flat:count,` pairs (20+1+20+1 each) under
-    // a fixed `lane1 hits=` prefix — over-approx, never under.
+    // METHOD_CALL_POOL_COUNT `flat:count,` pairs under a fixed
+    // `lane1 hits=` prefix (`lane1_pair_bytes`) — over-approx, never under.
     // Item M: one `lane2 hits=` line only when `--block-count` is on
     // (otherwise dump is a no-op and must not inflate the default bound).
+    //
+    // plans/M20.md item C / decision 1610: the Lane 2 line is now a
+    // **bounded, explicitly-truncating diagnostic** and this reservation is
+    // an over-approximation of it again. The guest prints at most
+    // `BLOCK_BOUND_PRINT_PAIRS` pairs and then ` truncated=<N>`; measured
+    // non-zero hit blocks are 372 (`boot-actors`) to 609
+    // (`boot-cross-core-mailbox-depth`), so real boots *do* truncate, and
+    // the marker is what makes that loud instead of silent. The full `f`
+    // vector comes from the host snapshot (`wrela-vmm --dump-lane2`), which
+    // has no console bound at all — 04 §5 names the snapshot as Lane 2's
+    // normative sink and this line as the diagnostic.
     // plans/lane1-per-core.md item B: a *third* possible trailing line,
     // `lane1 quiesce=timeout`, when the bounded quiesce runs out of polls
     // (decision 1504). It prints on at most one halt, and this bound is an
@@ -942,17 +1008,15 @@ pub fn compute_transcript_bound(
     const LANE1_SCALAR_LINE_BYTES: u64 = 12 + 20 + 9 + 20 + 10 + 20 + 1; // turns/run_one/messages
     const LANE1_QUIESCE_LINE_BYTES: u64 = 21 + 1; // "lane1 quiesce=timeout\n"
     const LANE1_HITS_PREFIX: u64 = 11; // "lane1 hits="
-    const LANE1_HIT_PAIR: u64 = 20 + 1 + 20 + 1; // flat:count,
-    let lane1_hits_bytes =
-        LANE1_HITS_PREFIX + (crate::rtconfig::METHOD_CALL_POOL_COUNT as u64) * LANE1_HIT_PAIR + 1;
-    worst_case_bytes += LANE1_SCALAR_LINE_BYTES + LANE1_QUIESCE_LINE_BYTES + lane1_hits_bytes;
+    worst_case_bytes += LANE1_SCALAR_LINE_BYTES
+        + LANE1_QUIESCE_LINE_BYTES
+        + LANE1_HITS_PREFIX
+        + lane1_pair_bytes()
+        + 1;
     let mut lines = runtime_tests.len() as u64 + 1 + LANE1_LINES;
     if crate::codegen::block_count_enabled() {
         const LANE2_HITS_PREFIX: u64 = 11; // "lane2 hits="
-        let lane2_hits_bytes = LANE2_HITS_PREFIX
-            + (crate::rtconfig::BLOCK_BOUND_PRINT_PAIRS as u64) * LANE1_HIT_PAIR
-            + 1;
-        worst_case_bytes += lane2_hits_bytes;
+        worst_case_bytes += LANE2_HITS_PREFIX + lane2_pair_bytes() + lane2_marker_bytes() + 1;
         lines += 1;
     }
     TranscriptBound {

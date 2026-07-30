@@ -1,13 +1,13 @@
-Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reorder_window=128 digest=3d1fb3009124ded0 provenance=b2a8503fa4d07439 ghz=2.4 workloads_digest=ad0a87410c842eff
-  Provenance T1=38 T2=19 T3=0 T4=10 T5=19 rows=86
-  Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method valid_for=static_shape_opts workload=flat
+Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reorder_window=128 digest=043f8dc4b21c4b12 provenance=a6e992e7d7f13fde ghz=2.4 workloads_digest=ad0a87410c842eff
+  Provenance T1=38 T2=19 T3=0 T4=10 T5=16 rows=83
+  Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method valid_for=static_shape_opts workload=flat pseudo_lru=modelled_as_lru
   Composition sum_of_fn_schedules=1
-  Total proxy_cycles=432
-  Workload name=flat proxy_cycles=432
-  Owner name=app proxy_cycles=432
+  Total proxy_cycles=314
+  Workload name=flat proxy_cycles=314
+  Owner name=app proxy_cycles=314
   Owner name=runtime proxy_cycles=0
   Owner name=driver proxy_cycles=0
-  Fn key=hot owner=app proxy_cycles=432
+  Fn key=hot owner=app proxy_cycles=314
     Term rule=alu count=33
     Term rule=branch count=3
     Term rule=load count=158

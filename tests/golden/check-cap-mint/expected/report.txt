@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/check_cap_mint.wr sha256=ca9cb433e65c357a9066afca01004c98f05fabf97d2c3a191928a5589482aa70
-  Input path=<generated> sha256=cd447f5762ae531d2a80e4792ff33401408634498f3de03fad9d8bdc9562d8de
+  Input path=<generated> sha256=e35db438d4fc25b8c9ea75750beaba0095be8122f1426cccad9abd53af29afc0
   Name value=cap-mint
   Target value=Target.wrela_machine_v1
   Device index=0 type=BlockHw
@@ -162,10 +162,11 @@ ImageReport v0
   Turns count=0 stride=0 bytes=0
   Totals actors=0 drivers=1 ready_queue=1 group_arena=0 bytes=32
   DeviceRegs device=device#0 type=BlockHw driver=BlkDriver base=0x40540020 size=8
-  Cost version=3 digest=3d1fb3009124ded0 total=34562 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=34562
-    Owner name=app proxy_cycles=1835
-    Owner name=runtime proxy_cycles=32727
+  Cost version=3 digest=043f8dc4b21c4b12 total=28920 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=28920
+    Owner name=app proxy_cycles=1580
+    Owner name=runtime proxy_cycles=27340
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=141 max_turn_proxy=68 turns_per_sec=35294117.6470588222 ms_per_turn_model=0.0000283333
-    Shared proxy_cycles=34421
+    Core n=0 proxy_cycles=114 max_turn_proxy=55 turns_per_sec=43636363.636363633 ms_per_turn_model=0.0000229167
+    Budget n=0 hot_text_bytes=88256 l1i_bytes=65536 over_l1i_lines=355 over_l2_lines=0 text_pages=22 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=5 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=2485
+    Shared proxy_cycles=28806

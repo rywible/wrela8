@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_deadline_driver_turn.wr sha256=bf454ea40e3d5aa1767bf129416a08e5d1261273b345bb3b4ed888c42edc86d7
-  Input path=<generated> sha256=afa35d2b6b7a44bf8dfb9736552eb6a69c0cf41819e61ad83e86adc643c303ce
+  Input path=<generated> sha256=f4f57c3f80bd9391fcc40d56ff866ecd686885c3daf5894011f1932455371d3c
   Name value=boot-deadline-driver-turn
   Target value=Target.wrela_machine_v1
   Device index=0 type=Hw
@@ -169,10 +169,11 @@ ImageReport v0
   Turns count=4 stride=1024 bytes=4096
   Totals actors=1 drivers=1 ready_queue=3 group_arena=1 bytes=4480
   DeviceRegs device=device#0 type=Hw driver=Stub base=0x40541180 size=8
-  Cost version=3 digest=3d1fb3009124ded0 total=39014 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=39014
-    Owner name=app proxy_cycles=5159
-    Owner name=runtime proxy_cycles=33855
+  Cost version=3 digest=043f8dc4b21c4b12 total=32339 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=32339
+    Owner name=app proxy_cycles=4348
+    Owner name=runtime proxy_cycles=27991
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=282 max_turn_proxy=79 turns_per_sec=30379746.8354430385 ms_per_turn_model=0.0000329167
-    Shared proxy_cycles=38732
+    Core n=0 proxy_cycles=237 max_turn_proxy=64 turns_per_sec=37500000 ms_per_turn_model=0.0000266667
+    Budget n=0 hot_text_bytes=95168 l1i_bytes=65536 over_l1i_lines=463 over_l2_lines=0 text_pages=24 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=3241
+    Shared proxy_cycles=32102
