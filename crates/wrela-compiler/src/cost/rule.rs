@@ -283,6 +283,21 @@ pub struct EmittedWord {
     pub mem: Option<MemRef>,
     /// NZCV read/write at emit (integrity item B).
     pub flags: FlagEffect,
+    /// Bytes this word transfers, for a load/store; `0` when the word is
+    /// not a load/store shape `encode.rs` knows (plans/M20.md item I).
+    ///
+    /// Assigned **at construction**, from the encoded word, by
+    /// `encode::access_width_bytes` — the module that wrote the `size`
+    /// field in the first place. Unlike `rule` and `mem`, the width is not
+    /// a semantic classification that has to be declared: it is *in* the
+    /// encoding, so threading a second `width` argument through every emit
+    /// site would create a source of truth that can disagree with the word
+    /// actually emitted, which is the defect freeze 1303 exists to
+    /// prevent. Nothing here reads the mnemonic text.
+    ///
+    /// `0` means "no width fact", and SOG §4.5's alignment terms treat it
+    /// as undecidable rather than as an aligned access (`score.rs`).
+    pub access_bytes: u8,
 }
 
 impl EmittedWord {
@@ -305,6 +320,7 @@ impl EmittedWord {
             src_len: n as u8,
             mem: None,
             flags: FlagEffect::None,
+            access_bytes: crate::encode::access_width_bytes(word).unwrap_or(0),
         }
     }
 

@@ -958,8 +958,27 @@ struct Frame {
     size: usize,
 }
 
+/// The alignment this ABI keeps `sp` at: `Frame::size` is rounded up to
+/// 16 (AAPCS64's own requirement, kept even though nothing here calls out
+/// to real AAPCS64 code — see the module doc's frame-layout block), and
+/// every prologue/epilogue adjustment is by a whole frame size.
+///
+/// Exported because the proxy-cycle model's SOG §4.5 alignment term
+/// (plans/M20.md item I) needs the one fact it can know about a Stack
+/// access's *absolute* address: `sp` is unknown, but it is congruent to 0
+/// modulo this. Reading it from here rather than restating 16 in
+/// `cost/score.rs` keeps the frame rule in one place.
+pub const FRAME_SP_ALIGN_BYTES: u64 = 16;
+
+/// Every temp slot is a multiple of this, and every slot offset is too
+/// (mwir's "no packing, always an 8-byte-slot-multiple" rule — the module
+/// doc's frame-layout block). The §4.5 alignment term quotes this as the
+/// reason no frame access can straddle a 16 B or 64 B boundary.
+pub const FRAME_SLOT_BYTES: u64 = 8;
+
 fn round_up_16(n: usize) -> usize {
-    (n + 15) & !15
+    let a = FRAME_SP_ALIGN_BYTES as usize;
+    (n + a - 1) & !(a - 1)
 }
 
 /// `reply_stage_size` is 0 for every sync fn and for any async fn with no

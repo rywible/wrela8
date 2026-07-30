@@ -422,15 +422,99 @@ fn branch_mispredict_charge(
 }
 
 /// **Item I** owns this. SOG §4.5's two boundaries: a load crossing a
-/// 64 B cache line, a store crossing a 16 B boundary. Both are statically
-/// decidable from wrela's fixed 8-byte-slot frame layout, so this term
-/// needs no dynamic information at all — the magnitudes are the swept
-/// `load_line_cross_penalty` / `store_boundary_cross_penalty`.
+/// 64 B cache line (`[align] load_line_bytes`), a store crossing a 16 B
+/// boundary (`[align] store_boundary_bytes`). The **mechanism** is T1 and
+/// pinned in `[align]`; the **magnitudes** are unpriced by §4.5 and so are
+/// read through `point` from `[sweep] load_line_cross_penalty` /
+/// `store_boundary_cross_penalty` — never pinned here (item D tiered them
+/// T5).
 ///
-/// Today: zero.
-fn alignment_penalty(ew: &EmittedWord, table: &CostTable, point: &SweepPoint) -> u64 {
-    let _ = (ew, table, point);
-    0
+/// **What is decidable, and what is not** (plans/M20.md item I, decision
+/// 1611). Two facts make a crossing verdict possible:
+///
+/// 1. the **access width**, read off the emitted word at construction
+///    (`EmittedWord::access_bytes`), and
+/// 2. the **base register's alignment**, which the model has only for
+///    `MemClass::Stack`: the base is `sp`, and this ABI keeps it congruent
+///    to 0 modulo [`codegen::FRAME_SP_ALIGN_BYTES`]. A `Cold` base holds a
+///    runtime-computed address whose alignment is not a fact this model
+///    has at all.
+///
+/// So a Stack access is decided exactly, over every `sp` the ABI permits
+/// (`crosses_boundary` quantifies over the residues rather than assuming
+/// `sp ≡ 0 (mod 64)` — an unknown `sp` is a residual uncertainty and
+/// decision 1609 rounds it toward over-costing). An undeclared width or a
+/// `Cold` base is **not decided**, and charges nothing; decision 1611
+/// records why, and that it is the one place in this model where an
+/// unmodelled incidence is not rounded up.
+///
+/// On the emitted stream this term is therefore **live but unexercised**:
+/// `encode.rs`'s `scaled_offset` asserts every immediate offset is a
+/// multiple of its own transfer width, `LDAR`/`STLR` have no offset at
+/// all, and every width is ≤ [`codegen::FRAME_SLOT_BYTES`], so every Stack
+/// access is naturally aligned and neither boundary can be straddled. That
+/// is a result about the spill-everything frame, not an accident, and
+/// `stack_accesses_never_straddle_either_boundary` measures it over the
+/// whole `cost-*` corpus rather than asserting it.
+fn alignment_penalty(
+    ew: &EmittedWord,
+    table: &CostTable,
+    point: &SweepPoint,
+) -> Result<u64, String> {
+    let is_load = ew.rule.is_load();
+    if !is_load && !ew.rule.is_store() {
+        return Ok(0);
+    }
+    // Not decided: no width fact, or a base whose alignment is unknown.
+    let width = u64::from(ew.access_bytes);
+    let Some(m) = ew.mem else {
+        return Ok(0);
+    };
+    if width == 0 || m.class != MemClass::Stack {
+        return Ok(0);
+    }
+    let (row_key, dim) = if is_load {
+        ("load_line_bytes", "load_line_cross_penalty")
+    } else {
+        ("store_boundary_bytes", "store_boundary_cross_penalty")
+    };
+    // Fail closed: a v3 table always carries both `[align]` rows, so a
+    // missing one means the profile and this term disagree about what
+    // §4.5 says — never a silent 0, which would be a discount.
+    let boundary = table
+        .align(row_key)
+        .ok_or_else(|| format!("cost table: [align.{row_key}] is required by SOG §4.5's terms"))?
+        .value;
+    if crosses_boundary(m.key, width, boundary, crate::codegen::FRAME_SP_ALIGN_BYTES) {
+        return Ok(point.get(dim));
+    }
+    Ok(0)
+}
+
+/// Does a `width`-byte access at frame offset `off` straddle an aligned
+/// `boundary`-byte block, for **any** `sp` this ABI permits?
+///
+/// `sp` itself is unknown; all that is known is `sp ≡ 0 (mod sp_align)`.
+/// So the absolute address is `k + off` for some `k` in
+/// `0, sp_align, 2·sp_align, …` below `boundary`, and the term charges if
+/// *any* of those positions crosses — the over-cost reading of an unknown
+/// base (decision 1609). When `boundary ≤ sp_align` the residue set is
+/// `{0}` and the verdict is exact.
+fn crosses_boundary(off: u64, width: u64, boundary: u64, sp_align: u64) -> bool {
+    if boundary == 0 || width == 0 {
+        return false;
+    }
+    let step = sp_align.max(1);
+    let mut k = 0u64;
+    loop {
+        if (k.wrapping_add(off) % boundary) + width > boundary {
+            return true;
+        }
+        k += step;
+        if k >= boundary {
+            return false;
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -773,13 +857,23 @@ fn score_words(
             _ => exec_lat,
         };
         lat = lat.saturating_add(cross.extra_cycles);
-        lat = lat.saturating_add(alignment_penalty(ew, table, point));
+        lat = lat.saturating_add(alignment_penalty(ew, table, point)?);
 
         let finish = issue.saturating_add(lat);
         retire[i] = finish;
         if let Some(d) = ew.dst {
             let d = d as usize;
-            if d < 32 {
+            // **SP is fully renamed too** (SOG §4.10 note 1, plans/M20.md
+            // item I): an SP write records no ready time, so an
+            // SP-write/SP-read pair creates no scheduler edge — exactly
+            // the treatment NZCV gets one line below. Encoding 31 is also
+            // XZR outside load/store, and a constant zero has no producer
+            // at all, so leaving `ready[31]` at 0 is right for both
+            // readings of the register number. This is **only** the
+            // scheduler edge: the frame-epoch reuse invalidation on an SP
+            // write is a different mechanism and still fires below —
+            // conflating the two would silently restore a stale-reuse bug.
+            if d < 32 && d != MEM_SP_REG as usize {
                 ready[d] = finish;
             }
         }
@@ -792,6 +886,9 @@ fn score_words(
         }
         max_retire = max_retire.max(finish);
 
+        // The other half of an SP write, and the half that stays: a new
+        // frame epoch ends memory reuse (stack offsets after an SP adjust
+        // name different bytes). Independent of the rename above.
         if ew.rule == CostRule::Call || ew.dst == Some(MEM_SP_REG) {
             mem.clear();
         }
@@ -1369,6 +1466,546 @@ mod tests {
             ],
         );
         assert_eq!(total(&flag_chain), 2, "four I-class Mops, three pipes");
+    }
+
+    /// Item I's deepening of the unit above: the removal is load-bearing on
+    /// the **dependent** flag shape specifically, and is not a blanket
+    /// discount on anything carrying a `FlagEffect`.
+    ///
+    /// The counterfactual is measured inside this one build rather than
+    /// quoted from history. The edge item E removed treated NZCV as a
+    /// single architectural register with a write→read dependence, so the
+    /// schedule it produced is exactly the schedule of the same words with
+    /// that dependence re-expressed through **one GPR** — which is what
+    /// `restored` below is. `drop = restored − live` is therefore the
+    /// removal's own contribution, per shape.
+    #[test]
+    fn a_dependent_flag_chain_drops_but_an_independent_one_does_not() {
+        /// A scratch GPR standing in for the flag register in the
+        /// counterfactual. Not `31` — that encoding is SP/XZR and carries
+        /// its own de-serialization (see the SP unit below).
+        const NZCV: u8 = 20;
+
+        // Dependent: `cmp` (writes NZCV) → `cset` (reads it, writes a GPR)
+        // → `cmp` of that GPR → `cset`. This is the shape `cost-branchy`
+        // actually emits, and it is the *only* way a flag chain can be
+        // serial here: `FlagEffect` is write-or-read, never both, so a run
+        // of bare flag writes is independent however long it is.
+        let dep_live = prog(
+            "f",
+            vec![
+                word_flags(CostRule::Alu, None, &[9, 10], FlagEffect::Write),
+                word_flags(CostRule::Alu, Some(11), &[], FlagEffect::Read),
+                word_flags(CostRule::Alu, None, &[11, 12], FlagEffect::Write),
+                word_flags(CostRule::Alu, Some(13), &[], FlagEffect::Read),
+            ],
+        );
+        let dep_restored = prog(
+            "f",
+            vec![
+                word(CostRule::Alu, Some(NZCV), &[9, 10]),
+                word(CostRule::Alu, Some(11), &[NZCV]),
+                word(CostRule::Alu, Some(NZCV), &[11, 12]),
+                word(CostRule::Alu, Some(13), &[NZCV]),
+            ],
+        );
+        assert_eq!(
+            total(&dep_restored),
+            4,
+            "the restored edge serializes all four words"
+        );
+        assert_eq!(
+            total(&dep_live),
+            2,
+            "renamed NZCV leaves only the GPR chain x11"
+        );
+        assert!(
+            total(&dep_live) < total(&dep_restored),
+            "a dependent flag chain must DROP: live {} should be below the \
+             restored-edge counterfactual {}",
+            total(&dep_live),
+            total(&dep_restored)
+        );
+
+        // Independent shape 1: four flag **writes** and no read. The
+        // renamed register has no WAW hazard, and the removed edge only
+        // ever fired on a read, so there is nothing here to drop.
+        let waw_live = prog(
+            "f",
+            vec![
+                word_flags(CostRule::Alu, None, &[1, 2], FlagEffect::Write),
+                word_flags(CostRule::Alu, None, &[3, 4], FlagEffect::Write),
+                word_flags(CostRule::Alu, None, &[5, 6], FlagEffect::Write),
+                word_flags(CostRule::Alu, None, &[7, 8], FlagEffect::Write),
+            ],
+        );
+        let waw_restored = prog(
+            "f",
+            vec![
+                word(CostRule::Alu, Some(NZCV), &[1, 2]),
+                word(CostRule::Alu, Some(NZCV), &[3, 4]),
+                word(CostRule::Alu, Some(NZCV), &[5, 6]),
+                word(CostRule::Alu, Some(NZCV), &[7, 8]),
+            ],
+        );
+        assert_eq!(
+            total(&waw_live),
+            total(&waw_restored),
+            "a flag chain with no read must NOT drop: {} vs {}",
+            total(&waw_live),
+            total(&waw_restored)
+        );
+
+        // Independent shape 2: four flag **reads** with no producer at all.
+        let raw_live = prog(
+            "f",
+            vec![
+                word_flags(CostRule::Alu, None, &[1, 2], FlagEffect::Read),
+                word_flags(CostRule::Alu, None, &[3, 4], FlagEffect::Read),
+                word_flags(CostRule::Alu, None, &[5, 6], FlagEffect::Read),
+                word_flags(CostRule::Alu, None, &[7, 8], FlagEffect::Read),
+            ],
+        );
+        let raw_restored = prog(
+            "f",
+            vec![
+                word(CostRule::Alu, None, &[1, NZCV]),
+                word(CostRule::Alu, None, &[3, NZCV]),
+                word(CostRule::Alu, None, &[5, NZCV]),
+                word(CostRule::Alu, None, &[7, NZCV]),
+            ],
+        );
+        assert_eq!(
+            total(&raw_live),
+            total(&raw_restored),
+            "flag reads with no writer must NOT drop: {} vs {}",
+            total(&raw_live),
+            total(&raw_restored)
+        );
+
+        // And the drop is real reduction, not a saturated-port coincidence:
+        // the dependent chain's restored form is strictly above the
+        // independent chains, which the removal leaves untouched.
+        assert!(total(&dep_restored) > total(&waw_restored));
+    }
+
+    /// SP is renamed too (SOG §4.10 note 1), and that is a **different
+    /// mechanism** from the frame-epoch reuse invalidation an SP write also
+    /// triggers. Conflating them would silently restore a stale-reuse bug,
+    /// so both halves are asserted here, separately:
+    ///
+    /// * **de-serialization** — an SP write puts no scheduler edge on a
+    ///   later SP-based access. Measured against the same counterfactual
+    ///   the flag unit uses: the dependence re-expressed through a GPR.
+    /// * **frame-epoch invalidation** — `MemState::clear` still fires, so a
+    ///   reload of the same frame offset after an SP adjust misses where it
+    ///   would otherwise have hit.
+    #[test]
+    fn sp_write_does_not_serialize_but_still_ends_the_frame_epoch() {
+        // --- half 1: no scheduler edge.
+        // `sub sp, sp, #n` then a stack load of a *fresh* key, so the
+        // memory verdict is identical in both programs and only the
+        // register edge can differ.
+        let sp_then_load = prog(
+            "f",
+            vec![
+                word(CostRule::Alu, Some(MEM_SP_REG), &[MEM_SP_REG]),
+                load_stack(1, 0),
+                word(CostRule::Alu, Some(2), &[1, 1]),
+            ],
+        );
+        // The counterfactual: the same shape with SP's role played by an
+        // ordinary GPR the load also reads.
+        const FAKE_SP: u8 = 20;
+        let restored = prog(
+            "f",
+            vec![
+                word(CostRule::Alu, Some(FAKE_SP), &[FAKE_SP]),
+                word(CostRule::Load, Some(1), &[MEM_SP_REG, FAKE_SP]).with_mem(MemRef::stack(0)),
+                word(CostRule::Alu, Some(2), &[1, 1]),
+            ],
+        );
+        assert!(
+            total(&sp_then_load) < total(&restored),
+            "an SP write must not serialize a later stack access: live {} \
+             should be below the restored-edge counterfactual {}",
+            total(&sp_then_load),
+            total(&restored)
+        );
+        // Sharper: the SP write is *free* — the schedule equals the same
+        // stream with the SP write deleted outright.
+        let without_sp = prog(
+            "f",
+            vec![load_stack(1, 0), word(CostRule::Alu, Some(2), &[1, 1])],
+        );
+        assert_eq!(
+            total(&sp_then_load),
+            total(&without_sp),
+            "the renamed SP write adds no cycle to the critical path"
+        );
+
+        // --- half 2: the frame epoch still ends. Same offset reloaded
+        // after the SP adjust must miss, which is a *memory* verdict and
+        // must survive the de-serialization above.
+        let hit = prog(
+            "f",
+            vec![
+                load_stack(1, 8),
+                word(CostRule::Alu, Some(1), &[1, 1]),
+                load_stack_after(2, 8, 1),
+            ],
+        );
+        let epoch = prog(
+            "f",
+            vec![
+                load_stack(1, 8),
+                word(CostRule::Alu, Some(1), &[1, 1]),
+                word(CostRule::Alu, Some(MEM_SP_REG), &[MEM_SP_REG]),
+                load_stack_after(2, 8, 1),
+            ],
+        );
+        assert!(
+            total(&epoch) > total(&hit),
+            "the SP write must still clear the reuse window: epoch {} should \
+             exceed same-epoch reuse {}",
+            total(&epoch),
+            total(&hit)
+        );
+        // The two mechanisms are independent: the epoch clear costs the
+        // *memory* difference (L2 miss vs L1 hit), not a register edge —
+        // a load of a **different** key after the same SP write is
+        // unaffected, because it was never going to hit.
+        let fresh_after_sp = prog(
+            "f",
+            vec![
+                load_stack(1, 8),
+                word(CostRule::Alu, Some(1), &[1, 1]),
+                word(CostRule::Alu, Some(MEM_SP_REG), &[MEM_SP_REG]),
+                load_stack_after(2, 4096, 1),
+            ],
+        );
+        let fresh_no_sp = prog(
+            "f",
+            vec![
+                load_stack(1, 8),
+                word(CostRule::Alu, Some(1), &[1, 1]),
+                load_stack_after(2, 4096, 1),
+            ],
+        );
+        assert_eq!(
+            total(&fresh_after_sp),
+            total(&fresh_no_sp),
+            "an SP write may not cost anything where there was no reuse to lose"
+        );
+    }
+
+    // --- SOG §4.5 alignment penalties (item I) ------------------------------
+
+    /// A stack load whose `word` fixes the transfer width and whose
+    /// `MemRef` fixes the frame offset.
+    ///
+    /// The two are deliberately allowed to disagree here: `codegen.rs`
+    /// cannot emit a `width`-byte access at an offset that is not a
+    /// multiple of `width` (`encode::scaled_offset` asserts it), so the
+    /// straddling witnesses below are **synthetic by necessity** — which
+    /// is the finding, not a workaround. The scoreboard never reads a
+    /// load's immediate out of `word`, only its size field.
+    fn stack_load_of_width(dst: u8, offset: u64, width_bytes: u8) -> EmittedWord {
+        use crate::encode;
+        let enc = match width_bytes {
+            1 => encode::enc_ldrb_imm(dst, MEM_SP_REG, 0),
+            2 => encode::enc_ldrh_imm(dst, MEM_SP_REG, 0),
+            4 => encode::enc_ldr_w_imm(dst, MEM_SP_REG, 0),
+            8 => encode::enc_ldr_x_imm(dst, MEM_SP_REG, 0),
+            w => panic!("no encoder for a {w}-byte load"),
+        };
+        EmittedWord::new(enc, String::new(), CostRule::Load, Some(dst), &[MEM_SP_REG])
+            .with_mem(MemRef::stack(offset))
+    }
+
+    fn stack_store_of_width(offset: u64, width_bytes: u8) -> EmittedWord {
+        use crate::encode;
+        let enc = match width_bytes {
+            1 => encode::enc_strb_imm(0, MEM_SP_REG, 0),
+            2 => encode::enc_strh_imm(0, MEM_SP_REG, 0),
+            4 => encode::enc_str_w_imm(0, MEM_SP_REG, 0),
+            8 => encode::enc_str_x_imm(0, MEM_SP_REG, 0),
+            w => panic!("no encoder for a {w}-byte store"),
+        };
+        EmittedWord::new(enc, String::new(), CostRule::Store, None, &[MEM_SP_REG, 0])
+            .with_mem(MemRef::stack(offset))
+    }
+
+    /// The width tag is a projection of the emitted word, so an emitted
+    /// load/store always has one and nothing else does.
+    #[test]
+    fn access_width_is_tagged_from_the_emitted_word() {
+        assert_eq!(stack_load_of_width(1, 0, 8).access_bytes, 8);
+        assert_eq!(stack_load_of_width(1, 0, 4).access_bytes, 4);
+        assert_eq!(stack_load_of_width(1, 0, 2).access_bytes, 2);
+        assert_eq!(stack_load_of_width(1, 0, 1).access_bytes, 1);
+        assert_eq!(stack_store_of_width(0, 8).access_bytes, 8);
+        assert_eq!(stack_store_of_width(0, 1).access_bytes, 1);
+        // Not a load/store shape: no width, and the alignment term must
+        // treat that as undecided rather than as aligned.
+        assert_eq!(word(CostRule::Alu, Some(1), &[0, 0]).access_bytes, 0);
+        assert_eq!(load_stack(1, 0).access_bytes, 0, "synthetic word=0 stream");
+    }
+
+    /// SOG §4.5, store side: a store straddling a 16 B boundary costs
+    /// strictly more than an aligned one, and the magnitude comes from the
+    /// **sweep box** rather than a pin.
+    #[test]
+    fn a_store_straddling_the_16_b_boundary_costs_more() {
+        let table = table();
+        let place = placement();
+        let point = SweepPoint::pinned(&table);
+        // Offset 8, width 8: [8, 16) — inside one 16 B block.
+        let aligned = prog("f", vec![stack_store_of_width(8, 8)]);
+        // Offset 12, width 8: [12, 20) — straddles the boundary at 16.
+        let straddle = prog("f", vec![stack_store_of_width(12, 8)]);
+        let a = score_program(&aligned, &table, &place)
+            .expect("aligned")
+            .total_proxy_cycles;
+        let s = score_program(&straddle, &table, &place)
+            .expect("straddle")
+            .total_proxy_cycles;
+        assert!(
+            s > a,
+            "a 16 B-straddling store {s} must cost more than an aligned one {a}"
+        );
+        assert_eq!(
+            s - a,
+            point.get("store_boundary_cross_penalty"),
+            "the charge is exactly the swept penalty"
+        );
+        // Read through the point, never pinned: the bracket's low end must
+        // move the schedule.
+        let lo = point.with("store_boundary_cross_penalty", 1);
+        let cheap = score_program_at(&straddle, &table, &place, &lo)
+            .expect("lo")
+            .total_proxy_cycles;
+        assert!(
+            cheap < s,
+            "store_boundary_cross_penalty must reach the schedule: {cheap} vs {s}"
+        );
+        // A narrower store at the same offset fits inside the block.
+        let narrow = prog("f", vec![stack_store_of_width(12, 4)]);
+        assert_eq!(
+            score_program(&narrow, &table, &place)
+                .expect("narrow")
+                .total_proxy_cycles,
+            a,
+            "a 4-byte store at offset 12 ends exactly on the boundary"
+        );
+    }
+
+    /// SOG §4.5, load side: a load straddling a 64 B cache line costs
+    /// strictly more than one inside it.
+    ///
+    /// `sp` is unknown modulo 64 (the ABI pins it only modulo 16), so the
+    /// verdict quantifies over every `sp` the ABI permits and charges if
+    /// *any* of them crosses — the over-cost reading of decision 1609.
+    /// Offset 60 crosses the line whenever `sp ≡ 0 (mod 64)`, so it is
+    /// charged; offset 56 crosses for no permitted `sp`.
+    #[test]
+    fn a_load_straddling_the_64_b_line_costs_more_than_one_inside_it() {
+        let table = table();
+        let place = placement();
+        let point = SweepPoint::pinned(&table);
+        let inside = prog("f", vec![stack_load_of_width(1, 56, 8)]);
+        let across = prog("f", vec![stack_load_of_width(1, 60, 8)]);
+        let i = score_program(&inside, &table, &place)
+            .expect("inside")
+            .total_proxy_cycles;
+        let x = score_program(&across, &table, &place)
+            .expect("across")
+            .total_proxy_cycles;
+        assert!(
+            x > i,
+            "a line-crossing load {x} must cost more than one inside the line {i}"
+        );
+        assert_eq!(x - i, point.get("load_line_cross_penalty"));
+        let lo = point.with("load_line_cross_penalty", 1);
+        assert!(
+            score_program_at(&across, &table, &place, &lo)
+                .expect("lo")
+                .total_proxy_cycles
+                < x,
+            "load_line_cross_penalty must reach the schedule"
+        );
+    }
+
+    /// The crossing predicate itself, including the part that is *not*
+    /// exact: `sp` is known only modulo `sp_align`, so the term charges if
+    /// any permitted `sp` crosses.
+    #[test]
+    fn crosses_boundary_quantifies_over_every_permitted_sp() {
+        let sp = crate::codegen::FRAME_SP_ALIGN_BYTES;
+        assert_eq!(sp, 16);
+        // Natural alignment ⇒ never crosses, at either boundary, for every
+        // width and every 8-byte-multiple offset in one line.
+        for off in (0u64..256).step_by(8) {
+            for w in [1u64, 2, 4, 8] {
+                assert!(
+                    !crosses_boundary(off, w, 16, sp),
+                    "off {off} width {w} must not cross 16 B"
+                );
+                assert!(
+                    !crosses_boundary(off, w, 64, sp),
+                    "off {off} width {w} must not cross 64 B"
+                );
+            }
+        }
+        // 16 B is exact: `sp ≡ 0 (mod 16)`, so the offset decides alone.
+        assert!(crosses_boundary(12, 8, 16, sp));
+        assert!(!crosses_boundary(12, 4, 16, sp));
+        assert!(crosses_boundary(15, 2, 16, sp));
+        // 64 B is the over-approximation. Offset 12 with width 8 crosses
+        // the line only when `sp ≡ 48 (mod 64)`, so a model that knew `sp`
+        // exactly would not charge it — this one does, because it does not.
+        assert!(crosses_boundary(12, 8, 64, sp), "some permitted sp crosses");
+        assert!(
+            !crosses_boundary(12, 8, 64, 64),
+            "with sp pinned mod 64 the verdict is exact and there is no crossing"
+        );
+        // Offset 60 crosses for `sp ≡ 0 (mod 64)` and is charged either way.
+        assert!(crosses_boundary(60, 8, 64, sp));
+        assert!(crosses_boundary(60, 8, 64, 64));
+        // Degenerate inputs never invent a charge.
+        assert!(!crosses_boundary(60, 0, 64, sp));
+        assert!(!crosses_boundary(60, 8, 0, sp));
+    }
+
+    /// A `Cold` base is **not** decided: its alignment is not a fact this
+    /// model has (plans/M20.md decision 1611). The same offset/width pair
+    /// that is charged against `sp` is charged nothing against a computed
+    /// base — and that is the recorded residual, not an oversight.
+    #[test]
+    fn a_cold_base_is_not_decided_and_charges_nothing() {
+        let table = table();
+        let point = SweepPoint::pinned(&table);
+        let stack = stack_store_of_width(12, 8);
+        assert_eq!(
+            alignment_penalty(&stack, &table, &point).expect("stack"),
+            point.get("store_boundary_cross_penalty")
+        );
+        let cold = EmittedWord::new(
+            crate::encode::enc_str_x_imm(0, 28, 0),
+            String::new(),
+            CostRule::Store,
+            None,
+            &[28, 0],
+        )
+        .with_mem(MemRef::cold_stable(28, 12));
+        assert_eq!(cold.access_bytes, 8, "the width is still known");
+        assert_eq!(
+            alignment_penalty(&cold, &table, &point).expect("cold"),
+            0,
+            "an unproven base alignment charges nothing (decision 1611)"
+        );
+        let unique = EmittedWord::new(
+            crate::encode::enc_str_x_imm(0, 9, 0),
+            String::new(),
+            CostRule::Store,
+            None,
+            &[9],
+        )
+        .with_mem(MemRef::cold_unique(0));
+        assert_eq!(
+            alignment_penalty(&unique, &table, &point).expect("unique"),
+            0
+        );
+    }
+
+    /// **The finding, measured rather than reasoned** (plans/M20.md item
+    /// I): over the whole `cost-*` corpus, every emitted load/store carries
+    /// a width, every `Stack` access is naturally aligned, and therefore
+    /// neither §4.5 penalty is reachable. wrela's fixed frame makes both
+    /// terms live-but-unexercised by construction.
+    ///
+    /// This fails if a future emit site produces an access this projection
+    /// cannot size (an `LDP`/`STP`/vector form) or a frame offset that is
+    /// not a multiple of its own transfer width.
+    #[test]
+    fn stack_accesses_never_straddle_either_boundary_on_the_corpus() {
+        use crate::cost::stage::codegen_cost_stage_with_placement;
+        use crate::opts::win::discover_cost_corpus;
+
+        let table = table();
+        let point = SweepPoint::pinned(&table);
+        let corpus = discover_cost_corpus();
+        assert!(!corpus.is_empty(), "cost corpus empty");
+
+        let mut stack = 0u64;
+        let mut cold = 0u64;
+        let mut charged = 0u64;
+        for path in &corpus {
+            let case = path
+                .parent()
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_string_lossy();
+            let (program, _place) = codegen_cost_stage_with_placement(path)
+                .unwrap_or_else(|e| panic!("codegen {case}: {e}"));
+            for (key, f) in &program.fns {
+                for ew in &f.code {
+                    if !ew.rule.is_load() && !ew.rule.is_store() {
+                        assert_eq!(
+                            ew.access_bytes,
+                            0,
+                            "{case}/{key}: non-memory `{}` carries a width: {}",
+                            ew.rule.as_str(),
+                            ew.text
+                        );
+                        continue;
+                    }
+                    assert!(
+                        ew.access_bytes > 0,
+                        "{case}/{key}: `{}` has no transfer width — extend \
+                         encode::access_width_bytes for it: {}",
+                        ew.rule.as_str(),
+                        ew.text
+                    );
+                    assert!(
+                        ew.access_bytes <= crate::codegen::FRAME_SLOT_BYTES as u8,
+                        "{case}/{key}: {}-byte access is wider than a frame slot: {}",
+                        ew.access_bytes,
+                        ew.text
+                    );
+                    let m = ew.mem.expect("emitted load/store is always tagged");
+                    match m.class {
+                        MemClass::Stack => {
+                            stack += 1;
+                            assert_eq!(
+                                m.key % u64::from(ew.access_bytes),
+                                0,
+                                "{case}/{key}: frame offset {} is not a multiple of \
+                                 the {}-byte width: {}",
+                                m.key,
+                                ew.access_bytes,
+                                ew.text
+                            );
+                        }
+                        MemClass::Cold => cold += 1,
+                    }
+                    if alignment_penalty(ew, &table, &point).expect("align") > 0 {
+                        charged += 1;
+                    }
+                }
+            }
+        }
+        assert!(stack > 0, "corpus has no Stack accesses to decide");
+        assert_eq!(
+            charged, 0,
+            "the fixed frame produced {charged} straddling accesses — the \
+             §4.5 terms are supposed to be unreachable by construction"
+        );
+        eprintln!(
+            "SOG §4.5 reach over the cost-* corpus: {stack} Stack accesses decided \
+             (0 straddling), {cold} Cold accesses not decided (decision 1611)"
+        );
     }
 
     // --- pre-M20 behaviour that must survive -------------------------------
