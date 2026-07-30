@@ -623,7 +623,7 @@ pub fn format_cost_summary(
          \x20   Owner name=runtime proxy_cycles={runtime}\n\
          \x20   Owner name=driver proxy_cycles={driver}\n"
     ));
-    cost_dump::append_core_block(&mut out, 2, report, placement, ghz, false)?;
+    cost_dump::append_core_block(&mut out, 2, report, placement, ghz, false, attach)?;
     Ok(out)
 }
 

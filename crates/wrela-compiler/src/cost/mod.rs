@@ -62,7 +62,7 @@ pub mod workload;
 pub use ab::{CostOpts, rank_cmp, score_with_opts};
 pub use attr::{CoreBucket, CoreCostReport, PlaceableTurn, attribute_cores};
 pub use branch::{BlockCounts, BlockObs, BranchSummary, BranchTerms, FRONTEND_SWEEP_DIM};
-pub use bridge::{BlockBridge, BridgedBlock, Resolved, make_key, split_key};
+pub use bridge::{BlockBridge, BridgedBlock, MeasuredBlocks, Resolved, make_key, split_key};
 pub use compose::{
     BlockGrainMeasure, WorkloadAttach, attach_workloads, block_grain_fxs, method_grain_fxs,
     uncovered_charge,
