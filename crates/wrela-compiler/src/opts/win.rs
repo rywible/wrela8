@@ -1137,6 +1137,125 @@ pub fn assert_sweep_wins(cmp: &SweepCompare, cand_label: &str, base_label: &str)
 }
 
 // ---------------------------------------------------------------------------
+// Per-opt attribution (plans/M20.md item K)
+// ---------------------------------------------------------------------------
+
+/// One `cost-*` case scored under one named opt configuration.
+///
+/// Four columns because item K's question needs all four at once: `cycles`
+/// is what the gate ranks on, `words` is the reported column freeze 1626
+/// left behind, `charge` is the priced I-side term that replaced it, and
+/// `hot_text_bytes` is the quantity `charge` is computed from — printed so
+/// a footprint win that the budget prices at **zero** is visible as a
+/// footprint win rather than as nothing at all.
+#[derive(Debug, Clone)]
+pub struct AttributionCell {
+    pub config: String,
+    pub proxy_cycles: u64,
+    pub words: u64,
+    pub charge: u64,
+    pub hot_text_bytes: u64,
+}
+
+/// One `cost-*` case across every configuration, in the order given.
+#[derive(Debug, Clone)]
+pub struct AttributionRow {
+    pub name: String,
+    pub cells: Vec<AttributionCell>,
+}
+
+impl AttributionRow {
+    pub fn cell(&self, config: &str) -> Option<&AttributionCell> {
+        self.cells.iter().find(|c| c.config == config)
+    }
+}
+
+/// Score the whole cost-* corpus under each named opt configuration
+/// (plans/M20.md item K). `compare_opt_lists` answers "does the candidate
+/// beat the baseline"; this answers "which opt paid for it", which is a
+/// different question and gets its own dumb loop rather than a flag on the
+/// comparison.
+///
+/// This is **attribution, not a gate.** It returns no verdict and no win
+/// predicate — freeze 1624's prohibition is on `∃`-shaped win predicates,
+/// and the honest way to stay clear of one is to expose no predicate here
+/// at all. Restores `CompileMode::Release` afterward, like its neighbours.
+pub fn attribute_opts(configs: &[(&str, &[OptId])]) -> Vec<AttributionRow> {
+    let corpus = discover_cost_corpus();
+    assert!(
+        !corpus.is_empty(),
+        "cost corpus empty: expected tests/golden/cost-*/input.wr"
+    );
+    let mut rows = Vec::with_capacity(corpus.len());
+    for path in &corpus {
+        let mut cells = Vec::with_capacity(configs.len());
+        for (label, opts) in configs {
+            let r = report_path_under_opts(path, opts);
+            cells.push(AttributionCell {
+                config: (*label).to_string(),
+                proxy_cycles: r.total_proxy_cycles,
+                words: r.total_words,
+                charge: total_charge(&r.footprint),
+                hot_text_bytes: r.footprint.iter().map(|b| b.hot_text_bytes).sum(),
+            });
+        }
+        rows.push(AttributionRow {
+            name: case_name(path),
+            cells,
+        });
+    }
+    apply_mode(CompileMode::Release);
+    rows
+}
+
+/// Stable text form of [`attribute_opts`] for item K's evidence block.
+///
+/// Every number here is a **flat** (`f ≡ 1`) total on the cost-stage
+/// closure, not a measured one — decision 1617's coverage rider attaches to
+/// the measured surface, and decision 1619 says the veto is read off the
+/// flat row. The header says so, so no reader can lift a row out of this
+/// table and call it a measurement.
+pub fn format_attribution_table(rows: &[AttributionRow]) -> String {
+    let mut out = String::new();
+    out.push_str("f=1 (flat); not a measured total\n");
+    out.push_str(&format!(
+        "{:<22} {:<18} {:>10} {:>10} {:>8} {:>10}\n",
+        "case", "config", "cycles", "words", "charge", "hot_text"
+    ));
+    for r in rows {
+        for c in &r.cells {
+            out.push_str(&format!(
+                "{:<22} {:<18} {:>10} {:>10} {:>8} {:>10}\n",
+                r.name, c.config, c.proxy_cycles, c.words, c.charge, c.hot_text_bytes
+            ));
+        }
+    }
+    let configs: Vec<&str> = rows
+        .first()
+        .map(|r| r.cells.iter().map(|c| c.config.as_str()).collect())
+        .unwrap_or_default();
+    for label in configs {
+        let mut cycles = 0u64;
+        let mut words = 0u64;
+        let mut charge = 0u64;
+        let mut hot = 0u64;
+        for r in rows {
+            if let Some(c) = r.cell(label) {
+                cycles = cycles.saturating_add(c.proxy_cycles);
+                words = words.saturating_add(c.words);
+                charge = charge.saturating_add(c.charge);
+                hot = hot.saturating_add(c.hot_text_bytes);
+            }
+        }
+        out.push_str(&format!(
+            "{:<22} {:<18} {:>10} {:>10} {:>8} {:>10}\n",
+            "SUM", label, cycles, words, charge, hot
+        ));
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
 // Overall veto-then-rank (Phase 2 item K)
 // ---------------------------------------------------------------------------
 
@@ -1764,6 +1883,138 @@ mod tests {
             "NarrowImm alone must strictly lower ≥1 cost-* case; none fell"
         );
         eprintln!("NarrowImm alone wins:\n{}", wins.join("\n"));
+    }
+
+    /// **plans/M20.md item K — the NarrowImm finding, pinned.**
+    ///
+    /// The plan predicted that under the A76 ruler NarrowImm "may score near
+    /// zero on cycles and win only on the footprint term", because
+    /// `MOVZ`/`MOVK` are 1-cycle, throughput-3, port-I. Measured, the
+    /// prediction is **inverted** and this oracle pins both halves of the
+    /// inversion:
+    ///
+    /// 1. NarrowImm's win is **entirely on cycles** — it lowers the corpus
+    ///    proxy total on its own, and (checked below) does so at every point
+    ///    of the residual box in `unit:narrow_imm_alone_wins_at_every_box_point`.
+    ///    It is not a latency win and never was: `load_imm` pushes each
+    ///    `MOVK` with **no** source register, so the four-word materialization
+    ///    is four *independent* 1-cycle uops, not a dependence chain. What
+    ///    NarrowImm buys is dispatch and port-I **issue bandwidth**, bounded
+    ///    above by one third of a cycle per deleted word (three I pipes).
+    /// 2. NarrowImm's **footprint** win — which the plan expected to be the
+    ///    whole story — is the half the gate cannot see. Hot text falls, and
+    ///    the priced overflow `charge` is **0 on both sides of every case**,
+    ///    because the cost-stage closure sits far inside its 64 KiB L1I. The
+    ///    term that replaced the words veto (decision 1619) prices this
+    ///    saving at exactly zero.
+    ///
+    /// So the retirement of the words veto did cost the gate a signal, and
+    /// this oracle is where that is stated as a measurement: had NarrowImm
+    /// been the footprint-only opt the plan expected, the gate would now be
+    /// blind to it. It survives on cycles alone.
+    #[test]
+    fn narrow_imm_wins_on_cycles_while_its_footprint_win_is_priced_at_zero() {
+        let configs: [(&str, &[OptId]); 4] = [
+            ("dev", &[]),
+            ("BoundsElide", &[OptId::BoundsElide]),
+            ("NarrowImm", &[OptId::NarrowImm]),
+            ("release", RELEASE_OPTS),
+        ];
+        let rows = attribute_opts(&configs);
+        let table = format_attribution_table(&rows);
+        eprintln!("per-opt attribution (plans/M20.md item K):\n{table}");
+
+        let sum = |label: &str, f: fn(&AttributionCell) -> u64| -> i64 {
+            rows.iter()
+                .map(|r| f(r.cell(label).expect("config scored")) as i64)
+                .sum()
+        };
+        let dev_cycles = sum("dev", |c| c.proxy_cycles);
+        let be_cycles = sum("BoundsElide", |c| c.proxy_cycles);
+        let ni_cycles = sum("NarrowImm", |c| c.proxy_cycles);
+        let rel_cycles = sum("release", |c| c.proxy_cycles);
+
+        // (1) Not "near zero on cycles".
+        assert!(
+            ni_cycles < dev_cycles,
+            "NarrowImm alone must still lower the corpus proxy total: \
+             dev {dev_cycles} -> NarrowImm {ni_cycles}\n{table}"
+        );
+
+        // (2) There is a real footprint win...
+        let dev_hot = sum("dev", |c| c.hot_text_bytes);
+        let ni_hot = sum("NarrowImm", |c| c.hot_text_bytes);
+        assert!(
+            ni_hot < dev_hot,
+            "NarrowImm must still shrink hot text: {dev_hot} -> {ni_hot}\n{table}"
+        );
+        // ...and the gate prices it at exactly zero, on both sides, everywhere.
+        for r in &rows {
+            for label in ["dev", "NarrowImm"] {
+                let c = r.cell(label).expect("config scored");
+                assert_eq!(
+                    c.charge, 0,
+                    "{}/{label}: this corpus is far inside its L1I, so the priced \
+                     I-side term is 0 and NarrowImm's footprint win is invisible \
+                     to the gate. A nonzero charge here means that claim has \
+                     changed and item K's record needs rewriting.\n{table}",
+                    r.name
+                );
+            }
+        }
+
+        // (3) The two opts reach disjoint parts of this corpus: NarrowImm is
+        // the *sole* mover wherever BoundsElide is exactly flat. `>= 4` rather
+        // than `== 4` so a new cost-* case cannot silently weaken the claim.
+        let sole: Vec<&str> = rows
+            .iter()
+            .filter(|r| {
+                let d = r.cell("dev").expect("dev").proxy_cycles;
+                let b = r.cell("BoundsElide").expect("be").proxy_cycles;
+                let n = r.cell("NarrowImm").expect("ni").proxy_cycles;
+                b == d && n < d
+            })
+            .map(|r| r.name.as_str())
+            .collect();
+        assert!(
+            sole.len() >= 4,
+            "NarrowImm must be the sole mover on ≥4 cases BoundsElide never \
+             touches; got {sole:?}\n{table}"
+        );
+
+        // (4) BoundsElide still carries the corpus on cycles — the majority of
+        // release's whole advantage, on two cases out of six.
+        assert!(
+            dev_cycles - be_cycles > (dev_cycles - rel_cycles) / 2,
+            "BoundsElide must still carry the majority of release's cycle win: \
+             BoundsElide {} of release {}\n{table}",
+            dev_cycles - be_cycles,
+            dev_cycles - rel_cycles
+        );
+    }
+
+    /// **plans/M20.md item K.** The cycle half of the finding above, under
+    /// `∀` rather than at the pinned point: NarrowImm alone falls at **every**
+    /// point of the residual box, on every case. That is the evidence that the
+    /// win is a dispatch/issue-bandwidth effect and not a latency or memory
+    /// one — the box varies every bracketed latency the model has, and on five
+    /// of six cases NarrowImm's delta does not move across it at all.
+    #[test]
+    fn narrow_imm_alone_wins_at_every_box_point() {
+        let cmp = compare_opt_lists_over_box(&[], &[OptId::NarrowImm]).expect("sweep");
+        assert_sweep_wins(&cmp, "NarrowImm", "dev");
+        for c in &cmp.cases {
+            assert!(
+                !c.points.is_empty() && c.points.iter().all(|p| p.candidate < p.baseline),
+                "{}: NarrowImm must fall at every box point",
+                c.name
+            );
+        }
+        eprintln!(
+            "NarrowImm ∀-sweep: {} points/side over {} cases",
+            cmp.scored_points(),
+            cmp.cases.len()
+        );
     }
 
     /// Decision 1453: swapped opt-list order vs RELEASE_OPTS — document
