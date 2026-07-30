@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/check_driver_mode_irq.wr sha256=40e6de4666f2f19b8e92a602840d557d0da6dd7712e67674a587a82a26306773
-  Input path=<generated> sha256=ee30b67a7958c3fe101fbd14cbf0417389a488ca143578238a18ef5308b32ffd
+  Input path=<generated> sha256=643993dc09c1aa1a8ed48a451a475fab1a69952733253643881232fbe964e39f
   Name value=check-driver-mode-irq
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock

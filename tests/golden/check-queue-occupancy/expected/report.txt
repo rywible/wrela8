@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/check_queue_occupancy.wr sha256=72e9fda2fcd590f55a21a64043f3bf9355859f82c51fc4a9714e50d0cdd6e364
-  Input path=<generated> sha256=d19318bd57f32a2b3dde8fe070663eaca6de26f7b6db2ea1e1ab1ecdea988e77
+  Input path=<generated> sha256=ba2ea7588cdf70e3444d17fe7fa28eef4a4f66640aa17bcb4f6a1ec6ba284519
   Name value=check-queue-occupancy
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock

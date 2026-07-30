@@ -8,7 +8,7 @@ ImageReport v0
   Quota max_exhaustive_cases=65536
   Input path=drivers/blk.wr sha256=7c0c0c16c444c96f75084a3daa26955557f52d115421048fdd538200e29c8f37
   Input path=examples/boot_blk_roundtrip.wr sha256=f8fe07d2e2b52f2da300d378c239232a70ae2978ba6e263a930b7f8df1973cae
-  Input path=<generated> sha256=d5806aec0d491f7ab904942aba55377cff25413e30e9b39558bcac6a51e6aa0c
+  Input path=<generated> sha256=8de8db4b88976f34f0964cd8b918a9550e4a32bfaa278fe0d83d958d14977dff
   Name value=boot-blk-roundtrip
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock

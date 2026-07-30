@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/check_regions_two_disciplines.wr sha256=9ca0719288e1cdbfc1becbddae368574f001138e203ddabb3356c215f51d9c5d
-  Input path=<generated> sha256=9711c154983508021ce60343e4d80b20defe9ac03d4cf7fdc08ef56b18f02289
+  Input path=<generated> sha256=93814a4b6a76d52d9a7dce365bab8169d93142818895491a9f55075086a436ec
   Name value=check-regions-two-disciplines
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Adder

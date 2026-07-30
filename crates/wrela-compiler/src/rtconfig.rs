@@ -152,7 +152,8 @@ pub const METHOD_CALL_POOL_COUNT: usize = 128;
 /// plans/M20.md item B / decision 1607 raised this from 1024: with
 /// `runtime` and `driver` instrumented, the measured id count of a
 /// `@test(runtime)` image is 2344 (`boot-hello`) to **2788**
-/// (`boot-cross-core-mailbox-depth`), `boot-actors` 2524 — every one of the
+/// (`boot-cross-core-mailbox-depth`), `boot-actors` 2524 (2527 after item C's
+/// own three extra Lane 2 dump blocks) — every one of the
 /// 45 `boot-*` cases exhausted a 1024 pool. 3072 is the corpus maximum plus
 /// ~10%.
 ///
@@ -614,6 +615,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     push_const(&mut out, "MB_POOL_COUNT", MB_POOL_COUNT);
     push_const(&mut out, "METHOD_CALL_POOL_COUNT", METHOD_CALL_POOL_COUNT);
     push_const(&mut out, "BLOCK_POOL_COUNT", BLOCK_POOL_COUNT);
+    push_const(&mut out, "BLOCK_BOUND_PRINT_PAIRS", BLOCK_BOUND_PRINT_PAIRS);
     push_const(&mut out, "N_METHODS", n_methods);
     push_const(&mut out, "TURNS_BASE", RTDATA_BASE as usize);
     // M12 item E: `N_INIT_SLOTS` names the coalesced live span count

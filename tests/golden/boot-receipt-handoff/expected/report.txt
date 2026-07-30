@@ -8,7 +8,7 @@ ImageReport v0
   Quota max_exhaustive_cases=65536
   Input path=core/io_error.wr sha256=c30f35780ff1d174d74787ddd4d3f51a3b8a0bd76c68e5036ec4bf76a511af81
   Input path=examples/boot_receipt_handoff.wr sha256=7b4a721735047624f93871f4f4afdfacfadbb2ee29aeb27199e7e644ca055b40
-  Input path=<generated> sha256=ca62ab6c3e6b2180554494684f1aa440615e768ab988d9ff16dc5991600e00b3
+  Input path=<generated> sha256=fdf8e2db6d3af8590ae3698d485b980f7f461e0e743cb177c173882b0a4710fa
   Name value=boot-receipt-handoff
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock

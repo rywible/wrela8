@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/err_boot_epoch_stale.wr sha256=b8c36a275d8a710bfe55f389b24e516a7e20d36315f77ce8f4912b627d91d0a8
-  Input path=<generated> sha256=a111862237ca54f27bf5786a0494297a7010932ea47eb3636e24b6443590d080
+  Input path=<generated> sha256=c3d2c159dfe90ffafd731bf1bc0a7a9de6911bf66f99bb04fc4ef7f240798d31
   Name value=err-boot-epoch-stale
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock

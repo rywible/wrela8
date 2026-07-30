@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/check_placement_cores_2.wr sha256=04f15926ad5191b0239013b0cf8ace965be13576ed4b20ed6f97cbc3e1ab7778
-  Input path=<generated> sha256=41f2d50f4fe930a7d7f1dcaa4bd6fd0ba42aaa441b69333dc32c23b59e0eb3b2
+  Input path=<generated> sha256=bcfd40bd7335668a80e021e7e20447f7b3aedbe8b4d6321ceaafc342b05fbd9f
   Name value=placement-cores-2
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Light

@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/check_cores_stacks_high.wr sha256=962268d64421979f325dff09201acc2a183d807d4694e70d00c482ce19d11e42
-  Input path=<generated> sha256=68040510d5a49103323fbdc248c17c73e7c6fd28ed8a0dad8c0cd41679263b6f
+  Input path=<generated> sha256=e775225b361a039e02ee4d189af67aebc6c914fae4f79fc49193e1d7c8cfacd8
   Name value=cores-stacks-high
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Store

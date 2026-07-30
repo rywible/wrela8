@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_device_claim.wr sha256=88cf58e8bb62b835c232576c24ea3289d3ca96d19c8cf693182dc9ae50346a3c
-  Input path=<generated> sha256=7d2b5a4b05194c180524065456489718954b55929340dee8199722bc85dc0227
+  Input path=<generated> sha256=08e043c55429d4f4c0091c7c3311d2653b75140871cb90efee229f0ced1323f1
   Name value=boot-device-claim
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock

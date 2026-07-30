@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/err_boot_dma_reclaim_early.wr sha256=10ed71cbd962ad2f590e8d2bd827341c1f118a2b17d0ce849bd180499aef92f5
-  Input path=<generated> sha256=cd0461ad015c613840291a512d25e5a2adfb738927275626627322cf1517e028
+  Input path=<generated> sha256=da4b56867c30778c4601b5bc2451d529a9c10ea08b0318a95fe2f5f3002cd94f
   Name value=err-boot-dma-reclaim-early
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock

@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_handle_index_distinct.wr sha256=5392855536884084b80628a152f025b6cc188fa93d577877932522a07c0ae122
-  Input path=<generated> sha256=b581a6b66a54e47344aa99a7fb8a2f7e79f387bb082aeba335e0fe47c921f550
+  Input path=<generated> sha256=d292dc3b2594d68810631d0e804f75618f07496295ab097be2f76d8cd66c9e6f
   Name value=handle-index-distinct
   Target value=Target.wrela_machine_v1
   Device index=0 type=Hw

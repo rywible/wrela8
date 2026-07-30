@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/err_boot_receipt_recover.wr sha256=8d0e49a13a9c3cdd337e7144a2f9edeaefbe081288ef1893ce2c6f2c305a7d68
-  Input path=<generated> sha256=6ae02f6fcc1fe8fbcad4364d28a1f87fd84e472035add8e6225ce85ffeff830b
+  Input path=<generated> sha256=1c18f008d37713e4d3985dae007eb5408512d69cf6308b182cd09c9716b6f116
   Name value=err-boot-receipt-recover
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock

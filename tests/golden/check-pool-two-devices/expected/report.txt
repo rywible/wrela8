@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/check_pool_two_devices.wr sha256=36aca8d495c39ad80c8b859d9e24d16953b2c44b6ce7126878a7eaf6f576596b
-  Input path=<generated> sha256=3a00912127b82713b25e04f4c79b98f4a0c7fa383c06a663e6484cf52d022a0f
+  Input path=<generated> sha256=b591444856e7b6d55fcd5a1a49e357aa3692346fd6e9bf205fc7f076c7ab50a3
   Name value=pool-two-devices
   Target value=Target.wrela_machine_v1
   Device index=0 type=BlockHw

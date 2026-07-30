@@ -8,7 +8,7 @@ ImageReport v0
   Quota max_exhaustive_cases=65536
   Input path=core/image_report.wr sha256=7abde3292fbefa4cd47b167ad19ed31ab9e08a7267f0dc3d40b1414b80b416bf
   Input path=examples/check_layout_assert_budget_helper.wr sha256=6b56f681f38f8a510f9f23ac3347731c1fc7c15ff48705258554f2541094bb81
-  Input path=<generated> sha256=435e5e35b28e1b5fe885afd55bb9ddb74007330463651e9896d85e114bdbf8de
+  Input path=<generated> sha256=782d8b2dce8d42a3f22dd506570f1a45db4c1af04129cf73f42a04192090fcba
   Name value=layout-assert-budget-helper
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Store

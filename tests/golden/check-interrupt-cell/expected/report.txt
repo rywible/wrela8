@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/check_interrupt_cell.wr sha256=5eacda36fb3f9f6d49ecb36a602704d269890d05ff7468ade1f5b01c4b478e6a
-  Input path=<generated> sha256=b8e5f94bc84cfa8015002d904136917736f3c9521961c74ef4d6334c51d1707b
+  Input path=<generated> sha256=321cb3e33757288904ff4c18ce5ee7efbb5f817260fb2758464e6a784a4174dd
   Name value=check-interrupt-cell
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock

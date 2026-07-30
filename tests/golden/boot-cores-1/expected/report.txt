@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_cores_1.wr sha256=6bedd805796627a3b1ed999541463906cc4f9856c0a0acef91cd8829e27d373b
-  Input path=<generated> sha256=be6d602b9cbba82e83f31676b0e0f81cd08b9a056b0c3179fb47cc7725fe0ec0
+  Input path=<generated> sha256=5b1c152f48dd5ae5a30b71c7ee328e84e81da6f525512ecee6067c38cbde8a13
   Name value=boot-cores-1
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Ledger

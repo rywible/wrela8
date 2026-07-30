@@ -192,7 +192,8 @@ pub use report_lines::{
 pub use harness::{
     DEADLOCK_MSG, EXIT_CODE_ABORT_FIXED, EXIT_CODE_ABORT_VAL, EXIT_CODE_NO_RUNTIME,
     TranscriptBound, build_checkpoint_and_vector_stub, build_checkpoint_and_vector_stub_ex,
-    check_transcript_bound, compute_transcript_bound, layout_test_image,
+    check_transcript_bound, compute_transcript_bound, lane1_pair_bytes, lane2_marker_bytes,
+    lane2_pair_bytes, layout_test_image,
 };
 
 #[cfg(test)]
@@ -5583,11 +5584,83 @@ fn two():
         // + hits over-approx (METHOD_CALL_POOL_COUNT pairs).
         const LANE1_SCALAR: u64 = 12 + 20 + 9 + 20 + 10 + 20 + 1;
         const LANE1_QUIESCE: u64 = 21 + 1;
-        let lane1_hits =
-            11 + (crate::rtconfig::METHOD_CALL_POOL_COUNT as u64) * (20 + 1 + 20 + 1) + 1;
+        let lane1_hits = 11 + lane1_pair_bytes() + 1;
         assert_eq!(
             bound.worst_case_bytes,
             16 + failed_len + 57 + LANE1_SCALAR + LANE1_QUIESCE + lane1_hits
+        );
+    }
+
+    /// **Decision 1610's proof obligation.** The Lane 1 and Lane 2 hits
+    /// reservations must over-approximate the widest line the guest can
+    /// actually print, which is what `harness.rs` claims about itself and
+    /// what item B measured to be false for Lane 2.
+    ///
+    /// The guest's widest line is exact arithmetic, not a guess:
+    /// `"lane1 hits="` / `"lane2 hits="` (11 B) + `n` pairs of
+    /// `<id>:<count>` at their real digit widths + `n - 1` separating
+    /// commas + (Lane 2 only) `" truncated="` and its count + `"\n"`.
+    /// `n` is `METHOD_CALL_POOL_COUNT` for Lane 1 and
+    /// `BLOCK_BOUND_PRINT_PAIRS` for Lane 2 — the latter because the guest
+    /// dump now stops there and reports the rest in the marker.
+    #[test]
+    fn lane_hit_reservations_over_approximate_the_widest_printable_line() {
+        const COUNT_DIGITS: u64 = 20; // u64 guest counter: no static bound.
+
+        let n = crate::rtconfig::METHOD_CALL_POOL_COUNT as u64;
+        // A flat method index is < METHOD_CALL_POOL_COUNT = 128 → 3 digits.
+        let lane1_widest = n * (3 + 1 + COUNT_DIGITS) + (n - 1);
+        assert!(
+            lane1_pair_bytes() >= lane1_widest,
+            "lane 1 reservation {} must cover the widest printable pair list {lane1_widest}",
+            lane1_pair_bytes()
+        );
+        assert_eq!(
+            lane1_pair_bytes() - lane1_widest,
+            1,
+            "and must not be loose by more than the one byte the trailing-comma \
+             over-charge costs"
+        );
+
+        let pairs = crate::rtconfig::BLOCK_BOUND_PRINT_PAIRS as u64;
+        // A Lane 2 id is < BLOCK_POOL_COUNT = 3072 → 4 digits.
+        let lane2_widest = pairs * (4 + 1 + COUNT_DIGITS) + (pairs - 1);
+        assert!(
+            lane2_pair_bytes() >= lane2_widest,
+            "lane 2 reservation {} must cover the widest printable pair list {lane2_widest}",
+            lane2_pair_bytes()
+        );
+        assert_eq!(lane2_pair_bytes() - lane2_widest, 1);
+
+        // The marker itself: ` truncated=` + at most BLOCK_POOL_COUNT.
+        let marker_widest = " truncated=".len() as u64 + 4;
+        assert!(
+            lane2_marker_bytes() >= marker_widest,
+            "the truncation marker must be reserved for, not discovered at run time"
+        );
+
+        // And the whole Lane 2 line fits the console with Lane 1's own
+        // reservation alongside it — the arithmetic decision 1610 states.
+        let lane1_line = 11 + lane1_pair_bytes() + 1;
+        let lane2_line = 11 + lane2_pair_bytes() + lane2_marker_bytes() + 1;
+        assert_eq!(lane1_line, 3212, "lane 1 hits line reservation");
+        assert_eq!(lane2_line, 3355, "lane 2 hits line reservation");
+        assert!(
+            lane1_line + lane2_line < console::DATA_SIZE,
+            "both hit lines together must leave room for the test/summary lines"
+        );
+    }
+
+    /// The Lane 2 reservation tracks `BLOCK_BOUND_PRINT_PAIRS`, not the
+    /// (unbounded) real non-zero block count — so raising the pool cannot
+    /// silently make the bound false again the way item B's widening did.
+    #[test]
+    fn lane2_reservation_is_bounded_by_the_print_pair_cap() {
+        let per_pair = lane2_pair_bytes() / (crate::rtconfig::BLOCK_BOUND_PRINT_PAIRS as u64);
+        assert_eq!(per_pair, 4 + 1 + 20 + 1, "id digits from BLOCK_POOL_COUNT");
+        assert!(
+            lane2_pair_bytes() < (crate::rtconfig::BLOCK_POOL_COUNT as u64) * per_pair,
+            "the reservation must be the *printable* cap, not the whole pool"
         );
     }
 

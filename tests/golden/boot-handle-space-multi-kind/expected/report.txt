@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_handle_space_multi_kind.wr sha256=eefaa53272b6e353d101d4212179fb677bb73d623b48b2df48afd2135fc010a9
-  Input path=<generated> sha256=30560c7a2b2255be7083a35854b314aea59b0d204cc4a462d983e2fca42a819e
+  Input path=<generated> sha256=a21c81820f82e2ba647b826ddbe54c931dc9f3a0c3f50b972aa0def173a4e804
   Name value=probe7-multi-kind
   Target value=Target.wrela_machine_v1
   Device index=0 type=HwA

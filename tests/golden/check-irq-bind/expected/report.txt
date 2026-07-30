@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/check_irq_bind.wr sha256=e30aea7888340e4531ef60b653d48a73858e295aaea5025d79059ff8f1296a82
-  Input path=<generated> sha256=a5da16c78ffdb8a4f15a046b4a6b761a7d58ae3750983c16f571fc420b899ae2
+  Input path=<generated> sha256=e21b7763766369f9d6971791b16b08bbe666eedc578ff755d876bbc98876f0bd
   Name value=check-irq-bind
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock

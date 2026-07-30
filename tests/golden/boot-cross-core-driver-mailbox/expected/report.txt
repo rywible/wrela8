@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_cross_core_driver_mailbox.wr sha256=2c433a3f5c993cfaf1c20c514772c4275ac5496016eb9b7f2c9da89e0a2e53e7
-  Input path=<generated> sha256=32d1d87a4647ea2d9a387b8ad4e779365d4637a1be8272c9844190b9985f9c09
+  Input path=<generated> sha256=0808c2d8699240cc642b756c67493bebe4848fcabd4951c968e95b157b64e3e2
   Name value=cross-core-driver-mailbox
   Target value=Target.wrela_machine_v1
   Device index=0 type=Hw

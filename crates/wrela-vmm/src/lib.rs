@@ -3652,5 +3652,39 @@ pub fn build() -> Image:
             !outcome.lane2_hits.is_empty(),
             "Lane 3 hit map must be non-empty on boot-actors"
         );
+
+        // plans/M20.md item C / decision 1610: `boot-actors` has more
+        // non-zero hit blocks than the transcript can carry, so this is a
+        // **truncating** case and the truncation must be loud — the marker
+        // present and naming a nonzero count that the host tail confirms.
+        // A pass here is therefore not "the line matched itself".
+        let line = transcript
+            .lines()
+            .find(|l| l.starts_with("lane2 hits="))
+            .expect("lane2 line");
+        let parsed = crate::lane3::parse_lane2_line(line).expect("parse");
+        assert!(
+            outcome.lane2_hits.len() > wrela_compiler::rtconfig::BLOCK_BOUND_PRINT_PAIRS,
+            "boot-actors must exceed the printable pair cap for this oracle to test \
+             truncation at all (host pairs: {})",
+            outcome.lane2_hits.len()
+        );
+        assert_eq!(
+            parsed.hits.len(),
+            wrela_compiler::rtconfig::BLOCK_BOUND_PRINT_PAIRS,
+            "a truncating dump must print exactly the cap"
+        );
+        assert_eq!(
+            parsed.truncated,
+            Some(
+                (outcome.lane2_hits.len() - wrela_compiler::rtconfig::BLOCK_BOUND_PRINT_PAIRS)
+                    as u64
+            ),
+            "`truncated=<N>` must name every dropped pair"
+        );
+        assert!(
+            parsed.truncated.unwrap() > 0,
+            "the marker must name a nonzero count on a truncating case"
+        );
     }
 }

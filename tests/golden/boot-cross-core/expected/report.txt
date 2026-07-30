@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_cross_core.wr sha256=72f7aa029cc99e2262d2e438d720ec2f83ddea7e8c402ec7ff0d6e1beecc7fb5
-  Input path=<generated> sha256=4f915e1094eda9614c3fcbfcf63da2f4b0dc719e7aa6383ddc9042e7202bac6a
+  Input path=<generated> sha256=38fd7b9b580092880d4b0df9d6d999479061f64e056006db50ab76dc45c80e4e
   Name value=boot-cross-core
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Store

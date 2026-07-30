@@ -8,7 +8,7 @@ ImageReport v0
   Quota max_exhaustive_cases=65536
   Input path=actor.wr sha256=4b7a743e7f1ce408b38d01780e9c122cf81ead61b0922eac45cbbe9bef5ac1f5
   Input path=image.wr sha256=73c30b52367f4cd3f94ee05adba51e7aede76ce2efca34a251829cb18306f23c
-  Input path=<generated> sha256=8312c74911cb3b57cea16b290fa1c3eabdd1894e2f18d5e48666a43620edc82a
+  Input path=<generated> sha256=0c6e42ac8e0102de1e2ce61a7c086c352353574598212203fdf67c90bfe52a93
   Name value=project-appliance
   Target value=Target.wrela_machine_v1
   Driver index=0 type=Blk

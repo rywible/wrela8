@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/check_placement_pinned_blk.wr sha256=3454f9263d07edf969c1d874230e4588f365f72e045f838031d4dcb96953d5ec
-  Input path=<generated> sha256=b407639d4207e7ff23ee71a03cd282fc9febe7445f17905f7aeff5a06c51764d
+  Input path=<generated> sha256=cc088845250a2e02bdf025f578129c40524448a19077573c7c8f21826499b6a6
   Name value=placement-pinned-blk
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock
