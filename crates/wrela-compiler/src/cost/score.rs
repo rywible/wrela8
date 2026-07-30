@@ -79,7 +79,11 @@ use crate::placement::PlacementTable;
 use super::footprint::{self, CoreBudget, HotBlocks};
 use super::mem::MemState;
 use super::owner::classify_owner;
-use super::rule::{CostRule, EmittedWord, MEM_SP_REG};
+// `MemClass` is read here only by item I's §4.5 alignment term: crossing is
+// statically decidable for a proven SP-relative slot and not for a `Cold`
+// base whose alignment is not a fact the model has (decision 1615). The
+// cache model itself lives in `super::mem` (item F).
+use super::rule::{CostRule, EmittedWord, MEM_SP_REG, MemClass};
 use super::sweep::SweepPoint;
 use super::table::{CostTable, LatRow, pipe_range};
 
