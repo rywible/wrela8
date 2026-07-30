@@ -334,6 +334,7 @@ fn check() -> Result<(), String> {
         "cargo test",
     )?;
     test_wrela_vmm_signed()?;
+    sweep_deep()?;
     golden(false)?;
     report_determinism()?;
     diff_eval_smoke()?;
@@ -2702,6 +2703,32 @@ fn diff_eval() -> Result<(), String> {
 /// comptime tests between them, exercising checked/wrapping arithmetic,
 /// structs, enums, `match`, loops, and a generic fn) — the closest
 /// existing cases to the plan's own naming, used verbatim rather than
+/// The ∀ sweep's **deep lane** (plans/M20.md decision 1637).
+///
+/// `opts::win`'s whole-corpus sweep is `#[ignore]`d in the default
+/// `cargo test` loop and run here instead, exactly as every `fuzz_*` lane
+/// keeps a deep default and a smoke budget. It costs minutes once item M's
+/// nine cases join the corpus (`k` reaches 14 on `cost-crosscore`, 16384
+/// corners), and CLAUDE.md puts that in the expensive close lane rather
+/// than on every per-item run. The smoke lane
+/// (`release_wins_at_every_box_point_on_the_smoke_case`) keeps the property
+/// under test on ordinary runs through the identical code path, so nothing
+/// about the oracle's strength moved — only which lane runs it.
+fn sweep_deep() -> Result<(), String> {
+    run(
+        Command::new("cargo").args([
+            "test",
+            "-p",
+            "wrela-compiler",
+            "--lib",
+            "--quiet",
+            "--",
+            "--ignored",
+        ]),
+        "sweep (deep lane)",
+    )
+}
+
 /// substituted.
 const DIFF_EVAL_SMOKE_CASES: [&str; 3] = ["boot-hello", "check-tests-arith", "check-tests-program"];
 

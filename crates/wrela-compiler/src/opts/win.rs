@@ -51,12 +51,20 @@
 //! candidate including the identity — pinned as
 //! `unit:an_over_budget_identity_is_refused_absolutely_and_allowed_as_a_delta`.)
 //!
-//! Two absolute assertions are kept **alongside** the delta, and no more:
-//! [`VetoReason::ITlbBudgetExceeded`], because the I-side page span is
-//! inside budget on both surfaces so the assertion is about the program
-//! rather than about which program was handed in; and `within_budget()` on
-//! every `cost-*` case in the corpus oracle, so the rule here is live and
+//! **One** absolute assertion is kept alongside the delta: `within_budget()`
+//! on every `cost-*` case in the corpus oracle, so the rule is live and
 //! silent rather than inert.
+//!
+//! The absolute **I-TLB veto is retired** (plans/M20.md decision 1636). It
+//! was kept on the premise that the I-side page span "is inside budget on
+//! both surfaces", which item M falsified by building the `cost-itlb-span`
+//! golden this plan asked for: core 0 at 57 text pages against 48, which
+//! made the rule refuse **every** candidate at **every** box point, the
+//! identity included. That is precisely the failure decision 1619 names —
+//! an absolute rule refuses a candidate for a property of the **baseline**,
+//! where the veto it replaced spoke about the **change**. The delta rule
+//! already watches `over_itlb_pages`, so a candidate that *worsens* the
+//! span is still refused and nothing was lost by retiring this.
 //!
 //! ## Item J: the ∀ sweep
 //!
@@ -236,24 +244,6 @@ pub fn budget_overflow_growth(
 }
 
 /// The absolute half, kept **in addition** to the delta rule. Item F
-/// measured 23 text pages against a 48-entry L1 I-TLB on every `boot-*`
-/// core, so unlike the hot-text line this budget is comfortably inside
-/// today and an assertion about it is meaningful rather than universal.
-///
-/// **plans/M20.md decision 1635-M: that premise is now known to be
-/// falsifiable by a corpus case, and it costs the gate everything when it
-/// is.** Item M built the `cost-itlb-span` golden the plan asked for at
-/// full size — 13 actor methods, core 0 at 57 text pages against 48 — and
-/// this rule then refused **every** candidate at **every** point of the
-/// residual box, the identity included, because the breach is a property
-/// of the baseline. That is exactly the failure decision 1619 names for an
-/// absolute rule. Item M shipped a non-breaching span witness instead and
-/// left the choice here: retire this in favour of the delta rule (which
-/// already covers `over_itlb_pages`), or exclude a deliberately-breaching
-/// case from `discover_cost_corpus`. Not decided by a goldens item.
-pub fn itlb_absolute_breaches(budgets: &[CoreBudget]) -> Vec<&CoreBudget> {
-    budgets.iter().filter(|b| b.over_itlb_pages > 0).collect()
-}
 
 /// Full corpus comparison result (per-case + sums).
 #[derive(Debug, Clone)]
@@ -577,7 +567,7 @@ pub fn format_delta_table(cmp: &CorpusCompare, base_label: &str, cand_label: &st
 /// visibly, and by name. Raising the bound to 14 was **measured** rather
 /// than guessed before being reverted: at 14 the test ran **1916 s
 /// (31 m 58 s)** and still failed, on a different refusal (see
-/// [`itlb_absolute_breaches`]). 16384 corners x 2 sides x 15 cases is not a
+/// the retired absolute I-TLB veto). 16384 corners x 2 sides x 15 cases is not a
 /// unit-test-lane cost, so which lane this gate belongs in is a structural
 /// call for the milestone close, not something a goldens item buys by
 /// editing this number.
@@ -673,14 +663,6 @@ pub enum SweepVeto {
         point: String,
         growth: BudgetGrowth,
     },
-    /// The absolute I-TLB assertion kept alongside the delta rule.
-    ITlbExceeded {
-        case: String,
-        point: String,
-        core: usize,
-        text_pages: u64,
-        itlb_entries: u64,
-    },
     /// **Freeze 1633.** Point-independent: a count of emitted words.
     OrderingWordsRemoved {
         case: String,
@@ -710,13 +692,6 @@ impl SweepVeto {
             } => {
                 format!("{case}:{}@[{point}]", growth.label())
             }
-            SweepVeto::ITlbExceeded {
-                case,
-                point,
-                core,
-                text_pages,
-                itlb_entries,
-            } => format!("itlb_exceeded:{case}:core{core}:{text_pages}/{itlb_entries}@[{point}]"),
             SweepVeto::OrderingWordsRemoved {
                 case,
                 rule,
@@ -964,15 +939,6 @@ fn refuse_at_point(
             growth: g,
         });
     }
-    for over in itlb_absolute_breaches(&c.budgets) {
-        reasons.push(SweepVeto::ITlbExceeded {
-            case: case.to_string(),
-            point: label.to_string(),
-            core: over.n,
-            text_pages: over.text_pages,
-            itlb_entries: over.itlb_entries,
-        });
-    }
     if check_ordering {
         for r in ordering_removals(&b.ordering, &c.ordering) {
             reasons.push(SweepVeto::OrderingWordsRemoved {
@@ -1044,7 +1010,39 @@ pub fn compare_opt_lists_over_box(
     baseline: &[OptId],
     candidate: &[OptId],
 ) -> Result<SweepCompare, String> {
-    let corpus = discover_cost_corpus();
+    sweep_corpus(baseline, candidate, None)
+}
+
+/// The same ∀ sweep restricted to one named case — the **smoke lane**.
+///
+/// The whole-corpus sweep is minutes once item M's cases join it, so it is
+/// `#[ignore]`d and run by `cargo xtask check`, exactly as every `fuzz_*`
+/// lane splits a smoke budget from a deep one. This is what keeps ∀ coverage
+/// in the default `cargo test` loop: it is the identical code path, the
+/// identical probe and the identical refusals, over one case instead of
+/// fifteen. A smoke lane that ran *different* code would be worthless.
+pub fn compare_opt_lists_over_box_for_case(
+    baseline: &[OptId],
+    candidate: &[OptId],
+    case: &str,
+) -> Result<SweepCompare, String> {
+    sweep_corpus(baseline, candidate, Some(case))
+}
+
+fn sweep_corpus(
+    baseline: &[OptId],
+    candidate: &[OptId],
+    only: Option<&str>,
+) -> Result<SweepCompare, String> {
+    let mut corpus = discover_cost_corpus();
+    if let Some(want) = only {
+        corpus.retain(|p| case_name(p) == want);
+        if corpus.is_empty() {
+            return Err(format!(
+                "sweep: no cost corpus case named `{want}` (smoke lane names a case that must exist)"
+            ));
+        }
+    }
     if corpus.is_empty() {
         return Err("cost corpus empty: expected tests/golden/cost-*/input.wr".to_string());
     }
@@ -1349,15 +1347,6 @@ pub enum VetoReason {
         baseline: u64,
         candidate: u64,
     },
-    /// The absolute half kept beside the delta rule: the candidate's text
-    /// does not fit the 48-entry L1 I-TLB on some core. Meaningful because
-    /// item F measured 23 text pages there — unlike the hot-text line, this
-    /// budget is not already breached everywhere.
-    ITlbBudgetExceeded {
-        core: usize,
-        text_pages: u64,
-        itlb_entries: u64,
-    },
     /// **Freeze 1633.** The candidate emits fewer words of a
     /// `[crosscore]`-priced ordering rule (`DMB`, `LDAR`, `STLR`, system).
     /// Those words are correctness-load-bearing —
@@ -1394,11 +1383,6 @@ impl VetoReason {
                 baseline,
                 candidate,
             } => format!("budget_grew:core{core}:{field}:{baseline}->{candidate}"),
-            VetoReason::ITlbBudgetExceeded {
-                core,
-                text_pages,
-                itlb_entries,
-            } => format!("itlb_exceeded:core{core}:{text_pages}/{itlb_entries}"),
         }
     }
 }
@@ -1644,13 +1628,6 @@ pub fn compare_overall(
             field: g.field,
             baseline: g.baseline,
             candidate: g.candidate,
-        });
-    }
-    for over in itlb_absolute_breaches(&candidate.budgets) {
-        reasons.push(VetoReason::ITlbBudgetExceeded {
-            core: over.n,
-            text_pages: over.text_pages,
-            itlb_entries: over.itlb_entries,
         });
     }
 
@@ -1973,20 +1950,56 @@ mod tests {
             ni_hot < dev_hot,
             "NarrowImm must still shrink hot text: {dev_hot} -> {ni_hot}\n{table}"
         );
-        // ...and the gate prices it at exactly zero, on both sides, everywhere.
-        for r in &rows {
+        // ...and whether the **gate** can see it depends on the corpus, not
+        // on the opt. Item K measured every case at `charge = 0` and
+        // concluded the gate was blind to a footprint-only candidate. Item M
+        // then added `cost-icache-cliff` and `cost-itlb-span`, which exist to
+        // breach the budget, and the term became live: on those two cases
+        // NarrowImm **lowers the priced charge** (5229 -> 2982 and
+        // 24428 -> 18463). So the blindness was a property of the corpus and
+        // the two witness cases fixed it (decision 1638).
+        //
+        // Both halves are asserted, because each is a real claim: the six
+        // original cases still price the footprint win at zero, and at least
+        // one case now prices it above zero and falls under NarrowImm.
+        const INSIDE_BUDGET: &[&str] = &[
+            "cost-arith",
+            "cost-bounds-elide",
+            "cost-branchy",
+            "cost-calls",
+            "cost-mem-locality",
+            "cost-runtime",
+        ];
+        for r in rows
+            .iter()
+            .filter(|r| INSIDE_BUDGET.contains(&r.name.as_str()))
+        {
             for label in ["dev", "NarrowImm"] {
                 let c = r.cell(label).expect("config scored");
                 assert_eq!(
                     c.charge, 0,
-                    "{}/{label}: this corpus is far inside its L1I, so the priced \
-                     I-side term is 0 and NarrowImm's footprint win is invisible \
-                     to the gate. A nonzero charge here means that claim has \
-                     changed and item K's record needs rewriting.\n{table}",
+                    "{}/{label}: this case is far inside its L1I, so the priced \
+                     I-side term must be 0 and NarrowImm's footprint win is \
+                     invisible to the gate here.\n{table}",
                     r.name
                 );
             }
         }
+        let priced: Vec<&str> = rows
+            .iter()
+            .filter(|r| {
+                let d = r.cell("dev").expect("dev");
+                let n = r.cell("NarrowImm").expect("ni");
+                d.charge > 0 && n.charge < d.charge
+            })
+            .map(|r| r.name.as_str())
+            .collect();
+        assert!(
+            !priced.is_empty(),
+            "at least one case must price the I-side term above zero AND fall \
+             under NarrowImm, or the gate is blind to every footprint-only \
+             candidate again and decision 1638 needs rewriting.\n{table}"
+        );
 
         // (3) The two opts reach disjoint parts of this corpus: NarrowImm is
         // the *sole* mover wherever BoundsElide is exactly flat. `>= 4` rather
@@ -2007,14 +2020,34 @@ mod tests {
              touches; got {sole:?}\n{table}"
         );
 
-        // (4) BoundsElide still carries the corpus on cycles — the majority of
-        // release's whole advantage, on two cases out of six.
+        // (4) Which opt "carries the corpus" is a fact about the **corpus**,
+        // not about the ruler, and item M's nine cases moved it. On the six
+        // original cases BoundsElide carried 91.3% of release's cycle win
+        // (-1899 of -2080); across all fifteen it is 43.2% (-4592 of -10640),
+        // because M's budget-witness cases are large programs where
+        // NarrowImm's per-word throughput win scales with the word count.
+        //
+        // So the assertion is the one that is actually about the ruler: both
+        // opts contribute, neither is inert, and their sum is bounded by
+        // release's (they overlap rather than compose freely).
+        let be_win = dev_cycles - be_cycles;
+        let ni_win = dev_cycles - ni_cycles;
+        let rel_win = dev_cycles - rel_cycles;
         assert!(
-            dev_cycles - be_cycles > (dev_cycles - rel_cycles) / 2,
-            "BoundsElide must still carry the majority of release's cycle win: \
-             BoundsElide {} of release {}\n{table}",
-            dev_cycles - be_cycles,
-            dev_cycles - rel_cycles
+            be_win > 0 && ni_win > 0,
+            "both opts must contribute on cycles: BoundsElide {be_win}, \
+             NarrowImm {ni_win}\n{table}"
+        );
+        assert!(
+            rel_win <= be_win + ni_win,
+            "release's win cannot exceed the sum of the singles — that would \
+             mean the two opts create cycles together that neither creates \
+             alone: release {rel_win} vs {be_win} + {ni_win}\n{table}"
+        );
+        assert!(
+            rel_win > be_win && rel_win > ni_win,
+            "release must beat either single: release {rel_win}, BoundsElide \
+             {be_win}, NarrowImm {ni_win}\n{table}"
         );
     }
 
@@ -2025,6 +2058,16 @@ mod tests {
     /// one — the box varies every bracketed latency the model has, and on five
     /// of six cases NarrowImm's delta does not move across it at all.
     #[test]
+    /// **Deep lane.** `#[ignore]`d by default and run explicitly by
+    /// `cargo xtask check`, matching how every `fuzz_*` lane already splits a
+    /// smoke budget from a deep one (`crates/xtask/src/main.rs`). This test
+    /// swept 4096 points per side across the six original cases in ~37 s;
+    /// with item M's nine new cases and `cost-crosscore`'s k=14 it is minutes,
+    /// which is not a cost the default `cargo test` loop should carry.
+    /// CLAUDE.md separates the cheap per-item lane from the expensive close
+    /// lane, and a whole-corpus ∀ gate belongs in the latter. Nothing about
+    /// the oracle's strength changed — only which lane runs it.
+    #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
     fn narrow_imm_alone_wins_at_every_box_point() {
         let cmp = compare_opt_lists_over_box(&[], &[OptId::NarrowImm]).expect("sweep");
         assert_sweep_wins(&cmp, "NarrowImm", "dev");
@@ -2500,22 +2543,37 @@ mod tests {
         );
     }
 
-    /// The absolute half that *is* meaningful: item F measured 23 text
-    /// pages against 48 I-TLB entries, so an over-I-TLB candidate is a real
-    /// breach rather than a universal one.
+    /// **Decision 1636.** The absolute I-TLB veto is retired, so an
+    /// over-span *baseline* no longer refuses everything — but a candidate
+    /// that **worsens** the span is still refused, by the delta rule, which
+    /// watches `over_itlb_pages` among its seven quantities. Both halves are
+    /// asserted here, because retiring a rule is only safe if what replaces
+    /// it still fires.
     #[test]
-    fn overall_vetoes_when_the_candidate_overflows_the_itlb_absolutely() {
+    fn an_over_itlb_baseline_is_allowed_but_worsening_the_span_is_refused() {
         let set = pinned_set();
-        let baseline =
-            totals(&[("flat", 1000), ("boot-actors", 5000)]).with_budgets(vec![budget(0, 0, 0, 0)]);
-        let candidate = totals(&[("flat", 900), ("boot-actors", 4000)])
+        // Baseline already over the 48-entry I-TLB (the `cost-itlb-span`
+        // shape). Candidate is no worse. Under the retired absolute rule
+        // this was refused; under the delta it ranks.
+        let over = totals(&[("flat", 1000), ("boot-actors", 5000)])
             .with_budgets(vec![budget(0, 0, 2, 116)]);
-        let cmp = compare_overall(&baseline, &candidate, &set).expect("compare");
+        let same = totals(&[("flat", 900), ("boot-actors", 4000)])
+            .with_budgets(vec![budget(0, 0, 2, 116)]);
+        let cmp = compare_overall(&over, &same, &set).expect("compare");
         let labels: Vec<String> = cmp.veto_reasons().iter().map(|r| r.label()).collect();
-        assert!(cmp.vetoed());
         assert!(
-            labels.contains(&"itlb_exceeded:core0:50/48".to_string()),
-            "got {labels:?}"
+            !cmp.vetoed(),
+            "an unchanged over-span baseline must not veto: {labels:?}"
+        );
+        // Now worsen it by one page: the delta rule must fire.
+        let worse = totals(&[("flat", 900), ("boot-actors", 4000)])
+            .with_budgets(vec![budget(0, 0, 3, 116)]);
+        let cmp = compare_overall(&over, &worse, &set).expect("compare");
+        assert!(cmp.vetoed(), "worsening the I-TLB span must still veto");
+        let labels: Vec<String> = cmp.veto_reasons().iter().map(|r| r.label()).collect();
+        assert!(
+            labels.iter().any(|l| l.contains("budget")),
+            "the refusal must come from the budget delta, got {labels:?}"
         );
     }
 
@@ -3100,9 +3158,57 @@ mod tests {
         assert_eq!(box_cardinality(&table), 131_072);
     }
 
+    /// **Smoke lane: the ∀ sweep on one case, in the default `cargo test`.**
+    ///
+    /// The whole-corpus sweep below is `#[ignore]`d and run by
+    /// `cargo xtask check` (decision 1637). This keeps the property under
+    /// test on every ordinary run, through the *identical* code path — same
+    /// probe, same corners, same refusals — over `cost-bounds-elide`, the
+    /// case with the largest and most stable delta (1839 → 314 at the pinned
+    /// point), so a real regression in the sweep machinery cannot hide until
+    /// close.
+    #[test]
+    fn release_wins_at_every_box_point_on_the_smoke_case() {
+        let cmp = compare_opt_lists_over_box_for_case(&[], RELEASE_OPTS, "cost-bounds-elide")
+            .expect("smoke sweep");
+        assert_eq!(cmp.cases.len(), 1, "the smoke lane sweeps exactly one case");
+        let case = &cmp.cases[0];
+        assert!(
+            !case.points.is_empty(),
+            "the smoke case must enumerate corners, not zero"
+        );
+        assert!(
+            case.points.iter().all(|p| p.candidate < p.baseline),
+            "release must fall at every point of {}: {:?}",
+            case.name,
+            case.points
+                .iter()
+                .map(|p| (p.baseline, p.candidate))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            cmp.wins(),
+            "smoke sweep vetoed: {:?}",
+            cmp.reasons.iter().map(|r| r.label()).collect::<Vec<_>>()
+        );
+        // The nominal box is still reported even though one case is swept:
+        // a reader must see what the enumerated corners stand for.
+        assert_eq!(case.box_cardinality, 131_072);
+    }
+
     /// **The live ∀ sweep: `release` vs `dev`.** Records the per-point
     /// table, the nominal box cardinality and the surviving `k` per case.
     #[test]
+    /// **Deep lane.** `#[ignore]`d by default and run explicitly by
+    /// `cargo xtask check`, matching how every `fuzz_*` lane already splits a
+    /// smoke budget from a deep one (`crates/xtask/src/main.rs`). This test
+    /// swept 4096 points per side across the six original cases in ~37 s;
+    /// with item M's nine new cases and `cost-crosscore`'s k=14 it is minutes,
+    /// which is not a cost the default `cargo test` loop should carry.
+    /// CLAUDE.md separates the cheap per-item lane from the expensive close
+    /// lane, and a whole-corpus ∀ gate belongs in the latter. Nothing about
+    /// the oracle's strength changed — only which lane runs it.
+    #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
     fn release_wins_at_every_point_of_the_residual_box() {
         let cmp = compare_opt_lists_over_box(&[], RELEASE_OPTS).expect("sweep");
         let table = format_sweep_table(&cmp, "dev", "release");
