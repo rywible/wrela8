@@ -268,13 +268,20 @@ fewer/cheaper ops and shorter true data deps must not require those.
 real-machine loss (same or better only); when unsure, prefer under-credit
 / over-cost. Three consequences are normative rather than advisory,
 because each names a way the cycle number alone can improve while the
-machine does not. (i) The scoreboard is **in-order over an
-out-of-order** core, so reordering it rewards may already be free on the
-flagship; a candidate may therefore never pay for schedule with **more
-emitted words**, and word count is a side condition on every gate below,
-not a term in the score. Since nothing here prices I-cache or ITLB
-footprint, growth is **refused, not priced** — a footprint model is what
-would unlock it. (ii) A measured hit whose method has no scored function
+machine does not. (i) The scoreboard reorders only within a **bounded
+window** over a core that reorders further, so a candidate may not buy
+modelled schedule with real instructions the score does not account for.
+The I-side term is that account: hot-text footprint and instruction-side
+translation are priced, so growth is **priced, not refused**. Emitted
+word count is therefore a **reported column**, not a veto, and the hard
+constraint standing in its place is the **per-core hot-text budget** —
+a core's hot text is charged against its 64 KiB 4-way L1I, its 48-entry
+L1 I-TLB, and the 1280-entry L2 TLB, each computed per core from sealed
+placement ([§3](#3)), because that is the denominator the machine
+actually has. Word growth inside those budgets is an ordinary priced
+trade; growth that breaks one is refused as before. The word veto
+retires only together with that budget term, never ahead of it.
+(ii) A measured hit whose method has no scored function
 is charged at the **maximum function schedule in the program**, never
 zero: dropping a key (rename, outline, fusion) must cost, or the ruler
 rewards measuring less. (iii) Measured **coverage may not fall** between
@@ -285,8 +292,13 @@ workload frequency `f_W(b)`. The **flat** workload `W_flat` is policy
 `valid_for=static_shape_opts` and `workload=flat` for that row. Named
 workloads are pinned in `bench/workloads.toml` (required `[flat]` weight
 plus measured names such as `[boot-actors]`); the dump header carries
-that file's digest. Measured rows compose `Σ f×s` (method grain today;
-block grain when Lane-2 `f` is attached) and print a nested
+that file's digest. Measured rows compose `Σ_b f(b)×s(b)` at **block**
+grain — the requirement, not an eventual refinement: a method-grain sum
+prices a hot loop body the same as the function that contains it. The
+bridge from a measured block id to the emitted-word range it scores is
+**proved, not assumed** — the two partitions must agree, and a mismatch
+is an error, never an attribution to the nearest offset. Measured rows
+print a nested
 `coverage=matched/total` — **coverage honesty:** uncovered hits shrink
 the matched side, must not be silently dropped, and are charged at the
 program's maximum function schedule so that losing coverage can never
@@ -295,20 +307,69 @@ two sides whose coverage denominators differ is an error, not a rank:
 they were measured against different frequency vectors.
 Frequency measurement has three lanes: **Lane 1**
 scheduler method/turn counters in the guest runtime transcript; **Lane 2**
-test-only in-guest basic-block hit counters (`--block-count`); **Lane 3**
+test-only in-guest basic-block hit counters (`--block-count`),
+instrumenting `app`, `runtime`, and `driver` code alike, since the
+generated runtime is the largest scored owner and an app-only `f` would
+explain almost none of it; **Lane 3**
 host/VMM agreement that Lane-2 vectors match on a named control case.
+Widening what is instrumented never narrows what is scored: the coverage
+denominator is the **whole scored set**, never the instrumented subset —
+redefining it to the measured subset is the same "reward measuring less"
+failure as dropping an uncovered hit.
 Static-shape opts (delete or shorten the stream without changing dynamic
 shape) may land on the flat land-gate alone. Frequency-dependent opts
 (guard, outline, specialize, unroll-as-dynamic-win) land only under
 **veto-then-rank overall** across the pinned set: veto if any non-flat
-measured W rises (ε=0), if any measured coverage falls, or if the static
-word count grows; else rank by the weight-mean of relative deltas
+measured W rises (ε=0) at any point of the residual box below, if any
+measured coverage falls, or if any core's hot-text / I-TLB / L2-TLB
+budget is exceeded; else rank by the weight-mean of relative deltas
 `(cand−base)/base` — never by device-wait wall timing. Every veto reason
-that fires is reported, not just the first. The model is not
-an A76 SOG port map, is not calibrated to host wall clocks, has no real
-L1/L2/L3 KB geometry, no host PGO as a gate input, and does not discharge
+that fires is reported, not just the first, and a reason that fires at
+one point of the residual box names that point. **The A76 port map is the
+model.** The documented Cortex-A76 execution pipelines, its dispatch
+constraints, its per-group latency and throughput, and real L1/L2/L3 and
+TLB geometry with associativity are all modelled, for exactly one
+profile — `a76-pi5` (Cortex-A76 / BCM2712 / Raspberry Pi 5). There is no
+second profile and no host profile; specificity to the flagship is the
+point rather than a limitation. Fidelity is to the **published record**,
+never to silicon this project measured: every pinned row carries a
+provenance tier (vendor-normative for this core, vendor-descriptive,
+third-party measured on this board, third-party measured on generic
+silicon, unresolved), an **unresolved row may not be pinned at all**, and
+the dump prints a provenance digest over the tier mix so the model can
+never quietly rest on a guess. **No hardware measurement is ever built
+for cost purposes** — no counter reads, no address attribution under
+replay, no predicted-versus-physical agreement report — because the
+published record already carries the measurement and reproducing it is
+not this project's work. The model is still **not calibrated to host wall
+clocks**, takes **no host PGO as a gate input**, and does not discharge
 `@budget` or cost proofs. Flat `issue_width`-only scoring is not the live
-model. Stable dump: `wrela dump --stage=cost` (Terms = rule counts, plus
+model. **Residual uncertainty is swept, not chosen.** Where the record
+gives a bracket rather than a number, or gives nothing at all, the pinned
+value is the bracket's **pessimistic end** and the bracket itself becomes
+a sweep dimension: the model **rounds toward over-costing at every
+residual uncertainty**, and an unmodelled mechanism never becomes a
+discount. A candidate must win at **every** point of the residual box
+(∀); no `∃`-form win predicate exists, because that form is a search for
+a flattering assumption rather than a gate. That rule has a second
+clause, since a larger charge is not automatically the safe end for a
+term whose *removal* is the win: a barrier charge must never make barrier
+**removal** profitable. Pinned dumps stay single-valued at `a76-pi5`; the
+sweep belongs to the land gate and never enters a pinned dump. The model
+is a **scoreboard with a real port map, not a cycle simulator** — no
+predictor state machine, no cache-line or coherency protocol simulation,
+no prefetcher model, no simulated reorder buffer. Reuse distance plus
+associativity yields a hit/miss verdict, measured branch bias yields a
+mispredict estimate, sealed placement yields a local/remote verdict, and
+the reorder window is a bounded depth. The hardware prefetcher is
+deliberately **unmodelled**, which charges strided loads full miss cost
+and therefore **under-credits** any transformation that improves stride
+regularity: a stated bias in the conservative direction, never a
+discount, and named here so a stride opt that scores poorly is read
+against this sentence rather than believed. Every cost the emitted stream
+can incur is **modelled, swept, or omitted with a written reason** —
+omission by oversight is a defect, and adding a dimension means adding
+its row. Stable dump: `wrela dump --stage=cost` (Terms = rule counts, plus
 schedule totals, owners, and `Workload` rows). The image report carries
 only a short summary ([§6](#6)). **Ruler oracles (normative):** the
 ranking is itself under test, not only the code it ranks. A semantically
@@ -327,10 +388,12 @@ mode, never a recipe file, evidence table, or plugin. Profitability is
 scored only under the proxy-cycle ranking above, always **in context** of
 the full pipeline. For the fixed cost-* corpus under `W_flat`, a
 candidate pipeline must not raise any case's flat proxy total, must not
-raise any case's emitted word count, and must strictly lower at least one
-proxy total (static-shape land-gate). The word condition restates the
-category: a static-shape opt deletes or shortens the stream, so one that
-grows it is misfiled, not merely unlucky. When measured
+break any core's hot-text / I-TLB / L2-TLB budget, and must strictly
+lower at least one proxy total (static-shape land-gate). Emitted word
+count is reported per case and no longer a condition of its own: with the
+I-side footprint priced, a static-shape opt that grows the stream is
+argued on the budget rather than refused for the growth alone. When
+measured
 workloads are in scope, the overall gate is veto-then-rank across the
 pinned `workloads.toml` set as above. Losers are deleted or reworked,
 not kept disabled. Host wall-time, flame graphs, `profile`, and
@@ -374,7 +437,11 @@ sites and proven elisions; maximum interrupt-masked interval; receipt
 handoff edges with their recovery nodes; every data copy above the
 reporting threshold, with site and size; a short proxy-cycle summary
 (model version, digest, schedule totals by owner — not per-Term lines;
-those live on `wrela dump --stage=cost`); baked artifact hashes;
+those live on `wrela dump --stage=cost`) plus one **per-core text and
+translation budget** line per core, giving that core's hot text against
+its 64 KiB L1I and its page span against the 48-entry I-TLB and the
+1280-entry L2 TLB, since [§5](#5) makes that the hard constraint on code
+growth and the budget is only meaningful per core; baked artifact hashes;
 and code and data size by owner. Expected device exit rates remain a
 separate report intention ([06 §5](06-machine.md)), not this summary.
 

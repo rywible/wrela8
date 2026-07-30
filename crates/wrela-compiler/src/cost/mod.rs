@@ -1,5 +1,9 @@
-//! Proxy-cycle ranking (plans/M18.md): emit-time CostRule tags + ISA table
-//! + scoreboard. Differential rank only — not host wall time, not A76 SOG.
+//! Proxy-cycle ranking (plans/M18.md; plans/M20.md item A reversed its
+//! scope): emit-time CostRule tags + the A76 table + scoreboard. The
+//! documented Cortex-A76 port map **is** the model, pinned to one profile
+//! (`a76-pi5` — A76 / BCM2712 / Pi 5), with fidelity claimed to the
+//! published record and never to silicon this project measured. Rank
+//! direction only: still not host wall time (04 §5).
 
 use std::path::{Path, PathBuf};
 

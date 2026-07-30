@@ -64,7 +64,7 @@ fn format_report(
     push_line(
         &mut out,
         1,
-        "Assumptions ignore_cache=1 ignore_mispredict=1 target=isa_baseline ghz_model=1 turn_path=max_entry_method valid_for=static_shape_opts workload=flat",
+        "Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method valid_for=static_shape_opts workload=flat",
     );
     push_line(&mut out, 1, "Composition sum_of_fn_schedules=1");
     push_line(
@@ -276,8 +276,12 @@ mod tests {
         assert!(!text.contains("Workload name=boot-actors"), "got:\n{text}");
         assert!(!text.contains("issue_width"), "got:\n{text}");
         assert!(text.contains("ghz=2.4"), "got:\n{text}");
+        // plans/M20.md item A: the Assumptions line is the clearest single
+        // signal of what the model claims, so the whole prefix is pinned
+        // here and not only its tail — `target=a76_pi5` with the cache and
+        // mispredict terms live is the reversal this milestone lands.
         assert!(text.contains(
-            "ghz_model=1 turn_path=max_entry_method valid_for=static_shape_opts workload=flat"
+            "Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method valid_for=static_shape_opts workload=flat"
         ));
         assert!(!text.contains("Core n="), "got:\n{text}");
         assert!(!text.contains("Shared proxy_cycles="), "got:\n{text}");

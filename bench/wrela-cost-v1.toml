@@ -1,9 +1,20 @@
-# bench/wrela-cost-v1.toml — ISA ranking model (not A76 absolute).
+# bench/wrela-cost-v1.toml — SUPERSEDED (plans/M20.md item A, 2026-07-29).
 #
-# Coarse ISA op-class latencies + dual-port / mem-reuse knobs for
-# **differential** proxy-cycle ranking only. Not an A76 SOG port map,
-# not host wall time, not a physical cache geometry table (no L1/L2/L3
-# sizes). Hard-cut schema version=2 — no `issue_width`.
+# Coarse ISA op-class latencies + dual-port / mem-reuse knobs, schema
+# version=2 (no `issue_width`). Rank direction only, never host wall time.
+#
+# This file is **superseded by `bench/a76-pi5.toml`** and is **deleted in
+# plans/M20.md item D**, the item that writes its replacement. The decision
+# item A was asked to make, made here: two tables are two sources of truth,
+# so there is never a moment where both exist — and deleting this one now,
+# before D lands, would leave the tree unable to score at all. So it stays,
+# marked, for exactly as long as it is the only table there is.
+#
+# Its rows are the pre-M20 model: 2 ALU / 2 mem ports against a real A76's
+# 3 integer pipes, 2 AGUs, and 8-wide dispatch; `branch_penalty = 0`
+# because the model had no predictor; no geometry at all. Every one of
+# those is a thing item D through item I replace with a published-record
+# row carrying its provenance tier.
 
 version = 2
 

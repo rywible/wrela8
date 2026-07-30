@@ -106,6 +106,20 @@
 //!              bearing golden is already the whole population either
 //!              name covers at this milestone's scale).
 //!   ledger     verify spec-coverage ledger (ledger/ledger.toml)
+//!   agnostic-sweep
+//!              plans/M20.md item A: fail closed if any of the cost
+//!              model's superseded board-independence claims survives in
+//!              the tracked tree — the port-map denials, the
+//!              no-real-geometry denials, the scope denials, and the two
+//!              pre-M20 spellings of the dump's Assumptions line. The
+//!              phrase list itself lives in `agnostic_sweep.rs` (which is
+//!              the one path excluded for that reason), along with
+//!              `docs/archive/` (read-only history) and `plans/` (which
+//!              record the superseded state on purpose).
+//!              `ledger/ledger.toml` is scanned per line, exempt only
+//!              where the line also records the lift. Also asserts the
+//!              replacement strings are present in the dump source. Wired
+//!              into `check` beside `ledger`.
 //!   stdlib-test
 //!              plans/M16.md item F / decisions 1160–1166: discover every
 //!              `stdlib/tests/**/*.wr`, load+check in-process, count
@@ -181,12 +195,14 @@ use wrela_compiler::syntax::printer;
 mod corpus_sema_census;
 mod corpus_sema_context;
 
+mod agnostic_sweep;
 mod bench;
 mod corpus;
 mod fuzz;
 mod golden;
 mod stdlib_test;
 
+use agnostic_sweep::*;
 use bench::*;
 use corpus::*;
 use fuzz::*;
@@ -226,6 +242,11 @@ fn main() -> ExitCode {
         Some("roundtrip") => roundtrip(),
         Some("report-determinism") => report_determinism(),
         Some("ledger") => ledger(),
+        // plans/M20.md item A: no superseded board-independence claim
+        // survives outside `docs/archive/` and `plans/`. Item A's own
+        // oracle — the failure mode of a two-dozen-site doc sweep is a
+        // *missed* site, which greps catch and diff reviews do not.
+        Some("agnostic-sweep") => agnostic_sweep(),
         // plans/M16.md item F / decisions 1160–1166: comptime stdlib
         // suite under `stdlib/tests/` — in-process load/check/`run_tests`,
         // fail closed on zero discovered comptime/exhaustive `@test`s.
@@ -252,7 +273,7 @@ fn main() -> ExitCode {
         Some("bench") => bench(&args[1..]),
         _ => {
             eprintln!(
-                "usage: cargo xtask <check|golden [--update]|corpus [--sema]|fuzz [lexer|parser|sema|eval|lower|async|imports|report] [--iters N] [--seed S]|roundtrip|report-determinism|ledger|stdlib-test|repro|diff-eval|diff-block-count|diff-blk|profile|bench <compiler|build|guest>>"
+                "usage: cargo xtask <check|golden [--update]|corpus [--sema]|fuzz [lexer|parser|sema|eval|lower|async|imports|report] [--iters N] [--seed S]|roundtrip|report-determinism|ledger|agnostic-sweep|stdlib-test|repro|diff-eval|diff-block-count|diff-blk|profile|bench <compiler|build|guest>>"
             );
             return ExitCode::FAILURE;
         }
@@ -353,6 +374,12 @@ fn check() -> Result<(), String> {
     bench_compiler()?;
     bench_build_lane()?;
     bench_guest_lane()?;
+    // plans/M20.md item A: the docs are ground truth over the code
+    // (CLAUDE.md), so a claim anywhere in the tracked tree that the cost
+    // model is board-independent is a contradiction, not a stale
+    // comment. Runs beside `ledger` — both are whole-tree consistency
+    // checks over text rather than behavior, and both are cheap.
+    agnostic_sweep()?;
     ledger()?;
     println!("xtask check: ok");
     Ok(())

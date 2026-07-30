@@ -76,8 +76,8 @@ history when it completes. Active plan: **[plans/M20.md](plans/M20.md)**
 (the A76 ruler — a Pi-5-specific microarchitectural cost model; activated
 2026-07-29, freezes 1620–1633 in force). M19 is COMPLETE
 ([plans/M19.md](plans/M19.md); optimization harness; proxy-only modes).
-M18 is COMPLETE ([plans/M18.md](plans/M18.md); cycle proxy — differential
-ISA ranking only). M17 is COMPLETE ([plans/M17.md](plans/M17.md); thin
+M18 is COMPLETE ([plans/M18.md](plans/M18.md); cycle proxy — the
+ISA-level ruler M20 rebases onto the A76 model). M17 is COMPLETE ([plans/M17.md](plans/M17.md); thin
 entropy device + sync MWIR floor). M16 is COMPLETE
 ([plans/M16.md](plans/M16.md); stdlib maturity). M15 is COMPLETE
 ([plans/M15.md](plans/M15.md); variable cores + true concurrent vCPUs;
@@ -197,10 +197,15 @@ in its own commit.
 
 Rejected alternative (recorded once): keeping 4 vCPUs and moving the
 flagship to an 8-core RK3588-class board, where the A76 cluster would be
-the machine and the A55 cluster the housekeeping — a good fit on paper
-(the ISA baseline is shared; `wrela-cost-v1` ranks that ISA stream
-differentially — it is not an A76 absolute model) and rejected
-because the board is a product decision, not a contract-driven one.
+the machine and the A55 cluster the housekeeping. **The rejection
+stands**, on two grounds. The board is a product decision, not a
+contract-driven one. And since M20 the cost model is pinned to this
+board specifically — [plans/M20.md](plans/M20.md) freeze 1621, `a76-pi5`
+is the only profile — so a second flagship would mean a second profile,
+which that freeze refuses outright. Pi-5-specificity costs nothing on
+the optimization side: an emission tuned where capacity and issue
+pressure bind first transfers to a larger machine merely uncalibrated,
+not wrong.
 
 The blast radius is small and belongs to this milestone's own plan, not to
 an ad-hoc edit: 06 §1's "4 vCPUs, always" and README's summary line (both
@@ -896,9 +901,15 @@ net/sound; virtio-rng rings; `stdlib/drivers/` changes.
 
 **Prerequisite discharged (2026-07-28):** the M13 ISR gate chose **keep**
 — ISR / `InterruptCell` paths are not scheduled to vanish. **Shape
-frozen 2026-07-28 (human):** differential **ISA** proxy only — **no
-physical calibration**, no `profile` / `bench guest` work, **not an A76
-(or Apple) microarchitecture model**.
+frozen 2026-07-28 (human), and half of it reversed at M20:** M18 shipped
+an ISA-level proxy with **no physical calibration**, no `profile` /
+`bench guest` work, and no microarchitecture model of any chip.
+[plans/M20.md](plans/M20.md) (decision 1600, human mandate 2026-07-29)
+makes the documented A76 port map the model and prices real Pi 5
+geometry. What survives that reversal is the calibration half — freeze
+1631: no hardware measurement is ever built for cost purposes, and
+physical measurement never gates an opt landing. The rest of this
+section is M18's record as it shipped, not current doctrine.
 
 This milestone shipped a deterministic **proxy-cycle** score for
 **ranking** emitted code. One question only:
@@ -911,18 +922,23 @@ wall-clock on Pi 5, Mac, or anything else. Cache sizes, predictors, and
 µarch details change real time; they must not be required to preserve
 **rank direction** for the emissions we care about (fewer / cheaper ops,
 shorter true data deps → lower proxy on every conforming host). Absolute
-accuracy vs silicon is out of scope. Physical / host wall-time is
+accuracy vs silicon was out of scope at M18; M20 models the flagship's
+cache sizes, predictor bias, and port map from the published record while
+keeping the wall-clock disclaimer. Physical / host wall-time is
 **not** part of the optimization process (see cleverness budget / M19);
 optional offline research may retune `wrela-cost-v1` on proxy misrank
 suspicion only.
 
-**Target the sealed ISA stream, not a chip.** The machine’s guest ISA is
-the ARMv8.2-A + NEON baseline (06 §1 — intersection of A76 and Apple
-Silicon). `wrela-cost-v1` ranks that **emission**, the same bytes whether
-the VMM is HVF or a Pi. Do **not** paste A76 Software Optimization Guide
-port maps into the proxy; do **not** calibrate against HVF timings. 06 §1
-and 04 §5 **split** the flagship A76 product/backend / `@budget` story
-from this **ISA ranking proxy** (landed M18 item A).
+**Target the sealed ISA stream — and, from M20, price it on the
+flagship.** The machine’s guest ISA is the ARMv8.2-A + NEON baseline
+(06 §1 — intersection of A76 and Apple Silicon), and the table ranks that
+**emission**, the same bytes whether the VMM is HVF or a Pi. At M18 the
+table was deliberately chip-free; M20 reverses that and makes the
+published A76 pipeline and latency tables the model, one profile only
+(`a76-pi5`). What does **not** change: do **not** calibrate against HVF
+timings, and the flagship's `@budget` / cost-proof story stays split from
+this ranking surface (06 §1 and 04 §5, landed M18 item A, re-worded at
+M20 item A).
 
 **`wrela-cost-v1`.** A versioned parameter file beside the machine
 constants (`bench/thresholds.toml`'s precedent): per-`CostRule` **latency**
@@ -941,10 +957,13 @@ emit-time **`CostRule` + dest/src regs** (always on; no cost-profile
 toggle; never parse mnemonics). Scorer: a dumb **register scoreboard**
 over the stream (`start = max(ready[srcs], issue_constraint)`;
 `ready[dst] = start + latency(rule)`; fn total = time the last insn
-retires). Optional fixed `issue_width` in the file is a **model
-parameter**, not “A76’s real decode.” Assumptions stated in the dump
-header (e.g. ignore cache hierarchy; no mispredict model — ChoiceLog has
-no addresses/path weights). Stable `wrela dump --stage=cost` with Terms
+retires). At M18 the file's issue width was a **model parameter** standing
+in for a decode width nobody had modelled, and the dump's Assumptions line
+said so — cache hierarchy ignored, no mispredict model, ChoiceLog having
+no addresses or path weights. M20 replaces both: the real dispatch
+constraints and the real cache hierarchy are modelled, and the Assumptions
+line reads `target=a76_pi5` with those two terms live. Stable
+`wrela dump --stage=cost` with Terms
 (rule counts) + schedule totals by function and owners (**app /
 generated-runtime / driver**). The image report prints a **short
 summary** by default (version, digest, totals by owner) — not per-Term
@@ -972,8 +991,10 @@ ledger note so this clause flips on `--stage=cost` / report summary +
 proxy off/on A/B + semantic exact-matches — **not** on exit-rate lines
 and **not** on predicted-vs-physical pairing.
 
-**Ordered spine.** (0) Normative fix landed: ISA ranking proxy ≠ A76
-absolute model ≠ `@budget` discharge; ledger opens + flip note. (1) Emit
+**Ordered spine.** (0) Normative fix landed: the ranking proxy was split
+from the flagship's `@budget` / cost-proof story (the ISA-level half of
+that split is what M20 item A re-bases onto the A76 model; the `@budget`
+half stands); ledger opens + flip note. (1) Emit
 tags+regs + `--stage=cost`. (2) `wrela-cost-v1` + scoreboard scorer. (3)
 Determinism / golden dumps + report summary. (4) Pass off/on proxy A/B.
 (5) Small differential corpus (rank order only). (6) Capstone below.
@@ -995,12 +1016,16 @@ Never tune `wrela-cost-v1` against the held-out case.
 
 Flips: `compiler.costs.predicted-vs-measured`. Opens only what the dump
 and scorer need. **Does not depend on `sema.bounds.loops`.** Normative
-edits to 04 and 06 §1 (ISA ranking proxy vs flagship A76 wording) —
-**done** with M18 item A.
-Non-goals: physical / host calibration; A76 SOG port maps as the proxy;
-cache/L2/L3/branch-mispredict models; `profile` juxtaposition; `@budget`
-proofs; WCET; exit-rate report lines; multicore contention; DVFS/thermal;
-in-compiler ML; anything beyond the capstone smoke.
+edits to 04 and 06 §1 (ranking proxy vs flagship `@budget` wording) —
+**done** with M18 item A, re-worded at M20 item A.
+Non-goals **as M18 shipped them** — the first three were reversed at M20
+(the port map, the cache and mispredict models, and multicore contention
+are now modelled; see [plans/M20.md](plans/M20.md) items D–H): the
+published port map as the proxy's basis; cache and branch-mispredict
+models; multicore contention. Still non-goals, permanently: physical /
+host calibration; `profile` juxtaposition; `@budget` proofs; WCET;
+exit-rate report lines; DVFS/thermal; in-compiler ML; anything beyond the
+capstone smoke.
 
 ### M19 — The optimization harness — COMPLETE
 **Closed 2026-07-28.** Detail: [plans/M19.md](plans/M19.md). M18 is
@@ -1068,9 +1093,10 @@ plus overall / per-W stubbed table after integrity Item P multi-W dump).
   set from the closed world (it already computes this to erase
   impossible `CallError` variants, 02 §9.4); `pub` boundaries still
   demand a declared nominal enum.
-- **Cost proofs** (deliberately not M18). M18's proxy ranks compiler
-  alternatives under an **ISA-level** `wrela-cost-v1` scoreboard
-  (differential direction only; not A76 absolute; no host calibration);
+- **Cost proofs** (deliberately not M18, and still not M20). The proxy
+  ranks compiler alternatives under a scoreboard — from M20 an A76 /
+  Pi 5 model built from the published record, rank direction only, with
+  no host calibration and no hardware measurement of its own;
   it does not discharge `@budget`, make
   `sema.bounds.loops` sound in cycles, or prove elapsed latency. Those need
   a separate static upper-bound model with explicit path, memory and

@@ -1,7 +1,14 @@
-//! Dual-port register scoreboard over a `CodegenProgram` (cost hard-cut
-//! item C; integrity item L block-split). Differential proxy-cycles only —
-//! path-insensitive, no real cache geometry, no mispredict model beyond
-//! `branch_penalty`.
+//! Register scoreboard over a `CodegenProgram` (cost hard-cut item C;
+//! integrity item L block-split). Proxy-cycles, path-insensitive.
+//!
+//! Still the pre-M20 shape as of plans/M20.md item A: two ALU / two mem
+//! ports in order, a reuse window standing in for the cache hierarchy, and
+//! a fetch-redirect charge standing in for mispredict. plans/M20.md
+//! replaces all three with the published A76 model — item E the eight
+//! pipelines, dispatch constraints and bounded out-of-order window, item F
+//! real geometry with associativity and reuse distance, item H the
+//! bias-derived mispredict charge. A scoreboard with a real port map, not
+//! a cycle simulator (decision 1606).
 //!
 //! Per-fn flat total = Σ s(b) over mechanical basic blocks (`f≡1`).
 

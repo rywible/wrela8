@@ -37,9 +37,15 @@ machine only needs to be what the stdlib drivers speak.
   words; images often run faster on M-series. The flagship **A76** is the
   product/backend microarchitecture story for proofs and schedules that
   need one. Separately, the compiler's **proxy-cycle ranking** model
-  (`wrela-cost-v1`, [04 §5](04-compiler.md)) scores that baseline ISA
-  **emission** differentially — rank direction only, not absolute wall
-  time on any host, and not an A76 Software Optimization Guide port map.
+  ([04 §5](04-compiler.md)) scores that baseline ISA **emission** against
+  a published-record-derived model of the flagship itself — Cortex-A76 /
+  BCM2712 / Raspberry Pi 5, profile `a76-pi5`, the only profile there is
+  — with documented pipelines and dispatch constraints, real cache and
+  TLB geometry, and swept ranges wherever the record is silent. Rank
+  direction only: it is still **not absolute wall time on any host**, and
+  its specificity to this board is the point rather than a limitation,
+  since an emission tuned where capacity and issue pressure bind first is
+  not made worse by a larger machine's slack.
 - No firmware-visible feature discovery: the baseline is the contract, and
   boot asserts it.
 

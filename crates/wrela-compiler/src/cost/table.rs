@@ -1,8 +1,16 @@
-//! `wrela-cost-v1` ISA latency table (`bench/wrela-cost-v1.toml`).
+//! The pinned cost table (`bench/wrela-cost-v1.toml` today; superseded by
+//! `bench/a76-pi5.toml` at plans/M20.md item D).
 //!
-//! Differential ranking only — not host wall time, not A76 SOG ports.
+//! Rank direction only — not host wall time. The documented A76 port map
+//! **is** the model as of plans/M20.md item A: real pipelines, real
+//! latency and throughput per instruction group, real cache and TLB
+//! geometry, every row sourced from the published record and carrying its
+//! provenance tier.
 //! Hard-cut schema `version = 2`: dual ports, max issue, branch penalty,
-//! mem reuse / working-set knobs (no `issue_width`).
+//! mem reuse / working-set knobs (no `issue_width`). Item D bumps this to
+//! `version = 3` with the pipeline / geometry / branch / crosscore
+//! sections and the tier columns; until then the live table still carries
+//! the coarse v2 rows.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

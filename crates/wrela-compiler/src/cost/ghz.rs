@@ -1,7 +1,13 @@
 //! Clock-rate helpers for proxy-cycle → wall-time conversion.
 //!
-//! Differential ranking only — GHz is a display scale, not a measurement
-//! of host wall time or A76 SOG.
+//! Rank direction only — GHz is a display scale, not a measurement of any
+//! host's wall clock (04 §5: the model is not calibrated to host wall
+//! clocks even now that the A76 port map is the model).
+//!
+//! plans/M20.md decision 1601 moves `ghz` into the pinned profile
+//! (`bench/a76-pi5.toml`) at item D, leaving the constant below a
+//! **fallback** for callers with no profile loaded rather than a second
+//! source of truth. Item A records the intent; item D does the move.
 
 /// Default clock for Pi 5 flagship (1 GiB).
 pub const DEFAULT_GHZ: f64 = 2.4;
