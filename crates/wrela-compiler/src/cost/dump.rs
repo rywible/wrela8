@@ -106,7 +106,7 @@ fn format_report(
             &format!("Owner name={name} proxy_cycles={cycles}"),
         );
     }
-    append_core_block(&mut out, 1, report, placement, ghz, true)?;
+    append_core_block(&mut out, 1, report, placement, ghz, true, attach)?;
     for f in &report.fns {
         push_line(
             &mut out,
@@ -181,6 +181,14 @@ pub(crate) fn append_workload_rows(
 /// growth is argued against, which is why it is per core and why it prints
 /// beside the core it belongs to rather than as a program-wide aggregate.
 ///
+/// A case that commits a block-grain `lane2-freq.txt` additionally gets a
+/// `MeasuredBudget workload=<name> …` line per core per measured workload
+/// (plans/M20.md items C+F): the same budget with hot text restricted to
+/// blocks whose measured `f` is non-zero. Both lines print, because the two
+/// answer different questions — the flat one is the static-footprint row
+/// 04 §5's veto is argued against, the measured one says how much of that
+/// text the measurement actually reached (decision 1617).
+///
 /// Legacy single-file dumps with no image (`cores == 0` and no entries)
 /// omit this block entirely.
 pub(crate) fn append_core_block(
@@ -190,6 +198,7 @@ pub(crate) fn append_core_block(
     placement: &PlacementTable,
     ghz: f64,
     include_placeables: bool,
+    attach: Option<&WorkloadAttach>,
 ) -> Result<(), String> {
     if placement.cores == 0 && placement.entries.is_empty() {
         return Ok(());
@@ -214,6 +223,13 @@ pub(crate) fn append_core_block(
         );
         if let Some(b) = report.footprint.iter().find(|b| b.n == c.n) {
             push_line(out, depth, &b.render());
+        }
+        if let Some(a) = attach {
+            for (name, budgets) in &a.measured_footprint {
+                if let Some(b) = budgets.iter().find(|b| b.n == c.n) {
+                    push_line(out, depth, &b.render_measured(name));
+                }
+            }
         }
     }
     push_line(
@@ -313,6 +329,7 @@ mod tests {
                 frequencies: BTreeMap::new(),
                 block_frequencies: BTreeMap::new(),
                 bridge: None,
+                measured_footprint: BTreeMap::new(),
             },
         )
         .expect("attach");
@@ -362,6 +379,7 @@ mod tests {
             frequencies,
             block_frequencies: BTreeMap::new(),
             bridge: None,
+            measured_footprint: BTreeMap::new(),
         };
         attach_workloads(&mut report, &attach).expect("attach");
         let placement = PlacementTable {

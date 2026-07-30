@@ -161,8 +161,21 @@ impl CoreBudget {
     /// core, matching the `Core n=…` style of
     /// [`super::dump::append_core_block`].
     pub fn render(&self) -> String {
+        self.render_line("Budget", String::new())
+    }
+
+    /// The same fields under a measured `f` (plans/M20.md item C's bridge
+    /// wired into [`HotBlocks::Measured`]). Printed **beside** the flat
+    /// `Budget` line, never instead of it: the flat line is the
+    /// static-footprint row 04 §5's veto is argued against (decision 1617),
+    /// and this one says how much of that text the measurement reached.
+    pub fn render_measured(&self, workload: &str) -> String {
+        self.render_line("MeasuredBudget", format!("workload={workload} "))
+    }
+
+    fn render_line(&self, label: &str, prefix: String) -> String {
         format!(
-            "Budget n={} hot_text_bytes={} l1i_bytes={} over_l1i_lines={} over_l2_lines={} \
+            "{label} {prefix}n={} hot_text_bytes={} l1i_bytes={} over_l1i_lines={} over_l2_lines={} \
              text_pages={} itlb_entries={} over_itlb_pages={} tlb_l2_entries={} \
              over_tlb_l2_pages={} data_pages={} over_dtlb_pages={} \
              over_data_tlb_l2_pages={} charge={}",
@@ -372,6 +385,40 @@ mod tests {
     fn load(offset: u64) -> EmittedWord {
         EmittedWord::new(0, String::new(), CostRule::Load, Some(1), &[MEM_SP_REG])
             .with_mem(MemRef::stack(offset))
+    }
+
+    /// The measured line carries the same fields under a distinct label
+    /// and names its workload, so a reader of a pinned dump can never
+    /// mistake it for the flat `Budget` row (plans/M20.md items C + F).
+    #[test]
+    fn the_measured_budget_line_is_labelled_and_names_its_workload() {
+        let b = CoreBudget {
+            n: 1,
+            hot_text_bytes: 7744,
+            l1i_bytes: 65536,
+            over_l1i_lines: 0,
+            over_l2_lines: 0,
+            text_pages: 3,
+            itlb_entries: 48,
+            over_itlb_pages: 0,
+            tlb_l2_entries: 1280,
+            over_tlb_l2_pages: 0,
+            data_pages: 5,
+            over_dtlb_pages: 0,
+            over_data_tlb_l2_pages: 0,
+            charge: 0,
+        };
+        assert!(b.render().starts_with("Budget n=1 hot_text_bytes=7744 "));
+        assert!(
+            b.render_measured("boot-actors")
+                .starts_with("MeasuredBudget workload=boot-actors n=1 hot_text_bytes=7744 ")
+        );
+        assert_eq!(
+            b.render().trim_start_matches("Budget "),
+            b.render_measured("w")
+                .trim_start_matches("MeasuredBudget workload=w "),
+            "the two lines must carry identical fields, so only the hotness rule differs"
+        );
     }
 
     /// A straight-line fn of `words` ALU words (one basic block).

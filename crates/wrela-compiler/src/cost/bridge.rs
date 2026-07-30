@@ -27,13 +27,29 @@
 //! on `boot-actors`' cost-stage closure, the mean is well above 1 — the
 //! reason nearest-offset attribution (forbidden by 1608) would be wrong
 //! even when it looked plausible.
+//!
+//! ## The join: [`MeasuredBlocks`]
+//!
+//! Item C landed the correspondence; item F
+//! ([`super::footprint::HotBlocks`]) and item H
+//! ([`super::branch::BlockCounts`]) each landed an injection point shaped
+//! `(fn_key, word_block_index) -> …` and each defaulted to its
+//! measurement-free variant. [`MeasuredBlocks`] is the one type that turns a
+//! bridge plus a measured `<fn_key>#<block_index>` vector into both closures.
+//! It lives here because this module already owns the MWIR ↔ word-block
+//! correspondence; a second module for the join would be a layer for its own
+//! sake (CLAUDE.md).
+//!
+//! **[`BlockObs::source`] is the whole reason the join is not a one-liner** —
+//! see [`MeasuredBlocks::obs`].
 
 use std::collections::BTreeMap;
 
 use crate::codegen::{BlockSpan, CodegenProgram};
 use crate::placement::PlacementTable;
 
-use super::score::{basic_block_ranges, block_schedule_lengths};
+use super::branch::{BlockCounts, BlockObs};
+use super::score::{basic_block_ranges, block_schedule_lengths_with_counts};
 use super::table::CostTable;
 
 /// A resolved Lane 2 block: its word span in the scored program and the
@@ -44,6 +60,14 @@ pub struct BridgedBlock {
     pub block_index: u32,
     pub word_start: usize,
     pub word_end: usize,
+    /// Ordinal of the first emitted-word block this span covers, indexing
+    /// [`basic_block_ranges`] over the fn. The span covers exactly
+    /// `first_word_block .. first_word_block + word_blocks` — contiguous,
+    /// because spans tile the fn's word range and every boundary is a block
+    /// leader. This is what makes a Lane 2 count attributable to the
+    /// `(fn_key, word_block_index)` identity `HotBlocks` and `BlockCounts`
+    /// are keyed by. 0 for an empty span (`word_blocks == 0`).
+    pub first_word_block: usize,
     /// How many emitted-word basic blocks this span covers.
     pub word_blocks: u64,
     /// `Σ s(b)` over those emitted-word blocks — the cost one measured hit
@@ -124,6 +148,30 @@ impl BlockBridge {
         table: &CostTable,
         placement: &PlacementTable,
     ) -> Result<Self, String> {
+        Self::build_with_counts(program, spans, table, placement, &BlockCounts::Flat)
+    }
+
+    /// [`BlockBridge::build`] with an explicit per-block frequency source
+    /// for the `s(b)` each span sums.
+    ///
+    /// **This is the second pass of the two-pass wiring.** `BridgedBlock`'s
+    /// `cycles` is `Σ s(b)` over the span, and `s(b)` itself depends on the
+    /// measured counts once item H's bias-derived mispredict is live. So the
+    /// correspondence is built first under [`BlockCounts::Flat`] (a
+    /// measured `f` cannot be resolved before the key → word-block map
+    /// exists), [`MeasuredBlocks::resolve`] is taken from that, and then the
+    /// per-span `cycles` are recomputed here under
+    /// [`BlockCounts::Measured`]. Only the `cycles` differ between the two
+    /// passes: the partition, the span boundaries and the fail-closed checks
+    /// are frequency-independent, which is why the second pass cannot move
+    /// coverage.
+    pub fn build_with_counts(
+        program: &CodegenProgram,
+        spans: &[BlockSpan],
+        table: &CostTable,
+        placement: &PlacementTable,
+        counts: &BlockCounts<'_>,
+    ) -> Result<Self, String> {
         let mut by_fn: BTreeMap<&str, Vec<&BlockSpan>> = BTreeMap::new();
         for s in spans {
             by_fn.entry(s.fn_key.as_str()).or_default().push(s);
@@ -142,7 +190,8 @@ impl BlockBridge {
                 )
             })?;
             let ranges = basic_block_ranges(&f.code);
-            let lengths = block_schedule_lengths(fn_key, &f.code, table, placement)?;
+            let lengths =
+                block_schedule_lengths_with_counts(fn_key, &f.code, table, placement, counts)?;
             if ranges.len() != lengths.len() {
                 return Err(format!(
                     "bridge: internal error: fn `{fn_key}` has {} emitted-word block(s) but {} \
@@ -200,6 +249,7 @@ impl BlockBridge {
                             block_index: n as u32,
                             word_start: span.word_start,
                             word_end: span.word_end,
+                            first_word_block: 0,
                             word_blocks: 0,
                             cycles: 0,
                         },
@@ -240,6 +290,7 @@ impl BlockBridge {
                         block_index: n as u32,
                         word_start: span.word_start,
                         word_end: span.word_end,
+                        first_word_block: first,
                         word_blocks,
                         cycles,
                     },
@@ -266,6 +317,23 @@ impl BlockBridge {
         placement: &PlacementTable,
     ) -> Result<Self, String> {
         Self::build(program, &crate::codegen::block_spans(), table, placement)
+    }
+
+    /// [`BlockBridge::from_current_codegen`] at an explicit frequency
+    /// source — the second pass of the two-pass wiring.
+    pub fn from_current_codegen_with_counts(
+        program: &CodegenProgram,
+        table: &CostTable,
+        placement: &PlacementTable,
+        counts: &BlockCounts<'_>,
+    ) -> Result<Self, String> {
+        Self::build_with_counts(
+            program,
+            &crate::codegen::block_spans(),
+            table,
+            placement,
+            counts,
+        )
     }
 
     /// Resolve one sidecar key. `Err` for a malformed key or an
@@ -296,11 +364,168 @@ impl BlockBridge {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The join: a measured vector -> item F's hotness and item H's bias
+// ---------------------------------------------------------------------------
+
+/// A measured `<fn_key>#<block_index>` vector resolved onto the scored
+/// program's **emitted-word** blocks: the single source both
+/// [`super::footprint::HotBlocks::Measured`] and
+/// [`super::branch::BlockCounts::Measured`] are built from.
+///
+/// ## Why one type feeds both
+///
+/// Item F asks `is_hot(fn_key, word_block)`, item H asks
+/// `obs(fn_key, word_block)`. Both are the identity
+/// [`basic_block_ranges`] indexes and the identity a Lane 2 span resolves
+/// to, so there is exactly one attribution to get right and it is done
+/// once, here.
+///
+/// ## What is *not* measured is not charged, and not hot
+///
+/// A word block with no observation yields `None` from [`Self::obs`] and
+/// `false` from [`Self::is_hot`]. That is decision 1609 read honestly (no
+/// data, no charge) rather than a default: at item C's measured 13.4%
+/// block coverage a 0.5-ratio default would put the full mispredict
+/// penalty on ~87% of branches, and a "hot by default" would make the
+/// measured footprint identical to the flat one.
+///
+/// **The direction is recorded rather than hidden:** treating an unmeasured
+/// block as cold is an *under*-cost of hot text, so the measured per-core
+/// budget is a floor, not a bound. Decision 1617 already tells item J to
+/// read its veto off the flat row (`HotBlocks::All`, every block hot) until
+/// coverage improves; the measured budget is the diagnostic beside it, not
+/// a replacement for it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MeasuredBlocks {
+    /// fn key → word-block ordinal → observation.
+    obs: BTreeMap<String, BTreeMap<usize, BlockObs>>,
+    /// Sidecar keys that resolved to a scored Lane 2 span.
+    pub resolved_keys: u64,
+    /// Sidecar keys naming a fn the scored closure does not contain. Not an
+    /// error (see [`Resolved::UnknownFn`]); `compose` charges them at the
+    /// program maximum and this join contributes no observation for them.
+    pub unresolved_keys: u64,
+    /// Emitted-word blocks that carry an observation.
+    pub measured_word_blocks: u64,
+    /// Of those, the ones whose count is non-zero — the hot-text set.
+    pub hot_word_blocks: u64,
+}
+
+impl MeasuredBlocks {
+    /// Resolve `counts` against `bridge`.
+    ///
+    /// Fails closed exactly where [`BlockBridge::lookup`] does: a malformed
+    /// key, or a block index out of range for a fn that **is** scored
+    /// (decision 1608). A key naming an unscored fn is counted in
+    /// `unresolved_keys` and contributes nothing — dropping it here does
+    /// **not** narrow the sidecar, because `compose` still charges the same
+    /// key at the program maximum and freeze 1627 keeps the coverage
+    /// denominator the whole scored set. This join changes no coverage
+    /// number at all; it only decides which `s(b)` the resolved part is
+    /// multiplied by and which blocks are hot text.
+    pub fn resolve(
+        bridge: &BlockBridge,
+        counts: &BTreeMap<String, u64>,
+    ) -> Result<MeasuredBlocks, String> {
+        // The `source` id: the Lane 2 span's own ordinal in the bridge, and
+        // deliberately **not** anything derived from the word block. See
+        // `obs` for why this is the load-bearing line of the whole join.
+        let source_of: BTreeMap<&str, u64> = bridge
+            .blocks()
+            .enumerate()
+            .map(|(i, (k, _))| (k.as_str(), i as u64))
+            .collect();
+
+        let mut out = MeasuredBlocks::default();
+        for (key, &count) in counts {
+            match bridge.lookup(key)? {
+                Resolved::Block(b) => {
+                    out.resolved_keys += 1;
+                    let source = *source_of.get(key.as_str()).ok_or_else(|| {
+                        format!(
+                            "bridge: key `{key}` resolved to a span the bridge does not \
+                             enumerate (the two views of one bridge disagree)"
+                        )
+                    })?;
+                    let per_fn = out.obs.entry(b.fn_key.clone()).or_default();
+                    let lo = b.first_word_block;
+                    let hi = lo + b.word_blocks as usize;
+                    for wb in lo..hi {
+                        if per_fn.insert(wb, BlockObs::new(count, source)).is_some() {
+                            return Err(format!(
+                                "bridge: fn `{}` word block {wb} is claimed by two Lane 2 \
+                                 spans — the partitions disagree (decision 1608)",
+                                b.fn_key
+                            ));
+                        }
+                        out.measured_word_blocks += 1;
+                        if count > 0 {
+                            out.hot_word_blocks += 1;
+                        }
+                    }
+                }
+                Resolved::UnknownFn => out.unresolved_keys += 1,
+            }
+        }
+        Ok(out)
+    }
+
+    /// Feeds [`super::footprint::HotBlocks::Measured`]: a block is hot text
+    /// when its measured `f` is non-zero. Unmeasured is **not** hot (see the
+    /// type doc).
+    pub fn is_hot(&self, fn_key: &str, word_block: usize) -> bool {
+        self.obs(fn_key, word_block).is_some_and(|o| o.count > 0)
+    }
+
+    /// Feeds [`super::branch::BlockCounts::Measured`].
+    ///
+    /// ## `source` is the Lane 2 span, never the word block
+    ///
+    /// This is the guard item H's model rests on, and getting it wrong
+    /// inverts that item's headline finding rather than merely perturbing a
+    /// number.
+    ///
+    /// Lane 2 ids are assigned over MWIR blocks; `s(b)` is computed over
+    /// emitted-word blocks; **one MWIR block spans several word blocks**. So
+    /// a conditional branch whose target and fallthrough both land inside a
+    /// single Lane 2 span has *one* measurement behind both successors. If
+    /// `source` were the word-block ordinal the two would look distinct, the
+    /// ratio would read `count:count` — a perfect 50/50 — and the branch
+    /// would be charged the **full** mispredict penalty. Every abort branch
+    /// wrela emits has exactly that shape, so the emit-every-check doctrine
+    /// would be priced at maximum mispredict instead of the zero item H
+    /// measured.
+    ///
+    /// Setting `source` to the span's identity makes
+    /// [`super::branch::BranchBias::from_observations`] see one datum and
+    /// return `None`, which charges nothing.
+    /// `unit:measured_blocks_source_is_the_span_so_an_abort_branch_charges_zero`
+    /// fails if this line is ever changed to a word-block-derived id.
+    pub fn obs(&self, fn_key: &str, word_block: usize) -> Option<BlockObs> {
+        self.obs.get(fn_key)?.get(&word_block).copied()
+    }
+
+    /// Scored fns carrying at least one measured block.
+    pub fn fn_count(&self) -> u64 {
+        self.obs.len() as u64
+    }
+
+    /// Whether any observation resolved at all. A vector that resolves to
+    /// nothing must behave exactly like the flat row rather than like a
+    /// measurement of zero.
+    pub fn is_empty(&self) -> bool {
+        self.measured_word_blocks == 0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::codegen::CodegenFn;
+    use crate::cost::branch::{BranchTerms, branch_mispredict_charge};
     use crate::cost::rule::{CostRule, EmittedWord};
+    use crate::cost::sweep::SweepPoint;
 
     fn word(rule: CostRule) -> EmittedWord {
         EmittedWord::new(0xd503_201f, "nop".to_string(), rule, None, &[])
@@ -375,11 +600,15 @@ mod tests {
             other => panic!("expected a block, got {other:?}"),
         };
         assert_eq!((b0.word_start, b0.word_end, b0.word_blocks), (0, 2, 1));
-        let all: u64 =
-            block_schedule_lengths("F.m", &prog.fns["F.m"].code, &t, &PlacementTable::default())
-                .unwrap()
-                .iter()
-                .sum();
+        let all: u64 = crate::cost::block_schedule_lengths(
+            "F.m",
+            &prog.fns["F.m"].code,
+            &t,
+            &PlacementTable::default(),
+        )
+        .unwrap()
+        .iter()
+        .sum();
         let bridged: u64 = bridge.blocks().map(|(_, b)| b.cycles).sum();
         assert_eq!(
             bridged, all,
@@ -400,9 +629,13 @@ mod tests {
         let t = table();
         let bridge = BlockBridge::build(&prog, &[span(0, 0, 4)], &t, &PlacementTable::default())
             .expect("bridge");
-        let lens =
-            block_schedule_lengths("F.m", &prog.fns["F.m"].code, &t, &PlacementTable::default())
-                .unwrap();
+        let lens = crate::cost::block_schedule_lengths(
+            "F.m",
+            &prog.fns["F.m"].code,
+            &t,
+            &PlacementTable::default(),
+        )
+        .unwrap();
         assert_eq!(lens.len(), 2, "two emitted-word blocks");
         match bridge.lookup("F.m#0").unwrap() {
             Resolved::Block(b) => {
@@ -656,5 +889,374 @@ mod tests {
             ids_only(&both_spans),
             "the id -> fn_key#idx map must be identical with and without counter emission"
         );
+    }
+
+    // --- the join: MeasuredBlocks (plans/M20.md items C + F + H) ----------
+
+    /// A real `CBZ` word: `byte_offset` is relative to the branch word.
+    fn cbz(byte_offset: i32) -> EmittedWord {
+        EmittedWord::new(
+            crate::encode::enc_cbz(0, byte_offset, true),
+            "cbz".to_string(),
+            CostRule::Branch,
+            None,
+            &[0],
+        )
+    }
+
+    fn alu() -> EmittedWord {
+        EmittedWord::new(0, "alu".to_string(), CostRule::Alu, Some(1), &[0, 0])
+    }
+
+    /// The **abort shape**: a conditional branch whose target and
+    /// fallthrough are two different emitted-word blocks.
+    ///
+    /// words: 0 alu | 1 cbz .+8 | 2 alu (fallthrough) | 3 alu (target) | 4 alu
+    /// emitted-word blocks: (0,2) (2,3) (3,5) — the branch is the last word
+    /// of block 0, its fallthrough is block 1 and its target is block 2.
+    fn abort_shape() -> CodegenProgram {
+        program(vec![alu(), cbz(8), alu(), alu(), alu()])
+    }
+
+    fn point() -> SweepPoint {
+        SweepPoint::pinned(&table())
+    }
+
+    fn penalty() -> u64 {
+        table()
+            .branch_row("mispredict_penalty")
+            .expect("[branch.mispredict_penalty]")
+            .value
+    }
+
+    /// The mispredict charged to the one branch in `prog`'s single fn under
+    /// `counts`.
+    fn charge(prog: &CodegenProgram, counts: &BlockCounts<'_>) -> u64 {
+        let code = &prog.fns["F.m"].code;
+        let t = table();
+        let terms = BranchTerms::compute("F.m", code, &t, &point(), counts).expect("terms");
+        assert_eq!(terms.summary.branches, 1, "the shape must carry one branch");
+        branch_mispredict_charge(penalty(), terms.bias_at(1))
+    }
+
+    /// **The `source` guard** (plans/M20.md item H's load-bearing clause).
+    ///
+    /// One MWIR block spans several emitted-word blocks, so an abort
+    /// branch's target and fallthrough routinely sit inside a **single**
+    /// Lane 2 span. Both then carry one measurement, which is one datum and
+    /// not a ratio. If `MeasuredBlocks::obs` derived `source` from the word
+    /// block instead of the span, the two would read as a measured 1000:1000
+    /// — a perfect 50/50 — and the branch would be charged the **full**
+    /// penalty. Every abort branch has that shape, so item H's headline
+    /// finding (emit-every-check costs ~0 mispredict) would invert.
+    ///
+    /// The control at the bottom is what makes this unit an oracle rather
+    /// than a tautology: the same program, same counts, with a
+    /// word-block-derived source, is charged the full 14.
+    #[test]
+    fn measured_blocks_source_is_the_span_so_an_abort_branch_charges_zero() {
+        let prog = abort_shape();
+        let t = table();
+        // One Lane 2 span over the whole fn: all three word blocks share it.
+        let bridge = BlockBridge::build(&prog, &[span(0, 0, 5)], &t, &PlacementTable::default())
+            .expect("bridge");
+        let counts = BTreeMap::from([("F.m#0".to_string(), 1000u64)]);
+        let mb = MeasuredBlocks::resolve(&bridge, &counts).expect("resolve");
+
+        assert_eq!(mb.measured_word_blocks, 3, "one span, three word blocks");
+        let (a, b, c) = (
+            mb.obs("F.m", 0).expect("block 0"),
+            mb.obs("F.m", 1).expect("block 1"),
+            mb.obs("F.m", 2).expect("block 2"),
+        );
+        assert_eq!((a.count, b.count, c.count), (1000, 1000, 1000));
+        assert_eq!(
+            (a.source, b.source, c.source),
+            (a.source, a.source, a.source),
+            "every word block inside one Lane 2 span reports the SAME source — \
+             it is one measurement, not three"
+        );
+
+        let obs_fn = |k: &str, w: usize| mb.obs(k, w);
+        let measured = BlockCounts::Measured(&obs_fn);
+        let terms = BranchTerms::compute("F.m", &prog.fns["F.m"].code, &t, &point(), &measured)
+            .expect("terms");
+        assert_eq!(terms.summary.biased, 0, "one datum is not a ratio");
+        assert_eq!(terms.summary.no_data, 1);
+        assert!(terms.bias_at(1).is_none());
+        assert_eq!(
+            charge(&prog, &measured),
+            0,
+            "an abort-shaped branch whose successors share one Lane 2 span must be \
+             charged ZERO mispredict, not the full penalty"
+        );
+
+        // The control: derive `source` from the word block instead and the
+        // same measurement becomes a fabricated 50/50 at the full penalty.
+        // This is the bug the assertion above exists to catch.
+        let by_word_block = |_: &str, w: usize| Some(BlockObs::new(1000, w as u64));
+        assert_eq!(
+            charge(&prog, &BlockCounts::Measured(&by_word_block)),
+            penalty(),
+            "a word-block-derived source would charge the full penalty — so the zero \
+             above is the guard working, not an absent term"
+        );
+
+        // And end to end through `s(b)`: the span-sourced schedule is the
+        // flat one, the word-block-sourced one is a whole penalty longer.
+        let sum = |counts: &BlockCounts<'_>| -> u64 {
+            block_schedule_lengths_with_counts(
+                "F.m",
+                &prog.fns["F.m"].code,
+                &t,
+                &PlacementTable::default(),
+                counts,
+            )
+            .expect("schedule")
+            .iter()
+            .sum()
+        };
+        let flat = sum(&BlockCounts::Flat);
+        assert_eq!(sum(&measured), flat);
+        assert_eq!(
+            sum(&BlockCounts::Measured(&by_word_block)),
+            flat + penalty()
+        );
+    }
+
+    /// Two **different** Lane 2 spans are two measurements, so the ratio is
+    /// real: 99/1 costs ~0 and 50/50 costs the whole penalty.
+    #[test]
+    fn successors_in_different_spans_give_a_real_ratio() {
+        let prog = abort_shape();
+        let t = table();
+        // span 0 covers word blocks 0-1 (branch + fallthrough), span 1
+        // covers word block 2 (the target).
+        let spans = [span(0, 0, 3), span(1, 3, 5)];
+        let bridge =
+            BlockBridge::build(&prog, &spans, &t, &PlacementTable::default()).expect("bridge");
+
+        let at = |taken: u64, not_taken: u64| -> u64 {
+            let counts = BTreeMap::from([
+                ("F.m#0".to_string(), not_taken),
+                ("F.m#1".to_string(), taken),
+            ]);
+            let mb = MeasuredBlocks::resolve(&bridge, &counts).expect("resolve");
+            assert_ne!(
+                mb.obs("F.m", 1).unwrap().source,
+                mb.obs("F.m", 2).unwrap().source,
+                "two spans are two measurements"
+            );
+            let f = |k: &str, w: usize| mb.obs(k, w);
+            charge(&prog, &BlockCounts::Measured(&f))
+        };
+
+        let lopsided = at(99, 1);
+        assert!(
+            lopsided <= 1,
+            "a 99/1 branch must cost ~0 of {}, got {lopsided}",
+            penalty()
+        );
+        assert_eq!(
+            at(50, 50),
+            penalty(),
+            "a measured 50/50 pays the whole thing"
+        );
+        assert_eq!(at(1_000_000, 0), 0, "never taken is exactly zero");
+    }
+
+    /// Item F's hot-text predicate under a measured `f`: `f > 0` is hot,
+    /// `f = 0` is not, and **unmeasured is not hot either** — no data, no
+    /// default hotness (decision 1609; the direction is recorded on
+    /// `MeasuredBlocks` itself).
+    #[test]
+    fn a_block_with_zero_f_is_not_hot_text_and_an_unmeasured_one_is_not_hot_by_default() {
+        let prog = abort_shape();
+        let t = table();
+        let bridge = BlockBridge::build(
+            &prog,
+            &[span(0, 0, 3), span(1, 3, 5)],
+            &t,
+            &PlacementTable::default(),
+        )
+        .expect("bridge");
+        let counts = BTreeMap::from([("F.m#0".to_string(), 0u64), ("F.m#1".to_string(), 7u64)]);
+        let mb = MeasuredBlocks::resolve(&bridge, &counts).expect("resolve");
+
+        assert!(!mb.is_hot("F.m", 0), "f = 0 is not hot text");
+        assert!(!mb.is_hot("F.m", 1), "f = 0 is not hot text");
+        assert!(mb.is_hot("F.m", 2), "f > 0 is hot text");
+        assert!(!mb.is_hot("F.m", 99), "an unmeasured block is not hot");
+        assert!(!mb.is_hot("Other.m", 0), "an unmeasured fn is not hot");
+        assert_eq!((mb.measured_word_blocks, mb.hot_word_blocks), (3, 1));
+
+        // `HotBlocks::All` is the opposite end and every block is hot — the
+        // flat row is a static-footprint row, unchanged by this wiring.
+        let all = crate::cost::HotBlocks::All;
+        for w in 0..3 {
+            assert!(all.is_hot("F.m", w));
+        }
+    }
+
+    /// Decision 1617: the join must not "fix" coverage. An unresolvable
+    /// key is **counted** and contributes no observation — `compose` still
+    /// charges it at the program maximum — and an out-of-range index on a
+    /// scored fn still fails closed (decision 1608).
+    #[test]
+    fn resolve_counts_unknown_fns_and_fails_closed_on_an_out_of_range_index() {
+        let prog = abort_shape();
+        let bridge = BlockBridge::build(
+            &prog,
+            &[span(0, 0, 5)],
+            &table(),
+            &PlacementTable::default(),
+        )
+        .expect("bridge");
+
+        let mb = MeasuredBlocks::resolve(
+            &bridge,
+            &BTreeMap::from([
+                ("F.m#0".to_string(), 3u64),
+                ("NotScored.m#4".to_string(), 900u64),
+            ]),
+        )
+        .expect("an unknown fn is not an error");
+        assert_eq!((mb.resolved_keys, mb.unresolved_keys), (1, 1));
+        assert!(
+            !mb.is_hot("NotScored.m", 0),
+            "an unresolvable key contributes no observation to this program"
+        );
+
+        let err = MeasuredBlocks::resolve(&bridge, &BTreeMap::from([("F.m#9".to_string(), 1u64)]))
+            .expect_err("an out-of-range index on a scored fn must fail closed");
+        assert!(err.contains("out of range"), "got: {err}");
+        assert!(
+            MeasuredBlocks::resolve(&bridge, &BTreeMap::from([("F.m".to_string(), 1u64)])).is_err(),
+            "a malformed key is a malformed sidecar, not a miss"
+        );
+    }
+
+    /// A vector that resolves to nothing must behave **exactly** like the
+    /// flat row, not like a measurement of zero: no bias anywhere, and the
+    /// measured-pass `s(b)` identical to the flat one.
+    #[test]
+    fn a_vector_that_resolves_to_nothing_is_the_flat_row() {
+        let prog = abort_shape();
+        let t = table();
+        let bridge = BlockBridge::build(&prog, &[span(0, 0, 5)], &t, &PlacementTable::default())
+            .expect("bridge");
+        let mb = MeasuredBlocks::resolve(
+            &bridge,
+            &BTreeMap::from([("Elsewhere.m#0".to_string(), 5u64)]),
+        )
+        .expect("resolve");
+        assert!(mb.is_empty());
+        let f = |k: &str, w: usize| mb.obs(k, w);
+        let measured = BlockBridge::build_with_counts(
+            &prog,
+            &[span(0, 0, 5)],
+            &t,
+            &PlacementTable::default(),
+            &BlockCounts::Measured(&f),
+        )
+        .expect("measured bridge");
+        assert_eq!(
+            measured, bridge,
+            "an unresolved vector must leave every s(b) exactly where the flat pass put it"
+        );
+    }
+
+    /// **The census of what the join actually reaches on the committed
+    /// `boot-actors` vector** — the number nobody had before, kept as a
+    /// number so a collapse to "clean about nothing" is visible in the
+    /// output rather than hidden behind a green test.
+    #[test]
+    fn boot_actors_measured_join_census() {
+        let (prog, spans, _) = bridge_codegen("boot-actors");
+        let t = table();
+        let place = PlacementTable::default();
+        let flat_bridge = BlockBridge::build(&prog, &spans, &t, &place).expect("bridge");
+        let f = crate::cost::freq::load_block_from_path(
+            &crate::cost::repo_root().join("tests/golden/boot-actors/lane2-freq.txt"),
+        )
+        .expect("committed sidecar");
+        let mb = MeasuredBlocks::resolve(&flat_bridge, &f.counts).expect("resolve");
+
+        // Resolution: unchanged from item C's pinned finding — the join
+        // resolves the same 81 keys and leaves the same 291 uncovered
+        // (decision 1617: do not "fix" coverage).
+        assert_eq!((mb.resolved_keys, mb.unresolved_keys), (81, 291));
+        assert_eq!(
+            mb.measured_word_blocks, 190,
+            "emitted-word blocks the measurement reaches"
+        );
+        assert_eq!(
+            mb.hot_word_blocks, 190,
+            "the committed sidecar carries only non-zero hits, so every measured block is hot"
+        );
+        assert_eq!(mb.fn_count(), 14, "scored fns the measurement reaches");
+
+        // Hot text under measured `f` vs under `W_flat`, in word blocks.
+        let all_word_blocks: u64 = prog
+            .fns
+            .values()
+            .map(|f| basic_block_ranges(&f.code).len() as u64)
+            .sum();
+        assert_eq!(
+            all_word_blocks, 333,
+            "emitted-word blocks in the scored closure — every one of them is hot under W_flat"
+        );
+        assert!(
+            mb.hot_word_blocks < all_word_blocks,
+            "the measured vector must exclude some blocks or item F's wiring is a no-op"
+        );
+
+        // Branch census under the measured vector: how many branches a real
+        // measurement can actually bias, and what that costs.
+        let obs_fn = |k: &str, w: usize| mb.obs(k, w);
+        let counts = BlockCounts::Measured(&obs_fn);
+        let point = point();
+        let (mut biased, mut no_data, mut branches, mut mispredict) = (0u64, 0u64, 0u64, 0u64);
+        for (key, cf) in &prog.fns {
+            let terms =
+                BranchTerms::compute(key, &cf.code, &t, &point, &counts).expect("branch terms");
+            branches += terms.summary.branches;
+            biased += terms.summary.biased;
+            no_data += terms.summary.no_data;
+            for w in 0..cf.code.len() {
+                mispredict +=
+                    branch_mispredict_charge(point.get("mispredict_penalty"), terms.bias_at(w));
+            }
+        }
+        assert_eq!(branches, 265, "branch words in the scored closure");
+        assert_eq!(
+            biased, 14,
+            "branches a real measured vector can bias — the number item J must not mistake \
+             for a fine-grained ranking signal (decision 1617)"
+        );
+        assert_eq!(
+            no_data, 104,
+            "conditional branches with no usable ratio: unmeasured, or both successors \
+             inside one Lane 2 span (the `source` guard)"
+        );
+        assert_eq!(
+            mispredict, 145,
+            "total bias-derived mispredict over the scored closure, in cycles"
+        );
+
+        // The flat row over the same program charges zero mispredict — the
+        // control that makes the number above a measurement rather than a
+        // constant.
+        let (mut flat_biased, mut flat_mispredict) = (0u64, 0u64);
+        for (key, cf) in &prog.fns {
+            let terms = BranchTerms::compute(key, &cf.code, &t, &point, &BlockCounts::Flat)
+                .expect("branch terms");
+            flat_biased += terms.summary.biased;
+            for w in 0..cf.code.len() {
+                flat_mispredict +=
+                    branch_mispredict_charge(point.get("mispredict_penalty"), terms.bias_at(w));
+            }
+        }
+        assert_eq!((flat_biased, flat_mispredict), (0, 0));
     }
 }
