@@ -44,15 +44,42 @@
 //!   FP/ASIMD. `latency.store`'s `ports = "L,D"` is how the table says
 //!   it; the Mop-vs-uop distinction is real in the dispatch accounting
 //!   (4 Mops/cycle but 8 uops/cycle).
-//! - **No NZCV serialization.** NZCV and SP are fully renamed on A76 (SOG
-//!   §4.10 note 1), so the pre-M20 scoreboard's flag edge was wrong for
-//!   this core and is gone. `FlagEffect` itself stays — item I and the
-//!   report read it.
+//! - **NZCV and SP carry their true (RAW) dependence; register 31 as XZR
+//!   carries none.** See the correction note below — this is the one place
+//!   plans/M20.md's own text was factually wrong about the machine.
 //!
-//! Four terms are **provisional seams**, each owned by a following item
+//! ## Correction: what register renaming actually removes
+//!
+//! plans/M20.md item I reads SOG §4.10 note 1 ("NZCV and SP are fully
+//! renamed") as licence to delete the scoreboard's flag and SP edges, and
+//! item E did so. **That inference does not hold.** Renaming eliminates
+//! *false* dependences — WAR (a writer waiting on an earlier reader) and
+//! WAW (two writers serializing) — by giving each definition its own
+//! physical register. It does nothing to a **RAW** dependence: `cmp`
+//! computes NZCV and `b.cond` / `cset` consume it, and no renaming lets a
+//! consumer read a value before its producer produced it. The same holds
+//! for `sub sp, sp, #N` followed by a load off the new SP.
+//!
+//! This model never had a WAR or WAW flag stall to remove — a flag write
+//! simply overwrote the producer time and a write after a read cost
+//! nothing — so §4.10 note 1 licensed **no change here at all**, and the
+//! deletion removed a correct edge. Its direction was **under-cost**, the
+//! one direction 04 §5 forbids, worth −75 of 3895 proxy-cycles.
+//!
+//! What item I was right about is narrower and is kept: register number 31
+//! is **XZR** in almost every group and **SP** only in add/subtract
+//! (immediate), so the pre-M20 model's `ready[31]` edge invented a
+//! dependence on every `str xzr` word — a constant with no producer. So
+//! the two registers are now tracked apart: `flags_ready` and `sp_ready`
+//! carry real RAW edges, `ready[31]` stays permanently zero, and a word
+//! reads SP only when its address is a proven `MemClass::Stack` slot or its
+//! encoding names register 31 as an add/sub-immediate `Rn`
+//! ([`crate::encode::reads_sp`]).
+//!
+//! Three terms are **provisional seams**, each owned by a following item
 //! and each a separate function so those items merge cleanly:
-//! [`mem_access_latency`] (item F), [`crosscore_extra`] (item G),
-//! [`branch_mispredict_charge`] (item H), [`alignment_penalty`] (item I).
+//! [`mem_access_latency`] (item F, now live), [`crosscore_extra`] (item G,
+//! now live), [`branch_mispredict_charge`] (item H).
 //!
 //! Per-fn flat total = Σ s(b) over mechanical basic blocks (`f≡1`).
 //!
@@ -722,6 +749,15 @@ fn score_words(
     // **completes** (SOG §3.6 note 1).
     let mut block_free = 0u64;
     let mut ready = [0u64; 32];
+    // NZCV's producer time. A **RAW** edge: renaming removes WAR/WAW, not
+    // the fact that a flag consumer cannot read a value its producer has
+    // not computed. Kept out of `ready` because register number 31 already
+    // means two things and NZCV is not a GPR at all.
+    let mut flags_ready = 0u64;
+    // SP's producer time, tracked separately from `ready[31]` for exactly
+    // that reason: 31 is SP in the add/sub-immediate group and XZR nearly
+    // everywhere else, and only one of the two has a producer.
+    let mut sp_ready = 0u64;
     let mut control_ready = 0u64;
     // SOG §4.10: an in-order system access is not reordered against the
     // rest of the window (item G sets `serializes_window` to turn this on).
@@ -823,6 +859,21 @@ fn score_words(
             .max(src_ready(ew, &ready))
             .max(control_ready)
             .max(serial_until);
+        if ew.flags.reads() {
+            base_ready = base_ready.max(flags_ready);
+        }
+        // A word reads SP either because its address is a **proven**
+        // SP-relative slot (`MemClass::Stack`) or because it is an
+        // add/sub-immediate naming register 31 as `Rn` (`sub sp, sp, #N`,
+        // `add x0, sp, #0`). A word that merely carries 31 in `srcs`
+        // without either of those is reading **XZR** and waits on nothing —
+        // that false edge, on every `str xzr` word, is the one thing item I
+        // was right to delete.
+        let reads_sp = matches!(ew.mem.map(|m| m.class), Some(MemClass::Stack))
+            || crate::encode::reads_sp(ew.word);
+        if reads_sp {
+            base_ready = base_ready.max(sp_ready);
+        }
         if blocks {
             base_ready = base_ready.max(block_free);
         }
@@ -867,21 +918,35 @@ fn score_words(
         retire[i] = finish;
         if let Some(d) = ew.dst {
             let d = d as usize;
-            // **SP is fully renamed too** (SOG §4.10 note 1, plans/M20.md
-            // item I): an SP write records no ready time, so an
-            // SP-write/SP-read pair creates no scheduler edge — exactly
-            // the treatment NZCV gets one line below. Encoding 31 is also
-            // XZR outside load/store, and a constant zero has no producer
-            // at all, so leaving `ready[31]` at 0 is right for both
-            // readings of the register number. This is **only** the
-            // scheduler edge: the frame-epoch reuse invalidation on an SP
-            // write is a different mechanism and still fires below —
-            // conflating the two would silently restore a stale-reuse bug.
+            // Register number 31 is skipped here on purpose, and the reason
+            // is **not** renaming — it is that 31 is two different
+            // registers. As an ordinary destination it is **XZR**, a
+            // constant with no producer, so a write to it is discarded and
+            // recording a ready time would invent a dependence the machine
+            // cannot have. As an add/sub-immediate destination it is **SP**,
+            // whose true dependence is tracked by `sp_ready` below.
             if d < 32 && d != MEM_SP_REG as usize {
                 ready[d] = finish;
             }
         }
-        // NZCV is fully renamed on A76 (SOG §4.10 note 1) — no flag edge.
+        // **SP's true dependence, restored** (see the module doc's
+        // correction note). A tagged `dst == 31` is a genuine SP write —
+        // stores carry `dst: None`, and codegen never names XZR as a
+        // destination, which is also why this same tag drives the
+        // frame-epoch invalidation below.
+        if ew.dst == Some(MEM_SP_REG) {
+            sp_ready = finish;
+        }
+        // **The NZCV data edge, restored.** Renaming removes WAR and WAW
+        // hazards; it does not remove a RAW one. `cmp` produces NZCV and
+        // `b.cond` / `cset` consume it, and no amount of renaming lets a
+        // consumer read a value before its producer computed it. This model
+        // has never had a WAR or WAW flag stall to remove — a write simply
+        // overwrites `flags_ready` and a write after a read costs nothing —
+        // so SOG §4.10 note 1 licenses no change here at all.
+        if ew.flags.writes() {
+            flags_ready = finish;
+        }
         if ew.rule == CostRule::Branch {
             control_ready = finish;
         }
@@ -1430,11 +1495,13 @@ mod tests {
 
     // --- NZCV de-serialization ---------------------------------------------
 
-    /// SOG §4.10 note 1: NZCV and SP are fully **renamed** on A76, so the
-    /// pre-M20 scoreboard's flag edge was wrong for this core. A dependent
-    /// flag chain no longer serializes; a true GPR dependence still does.
+    /// A flag **RAW** edge costs exactly what the equivalent GPR dependence
+    /// costs. Renaming (SOG §4.10 note 1) removes WAR and WAW hazards; it
+    /// cannot let `b.cond` read NZCV before `cmp` computed it. See this
+    /// module's correction note — plans/M20.md read note 1 as licence to
+    /// delete this edge, which was an under-cost.
     #[test]
-    fn nzcv_chain_does_not_serialize_but_a_gpr_chain_does() {
+    fn nzcv_raw_edge_is_charged_like_a_gpr_dependence() {
         let flags = prog(
             "f",
             vec![
@@ -1442,49 +1509,49 @@ mod tests {
                 word_flags(CostRule::Branch, None, &[], FlagEffect::Read),
             ],
         );
-        assert_eq!(
-            total(&flags),
-            1,
-            "cmp and b.cond take different pipes and no renamed-flag edge exists"
-        );
         let gpr = prog(
             "f",
             vec![
                 word(CostRule::Alu, Some(1), &[0, 0]),
-                word(CostRule::Alu, Some(2), &[1, 1]),
+                word(CostRule::Branch, None, &[1]),
             ],
         );
         assert_eq!(
+            total(&flags),
             total(&gpr),
-            2,
-            "a real register dependence still serializes"
+            "cmp -> b.cond must cost what an equivalent GPR dependence costs: \
+             flags {} vs gpr {}",
+            total(&flags),
+            total(&gpr)
         );
-        // A longer flag chain stays flat while the GPR chain grows.
-        let flag_chain = prog(
+        // And it is a real edge, not port pressure: the same two words with
+        // no flag relationship issue together on their two distinct pipes.
+        let independent = prog(
             "f",
             vec![
-                word_flags(CostRule::Alu, None, &[1, 2], FlagEffect::Write),
-                word_flags(CostRule::Alu, None, &[3, 4], FlagEffect::Read),
-                word_flags(CostRule::Alu, None, &[5, 6], FlagEffect::Write),
-                word_flags(CostRule::Alu, None, &[7, 8], FlagEffect::Read),
+                word(CostRule::Alu, None, &[1, 2]),
+                word(CostRule::Branch, None, &[]),
             ],
         );
-        assert_eq!(total(&flag_chain), 2, "four I-class Mops, three pipes");
+        assert!(
+            total(&flags) > total(&independent),
+            "the flag edge must lengthen the schedule: {} vs independent {}",
+            total(&flags),
+            total(&independent)
+        );
     }
 
-    /// Item I's deepening of the unit above: the removal is load-bearing on
-    /// the **dependent** flag shape specifically, and is not a blanket
-    /// discount on anything carrying a `FlagEffect`.
+    /// **The precise statement of what renaming does**, and the oracle that
+    /// keeps this model from drifting back to either error.
     ///
-    /// The counterfactual is measured inside this one build rather than
-    /// quoted from history. The edge item E removed treated NZCV as a
-    /// single architectural register with a write→read dependence, so the
-    /// schedule it produced is exactly the schedule of the same words with
-    /// that dependence re-expressed through **one GPR** — which is what
-    /// `restored` below is. `drop = restored − live` is therefore the
-    /// removal's own contribution, per shape.
+    /// Each shape is scored against a counterfactual in which the flag
+    /// register's role is played by **one GPR**, which is exactly a model
+    /// that treats NZCV as a single architectural register. Renaming's real
+    /// effect is that the two agree on the **RAW** shape and diverge on the
+    /// **WAW** and read-with-no-producer shapes, where a single-register
+    /// model would invent a hazard renaming eliminates.
     #[test]
-    fn a_dependent_flag_chain_drops_but_an_independent_one_does_not() {
+    fn renaming_removes_war_and_waw_flag_hazards_but_not_the_raw_edge() {
         /// A scratch GPR standing in for the flag register in the
         /// counterfactual. Not `31` — that encoding is SP/XZR and carries
         /// its own de-serialization (see the SP unit below).
@@ -1516,24 +1583,20 @@ mod tests {
         assert_eq!(
             total(&dep_restored),
             4,
-            "the restored edge serializes all four words"
+            "the GPR counterfactual serializes all four words"
         );
         assert_eq!(
             total(&dep_live),
-            2,
-            "renamed NZCV leaves only the GPR chain x11"
-        );
-        assert!(
-            total(&dep_live) < total(&dep_restored),
-            "a dependent flag chain must DROP: live {} should be below the \
-             restored-edge counterfactual {}",
+            total(&dep_restored),
+            "a dependent flag chain is a RAW chain and must cost the same as \
+             its GPR counterfactual: live {} vs {}",
             total(&dep_live),
             total(&dep_restored)
         );
 
-        // Independent shape 1: four flag **writes** and no read. The
-        // renamed register has no WAW hazard, and the removed edge only
-        // ever fired on a read, so there is nothing here to drop.
+        // WAW shape: four flag **writes** and no read. A single-register
+        // model has a WAW hazard here; a renamed one does not. This is the
+        // half SOG §4.10 note 1 genuinely licenses.
         let waw_live = prog(
             "f",
             vec![
@@ -1552,15 +1615,16 @@ mod tests {
                 word(CostRule::Alu, Some(NZCV), &[7, 8]),
             ],
         );
-        assert_eq!(
-            total(&waw_live),
-            total(&waw_restored),
-            "a flag chain with no read must NOT drop: {} vs {}",
+        assert!(
+            total(&waw_live) <= total(&waw_restored),
+            "renaming must remove the WAW hazard: live {} should not exceed \
+             the single-register counterfactual {}",
             total(&waw_live),
             total(&waw_restored)
         );
 
-        // Independent shape 2: four flag **reads** with no producer at all.
+        // Read-with-no-producer shape: four flag reads and no writer. There
+        // is nothing to wait for, in either model.
         let raw_live = prog(
             "f",
             vec![
@@ -1582,15 +1646,14 @@ mod tests {
         assert_eq!(
             total(&raw_live),
             total(&raw_restored),
-            "flag reads with no writer must NOT drop: {} vs {}",
+            "flag reads with no writer wait on nothing: {} vs {}",
             total(&raw_live),
             total(&raw_restored)
         );
 
-        // And the drop is real reduction, not a saturated-port coincidence:
-        // the dependent chain's restored form is strictly above the
-        // independent chains, which the removal leaves untouched.
-        assert!(total(&dep_restored) > total(&waw_restored));
+        // The RAW chain really is the expensive shape, so the agreement
+        // above is not a saturated-port coincidence.
+        assert!(total(&dep_live) > total(&waw_live));
     }
 
     /// SP is renamed too (SOG §4.10 note 1), and that is a **different
@@ -1598,17 +1661,21 @@ mod tests {
     /// triggers. Conflating them would silently restore a stale-reuse bug,
     /// so both halves are asserted here, separately:
     ///
-    /// * **de-serialization** — an SP write puts no scheduler edge on a
-    ///   later SP-based access. Measured against the same counterfactual
-    ///   the flag unit uses: the dependence re-expressed through a GPR.
+    /// * **SP's RAW edge** — an SP write *does* serialize a later SP-based
+    ///   access, because `sub sp, sp, #N` produces the address the load
+    ///   needs. Renaming removes WAR/WAW, not this.
+    /// * **register 31 as XZR** — a word that merely names 31 without an
+    ///   SP-relative address or an add/sub-immediate `Rn` is reading a
+    ///   constant with no producer, and waits on nothing. That false edge,
+    ///   on every `str xzr` word, is what the pre-M20 model got wrong.
     /// * **frame-epoch invalidation** — `MemState::clear` still fires, so a
     ///   reload of the same frame offset after an SP adjust misses where it
     ///   would otherwise have hit.
     #[test]
-    fn sp_write_does_not_serialize_but_still_ends_the_frame_epoch() {
-        // --- half 1: no scheduler edge.
+    fn sp_raw_edge_holds_while_an_xzr_read_waits_on_nothing() {
+        // --- half 1: the SP write serializes a later stack access.
         // `sub sp, sp, #n` then a stack load of a *fresh* key, so the
-        // memory verdict is identical in both programs and only the
+        // memory verdict is identical across the comparison and only the
         // register edge can differ.
         let sp_then_load = prog(
             "f",
@@ -1619,9 +1686,10 @@ mod tests {
             ],
         );
         // The counterfactual: the same shape with SP's role played by an
-        // ordinary GPR the load also reads.
+        // ordinary GPR the load also reads. A correct model agrees with it,
+        // because this dependence is real.
         const FAKE_SP: u8 = 20;
-        let restored = prog(
+        let as_gpr = prog(
             "f",
             vec![
                 word(CostRule::Alu, Some(FAKE_SP), &[FAKE_SP]),
@@ -1629,23 +1697,56 @@ mod tests {
                 word(CostRule::Alu, Some(2), &[1, 1]),
             ],
         );
-        assert!(
-            total(&sp_then_load) < total(&restored),
-            "an SP write must not serialize a later stack access: live {} \
-             should be below the restored-edge counterfactual {}",
+        assert_eq!(
             total(&sp_then_load),
-            total(&restored)
+            total(&as_gpr),
+            "an SP write must serialize a later stack access exactly as the \
+             equivalent GPR dependence does: {} vs {}",
+            total(&sp_then_load),
+            total(&as_gpr)
         );
-        // Sharper: the SP write is *free* — the schedule equals the same
-        // stream with the SP write deleted outright.
+        // And the edge is load-bearing: deleting the SP write shortens it.
         let without_sp = prog(
             "f",
             vec![load_stack(1, 0), word(CostRule::Alu, Some(2), &[1, 1])],
         );
-        assert_eq!(
+        assert!(
+            total(&sp_then_load) > total(&without_sp),
+            "the SP write must cost a cycle on the critical path: {} vs {}",
             total(&sp_then_load),
-            total(&without_sp),
-            "the renamed SP write adds no cycle to the critical path"
+            total(&without_sp)
+        );
+
+        // --- half 1b: register 31 read as XZR waits on nothing. A store
+        // whose data register is 31 (`str xzr, [sp, #n]`) names 31 in
+        // `srcs` but has no SP-relative *value* dependence beyond its own
+        // base, so the SP write must not gate an unrelated later consumer.
+        let xzr_reader = prog(
+            "f",
+            vec![
+                word(CostRule::Alu, Some(MEM_SP_REG), &[MEM_SP_REG]),
+                // Reads 31 twice (base + data) but is not itself SP-based
+                // for the purposes of the false edge: a `Cold` address.
+                word(CostRule::Store, None, &[MEM_SP_REG, MEM_SP_REG])
+                    .with_mem(MemRef::cold_stable(MEM_SP_REG, 64)),
+                word(CostRule::Alu, Some(3), &[4, 5]),
+            ],
+        );
+        let xzr_without_sp = prog(
+            "f",
+            vec![
+                word(CostRule::Store, None, &[MEM_SP_REG, MEM_SP_REG])
+                    .with_mem(MemRef::cold_stable(MEM_SP_REG, 64)),
+                word(CostRule::Alu, Some(3), &[4, 5]),
+            ],
+        );
+        assert_eq!(
+            total(&xzr_reader),
+            total(&xzr_without_sp),
+            "a word reading register 31 as XZR must not inherit the SP edge: \
+             {} vs {}",
+            total(&xzr_reader),
+            total(&xzr_without_sp)
         );
 
         // --- half 2: the frame epoch still ends. Same offset reloaded

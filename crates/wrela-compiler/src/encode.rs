@@ -318,6 +318,27 @@ pub fn access_width_bytes(word: u32) -> Option<u8> {
     None
 }
 
+/// Does this encoded word read **SP** at register number 31, rather than
+/// XZR?
+///
+/// Register number 31 is two different things depending on the instruction
+/// group, and the cost model has to tell them apart: in the *add/subtract
+/// (immediate)* group it names **SP** (that is how `add x0, sp, #0` and
+/// `sub sp, sp, #N` are written), and almost everywhere else it names
+/// **XZR**, a constant with no producer. Reading it back from the word the
+/// encoder already wrote keeps one source of truth — the same reasoning
+/// `access_width_bytes` above records, and the reason freeze 1303 forbids
+/// inferring this from mnemonic text.
+///
+/// Add/subtract (immediate) is `sf op S 100010 sh imm12 Rn Rd`, so bits
+/// 28:23 are `0b100010`; `Rn` is bits 9:5. This deliberately does **not**
+/// cover load/store base registers — a load or store with an SP base is
+/// already identified by its `MemRef` carrying `MemClass::Stack`, which is
+/// a *proven* SP-relative address rather than an encoding guess.
+pub fn reads_sp(word: u32) -> bool {
+    word & 0x1F80_0000 == 0x1100_0000 && (word >> 5) & 0x1F == 31
+}
+
 // --- Barriers: DMB (plans/M15.md item H, decisions 1080–1085) ------------
 //
 // ARM ARM "DMB": `1101 0101 0000 0011 0011 CRm[3:0] 1 01 11111`
@@ -1019,6 +1040,34 @@ mod tests {
         assert_eq!(enc_ldr_w_imm(0, 1, 0), 0xb9400020);
         assert_eq!(enc_strb_imm(0, 1, 0), 0x39000020);
         assert_eq!(enc_ldrb_imm(0, 1, 0), 0x39400020);
+    }
+
+    /// Register 31 is SP in add/subtract (immediate) and XZR nearly
+    /// everywhere else, and the scoreboard's SP dependence turns on telling
+    /// them apart. Checked against the real encoders, both directions.
+    #[test]
+    fn reads_sp_distinguishes_sp_from_xzr_at_register_31() {
+        // `sub sp, sp, #64` and `add sp, sp, #64` — prologue and epilogue.
+        assert!(reads_sp(enc_sub_imm(31, 31, 64, true)));
+        assert!(reads_sp(enc_add_imm(31, 31, 64, true)));
+        // `add x0, sp, #0` — materializing a frame address; reads SP even
+        // though it does not write it.
+        assert!(reads_sp(enc_add_imm(0, 31, 0, true)));
+        // An add/sub immediate that does not name 31 as `Rn`.
+        assert!(!reads_sp(enc_add_imm(0, 1, 8, true)));
+        assert!(!reads_sp(enc_sub_imm(2, 3, 8, true)));
+        // Register 31 outside this group is XZR, which has no producer:
+        // `orr`/`and`/`mul` and the flag-setting register compares all name
+        // it without reading SP.
+        assert!(!reads_sp(enc_orr_reg(0, 31, 1, true)));
+        assert!(!reads_sp(enc_and_reg(0, 31, 1, true)));
+        assert!(!reads_sp(enc_cmp_reg(31, 1, true)));
+        assert!(!reads_sp(enc_mul(0, 31, 1, true)));
+        // A load/store with an SP base is *not* claimed here — that is the
+        // `MemClass::Stack` path, a proven address rather than an encoding
+        // guess. Asserted so the split stays deliberate.
+        assert!(!reads_sp(enc_ldr_x_imm(0, 31, 8)));
+        assert!(!reads_sp(enc_str_x_imm(0, 31, 8)));
     }
 
     /// plans/M20.md item I: the §4.5 alignment term reads the access width
