@@ -274,11 +274,24 @@ tier = "T1"
 source = "SOG §3.3 branch and link, immed — the value-carrying abort branch"
 sweep_add = "call_overhead"
 
-# `MOVZ`/`MOVK` are 1 cycle, throughput 3, port I. Stated plainly because
-# item K depends on it: **NarrowImm's win is fetch and footprint, not
-# latency.** Under this model a narrowed immediate sequence may score at or
-# near zero on cycles and win only on the I-side footprint term. That is a
-# finding about the ruler, not a licence to retune.
+# `MOVZ`/`MOVK` are 1 cycle, throughput 3, port I.
+#
+# **Corrected by item K's measurement (decision 1620-K).** This comment used
+# to read "NarrowImm's win is fetch and footprint, not latency", copied from
+# the plan's research block. Measured, that is inverted: NarrowImm's entire
+# visible win is **cycles** (-341 at every box point, on all six cases), and
+# its footprint win — 6144 B of hot text, -28% — scores exactly **zero**,
+# because the cost-stage closure sits 6.3x inside its 64 KiB L1I so the
+# priced I-side term is 0 on both sides.
+#
+# The original framing is a false dichotomy: it offers latency or footprint
+# and omits **throughput**, which is the actual mechanism. `load_imm` pushes
+# every `MOVK` with empty `srcs`, so a four-word materialization is four
+# *independent* 1-cycle uops — there is no dependence chain to shorten, and
+# never was. The win is issue bandwidth: Mops through in-order dispatch and
+# uops through the three I pipes. Widening the modelled machine from 2 issue
+# slots to 3 I pipes is exactly why the credit fell 59.5% from M19's -842 to
+# M20's -341 — the belief was right, only its size was an artefact.
 [latency.mov_wide]
 lat = 1
 thru_num = 3

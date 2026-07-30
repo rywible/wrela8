@@ -36,7 +36,10 @@ pub enum CostRule {
     Abort,
     AbortVal,
     /// `MOVZ` / `MOVK` — 1 cycle, throughput 3, port I. NarrowImm's win is
-    /// therefore fetch and footprint, not latency.
+    /// **throughput**, not latency and not footprint (decision 1620-K):
+    /// `load_imm` pushes every `MOVK` with empty `srcs`, so a materialization
+    /// is independent 1-cycle uops with no chain to shorten, and the I-side
+    /// footprint term scores zero on a closure this far inside its L1I.
     MovWide,
     /// Multiply-accumulate, **X-form** (`MADD`/`MSUB`; `MUL` is `MADD` with
     /// `XZR`). Lat 4 (acc 3), thru 1/3, port M, and stalls pipe M 2 extra
