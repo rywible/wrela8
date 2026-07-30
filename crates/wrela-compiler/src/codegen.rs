@@ -392,6 +392,32 @@ pub fn block_count_enabled() -> bool {
     block_count()
 }
 
+/// The Lane 2 counter helper's own fn key. It is the one fn instrumentation
+/// must never enter: every leader in it would emit `bl <__wrela_block_hit>`
+/// into `__wrela_block_hit` itself, which is unbounded self-recursion on the
+/// very first hit (measured, plans/M20.md item B: a widened build faults with
+/// `unhandled exception` in the guest before the first test line). The
+/// pre-M20 `app`-only gate excluded it incidentally — `core.runtime` was
+/// never instrumented at all — so decision 1607's widening has to exclude it
+/// by name, not by owner.
+const BLOCK_HIT_KEY: &str = "__wrela_block_hit";
+
+/// Whether `key` is instrumented under `--block-count`. plans/M20.md item B /
+/// decision 1607: **every** owner (`app`, `runtime`, `driver`) is
+/// instrumented — the only exclusion is the counter helper itself.
+fn block_count_instruments(key: &str) -> bool {
+    block_count() && key != BLOCK_HIT_KEY
+}
+
+/// plans/M20.md item B: how many Lane 2 block ids the most recent
+/// `codegen_program*` call allocated. Both entry points reset
+/// `NEXT_BLOCK_ID`, so after a build this is that build's id count — the
+/// number decision 1607's widening has to keep under
+/// [`crate::rtconfig::BLOCK_POOL_COUNT`]. Read-only; never a knob.
+pub fn block_ids_assigned() -> u32 {
+    NEXT_BLOCK_ID.with(|c| c.get())
+}
+
 // plans/M19.md item B / decision 1421 + item I / 1485–1486: TLS knob for
 // narrow-immediate materialization. Default **off**; `opts::apply_mode
 // (Release)` turns it on when `OptId::NarrowImm` is in `RELEASE_OPTS`.
@@ -4301,7 +4327,14 @@ fn emit_fn(
     // scratch is reserved when the body emits `Inst::Entropy` (item Es).
     let frame = build_frame(f, layout, 0, mwir_entropy_scratch_size(f), 0)?;
 
-    let block_ids = if block_count() && crate::cost::owner::classify_owner(_key) == "app" {
+    // plans/M20.md item B / decision 1607: Lane 2 instruments **every**
+    // owner, not just `app`. `cost-runtime` is the largest corpus case
+    // (2717 of release SUM 4518), so an app-only `f` vector would explain
+    // almost none of the scored program — and item C makes `f`
+    // load-bearing at block grain. Freeze 1627: the coverage denominator
+    // is still the whole scored set, not the instrumented subset. The one
+    // exclusion is the counter helper itself (`block_count_instruments`).
+    let block_ids = if block_count_instruments(_key) {
         assign_mwir_block_ids(&f.body)?
     } else {
         vec![None; f.body.len()]
@@ -8149,7 +8182,10 @@ fn emit_flowwir_fn(
     let (frame, state_temp) = build_frame_flow(f, layout)?;
     let (state_flat_base, resume_target, flat) = flatten(f);
     let total = flat.len();
-    let block_ids = if block_count() && crate::cost::owner::classify_owner(fn_key) == "app" {
+    // plans/M20.md item B / decision 1607: same widening as `emit_fn` —
+    // `runtime` and `driver` async bodies are instrumented too, with the
+    // same single exclusion for the counter helper.
+    let block_ids = if block_count_instruments(fn_key) {
         assign_flat_block_ids(&flat, &state_flat_base)?
     } else {
         vec![None; flat.len()]
@@ -10326,6 +10362,145 @@ mod tests {
         assert!(
             on_a.fns["branchy"].code.len() > off.fns["branchy"].code.len(),
             "instrumented body must grow"
+        );
+    }
+
+    /// plans/M20.md item B / decision 1607: Lane 2 instruments **every**
+    /// owner. One two-block fn per owner bucket, all four in one program:
+    /// `app`, `runtime` (a `core.runtime.*` key), `driver` (a `.on_*` key)
+    /// — and the counter helper itself, which must stay uninstrumented or
+    /// its first hit self-recurses forever (measured: the guest faults).
+    ///
+    /// This is the oracle for the gate drop: restoring
+    /// `classify_owner(key) == "app"` at either site makes it fail, because
+    /// the runtime and driver bodies would emit no hit call.
+    #[test]
+    fn block_count_instruments_runtime_and_driver_owners() {
+        fn two_block_fn() -> MwirFn {
+            MwirFn {
+                receiver: None,
+                params: vec![],
+                ret: Type::Unit,
+                temp_types: vec![Type::Bool],
+                body: vec![
+                    Inst::ConstBool {
+                        dst: Temp(0),
+                        value: true,
+                    },
+                    Inst::JumpIfFalse {
+                        cond: Temp(0),
+                        target: 3,
+                    },
+                    Inst::Jump { target: 3 },
+                    Inst::Return { value: None },
+                ],
+            }
+        }
+
+        let keys = [
+            "app_fn",
+            "core.runtime.helper",
+            "Blk.on_turn",
+            "__wrela_block_hit",
+        ];
+        for k in keys {
+            let expect = match k {
+                "app_fn" => "app",
+                "core.runtime.helper" | "__wrela_block_hit" => "runtime",
+                _ => "driver",
+            };
+            assert_eq!(
+                crate::cost::owner::classify_owner(k),
+                expect,
+                "owner fixture for {k} drifted"
+            );
+        }
+
+        let mwir = MwirProgram {
+            fns: keys
+                .iter()
+                .map(|k| ((*k).to_string(), two_block_fn()))
+                .collect(),
+            rodata: vec![],
+        };
+        let layout = LayoutCtx::default();
+
+        set_block_count(true);
+        let on = codegen_program(&mwir, &layout).expect("codegen on");
+        let ids = block_ids_assigned();
+        set_block_count(false);
+
+        for k in ["app_fn", "core.runtime.helper", "Blk.on_turn"] {
+            let hits = on.fns[k]
+                .code
+                .iter()
+                .filter(|w| w.text == "bl <__wrela_block_hit>")
+                .count();
+            assert_eq!(
+                hits,
+                3,
+                "{k} ({}) must be instrumented at every leader under decision 1607",
+                crate::cost::owner::classify_owner(k)
+            );
+        }
+        let self_hits = on.fns["__wrela_block_hit"]
+            .code
+            .iter()
+            .filter(|w| w.text == "bl <__wrela_block_hit>")
+            .count();
+        assert_eq!(
+            self_hits, 0,
+            "the counter helper must never be instrumented — that is unbounded self-recursion"
+        );
+        // 3 instrumented fns × 3 leaders (0, the JumpIfFalse fallthrough,
+        // and the shared target); the helper allocates none.
+        assert_eq!(ids, 9, "one id per instrumented leader, helper excluded");
+    }
+
+    /// plans/M20.md item B: the widened Lane 2 id count on the cost-stage
+    /// closure of the `boot-actors` control case, pinned so the number
+    /// stays checked rather than living in a commit message. Measured
+    /// 2026-07-29: 184 ids widened (123 under the pre-M20 `app`-only gate).
+    ///
+    /// **Scope of this bound.** This is the closure `wrela dump
+    /// --stage=asm|cost` builds — the surface the cost model scores. It is
+    /// *not* the `@test(runtime)` boot image, whose widened count is far
+    /// larger (2522 for `boot-actors`, 2786 max across `boot-*`) and does
+    /// **not** fit `BLOCK_POOL_COUNT`; see this item's report.
+    #[test]
+    fn block_count_id_count_on_boot_actors_cost_stage_is_pinned() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/golden/boot-actors/input.wr");
+
+        set_block_count(true);
+        let prog = crate::cost::stage::codegen_cost_stage(&path);
+        let ids = block_ids_assigned();
+        set_block_count(false);
+        let prog = prog.expect("boot-actors cost-stage codegen under --block-count");
+
+        let hits: usize = prog
+            .fns
+            .values()
+            .map(|f| {
+                f.code
+                    .iter()
+                    .filter(|w| w.text == "bl <__wrela_block_hit>")
+                    .count()
+            })
+            .sum();
+        assert_eq!(
+            hits, ids as usize,
+            "every allocated id must emit exactly one hit call"
+        );
+        assert_eq!(
+            ids, 184,
+            "boot-actors cost-stage Lane 2 id count moved; re-measure and cite the new number \
+             (plans/M20.md item B)"
+        );
+        assert!(
+            (ids as usize) < crate::rtconfig::BLOCK_POOL_COUNT,
+            "cost-stage id count {ids} must stay under BLOCK_POOL_COUNT {}",
+            crate::rtconfig::BLOCK_POOL_COUNT
         );
     }
 
