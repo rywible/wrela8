@@ -456,17 +456,19 @@ fn mem_access_latency(
     store.saturating_add(working_set_surcharge(state, table))
 }
 
-/// **Item G** owns this. Placement-derived local-vs-remote snoop
+/// **Item G's seam.** Placement-derived local-vs-remote snoop
 /// classification (decision 1603: `PlacementTable::core_of` seals every
 /// actor and driver to a core, so whether a load reads a line another core
 /// wrote is a *static* fact), the `DMB` charge, the system-register flush
 /// charge, and the swept `LoadAcquire` / `StoreRelease` increments — every
 /// one of them swept and none of them pinnable (decision 1602).
 ///
-/// Today: the `CostTable::crosscore_extra` shape, read through `point` so
-/// the increment is the swept value rather than only its pinned end (0 at
-/// the canonical point for both ordered accesses). `fn_key` and
-/// `placement` are threaded in already so item G edits only this body.
+/// Live: the model is [`crate::cost::crosscore`] — barrier ordering plus
+/// its swept `dmb_cost`, the placement-classified snoop above the memory
+/// path, §4.10's in-order/flush system-register halves, the swept ordered
+/// accesses, and row 20's "charge the branch, never a handler body". This
+/// body is the seam; the model lives in one file so item G's reasoning and
+/// its oracles sit together.
 fn crosscore_extra(
     fn_key: &str,
     ew: &EmittedWord,
@@ -474,18 +476,7 @@ fn crosscore_extra(
     point: &SweepPoint,
     placement: &PlacementTable,
 ) -> CrossExtra {
-    let _ = (fn_key, placement);
-    let extra_cycles = match table.crosscore_extra_dim(ew.rule) {
-        Some(dim) => point.get(dim),
-        // `barrier` / `system` carry no `base`, so their whole (swept)
-        // cost is already the rule's latency; only the ordered accesses
-        // are increments on a `[latency]` row.
-        None => 0,
-    };
-    CrossExtra {
-        extra_cycles,
-        serializes_window: false,
-    }
+    super::crosscore::charge(fn_key, ew, table, point, placement)
 }
 
 /// **Item H** owns this. The mispredict charge, scaled by measured

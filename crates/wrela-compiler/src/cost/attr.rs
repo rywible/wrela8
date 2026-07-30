@@ -124,12 +124,15 @@ pub fn attribute_cores(
     })
 }
 
-enum AttrTarget {
+/// Where a scored fn key's mass belongs. `pub(crate)` because the
+/// cross-core model reads the same mapping (plans/M20.md item G): a fn key
+/// resolves to a core through sealed placement in exactly one place.
+pub(crate) enum AttrTarget {
     Core(usize),
     Shared,
 }
 
-fn classify_target(key: &str, placement: &PlacementTable) -> Result<AttrTarget, String> {
+pub(crate) fn classify_target(key: &str, placement: &PlacementTable) -> Result<AttrTarget, String> {
     if let Some(n) = parse_secondary_core(key) {
         if n >= placement.cores {
             return Err(format!(

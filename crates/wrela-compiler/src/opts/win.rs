@@ -21,10 +21,33 @@
 //! the workload" nor "the candidate emits more code", and 04 §5 requires
 //! that a proxy win never imply a real-machine loss — so both are refused
 //! rather than absorbed into the mean.
+//!
+//! ## Freeze 1633: the barrier-removal refusal (plans/M20.md item G)
+//!
+//! A third side condition, and the only one that is a **correctness** rule
+//! rather than a soundness-of-the-proxy rule: a candidate that emits fewer
+//! ordering words (`DMB`, `LDAR`, `STLR`, system) than the baseline is
+//! **refused**, whatever the cycle numbers say. Barriers are
+//! correctness-load-bearing and `machine.cross-core.publish-acquire-barrier`
+//! is a known-risk gap in plans/BLOCKED.md, so the gate may never credit
+//! deleting one. The rule compares **counts of emitted words** —
+//! [`cost::crosscore::ordering_removals`] — so there is no coefficient,
+//! sweep dimension or table row whose value can satisfy it. Both gates
+//! carry it: [`CorpusCompare::wins`] / [`assert_wins`] for the corpus gate
+//! and [`VetoReason::OrderingWordsRemoved`] for the overall gate.
+//!
+//! **Note for item J:** the model side of this lives entirely in
+//! `cost/crosscore.rs`; the only thing here is the plumbing — two
+//! `CaseDelta` fields plus [`CaseDelta::ordering_removed`], one
+//! `OverallSide` field plus [`OverallSide::with_ordering`], and one
+//! `VetoReason` variant. Retiring the words veto (decision 1626) does not
+//! touch any of it; the barrier refusal is independent of, and outlives,
+//! the words condition.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use crate::cost::crosscore::{OrderingRemoval, ordering_removals, ordering_word_counts};
 use crate::cost::score::CostReport;
 use crate::cost::stage::report_cost_stage_path;
 use crate::cost::workload::{self, FLAT_NAME, WorkloadSet};
@@ -40,6 +63,10 @@ pub struct CaseDelta {
     /// Static emitted word counts — the footprint side condition.
     pub baseline_words: u64,
     pub candidate_words: u64,
+    /// Ordering-word counts per `[crosscore]`-priced rule — the freeze-1633
+    /// refusal input (plans/M20.md item G).
+    pub baseline_ordering: BTreeMap<&'static str, u64>,
+    pub candidate_ordering: BTreeMap<&'static str, u64>,
 }
 
 impl CaseDelta {
@@ -49,6 +76,12 @@ impl CaseDelta {
 
     pub fn words_delta(&self) -> i64 {
         self.candidate_words as i64 - self.baseline_words as i64
+    }
+
+    /// **Freeze 1633.** Ordering rules this case emits fewer words of under
+    /// the candidate. Non-empty is a refusal, never a ranking input.
+    pub fn ordering_removed(&self) -> Vec<OrderingRemoval> {
+        ordering_removals(&self.baseline_ordering, &self.candidate_ordering)
     }
 
     /// Static-shape opts "delete or shorten the stream" (04 §5), so a
@@ -77,8 +110,8 @@ impl CorpusCompare {
         self.candidate_words as i64 - self.baseline_words as i64
     }
 
-    /// True when no case rises in cycles **or** words and at least one
-    /// strictly falls in cycles.
+    /// True when no case rises in cycles **or** words, no case deletes an
+    /// ordering word, and at least one strictly falls in cycles.
     ///
     /// The word side condition exists because the scoreboard is in-order
     /// over an out-of-order core: reordering that the hardware already
@@ -86,10 +119,17 @@ impl CorpusCompare {
     /// otherwise buy modelled cycles with real instructions. 04 §5 asks
     /// for "fewer/cheaper ops **and** shorter true data deps"; checking
     /// the composite alone does not enforce the conjunction.
+    ///
+    /// The ordering condition is freeze 1633 and is a different kind of
+    /// rule: not "the proxy might be wrong" but "this word is
+    /// correctness-load-bearing and its deletion is never a win".
     pub fn wins(&self) -> bool {
         let mut any_fall = false;
         for c in &self.cases {
             if c.candidate > c.baseline || c.words_grew() {
+                return false;
+            }
+            if !c.ordering_removed().is_empty() {
                 return false;
             }
             if c.candidate < c.baseline {
@@ -171,6 +211,8 @@ pub fn compare_opt_lists(baseline: &[OptId], candidate: &[OptId]) -> CorpusCompa
             candidate: c.total_proxy_cycles,
             baseline_words: b.total_words,
             candidate_words: c.total_words,
+            baseline_ordering: ordering_word_counts(&b),
+            candidate_ordering: ordering_word_counts(&c),
         });
     }
 
@@ -204,8 +246,12 @@ fn assert_wins(cmp: &CorpusCompare, cand_label: &str, base_label: &str) {
     let table = format_delta_table(cmp, base_label, cand_label);
     let mut rose = Vec::new();
     let mut grew = Vec::new();
+    let mut unordered = Vec::new();
     let mut any_fall = false;
     for c in &cmp.cases {
+        for r in c.ordering_removed() {
+            unordered.push(format!("{}: {}", c.name, r.label()));
+        }
         if c.candidate > c.baseline {
             rose.push(format!(
                 "{}: {cand_label} {} > {base_label} {}",
@@ -235,6 +281,18 @@ fn assert_wins(cmp: &CorpusCompare, cand_label: &str, base_label: &str) {
          as a win:\n{}\n{table}",
         grew.len(),
         grew.join("\n"),
+    );
+    // Freeze 1633: barriers and the ordered accesses are
+    // correctness-load-bearing, so their deletion is refused structurally
+    // rather than priced. Checked before the "something fell" rule, since a
+    // candidate whose only gain is a deleted barrier must read as refused,
+    // not as "no case fell".
+    assert!(
+        unordered.is_empty(),
+        "{cand_label} deleted correctness-load-bearing ordering words on {} case(s) — \
+         freeze 1633 refuses barrier removal however the cycles come out:\n{}\n{table}",
+        unordered.len(),
+        unordered.join("\n"),
     );
     assert!(
         any_fall,
@@ -334,11 +392,27 @@ pub enum VetoReason {
     /// so it cannot certify a footprint increase as safe (04 §5: prefer
     /// over-cost when unsure).
     WordsGrew { baseline: u64, candidate: u64 },
+    /// **Freeze 1633.** The candidate emits fewer words of a
+    /// `[crosscore]`-priced ordering rule (`DMB`, `LDAR`, `STLR`, system).
+    /// Those words are correctness-load-bearing —
+    /// `machine.cross-core.publish-acquire-barrier` is a known-risk gap —
+    /// so their deletion is refused structurally, not priced. Compares
+    /// counts of emitted words, so no coefficient can satisfy it.
+    OrderingWordsRemoved {
+        rule: &'static str,
+        baseline: u64,
+        candidate: u64,
+    },
 }
 
 impl VetoReason {
     pub fn label(&self) -> String {
         match self {
+            VetoReason::OrderingWordsRemoved {
+                rule,
+                baseline,
+                candidate,
+            } => format!("ordering_words_removed:{rule}:{baseline}->{candidate}"),
             VetoReason::WorkloadRose { name } => format!("workload_rose:{name}"),
             VetoReason::CoverageFell {
                 name,
@@ -427,27 +501,39 @@ pub struct OverallSide {
     /// Workload name → (matched_hits, total_hits).
     pub coverage: BTreeMap<String, (u64, u64)>,
     pub words: u64,
+    /// Ordering-word counts per `[crosscore]`-priced rule — the freeze-1633
+    /// refusal input (plans/M20.md item G). Empty on both sides leaves the
+    /// refusal inert, which is what a plumbing test wants.
+    pub ordering: BTreeMap<&'static str, u64>,
 }
 
 impl OverallSide {
-    /// Read all three from a composed report (`cost::attach_workloads`
+    /// Read all four from a composed report (`cost::attach_workloads`
     /// must have run for measured rows to be present).
     pub fn from_report(report: &CostReport) -> Self {
         Self {
             totals: report.workload_totals.clone(),
             coverage: report.workload_coverage.clone(),
             words: report.total_words,
+            ordering: ordering_word_counts(report),
         }
     }
 
-    /// Totals only — no coverage rows, zero words. For plumbing tests and
-    /// flat-only callers; the coverage/word vetoes stay inert.
+    /// Totals only — no coverage rows, zero words, no ordering counts. For
+    /// plumbing tests and flat-only callers; the coverage / word / ordering
+    /// refusals stay inert.
     pub fn from_totals(totals: BTreeMap<String, u64>) -> Self {
         Self {
             totals,
             coverage: BTreeMap::new(),
             words: 0,
+            ordering: BTreeMap::new(),
         }
+    }
+
+    pub fn with_ordering(mut self, ordering: BTreeMap<&'static str, u64>) -> Self {
+        self.ordering = ordering;
+        self
     }
 
     pub fn with_words(mut self, words: u64) -> Self {
@@ -560,6 +646,16 @@ pub fn compare_overall(
         reasons.push(VetoReason::WordsGrew {
             baseline: baseline.words,
             candidate: candidate.words,
+        });
+    }
+
+    // Freeze 1633: a deleted ordering word is refused however the cycles
+    // come out. Counts of emitted words, so nothing here is tunable.
+    for r in ordering_removals(&baseline.ordering, &candidate.ordering) {
+        reasons.push(VetoReason::OrderingWordsRemoved {
+            rule: r.rule,
+            baseline: r.baseline,
+            candidate: r.candidate,
         });
     }
 
@@ -1122,6 +1218,170 @@ mod tests {
             .with_words(4100);
         let cmp = compare_overall(&baseline, &candidate, &set).expect("compare");
         assert_eq!(cmp.veto_reasons().len(), 3, "{:?}", cmp.veto_reasons());
+    }
+
+    // -----------------------------------------------------------------------
+    // Freeze 1633: the barrier-removal refusal (plans/M20.md item G)
+    // -----------------------------------------------------------------------
+
+    fn ord(pairs: &[(&'static str, u64)]) -> BTreeMap<&'static str, u64> {
+        pairs.iter().copied().collect()
+    }
+
+    /// **Freeze 1633 on the overall gate.** Every cycle number falls and
+    /// coverage and words are clean — and the candidate is still refused,
+    /// because it emits one fewer `DMB`. This is the `--omit-dmb` shape: the
+    /// mutation arm of `boot-cross-core-publish-acquire` is exactly "delete
+    /// the barrier and see if anything notices".
+    #[test]
+    fn overall_refuses_a_candidate_whose_only_gain_is_deleting_a_dmb() {
+        let set = pinned_set();
+        let baseline = totals(&[("flat", 1000), ("boot-actors", 5000)])
+            .with_words(4000)
+            .with_ordering(ord(&[
+                ("barrier", 6),
+                ("load_acquire", 4),
+                ("store_release", 6),
+            ]));
+        let candidate = totals(&[("flat", 900), ("boot-actors", 4000)])
+            .with_words(3999)
+            .with_ordering(ord(&[
+                ("barrier", 5),
+                ("load_acquire", 4),
+                ("store_release", 6),
+            ]));
+        let cmp = compare_overall(&baseline, &candidate, &set).expect("compare");
+        let table = format_overall_table(&cmp, "baseline", "omit-dmb");
+        eprintln!("freeze 1633 refusal:\n{table}");
+        assert!(cmp.vetoed(), "deleting a DMB must be refused:\n{table}");
+        assert!(!cmp.wins());
+        assert_eq!(
+            cmp.veto_reasons(),
+            &[VetoReason::OrderingWordsRemoved {
+                rule: "barrier",
+                baseline: 6,
+                candidate: 5,
+            }]
+        );
+        assert!(
+            table.contains("ordering_words_removed:barrier:6->5"),
+            "the refusal must name itself (04 §5):\n{table}"
+        );
+    }
+
+    /// The refusal covers the ordered halves too — they carry the same
+    /// hazard by their own `removal_sensitive` profile rows — and it does
+    /// **not** fire on keeping or adding an ordering word.
+    #[test]
+    fn overall_ordering_refusal_covers_every_crosscore_rule() {
+        let set = pinned_set();
+        let base_ord = ord(&[
+            ("barrier", 6),
+            ("load_acquire", 4),
+            ("store_release", 6),
+            ("system", 1),
+        ]);
+        let side = |ordering: BTreeMap<&'static str, u64>| {
+            totals(&[("flat", 900), ("boot-actors", 4000)]).with_ordering(ordering)
+        };
+        let baseline =
+            totals(&[("flat", 1000), ("boot-actors", 5000)]).with_ordering(base_ord.clone());
+        // Identical counts: no refusal, ordinary win.
+        let same = compare_overall(&baseline, &side(base_ord.clone()), &set).expect("cmp");
+        assert!(!same.vetoed() && same.wins());
+        // Adding is fine.
+        let mut more = base_ord.clone();
+        more.insert("barrier", 7);
+        let added = compare_overall(&baseline, &side(more), &set).expect("cmp");
+        assert!(!added.vetoed() && added.wins());
+        // Dropping any one of the four is refused, and every dropped rule
+        // is reported rather than only the first.
+        for rule in ["barrier", "load_acquire", "store_release", "system"] {
+            let mut fewer = base_ord.clone();
+            *fewer.get_mut(rule).unwrap() -= 1;
+            let cmp = compare_overall(&baseline, &side(fewer), &set).expect("cmp");
+            assert!(cmp.vetoed(), "{rule} removal must be refused");
+            assert_eq!(cmp.veto_reasons().len(), 1, "{rule}");
+        }
+        let cmp = compare_overall(&baseline, &side(ord(&[])), &set).expect("cmp");
+        assert_eq!(cmp.veto_reasons().len(), 4, "{:?}", cmp.veto_reasons());
+    }
+
+    /// **Freeze 1633 on the corpus gate.** A case whose cycles fall while
+    /// its barrier count drops is not a win, and `assert_wins` says why.
+    #[test]
+    fn corpus_gate_refuses_barrier_removal() {
+        let cmp = CorpusCompare {
+            cases: vec![CaseDelta {
+                name: "cost-crosscore".to_string(),
+                baseline: 1000,
+                candidate: 900,
+                baseline_words: 400,
+                candidate_words: 399,
+                baseline_ordering: ord(&[("barrier", 2)]),
+                candidate_ordering: ord(&[("barrier", 1)]),
+            }],
+            baseline_sum: 1000,
+            candidate_sum: 900,
+            baseline_words: 400,
+            candidate_words: 399,
+        };
+        assert!(
+            !cmp.wins(),
+            "a cycle fall bought by deleting a barrier is not a win"
+        );
+        assert_eq!(
+            cmp.cases[0].ordering_removed(),
+            vec![crate::cost::crosscore::OrderingRemoval {
+                rule: "barrier",
+                baseline: 2,
+                candidate: 1,
+            }]
+        );
+        let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            assert_wins(&cmp, "candidate", "baseline");
+        }))
+        .expect_err("must refuse");
+        let msg = err
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .unwrap_or("<non-string panic>")
+            .to_string();
+        assert!(
+            msg.contains("freeze 1633") && msg.contains("ordering_words_removed:barrier:2->1"),
+            "refusal must name freeze 1633 and the rule, got: {msg}"
+        );
+    }
+
+    /// The live corpus gate is unaffected: the `cost-*` corpus emits no
+    /// ordering word at all, so `release` vs `dev` carries 0 → 0 on every
+    /// ordering rule and the refusal is inert there. Recorded because it is
+    /// also the coverage gap item G reports — `cost-crosscore` (item M) is
+    /// the golden that will exercise this.
+    #[test]
+    fn release_removes_no_ordering_words_and_the_corpus_has_none() {
+        let cmp = compare_opt_lists(&[], RELEASE_OPTS);
+        for c in &cmp.cases {
+            assert!(
+                c.ordering_removed().is_empty(),
+                "{}: release removed an ordering word",
+                c.name
+            );
+            assert!(
+                c.baseline_ordering.values().all(|&n| n == 0),
+                "{}: the cost-* corpus is expected to reach no ordering word; \
+                 counts {:?} — if this fires, the coverage gap item G reported \
+                 has closed and the report should say so",
+                c.name,
+                c.baseline_ordering
+            );
+            assert_eq!(
+                c.baseline_ordering.len(),
+                4,
+                "every crosscore rule must have a slot, present at 0"
+            );
+        }
+        apply_mode(CompileMode::Release);
     }
 
     // -----------------------------------------------------------------------

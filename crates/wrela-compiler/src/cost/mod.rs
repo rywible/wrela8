@@ -43,6 +43,7 @@ impl Fnv64 {
 pub mod ab;
 pub mod attr;
 pub mod compose;
+pub mod crosscore;
 pub mod dump;
 pub mod freq;
 pub mod ghz;
