@@ -78,7 +78,12 @@ fn format_report(
     push_line(
         &mut out,
         1,
-        "Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method valid_for=static_shape_opts workload=flat",
+        // plans/M20.md item F appends `pseudo_lru=modelled_as_lru` without
+        // reordering item A's fields: A76's L1I/L1D replacement policy is
+        // pseudo-LRU (Core TRM) and `cost::mem`'s levels are true LRU, so
+        // the approximation is named where a reader of a pinned dump sees
+        // it rather than only in a module comment.
+        "Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method valid_for=static_shape_opts workload=flat pseudo_lru=modelled_as_lru",
     );
     push_line(&mut out, 1, "Composition sum_of_fn_schedules=1");
     push_line(
@@ -148,7 +153,14 @@ pub(crate) fn append_workload_rows(out: &mut String, depth: usize, report: &Cost
     }
 }
 
-/// Append Core / Shared / optional Placeable lines after owners.
+/// Append Core / Budget / Shared / optional Placeable lines after owners.
+///
+/// Each `Core n=…` line is followed by that core's **per-core text and
+/// translation budget** line (04 §6, plans/M20.md item F): its hot text
+/// against its 64 KiB L1I, and its page span against the 48-entry I-TLB and
+/// the 1280-entry L2 TLB. 04 §5 makes that budget the hard constraint code
+/// growth is argued against, which is why it is per core and why it prints
+/// beside the core it belongs to rather than as a program-wide aggregate.
 ///
 /// Legacy single-file dumps with no image (`cores == 0` and no entries)
 /// omit this block entirely.
@@ -181,6 +193,9 @@ pub(crate) fn append_core_block(
                 c.n, c.proxy_cycles, c.max_turn_proxy, tps, mpt
             ),
         );
+        if let Some(b) = report.footprint.iter().find(|b| b.n == c.n) {
+            push_line(out, depth, &b.render());
+        }
     }
     push_line(
         out,
@@ -249,6 +264,7 @@ mod tests {
             workloads_digest: None,
             workload_totals: BTreeMap::new(),
             workload_coverage: BTreeMap::new(),
+            footprint: Vec::new(),
         }
     }
 

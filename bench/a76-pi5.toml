@@ -30,9 +30,11 @@
 #   T5  unresolved, conflicting, **or unpriced by any source**
 #
 # `cost::table` **rejects a pinned T5 row** outright. A T5 magnitude may
-# exist only as a `[sweep.*]` dimension (or, transitionally, in
-# `[transitional]`, which is the quarantine section item F deletes and
-# which may contain *nothing but* T5 holdovers). That rule is what makes
+# exist only as a `[sweep.*]` dimension. Item D carried a `[transitional]`
+# quarantine for three unsourced v2 holdovers; **item F deleted it** along
+# with the reuse-window model that read them, and the parser now refuses a
+# table that still carries the section by name — a quarantine that outlives
+# its owning item is just an unsourced row again. That rule is what makes
 # decision 1602 machine-checked rather than commented: the model is forced
 # to admit that its most consequential number for a message-passing
 # machine — cross-core publish/acquire cost — is a range, instead of
@@ -640,9 +642,10 @@ source = "unpriced by absence: no store-release entry in SOG §3.10 or anywhere 
 # and must carry an `ambiguity` note. Cardinality at bracket endpoints
 # (2 points per dimension) is 2^17 = 131072 points.
 #
-# `[transitional]` knobs are deliberately **not** sweep dimensions: they
-# are unsourced v2 holdovers that item F deletes outright, not residual
-# uncertainty about the machine.
+# Item D's `[transitional]` knobs were deliberately **not** sweep
+# dimensions: they were unsourced v2 holdovers, not residual uncertainty
+# about the machine, and item F deleted them outright rather than
+# migrating them here.
 # ---------------------------------------------------------------------------
 
 [sweep.l2_latency]
@@ -823,41 +826,3 @@ removal_sensitive = true
 ambiguity = "deleting a call is inlining and adding one is outlining; a large residual over-credits the first and a small one the second, so the pinned point favours neither and decision 1604's ∀ sweep decides"
 tier = "T5"
 source = "unpriced: the SOG prices `BL` (1 cycle, ports I+B) and nothing beyond it. Bracket is an engineering bound: 0 to 16 cycles of callee-side prologue/epilogue and drain"
-
-# ---------------------------------------------------------------------------
-# [transitional] — the quarantine. THREE KNOBS WITH NO v3 SOURCE.
-#
-# These are v2 scorer holdovers with no published-record basis at all. They
-# survive only because `cost/score.rs`'s reuse-window memory model still
-# reads them, and **plans/M20.md item F deletes this whole section** when it
-# replaces that model with reuse distance over real capacities and
-# associativity. Item F must delete the section, not migrate it.
-#
-# They are kept here, in a section that says what it is, rather than
-# smuggled into `[geometry]` where they would read as sourced geometry.
-# Every row must be tier T5 with exactly the holdover source string and
-# `deleted_by = "item F"` — the parser rejects anything else in here, which
-# is how this section stays a quarantine instead of becoming a loophole in
-# freeze 1629.
-# ---------------------------------------------------------------------------
-
-[transitional.mem_reuse_window]
-value = 8
-tier = "T5"
-source = "none — v2 scorer holdover"
-deleted_by = "item F"
-note = "count of recent Load/Store ops in this fn, not bytes of cache; superseded by reuse distance at 64 B line grain"
-
-[transitional.mem_working_set_cap]
-value = 4
-tier = "T5"
-source = "none — v2 scorer holdover"
-deleted_by = "item F"
-note = "distinct keys tolerated in the window before the surcharge; superseded by real capacity + associativity"
-
-[transitional.working_set_surcharge]
-value = 2
-tier = "T5"
-source = "none — v2 scorer holdover"
-deleted_by = "item F"
-note = "charged per distinct key over the cap. Item F keeps it only if a unit shows it still adds ranking information once reuse distance exists; otherwise it goes with the section"

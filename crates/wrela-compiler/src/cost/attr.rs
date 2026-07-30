@@ -124,9 +124,13 @@ pub fn attribute_cores(
     })
 }
 
-/// Where a scored fn key's mass belongs. `pub(crate)` because the
-/// cross-core model reads the same mapping (plans/M20.md item G): a fn key
-/// resolves to a core through sealed placement in exactly one place.
+/// Where a scored fn key's mass belongs.
+///
+/// `pub(crate)` because three models now read the same mapping and a fn key
+/// must resolve to a core through sealed placement in exactly one place: the
+/// proxy-cycle attribution here, the per-core footprint model
+/// ([`super::footprint`], plans/M20.md item F), and the local-vs-remote
+/// classification ([`super::crosscore`], item G). One classifier, not three.
 pub(crate) enum AttrTarget {
     Core(usize),
     Shared,
@@ -257,6 +261,7 @@ mod tests {
             workloads_digest: None,
             workload_totals: BTreeMap::new(),
             workload_coverage: BTreeMap::new(),
+            footprint: Vec::new(),
         }
     }
 

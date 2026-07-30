@@ -45,8 +45,10 @@ pub mod attr;
 pub mod compose;
 pub mod crosscore;
 pub mod dump;
+pub mod footprint;
 pub mod freq;
 pub mod ghz;
+pub mod mem;
 pub mod owner;
 pub mod rule;
 pub mod score;
@@ -59,13 +61,15 @@ pub use ab::{CostOpts, rank_cmp, score_with_opts};
 pub use attr::{CoreBucket, CoreCostReport, PlaceableTurn, attribute_cores};
 pub use compose::{WorkloadAttach, attach_workloads, method_grain_fxs, uncovered_charge};
 pub use dump::{dump, dump_for_source};
+pub use footprint::{CoreBudget, HotBlocks, PAGE_BYTES};
 pub use freq::{MethodFreq, sibling_freq_path};
 pub use ghz::{DEFAULT_GHZ, fmt_compact, ms_per_turn, parse_ghz, turns_per_sec};
+pub use mem::{LineId, MemLevel, MemState, MemVerdict};
 pub use owner::classify_owner;
 pub use rule::{CostRule, EmittedWord, FlagEffect, MEM_SP_REG, MemClass, MemRef};
 pub use score::{
-    BranchBias, CostReport, CrossExtra, FnCost, MemState, basic_block_ranges,
-    block_schedule_lengths, score_program, score_program_at,
+    BranchBias, CostReport, CrossExtra, FnCost, basic_block_ranges, block_schedule_lengths,
+    score_program, score_program_at, score_program_at_with_hot,
 };
 pub use stage::{
     CostStageClosure, codegen_cost_stage, codegen_cost_stage_with_placement,
@@ -73,7 +77,7 @@ pub use stage::{
 };
 pub use sweep::{SweepPoint, endpoint_corners};
 pub use table::{
-    CostTable, CrossRow, EXPECTED_VERSION, End, LatRow, MemCosts, PROFILE_NAME, Row, SweepRow,
-    Tier, default_table_path, load_default, load_from_path, parse, profile_ghz,
+    CostTable, CrossRow, EXPECTED_VERSION, End, LatRow, PROFILE_NAME, Row, SweepRow, Tier,
+    default_table_path, load_default, load_from_path, parse, profile_ghz,
 };
 pub use workload::{FLAT_NAME, WorkloadSet, default_workloads_path};

@@ -1045,6 +1045,10 @@ mod tests {
             total_proxy_cycles: 0,
             total_words: 0,
             owner_totals: BTreeMap::new(),
+            // Item F's per-core budget: empty here on purpose. This fixture
+            // exercises the freeze-1633 ordering-word refusal, which reads
+            // Term counts alone and must fire whatever the footprint says.
+            footprint: Vec::new(),
             fns: vec![
                 mk("a", &[("barrier", 2), ("alu", 99), ("load_acquire", 1)]),
                 mk("b", &[("barrier", 4), ("store_release", 3)]),

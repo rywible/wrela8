@@ -1443,6 +1443,7 @@ mod tests {
                 workloads_digest: None,
                 workload_totals: BTreeMap::new(),
                 workload_coverage: BTreeMap::new(),
+                footprint: Vec::new(),
             };
             attach_workloads(
                 &mut report,
