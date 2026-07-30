@@ -197,15 +197,302 @@ iteration-bodies ≈ 520 KB against a 64 KiB L1I, break-even only above
 N at all, and the compile-time lock breaks first. Do not relitigate
 without new facts.
 
+## The work-vs-time hazard (read before Tier 5 or either moonshot)
+
+**The gate measures work, not time, and a placement opt can game that.**
+`cost(P, W) = Σ_b f_W(b) × s(b)` is a **sum over the program's work**. On a
+one-core machine work and time coincide; on three cores they diverge
+completely. Packing every actor onto core 0 strictly *minimizes* total
+work — no snoop, no `DMB`, every send fusable under M1 — while tripling
+makespan. And the gate cannot see it: `CaseDelta`
+([win.rs:36](../crates/wrela-compiler/src/opts/win.rs:36)) carries totals
+and words only, with **no per-core field**, even though the report already
+prints `Core n=0 proxy_cycles=… max_turn_proxy=…`
+([appliance report:191](../tests/golden/appliance/expected/report.txt:191)).
+The data exists; the gate ignores it. A degenerate all-on-core-0 placement
+would pass every check in M20 and be a large real-world regression.
+
+**Containment: the hazard is entirely in 5a, not in M1.** M1 *consumes*
+placement — it fuses sends that are already co-located and cannot move an
+actor. If M1 lands and 5a never does, there is no gaming vector: placement
+comes from source annotation or existing inference, and M1 harvests
+whatever co-location happens to exist. **So 5a is gated on the fix below
+and M1 is not.**
+
+**Existing counter-pressure (friction and visibility, not a gate).**
+Packing all actors on one core sums their hot text into a *single* 64 KiB
+L1I and 48-entry I-TLB budget (M20 item F), which pushes back hard; the
+virtio-blk driver is pinned to core 0 regardless; placement is a
+report-visible, golden-pinned artifact (`Placement id=… core=…
+source=inferred`), so a collapse shows up in the diff; and `cores=N` is a
+sealed image fact, so declaring 3 and using 1 is legible. None of these
+*refuse* the degenerate — they only make it visible and partly expensive.
+
+**Fix, phase 1 (required before 5a): veto on `max_core` rising.** Add
+per-core totals to `CaseDelta` and refuse any candidate that raises the
+maximum per-core cost, even when it lowers the sum. Cheap — the dump
+already computes it — and it kills the degenerate directly.
+
+**Known limitation of phase 1, recorded so it is not mistaken for
+correctness:** `max_core` assumes per-core work *overlaps*. For a strictly
+serial chain (A sends to B, B replies to A, alternating), splitting across
+cores overlaps nothing and adds cross-core latency, yet `max_core` scores
+the split as cheaper — so phase 1 *over-credits splitting a serial chain*.
+That errs toward refusing good co-locations rather than allowing bad ones,
+which is decision 1609's direction, so it is the acceptable dumb version.
+
+**Fix, phase 2 (only if 5a is actually pursued): critical path over the
+sealed message graph.** The correct metric is the longest path through the
+actor wiring, where same-core edges cost dispatch (or ~0 when M1 fuses
+them), cross-core edges cost snoop + barrier, and independent subgraphs
+overlap. The graph is sealed at image build, so this is computable rather
+than estimated. It is a **cost-model extension, not a placement
+heuristic** — it belongs behind the same provenance and ∀-sweep discipline
+as everything else in M20, and it is a plan of its own.
+
 ## Tier 5 — machine-level (highest ceiling, widest error bars)
 
-**5a. Traffic-aware placement.** Feed item G's cross-core term back into
-placement inference: co-locate actor pairs whose measured message traffic
-is highest, subject to the per-core L1I/TLB budgets that same ruler
-enforces. Placement currently packs on `(work, bytes)` with no traffic
-term. This is the first opt where the *placement* is the optimization —
-and because the snoop cost is swept, it lands only if it wins across the
-whole uncertainty box, which is the gate working as designed.
+**5a. Traffic-aware placement. Blocked on the `max_core` veto above.**
+Feed item G's cross-core term back into placement inference: co-locate
+actor pairs whose measured message traffic is highest, subject to the
+per-core L1I/TLB budgets that same ruler enforces. Placement currently
+packs on `(work, bytes)` with no traffic term. This is the first opt where
+the *placement* is the optimization — which is exactly why it is the first
+opt that can game a work-only metric. Do not start it before phase 1
+lands; prefer waiting for phase 2.
+
+## Tier 6 — single-target ISA arcana (v8.2-A + A76 + sealed image)
+
+The payoff of targeting exactly one ISA/extension set with a sealed image:
+tricks a portable compiler must guard behind runtime checks, feature
+detection, or conservative layout assumptions become *unconditional* here.
+First, the honest envelope — what this core has and does not have, so
+nobody chases ghosts: A76 is v8.2-A with crypto, CRC32, LSE atomics
+(v8.1), FP16, and dotprod. **No SVE, no pointer auth (v8.3), no LDAPR/
+RCpc, no BTI, no MTE.** LSE exists but atomics are settled-out (decision
+1500) — noted for whenever a future rung reopens that door, because LSE
+`LDADD` beats an exclusives loop soundly.
+
+Each item below fights the ruler like everything else; most shrink words
+and land on the flat gate. Ordered by expected value.
+
+**6a. Block-mapped page tables: delete the TLB problem by construction.**
+The guest owns its EL1 translation regime, the layout is fixed and
+published (06 §2), and the L1 D-TLB holds 4 KiB–512 MiB pages. Map the
+image and DRAM with 2 MiB (or larger) block entries and the entire
+machine fits in a handful of L1 TLB entries — the I-TLB span term (M20
+item F), the L2-TLB walk sweep dimension, and the T3 curve's page-walk
+tail all become near-moot *by construction rather than by modelling*.
+First step is descriptive, not code: record how boot currently maps
+memory; if it already uses blocks, update item F's TLB terms to say so;
+if it uses 4 KiB pages, this is likely the highest single-lever item in
+this tier. Attribute boundaries (device vs normal) force a few splits;
+the layout already segregates them.
+
+**6b. `ADR`-only rodata addressing: the sealed layout makes `ADRP+ADD`
+pointless.** Every rodata reference today is a 2-instruction `ADRP`+`ADD`
+pair plus a reloc. `ADR` reaches ±1 MiB; the *worst* pinned image spans
+~99 KB from first code byte to last rodata byte
+(`boot-receipt-handoff`: code 0x40500050 + 97688, rodata 0x40517de8 +
+1574) — 10× inside range. `enc_adr` already exists
+([encode.rs:851](../crates/wrela-compiler/src/encode.rs:851)). Replace
+the pair with one `ADR`; **fail closed at layout time** if any site's
+distance ever exceeds ±1 MiB (the sealed image makes this a link-time
+proof, not a hope). Halves every rodata access, deletes a reloc class,
+shrinks words — flat-gate legal.
+
+**6c. `DC ZVA` + `STP XZR, XZR` zeroing.** `DC ZVA` zeroes a full 64 B
+line without read-for-ownership — no fetch, no store-buffer occupancy,
+one instruction per line. A portable compiler must read `DCZID_EL0` and
+handle the trap-disabled case; wrela owns EL1 and the VMM, so ZVA=64 is a
+machine constant and its enablement is part of the sealed configuration.
+Use it for the boot zeroing loops (`__wrela_rt_primary_boot`'s stripe
+zeroing, `LANE2` reset) and any pool/page zeroing; use `STP XZR, XZR`
+(16 B/insn, no materialized zero) for sub-line tails. Also the degenerate
+form everywhere: `STR XZR` for single zero stores instead of
+materializing 0 into a register.
+
+**6d. One-way barriers: `LDAR`/`STLR` instead of `DMB` + plain access.**
+The four cross-core publish/acquire sites pair a full `DMB(ishst/ishld)`
+with a plain store/load. Acquire/release accesses are the
+architecturally-intended shape: `STLR` orders only what precedes it,
+`LDAR` only what follows, instead of a full fence on everything in
+flight. The encodings already exist, unused
+([encode.rs:233–261](../crates/wrela-compiler/src/encode.rs:233)).
+**This is not barrier removal** (freeze 1633 untouched) — it is
+replacement with equivalent-or-stronger ordering for these exact sites,
+strictly weaker global serialization. It is also a `docs/language/` +
+ledger change (`@dmb` is a language surface; either the intrinsic set
+grows acq/rel forms or lowering recognizes the `@dmb`+access idiom), and
+its magnitude is T5 like every other cross-core cost — the *mechanism*
+argument (one-way ≤ full fence) is what lands it, under the ∀ sweep.
+
+**6e. `UBFX`/`SBFX`/`BFI` for `narrow_to_width` and field access.** The
+LSL/LSR canonicalization pair is `UBFX` in one instruction — same 1-cycle
+throughput-3 I-port class, half the words, and it composes with Tier 2c
+(elide when provably canonical, `UBFX` when not). `TBZ`/`TBNZ` similarly
+collapse mask-test-branch sequences to one instruction for tag and flag
+dispatch; `CBZ` exists in the encoder already.
+
+**6f. `CCMP` chains and flag-folding.** Compound conditions
+(`a && b && c`) become `CMP; CCMP; CCMP; B.cond` — one branch, no
+short-circuit branch tree, 1-cycle throughput-3 each. Pair with using
+`ADDS`/`SUBS` to fold a comparison into arithmetic that was happening
+anyway. Fewer branches also relieves the §4.8 four-per-32 B density rule.
+
+**6g. Strength reduction with the port quirk as the rule.** The arcane
+fact: shifted-operand `ADD`/`SUB` with **LSL ≤ 4 stays 1-cycle
+throughput-3 on I; LSL > 4 or any LSR/ASR/ROR drops to 2-cycle
+throughput-1 on M** (SOG §3.4). So ×3/×5/×9/×17 are single cheap
+instructions, ×24 is two (×3 then `LSL #3`), and the boundary between
+"free" and "M-pipe" is knowable per constant. Likewise every
+constant-divisor `SDIV`/`UDIV` (5–20 cycles, blocks the only M pipe)
+becomes multiply-high + shifts, and every power-of-two ring/pool size
+becomes `AND`. Where a size is *almost* a power of two, rounding the pool
+up buys the cheap index math — a layout/speed trade the ruler can now
+price.
+
+**6h. `RBIT`+`CLZ` pending-vector scan.** Where the scheduler scans for
+ready work bit-by-bit or slot-by-slot, `RBIT`+`CLZ` (both 1-cycle,
+throughput 3) computes find-first-set in 2 instructions and jumps
+straight to the winner. Applies wherever the pending vector is a bitmask;
+if it is currently an array walk, making it a bitmask is the enabling
+layout change and should be priced as a pair.
+
+**6i. Count-down loops: fold the trip counter into the induction.** An
+accepted `@budget` emits a hidden counter (increment, compare, abort
+branch) beside the loop's own induction. Counting the induction *down*
+from N with `SUBS` makes the flags free and one `B.NE`/abort-check serve
+both purposes — the fail-closed bound survives, expressed through the
+loop's own arithmetic. Semantics preserved (the abort still fires at
+N+1); this is codegen shape, not a bound change — but it touches the
+trip-counter contract (02 §8.1), so it cites the clause and pins a
+golden.
+
+**6j. Text placement constants.** Two free wins from owning the layout:
+start the code section on a 2 MiB-aligned base so every branch and target
+share one 2 MiB region (SOG §4.8 — current base 0x40500050 is not
+2 MiB-aligned); and have Tier 3b's 32 B alignment done against that same
+base. One constant in the layout, every address in every golden moves —
+its own commit, like every layout move.
+
+**6k. `ADR` reach extends past rodata to the runtime data sections.**
+Follow-on to 6b, verified: rtdata (0x40540000) and pooldata (0x405401f8)
+sit ~256 KB from the code base — inside `ADR`'s ±1 MiB. So placed-static
+address materialization (today `MOVZ`+`MOVK`s or `ADRP`+`ADD`) can be one
+`ADR` for every section except `pages` (0x40000000, ~5 MB away — keep the
+absolute form there). Same fail-closed link-time range proof as 6b.
+
+### Representation arcana (overloading bits, sealed-map edition)
+
+The second family the question asked for: the 1 GiB fixed map and owned
+EL1 make several bit-overloading tricks *architecturally free* here.
+
+**6l. Top-Byte Ignore: 8 tag bits in every pointer, enforced by hardware
+config wrela owns.** TBI (`TCR_EL1.TBI0`, base v8.0) makes the MMU ignore
+bits 63:56 of data addresses. A portable compiler cannot assume it; wrela
+*sets* TCR_EL1, so it is a machine-contract fact (06 §2 addition). Every
+data pointer carries 8 metadata bits that cost **zero masking on
+dereference** — tags are checked only where a check is wanted. Candidate
+payloads: pool-slot generation counts (making stale-handle aborts a
+1-instruction `CMP` on the tag — a *strengthening* of fail-closed, not a
+speed trick), handle kind tags, owning-core ids. Docs + ledger change;
+the language's handle representation is a normative surface.
+
+**6m. The whole machine fits in 31 bits: compressed pointers for free.**
+Guest-physical runs 0x40000000–0x7FFFFFFF — every address fits a `u32`
+with **zero decompression**: `LDR W` zero-extends to the full pointer.
+Pointer-bearing runtime structures (ring slots, queue entries, turn
+records) can store 32-bit absolute addresses and double their density per
+cache line — which the reuse-distance model now prices directly. Combined
+with 8-byte alignment (3 low bits) and TBI (8 high bits), one 64-bit slot
+honestly holds a pointer plus ~⁠35 bits of metadata: `{addr[31], gen[8],
+tag[8], len[16]}` in one register, one load.
+
+**6n. Checked-narrow overflow via bitmask-immediate `TST`.** Codegen's
+own invariant states it: "Unsigned: overflow iff the high word is
+nonzero." High-mask constants (`0xFFFFFFFF00000000`, `0xFFFFFFFFFFFFFF00`,
+…) are all encodable AArch64 bitmask immediates — a rotated run of ones —
+so the check is one `TST` + `B.NE`, no canonicalize-and-compare dance and
+no constant materialization. **The customer is every checked narrow op in
+every program** — the single widest check surface the emit-every-check
+doctrine produces. Signed forms use `CMP x, w, SXTW`-shaped
+sign-extension compares. This is arguably the highest-value item in the
+whole tier because its site count is enormous and it shrinks words.
+
+**6o. SWAR with free constants.** The classic byte-parallel-in-a-GPR
+tricks (`haszero(v) = (v − 0x0101…) & ~v & 0x8080…`, byte broadcast,
+2-digits-at-a-time decimal formatting) all depend on repeating-pattern
+constants — which AArch64 bitmask immediates encode in **zero extra
+instructions**, where x86 pays a 10-byte `mov` each. Customers: the
+transcript/console formatting paths (decimal emission, line scanning) —
+hot in every boot golden by construction. Related cheap win the dump will
+show anyway: the runtime builds console lines byte-by-byte
+(`TEST_LINE_BUF.bytes[i] = …` one store each); adjacent-constant-store
+merging into word/`STP` stores is Tier 2e's peephole family and cuts
+those sites ~8×.
+
+**6p. Crypto units as non-crypto ALUs — recorded, awaiting a customer.**
+The honest framing: these are real and fast, and wrela currently has no
+consumer, so they are *recorded* (fail-closed doctrine: no speculative
+machinery) rather than scheduled.
+  - **AESE/AESMC fused pairs as a 128-bit mixer.** A76 fuses adjacent
+    AESE+AESMC (SOG §4.6): ~1 fused uop per cycle on V0, 2-cycle latency
+    — two rounds give avalanche-quality mixing. This is the aHash/GxHash
+    trick. Customer appears the day the stdlib grows a hash-keyed
+    structure; determinism is fine (fixed key, deterministic input).
+  - **`PMULL` bit-spreading: GF(2) squaring is a 1-instruction Morton
+    spread.** Carryless `PMULL(x,x)` places bit *i* at position *2i* —
+    the exact interleave step of Z-order curves. Customer: framebuffer
+    tiling when Pixels activates; Z-order tiles turn 2D locality into the
+    1D locality the reuse-distance model rewards.
+  - **`CRC32C` chains at 1/cycle with late-forwarding** (8 B/cycle
+    checksums, M port): the receipt/transcript checksum primitive if one
+    is ever wanted.
+
+**Not applicable / handle with care, recorded so nobody hunts for them:**
+NaN-boxing (no dynamic typing); non-temporal `LDNP`/`STNP` (hint largely
+inert on A76 — measure before believing); software `PRFM` (competes with
+the unmodelled hardware prefetcher; only worth trying in the 4c copy
+loop); `WFE`/`SEV` parking (energy and snoop win, but wake timing
+interacts with the recorder's checkpoint injection — needs its own design
+note before anyone touches the park loop).
+
+**Asked and answered (2026-07-29), so they are not re-litigated:**
+  - **FEAT_LPA (52-bit PA): not on this core, and maximally irrelevant.**
+    Cortex-A76 implements a **40-bit** physical address; FEAT_LPA arrives
+    in later cores. And wrela's machine is 1 GiB at a fixed base — 31
+    bits of address on a sealed map. Nothing here would change even on a
+    core that had it. (The only adjacent nugget: PTE bits 58:55 are
+    software-defined and hardware-ignored — free metadata bits — but
+    under 6a's block mappings the whole machine is a handful of PTEs, so
+    there is nothing worth tagging.)
+  - **FEAT_LSE: available (v8.2 mandates it), and the door stays closed —
+    but for a better reason than "decision 1500 said so."** LSE's
+    headline win is replacing LL/SC lock loops, and wrela has **no locks
+    and no LL/SC loops to replace** — exclusivity, SPSC rings, per-core
+    striping, and checkpoint-injected admission exist precisely so that
+    no two cores ever contend on a word. Striping (decision 1500) is
+    strictly better than even LSE *far atomics* (the arcane DSU form
+    that executes `LDADD` at L3 to avoid line ping-pong): a striped
+    counter generates zero coherency traffic, a far atomic still
+    generates some. If a future construct genuinely needs multi-producer
+    admission, LSE is the primitive to reopen the door with — and its
+    cost will be T5, since the SOG prices no atomic at all.
+  - **RAS: the host's business, and replay is the better detector.** Pi 5
+    ships non-ECC LPDDR4X, so DRAM RAS coverage is absent on the
+    flagship; whatever cache ECC BCM2712 enabled is T5. Physical RAS
+    errors surface to the *host* Linux/VMM, not the guest, and a RAS
+    event is inherently nondeterministic — the physical world intruding
+    on a deterministic machine. The doctrine answer: a hardware error is
+    **fatal and fail-closed**, recorded by the recorder as a terminal
+    event, never "handled" (recovery would be a nondeterminism source).
+    And wrela already owns a stronger serviceability primitive than RAS:
+    **byte-identical replay is a bit-flip detector** — if a divergence
+    does not reproduce under replay, the hardware did it, with perfect
+    attribution. RAS registers only tell you sooner and name the unit;
+    the VMM may *read* them on a fatal event for the post-mortem line,
+    and that is the entire integration.
 
 ## Moonshots (wrela-only physics; either could dwarf the ladder)
 
@@ -240,6 +527,15 @@ semantics and deadline/cancellation observation points must be preserved
 bit-for-bit in transcripts. First falsifiable step: fuse exactly one
 statically-provable pair in a synthetic two-actor golden and demand
 byte-identical transcripts under both modes.
+
+**It does not create the placement hazard, but it does create a programmer
+incentive.** M1 cannot move an actor, so it cannot game placement (see the
+hazard section). It does mean co-locating a chatty pair gets measurably
+faster, which is a legitimate design tradeoff made with `core=K` in hand —
+not gaming, provided the programmer can *see* it. So M1 owes the report a
+line per send site recording fused-vs-transported, or the incentive is
+invisible and the tradeoff is being made blind. Treat that report line as
+part of M1's deliverable, not a nice-to-have.
 
 ### M2. Boot as a comptime value ("the image ships pre-booted")
 

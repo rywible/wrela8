@@ -503,6 +503,26 @@ impl CodegenError {
     }
 }
 
+/// Message prefix marking a codegen error as a **fail-closed resource
+/// violation** rather than "this shape did not lower".
+///
+/// The distinction is load-bearing: `layout::try_layout_with_codegen`
+/// deliberately treats an ordinary codegen `Err` as *soft* (report without
+/// an `.img`), because a cross-core or partially-lowering shape legitimately
+/// produces a report and no image — the `err-cross-core-*` report goldens
+/// pin exactly that. A pool overflow is not that. It is a bound the build
+/// blew through, and swallowing it hands the caller a silent image-less
+/// report and exit code 0 — the fail-open plans/M20.md item B measured on
+/// `wrela build --block-count` once `BLOCK_POOL_COUNT` was exhausted.
+///
+/// A prefix rather than a new error field, for the same reason the
+/// producer-bug prefix (`internal_error_census`) is one:
+/// `lower_and_codegen_image` already flattens every codegen error to a
+/// `String` before layout sees it, so a field would have to be threaded
+/// through a conversion that exists to discard structure. One producer, one
+/// consumer, both named here.
+pub const FAIL_CLOSED_PREFIX: &str = "fail-closed: ";
+
 fn alloc_block_id() -> Result<u32, CodegenError> {
     let id = NEXT_BLOCK_ID.with(|c| {
         let id = c.get();
@@ -512,7 +532,7 @@ fn alloc_block_id() -> Result<u32, CodegenError> {
     if id as usize >= crate::rtconfig::BLOCK_POOL_COUNT {
         return Err(CodegenError {
             message: format!(
-                "block-count pool exhausted (BLOCK_POOL_COUNT={})",
+                "{FAIL_CLOSED_PREFIX}block-count pool exhausted (BLOCK_POOL_COUNT={})",
                 crate::rtconfig::BLOCK_POOL_COUNT
             ),
         });
@@ -9892,6 +9912,52 @@ mod tests {
         let layout = mwir::build_layout_ctx(&module, &Default::default())
             .expect("test source must build a layout ctx");
         (mwir_program, layout)
+    }
+
+    /// A blown Lane 2 pool must fail **closed**, not degrade into a report
+    /// with no `.img` and exit code 0 (plans/M20.md item B measured that
+    /// fail-open on `wrela build --block-count`). Drives the real allocator
+    /// to its real bound rather than asserting on a hand-written string.
+    #[test]
+    fn block_id_pool_exhaustion_is_a_fail_closed_error() {
+        set_block_count(true);
+        // One below the bound still allocates.
+        NEXT_BLOCK_ID.with(|c| c.set((crate::rtconfig::BLOCK_POOL_COUNT - 1) as u32));
+        let last = alloc_block_id().expect("the final id in the pool must allocate");
+        assert_eq!(last as usize, crate::rtconfig::BLOCK_POOL_COUNT - 1);
+        // The next one is over it, and the message must carry the marker
+        // `layout::try_layout_with_codegen` routes on.
+        let err = alloc_block_id().expect_err("one past the pool must fail");
+        assert!(
+            err.message.starts_with(FAIL_CLOSED_PREFIX),
+            "pool exhaustion must be marked fail-closed, got: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("BLOCK_POOL_COUNT"),
+            "the error must name the bound it blew, got: {}",
+            err.message
+        );
+        set_block_count(false);
+    }
+
+    /// The other half of the same oracle: an ordinary "did not lower"
+    /// codegen error must stay **soft**, or every `err-cross-core-*` report
+    /// golden (report, no `.img`) would start failing the build.
+    #[test]
+    fn an_ordinary_codegen_error_is_not_marked_fail_closed() {
+        let soft = CodegenError::unimplemented("some shape");
+        assert!(
+            !soft.message.starts_with(FAIL_CLOSED_PREFIX),
+            "unimplemented must remain soft, got: {}",
+            soft.message
+        );
+        let internal = CodegenError::internal("some invariant");
+        assert!(
+            !internal.message.starts_with(FAIL_CLOSED_PREFIX),
+            "producer bugs travel under their own census-tracked prefix, got: {}",
+            internal.message
+        );
     }
 
     // --- frame-slot assignment (task note 5's own first requirement) ---

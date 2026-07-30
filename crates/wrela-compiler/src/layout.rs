@@ -3689,8 +3689,15 @@ pub fn try_layout_with_codegen(
         &empty_async,
     ) {
         Ok(c) => c,
+        // A fail-closed resource violation is **hard** — a blown pool bound
+        // is not "this shape did not lower", and absorbing it hands the
+        // caller a silent image-less report and exit code 0 (the fail-open
+        // plans/M20.md item B measured once `BLOCK_POOL_COUNT` was
+        // exhausted under decision 1607's wider owner set).
+        Err(e) if e.starts_with(crate::codegen::FAIL_CLOSED_PREFIX) => return Err(e),
         // Soft: reachable surface / cross-core shape did not fully lower.
-        // Report stages keep an ImageReport without an `.img`.
+        // Report stages keep an ImageReport without an `.img` — the
+        // `err-cross-core-*` report goldens pin exactly that.
         Err(_) => return Ok(None),
     };
     layout_program(
