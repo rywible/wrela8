@@ -274,6 +274,50 @@ pub fn enc_stlxr_x(rs: u8, rt: u8, rn: u8) -> u32 {
     0xc800fc00 | (reg(rs) << 16) | (reg(rn) << 5) | reg(rt)
 }
 
+// --- Transfer width of an emitted load/store word ------------------------
+//
+// plans/M20.md item I needs the **access width** of every emitted
+// load/store to price SOG §4.5's two boundaries (a load crossing a 64 B
+// cache line, a store crossing a 16 B boundary). The width is *not* a
+// semantic classification the way `CostRule` and `MemRef` are: it is a
+// field of the encoding, written by the functions above, and this module
+// owns that encoding. Reading it back here — rather than passing a second
+// `width` argument down ~95 emit sites — is what keeps it from becoming a
+// second source of truth that can disagree with the word actually
+// emitted. That is the defect freeze 1303 exists to prevent, and it is
+// why this is a projection of the emitted word and **not** a parse of the
+// mnemonic text (which freeze 1303 forbids, and which nothing here
+// touches).
+//
+// Fails closed: any load/store shape not encoded above returns `None`, so
+// adding an `LDP`/`STP`/vector emit site means extending this function
+// deliberately rather than silently getting a width of zero.
+
+/// Bytes transferred by an emitted load/store word, or `None` when `word`
+/// is not one of the load/store shapes this module encodes.
+///
+/// Both shapes carry the transfer size in `word[31:30]`
+/// (`00`=byte, `01`=halfword, `10`=32-bit, `11`=64-bit):
+///
+/// * LDR/STR, immediate unsigned offset —
+///   `size[31:30] 111001 opc[23:22] imm12 Rn Rt` (bits 29:24 = `0b111001`).
+/// * LDAR/STLR — the fixed words above with `size` in the same position.
+pub fn access_width_bytes(word: u32) -> Option<u8> {
+    let width = 1u8 << (word >> 30);
+    // LDR/STR (immediate, unsigned offset): bits 29:24 == 0b111001.
+    if word & 0x3F00_0000 == 0x3900_0000 {
+        return Some(width);
+    }
+    // LDAR / STLR: everything but `size`, `Rn` and `Rt` is fixed.
+    const LDAR: u32 = 0x08df_fc00;
+    const STLR: u32 = 0x089f_fc00;
+    let fixed = word & 0x3FFF_FC00;
+    if (fixed == LDAR || fixed == STLR) && (word >> 30) >= 0b10 {
+        return Some(width);
+    }
+    None
+}
+
 // --- Barriers: DMB (plans/M15.md item H, decisions 1080–1085) ------------
 //
 // ARM ARM "DMB": `1101 0101 0000 0011 0011 CRm[3:0] 1 01 11111`
@@ -975,6 +1019,59 @@ mod tests {
         assert_eq!(enc_ldr_w_imm(0, 1, 0), 0xb9400020);
         assert_eq!(enc_strb_imm(0, 1, 0), 0x39000020);
         assert_eq!(enc_ldrb_imm(0, 1, 0), 0x39400020);
+    }
+
+    /// plans/M20.md item I: the §4.5 alignment term reads the access width
+    /// back off the emitted word, so the projection is checked against
+    /// **every** load/store encoder in this module rather than trusted.
+    /// A shape this module does not encode (`LDP`/`STP`, the exclusives,
+    /// anything else) must report `None` so a new emit site has to extend
+    /// `access_width_bytes` deliberately.
+    #[test]
+    fn access_width_round_trips_every_load_store_encoder() {
+        let cases: &[(u32, u8, &str)] = &[
+            (enc_ldr_x_imm(0, 1, 8), 8, "ldr x"),
+            (enc_str_x_imm(0, 1, 8), 8, "str x"),
+            (enc_ldr_w_imm(0, 1, 4), 4, "ldr w"),
+            (enc_str_w_imm(0, 1, 4), 4, "str w"),
+            (enc_ldrh_imm(0, 1, 2), 2, "ldrh"),
+            (enc_strh_imm(0, 1, 2), 2, "strh"),
+            (enc_ldrb_imm(0, 1, 1), 1, "ldrb"),
+            (enc_strb_imm(0, 1, 1), 1, "strb"),
+            (enc_ldar_x(0, 1), 8, "ldar x"),
+            (enc_stlr_x(0, 1), 8, "stlr x"),
+            (enc_ldar_w(0, 1), 4, "ldar w"),
+            (enc_stlr_w(0, 1), 4, "stlr w"),
+        ];
+        for &(word, want, name) in cases {
+            assert_eq!(
+                access_width_bytes(word),
+                Some(want),
+                "{name} ({word:#010x}) width"
+            );
+        }
+        // Not encoded as a plain load/store: fail closed with `None`.
+        for (word, name) in [
+            (enc_ldp_x(0, 1, 2, 0), "ldp x"),
+            (enc_stp_x(0, 1, 2, 0), "stp x"),
+            (enc_ldp_w(0, 1, 2, 0), "ldp w"),
+            (enc_stp_w(0, 1, 2, 0), "stp w"),
+            (enc_ldaxr_w(0, 1), "ldaxr w"),
+            (enc_stlxr_w(2, 0, 1), "stlxr w"),
+            (enc_ldaxr_x(0, 1), "ldaxr x"),
+            (enc_stlxr_x(2, 0, 1), "stlxr x"),
+            (enc_add_imm(0, 1, 8, true), "add imm"),
+            (enc_movz(0, 1, 0, true), "movz"),
+            (enc_dmb_ishst(), "dmb ishst"),
+            (enc_ret(30), "ret"),
+            (0, "zero word"),
+        ] {
+            assert_eq!(
+                access_width_bytes(word),
+                None,
+                "{name} ({word:#010x}) must not report a transfer width"
+            );
+        }
     }
 
     /// plans/M15.md item H: DMB ISHST / ISHLD against `as -arch arm64`.
