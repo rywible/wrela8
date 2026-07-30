@@ -31,18 +31,32 @@
 //! never one ahead of the other (freeze 1626).
 //!
 //! The replacement is a **delta** rule — no core's over-budget quantity may
-//! rise — and that is decision 1619, not a softening of the plan's wording.
-//! Item F measured that under `W_flat` (`f ≡ 1`, every block hot) the
-//! hot-text budget is already exceeded on **every core of every `boot-*`
-//! case** (91–92 KiB against a 64 KiB L1I, 409–413 lines over), so
-//! [`CoreBudget::within_budget`](crate::cost::CoreBudget::within_budget)
-//! read as an absolute veto would refuse every candidate including the
-//! identity. The delta rule is exactly what the retiring words veto was —
-//! `candidate > baseline` on a footprint quantity — priced on the
-//! denominator the machine actually has. The I-TLB half *is* comfortably
-//! inside budget today (23 text pages against 48 entries), so an absolute
-//! breach there is meaningful and is kept **in addition**
-//! ([`VetoReason::ITlbBudgetExceeded`]).
+//! rise — and that is decision 1619. The reason is what the rule *means*,
+//! not whether it would fire: an absolute
+//! [`within_budget`](crate::cost::CoreBudget::within_budget) veto refuses a
+//! candidate for a property of the **baseline** (a program already over its
+//! L1I is refused however much better the candidate makes it), while the
+//! veto being retired said "a candidate may not pay for schedule with more
+//! footprint", which is a statement about the **change**. The delta keeps
+//! that sentence true wherever the baseline sits relative to the ceiling.
+//!
+//! The cost-stage closure this gate scores is in fact comfortably **inside**
+//! every budget — largest is `cost-runtime` at 10432 B of hot text against a
+//! 65536 B L1I, 3 text pages against 48 entries, `charge = 0` on both sides
+//! of every case — so an absolute rule is implementable here; it is simply
+//! the wrong rule. (Item F's 91–92 KiB figure is the **image** program, a
+//! different and much larger closure that prints a line with the same name.
+//! Nothing constrains this gate's inputs to be cost-stage closures, and
+//! handed the image program's budgets an absolute veto would refuse every
+//! candidate including the identity — pinned as
+//! `unit:an_over_budget_identity_is_refused_absolutely_and_allowed_as_a_delta`.)
+//!
+//! Two absolute assertions are kept **alongside** the delta, and no more:
+//! [`VetoReason::ITlbBudgetExceeded`], because the I-side page span is
+//! inside budget on both surfaces so the assertion is about the program
+//! rather than about which program was handed in; and `within_budget()` on
+//! every `cost-*` case in the corpus oracle, so the rule here is live and
+//! silent rather than inert.
 //!
 //! ## Item J: the ∀ sweep
 //!
@@ -180,11 +194,13 @@ fn over_budget_quantities(b: &CoreBudget) -> [(&'static str, u64); 7] {
 ///
 /// The plan asked for the budget "as the hard constraint in its place",
 /// which reads as an absolute [`CoreBudget::within_budget`] test. That
-/// reading is unimplementable: item F measured every core of every `boot-*`
-/// case already 409–413 lines over its 64 KiB L1I under `W_flat`, so an
-/// absolute veto refuses **every** candidate, the identity included. The
-/// delta is what the words veto actually was, moved onto the right
-/// denominator.
+/// reading is implementable on the cost-stage closure — which is inside
+/// every budget — but it is the wrong rule: it refuses a candidate for a
+/// property of the **baseline**, while the veto it replaces was about the
+/// **change**. It is also unsafe on the image program, whose every core is
+/// already 409–413 lines over its 64 KiB L1I under `W_flat`, where an
+/// absolute veto refuses every candidate including the identity. The delta
+/// is what the words veto actually was, moved onto the right denominator.
 pub fn budget_overflow_growth(
     baseline: &[CoreBudget],
     candidate: &[CoreBudget],
@@ -1179,10 +1195,10 @@ pub enum VetoReason {
     /// **Decision 1619.** A per-core text/TLB budget overflow quantity
     /// rose. This is what replaced the retired word-count veto (freeze
     /// 1626): with the I-side term real, 04 §5 prices footprint growth and
-    /// makes the **budget** the hard constraint, and it is read as a delta
-    /// because under `W_flat` the hot-text budget is already exceeded
-    /// everywhere (item F), so an absolute reading would refuse the
-    /// identity.
+    /// makes the **budget** the hard constraint. It is read as a delta
+    /// because the veto it replaces was one — "a candidate may not pay for
+    /// schedule with more footprint" is a claim about the change, not about
+    /// where the baseline sits relative to the ceiling.
     BudgetOverflowGrew {
         core: usize,
         field: &'static str,
@@ -2157,14 +2173,17 @@ mod tests {
         }
     }
 
-    /// **Decision 1619's counter-example, and the whole reason for it.**
+    /// **Decision 1619's counter-example.**
     ///
-    /// Item F measured every core of every `boot-*` case already 409–413
-    /// lines over its 64 KiB L1I under `W_flat`. Read absolutely —
-    /// `CoreBudget::within_budget()` — the budget veto would fire on the
+    /// These are the **image** program's budgets, not the cost-stage
+    /// closure's — item F measured every core of every `boot-*` case
+    /// already 409–413 lines over its 64 KiB L1I under `W_flat`. Nothing
+    /// constrains this gate's inputs to be cost-stage closures, and handed
+    /// these an absolute `CoreBudget::within_budget()` veto fires on the
     /// **identity**, refusing a program compared against itself and
     /// therefore every candidate there will ever be. The delta reading does
-    /// not fire, which is what makes it a usable gate.
+    /// not fire, which is why an absolute whole-budget veto is not the rule
+    /// that replaces the words veto.
     #[test]
     fn an_over_budget_identity_is_refused_absolutely_and_allowed_as_a_delta() {
         let set = pinned_set();
