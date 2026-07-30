@@ -50,6 +50,7 @@ pub mod owner;
 pub mod rule;
 pub mod score;
 pub mod stage;
+pub mod sweep;
 pub mod table;
 pub mod workload;
 
@@ -66,6 +67,7 @@ pub use stage::{
     CostStageClosure, codegen_cost_stage, load_cost_stage_closure, report_cost_stage_path,
     score_cost_stage_path,
 };
+pub use sweep::{SweepPoint, endpoint_corners};
 pub use table::{
     CostTable, CrossRow, EXPECTED_VERSION, End, LatRow, MemCosts, PROFILE_NAME, Row, SweepRow,
     Tier, default_table_path, load_default, load_from_path, parse, profile_ghz,
