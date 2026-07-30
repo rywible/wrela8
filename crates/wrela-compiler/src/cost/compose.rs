@@ -18,9 +18,12 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use super::bridge::{BlockBridge, Resolved};
+use super::branch::BlockCounts;
+use super::bridge::{BlockBridge, MeasuredBlocks, Resolved};
+use super::footprint::{self, CoreBudget, HotBlocks};
 use super::freq::{self, BlockFreq, MethodFreq};
 use super::score::{CostReport, FnCost};
+use super::sweep::SweepPoint;
 use super::workload::{self, FLAT_NAME, WorkloadSet};
 
 /// Workloads.toml set plus optional measured frequency vectors.
@@ -36,7 +39,22 @@ pub struct WorkloadAttach {
     /// program. Required whenever `block_frequencies` is non-empty —
     /// compose fails closed rather than silently falling back to method
     /// grain or dropping the row.
+    ///
+    /// Built by [`WorkloadAttach::load_default_for`] as the **measured**
+    /// bridge: its per-span `cycles` are `Σ s(b)` scored under
+    /// [`BlockCounts::Measured`], so item H's bias-derived mispredict
+    /// actually reaches `Σ_b f(b)×s(b)`. The flat row never reads this — it
+    /// is `report.total_proxy_cycles`, scored with `BlockCounts::Flat`.
     pub bridge: Option<BlockBridge>,
+    /// Workload name → per-core budget under **that workload's** measured
+    /// `f` (item F's `HotBlocks::Measured`, item C's resolution).
+    ///
+    /// Reported beside the flat `Budget` line rather than replacing it:
+    /// under `W_flat` every block is hot, which is the static-footprint row
+    /// decision 1617 tells item J to read its veto off. This is the
+    /// diagnostic that says how much of that text the measurement actually
+    /// touched.
+    pub measured_footprint: BTreeMap<String, Vec<CoreBudget>>,
 }
 
 impl WorkloadAttach {
@@ -59,6 +77,7 @@ impl WorkloadAttach {
         let mut frequencies = BTreeMap::new();
         let mut block_frequencies = BTreeMap::new();
         let mut bridge = None;
+        let mut measured_footprint = BTreeMap::new();
         if let Some(path) = source {
             if let Some(freq_path) = freq::sibling_freq_path(path) {
                 let f = freq::load_from_path(&freq_path)?;
@@ -78,9 +97,36 @@ impl WorkloadAttach {
                         f.workload
                     ));
                 }
-                bridge = Some(BlockBridge::from_current_codegen(
-                    program, table, placement,
+                // Two passes, and the order is forced (see
+                // `BlockBridge::build_with_counts`):
+                //
+                // 1. the flat correspondence — a measured `f` cannot be
+                //    resolved before the key → word-block map exists;
+                // 2. `MeasuredBlocks` from it — the one join item F and
+                //    item H both read;
+                // 3. the same correspondence re-costed under those counts,
+                //    so `Σ_b f(b)×s(b)` multiplies a bias-aware `s(b)`.
+                let spans = crate::codegen::block_spans();
+                let flat = BlockBridge::build(program, &spans, table, placement)?;
+                let measured = MeasuredBlocks::resolve(&flat, &f.counts)?;
+                let obs_fn = |k: &str, b: usize| measured.obs(k, b);
+                let counts = BlockCounts::Measured(&obs_fn);
+                bridge = Some(BlockBridge::build_with_counts(
+                    program, &spans, table, placement, &counts,
                 )?);
+                // Item F under a measured `f`: a block with `f = 0` (or no
+                // measurement at all) is not hot text.
+                let hot_fn = |k: &str, b: usize| measured.is_hot(k, b);
+                measured_footprint.insert(
+                    f.workload.clone(),
+                    footprint::compute(
+                        program,
+                        table,
+                        &SweepPoint::pinned(table),
+                        placement,
+                        HotBlocks::Measured(&hot_fn),
+                    )?,
+                );
                 block_frequencies.insert(f.workload, f.counts);
             }
         }
@@ -89,6 +135,7 @@ impl WorkloadAttach {
             frequencies,
             block_frequencies,
             bridge,
+            measured_footprint,
         })
     }
 
@@ -101,6 +148,7 @@ impl WorkloadAttach {
             frequencies,
             block_frequencies: BTreeMap::new(),
             bridge: None,
+            measured_footprint: BTreeMap::new(),
         }
     }
 
@@ -113,12 +161,20 @@ impl WorkloadAttach {
             frequencies: BTreeMap::new(),
             block_frequencies,
             bridge: Some(bridge),
+            measured_footprint: BTreeMap::new(),
         }
     }
 
     /// Which grain priced workload `name` — the dump prints this so the
     /// both-sidecars rule (see `attach_workloads`) is never silent.
     /// `None` for `flat` and for any name this attach did not measure.
+    /// The per-core budget under workload `name`'s measured `f`, if it has
+    /// one. `None` for `flat` and for any method-grain workload — a method
+    /// vector says nothing about *which blocks* are hot.
+    pub fn measured_budget(&self, name: &str) -> Option<&[CoreBudget]> {
+        self.measured_footprint.get(name).map(|v| v.as_slice())
+    }
+
     pub fn grain_of(&self, name: &str) -> Option<&'static str> {
         if self.block_frequencies.contains_key(name) {
             Some("block")
@@ -552,6 +608,7 @@ Worker.report=2
                 BTreeMap::from([("F.m#0".to_string(), 1u64)]),
             )]),
             bridge: None,
+            measured_footprint: BTreeMap::new(),
         };
         let err = attach_workloads(&mut report, &attach).expect_err("no bridge");
         assert!(err.contains("no block bridge"), "got: {err}");
@@ -573,6 +630,7 @@ Worker.report=2
             frequencies: BTreeMap::from([(m1.workload.clone(), m1.counts.clone())]),
             block_frequencies: BTreeMap::from([(m2.workload.clone(), m2.counts.clone())]),
             bridge: Some(bridge.clone()),
+            measured_footprint: BTreeMap::new(),
         };
         attach_workloads(&mut report, &attach).expect("attach");
         assert_eq!(attach.grain_of("boot-actors"), Some("block"));
@@ -627,6 +685,149 @@ Worker.report=2
             m.uncovered_cycles,
             m.cycles
         );
+    }
+
+    // --- the wiring: items C + F + H joined ------------------------------
+
+    /// Score `case` the way the CLI's `--stage=cost` does — bridge-mode
+    /// codegen, real sealed placement, the real sidecar — and attach.
+    fn attached(case: &str) -> (CostReport, WorkloadAttach, crate::placement::PlacementTable) {
+        let p = crate::cost::repo_root().join(format!("tests/golden/{case}/input.wr"));
+        crate::opts::apply_mode(crate::opts::CompileMode::Release);
+        crate::codegen::set_block_bridge(true);
+        let (prog, placement) =
+            crate::cost::codegen_cost_stage_with_placement(&p).expect("cost-stage codegen");
+        crate::codegen::set_block_bridge(false);
+        let t = table();
+        let mut report = crate::cost::score_program(&prog, &t, &placement).expect("score");
+        let attach =
+            WorkloadAttach::load_default_for(Some(&p), &prog, &t, &placement).expect("attach");
+        attach_workloads(&mut report, &attach).expect("attach workloads");
+        (report, attach, placement)
+    }
+
+    /// **The join, end to end.** The measured row is priced with an `s(b)`
+    /// that carries item H's bias-derived mispredict, and the flat row is
+    /// not — `total_proxy_cycles` is still `cost(P, W_flat)` with
+    /// `HotBlocks::All` and `BlockCounts::Flat`, exactly as 04 §5 and item H
+    /// require.
+    #[test]
+    fn the_measured_row_carries_bias_and_the_flat_row_does_not() {
+        let (report, attach, placement) = attached("boot-actors");
+        let t = table();
+
+        // The flat row: byte-for-byte the measurement-free score.
+        let (prog, _) = {
+            let p = crate::cost::repo_root().join("tests/golden/boot-actors/input.wr");
+            crate::opts::apply_mode(crate::opts::CompileMode::Release);
+            crate::codegen::set_block_bridge(true);
+            let r = crate::cost::codegen_cost_stage_with_placement(&p).expect("codegen");
+            crate::codegen::set_block_bridge(false);
+            r
+        };
+        let flat = crate::cost::score_program_at_with_hot(
+            &prog,
+            &t,
+            &placement,
+            &SweepPoint::pinned(&t),
+            HotBlocks::All,
+            BlockCounts::Flat,
+        )
+        .expect("flat score");
+        assert_eq!(report.total_proxy_cycles, flat.total_proxy_cycles);
+        assert_eq!(
+            report.workload_totals["flat"], report.total_proxy_cycles,
+            "the flat row IS cost(P, W_flat)"
+        );
+        assert_eq!(
+            report.footprint, flat.footprint,
+            "the printed `Budget` line stays the static-footprint row (HotBlocks::All)"
+        );
+
+        // The measured row: strictly more than the same Σ f×s over a
+        // flat-scored s(b), and the difference is the bias-derived
+        // mispredict reaching the number.
+        let spans = crate::codegen::block_spans();
+        let flat_bridge = BlockBridge::build(&prog, &spans, &t, &placement).expect("flat bridge");
+        let counts = &attach.block_frequencies["boot-actors"];
+        let under_flat_s = block_grain_fxs(&report.fns, &flat_bridge, counts).expect("flat s");
+        let measured = block_grain_fxs(
+            &report.fns,
+            attach.bridge.as_ref().expect("measured bridge"),
+            counts,
+        )
+        .expect("measured s");
+        assert_eq!(report.workload_totals["boot-actors"], measured.cycles);
+        assert!(
+            measured.cycles > under_flat_s.cycles,
+            "wiring the measured counts into s(b) must actually move the measured row: \
+             {} vs {}",
+            under_flat_s.cycles,
+            measured.cycles
+        );
+
+        // Freeze 1627 / decision 1617: the wiring must move no coverage
+        // number at all.
+        assert_eq!(report.workload_coverage["boot-actors"], (893, 6647));
+        assert_eq!(
+            (measured.matched, measured.total),
+            (under_flat_s.matched, under_flat_s.total)
+        );
+        assert_eq!(
+            (measured.resolved_keys, measured.unresolved_keys),
+            (81, 291)
+        );
+        assert_eq!(attach.grain_of("boot-actors"), Some("block"));
+    }
+
+    /// **Item F under a measured `f`** (plans/M20.md item F's own recorded
+    /// finding is that under `W_flat` *every* block is hot): a block the
+    /// measurement never entered is not hot text, so the measured budget is
+    /// strictly smaller than the flat one.
+    ///
+    /// The direction is an **under**-cost of hot text — decision 1617
+    /// already tells item J to read its veto off the flat row until block
+    /// coverage improves, and this asserts the two rows really are distinct
+    /// so nobody mistakes one for the other.
+    #[test]
+    fn the_measured_per_core_budget_excludes_cold_text() {
+        let (report, attach, _) = attached("boot-actors");
+        let flat = &report.footprint;
+        let measured = attach
+            .measured_budget("boot-actors")
+            .expect("a block-grain workload has a measured budget");
+        assert_eq!(flat.len(), measured.len(), "one budget per core, both rows");
+        assert!(!flat.is_empty(), "boot-actors has a sealed placement");
+        for (f, m) in flat.iter().zip(measured.iter()) {
+            assert_eq!(f.n, m.n);
+            assert!(
+                m.hot_text_bytes < f.hot_text_bytes,
+                "core {}: the measured vector must exclude some text ({} vs {})",
+                f.n,
+                m.hot_text_bytes,
+                f.hot_text_bytes
+            );
+            assert!(m.hot_text_bytes > 0, "core {}: and not all of it", f.n);
+            assert_eq!(f.l1i_bytes, 65536);
+        }
+        // A method-grain-only workload says nothing about which blocks are
+        // hot, so it gets no measured budget rather than a fabricated one.
+        assert!(attach.measured_budget("flat").is_none());
+    }
+
+    /// The five `cost-*` cases commit no `lane2-freq.txt`, so this wiring
+    /// must not reach them at all: no bridge, no measured budget, and the
+    /// flat total unchanged. (The whole-dump byte identity is checked with
+    /// `wrela dump --stage=cost` against the committed goldens.)
+    #[test]
+    fn a_case_with_no_block_vector_is_untouched_by_the_wiring() {
+        let (report, attach, _) = attached("cost-branchy");
+        assert!(attach.bridge.is_none());
+        assert!(attach.measured_footprint.is_empty());
+        assert!(attach.block_frequencies.is_empty());
+        assert_eq!(report.total_proxy_cycles, 172, "the pinned flat total");
+        assert_eq!(report.workload_totals["flat"], 172);
+        assert_eq!(report.workload_totals.len(), 1, "flat row only");
     }
 
     /// The `f` vector this case commits was measured on the test image, and

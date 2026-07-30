@@ -51,6 +51,7 @@ pub mod footprint;
 pub mod freq;
 pub mod ghz;
 pub mod mem;
+pub mod oracles;
 pub mod owner;
 pub mod rule;
 pub mod score;
@@ -62,7 +63,7 @@ pub mod workload;
 pub use ab::{CostOpts, rank_cmp, score_with_opts};
 pub use attr::{CoreBucket, CoreCostReport, PlaceableTurn, attribute_cores};
 pub use branch::{BlockCounts, BlockObs, BranchSummary, BranchTerms, FRONTEND_SWEEP_DIM};
-pub use bridge::{BlockBridge, BridgedBlock, Resolved, make_key, split_key};
+pub use bridge::{BlockBridge, BridgedBlock, MeasuredBlocks, Resolved, make_key, split_key};
 pub use compose::{
     BlockGrainMeasure, WorkloadAttach, attach_workloads, block_grain_fxs, method_grain_fxs,
     uncovered_charge,
@@ -72,6 +73,7 @@ pub use footprint::{CoreBudget, HotBlocks, PAGE_BYTES};
 pub use freq::{BlockFreq, MethodFreq, sibling_block_freq_path, sibling_freq_path};
 pub use ghz::{DEFAULT_GHZ, fmt_compact, ms_per_turn, parse_ghz, turns_per_sec};
 pub use mem::{LineId, MemLevel, MemState, MemVerdict};
+pub use oracles::{check_dimension_inventory, inventory_rows, plan_inventory_rows, plan_text};
 pub use owner::classify_owner;
 pub use rule::{CostRule, EmittedWord, FlagEffect, MEM_SP_REG, MemClass, MemRef};
 pub use score::{
