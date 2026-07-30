@@ -113,6 +113,20 @@
 //! owning placeable. A future item that wants the broad charge must
 //! re-open this paragraph, not just change a coefficient.
 //!
+//! **What bounds the damage today, and what removes that bound.** The
+//! under-cost is only *exploitable* by a transformation that changes which
+//! core reads a line — and this rung lands **no named opt at all**
+//! (freeze 1628), so nothing in the tree can currently spend it. The
+//! transformation that would is **actor co-placement**, which
+//! `plans/M20.md` item M names as a next-rung candidate precisely because
+//! row 18 makes placement a cost question for the first time
+//! (`placement.rs` packs on `(work, bytes)` with no notion of cross-core
+//! traffic). So: **co-placement may not be scored on this ruler until
+//! point 5 is closed.** Attempting it against an unclassifiable-cold-load
+//! model would let a candidate move an actor to another core and pay
+//! nothing for the remote reads it created — a proxy win that implies a
+//! real-machine loss, which is the one thing 04 §5 exists to forbid.
+//!
 //! ## Row 19, system-register access
 //!
 //! SOG §4.10 gives, per register, whether access is non-speculative,

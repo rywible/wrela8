@@ -1,15 +1,40 @@
-# The optimization ladder: candidate opts for the A76 ruler
+# Optimization research backlog: candidates to pull in as needed
 
-**Status: PROPOSED (2026-07-29).** Not activated, and **cannot activate
-before M20 closes** — every candidate below is priced by the ruler M20
-builds (block-grain `f`, 8-pipe port model, real memory hierarchy,
-bias-derived branches, cross-core terms, ∀ sweep). This document is the
-expanded form of what [M20.md](M20.md) item M records as "the candidate
-list the new ruler makes scoreable," written down now so the arguments from
-the 2026-07-29 design discussions are not re-derived later. Decision block
-1700–1799 reserved on activation. Milestone numbering is the human's call;
-the tiers below are dependency-ordered, not milestone-ordered — several
-tiers could be one milestone or several.
+**Status: BACKLOG (2026-07-29).** **Not a plan and not scheduled.** This is
+the catalogue of optimization candidates for the A76 ruler, kept so the
+arguments from the 2026-07-29 design discussions are not re-derived later.
+Every candidate is priced by the ruler [M20.md](M20.md) builds (block-grain
+`f`, 8-pipe port model, real memory hierarchy, bias-derived branches,
+cross-core terms, ∀ sweep), so nothing here can be evaluated before M20
+closes.
+
+**The Pareto subset was extracted into a real plan:
+[codegen-pareto.md](codegen-pareto.md)** — register allocation, the no-ABI
+items, hot/cold block layout, and the easy static-shape wins. Items marked
+**[IN PLAN]** below live there now and are kept here only as context.
+Everything else is parked, to be pulled in when measurement justifies it.
+Decision block 1700–1799 belongs to the plan; a pulled-in item takes its
+numbers from whatever plan adopts it.
+
+**Pull-in priority when the plan closes** (revise against its measured
+results, not against this ordering):
+
+1. **The inliner (2a) + GVN/SCCP/DCE (2b).** The largest parked win. wrela's
+   redundancy is *spatial* — repeated constant materialization, repeated
+   rodata addressing, repeated bounds-check subexpressions — and inlining
+   plus redundancy elimination is what kills it. Deferred from the plan only
+   because it is a large build, not because it ranks low.
+2. **Range propagation (Tier 7 beyond type-known widths).** Potentiates 2b
+   and unlocks provable check elision.
+3. **Block page tables (6a).** Plausibly the single largest lever in Tier 6,
+   and it deletes a whole class of cost-model uncertainty rather than
+   optimizing against it.
+4. **SIMD + vectorizer (Tiers 9–10).** Gated on the pixels rung; when that
+   activates, this becomes urgent rather than optional.
+5. Everything else by opportunity.
+
+The tier numbers below are **identifiers grouped by mechanism**, not a
+schedule. See "Recommended sequencing" near the end for dependency order.
 
 ## Standing rules (M19/M20 doctrine, restated once)
 
@@ -55,6 +80,39 @@ Facts established in M20's research pass; each shaped the ordering below:
 6. **Code already exceeds L1I** (93–98 KB text vs 64 KiB), so every
    code-growing opt is spending a budget that is already overdrawn until
    the hot-footprint term says otherwise.
+7. **There is no SIMD at all.** No NEON encodings beyond incidental
+   `CostRule::Neon`, no vector MWIR, no vectorizer — while 06 §7 already
+   commits the display path to "pure CPU (**NEON**)" rendering. Tiers 9–10
+   close that gap; until they do, the machine cannot render its own
+   flagship mode at the quality the contract implies.
+8. **The no-ABI fact is the least-exploited structural advantage in the
+   project.** AAPCS64 exists so strangers can call your code; a sealed
+   image has no strangers. Tier 1's interprocedural allocator is the
+   keystone item on this whole ladder.
+
+## Why the ceiling is above LLVM (the thesis, in one table)
+
+Full argument in [beating-llvm.md](beating-llvm.md); the short form,
+because it drives the tier ordering. Hand-written assembly beats compiler
+output for about ten reasons, and wrela structurally removes seven:
+
+| Why hand asm wins | wrela | Tier |
+| --- | --- | --- |
+| Human knows the aliasing | **removed** (type-system fact) | 10 |
+| Human ignores the ABI | **removed** (no external linkage) | **1** |
+| Human knows alignment | **removed** (compiler owns layout) | 4, 9 |
+| Human knows trip counts/shapes | **removed** (bounds, comptime sizes, measured trips) | 0, 10 |
+| Human allocates registers globally | **removed** (no ABI + whole program) | **1** |
+| Human uses exotic instructions | reducible (single target, no feature guards) | 6 |
+| Human schedules for the µarch | mostly moot (A76 is OoO, 128-entry window) | — |
+| Human knows value invariants | **partly removed** (checked arithmetic is a range oracle) | 7 |
+| Human accepts unmaintainable code | *not* removed (compile time is a product number) | — |
+| Human chose a better algorithm | *not* removed | — |
+
+**The honest claim this licenses:** hand-asm-quality codegen *for the
+algorithm you wrote*. Not algorithm discovery. That is still the whole
+prize, because it means writing ordinary wrela gets you what writing
+assembly would have.
 
 ## Tier 0 — measure first (no opt lands; days, not weeks)
 
@@ -86,7 +144,7 @@ reloaded get no slot; shrink the frame and the `sub sp` immediate. Cuts
 distinct `MemRef` keys, which the reuse-distance model now prices. Same
 disposability note as 1a.
 
-**1c. Register allocation, per function.** The real item. Linear-scan over
+**1c. Register allocation, per function.** **[IN PLAN]** The real item. Linear-scan over
 the existing per-fn MWIR — no SSA construction required for a first
 version; wrela's exclusivity rules mean no aliasing analysis is needed to
 prove a temp's live range. ~28 usable GPRs. Every temp that stays resident
@@ -114,6 +172,182 @@ across the whole turn body (entry method + its inlined callees, after
 Tier 2) so a turn's working state never touches the frame at all. This is
 the sized-down, achievable form of "everything lives in registers" — the
 live-range firewall is the turn boundary, which the language guarantees.
+
+### The no-ABI items (LLVM structurally cannot do these)
+
+**No function in a sealed image is callable from outside it.** AAPCS64 —
+x0–x7 arguments, x8 indirect result, x19–x28 callee-saved, x29 frame
+pointer — exists so strangers can call your code. There are no strangers.
+LLVM approximates this with `internal` + `fastcc` + LTO, but visibility
+rules, symbol interposition, and plugin boundaries keep it partial.
+
+**1f. Interprocedural register allocation.** **[IN PLAN]** One allocation problem over
+the whole program, with a **custom convention per function** computed
+globally rather than AAPCS64's fixed one. This is the *legitimate* form of
+the "one function per vCPU" instinct: cross-call register residency
+**without fusing code**, so the live-range firewalls that made fusion
+counterproductive survive intact. Keystone item — 1c is a prerequisite,
+not a substitute.
+
+**1g. No callee-saved discipline.** **[IN PLAN]** The caller knows exactly which
+registers the callee clobbers (whole program, no indirect calls, no `dyn`),
+so conservative save/restore **disappears** rather than being minimized.
+
+**1h. Frameless functions.** **[IN PLAN]** A function whose values all fit in registers
+needs no stack frame: prologue, epilogue, and the `sub sp` all vanish.
+Against a spill-everything baseline this is the largest per-function
+constant-factor win available.
+
+**1i. Arbitrary-arity register passing and multi-value returns.** **[IN PLAN]** Twenty
+live values across a call if the allocator wants it; no x0–x7 limit, no
+x8 indirect-result convention, no struct-return dance.
+
+**1j. Universal tail calls + argument-specialized cloning.** **[IN PLAN]** Every
+tail-position call becomes a jump, unconditionally — not an optimization
+that sometimes applies. And because all call sites are known, clone a
+function per call site's known-constant arguments **without inlining it**:
+the enabling effect of inlining at a fraction of the size cost. Pairs with
+2a; prefer cloning where inlining would grow words.
+
+## Tier 7 — value ranges (automating "the human knows the invariants")
+
+The least-explored axis, and pure profit. wrela has **sized integer types
+with checked arithmetic**: if a program is accepted, every arithmetic
+result is provably in range. That is a free range oracle LLVM must
+reconstruct with `computeKnownBits` and routinely loses across calls.
+
+**7a. Type-driven width selection.** **[IN PLAN]** The A76 payoff is concrete, large, and
+verified from the SOG: `MADD`/`MSUB` **W-form is 2-cycle at 1/cycle
+throughput**, while **X-form is 4-cycle at 1/3 throughput *and* stalls the
+only M pipe for 2 extra cycles** (§3.6 notes 2/4). A multiply whose type
+proves ≤32 bits must never emit X-form. Same for divides, which block that
+same single pipe for 5–20 cycles. Cheap, immediate, provable — a good
+warm-up item.
+
+**7b. Range-proved check elision.** Propagate declared ranges to prove
+overflow and bounds checks dead. This is the *provable* subset of check
+removal, which is the only permitted subset (see 2d and prior 4).
+
+**7c. Range-proved canonicalization elision.** `narrow_to_width`'s LSL/LSR
+pair is dead whenever the range proves the value already canonical —
+supersedes 2c's syntactic version with a semantic one.
+
+**7d. Range-driven representation choice.** A value proven < 2^31 lives in
+a `W` register and stores as 4 bytes, feeding the compressed handle packing
+in 6m. A value proven < 2^8 enables the SWAR paths in 6o.
+
+## Tier 8 — frequency-driven code layout (PGO, without PGO)
+
+LLVM's PGO needs an instrumented build, a training run, and a profile that
+goes stale. wrela's Lane 2 sidecar is committed next to the source and
+validated by Lane 3 host agreement — so every decision here is *ordinary*,
+not opt-in.
+
+**8a. Basic-block hot/cold layout.** **[IN PLAN]** Pack the measured hot path
+contiguously; move cold blocks (abort paths, error handling, rare branches)
+out of the hot region entirely. **This is the cheapest large win on the
+ladder and the one that makes every other code-growing opt affordable**,
+because it attacks the 93–98 KB-text-vs-64 KiB-L1I problem directly: static
+size stops mattering once the *hot* subset is dense. Do this early.
+
+**8b. Fallthrough = measured-likely path**, on every branch. Free, and
+pairs with 3a's bias data.
+
+**8c. Call-site-frequency-driven specialization** instead of heuristic
+inlining thresholds — the frequency input 2a and 1j should consult.
+
+## Tier 9 — SIMD infrastructure (prerequisite for Tier 10)
+
+Nothing here is an opt; it is the missing backend capability. 06 §7 already
+commits the display path to NEON rendering, so this is closing a gap
+between the machine contract and the compiler, not adding a feature.
+
+**9a. NEON encodings in `encode.rs`.** A bounded set, not the whole ISA
+(freeze 1630 — model and emit only what is used): `LD1`/`ST1` vector
+load/store, `LDP`/`STP` of Q registers (also wanted by 4c), integer
+`ADD`/`SUB`/`MUL`/`MLA` on vectors, logical `AND`/`ORR`/`EOR`, shifts,
+`CMEQ`/`CMGT` compares, `DUP`, `EXT`, and the reduction ops (`ADDV`,
+`UMAXV`). `enc_ldaxr_w`'s presence-but-unused precedent shows the shape.
+
+**9b. Vector types in MWIR + codegen.** New MWIR instruction forms over
+fixed-width vector temps, mapped to `V0`–`V31`. Register allocation must
+learn the V bank — which composes with 1d (spill-to-VPR) since both need V
+registers to be first-class rather than scratch.
+
+**9c. Cost-model NEON rows.** M20 inventory **row 35's trigger condition
+has fired**: wrela now emits FP/ASIMD, so the freeze that declined those
+rows is satisfied by adding them, not violated. The SOG's ASIMD tables are
+already extracted — transcription, not research. Two inventory rows flip
+from N/A to **live** the moment 9a lands, and both must be modelled here:
+  - **row 32, region-based fast forwarding** (SOG §4.7): +1 cycle when
+    producer and consumer are in different forwarding regions. Real once
+    vector chains exist.
+  - **row 33, the §4.2 dispatch stall**: a V-pipe uop with more than one
+    quad-word source previously written as single words stalls dispatch
+    3 cycles. Avoidable by construction if 9b never emits S-register
+    writes feeding Q reads — make that an invariant, not a hope.
+  - Also now live: **store-data uops share the V pipes**, so vector work
+    contends with every scalar store in the program. The port model
+    already knows this (M20 item E); vectorized code makes it bite.
+
+**9d. Language-surface decision (settle in item 0, do not drift).**
+Recommended: **no language surface at all.** Vectorization is an *as-if*
+transformation — `dev` mode stays scalar and remains the correctness
+reference, `diff-eval` proves equivalence, and the docs gain a sentence in
+04 §5 rather than new syntax, types, or intrinsics. Rejected: explicit
+vector types (large 02 change, new sema, new goldens) and NEON intrinsics
+(a language surface for a codegen concern, and adjacent to the inline-asm
+prohibition). **The open question this forces:** does the software
+rasterizer rely entirely on auto-vectorizing its scalar loops, or does the
+stdlib need a vector-shaped API? Answer it *before* the pixels rung
+designs its renderer, because the answer shapes that renderer.
+
+## Tier 10 — the vectorizer (where ffmpeg parity is defensible)
+
+**Why LLVM's auto-vectorizer produces cautious, bloated code** — four
+things it *must* emit:
+
+1. runtime alias checks guarding the vector loop;
+2. a scalar fallback loop for when those checks fail;
+3. a remainder loop for `n % VF`;
+4. an alignment peeling loop.
+
+**wrela removes all four structurally**, which is the whole argument:
+
+**10a. No alias checks, no scalar fallback.**
+`values.exclusivity.no-overlap` makes non-aliasing *checked*, so
+vectorization legality is a type-system consequence rather than an analysis
+that usually fails. Neither guard nor fallback is ever emitted.
+
+**10b. No remainder loop — and the trick only wrela can play: the compiler
+picks the size.** Array sizes are comptime and **pool sizes are chosen at
+image build**, so the compiler can round a pool *up* to a SIMD-friendly
+multiple and delete the epilogue entirely. LLVM can never change your
+array's size. Report the rounding in the image report so the footprint
+cost is visible, and let the ruler price size-vs-epilogue per array.
+
+**10c. No alignment peeling.** Alignment is a build-time fact the compiler
+chose (4b, 9a's `LD1` alignment preferences), not a runtime unknown.
+
+**10d. No trip-count dispatch.** `@budget` bounds and measured trips
+(Tier 0a) replace LLVM's `if (n < VF) goto scalar`.
+
+**10e. Reduction and idiom recognition**, informed by Tier 7 ranges: which
+lanes can overflow decides whether a reduction needs widening, and
+accumulator expansion (the one surviving classical unroll motivation) is a
+vectorizer decision here rather than a separate unroll pass.
+
+**The resulting output shape is *just the vector loop*** — which is exactly
+what hand-written assembly looks like, and precisely why ffmpeg's asm is
+smaller and faster than compiler output for the same algorithm: it is not
+carrying four contingencies that cannot occur. The wrela vectorizer does
+not need to be cleverer than LLVM's. **It needs less to be afraid of.**
+
+**Gate note.** Vectorization is frequency-dependent and code-growing, so it
+lands under veto-then-rank overall with the per-core text budget enforced —
+never on the flat gate alone. And it is the first opt where `diff-eval` is
+doing heavy lifting as the equivalence oracle rather than a formality;
+budget fuzzing effort accordingly.
 
 ## Tier 2 — inline and clean (where the spatial redundancy dies)
 
@@ -289,7 +523,7 @@ if it uses 4 KiB pages, this is likely the highest single-lever item in
 this tier. Attribute boundaries (device vs normal) force a few splits;
 the layout already segregates them.
 
-**6b. `ADR`-only rodata addressing: the sealed layout makes `ADRP+ADD`
+**6b. [IN PLAN]** `ADR`-only rodata addressing: the sealed layout makes `ADRP+ADD`
 pointless.** Every rodata reference today is a 2-instruction `ADRP`+`ADD`
 pair plus a reloc. `ADR` reaches ±1 MiB; the *worst* pinned image spans
 ~99 KB from first code byte to last rodata byte
@@ -327,7 +561,7 @@ grows acq/rel forms or lowering recognizes the `@dmb`+access idiom), and
 its magnitude is T5 like every other cross-core cost — the *mechanism*
 argument (one-way ≤ full fence) is what lands it, under the ∀ sweep.
 
-**6e. `UBFX`/`SBFX`/`BFI` for `narrow_to_width` and field access.** The
+**6e. [IN PLAN, partly]** `UBFX`/`SBFX`/`BFI` for `narrow_to_width` and field access. The
 LSL/LSR canonicalization pair is `UBFX` in one instruction — same 1-cycle
 throughput-3 I-port class, half the words, and it composes with Tier 2c
 (elide when provably canonical, `UBFX` when not). `TBZ`/`TBNZ` similarly
@@ -369,14 +603,14 @@ N+1); this is codegen shape, not a bound change — but it touches the
 trip-counter contract (02 §8.1), so it cites the clause and pins a
 golden.
 
-**6j. Text placement constants.** Two free wins from owning the layout:
+**6j. [IN PLAN]** Text placement constants. Two free wins from owning the layout:
 start the code section on a 2 MiB-aligned base so every branch and target
 share one 2 MiB region (SOG §4.8 — current base 0x40500050 is not
 2 MiB-aligned); and have Tier 3b's 32 B alignment done against that same
 base. One constant in the layout, every address in every golden moves —
 its own commit, like every layout move.
 
-**6k. `ADR` reach extends past rodata to the runtime data sections.**
+**6k. [IN PLAN]** `ADR` reach extends past rodata to the runtime data sections.
 Follow-on to 6b, verified: rtdata (0x40540000) and pooldata (0x405401f8)
 sit ~256 KB from the code base — inside `ADR`'s ±1 MiB. So placed-static
 address materialization (today `MOVZ`+`MOVK`s or `ADRP`+`ADD`) can be one
@@ -409,7 +643,7 @@ with 8-byte alignment (3 low bits) and TBI (8 high bits), one 64-bit slot
 honestly holds a pointer plus ~⁠35 bits of metadata: `{addr[31], gen[8],
 tag[8], len[16]}` in one register, one load.
 
-**6n. Checked-narrow overflow via bitmask-immediate `TST`.** Codegen's
+**6n. [IN PLAN]** Checked-narrow overflow via bitmask-immediate `TST`. Codegen's
 own invariant states it: "Unsigned: overflow iff the high word is
 nonzero." High-mask constants (`0xFFFFFFFF00000000`, `0xFFFFFFFFFFFFFF00`,
 …) are all encodable AArch64 bitmask immediates — a rotated run of ones —
@@ -570,6 +804,67 @@ backend, it dies. First falsifiable step: snapshot only the zeroing +
 init-span phase (already pure data) and diff the resulting boot transcript
 against the status quo — byte-identical minus the elided init lines.
 
+### M3. Verified superoptimization ("synthesize our own peephole tables")
+
+**The idea.** For the measured-hot basic blocks only — Lane 2 says which,
+and there will be few — search the space of equivalent instruction
+sequences and keep the cheapest under the M20 cost model. The search is
+**offline**; its output is a table of ordinary in-code rewrite patterns, so
+build-time compile cost is zero and the compile-time lock is untouched.
+
+**Why wrela can and LLVM effectively cannot.**
+  - **One target.** A rewrite need not be valid or profitable anywhere
+    else. LLVM's peephole patterns must generalize across every backend.
+  - **A perfect equivalence oracle.** `diff-eval` plus byte-identical
+    deterministic replay makes "are these sequences equivalent?" *decidable
+    by execution* on this machine. This is the piece every superoptimizer
+    struggles with, and wrela built it years ago for testing reasons.
+  - **A real cost model to rank candidates** — that is what M20 is.
+  - **A tiny measured hot set.** Superoptimization fails on whole programs
+    and succeeds on kernels; Lane 2 names the kernels.
+  - **Offline is explicitly allowed** by the cleverness budget, provided the
+    output is a committed, locked artifact.
+
+**Why it could be the "god tier" item.** LLVM's peephole tables were
+hand-written over twenty years. wrela could **synthesize its own, verified,
+for its one target** — which is a credible path to patterns no human would
+have thought to write. That is the actual definition of beating hand asm.
+
+**Kill conditions.** If the search space is intractable at realistic block
+sizes even offline, it dies. If discovered rewrites are all special cases
+rather than stable patterns, the table never converges and it dies. Do not
+start before Tiers 1 and 8 exist — a superoptimizer optimizes whatever the
+rest of the pipeline hands it, and handing it spill-everything code wastes
+the search. **First falsifiable step:** take the single hottest block in
+`boot-actors`, enumerate 3-instruction equivalents under the cost model,
+and see whether anything beats what codegen emits today.
+
+## Recommended sequencing
+
+Tier numbers are **identifiers grouped by mechanism**, not a schedule. The
+dependency order that matters:
+
+1. **Tier 0** — measure. Nothing below is well-founded without the
+   trip-count and hot-block tables.
+2. **Tier 8a** — hot/cold block layout. Cheapest large win; makes every
+   later code-growing opt affordable against the L1I budget. Do it early
+   even though its tier number is high.
+3. **Static-shape milestone** — 1a, 1b, 2a, 2c, 2e, 6b, 6k, 7a. All shrink
+   words, all land on the flat gate, all have cheap oracles. 6b (`ADR`-only
+   rodata) and 7a (W-form multiply) are the standout ratio items.
+4. **The allocator milestone** — 1c, then 1d. Own milestone; large golden
+   blast radius.
+5. **The no-ABI milestone** — 1f–1j, then 1e. The keystone, and the most
+   clearly LLVM-impossible work in the project.
+6. **Tier 7 + Tier 2b** — ranges and redundancy elimination, which
+   potentiate each other.
+7. **Tier 9** — SIMD infrastructure. Gated on the pixels rung wanting it,
+   or on 9d's open question being answered, whichever comes first.
+8. **Tier 10** — the vectorizer. Only after 9, and only once something in
+   the stdlib has a real data-parallel loop worth vectorizing.
+9. **Tiers 4, 5, 6 remainder, M1, M2** — by opportunity and appetite.
+10. **M3** — research. After 1 and 8, never before.
+
 ## Suggested first milestone cut
 
 Tier 0 + 1a/1b/2a/2c/2e as one static-shape milestone (all shrink words,
@@ -582,8 +877,10 @@ first falsifiable step as item 0.
 
 | Rejected | Why (short form) |
 | --- | --- |
-| Full unrolling / whole-program fusion / mega-function per vCPU | size arithmetic vs 64 KiB L1I; ceilings ≠ trip counts; A76 unrolls in hardware; compile-time lock |
-| AoS→SoA rewriting | wrong access pattern (element-at-a-time); no vectorizer to feed |
-| Auto-vectorization | no NEON emission to speak of; cost model deliberately has no NEON rows (M20 freeze 1630) |
-| Check deletion for cycles | checks are ~free under the bias model; only *dominance-proven* elision (2d), for words |
+| Full unrolling / whole-program fusion / mega-function per vCPU | size arithmetic vs 64 KiB L1I; ceilings ≠ trip counts; A76 unrolls in hardware; compile-time lock. **Note:** 1f delivers this instinct's actual payoff (cross-call register residency) without fusing anything |
+| Blanket AoS→SoA rewriting | wrong access pattern for actor state (element-at-a-time). **Superseded in part:** decide layout **per array** from measured access (4a) once Tier 10 exists and a field-scanning workload appears — a rasterizer's pixel buffers may qualify where actor state never will |
+| ~~Auto-vectorization~~ | **no longer rejected — now Tiers 9–10.** The prior reason (no NEON emission, no cost rows) was a statement about the backend, not about the idea; M20 row 35's trigger has fired |
+| Explicit vector types / NEON intrinsics as a language surface | 9d — vectorization is an as-if transform; `dev` mode + `diff-eval` are already the right oracles, so the language does not need to change |
+| Check deletion for cycles | checks are ~free under the bias model; only *dominance-proven* (2d) or *range-proven* (7b) elision, and the win is words |
 | Barrier removal/motion | correctness-load-bearing; freeze 1633 |
+| Algorithm discovery | no compiler does this. The claim is hand-asm quality *for the algorithm you wrote* |
