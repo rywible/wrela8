@@ -1931,6 +1931,17 @@ fn test_cmd(args: &[String]) -> ExitCode {
         }
     }
 
+    // plans/M20.md item B: same stderr-only Lane 2 id count as `build_cmd`.
+    // `test.txt` goldens pin stdout, and no golden runner passes
+    // `--block-count`, so this never enters a pinned transcript.
+    if block_count {
+        eprintln!(
+            "test: block-count ids={} pool={}",
+            wrela_compiler::codegen::block_ids_assigned(),
+            wrela_compiler::rtconfig::BLOCK_POOL_COUNT
+        );
+    }
+
     let Some(vmm_path) = find_vmm_binary(vmm_arg.as_deref()) else {
         for l in &comptime_lines {
             println!("{l}");
@@ -2270,6 +2281,19 @@ fn build_cmd(args: &[String]) -> ExitCode {
         }
     }
 
+    // plans/M20.md item B: the Lane 2 id count for this build, on **stderr**
+    // only and only under the test-only `--block-count` flag — every
+    // `build.txt` golden pins stdout, and no golden runner passes
+    // `--block-count`, so this line never enters a pinned dump. It exists
+    // so the pool headroom under decision 1607's wider owner set is
+    // measurable per case without an ad-hoc script.
+    if block_count {
+        eprintln!(
+            "build: block-count ids={} pool={}",
+            wrela_compiler::codegen::block_ids_assigned(),
+            wrela_compiler::rtconfig::BLOCK_POOL_COUNT
+        );
+    }
     println!("build: name={} target={}", r.name, r.target);
     println!(
         "build: devices={} drivers={} actors={} pools={}",

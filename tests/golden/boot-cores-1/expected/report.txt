@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/boot_cores_1.wr sha256=6bedd805796627a3b1ed999541463906cc4f9856c0a0acef91cd8829e27d373b
-  Input path=<generated> sha256=73c854a57f1716c3bae3a5ada9e360c5242511f75a729c46fd8ff4d06e70ffa3
+  Input path=<generated> sha256=be6d602b9cbba82e83f31676b0e0f81cd08b9a056b0c3179fb47cc7725fe0ec0
   Name value=boot-cores-1
   Target value=Target.wrela_machine_v1
   Actor index=0 type=Ledger
@@ -55,9 +55,9 @@ ImageReport v0
     Field name=run_one_hits type=[u64; N_CORES] offset=0x8 size=8
     Field name=messages type=[u64; N_CORES] offset=0x10 size=8
     Field name=method_hits type=[u64; LANE1_METHOD_HITS_LEN] offset=0x18 size=1024
-  Layout name=Lane2Counters kind=runtime endian=little size=8200 padding=0
+  Layout name=Lane2Counters kind=runtime endian=little size=24584 padding=0
     Field name=enabled type=u64 offset=0x0 size=8
-    Field name=hits type=[u64; BLOCK_POOL_COUNT] offset=0x8 size=8192
+    Field name=hits type=[u64; BLOCK_POOL_COUNT] offset=0x8 size=24576
   Section name=pages base=0x40000000 size=28672
   Cores count=1
   CoreStack core=0 base=0x7ff00000 size=0x100000
@@ -81,8 +81,8 @@ ImageReport v0
   PlacedStatic name=INIT_SPAN5 type=InitSpan5Words addr=0x4057f760 size=8
   PlacedStatic name=INIT_SPAN6 type=InitSpan6Words addr=0x4057f768 size=8
   PlacedStatic name=INIT_SPAN7 type=InitSpan7Words addr=0x4057f770 size=8
-  PlacedStatic name=LANE1 type=Lane1Stripe addr=0x4000b000 size=1048
-  PlacedStatic name=LANE2 type=Lane2Counters addr=0x40008800 size=8200
+  PlacedStatic name=LANE1 type=Lane1Stripe addr=0x4000e900 size=1048
+  PlacedStatic name=LANE2 type=Lane2Counters addr=0x40008800 size=24584
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=536
   PlacedStatic name=MB0_CTL type=MbCtl addr=0x40540cc8 size=24
   PlacedStatic name=MB0_DATA type=Mb0Data addr=0x40540c08 size=192

@@ -5284,13 +5284,23 @@ fn two():
         }
     }
 
+    /// One `Lane2Counters`: `enabled: u64` + `hits: [u64; BLOCK_POOL_COUNT]`.
+    /// plans/M20.md item B raised the pool to 3072, so this is 24584 bytes
+    /// where it was 8200 — which is why `LANE1` moved.
+    const LANE2_BYTES: u64 = 8 + (crate::rtconfig::BLOCK_POOL_COUNT as u64) * 8;
+
     #[test]
     fn device_window_accepts_the_live_lane_pages() {
         assert_eq!(LANE1_ROW, 1048);
-        for cores in [1u64, 2, 3, 19] {
+        assert_eq!(LANE2_BYTES, 24584);
+        // plans/M20.md item B: five rows, not the pre-M20 nineteen — the
+        // widened `LANE2` page consumes the space the stripe used to grow
+        // into. Five still covers the Pi 5 (freeze 1621); the trade is
+        // recorded on `rtconfig::BLOCK_POOL_COUNT`.
+        for cores in [1u64, 2, 3, 5] {
             let placed = vec![
-                window_static("LANE2", 0x4000_8800, 8200),
-                window_static("LANE1", 0x4000_b000, cores * LANE1_ROW),
+                window_static("LANE2", 0x4000_8800, LANE2_BYTES),
+                window_static("LANE1", 0x4000_e900, cores * LANE1_ROW),
                 // Outside the window: never considered.
                 window_static("RT", 0x4054_0000, 3072),
             ];
@@ -5305,7 +5315,7 @@ fn two():
         // exactly why the stripe moved above it.
         let placed = vec![
             window_static("LANE1", 0x4000_8000, 2 * LANE1_ROW),
-            window_static("LANE2", 0x4000_8800, 8200),
+            window_static("LANE2", 0x4000_8800, LANE2_BYTES),
         ];
         let err = verify_device_window_statics(&placed).expect_err("LANE1 reaches LANE2");
         assert!(
@@ -5317,11 +5327,13 @@ fn two():
 
     #[test]
     fn device_window_refuses_a_stripe_past_the_end_of_the_window() {
+        // plans/M20.md item B: six rows leave the window at the post-M20
+        // base (five fit), where twenty were needed at 0x4000b000.
         let placed = vec![
-            window_static("LANE2", 0x4000_8800, 8200),
-            window_static("LANE1", 0x4000_b000, 20 * LANE1_ROW),
+            window_static("LANE2", 0x4000_8800, LANE2_BYTES),
+            window_static("LANE1", 0x4000_e900, 6 * LANE1_ROW),
         ];
-        let err = verify_device_window_statics(&placed).expect_err("20 rows leave the window");
+        let err = verify_device_window_statics(&placed).expect_err("6 rows leave the window");
         assert!(
             err.message
                 .contains("past the end of the reserved device-page window"),

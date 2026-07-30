@@ -147,13 +147,46 @@ pub const MB_POOL_COUNT: usize = 32;
 /// `__method_N` so `__wrela_call_method` bodies can Call them.
 pub const METHOD_CALL_POOL_COUNT: usize = 128;
 /// Integrity Phase 2 Item M — Lane 2 in-guest block-counter pool. Codegen
-/// fails closed if exhausted. Transcript bound (when `--block-count` is on)
-/// reserves [`BLOCK_BOUND_PRINT_PAIRS`] hit pairs, not the full pool — the
-/// dump emits non-zero entries only; boot-actors stays well under that.
-pub const BLOCK_POOL_COUNT: usize = 1024;
-/// Worst-case non-zero `id:count,` pairs reserved in the transcript bound
-/// under `--block-count` (Item M). Must stay ≤ console DATA_SIZE headroom
-/// after Lane 1.
+/// fails closed if exhausted ([`crate::codegen`]'s `alloc_block_id`).
+///
+/// plans/M20.md item B / decision 1607 raised this from 1024: with
+/// `runtime` and `driver` instrumented, the measured id count of a
+/// `@test(runtime)` image is 2344 (`boot-hello`) to **2788**
+/// (`boot-cross-core-mailbox-depth`), `boot-actors` 2524 — every one of the
+/// 45 `boot-*` cases exhausted a 1024 pool. 3072 is the corpus maximum plus
+/// ~10%.
+///
+/// **This size costs device-window space, and the cost is real.** `LANE2` is
+/// `8 + 8 * BLOCK_POOL_COUNT` bytes at a host-pinned base
+/// (`wrela_vmm::lane3::LANE2_BASE`), so growing it pushed `LANE1` up inside
+/// the fixed 32 KiB window (`layout.rs`'s `DEVICE_WINDOW_LO/HI`): the Lane 1
+/// stripe now fits `N_CORES <= 5` where it fitted 19 before. That is within
+/// the Pi 5's four cores (freeze 1621) but far below `CORE_SLOTS = 32`, and
+/// it is the constraint to revisit before either pool grows again.
+pub const BLOCK_POOL_COUNT: usize = 3072;
+/// Non-zero `id:count,` pairs *reserved* in the transcript bound under
+/// `--block-count` (Item M). Must stay ≤ console DATA_SIZE headroom after
+/// Lane 1.
+///
+/// **This is a reservation, not a proof, and after plans/M20.md item B it is
+/// knowingly smaller than the worst case.** It was already a deliberate
+/// under-reservation ("the dump emits non-zero entries only"), and item B's
+/// widening blew through the claim that came with it: measured non-zero
+/// blocks per boot are now 126 (`boot-hello`) to **609**
+/// (`boot-cross-core-mailbox-depth`), `boot-actors` **372** — all above 128.
+/// Nothing truncates at run time, because the *actual* line is ~9 bytes per
+/// pair while this bound charges the 42-byte worst case; the guest dump and
+/// the Lane 3 host DRAM snapshot agree byte for byte on `boot-actors`
+/// (`cargo xtask diff-block-count`).
+///
+/// Raising it to the real worst case is **not possible** in the current
+/// console geometry: `console::DATA_SIZE` is 16 KiB and the tightest
+/// `boot-*` images already refuse at 250 pairs (measured; 248 is the corpus
+/// ceiling), so 609 pairs cannot be bounded at all. Left at 128 on purpose
+/// — raising it only refuses images without making the bound sound. Closing
+/// the gap needs a decision this item is not allowed to make: a tighter
+/// per-pair worst case, a larger console, or making the Lane 3 host snapshot
+/// the normative Lane 2 sink (`wrela-vmm --dump-lane2` already exists).
 pub const BLOCK_BOUND_PRINT_PAIRS: usize = 128;
 /// Boot `init` call stub pool (decision 812).
 pub const BOOT_CALL_POOL_COUNT: usize = 32;
