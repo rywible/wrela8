@@ -124,12 +124,15 @@ pub fn attribute_cores(
     })
 }
 
-enum AttrTarget {
+/// Where a scored fn key's mass belongs. Shared by the proxy-cycle
+/// attribution here and the per-core footprint model
+/// ([`super::footprint`], plans/M20.md item F) — one classifier, not two.
+pub(crate) enum AttrTarget {
     Core(usize),
     Shared,
 }
 
-fn classify_target(key: &str, placement: &PlacementTable) -> Result<AttrTarget, String> {
+pub(crate) fn classify_target(key: &str, placement: &PlacementTable) -> Result<AttrTarget, String> {
     if let Some(n) = parse_secondary_core(key) {
         if n >= placement.cores {
             return Err(format!(
@@ -254,6 +257,7 @@ mod tests {
             workloads_digest: None,
             workload_totals: BTreeMap::new(),
             workload_coverage: BTreeMap::new(),
+            footprint: Vec::new(),
         }
     }
 

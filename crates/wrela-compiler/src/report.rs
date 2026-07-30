@@ -920,8 +920,28 @@ mod tests {
             workloads_digest: Some("wdigest".to_string()),
             workload_totals: BTreeMap::from([("flat".to_string(), 30u64)]),
             workload_coverage: BTreeMap::new(),
+            // 04 §6 / plans/M20.md item F: one per-core text and translation
+            // budget line per core, pinned here beside the `Core n=` line it
+            // belongs to. The numbers are a fixture, not a scored program —
+            // `cost::footprint`'s units own the model.
+            footprint: vec![cost::CoreBudget {
+                n: 0,
+                hot_text_bytes: 1216,
+                l1i_bytes: 65536,
+                over_l1i_lines: 0,
+                over_l2_lines: 0,
+                text_pages: 1,
+                itlb_entries: 48,
+                over_itlb_pages: 0,
+                tlb_l2_entries: 1280,
+                over_tlb_l2_pages: 0,
+                data_pages: 2,
+                over_dtlb_pages: 0,
+                over_data_tlb_l2_pages: 0,
+                charge: 0,
+            }],
         };
-        // Default placement has cores=1 → Core + Shared lines appear.
+        // Default placement has cores=1 → Core + Budget + Shared lines appear.
         let text = format_cost_summary(&report, &PlacementTable::default(), cost::DEFAULT_GHZ)
             .expect("format");
         assert_eq!(
@@ -932,6 +952,7 @@ mod tests {
                \x20   Owner name=runtime proxy_cycles=12\n\
                \x20   Owner name=driver proxy_cycles=8\n\
                \x20   Core n=0 proxy_cycles=0 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn_model=n/a\n\
+               \x20   Budget n=0 hot_text_bytes=1216 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 text_pages=1 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=2 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0\n\
                \x20   Shared proxy_cycles=0\n"
         );
     }
@@ -960,6 +981,7 @@ mod tests {
             workloads_digest: None,
             workload_totals: BTreeMap::new(),
             workload_coverage: BTreeMap::new(),
+            footprint: Vec::new(),
         };
         let empty = PlacementTable {
             entries: Vec::new(),

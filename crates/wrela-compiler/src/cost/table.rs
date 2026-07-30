@@ -8,18 +8,22 @@
 //!
 //! Schema `version = 3` (plans/M20.md item D): `[profile]`, `[pipelines]`,
 //! `[latency.<group>]`, `[geometry]`, `[branch]`, `[align]`,
-//! `[crosscore]`, `[sweep.<dimension>]`, `[transitional]`. Every row
-//! carries `tier` and `source`. Fail closed in every direction — a
-//! half-migrated table, an unsourced row, a **pinned T5 row** (freeze
-//! 1629), a pinned value that is not its bracket's pessimistic end
-//! (decision 1609), or a `[crosscore]` term carrying a magnitude at all
-//! (decision 1602) each refuse to load rather than score. The
-//! `issue_width` rejection survives the bump from `version = 2`.
+//! `[crosscore]`, `[sweep.<dimension>]`. Every row carries `tier` and
+//! `source`. Fail closed in every direction — a half-migrated table, an
+//! unsourced row, a **pinned T5 row** (freeze 1629), a pinned value that is
+//! not its bracket's pessimistic end (decision 1609), or a `[crosscore]`
+//! term carrying a magnitude at all (decision 1602) each refuse to load
+//! rather than score. The `issue_width` rejection survives the bump from
+//! `version = 2`.
 //!
-//! The v2 rows (`[ports]` dual issue, `[mem]` hit/miss latencies) are
-//! gone; the accessors the pre-M20 scorer still needs are **derived** from
-//! the v3 sections so there is one source of truth. Items E / F / H
-//! replace those accessors with the real port, memory, and branch models.
+//! The v2 rows (`[ports]` dual issue, `[mem]` hit/miss latencies) are gone,
+//! and so is item D's `[transitional]` quarantine: plans/M20.md item F
+//! deleted its three unsourced holdovers along with the reuse-window model
+//! that read them, so a table still carrying the section is **refused by
+//! name** — a quarantine that outlives its owning item is just an unsourced
+//! row again. The memory model reads `[geometry]` and `[sweep]` directly
+//! ([`super::mem`]), so there is no derived second spelling of the leaf
+//! latencies left to drift.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -33,12 +37,6 @@ pub const EXPECTED_VERSION: u64 = 3;
 /// is refused: a second board profile is out of scope by mandate.
 pub const PROFILE_NAME: &str = "a76-pi5";
 
-/// `[transitional]` is a quarantine, not a section: every row in it must be
-/// tier T5 with exactly this `source` and `deleted_by`. Anything else in
-/// there would be a loophole in freeze 1629.
-const TRANSITIONAL_SOURCE: &str = "none — v2 scorer holdover";
-const TRANSITIONAL_OWNER: &str = "item F";
-
 /// Sections a `version < 3` table may not carry (a half-migrated table
 /// fails by name rather than half-parsing).
 const V3_SECTIONS: &[&str] = &[
@@ -50,11 +48,28 @@ const V3_SECTIONS: &[&str] = &[
     "align",
     "crosscore",
     "sweep",
-    "transitional",
 ];
 
-/// v2 sections that must be gone at `version = 3`.
-const V2_SECTIONS: &[&str] = &["ports", "mem"];
+/// Sections that must be gone at `version = 3`: the v2 rows, and item D's
+/// `[transitional]` quarantine, which plans/M20.md item F deleted together
+/// with the reuse-window model that was its only consumer. A quarantine
+/// that outlives its owning item is an unsourced row again, so the section
+/// is refused by name rather than tolerated.
+const RETIRED_SECTIONS: &[(&str, &str)] = &[
+    (
+        "ports",
+        "its rows moved to [pipelines] (dual issue is a port map now)",
+    ),
+    ("mem", "its rows moved to [geometry]"),
+    (
+        "transitional",
+        "plans/M20.md item F deleted the quarantine and its three unsourced \
+         holdovers (mem_reuse_window / mem_working_set_cap / \
+         working_set_surcharge) along with the reuse-window model that read \
+         them; reuse distance over real capacities and associativity replaces \
+         it, and an unsourced knob may not come back through this door",
+    ),
+];
 
 /// Top-level keys `version = 3` allows.
 const TOP_KEYS: &[&str] = &[
@@ -67,7 +82,6 @@ const TOP_KEYS: &[&str] = &[
     "align",
     "crosscore",
     "sweep",
-    "transitional",
 ];
 
 // --- required row names, per section ---------------------------------------
@@ -127,12 +141,6 @@ const BRANCH_ROWS: &[&str] = &[
 ];
 
 const ALIGN_ROWS: &[&str] = &["load_line_bytes", "store_boundary_bytes"];
-
-const TRANSITIONAL_ROWS: &[&str] = &[
-    "mem_reuse_window",
-    "mem_working_set_cap",
-    "working_set_surcharge",
-];
 
 // --- allowed keys, per row shape -------------------------------------------
 
@@ -322,25 +330,6 @@ pub struct SweepRow {
     pub note: Option<String>,
 }
 
-/// Hit/miss / store / surcharge latencies for the emit-time mem model.
-///
-/// **Derived** from `[geometry]` and `[transitional]`, never a second table:
-/// `load_stack_hit` = `load_cold_hit` = `lat_l1d_hit`, `load_stack_miss` =
-/// `lat_l2` (L2 is strictly inclusive of L1D, so an L1 miss hitting L2 is
-/// that path with no victim path to model), `load_cold_miss` = `lat_l3`,
-/// and `store_stack` = `store_cold` = `latency.store` (the store buffer).
-/// Items F replaces this shape with reuse distance over real capacities.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MemCosts {
-    pub load_stack_hit: u64,
-    pub load_stack_miss: u64,
-    pub load_cold_hit: u64,
-    pub load_cold_miss: u64,
-    pub store_stack: u64,
-    pub store_cold: u64,
-    pub working_set_surcharge: u64,
-}
-
 /// Parsed A76 cost profile (schema version 3).
 ///
 /// Not `Eq`: `ghz` is an `f64` from the profile (decision 1601).
@@ -362,7 +351,6 @@ pub struct CostTable {
     align: BTreeMap<String, Row>,
     crosscore: BTreeMap<String, CrossRow>,
     sweep: BTreeMap<String, SweepRow>,
-    transitional: BTreeMap<String, Row>,
     /// Derived: latency in proxy-cycles for every `CostRule` in `ALL`.
     latencies: BTreeMap<&'static str, u64>,
     /// Derived: the swept increment a `[crosscore]` term adds **above** its
@@ -374,8 +362,6 @@ pub struct CostTable {
     /// `SweepPoint` instead of only the pinned scalar (plans/M20.md item E;
     /// item G replaces the flat add with the placement-classified charge).
     crosscore_extra_dim: BTreeMap<&'static str, String>,
-    /// Derived from `[geometry]` + `[transitional]`.
-    mem: MemCosts,
 }
 
 impl CostTable {
@@ -474,19 +460,6 @@ impl CostTable {
         0
     }
 
-    /// Derived hit/miss/store latencies for the pre-M20 mem model.
-    pub fn mem(&self) -> &MemCosts {
-        &self.mem
-    }
-
-    pub fn mem_reuse_window(&self) -> u64 {
-        self.transitional["mem_reuse_window"].value
-    }
-
-    pub fn mem_working_set_cap(&self) -> u64 {
-        self.transitional["mem_working_set_cap"].value
-    }
-
     pub fn geometry(&self, key: &str) -> Option<&Row> {
         self.geometry.get(key)
     }
@@ -567,7 +540,6 @@ impl CostTable {
             ("geometry", &self.geometry),
             ("branch", &self.branch),
             ("align", &self.align),
-            ("transitional", &self.transitional),
         ] {
             for (name, row) in rows {
                 match &row.text {
@@ -634,7 +606,6 @@ impl CostTable {
             ("geometry", &self.geometry),
             ("branch", &self.branch),
             ("align", &self.align),
-            ("transitional", &self.transitional),
         ] {
             for (name, row) in rows {
                 l.push(format!("{section}.{name}={}", row.tier.as_str()));
@@ -743,11 +714,10 @@ pub fn parse(text: &str) -> Result<CostTable, String> {
     let root = value
         .as_table()
         .ok_or_else(|| "table root must be a TOML table".to_string())?;
-    for stale in V2_SECTIONS {
+    for (stale, why) in RETIRED_SECTIONS {
         if root.contains_key(*stale) {
             return Err(format!(
-                "v2 section `[{stale}]` is not part of version {EXPECTED_VERSION} \
-                 (its rows moved to [pipelines] / [geometry] / [transitional])"
+                "retired section `[{stale}]` is not part of version {EXPECTED_VERSION}: {why}"
             ));
         }
     }
@@ -803,7 +773,6 @@ pub fn parse(text: &str) -> Result<CostTable, String> {
     let geometry = parse_value_section(root, "geometry", GEOMETRY_ROWS, &sweep)?;
     let branch = parse_value_section(root, "branch", BRANCH_ROWS, &sweep)?;
     let align = parse_value_section(root, "align", ALIGN_ROWS, &sweep)?;
-    let transitional = parse_transitional(root, &sweep)?;
 
     // Port map: `port_i` = "2-4" is three pipes, `port_l` = "5-6" is two.
     // The derived accessors count them rather than restating the count.
@@ -876,6 +845,19 @@ pub fn parse(text: &str) -> Result<CostTable, String> {
                 .to_string(),
         );
     }
+    // plans/M20.md item F: `cost::mem` resolves **one** 64 B line identity
+    // per `MemRef` and indexes every level's sets from it, so a profile
+    // whose levels disagree on the line size describes a hierarchy this
+    // model cannot express. Refuse it rather than pick a level's size.
+    for key in ["l1i_line_bytes", "l2_line_bytes", "l3_line_bytes"] {
+        if geometry[key].value != geometry["l1d_line_bytes"].value {
+            return Err(format!(
+                "geometry.{key} ({}) disagrees with geometry.l1d_line_bytes ({}): the memory \
+                 model resolves one line identity for every level (plans/M20.md item F)",
+                geometry[key].value, geometry["l1d_line_bytes"].value
+            ));
+        }
+    }
     for key in ["l1i_bytes", "l1d_bytes", "l2_bytes", "l3_bytes"] {
         let line = geometry[match key {
             "l1i_bytes" => "l1i_line_bytes",
@@ -944,22 +926,6 @@ pub fn parse(text: &str) -> Result<CostTable, String> {
         }
     }
 
-    let mem = MemCosts {
-        load_stack_hit: geometry["lat_l1d_hit"].value,
-        load_stack_miss: geometry["lat_l2"].value,
-        load_cold_hit: geometry["lat_l1d_hit"].value,
-        load_cold_miss: geometry["lat_l3"].value,
-        store_stack: latency["store"].lat,
-        store_cold: latency["store"].lat,
-        working_set_surcharge: transitional["working_set_surcharge"].value,
-    };
-    if mem.load_stack_hit == 0 || mem.load_cold_hit == 0 {
-        return Err("derived mem hit latencies must be >= 1 (no free reloads)".to_string());
-    }
-    if mem.load_stack_miss >= mem.load_cold_miss {
-        return Err("derived load_stack_miss must be < load_cold_miss".to_string());
-    }
-
     let profile_tier_name = name_row.tier;
     let profile_tier_ghz = ghz_row.tier;
 
@@ -977,11 +943,9 @@ pub fn parse(text: &str) -> Result<CostTable, String> {
         align,
         crosscore,
         sweep,
-        transitional,
         latencies,
         crosscore_extra,
         crosscore_extra_dim,
-        mem,
     })
 }
 
@@ -1067,8 +1031,9 @@ fn req_tier(path: &str, tbl: &Tbl) -> Result<Tier, String> {
     Tier::from_str(&s).ok_or_else(|| format!("{path}.tier `{s}`: expected one of T1..T5"))
 }
 
-/// Freeze 1629: a T5 value may never be pinned. It lives in the sweep box
-/// (or in `[transitional]`, the quarantine item F deletes) or nowhere.
+/// Freeze 1629: a T5 value may never be pinned. It lives in a
+/// `[sweep.<dimension>]` row or nowhere — plans/M20.md item F deleted the
+/// one transitional exception there ever was.
 fn reject_pinned_t5(section: &str, name: &str, tier: Tier) -> Result<(), String> {
     if tier == Tier::T5 {
         Err(format!(
@@ -1220,50 +1185,6 @@ fn parse_value_section(
     for r in rows {
         let row = value_row(name, r, sub(tbl, name, r)?, sweep)?;
         reject_pinned_t5(name, r, row.tier)?;
-        out.insert((*r).to_string(), row);
-    }
-    Ok(out)
-}
-
-/// `[transitional]` is a quarantine: every row must be T5 with exactly the
-/// holdover source and `deleted_by = "item F"`. Anything sourced in here
-/// would be a loophole in freeze 1629 rather than an honest holdover.
-fn parse_transitional(
-    root: &Tbl,
-    sweep: &BTreeMap<String, SweepRow>,
-) -> Result<BTreeMap<String, Row>, String> {
-    let tbl = section(root, "transitional")?;
-    require_rows("transitional", tbl, TRANSITIONAL_ROWS)?;
-    let mut out = BTreeMap::new();
-    for r in TRANSITIONAL_ROWS {
-        let path = format!("transitional.{r}");
-        let sub_tbl = sub(tbl, "transitional", r)?;
-        let mut allowed: Vec<&str> = VALUE_ROW_KEYS.to_vec();
-        allowed.push("deleted_by");
-        check_keys(&path, sub_tbl, &allowed)?;
-        let mut without_owner = sub_tbl.clone();
-        without_owner.remove("deleted_by");
-        let row = value_row("transitional", r, &without_owner, sweep)?;
-        if row.tier != Tier::T5 {
-            return Err(format!(
-                "[{path}] is tier {}: [transitional] holds only unsourced v2 holdovers, \
-                 which are T5 by definition — a sourced row belongs in its real section",
-                row.tier.as_str()
-            ));
-        }
-        if row.source != TRANSITIONAL_SOURCE {
-            return Err(format!(
-                "[{path}].source must be exactly `{TRANSITIONAL_SOURCE}` (the section is a \
-                 quarantine, not a place to put a weak citation)"
-            ));
-        }
-        let owner = req_str(&path, sub_tbl, "deleted_by")?;
-        if owner != TRANSITIONAL_OWNER {
-            return Err(format!(
-                "[{path}].deleted_by must be `{TRANSITIONAL_OWNER}`: plans/M20.md item F \
-                 deletes this whole section"
-            ));
-        }
         out.insert((*r).to_string(), row);
     }
     Ok(out)
@@ -1660,7 +1581,9 @@ mod tests {
         // The store's address/data split is in the port field for item E.
         assert_eq!(a.latency_row("store").unwrap().ports, "L,D");
 
-        // [geometry] and the MemCosts derived from it.
+        // [geometry] — read directly by `cost::mem` / `cost::footprint`.
+        // Item F deleted the derived `MemCosts` mirror of these rows: one
+        // spelling of the leaf latencies, so there is nothing to drift.
         assert_eq!(a.geometry("l1d_bytes").unwrap().value, 65536);
         assert_eq!(a.geometry("l1d_ways").unwrap().value, 4);
         assert_eq!(a.geometry("l2_bytes").unwrap().value, 524288);
@@ -1669,14 +1592,11 @@ mod tests {
         assert_eq!(a.geometry("l3_ways").unwrap().value, 16);
         assert_eq!(a.geometry("itlb_l1_entries").unwrap().value, 48);
         assert_eq!(a.geometry("tlb_l2_entries").unwrap().value, 1280);
-        assert_eq!(a.mem().load_stack_hit, 4);
-        assert_eq!(a.mem().load_cold_hit, 4);
-        assert_eq!(a.mem().load_stack_miss, 11);
-        assert_eq!(a.mem().load_cold_miss, 35);
-        assert_eq!(a.mem().store_stack, 1);
-        assert_eq!(a.mem().store_cold, 1);
-        assert!(a.mem().load_stack_miss < a.mem().load_cold_miss);
+        assert_eq!(a.geometry("lat_l1d_hit").unwrap().value, 4);
+        assert_eq!(a.geometry("lat_l2").unwrap().value, 11);
+        assert_eq!(a.geometry("lat_l3").unwrap().value, 35);
         assert_eq!(a.geometry("lat_dram").unwrap().value, 347);
+        assert_eq!(a.latency_row("store").unwrap().lat, 1, "to the buffer");
 
         // [branch] / [align].
         assert_eq!(a.branch_row("mispredict_penalty").unwrap().value, 14);
@@ -1710,13 +1630,7 @@ mod tests {
     fn every_committed_row_carries_a_tier_and_a_source() {
         let t = parse(&committed_text()).expect("parse");
         let mut rows = 0usize;
-        for section in [
-            &t.pipelines,
-            &t.geometry,
-            &t.branch,
-            &t.align,
-            &t.transitional,
-        ] {
+        for section in [&t.pipelines, &t.geometry, &t.branch, &t.align] {
             for (name, row) in section {
                 assert!(!row.source.trim().is_empty(), "{name}: empty source");
                 rows += 1;
@@ -1850,7 +1764,7 @@ mod tests {
     fn reject_v2_sections_at_v3() {
         for stale in ["[ports]\nalu = 2\n", "[mem]\nstore_stack = 1\n"] {
             let e = err_of(format!("{}\n{stale}", committed_text()));
-            assert!(e.contains("v2 section"), "got: {e}");
+            assert!(e.contains("retired section"), "got: {e}");
         }
     }
 
@@ -2307,44 +2221,75 @@ mod tests {
         );
     }
 
-    // --- fail closed: the transitional quarantine --------------------------
+    // --- fail closed: the retired sections ---------------------------------
 
+    /// Item D quarantined three unsourced v2 holdovers in `[transitional]`
+    /// with `deleted_by = "item F"`. **Item F deleted the section**, and the
+    /// parser now refuses a table that still carries it — by name, with the
+    /// reason, rather than as a generic unknown key. A quarantine that
+    /// outlives its owning item is an unsourced row again, so the door has
+    /// to be shut and not merely unused.
     #[test]
-    fn reject_transitional_row_that_pretends_to_be_sourced() {
+    fn reject_a_table_still_carrying_the_transitional_quarantine() {
+        let revived = format!(
+            "{}\n[transitional.mem_reuse_window]\nvalue = 8\ntier = \"T5\"\n\
+             source = \"none — v2 scorer holdover\"\ndeleted_by = \"item F\"\n",
+            committed_text()
+        );
+        let err = parse(&revived).expect_err("the quarantine must not load");
+        assert!(
+            err.contains("retired section `[transitional]`"),
+            "got: {err}"
+        );
+        assert!(err.contains("item F"), "got: {err}");
+        assert!(err.contains("reuse distance"), "got: {err}");
+        // The v2 sections stay shut by the same rule, in both spellings.
+        for stale in ["ports", "mem"] {
+            let err = parse(&format!(
+                "{}\n[{stale}.alu]\nvalue = 2\ntier = \"T1\"\nsource = \"x\"\n",
+                committed_text()
+            ))
+            .expect_err("v2 section must not load");
+            assert!(
+                err.contains(&format!("retired section `[{stale}]`")),
+                "got: {err}"
+            );
+        }
+    }
+
+    /// The three deleted knobs may not come back anywhere else either: a
+    /// `[geometry]` row named after one of them is an unknown row, so the
+    /// deletion cannot be undone by relocating it into a sourced section.
+    #[test]
+    fn the_deleted_knobs_cannot_reappear_in_a_sourced_section() {
+        for knob in [
+            "mem_reuse_window",
+            "mem_working_set_cap",
+            "working_set_surcharge",
+        ] {
+            let text = format!(
+                "{}\n[geometry.{knob}]\nvalue = 8\ntier = \"T2\"\n\
+                 source = \"Cortex-A76 Core TRM 100798\"\n",
+                committed_text()
+            );
+            let err = parse(&text).expect_err("relocated knob must not load");
+            assert!(err.contains("unknown row"), "{knob}: got {err}");
+        }
+    }
+
+    /// `cost::mem` resolves one line identity for every level, so levels
+    /// that disagree on the line size describe a hierarchy this model
+    /// cannot express (plans/M20.md item F).
+    #[test]
+    fn reject_levels_that_disagree_on_the_line_size() {
         assert_err_names(
             edit_block(
                 &committed_text(),
-                "[transitional.mem_reuse_window]",
-                "tier = \"T5\"",
-                "tier = \"T2\"",
+                "[geometry.l2_line_bytes]",
+                "value = 64",
+                "value = 128",
             ),
-            "only unsourced v2 holdovers",
-        );
-        assert_err_names(
-            edit_block(
-                &committed_text(),
-                "[transitional.mem_reuse_window]",
-                "source = \"none — v2 scorer holdover\"",
-                "source = \"Cortex-A76 Core TRM 100798\"",
-            ),
-            "must be exactly",
-        );
-        assert_err_names(
-            edit_block(
-                &committed_text(),
-                "[transitional.mem_reuse_window]",
-                "deleted_by = \"item F\"",
-                "deleted_by = \"item Z\"",
-            ),
-            "item F",
-        );
-        assert_err_names(
-            without_line(
-                &committed_text(),
-                "[transitional.mem_reuse_window]",
-                "deleted_by =",
-            ),
-            "deleted_by",
+            "one line identity",
         );
     }
 
@@ -2359,10 +2304,16 @@ mod tests {
         assert_eq!(t.alu_ports(), 3);
         assert_eq!(t.latency(CostRule::Alu), 1);
         assert_eq!(t.latency(CostRule::Load), 4);
-        assert_eq!(t.mem().load_stack_hit, 4);
-        assert_eq!(t.mem_reuse_window(), 8);
-        assert_eq!(t.mem_working_set_cap(), 4);
-        assert_eq!(t.mem().working_set_surcharge, 2);
+        assert_eq!(t.geometry("lat_l1d_hit").expect("row").value, 4);
+        // Item F's deletion, asserted rather than assumed: none of the three
+        // `[transitional]` knobs is reachable, and the section is gone.
+        assert!(t.geometry("mem_reuse_window").is_none());
+        assert!(t.geometry("mem_working_set_cap").is_none());
+        assert!(t.geometry("working_set_surcharge").is_none());
+        assert!(
+            !committed_text().contains("\n[transitional."),
+            "the committed profile must not carry the quarantine"
+        );
         // Digests must be stable across loads of the same file.
         let again = load_default().expect("reload");
         assert_eq!(t.table_digest(), again.table_digest());

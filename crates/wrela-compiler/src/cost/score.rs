@@ -71,13 +71,15 @@
 //!   `divide_x_latency`. The profile does not sweep throughput, so at the
 //!   bracket's low end the hold still charges 20. Over-cost.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 
 use crate::codegen::{CodegenFn, CodegenProgram};
 use crate::placement::PlacementTable;
 
+use super::footprint::{self, CoreBudget, HotBlocks};
+use super::mem::MemState;
 use super::owner::classify_owner;
-use super::rule::{CostRule, EmittedWord, MEM_SP_REG, MemClass, MemRef};
+use super::rule::{CostRule, EmittedWord, MEM_SP_REG};
 use super::sweep::SweepPoint;
 use super::table::{CostTable, LatRow, pipe_range};
 
@@ -131,6 +133,13 @@ pub struct CostReport {
     pub workload_totals: BTreeMap<String, u64>,
     /// Measured-W coverage: name → (matched_hits, total_hits).
     pub workload_coverage: BTreeMap<String, (u64, u64)>,
+    /// Per-core text and translation budget, one entry per core in
+    /// `0..placement.cores` (empty when there is no image, so no per-core
+    /// denominator exists). 04 §6 prints one line per entry; 04 §5 makes it
+    /// the hard constraint that replaces the word veto (plans/M20.md item F,
+    /// decision 1603). **Not** folded into `total_proxy_cycles` — see
+    /// [`super::footprint`] for why.
+    pub footprint: Vec<CoreBudget>,
 }
 
 // ---------------------------------------------------------------------------
@@ -326,49 +335,6 @@ impl Machine {
 // Seam payload types (items F / G / H)
 // ---------------------------------------------------------------------------
 
-/// Carried state of the memory model across one block's word stream.
-///
-/// Today this is the pre-M20 reuse **window** (a count of recent
-/// `MemRef`s, `[transitional] mem_reuse_window`), which is why the
-/// section it reads is a quarantine item F deletes. Item F replaces it
-/// with reuse distance at 64 B line grain over real capacities and
-/// associativity, L2 inclusivity, and store-buffer forwarding.
-#[derive(Debug, Clone)]
-pub struct MemState {
-    window: VecDeque<WinEntry>,
-    cap: usize,
-}
-
-impl MemState {
-    pub fn new(table: &CostTable) -> MemState {
-        MemState {
-            window: VecDeque::new(),
-            cap: table.mem_reuse_window().max(1) as usize,
-        }
-    }
-
-    /// Call clobber and SP writes (a new frame epoch) end reuse: stack
-    /// offsets after an SP adjust name different bytes.
-    pub fn clear(&mut self) {
-        self.window.clear();
-    }
-
-    fn push(&mut self, entry: WinEntry) {
-        self.window.push_back(entry);
-        while self.window.len() > self.cap {
-            self.window.pop_front();
-        }
-    }
-}
-
-/// One slot in the mem reuse window: stores push for working-set only
-/// (`grants_hit = false`); loads push hit-eligible entries.
-#[derive(Debug, Clone, Copy)]
-struct WinEntry {
-    mem: MemRef,
-    grants_hit: bool,
-}
-
 /// What a cross-core term adds to one word.
 ///
 /// `serializes_window` is the structural half of SOG §4.10: an in-order
@@ -400,60 +366,18 @@ pub struct BranchBias {
 
 /// **Item F** owns this. Reuse distance at 64 B line grain over real
 /// capacities and associativity (4-way L1D ⇒ a conflict verdict, not only
-/// a capacity verdict), L2 strict inclusivity of L1D, and store-buffer
-/// forwarding.
+/// a capacity verdict), L2 strict inclusivity of L1D, and the store buffer
+/// with store-to-load forwarding.
 ///
-/// Today: the pre-M20 hit/miss window derived from `[geometry]` via
-/// `CostTable::mem()`, plus the `working_set_surcharge` nudge. The L2 and
-/// L3 leaves are read through `point` so item J's sweep already reaches
-/// them; everything else is pinned. Returns the whole memory latency of
-/// this word (including the surcharge) and advances `state` in **program**
-/// order.
-fn mem_access_latency(
-    ew: &EmittedWord,
-    table: &CostTable,
-    point: &SweepPoint,
-    state: &mut MemState,
-) -> u64 {
-    // Leaf latencies: `lat_l1d_hit` is T1 and unbracketed, so it is read
-    // pinned; `lat_l2` / `lat_l3` are bracketed and swept.
-    let l1d = table.mem().load_stack_hit;
-    let l2 = point.get("l2_latency");
-    let l3 = point.get("l3_latency");
-
-    if ew.rule.is_load() {
-        let lat = match ew.mem {
-            None => l3, // untagged address: cold miss, no window push
-            Some(m) => {
-                let hit = state.window.iter().any(|e| e.grants_hit && e.mem == m);
-                let lat = match (m.class, hit) {
-                    (MemClass::Stack, true) | (MemClass::Cold, true) => l1d,
-                    (MemClass::Stack, false) => l2,
-                    (MemClass::Cold, false) => l3,
-                };
-                state.push(WinEntry {
-                    mem: m,
-                    grants_hit: true,
-                });
-                lat.saturating_add(working_set_surcharge(state, table))
-            }
-        };
-        return lat;
-    }
-
-    // Store: latency 1 to the **store buffer** (SOG §3.10), not to cache.
-    let store = table.mem().store_stack;
-    let Some(m) = ew.mem else {
-        return store;
-    };
-    // A store invalidates every prior hit-granting entry for this key,
-    // then pushes a working-set-only entry.
-    state.window.retain(|e| e.mem != m);
-    state.push(WinEntry {
-        mem: m,
-        grants_hit: false,
-    });
-    store.saturating_add(working_set_surcharge(state, table))
+/// The model itself lives in [`super::mem`] — this is the seam that hands
+/// one emitted word to it. `lat_l1d_hit` is T1 and unbracketed so it is
+/// read pinned; every bracketed leaf (`l2_latency` / `l3_latency` /
+/// `dram_latency`), the swept effective L3 **size**, and the T5
+/// `store_to_load_forwarding` latency all come through `point`, so item J's
+/// ∀ sweep genuinely moves the memory model. Returns the whole memory
+/// latency of this word and advances `state` in **program** order.
+fn mem_access_latency(ew: &EmittedWord, state: &mut MemState) -> u64 {
+    state.access(ew).latency
 }
 
 /// **Item G** owns this. Placement-derived local-vs-remote snoop
@@ -541,6 +465,24 @@ pub fn score_program_at(
     placement: &PlacementTable,
     point: &SweepPoint,
 ) -> Result<CostReport, String> {
+    score_program_at_with_hot(program, table, placement, point, HotBlocks::All)
+}
+
+/// Score at `point` with an explicit hot-text predicate — the per-core
+/// footprint term's only input beyond placement (plans/M20.md item F,
+/// decision 1603).
+///
+/// `HotBlocks::All` is `W_flat` (`f ≡ 1`), which makes the flat row a
+/// **static-footprint** row; item C passes `HotBlocks::Measured` once the
+/// block-grain `f` bridge exists. Everything else about scoring is
+/// unchanged, so wiring measured `f` in reshapes nothing.
+pub fn score_program_at_with_hot(
+    program: &CodegenProgram,
+    table: &CostTable,
+    placement: &PlacementTable,
+    point: &SweepPoint,
+    hot: HotBlocks<'_>,
+) -> Result<CostReport, String> {
     let machine = Machine::from_table(table)?;
     let mut fns = Vec::with_capacity(program.fns.len());
     let mut total_proxy_cycles = 0u64;
@@ -584,6 +526,7 @@ pub fn score_program_at(
         workloads_digest: None,
         workload_totals: BTreeMap::new(),
         workload_coverage: BTreeMap::new(),
+        footprint: footprint::compute(program, table, point, placement, hot)?,
     })
 }
 
@@ -690,7 +633,7 @@ fn score_words(
         return Ok((0, terms));
     }
 
-    let mut mem = MemState::new(table);
+    let mut mem = MemState::new(table, point);
     // Per-pipe next-free cycle. Index 0 unused (pipes are 1-based).
     let mut pipe_free = vec![0u64; machine.pipes + 1];
     // Functional-unit hold per dispatch class — only ever non-zero for a
@@ -835,7 +778,7 @@ fn score_words(
             CostRule::Branch => {
                 exec_lat.saturating_add(branch_mispredict_charge(table, point, None))
             }
-            r if r.is_load() || r.is_store() => mem_access_latency(ew, table, point, &mut mem),
+            r if r.is_load() || r.is_store() => mem_access_latency(ew, &mut mem),
             _ => exec_lat,
         };
         lat = lat.saturating_add(cross.extra_cycles);
@@ -981,32 +924,6 @@ fn check_mem_base_in_srcs(ew: &EmittedWord) -> Result<(), String> {
         return Ok(());
     };
     m.require_base_in_srcs(ew.src_slice())
-}
-
-/// Surcharge for a window holding more distinct keys than the cap.
-///
-/// Scales with the overflow: `(distinct − cap) × working_set_surcharge`.
-/// A flat charge would price a fn touching 5 distinct addresses the same
-/// as one touching 500 — i.e. **under-cost** footprint growth, the one
-/// direction 04 §5's proxy soundness rule forbids. Item F decides whether
-/// this still adds ranking information once reuse distance exists.
-fn working_set_surcharge(state: &MemState, table: &CostTable) -> u64 {
-    let mut keys: Vec<(u8, u64)> = state
-        .window
-        .iter()
-        .map(|e| {
-            let class = match e.mem.class {
-                MemClass::Stack => 0u8,
-                MemClass::Cold => 1u8,
-            };
-            (class, e.mem.key)
-        })
-        .collect();
-    keys.sort_unstable();
-    keys.dedup();
-    let distinct = keys.len() as u64;
-    let over = distinct.saturating_sub(table.mem_working_set_cap());
-    over.saturating_mul(table.mem().working_set_surcharge)
 }
 
 fn src_ready(ew: &EmittedWord, ready: &[u64; 32]) -> u64 {
@@ -1531,12 +1448,20 @@ mod tests {
         assert_eq!(term_sum, r.fns[0].words, "Σ Terms must equal words");
     }
 
-    /// Surcharge scales with overflow: 6 distinct keys over cap=4 costs
-    /// strictly more than 5 distinct, which costs more than at-cap. The
-    /// chain is genuinely serial (each load reads the previous result), so
-    /// out-of-order issue cannot hide the surcharge off the critical path.
+    /// Footprint growth is priced through the schedule, and it scales.
+    ///
+    /// This replaces the pre-M20 `working_set_surcharge_scales_with_overflow`,
+    /// whose fixture was polluted: offsets 0/8/16/24/32/40 are all inside
+    /// **one** 64 B line, so its "distinct keys" were one line and its deltas
+    /// came from the added instructions rather than from footprint. At 64 B
+    /// line grain the same claim is made honestly — each extra *line* is a
+    /// compulsory reference at `lat_l2`, not a hit at `lat_l1d_hit` — and the
+    /// deleted surcharge (2 per key over a cap of 4) adds nothing on top of
+    /// that 7-cycle differential. `cost::mem`'s
+    /// `reuse_distance_subsumes_the_working_set_surcharge` carries the
+    /// deletion argument; this is its schedule-level half.
     #[test]
-    fn working_set_surcharge_scales_with_overflow() {
+    fn footprint_growth_scales_through_reuse_distance() {
         fn chain(offsets: &[u64]) -> Vec<EmittedWord> {
             let mut code = Vec::new();
             for (i, &off) in offsets.iter().enumerate() {
@@ -1550,18 +1475,24 @@ mod tests {
             }
             code
         }
-        let a = total(&prog("f", chain(&[0, 8, 16, 24])));
-        let b = total(&prog("f", chain(&[0, 8, 16, 24, 32])));
-        let c = total(&prog("f", chain(&[0, 8, 16, 24, 32, 40])));
-        assert!(b > a, "5 distinct {b} must exceed 4 distinct {a}");
-        // The scaling claim: the 6th distinct key costs strictly more than
-        // the 5th did — a flat surcharge would make these deltas equal.
-        let delta_5 = b - a;
-        let delta_6 = c - b;
+        // One line, revisited: every reload after the first is an L1D hit.
+        let one_line = total(&prog("f", chain(&[0, 8, 16, 24, 32, 40])));
+        // Six distinct lines: six compulsory references.
+        let six_lines = total(&prog("f", chain(&[0, 64, 128, 192, 256, 320])));
         assert!(
-            delta_6 > delta_5,
-            "surcharge must scale: Δ6 {delta_6} should exceed Δ5 {delta_5}"
+            six_lines > one_line,
+            "6 lines {six_lines} must exceed 6 offsets in 1 line {one_line}"
         );
+        // And it scales per line: the 6th line costs the same 7-cycle
+        // differential the 5th did, so growth is priced rather than capped.
+        let five = total(&prog("f", chain(&[0, 64, 128, 192, 256])));
+        let four = total(&prog("f", chain(&[0, 64, 128, 192])));
+        assert_eq!(
+            six_lines - five,
+            five - four,
+            "each extra line costs the same compulsory differential"
+        );
+        assert_eq!(five - four, 11 + 1, "lat_l2 for the line plus its alu");
     }
 
     /// Soundness oracle (monotonicity): appending a dead, independent word
@@ -1729,8 +1660,12 @@ mod tests {
         );
     }
 
+    /// A stack reuse beats a reference to a **different line**. Offset 16
+    /// used to be the "miss" side of this unit and is now a hit: at 64 B
+    /// line grain offsets 8 and 16 are the same line, which is the whole
+    /// point of the grain change, so the miss side moves to offset 128.
     #[test]
-    fn stack_hit_cheaper_than_miss() {
+    fn stack_hit_cheaper_than_a_different_line() {
         // Serial: each reload waits on the previous result, so the second
         // load's own hit/miss verdict is on the critical path.
         let hit = prog(
@@ -1742,7 +1677,7 @@ mod tests {
                 word(CostRule::Alu, Some(3), &[2, 2]),
             ],
         );
-        let miss = prog(
+        let same_line = prog(
             "f",
             vec![
                 load_stack(1, 8),
@@ -1751,16 +1686,38 @@ mod tests {
                 word(CostRule::Alu, Some(3), &[2, 2]),
             ],
         );
-        assert!(
-            total(&hit) < total(&miss),
-            "stack hit schedule {} should beat miss {}",
+        let other_line = prog(
+            "f",
+            vec![
+                load_stack(1, 8),
+                word(CostRule::Alu, Some(1), &[1, 1]),
+                load_stack_after(2, 128, 1),
+                word(CostRule::Alu, Some(3), &[2, 2]),
+            ],
+        );
+        assert_eq!(
             total(&hit),
-            total(&miss)
+            total(&same_line),
+            "offsets 8 and 16 are one 64 B line"
+        );
+        assert!(
+            total(&hit) < total(&other_line),
+            "stack hit schedule {} should beat another line {}",
+            total(&hit),
+            total(&other_line)
         );
     }
 
+    /// **The pre-M20 behaviour this replaces.** A store used to *invalidate*
+    /// its key so the reload missed; under a store buffer the reload
+    /// **forwards** (SOG §3.10, inventory row 13). That is a cheapening, and
+    /// it is correct — a spill/fill pair really is served from the buffer on
+    /// this machine. At the pinned point the forward costs exactly
+    /// `lat_l1d_hit`, so the store adds only its own cycle; at the swept
+    /// bracket's low end the forward is cheaper than the L1 path, which is
+    /// why `[sweep.store_to_load_forwarding]`'s high end is pinned at 4.
     #[test]
-    fn store_kills_stack_hit() {
+    fn a_store_no_longer_invalidates_its_reload() {
         let reuse = prog(
             "f",
             vec![
@@ -1780,11 +1737,22 @@ mod tests {
                 word(CostRule::Alu, Some(3), &[2, 2]),
             ],
         );
-        assert!(
-            total(&after_store) > total(&reuse),
-            "store-invalidated reload {} should exceed hit reload {}",
+        assert_eq!(
             total(&after_store),
-            total(&reuse)
+            total(&reuse),
+            "the reload forwards at lat_l1d_hit, so the store is off the \
+             critical path rather than an invalidation"
+        );
+        // The forwarded reload is genuinely on the forwarding path, and the
+        // swept dimension reaches it through the whole scoreboard.
+        let table = table();
+        let lo = SweepPoint::pinned(&table).with("store_to_load_forwarding", 1);
+        let cheap = score_program_at(&after_store, &table, &placement(), &lo).expect("lo");
+        assert!(
+            cheap.total_proxy_cycles < total(&after_store),
+            "forwarding must be swept end to end: {} vs {}",
+            cheap.total_proxy_cycles,
+            total(&after_store)
         );
     }
 
@@ -1855,34 +1823,45 @@ mod tests {
         assert_eq!(total(&untagged), 35); // lat_l3
     }
 
+    /// **A 5-way conflict inside capacity still misses on 4-way**, seen
+    /// through the whole scoreboard rather than only through `cost::mem`.
+    /// L1D has 256 sets, so offsets 0 / 16 KiB / 32 KiB / 48 KiB / 64 KiB all
+    /// index set 0; the reload of offset 0 is 5 deep in a 4-way set and takes
+    /// the L2 path. Five 64 B lines is 320 B against a 64 KiB cache, so no
+    /// capacity term can explain it — this is the associativity term being
+    /// live rather than decorative.
     #[test]
-    fn working_set_surcharge_when_distinct_over_cap() {
-        // cap=4: five distinct stack keys → surcharge on the 5th.
-        let over = prog(
-            "f",
-            vec![
-                load_stack(1, 0),
-                load_stack(2, 8),
-                load_stack(3, 16),
-                load_stack(4, 24),
-                load_stack(5, 32),
-            ],
-        );
-        let under = prog(
-            "f",
-            vec![
-                load_stack(1, 0),
-                load_stack(2, 8),
-                load_stack(3, 16),
-                load_stack(4, 24),
-                load_stack(5, 0), // reuse key 0 — still 4 distinct
-            ],
-        );
+    fn five_way_conflict_inside_capacity_costs_more_than_a_reuse() {
+        const SET_STRIDE: u64 = 256 * 64;
+        let serial = |offsets: &[u64]| -> CodegenProgram {
+            let mut code = Vec::new();
+            for (i, &off) in offsets.iter().enumerate() {
+                let dst = (i as u8) + 1;
+                if i == 0 {
+                    code.push(load_stack(dst, off));
+                } else {
+                    code.push(load_stack_after(dst, off, i as u8));
+                }
+                code.push(word(CostRule::Alu, Some(dst), &[dst, dst]));
+            }
+            code.push(load_stack_after(20, offsets[0], offsets.len() as u8));
+            prog("f", code)
+        };
+        // Five lines that collide in one set, then reload the first.
+        let conflict: Vec<u64> = (0..5).map(|k| k * SET_STRIDE).collect();
+        // The control: five lines that do not collide, same count, same
+        // dependence chain, same instruction multiset.
+        let spread: Vec<u64> = (0..5).map(|k| k * 64).collect();
+        let a = total(&serial(&conflict));
+        let b = total(&serial(&spread));
         assert!(
-            total(&over) > total(&under),
-            "surcharge schedule {} should exceed under-cap {}",
-            total(&over),
-            total(&under)
+            a > b,
+            "a 5-way conflict {a} must cost more than a spread working set {b}"
+        );
+        assert_eq!(
+            a - b,
+            11 - 4,
+            "the reload takes lat_l2 instead of an L1 hit"
         );
     }
 
