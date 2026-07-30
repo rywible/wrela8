@@ -153,8 +153,10 @@ LayoutTypes v0
       Field name=now_ns type=u64 offset=0x0 size=8
     Layout name=ParkMmio kind=runtime endian=little size=8 padding=0
       Field name=word type=u64 offset=0x0 size=8
-    Layout name=PendingPage kind=runtime endian=little size=256 padding=0
+    Layout name=PendingPage kind=runtime endian=little size=2304 padding=1792
       Field name=words type=[u64; CORE_SLOTS] offset=0x0 size=256
+      Padding offset=0x100 size=1792
+      Field name=idle type=[u64; CORE_SLOTS] offset=0x800 size=256
     Layout name=ConsoleRingPage kind=runtime endian=little size=6672 padding=2564
       Field name=desc_words type=[u64; DESC_WORD_COUNT] offset=0x0 size=4096
       Field name=avail_flags_idx type=u32 offset=0x1000 size=4

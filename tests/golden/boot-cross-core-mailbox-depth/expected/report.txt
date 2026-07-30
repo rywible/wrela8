@@ -41,8 +41,10 @@ ImageReport v0
     Field name=now_ns type=u64 offset=0x0 size=8
   Layout name=ParkMmio kind=runtime endian=little size=8 padding=0
     Field name=word type=u64 offset=0x0 size=8
-  Layout name=PendingPage kind=runtime endian=little size=256 padding=0
+  Layout name=PendingPage kind=runtime endian=little size=2304 padding=1792
     Field name=words type=[u64; CORE_SLOTS] offset=0x0 size=256
+    Padding offset=0x100 size=1792
+    Field name=idle type=[u64; CORE_SLOTS] offset=0x800 size=256
   Layout name=ConsoleRingPage kind=runtime endian=little size=6672 padding=2564
     Field name=desc_words type=[u64; DESC_WORD_COUNT] offset=0x0 size=4096
     Field name=avail_flags_idx type=u32 offset=0x1000 size=4
@@ -66,14 +68,14 @@ ImageReport v0
   CoreStack core=1 base=0x7fe00000 size=0x100000
   CoreStack core=2 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=92020
-  Section name=rodata base=0x405167c8 size=917
-  Section name=abort base=0x40516b60 size=120
-  Section name=checkpoint base=0x40516bd8 size=28
+  Section name=code base=0x40500050 size=92304
+  Section name=rodata base=0x405168e0 size=917
+  Section name=abort base=0x40516c78 size=120
+  Section name=checkpoint base=0x40516cf0 size=28
   Section name=rtdata base=0x40540000 size=4992
   Entry base=0x40500000
-  CoreEntry core=1 base=0x4051673c
-  CoreEntry core=2 base=0x40516780
+  CoreEntry core=1 base=0x40516858
+  CoreEntry core=2 base=0x4051689c
   PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
@@ -155,7 +157,7 @@ ImageReport v0
   PlacedStatic name=MB9_CTL type=MbCtl addr=0x4057fa58 size=24
   PlacedStatic name=MB9_DATA type=Mb9Data addr=0x4057fa38 size=8
   PlacedStatic name=PARK type=ParkMmio addr=0x8002000 size=8
-  PlacedStatic name=PENDING type=PendingPage addr=0x40007000 size=256
+  PlacedStatic name=PENDING type=PendingPage addr=0x40007000 size=2304
   PlacedStatic name=RELEASE type=ParkMmio addr=0x8003000 size=8
   PlacedStatic name=RINGS_CTL type=RingsCtl addr=0x40541170 size=144
   PlacedStatic name=RINGS_DATA type=RingsData addr=0x40541200 size=384
@@ -177,12 +179,12 @@ ImageReport v0
   Turns count=4 stride=1024 bytes=4096
   Rings count=6 stride=64 padding=192 bytes=528
   Totals actors=3 drivers=0 ready_queue=4 group_arena=0 bytes=4992
-  Cost version=2 digest=ca6c6ea1a27ab060 total=30917 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=30917
+  Cost version=2 digest=ca6c6ea1a27ab060 total=30990 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=30990
     Owner name=app proxy_cycles=3531
-    Owner name=runtime proxy_cycles=27386
+    Owner name=runtime proxy_cycles=27459
     Owner name=driver proxy_cycles=0
     Core n=0 proxy_cycles=450 max_turn_proxy=450 turns_per_sec=5333333.333333333 ms_per_turn_model=0.0001875
     Core n=1 proxy_cycles=207 max_turn_proxy=61 turns_per_sec=39344262.2950819656 ms_per_turn_model=0.0000254167
     Core n=2 proxy_cycles=334 max_turn_proxy=317 turns_per_sec=7570977.9179810723 ms_per_turn_model=0.0001320833
-    Shared proxy_cycles=29926
+    Shared proxy_cycles=29999

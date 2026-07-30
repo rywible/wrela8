@@ -459,7 +459,8 @@ pub mod pending {
     pub const BASE: u64 = DRAM_BASE + 0x7000;
     pub const SIZE: u64 = 0x1000;
 
-    /// Bytes actually used: one `u64` pending-word per core.
+    /// Bytes actually used: one `u64` pending-word per core, plus one
+    /// `u64` idle-word per core at [`IDLE_OFF`].
     pub const WORD_SIZE: u64 = 8;
 
     /// Guest-physical address of core `n`'s own pending word (`n` in
@@ -468,6 +469,29 @@ pub mod pending {
     /// to before waking that core's vCPU.
     pub const fn core_word_addr(core: usize) -> u64 {
         BASE + (core as u64) * WORD_SIZE
+    }
+
+    /// Second array in this page: core `n`'s own **idle** word
+    /// (plans/lane1-per-core.md item B / decision 1504). Guest-only — the
+    /// VMM neither reads nor writes it; both `wrela-machine` consts exist so
+    /// the page's occupants are published in one place rather than known
+    /// only to `runtime.wr`.
+    ///
+    /// A secondary core stores 1 here — after a store barrier, so every
+    /// counter store it made is published first — immediately before its
+    /// park, and 0 at its loop head before it does any work. Core 0 reads
+    /// the words at halt to decide whether every released core has actually
+    /// finished, so the Lane 1 counters it dumps are a total rather than a
+    /// sample of a race (the `unpinned-lane1` stopgap's own root cause).
+    ///
+    /// Placed at half a page rather than immediately after the pending words
+    /// so the doorbell words the VMM stores to and the idle words core 0
+    /// polls never share a cache line.
+    pub const IDLE_OFF: u64 = 0x800;
+
+    /// Guest-physical address of core `n`'s own idle word.
+    pub const fn core_idle_addr(core: usize) -> u64 {
+        BASE + IDLE_OFF + (core as u64) * WORD_SIZE
     }
 }
 
@@ -908,6 +932,26 @@ mod tests {
                 assert!(
                     addr_a + pending::WORD_SIZE <= addr_b || addr_b + pending::WORD_SIZE <= addr_a
                 );
+            }
+        }
+    }
+
+    /// plans/lane1-per-core.md item B: the idle words share the pending page,
+    /// so they must clear every pending word, stay inside the page, and keep
+    /// one word per core.
+    #[test]
+    fn idle_words_fit_the_page_and_clear_the_pending_words() {
+        let pending_used = CORE_SLOTS as u64 * pending::WORD_SIZE;
+        assert!(pending_used <= pending::IDLE_OFF);
+        let idle_end = pending::IDLE_OFF + CORE_SLOTS as u64 * pending::WORD_SIZE;
+        assert!(idle_end <= pending::SIZE);
+        for core in 0..CORE_SLOTS {
+            let idle = pending::core_idle_addr(core);
+            assert_eq!(idle, pending::BASE + pending::IDLE_OFF + core as u64 * 8);
+            assert!(idle >= pending::BASE + pending_used);
+            assert!(idle + pending::WORD_SIZE <= pending::BASE + pending::SIZE);
+            for other in 0..CORE_SLOTS {
+                assert_ne!(idle, pending::core_word_addr(other));
             }
         }
     }

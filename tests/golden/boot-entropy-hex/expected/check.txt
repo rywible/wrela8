@@ -25,6 +25,7 @@ Module path=runtime
   Static RELEASE: ParkMmio placed=0x8003000
   Struct PendingPage data
     field words: [u64; CORE_SLOTS]
+    field idle: [u64; CORE_SLOTS]
   Static PENDING: PendingPage placed=0x40007000
   Struct ConsoleRingPage data
     field desc_words: [u64; DESC_WORD_COUNT]
@@ -152,6 +153,10 @@ Module path=runtime
   Fn __wrela_append_failed_tail_literal() -> u64
   Fn __wrela_append_deadlock_literal() -> u64
   Fn __wrela_abort_deadlock() -> unit
+  Const QUIESCE_POLL_BOUND: usize
+  Fn __wrela_secondaries_idle() -> u64
+  Fn __wrela_quiesce_before_halt() -> u64
+  Fn __wrela_lane1_quiesce_timeout_line() -> unit
   Fn __wrela_rt_summary_and_halt() -> unit
   Fn __wrela_rt_primary_boot() -> unit
   Fn __wrela_rt_primary_entry() -> unit

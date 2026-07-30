@@ -5525,7 +5525,8 @@ fn two():
         let program = program_with_rodata(b"boom");
         let tests = vec!["a".to_string(), "b".to_string(), "c".to_string()];
         let bound = compute_transcript_bound(&program, &tests);
-        assert_eq!(bound.lines, 6); // 3 tests + 1 summary + 2 lane1
+        // 3 tests + 1 summary + 2 lane1 + the item-B quiesce-timeout line
+        assert_eq!(bound.lines, 7);
     }
 
     #[test]
@@ -5559,13 +5560,15 @@ fn two():
         // (the deadlock diagnostic is the longest message even with an
         // empty rodata pool), plus the summary's own exact 2*20+9+8=57.
         let failed_len = 7 + 2 * DEADLOCK_MSG.len() as u64 + 20 + 1;
-        // + lane1 scalar line + hits over-approx (METHOD_CALL_POOL_COUNT pairs).
+        // + lane1 scalar line + the item-B `lane1 quiesce=timeout` line
+        // + hits over-approx (METHOD_CALL_POOL_COUNT pairs).
         const LANE1_SCALAR: u64 = 12 + 20 + 9 + 20 + 10 + 20 + 1;
+        const LANE1_QUIESCE: u64 = 21 + 1;
         let lane1_hits =
             11 + (crate::rtconfig::METHOD_CALL_POOL_COUNT as u64) * (20 + 1 + 20 + 1) + 1;
         assert_eq!(
             bound.worst_case_bytes,
-            16 + failed_len + 57 + LANE1_SCALAR + lane1_hits
+            16 + failed_len + 57 + LANE1_SCALAR + LANE1_QUIESCE + lane1_hits
         );
     }
 

@@ -449,6 +449,11 @@ pub const RUNTIME_TEST_FORCE_ROOT_KEYS: &[&str] = &[
     "__wrela_lane1_sum_method_hits",
     // Integrity Phase 2 Item M — Lane 2 block-counter dump (no-op unless enabled).
     "__wrela_lane2_dump",
+    // plans/lane1-per-core.md item B: bounded quiesce before the halt dump
+    // (decision 1504) and the one line a timeout prints.
+    "__wrela_quiesce_before_halt",
+    "__wrela_secondaries_idle",
+    "__wrela_lane1_quiesce_timeout_line",
 ];
 
 /// Optional seeds for the single image lower (wiring / test-runner).
@@ -5110,6 +5115,77 @@ mod integration_tests {
         let tokens = lexer::lex(src).expect("test source must lex");
         let module = parser::parse(tokens).expect("test source must parse");
         sema::check_typed(&module, "<test>").expect("test source must check")
+    }
+
+    /// plans/lane1-per-core.md item B / decision 1504: the quiesce wait is
+    /// **bounded**. An unbounded wait would turn a scheduling bug (a released
+    /// core that never parks) into a hang at halt, so the loop must carry its
+    /// `@budget` trip counter — which lowers to a "loop budget exceeded"
+    /// abort against a literal bound. Deleting the `@budget`, or letting the
+    /// loop condition outrun it, fails here.
+    #[test]
+    fn quiesce_before_halt_is_a_bounded_wait() {
+        let (runtime_key, runtime_loaded) = match crate::loader::load_runtime_module() {
+            Ok(v) => v,
+            Err(_) => panic!("runtime.wr must load"),
+        };
+        let gen_key: Vec<String> = crate::loader::IMAGE_RUNTIME_MODULE_KEY
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        let gen_module = crate::rtconfig::parse_generated(&crate::rtconfig::stub_text())
+            .expect("stub must parse");
+        let mut modules = BTreeMap::new();
+        modules.insert(runtime_key.clone(), runtime_loaded.module);
+        modules.insert(gen_key.clone(), gen_module);
+        let mut paths = BTreeMap::new();
+        paths.insert(
+            runtime_key.clone(),
+            runtime_loaded.file.display().to_string(),
+        );
+        paths.insert(gen_key, crate::rtconfig::GENERATED_INPUT_PATH.to_string());
+        let programs = sema::check_program_typed(&modules, &paths).expect("check");
+        let typed = programs
+            .get(&runtime_key)
+            .expect("core.runtime must be checked");
+        let mut only = BTreeSet::new();
+        only.insert("__wrela_quiesce_before_halt".to_string());
+        let opts = LowerOpts {
+            emit_comptime_tests: false,
+            only: Some(only),
+        };
+        let mwir = lower_program_with(typed, &opts).expect("core.runtime must lower");
+        let f = mwir
+            .fns
+            .get("__wrela_quiesce_before_halt")
+            .expect("quiesce fn must lower");
+        let bounded = f.body.iter().any(
+            |i| matches!(i, Inst::AssertFail { message: Some(m) } if m == "loop budget exceeded"),
+        );
+        assert!(
+            bounded,
+            "the quiesce wait must be `@budget`-bounded; body:\n{:?}",
+            f.body
+        );
+        // The trip bound is the poll bound, not some other literal: the
+        // budget's own `ConstInt` carries it.
+        let bound = f
+            .body
+            .iter()
+            .filter_map(|i| match i {
+                Inst::ConstInt {
+                    ty: Type::U64,
+                    value,
+                    ..
+                } if *value > 1 => Some(*value),
+                _ => None,
+            })
+            .max()
+            .expect("a budget bound literal must be present");
+        assert_eq!(
+            bound, 4096,
+            "QUIESCE_POLL_BOUND changed; update this oracle deliberately"
+        );
     }
 
     #[test]

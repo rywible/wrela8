@@ -43,8 +43,10 @@ ImageReport v0
     Field name=now_ns type=u64 offset=0x0 size=8
   Layout name=ParkMmio kind=runtime endian=little size=8 padding=0
     Field name=word type=u64 offset=0x0 size=8
-  Layout name=PendingPage kind=runtime endian=little size=256 padding=0
+  Layout name=PendingPage kind=runtime endian=little size=2304 padding=1792
     Field name=words type=[u64; CORE_SLOTS] offset=0x0 size=256
+    Padding offset=0x100 size=1792
+    Field name=idle type=[u64; CORE_SLOTS] offset=0x800 size=256
   Layout name=ConsoleRingPage kind=runtime endian=little size=6672 padding=2564
     Field name=desc_words type=[u64; DESC_WORD_COUNT] offset=0x0 size=4096
     Field name=avail_flags_idx type=u32 offset=0x1000 size=4
@@ -74,10 +76,10 @@ ImageReport v0
   Cores count=1
   CoreStack core=0 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=84740
-  Section name=rodata base=0x40514b58 size=842
-  Section name=abort base=0x40514ea4 size=120
-  Section name=checkpoint base=0x40514f1c size=28
+  Section name=code base=0x40500050 size=85024
+  Section name=rodata base=0x40514c70 size=842
+  Section name=abort base=0x40514fbc size=120
+  Section name=checkpoint base=0x40515034 size=28
   Section name=rtdata base=0x40540000 size=2328
   Section name=devregs base=0x40540918 size=104
   Section name=pooldata base=0x40540980 size=512
@@ -163,7 +165,7 @@ ImageReport v0
   PlacedStatic name=MB9_CTL type=MbCtl addr=0x4057fa38 size=24
   PlacedStatic name=MB9_DATA type=Mb9Data addr=0x4057fa18 size=8
   PlacedStatic name=PARK type=ParkMmio addr=0x8002000 size=8
-  PlacedStatic name=PENDING type=PendingPage addr=0x40007000 size=256
+  PlacedStatic name=PENDING type=PendingPage addr=0x40007000 size=2304
   PlacedStatic name=RELEASE type=ParkMmio addr=0x8003000 size=8
   PlacedStatic name=RINGS_CTL type=RingsCtl addr=0x4057ffe0 size=24
   PlacedStatic name=RINGS_DATA type=RingsData addr=0x4057fff8 size=8
@@ -183,10 +185,10 @@ ImageReport v0
   BlkDevice device=device#0 capacity_sectors=16 features=0x100000200
   BlkQueue index=0 size=8 desc=0x40540980 avail=0x40540a00 used=0x40540a18 doorbell=0x40540a60
   BlkAccounting descriptors_per_op=3 queue_depth=8 occupancy_bound=2
-  Cost version=2 digest=ca6c6ea1a27ab060 total=28243 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=28243
+  Cost version=2 digest=ca6c6ea1a27ab060 total=28316 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=28316
     Owner name=app proxy_cycles=2911
-    Owner name=runtime proxy_cycles=25332
+    Owner name=runtime proxy_cycles=25405
     Owner name=driver proxy_cycles=0
     Core n=0 proxy_cycles=521 max_turn_proxy=73 turns_per_sec=32876712.3287671246 ms_per_turn_model=0.0000304167
-    Shared proxy_cycles=27722
+    Shared proxy_cycles=27795

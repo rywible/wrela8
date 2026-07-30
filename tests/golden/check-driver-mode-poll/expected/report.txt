@@ -35,8 +35,10 @@ ImageReport v0
     Field name=now_ns type=u64 offset=0x0 size=8
   Layout name=ParkMmio kind=runtime endian=little size=8 padding=0
     Field name=word type=u64 offset=0x0 size=8
-  Layout name=PendingPage kind=runtime endian=little size=256 padding=0
+  Layout name=PendingPage kind=runtime endian=little size=2304 padding=1792
     Field name=words type=[u64; CORE_SLOTS] offset=0x0 size=256
+    Padding offset=0x100 size=1792
+    Field name=idle type=[u64; CORE_SLOTS] offset=0x800 size=256
   Layout name=ConsoleRingPage kind=runtime endian=little size=6672 padding=2564
     Field name=desc_words type=[u64; DESC_WORD_COUNT] offset=0x0 size=4096
     Field name=avail_flags_idx type=u32 offset=0x1000 size=4
@@ -62,10 +64,10 @@ ImageReport v0
   Cores count=1
   CoreStack core=0 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=80984
-  Section name=rodata base=0x40513ca8 size=511
-  Section name=abort base=0x40513ea8 size=120
-  Section name=checkpoint base=0x40513f20 size=28
+  Section name=code base=0x40500050 size=81268
+  Section name=rodata base=0x40513dc8 size=511
+  Section name=abort base=0x40513fc8 size=120
+  Section name=checkpoint base=0x40514040 size=28
   Section name=rtdata base=0x40540000 size=48
   Section name=devregs base=0x40540030 size=8
   Entry base=0x40500000
@@ -150,7 +152,7 @@ ImageReport v0
   PlacedStatic name=MB9_CTL type=MbCtl addr=0x4057fa40 size=24
   PlacedStatic name=MB9_DATA type=Mb9Data addr=0x4057fa20 size=8
   PlacedStatic name=PARK type=ParkMmio addr=0x8002000 size=8
-  PlacedStatic name=PENDING type=PendingPage addr=0x40007000 size=256
+  PlacedStatic name=PENDING type=PendingPage addr=0x40007000 size=2304
   PlacedStatic name=RELEASE type=ParkMmio addr=0x8003000 size=8
   PlacedStatic name=RINGS_CTL type=RingsCtl addr=0x4057ffe0 size=24
   PlacedStatic name=RINGS_DATA type=RingsData addr=0x4057fff8 size=8
@@ -163,10 +165,10 @@ ImageReport v0
   Turns count=0 stride=0 bytes=0
   Totals actors=0 drivers=1 ready_queue=1 group_arena=0 bytes=48
   DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver[DriverMode.Poll] base=0x40540030 size=8
-  Cost version=2 digest=ca6c6ea1a27ab060 total=26357 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=26357
+  Cost version=2 digest=ca6c6ea1a27ab060 total=26430 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=26430
     Owner name=app proxy_cycles=1474
-    Owner name=runtime proxy_cycles=24883
+    Owner name=runtime proxy_cycles=24956
     Owner name=driver proxy_cycles=0
     Core n=0 proxy_cycles=212 max_turn_proxy=104 turns_per_sec=23076923.0769230761 ms_per_turn_model=0.0000433333
-    Shared proxy_cycles=26145
+    Shared proxy_cycles=26218
