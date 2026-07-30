@@ -3094,6 +3094,13 @@ fn ledger() -> Result<(), String> {
                                 | "report-determinism"
                                 // plans/M16.md item F / decisions 1160–1166.
                                 | "stdlib-test"
+                                // plans/M20.md item L / freeze 1632: the
+                                // cost dimension inventory cross-check
+                                // between `CostRule` and plans/M20.md's
+                                // table runs inside `ledger` itself, so a
+                                // clause may cite it the same way the doc
+                                // corpus cites `xtask:corpus`.
+                                | "ledger"
                         ) {
                             return Err(format!("clause `{id}`: unknown xtask check `{cmd}`"));
                         }
@@ -3134,6 +3141,20 @@ fn ledger() -> Result<(), String> {
             _ => return Err(format!("clause `{id}`: status must be \"test\" or \"gap\"")),
         }
     }
+    // Freeze 1632 (plans/M20.md item L): the cost dimension inventory is
+    // machine-checked, not a prose table. Every `CostRule` variant must
+    // name at least one inventory row and every row it names must exist in
+    // `plans/M20.md`'s table — so a `CostRule` added without an inventory
+    // row (or an inventory row deleted from under one) fails the ledger.
+    // Runs here rather than as a unit because it is a whole-tree
+    // consistency check between code and a plan document, the same shape as
+    // the clause/doc cross-check above.
+    let plan = wrela_compiler::cost::plan_text()?;
+    println!(
+        "{}",
+        wrela_compiler::cost::check_dimension_inventory(&plan)?
+    );
+
     println!(
         "ledger: {} clause(s), {tested} tested, {} explicit gap(s)",
         clauses.len(),
