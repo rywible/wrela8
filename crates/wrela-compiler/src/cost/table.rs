@@ -445,20 +445,13 @@ impl CostTable {
         self.dispatch_uops()
     }
 
-    /// Added to branch finish latency by the pre-M20 scoreboard.
-    ///
-    /// **Zero, deliberately, and only until item H.** `[branch]
-    /// mispredict_penalty` is a real 14 cycles now, but the v2 scoreboard
-    /// has no branch bias at all: it can never argue a branch *is*
-    /// mispredicted, so charging the penalty unconditionally would
-    /// over-credit branch *removal* — if-conversion would score a
-    /// multi-cycle win where a well-predicted branch costs the real
-    /// machine nothing. Item H replaces this accessor with the
-    /// bias-derived charge from block-grain `f`, at which point it goes
-    /// away rather than being set to a number.
-    pub fn branch_penalty(&self) -> u64 {
-        0
-    }
+    // `branch_penalty()` — the pre-M20 accessor that returned a constant 0
+    // "only until item H" — is **deleted** by item H rather than set to a
+    // number, exactly as its own note promised. The mispredict charge is now
+    // bias-derived (`cost::branch`), reads its magnitude from `[sweep]
+    // mispredict_penalty` through a `SweepPoint`, and cannot be spelled as a
+    // single table constant at all: an unconditional per-branch number is
+    // the thing the zero existed to refuse.
 
     pub fn geometry(&self, key: &str) -> Option<&Row> {
         self.geometry.get(key)
@@ -1536,7 +1529,11 @@ mod tests {
         assert_eq!(a.alu_ports(), 3, "port_i = pipes 2-4");
         assert_eq!(a.mem_ports(), 2, "port_l = pipes 5-6");
         assert_eq!(a.max_issue_per_cycle(), 8);
-        assert_eq!(a.branch_penalty(), 0, "item H replaces this accessor");
+        // `branch_penalty()` is gone (item H): the mispredict charge is
+        // bias-derived and swept, so the pinned row is a bracket end rather
+        // than a scoreboard addend.
+        assert_eq!(a.branch_row("mispredict_penalty").expect("row").value, 14);
+        assert_eq!(a.sweep("mispredict_penalty").expect("row").lo, 11);
 
         // T1 latency rows.
         assert_eq!(a.latency(CostRule::Alu), 1);

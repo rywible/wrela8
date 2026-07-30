@@ -42,6 +42,7 @@ impl Fnv64 {
 
 pub mod ab;
 pub mod attr;
+pub mod branch;
 pub mod compose;
 pub mod crosscore;
 pub mod dump;
@@ -59,6 +60,7 @@ pub mod workload;
 
 pub use ab::{CostOpts, rank_cmp, score_with_opts};
 pub use attr::{CoreBucket, CoreCostReport, PlaceableTurn, attribute_cores};
+pub use branch::{BlockCounts, BlockObs, BranchSummary, BranchTerms, FRONTEND_SWEEP_DIM};
 pub use compose::{WorkloadAttach, attach_workloads, method_grain_fxs, uncovered_charge};
 pub use dump::{dump, dump_for_source};
 pub use footprint::{CoreBudget, HotBlocks, PAGE_BYTES};
@@ -69,7 +71,7 @@ pub use owner::classify_owner;
 pub use rule::{CostRule, EmittedWord, FlagEffect, MEM_SP_REG, MemClass, MemRef};
 pub use score::{
     BranchBias, CostReport, CrossExtra, FnCost, basic_block_ranges, block_schedule_lengths,
-    score_program, score_program_at, score_program_at_with_hot,
+    block_schedule_lengths_with_counts, score_program, score_program_at, score_program_at_with_hot,
 };
 pub use stage::{
     CostStageClosure, codegen_cost_stage, codegen_cost_stage_with_placement,
