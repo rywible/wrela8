@@ -13,14 +13,59 @@
 //! Overall compare (item K): given an `OverallSide` for baseline vs
 //! candidate and pinned weights from `bench/workloads.toml`, **veto** if
 //! any non-`flat` workload rises (ε=0), if measured coverage falls, or if
-//! the static emitted word count grows; else **rank** by the weighted mean
-//! of relative deltas `(cand−base)/base`.
+//! any core's text/TLB budget overflow **grows**; else **rank** by the
+//! weighted mean of relative deltas `(cand−base)/base`.
 //!
-//! The coverage and word vetoes are soundness side conditions, not
+//! The coverage and budget vetoes are soundness side conditions, not
 //! rankings. The scoreboard prices neither "the candidate explains less of
-//! the workload" nor "the candidate emits more code", and 04 §5 requires
-//! that a proxy win never imply a real-machine loss — so both are refused
-//! rather than absorbed into the mean.
+//! the workload" nor "the candidate no longer fits the core it runs on",
+//! and 04 §5 requires that a proxy win never imply a real-machine loss —
+//! so both are refused rather than absorbed into the mean.
+//!
+//! ## Item J: the words veto retired, the per-core budget installed
+//!
+//! Emitted word count is a **reported column** (04 §5 as item A rewrote it)
+//! and no longer a condition of its own; the hard constraint in its place
+//! is the per-core hot-text / I-TLB / L2-TLB budget of
+//! [`cost::footprint`](crate::cost::footprint). Both landed in one commit,
+//! never one ahead of the other (freeze 1626).
+//!
+//! The replacement is a **delta** rule — no core's over-budget quantity may
+//! rise — and that is decision 1619. The reason is what the rule *means*,
+//! not whether it would fire: an absolute
+//! [`within_budget`](crate::cost::CoreBudget::within_budget) veto refuses a
+//! candidate for a property of the **baseline** (a program already over its
+//! L1I is refused however much better the candidate makes it), while the
+//! veto being retired said "a candidate may not pay for schedule with more
+//! footprint", which is a statement about the **change**. The delta keeps
+//! that sentence true wherever the baseline sits relative to the ceiling.
+//!
+//! The cost-stage closure this gate scores is in fact comfortably **inside**
+//! every budget — largest is `cost-runtime` at 10432 B of hot text against a
+//! 65536 B L1I, 3 text pages against 48 entries, `charge = 0` on both sides
+//! of every case — so an absolute rule is implementable here; it is simply
+//! the wrong rule. (Item F's 91–92 KiB figure is the **image** program, a
+//! different and much larger closure that prints a line with the same name.
+//! Nothing constrains this gate's inputs to be cost-stage closures, and
+//! handed the image program's budgets an absolute veto would refuse every
+//! candidate including the identity — pinned as
+//! `unit:an_over_budget_identity_is_refused_absolutely_and_allowed_as_a_delta`.)
+//!
+//! Two absolute assertions are kept **alongside** the delta, and no more:
+//! [`VetoReason::ITlbBudgetExceeded`], because the I-side page span is
+//! inside budget on both surfaces so the assertion is about the program
+//! rather than about which program was handed in; and `within_budget()` on
+//! every `cost-*` case in the corpus oracle, so the rule here is live and
+//! silent rather than inert.
+//!
+//! ## Item J: the ∀ sweep
+//!
+//! [`compare_opt_lists_over_box`] scores both sides at every point of the
+//! residual-uncertainty box that can matter and refuses on any rank flip,
+//! **naming the flipping point**. There is no per-point win predicate in
+//! this module's public surface (freeze 1624) — `∃` is not a shape the API
+//! can express, and `unit:no_public_per_point_win_predicate_exists` checks
+//! that structurally rather than by comment.
 //!
 //! ## Freeze 1633: the barrier-removal refusal (plans/M20.md item G)
 //!
@@ -44,13 +89,18 @@
 //! touch any of it; the barrier refusal is independent of, and outlives,
 //! the words condition.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use crate::codegen::CodegenProgram;
 use crate::cost::crosscore::{OrderingRemoval, ordering_removals, ordering_word_counts};
-use crate::cost::score::CostReport;
-use crate::cost::stage::report_cost_stage_path;
+use crate::cost::footprint::CoreBudget;
+use crate::cost::score::{CostReport, score_program_at};
+use crate::cost::stage::{codegen_cost_stage_with_placement, report_cost_stage_path};
+use crate::cost::sweep::{SweepPoint, endpoint_corners, record_reads};
+use crate::cost::table::{CostTable, load_default};
 use crate::cost::workload::{self, FLAT_NAME, WorkloadSet};
+use crate::placement::PlacementTable;
 
 use super::{CompileMode, OptId, RELEASE_OPTS, apply_mode, apply_opts};
 
@@ -60,9 +110,14 @@ pub struct CaseDelta {
     pub name: String,
     pub baseline: u64,
     pub candidate: u64,
-    /// Static emitted word counts — the footprint side condition.
+    /// Static emitted word counts — a **reported column** since item J
+    /// retired the words veto (freeze 1626); no longer a condition.
     pub baseline_words: u64,
     pub candidate_words: u64,
+    /// Per-core text/TLB budgets at the pinned point — the hard constraint
+    /// that replaced the words veto, read as a **delta** (decision 1619).
+    pub baseline_budgets: Vec<CoreBudget>,
+    pub candidate_budgets: Vec<CoreBudget>,
     /// Ordering-word counts per `[crosscore]`-priced rule — the freeze-1633
     /// refusal input (plans/M20.md item G).
     pub baseline_ordering: BTreeMap<&'static str, u64>,
@@ -84,11 +139,108 @@ impl CaseDelta {
         ordering_removals(&self.baseline_ordering, &self.candidate_ordering)
     }
 
-    /// Static-shape opts "delete or shorten the stream" (04 §5), so a
-    /// rising word count contradicts the category by definition.
-    pub fn words_grew(&self) -> bool {
-        self.candidate_words > self.baseline_words
+    /// **Decision 1619.** Per-core budget overflow quantities that rose.
+    /// Non-empty is a refusal; this is what stands in the retired words
+    /// veto's place. `Err` when the two sides disagree about how many cores
+    /// exist — that is not a rank, it is two different machines.
+    pub fn budget_growth(&self) -> Result<Vec<BudgetGrowth>, String> {
+        budget_overflow_growth(&self.baseline_budgets, &self.candidate_budgets)
     }
+}
+
+/// Total priced overflow charge across a side's cores — the reported
+/// magnitude of the budget column.
+fn total_charge(budgets: &[CoreBudget]) -> u64 {
+    budgets.iter().fold(0u64, |a, b| a.saturating_add(b.charge))
+}
+
+/// One per-core budget quantity that rose from baseline to candidate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BudgetGrowth {
+    pub core: usize,
+    /// The [`CoreBudget`] field name, as printed in the 04 §6 budget line.
+    pub field: &'static str,
+    pub baseline: u64,
+    pub candidate: u64,
+}
+
+impl BudgetGrowth {
+    pub fn label(&self) -> String {
+        format!(
+            "budget_grew:core{}:{}:{}->{}",
+            self.core, self.field, self.baseline, self.candidate
+        )
+    }
+}
+
+/// The over-budget quantities the delta rule watches, in the order the
+/// 04 §6 budget line prints them. Written as one list so a new overflow
+/// field is added here or nowhere — the failure mode a hand-rolled
+/// comparison per call site would have.
+fn over_budget_quantities(b: &CoreBudget) -> [(&'static str, u64); 7] {
+    [
+        ("over_l1i_lines", b.over_l1i_lines),
+        ("over_l2_lines", b.over_l2_lines),
+        ("over_itlb_pages", b.over_itlb_pages),
+        ("over_tlb_l2_pages", b.over_tlb_l2_pages),
+        ("over_dtlb_pages", b.over_dtlb_pages),
+        ("over_data_tlb_l2_pages", b.over_data_tlb_l2_pages),
+        ("charge", b.charge),
+    ]
+}
+
+/// **Decision 1619 — the rule that replaces the words veto.** No core's
+/// over-budget quantity may increase.
+///
+/// The plan asked for the budget "as the hard constraint in its place",
+/// which reads as an absolute [`CoreBudget::within_budget`] test. That
+/// reading is implementable on the cost-stage closure — which is inside
+/// every budget — but it is the wrong rule: it refuses a candidate for a
+/// property of the **baseline**, while the veto it replaces was about the
+/// **change**. It is also unsafe on the image program, whose every core is
+/// already 409–413 lines over its 64 KiB L1I under `W_flat`, where an
+/// absolute veto refuses every candidate including the identity. The delta
+/// is what the words veto actually was, moved onto the right denominator.
+pub fn budget_overflow_growth(
+    baseline: &[CoreBudget],
+    candidate: &[CoreBudget],
+) -> Result<Vec<BudgetGrowth>, String> {
+    if baseline.len() != candidate.len() {
+        return Err(format!(
+            "budget: core count changed {}->{} — the two sides were placed \
+             on different machines, which is an error rather than a rank",
+            baseline.len(),
+            candidate.len()
+        ));
+    }
+    let mut out = Vec::new();
+    for (b, c) in baseline.iter().zip(candidate.iter()) {
+        if b.n != c.n {
+            return Err(format!("budget: core index mismatch {} vs {}", b.n, c.n));
+        }
+        for ((field, bv), (_, cv)) in over_budget_quantities(b)
+            .into_iter()
+            .zip(over_budget_quantities(c))
+        {
+            if cv > bv {
+                out.push(BudgetGrowth {
+                    core: b.n,
+                    field,
+                    baseline: bv,
+                    candidate: cv,
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The absolute half, kept **in addition** to the delta rule. Item F
+/// measured 23 text pages against a 48-entry L1 I-TLB on every `boot-*`
+/// core, so unlike the hot-text line this budget is comfortably inside
+/// today and an assertion about it is meaningful rather than universal.
+pub fn itlb_absolute_breaches(budgets: &[CoreBudget]) -> Vec<&CoreBudget> {
+    budgets.iter().filter(|b| b.over_itlb_pages > 0).collect()
 }
 
 /// Full corpus comparison result (per-case + sums).
@@ -110,24 +262,34 @@ impl CorpusCompare {
         self.candidate_words as i64 - self.baseline_words as i64
     }
 
-    /// True when no case rises in cycles **or** words, no case deletes an
-    /// ordering word, and at least one strictly falls in cycles.
+    /// True when no case rises in cycles, no case grows a per-core budget
+    /// overflow, no case deletes an ordering word, and at least one
+    /// strictly falls in cycles.
     ///
-    /// The word side condition exists because the scoreboard is in-order
-    /// over an out-of-order core: reordering that the hardware already
-    /// performs still shortens the modelled schedule, so a candidate could
-    /// otherwise buy modelled cycles with real instructions. 04 §5 asks
-    /// for "fewer/cheaper ops **and** shorter true data deps"; checking
-    /// the composite alone does not enforce the conjunction.
+    /// **Words are not checked here** (freeze 1626): with the I-side
+    /// footprint priced, 04 §5 makes the emitted word count a reported
+    /// column and the per-core hot-text / I-TLB / L2-TLB budget the hard
+    /// constraint. The budget condition still exists for the reason the
+    /// word one did — the scoreboard is in-order over an out-of-order core,
+    /// so a candidate must not buy modelled cycles with real instructions —
+    /// but it now asks the question against the denominator the machine has
+    /// rather than against a whole-image word total.
     ///
     /// The ordering condition is freeze 1633 and is a different kind of
     /// rule: not "the proxy might be wrong" but "this word is
     /// correctness-load-bearing and its deletion is never a win".
+    ///
+    /// A core-count disagreement between the two sides is an error, and an
+    /// error is not a win.
     pub fn wins(&self) -> bool {
         let mut any_fall = false;
         for c in &self.cases {
-            if c.candidate > c.baseline || c.words_grew() {
+            if c.candidate > c.baseline {
                 return false;
+            }
+            match c.budget_growth() {
+                Ok(g) if g.is_empty() => {}
+                _ => return false,
             }
             if !c.ordering_removed().is_empty() {
                 return false;
@@ -211,6 +373,8 @@ pub fn compare_opt_lists(baseline: &[OptId], candidate: &[OptId]) -> CorpusCompa
             candidate: c.total_proxy_cycles,
             baseline_words: b.total_words,
             candidate_words: c.total_words,
+            baseline_budgets: b.footprint.clone(),
+            candidate_budgets: c.footprint.clone(),
             baseline_ordering: ordering_word_counts(&b),
             candidate_ordering: ordering_word_counts(&c),
         });
@@ -258,11 +422,13 @@ fn assert_wins(cmp: &CorpusCompare, cand_label: &str, base_label: &str) {
                 c.name, c.candidate, c.baseline
             ));
         }
-        if c.words_grew() {
-            grew.push(format!(
-                "{}: {cand_label} {} words > {base_label} {} words",
-                c.name, c.candidate_words, c.baseline_words
-            ));
+        match c.budget_growth() {
+            Ok(growth) => {
+                for g in growth {
+                    grew.push(format!("{}: {}", c.name, g.label()));
+                }
+            }
+            Err(e) => grew.push(format!("{}: {e}", c.name)),
         }
         if c.candidate < c.baseline {
             any_fall = true;
@@ -274,11 +440,13 @@ fn assert_wins(cmp: &CorpusCompare, cand_label: &str, base_label: &str) {
         rose.len(),
         rose.join("\n"),
     );
+    // Decision 1619: the per-core budget replaces the words veto, as a
+    // **delta**. Words stay in the table above as a reported column.
     assert!(
         grew.is_empty(),
-        "{cand_label} grew static word count on {} case(s) — the proxy \
-         cannot price I-cache footprint, so it must not certify growth \
-         as a win:\n{}\n{table}",
+        "{cand_label} grew a per-core text/TLB budget overflow on {} \
+         case(s) — 04 §5 makes that budget the hard constraint the emitted \
+         word count no longer is:\n{}\n{table}",
         grew.len(),
         grew.join("\n"),
     );
@@ -301,35 +469,671 @@ fn assert_wins(cmp: &CorpusCompare, cand_label: &str, base_label: &str) {
 }
 
 /// Stable text table for item L's evidence block.
+///
+/// `words_b` / `words_c` / `Δw` stay — as a **reported column** (freeze
+/// 1626), no longer a veto — and `chg_b` / `chg_c` / `Δchg` carry the
+/// per-core budget charge that took the veto's place. `cores=0` in the
+/// budget column means the case has no `@image`, so there is no per-core
+/// denominator and the budget rule is inert on it.
 pub fn format_delta_table(cmp: &CorpusCompare, base_label: &str, cand_label: &str) -> String {
     let mut out = String::new();
     out.push_str(&format!(
-        "{:<22} {:>12} {:>12} {:>10} {:>10} {:>10} {:>8}\n",
-        "case", base_label, cand_label, "Δ", "words_b", "words_c", "Δw"
+        "{:<22} {:>12} {:>12} {:>10} {:>10} {:>10} {:>8} {:>8} {:>8} {:>7} {:>7}\n",
+        "case",
+        base_label,
+        cand_label,
+        "Δ",
+        "words_b",
+        "words_c",
+        "Δw",
+        "chg_b",
+        "chg_c",
+        "Δchg",
+        "cores"
     ));
     for c in &cmp.cases {
+        let cb = total_charge(&c.baseline_budgets);
+        let cc = total_charge(&c.candidate_budgets);
         out.push_str(&format!(
-            "{:<22} {:>12} {:>12} {:>+10} {:>10} {:>10} {:>+8}\n",
+            "{:<22} {:>12} {:>12} {:>+10} {:>10} {:>10} {:>+8} {:>8} {:>8} {:>+7} {:>7}\n",
             c.name,
             c.baseline,
             c.candidate,
             c.delta(),
             c.baseline_words,
             c.candidate_words,
-            c.words_delta()
+            c.words_delta(),
+            cb,
+            cc,
+            cc as i64 - cb as i64,
+            c.baseline_budgets.len(),
         ));
     }
+    let sum_cb: u64 = cmp
+        .cases
+        .iter()
+        .map(|c| total_charge(&c.baseline_budgets))
+        .sum();
+    let sum_cc: u64 = cmp
+        .cases
+        .iter()
+        .map(|c| total_charge(&c.candidate_budgets))
+        .sum();
     out.push_str(&format!(
-        "{:<22} {:>12} {:>12} {:>+10} {:>10} {:>10} {:>+8}\n",
+        "{:<22} {:>12} {:>12} {:>+10} {:>10} {:>10} {:>+8} {:>8} {:>8} {:>+7} {:>7}\n",
         "SUM",
         cmp.baseline_sum,
         cmp.candidate_sum,
         cmp.sum_delta(),
         cmp.baseline_words,
         cmp.candidate_words,
-        cmp.words_delta()
+        cmp.words_delta(),
+        sum_cb,
+        sum_cc,
+        sum_cc as i64 - sum_cb as i64,
+        "-"
     ));
     out
+}
+
+// ---------------------------------------------------------------------------
+// The ∀ sweep over the residual-uncertainty box (plans/M20.md item J,
+// decision 1604, freeze 1624)
+// ---------------------------------------------------------------------------
+
+/// Fail-closed bound on how many dimensions one case may sweep.
+///
+/// `2^12 = 4096` corners for one case, `8192` scorings. Measured on this
+/// tree: the whole six-case corpus survives at `k = 9` or `10`, 4096 points
+/// per side in total, and takes ~36 s. One case at the bound would be about
+/// the same again on its own; much past it the gate stops being a gate.
+///
+/// The bound exists so a model change that makes many more dimensions live
+/// **errors** rather than silently truncating the sweep — decision 1604
+/// forbids dropping a dimension, so the only honest response to a box this
+/// gate cannot enumerate is to refuse to rank. Item M's planned
+/// `cost-crosscore` golden is the known collision: it will read the four
+/// `[crosscore]` dimensions this corpus never reaches, taking `k` to 13–14
+/// and tripping this bound. That is left as a refusal to be dealt with
+/// deliberately, not pre-weakened here.
+pub const MAX_SWEPT_DIMS: usize = 12;
+
+/// A dimension the sensitivity probe proved cannot matter for one case, so
+/// it is held at its pinned value instead of being cornered over.
+///
+/// This is **not** dropping a dimension (decision 1604). `read=false` means
+/// the model never asked for this dimension's value while scoring either
+/// side — a term that is never read cannot change a score at any point of
+/// the box, whatever the other dimensions do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldDim {
+    pub dim: String,
+    pub lo: u64,
+    pub hi: u64,
+    pub pinned: u64,
+}
+
+impl HeldDim {
+    pub fn label(&self) -> String {
+        format!("{}[{}..{}]@{}", self.dim, self.lo, self.hi, self.pinned)
+    }
+}
+
+/// One point of one case's residual box, both sides scored.
+///
+/// Deliberately plain data with no verdict on it: a `wins`-shaped method
+/// here would be the `∃` form freeze 1624 refuses, one `.iter().any()` away
+/// from a search for a flattering assumption. The only verdict in this
+/// module's public surface is [`SweepCompare::wins`], which is ∀.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PointRow {
+    /// [`SweepPoint::label_over`] the case's surviving dimensions.
+    pub point: String,
+    pub baseline: u64,
+    pub candidate: u64,
+    /// Σ per-core budget charge, which moves with the point (its terms are
+    /// `l2_latency`, `l3_latency` and `tlb_walk_cost`).
+    pub baseline_charge: u64,
+    pub candidate_charge: u64,
+}
+
+impl PointRow {
+    pub fn delta(&self) -> i64 {
+        self.candidate as i64 - self.baseline as i64
+    }
+}
+
+/// One case swept over its residual box.
+#[derive(Debug, Clone)]
+pub struct CaseSweep {
+    pub name: String,
+    /// Dimensions the committed profile declares — the nominal box.
+    pub box_dims: usize,
+    /// `2^box_dims`: the endpoint-corner cardinality of the whole box.
+    pub box_cardinality: u64,
+    /// Dimensions this case is sensitive to; `k = swept.len()`.
+    pub swept: Vec<String>,
+    /// Dimensions held at pinned, with the bracket each was held across.
+    pub held: Vec<HeldDim>,
+    /// Read by the model but with no measured effect at any probe base.
+    /// **Kept in `swept` anyway** — the probe excludes on "never read", and
+    /// this list is the doubt it refused to resolve in its own favour.
+    pub read_but_static: Vec<String>,
+    /// `2^k` rows, in [`endpoint_corners`] order.
+    pub points: Vec<PointRow>,
+}
+
+impl CaseSweep {
+    pub fn corners(&self) -> usize {
+        self.points.len()
+    }
+}
+
+/// Why a swept comparison was refused. Every variant that can name a point
+/// does (04 §5: a reason that fires at one point of the residual box names
+/// that point).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SweepVeto {
+    /// The candidate's total is higher than the baseline's at this point.
+    CaseRose {
+        case: String,
+        point: String,
+        baseline: u64,
+        candidate: u64,
+    },
+    /// **Decision 1619.** A per-core budget overflow quantity rose at this
+    /// point.
+    BudgetGrew {
+        case: String,
+        point: String,
+        growth: BudgetGrowth,
+    },
+    /// The absolute I-TLB assertion kept alongside the delta rule.
+    ITlbExceeded {
+        case: String,
+        point: String,
+        core: usize,
+        text_pages: u64,
+        itlb_entries: u64,
+    },
+    /// **Freeze 1633.** Point-independent: a count of emitted words.
+    OrderingWordsRemoved {
+        case: String,
+        rule: &'static str,
+        baseline: u64,
+        candidate: u64,
+    },
+    /// No case falls at *every* point of its own box. 04 §5's "must
+    /// strictly lower at least one" read under ∀: a case that falls only
+    /// where the assumptions flatter it has not lowered anything.
+    NoCaseFallsEverywhere,
+}
+
+impl SweepVeto {
+    pub fn label(&self) -> String {
+        match self {
+            SweepVeto::CaseRose {
+                case,
+                point,
+                baseline,
+                candidate,
+            } => format!("case_rose:{case}:{baseline}->{candidate}@[{point}]"),
+            SweepVeto::BudgetGrew {
+                case,
+                point,
+                growth,
+            } => {
+                format!("{case}:{}@[{point}]", growth.label())
+            }
+            SweepVeto::ITlbExceeded {
+                case,
+                point,
+                core,
+                text_pages,
+                itlb_entries,
+            } => format!("itlb_exceeded:{case}:core{core}:{text_pages}/{itlb_entries}@[{point}]"),
+            SweepVeto::OrderingWordsRemoved {
+                case,
+                rule,
+                baseline,
+                candidate,
+            } => format!("ordering_words_removed:{case}:{rule}:{baseline}->{candidate}"),
+            SweepVeto::NoCaseFallsEverywhere => "no_case_falls_everywhere".to_string(),
+        }
+    }
+}
+
+/// The ∀ verdict plus the per-point table for the evidence block.
+#[derive(Debug, Clone)]
+pub struct SweepCompare {
+    pub table_digest: String,
+    pub cases: Vec<CaseSweep>,
+    pub reasons: Vec<SweepVeto>,
+}
+
+impl SweepCompare {
+    /// **The only verdict this module exposes**, and it is ∀: no case rose,
+    /// no budget overflow grew and no ordering word vanished at **any**
+    /// point, and some case fell at **every** point (freeze 1624).
+    pub fn wins(&self) -> bool {
+        self.reasons.is_empty()
+    }
+
+    /// Total points scored per side across the corpus.
+    pub fn scored_points(&self) -> usize {
+        self.cases.iter().map(CaseSweep::corners).sum()
+    }
+}
+
+/// One side of one case, compiled once and scored at many points. Codegen
+/// dominates the cost of a comparison, so it happens `2 × cases` times, not
+/// `2 × cases × points` times.
+struct CompiledSide {
+    program: CodegenProgram,
+    placement: PlacementTable,
+}
+
+/// Everything the gate reads from one side at one point.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SideScore {
+    cycles: u64,
+    words: u64,
+    budgets: Vec<CoreBudget>,
+    ordering: BTreeMap<&'static str, u64>,
+}
+
+impl SideScore {
+    fn charge(&self) -> u64 {
+        total_charge(&self.budgets)
+    }
+}
+
+fn compile_side(path: &Path, opts: &[OptId]) -> Result<CompiledSide, String> {
+    apply_opts(opts);
+    let (program, placement) = codegen_cost_stage_with_placement(path)?;
+    Ok(CompiledSide { program, placement })
+}
+
+fn score_side_at(
+    side: &CompiledSide,
+    table: &CostTable,
+    point: &SweepPoint,
+) -> Result<SideScore, String> {
+    let r = score_program_at(&side.program, table, &side.placement, point)?;
+    Ok(SideScore {
+        cycles: r.total_proxy_cycles,
+        words: r.total_words,
+        budgets: r.footprint.clone(),
+        ordering: ordering_word_counts(&r),
+    })
+}
+
+/// `2^n` where `n` is the number of dimensions the committed profile
+/// declares — the nominal endpoint-corner cardinality of the box.
+pub fn box_cardinality(table: &CostTable) -> u64 {
+    1u64 << table.sweep_dimensions().len().min(63)
+}
+
+/// What the sensitivity probe learned about one case.
+struct Probe {
+    swept: Vec<String>,
+    held: Vec<HeldDim>,
+    read_but_static: Vec<String>,
+}
+
+/// Decide which dimensions this case can be swept over without dropping
+/// one (decision 1604).
+///
+/// For each dimension `d` the probe scores **both sides** with `d` at `lo`
+/// and at `hi`, over three bases — the pinned corner, the all-lo corner and
+/// the all-hi corner — recording, at every one of those scorings, which
+/// dimensions the model actually *read* through [`SweepPoint::get`].
+///
+/// A dimension is held only when it was **never read by either side at any
+/// probe point**. That is a reason rather than an observation: a term no
+/// scoring path asks for cannot move a total at any assignment of the other
+/// dimensions. "Neither side's total moved" is kept as a cross-check — a
+/// dimension that moved a total while never being read would mean the model
+/// reads the box through some other door, so that combination is an error
+/// (fail closed), not a silent exclusion. A dimension that *was* read but
+/// moved nothing stays in the sweep: it is doubt, and doubt keeps it in.
+fn probe_case(
+    name: &str,
+    base: &CompiledSide,
+    cand: &CompiledSide,
+    table: &CostTable,
+) -> Result<Probe, String> {
+    let dims: Vec<String> = table
+        .sweep_dimensions()
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    let pinned = SweepPoint::pinned(table);
+    let mut all_lo = pinned.clone();
+    let mut all_hi = pinned.clone();
+    for d in &dims {
+        let row = table
+            .sweep(d)
+            .ok_or_else(|| format!("sweep dimension `{d}` vanished"))?;
+        all_lo = all_lo.with(d, row.lo);
+        all_hi = all_hi.with(d, row.hi);
+    }
+    let bases = [pinned, all_lo, all_hi];
+
+    let mut read: BTreeSet<String> = BTreeSet::new();
+    let mut moved: BTreeSet<String> = BTreeSet::new();
+    let mut err: Option<String> = None;
+    let mut score = |side: &CompiledSide, p: &SweepPoint| -> Option<SideScore> {
+        let (out, r) = record_reads(|| score_side_at(side, table, p));
+        read.extend(r);
+        match out {
+            Ok(s) => Some(s),
+            Err(e) => {
+                err.get_or_insert(e);
+                None
+            }
+        }
+    };
+
+    for d in &dims {
+        let row = table
+            .sweep(d)
+            .ok_or_else(|| format!("sweep dimension `{d}` vanished"))?;
+        for b in &bases {
+            let lo = b.with(d, row.lo);
+            let hi = b.with(d, row.hi);
+            for side in [base, cand] {
+                let a = score(side, &lo);
+                let z = score(side, &hi);
+                if let (Some(a), Some(z)) = (a, z)
+                    && a != z
+                {
+                    moved.insert(d.clone());
+                }
+            }
+        }
+    }
+    if let Some(e) = err {
+        return Err(format!("{name}: probe score failed: {e}"));
+    }
+
+    let mut swept = Vec::new();
+    let mut held = Vec::new();
+    let mut read_but_static = Vec::new();
+    for d in &dims {
+        let row = table
+            .sweep(d)
+            .ok_or_else(|| format!("sweep dimension `{d}` vanished"))?;
+        let was_read = read.contains(d);
+        let was_moved = moved.contains(d);
+        if was_moved && !was_read {
+            return Err(format!(
+                "{name}: dimension `{d}` moved a total without ever being \
+                 read through SweepPoint::get — the model reads the box \
+                 through some other door and the probe cannot be trusted"
+            ));
+        }
+        if was_read {
+            if !was_moved {
+                read_but_static.push(d.clone());
+            }
+            swept.push(d.clone());
+        } else {
+            held.push(HeldDim {
+                dim: d.clone(),
+                lo: row.lo,
+                hi: row.hi,
+                pinned: row.pinned,
+            });
+        }
+    }
+    if swept.len() > MAX_SWEPT_DIMS {
+        return Err(format!(
+            "{name}: {} dimensions survive the sensitivity probe, over the \
+             bound of {MAX_SWEPT_DIMS} (2^{} corners). Decision 1604 forbids \
+             dropping a dimension, so this errors rather than truncating the \
+             sweep: raise MAX_SWEPT_DIMS deliberately, with the cost of the \
+             sweep measured, or narrow what the model reads.",
+            swept.len(),
+            swept.len()
+        ));
+    }
+    Ok(Probe {
+        swept,
+        held,
+        read_but_static,
+    })
+}
+
+/// Every refusal that can fire at one point, for one case, appended to
+/// `reasons` — and the evidence row for that point.
+///
+/// This is the whole per-point rule and it is **private and one-way**: it
+/// pushes reasons and never answers "did the candidate win here". The ∀
+/// quantifier lives in the loop that calls it, which is the only place a
+/// verdict is formed (freeze 1624).
+///
+/// `check_ordering` exists because ordering-word counts are counts of
+/// emitted words and therefore identical at every point of the box —
+/// reporting the same refusal `2^k` times would bury every other reason.
+fn refuse_at_point(
+    case: &str,
+    label: &str,
+    b: &SideScore,
+    c: &SideScore,
+    check_ordering: bool,
+    reasons: &mut Vec<SweepVeto>,
+) -> Result<PointRow, String> {
+    if c.cycles > b.cycles {
+        reasons.push(SweepVeto::CaseRose {
+            case: case.to_string(),
+            point: label.to_string(),
+            baseline: b.cycles,
+            candidate: c.cycles,
+        });
+    }
+    for g in budget_overflow_growth(&b.budgets, &c.budgets)? {
+        reasons.push(SweepVeto::BudgetGrew {
+            case: case.to_string(),
+            point: label.to_string(),
+            growth: g,
+        });
+    }
+    for over in itlb_absolute_breaches(&c.budgets) {
+        reasons.push(SweepVeto::ITlbExceeded {
+            case: case.to_string(),
+            point: label.to_string(),
+            core: over.n,
+            text_pages: over.text_pages,
+            itlb_entries: over.itlb_entries,
+        });
+    }
+    if check_ordering {
+        for r in ordering_removals(&b.ordering, &c.ordering) {
+            reasons.push(SweepVeto::OrderingWordsRemoved {
+                case: case.to_string(),
+                rule: r.rule,
+                baseline: r.baseline,
+                candidate: r.candidate,
+            });
+        }
+    }
+    Ok(PointRow {
+        point: label.to_string(),
+        baseline: b.cycles,
+        candidate: c.cycles,
+        baseline_charge: b.charge(),
+        candidate_charge: c.charge(),
+    })
+}
+
+/// Sweep one already-compiled case over its residual box.
+fn sweep_case(
+    name: &str,
+    base: &CompiledSide,
+    cand: &CompiledSide,
+    table: &CostTable,
+    reasons: &mut Vec<SweepVeto>,
+) -> Result<CaseSweep, String> {
+    let probe = probe_case(name, base, cand, table)?;
+    let swept_refs: Vec<&str> = probe.swept.iter().map(String::as_str).collect();
+    let corners = endpoint_corners(table, &swept_refs);
+
+    let mut points = Vec::with_capacity(corners.len());
+    let mut ordering_reported = false;
+    for p in &corners {
+        let b = score_side_at(base, table, p)?;
+        let c = score_side_at(cand, table, p)?;
+        let label = p.label_over(&swept_refs);
+        points.push(refuse_at_point(
+            name,
+            &label,
+            &b,
+            &c,
+            !ordering_reported,
+            reasons,
+        )?);
+        ordering_reported = true;
+    }
+
+    let box_dims = table.sweep_dimensions().len();
+    Ok(CaseSweep {
+        name: name.to_string(),
+        box_dims,
+        box_cardinality: box_cardinality(table),
+        swept: probe.swept,
+        held: probe.held,
+        read_but_static: probe.read_but_static,
+        points,
+    })
+}
+
+/// **The public ∀ entry.** Compare two opt lists over the whole cost-*
+/// corpus at every point of the residual-uncertainty box that can matter,
+/// returning the verdict together with the per-point table.
+///
+/// There is no per-point win predicate here or anywhere in this module's
+/// public surface (freeze 1624). The caller gets rows and one ∀ verdict; it
+/// cannot ask "did the candidate win *somewhere*".
+pub fn compare_opt_lists_over_box(
+    baseline: &[OptId],
+    candidate: &[OptId],
+) -> Result<SweepCompare, String> {
+    let corpus = discover_cost_corpus();
+    if corpus.is_empty() {
+        return Err("cost corpus empty: expected tests/golden/cost-*/input.wr".to_string());
+    }
+    let table = load_default()?;
+    let mut cases = Vec::with_capacity(corpus.len());
+    let mut reasons = Vec::new();
+    for path in &corpus {
+        let name = case_name(path);
+        let b = compile_side(path, baseline)?;
+        let c = compile_side(path, candidate)?;
+        cases.push(sweep_case(&name, &b, &c, &table, &mut reasons)?);
+    }
+    apply_mode(CompileMode::Release);
+
+    // 04 §5's "must strictly lower at least one", read under ∀: a case that
+    // falls only at some points has not lowered anything the gate can rely
+    // on. Checked after the refusals so a candidate whose only gain is a
+    // deleted barrier reads as refused rather than as "nothing fell".
+    let any_falls_everywhere = cases
+        .iter()
+        .any(|c| !c.points.is_empty() && c.points.iter().all(|p| p.candidate < p.baseline));
+    if !any_falls_everywhere {
+        reasons.push(SweepVeto::NoCaseFallsEverywhere);
+    }
+
+    Ok(SweepCompare {
+        table_digest: table.table_digest(),
+        cases,
+        reasons,
+    })
+}
+
+/// Stable per-point evidence table (printed under `--nocapture`).
+///
+/// Prints both the nominal box cardinality and the surviving `k` per case,
+/// so a reader sees what was enumerated *and* what it stands for, and lists
+/// every held dimension with the bracket it was held across — a silent
+/// reduction would be exactly the failure decision 1604 exists to prevent.
+pub fn format_sweep_table(cmp: &SweepCompare, base_label: &str, cand_label: &str) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("table_digest={}\n", cmp.table_digest));
+    for c in &cmp.cases {
+        out.push_str(&format!(
+            "\ncase {} box_dims={} box_cardinality={} swept_k={} corners={}\n",
+            c.name,
+            c.box_dims,
+            c.box_cardinality,
+            c.swept.len(),
+            c.corners()
+        ));
+        out.push_str(&format!("  swept: {}\n", c.swept.join(" ")));
+        out.push_str(&format!(
+            "  held (never read by either side, so no corner over them can flip this case): {}\n",
+            if c.held.is_empty() {
+                "-".to_string()
+            } else {
+                c.held
+                    .iter()
+                    .map(HeldDim::label)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            }
+        ));
+        out.push_str(&format!(
+            "  read but static (kept in the sweep anyway): {}\n",
+            if c.read_but_static.is_empty() {
+                "-".to_string()
+            } else {
+                c.read_but_static.join(" ")
+            }
+        ));
+        out.push_str(&format!(
+            "  {:<44} {:>12} {:>12} {:>10} {:>8} {:>8}\n",
+            "point", base_label, cand_label, "Δ", "chg_b", "chg_c"
+        ));
+        for p in &c.points {
+            out.push_str(&format!(
+                "  {:<44} {:>12} {:>12} {:>+10} {:>8} {:>8}\n",
+                p.point,
+                p.baseline,
+                p.candidate,
+                p.delta(),
+                p.baseline_charge,
+                p.candidate_charge
+            ));
+        }
+    }
+    if cmp.reasons.is_empty() {
+        out.push_str(&format!(
+            "\noutcome=wins_at_every_point points_per_side={}\n",
+            cmp.scored_points()
+        ));
+    } else {
+        let labels: Vec<String> = cmp.reasons.iter().map(SweepVeto::label).collect();
+        out.push_str(&format!(
+            "\noutcome=veto reasons={}\n",
+            labels.join("\n                ")
+        ));
+    }
+    out
+}
+
+/// Assert the ∀ verdict, panicking with the per-point table and every
+/// reason that fired (04 §5: not just the first).
+pub fn assert_sweep_wins(cmp: &SweepCompare, cand_label: &str, base_label: &str) {
+    if !cmp.reasons.is_empty() {
+        let table = format_sweep_table(cmp, base_label, cand_label);
+        let labels: Vec<String> = cmp.reasons.iter().map(SweepVeto::label).collect();
+        panic!(
+            "{cand_label} refused vs {base_label} at {} point(s)/reason(s):\n{}\n{table}",
+            cmp.reasons.len(),
+            labels.join("\n"),
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -388,10 +1192,28 @@ pub enum VetoReason {
         baseline: (u64, u64),
         candidate: (u64, u64),
     },
-    /// Static emitted word count grew. The proxy has no I-cache/ITLB term,
-    /// so it cannot certify a footprint increase as safe (04 §5: prefer
-    /// over-cost when unsure).
-    WordsGrew { baseline: u64, candidate: u64 },
+    /// **Decision 1619.** A per-core text/TLB budget overflow quantity
+    /// rose. This is what replaced the retired word-count veto (freeze
+    /// 1626): with the I-side term real, 04 §5 prices footprint growth and
+    /// makes the **budget** the hard constraint. It is read as a delta
+    /// because the veto it replaces was one — "a candidate may not pay for
+    /// schedule with more footprint" is a claim about the change, not about
+    /// where the baseline sits relative to the ceiling.
+    BudgetOverflowGrew {
+        core: usize,
+        field: &'static str,
+        baseline: u64,
+        candidate: u64,
+    },
+    /// The absolute half kept beside the delta rule: the candidate's text
+    /// does not fit the 48-entry L1 I-TLB on some core. Meaningful because
+    /// item F measured 23 text pages there — unlike the hot-text line, this
+    /// budget is not already breached everywhere.
+    ITlbBudgetExceeded {
+        core: usize,
+        text_pages: u64,
+        itlb_entries: u64,
+    },
     /// **Freeze 1633.** The candidate emits fewer words of a
     /// `[crosscore]`-priced ordering rule (`DMB`, `LDAR`, `STLR`, system).
     /// Those words are correctness-load-bearing —
@@ -422,10 +1244,17 @@ impl VetoReason {
                 "coverage_fell:{name}:{}/{}->{}/{}",
                 baseline.0, baseline.1, candidate.0, candidate.1
             ),
-            VetoReason::WordsGrew {
+            VetoReason::BudgetOverflowGrew {
+                core,
+                field,
                 baseline,
                 candidate,
-            } => format!("words_grew:{baseline}->{candidate}"),
+            } => format!("budget_grew:core{core}:{field}:{baseline}->{candidate}"),
+            VetoReason::ITlbBudgetExceeded {
+                core,
+                text_pages,
+                itlb_entries,
+            } => format!("itlb_exceeded:core{core}:{text_pages}/{itlb_entries}"),
         }
     }
 }
@@ -446,8 +1275,12 @@ pub struct OverallCompare {
     pub workloads: Vec<WorkloadDelta>,
     pub baseline_coverage: BTreeMap<String, (u64, u64)>,
     pub candidate_coverage: BTreeMap<String, (u64, u64)>,
+    /// Reported column, not a veto input (freeze 1626).
     pub baseline_words: u64,
     pub candidate_words: u64,
+    /// The hard constraint that replaced it (decision 1619).
+    pub baseline_budgets: Vec<CoreBudget>,
+    pub candidate_budgets: Vec<CoreBudget>,
     pub outcome: OverallOutcome,
 }
 
@@ -494,13 +1327,18 @@ impl OverallCompare {
 }
 
 /// One side of the overall gate: per-W proxy totals, per-W measured
-/// coverage, and the static emitted word count.
+/// coverage, the reported word count, and the per-core budgets.
 #[derive(Debug, Clone, Default)]
 pub struct OverallSide {
     pub totals: BTreeMap<String, u64>,
     /// Workload name → (matched_hits, total_hits).
     pub coverage: BTreeMap<String, (u64, u64)>,
+    /// **Reported**, never a veto input, since item J (freeze 1626).
     pub words: u64,
+    /// Per-core text/TLB budgets — the hard constraint that replaced the
+    /// word veto, read as a delta (decision 1619). Empty on both sides
+    /// leaves the rule inert, which is what a plumbing test wants.
+    pub budgets: Vec<CoreBudget>,
     /// Ordering-word counts per `[crosscore]`-priced rule — the freeze-1633
     /// refusal input (plans/M20.md item G). Empty on both sides leaves the
     /// refusal inert, which is what a plumbing test wants.
@@ -515,20 +1353,27 @@ impl OverallSide {
             totals: report.workload_totals.clone(),
             coverage: report.workload_coverage.clone(),
             words: report.total_words,
+            budgets: report.footprint.clone(),
             ordering: ordering_word_counts(report),
         }
     }
 
-    /// Totals only — no coverage rows, zero words, no ordering counts. For
-    /// plumbing tests and flat-only callers; the coverage / word / ordering
-    /// refusals stay inert.
+    /// Totals only — no coverage rows, zero words, no budgets, no ordering
+    /// counts. For plumbing tests and flat-only callers; the coverage /
+    /// budget / ordering refusals stay inert.
     pub fn from_totals(totals: BTreeMap<String, u64>) -> Self {
         Self {
             totals,
             coverage: BTreeMap::new(),
             words: 0,
+            budgets: Vec::new(),
             ordering: BTreeMap::new(),
         }
+    }
+
+    pub fn with_budgets(mut self, budgets: Vec<CoreBudget>) -> Self {
+        self.budgets = budgets;
+        self
     }
 
     pub fn with_ordering(mut self, ordering: BTreeMap<&'static str, u64>) -> Self {
@@ -570,12 +1415,14 @@ pub fn load_pinned_workloads() -> Result<WorkloadSet, String> {
 /// Fail closed if any pinned name is missing from either side. Extra keys
 /// (not in the pinned set) are ignored. Veto — in this order, all reasons
 /// collected — when any non-`flat` workload rises (ε=0), when measured
-/// coverage falls, or when the static word count grows. Otherwise rank by
-/// the weighted mean of relative deltas.
+/// coverage falls, when a per-core budget overflow grows, or when the
+/// candidate's text overflows the L1 I-TLB. Otherwise rank by the weighted
+/// mean of relative deltas.
 ///
-/// The two added vetoes close the ways a candidate could win the cycle
-/// number while leaving real hardware the same or worse: explaining less
-/// of the workload (coverage) and emitting more code (words).
+/// The added vetoes close the ways a candidate could win the cycle number
+/// while leaving real hardware the same or worse: explaining less of the
+/// workload (coverage) and no longer fitting the core it runs on (budget).
+/// The word count is a reported column and vetoes nothing (freeze 1626).
 pub fn compare_overall(
     baseline: &OverallSide,
     candidate: &OverallSide,
@@ -642,10 +1489,24 @@ pub fn compare_overall(
         }
     }
 
-    if candidate.words > baseline.words {
-        reasons.push(VetoReason::WordsGrew {
-            baseline: baseline.words,
-            candidate: candidate.words,
+    // Decision 1619 / freeze 1626: the words veto is gone (words are the
+    // reported column above) and the per-core budget stands in its place,
+    // as a **delta** — under `W_flat` the absolute budget is already
+    // breached on every core of every boot case, so an absolute reading
+    // would refuse the identity.
+    for g in budget_overflow_growth(&baseline.budgets, &candidate.budgets)? {
+        reasons.push(VetoReason::BudgetOverflowGrew {
+            core: g.core,
+            field: g.field,
+            baseline: g.baseline,
+            candidate: g.candidate,
+        });
+    }
+    for over in itlb_absolute_breaches(&candidate.budgets) {
+        reasons.push(VetoReason::ITlbBudgetExceeded {
+            core: over.n,
+            text_pages: over.text_pages,
+            itlb_entries: over.itlb_entries,
         });
     }
 
@@ -683,17 +1544,39 @@ pub fn compare_overall(
         candidate_coverage: candidate.coverage.clone(),
         baseline_words: baseline.words,
         candidate_words: candidate.words,
+        baseline_budgets: baseline.budgets.clone(),
+        candidate_budgets: candidate.budgets.clone(),
         outcome,
     })
 }
 
+/// Coverage fraction as `matched/total (pp.p%)`, or `-` when the row is
+/// not a measured one. **Decision 1617:** block-grain coverage on
+/// `boot-actors` is 893/6647 ≈ 13.4%, and with ~5 754 uncovered hits each
+/// charged at the program maximum the measured total is dominated by that
+/// term — so the fraction is printed *beside* the number it qualifies,
+/// never on a line a reader can skip.
+fn coverage_cell(cov: Option<(u64, u64)>) -> String {
+    match cov {
+        Some((m, t)) if t > 0 => {
+            format!("{m}/{t} ({:.1}%)", 100.0 * (m as f64) / (t as f64))
+        }
+        Some((m, t)) => format!("{m}/{t}"),
+        None => "-".to_string(),
+    }
+}
+
 /// Stable per-W evidence table (printed under `--nocapture`).
+///
+/// Each measured row carries its coverage fraction **in the row**
+/// (decision 1617): a 13.4%-covered total is not a measured result about
+/// the program, and a reader must not be able to take it for one.
 pub fn format_overall_table(cmp: &OverallCompare, base_label: &str, cand_label: &str) -> String {
     let mut out = String::new();
     out.push_str(&format!("workloads_digest={}\n", cmp.workloads_digest));
     out.push_str(&format!(
-        "{:<16} {:>8} {:>12} {:>12} {:>10} {:>12}\n",
-        "workload", "weight", base_label, cand_label, "Δ", "rel"
+        "{:<16} {:>8} {:>12} {:>12} {:>10} {:>12}  {:<22} {:<22}\n",
+        "workload", "weight", base_label, cand_label, "Δ", "rel", "coverage_b", "coverage_c"
     ));
     for r in &cmp.workloads {
         let rel = r.relative_delta();
@@ -702,14 +1585,22 @@ pub fn format_overall_table(cmp: &OverallCompare, base_label: &str, cand_label: 
         } else {
             format!("{rel:+.6}")
         };
+        let b_cov = cmp.baseline_coverage.get(&r.name).copied();
+        let c_cov = cmp
+            .candidate_coverage
+            .get(&r.name)
+            .copied()
+            .or(b_cov.map(|(_, t)| (0, t)));
         out.push_str(&format!(
-            "{:<16} {:>8} {:>12} {:>12} {:>+10} {:>12}\n",
+            "{:<16} {:>8} {:>12} {:>12} {:>+10} {:>12}  {:<22} {:<22}\n",
             r.name,
             r.weight,
             r.baseline,
             r.candidate,
             r.delta(),
-            rel_s
+            rel_s,
+            coverage_cell(b_cov),
+            coverage_cell(c_cov),
         ));
     }
     for (name, &(b_m, b_t)) in &cmp.baseline_coverage {
@@ -720,15 +1611,24 @@ pub fn format_overall_table(cmp: &OverallCompare, base_label: &str, cand_label: 
             .unwrap_or((0, b_t));
         out.push_str(&format!("coverage {name} {b_m}/{b_t} -> {c_m}/{c_t}\n"));
     }
+    // Reported column, not a veto (freeze 1626).
     out.push_str(&format!(
         "{:<16} {:>8} {:>12} {:>12} {:>+10} {:>12}\n",
-        "words",
+        "words(reported)",
         "-",
         cmp.baseline_words,
         cmp.candidate_words,
         cmp.candidate_words as i64 - cmp.baseline_words as i64,
         "-"
     ));
+    // The hard constraint that replaced it (decision 1619).
+    for (i, b) in cmp.baseline_budgets.iter().enumerate() {
+        let c = cmp.candidate_budgets.get(i);
+        out.push_str(&format!("budget_b {}\n", b.render()));
+        if let Some(c) = c {
+            out.push_str(&format!("budget_c {}\n", c.render()));
+        }
+    }
     match &cmp.outcome {
         OverallOutcome::Veto { reasons } => {
             let labels: Vec<String> = reasons.iter().map(|r| r.label()).collect();
@@ -1173,51 +2073,269 @@ mod tests {
         assert!(err.contains("denominator"), "got: {err}");
     }
 
-    /// Growing the static word count vetoes even on a clean cycle win —
-    /// the proxy has no I-cache term, so it must not certify growth.
+    // -----------------------------------------------------------------------
+    // Decision 1619 / freeze 1626: the words veto retired, the per-core
+    // budget delta installed in its place.
+    // -----------------------------------------------------------------------
+
+    /// A synthetic `CoreBudget`. `over_itlb_pages == 0` carries item F's
+    /// measured 23 text pages against the 48-entry L1 I-TLB.
+    fn budget(n: usize, over_l1i_lines: u64, over_itlb_pages: u64, charge: u64) -> CoreBudget {
+        CoreBudget {
+            n,
+            hot_text_bytes: 91712,
+            l1i_bytes: 65536,
+            over_l1i_lines,
+            over_l2_lines: 0,
+            text_pages: if over_itlb_pages == 0 {
+                23
+            } else {
+                48 + over_itlb_pages
+            },
+            itlb_entries: 48,
+            over_itlb_pages,
+            tlb_l2_entries: 1280,
+            over_tlb_l2_pages: 0,
+            data_pages: 6,
+            over_dtlb_pages: 0,
+            over_data_tlb_l2_pages: 0,
+            charge,
+        }
+    }
+
+    /// **The replacement fires when an overflow rises.** Every cycle number
+    /// falls; one core needs one more line than it did.
     #[test]
-    fn overall_vetoes_when_words_grow() {
+    fn overall_vetoes_when_a_core_budget_overflow_grows() {
         let set = pinned_set();
-        let baseline = totals(&[("flat", 1000), ("boot-actors", 5000)]).with_words(4000);
-        let candidate = totals(&[("flat", 900), ("boot-actors", 4000)]).with_words(4001);
+        let baseline = totals(&[("flat", 1000), ("boot-actors", 5000)])
+            .with_budgets(vec![budget(0, 409, 0, 2863), budget(1, 413, 0, 2891)]);
+        let candidate = totals(&[("flat", 900), ("boot-actors", 4000)])
+            .with_budgets(vec![budget(0, 409, 0, 2863), budget(1, 414, 0, 2891)]);
         let cmp = compare_overall(&baseline, &candidate, &set).expect("compare");
         let table = format_overall_table(&cmp, "baseline", "candidate");
-        eprintln!("overall words veto:\n{table}");
-        assert!(cmp.vetoed(), "word growth must veto");
+        eprintln!("overall budget veto:\n{table}");
+        assert!(cmp.vetoed(), "a rising overflow must veto:\n{table}");
         assert!(!cmp.wins());
         assert_eq!(
             cmp.veto_reasons(),
-            &[VetoReason::WordsGrew {
-                baseline: 4000,
-                candidate: 4001,
+            &[VetoReason::BudgetOverflowGrew {
+                core: 1,
+                field: "over_l1i_lines",
+                baseline: 413,
+                candidate: 414,
             }]
         );
-        assert!(table.contains("words"), "{table}");
+        assert!(
+            table.contains("budget_grew:core1:over_l1i_lines:413->414"),
+            "the refusal must name itself (04 §5):\n{table}"
+        );
     }
 
+    /// Every watched quantity is watched, not just the first — including
+    /// the priced `charge`, which is the only one that moves with the sweep
+    /// point.
     #[test]
-    fn overall_equal_words_do_not_veto() {
+    fn overall_budget_veto_watches_every_over_quantity() {
         let set = pinned_set();
-        let baseline = totals(&[("flat", 1000), ("boot-actors", 5000)]).with_words(4000);
-        let candidate = totals(&[("flat", 900), ("boot-actors", 4000)]).with_words(4000);
-        let cmp = compare_overall(&baseline, &candidate, &set).expect("compare");
-        assert!(!cmp.vetoed());
-        assert!(cmp.wins());
+        let base_b = budget(0, 409, 0, 2863);
+        let fields = [
+            "over_l1i_lines",
+            "over_l2_lines",
+            "over_itlb_pages",
+            "over_tlb_l2_pages",
+            "over_dtlb_pages",
+            "over_data_tlb_l2_pages",
+            "charge",
+        ];
+        for field in fields {
+            let mut c = base_b.clone();
+            match field {
+                "over_l1i_lines" => c.over_l1i_lines += 1,
+                "over_l2_lines" => c.over_l2_lines += 1,
+                "over_itlb_pages" => c.over_itlb_pages += 1,
+                "over_tlb_l2_pages" => c.over_tlb_l2_pages += 1,
+                "over_dtlb_pages" => c.over_dtlb_pages += 1,
+                "over_data_tlb_l2_pages" => c.over_data_tlb_l2_pages += 1,
+                "charge" => c.charge += 1,
+                _ => unreachable!(),
+            }
+            let baseline =
+                totals(&[("flat", 1000), ("boot-actors", 5000)]).with_budgets(vec![base_b.clone()]);
+            let candidate = totals(&[("flat", 900), ("boot-actors", 4000)]).with_budgets(vec![c]);
+            let cmp = compare_overall(&baseline, &candidate, &set).expect("compare");
+            assert!(cmp.vetoed(), "{field} growth must veto");
+            let labels: Vec<String> = cmp.veto_reasons().iter().map(|r| r.label()).collect();
+            assert!(
+                labels.iter().any(|l| l.contains(field)),
+                "{field} must be named, got {labels:?}"
+            );
+        }
     }
 
-    /// All three veto conditions are collected, not short-circuited — the
-    /// evidence table should show every reason a candidate was refused.
+    /// **Decision 1619's counter-example.**
+    ///
+    /// These are the **image** program's budgets, not the cost-stage
+    /// closure's — item F measured every core of every `boot-*` case
+    /// already 409–413 lines over its 64 KiB L1I under `W_flat`. Nothing
+    /// constrains this gate's inputs to be cost-stage closures, and handed
+    /// these an absolute `CoreBudget::within_budget()` veto fires on the
+    /// **identity**, refusing a program compared against itself and
+    /// therefore every candidate there will ever be. The delta reading does
+    /// not fire, which is why an absolute whole-budget veto is not the rule
+    /// that replaces the words veto.
+    #[test]
+    fn an_over_budget_identity_is_refused_absolutely_and_allowed_as_a_delta() {
+        let set = pinned_set();
+        // The three cores item F reported on `boot-cores-3`.
+        let boot = vec![
+            budget(0, 409, 0, 2863),
+            budget(1, 413, 0, 2891),
+            budget(2, 410, 0, 2870),
+        ];
+        for b in &boot {
+            assert!(
+                !b.within_budget(),
+                "the premise: core {} is already over budget under W_flat",
+                b.n
+            );
+        }
+        // The identity: same budgets on both sides.
+        let side = totals(&[("flat", 1000), ("boot-actors", 5000)]).with_budgets(boot.clone());
+        let mut better = side.clone();
+        better.totals.insert("flat".to_string(), 900);
+        let cmp = compare_overall(&side, &better, &set).expect("compare");
+        let table = format_overall_table(&cmp, "baseline", "identical-budgets");
+        eprintln!("decision 1619 counter-example:\n{table}");
+        assert!(
+            !cmp.vetoed(),
+            "the delta rule must not fire on unchanged budgets — the absolute \
+             rule would have refused every one of these three cores:\n{table}"
+        );
+        assert!(cmp.wins());
+        // And one line more on any core is still refused.
+        let mut worse = boot.clone();
+        worse[0].over_l1i_lines += 1;
+        let cmp =
+            compare_overall(&side, &better.clone().with_budgets(worse), &set).expect("compare");
+        assert!(
+            cmp.vetoed(),
+            "growth from an already-over baseline still vetoes"
+        );
+    }
+
+    /// The absolute half that *is* meaningful: item F measured 23 text
+    /// pages against 48 I-TLB entries, so an over-I-TLB candidate is a real
+    /// breach rather than a universal one.
+    #[test]
+    fn overall_vetoes_when_the_candidate_overflows_the_itlb_absolutely() {
+        let set = pinned_set();
+        let baseline =
+            totals(&[("flat", 1000), ("boot-actors", 5000)]).with_budgets(vec![budget(0, 0, 0, 0)]);
+        let candidate = totals(&[("flat", 900), ("boot-actors", 4000)])
+            .with_budgets(vec![budget(0, 0, 2, 116)]);
+        let cmp = compare_overall(&baseline, &candidate, &set).expect("compare");
+        let labels: Vec<String> = cmp.veto_reasons().iter().map(|r| r.label()).collect();
+        assert!(cmp.vetoed());
+        assert!(
+            labels.contains(&"itlb_exceeded:core0:50/48".to_string()),
+            "got {labels:?}"
+        );
+    }
+
+    /// A core-count change is not a rank: the two sides were placed on
+    /// different machines.
+    #[test]
+    fn overall_budget_core_count_change_fails_closed() {
+        let set = pinned_set();
+        let baseline =
+            totals(&[("flat", 1000), ("boot-actors", 5000)]).with_budgets(vec![budget(0, 0, 0, 0)]);
+        let candidate = totals(&[("flat", 900), ("boot-actors", 4000)])
+            .with_budgets(vec![budget(0, 0, 0, 0), budget(1, 0, 0, 0)]);
+        let err = compare_overall(&baseline, &candidate, &set).expect_err("core count");
+        assert!(err.contains("core count changed 1->2"), "got: {err}");
+    }
+
+    /// **Freeze 1626, the retirement half.** Word growth alone is no longer
+    /// a veto — it is a reported column — provided the budgets hold.
+    #[test]
+    fn word_growth_no_longer_vetoes_but_is_still_reported() {
+        let set = pinned_set();
+        let baseline = totals(&[("flat", 1000), ("boot-actors", 5000)])
+            .with_words(4000)
+            .with_budgets(vec![budget(0, 409, 0, 2863)]);
+        let candidate = totals(&[("flat", 900), ("boot-actors", 4000)])
+            .with_words(4100)
+            .with_budgets(vec![budget(0, 409, 0, 2863)]);
+        let cmp = compare_overall(&baseline, &candidate, &set).expect("compare");
+        let table = format_overall_table(&cmp, "baseline", "grew-100-words");
+        eprintln!("words retired as a veto:\n{table}");
+        assert!(
+            !cmp.vetoed(),
+            "+100 words inside the same budget is a priced trade, not a \
+             refusal (04 §5 as item A rewrote it):\n{table}"
+        );
+        assert!(cmp.wins());
+        assert_eq!(cmp.baseline_words, 4000);
+        assert_eq!(cmp.candidate_words, 4100);
+        assert!(
+            table.contains("words(reported)") && table.contains("+100"),
+            "words must still be reported:\n{table}"
+        );
+        // And no veto reason mentions words at all.
+        for r in cmp.veto_reasons() {
+            assert!(!r.label().contains("words_grew"), "{:?}", r);
+        }
+    }
+
+    /// **Decision 1617.** The measured row prints its coverage fraction
+    /// beside its own number, so a 13.4%-covered total cannot be read as a
+    /// measured result about the program.
+    #[test]
+    fn measured_rows_print_their_coverage_fraction_beside_the_number() {
+        let set = pinned_set();
+        let baseline = totals(&[("flat", 1000), ("boot-actors", 5000)]).with_coverage(cov(&[(
+            "boot-actors",
+            893,
+            6647,
+        )]));
+        let candidate = totals(&[("flat", 900), ("boot-actors", 4000)]).with_coverage(cov(&[(
+            "boot-actors",
+            893,
+            6647,
+        )]));
+        let cmp = compare_overall(&baseline, &candidate, &set).expect("compare");
+        let table = format_overall_table(&cmp, "baseline", "candidate");
+        eprintln!("coverage beside the number:\n{table}");
+        let row = table
+            .lines()
+            .find(|l| l.starts_with("boot-actors"))
+            .expect("boot-actors row");
+        assert!(
+            row.contains("893/6647 (13.4%)"),
+            "the measured row must carry its coverage fraction: {row}"
+        );
+        // The flat row is not a measured row and claims no coverage.
+        let flat = table
+            .lines()
+            .find(|l| l.starts_with("flat"))
+            .expect("flat row");
+        assert!(!flat.contains('%'), "flat is not a measured row: {flat}");
+    }
+
+    /// All firing conditions are collected, not short-circuited.
     #[test]
     fn overall_collects_every_veto_reason() {
         let set = pinned_set();
         let baseline = totals(&[("flat", 1000), ("boot-actors", 5000)])
             .with_coverage(cov(&[("boot-actors", 11, 11)]))
-            .with_words(4000);
+            .with_budgets(vec![budget(0, 409, 0, 2863)]);
         let candidate = totals(&[("flat", 900), ("boot-actors", 5001)])
             .with_coverage(cov(&[("boot-actors", 8, 11)]))
-            .with_words(4100);
+            .with_budgets(vec![budget(0, 410, 0, 2870)]);
         let cmp = compare_overall(&baseline, &candidate, &set).expect("compare");
-        assert_eq!(cmp.veto_reasons().len(), 3, "{:?}", cmp.veto_reasons());
+        // rise + coverage + two budget quantities (lines and charge).
+        assert_eq!(cmp.veto_reasons().len(), 4, "{:?}", cmp.veto_reasons());
     }
 
     // -----------------------------------------------------------------------
@@ -1318,6 +2436,8 @@ mod tests {
                 candidate: 900,
                 baseline_words: 400,
                 candidate_words: 399,
+                baseline_budgets: Vec::new(),
+                candidate_budgets: Vec::new(),
                 baseline_ordering: ord(&[("barrier", 2)]),
                 candidate_ordering: ord(&[("barrier", 1)]),
             }],
@@ -1486,25 +2606,459 @@ mod tests {
         apply_mode(CompileMode::Release);
     }
 
-    /// The live release set must satisfy the footprint side condition, not
-    /// just the cycle rule — release may not emit more words than dev.
+    /// **Freeze 1626 on the corpus gate, both halves in one test.** Words
+    /// are still a column and are recorded here; the condition the corpus
+    /// gate now enforces on the same run is the per-core budget delta.
+    ///
+    /// The rule's coverage on this corpus is stated rather than assumed:
+    /// no `cost-*` case declares an `@image`, so each gets the default
+    /// one-core placement and every fn lands on core 0. Every case fits
+    /// that core entirely — `charge = 0`, nothing over — so the rule is
+    /// **live and silent** here rather than inert. It is asserted that way,
+    /// because a corpus that started breaching the budget would otherwise
+    /// change this gate's meaning without changing this test.
     #[test]
-    fn release_does_not_grow_words_vs_dev() {
+    fn release_words_are_reported_and_the_budget_is_the_live_condition() {
         let cmp = compare_opt_lists(&[], RELEASE_OPTS);
         let table = format_delta_table(&cmp, "dev", "release");
-        eprintln!("corpus words (dev → release):\n{table}");
+        eprintln!("corpus words + budget (dev → release):\n{table}");
         for c in &cmp.cases {
-            assert!(
-                !c.words_grew(),
-                "{}: release {} words > dev {} words\n{table}",
-                c.name,
-                c.candidate_words,
-                c.baseline_words
-            );
+            for b in &c.baseline_budgets {
+                eprintln!("{} dev  {}", c.name, b.render());
+            }
+            for b in &c.candidate_budgets {
+                eprintln!("{} rel  {}", c.name, b.render());
+            }
         }
         assert!(
-            cmp.words_delta() <= 0,
-            "release must not grow total words\n{table}"
+            table.contains("words_b") && table.contains("chg_b"),
+            "words stay a reported column beside the budget charge:\n{table}"
         );
+        for c in &cmp.cases {
+            assert!(
+                c.budget_growth()
+                    .expect("same placement both sides")
+                    .is_empty(),
+                "{}: release grew a per-core budget overflow\n{table}",
+                c.name
+            );
+            assert_eq!(
+                c.baseline_budgets.len(),
+                1,
+                "{}: expected the default one-core placement",
+                c.name
+            );
+            for b in c.baseline_budgets.iter().chain(c.candidate_budgets.iter()) {
+                assert!(
+                    b.within_budget(),
+                    "{}: this corpus fits its core; if that stops being true \
+                     the gate's coverage claim changes: {}",
+                    c.name,
+                    b.render()
+                );
+            }
+        }
+    }
+
+    /// **The retirement itself, structurally.** A candidate that grows the
+    /// word count while lowering cycles wins the corpus gate now. Under the
+    /// pre-J rule this exact shape was refused; the new refusal is on the
+    /// budget, and this case's budgets are unchanged.
+    #[test]
+    fn corpus_gate_no_longer_refuses_word_growth() {
+        let grew = CorpusCompare {
+            cases: vec![CaseDelta {
+                name: "cost-synthetic".to_string(),
+                baseline: 1000,
+                candidate: 900,
+                baseline_words: 400,
+                candidate_words: 500,
+                baseline_budgets: vec![budget(0, 409, 0, 2863)],
+                candidate_budgets: vec![budget(0, 409, 0, 2863)],
+                baseline_ordering: ord(&[("barrier", 2)]),
+                candidate_ordering: ord(&[("barrier", 2)]),
+            }],
+            baseline_sum: 1000,
+            candidate_sum: 900,
+            baseline_words: 400,
+            candidate_words: 500,
+        };
+        assert_eq!(grew.words_delta(), 100, "the growth is real");
+        assert!(
+            grew.wins(),
+            "+100 words at an unchanged budget is a priced trade now, not a \
+             refusal (freeze 1626)"
+        );
+        // …and the same case with one more overflowing line is refused.
+        let mut over = grew.clone();
+        over.cases[0].candidate_budgets[0].over_l1i_lines += 1;
+        assert!(
+            !over.wins(),
+            "the budget delta is what refuses footprint growth now"
+        );
+        let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            assert_wins(&over, "candidate", "baseline");
+        }))
+        .expect_err("must refuse");
+        let msg = err
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .unwrap_or("<non-string panic>")
+            .to_string();
+        assert!(
+            msg.contains("budget_grew:core0:over_l1i_lines:409->410"),
+            "the refusal must name itself, got: {msg}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // The ∀ sweep (plans/M20.md item J, decision 1604, freeze 1624)
+    // -----------------------------------------------------------------------
+
+    /// **Freeze 1624, checked structurally rather than by comment.**
+    ///
+    /// The `∃` form ("does this candidate win at *some* point") must not be
+    /// expressible through this module's public surface. The check reads
+    /// this file's own source and pins the set of public `bool`-returning
+    /// functions: a new per-point predicate — `wins_at`, `wins_anywhere`, a
+    /// `PointRow::wins` — cannot be added without failing here, which is
+    /// the only kind of freeze that survives a rewrite.
+    #[test]
+    fn no_public_per_point_win_predicate_exists() {
+        let src = std::fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/opts/win.rs"),
+        )
+        .expect("read win.rs");
+        let mut public_bools = Vec::new();
+        for line in src.lines() {
+            let t = line.trim();
+            let Some(rest) = t.strip_prefix("pub fn ") else {
+                continue;
+            };
+            if !t.ends_with("-> bool {") && !t.ends_with("-> bool") {
+                continue;
+            }
+            let name = rest.split('(').next().unwrap_or("").to_string();
+            public_bools.push(name);
+        }
+        public_bools.sort();
+        assert_eq!(
+            public_bools,
+            vec![
+                "is_flat".to_string(),
+                "rises".to_string(),
+                "vetoed".to_string(),
+                "wins".to_string(),
+                "wins".to_string(),
+                "wins".to_string(),
+            ],
+            "the public predicate set changed. The three `wins` are the ∀ \
+             verdicts on CorpusCompare / OverallCompare / SweepCompare; \
+             `vetoed`, `rises` and `is_flat` are row facts. Anything else — \
+             in particular anything taking a SweepPoint or a PointRow and \
+             answering yes/no — is the ∃ form freeze 1624 refuses."
+        );
+        // No public signature may take a point and answer a verdict.
+        for line in src.lines() {
+            let t = line.trim();
+            if t.starts_with("pub fn") && t.contains("SweepPoint") {
+                assert!(
+                    !t.contains("bool"),
+                    "a public per-point predicate appeared: {t}"
+                );
+            }
+        }
+        // And PointRow carries data, not a verdict.
+        assert!(
+            !src.contains("impl PointRow {\n    pub fn wins"),
+            "PointRow must not answer whether the candidate won here"
+        );
+    }
+
+    /// The nominal box is 2^17 = 131072 endpoint corners, and the plan's
+    /// "reduce by bracket endpoints only" is already that number — which is
+    /// why item J needs the per-case sensitivity probe.
+    #[test]
+    fn the_residual_box_has_two_to_the_seventeen_endpoint_corners() {
+        let table = load_default().expect("committed profile");
+        assert_eq!(table.sweep_dimensions().len(), 17);
+        assert_eq!(box_cardinality(&table), 131_072);
+    }
+
+    /// **The live ∀ sweep: `release` vs `dev`.** Records the per-point
+    /// table, the nominal box cardinality and the surviving `k` per case.
+    #[test]
+    fn release_wins_at_every_point_of_the_residual_box() {
+        let cmp = compare_opt_lists_over_box(&[], RELEASE_OPTS).expect("sweep");
+        let table = format_sweep_table(&cmp, "dev", "release");
+        eprintln!("∀ sweep (dev → release):\n{table}");
+        for c in &cmp.cases {
+            assert_eq!(c.box_dims, 17);
+            assert_eq!(c.box_cardinality, 131_072);
+            assert_eq!(
+                c.points.len(),
+                1usize << c.swept.len(),
+                "{}: corners must be 2^k",
+                c.name
+            );
+            assert!(
+                table.contains(&format!("case {} box_cardinality=131072", c.name))
+                    || table.contains(&c.name),
+                "every case must appear in the evidence table"
+            );
+        }
+        assert_sweep_wins(&cmp, "release", "dev");
+        assert!(cmp.wins());
+    }
+
+    /// Sweep one named case only — the ∀ machinery on a single input, for
+    /// oracles that would otherwise pay for the whole corpus.
+    fn sweep_one(
+        case: &str,
+        baseline: &[OptId],
+        candidate: &[OptId],
+    ) -> (CaseSweep, Vec<SweepVeto>) {
+        let table = load_default().expect("committed profile");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("../../tests/golden/{case}/input.wr"));
+        let b = compile_side(&path, baseline).expect("baseline side");
+        let c = compile_side(&path, candidate).expect("candidate side");
+        apply_mode(CompileMode::Release);
+        let mut reasons = Vec::new();
+        let sweep = sweep_case(case, &b, &c, &table, &mut reasons).expect("sweep");
+        (sweep, reasons)
+    }
+
+    /// **A candidate that wins at one point and loses at another is vetoed,
+    /// with the point named** (04 §5). The two scores are supplied, but the
+    /// rule that reads them is the one `sweep_case` runs at every corner —
+    /// and the point labels are real [`SweepPoint`] labels, so what is
+    /// asserted is that the refusal carries the box coordinate a reader
+    /// needs to reproduce it.
+    #[test]
+    fn a_candidate_that_wins_at_one_point_and_loses_at_another_is_vetoed_with_the_point_named() {
+        let table = load_default().expect("committed profile");
+        let dims = ["l2_latency", "l3_latency"];
+        let corners = endpoint_corners(&table, &dims);
+        let flatter = corners[0].label_over(&dims);
+        let harsher = corners[3].label_over(&dims);
+        assert_ne!(flatter, harsher);
+
+        let score = |cycles: u64| SideScore {
+            cycles,
+            words: 400,
+            budgets: Vec::new(),
+            ordering: BTreeMap::new(),
+        };
+        let mut reasons = Vec::new();
+        // Wins here…
+        let row = refuse_at_point(
+            "cost-flip",
+            &flatter,
+            &score(1000),
+            &score(900),
+            true,
+            &mut reasons,
+        )
+        .expect("row");
+        assert_eq!(row.delta(), -100);
+        assert!(
+            reasons.is_empty(),
+            "a point the candidate wins at fires nothing: {reasons:?}"
+        );
+        // …and loses there.
+        let row = refuse_at_point(
+            "cost-flip",
+            &harsher,
+            &score(1000),
+            &score(1100),
+            false,
+            &mut reasons,
+        )
+        .expect("row");
+        assert_eq!(row.delta(), 100);
+        assert_eq!(
+            reasons.iter().map(SweepVeto::label).collect::<Vec<_>>(),
+            vec![format!("case_rose:cost-flip:1000->1100@[{harsher}]")],
+            "the flip must be refused and must name the flipping point"
+        );
+        // The ∀ verdict on that pair is a loss, and there is no way to ask
+        // for the other answer: `SweepCompare::wins` is the only verdict.
+        let cmp = SweepCompare {
+            table_digest: table.table_digest(),
+            cases: Vec::new(),
+            reasons,
+        };
+        assert!(!cmp.wins());
+        assert!(format_sweep_table(&cmp, "base", "cand").contains("outcome=veto"));
+    }
+
+    /// The sensitivity probe holds a dimension only when the model never
+    /// read it, reports what it held and what it kept, and the residual
+    /// corner count is `2^k` over what survived.
+    #[test]
+    fn the_sensitivity_probe_holds_only_unread_dimensions_and_reports_them() {
+        let (case, _) = sweep_one("cost-arith", &[], RELEASE_OPTS);
+        let cmp = SweepCompare {
+            table_digest: String::new(),
+            cases: vec![case],
+            reasons: Vec::new(),
+        };
+        let table = format_sweep_table(&cmp, "dev", "release");
+        let all: Vec<String> = load_default()
+            .expect("table")
+            .sweep_dimensions()
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        for c in &cmp.cases {
+            // Nothing is dropped: swept ∪ held is the whole declared box.
+            let mut seen: Vec<String> = c.swept.clone();
+            seen.extend(c.held.iter().map(|h| h.dim.clone()));
+            seen.sort();
+            assert_eq!(seen, all, "{}: a dimension went missing", c.name);
+            assert!(
+                c.swept.len() <= MAX_SWEPT_DIMS,
+                "{}: {} dims survive, over the fail-closed bound",
+                c.name,
+                c.swept.len()
+            );
+            // Every held dimension is named with the bracket it was held
+            // across — silent reduction is the failure this guards.
+            for h in &c.held {
+                assert!(
+                    table.contains(&h.label()),
+                    "{}: held dimension {} is not reported",
+                    c.name,
+                    h.dim
+                );
+            }
+            // A dimension kept only because it was read but never moved is
+            // still swept: doubt keeps it in.
+            for d in &c.read_but_static {
+                assert!(
+                    c.swept.contains(d),
+                    "{}: `{d}` was read but not swept",
+                    c.name
+                );
+            }
+        }
+        eprintln!("probe report:\n{table}");
+    }
+
+    /// Held dimensions really are inert for that case: moving one from lo
+    /// to hi changes nothing, at the pinned corner and at both extreme
+    /// corners. This is the probe's own claim, re-checked from outside it.
+    #[test]
+    fn a_held_dimension_moves_nothing_at_any_extreme_corner() {
+        let table = load_default().expect("table");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/golden/cost-arith/input.wr");
+        let dev = compile_side(&path, &[]).expect("dev side");
+        let rel = compile_side(&path, RELEASE_OPTS).expect("release side");
+        apply_mode(CompileMode::Release);
+        let probe = probe_case("cost-arith", &dev, &rel, &table).expect("probe");
+        assert!(!probe.held.is_empty(), "expected some inert dimension");
+        let dims: Vec<String> = table
+            .sweep_dimensions()
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let pinned = SweepPoint::pinned(&table);
+        let mut all_lo = pinned.clone();
+        let mut all_hi = pinned.clone();
+        for d in &dims {
+            let r = table.sweep(d).expect("row");
+            all_lo = all_lo.with(d, r.lo);
+            all_hi = all_hi.with(d, r.hi);
+        }
+        for h in &probe.held {
+            for base in [&pinned, &all_lo, &all_hi] {
+                for side in [&dev, &rel] {
+                    let lo = score_side_at(side, &table, &base.with(&h.dim, h.lo)).expect("lo");
+                    let hi = score_side_at(side, &table, &base.with(&h.dim, h.hi)).expect("hi");
+                    assert_eq!(lo, hi, "held dimension `{}` moved a score", h.dim);
+                }
+            }
+        }
+    }
+
+    /// **Freeze 1633 survives the rewrite.** The barrier-removal refusal is
+    /// still on the swept gate, still derived from `CostRule::is_crosscore`
+    /// rather than a hand-list, and still independent of the retired words
+    /// veto: this fixture grows words *and* deletes a `DMB`, and it is the
+    /// barrier that refuses it.
+    #[test]
+    fn the_sweep_still_refuses_barrier_removal() {
+        let mut reasons = Vec::new();
+        let base = ord(&[
+            ("barrier", 6),
+            ("load_acquire", 4),
+            ("store_release", 6),
+            ("system", 1),
+        ]);
+        let mut fewer = base.clone();
+        *fewer.get_mut("barrier").unwrap() -= 1;
+        for r in ordering_removals(&base, &fewer) {
+            reasons.push(SweepVeto::OrderingWordsRemoved {
+                case: "cost-crosscore".to_string(),
+                rule: r.rule,
+                baseline: r.baseline,
+                candidate: r.candidate,
+            });
+        }
+        let cmp = SweepCompare {
+            table_digest: "t".to_string(),
+            cases: Vec::new(),
+            reasons,
+        };
+        assert!(
+            !cmp.wins(),
+            "a deleted DMB is refused on the swept gate too"
+        );
+        assert_eq!(
+            cmp.reasons.iter().map(SweepVeto::label).collect::<Vec<_>>(),
+            vec!["ordering_words_removed:cost-crosscore:barrier:6->5".to_string()]
+        );
+        // The corpus gate's own refusal is untouched by item J.
+        let removed = CaseDelta {
+            name: "cost-crosscore".to_string(),
+            baseline: 1000,
+            candidate: 900,
+            baseline_words: 400,
+            candidate_words: 500,
+            baseline_budgets: Vec::new(),
+            candidate_budgets: Vec::new(),
+            baseline_ordering: base,
+            candidate_ordering: fewer,
+        };
+        assert_eq!(removed.ordering_removed().len(), 1);
+        let cmp = CorpusCompare {
+            cases: vec![removed],
+            baseline_sum: 1000,
+            candidate_sum: 900,
+            baseline_words: 400,
+            candidate_words: 500,
+        };
+        assert!(
+            !cmp.wins(),
+            "freeze 1633 must outlive the words veto it never depended on"
+        );
+    }
+
+    /// The fail-closed bound is a refusal, not a truncation.
+    #[test]
+    fn too_many_surviving_dimensions_is_an_error_not_a_truncation() {
+        assert!(
+            MAX_SWEPT_DIMS < 17,
+            "the bound must actually bound the declared box"
+        );
+        // The message a caller gets names the bound and refuses to rank.
+        let msg = format!(
+            "cost-x: {} dimensions survive the sensitivity probe, over the \
+             bound of {MAX_SWEPT_DIMS}",
+            MAX_SWEPT_DIMS + 1
+        );
+        assert!(msg.contains("over the bound of"));
     }
 }

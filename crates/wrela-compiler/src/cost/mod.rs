@@ -84,7 +84,7 @@ pub use stage::{
     CostStageClosure, codegen_cost_stage, codegen_cost_stage_with_placement,
     load_cost_stage_closure, report_cost_stage_path, score_cost_stage_path,
 };
-pub use sweep::{SweepPoint, endpoint_corners};
+pub use sweep::{SweepPoint, endpoint_corners, record_reads};
 pub use table::{
     CostTable, CrossRow, EXPECTED_VERSION, End, LatRow, PROFILE_NAME, Row, SweepRow, Tier,
     default_table_path, load_default, load_from_path, parse, profile_ghz,
