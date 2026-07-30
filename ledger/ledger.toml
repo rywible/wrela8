@@ -1978,6 +1978,39 @@ plans/M8.md item H attack 4 (2026-07-25). Item C2 discharged the sentence by *or
 
 
 [[clause]]
+id = "machine.lane1.per-core-counters"
+doc = "04-compiler.md#5"
+status = "test"
+tests = [
+  "golden/boot-cross-core-ring-full",
+  "golden/boot-cross-core-admission-order",
+  "golden/boot-cross-core-two-senders",
+  "golden/boot-cores-3",
+  "golden/boot-actors",
+  "unit:quiesce_before_halt_is_a_bounded_wait",
+  "unit:device_window_refuses_a_stripe_that_reaches_the_next_page",
+  "unit:idle_words_fit_the_page_and_clear_the_pending_words",
+  "xtask:repro",
+]
+note = """04-compiler.md §5 names Lane 1 — "scheduler method/turn counters in the guest runtime transcript" — as a frequency source for `Σ f×s`. **Lane 1 counters are per-core and summed at dump; no counter is a shared read-modify-write across concurrently running cores, and the dump happens at a quiesced halt.** plans/lane1-per-core.md items A–D (decisions 1500–1504, 2026-07-29).
+
+**The defect.** `LANE1` was one shared `@placed` static and each of its five update sites (`__wrela_rt_run_one` ×3, `__wrela_rt_select`, `__wrela_rt_enqueue`, `__wrela_lane1_record_method`) was a non-atomic `ldr/add/str` executed by whichever core drained. plans/M15.md item I deleted the Condvar baton, so two cores draining different mailboxes run concurrently and **an increment can be lost**. There is no barrier fix: `@dmb` orders visibility, not read-modify-write atomicity, and this language exposes no atomic add. Decision 1500 rejects adding one (a `docs/language/` change plus a codegen intrinsic plus a clause, to buy mutual exclusion the design does not need); `encode.rs`'s unused `enc_ldaxr_w` stays unused.
+
+**Why it is a cost-model clause and not a flaky-test clause.** A lost increment under-reports a hot method, which biases the `f` vector low — the same class of error `compiler.costs.multi-w-compose`'s own note forbids ("a proxy win bought by measuring less"). The committed fixture `tests/golden/boot-actors/lane1-freq.txt` is generated from a Lane 1 transcript line, so a lost increment travels straight into a scored workload.
+
+**Item A — ownership, not locking (decisions 1500–1502).** `LANE1: Lane1Stripe` carries `N_CORES` slots per counter (`turns`/`run_one_hits`/`messages` arrays plus a `N_CORES × METHOD_CALL_POOL_COUNT` hit vector); each core writes only its own slot, so no concurrent RMW remains. `__wrela_lane1_dump` folds the slots in core order, so the emitted text keeps its shape and **every single-core transcript is byte-identical** across the change (measured: `xtask golden`'s whole `test.txt` set moved zero files at item A). Sized by the generated `N_CORES`, not `CORE_SLOTS` (1501): `CORE_SLOTS = 32` would spend 33,536 bytes of the device-page window on a three-core machine, and a one-core image keeps its previous 1048-byte layout exactly. `core` is threaded into `rt_select` / `rt_enqueue` / `lane1_record_method` rather than re-derived, and each refuses (`test_failed`) rather than defaulting to slot 0, which would restore the shared write. Struct-of-arrays rather than `[Lane1Counters; N_CORES]` because `lower.rs`'s `placed_array_field_index` resolves exactly one array-field index into a placed static.
+
+**Item A's second half — fail closed on the window.** A stripe with an image-dependent extent can outgrow its page, so `LANE1` moved above `LANE2` (leaving `wrela-vmm/src/lane3.rs`'s pinned `LANE2_BASE` untouched) and `layout::verify_device_window_statics` refuses any image whose placed statics leave or overlap inside `0x4000_8000..0x4001_0000`. Scoped to that window deliberately: `INIT_SPAN{k}` overlays legitimately alias rtdata state elsewhere, so a global non-overlap rule would be false. Consequence, stated rather than hidden: at `METHOD_CALL_POOL_COUNT = 128` the window holds 19 rows, so an image declaring more cores than that is refused by name.
+
+**Item B — a bounded quiesce before the dump (decision 1504).** Striping makes the counters *correct*; it does not make the sampling *instant* right. `boot-cross-core-ring-full` asserts a rejection, so it deliberately halts with one admitted-but-unprocessed message outstanding, and core 0 reached `__wrela_rt_summary_and_halt` while core 1 was still draining — its trailer varied in every field (measured 2/10 reproducing the pin; it had already been re-pinned once to a different draw of the same race). Now each released core stores 1 into its `PENDING.idle` word behind a `@dmb(ishst)` before parking and 0 at its loop head, and core 0 polls, up to `QUIESCE_POLL_BOUND = 4096` polls, for every released core to be idle with an empty pending word, taking `@dmb(ishld)` before it reads a counter — the same release/acquire shape M15 item H uses for rings, and the happens-before edge whose absence the stopgap marker named. Bounded, and it halts anyway on timeout: an unbounded wait would turn a scheduling bug into a hang. A timeout prints `lane1 quiesce=timeout` in one fixed spelling, so it can never be mistaken in a golden for a clean quiesce, and it is accounted for in the static transcript bound.
+
+**Item C — `run_one` is batching-invariant, and kept.** Every increment is one unit of program-determined work: `drained` messages per drain call (the 2026-07-29 audit note's change — one drain empties a ring, so counting *calls* made a tick depend on how a producer's publishes interleaved with a consumer's polls, which is exactly what made `boot-cross-core-admission-order` flake 12 vs 13), one per turn slice run, one per child slice run. Unproductive polls — including every spin of item B's quiesce loop — do not count, which is what keeps the total independent of host timing. Measured after A+B: 20/20 identical trailers for `ring-full`, `admission-order`, `two-senders`, `boot-cores-2`, `boot-cores-3`.
+
+**Item D — the stopgap is gone.** `tests/golden/boot-cross-core-ring-full/unpinned-lane1` and `xtask::golden::{lane1_is_unpinned, strip_lane1_lines}` are deleted; the case pins `lane1 turns=1 run_one=2 messages=1` / `lane1 hits=0:1` again, which is the total item B's quiesce guarantees (drain 1 + select 1 = `run_one` 2). The one-time 20/20 is not the oracle — `xtask repro`'s `repro_lane1_trailer_repeats` re-boots both formerly-unstable cases five times each on every `check` and fails on any trailer difference or any `quiesce=timeout`, because a golden that boots once cannot tell a pin from a won race.
+
+**Deliberately not touched.** `machine.cross-core.publish-acquire-barrier` stays `gap` (plans/BLOCKED.md known risk 4): that clause is about store *visibility* under a deleted barrier, this one is about counter *ownership*. Item A would still be correct on a host that never reorders. Exhaustive schedule enumeration (M15 item J, cut) is not revived: item B makes the totals deterministic, not the interleaving."""
+
+[[clause]]
 id = "library.intrinsics.closed-surface"
 doc = "05-library.md#9"
 status = "test"

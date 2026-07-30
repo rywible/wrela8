@@ -1319,7 +1319,85 @@ fn repro() -> Result<(), String> {
     repro_blk_completion_replay(&vmm)?;
     repro_cross_core_admission_replay(&vmm)?;
     repro_cross_core_mailbox_depth_admissions(&vmm)?;
+    repro_lane1_trailer_repeats(&vmm)?;
     repro_replay_exit_code_contract(&vmm)
+}
+
+/// plans/lane1-per-core.md items B–D: the Lane 1 trailer reproduces across
+/// repeated boots of the same image.
+///
+/// The goldens boot each case **once**, so they cannot tell a pinned trailer
+/// from a trailer that happened to win a race — which is exactly how
+/// `boot-cross-core-ring-full` came to be pinned twice to two different draws
+/// (a2579154, then 82314ed6) before its `unpinned-lane1` stopgap. Item D's
+/// exit criterion is "run it 20× and require 20/20"; that measurement is only
+/// worth anything if something keeps re-taking it, so this lane is the
+/// standing form of it.
+///
+/// The two cases are the ones whose trailers were actually unstable: the
+/// ring-full rejection (it deliberately halts with one admitted-but-
+/// unprocessed message, so before item B's quiesce core 0 sampled the
+/// counters mid-flight) and the admission order (whose historical flake was
+/// `run_one`, 12 vs 13 — item C's field).
+///
+/// A `lane1 quiesce=timeout` line fails the lane too, rather than being
+/// tolerated: it means the bounded wait ran out on this host, so the totals
+/// below it are a sample again and any pin over them is luck.
+fn repro_lane1_trailer_repeats(vmm: &Path) -> Result<(), String> {
+    const REPEATS: usize = 5;
+    const CASES: [&str; 2] = [
+        "boot-cross-core-ring-full",
+        "boot-cross-core-admission-order",
+    ];
+    for case in CASES {
+        let (img_bytes, report_text) = golden_test_image(case)?;
+        let (tmp_dir, img_path, report_path, _record) =
+            stage_repro_dir("target/repro-lane1-tmp", &img_bytes, &report_text)?;
+        let mut first: Option<String> = None;
+        for run in 0..REPEATS {
+            let boot = run_vmm(vmm, &report_path, &img_path)?;
+            let trailer: String = boot
+                .transcript
+                .lines()
+                .filter(|l| l.starts_with("lane1 "))
+                .map(|l| format!("{l}\n"))
+                .collect();
+            if trailer.is_empty() {
+                let _ = std::fs::remove_dir_all(&tmp_dir);
+                return Err(format!(
+                    "repro: {case} boot {run} printed no `lane1 …` trailer at all:\n{}",
+                    boot.transcript
+                ));
+            }
+            if trailer.contains("quiesce=timeout") {
+                let _ = std::fs::remove_dir_all(&tmp_dir);
+                return Err(format!(
+                    "repro: {case} boot {run} timed out waiting for the released cores to park \
+                     (`lane1 quiesce=timeout`), so its Lane 1 totals are a mid-flight sample — \
+                     raise `QUIESCE_POLL_BOUND` in stdlib/core/runtime.wr or find out which core \
+                     never parked"
+                ));
+            }
+            match &first {
+                None => first = Some(trailer),
+                Some(want) if *want == trailer => {}
+                Some(want) => {
+                    let _ = std::fs::remove_dir_all(&tmp_dir);
+                    return Err(format!(
+                        "repro: {case}'s Lane 1 trailer is not reproducible — boot 0 printed\n\
+                         {want}but boot {run} printed\n{trailer}"
+                    ));
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+    println!(
+        "repro: the Lane 1 trailer of {} reproduced byte-for-byte across {REPEATS} boots each \
+         (per-core counters summed at a quiesced halt)",
+        CASES.join(" and ")
+    );
+    Ok(())
 }
 
 /// plans/M8.md item H Target C: the depth-1 mailbox under three cores
