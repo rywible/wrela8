@@ -169,10 +169,10 @@ ImageReport v0
   Turns count=4 stride=1024 bytes=4096
   Totals actors=1 drivers=1 ready_queue=3 group_arena=1 bytes=4480
   DeviceRegs device=device#0 type=Hw driver=Stub base=0x40541180 size=8
-  Cost version=3 digest=3d1fb3009124ded0 total=56995 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=56995
-    Owner name=app proxy_cycles=7936
-    Owner name=runtime proxy_cycles=49059
+  Cost version=3 digest=3d1fb3009124ded0 total=39014 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=39014
+    Owner name=app proxy_cycles=5159
+    Owner name=runtime proxy_cycles=33855
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=437 max_turn_proxy=137 turns_per_sec=17518248.1751824804 ms_per_turn_model=0.0000570833
-    Shared proxy_cycles=56558
+    Core n=0 proxy_cycles=282 max_turn_proxy=79 turns_per_sec=30379746.8354430385 ms_per_turn_model=0.0000329167
+    Shared proxy_cycles=38732

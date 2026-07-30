@@ -582,7 +582,7 @@ pub fn append_cost_summary(
     source: Option<&std::path::Path>,
 ) -> Result<(), String> {
     let table = cost::load_default()?;
-    let mut report = cost::score_program(program, &table)?;
+    let mut report = cost::score_program(program, &table, placement)?;
     let attach = cost::WorkloadAttach::load_default_for(source)?;
     cost::attach_workloads(&mut report, &attach);
     out.push_str(&format_cost_summary(&report, placement, ghz)?);

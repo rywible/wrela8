@@ -144,6 +144,22 @@ fn load_runtime_bearing_singleton(path: &str, module: Module) -> Result<CostStag
 /// `wrela dump --stage=cost` / `--stage=asm`). Caller must have set opt
 /// TLS already.
 pub fn codegen_cost_stage(path: &Path) -> Result<CodegenProgram, String> {
+    codegen_cost_stage_with_placement(path).map(|(prog, _)| prog)
+}
+
+/// Same, plus the sealed placement table the scorer needs.
+///
+/// plans/M20.md decision 1603: the I-side, TLB and cross-core terms are
+/// per **core**, and `PlacementTable::core_of` is what makes a load's
+/// local-vs-remote verdict a static fact. The cost-stage path builds the
+/// same table the image report publishes, from the same `ImageGraph` it
+/// already evaluates for the enqueue specs — so items F and G score
+/// against real placement rather than against an empty stand-in. A
+/// closure with no `@image` (most `cost-*` cases) has no placement to
+/// build and gets the default, which classifies nothing.
+pub fn codegen_cost_stage_with_placement(
+    path: &Path,
+) -> Result<(CodegenProgram, crate::placement::PlacementTable), String> {
     let checked = load_cost_stage_closure(path)?;
     let reachable = lower::guest_reachable_keys_closure(&checked.programs, &LowerOpts::default());
     let lower_opts = LowerOpts {
@@ -168,21 +184,26 @@ pub fn codegen_cost_stage(path: &Path) -> Result<CodegenProgram, String> {
         .map_err(|e| e.message)?;
     let group_arena_capacity = crate::layout::count_with_group_sites(&checked.modules);
 
-    let enqueue_specs = {
+    let (enqueue_specs, placement) = {
         let root = &checked.programs[&checked.root];
         match &root.image_fn {
             Some(name) => match crate::eval::interp::eval_image(root, name) {
                 Ok(graph) => {
-                    crate::layout::mailbox_enqueue_specs(&graph, &checked.modules, &layout_ctx)
-                        .unwrap_or_default()
+                    let specs =
+                        crate::layout::mailbox_enqueue_specs(&graph, &checked.modules, &layout_ctx)
+                            .unwrap_or_default();
+                    let table =
+                        crate::placement::place(&graph, &checked.modules, &layout_ctx, graph.cores)
+                            .unwrap_or_default();
+                    (specs, table)
                 }
-                Err(_) => Vec::new(),
+                Err(_) => (Vec::new(), crate::placement::PlacementTable::default()),
             },
-            None => Vec::new(),
+            None => (Vec::new(), crate::placement::PlacementTable::default()),
         }
     };
 
-    codegen::codegen_program_with_async(
+    let prog = codegen::codegen_program_with_async(
         &mwir_program,
         &flow_program,
         &layout_ctx,
@@ -190,16 +211,17 @@ pub fn codegen_cost_stage(path: &Path) -> Result<CodegenProgram, String> {
         group_arena_capacity,
         &enqueue_specs,
     )
-    .map_err(|e| e.message)
+    .map_err(|e| e.message)?;
+    Ok((prog, placement))
 }
 
 /// Full scored report for `path` under the current opt TLS (caller sets
 /// mode/opts first). The gate needs more than the cycle total — static
 /// word count and measured-W coverage are side conditions (04 §5).
 pub fn report_cost_stage_path(path: &Path) -> Result<CostReport, String> {
-    let prog = codegen_cost_stage(path)?;
+    let (prog, placement) = codegen_cost_stage_with_placement(path)?;
     let table = load_default()?;
-    score_program(&prog, &table)
+    score_program(&prog, &table, &placement)
 }
 
 /// Score `path` under the current opt TLS (caller sets mode/opts first).

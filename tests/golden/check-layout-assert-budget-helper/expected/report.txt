@@ -158,10 +158,10 @@ ImageReport v0
   Actor name=Store mailbox=8 slot=16 frame=64 state=8
   Turns count=1 stride=64 bytes=64
   Totals actors=1 drivers=0 ready_queue=2 group_arena=0 bytes=248
-  Cost version=3 digest=3d1fb3009124ded0 total=50488 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=50488
-    Owner name=app proxy_cycles=2460
-    Owner name=runtime proxy_cycles=48028
+  Cost version=3 digest=3d1fb3009124ded0 total=35002 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=35002
+    Owner name=app proxy_cycles=1818
+    Owner name=runtime proxy_cycles=33184
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=173 max_turn_proxy=85 turns_per_sec=28235294.1176470593 ms_per_turn_model=0.0000354167
-    Shared proxy_cycles=50315
+    Core n=0 proxy_cycles=124 max_turn_proxy=62 turns_per_sec=38709677.4193548411 ms_per_turn_model=0.0000258333
+    Shared proxy_cycles=34878

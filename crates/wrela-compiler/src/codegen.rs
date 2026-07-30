@@ -3209,7 +3209,9 @@ fn emit_format_scalar(
                 ),
                 CostRule::Mul,
                 Some(X_D),
-                &[X_C, X_B],
+                // `msub Xd, Xn, Xm, Xa` = `Xa - Xn*Xm`: the accumulator
+                // `X_A` is a source (plans/M20.md item E).
+                &[X_C, X_B, X_A],
             );
             ctx.load_imm(X_B, b'0' as i64);
             ctx.add_reg(X_D, X_D, X_B);
@@ -3720,6 +3722,12 @@ fn emit_div_rem(
     // plans/M20.md item D: X-form (`sf = true`) divide, SOG §3.6 — 5-20
     // cycles on pipe M, not the 1-cycle integer ALU group these two sites
     // were tagged as before the A76 table distinguished them.
+    //
+    // plans/M20.md item E: this site used to push `dst = None, srcs = &[]`,
+    // so a 20-cycle divide declared **no dependence edge** and nothing
+    // downstream ever waited on its result — a genuine under-cost in the
+    // one direction 04 §5 forbids. The quotient lands in `X_C` and the
+    // operands are `X_A` (dividend) / `X_B` (divisor).
     let (enc, mnem, rule) = if signed {
         (
             encode::enc_sdiv(X_C, X_A, X_B, true),
@@ -3742,10 +3750,14 @@ fn emit_div_rem(
             reg_name(X_B)
         ),
         rule,
-        None,
-        &[],
+        Some(X_C),
+        &[X_A, X_B],
     );
     if op == BinOp::Rem {
+        // `msub Xd, Xn, Xm, Xa` computes `Xa - Xn*Xm`, so the accumulator
+        // `X_A` (the dividend) is a source too — it was missing here, and
+        // at the itoa site below, which under-declared the edge from the
+        // divide's own inputs (plans/M20.md item E).
         ctx.push(
             encode::enc_msub(X_C, X_C, X_B, X_A, true),
             format!(
@@ -3757,7 +3769,7 @@ fn emit_div_rem(
             ),
             CostRule::Mul,
             Some(X_C),
-            &[X_C, X_B],
+            &[X_C, X_B, X_A],
         );
     } else if op != BinOp::Div {
         return Err(CodegenError::internal(format!(
@@ -10269,6 +10281,87 @@ mod tests {
         val
     }
 
+    /// plans/M20.md item E: the emitted divide declares its **result and
+    /// its operands**, so a consumer of the quotient waits on it.
+    ///
+    /// Before this item `emit_div_rem` pushed `dst = None, srcs = &[]`,
+    /// which meant a 20-cycle divide created no dependence edge at all and
+    /// nothing downstream ever waited — a genuine under-cost in the one
+    /// direction 04 §5 forbids. A source scan would not catch it (the
+    /// `CostRule` tag was already right); only the tags themselves say it.
+    #[test]
+    fn emitted_divide_declares_result_and_operands() {
+        const SRC: &str = r#"
+module examples.cost_div_tags
+
+pub fn q(a: u64, b: u64) -> u64:
+    return a / b
+
+pub fn r(a: u64, b: u64) -> u64:
+    return a % b
+"#;
+        let tokens = lexer::lex(SRC).expect("lex");
+        let module = parser::parse(tokens).expect("parse");
+        let typed = sema::check_typed(&module, "<test>").expect("check");
+        let layout = mwir::build_layout_ctx(&module, &Default::default()).expect("layout");
+        let mwir_program = crate::lower::lower_program(&typed).expect("lower");
+        let prog = codegen_program(&mwir_program, &layout).expect("codegen");
+
+        let mut divides = 0usize;
+        let mut msubs = 0usize;
+        for f in prog.fns.values() {
+            for ew in &f.code {
+                match ew.rule {
+                    CostRule::Udiv | CostRule::Sdiv => {
+                        divides += 1;
+                        assert_eq!(
+                            ew.dst,
+                            Some(X_C),
+                            "the divide must declare its quotient register"
+                        );
+                        assert!(
+                            ew.src_slice().contains(&X_A) && ew.src_slice().contains(&X_B),
+                            "the divide must declare both operands, got {:?}",
+                            ew.src_slice()
+                        );
+                    }
+                    CostRule::Mul => {
+                        // The `%` lowering's `msub Xd, Xn, Xm, Xa` reads
+                        // the accumulator `Xa` too.
+                        msubs += 1;
+                        assert!(
+                            ew.src_slice().contains(&X_A),
+                            "msub must declare its accumulator source, got {:?}",
+                            ew.src_slice()
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        }
+        assert_eq!(divides, 2, "one divide per fn");
+        assert_eq!(msubs, 1, "only the `%` lowering emits the msub");
+
+        // And the edge is live in the scoreboard: the store of the
+        // quotient reads X_C, so it cannot issue before the divide
+        // retires. Score the `q` fn alone against the committed profile.
+        let table = crate::cost::table::load_default().expect("bench/a76-pi5.toml");
+        let place = crate::placement::PlacementTable::default();
+        let scored = crate::cost::score_program(&prog, &table, &place).expect("score");
+        let q = scored
+            .fns
+            .iter()
+            .find(|f| f.key == "q")
+            .expect("fn q scored");
+        assert!(
+            q.proxy_cycles > table.latency(CostRule::Udiv),
+            "the consumer of the quotient must extend past the divide's own {} \
+             cycles, got {}",
+            table.latency(CostRule::Udiv),
+            q.proxy_cycles
+        );
+    }
+
     /// plans/M19.md item I Cheap: cost-calls proxy rank drops with NarrowImm
     /// on vs off while BoundsElide stays fixed (many small immediates).
     #[test]
@@ -10288,13 +10381,14 @@ mod tests {
         set_bounds_elide(true);
         let mwir_program = crate::lower::lower_program(&typed).expect("lower");
 
+        let place = crate::placement::PlacementTable::default();
         set_narrow_imm(false);
         let off_prog = codegen_program(&mwir_program, &layout).expect("codegen off");
-        let off = score_program(&off_prog, &table).expect("score off");
+        let off = score_program(&off_prog, &table, &place).expect("score off");
 
         set_narrow_imm(true);
         let on_prog = codegen_program(&mwir_program, &layout).expect("codegen on");
-        let on = score_program(&on_prog, &table).expect("score on");
+        let on = score_program(&on_prog, &table, &place).expect("score on");
         set_narrow_imm(false);
 
         assert!(

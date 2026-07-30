@@ -16,6 +16,7 @@ use std::cmp::Ordering;
 
 use crate::codegen::CodegenProgram;
 use crate::opts::CompileMode;
+use crate::placement::PlacementTable;
 
 use super::score::{CostReport, score_program};
 use super::table::CostTable;
@@ -46,9 +47,10 @@ impl Default for CostOpts {
 pub fn score_with_opts(
     program: &CodegenProgram,
     table: &CostTable,
+    placement: &PlacementTable,
     _opts: CostOpts,
 ) -> Result<CostReport, String> {
-    score_program(program, table)
+    score_program(program, table, placement)
 }
 
 /// Compare two emissions: returns Ordering of a.total vs b.total (proxy rank).
@@ -63,7 +65,7 @@ mod tests {
     use super::*;
     use crate::codegen::CodegenFn;
     use crate::cost::rule::{CostRule, EmittedWord};
-    use crate::cost::stage::codegen_cost_stage;
+    use crate::cost::stage::codegen_cost_stage_with_placement;
     use crate::cost::table::load_default;
     use crate::opts::win::discover_cost_corpus;
     use crate::opts::{CompileMode, OptId, apply_mode, apply_opts};
@@ -149,7 +151,8 @@ pub fn hot(a: [u64; 32]) -> u64:
         apply_mode(mode);
         let mwir = lower_program(&typed).expect("lower");
         let prog = codegen_program(&mwir, &layout).expect("codegen");
-        score_with_opts(&prog, &table, CostOpts { mode }).expect("score")
+        score_with_opts(&prog, &table, &PlacementTable::default(), CostOpts { mode })
+            .expect("score")
     }
 
     #[test]
@@ -165,8 +168,9 @@ pub fn hot(a: [u64; 32]) -> u64:
         let opts = CostOpts {
             mode: CompileMode::Release,
         };
-        let a = score_with_opts(&p, &table, opts).expect("first");
-        let b = score_with_opts(&p, &table, opts).expect("second");
+        let place = PlacementTable::default();
+        let a = score_with_opts(&p, &table, &place, opts).expect("first");
+        let b = score_with_opts(&p, &table, &place, opts).expect("second");
         assert_eq!(a.total_proxy_cycles, b.total_proxy_cycles);
         assert_eq!(rank_cmp(&a, &b), Ordering::Equal);
     }
@@ -191,8 +195,9 @@ pub fn hot(a: [u64; 32]) -> u64:
             ],
         );
         let opts = CostOpts::default();
-        let a = score_with_opts(&a_prog, &table, opts).expect("a");
-        let b = score_with_opts(&b_prog, &table, opts).expect("b");
+        let place = PlacementTable::default();
+        let a = score_with_opts(&a_prog, &table, &place, opts).expect("a");
+        let b = score_with_opts(&b_prog, &table, &place, opts).expect("b");
         assert!(
             b.total_proxy_cycles > a.total_proxy_cycles,
             "dependent {} should exceed independent {}",
@@ -260,12 +265,13 @@ pub fn hot(a: [u64; 32]) -> u64:
                 .unwrap_or_else(|| path.display().to_string());
 
             apply_opts(&[OptId::BoundsElide]);
-            let on_prog = codegen_cost_stage(path).unwrap_or_else(|e| {
+            let (on_prog, on_place) = codegen_cost_stage_with_placement(path).unwrap_or_else(|e| {
                 panic!("codegen BoundsElide-on {case}: {e}");
             });
             let on = score_with_opts(
                 &on_prog,
                 &table,
+                &on_place,
                 CostOpts {
                     mode: CompileMode::Release,
                 },
@@ -273,12 +279,14 @@ pub fn hot(a: [u64; 32]) -> u64:
             .unwrap_or_else(|e| panic!("score BoundsElide-on {case}: {e}"));
 
             apply_opts(&[]);
-            let off_prog = codegen_cost_stage(path).unwrap_or_else(|e| {
-                panic!("codegen BoundsElide-off {case}: {e}");
-            });
+            let (off_prog, off_place) =
+                codegen_cost_stage_with_placement(path).unwrap_or_else(|e| {
+                    panic!("codegen BoundsElide-off {case}: {e}");
+                });
             let off = score_with_opts(
                 &off_prog,
                 &table,
+                &off_place,
                 CostOpts {
                     mode: CompileMode::Dev,
                 },
