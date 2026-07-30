@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/pool_slot_stride.wr sha256=5bb9055e62233631966c39244fef737224b58960b52934feae4cd6031c91f266
-  Input path=<generated> sha256=e9f89c1fec688e70b3f9c54475afed319629d48583832daa13c1cf485a4f9223
+  Input path=<generated> sha256=6e90fdff65a373ddd8985c67c89e21e9723fc2208b08783aabd7ef03563f2c67
   Name value=pool-slot-stride
   Target value=Target.wrela_machine_v1
   Device index=0 type=BlockHw
@@ -60,9 +60,9 @@ ImageReport v0
     Field name=run_one_hits type=[u64; N_CORES] offset=0x8 size=8
     Field name=messages type=[u64; N_CORES] offset=0x10 size=8
     Field name=method_hits type=[u64; LANE1_METHOD_HITS_LEN] offset=0x18 size=1024
-  Layout name=Lane2Counters kind=runtime endian=little size=8200 padding=0
+  Layout name=Lane2Counters kind=runtime endian=little size=24584 padding=0
     Field name=enabled type=u64 offset=0x0 size=8
-    Field name=hits type=[u64; BLOCK_POOL_COUNT] offset=0x8 size=8192
+    Field name=hits type=[u64; BLOCK_POOL_COUNT] offset=0x8 size=24576
   Layout name=Odd kind=dma endian=little size=9 padding=0
     Field name=sector type=u64 offset=0x0 size=8
     Field name=status type=u8 offset=0x8 size=1
@@ -93,8 +93,8 @@ ImageReport v0
   PlacedStatic name=INIT_SPAN5 type=InitSpan5Words addr=0x4057f760 size=8
   PlacedStatic name=INIT_SPAN6 type=InitSpan6Words addr=0x4057f768 size=8
   PlacedStatic name=INIT_SPAN7 type=InitSpan7Words addr=0x4057f770 size=8
-  PlacedStatic name=LANE1 type=Lane1Stripe addr=0x4000b000 size=1048
-  PlacedStatic name=LANE2 type=Lane2Counters addr=0x40008800 size=8200
+  PlacedStatic name=LANE1 type=Lane1Stripe addr=0x4000e900 size=1048
+  PlacedStatic name=LANE2 type=Lane2Counters addr=0x40008800 size=24584
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=536
   PlacedStatic name=MB0_CTL type=MbCtl addr=0x4057f7f8 size=24
   PlacedStatic name=MB0_DATA type=Mb0Data addr=0x4057f7d8 size=8

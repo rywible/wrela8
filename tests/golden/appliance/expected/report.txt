@@ -10,7 +10,7 @@ ImageReport v0
   Input path=driver.wr sha256=30c55aa16de613fbb7166f3c955755c10ff2525bc1ff74c3f8a4377e6ca371eb
   Input path=image.wr sha256=56e24549178a76a7f80966d536be2704e14fb1a0414f745596122f2e9c7775b4
   Input path=stats.wr sha256=331b09394832cdd4194af3354870c8a0ce06f853c02692249c4be6618a4b4aee
-  Input path=<generated> sha256=ce268243c459591f1da9842db2b40806c477d4242a9a8793545c4594765e8c2f
+  Input path=<generated> sha256=ac2db58b4dc0bc50d1e4611ca648c90ca822019f232f494d467f76ccfdb7fa80
   Name value=storage-appliance
   Target value=Target.wrela_machine_v1
   Device index=0 type=BlockHw
@@ -71,9 +71,9 @@ ImageReport v0
     Field name=run_one_hits type=[u64; N_CORES] offset=0x8 size=8
     Field name=messages type=[u64; N_CORES] offset=0x10 size=8
     Field name=method_hits type=[u64; LANE1_METHOD_HITS_LEN] offset=0x18 size=1024
-  Layout name=Lane2Counters kind=runtime endian=little size=8200 padding=0
+  Layout name=Lane2Counters kind=runtime endian=little size=24584 padding=0
     Field name=enabled type=u64 offset=0x0 size=8
-    Field name=hits type=[u64; BLOCK_POOL_COUNT] offset=0x8 size=8192
+    Field name=hits type=[u64; BLOCK_POOL_COUNT] offset=0x8 size=24576
   Section name=pages base=0x40000000 size=28672
   Cores count=1
   CoreStack core=0 base=0x7ff00000 size=0x100000
@@ -99,8 +99,8 @@ ImageReport v0
   PlacedStatic name=INIT_SPAN5 type=InitSpan5Words addr=0x4057f760 size=8
   PlacedStatic name=INIT_SPAN6 type=InitSpan6Words addr=0x4057f768 size=8
   PlacedStatic name=INIT_SPAN7 type=InitSpan7Words addr=0x4057f770 size=8
-  PlacedStatic name=LANE1 type=Lane1Stripe addr=0x4000b000 size=1048
-  PlacedStatic name=LANE2 type=Lane2Counters addr=0x40008800 size=8200
+  PlacedStatic name=LANE1 type=Lane1Stripe addr=0x4000e900 size=1048
+  PlacedStatic name=LANE2 type=Lane2Counters addr=0x40008800 size=24584
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=536
   PlacedStatic name=MB0_CTL type=MbCtl addr=0x40540118 size=24
   PlacedStatic name=MB0_DATA type=Mb0Data addr=0x40540098 size=128

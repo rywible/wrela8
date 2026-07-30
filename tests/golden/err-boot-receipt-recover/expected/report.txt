@@ -7,7 +7,7 @@ ImageReport v0
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
   Input path=examples/err_boot_receipt_recover.wr sha256=8d0e49a13a9c3cdd337e7144a2f9edeaefbe081288ef1893ce2c6f2c305a7d68
-  Input path=<generated> sha256=ed1dee29572b74fbb1a3d1e8549331b22412df32c6f24d1492c788ff81bac9fa
+  Input path=<generated> sha256=6ae02f6fcc1fe8fbcad4364d28a1f87fd84e472035add8e6225ce85ffeff830b
   Name value=err-boot-receipt-recover
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock
@@ -70,9 +70,9 @@ ImageReport v0
     Field name=run_one_hits type=[u64; N_CORES] offset=0x8 size=8
     Field name=messages type=[u64; N_CORES] offset=0x10 size=8
     Field name=method_hits type=[u64; LANE1_METHOD_HITS_LEN] offset=0x18 size=1024
-  Layout name=Lane2Counters kind=runtime endian=little size=8200 padding=0
+  Layout name=Lane2Counters kind=runtime endian=little size=24584 padding=0
     Field name=enabled type=u64 offset=0x0 size=8
-    Field name=hits type=[u64; BLOCK_POOL_COUNT] offset=0x8 size=8192
+    Field name=hits type=[u64; BLOCK_POOL_COUNT] offset=0x8 size=24576
   Layout name=VirtioIrqMmio kind=mmio endian=little size=104 padding=96
     Padding offset=0x0 size=96
     Field name=interrupt_status type=ReadOnly[u32] offset=0x60 size=4
@@ -112,8 +112,8 @@ ImageReport v0
   PlacedStatic name=INIT_SPAN5 type=InitSpan5Words addr=0x4057f768 size=8
   PlacedStatic name=INIT_SPAN6 type=InitSpan6Words addr=0x4057f770 size=8
   PlacedStatic name=INIT_SPAN7 type=InitSpan7Words addr=0x4057f778 size=8
-  PlacedStatic name=LANE1 type=Lane1Stripe addr=0x4000b000 size=1048
-  PlacedStatic name=LANE2 type=Lane2Counters addr=0x40008800 size=8200
+  PlacedStatic name=LANE1 type=Lane1Stripe addr=0x4000e900 size=1048
+  PlacedStatic name=LANE2 type=Lane2Counters addr=0x40008800 size=24584
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=536
   PlacedStatic name=MB0_CTL type=MbCtl addr=0x405408c8 size=24
   PlacedStatic name=MB0_DATA type=Mb0Data addr=0x40540808 size=192

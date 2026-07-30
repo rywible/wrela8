@@ -48,7 +48,7 @@ Module path=runtime
     field run_one_hits: [u64; N_CORES]
     field messages: [u64; N_CORES]
     field method_hits: [u64; LANE1_METHOD_HITS_LEN]
-  Static LANE1: Lane1Stripe placed=0x4000b000
+  Static LANE1: Lane1Stripe placed=0x4000e900
   Fn __wrela_lane1_method_flat(root: read usize, method: read usize) -> usize
   Fn __wrela_lane1_record_method(core: read usize, root: read usize, method: read usize) -> unit
   Fn __wrela_lane1_append_u64(value: read u64) -> u64

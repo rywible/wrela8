@@ -16,7 +16,7 @@ use wrela_machine::layout::DRAM_BASE;
 pub const LANE2_BASE: u64 = 0x4000_8800;
 
 /// Must match `wrela_compiler::rtconfig::BLOCK_POOL_COUNT` / runtime import.
-pub const LANE2_POOL_COUNT: usize = 1024;
+pub const LANE2_POOL_COUNT: usize = 3072;
 
 /// Compact hit vector: non-zero `(id, count)` pairs in ascending id order.
 pub type HitVec = Vec<(u32, u64)>;

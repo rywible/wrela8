@@ -643,7 +643,13 @@ struct Lane1Stripe:
 # constant in `crates/wrela-vmm/src/lane3.rs`. `collect_placed_statics`'s
 # device-window verifier refuses an image whose rows would leave the window,
 # rather than letting a row overwrite the next static.
-@placed(0x4000b000)
+#
+# plans/M20.md item B / decision 1607 moved this base up from 0x4000b000:
+# BLOCK_POOL_COUNT grew 1024 -> 3072, so LANE2 (8 + 8*3072 = 24584 bytes at
+# 0x40008800) now ends at 0x4000e808 and the stripe has to start above that.
+# The cost is stated in rtconfig.rs's BLOCK_POOL_COUNT comment: the window's
+# remaining 5888 bytes hold N_CORES <= 5 rows, where 0x4000b000 held 19.
+@placed(0x4000e900)
 static LANE1: Lane1Stripe
 
 # Flat method index matching `__wrela_call_method`'s `__method_N` numbering.
@@ -855,7 +861,8 @@ pub fn __wrela_lane2_dump():
     _ = __wrela_console_append_line_buf(11)
     first: u64 = 1
     i: usize = 0
-    @budget(bound=1024)
+    # plans/M20.md item B: BLOCK_POOL_COUNT is 3072.
+    @budget(bound=4096)
     while i < BLOCK_POOL_COUNT:
         c = LANE2.hits[i]
         if c != 0:
@@ -2174,7 +2181,8 @@ pub fn __wrela_rt_primary_boot():
         zi = zi +% 1
     LANE2.enabled = 0
     zj: usize = 0
-    @budget(bound=1024)
+    # plans/M20.md item B: BLOCK_POOL_COUNT is 3072.
+    @budget(bound=4096)
     while zj < BLOCK_POOL_COUNT:
         LANE2.hits[zj] = 0
         zj = zj +% 1

@@ -8,7 +8,7 @@ ImageReport v0
   Quota max_exhaustive_cases=65536
   Input path=core/io_error.wr sha256=c30f35780ff1d174d74787ddd4d3f51a3b8a0bd76c68e5036ec4bf76a511af81
   Input path=examples/boot_receipt_handoff.wr sha256=7b4a721735047624f93871f4f4afdfacfadbb2ee29aeb27199e7e644ca055b40
-  Input path=<generated> sha256=7324382ac1cb694579be71292017d32f69102c122ae9c17cbe3ca010f9adf6d4
+  Input path=<generated> sha256=ca62ab6c3e6b2180554494684f1aa440615e768ab988d9ff16dc5991600e00b3
   Name value=boot-receipt-handoff
   Target value=Target.wrela_machine_v1
   Device index=0 type=VirtioBlock
@@ -73,9 +73,9 @@ ImageReport v0
     Field name=run_one_hits type=[u64; N_CORES] offset=0x8 size=8
     Field name=messages type=[u64; N_CORES] offset=0x10 size=8
     Field name=method_hits type=[u64; LANE1_METHOD_HITS_LEN] offset=0x18 size=1024
-  Layout name=Lane2Counters kind=runtime endian=little size=8200 padding=0
+  Layout name=Lane2Counters kind=runtime endian=little size=24584 padding=0
     Field name=enabled type=u64 offset=0x0 size=8
-    Field name=hits type=[u64; BLOCK_POOL_COUNT] offset=0x8 size=8192
+    Field name=hits type=[u64; BLOCK_POOL_COUNT] offset=0x8 size=24576
   Layout name=VirtioIrqMmio kind=mmio endian=little size=104 padding=96
     Padding offset=0x0 size=96
     Field name=interrupt_status type=ReadOnly[u32] offset=0x60 size=4
@@ -115,8 +115,8 @@ ImageReport v0
   PlacedStatic name=INIT_SPAN5 type=InitSpan5Words addr=0x4057f768 size=8
   PlacedStatic name=INIT_SPAN6 type=InitSpan6Words addr=0x4057f770 size=8
   PlacedStatic name=INIT_SPAN7 type=InitSpan7Words addr=0x4057f778 size=8
-  PlacedStatic name=LANE1 type=Lane1Stripe addr=0x4000b000 size=1048
-  PlacedStatic name=LANE2 type=Lane2Counters addr=0x40008800 size=8200
+  PlacedStatic name=LANE1 type=Lane1Stripe addr=0x4000e900 size=1048
+  PlacedStatic name=LANE2 type=Lane2Counters addr=0x40008800 size=24584
   PlacedStatic name=MACHINE_INFO type=MachineInfoPage addr=0x40000000 size=536
   PlacedStatic name=MB0_CTL type=MbCtl addr=0x40541868 size=24
   PlacedStatic name=MB0_DATA type=Mb0Data addr=0x40541808 size=96
