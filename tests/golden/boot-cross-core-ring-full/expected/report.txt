@@ -165,10 +165,10 @@ ImageReport v0
   Turns count=2 stride=512 bytes=1024
   Rings count=2 stride=24 padding=8 bytes=96
   Totals actors=1 drivers=0 ready_queue=2 group_arena=0 bytes=1248
-  Cost version=3 digest=043f8dc4b21c4b12 total=30198 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=30198
+  Cost version=3 digest=043f8dc4b21c4b12 total=30276 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=30276
     Owner name=app proxy_cycles=2141
-    Owner name=runtime proxy_cycles=28057
+    Owner name=runtime proxy_cycles=28135
     Owner name=driver proxy_cycles=0
     Core n=0 proxy_cycles=0 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn_model=n/a
     Budget n=0 hot_text_bytes=92160 l1i_bytes=65536 over_l1i_lines=416 over_l2_lines=0 text_pages=23 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=5 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=2912
@@ -176,4 +176,4 @@ ImageReport v0
     Budget n=1 hot_text_bytes=92544 l1i_bytes=65536 over_l1i_lines=422 over_l2_lines=0 text_pages=23 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=2954
     Core n=2 proxy_cycles=21 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn_model=n/a
     Budget n=2 hot_text_bytes=92224 l1i_bytes=65536 over_l1i_lines=417 over_l2_lines=0 text_pages=23 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=5 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=2919
-    Shared proxy_cycles=30038
+    Shared proxy_cycles=30116
