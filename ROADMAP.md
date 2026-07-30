@@ -72,7 +72,9 @@ beyond the active milestone. A milestone's *first deliverable* is its plan
 code exists, the shape decisions that milestone freezes, and explicit
 non-goals. Plans are written when a milestone activates, never earlier
 (each milestone manufactures the facts the next plan needs), and become
-history when it completes. Active plan: **none**. M19 is COMPLETE
+history when it completes. Active plan: **[plans/M20.md](plans/M20.md)**
+(the A76 ruler — a Pi-5-specific microarchitectural cost model; activated
+2026-07-29, freezes 1620–1633 in force). M19 is COMPLETE
 ([plans/M19.md](plans/M19.md); optimization harness; proxy-only modes).
 M18 is COMPLETE ([plans/M18.md](plans/M18.md); cycle proxy — differential
 ISA ranking only). M17 is COMPLETE ([plans/M17.md](plans/M17.md); thin
