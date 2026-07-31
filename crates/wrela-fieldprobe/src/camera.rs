@@ -25,6 +25,7 @@ pub struct Camera {
     pub aspect: f32,
     pub w: u32,
     pub h: u32,
+    pub fov_deg: f32,
 }
 
 fn norm3(v: [f32; 3]) -> [f32; 3] {
@@ -56,6 +57,7 @@ impl Camera {
             aspect: w as f32 / h as f32,
             w,
             h,
+            fov_deg,
         }
     }
 

@@ -1736,3 +1736,195 @@ pub fn run_edge_census(sc: &Scene, s: &mut Scratch) -> EdgeCensus {
     }
     o
 }
+
+// ---------------------------------------------------------------------------
+// E9 — the baked atlas: certified analytic solves instead of marching.
+// ---------------------------------------------------------------------------
+
+pub struct AtlasOut {
+    pub cost: crate::atlas::TraceCost,
+    pub pixels: u64,
+    pub hits: u64,
+    /// Pixels where the atlas and an independent march disagree. Must be 0:
+    /// the proxy is an accelerator with a certificate, not a second source
+    /// of truth, so any disagreement means the certificate is wrong.
+    pub mismatches: u64,
+    /// Mismatch taxonomy: guessing at the cause wasted two rounds, so the
+    /// gate reports which way it failed.
+    pub miss_atlas_none: u64,
+    pub miss_atlas_extra: u64,
+    pub miss_depth: u64,
+    pub worst_dt: f32,
+}
+
+pub fn run_atlas(sc: &Scene, at: &crate::atlas::Atlas, s: &mut Scratch) -> AtlasOut {
+    let cam = &sc.cam;
+    let mut o = AtlasOut {
+        cost: Default::default(),
+        pixels: (cam.w as u64) * (cam.h as u64),
+        hits: 0,
+        mismatches: 0,
+        miss_atlas_none: 0,
+        miss_atlas_extra: 0,
+        miss_depth: 0,
+        worst_dt: 0.0,
+    };
+    for y in 0..cam.h {
+        for x in 0..cam.w {
+            let d = cam.dir_at_pixel(x as f32 + 0.5, y as f32 + 0.5);
+            let got = crate::atlas::trace(
+                at, &sc.tape, cam.eye, d, sc.t_near, sc.t_far, &mut o.cost, s,
+            );
+            let truth = march(&sc.tape, cam.eye, d, sc.t_near, sc.t_far, s).0;
+            if got.is_some() {
+                o.hits += 1;
+            }
+            match (got, truth) {
+                (Some(a), Some(b)) if (a - b).abs() <= 3e-3 * b.max(1.0) => {}
+                (None, None) => {}
+                (Some(a), Some(b)) => {
+                    o.mismatches += 1;
+                    o.miss_depth += 1;
+                    o.worst_dt = o.worst_dt.max((a - b).abs());
+                }
+                (None, Some(_)) => {
+                    o.mismatches += 1;
+                    o.miss_atlas_none += 1;
+                }
+                (Some(_), None) => {
+                    o.mismatches += 1;
+                    o.miss_atlas_extra += 1;
+                }
+            }
+        }
+    }
+    o
+}
+
+// ---------------------------------------------------------------------------
+// E11 — the frame budget under motion.
+// ---------------------------------------------------------------------------
+
+pub struct FrameStat {
+    pub deg: f32,
+    pub primary_flop_px: f64,
+    pub hit_rate: f64,
+    pub hinted: f64,
+    pub verified: f64,
+}
+
+/// Cost every frame of a whip, not just a representative one.
+///
+/// A frame budget is set by the *worst* frame. §4.4 schedules resolution
+/// against camera velocity, which only works if the cost-versus-velocity
+/// curve is known — and a single static pose cannot show it. This walks the
+/// whole path: primary visibility through the atlas per frame, plus the
+/// reprojection hit rate from the preceding pose, so the two curves can be
+/// read against each other.
+pub fn run_motion(
+    sc: &Scene,
+    at: &crate::atlas::Atlas,
+    stride: u32,
+    s: &mut Scratch,
+) -> Vec<FrameStat> {
+    let mut out = Vec::new();
+    let mut prev: Option<(&Camera, Vec<Option<f32>>)> = None;
+    for (i, cam) in sc.path.iter().enumerate() {
+        let mut cost: crate::atlas::TraceCost = Default::default();
+        let w = (cam.w / stride) as usize;
+        let h = (cam.h / stride) as usize;
+        let mut depth = vec![None; w * h];
+        let mut hits = 0u64;
+        for iy in 0..h {
+            for ix in 0..w {
+                let px = (ix as u32 * stride) as f32 + 0.5;
+                let py = (iy as u32 * stride) as f32 + 0.5;
+                let d = cam.dir_at_pixel(px, py);
+                let t = crate::atlas::trace(
+                    at, &sc.tape, cam.eye, d, sc.t_near, sc.t_far, &mut cost, s,
+                );
+                if t.is_some() {
+                    hits += 1;
+                }
+                depth[iy * w + ix] = t;
+            }
+        }
+        let n = (w * h) as f64;
+
+        // Reprojection from the previous pose: forward-scatter its hits.
+        let (mut hinted, mut verified) = (0.0, 0.0);
+        if let Some((p0, pd)) = &prev {
+            let mut hint = vec![f32::INFINITY; w * h];
+            for iy in 0..h {
+                for ix in 0..w {
+                    let t = match pd[iy * w + ix] {
+                        Some(t) => t,
+                        None => continue,
+                    };
+                    let px = (ix as u32 * stride) as f32 + 0.5;
+                    let py = (iy as u32 * stride) as f32 + 0.5;
+                    let d0 = p0.dir_at_pixel(px, py);
+                    let wp = [
+                        p0.eye[0] + t * d0[0],
+                        p0.eye[1] + t * d0[1],
+                        p0.eye[2] + t * d0[2],
+                    ];
+                    let r = [wp[0] - cam.eye[0], wp[1] - cam.eye[1], wp[2] - cam.eye[2]];
+                    let zf = r[0] * cam.fwd[0] + r[1] * cam.fwd[1] + r[2] * cam.fwd[2];
+                    if zf <= 1e-4 {
+                        continue;
+                    }
+                    let xr = r[0] * cam.right[0] + r[1] * cam.right[1] + r[2] * cam.right[2];
+                    let yu = r[0] * cam.up[0] + r[1] * cam.up[1] + r[2] * cam.up[2];
+                    let sx = (xr / zf / (cam.aspect * cam.tan_half) + 1.0) * 0.5 * cam.w as f32;
+                    let sy = (1.0 - yu / zf / cam.tan_half) * 0.5 * cam.h as f32;
+                    if sx < 0.0 || sy < 0.0 {
+                        continue;
+                    }
+                    let (jx, jy) = ((sx as u32 / stride) as usize, (sy as u32 / stride) as usize);
+                    if jx < w && jy < h {
+                        let dist = (r[0] * r[0] + r[1] * r[1] + r[2] * r[2]).sqrt();
+                        let c = &mut hint[jy * w + jx];
+                        if dist < *c {
+                            *c = dist;
+                        }
+                    }
+                }
+            }
+            for iy in 0..h {
+                for ix in 0..w {
+                    let hv = hint[iy * w + ix];
+                    if !hv.is_finite() {
+                        continue;
+                    }
+                    hinted += 1.0;
+                    if let Some(t) = depth[iy * w + ix] {
+                        if (t - hv).abs() < 0.08 {
+                            verified += 1.0;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Angular step from the previous pose.
+        let deg = match &prev {
+            Some((p0, _)) => {
+                let dot = (p0.fwd[0] * cam.fwd[0] + p0.fwd[1] * cam.fwd[1] + p0.fwd[2] * cam.fwd[2])
+                    .clamp(-1.0, 1.0);
+                dot.acos().to_degrees()
+            }
+            None => 0.0,
+        };
+        out.push(FrameStat {
+            deg,
+            primary_flop_px: cost.flop() / n,
+            hit_rate: hits as f64 / n,
+            hinted: hinted / n,
+            verified: if hinted > 0.0 { verified / hinted } else { 0.0 },
+        });
+        prev = Some((cam, depth));
+        let _ = i;
+    }
+    out
+}

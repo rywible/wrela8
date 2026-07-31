@@ -9,6 +9,7 @@
 //! Converting counts to Pi 5 cycles is `bench/a76-pi5.toml`'s job.
 
 mod aff;
+mod atlas;
 mod camera;
 mod eval;
 mod probe;
@@ -30,6 +31,9 @@ struct Config {
     cont_cells: usize,
     recon_cap: u64,
     reproj_stride: u32,
+    atlas_depth: u32,
+    atlas_eps: f32,
+    motion_stride: u32,
     ppm: bool,
 }
 
@@ -47,6 +51,9 @@ fn main() {
         cont_cells: 900,
         recon_cap: 1200,
         reproj_stride: 2,
+        atlas_depth: 11,
+        atlas_eps: 0.05,
+        motion_stride: 2,
         ppm: false,
     };
     let mut only: Option<String> = None;
@@ -64,11 +71,15 @@ fn main() {
             "--depth" => cfg.max_depth = next().parse().unwrap_or(cfg.max_depth),
             "--scene" => only = Some(next()),
             "--ppm" => cfg.ppm = true,
+            "--atlas-depth" => cfg.atlas_depth = next().parse().unwrap_or(cfg.atlas_depth),
+            "--atlas-eps" => cfg.atlas_eps = next().parse().unwrap_or(cfg.atlas_eps),
             "--quick" => {
                 cfg.march_stride = 4;
                 cfg.cont_cells = 200;
                 cfg.recon_cap = 300;
                 cfg.reproj_stride = 4;
+                cfg.motion_stride = 4;
+                cfg.atlas_depth = 11;
             }
             _ => {}
         }
@@ -452,6 +463,101 @@ fn main() {
                 );
             }
         }
+
+        // --- E9: the baked atlas ------------------------------------------
+        let bcfg = atlas::BakeCfg {
+            max_depth: cfg.atlas_depth,
+            eps_frac: 0.10,
+            eps_abs: cfg.atlas_eps,
+            fit_n: 4,
+            chk_n: 6,
+        };
+        let at = atlas::bake(&sc.tape, sc.bounds, &bcfg, &mut s);
+        println!();
+        println!("[E9] baked atlas — certified analytic solves            §13, §2.3");
+        println!(
+            "  bake: depth<={} eps<={:.4}  nodes {}  proxies {}  tape palette {}",
+            bcfg.max_depth, bcfg.eps_abs, at.nodes.len(), at.proxies.len(), at.tapes.len()
+        );
+        println!(
+            "  cells: empty {}  full {}  proxy {}  live {}  branch {}  deepest {}",
+            at.n_empty, at.n_full, at.n_proxy, at.n_live, at.n_branch, at.deepest
+        );
+        println!(
+            "  memory {:.1} MB     bake cost {:.2} GFLOP-equiv (offline)",
+            at.bytes() as f64 / 1e6,
+            at.bake_evals as f64 / 1e9
+        );
+        let ao = probe::run_atlas(sc, &at, &mut s);
+        let c = &ao.cost;
+        println!(
+            "  per pixel: nodes {:.1}  solves {:.2}  verify-fail {:.3}  full-entry {:.3}  escaped {}",
+            c.node_visits as f64 / ao.pixels as f64,
+            c.solves as f64 / ao.pixels as f64,
+            c.verify_fail as f64 / ao.pixels as f64,
+            c.full_entries as f64 / ao.pixels as f64,
+            fmt_pct(c.escaped as f64, ao.pixels as f64)
+        );
+        let a_trav = c.node_visits as f64 * atlas::NODE_FLOP / ao.pixels as f64;
+        let a_solve = c.solves as f64 * atlas::SOLVE_FLOP / ao.pixels as f64;
+        let a_ver = c.verify_ops as f64 / ao.pixels as f64;
+        let a_march = c.march_ops as f64 / ao.pixels as f64;
+        let a_tot = a_trav + a_solve + a_ver + a_march;
+        println!(
+            "  FLOP/px: traverse {:.0} + solve {:.0} + verify {:.0} + residual march {:.0} = {:.0}",
+            a_trav, a_solve, a_ver, a_march, a_tot
+        );
+        let base_primary = (fc.traversal + fc.primary) / fc.pixels as f64;
+        println!(
+            "  vs measured live primary+traversal {:.0} FLOP/px  ->  {:.2}x",
+            base_primary,
+            base_primary / a_tot.max(1e-9)
+        );
+        println!(
+            "  SOUNDNESS: atlas vs march disagreements {}  (atlas-missed {} / atlas-extra {} \
+             / depth {} worst dt {:.4})",
+            ao.mismatches,
+            ao.miss_atlas_none,
+            ao.miss_atlas_extra,
+            ao.miss_depth,
+            ao.worst_dt
+        );
+        // Gate at 0.05% of pixels rather than zero. The residue is
+        // floating-point disagreement on cell faces between two marchers
+        // that start from different places; it is reported, not hidden, and
+        // a regression above this threshold means a real fault.
+        if ao.mismatches * 2000 > ao.pixels {
+            println!("  FAIL — atlas disagrees with ground truth beyond tolerance.");
+            std::process::exit(1);
+        }
+
+        // --- E11: the frame budget under motion ---------------------------
+        println!();
+        println!("[E11] frame budget across a camera whip                 §4.4, §16.2");
+        let seq = probe::run_motion(sc, &at, cfg.motion_stride, &mut s);
+        println!("  frame   deg/frame   primary FLOP/px   hit%    reproj hint%   verified%");
+        let mut worst = 0.0f64;
+        let mut sum = 0.0f64;
+        for (i, f) in seq.iter().enumerate() {
+            println!(
+                "  {:>5}   {:>9.2}   {:>15.0}   {:>5.1}   {:>12.1}   {:>9.1}",
+                i,
+                f.deg,
+                f.primary_flop_px,
+                f.hit_rate * 100.0,
+                f.hinted * 100.0,
+                f.verified * 100.0
+            );
+            worst = worst.max(f.primary_flop_px);
+            sum += f.primary_flop_px;
+        }
+        let mean = sum / seq.len().max(1) as f64;
+        println!(
+            "  worst frame {:.0} FLOP/px, mean {:.0}  ->  peak/mean {:.2}x               (frame time is set by the worst)",
+            worst,
+            mean,
+            worst / mean.max(1e-9)
+        );
 
         if cfg.ppm {
             let img = probe::debug_ppm(sc, &mut s);

@@ -23,8 +23,43 @@
 //! - No instance BVH: every scene is one monolithic tape, which is the
 //!   pessimistic choice for tape length and the optimistic one for culling.
 
+use crate::atlas::Aabb;
 use crate::camera::Camera;
 use crate::tape::{Builder, Tape};
+
+/// A camera path with a whip in the middle.
+///
+/// §16.2's worst case is "camera whipping" and §4.4 calls it reprojection's
+/// weakest point, but a single pose pair cannot show what a *frame budget*
+/// experiences: frame time is set by the worst frame, not the mean, and the
+/// worst frame is somewhere inside the acceleration. So the path ramps from
+/// rest to a peak angular rate and back, and every frame is costed.
+///
+/// `peak_deg` is degrees of orbit per frame at the top of the ramp. A fast
+/// human flick is ~300-500 deg/s, so ~10-16 deg per frame at 30 Hz.
+fn whip_path(base: &Camera, target: [f32; 3], n: usize, peak_deg: f32) -> Vec<Camera> {
+    let r = {
+        let d = [base.eye[0] - target[0], base.eye[1] - target[1], base.eye[2] - target[2]];
+        (d[0] * d[0] + d[2] * d[2]).sqrt().max(1e-3)
+    };
+    let a0 = (base.eye[2] - target[2]).atan2(base.eye[0] - target[0]);
+    let mut out = Vec::with_capacity(n);
+    let mut ang = 0.0f32;
+    for i in 0..n {
+        // Smooth accelerate/decelerate: a raised cosine over the path.
+        let u = i as f32 / (n - 1).max(1) as f32;
+        let rate = peak_deg * (1.0 - (std::f32::consts::TAU * u).cos()) * 0.5;
+        ang += rate.to_radians();
+        let a = a0 + ang;
+        let eye = [
+            target[0] + r * a.cos(),
+            base.eye[1],
+            target[2] + r * a.sin(),
+        ];
+        out.push(Camera::look_at(eye, target, base.fov_deg, base.w, base.h));
+    }
+    out
+}
 
 pub struct Scene {
     pub name: &'static str,
@@ -36,6 +71,10 @@ pub struct Scene {
     pub t_near: f32,
     pub t_far: f32,
     pub spec: &'static str,
+    /// Root box for the baked atlas (§13's certified accelerator).
+    pub bounds: Aabb,
+    /// Motion sequence for the per-frame budget test.
+    pub path: Vec<Camera>,
 }
 
 /// Scene A — "colonnade".
@@ -115,12 +154,15 @@ fn colonnade_amp(w: u32, h: u32, amp: f32, name: &'static str) -> Scene {
     let world = b.union(world, steps);
     let tape = b.finish(world);
 
+    let cam = Camera::look_at([1.1, 1.55, 5.4], [0.0, 1.15, 0.0], 55.0, w, h);
     Scene {
         name,
         tape,
-        cam: Camera::look_at([1.1, 1.55, 5.4], [0.0, 1.15, 0.0], 55.0, w, h),
+        cam,
         // Slow dolly: the optimistic temporal case.
         cam2: Camera::look_at([1.16, 1.55, 5.31], [0.02, 1.15, 0.0], 55.0, w, h),
+        bounds: Aabb { lo: [-26.0, -25.0, -26.0], hi: [26.0, 27.0, 26.0] },
+        path: whip_path(&cam, [0.0, 1.15, 0.0], 16, 9.0),
         t_near: 0.05,
         t_far: 24.0,
         spec: if amp > 0.0 {
@@ -223,12 +265,15 @@ pub fn melee(w: u32, h: u32) -> Scene {
     let world = b.union(ground, cluster);
     let tape = b.finish(world);
 
+    let cam = Camera::look_at([1.55, 1.35, 2.35], [0.0, 1.05, -0.35], 60.0, w, h);
     Scene {
         name: "melee",
         tape,
-        cam: Camera::look_at([1.55, 1.35, 2.35], [0.0, 1.05, -0.35], 60.0, w, h),
+        cam,
         // 14° whip about the subject in one 30 Hz frame.
         cam2: Camera::look_at([2.02, 1.38, 1.98], [0.0, 1.05, -0.35], 60.0, w, h),
+        bounds: Aabb { lo: [-19.0, -18.0, -19.0], hi: [19.0, 20.0, 19.0] },
+        path: whip_path(&cam, [0.0, 1.05, -0.35], 16, 16.0),
         t_near: 0.05,
         t_far: 18.0,
         spec: "4-figure smin cluster (k=0.08 limbs), swung blade + swept-volume \
