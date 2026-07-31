@@ -1473,6 +1473,10 @@ mod tests {
         let t = table();
         let p = SweepPoint::pinned(&t);
         let fe = p.get(FRONTEND_SWEEP_DIM);
+        // Hoisted: `penalty()` re-reads and re-parses bench/a76-pi5.toml on
+        // every call, and the per-word loop below calls it once per emitted
+        // word across the whole corpus — measured at ~40s of a ~42s test.
+        let pen = penalty();
         let corpus = discover_cost_corpus();
         assert!(!corpus.is_empty(), "cost corpus empty");
 
@@ -1544,7 +1548,7 @@ mod tests {
                         .unwrap_or_else(|e| panic!("{case}/{key}: {e}"));
                 census.biased += measured.summary.biased;
                 for w in 0..f.code.len() {
-                    let c = branch_mispredict_charge(penalty(), measured.bias_at(w));
+                    let c = branch_mispredict_charge(pen, measured.bias_at(w));
                     case_max += c;
                 }
             }
