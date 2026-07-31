@@ -288,9 +288,11 @@ produced it.
   without touching ~220 emission sites, and it will let F's frameless
   functions (F3) land the same way: a function with no frame slots at all
   simply has every temp virtual.
-- `Frame::temp_reg` / `Frame::residents`, `Assignment::residents` — the
-  surfaces `report.rs` will want when F makes each function's chosen
-  convention visible.
+- `Assignment::residents` / `Assignment::resident_count` — the surfaces
+  `report.rs` will want when F makes each function's chosen convention
+  visible. `Frame` deliberately keeps **only** `virt_to_reg`: a second
+  copy of the residency map on the frame would be unused surface, and the
+  frame's answer to "is this temp resident" is `reg_at(off(t))`.
 
 **Assumptions baked in that whole-program allocation will break — read
 these before extending.**

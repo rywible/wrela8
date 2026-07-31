@@ -1100,11 +1100,10 @@ struct Frame {
     entropy_scratch_size: usize,
     lr_off: usize,
     size: usize,
-    /// plans/codegen-pareto.md item E: the physical register each
-    /// **resident** temp lives in, or `None` for a temp that keeps its
-    /// frame slot. Always all-`None` in `dev` and on the async path.
-    temp_reg: Vec<Option<u8>>,
-    /// Reverse index for [`Self::reg_at`]: virtual offset -> register.
+    /// plans/codegen-pareto.md item E: virtual slot offset -> the
+    /// physical register that **resident** temp lives in. Empty in `dev`
+    /// and on the async path, which is exactly what makes the frame
+    /// byte-for-byte the naive one there.
     virt_to_reg: BTreeMap<usize, u8>,
 }
 
@@ -1179,7 +1178,6 @@ fn build_frame(
     let mut offset = 0usize;
     let mut temp_offset = Vec::with_capacity(f.temp_types.len());
     let mut temp_size = Vec::with_capacity(f.temp_types.len());
-    let mut temp_reg: Vec<Option<u8>> = Vec::with_capacity(f.temp_types.len());
     let mut virt_to_reg: BTreeMap<usize, u8> = BTreeMap::new();
     let mut next_virt = VIRT_SLOT_BASE;
     for (t, ty) in f.temp_types.iter().enumerate() {
@@ -1190,12 +1188,10 @@ fn build_frame(
                 virt_to_reg.insert(next_virt, reg);
                 next_virt += FRAME_SLOT_BYTES as usize;
                 temp_size.push(sz);
-                temp_reg.push(Some(reg));
             }
             None => {
                 temp_offset.push(offset);
                 temp_size.push(sz);
-                temp_reg.push(None);
                 offset += sz;
             }
         }
@@ -1268,7 +1264,6 @@ fn build_frame(
         entropy_scratch_size,
         lr_off,
         size,
-        temp_reg,
         virt_to_reg,
     })
 }
@@ -1318,16 +1313,6 @@ impl Frame {
             }
         }
         None
-    }
-
-    /// Resident temps and their registers, for the `--stage=asm` header
-    /// and the unit oracles.
-    fn residents(&self) -> Vec<(usize, u8)> {
-        self.temp_reg
-            .iter()
-            .enumerate()
-            .filter_map(|(t, r)| r.map(|p| (t, p)))
-            .collect()
     }
 }
 
@@ -12149,12 +12134,11 @@ pub fn used_twice(a: u64) -> u64:
         }
     }
 
-    /// The frame's own view of residency agrees with what was emitted:
-    /// every resident temp is in the pool, and no two share a register
-    /// while both are resident at the same time is the allocator's job —
-    /// here we pin the surface `Frame` exposes.
+    /// The naive assignment really does produce the naive frame: no temp
+    /// is resident and nothing virtual is handed out, which is what makes
+    /// `dev` byte-for-byte the old model.
     #[test]
-    fn frame_residency_surface_only_names_pool_registers() {
+    fn a_naive_assignment_leaves_no_temp_resident() {
         let naive = regalloc::Assignment::none(3);
         let f = MwirFn {
             receiver: None,
@@ -12169,7 +12153,13 @@ pub fn used_twice(a: u64) -> u64:
         };
         let layout = LayoutCtx::default();
         let frame = build_frame(&f, &layout, 0, 0, 0, &naive).expect("naive frame");
-        assert!(frame.residents().is_empty());
-        assert_eq!(frame.temp_reg, vec![None, None, None]);
+        assert!(frame.virt_to_reg.is_empty());
+        for t in 0..3 {
+            assert!(
+                frame.off(Temp(t)) < VIRT_SLOT_BASE,
+                "temp {t} must have a real frame offset"
+            );
+            assert_eq!(frame.reg_at(frame.off(Temp(t))), None);
+        }
     }
 }
