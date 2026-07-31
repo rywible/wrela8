@@ -5724,8 +5724,11 @@ fn two():
         let err = verify_branch_region(&straddle).expect_err("straddling must fail closed");
         assert!(err.message.contains("straddles"), "{}", err.message);
 
-        // The image as it is actually laid out today: an unaligned base
-        // whose whole text still lives in one region.
+        // The image as it is actually laid out today (`boot-actors`, items
+        // A+B+C): an unaligned base whose whole text still lives in one
+        // region, by a factor of ~24. The sizes are a fixture — the real
+        // check runs on every image build — but they are the real sizes, so
+        // the margin this fixture claims is the margin the image has.
         let real = vec![
             Section {
                 name: "entry",
@@ -5735,11 +5738,16 @@ fn two():
             Section {
                 name: "code",
                 base: 0x4050_0050,
-                size: 87488,
+                size: 85136,
+            },
+            Section {
+                name: "abort",
+                base: 0x4051_4ff4,
+                size: 120,
             },
             Section {
                 name: "checkpoint",
-                base: 0x4051_599c,
+                base: 0x4051_506c,
                 size: 28,
             },
         ];

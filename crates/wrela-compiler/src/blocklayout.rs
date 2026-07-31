@@ -911,6 +911,12 @@ mod tests {
     /// -- --nocapture`
     #[test]
     fn the_measured_hot_text_footprint_before_and_after() {
+        /// Measured hot text of the `boot-actors` cost-stage closure as the
+        /// compiler emits it today — item D's baseline, not a property of
+        /// item D. Every word-shrinking opt moves it; see the assertion
+        /// below for what to do when it does.
+        const BEFORE_HOT_TEXT_BYTES: u64 = 7616;
+
         use crate::cost::{
             self, BlockBridge, HotBlocks, MeasuredBlocks, SweepPoint, make_key,
             sibling_block_freq_path,
@@ -1099,8 +1105,23 @@ mod tests {
         assert_eq!(budget_before.len(), budget_after.len());
         assert!(!budget_before.is_empty(), "boot-actors places one core");
         assert_eq!(
-            budget_before[0].hot_text_bytes, 7744,
-            "the committed before-number"
+            budget_before[0].hot_text_bytes, BEFORE_HOT_TEXT_BYTES,
+            "item D's baseline moved.\n\
+             \n\
+             This is the assertion doing its job, not a bug in it. \
+             `{BEFORE_HOT_TEXT_BYTES}` is the measured hot text of the `boot-actors` \
+             cost-stage closure **as the compiler emits it today**, so *any* opt that \
+             deletes or adds words moves it — and item D's whole claim is a delta \
+             against it. It has already moved twice on this plan: 7744 at item A, 7680 \
+             once item B's one-word `ADR` addressing merged, {BEFORE_HOT_TEXT_BYTES} \
+             once item C's arithmetic opts did.\n\
+             \n\
+             What to do: re-run this test with `-- --nocapture`, re-pin \
+             `BEFORE_HOT_TEXT_BYTES` to what it prints, and **re-measure every number \
+             in `plans/codegen-pareto-D.md`** — the delta, the density figure and the \
+             packing headroom all move with the baseline and none of them may be \
+             rescaled arithmetically. Do not update this constant without doing that; \
+             a green test over stale prose is worse than a red one."
         );
         assert!(
             budget_after[0].hot_text_bytes <= budget_before[0].hot_text_bytes,
