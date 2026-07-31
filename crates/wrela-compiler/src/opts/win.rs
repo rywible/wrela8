@@ -1941,10 +1941,11 @@ mod tests {
     /// blind to it. It survives on cycles alone.
     #[test]
     fn narrow_imm_wins_on_cycles_while_its_footprint_win_is_priced_at_zero() {
-        let configs: [(&str, &[OptId]); 4] = [
+        let configs: [(&str, &[OptId]); 5] = [
             ("dev", &[]),
             ("BoundsElide", &[OptId::BoundsElide]),
             ("NarrowImm", &[OptId::NarrowImm]),
+            ("AdrAddressing", &[OptId::AdrAddressing]),
             ("release", RELEASE_OPTS),
         ];
         let rows = attribute_opts(&configs);
@@ -1959,6 +1960,7 @@ mod tests {
         let dev_cycles = sum("dev", |c| c.proxy_cycles);
         let be_cycles = sum("BoundsElide", |c| c.proxy_cycles);
         let ni_cycles = sum("NarrowImm", |c| c.proxy_cycles);
+        let adr_cycles = sum("AdrAddressing", |c| c.proxy_cycles);
         let rel_cycles = sum("release", |c| c.proxy_cycles);
 
         // (1) Not "near zero on cycles".
@@ -2052,27 +2054,35 @@ mod tests {
         // because M's budget-witness cases are large programs where
         // NarrowImm's per-word throughput win scales with the word count.
         //
-        // So the assertion is the one that is actually about the ruler: both
-        // opts contribute, neither is inert, and their sum is bounded by
-        // release's (they overlap rather than compose freely).
+        // So the assertion is the one that is actually about the ruler: every
+        // opt contributes, none is inert, and their sum bounds release's
+        // (they overlap rather than compose freely).
+        //
+        // plans/codegen-pareto.md item B1 made `release` three opts rather
+        // than two, so the singles this is asked over are three. The
+        // percentages quoted above were computed on the two-opt release and
+        // are deliberately left as the historical record of *that* list
+        // rather than restated — the claim being asserted is the structural
+        // one, and it is the one that survives a list that grows.
         let be_win = dev_cycles - be_cycles;
         let ni_win = dev_cycles - ni_cycles;
+        let adr_win = dev_cycles - adr_cycles;
         let rel_win = dev_cycles - rel_cycles;
         assert!(
-            be_win > 0 && ni_win > 0,
-            "both opts must contribute on cycles: BoundsElide {be_win}, \
-             NarrowImm {ni_win}\n{table}"
+            be_win > 0 && ni_win > 0 && adr_win > 0,
+            "every opt must contribute on cycles: BoundsElide {be_win}, \
+             NarrowImm {ni_win}, AdrAddressing {adr_win}\n{table}"
         );
         assert!(
-            rel_win <= be_win + ni_win,
+            rel_win <= be_win + ni_win + adr_win,
             "release's win cannot exceed the sum of the singles — that would \
-             mean the two opts create cycles together that neither creates \
-             alone: release {rel_win} vs {be_win} + {ni_win}\n{table}"
+             mean the opts create cycles together that none creates alone: \
+             release {rel_win} vs {be_win} + {ni_win} + {adr_win}\n{table}"
         );
         assert!(
-            rel_win > be_win && rel_win > ni_win,
-            "release must beat either single: release {rel_win}, BoundsElide \
-             {be_win}, NarrowImm {ni_win}\n{table}"
+            rel_win > be_win && rel_win > ni_win && rel_win > adr_win,
+            "release must beat every single: release {rel_win}, BoundsElide \
+             {be_win}, NarrowImm {ni_win}, AdrAddressing {adr_win}\n{table}"
         );
     }
 
@@ -2112,12 +2122,105 @@ mod tests {
         );
     }
 
+    /// **plans/codegen-pareto.md item B1, the land gate — smoke form.**
+    ///
+    /// `AdrAddressing` alone, over one case, at every point of that case's
+    /// residual box. `cost-arith` is the smoke case: it is small (147
+    /// proxy-cycles under release) and it emits six rodata references from
+    /// its checked-arithmetic abort stubs, so the substitution is the only
+    /// thing separating the two sides. Freeze 1714 in one sentence — the
+    /// oracle exercises the new path or it is not an oracle, and this one
+    /// scores zero delta if `load_rodata_addr` stops substituting.
+    #[test]
+    fn adr_addressing_wins_at_every_box_point_on_the_smoke_case() {
+        let cmp = compare_opt_lists_over_box_for_case(&[], &[OptId::AdrAddressing], "cost-arith")
+            .expect("smoke sweep");
+        assert_eq!(cmp.cases.len(), 1, "the smoke lane sweeps exactly one case");
+        let case = &cmp.cases[0];
+        assert!(
+            !case.points.is_empty(),
+            "the smoke case must enumerate corners, not zero"
+        );
+        assert!(
+            case.points.iter().all(|p| p.candidate < p.baseline),
+            "AdrAddressing must fall at every point of {}: {:?}",
+            case.name,
+            case.points
+                .iter()
+                .map(|p| (p.baseline, p.candidate))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            cmp.wins(),
+            "smoke sweep vetoed: {:?}",
+            cmp.reasons.iter().map(|r| r.label()).collect::<Vec<_>>()
+        );
+    }
+
+    /// The same gate asked the question that actually decides the landing:
+    /// not "is `AdrAddressing` a win against `dev`" but "does adding it to
+    /// the already-shipping list still fall". A candidate that only wins
+    /// from a `dev` baseline could be riding another opt's coattails; this
+    /// one holds `BoundsElide`+`NarrowImm` fixed on both sides.
+    #[test]
+    fn adr_addressing_is_a_marginal_win_over_the_previous_release_list() {
+        const WITHOUT: &[OptId] = &[OptId::BoundsElide, OptId::NarrowImm];
+        let cmp = compare_opt_lists_over_box_for_case(WITHOUT, RELEASE_OPTS, "cost-arith")
+            .expect("marginal smoke sweep");
+        let case = &cmp.cases[0];
+        assert!(
+            case.points.iter().all(|p| p.candidate < p.baseline),
+            "adding AdrAddressing must fall at every point of {}: {:?}",
+            case.name,
+            case.points
+                .iter()
+                .map(|p| (p.baseline, p.candidate))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            cmp.wins(),
+            "marginal smoke sweep vetoed: {:?}",
+            cmp.reasons.iter().map(|r| r.label()).collect::<Vec<_>>()
+        );
+    }
+
+    /// **plans/codegen-pareto.md item B1, the land gate — whole corpus.**
+    /// `RELEASE_OPTS` minus `AdrAddressing` vs `RELEASE_OPTS`, ∀ over the
+    /// residual box, over every `cost-*` case. **Deep lane**, same budget
+    /// argument as its two neighbours above.
+    #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
+    #[test]
+    fn adr_addressing_wins_at_every_point_of_the_residual_box() {
+        const WITHOUT: &[OptId] = &[OptId::BoundsElide, OptId::NarrowImm];
+        let cmp = compare_opt_lists_over_box(WITHOUT, RELEASE_OPTS).expect("sweep");
+        let table = format_sweep_table(&cmp, "release−AdrAddressing", "release");
+        eprintln!("∀ sweep (release−AdrAddressing → release):\n{table}");
+        assert_sweep_wins(&cmp, "release", "release−AdrAddressing");
+        assert!(cmp.wins());
+        eprintln!(
+            "AdrAddressing ∀-sweep: {} points/side over {} cases",
+            cmp.scored_points(),
+            cmp.cases.len()
+        );
+    }
+
     /// Decision 1453: swapped opt-list order vs RELEASE_OPTS — document
     /// independence when totals match (lower vs codegen axes).
     #[test]
     fn swapped_order_scores_same_as_release_opts() {
-        const SWAPPED: &[OptId] = &[OptId::NarrowImm, OptId::BoundsElide];
-        let cmp = compare_opt_lists(RELEASE_OPTS, SWAPPED);
+        // The **reverse** of the live list, not a hand-written pair: the
+        // claim is that the order of the slice cannot change a score,
+        // and a hardcoded pair stops testing that the moment the list
+        // grows (plans/codegen-pareto.md item C added four ids, and the
+        // stale pair silently turned this into a "release beats two of
+        // its six opts" test instead).
+        let swapped: Vec<OptId> = RELEASE_OPTS.iter().rev().copied().collect();
+        assert_ne!(
+            swapped.as_slice(),
+            RELEASE_OPTS,
+            "the reversal must actually reorder something"
+        );
+        let cmp = compare_opt_lists(RELEASE_OPTS, &swapped);
         let table = format_delta_table(&cmp, "RELEASE_OPTS", "swapped");
         eprintln!("order swap note:\n{table}");
         // Both axes are independent TLS knobs; enabling both before
@@ -3268,6 +3371,286 @@ mod tests {
         }
         assert_sweep_wins(&cmp, "release", "dev");
         assert!(cmp.wins());
+    }
+
+    // ---------------------------------------------------------------
+    // plans/codegen-pareto.md item C: one ∀ gate per arithmetic opt
+    // (decision 1745). Each id is ranked **alone against `dev`**, so a
+    // refusal names one transform rather than the bundle.
+    // ---------------------------------------------------------------
+
+    /// One row per item-C opt: `(baseline, opt, smoke case)`.
+    ///
+    /// The **case** is the one whose shapes the transform actually
+    /// reaches; a smoke lane pointed at a case the opt does not touch is
+    /// the green-unit-that-is-not-an-oracle freeze 1714 forbids, so the
+    /// pairing is written down rather than defaulted.
+    ///
+    /// The **baseline** is `dev` except for `WideImmForms`, which is
+    /// gated against `[NarrowImm]` (decision 1747). That is not a softer
+    /// gate, it is the only gate that means anything for this opt:
+    /// `load_imm` returns to `load_imm_naive` before it ever reaches
+    /// C5's one-word forms when `NarrowImm` is off, so `[] → [WideImmForms]`
+    /// is the identity comparison and would "pass" or "fail" for reasons
+    /// that have nothing to do with C5. Item C5 is named in the plan as
+    /// "the `NarrowImm` sequel"; this is what that composition means when
+    /// the gate has to rank it.
+    const ITEM_C_SMOKE: &[(&[OptId], OptId, &str)] = &[
+        // Narrow checked `+`/`-`/`*` and the narrowing `.to[T]()`.
+        (&[], OptId::MaskCheck, "cost-arith"),
+        // `narrow_to_width` — every wrapping narrow op. `cost-arith`'s own
+        // shapes move only in words, so the ranked case is the one whose
+        // cycles move.
+        (&[], OptId::BfxNarrow, "cost-runtime"),
+        // The signed bounds constants and the `MIN`/`-1` divide guard.
+        (&[OptId::NarrowImm], OptId::WideImmForms, "cost-mpipe-block"),
+    ];
+
+    /// Item C's attribution table, printed for
+    /// `plans/codegen-pareto-C.md`: each opt alone against `dev`, at the
+    /// pinned point, in cycles **and** in words.
+    ///
+    /// Not a gate — [`attribute_opts`]'s own doc says why it exposes no
+    /// verdict. It exists because the gate ranks on cycles alone, and an
+    /// opt whose whole effect is words needs a place where that effect is
+    /// *visible* rather than a place where it reads as nothing.
+    #[test]
+    fn item_c_attribution_over_the_corpus() {
+        let rows = attribute_opts(&[
+            ("dev", &[]),
+            ("BfxNarrow", &[OptId::BfxNarrow]),
+            ("MaskCheck", &[OptId::MaskCheck]),
+            ("WideImmForms", &[OptId::WideImmForms]),
+            ("+NarrowImm", &[OptId::NarrowImm]),
+            ("+NI+WideImm", &[OptId::NarrowImm, OptId::WideImmForms]),
+            ("release", RELEASE_OPTS),
+            (
+                "rel-noBfx",
+                &[
+                    OptId::BoundsElide,
+                    OptId::NarrowImm,
+                    OptId::MaskCheck,
+                    OptId::WideImmForms,
+                ],
+            ),
+            (
+                "rel-noMask",
+                &[
+                    OptId::BoundsElide,
+                    OptId::NarrowImm,
+                    OptId::BfxNarrow,
+                    OptId::WideImmForms,
+                ],
+            ),
+            (
+                "rel-noWideImm",
+                &[
+                    OptId::BoundsElide,
+                    OptId::NarrowImm,
+                    OptId::BfxNarrow,
+                    OptId::MaskCheck,
+                ],
+            ),
+        ]);
+        eprintln!("item C attribution:\n{}", format_attribution_table(&rows));
+        // The corpus must actually contain a customer for each opt, or the
+        // table above is four columns of the identity (freeze 1714).
+        for label in ["BfxNarrow", "MaskCheck", "+NI+WideImm"] {
+            let moved = rows.iter().any(|r| {
+                let dev = r.cell("dev").expect("dev cell");
+                let c = r.cell(label).expect("opt cell");
+                c.words != dev.words || c.proxy_cycles != dev.proxy_cycles
+            });
+            assert!(
+                moved,
+                "{label} changes nothing anywhere in the cost corpus — it has no \
+                 customer, so no number in this table is about it"
+            );
+        }
+    }
+
+    /// **Why item C1 scores zero, measured rather than asserted**
+    /// (plans/codegen-pareto-C.md, decision 1746).
+    ///
+    /// Decision 1740 predicted C1 would be unrankable because the table
+    /// had no W-form row, and made adding one C1's job. The row is added,
+    /// with T1 provenance; W-form multiplies *are* emitted and *are*
+    /// priced at their own latency — and `WFormMul` still moves the total
+    /// by exactly zero on every case in the corpus. So the missing row was
+    /// not the reason, and this test finds the reason that is.
+    ///
+    /// It ablates the **X-form** multiply row upward, one cycle at a time,
+    /// and reports the latency at which the substitution first becomes
+    /// visible. Below that threshold the difference between an X-form
+    /// multiply and a W-form one is absorbed by slack the block already
+    /// has: under `compiler.codegen.naive-locked`'s spill-everything
+    /// frame every operand arrives from a 4-cycle frame load and every
+    /// result leaves through a store, so the two L pipes bound the block
+    /// and the M pipe has cycles to spare. The committed X-form numbers
+    /// (lat 4, hold `ceil(3/1) + 2 = 5`) fit inside that slack; the W-form
+    /// numbers (lat 2, hold 1) fit inside it too, and two quantities that
+    /// both fit under the same bound are the same number to a block
+    /// schedule.
+    ///
+    /// The threshold is the useful output, not the zero: it says how much
+    /// headroom the frame convention is currently donating, and therefore
+    /// how much of item C1's win item E has to unlock before the row added
+    /// here starts to pay. `cost-mpipe-block`'s golden recorded the same
+    /// shape for the X-form *stall* in M20 ("the frame's own load/store
+    /// traffic already spaces the multiplies more than five cycles
+    /// apart"); this is that observation carried to the latency, on the
+    /// case built to carry item C1.
+    ///
+    /// The test also refuses the *other* failure: if no inflation made any
+    /// difference, the multiply term would be inert in the model and the
+    /// zero would mean nothing at all.
+    #[test]
+    fn item_c1_is_hidden_by_the_frame_until_the_multiply_outgrows_its_slack() {
+        let case = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/golden/cost-arith-w/input.wr");
+        let committed = std::fs::read_to_string(crate::cost::table::default_table_path())
+            .expect("committed profile");
+        const W_ROW: &str =
+            "[latency.mul_w]\nlat = 2\nacc_lat = 1\nthru_num = 1\nthru_den = 1\nports = \"M\"\n";
+        assert!(
+            committed.contains(W_ROW),
+            "the ablation must actually patch `[latency.mul_w]` — if the row's text \
+             moved, fix the patch rather than letting this test pass vacuously"
+        );
+
+        // One program, the one the compiler actually emits. The
+        // substitution is priced by moving the **row**, not the opt:
+        // C1 is unconditional (decision 1746), so there is no second
+        // program to compare against, and pricing the emitted W-form
+        // words at the X-form row is exactly the counterfactual anyway.
+        let side = compile_side(&case, RELEASE_OPTS).expect("release side");
+        apply_mode(CompileMode::Release);
+        let rules: Vec<_> = side
+            .program
+            .fns
+            .values()
+            .flat_map(|f| f.code.iter().map(|w| w.rule))
+            .collect();
+        assert!(
+            rules.contains(&crate::cost::rule::CostRule::MulW),
+            "cost-arith-w must emit W-form multiplies or this measures nothing"
+        );
+        assert!(
+            rules.contains(&crate::cost::rule::CostRule::Mul),
+            "cost-arith-w's two X-form controls must survive"
+        );
+
+        let score_with_mul_w_at = |lat: u32, thru_den: u32, stall: u32| -> u64 {
+            let mut row = format!(
+                "[latency.mul_w]\nlat = {lat}\nacc_lat = 1\nthru_num = 1\nthru_den = {thru_den}\nports = \"M\"\n"
+            );
+            if stall > 0 {
+                row.push_str(&format!("m_pipe_stall = {stall}\n"));
+            }
+            let patched = committed.replace(W_ROW, &row);
+            let table = crate::cost::table::parse(&patched)
+                .unwrap_or_else(|e| panic!("profile with mul_w lat={lat}: {e}"));
+            assert_eq!(table.latency(crate::cost::rule::CostRule::MulW), lat as u64);
+            let p = SweepPoint::pinned(&table);
+            score_side_at(&side, &table, &p).expect("score").cycles
+        };
+
+        // The committed W-form row, and the same words priced at the
+        // X-form row this item replaced (SOG §3.6: lat 4, thru 1/3,
+        // note 4's 2-cycle M-pipe stall).
+        let w_form = score_with_mul_w_at(2, 1, 0);
+        let x_form = score_with_mul_w_at(4, 3, 2);
+        assert_eq!(
+            w_form, x_form,
+            "the W-form substitution must score exactly zero on the committed profile \
+             — if it no longer does, item C1 has become rankable and decision 1746 \
+             needs revisiting"
+        );
+
+        // Walk the counterfactual X-form latency up until it does not, so
+        // the zero above is a measured amount of slack rather than an
+        // inert term. Throughput and stall held at the X-form values.
+        let mut threshold = None;
+        for lat in 5..=40u32 {
+            let inflated = score_with_mul_w_at(lat, 3, 2);
+            if inflated != w_form {
+                threshold = Some((lat, inflated));
+                break;
+            }
+        }
+        let (lat, inflated) = threshold.expect(
+            "no multiply latency up to 40 changed the total — the multiply term is \
+             inert in the model, which would make C1's zero meaningless rather than \
+             informative",
+        );
+        assert!(inflated > w_form, "the slower row must score higher");
+        eprintln!(
+            "C1 ablation on cost-arith-w: the emitted W-form words score {w_form} at the \
+             committed `[latency.mul_w]` and the identical {x_form} when priced at the \
+             X-form row they replaced — the substitution is worth 0. It first becomes \
+             visible at lat = {lat} ({inflated} cycles), so the spill-everything frame \
+             is donating {} cycles of M-pipe slack per multiply, against the 2 cycles \
+             SOG §3.6 says the substitution saves.",
+            lat - 4
+        );
+    }
+
+    /// Smoke lane for item C: every one of its opts falls at **every**
+    /// point of its own case's residual box, alone, and is refused for
+    /// nothing.
+    #[test]
+    fn each_item_c_opt_wins_at_every_box_point_on_its_smoke_case() {
+        for &(base, id, case) in ITEM_C_SMOKE {
+            let mut candidate = base.to_vec();
+            candidate.push(id);
+            let (sweep, reasons) = sweep_one(case, base, &candidate);
+            let labels: Vec<String> = reasons.iter().map(SweepVeto::label).collect();
+            assert!(
+                labels.is_empty(),
+                "{id:?} refused on {case}: {}",
+                labels.join(" ")
+            );
+            assert!(
+                !sweep.points.is_empty(),
+                "{id:?} on {case}: the probe enumerated no corners"
+            );
+            assert!(
+                sweep.points.iter().all(|p| p.candidate < p.baseline),
+                "{id:?} must fall at every point of {case} over baseline {base:?}; got {:?}",
+                sweep
+                    .points
+                    .iter()
+                    .map(|p| (p.baseline, p.candidate))
+                    .collect::<Vec<_>>()
+            );
+            eprintln!(
+                "item C smoke: {id:?} over {base:?} on {case} — {} corners, {} → {} at the first",
+                sweep.points.len(),
+                sweep.points[0].baseline,
+                sweep.points[0].candidate
+            );
+        }
+    }
+
+    /// **The land gate for item C.** Each opt, alone, over the whole
+    /// `cost-*` corpus at every point of the residual box: no case may
+    /// rise anywhere, and at least one must fall everywhere.
+    ///
+    /// **Deep lane**, for the same reason its neighbours are: this is four
+    /// whole-corpus sweeps.
+    #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
+    #[test]
+    fn each_item_c_opt_wins_over_the_whole_box_alone() {
+        for &(base, id, _) in ITEM_C_SMOKE {
+            let mut candidate = base.to_vec();
+            candidate.push(id);
+            let cmp = compare_opt_lists_over_box(base, &candidate).expect("sweep");
+            eprintln!(
+                "item C ∀ ({id:?} over {base:?}):\n{}",
+                format_sweep_table(&cmp, &format!("{base:?}"), &format!("+{id:?}"))
+            );
+            assert_sweep_wins(&cmp, &format!("+{id:?}"), &format!("{base:?}"));
+        }
     }
 
     /// Sweep one named case only — the ∀ machinery on a single input, for

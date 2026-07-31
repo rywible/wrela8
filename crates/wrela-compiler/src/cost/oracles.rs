@@ -93,7 +93,10 @@ pub fn inventory_rows(rule: CostRule) -> &'static [u32] {
         // they are the same inventory dimension.
         CostRule::Alu | CostRule::MovWide | CostRule::Adrp => &[1],
         // Row 3: multiply / MAC / multiply-high plus the M-pipe stalls.
-        CostRule::Mul | CostRule::MulHigh => &[3],
+        // `MulW` is the same inventory dimension as `Mul` — the same SOG
+        // §3.6 multiply-accumulate group, read at a different operand
+        // width (plans/codegen-pareto.md decision 1740).
+        CostRule::Mul | CostRule::MulW | CostRule::MulHigh => &[3],
         // Row 4: divide range + pipe blocking.
         CostRule::Sdiv | CostRule::Udiv => &[4],
         // Rows 7 (L1D-hit latency) and 9 (the miss hierarchy); a load also

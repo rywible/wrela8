@@ -72,10 +72,10 @@ ImageReport v0
   Cores count=1
   CoreStack core=0 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=81648
-  Section name=rodata base=0x40513f40 size=538
-  Section name=abort base=0x4051415c size=120
-  Section name=checkpoint base=0x405141d4 size=28
+  Section name=code base=0x40500050 size=79380
+  Section name=rodata base=0x40513668 size=538
+  Section name=abort base=0x40513884 size=120
+  Section name=checkpoint base=0x405138fc size=28
   Section name=rtdata base=0x40540000 size=48
   Section name=devregs base=0x40540030 size=104
   Section name=pooldata base=0x40540098 size=4096
@@ -179,11 +179,11 @@ ImageReport v0
   BlkDevice device=device#0 capacity_sectors=16 features=0x100000200
   BlkQueue index=0 size=128 desc=0x40540098 avail=0x40540898 used=0x405409a0 doorbell=0x40540da8
   BlkAccounting descriptors_per_op=3 queue_depth=128 occupancy_bound=42
-  Cost version=3 digest=043f8dc4b21c4b12 total=29128 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=29128
-    Owner name=app proxy_cycles=1698
-    Owner name=runtime proxy_cycles=27430
+  Cost version=3 digest=b2484a1b9c00d7fa total=28821 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=28821
+    Owner name=app proxy_cycles=1684
+    Owner name=runtime proxy_cycles=27137
     Owner name=driver proxy_cycles=0
     Core n=0 proxy_cycles=232 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn_model=n/a
-    Budget n=0 hot_text_bytes=88704 l1i_bytes=65536 over_l1i_lines=362 over_l2_lines=0 text_pages=22 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=5 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=2534
-    Shared proxy_cycles=28896
+    Budget n=0 hot_text_bytes=86464 l1i_bytes=65536 over_l1i_lines=327 over_l2_lines=0 text_pages=22 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=5 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=2289
+    Shared proxy_cycles=28589

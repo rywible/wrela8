@@ -1,16 +1,16 @@
-Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reorder_window=128 digest=043f8dc4b21c4b12 provenance=3f7c1c0356b12d8d ghz=2.4 workloads_digest=ad0a87410c842eff
-  Provenance T1=38 T2=19 T3=0 T4=10 T5=16 rows=83
+Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reorder_window=128 digest=b2484a1b9c00d7fa provenance=e851020b74800045 ghz=2.4 workloads_digest=ad0a87410c842eff
+  Provenance T1=39 T2=19 T3=0 T4=10 T5=16 rows=84
   Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method valid_for=static_shape_opts workload=flat pseudo_lru=modelled_as_lru
   Composition sum_of_fn_schedules=1
-  Total proxy_cycles=90
-  Workload name=flat proxy_cycles=90
-  Owner name=app proxy_cycles=90
+  Total proxy_cycles=88
+  Workload name=flat proxy_cycles=88
+  Owner name=app proxy_cycles=88
   Owner name=runtime proxy_cycles=0
   Owner name=driver proxy_cycles=0
-  Fn key=add_one owner=app proxy_cycles=29
+  Fn key=add_one owner=app proxy_cycles=28
     Term rule=abort count=1
     Term rule=adrp count=1
-    Term rule=alu count=6
+    Term rule=alu count=5
     Term rule=branch count=4
     Term rule=load count=4
     Term rule=mov_wide count=2
@@ -21,10 +21,10 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=call count=2
     Term rule=load count=4
     Term rule=store count=4
-  Fn key=double owner=app proxy_cycles=39
+  Fn key=double owner=app proxy_cycles=38
     Term rule=abort count=1
     Term rule=adrp count=1
-    Term rule=alu count=6
+    Term rule=alu count=5
     Term rule=branch count=4
     Term rule=load count=4
     Term rule=mov_wide count=2

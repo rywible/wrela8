@@ -26,92 +26,89 @@ Program
     0023: 8a0a012b  and x11, x9, x10
     0024: f90023eb  str x11, [sp, #64]
     0025: f94023e9  ldr x9, [sp, #64]
-    0026: b4000269  cbz x9, #76
+    0026: b4000249  cbz x9, #72
     0027: f9400be9  ldr x9, [sp, #16]
     0028: f9400bea  ldr x10, [sp, #16]
     0029: 9b0a7d2b  mul x11, x9, x10
     0030: 9bca7d2c  umulh x12, x9, x10
     0031: eb1f019f  cmp x12, xzr
-    0032: 54000120  b.eq #36
+    0032: 54000100  b.eq #32
     0033: d10043ff  sub sp, sp, #16  ; abort Bytes slot
-    0034: 90000009  adrp x9, rodata+0x0
-    0035: 91000129  add x9, x9, rodata+0x0
-    0036: f90003e9  str x9, [sp]  ; Bytes.base
-    0037: d2800349  movz x9, #0x1a
-    0038: f90007e9  str x9, [sp, #8]  ; Bytes.len
-    0039: 910003e0  add x0, sp, #0  ; *Bytes
-    0040: 94000000  bl <__wrela_abort>
-    0041: f90027eb  str x11, [sp, #72]
-    0042: f94027e0  ldr x0, [sp, #72]
-    0043: 14000042  b #264
-    0044: 14000040  b #256
-    0045: f94003e9  ldr x9, [sp, #0]
-    0046: f9002fe9  str x9, [sp, #88]
-    0047: d2800029  movz x9, #0x1
-    0048: f90033e9  str x9, [sp, #96]
-    0049: f9402fe9  ldr x9, [sp, #88]
-    0050: f94033ea  ldr x10, [sp, #96]
-    0051: eb0a013f  cmp x9, x10
-    0052: 9a9f17eb  cset x11, eq
-    0053: f90037eb  str x11, [sp, #104]
-    0054: f94007e9  ldr x9, [sp, #8]
-    0055: f9003be9  str x9, [sp, #112]
-    0056: f9403be9  ldr x9, [sp, #112]
-    0057: f9002be9  str x9, [sp, #80]
-    0058: d2800029  movz x9, #0x1
-    0059: f9003fe9  str x9, [sp, #120]
-    0060: f94037e9  ldr x9, [sp, #104]
-    0061: f9403fea  ldr x10, [sp, #120]
-    0062: 8a0a012b  and x11, x9, x10
-    0063: f90043eb  str x11, [sp, #128]
-    0064: f94043e9  ldr x9, [sp, #128]
-    0065: b4000269  cbz x9, #76
-    0066: f9402be9  ldr x9, [sp, #80]
-    0067: f9402bea  ldr x10, [sp, #80]
-    0068: 9b0a7d2b  mul x11, x9, x10
-    0069: 9bca7d2c  umulh x12, x9, x10
-    0070: eb1f019f  cmp x12, xzr
-    0071: 54000120  b.eq #36
-    0072: d10043ff  sub sp, sp, #16  ; abort Bytes slot
-    0073: 90000009  adrp x9, rodata+0x0
-    0074: 91000129  add x9, x9, rodata+0x0
-    0075: f90003e9  str x9, [sp]  ; Bytes.base
-    0076: d2800349  movz x9, #0x1a
-    0077: f90007e9  str x9, [sp, #8]  ; Bytes.len
-    0078: 910003e0  add x0, sp, #0  ; *Bytes
-    0079: 94000000  bl <__wrela_abort>
-    0080: f90047eb  str x11, [sp, #136]
-    0081: f94047e0  ldr x0, [sp, #136]
-    0082: 1400001b  b #108
-    0083: 14000019  b #100
-    0084: f94003e9  ldr x9, [sp, #0]
-    0085: f9004be9  str x9, [sp, #144]
-    0086: d2800049  movz x9, #0x2
-    0087: f9004fe9  str x9, [sp, #152]
-    0088: f9404be9  ldr x9, [sp, #144]
-    0089: f9404fea  ldr x10, [sp, #152]
-    0090: eb0a013f  cmp x9, x10
-    0091: 9a9f17eb  cset x11, eq
-    0092: f90053eb  str x11, [sp, #160]
-    0093: f94053e9  ldr x9, [sp, #160]
-    0094: b40000c9  cbz x9, #24
-    0095: d2800009  movz x9, #0x0
-    0096: f90057e9  str x9, [sp, #168]
-    0097: f94057e0  ldr x0, [sp, #168]
-    0098: 1400000b  b #44
-    0099: 14000009  b #36
-    0100: d10043ff  sub sp, sp, #16  ; abort Bytes slot
-    0101: 90000009  adrp x9, rodata+0x1a
-    0102: 91000129  add x9, x9, rodata+0x1a
-    0103: f90003e9  str x9, [sp]  ; Bytes.base
-    0104: d2800b49  movz x9, #0x5a
-    0105: f90007e9  str x9, [sp, #8]  ; Bytes.len
-    0106: 910003e0  add x0, sp, #0  ; *Bytes
-    0107: 94000000  bl <__wrela_abort>
-    0108: 14000001  b #4
-    0109: f9405bfe  ldr lr, [sp, #176]
-    0110: 910303ff  add sp, sp, #192
-    0111: d65f03c0  ret
+    0034: 10000009  adr x9, rodata+0x0
+    0035: f90003e9  str x9, [sp]  ; Bytes.base
+    0036: d2800349  movz x9, #0x1a
+    0037: f90007e9  str x9, [sp, #8]  ; Bytes.len
+    0038: 910003e0  add x0, sp, #0  ; *Bytes
+    0039: 94000000  bl <__wrela_abort>
+    0040: f90027eb  str x11, [sp, #72]
+    0041: f94027e0  ldr x0, [sp, #72]
+    0042: 14000040  b #256
+    0043: 1400003e  b #248
+    0044: f94003e9  ldr x9, [sp, #0]
+    0045: f9002fe9  str x9, [sp, #88]
+    0046: d2800029  movz x9, #0x1
+    0047: f90033e9  str x9, [sp, #96]
+    0048: f9402fe9  ldr x9, [sp, #88]
+    0049: f94033ea  ldr x10, [sp, #96]
+    0050: eb0a013f  cmp x9, x10
+    0051: 9a9f17eb  cset x11, eq
+    0052: f90037eb  str x11, [sp, #104]
+    0053: f94007e9  ldr x9, [sp, #8]
+    0054: f9003be9  str x9, [sp, #112]
+    0055: f9403be9  ldr x9, [sp, #112]
+    0056: f9002be9  str x9, [sp, #80]
+    0057: d2800029  movz x9, #0x1
+    0058: f9003fe9  str x9, [sp, #120]
+    0059: f94037e9  ldr x9, [sp, #104]
+    0060: f9403fea  ldr x10, [sp, #120]
+    0061: 8a0a012b  and x11, x9, x10
+    0062: f90043eb  str x11, [sp, #128]
+    0063: f94043e9  ldr x9, [sp, #128]
+    0064: b4000249  cbz x9, #72
+    0065: f9402be9  ldr x9, [sp, #80]
+    0066: f9402bea  ldr x10, [sp, #80]
+    0067: 9b0a7d2b  mul x11, x9, x10
+    0068: 9bca7d2c  umulh x12, x9, x10
+    0069: eb1f019f  cmp x12, xzr
+    0070: 54000100  b.eq #32
+    0071: d10043ff  sub sp, sp, #16  ; abort Bytes slot
+    0072: 10000009  adr x9, rodata+0x0
+    0073: f90003e9  str x9, [sp]  ; Bytes.base
+    0074: d2800349  movz x9, #0x1a
+    0075: f90007e9  str x9, [sp, #8]  ; Bytes.len
+    0076: 910003e0  add x0, sp, #0  ; *Bytes
+    0077: 94000000  bl <__wrela_abort>
+    0078: f90047eb  str x11, [sp, #136]
+    0079: f94047e0  ldr x0, [sp, #136]
+    0080: 1400001a  b #104
+    0081: 14000018  b #96
+    0082: f94003e9  ldr x9, [sp, #0]
+    0083: f9004be9  str x9, [sp, #144]
+    0084: d2800049  movz x9, #0x2
+    0085: f9004fe9  str x9, [sp, #152]
+    0086: f9404be9  ldr x9, [sp, #144]
+    0087: f9404fea  ldr x10, [sp, #152]
+    0088: eb0a013f  cmp x9, x10
+    0089: 9a9f17eb  cset x11, eq
+    0090: f90053eb  str x11, [sp, #160]
+    0091: f94053e9  ldr x9, [sp, #160]
+    0092: b40000c9  cbz x9, #24
+    0093: d2800009  movz x9, #0x0
+    0094: f90057e9  str x9, [sp, #168]
+    0095: f94057e0  ldr x0, [sp, #168]
+    0096: 1400000a  b #40
+    0097: 14000008  b #32
+    0098: d10043ff  sub sp, sp, #16  ; abort Bytes slot
+    0099: 10000009  adr x9, rodata+0x1a
+    0100: f90003e9  str x9, [sp]  ; Bytes.base
+    0101: d2800b49  movz x9, #0x5a
+    0102: f90007e9  str x9, [sp, #8]  ; Bytes.len
+    0103: 910003e0  add x0, sp, #0  ; *Bytes
+    0104: 94000000  bl <__wrela_abort>
+    0105: 14000001  b #4
+    0106: f9405bfe  ldr lr, [sp, #176]
+    0107: 910303ff  add sp, sp, #192
+    0108: d65f03c0  ret
   Rodata
     0: offset=0x0 arithmetic overflow in `*`
     1: offset=0x1a assertion failed: match: no arm matched (exhaustiveness already proved this cannot happen)
