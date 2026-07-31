@@ -201,8 +201,10 @@ Per-case cost-golden totals, `dev` → `release`, for the cases that moved:
 | `cost-mpipe-block` | 630 | 627 |
 | `cost-runtime` | 1954 | 1948 |
 
-`cost-arith`'s `checked_add` is the shape C2 was built for: 36 emitted
-words → 23, `abort` 2 → 1, `mov_wide` 5 → 1, `alu` 11 → 7.
+`cost-arith`'s `checked_add` is the shape C2 was built for: **37 emitted
+words → 24** (counted off `asm-arith`'s golden before and after), `abort`
+2 → 1, `adrp` 2 → 1, `mov_wide` 5 → 1, `alu` 11 → 7, `store` 8 → 6, and
+the fn's own `proxy_cycles` 36 → 30.
 
 ## Why C1 is not rankable — measured, not asserted
 
