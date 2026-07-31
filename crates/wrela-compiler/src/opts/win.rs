@@ -118,6 +118,10 @@ use super::{CompileMode, OptId, RELEASE_OPTS, apply_mode, apply_opts};
 #[derive(Debug, Clone)]
 pub struct CaseDelta {
     pub name: String,
+    /// Which corpus tier this case belongs to (decision 1780). Reported in
+    /// every table: decision 1717 forbids a reader having to guess which
+    /// corpus a verdict came from.
+    pub tier: CostTier,
     pub baseline: u64,
     pub candidate: u64,
     /// Static emitted word counts — a **reported column** since item J
@@ -306,32 +310,258 @@ impl CorpusCompare {
     }
 }
 
-/// Deterministic discovery: all `tests/golden/cost-*` dirs that contain
-/// `input.wr`, sorted by path (decision 1450).
-pub fn discover_cost_corpus() -> Vec<PathBuf> {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/golden");
-    let entries = std::fs::read_dir(&root).unwrap_or_else(|e| {
-        panic!("read {}: {e}", root.display());
-    });
-    let mut paths = Vec::new();
+// ---------------------------------------------------------------------------
+// The corpus and its two tiers (plans/codegen-pareto.md item H,
+// decisions 1716/1717, 1780–1789)
+// ---------------------------------------------------------------------------
+
+/// Which tier of the cost corpus a case belongs to.
+///
+/// **Decision 1780.** The tier is read off the case's *shape*, not off a
+/// list somebody maintains and not off its name:
+///
+/// - **[`Micro`](CostTier::Micro)** — the case owns its program. There is
+///   `.wr` source inside the case directory (the flat `input.wr` shape, or
+///   a `root` naming a package inside the case).
+/// - **[`Product`](CostTier::Product)** — the case owns *no* source at
+///   all. Its whole content is a one-line `root` naming a program that
+///   already exists elsewhere in the tree for its own reasons.
+///
+/// The rule is the honesty rule. Decision 1716's first consequence is
+/// **self-selection**: every item is told to add a `cost-*` case if none
+/// exercises its opt, so each opt ends up graded on a program written to
+/// show it off. A case that does not *contain* its program cannot have had
+/// that program tuned for the gate — the appliance image and the boot
+/// transcripts are what they are for reasons that predate this plan. So
+/// "borrowed" and "product-scale" are the same predicate here, and the
+/// classifier can be a total function of the directory rather than a
+/// declaration a future case could get wrong.
+///
+/// Every other shape — no source and no `root`, both `input.wr` and a
+/// `root`, a `root` that names nothing, a `root` pointing outside the case
+/// while `.wr` files sit inside it — is an **error**, never a default
+/// (decision 1781). M20's `MAX_SWEPT_DIMS` is the worked example of the
+/// failure this avoids from the other side: a gate that silently does not
+/// run is worse than one that admits it is off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CostTier {
+    /// A microbenchmark written for this corpus.
+    Micro,
+    /// A program the appliance actually ships, borrowed whole.
+    Product,
+}
+
+impl CostTier {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CostTier::Micro => "micro",
+            CostTier::Product => "product",
+        }
+    }
+
+    /// Both tiers, in the order the tables print them. Written once so a
+    /// third tier is added here or nowhere.
+    pub const ALL: [CostTier; 2] = [CostTier::Micro, CostTier::Product];
+}
+
+impl std::fmt::Display for CostTier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// One discovered `cost-*` case: its directory name, its tier, and the
+/// program the cost stage is handed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CostCase {
+    /// The case **directory** name (`cost-product-actors`), never the
+    /// borrowed program's directory — the gate's rows must name the case a
+    /// reader can find under `tests/golden/`.
+    pub name: String,
+    pub tier: CostTier,
+    pub input: PathBuf,
+}
+
+fn golden_root() -> PathBuf {
+    normalize_lexically(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/golden"))
+}
+
+/// Collapse `.` and `..` components without touching the filesystem.
+///
+/// A borrowed case's `root` is `../boot-actors/input.wr`, so the joined
+/// path lexically *starts with* the case directory it is escaping — which
+/// would make "does this case own its program?" answer yes for every
+/// product case. Purely lexical because that is what the question is
+/// about: which directory the case's `root` line points into. No symlink
+/// resolution, no `canonicalize`, nothing that depends on the checkout.
+fn normalize_lexically(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if !out.pop() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// Every `.wr` file at or under `dir`, recursively. Used only to decide
+/// whether a case owns source; the answer is a bool, so it stops early.
+fn contains_wr_source(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.is_dir() {
+            if p.file_name().is_some_and(|n| n == "expected") {
+                continue;
+            }
+            if contains_wr_source(&p) {
+                return true;
+            }
+        } else if p.extension().is_some_and(|e| e == "wr") {
+            return true;
+        }
+    }
+    false
+}
+
+/// **Decision 1781 — a case belongs to exactly one tier, or the corpus
+/// refuses to be discovered.**
+///
+/// Returns `Err` with the case named and the shape described. There is no
+/// "assume micro" branch: a case that falls through the classifier would be
+/// scored by the gate while belonging to no tier's verdict, which is
+/// precisely the lane-nobody-runs failure M20 spent an item on.
+pub fn classify_cost_case(dir: &Path) -> Result<CostCase, String> {
+    let dir = &normalize_lexically(dir);
+    let name = dir
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .ok_or_else(|| format!("cost case {} has no directory name", dir.display()))?;
+    let flat = dir.join("input.wr");
+    let root_marker = dir.join("root");
+    let has_flat = flat.is_file();
+    let has_root = root_marker.is_file();
+
+    match (has_flat, has_root) {
+        (true, true) => Err(format!(
+            "{name}: carries both `input.wr` and `root` — which program the \
+             gate scores is ambiguous, and an ambiguous case cannot be tiered"
+        )),
+        (false, false) => Err(format!(
+            "{name}: has neither `input.wr` nor `root`, so there is no program \
+             to score. A `cost-*` directory is a corpus case; if it is not one, \
+             it does not belong under that prefix"
+        )),
+        (true, false) => Ok(CostCase {
+            name,
+            tier: CostTier::Micro,
+            input: normalize_lexically(&flat),
+        }),
+        (false, true) => {
+            let rel = std::fs::read_to_string(&root_marker)
+                .map_err(|e| format!("{name}: read {}: {e}", root_marker.display()))?;
+            let rel = rel.trim().to_string();
+            if rel.is_empty() {
+                return Err(format!("{name}: `root` file is empty"));
+            }
+            let target = normalize_lexically(&dir.join(&rel));
+            if !target.is_file() {
+                return Err(format!(
+                    "{name}: `root` names `{rel}`, which is not a file \
+                     ({}) — a borrowed case whose program moved must fail the \
+                     corpus, not vanish from it",
+                    target.display()
+                ));
+            }
+            let owns_source = contains_wr_source(dir);
+            // Read off the normalized target, not off the `root` line's
+            // spelling: `./../x` and `../x` are the same escape.
+            let borrowed = !target.starts_with(dir);
+            match (borrowed, owns_source) {
+                (true, false) => Ok(CostCase {
+                    name,
+                    tier: CostTier::Product,
+                    input: target,
+                }),
+                (false, true) => Ok(CostCase {
+                    name,
+                    tier: CostTier::Micro,
+                    input: target,
+                }),
+                (true, true) => Err(format!(
+                    "{name}: `root` points outside the case (`{rel}`) but the \
+                     case also contains `.wr` source. A product-scale case is \
+                     one that owns no program of its own — that is the whole \
+                     reason nobody can have tuned it for the gate"
+                )),
+                (false, false) => Err(format!(
+                    "{name}: `root` names `{rel}` inside the case, but the case \
+                     contains no `.wr` source"
+                )),
+            }
+        }
+    }
+}
+
+/// Deterministic discovery of every `tests/golden/cost-*` case with its
+/// tier, sorted by case name (decision 1450's ordering, widened by
+/// decision 1780's tiering).
+///
+/// Fails closed: one unclassifiable directory refuses the **whole** corpus
+/// rather than dropping that case. Sampling the corpus and ranking over
+/// what is left is the failure this item exists to correct.
+pub fn try_discover_cost_cases() -> Result<Vec<CostCase>, String> {
+    let root = golden_root();
+    let entries = std::fs::read_dir(&root).map_err(|e| format!("read {}: {e}", root.display()))?;
+    let mut dirs = Vec::new();
     for entry in entries {
-        let entry = entry.expect("read_dir entry");
+        let entry = entry.map_err(|e| format!("read_dir {}: {e}", root.display()))?;
         let path = entry.path();
         if !path.is_dir() {
             continue;
         }
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if !name.starts_with("cost-") {
+        if !entry.file_name().to_string_lossy().starts_with("cost-") {
             continue;
         }
-        let input = path.join("input.wr");
-        if input.is_file() {
-            paths.push(input);
-        }
+        dirs.push(path);
     }
-    paths.sort();
-    paths
+    dirs.sort();
+    let mut cases = Vec::with_capacity(dirs.len());
+    for d in &dirs {
+        cases.push(classify_cost_case(d)?);
+    }
+    Ok(cases)
+}
+
+/// [`try_discover_cost_cases`], panicking with the offending case named.
+/// Every gate entry point goes through this, so an untiered case stops the
+/// gate instead of quietly leaving the corpus.
+pub fn discover_cost_cases() -> Vec<CostCase> {
+    try_discover_cost_cases().unwrap_or_else(|e| panic!("cost corpus: {e}"))
+}
+
+/// Cases in one tier only.
+pub fn discover_cost_cases_in(tier: CostTier) -> Vec<CostCase> {
+    discover_cost_cases()
+        .into_iter()
+        .filter(|c| c.tier == tier)
+        .collect()
+}
+
+/// The scored programs of the whole corpus, both tiers, sorted by case
+/// name (decision 1450). Kept path-only for the several structural census
+/// tests outside this module that walk the corpus and do not care which
+/// tier a program came from.
+pub fn discover_cost_corpus() -> Vec<PathBuf> {
+    discover_cost_cases().into_iter().map(|c| c.input).collect()
 }
 
 /// Lower+codegen+score `path` under an explicit opt list, via the
@@ -351,7 +581,7 @@ pub fn report_path_under_opts(path: &Path, opts: &[OptId]) -> CostReport {
 /// Score every cost-* case under `baseline` vs `candidate` opt lists
 /// (decision 1451–1452). Restores `CompileMode::Release` afterward.
 pub fn compare_opt_lists(baseline: &[OptId], candidate: &[OptId]) -> CorpusCompare {
-    let corpus = discover_cost_corpus();
+    let corpus = discover_cost_cases();
     assert!(
         !corpus.is_empty(),
         "cost corpus empty: expected tests/golden/cost-*/input.wr"
@@ -363,8 +593,9 @@ pub fn compare_opt_lists(baseline: &[OptId], candidate: &[OptId]) -> CorpusCompa
     let mut baseline_words = 0u64;
     let mut candidate_words = 0u64;
 
-    for path in &corpus {
-        let name = case_name(path);
+    for case in &corpus {
+        let path = case.input.as_path();
+        let name = case.name.clone();
         let b = report_path_under_opts(path, baseline);
         let c = report_path_under_opts(path, candidate);
         baseline_sum = baseline_sum.saturating_add(b.total_proxy_cycles);
@@ -373,6 +604,7 @@ pub fn compare_opt_lists(baseline: &[OptId], candidate: &[OptId]) -> CorpusCompa
         candidate_words = candidate_words.saturating_add(c.total_words);
         cases.push(CaseDelta {
             name,
+            tier: case.tier,
             baseline: b.total_proxy_cycles,
             candidate: c.total_proxy_cycles,
             baseline_words: b.total_words,
@@ -482,8 +714,9 @@ fn assert_wins(cmp: &CorpusCompare, cand_label: &str, base_label: &str) {
 pub fn format_delta_table(cmp: &CorpusCompare, base_label: &str, cand_label: &str) -> String {
     let mut out = String::new();
     out.push_str(&format!(
-        "{:<22} {:>12} {:>12} {:>10} {:>10} {:>10} {:>8} {:>8} {:>8} {:>7} {:>7}\n",
+        "{:<24} {:<8} {:>12} {:>12} {:>10} {:>10} {:>10} {:>8} {:>8} {:>8} {:>7} {:>7}\n",
         "case",
+        "tier",
         base_label,
         cand_label,
         "Δ",
@@ -499,8 +732,9 @@ pub fn format_delta_table(cmp: &CorpusCompare, base_label: &str, cand_label: &st
         let cb = total_charge(&c.baseline_budgets);
         let cc = total_charge(&c.candidate_budgets);
         out.push_str(&format!(
-            "{:<22} {:>12} {:>12} {:>+10} {:>10} {:>10} {:>+8} {:>8} {:>8} {:>+7} {:>7}\n",
+            "{:<24} {:<8} {:>12} {:>12} {:>+10} {:>10} {:>10} {:>+8} {:>8} {:>8} {:>+7} {:>7}\n",
             c.name,
+            c.tier.as_str(),
             c.baseline,
             c.candidate,
             c.delta(),
@@ -511,6 +745,39 @@ pub fn format_delta_table(cmp: &CorpusCompare, base_label: &str, cand_label: &st
             cc,
             cc as i64 - cb as i64,
             c.baseline_budgets.len(),
+        ));
+    }
+    // Decision 1717: both tiers get printed, and a per-tier subtotal is
+    // what makes "the two tiers disagree" a thing a reader can see rather
+    // than derive. The product row governs.
+    for tier in CostTier::ALL {
+        let rows: Vec<&CaseDelta> = cmp.cases.iter().filter(|c| c.tier == tier).collect();
+        if rows.is_empty() {
+            continue;
+        }
+        let b: u64 = rows.iter().map(|c| c.baseline).sum();
+        let d: u64 = rows.iter().map(|c| c.candidate).sum();
+        let wb: u64 = rows.iter().map(|c| c.baseline_words).sum();
+        let wc: u64 = rows.iter().map(|c| c.candidate_words).sum();
+        let cb: u64 = rows.iter().map(|c| total_charge(&c.baseline_budgets)).sum();
+        let cc: u64 = rows
+            .iter()
+            .map(|c| total_charge(&c.candidate_budgets))
+            .sum();
+        out.push_str(&format!(
+            "{:<24} {:<8} {:>12} {:>12} {:>+10} {:>10} {:>10} {:>+8} {:>8} {:>8} {:>+7} {:>7}\n",
+            format!("SUB[{}]", tier.as_str()),
+            format!("n={}", rows.len()),
+            b,
+            d,
+            d as i64 - b as i64,
+            wb,
+            wc,
+            wc as i64 - wb as i64,
+            cb,
+            cc,
+            cc as i64 - cb as i64,
+            "-"
         ));
     }
     let sum_cb: u64 = cmp
@@ -524,8 +791,9 @@ pub fn format_delta_table(cmp: &CorpusCompare, base_label: &str, cand_label: &st
         .map(|c| total_charge(&c.candidate_budgets))
         .sum();
     out.push_str(&format!(
-        "{:<22} {:>12} {:>12} {:>+10} {:>10} {:>10} {:>+8} {:>8} {:>8} {:>+7} {:>7}\n",
+        "{:<24} {:<8} {:>12} {:>12} {:>+10} {:>10} {:>10} {:>+8} {:>8} {:>8} {:>+7} {:>7}\n",
         "SUM",
+        "both",
         cmp.baseline_sum,
         cmp.candidate_sum,
         cmp.sum_delta(),
@@ -563,20 +831,45 @@ pub fn format_delta_table(cmp: &CorpusCompare, base_label: &str, cand_label: &st
 /// be ranked over the box at all. A bound that refuses the entire corpus
 /// is not a fail-closed bound, it is an outage.
 ///
-/// The cost is measured, not guessed. On this tree
-/// `release_wins_at_every_point_of_the_residual_box` enumerates **26 112
-/// points per side** across the 15 cases and wins at every one of them;
-/// the whole deep lane — that sweep plus
-/// `narrow_imm_alone_wins_at_every_box_point` — is **~4 minutes** in the
-/// profile `cargo test` actually runs (243 s standalone, 218 s inside
-/// `cargo xtask check`). The 1916 s (31 m 58 s) figure
-/// previously recorded here does not reproduce, and the run that produced
-/// it also *failed*, on the since-retired absolute I-TLB veto. Four
-/// minutes is a deep-lane cost, not a `cargo test` cost, which is why the
-/// sweep is
+/// The cost is measured, not guessed. The 1916 s (31 m 58 s) figure once
+/// recorded here does not reproduce, and the run that produced it also
+/// *failed*, on the since-retired absolute I-TLB veto.
+///
+/// The unit to plan by is **∀ points enumerated per side**, because that is
+/// determined; wall clock on the machine that measured this was not, and
+/// is quoted below only as a range with its `n`.
+///
+/// | when | corpus | release sweep pts/side | whole deep lane pts/side |
+/// | --- | --- | --- | --- |
+/// | 2026-07-30 (M20) | 15 micro | 26 112 | 52 224 |
+/// | 2026-07-31 (item H) | 15 micro + 4 product | 36 352 | **93 184** |
+///
+/// Item H's four product cases raise the release sweep by 10 240
+/// points/side (28% of it) and add a third deep test,
+/// `each_release_opt_is_re_asked_alone_on_the_product_tier`, for **×1.78
+/// the deep lane's ∀ work**.
+///
+/// **That ×1.78 did not show up as wall clock.** As `xtask::deep_lane`
+/// invokes it, the widened lane ran in **309 / 362 / 397 s** (n=3) against
+/// **411 s** (n=1) before — all three faster, on the same laptop under the
+/// same concurrent-worktree load. Not because the product cases are cheap:
+/// because the third `#[ignore]`d test gives `cargo test` a third harness
+/// thread, and two long sweeps had been leaving cores idle. The same
+/// widened corpus with only two tests took 597 s, which is what the extra
+/// points cost without that parallelism. Minutes either way is a deep-lane
+/// cost, not a `cargo test` cost, which is why these sweeps are
 /// `#[ignore]`d and run by `xtask::deep_lane` — a lane that, until that
 /// function landed, did not exist, so this gate was refusing into a void
-/// nothing executed.
+/// nothing executed. `--fast` does not reach it (`xtask::check` returns
+/// first), so the cost lands at milestone close and nowhere else. M20's
+/// 243 s idle figure is not comparable to any of these; an idle
+/// re-measurement belongs to the close.
+///
+/// No product case pushes the probe past this bound: the widest is
+/// `cost-product-blk`/`cost-product-receipt` at `k=12`, under
+/// `cost-crosscore`'s 14. That was the risk worth naming — a borrowed
+/// program reaching `k=15` would have made the widened corpus refuse to
+/// rank at all, which is this constant's own worked failure.
 ///
 /// Raising it further needs the same treatment: a measured wall time for
 /// the deep lane, in its own commit, with the reason the model now reads
@@ -632,6 +925,8 @@ impl PointRow {
 #[derive(Debug, Clone)]
 pub struct CaseSweep {
     pub name: String,
+    /// Which corpus tier this case belongs to (decision 1780).
+    pub tier: CostTier,
     /// Dimensions the committed profile declares — the nominal box.
     pub box_dims: usize,
     /// `2^box_dims`: the endpoint-corner cardinality of the whole box.
@@ -680,10 +975,19 @@ pub enum SweepVeto {
         baseline: u64,
         candidate: u64,
     },
-    /// No case falls at *every* point of its own box. 04 §5's "must
-    /// strictly lower at least one" read under ∀: a case that falls only
-    /// where the assumptions flatter it has not lowered anything.
-    NoCaseFallsEverywhere,
+    /// No case **in this tier** falls at *every* point of its own box.
+    /// 04 §5's "must strictly lower at least one" read under ∀: a case that
+    /// falls only where the assumptions flatter it has not lowered
+    /// anything.
+    ///
+    /// **Decision 1782 — the rule is per tier, not per corpus.** Decision
+    /// 1717 says an opt may not gate on a case it authored alone, and a
+    /// corpus-wide quantifier is exactly the loophole that permits it: with
+    /// the tiers pooled, an opt that wins only on the microbenchmark it
+    /// shipped with satisfies "some case fell everywhere" while the
+    /// appliance never moved. Asking the question once per tier is what
+    /// makes the product tier a gate rather than a printout.
+    NoCaseFallsEverywhere { tier: CostTier },
 }
 
 impl SweepVeto {
@@ -708,7 +1012,30 @@ impl SweepVeto {
                 baseline,
                 candidate,
             } => format!("ordering_words_removed:{case}:{rule}:{baseline}->{candidate}"),
-            SweepVeto::NoCaseFallsEverywhere => "no_case_falls_everywhere".to_string(),
+            SweepVeto::NoCaseFallsEverywhere { tier } => {
+                format!("no_case_falls_everywhere:tier={tier}")
+            }
+        }
+    }
+
+    /// The tier this refusal is about, when it has one. `CaseRose` and
+    /// friends name a case rather than a tier; the sweep looks the case's
+    /// tier up, which is why this returns `None` for them and
+    /// [`SweepCompare::reasons_for_tier`] does the join.
+    pub fn tier(&self) -> Option<CostTier> {
+        match self {
+            SweepVeto::NoCaseFallsEverywhere { tier } => Some(*tier),
+            _ => None,
+        }
+    }
+
+    /// The case this refusal names, when it names one.
+    pub fn case(&self) -> Option<&str> {
+        match self {
+            SweepVeto::CaseRose { case, .. }
+            | SweepVeto::BudgetGrew { case, .. }
+            | SweepVeto::OrderingWordsRemoved { case, .. } => Some(case.as_str()),
+            SweepVeto::NoCaseFallsEverywhere { .. } => None,
         }
     }
 }
@@ -732,6 +1059,60 @@ impl SweepCompare {
     /// Total points scored per side across the corpus.
     pub fn scored_points(&self) -> usize {
         self.cases.iter().map(CaseSweep::corners).sum()
+    }
+
+    /// The tiers this sweep actually covered, in [`CostTier::ALL`] order.
+    pub fn tiers(&self) -> Vec<CostTier> {
+        CostTier::ALL
+            .into_iter()
+            .filter(|t| self.cases.iter().any(|c| c.tier == *t))
+            .collect()
+    }
+
+    pub fn cases_in(&self, tier: CostTier) -> Vec<&CaseSweep> {
+        self.cases.iter().filter(|c| c.tier == tier).collect()
+    }
+
+    pub fn scored_points_in(&self, tier: CostTier) -> usize {
+        self.cases_in(tier).iter().map(|c| c.corners()).sum()
+    }
+
+    /// Every refusal attributable to `tier` — the tier-tagged ones plus the
+    /// case-named ones whose case sits in that tier (decision 1717: both
+    /// tiers' verdicts are reported, so each must be separable).
+    pub fn reasons_for_tier(&self, tier: CostTier) -> Vec<&SweepVeto> {
+        self.reasons
+            .iter()
+            .filter(|r| match (r.tier(), r.case()) {
+                (Some(t), _) => t == tier,
+                (None, Some(case)) => self.cases.iter().any(|c| c.name == case && c.tier == tier),
+                (None, None) => false,
+            })
+            .collect()
+    }
+
+    /// The ∀ verdict restricted to one tier. **Decision 1717: the
+    /// `Product` answer governs**, and this is the accessor that makes the
+    /// two answers separately statable. `wins()` is still the conjunction —
+    /// a candidate is not landed on a tier split.
+    pub fn wins_in_tier(&self, tier: CostTier) -> bool {
+        self.reasons_for_tier(tier).is_empty()
+    }
+
+    /// The one line decision 1717 asks for: both tiers' verdicts, named.
+    pub fn tier_verdicts(&self) -> String {
+        self.tiers()
+            .into_iter()
+            .map(|t| {
+                format!(
+                    "{t}={} ({} case(s), {} points/side)",
+                    if self.wins_in_tier(t) { "wins" } else { "veto" },
+                    self.cases_in(t).len(),
+                    self.scored_points_in(t)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 }
 
@@ -986,6 +1367,7 @@ fn refuse_at_point(
 /// Sweep one already-compiled case over its residual box.
 fn sweep_case(
     name: &str,
+    tier: CostTier,
     base: &CompiledSide,
     cand: &CompiledSide,
     table: &CostTable,
@@ -1015,6 +1397,7 @@ fn sweep_case(
     let box_dims = table.sweep_dimensions().len();
     Ok(CaseSweep {
         name: name.to_string(),
+        tier,
         box_dims,
         box_cardinality: box_cardinality(table),
         swept: probe.swept,
@@ -1035,7 +1418,19 @@ pub fn compare_opt_lists_over_box(
     baseline: &[OptId],
     candidate: &[OptId],
 ) -> Result<SweepCompare, String> {
-    sweep_corpus(baseline, candidate, None)
+    sweep_corpus(baseline, candidate, CorpusSel::All)
+}
+
+/// The same ∀ sweep restricted to one tier. Exists so the deep lane can
+/// say what the product tier costs and what it decides **on its own**,
+/// without the micro tier's fifteen cases in the average — decision 1717's
+/// "both numbers are reported" needs each to be obtainable alone.
+pub fn compare_opt_lists_over_box_in_tier(
+    baseline: &[OptId],
+    candidate: &[OptId],
+    tier: CostTier,
+) -> Result<SweepCompare, String> {
+    sweep_corpus(baseline, candidate, CorpusSel::Tier(tier))
 }
 
 /// The same ∀ sweep restricted to one named case — the **smoke lane**.
@@ -1051,21 +1446,44 @@ pub fn compare_opt_lists_over_box_for_case(
     candidate: &[OptId],
     case: &str,
 ) -> Result<SweepCompare, String> {
-    sweep_corpus(baseline, candidate, Some(case))
+    sweep_corpus(baseline, candidate, CorpusSel::Case(case))
+}
+
+/// Which slice of the corpus a sweep runs over. Deliberately a closed enum
+/// rather than a predicate: "sweep whatever these cases are" is one step
+/// from "sweep the cases that flatter the candidate".
+#[derive(Debug, Clone, Copy)]
+enum CorpusSel<'a> {
+    All,
+    Tier(CostTier),
+    Case(&'a str),
 }
 
 fn sweep_corpus(
     baseline: &[OptId],
     candidate: &[OptId],
-    only: Option<&str>,
+    sel: CorpusSel<'_>,
 ) -> Result<SweepCompare, String> {
-    let mut corpus = discover_cost_corpus();
-    if let Some(want) = only {
-        corpus.retain(|p| case_name(p) == want);
-        if corpus.is_empty() {
-            return Err(format!(
-                "sweep: no cost corpus case named `{want}` (smoke lane names a case that must exist)"
-            ));
+    let mut corpus = try_discover_cost_cases()?;
+    match sel {
+        CorpusSel::All => {}
+        CorpusSel::Tier(t) => {
+            corpus.retain(|c| c.tier == t);
+            if corpus.is_empty() {
+                return Err(format!(
+                    "sweep: the `{t}` tier of the cost corpus is empty — a tier \
+                     nothing populates is a lane nothing runs, and this refuses \
+                     rather than reporting a vacuous ∀"
+                ));
+            }
+        }
+        CorpusSel::Case(want) => {
+            corpus.retain(|c| c.name == want);
+            if corpus.is_empty() {
+                return Err(format!(
+                    "sweep: no cost corpus case named `{want}` (smoke lane names a case that must exist)"
+                ));
+            }
         }
     }
     if corpus.is_empty() {
@@ -1074,11 +1492,18 @@ fn sweep_corpus(
     let table = load_default()?;
     let mut cases = Vec::with_capacity(corpus.len());
     let mut reasons = Vec::new();
-    for path in &corpus {
-        let name = case_name(path);
+    for case in &corpus {
+        let path = case.input.as_path();
         let b = compile_side(path, baseline)?;
         let c = compile_side(path, candidate)?;
-        cases.push(sweep_case(&name, &b, &c, &table, &mut reasons)?);
+        cases.push(sweep_case(
+            &case.name,
+            case.tier,
+            &b,
+            &c,
+            &table,
+            &mut reasons,
+        )?);
     }
     apply_mode(CompileMode::Release);
 
@@ -1086,11 +1511,23 @@ fn sweep_corpus(
     // falls only at some points has not lowered anything the gate can rely
     // on. Checked after the refusals so a candidate whose only gain is a
     // deleted barrier reads as refused rather than as "nothing fell".
-    let any_falls_everywhere = cases
-        .iter()
-        .any(|c| !c.points.is_empty() && c.points.iter().all(|p| p.candidate < p.baseline));
-    if !any_falls_everywhere {
-        reasons.push(SweepVeto::NoCaseFallsEverywhere);
+    //
+    // **Decision 1782: once per tier.** Asked once over the pooled corpus,
+    // the quantifier is satisfied by whichever tier is easiest, which for
+    // every item on this plan is the microbenchmark it wrote itself. Only
+    // the tiers actually swept are asked — the smoke lane sweeps one case
+    // and must keep meaning what it meant.
+    for tier in CostTier::ALL {
+        let in_tier: Vec<&CaseSweep> = cases.iter().filter(|c| c.tier == tier).collect();
+        if in_tier.is_empty() {
+            continue;
+        }
+        let any_falls_everywhere = in_tier
+            .iter()
+            .any(|c| !c.points.is_empty() && c.points.iter().all(|p| p.candidate < p.baseline));
+        if !any_falls_everywhere {
+            reasons.push(SweepVeto::NoCaseFallsEverywhere { tier });
+        }
     }
 
     Ok(SweepCompare {
@@ -1111,8 +1548,9 @@ pub fn format_sweep_table(cmp: &SweepCompare, base_label: &str, cand_label: &str
     out.push_str(&format!("table_digest={}\n", cmp.table_digest));
     for c in &cmp.cases {
         out.push_str(&format!(
-            "\ncase {} box_dims={} box_cardinality={} swept_k={} corners={}\n",
+            "\ncase {} tier={} box_dims={} box_cardinality={} swept_k={} corners={}\n",
             c.name,
+            c.tier,
             c.box_dims,
             c.box_cardinality,
             c.swept.len(),
@@ -1155,15 +1593,42 @@ pub fn format_sweep_table(cmp: &SweepCompare, base_label: &str, cand_label: &str
             ));
         }
     }
+    // **Decision 1783 — every verdict is printed beside the tier it came
+    // from.** Decision 1717 makes the product tier govern where the two
+    // disagree, which is only usable if a reader can tell them apart
+    // without going and looking up which corpus a case name belongs to.
+    for t in cmp.tiers() {
+        let rows = cmp.cases_in(t);
+        let refusals = cmp.reasons_for_tier(t);
+        out.push_str(&format!(
+            "\ntier {t} cases={} points_per_side={} outcome={}\n",
+            rows.len(),
+            cmp.scored_points_in(t),
+            if refusals.is_empty() {
+                "wins_at_every_point".to_string()
+            } else {
+                format!(
+                    "veto reasons={}",
+                    refusals
+                        .iter()
+                        .map(|r| r.label())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                )
+            }
+        ));
+    }
     if cmp.reasons.is_empty() {
         out.push_str(&format!(
-            "\noutcome=wins_at_every_point points_per_side={}\n",
-            cmp.scored_points()
+            "\noutcome=wins_at_every_point points_per_side={} tiers[{}]\n",
+            cmp.scored_points(),
+            cmp.tier_verdicts()
         ));
     } else {
         let labels: Vec<String> = cmp.reasons.iter().map(SweepVeto::label).collect();
         out.push_str(&format!(
-            "\noutcome=veto reasons={}\n",
+            "\noutcome=veto tiers[{}] reasons={}\n",
+            cmp.tier_verdicts(),
             labels.join("\n                ")
         ));
     }
@@ -1209,6 +1674,7 @@ pub struct AttributionCell {
 #[derive(Debug, Clone)]
 pub struct AttributionRow {
     pub name: String,
+    pub tier: CostTier,
     pub cells: Vec<AttributionCell>,
 }
 
@@ -1229,13 +1695,14 @@ impl AttributionRow {
 /// and the honest way to stay clear of one is to expose no predicate here
 /// at all. Restores `CompileMode::Release` afterward, like its neighbours.
 pub fn attribute_opts(configs: &[(&str, &[OptId])]) -> Vec<AttributionRow> {
-    let corpus = discover_cost_corpus();
+    let corpus = discover_cost_cases();
     assert!(
         !corpus.is_empty(),
         "cost corpus empty: expected tests/golden/cost-*/input.wr"
     );
     let mut rows = Vec::with_capacity(corpus.len());
-    for path in &corpus {
+    for case in &corpus {
+        let path = case.input.as_path();
         let mut cells = Vec::with_capacity(configs.len());
         for (label, opts) in configs {
             let r = report_path_under_opts(path, opts);
@@ -1248,7 +1715,8 @@ pub fn attribute_opts(configs: &[(&str, &[OptId])]) -> Vec<AttributionRow> {
             });
         }
         rows.push(AttributionRow {
-            name: case_name(path),
+            name: case.name.clone(),
+            tier: case.tier,
             cells,
         });
     }
@@ -1267,14 +1735,20 @@ pub fn format_attribution_table(rows: &[AttributionRow]) -> String {
     let mut out = String::new();
     out.push_str("f=1 (flat); not a measured total\n");
     out.push_str(&format!(
-        "{:<22} {:<18} {:>10} {:>10} {:>8} {:>10}\n",
-        "case", "config", "cycles", "words", "charge", "hot_text"
+        "{:<24} {:<8} {:<18} {:>10} {:>10} {:>8} {:>10}\n",
+        "case", "tier", "config", "cycles", "words", "charge", "hot_text"
     ));
     for r in rows {
         for c in &r.cells {
             out.push_str(&format!(
-                "{:<22} {:<18} {:>10} {:>10} {:>8} {:>10}\n",
-                r.name, c.config, c.proxy_cycles, c.words, c.charge, c.hot_text_bytes
+                "{:<24} {:<8} {:<18} {:>10} {:>10} {:>8} {:>10}\n",
+                r.name,
+                r.tier.as_str(),
+                c.config,
+                c.proxy_cycles,
+                c.words,
+                c.charge,
+                c.hot_text_bytes
             ));
         }
     }
@@ -1282,6 +1756,39 @@ pub fn format_attribution_table(rows: &[AttributionRow]) -> String {
         .first()
         .map(|r| r.cells.iter().map(|c| c.config.as_str()).collect())
         .unwrap_or_default();
+    // Per-tier subtotals first, then the pooled one — decision 1783: a
+    // reader must never have to guess which corpus a number came from, and
+    // a pooled sum with fifteen micro rows and four product ones is exactly
+    // that guess.
+    for tier in CostTier::ALL {
+        if !rows.iter().any(|r| r.tier == tier) {
+            continue;
+        }
+        for label in &configs {
+            let mut cycles = 0u64;
+            let mut words = 0u64;
+            let mut charge = 0u64;
+            let mut hot = 0u64;
+            for r in rows.iter().filter(|r| r.tier == tier) {
+                if let Some(c) = r.cell(label) {
+                    cycles = cycles.saturating_add(c.proxy_cycles);
+                    words = words.saturating_add(c.words);
+                    charge = charge.saturating_add(c.charge);
+                    hot = hot.saturating_add(c.hot_text_bytes);
+                }
+            }
+            out.push_str(&format!(
+                "{:<24} {:<8} {:<18} {:>10} {:>10} {:>8} {:>10}\n",
+                format!("SUB[{}]", tier.as_str()),
+                tier.as_str(),
+                label,
+                cycles,
+                words,
+                charge,
+                hot
+            ));
+        }
+    }
     for label in configs {
         let mut cycles = 0u64;
         let mut words = 0u64;
@@ -1296,8 +1803,8 @@ pub fn format_attribution_table(rows: &[AttributionRow]) -> String {
             }
         }
         out.push_str(&format!(
-            "{:<22} {:<18} {:>10} {:>10} {:>8} {:>10}\n",
-            "SUM", label, cycles, words, charge, hot
+            "{:<24} {:<8} {:<18} {:>10} {:>10} {:>8} {:>10}\n",
+            "SUM", "both", label, cycles, words, charge, hot
         ));
     }
     out
@@ -1807,14 +2314,6 @@ pub fn assert_overall_wins(cmp: &OverallCompare, cand_label: &str, base_label: &
     );
 }
 
-fn case_name(input: &Path) -> String {
-    input
-        .parent()
-        .and_then(|p| p.file_name())
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| input.display().to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1822,21 +2321,241 @@ mod tests {
 
     #[test]
     fn discover_cost_corpus_is_sorted_cost_star() {
-        let paths = discover_cost_corpus();
+        let cases = discover_cost_cases();
         assert!(
-            paths.len() >= 4,
+            cases.len() >= 4,
             "expected ≥4 cost-* goldens, got {}",
-            paths.len()
+            cases.len()
         );
-        let names: Vec<String> = paths.iter().map(|p| case_name(p)).collect();
+        let names: Vec<String> = cases.iter().map(|c| c.name.clone()).collect();
         let mut sorted = names.clone();
         sorted.sort();
-        assert_eq!(names, sorted, "corpus paths must be sorted");
+        assert_eq!(names, sorted, "corpus cases must be sorted by case name");
         for n in &names {
             assert!(n.starts_with("cost-"), "unexpected case {n}");
         }
         assert!(names.iter().any(|n| n == "cost-bounds-elide"));
         assert!(names.iter().any(|n| n == "cost-calls"));
+        // The path list stays the scored programs, in the same order.
+        assert_eq!(
+            discover_cost_corpus(),
+            cases.iter().map(|c| c.input.clone()).collect::<Vec<_>>()
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Item H: the tier split (decisions 1780–1783)
+    // -----------------------------------------------------------------------
+
+    /// **Decision 1781's oracle: every case is in exactly one tier, and
+    /// both tiers are populated.**
+    ///
+    /// The second half is the one M20 paid for. `MAX_SWEPT_DIMS` at 12 made
+    /// the ∀ gate refuse the whole corpus, and the whole-corpus sweep was
+    /// `#[ignore]`d into a lane that did not exist — twice, the failure was
+    /// a gate that silently scored nothing. An empty `product` tier would
+    /// be the same failure in a new place: `compare_opt_lists_over_box`
+    /// would keep returning `wins`, over the microbenchmarks only, and
+    /// nothing would say so.
+    #[test]
+    fn every_cost_case_belongs_to_exactly_one_tier_and_both_tiers_are_populated() {
+        let cases = discover_cost_cases();
+        let micro = discover_cost_cases_in(CostTier::Micro);
+        let product = discover_cost_cases_in(CostTier::Product);
+        assert_eq!(
+            micro.len() + product.len(),
+            cases.len(),
+            "a case fell outside both tiers — the classifier must be total"
+        );
+        assert!(
+            !micro.is_empty(),
+            "the micro tier is empty: the smoke lane has nothing to sweep"
+        );
+        assert!(
+            !product.is_empty(),
+            "the product tier is empty — decision 1716 exists because the gate \
+             ranked over microbenchmarks alone, and an unpopulated product tier \
+             is that state with a name on it"
+        );
+        for c in &product {
+            assert!(
+                !c.input.starts_with(golden_root().join(&c.name)),
+                "{}: a product case must borrow a program from outside itself, \
+                 got {}",
+                c.name,
+                c.input.display()
+            );
+            assert!(c.input.is_file(), "{}: borrowed program missing", c.name);
+        }
+        for c in &micro {
+            assert!(
+                c.input.starts_with(golden_root().join(&c.name)),
+                "{}: a micro case's program must live inside it, got {}",
+                c.name,
+                c.input.display()
+            );
+        }
+        eprintln!(
+            "cost corpus tiers: micro={} product={} ({})",
+            micro.len(),
+            product.len(),
+            product
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+    }
+
+    /// **Decision 1781: an unclassifiable case refuses the corpus, it does
+    /// not fall out of it.** Every shape that is neither tier is driven
+    /// here, on real directories, because the failure mode being guarded is
+    /// a case that scores in the gate while belonging to no tier's verdict.
+    #[test]
+    fn an_unclassifiable_cost_case_fails_closed_rather_than_being_dropped() {
+        let tmp = std::env::temp_dir().join(format!(
+            "wrela-cost-tier-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let mk = |name: &str| -> PathBuf {
+            let d = tmp.join(name);
+            std::fs::create_dir_all(&d).expect("mkdir");
+            d
+        };
+
+        let bare = mk("cost-bare");
+        let e = classify_cost_case(&bare).expect_err("no program is not a tier");
+        assert!(e.contains("neither `input.wr` nor `root`"), "{e}");
+
+        let both = mk("cost-both");
+        std::fs::write(both.join("input.wr"), "module x\n").unwrap();
+        std::fs::write(both.join("root"), "../cost-bare/input.wr\n").unwrap();
+        let e = classify_cost_case(&both).expect_err("ambiguous program");
+        assert!(e.contains("both `input.wr` and `root`"), "{e}");
+
+        let empty_root = mk("cost-empty-root");
+        std::fs::write(empty_root.join("root"), "\n").unwrap();
+        let e = classify_cost_case(&empty_root).expect_err("empty root");
+        assert!(e.contains("`root` file is empty"), "{e}");
+
+        let dangling = mk("cost-dangling");
+        std::fs::write(dangling.join("root"), "../gone/input.wr\n").unwrap();
+        let e = classify_cost_case(&dangling).expect_err("dangling root");
+        assert!(e.contains("which is not a file"), "{e}");
+
+        // The shape that would let a product case smuggle in a program of
+        // its own — borrowed *and* self-authored.
+        let hybrid = mk("cost-hybrid");
+        std::fs::create_dir_all(hybrid.join("src")).unwrap();
+        std::fs::write(hybrid.join("src/extra.wr"), "module x\n").unwrap();
+        std::fs::write(hybrid.join("root"), "../cost-both/input.wr\n").unwrap();
+        let e = classify_cost_case(&hybrid).expect_err("borrowed but self-authored");
+        assert!(e.contains("owns no program of its own"), "{e}");
+
+        // And the two shapes that *are* tiers, from the same classifier.
+        let micro = mk("cost-micro");
+        std::fs::write(micro.join("input.wr"), "module x\n").unwrap();
+        assert_eq!(
+            classify_cost_case(&micro).expect("micro").tier,
+            CostTier::Micro
+        );
+        let product = mk("cost-prod");
+        std::fs::write(product.join("root"), "../cost-micro/input.wr\n").unwrap();
+        assert_eq!(
+            classify_cost_case(&product).expect("product").tier,
+            CostTier::Product
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// **Decision 1783: the tier is on the row.** A verdict a reader has to
+    /// attribute to a corpus by recognising case names is a verdict that
+    /// gets attributed wrong.
+    #[test]
+    fn every_reported_table_names_the_tier_of_every_row() {
+        let cmp = compare_opt_lists_over_box_for_case(&[], RELEASE_OPTS, "cost-bounds-elide")
+            .expect("smoke sweep");
+        let table = format_sweep_table(&cmp, "dev", "release");
+        assert!(
+            table.contains("case cost-bounds-elide tier=micro"),
+            "sweep table must tag each case with its tier:\n{table}"
+        );
+        assert!(
+            table.contains("tier micro cases=1"),
+            "sweep table must print a per-tier outcome:\n{table}"
+        );
+        assert!(
+            table.contains("tiers[micro=wins"),
+            "the overall line must carry both tiers' verdicts:\n{table}"
+        );
+        assert_eq!(cmp.tiers(), vec![CostTier::Micro]);
+        assert!(cmp.wins_in_tier(CostTier::Micro));
+    }
+
+    /// **Decision 1782 checked on a real refusal:** a candidate that falls
+    /// everywhere in one tier and nowhere in the other is vetoed, and the
+    /// veto names the tier. Built by hand rather than by finding an opt
+    /// that does this, because the rule must hold before such an opt exists.
+    #[test]
+    fn a_win_confined_to_one_tier_is_vetoed_and_the_tier_is_named() {
+        let flat_case = |name: &str, tier: CostTier, fell: bool| CaseSweep {
+            name: name.to_string(),
+            tier,
+            box_dims: 17,
+            box_cardinality: 131_072,
+            swept: vec!["l2_latency".to_string()],
+            held: Vec::new(),
+            read_but_static: Vec::new(),
+            points: vec![PointRow {
+                point: "l2_latency=lo".to_string(),
+                baseline: 100,
+                candidate: if fell { 90 } else { 100 },
+                baseline_charge: 0,
+                candidate_charge: 0,
+            }],
+        };
+        let cmp = SweepCompare {
+            table_digest: "test".to_string(),
+            cases: vec![
+                flat_case("cost-fixture", CostTier::Micro, true),
+                flat_case("cost-product-appliance", CostTier::Product, false),
+            ],
+            reasons: vec![SweepVeto::NoCaseFallsEverywhere {
+                tier: CostTier::Product,
+            }],
+        };
+        assert!(
+            !cmp.wins(),
+            "a product-tier refusal must refuse the landing"
+        );
+        assert!(cmp.wins_in_tier(CostTier::Micro));
+        assert!(!cmp.wins_in_tier(CostTier::Product));
+        assert_eq!(
+            cmp.reasons[0].label(),
+            "no_case_falls_everywhere:tier=product"
+        );
+        let table = format_sweep_table(&cmp, "dev", "cand");
+        assert!(
+            table.contains("tier product cases=1")
+                && table.contains("no_case_falls_everywhere:tier=product"),
+            "the tier's own outcome line must carry the refusal:\n{table}"
+        );
+    }
+
+    /// A tier the corpus does not populate is an **error**, never a
+    /// vacuous ∀ win. Same lesson as `MAX_SWEPT_DIMS`, from the other
+    /// direction: a gate must not report success about nothing.
+    #[test]
+    fn sweeping_an_unpopulated_tier_is_an_error() {
+        // Both tiers are populated on this tree, so drive the refusal
+        // through the selector's own emptiness path with a name that
+        // matches nothing.
+        let e = compare_opt_lists_over_box_for_case(&[], RELEASE_OPTS, "cost-does-not-exist")
+            .expect_err("must refuse");
+        assert!(e.contains("no cost corpus case named"), "{e}");
     }
 
     /// plans/M19.md item E / decisions 1450–1451: release vs dev on the
@@ -1894,14 +2613,13 @@ mod tests {
     /// Decision 1453: NarrowImm alone wins on at least one cost-* case.
     #[test]
     fn narrow_imm_alone_wins_some_cost_case() {
-        let corpus = discover_cost_corpus();
+        let corpus = discover_cost_cases();
         let mut wins = Vec::new();
-        for path in &corpus {
-            let name = case_name(path);
-            let dev = score_path_under_opts(path, &[]);
-            let alone = score_path_under_opts(path, &[OptId::NarrowImm]);
+        for case in &corpus {
+            let dev = score_path_under_opts(&case.input, &[]);
+            let alone = score_path_under_opts(&case.input, &[OptId::NarrowImm]);
             if alone < dev {
-                wins.push(format!("{name}: {alone} < {dev}"));
+                wins.push(format!("{}[{}]: {alone} < {dev}", case.name, case.tier));
             }
         }
         apply_mode(CompileMode::Release);
@@ -2126,10 +2844,12 @@ mod tests {
     /// **Deep lane.** `#[ignore]`d by default and run by
     /// `xtask::deep_lane`, which `cargo xtask check` calls — matching how
     /// every `fuzz_*` lane already splits a smoke budget from a deep one
-    /// (`crates/xtask/src/main.rs`). Measured 2026-07-30 on this tree, in
-    /// the profile `cargo test` actually runs: **26 112 points per side**
-    /// across the 15 cases, and **~4 minutes** for the deep lane's two
-    /// sweeps together. That is not a cost the default `cargo test` loop
+    /// (`crates/xtask/src/main.rs`). Measured 2026-07-31, after item H
+    /// widened the corpus: **36 352 points per side** across 19 cases —
+    /// 15 micro and 4 product — for **×1.78** the deep lane's ∀ work, which
+    /// did not show up as wall clock: 309–397 s (n=3) against 411 s (n=1)
+    /// before (see [`MAX_SWEPT_DIMS`] for why, and for why the work and not
+    /// the clock is the stated number). That is not a cost the default `cargo test` loop
     /// should carry; CLAUDE.md separates the
     /// cheap per-item lane from the expensive close lane, and a
     /// whole-corpus ∀ gate belongs in the latter. Nothing about the
@@ -2234,6 +2954,143 @@ mod tests {
             cmp.cases.len()
         );
     }
+
+    /// **Deep lane. Decision 1784 — every `RELEASE_OPTS` member is
+    /// re-asked, alone, on the product tier.**
+    ///
+    /// Decision 1717 says an opt may not gate on a case it authored alone.
+    /// That sentence has no force unless somebody actually re-runs the
+    /// landing question over the borrowed programs, so this is that run:
+    /// for each opt in `RELEASE_OPTS`, `dev` vs `[opt]` over the product
+    /// tier only, ∀ across each case's residual box.
+    ///
+    /// Product tier only, deliberately. The whole-corpus sweep above
+    /// already covers both tiers for the list as a whole; repeating it per
+    /// member would triple a lane that item H already measured at
+    /// 411 s → 597 s. What is not covered anywhere else is the *member's*
+    /// verdict on the programs it did not choose, and that is 4 cases
+    /// rather than 19.
+    #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
+    #[test]
+    fn each_release_opt_is_re_asked_alone_on_the_product_tier() {
+        assert!(
+            !RELEASE_OPTS.is_empty(),
+            "an empty RELEASE_OPTS would make this lane vacuous"
+        );
+        let mut verdicts = Vec::new();
+        let mut measured: Vec<(String, &'static str)> = Vec::new();
+        for opt in RELEASE_OPTS {
+            let label = format!("{opt:?}");
+            // Each member is asked over **its own** baseline, not blindly
+            // over `dev`. `WideImmForms` is the one member for which
+            // `dev -> [it]` is the *identity* comparison (decision 1747):
+            // with `NarrowImm` off, `load_imm` returns to `load_imm_naive`
+            // before C5's one-word forms are ever reached, so a `dev`
+            // baseline would record a veto that says nothing about the
+            // product tier and everything about the question being
+            // unanswerable. Asking the wrong question and pinning the
+            // answer is worse than not asking.
+            let base: &[OptId] = match opt {
+                OptId::WideImmForms => &[OptId::NarrowImm],
+                _ => &[],
+            };
+            let base_label = if base.is_empty() {
+                "dev".to_string()
+            } else {
+                format!("{base:?}")
+            };
+            let cmp = compare_opt_lists_over_box_in_tier(
+                base,
+                &[base, &[*opt][..]].concat(),
+                CostTier::Product,
+            )
+            .unwrap_or_else(|e| panic!("{label}: product-tier sweep: {e}"));
+            let table = format_sweep_table(&cmp, &base_label, &label);
+            eprintln!("∀ sweep, product tier only ({base_label} → {label}):\n{table}");
+            assert_eq!(cmp.tiers(), vec![CostTier::Product]);
+            assert!(
+                cmp.scored_points_in(CostTier::Product) > 0,
+                "{label}: the product tier enumerated no points"
+            );
+            let reasons: Vec<String> = cmp.reasons.iter().map(SweepVeto::label).collect();
+            let verdict = if cmp.wins_in_tier(CostTier::Product) {
+                "wins"
+            } else {
+                "veto"
+            };
+            measured.push((label.clone(), verdict));
+            verdicts.push(format!(
+                "{label}: product={} ({} points/side over {} case(s)) reasons=[{}]",
+                verdict,
+                cmp.scored_points_in(CostTier::Product),
+                cmp.cases_in(CostTier::Product).len(),
+                reasons.join(" ")
+            ));
+        }
+        eprintln!(
+            "RELEASE_OPTS re-asked alone on the product tier:\n{}",
+            verdicts.join("\n")
+        );
+        let measured: Vec<(&str, &str)> = measured.iter().map(|(l, v)| (l.as_str(), *v)).collect();
+        assert_eq!(
+            measured.as_slice(),
+            PINNED_PRODUCT_TIER_VERDICTS,
+            "**Decision 1785 — the pinned product-tier verdict set moved.**\n\
+             \n\
+             This is a *measurement*, pinned so that it cannot change \
+             quietly in either direction, not a target. What it currently \
+             records is item H's headline finding (plans/codegen-pareto-H.md):\n\
+             \n\
+             - `NarrowImm` alone falls at every point of every borrowed \
+             program. It is justified by the appliance, not only by the \
+             corpus.\n\
+             - `BoundsElide` alone is **byte-identical to `dev` on all four \
+             product cases** — same cycles, same emitted words, same hot \
+             text. Its entire measured effect lives on six microbenchmarks, \
+             the largest of which (`cost-bounds-elide`, 1839 → 314) was \
+             written for it. It is decision 1716's self-selection failure, \
+             found by exactly the widening item H exists to do.\n\
+             \n\
+             `RELEASE_OPTS` as a *list* still wins ∀ in both tiers \
+             (`unit:release_wins_at_every_point_of_the_residual_box`), which \
+             is what freeze 1714 gates, so nothing here un-lands anything. \
+             Item H adds no opt and removes none. If this assertion fires, \
+             re-derive the row it names and update the finding — do not \
+             delete the row to get green.\n\
+             \n{}",
+            verdicts.join("\n")
+        );
+    }
+
+    /// **Decision 1785.** The measured per-tier verdict of each
+    /// `RELEASE_OPTS` member, standing alone, over the product tier —
+    /// pinned so a change in either direction is loud. See
+    /// `unit:each_release_opt_is_re_asked_alone_on_the_product_tier` for
+    /// what the two rows mean and why a `veto` row is a finding rather
+    /// than a broken gate.
+    const PINNED_PRODUCT_TIER_VERDICTS: &[(&str, &str)] = &[
+        // The finding: byte-identical to `dev` on all four borrowed
+        // programs. Its whole measured effect is on six microbenchmarks,
+        // the largest of which was written for it.
+        ("BoundsElide", "veto"),
+        ("NarrowImm", "wins"),
+        ("AdrAddressing", "wins"),
+        ("BfxNarrow", "wins"),
+        ("MaskCheck", "wins"),
+        // **The second finding, and it was not predicted.** Asked over
+        // `[NarrowImm]` rather than `dev` (decision 1747, and see the
+        // baseline note in the lane body), `WideImmForms` is still flat:
+        // Δ = +0 at **all 10 240 product-tier points**, byte-identical on
+        // all four borrowed programs, exactly like `BoundsElide`. The
+        // `dev` baseline was suspected of manufacturing this veto; it did
+        // not. A plausible mechanism is already written down in
+        // `RELEASE_OPTS`' own ordering note — `MaskCheck` deletes most of
+        // the constant materializations `WideImmForms` would otherwise
+        // shorten — but that is a hypothesis, not a measurement, and item
+        // G owns confirming or killing it.
+        ("WideImmForms", "veto"),
+        ("RegAlloc", "wins"),
+    ];
 
     /// Decision 1453: swapped opt-list order vs RELEASE_OPTS — document
     /// independence when totals match (lower vs codegen axes).
@@ -2932,6 +3789,7 @@ mod tests {
     fn corpus_gate_refuses_barrier_removal() {
         let cmp = CorpusCompare {
             cases: vec![CaseDelta {
+                tier: CostTier::Micro,
                 name: "cost-crosscore".to_string(),
                 baseline: 1000,
                 candidate: 900,
@@ -3211,6 +4069,7 @@ mod tests {
     fn corpus_gate_no_longer_refuses_word_growth() {
         let grew = CorpusCompare {
             cases: vec![CaseDelta {
+                tier: CostTier::Micro,
                 name: "cost-synthetic".to_string(),
                 baseline: 1000,
                 candidate: 900,
@@ -3294,11 +4153,16 @@ mod tests {
                 "wins".to_string(),
                 "wins".to_string(),
                 "wins".to_string(),
+                "wins_in_tier".to_string(),
             ],
             "the public predicate set changed. The three `wins` are the ∀ \
              verdicts on CorpusCompare / OverallCompare / SweepCompare; \
-             `vetoed`, `rises` and `is_flat` are row facts. Anything else — \
-             in particular anything taking a SweepPoint or a PointRow and \
+             `vetoed`, `rises` and `is_flat` are row facts. `wins_in_tier` \
+             (item H, decision 1782) is a fourth ∀ verdict and not a fourth \
+             kind of predicate: its argument is a CostTier — a slice of the \
+             *corpus*, fixed on disk — and it still quantifies over every \
+             point of every case in that slice. Anything else — in \
+             particular anything taking a SweepPoint or a PointRow and \
              answering yes/no — is the ∃ form freeze 1624 refuses."
         );
         // No public signature may take a point and answer a verdict.
@@ -3371,10 +4235,12 @@ mod tests {
     /// **Deep lane.** `#[ignore]`d by default and run by
     /// `xtask::deep_lane`, which `cargo xtask check` calls — matching how
     /// every `fuzz_*` lane already splits a smoke budget from a deep one
-    /// (`crates/xtask/src/main.rs`). Measured 2026-07-30 on this tree, in
-    /// the profile `cargo test` actually runs: **26 112 points per side**
-    /// across the 15 cases, and **~4 minutes** for the deep lane's two
-    /// sweeps together. That is not a cost the default `cargo test` loop
+    /// (`crates/xtask/src/main.rs`). Measured 2026-07-31, after item H
+    /// widened the corpus: **36 352 points per side** across 19 cases —
+    /// 15 micro and 4 product — for **×1.78** the deep lane's ∀ work, which
+    /// did not show up as wall clock: 309–397 s (n=3) against 411 s (n=1)
+    /// before (see [`MAX_SWEPT_DIMS`] for why, and for why the work and not
+    /// the clock is the stated number). That is not a cost the default `cargo test` loop
     /// should carry; CLAUDE.md separates the
     /// cheap per-item lane from the expensive close lane, and a
     /// whole-corpus ∀ gate belongs in the latter. Nothing about the
@@ -3789,7 +4655,7 @@ mod tests {
         let c = compile_side(&path, candidate).expect("candidate side");
         apply_mode(CompileMode::Release);
         let mut reasons = Vec::new();
-        let sweep = sweep_case(case, &b, &c, &table, &mut reasons).expect("sweep");
+        let sweep = sweep_case(case, CostTier::Micro, &b, &c, &table, &mut reasons).expect("sweep");
         (sweep, reasons)
     }
 
@@ -3986,6 +4852,7 @@ mod tests {
         );
         // The corpus gate's own refusal is untouched by item J.
         let removed = CaseDelta {
+            tier: CostTier::Micro,
             name: "cost-crosscore".to_string(),
             baseline: 1000,
             candidate: 900,
@@ -4022,10 +4889,11 @@ mod tests {
             "the bound must actually bound the declared box"
         );
         let table = load_default().expect("profile");
-        let path = discover_cost_corpus()
+        let path = discover_cost_cases()
             .into_iter()
-            .find(|p| case_name(p) == "cost-bounds-elide")
-            .expect("cost-bounds-elide must exist");
+            .find(|c| c.name == "cost-bounds-elide")
+            .expect("cost-bounds-elide must exist")
+            .input;
         let b = compile_side(&path, &[]).expect("baseline");
         let c = compile_side(&path, RELEASE_OPTS).expect("candidate");
 

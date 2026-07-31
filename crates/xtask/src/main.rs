@@ -313,6 +313,23 @@ fn main() -> ExitCode {
 /// is minutes by construction (the whole-corpus ∀ sweep enumerates 2^k
 /// corners per case per side), which is precisely why it is not in the
 /// default `cargo test` loop.
+///
+/// **Which tier runs where** (plans/codegen-pareto.md item H, decision
+/// 1787). The cost corpus has two tiers and they are split by *cost*, per
+/// CLAUDE.md, not by subject:
+///
+/// | lane | who runs it | what it sweeps |
+/// | --- | --- | --- |
+/// | smoke | default `cargo test` | one **micro** case, ∀ over its box |
+/// | deep | this function | **both tiers**, plus each `RELEASE_OPTS` member alone over the **product** tier |
+///
+/// Measured 2026-07-31: item H's product tier is 4 of 19 cases and 10 240
+/// of 36 352 points per side, taking the whole lane from 52 224 to 93 184
+/// ∀ points per side (**×1.78**). It did not get slower — this function's
+/// own invocation ran 309/362/397 s after against 411 s before, because
+/// the third `#[ignore]`d test fills a harness thread the two-sweep lane
+/// left idle. See `wrela_compiler::opts::win::MAX_SWEPT_DIMS` for the
+/// table and why the work, not the clock, is the number recorded.
 fn deep_lane() -> Result<(), String> {
     run(
         Command::new("cargo").args([
@@ -2802,6 +2819,17 @@ fn diff_eval_over_cases(vmm: &Path, filter: Option<&[&str]>) -> Result<DiffEvalT
             continue;
         };
         if !target.exists() {
+            continue;
+        }
+        // plans/codegen-pareto.md item H, decision 1786: a **borrowed**
+        // case (`root` naming a program outside the case dir — the
+        // product-scale cost tier) owns no program of its own, so the case
+        // that *does* own it is already in this loop. Running it twice
+        // proves nothing twice and doubles the compile.
+        if golden_case_is_borrowed(&case)? {
+            println!(
+                "diff-eval: case {name}: borrows its program — covered by the case that owns it"
+            );
             continue;
         }
         let source = std::fs::read_to_string(&target)
