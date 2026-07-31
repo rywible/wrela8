@@ -72,9 +72,18 @@ pub const COUNTER_CLEARING_KEY: &str = "__wrela_rt_primary_boot";
 /// every non-zero counter from a pool that covers every assigned id, so a
 /// block that is *absent from a fn the sidecar does name* really did
 /// execute zero times — that is `Cold`, real evidence. A block in a fn the
-/// sidecar never names has no evidence at all; calling it cold would sink
-/// most of a program on nothing. Item D must leave `Unmeasured` blocks
-/// exactly where they are.
+/// sidecar never names has no evidence at all, and sinking it would be a
+/// guess wearing a measurement's clothes. Item D must leave `Unmeasured`
+/// blocks exactly where they are.
+///
+/// Measured over the real cost-stage closure of `boot-actors`, the split is
+/// 81 hot / 85 cold / **18** unmeasured of 184 blocks
+/// (`unit:layout_classes_over_a_real_bridge_mode_build`) — so on *this*
+/// program the conflation would misplace 18 blocks, not most of them. The
+/// distinction is kept because a layout pass has no way to know in advance
+/// which of the two it is looking at: the same sidecar over a program the
+/// `@test(runtime)` image does not cover would be almost entirely
+/// unmeasured, and nothing in the vector announces that.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum BlockClass {
     /// Measured, count ≥ 1.
@@ -822,6 +831,88 @@ mod tests {
         .expect("parse");
         let err = derive(&f).expect_err("artifact only");
         assert!(err.contains("counter-clearing artifact"), "got: {err}");
+    }
+
+    // --- end to end, over a real build ----------------------------------
+
+    /// The sidecar's closure and the cost-stage closure are **different
+    /// programs**, and this is the unit that pins how far apart.
+    ///
+    /// `layout_classes` is item D's entry point, so it must be exercised
+    /// against a real bridge-mode build and not only against the synthetic
+    /// partitions the staleness units use. What it proves:
+    ///
+    /// - the committed sidecar is *not* stale against a fresh build — the
+    ///   fns it names that this closure contains all still have their
+    ///   measured indices in range;
+    /// - the overlap is small and asymmetric in **both** directions, and
+    ///   the two directions are not the same fact. 53 of the sidecar's 67
+    ///   fns are absent from this closure (the sidecar's `@test(runtime)`
+    ///   image carries a test harness and boot init this program does not),
+    ///   and only 81 of its 364 keys resolve — which is M20's own
+    ///   independently-derived "81 resolve" number, so this unit
+    ///   cross-checks that figure rather than restating it.
+    ///
+    /// **The correction this unit forced.** Item A's first pass asserted
+    /// that unmeasured blocks would dominate a real closure, and that this
+    /// was why decision 1723 must keep `Unmeasured` separate from `Cold`.
+    /// Measured, that is false: 81 hot + 85 cold + **18** unmeasured of 184.
+    /// The closure is almost entirely covered. The decision survives on the
+    /// narrower and more honest ground asserted below — 18 blocks would be
+    /// sunk on no evidence whatever, and a layout pass that cannot tell
+    /// "measured zero" from "never measured" has no way to know it is only
+    /// 18 rather than most of the program.
+    #[test]
+    fn layout_classes_over_a_real_bridge_mode_build() {
+        let input = super::super::repo_root().join("tests/golden/boot-actors/input.wr");
+        crate::opts::apply_mode(crate::opts::CompileMode::Release);
+        crate::codegen::set_block_bridge(true);
+        let _prog = super::super::codegen_cost_stage(&input).expect("cost-stage codegen");
+        let spans = crate::codegen::block_spans();
+        crate::codegen::set_block_bridge(false);
+        assert!(!spans.is_empty(), "bridge mode must record a partition");
+
+        let lc = layout_classes(Some(&input), &spans).expect("a fresh build is not stale");
+        let LayoutClasses::Measured(t, check) = &lc else {
+            panic!("boot-actors has a committed sidecar; this must be Measured");
+        };
+        assert!(lc.is_measured());
+        assert_eq!(t.sidecar_digest, 0x4a53_6169_0b06_f87a);
+
+        // The overlap, pinned. `matched_fns + unmatched_fns` is the whole
+        // measured fn set (67, artifact already excluded by decision 1724).
+        assert_eq!(check.matched_fns, 14);
+        assert_eq!(check.unmatched_fns, 53);
+        assert_eq!(check.matched_fns + check.unmatched_fns, t.measured_fns);
+        // M20's independently-derived figure for this pair of closures.
+        assert_eq!(check.matched_keys, 81);
+        assert!(
+            check.matched_keys < t.measured_keys,
+            "a closure that resolved every key would mean the two closures were the same program"
+        );
+
+        // Decision 1723 over a real partition. The honest distribution: the
+        // closure is *mostly covered*, and the 18 blocks that are not are
+        // exactly the ones a cold-by-default reading would sink on no
+        // evidence.
+        let mut hot = 0u64;
+        let mut cold = 0u64;
+        let mut unmeasured = 0u64;
+        for s in &spans {
+            match lc.class_of(&s.fn_key, s.block_index) {
+                BlockClass::Hot => hot += 1,
+                BlockClass::Cold => cold += 1,
+                BlockClass::Unmeasured => unmeasured += 1,
+            }
+        }
+        assert_eq!(hot + cold + unmeasured, spans.len() as u64);
+        assert_eq!((hot, cold, unmeasured), (81, 85, 18));
+        assert_eq!(hot, check.matched_keys, "every resolved key is a hot block");
+        assert!(
+            unmeasured > 0,
+            "a closure the sidecar covers completely would not exercise the three-valued \
+             classification at all, and this unit would stop being decision 1723's oracle"
+        );
     }
 
     #[test]
