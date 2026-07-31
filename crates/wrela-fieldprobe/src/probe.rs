@@ -2321,3 +2321,138 @@ pub fn run_light_bake(sc: &Scene, lo: [f32; 3], hi: [f32; 3], cell: f32, rng: &m
     }
     out
 }
+
+/// Soft sun visibility at a point: one sphere-traced ray with §8's penumbra
+/// estimator `min(k·d/t)`.
+fn sun_vis(tape: &Tape, p: [f32; 3], sun: [f32; 3], k: f32, s: &mut Scratch) -> f32 {
+    let mut vis = 1.0f32;
+    let mut t = 0.03f32;
+    let mut steps = 0;
+    while t < 12.0 && steps < 48 {
+        let q = [p[0] + t * sun[0], p[1] + t * sun[1], p[2] + t * sun[2]];
+        let f = eval(tape, q, &mut s.f);
+        steps += 1;
+        if f < 1e-3 {
+            return 0.0;
+        }
+        vis = vis.min(k * f / t);
+        t += f.max(0.01);
+    }
+    vis.clamp(0.0, 1.0)
+}
+
+/// Bake **sun visibility** rather than ambient occlusion.
+///
+/// E10 measured that a volume grid reproduces surface AO badly (p95 0.17 at
+/// 0.125 cells) while replacing something §8 already prices at "near-free" —
+/// the wrong trade in both directions. Sun visibility is the opposite case
+/// on both counts: it is the *expensive* lighting term (5 evals per hit,
+/// 12.9% of the measured frame, and each eval marches a long ray), and it is
+/// a long-range quantity that varies smoothly except across penumbra
+/// boundaries, so a volume grid should carry it far better than it carries
+/// contact occlusion.
+///
+/// Reported error is against directly-traced visibility at real surface
+/// points, because a tap that disagrees with the ray it replaces is not a
+/// saving, it is a bug with good performance.
+pub fn run_sun_bake(
+    sc: &Scene,
+    lo: [f32; 3],
+    hi: [f32; 3],
+    cell: f32,
+    rng: &mut Rng,
+    s: &mut Scratch,
+) -> LightBake {
+    let sun = {
+        let v = [0.42f32, 0.86, 0.29];
+        let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        [v[0] / l, v[1] / l, v[2] / l]
+    };
+    let k = 12.0;
+    let dims = [
+        (((hi[0] - lo[0]) / cell).ceil() as usize + 1).max(2),
+        (((hi[1] - lo[1]) / cell).ceil() as usize + 1).max(2),
+        (((hi[2] - lo[2]) / cell).ceil() as usize + 1).max(2),
+    ];
+    let n = dims[0] * dims[1] * dims[2];
+    let mut grid = vec![1.0f32; n];
+    for iz in 0..dims[2] {
+        for iy in 0..dims[1] {
+            for ix in 0..dims[0] {
+                let p = [
+                    lo[0] + ix as f32 * cell,
+                    lo[1] + iy as f32 * cell,
+                    lo[2] + iz as f32 * cell,
+                ];
+                grid[(iz * dims[1] + iy) * dims[0] + ix] = sun_vis(&sc.tape, p, sun, k, s);
+            }
+        }
+    }
+    let sample = |g: &Vec<f32>, p: [f32; 3]| -> f32 {
+        let f = [
+            ((p[0] - lo[0]) / cell).clamp(0.0, (dims[0] - 1) as f32 - 1e-3),
+            ((p[1] - lo[1]) / cell).clamp(0.0, (dims[1] - 1) as f32 - 1e-3),
+            ((p[2] - lo[2]) / cell).clamp(0.0, (dims[2] - 1) as f32 - 1e-3),
+        ];
+        let i = [f[0] as usize, f[1] as usize, f[2] as usize];
+        let d = [f[0] - i[0] as f32, f[1] - i[1] as f32, f[2] - i[2] as f32];
+        let at = |dx: usize, dy: usize, dz: usize| -> f32 {
+            g[((i[2] + dz) * dims[1] + i[1] + dy) * dims[0] + i[0] + dx]
+        };
+        let l = |a: f32, b: f32, t: f32| a + (b - a) * t;
+        let c00 = l(at(0, 0, 0), at(1, 0, 0), d[0]);
+        let c10 = l(at(0, 1, 0), at(1, 1, 0), d[0]);
+        let c01 = l(at(0, 0, 1), at(1, 0, 1), d[0]);
+        let c11 = l(at(0, 1, 1), at(1, 1, 1), d[0]);
+        l(l(c00, c10, d[1]), l(c01, c11, d[1]), d[2])
+    };
+
+    let cam = &sc.cam;
+    let mut out = LightBake {
+        dims,
+        cell,
+        cells: n as u64,
+        bake_rays: n as u64,
+        bytes_f32: (n * 4) as u64,
+        tested: 0,
+        mean_err: 0.0,
+        p95_err: 0.0,
+        max_err: 0.0,
+    };
+    let mut errs: Vec<f32> = Vec::new();
+    for _ in 0..1500 {
+        let px = rng.range(0.0, cam.w as f32);
+        let py = rng.range(0.0, cam.h as f32);
+        let d = cam.dir_at_pixel(px, py);
+        let t = match march(&sc.tape, cam.eye, d, sc.t_near, sc.t_far, s).0 {
+            Some(t) => t,
+            None => continue,
+        };
+        let p = [cam.eye[0] + t * d[0], cam.eye[1] + t * d[1], cam.eye[2] + t * d[2]];
+        if p[0] < lo[0] || p[1] < lo[1] || p[2] < lo[2] || p[0] > hi[0] || p[1] > hi[1] || p[2] > hi[2] {
+            continue;
+        }
+        // Lift off the surface by half a cell along the normal: the shadow
+        // ray starts there anyway, and it keeps the stencil out of the solid.
+        let (_, g) = eval_grad(&sc.tape, p, &mut s.g);
+        let gl = (g[0] * g[0] + g[1] * g[1] + g[2] * g[2]).sqrt().max(1e-6);
+        let ps = [
+            p[0] + g[0] / gl * 0.5 * cell,
+            p[1] + g[1] / gl * 0.5 * cell,
+            p[2] + g[2] / gl * 0.5 * cell,
+        ];
+        let truth = sun_vis(&sc.tape, ps, sun, k, s);
+        let got = sample(&grid, ps);
+        let e = (truth - got).abs();
+        errs.push(e);
+        out.mean_err += e as f64;
+        out.max_err = out.max_err.max(e);
+        out.tested += 1;
+    }
+    if out.tested > 0 {
+        out.mean_err /= out.tested as f64;
+        errs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        out.p95_err = errs[(errs.len() * 95 / 100).min(errs.len() - 1)];
+    }
+    out
+}

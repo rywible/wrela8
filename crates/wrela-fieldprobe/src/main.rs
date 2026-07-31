@@ -86,6 +86,11 @@ fn main() {
         i += 1;
     }
 
+    if args.iter().any(|a| a == "--recon-sweep") {
+        recon_sweep(&only);
+        return;
+    }
+
     println!("fieldprobe — plans/graphics.md §16, counts only");
     println!(
         "resolution {}x{}  base tile {}px  max depth {}  leaf {}px",
@@ -568,6 +573,17 @@ fn main() {
                     lb.mean_err, lb.p95_err, lb.max_err
                 );
             }
+            for &cell in &[0.5f32, 0.25, 0.125] {
+                let lb = probe::run_sun_bake(sc, lo, hi, cell, &mut rng, &mut s);
+                println!(
+                    "  [E10b] SUN bake cell {:.3}: {} probes, {:.2} MB as u8   \
+                     err mean {:.4} p95 {:.4} max {:.4}",
+                    lb.cell,
+                    lb.cells,
+                    lb.cells as f64 / 1e6,
+                    lb.mean_err, lb.p95_err, lb.max_err
+                );
+            }
             println!(
                 "        replaces shadow+AO+GI = {:.0} FLOP/px measured, with ~25 FLOP/tap.",
                 (fc.shadow + fc.ao_gi) / fc.pixels as f64
@@ -650,4 +666,52 @@ fn main() {
     println!();
     println!("Counts only. Converting these to Pi 5 time is bench/a76-pi5.toml's job,");
     println!("deliberately not done here (§16.1: wall-clock on the M4 proxy does not port).");
+}
+
+/// How the reconstruction factor scales with output resolution.
+///
+/// Every reconstruction number so far was measured at 512x288 and then used
+/// to reason about 1080p and 4K, which silently assumes the factor is
+/// resolution-independent. It is not, and the direction is the favourable
+/// one: a patch is a quadratic fitted to *world* geometry, so raising the
+/// output resolution does not create new patches at the same rate it creates
+/// new pixels — only the edge set grows, and it grows with edge *length*,
+/// i.e. linearly, against pixels growing quadratically.
+///
+/// Two effects fight: patches survive resolution increases, but the fit
+/// tolerance is stated in pixels of parallax, so it tightens as the pixel
+/// footprint shrinks and patches must get smaller. Which wins is an
+/// empirical question, and it decides whether 4K is reachable — so it is
+/// measured here rather than argued.
+fn recon_sweep(only: &Option<String>) {
+    println!("fieldprobe — reconstruction factor vs output resolution");
+    println!();
+    for (w, h) in [(512u32, 288u32), (1024, 576), (1920, 1080), (3840, 2160)] {
+        let scenes = [scene::colonnade(w, h), scene::melee(w, h)];
+        for sc in scenes.iter() {
+            if let Some(o) = only {
+                if o != sc.name {
+                    continue;
+                }
+            }
+            let mut s = Scratch::default();
+            let (cen, er) = probe::run_edge_recon(sc, 1.0, 64, &mut s);
+            println!(
+                "  {:<10} {:>4}x{:<4}  edge {:>6}  samples {:>8} = {:>7} patch + {:>7} edge \
+                 + {:>6} dense   -> {:>7.2}x",
+                sc.name,
+                w,
+                h,
+                fmt_pct(cen.edge as f64, cen.pixels as f64),
+                er.samples(),
+                er.patch_samples,
+                er.edge_samples,
+                er.dense_samples,
+                er.factor()
+            );
+        }
+    }
+    println!();
+    println!("  Patch samples that stay flat while pixels grow 4x per row are the");
+    println!("  whole 4K argument; patch samples that grow with pixels kill it.");
 }
