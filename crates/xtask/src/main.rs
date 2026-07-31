@@ -325,10 +325,11 @@ fn main() -> ExitCode {
 ///
 /// Measured 2026-07-31: item H's product tier is 4 of 19 cases and 10 240
 /// of 36 352 points per side, taking the whole lane from 52 224 to 93 184
-/// ∀ points per side (**×1.78**). Wall clock on the machine that measured
-/// it ranged 230–597 s per invocation and 362 s for the whole lane, which
-/// is why the work and not the clock is the number recorded — see
-/// `wrela_compiler::opts::win::MAX_SWEPT_DIMS`.
+/// ∀ points per side (**×1.78**). It did not get slower — this function's
+/// own invocation ran 309/362/397 s after against 411 s before, because
+/// the third `#[ignore]`d test fills a harness thread the two-sweep lane
+/// left idle. See `wrela_compiler::opts::win::MAX_SWEPT_DIMS` for the
+/// table and why the work, not the clock, is the number recorded.
 fn deep_lane() -> Result<(), String> {
     run(
         Command::new("cargo").args([

@@ -67,28 +67,30 @@ The split is by cost, per CLAUDE.md, and it is stated in
 `cargo xtask check --fast` returns before `deep_lane()`, so none of this
 lands on the per-merge lane.
 
-**Measured, before and after — and the wall clock on this machine does not
-survive the measurement.** Every run below was on a laptop with four
-sibling worktrees compiling concurrently (decision 1708's parallel round),
-and the numbers are not monotone in the work:
+**Measured, before and after.** Every run was on a laptop with four sibling
+worktrees building and running their own deep sweeps (decision 1708's
+parallel round), so single runs are noisy; the post-item-H lane was
+therefore measured **three times**.
 
 | run | corpus | deep tests | ∀ points/side | harness wall |
 | --- | --- | --- | --- | --- |
-| before | 15 micro | 2 | 52 224 | **411.05 s** |
-| after | 15 micro + 4 product | 2 | 72 704 | **597.07 s** |
-| after (per-opt lane alone) | product only | 1 | 20 480 | **230.12 s** |
-| after (all three, as `deep_lane` runs them) | 15 micro + 4 product | 3 | **93 184** | **362.19 s** |
+| before | 15 micro | 2 | 52 224 | 411.05 s |
+| after, sweeps only | 15 micro + 4 product | 2 | 72 704 | 597.07 s |
+| after, per-opt lane alone | product only | 1 | 20 480 | 230.12 s |
+| **after, as `deep_lane` runs it** | 15 micro + 4 product | 3 | **93 184** | **309.31 / 362.19 / 396.57 s** |
 
-The last row does **more** work than the first and finished in **less**
-time. That is not a result about item H; it is the machine. The three deep
-tests run on separate harness threads, so wall time depends on both the
-contention from the sibling worktrees and how the three sweeps happen to
-overlap. **Reporting 827 s (the sum of isolated runs) or 362 s (the one
-combined run) as "the cost" would each be a number chosen to flatter a
-story, so neither is stated as the cost.**
+**The ∀ work grew ×1.78. The wall clock did not grow at all** — the deep
+lane as `xtask::deep_lane` actually invokes it now runs in 309–397 s
+(mean 356 s) against 411 s before. Three measurements, all faster than the
+one before-run, on the same machine under the same kind of load.
 
-What *is* exact and machine-independent is the work, because the ∀ sweep
-enumerates a determined number of points:
+The reason is not that the product cases are cheap. It is that item H added
+a **third** `#[ignore]`d test, and `cargo test` runs them on separate
+harness threads: two long sweeps left a machine with idle cores, three fill
+it. The 597 s row is the same widened corpus with only two tests and is the
+honest picture of what the extra points cost *without* that parallelism.
+
+So the two numbers worth carrying forward are:
 
 | | before | after | |
 | --- | --- | --- | --- |
@@ -96,15 +98,16 @@ enumerates a determined number of points:
 | whole deep lane, points/side | 52 224 | **93 184** | **×1.78** |
 | product share of the release sweep | — | 10 240 / 36 352 | 28% |
 | cases compiled per sweep, per side | 15 | 19 | +27% |
+| deep lane wall, as invoked | 411 s (n=1) | **309–397 s (n=3)** | no growth |
 
-**So: item H costs the deep lane ~1.8× its ∀ work.** Against M20's own idle
-baseline of 243 s that projects to roughly 7 minutes on a quiet tree, which
-is the number to re-measure at close on an idle machine — it is a
-projection from a ratio, not something this round observed, and it is
-labelled as one.
+Work is the number to plan by, because it is determined and this machine's
+clock is not; wall clock is reported as the range it was observed in, with
+its `n`. M20's own 243 s idle figure is not comparable to any row here — it
+was taken on a quiet tree and the before-row re-measured 411 s under load.
+An idle re-measurement belongs to the close item.
 
-The default `cargo test -p wrela-compiler --lib` lane moved 7.57 s → 8.7–20.2 s
-across four runs; same caveat, same direction, and against the locked
+The default `cargo test -p wrela-compiler --lib` lane moved 7.57 s →
+8.7–20.2 s across four runs; same load caveat, and against the locked
 `[tests] workspace_suite_max_us = 240 s` nowhere near a placement failure.
 The added work there is real but small: three census tests outside
 `opts/win.rs` (`cost/branch.rs`, `cost/ab.rs`, `cost/score.rs`) walk
@@ -119,8 +122,9 @@ to rank at all, which is that constant's own worked failure — it did not
 happen, and the numbers are recorded in `MAX_SWEPT_DIMS`' doc so the next
 person raising it has the table.
 
-**Is ×1.78 affordable?** Yes, and no alternative tiering is proposed: it is
-a close-item cost, run once per full gate and never by `--fast`. If it
+**Is ×1.78 affordable?** Yes — and on the measurements above it is not
+even visible in the lane's wall clock. It is a close-item cost, run once
+per full gate and never by `--fast`. If it
 later stops being affordable, the honest lever is the per-opt lane, which
 is product-tier-only *by design* and drops to zero opts before any case is
 dropped from the ∀ sweep. **No case is sampled, truncated or capped to buy
