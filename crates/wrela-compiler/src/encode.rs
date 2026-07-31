@@ -813,6 +813,227 @@ pub fn enc_asr_imm(rd: u8, rn: u8, shift: u8, sf: bool) -> u32 {
     bitfield(sf, 0b00, shift, width - 1, rn, rd)
 }
 
+// --- UBFX/SBFX (bitfield extract) ------------------------------------------
+//
+// plans/codegen-pareto.md item C3. Both are aliases of the same two
+// bitfield instructions `LSL`/`LSR`/`ASR` alias: `UBFX Rd, Rn, #lsb,
+// #width` is `UBFM Rd, Rn, #lsb, #(lsb+width-1)` and `SBFX` is `SBFM`
+// with the identical `immr`/`imms` pair. The alias is only *printed* as
+// `UBFX`/`SBFX` when `imms >= immr`; codegen's one caller passes
+// `lsb = 0`, so that holds by construction and is asserted.
+
+/// `UBFX Rd, Rn, #lsb, #width` — zero-extend the `width` bits starting at
+/// `lsb`. Alias of `UBFM Rd, Rn, #lsb, #(lsb+width-1)`.
+pub fn enc_ubfx(rd: u8, rn: u8, lsb: u8, width: u8, sf: bool) -> u32 {
+    let (immr, imms) = bfx_fields(lsb, width, sf);
+    bitfield(sf, 0b10, immr, imms, rn, rd)
+}
+
+/// `SBFX Rd, Rn, #lsb, #width` — sign-extend the `width` bits starting at
+/// `lsb`. Alias of `SBFM Rd, Rn, #lsb, #(lsb+width-1)`.
+pub fn enc_sbfx(rd: u8, rn: u8, lsb: u8, width: u8, sf: bool) -> u32 {
+    let (immr, imms) = bfx_fields(lsb, width, sf);
+    bitfield(sf, 0b00, immr, imms, rn, rd)
+}
+
+fn bfx_fields(lsb: u8, width: u8, sf: bool) -> (u32, u32) {
+    let reg_width = width_of(sf);
+    let lsb = lsb as u32;
+    let width = width as u32;
+    assert!(width >= 1, "bitfield extract width must be >= 1");
+    assert!(
+        lsb + width <= reg_width,
+        "bitfield extract [{lsb}, {}) runs off a {reg_width}-bit register",
+        lsb + width
+    );
+    (lsb, lsb + width - 1)
+}
+
+// --- Logical (immediate): AND/ORR/EOR/ANDS with a bitmask immediate ---------
+//
+// plans/codegen-pareto.md items C2 and C5, and the direct answer to the
+// module-level note above ("Implementing the bitmask-immediate encoder
+// correctly is future work"). The trap that note names — an immediate that
+// silently encodes a *different* value than the one asked for — is closed
+// structurally rather than by care: [`encode_bitmask_imm`] builds the
+// `N:immr:imms` triple and then **decodes it back** with an independent
+// implementation of the ARM ARM's own `DecodeBitMasks`, returning `None`
+// unless the round trip reproduces the requested value bit for bit. A
+// wrong encoding therefore cannot reach an emitted word; it can only fail
+// to be an encoding at all, and every caller falls back to the register
+// form it already had.
+//
+// ARM ARM "Logical (immediate)": `sf[31] opc[30:29] 100100 N[22]
+// immr[21:16] imms[15:10] Rn[9:5] Rd[4:0]`. `opc` picks `AND`(`00`) /
+// `ORR`(`01`) / `EOR`(`10`) / `ANDS`(`11`).
+//
+// **64-bit forms only** (`sf = true`). The 32-bit forms require `N = 0`
+// and a pattern that repeats within 32 bits; codegen has no 32-bit caller,
+// and an encoder with an unexercised half is a place for a wrong word to
+// hide, so the 32-bit case is refused rather than written untested.
+
+/// One valid AArch64 bitmask immediate, as the three encoded fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BitmaskImm {
+    pub n: u32,
+    pub immr: u32,
+    pub imms: u32,
+}
+
+/// The ARM ARM's `DecodeBitMasks` for the 64-bit (`sf = 1`) logical
+/// immediate, written straight from the pseudocode. `None` is the
+/// pseudocode's `UNDEFINED`.
+///
+/// Deliberately a *separate* implementation from [`encode_bitmask_imm`]:
+/// it is the oracle that encoder is checked against, so sharing code
+/// between them would make the check vacuous.
+pub fn decode_bitmask_imm(b: BitmaskImm) -> Option<u64> {
+    let n = b.n & 1;
+    let imms = b.imms & 0x3F;
+    let immr = b.immr & 0x3F;
+    // len = HighestSetBit(N:NOT(imms)) over the 7-bit field.
+    let field = (n << 6) | ((!imms) & 0x3F);
+    if field == 0 {
+        return None;
+    }
+    // `field` is the 7-bit `N:NOT(imms)` inside a u32, so the pseudocode's
+    // `HighestSetBit` is `31 - leading_zeros`.
+    let len = 31 - field.leading_zeros() as i32;
+    if len < 1 {
+        return None;
+    }
+    let esize = 1u32 << len;
+    let levels = (1u32 << len) - 1; // ZeroExtend(Ones(len), 6)
+    if (imms & levels) == levels {
+        return None;
+    }
+    let s = imms & levels;
+    let r = immr & levels;
+    // welem = ZeroExtend(Ones(S+1), esize), then ROR by R within esize.
+    let ones = s + 1;
+    let welem: u64 = if ones >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << ones) - 1
+    };
+    let r = r % esize;
+    let rotated = if esize == 64 {
+        welem.rotate_right(r)
+    } else {
+        let mask = (1u64 << esize) - 1;
+        ((welem >> r) | (welem << (esize - r) % esize)) & mask
+    };
+    // Replicate to 64 bits.
+    let mut out = 0u64;
+    let mut shift = 0u32;
+    while shift < 64 {
+        out |= rotated << shift;
+        shift += esize;
+    }
+    Some(out)
+}
+
+/// The inverse: the `N:immr:imms` triple encoding `value` as a 64-bit
+/// AArch64 bitmask immediate, or `None` when `value` is not one.
+///
+/// **Fail closed.** The triple is only returned after
+/// [`decode_bitmask_imm`] reproduces `value` from it exactly.
+pub fn encode_bitmask_imm(value: u64) -> Option<BitmaskImm> {
+    // The all-zeros and all-ones patterns have no encoding: `imms` would
+    // have to name a run as long as the element, which the `(imms AND
+    // levels) == levels` clause of `DecodeBitMasks` makes UNDEFINED.
+    if value == 0 || value == u64::MAX {
+        return None;
+    }
+
+    // Smallest element size the value repeats in.
+    let mut size = 64u32;
+    loop {
+        size /= 2;
+        let mask = (1u64 << size) - 1;
+        if (value & mask) != ((value >> size) & mask) {
+            size *= 2;
+            break;
+        }
+        if size <= 2 {
+            break;
+        }
+    }
+
+    let mask = u64::MAX >> (64 - size);
+    let mut elem = value & mask;
+
+    // Within the element, the ones must form a contiguous run, possibly
+    // wrapped around the element's top.
+    let (rotation, ones) = if is_shifted_mask(elem) {
+        let i = elem.trailing_zeros();
+        (i, (elem >> i).trailing_ones())
+    } else {
+        elem |= !mask;
+        if !is_shifted_mask(!elem) {
+            return None;
+        }
+        let clo = (!elem).leading_zeros();
+        let i = 64 - clo;
+        let cto = clo + elem.trailing_ones() - (64 - size);
+        (i, cto)
+    };
+    if ones == 0 || ones >= size {
+        return None;
+    }
+
+    let immr = (size - rotation) & (size - 1);
+    // `imms` carries the element size in its high bits (as the ones'
+    // complement of `size-1` shifted up) and `ones-1` in the low bits.
+    let nimms = (!(size - 1) << 1) | (ones - 1);
+    let n = ((nimms >> 6) & 1) ^ 1;
+
+    let b = BitmaskImm {
+        n,
+        immr: immr & 0x3F,
+        imms: nimms & 0x3F,
+    };
+    // The whole point of this function: never hand back an encoding that
+    // does not decode to what was asked for.
+    if decode_bitmask_imm(b) == Some(value) {
+        Some(b)
+    } else {
+        None
+    }
+}
+
+/// A contiguous, non-empty run of ones ending at the low end after a
+/// shift — `0b0011_1100` yes, `0b0011_0100` no, `0` no.
+fn is_shifted_mask(x: u64) -> bool {
+    x != 0 && (x.wrapping_add(x & x.wrapping_neg()) & x) == 0
+}
+
+fn logical_imm(sf: bool, opc: u32, b: BitmaskImm, rn: u8, rd: u8) -> u32 {
+    (sf_bit(sf) << 31)
+        | (opc << 29)
+        | (0b100100 << 23)
+        | ((b.n & 1) << 22)
+        | ((b.immr & 0x3F) << 16)
+        | ((b.imms & 0x3F) << 10)
+        | (reg(rn) << 5)
+        | reg(rd)
+}
+
+/// `TST Xn, #imm` — alias of `ANDS XZR, Xn, #imm`. `None` when `imm` is
+/// not an encodable 64-bit bitmask immediate.
+pub fn enc_tst_imm(rn: u8, imm: u64) -> Option<u32> {
+    let b = encode_bitmask_imm(imm)?;
+    Some(logical_imm(true, 0b11, b, rn, 31))
+}
+
+/// `ORR Xd, XZR, #imm` — the ARM ARM's `MOV (bitmask immediate)` alias, a
+/// one-word materialization of any encodable bitmask immediate
+/// (plans/codegen-pareto.md item C5). `None` when `imm` is not one.
+pub fn enc_mov_bitmask_imm(rd: u8, imm: u64) -> Option<u32> {
+    let b = encode_bitmask_imm(imm)?;
+    Some(logical_imm(true, 0b01, b, 31, rd))
+}
+
 // --- Conditional branch, compare-and-branch --------------------------------
 //
 // ARM ARM "Conditional branch (immediate)": `0101010 0 imm19[23:5] 0
@@ -1406,6 +1627,123 @@ mod tests {
             src.matches("assert!(").count() >= 12,
             "the range/alignment guards are gone, not merely weakened"
         );
+    }
+
+    // --- item C: UBFX/SBFX and the bitmask immediate ----------------------
+
+    /// `ubfx x0, x1, #0, #8` / `sbfx x0, x1, #0, #8`, and the identity
+    /// that makes item C3 a substitution rather than a new semantics: the
+    /// `LSL`+`LSR` / `LSL`+`ASR` pair at shift `64-w` is the same bitfield
+    /// move as one `UBFX`/`SBFX` of width `w` at lsb 0.
+    #[test]
+    fn ubfx_sbfx_encode_and_alias_the_shift_pair() {
+        // Hand-decoded: UBFM x0, x1, #0, #7 / SBFM x0, x1, #0, #7.
+        assert_eq!(enc_ubfx(0, 1, 0, 8, true), 0xd3401c20);
+        assert_eq!(enc_sbfx(0, 1, 0, 8, true), 0x93401c20);
+        // Same opc/immr/imms family as the shift aliases already here.
+        assert_eq!(enc_ubfx(2, 2, 0, 32, true), 0xd3407c42);
+        assert_eq!(enc_sbfx(2, 2, 0, 32, true), 0x93407c42);
+    }
+
+    #[test]
+    #[should_panic(expected = "runs off a 64-bit register")]
+    fn bfx_refuses_a_field_past_the_register() {
+        enc_ubfx(0, 1, 40, 32, true);
+    }
+
+    /// **The fail-closed proof the module note asked for.** Enumerate every
+    /// syntactically valid 64-bit logical-immediate encoding, decode it,
+    /// and check the encoder recovers *that same* triple — so no value can
+    /// round-trip through a triple that decodes to something else.
+    #[test]
+    fn every_valid_bitmask_immediate_round_trips() {
+        let mut seen = std::collections::BTreeSet::new();
+        for n in 0..2u32 {
+            for immr in 0..64u32 {
+                for imms in 0..64u32 {
+                    let b = BitmaskImm { n, immr, imms };
+                    let Some(v) = decode_bitmask_imm(b) else {
+                        continue;
+                    };
+                    assert_ne!(v, 0, "a decoded bitmask immediate is never 0");
+                    assert_ne!(v, u64::MAX, "a decoded bitmask immediate is never ~0");
+                    let got = encode_bitmask_imm(v).unwrap_or_else(|| {
+                        panic!("{v:#018x} decodes from N={n} immr={immr} imms={imms} but does not encode")
+                    });
+                    assert_eq!(
+                        decode_bitmask_imm(got),
+                        Some(v),
+                        "encoder produced {got:?} for {v:#018x}, which decodes elsewhere"
+                    );
+                    seen.insert(v);
+                }
+            }
+        }
+        // The published count of distinct 64-bit bitmask immediates.
+        assert_eq!(seen.len(), 5334, "distinct 64-bit bitmask immediates");
+    }
+
+    /// Item C2's actual customers: every high-mask `!(2^w - 1)` the narrow
+    /// overflow check needs is an encodable bitmask immediate.
+    #[test]
+    fn every_narrow_high_mask_is_a_bitmask_immediate() {
+        for w in [8u32, 16, 32] {
+            let mask = !((1u64 << w) - 1);
+            let word = enc_tst_imm(2, mask)
+                .unwrap_or_else(|| panic!("high mask for {w} bits is not encodable"));
+            // TST is ANDS with Rd = XZR.
+            assert_eq!(word & 0x1F, 31, "TST writes XZR");
+            assert_eq!(word >> 29 & 0b11, 0b11, "TST is the ANDS opc");
+        }
+        // `tst x2, #0xffffffff00000000` = `ANDS xzr, x2, #imm` with N=1,
+        // immr=32, imms=31: `1 11 100100 1 100000 011111 00010 11111`.
+        // DecodeBitMasks: len=6, esize=64, S=31 so welem = Ones(32),
+        // R=32 so ROR(0x00000000FFFFFFFF, 32) = 0xFFFFFFFF00000000.
+        assert_eq!(enc_tst_imm(2, 0xFFFF_FFFF_0000_0000), Some(0xf260_7c5f));
+        assert_eq!(
+            decode_bitmask_imm(BitmaskImm {
+                n: 1,
+                immr: 32,
+                imms: 31
+            }),
+            Some(0xFFFF_FFFF_0000_0000)
+        );
+    }
+
+    /// Values that are *not* bitmask immediates must be refused, not
+    /// silently encoded as a neighbour.
+    #[test]
+    fn non_bitmask_values_are_refused() {
+        for v in [
+            0u64,
+            u64::MAX,
+            5,
+            0x1234_5678_9abc_def0,
+            0b1011,
+            1 << 63 | 1 << 5,
+        ] {
+            if let Some(b) = encode_bitmask_imm(v) {
+                assert_eq!(
+                    decode_bitmask_imm(b),
+                    Some(v),
+                    "{v:#x} encoded to a triple that decodes elsewhere"
+                );
+            }
+        }
+        assert_eq!(encode_bitmask_imm(0), None);
+        assert_eq!(encode_bitmask_imm(u64::MAX), None);
+        assert_eq!(encode_bitmask_imm(0x1234_5678_9abc_def0), None);
+        assert_eq!(enc_tst_imm(0, 0x1234_5678_9abc_def0), None);
+    }
+
+    /// `MOV Xd, #imm` (bitmask form) is `ORR Xd, XZR, #imm`.
+    #[test]
+    fn mov_bitmask_imm_is_orr_from_xzr() {
+        let word = enc_mov_bitmask_imm(3, 0xFFFF_FFFF_0000_0000).expect("encodable");
+        assert_eq!(word & 0x1F, 3, "Rd");
+        assert_eq!(word >> 5 & 0x1F, 31, "Rn = XZR");
+        assert_eq!(word >> 29 & 0b11, 0b01, "ORR opc");
+        assert_eq!(enc_mov_bitmask_imm(0, 0x1234_5678_9abc_def0), None);
     }
 
     /// The workspace keeps `debug-assertions` on in release for the same
