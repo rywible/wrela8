@@ -215,9 +215,13 @@ mod tests {
         //     `FnCtx::{add_reg,mul_reg,orr_reg,and_reg,cmp_reg}`, and the
         //     three identical park-and-return tails onto
         //     `emit_park_and_return`.
+        // 347 -> 348, deliberately upward and by exactly one:
+        // plans/codegen-pareto.md item E adds `FnCtx::mov_reg`, the single
+        // `enc_mov_reg` site that stands in for a spill/reload pair once a
+        // temp is register-resident. No other emitter gained or lost a site.
         assert_eq!(
             encode_enc_site_count(),
-            347,
+            348,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }
