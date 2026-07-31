@@ -1,0 +1,140 @@
+# Plan: codegen Pareto round 2 — delete the movs, kill the redundancy, fix the ruler
+
+**Status: ACTIVE (2026-07-31).** Follows [codegen-pareto.md](codegen-pareto.md),
+whose close measured −15.5 % on the product tier and, more usefully, showed
+*why* that number is small. Decision block **1900–1999**.
+
+**Old decisions do not bind this round.** The human's instruction is explicit:
+do not preserve backwards compatibility, do not defer to a prior freeze that
+measurement has since contradicted. Where a decision from M19/M20 or round 1
+blocks something that is now known to be worth doing, **overturn it and say so
+in a numbered decision here.** Golden churn is expected and is the
+orchestrator's to re-pin.
+
+## What round 1 actually showed
+
+On the real appliance image, `dev` → `release`:
+
+| | dev | release |
+| --- | --- | --- |
+| `movk` | 780 | 0 |
+| `str` | 509 | 461 |
+| `ldr` | 430 | 344 |
+| `mov` | 0 | **161** |
+| total words | 2660 | 1807 |
+
+Three facts follow, and they set this round's agenda:
+
+1. **The allocator relocates data movement rather than deleting it.** −134
+   memory ops, **+161 register moves**: net *positive* on word count. The
+   promised "every resident temp deletes a store and a load" did not happen.
+   Both items E and F named coalescing as the missing piece and left it.
+2. **The word win belongs to an opt that predates the plan.** `movk` 780 → 0
+   is constant-materialization elimination, and `NarrowImm` alone accounts
+   for 19 067 → 13 685 words of the product tier.
+3. **95 % of modelled cost is `runtime`, not `app`** (22 134 vs 1108 on the
+   appliance). There is no compute-heavy program in this repo for a codegen
+   opt to win on, so the corpus cannot show what these opts are for. That is
+   the same self-selection failure round 1's item H found, one level up.
+
+## Items
+
+### I. Register coalescing — delete the 161 movs
+
+Make the allocator's `mov` pairs disappear instead of merely replacing
+spill traffic. A copy whose source and destination do not interfere is one
+register, not two and a move. Includes argument/return position: the home
+of a value passed to a call should *be* the argument register (item F's F4
+note), so the `mov` around every call site vanishes.
+
+Overturn round 1's **decision 1765** (a temp needs two reads before
+promotion) if coalescing makes single-read promotion profitable again —
+1765 existed only because a single-read temp became a serial two-`mov`
+chain, and coalescing is exactly what removes that.
+
+**Oracle:** `mov` count on the appliance asm dump, before/after, recorded.
+Both ∀ tiers. `diff-eval`. **A named boot case, run by you** (see the boot
+rule below).
+**Decisions 1900–1919.**
+
+### J. The inliner, then GVN/SCCP/DCE
+
+The ladder's pull-in #1 and #2, parked by round 1 for size, not rank.
+wrela's redundancy is **spatial** — repeated constant materialization,
+repeated rodata addressing, repeated bounds-check subexpressions — and
+inlining plus redundancy elimination is what kills it. The 780 `movk` in
+dev is that redundancy, visible.
+
+Land the inliner first (single-call-site inlining is the cheap majority),
+then GVN/SCCP/DCE over the widened scope. Each is its own `OptId` and its
+own gate run.
+
+**Oracle:** both ∀ tiers per opt, word and cycle deltas on the product tier,
+`diff-eval`, a named boot case.
+**Decisions 1920–1949.**
+
+### K. Fix the ruler's three known defects
+
+1. **The divide-lo corner.** Independent `[5,20]` and `[5,12]` brackets put
+   `(x=5, w=12)` inside the box, where a 32-bit divide scores *slower* than
+   the 64-bit one it replaced — physically impossible on one divider.
+   Correlated quantities are modelled as independent. Fix the correlation;
+   this unblocks C4.
+2. **`--stage=cost` and `--stage=report` disagree about hot text** for the
+   same program (appliance: 8 256 B vs 91 456 B). One of them is wrong, or
+   they measure different things and both are mislabelled. Reconcile, and
+   make the ∀ gate read the column that describes the shipped image.
+3. **The footprint term is order-invariant**, which is why round 1's item D
+   could not be scored. Make it order-sensitive — charge for *density*, not
+   only for overflow — so block layout is rankable. Then either wire item D's
+   `blocklayout.rs` (it exists and is tested but deliberately unwired) or
+   **delete it**, on the measurement.
+
+Overturn M20's freezes where they are what is wrong. Every changed or added
+row keeps M20 item A's provenance discipline (`source`, `mechanism`, `note`,
+`ambiguity`, tier). Digests will move; that is the review surface.
+**Decisions 1950–1969.**
+
+### L. Delete the losers, land the blocked
+
+- **Delete `BoundsElide`.** Byte-identical to `dev` on all four shipped
+  programs; its whole measured effect is six microbenchmarks, the largest
+  written for it. Doctrine: losers are deleted, not kept disabled. Delete the
+  opt, its transform, and `cost-bounds-elide` if that case exists only to
+  flatter it. If deleting it turns out to change shipped code after all,
+  **that** is the finding — report it and stop.
+- **Re-examine `WideImmForms`** once I and J have landed: its three
+  remaining customers may be gone. Same rule.
+- **Unblock B4 (branch-to-branch and branch-to-fallthrough cleanup).** It
+  wins on all 15 cost cases and was reverted only because eliding a branch
+  merges two emitted-word blocks while the Lane 2 MWIR partition stays
+  finer — M20 decision 1608's bridge contract. **Overturn 1608**: carry block
+  identity through the elision, or relax the bridge to a coarser join.
+- **Land B2** (`ADR` for placed statics, rtdata/pooldata), deferred in round 1
+  only because its oracle is a boot transcript.
+
+**Decisions 1970–1989.**
+
+### M. A workload the compiler can be judged on
+
+There is no compute-heavy program in the tree. Add one — real work with
+loops, arrays, arithmetic and calls, of the shape the flagship will actually
+run (pixel/blit-like inner loops, fixed-point maths) — as a product-tier cost
+case *and* a boot case, so codegen quality is visible in both the model and a
+guest transcript. It must be a genuine program, not a benchmark written to
+flatter an opt: state plainly what it computes and why that shape.
+
+**Decisions 1990–1999.**
+
+## Rules for this round
+
+- **Every item runs its own named boot case.** Round 1 barred agents from the
+  hypervisor and a keystone item silently miscompiled the guest for hours.
+  That trade is reversed: a filtered, read-only `cargo xtask golden
+  --only-boot --filter <case>` is required before an item reports done.
+  Never `--update`; the orchestrator re-pins.
+- **Both ∀ tiers bind**, each opt asked over its own baseline (round 1
+  decision 1717).
+- **Never tune the cost model to make an opt win.** Item K changes the model
+  *only* where it is provably wrong, with provenance.
+- Losers are deleted.
