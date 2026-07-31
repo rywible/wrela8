@@ -3041,15 +3041,27 @@ mod tests {
             // answer is worse than not asking.
             //
             // **Item F's two ids need the same treatment, and for the
-            // same reason** (decision 1780). Neither is a transform of
+            // same reason** (decision 1792). Neither is a transform of
             // its own: `InterprocRegs` changes which register the
             // allocator may hand out, and `Frameless` is read off the
             // allocation's own result, so with `RegAlloc` off both are
             // the identity and a `dev` baseline would pin a veto that
             // says nothing. Each is asked over its own link in item F's
             // chain, derived from `RELEASE_OPTS` rather than written out.
+            //
+            // `WideImmForms` was widened from `[NarrowImm]` to
+            // `[NarrowImm, RegAlloc]` by decision 1791, and the reason is
+            // the same mechanism one item earlier: C5 cannot be ranked
+            // against `dev` at all (1747), and on the product tier it
+            // cannot be ranked without `RegAlloc` either, because its
+            // saving is *words* and words only become cycles once the
+            // allocator has removed the schedule slack that absorbs them.
+            // Both halves are measured in plans/codegen-pareto-C.md. That
+            // baseline was widened *after* a red test, so it is not what
+            // the membership claim rests on — leave-one-out is, and it has
+            // no baseline freedom at all.
             let base: Vec<OptId> = match opt {
-                OptId::WideImmForms => vec![OptId::NarrowImm],
+                OptId::WideImmForms => vec![OptId::NarrowImm, OptId::RegAlloc],
                 OptId::InterprocRegs => item_f_baseline(),
                 OptId::Frameless => {
                     let mut b = item_f_baseline();
@@ -3141,18 +3153,24 @@ mod tests {
         ("AdrAddressing", "wins"),
         ("BfxNarrow", "wins"),
         ("MaskCheck", "wins"),
-        // **The second finding, and it was not predicted.** Asked over
-        // `[NarrowImm]` rather than `dev` (decision 1747, and see the
-        // baseline note in the lane body), `WideImmForms` is still flat:
-        // Δ = +0 at **all 10 240 product-tier points**, byte-identical on
-        // all four borrowed programs, exactly like `BoundsElide`. The
-        // `dev` baseline was suspected of manufacturing this veto; it did
-        // not. A plausible mechanism is already written down in
-        // `RELEASE_OPTS`' own ordering note — `MaskCheck` deletes most of
-        // the constant materializations `WideImmForms` would otherwise
-        // shorten — but that is a hypothesis, not a measurement, and item
-        // G owns confirming or killing it.
-        ("WideImmForms", "veto"),
+        // **Item H's second finding, now resolved — decision 1791.** Over
+        // `[NarrowImm]` this was `veto`: Δ = +0 at all 10 240 product-tier
+        // points. Item H's hypothesis — that `MaskCheck` deletes the
+        // constant materializations C5 would shorten — was **measured and
+        // is true**: on the four shipped programs `MaskCheck` removes 4 of
+        // C5's 7 customers, every bitmask-immediate one, leaving three
+        // `MOVN`s on two programs.
+        //
+        // But that is not why the verdict was `veto`. The missing
+        // ingredient was `RegAlloc`, not `MaskCheck`: C5's saving is
+        // words, and words become cycles only once the allocator removes
+        // the slack that absorbs them — the same crossover item C1 hit.
+        // Asked over `[NarrowImm, RegAlloc]`, the configuration the
+        // product actually ships, C5 falls at **every** one of the 10 240
+        // points on `cost-product-blk` and `cost-product-receipt` and
+        // rises nowhere. Leave-one-out against the whole shipped list
+        // gives the identical verdict on the identical two cases.
+        ("WideImmForms", "wins"),
         ("RegAlloc", "wins"),
         // **plans/codegen-pareto.md item F, decision 1780.** Both win on
         // all four borrowed programs, which is the question decision 1717
@@ -4379,8 +4397,94 @@ mod tests {
         // cycles move.
         (&[], OptId::BfxNarrow, "cost-runtime"),
         // The signed bounds constants and the `MIN`/`-1` divide guard.
-        (&[OptId::NarrowImm], OptId::WideImmForms, "cost-mpipe-block"),
+        //
+        // **Baseline widened to include `RegAlloc` at decision 1791**, and
+        // this is the one row where the baseline is load-bearing, so the
+        // reasoning is here rather than in the findings alone.
+        //
+        // Asked over `[NarrowImm]` this opt **fails** on the product
+        // tier — `no_case_falls_everywhere`, which is what turned this
+        // lane red on master once item H made the product tier part of the
+        // box. That result is real and is not being papered over; it is
+        // reproduced and explained in plans/codegen-pareto-C.md. What it
+        // means is that `[NarrowImm]` is now the wrong baseline for the
+        // same reason `dev` was wrong for it at decision 1747: it asks the
+        // question in a configuration the product does not ship. C5's
+        // saving is **words**, and words only become cycles when the
+        // schedule has no slack left to absorb them. `RegAlloc` is what
+        // removes that slack, and `RegAlloc` ships.
+        //
+        // The baseline was not chosen by hunting for a green one. The
+        // *strictest* membership question available — leave-one-out
+        // against the entire shipped list, where C5 has to beat every
+        // other opt including the two that delete most of its customers —
+        // gives the identical verdict on the identical two cases, and is
+        // pinned separately in
+        // `unit:item_c5_earns_its_place_by_leave_one_out_on_the_product_tier`
+        // so this row's baseline cannot be what carries the claim.
+        (
+            &[OptId::NarrowImm, OptId::RegAlloc],
+            OptId::WideImmForms,
+            "cost-mpipe-block",
+        ),
     ];
+
+    /// **Decision 1791: C5's membership claim, asked the hardest way.**
+    ///
+    /// `ITEM_C_SMOKE` ranks each opt over a chosen baseline, and a chosen
+    /// baseline is exactly the kind of freedom that can flatter an opt. So
+    /// C5's place in `RELEASE_OPTS` is pinned here instead, by the one
+    /// question that has no such freedom: **remove it from the shipped
+    /// list and see whether the shipped list gets worse.**
+    ///
+    /// This is strictly harder than the alone-gate. C5 must beat the whole
+    /// rest of `RELEASE_OPTS`, including `MaskCheck`, which deletes 4 of
+    /// its 7 constant-materialization customers on the four programs the
+    /// appliance ships — every bitmask-immediate one, leaving only three
+    /// `MOVN`s across two of the four. It still falls at **every** point
+    /// of the product box on both of those two, and rises nowhere.
+    ///
+    /// If this ever stops holding — most plausibly because `MaskCheck`'s
+    /// coverage grows and eats the remaining `MOVN` customers — C5 has
+    /// become dead weight and the doctrine is to delete it, not to look
+    /// for a baseline where it still wins.
+    #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
+    #[test]
+    fn item_c5_earns_its_place_by_leave_one_out_on_the_product_tier() {
+        let without: Vec<OptId> = RELEASE_OPTS
+            .iter()
+            .copied()
+            .filter(|o| *o != OptId::WideImmForms)
+            .collect();
+        assert_eq!(
+            without.len() + 1,
+            RELEASE_OPTS.len(),
+            "WideImmForms must be in RELEASE_OPTS for leave-one-out to mean anything"
+        );
+        let cmp = compare_opt_lists_over_box_in_tier(&without, RELEASE_OPTS, CostTier::Product)
+            .expect("product-tier leave-one-out sweep");
+        let falls: Vec<&str> = cmp
+            .cases
+            .iter()
+            .filter(|c| !c.points.is_empty() && c.points.iter().all(|p| p.candidate < p.baseline))
+            .map(|c| c.name.as_str())
+            .collect();
+        eprintln!(
+            "C5 leave-one-out (product tier): {} points/side, falls everywhere on {falls:?}",
+            cmp.scored_points_in(CostTier::Product)
+        );
+        assert!(
+            cmp.wins_in_tier(CostTier::Product),
+            "C5 no longer earns its place in RELEASE_OPTS: {:?}. Delete it — do not \
+             go looking for a baseline where it still wins.",
+            cmp.reasons.iter().map(SweepVeto::label).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            falls,
+            ["cost-product-blk", "cost-product-receipt"],
+            "the two shipped programs C5 is justified by; re-derive rather than rescale"
+        );
+    }
 
     /// Item C's attribution table, printed for
     /// `plans/codegen-pareto-C.md`: each opt alone against `dev`, at the
@@ -4547,9 +4651,17 @@ mod tests {
         // item C's findings said would happen ("C1's payoff is gated on
         // item E, not on the ruler").
         //
-        // Promoting C1 to a ranked `OptId` is item C's follow-up, not this
-        // assertion's job. What this pins is the *direction and size* of
-        // the crossover, so it cannot quietly reverse.
+        // Promoting C1 to a ranked `OptId` was item C's follow-up, and the
+        // answer is **no** — decision 1790. Not because it is unrankable
+        // any more (it is: 3 cycles here), but because of *which* case
+        // falls. `cost-arith-w` is the only case in either tier that moves
+        // at all, item C wrote it, and C1 is worth exactly zero on all
+        // four programs the appliance ships. Freeze 1717 forbids gating on
+        // a case the opt authored alone, and that is the whole gate C1
+        // would have had. See plans/codegen-pareto-C.md.
+        //
+        // What this pins is the *direction and size* of the crossover, so
+        // it cannot quietly reverse.
         assert!(
             w_form < x_form,
             "item C1 has stopped being visible again: W-form {w_form} vs X-form \

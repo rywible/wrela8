@@ -17,14 +17,17 @@ Branch `cp-C`, based on `01a7ca24`. Commits:
 
 | Sub-item | Landed as | ∀ gate verdict |
 | --- | --- | --- |
-| **C1** type-driven W/X width | Unconditional codegen form change + a T1 cost row. **Not** an `OptId`. | **Scored at exactly zero**, everywhere. Not rankable — reason measured, below. |
+| **C1** type-driven W/X width | Unconditional codegen form change + a T1 cost row. **Not** an `OptId`. | Scored at zero on item C's tree (1746); rankable after item E, still not an id — its only customer is the case it authored, and it is byte-identical on all four shipped programs (**1790**, follow-up below). |
 | **C2** bitmask-immediate `TST` overflow checks | `OptId::MaskCheck` in `RELEASE_OPTS` | **Passes**, alone vs `dev`, at all 1024 corners of `cost-arith` and over the whole corpus |
 | **C3** `UBFX`/`SBFX` narrowing | `OptId::BfxNarrow` in `RELEASE_OPTS` | **Passes**, alone vs `dev`, on `cost-runtime` |
 | **C4** constant-divisor strength reduction | **Not landed** | Not attempted — see below |
-| **C5** `MOVN` + bitmask-immediate materialization | `OptId::WideImmForms` in `RELEASE_OPTS` | **Passes**, over baseline `[NarrowImm]`, on `cost-mpipe-block` |
+| **C5** `MOVN` + bitmask-immediate materialization | `OptId::WideImmForms` in `RELEASE_OPTS` | Micro: **passes** over `[NarrowImm]` on `cost-mpipe-block`. Product: `veto` over `[NarrowImm]`, **passes** over `[NarrowImm, RegAlloc]` and by leave-one-out, on `cost-product-blk` and `cost-product-receipt` (**1791**, follow-up below). Marginal — tripwire recorded. |
 
-`RELEASE_OPTS` is now
-`[BoundsElide, NarrowImm, BfxNarrow, MaskCheck, WideImmForms]`.
+`RELEASE_OPTS` was `[BoundsElide, NarrowImm, BfxNarrow, MaskCheck,
+WideImmForms]` at item C's close; after items B and E merged it is
+`[BoundsElide, NarrowImm, AdrAddressing, BfxNarrow, MaskCheck,
+WideImmForms, RegAlloc]`. Item C's follow-up (below) adds no id and
+removes none.
 
 ## Decisions
 
@@ -373,3 +376,178 @@ there:
 Not run, deliberately (decision 1708): `cargo xtask check` in any form,
 unfiltered `golden`, anything `--only-boot`, `bench`/`profile`/`repro`,
 `cargo test -p wrela-vmm`.
+
+---
+
+# Follow-up after items A/B/D/E/H merged (master `bac328db`)
+
+Item C's own findings predicted one of these and were wrong-footed by the
+other. Decisions **1790** and **1791** — item C's 1740–1749 block was
+exhausted, and 1789–1799 is the free tail of this plan's 1700 block
+(item F holds 1770–1779).
+
+## 1790 — C1 does **not** become a ranked `OptId`, for a new reason
+
+**The prediction landed.** Item C's findings said "C1's payoff is gated on
+item E, not on the ruler" and named the threshold: the spill-everything
+frame was donating 6 cycles of M-pipe slack per multiply against the 2 the
+substitution saves. Item E's allocator removed that slack and
+`unit:item_c1_is_hidden_by_the_frame_until_the_multiply_outgrows_its_slack`
+failed on schedule, exactly as its own message said it would. On the
+merged tree the ablation reads **W-form 149 vs X-form 152** — a 3-cycle
+win with 1 cycle of residual slack.
+
+So decision 1746's premise ("scores exactly zero, therefore unrankable,
+therefore freeze 1714 forbids a named opt") is gone. C1 is rankable now.
+It still does not become an `OptId`, and this is the measurement that
+decides it:
+
+| baseline `[RegAlloc]` → `+WFormMul` | Δ cycles |
+| --- | --- |
+| `cost-arith-w` | **−1** |
+| every other micro case (14) | 0 |
+| `cost-product-actors` | **0** |
+| `cost-product-appliance` | **0** |
+| `cost-product-blk` | **0** |
+| `cost-product-receipt` | **0** |
+
+and in the full shipped list, `RELEASE_OPTS` vs `RELEASE_OPTS` minus C1:
+`cost-arith-w` 152 → 149, **every product program unchanged**.
+
+The product tier is flat for a reason that needs no sweep to establish.
+Counting W-form multiplies in the four programs the appliance ships:
+
+```
+cost-product-actors:    mul_w=0  mul_x=25
+cost-product-appliance: mul_w=0  mul_x=24
+cost-product-blk:       mul_w=0  mul_x=28
+cost-product-receipt:   mul_w=0  mul_x=28
+```
+
+**Zero.** All 105 multiplies in shipped code are X-form — checked
+multiplies, whose overflow test needs the high half, or 64-bit wrapping
+ones. C1 changes not one emitted word on the product tier, so it scores
+identically at every point of the box by construction.
+
+That leaves `cost-arith-w` as the only case in either tier that moves at
+all — **and item C wrote `cost-arith-w`**, precisely because no case in
+the corpus had a narrow wrapping multiply. Freeze 1717 says an opt may not
+gate on a case it authored alone, and that is the entire gate C1 would
+have. So C1 stays what decision 1740 prescribed in advance: a reported
+form change, unconditional, with no win claimed.
+
+`cost-arith-w` stays too — it is a legitimate cost golden pinning the
+W-form emission and the `mul_w` row, and it is the ablation's substrate.
+It just cannot be C1's gate.
+
+**Revisit when** the appliance ships a narrow wrapping multiply. The
+ablation test is the tripwire and already reads the right way.
+
+## 1791 — C5 keeps its place, and the veto was the baseline
+
+Item H's re-run found `WideImmForms` flat on the product tier — Δ = +0 at
+all 10 240 points, asked over `[NarrowImm]`. That turned
+`unit:each_item_c_opt_wins_over_the_whole_box_alone` red on master once
+the product tier became part of the box it sweeps. The finding is real and
+is reproduced here. Two separate questions came out of it.
+
+### The `MaskCheck` hypothesis: **confirmed, and sharper than stated**
+
+Item C's own `RELEASE_OPTS` ordering note guessed the mechanism —
+`MaskCheck` deletes most of the constant materializations `WideImmForms`
+would otherwise shorten. Counting C5's actual customers (emitted `MOVN`
+plus bitmask-immediate `MOV` words) on the four shipped programs:
+
+| program | customers, `MaskCheck` off | customers, `MaskCheck` on | words saved off → on |
+| --- | --- | --- | --- |
+| `cost-product-actors` | 1 (1 bitmask) | **0** | 1 → 0 |
+| `cost-product-appliance` | 1 (1 bitmask) | **0** | 1 → 0 |
+| `cost-product-blk` | 3 (2 `MOVN`, 1 bitmask) | 2 (2 `MOVN`) | 7 → 6 |
+| `cost-product-receipt` | 2 (1 `MOVN`, 1 bitmask) | 1 (1 `MOVN`) | 4 → 3 |
+| **total** | **7** | **3** | **13 → 9** |
+
+`MaskCheck` deletes **4 of C5's 7 customers on shipped code, and every
+single bitmask-immediate one** — those were exactly the narrow
+range-check bounds C5 would have materialized in one word, and `MaskCheck`
+removes the materialization entirely. Two of the four shipped programs are
+left byte-identical with and without C5. The hypothesis was right.
+
+### But that is not why the verdict was `veto`
+
+Three `MOVN` customers survive on two programs, and they are worth real
+cycles — just not against a baseline without the allocator:
+
+| baseline | `cost-product-blk` | `cost-product-receipt` |
+| --- | --- | --- |
+| `[NarrowImm]` → `+C5` | 5808 → 5808 (**0**) | 0 |
+| `[NarrowImm, RegAlloc]` → `+C5` | 5217 → **5216** | 6737 → **6736** |
+
+**C5's saving is words; words become cycles only once the schedule has no
+slack left to absorb them, and `RegAlloc` is what removes that slack.**
+That is the same crossover as C1 — one mechanism, two opts, and the reason
+item H's `[NarrowImm]` baseline could not see it. `[NarrowImm]` asks the
+question in a configuration the product does not ship, which is the same
+objection decision 1747 raised against `dev`.
+
+### The membership claim, asked the hardest way
+
+Changing a baseline after seeing a test go red is exactly the move that
+needs to be distrusted, so C5's place is **not** rested on it. The
+strictest question available has no baseline freedom at all: remove C5
+from the shipped list and ask whether the shipped list gets worse. C5 then
+has to beat every other opt, including the two that delete most of its
+customers.
+
+```
+C5 leave-one-out, product tier: 10240 points/side
+  falls at every point on: ["cost-product-blk", "cost-product-receipt"]
+  rises anywhere:          []
+  vetoes:                  []
+```
+
+Identical verdict, identical two cases, as the corrected alone-gate. Pinned
+in `unit:item_c5_earns_its_place_by_leave_one_out_on_the_product_tier`, so
+the claim rests on the question with no freedom in it and the smoke row's
+baseline cannot be what carries it.
+
+### Recommendation: **keep C5**, and here is the line
+
+C5 is **not** the `BoundsElide` pathology. `BoundsElide` is byte-identical
+to `dev` on all four shipped programs — it changes nothing the appliance
+runs. C5 changes shipped code, on two of four programs, and lowers their
+cycle count at every point of the product box under the strictest question
+this repo has.
+
+It is nonetheless **marginal** and should be read that way: 3 customers, 9
+words, 1 cycle each on two programs. It survives on `MOVN` alone; every
+one of its bitmask-immediate customers on shipped code is already gone,
+eaten by `MaskCheck`. So the honest disposition is to keep it and write
+down the tripwire:
+
+> **If `MaskCheck`'s coverage grows to eat the remaining `MOVN` customers,
+> C5 becomes dead weight and the doctrine is to delete it — not to look
+> for another baseline where it still wins.**
+
+The leave-one-out test is that tripwire, and its failure message says so.
+
+## What changed in the tree
+
+- `OptId::WFormMul` **not** added; C1's W-form selection stays
+  unconditional (1790). `codegen.rs`'s emit-site comment carries the new
+  reason.
+- `ITEM_C_SMOKE`'s C5 row: baseline `[NarrowImm]` → `[NarrowImm, RegAlloc]`,
+  with the full history at the row.
+- `each_release_opt_is_re_asked_alone_on_the_product_tier`: same baseline
+  correction; `PINNED_PRODUCT_TIER_VERDICTS` row for `WideImmForms`
+  `veto` → `wins`, with the measurement.
+- New deep-lane test
+  `item_c5_earns_its_place_by_leave_one_out_on_the_product_tier`.
+- **No emission change, and it is checked rather than asserted.** The
+  whole `codegen.rs` diff for this follow-up is comment-only — `git diff`
+  filtered to non-comment lines is empty — and `opts/mod.rs` is untouched,
+  so `RELEASE_OPTS` is byte-for-byte what item E's merge left. Goldens are
+  therefore untouched (spot-checked: `cost-product` 4/4 and `asm-arith`
+  1/1 ok), and `diff-eval` was not re-run because nothing here can move an
+  emitted word.
+- Deliberately **not** touched, so item F's live worktree does not
+  collide: `opts/mod.rs`, and any executable line of `codegen.rs`.
