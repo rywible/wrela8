@@ -1459,6 +1459,17 @@ impl Frame {
         }
     }
 
+    /// One bit per register that is some resident temp's home
+    /// (plans/codegen-pareto-2.md item I, decision 1900). Empty in `dev`
+    /// and on the async path, where nothing is resident.
+    fn home_mask(&self) -> u32 {
+        let mut m = 0u32;
+        for &r in self.virt_to_reg.values() {
+            m |= 1u32 << (r & 31);
+        }
+        m
+    }
+
     /// True for an offset that is virtual but has no register behind it
     /// — an interior word of a resident temp, which cannot happen and is
     /// reported as a producer bug if it does.
@@ -1558,6 +1569,23 @@ struct FnCtx<'a> {
     /// serve it (see [`VIRT_SLOT_BASE`]). `emit_fn` turns it into a
     /// producer-bug error rather than emitting a wrong instruction.
     resident_misuse: Option<String>,
+    /// plans/codegen-pareto-2.md item I (decision 1900): one bit per
+    /// register that is some resident temp's home, i.e. the registers
+    /// whose contents belong to the *allocator* rather than to whichever
+    /// emission site happens to be running.
+    ///
+    /// It exists to make item I's one new hazard fail closed. Coalescing
+    /// hands an emission site a home register in place of a scratch one
+    /// ([`use_slot`](FnCtx::use_slot)); a site that then *writes* that
+    /// register would destroy a live value, silently, in a way no unit
+    /// test of the allocator could see. So every `push` checks it, and
+    /// the only writes allowed are the temp's own definition.
+    home_mask: u32,
+    /// The one home register the current site is authorized to define,
+    /// set by [`def_reg`](FnCtx::def_reg) and cleared by the matching
+    /// `store_slot`. Everything else that writes a home is a producer
+    /// bug.
+    home_def_ok: Option<u8>,
 }
 
 /// Integrity item D: structural emit-tag shape checked at `FnCtx::push` /
@@ -1711,9 +1739,29 @@ impl<'a> FnCtx<'a> {
     ) {
         // Flag-setting Alu/Branch paths — not Load/Store/Call; still shape-check.
         check_push_shape(rule, dst, srcs, None);
+        self.check_home_write(dst, &text);
         let mut ew = EmittedWord::new(word, text, rule, dst, srcs);
         ew.flags = flags;
         self.words.push(ew);
+    }
+
+    /// Item I (decision 1900): a write to a resident temp's home register
+    /// from anywhere but that temp's own definition means the emitter and
+    /// the allocator have diverged — either a coalesced operand
+    /// ([`use_slot`](Self::use_slot)) was clobbered by the site that
+    /// borrowed it, or the allocator handed out a register the emission
+    /// uses for something else. Both are producer bugs, and both destroy
+    /// a live value silently. Recorded here and turned into a build
+    /// failure by `emit_fn`, never emitted around.
+    fn check_home_write(&mut self, dst: Option<u8>, text: &str) {
+        let Some(d) = dst else { return };
+        if self.home_mask & (1u32 << (d & 31)) == 0 || self.home_def_ok == Some(d) {
+            return;
+        }
+        self.note_alloc_divergence(&format!(
+            "`{text}` writes x{d}, which is a register-allocated temp's home, outside that \
+             temp's own definition"
+        ));
     }
 
     fn push_mem(
@@ -1732,6 +1780,7 @@ impl<'a> FnCtx<'a> {
             m => m,
         };
         check_push_shape(rule, dst, srcs, mem.as_ref());
+        self.check_home_write(dst, &text);
         let mut ew = EmittedWord::new(word, text, rule, dst, srcs);
         ew.mem = mem;
         self.words.push(ew);
@@ -1770,10 +1819,79 @@ impl<'a> FnCtx<'a> {
     /// probe and the emitter disagree about how a temp is addressed.
     /// Recorded rather than emitted-around (`emit_fn` fails the build).
     fn note_resident_misuse(&mut self, what: &str, off: usize) {
+        self.note_alloc_divergence(&format!(
+            "register-allocated temp reached through {what} at virtual slot offset {off}"
+        ));
+    }
+
+    /// The one recorder for "the allocation and the emission disagree".
+    /// First message wins; `emit_fn` turns it into a build failure.
+    fn note_alloc_divergence(&mut self, msg: &str) {
         if self.resident_misuse.is_none() {
-            self.resident_misuse = Some(format!(
-                "register-allocated temp reached through {what} at virtual slot offset {off}"
-            ));
+            self.resident_misuse = Some(msg.to_string());
+        }
+    }
+
+    /// **Coalesced read** (plans/codegen-pareto-2.md item I, decision
+    /// 1900): the register that holds the value of the temp whose slot is
+    /// `off`, and **no instruction at all** when that temp is resident.
+    ///
+    /// [`load_slot`](Self::load_slot) answers the question "put this
+    /// temp's value in *that* register", which for a resident temp is a
+    /// `mov` — a copy whose destination is a scratch register live for
+    /// exactly one instruction and whose source is the temp's home. Those
+    /// two never interfere, so they are one register: this method answers
+    /// the *other* question — "which register may I read this temp from" —
+    /// and the copy stops existing rather than being relocated. That is
+    /// the whole of item I's temp-to-temp coalescing; there is no separate
+    /// pass, because the emitter is the only thing that knows which
+    /// operand field it is about to write the register number into.
+    ///
+    /// **The returned register is read-only.** A site that clobbers its
+    /// operand must keep using `load_slot`. Writing it is caught rather
+    /// than trusted: `push` refuses any `dst` that is a resident temp's
+    /// home outside that temp's own definition window (see
+    /// [`home_def_ok`](FnCtx::home_def_ok)), and `emit_fn` turns the
+    /// refusal into a build failure.
+    ///
+    /// Under `dev`, on the async path and inside the probe emission
+    /// nothing is resident, so this is `load_slot` word for word — which
+    /// is what keeps the probe measuring the program that is finally
+    /// built.
+    fn use_slot(&mut self, scratch: u8, off: usize) -> u8 {
+        if let Some(home) = self.frame.reg_at(off) {
+            self.slot_accesses
+                .push((off, regalloc::Touch::Read, self.words.len()));
+            return home;
+        }
+        self.load_slot(scratch, off);
+        scratch
+    }
+
+    /// **Coalesced write** (item I, decision 1900): the register a
+    /// definition of the temp whose slot is `off` should be computed
+    /// *into*, so that the defining instruction lands the value in its
+    /// home and the store-side `mov` never exists either.
+    ///
+    /// Pair it with the ordinary `store_slot(d, off)`: for a resident
+    /// temp that is `mov home, home`, which [`mov_reg`](Self::mov_reg)
+    /// already elides, and for a spilled one it is the `str` it always
+    /// was. So the touch bookkeeping, the probe's view and the spilled
+    /// path are all unchanged, and only the register number moves.
+    ///
+    /// The caller must not read any other temp between this call and the
+    /// store: the returned register is the home, and while a home can
+    /// never collide with a *live* temp's home (two temps touched at one
+    /// program point have intersecting intervals, so the scan gives them
+    /// different registers) it is a definition, and a definition is only
+    /// safe once its own sources have been read.
+    fn def_reg(&mut self, scratch: u8, off: usize) -> u8 {
+        match self.frame.reg_at(off) {
+            Some(home) => {
+                self.home_def_ok = Some(home);
+                home
+            }
+            None => scratch,
         }
     }
 
@@ -1805,9 +1923,16 @@ impl<'a> FnCtx<'a> {
         self.slot_accesses
             .push((off, regalloc::Touch::Write, self.words.len()));
         if let Some(home) = self.frame.reg_at(off) {
+            // The one authorized write to a home register that is not a
+            // `def_reg` definition: the temp's own store. `mov_reg`
+            // elides it outright when the value was already computed
+            // into the home (item I's write-side coalescing).
+            self.home_def_ok = Some(home);
             self.mov_reg(home, reg);
+            self.home_def_ok = None;
             return;
         }
+        self.home_def_ok = None;
         if self.frame.is_stray_virtual(off) {
             self.note_resident_misuse("store_slot", off);
             return;
@@ -2088,11 +2213,30 @@ impl<'a> FnCtx<'a> {
     /// register `X_A` (`MakeAggregate`/`Project`/`SetField`/`MakeEnum`'s
     /// shared "both sides are known compile-time frame offsets" copy
     /// shape).
+    ///
+    /// Item I: each word goes `use_slot` → `store_slot`, so a copy
+    /// between two resident scalars is one `mov` (or, when the allocator
+    /// gave both ends the same register, nothing at all) instead of two.
     fn copy_slot_to_slot(&mut self, dst_off: usize, src_off: usize, size: usize) {
         let mut w = 0;
         while w < size {
-            self.load_slot(X_A, src_off + w);
-            self.store_slot(X_A, dst_off + w);
+            match self.frame.reg_at(dst_off + w) {
+                // The destination is resident: read the source *straight
+                // into its home*, so a spilled source is one `ldr` and a
+                // resident one is one `mov` — and nothing at all when the
+                // allocator gave both ends the same register.
+                Some(_) => {
+                    let d = self.def_reg(X_A, dst_off + w);
+                    self.load_slot(d, src_off + w);
+                    self.store_slot(d, dst_off + w);
+                }
+                // The destination is spilled: store straight out of
+                // wherever the source already lives.
+                None => {
+                    let s = self.use_slot(X_A, src_off + w);
+                    self.store_slot(s, dst_off + w);
+                }
+            }
             w += 8;
         }
     }
@@ -2663,12 +2807,16 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             if is_float(ty) {
                 return Err(CodegenError::internal("`ConstInt` with a float type"));
             }
-            ctx.load_imm(X_A, *value as i64);
-            ctx.store_slot(X_A, ctx.frame.off(*dst));
+            let off = ctx.frame.off(*dst);
+            let d = ctx.def_reg(X_A, off);
+            ctx.load_imm(d, *value as i64);
+            ctx.store_slot(d, off);
         }
         Inst::ConstBool { dst, value } => {
-            ctx.load_imm(X_A, if *value { 1 } else { 0 });
-            ctx.store_slot(X_A, ctx.frame.off(*dst));
+            let off = ctx.frame.off(*dst);
+            let d = ctx.def_reg(X_A, off);
+            ctx.load_imm(d, if *value { 1 } else { 0 });
+            ctx.store_slot(d, off);
         }
         Inst::ConstFloat { .. } => {
             return Err(CodegenError::unimplemented(
@@ -2676,12 +2824,16 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             ));
         }
         Inst::ConstChar { dst, value } => {
-            ctx.load_imm(X_A, *value as u32 as i64);
-            ctx.store_slot(X_A, ctx.frame.off(*dst));
+            let off = ctx.frame.off(*dst);
+            let d = ctx.def_reg(X_A, off);
+            ctx.load_imm(d, *value as u32 as i64);
+            ctx.store_slot(d, off);
         }
         Inst::ConstUnit { dst } => {
-            ctx.load_imm(X_A, 0);
-            ctx.store_slot(X_A, ctx.frame.off(*dst));
+            let off = ctx.frame.off(*dst);
+            let d = ctx.def_reg(X_A, off);
+            ctx.load_imm(d, 0);
+            ctx.store_slot(d, off);
         }
         Inst::ConstText { .. } => {
             return Err(CodegenError::unimplemented(
@@ -2724,12 +2876,13 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             if matches!(base_ty, Type::Own(..)) {
                 let payload_ty = unwrap_own_ref(&base_ty);
                 let (off, size) = field_offset_size(payload_ty, *index, ctx.layout)?;
-                ctx.load_slot(X_A, ctx.frame.off(*base));
+                let b = ctx.use_slot(X_A, ctx.frame.off(*base));
                 let dst_off = ctx.frame.off(*dst);
                 let mut w = 0;
                 while w < size {
-                    ctx.load_ptr(X_B, X_A, off + w);
-                    ctx.store_slot(X_B, dst_off + w);
+                    let d = ctx.def_reg(X_B, dst_off + w);
+                    ctx.load_ptr(d, b, off + w);
+                    ctx.store_slot(d, dst_off + w);
                     w += 8;
                 }
             } else {
@@ -2742,12 +2895,12 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             if matches!(base_ty, Type::Own(..)) {
                 let payload_ty = unwrap_own_ref(&base_ty);
                 let (off, size) = field_offset_size(payload_ty, *index, ctx.layout)?;
-                ctx.load_slot(X_A, ctx.frame.off(*base));
+                let b = ctx.use_slot(X_A, ctx.frame.off(*base));
                 let src_off = ctx.frame.off(*value);
                 let mut w = 0;
                 while w < size {
-                    ctx.load_slot(X_B, src_off + w);
-                    ctx.store_ptr(X_B, X_A, off + w);
+                    let s = ctx.use_slot(X_B, src_off + w);
+                    ctx.store_ptr(s, b, off + w);
                     w += 8;
                 }
             } else {
@@ -2776,8 +2929,9 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             let dst_off = ctx.frame.off(*dst);
             let mut w = 0;
             while w < elem_size {
-                ctx.load_ptr(X_F, X_C, w);
-                ctx.store_slot(X_F, dst_off + w);
+                let d = ctx.def_reg(X_F, dst_off + w);
+                ctx.load_ptr(d, X_C, w);
+                ctx.store_slot(d, dst_off + w);
                 w += 8;
             }
         }
@@ -2802,8 +2956,8 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             let val_off = ctx.frame.off(*value);
             let mut w = 0;
             while w < elem_size {
-                ctx.load_slot(X_F, val_off + w);
-                ctx.store_ptr(X_F, X_C, w);
+                let s = ctx.use_slot(X_F, val_off + w);
+                ctx.store_ptr(s, X_C, w);
                 w += 8;
             }
         }
@@ -2830,25 +2984,27 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
                 X_C,
             );
             let width = mmio_access_width(ty, 0)?;
+            let dst_off = ctx.frame.off(*dst);
+            let d = ctx.def_reg(X_B, dst_off);
             let (enc, mnem) = match width {
-                1 => (encode::enc_ldrb_imm(X_B, X_C, 0), "ldrb"),
-                2 => (encode::enc_ldrh_imm(X_B, X_C, 0), "ldrh"),
-                4 => (encode::enc_ldr_w_imm(X_B, X_C, 0), "ldr"),
-                _ => (encode::enc_ldr_x_imm(X_B, X_C, 0), "ldr"),
+                1 => (encode::enc_ldrb_imm(d, X_C, 0), "ldrb"),
+                2 => (encode::enc_ldrh_imm(d, X_C, 0), "ldrh"),
+                4 => (encode::enc_ldr_w_imm(d, X_C, 0), "ldr"),
+                _ => (encode::enc_ldr_x_imm(d, X_C, 0), "ldr"),
             };
             let rt = if width == 8 {
-                reg_name(X_B)
+                reg_name(d)
             } else {
-                format!("w{X_B}")
+                format!("w{d}")
             };
             ctx.push(
                 enc,
                 format!("{mnem} {rt}, [{}, #0]", reg_name(X_C)),
                 CostRule::Load,
-                Some(X_B),
+                Some(d),
                 &[X_C],
             );
-            ctx.store_slot(X_B, ctx.frame.off(*dst));
+            ctx.store_slot(d, dst_off);
         }
         Inst::PlacedIndexSet {
             base,
@@ -2869,32 +3025,34 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
                 X_C,
             );
             let width = mmio_access_width(ty, 0)?;
-            ctx.load_slot(X_B, ctx.frame.off(*value));
+            let v = ctx.use_slot(X_B, ctx.frame.off(*value));
             let (enc, mnem) = match width {
-                1 => (encode::enc_strb_imm(X_B, X_C, 0), "strb"),
-                2 => (encode::enc_strh_imm(X_B, X_C, 0), "strh"),
-                4 => (encode::enc_str_w_imm(X_B, X_C, 0), "str"),
-                _ => (encode::enc_str_x_imm(X_B, X_C, 0), "str"),
+                1 => (encode::enc_strb_imm(v, X_C, 0), "strb"),
+                2 => (encode::enc_strh_imm(v, X_C, 0), "strh"),
+                4 => (encode::enc_str_w_imm(v, X_C, 0), "str"),
+                _ => (encode::enc_str_x_imm(v, X_C, 0), "str"),
             };
             let rt = if width == 8 {
-                reg_name(X_B)
+                reg_name(v)
             } else {
-                format!("w{X_B}")
+                format!("w{v}")
             };
             ctx.push(
                 enc,
                 format!("{mnem} {rt}, [{}, #0]", reg_name(X_C)),
                 CostRule::Store,
                 None,
-                &[X_B, X_C],
+                &[v, X_C],
             );
         }
         // plans/M10.md item B4 / decisions 595–596: packed byte load
         // through an unbounded `Bytes` (base, len) handle.
         Inst::BytesIndexGet { dst, base, index } => {
             emit_bytes_index_addr(ctx, ctx.frame.off(*base), ctx.frame.off(*index), X_C)?;
-            ctx.load_byte_imm(X_B, X_C, 0);
-            ctx.store_slot(X_B, ctx.frame.off(*dst));
+            let dst_off = ctx.frame.off(*dst);
+            let d = ctx.def_reg(X_B, dst_off);
+            ctx.load_byte_imm(d, X_C, 0);
+            ctx.store_slot(d, dst_off);
         }
         Inst::MakeEnum { dst, tag, payload } => {
             let dst_off = ctx.frame.off(*dst);
@@ -2903,8 +3061,9 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
                 // Niche: None = 0; Some(id) = the GroupId word itself
                 // (1-based, never zero — decision 567 / 669).
                 if *tag == 0 {
-                    ctx.load_imm(X_A, 0);
-                    ctx.store_slot(X_A, dst_off);
+                    let d = ctx.def_reg(X_A, dst_off);
+                    ctx.load_imm(d, 0);
+                    ctx.store_slot(d, dst_off);
                 } else {
                     let p = payload.first().copied().ok_or_else(|| {
                         CodegenError::internal("Some(GroupId) MakeEnum with no payload")
@@ -2913,8 +3072,9 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
                     ctx.copy_slot_to_slot(dst_off, ctx.frame.off(p), sz);
                 }
             } else {
-                ctx.load_imm(X_A, *tag as i64);
-                ctx.store_slot(X_A, dst_off);
+                let d = ctx.def_reg(X_A, dst_off);
+                ctx.load_imm(d, *tag as i64);
+                ctx.store_slot(d, dst_off);
                 let mut cur = 8usize;
                 for p in payload {
                     let sz = ctx.frame.size_of_temp(*p);
@@ -2927,27 +3087,29 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             let src_ty = f.temp_types[src.0].clone();
             if is_option_group_id(&src_ty) {
                 // tag = (word != 0) ? 1 : 0 — Some vs None.
-                ctx.load_slot(X_A, ctx.frame.off(*src));
+                let s = ctx.use_slot(X_A, ctx.frame.off(*src));
                 ctx.push_flags(
-                    encode::enc_cmp_imm(X_A, 0, true),
-                    format!("cmp {}, #0", reg_name(X_A)),
+                    encode::enc_cmp_imm(s, 0, true),
+                    format!("cmp {}, #0", reg_name(s)),
                     CostRule::Alu,
                     None,
-                    &[X_A],
+                    &[s],
                     FlagEffect::Write,
                 );
+                let dst_off = ctx.frame.off(*dst);
+                let d = ctx.def_reg(X_A, dst_off);
                 ctx.push_flags(
-                    encode::enc_cset(X_A, Cond::Ne, true),
-                    format!("cset {}, ne", reg_name(X_A)),
+                    encode::enc_cset(d, Cond::Ne, true),
+                    format!("cset {}, ne", reg_name(d)),
                     CostRule::Alu,
-                    Some(X_A),
+                    Some(d),
                     &[],
                     FlagEffect::Read,
                 );
-                ctx.store_slot(X_A, ctx.frame.off(*dst));
+                ctx.store_slot(d, dst_off);
             } else {
-                ctx.load_slot(X_A, ctx.frame.off(*src));
-                ctx.store_slot(X_A, ctx.frame.off(*dst));
+                let s = ctx.use_slot(X_A, ctx.frame.off(*src));
+                ctx.store_slot(s, ctx.frame.off(*dst));
             }
         }
         Inst::EnumPayload { dst, src, index } => {
@@ -2999,12 +3161,14 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             if is_float(ty) {
                 return Err(CodegenError::internal("`Bitwise` with a float type"));
             }
-            ctx.load_slot(X_A, ctx.frame.off(*lhs));
-            ctx.load_slot(X_B, ctx.frame.off(*rhs));
+            let a = ctx.use_slot(X_A, ctx.frame.off(*lhs));
+            let b = ctx.use_slot(X_B, ctx.frame.off(*rhs));
+            let dst_off = ctx.frame.off(*dst);
+            let d = ctx.def_reg(X_C, dst_off);
             let (enc, mnem) = match op {
-                BinOp::BitAnd => (encode::enc_and_reg(X_C, X_A, X_B, true), "and"),
-                BinOp::BitOr => (encode::enc_orr_reg(X_C, X_A, X_B, true), "orr"),
-                BinOp::BitXor => (encode::enc_eor_reg(X_C, X_A, X_B, true), "eor"),
+                BinOp::BitAnd => (encode::enc_and_reg(d, a, b, true), "and"),
+                BinOp::BitOr => (encode::enc_orr_reg(d, a, b, true), "orr"),
+                BinOp::BitXor => (encode::enc_eor_reg(d, a, b, true), "eor"),
                 other => {
                     return Err(CodegenError::internal(format!(
                         "`Bitwise` with a non-bitwise op `{}`",
@@ -3014,17 +3178,12 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             };
             ctx.push(
                 enc,
-                format!(
-                    "{mnem} {}, {}, {}",
-                    reg_name(X_C),
-                    reg_name(X_A),
-                    reg_name(X_B)
-                ),
+                format!("{mnem} {}, {}, {}", reg_name(d), reg_name(a), reg_name(b)),
                 CostRule::Alu,
                 None,
                 &[],
             );
-            ctx.store_slot(X_C, ctx.frame.off(*dst));
+            ctx.store_slot(d, dst_off);
         }
         Inst::Compare {
             dst,
@@ -3036,19 +3195,21 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             if is_float(ty) {
                 return Err(CodegenError::unimplemented("floating-point comparison"));
             }
-            ctx.load_slot(X_A, ctx.frame.off(*lhs));
-            ctx.load_slot(X_B, ctx.frame.off(*rhs));
-            ctx.cmp_reg(X_A, X_B);
+            let a = ctx.use_slot(X_A, ctx.frame.off(*lhs));
+            let b = ctx.use_slot(X_B, ctx.frame.off(*rhs));
+            ctx.cmp_reg(a, b);
             let cond = compare_cond(*op)?;
+            let dst_off = ctx.frame.off(*dst);
+            let d = ctx.def_reg(X_C, dst_off);
             ctx.push_flags(
-                encode::enc_cset(X_C, cond, true),
-                format!("cset {}, {}", reg_name(X_C), cond_mnemonic(cond)),
+                encode::enc_cset(d, cond, true),
+                format!("cset {}, {}", reg_name(d), cond_mnemonic(cond)),
                 CostRule::Alu,
-                Some(X_C),
+                Some(d),
                 &[],
                 FlagEffect::Read,
             );
-            ctx.store_slot(X_C, ctx.frame.off(*dst));
+            ctx.store_slot(d, dst_off);
         }
         Inst::Neg {
             dst,
@@ -3065,20 +3226,22 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
                 return Err(CodegenError::internal("`Neg` on an unsigned type"));
             }
             let (min, _) = int_bounds_i64(ty).unwrap();
-            ctx.load_slot(X_A, ctx.frame.off(*src));
+            let a = ctx.use_slot(X_A, ctx.frame.off(*src));
             ctx.load_imm(X_D, min);
-            ctx.cmp_reg(X_A, X_D);
+            ctx.cmp_reg(a, X_D);
             let skip = ctx.emit_skip(SkipKind::Cond(Cond::Ne));
             ctx.abort_fixed(abort);
             ctx.patch_skip(skip, SkipKind::Cond(Cond::Ne));
+            let dst_off = ctx.frame.off(*dst);
+            let d = ctx.def_reg(X_C, dst_off);
             ctx.push(
-                encode::enc_sub_reg(X_C, X_ZR, X_A, true),
-                format!("neg {}, {}", reg_name(X_C), reg_name(X_A)),
+                encode::enc_sub_reg(d, X_ZR, a, true),
+                format!("neg {}, {}", reg_name(d), reg_name(a)),
                 CostRule::Alu,
-                Some(X_C),
-                &[X_ZR, X_A],
+                Some(d),
+                &[X_ZR, a],
             );
-            ctx.store_slot(X_C, ctx.frame.off(*dst));
+            ctx.store_slot(d, dst_off);
         }
         Inst::BitNot { dst, ty, src } => {
             if is_float(ty) {
@@ -3086,22 +3249,19 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             }
             let (bits, signed) = int_shape(ty)
                 .ok_or_else(|| CodegenError::internal(format!("`BitNot` on non-integer {ty:?}")))?;
-            ctx.load_slot(X_A, ctx.frame.off(*src));
+            let a = ctx.use_slot(X_A, ctx.frame.off(*src));
             ctx.load_imm(X_D, -1);
+            let dst_off = ctx.frame.off(*dst);
+            let d = ctx.def_reg(X_C, dst_off);
             ctx.push(
-                encode::enc_eor_reg(X_C, X_A, X_D, true),
-                format!(
-                    "eor {}, {}, {}",
-                    reg_name(X_C),
-                    reg_name(X_A),
-                    reg_name(X_D)
-                ),
+                encode::enc_eor_reg(d, a, X_D, true),
+                format!("eor {}, {}, {}", reg_name(d), reg_name(a), reg_name(X_D)),
                 CostRule::Alu,
-                Some(X_C),
-                &[X_A, X_D],
+                Some(d),
+                &[a, X_D],
             );
-            ctx.narrow_to_width(X_C, bits, signed);
-            ctx.store_slot(X_C, ctx.frame.off(*dst));
+            ctx.narrow_to_width(d, bits, signed);
+            ctx.store_slot(d, dst_off);
         }
         Inst::Convert {
             dst,
@@ -3110,35 +3270,39 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             abort,
         } => emit_convert(ctx, f, ty, *src, *dst, abort)?,
         Inst::Not { dst, src } => {
-            ctx.load_slot(X_A, ctx.frame.off(*src));
+            let a = ctx.use_slot(X_A, ctx.frame.off(*src));
             ctx.push_flags(
-                encode::enc_cmp_reg(X_A, X_ZR, true),
-                format!("cmp {}, xzr", reg_name(X_A)),
+                encode::enc_cmp_reg(a, X_ZR, true),
+                format!("cmp {}, xzr", reg_name(a)),
                 CostRule::Alu,
                 None,
-                &[X_A, X_ZR],
+                &[a, X_ZR],
                 FlagEffect::Write,
             );
+            let dst_off = ctx.frame.off(*dst);
+            let d = ctx.def_reg(X_C, dst_off);
             ctx.push_flags(
-                encode::enc_cset(X_C, Cond::Eq, true),
-                format!("cset {}, eq", reg_name(X_C)),
+                encode::enc_cset(d, Cond::Eq, true),
+                format!("cset {}, eq", reg_name(d)),
                 CostRule::Alu,
-                Some(X_C),
+                Some(d),
                 &[],
                 FlagEffect::Read,
             );
-            ctx.store_slot(X_C, ctx.frame.off(*dst));
+            ctx.store_slot(d, dst_off);
         }
         Inst::BoolAnd { dst, lhs, rhs } => {
-            ctx.load_slot(X_A, ctx.frame.off(*lhs));
-            ctx.load_slot(X_B, ctx.frame.off(*rhs));
-            ctx.and_reg(X_C, X_A, X_B);
-            ctx.store_slot(X_C, ctx.frame.off(*dst));
+            let a = ctx.use_slot(X_A, ctx.frame.off(*lhs));
+            let b = ctx.use_slot(X_B, ctx.frame.off(*rhs));
+            let dst_off = ctx.frame.off(*dst);
+            let d = ctx.def_reg(X_C, dst_off);
+            ctx.and_reg(d, a, b);
+            ctx.store_slot(d, dst_off);
         }
         Inst::Jump { target } => ctx.b_unconditional(*target),
         Inst::JumpIfFalse { cond, target } => {
-            ctx.load_slot(X_A, ctx.frame.off(*cond));
-            ctx.cbz(X_A, *target);
+            let c = ctx.use_slot(X_A, ctx.frame.off(*cond));
+            ctx.cbz(c, *target);
         }
         Inst::Call {
             dst,
@@ -3530,13 +3694,16 @@ fn push_turn_addr_from_id(ctx: &mut FnCtx, id_reg: u8, scratch: u8) {
     ctx.add_reg(id_reg, scratch, id_reg);
 }
 
-fn emit_mem_addr(ctx: &mut FnCtx, base: Temp, offset: u64) {
-    ctx.load_slot(X_A, ctx.frame.off(base));
+/// Leaves the address in the register it returns: item I lets a
+/// zero-offset access read the base straight out of its home.
+fn emit_mem_addr(ctx: &mut FnCtx, base: Temp, offset: u64) -> u8 {
     if offset == 0 {
-        return;
+        return ctx.use_slot(X_A, ctx.frame.off(base));
     }
+    ctx.load_slot(X_A, ctx.frame.off(base));
     ctx.load_imm(X_B, offset as i64);
     ctx.add_reg(X_A, X_A, X_B);
+    X_A
 }
 
 fn emit_mem_load(
@@ -3546,12 +3713,14 @@ fn emit_mem_load(
     offset: u64,
     width: u8,
 ) -> Result<(), CodegenError> {
-    emit_mem_addr(ctx, base, offset);
+    let addr = emit_mem_addr(ctx, base, offset);
+    let dst_off = ctx.frame.off(dst);
+    let d = ctx.def_reg(X_B, dst_off);
     let (enc, mnem) = match width {
-        1 => (encode::enc_ldrb_imm(X_B, X_A, 0), "ldrb"),
-        2 => (encode::enc_ldrh_imm(X_B, X_A, 0), "ldrh"),
-        4 => (encode::enc_ldr_w_imm(X_B, X_A, 0), "ldr"),
-        8 => (encode::enc_ldr_x_imm(X_B, X_A, 0), "ldr"),
+        1 => (encode::enc_ldrb_imm(d, addr, 0), "ldrb"),
+        2 => (encode::enc_ldrh_imm(d, addr, 0), "ldrh"),
+        4 => (encode::enc_ldr_w_imm(d, addr, 0), "ldr"),
+        8 => (encode::enc_ldr_x_imm(d, addr, 0), "ldr"),
         w => {
             return Err(CodegenError::internal(format!(
                 "MemLoad width {w} (want 1/2/4/8)"
@@ -3559,18 +3728,18 @@ fn emit_mem_load(
         }
     };
     let rt = if width == 8 {
-        reg_name(X_B)
+        reg_name(d)
     } else {
-        format!("w{X_B}")
+        format!("w{d}")
     };
     ctx.push(
         enc,
-        format!("{mnem} {rt}, [{}]", reg_name(X_A)),
+        format!("{mnem} {rt}, [{}]", reg_name(addr)),
         CostRule::Load,
-        Some(X_B),
-        &[X_A],
+        Some(d),
+        &[addr],
     );
-    ctx.store_slot(X_B, ctx.frame.off(dst));
+    ctx.store_slot(d, dst_off);
     Ok(())
 }
 
@@ -3581,13 +3750,13 @@ fn emit_mem_store(
     value: Temp,
     width: u8,
 ) -> Result<(), CodegenError> {
-    emit_mem_addr(ctx, base, offset);
-    ctx.load_slot(X_B, ctx.frame.off(value));
+    let addr = emit_mem_addr(ctx, base, offset);
+    let v = ctx.use_slot(X_B, ctx.frame.off(value));
     let (enc, mnem) = match width {
-        1 => (encode::enc_strb_imm(X_B, X_A, 0), "strb"),
-        2 => (encode::enc_strh_imm(X_B, X_A, 0), "strh"),
-        4 => (encode::enc_str_w_imm(X_B, X_A, 0), "str"),
-        8 => (encode::enc_str_x_imm(X_B, X_A, 0), "str"),
+        1 => (encode::enc_strb_imm(v, addr, 0), "strb"),
+        2 => (encode::enc_strh_imm(v, addr, 0), "strh"),
+        4 => (encode::enc_str_w_imm(v, addr, 0), "str"),
+        8 => (encode::enc_str_x_imm(v, addr, 0), "str"),
         w => {
             return Err(CodegenError::internal(format!(
                 "MemStore width {w} (want 1/2/4/8)"
@@ -3595,16 +3764,16 @@ fn emit_mem_store(
         }
     };
     let rt = if width == 8 {
-        reg_name(X_B)
+        reg_name(v)
     } else {
-        format!("w{X_B}")
+        format!("w{v}")
     };
     ctx.push(
         enc,
-        format!("{mnem} {rt}, [{}]", reg_name(X_A)),
+        format!("{mnem} {rt}, [{}]", reg_name(addr)),
         CostRule::Store,
         None,
-        &[X_B, X_A],
+        &[v, addr],
     );
     Ok(())
 }
@@ -4112,20 +4281,20 @@ fn emit_index_addr(
     elem_size: usize,
     out_reg: u8,
 ) {
-    ctx.load_slot(X_A, index_off);
+    let x_a = ctx.use_slot(X_A, index_off);
     ctx.load_imm(X_B, len as i64);
-    ctx.cmp_reg(X_A, X_B);
+    ctx.cmp_reg(x_a, X_B);
     let skip = ctx.emit_skip(SkipKind::Cond(Cond::Cc));
     ctx.abort_val(
         "index ",
-        X_A,
+        x_a,
         false,
         &format!(" out of bounds (length {len})"),
     );
     ctx.patch_skip(skip, SkipKind::Cond(Cond::Cc));
     ctx.addr_of_slot(out_reg, base_off);
     ctx.load_imm(X_D, elem_size as i64);
-    ctx.mul_reg(X_E, X_A, X_D);
+    ctx.mul_reg(X_E, x_a, X_D);
     ctx.add_reg(out_reg, out_reg, X_E);
 }
 
@@ -4139,23 +4308,23 @@ fn emit_bytes_index_addr(
     index_off: usize,
     out_reg: u8,
 ) -> Result<(), CodegenError> {
-    // X_A = index; X_B = handle.len; compare; on fail abort with the
+    // x_a = index; x_b = handle.len; compare; on fail abort with the
     // live index (length rendered as the handle's own len word).
-    ctx.load_slot(X_A, index_off);
-    ctx.load_slot(X_B, handle_off + 8);
-    ctx.cmp_reg(X_A, X_B);
+    let x_a = ctx.use_slot(X_A, index_off);
+    let x_b = ctx.use_slot(X_B, handle_off + 8);
+    ctx.cmp_reg(x_a, x_b);
     let skip = ctx.emit_skip(SkipKind::Cond(Cond::Cc));
     // Suffix embeds the live length so the diagnostic matches IndexGet's
     // `"index {i} out of bounds (length {len})"` shape; the length half
     // is written through a small scratch because abort_val takes one
-    // value register. Re-use X_B (still the len) after stashing the index
-    // message's value register — abort_val's own contract takes X_A as
-    // the interpolated value when we pass it; here we pass X_A = index.
-    ctx.abort_val("index ", X_A, false, " out of bounds (Bytes)");
+    // value register. Re-use x_b (still the len) after stashing the index
+    // message's value register — abort_val's own contract takes x_a as
+    // the interpolated value when we pass it; here we pass x_a = index.
+    ctx.abort_val("index ", x_a, false, " out of bounds (Bytes)");
     ctx.patch_skip(skip, SkipKind::Cond(Cond::Cc));
     // out = handle.base + index (elem_stride = 1 packed byte).
     ctx.load_slot(out_reg, handle_off);
-    ctx.add_reg(out_reg, out_reg, X_A);
+    ctx.add_reg(out_reg, out_reg, x_a);
     Ok(())
 }
 
@@ -4170,13 +4339,13 @@ fn emit_placed_index_addr(
     elem_stride: u64,
     out_reg: u8,
 ) {
-    ctx.load_slot(X_A, index_off);
+    let x_a = ctx.use_slot(X_A, index_off);
     ctx.load_imm(X_B, len as i64);
-    ctx.cmp_reg(X_A, X_B);
+    ctx.cmp_reg(x_a, X_B);
     let skip = ctx.emit_skip(SkipKind::Cond(Cond::Cc));
     ctx.abort_val(
         "index ",
-        X_A,
+        x_a,
         false,
         &format!(" out of bounds (length {len})"),
     );
@@ -4187,7 +4356,7 @@ fn emit_placed_index_addr(
         ctx.add_reg(out_reg, out_reg, X_D);
     }
     ctx.load_imm(X_D, elem_stride as i64);
-    ctx.mul_reg(X_E, X_A, X_D);
+    ctx.mul_reg(X_E, x_a, X_D);
     ctx.add_reg(out_reg, out_reg, X_E);
 }
 
@@ -4205,13 +4374,18 @@ fn emit_arith_checked(
     }
     let (bits, signed) = int_shape(ty)
         .ok_or_else(|| CodegenError::internal(format!("`ArithChecked` on non-integer {ty:?}")))?;
-    ctx.load_slot(X_A, ctx.frame.off(lhs));
-    ctx.load_slot(X_B, ctx.frame.off(rhs));
+    // Item I: the operands are read from wherever they live and the
+    // result is computed straight into its home, so a fully resident
+    // `a + b` is one `add` and nothing else.
+    let x_a = ctx.use_slot(X_A, ctx.frame.off(lhs));
+    let x_b = ctx.use_slot(X_B, ctx.frame.off(rhs));
+    let dst_off = ctx.frame.off(dst);
+    let x_c = ctx.def_reg(X_C, dst_off);
     if bits < 64 {
         let (enc, mnem) = match op {
-            BinOp::Add => (encode::enc_add_reg(X_C, X_A, X_B, true), "add"),
-            BinOp::Sub => (encode::enc_sub_reg(X_C, X_A, X_B, true), "sub"),
-            BinOp::Mul => (encode::enc_mul(X_C, X_A, X_B, true), "mul"),
+            BinOp::Add => (encode::enc_add_reg(x_c, x_a, x_b, true), "add"),
+            BinOp::Sub => (encode::enc_sub_reg(x_c, x_a, x_b, true), "sub"),
+            BinOp::Mul => (encode::enc_mul(x_c, x_a, x_b, true), "mul"),
             other => {
                 return Err(CodegenError::internal(format!(
                     "`ArithChecked` with op `{}`",
@@ -4223,34 +4397,34 @@ fn emit_arith_checked(
             enc,
             format!(
                 "{mnem} {}, {}, {}",
-                reg_name(X_C),
-                reg_name(X_A),
-                reg_name(X_B)
+                reg_name(x_c),
+                reg_name(x_a),
+                reg_name(x_b)
             ),
             match op {
                 BinOp::Mul => CostRule::Mul,
                 _ => CostRule::Alu,
             },
-            Some(X_C),
-            &[X_A, X_B],
+            Some(x_c),
+            &[x_a, x_b],
         );
-        ctx.check_int_range_or_abort(X_C, bits, signed, abort);
-        ctx.store_slot(X_C, ctx.frame.off(dst));
+        ctx.check_int_range_or_abort(x_c, bits, signed, abort);
+        ctx.store_slot(x_c, dst_off);
         return Ok(());
     }
     match op {
         BinOp::Add => {
             ctx.push_flags(
-                encode::enc_adds_reg(X_C, X_A, X_B, true),
+                encode::enc_adds_reg(x_c, x_a, x_b, true),
                 format!(
                     "adds {}, {}, {}",
-                    reg_name(X_C),
-                    reg_name(X_A),
-                    reg_name(X_B)
+                    reg_name(x_c),
+                    reg_name(x_a),
+                    reg_name(x_b)
                 ),
                 CostRule::Alu,
-                Some(X_C),
-                &[X_A, X_B],
+                Some(x_c),
+                &[x_a, x_b],
                 FlagEffect::Write,
             );
             let fail = if signed { Cond::Vs } else { Cond::Cs };
@@ -4258,56 +4432,56 @@ fn emit_arith_checked(
         }
         BinOp::Sub => {
             ctx.push_flags(
-                encode::enc_subs_reg(X_C, X_A, X_B, true),
+                encode::enc_subs_reg(x_c, x_a, x_b, true),
                 format!(
                     "subs {}, {}, {}",
-                    reg_name(X_C),
-                    reg_name(X_A),
-                    reg_name(X_B)
+                    reg_name(x_c),
+                    reg_name(x_a),
+                    reg_name(x_b)
                 ),
                 CostRule::Alu,
-                Some(X_C),
-                &[X_A, X_B],
+                Some(x_c),
+                &[x_a, x_b],
                 FlagEffect::Write,
             );
             let fail = if signed { Cond::Vs } else { Cond::Cc };
             ctx.check_flags_or_abort(fail, abort);
         }
         BinOp::Mul => {
-            ctx.mul_reg(X_C, X_A, X_B);
+            ctx.mul_reg(x_c, x_a, x_b);
             if signed {
                 ctx.push(
-                    encode::enc_smulh(X_D, X_A, X_B),
+                    encode::enc_smulh(X_D, x_a, x_b),
                     format!(
                         "smulh {}, {}, {}",
                         reg_name(X_D),
-                        reg_name(X_A),
-                        reg_name(X_B)
+                        reg_name(x_a),
+                        reg_name(x_b)
                     ),
                     CostRule::MulHigh,
                     Some(X_D),
-                    &[X_A, X_B],
+                    &[x_a, x_b],
                 );
                 ctx.push(
-                    encode::enc_asr_imm(X_E, X_C, 63, true),
-                    format!("asr {}, {}, #63", reg_name(X_E), reg_name(X_C)),
+                    encode::enc_asr_imm(X_E, x_c, 63, true),
+                    format!("asr {}, {}, #63", reg_name(X_E), reg_name(x_c)),
                     CostRule::Alu,
                     Some(X_E),
-                    &[X_C],
+                    &[x_c],
                 );
                 ctx.cmp_reg(X_D, X_E);
             } else {
                 ctx.push(
-                    encode::enc_umulh(X_D, X_A, X_B),
+                    encode::enc_umulh(X_D, x_a, x_b),
                     format!(
                         "umulh {}, {}, {}",
                         reg_name(X_D),
-                        reg_name(X_A),
-                        reg_name(X_B)
+                        reg_name(x_a),
+                        reg_name(x_b)
                     ),
                     CostRule::MulHigh,
                     Some(X_D),
-                    &[X_A, X_B],
+                    &[x_a, x_b],
                 );
                 ctx.push_flags(
                     encode::enc_cmp_reg(X_D, X_ZR, true),
@@ -4327,7 +4501,7 @@ fn emit_arith_checked(
             )));
         }
     }
-    ctx.store_slot(X_C, ctx.frame.off(dst));
+    ctx.store_slot(x_c, dst_off);
     Ok(())
 }
 
@@ -4346,20 +4520,22 @@ fn emit_arith_wrapping(
     }
     let (bits, signed) = int_shape(ty)
         .ok_or_else(|| CodegenError::internal(format!("`ArithWrapping` on non-integer {ty:?}")))?;
-    ctx.load_slot(X_A, ctx.frame.off(lhs));
-    ctx.load_slot(X_B, ctx.frame.off(rhs));
+    let x_a = ctx.use_slot(X_A, ctx.frame.off(lhs));
+    let x_b = ctx.use_slot(X_B, ctx.frame.off(rhs));
+    let dst_off = ctx.frame.off(dst);
+    let x_c = ctx.def_reg(X_C, dst_off);
     // plans/M20.md item D: the wrapping `MUL` is the X-form
     // multiply-accumulate group (SOG §3.6: lat 4, thru 1/3, port M, and it
     // stalls pipe M 2 extra cycles), not the 1-cycle integer ALU group the
     // shared push tagged all three arms as.
     let (enc, mnem, rule) = match op {
         BinOp::AddW => (
-            encode::enc_add_reg(X_C, X_A, X_B, true),
+            encode::enc_add_reg(x_c, x_a, x_b, true),
             "add",
             CostRule::Alu,
         ),
         BinOp::SubW => (
-            encode::enc_sub_reg(X_C, X_A, X_B, true),
+            encode::enc_sub_reg(x_c, x_a, x_b, true),
             "sub",
             CostRule::Alu,
         ),
@@ -4407,17 +4583,17 @@ fn emit_arith_wrapping(
             // registers: an asm dump that said `mul x2, x0, x1` over a
             // `sf = 0` word would be a lie in a pinned golden.
             ctx.push(
-                encode::enc_mul(X_C, X_A, X_B, false),
-                format!("mul w{X_C}, w{X_A}, w{X_B}"),
+                encode::enc_mul(x_c, x_a, x_b, false),
+                format!("mul w{x_c}, w{x_a}, w{x_b}"),
                 CostRule::MulW,
                 None,
                 &[],
             );
-            ctx.narrow_to_width(X_C, bits, signed);
-            ctx.store_slot(X_C, ctx.frame.off(dst));
+            ctx.narrow_to_width(x_c, bits, signed);
+            ctx.store_slot(x_c, dst_off);
             return Ok(());
         }
-        BinOp::MulW => (encode::enc_mul(X_C, X_A, X_B, true), "mul", CostRule::Mul),
+        BinOp::MulW => (encode::enc_mul(x_c, x_a, x_b, true), "mul", CostRule::Mul),
         other => {
             return Err(CodegenError::internal(format!(
                 "`ArithWrapping` with op `{}`",
@@ -4429,16 +4605,16 @@ fn emit_arith_wrapping(
         enc,
         format!(
             "{mnem} {}, {}, {}",
-            reg_name(X_C),
-            reg_name(X_A),
-            reg_name(X_B)
+            reg_name(x_c),
+            reg_name(x_a),
+            reg_name(x_b)
         ),
         rule,
         None,
         &[],
     );
-    ctx.narrow_to_width(X_C, bits, signed);
-    ctx.store_slot(X_C, ctx.frame.off(dst));
+    ctx.narrow_to_width(x_c, bits, signed);
+    ctx.store_slot(x_c, dst_off);
     Ok(())
 }
 
@@ -4457,14 +4633,16 @@ fn emit_div_rem(
     }
     let (_, signed) = int_shape(ty)
         .ok_or_else(|| CodegenError::internal(format!("`DivRem` on non-integer {ty:?}")))?;
-    ctx.load_slot(X_A, ctx.frame.off(lhs));
-    ctx.load_slot(X_B, ctx.frame.off(rhs));
+    let x_a = ctx.use_slot(X_A, ctx.frame.off(lhs));
+    let x_b = ctx.use_slot(X_B, ctx.frame.off(rhs));
+    let dst_off = ctx.frame.off(dst);
+    let x_c = ctx.def_reg(X_C, dst_off);
     ctx.push_flags(
-        encode::enc_cmp_reg(X_B, X_ZR, true),
-        format!("cmp {}, xzr", reg_name(X_B)),
+        encode::enc_cmp_reg(x_b, X_ZR, true),
+        format!("cmp {}, xzr", reg_name(x_b)),
         CostRule::Alu,
         None,
-        &[X_B, X_ZR],
+        &[x_b, X_ZR],
         FlagEffect::Write,
     );
     let skip_zero = ctx.emit_skip(SkipKind::Cond(Cond::Ne));
@@ -4473,10 +4651,10 @@ fn emit_div_rem(
     if signed && op == BinOp::Div {
         let (min, _) = int_bounds_i64(ty).unwrap();
         ctx.load_imm(X_D, min);
-        ctx.cmp_reg(X_A, X_D);
+        ctx.cmp_reg(x_a, X_D);
         let skip_a = ctx.emit_skip(SkipKind::Cond(Cond::Ne));
         ctx.load_imm(X_E, -1);
-        ctx.cmp_reg(X_B, X_E);
+        ctx.cmp_reg(x_b, X_E);
         let skip_b = ctx.emit_skip(SkipKind::Cond(Cond::Ne));
         ctx.abort_fixed(abort_overflow);
         ctx.patch_skip(skip_a, SkipKind::Cond(Cond::Ne));
@@ -4489,17 +4667,17 @@ fn emit_div_rem(
     // plans/M20.md item E: this site used to push `dst = None, srcs = &[]`,
     // so a 20-cycle divide declared **no dependence edge** and nothing
     // downstream ever waited on its result — a genuine under-cost in the
-    // one direction 04 §5 forbids. The quotient lands in `X_C` and the
-    // operands are `X_A` (dividend) / `X_B` (divisor).
+    // one direction 04 §5 forbids. The quotient lands in `x_c` and the
+    // operands are `x_a` (dividend) / `x_b` (divisor).
     let (enc, mnem, rule) = if signed {
         (
-            encode::enc_sdiv(X_C, X_A, X_B, true),
+            encode::enc_sdiv(x_c, x_a, x_b, true),
             "sdiv",
             CostRule::Sdiv,
         )
     } else {
         (
-            encode::enc_udiv(X_C, X_A, X_B, true),
+            encode::enc_udiv(x_c, x_a, x_b, true),
             "udiv",
             CostRule::Udiv,
         )
@@ -4508,31 +4686,31 @@ fn emit_div_rem(
         enc,
         format!(
             "{mnem} {}, {}, {}",
-            reg_name(X_C),
-            reg_name(X_A),
-            reg_name(X_B)
+            reg_name(x_c),
+            reg_name(x_a),
+            reg_name(x_b)
         ),
         rule,
-        Some(X_C),
-        &[X_A, X_B],
+        Some(x_c),
+        &[x_a, x_b],
     );
     if op == BinOp::Rem {
         // `msub Xd, Xn, Xm, Xa` computes `Xa - Xn*Xm`, so the accumulator
-        // `X_A` (the dividend) is a source too — it was missing here, and
+        // `x_a` (the dividend) is a source too — it was missing here, and
         // at the itoa site below, which under-declared the edge from the
         // divide's own inputs (plans/M20.md item E).
         ctx.push(
-            encode::enc_msub(X_C, X_C, X_B, X_A, true),
+            encode::enc_msub(x_c, x_c, x_b, x_a, true),
             format!(
                 "msub {}, {}, {}, {}",
-                reg_name(X_C),
-                reg_name(X_C),
-                reg_name(X_B),
-                reg_name(X_A)
+                reg_name(x_c),
+                reg_name(x_c),
+                reg_name(x_b),
+                reg_name(x_a)
             ),
             CostRule::Mul,
-            Some(X_C),
-            &[X_C, X_B, X_A],
+            Some(x_c),
+            &[x_c, x_b, x_a],
         );
     } else if op != BinOp::Div {
         return Err(CodegenError::internal(format!(
@@ -4540,7 +4718,7 @@ fn emit_div_rem(
             op.as_str()
         )));
     }
-    ctx.store_slot(X_C, ctx.frame.off(dst));
+    ctx.store_slot(x_c, dst_off);
     Ok(())
 }
 
@@ -4559,43 +4737,45 @@ fn emit_shift(
     }
     let (_, signed) = int_shape(ty)
         .ok_or_else(|| CodegenError::internal(format!("`Shift` on non-integer {ty:?}")))?;
-    ctx.load_slot(X_A, ctx.frame.off(lhs));
-    ctx.load_slot(X_B, ctx.frame.off(rhs));
+    let x_a = ctx.use_slot(X_A, ctx.frame.off(lhs));
+    let x_b = ctx.use_slot(X_B, ctx.frame.off(rhs));
+    let dst_off = ctx.frame.off(dst);
+    let x_f = ctx.def_reg(X_F, dst_off);
     // Range check: one unsigned compare catches both "negative" and
     // "too large" (module doc's own worked reasoning).
     ctx.load_imm(X_D, bits as i64);
-    ctx.cmp_reg(X_B, X_D);
+    ctx.cmp_reg(x_b, X_D);
     let skip_range = ctx.emit_skip(SkipKind::Cond(Cond::Cc));
     ctx.abort_val(
         "shift count ",
-        X_B,
+        x_b,
         signed,
         &format!(" is out of range for a {bits}-bit type"),
     );
     ctx.patch_skip(skip_range, SkipKind::Cond(Cond::Cc));
 
     if op == BinOp::Shl {
-        let skip_zero = ctx.emit_skip(SkipKind::Cbz(X_B));
+        let skip_zero = ctx.emit_skip(SkipKind::Cbz(x_b));
         ctx.push(
-            encode::enc_mov_reg(X_C, X_A, true),
-            format!("mov {}, {}", reg_name(X_C), reg_name(X_A)),
+            encode::enc_mov_reg(X_C, x_a, true),
+            format!("mov {}, {}", reg_name(X_C), reg_name(x_a)),
             CostRule::Alu,
             Some(X_C),
-            &[X_A],
+            &[x_a],
         );
         ctx.narrow_to_width(X_C, bits, false);
         ctx.load_imm(X_D, bits as i64);
         ctx.push(
-            encode::enc_sub_reg(X_D, X_D, X_B, true),
+            encode::enc_sub_reg(X_D, X_D, x_b, true),
             format!(
                 "sub {}, {}, {}",
                 reg_name(X_D),
                 reg_name(X_D),
-                reg_name(X_B)
+                reg_name(x_b)
             ),
             CostRule::Alu,
             Some(X_D),
-            &[X_D, X_B],
+            &[X_D, x_b],
         );
         ctx.push(
             encode::enc_lsr_reg(X_E, X_C, X_D, true),
@@ -4623,41 +4803,41 @@ fn emit_shift(
         })?;
         ctx.abort_fixed(lost_msg);
         ctx.patch_skip(skip_lost, SkipKind::Cond(Cond::Eq));
-        ctx.patch_skip(skip_zero, SkipKind::Cbz(X_B));
+        ctx.patch_skip(skip_zero, SkipKind::Cbz(x_b));
 
         ctx.push(
-            encode::enc_lsl_reg(X_F, X_A, X_B, true),
+            encode::enc_lsl_reg(x_f, x_a, x_b, true),
             format!(
                 "lsl {}, {}, {}",
-                reg_name(X_F),
-                reg_name(X_A),
-                reg_name(X_B)
+                reg_name(x_f),
+                reg_name(x_a),
+                reg_name(x_b)
             ),
             CostRule::Alu,
-            Some(X_F),
-            &[X_A, X_B],
+            Some(x_f),
+            &[x_a, x_b],
         );
-        ctx.narrow_to_width(X_F, bits, signed);
-        ctx.store_slot(X_F, ctx.frame.off(dst));
+        ctx.narrow_to_width(x_f, bits, signed);
+        ctx.store_slot(x_f, dst_off);
     } else if op == BinOp::Shr {
         let (enc, mnem) = if signed {
-            (encode::enc_asr_reg(X_F, X_A, X_B, true), "asr")
+            (encode::enc_asr_reg(x_f, x_a, x_b, true), "asr")
         } else {
-            (encode::enc_lsr_reg(X_F, X_A, X_B, true), "lsr")
+            (encode::enc_lsr_reg(x_f, x_a, x_b, true), "lsr")
         };
         ctx.push(
             enc,
             format!(
                 "{mnem} {}, {}, {}",
-                reg_name(X_F),
-                reg_name(X_A),
-                reg_name(X_B)
+                reg_name(x_f),
+                reg_name(x_a),
+                reg_name(x_b)
             ),
             CostRule::Alu,
             None,
             &[],
         );
-        ctx.store_slot(X_F, ctx.frame.off(dst));
+        ctx.store_slot(x_f, dst_off);
     } else {
         return Err(CodegenError::internal(format!(
             "`Shift` with op `{}`",
@@ -4685,15 +4865,17 @@ fn emit_convert(
         .ok_or_else(|| CodegenError::internal(format!("`Convert` target {target_ty:?}")))?;
     let (sbits, ssigned) = int_shape(&src_ty)
         .ok_or_else(|| CodegenError::internal(format!("`Convert` source {src_ty:?}")))?;
-    ctx.load_slot(X_A, ctx.frame.off(src));
+    let x_a = ctx.use_slot(X_A, ctx.frame.off(src));
+    let dst_off = ctx.frame.off(dst);
+    let x_c = ctx.def_reg(X_C, dst_off);
     if tbits == 64 && !tsigned {
         if ssigned {
             ctx.push_flags(
-                encode::enc_cmp_reg(X_A, X_ZR, true),
-                format!("cmp {}, xzr", reg_name(X_A)),
+                encode::enc_cmp_reg(x_a, X_ZR, true),
+                format!("cmp {}, xzr", reg_name(x_a)),
                 CostRule::Alu,
                 None,
-                &[X_A, X_ZR],
+                &[x_a, X_ZR],
                 FlagEffect::Write,
             );
             let skip = ctx.emit_skip(SkipKind::Cond(Cond::Ge));
@@ -4703,11 +4885,11 @@ fn emit_convert(
     } else if tbits == 64 && tsigned {
         if !ssigned && sbits == 64 {
             ctx.push_flags(
-                encode::enc_cmp_reg(X_A, X_ZR, true),
-                format!("cmp {}, xzr", reg_name(X_A)),
+                encode::enc_cmp_reg(x_a, X_ZR, true),
+                format!("cmp {}, xzr", reg_name(x_a)),
                 CostRule::Alu,
                 None,
-                &[X_A, X_ZR],
+                &[x_a, X_ZR],
                 FlagEffect::Write,
             );
             let skip = ctx.emit_skip(SkipKind::Cond(Cond::Ge));
@@ -4718,17 +4900,17 @@ fn emit_convert(
         // Reached only when `tbits < 64` (both 64-bit target arms are
         // handled above), which is exactly `check_int_range_or_abort`'s
         // narrow domain.
-        ctx.check_int_range_or_abort(X_A, tbits, tsigned, abort);
+        ctx.check_int_range_or_abort(x_a, tbits, tsigned, abort);
     }
     ctx.push(
-        encode::enc_mov_reg(X_C, X_A, true),
-        format!("mov {}, {}", reg_name(X_C), reg_name(X_A)),
+        encode::enc_mov_reg(x_c, x_a, true),
+        format!("mov {}, {}", reg_name(x_c), reg_name(x_a)),
         CostRule::Alu,
-        Some(X_C),
-        &[X_A],
+        Some(x_c),
+        &[x_a],
     );
-    ctx.narrow_to_width(X_C, tbits, tsigned);
-    ctx.store_slot(X_C, ctx.frame.off(dst));
+    ctx.narrow_to_width(x_c, tbits, tsigned);
+    ctx.store_slot(x_c, dst_off);
     Ok(())
 }
 
@@ -4797,8 +4979,9 @@ fn emit_prologue(f: &MwirFn, frame: &Frame, ctx: &mut FnCtx) -> Result<(), Codeg
             let dst_off = frame.off(*p);
             let mut w = 0;
             while w < size {
-                ctx.load_ptr(X_A, next_reg, w);
-                ctx.store_slot(X_A, dst_off + w);
+                let d = ctx.def_reg(X_A, dst_off + w);
+                ctx.load_ptr(d, next_reg, w);
+                ctx.store_slot(d, dst_off + w);
                 w += 8;
             }
         } else {
@@ -4833,13 +5016,13 @@ fn emit_epilogue(f: &MwirFn, frame: &Frame, ctx: &mut FnCtx) -> Result<(), Codeg
     // saved incoming pointer (02-language.md §5.1 / plans/M9.md item CC).
     // No InterruptCell special-case — those cells live only on `self`.
     for (p, ptr_off) in &frame.mut_param_ptr_offs {
-        ctx.load_slot(X_A, *ptr_off);
+        let base = ctx.use_slot(X_A, *ptr_off);
         let size = frame.size_of_temp(*p);
         let src_off = frame.off(*p);
         let mut w = 0;
         while w < size {
-            ctx.load_slot(X_B, src_off + w);
-            ctx.store_ptr(X_B, X_A, w);
+            let v = ctx.use_slot(X_B, src_off + w);
+            ctx.store_ptr(v, base, w);
             w += 8;
         }
     }
@@ -5268,6 +5451,8 @@ fn probe_fn_facts(
             cold_seq: 0,
             slot_accesses: Vec::new(),
             resident_misuse: None,
+            home_mask: frame.home_mask(),
+            home_def_ok: None,
         };
         emit_prologue(f, frame, &mut ctx)?;
         points.push(finish(ctx));
@@ -5287,6 +5472,8 @@ fn probe_fn_facts(
             cold_seq: 0,
             slot_accesses: Vec::new(),
             resident_misuse: None,
+            home_mask: frame.home_mask(),
+            home_def_ok: None,
         };
         emit_body_inst(i, f, &mut ctx, plan, block_ids)?;
         points.push(finish(ctx));
@@ -5306,6 +5493,8 @@ fn probe_fn_facts(
             cold_seq: 0,
             slot_accesses: Vec::new(),
             resident_misuse: None,
+            home_mask: frame.home_mask(),
+            home_def_ok: None,
         };
         emit_epilogue(f, frame, &mut ctx)?;
         points.push(finish(ctx));
@@ -5750,6 +5939,8 @@ fn emit_fn(
         cold_seq: 0,
         slot_accesses: Vec::new(),
         resident_misuse: None,
+        home_mask: frame.home_mask(),
+        home_def_ok: None,
     };
     emit_prologue(f, &frame, &mut probe_pro)?;
     let prologue_len = probe_pro.words.len();
@@ -5769,6 +5960,8 @@ fn emit_fn(
             cold_seq: 0,
             slot_accesses: Vec::new(),
             resident_misuse: None,
+            home_mask: frame.home_mask(),
+            home_def_ok: None,
         };
         emit_body_inst(i, f, &mut probe, plan, block_ids)?;
         counts.push(probe.words.len());
@@ -5793,6 +5986,8 @@ fn emit_fn(
         cold_seq: 0,
         slot_accesses: Vec::new(),
         resident_misuse: None,
+        home_mask: frame.home_mask(),
+        home_def_ok: None,
     };
     emit_prologue(f, &frame, &mut ctx)?;
     debug_assert_eq!(ctx.words.len(), prologue_len);
@@ -9649,6 +9844,8 @@ fn emit_flowwir_fn(
         cold_seq: 0,
         slot_accesses: Vec::new(),
         resident_misuse: None,
+        home_mask: frame.home_mask(),
+        home_def_ok: None,
     };
     emit_async_entry(
         &synthetic,
@@ -9672,6 +9869,8 @@ fn emit_flowwir_fn(
             cold_seq: 0,
             slot_accesses: Vec::new(),
             resident_misuse: None,
+            home_mask: frame.home_mask(),
+            home_def_ok: None,
         };
         if let Some(id) = block_ids[i] {
             if block_count() {
@@ -9719,6 +9918,8 @@ fn emit_flowwir_fn(
         cold_seq: 0,
         slot_accesses: Vec::new(),
         resident_misuse: None,
+        home_mask: frame.home_mask(),
+        home_def_ok: None,
     };
     emit_async_epilogue(&synthetic, &mut probe_epi)?;
     word_offsets[total + 1] = acc + probe_epi.words.len();
@@ -9735,6 +9936,8 @@ fn emit_flowwir_fn(
         cold_seq: 0,
         slot_accesses: Vec::new(),
         resident_misuse: None,
+        home_mask: frame.home_mask(),
+        home_def_ok: None,
     };
     emit_async_entry(&synthetic, fn_key, &mut ctx, state_temp, &resume_target)?;
     debug_assert_eq!(ctx.words.len(), prologue_len);
@@ -13910,6 +14113,183 @@ pub fn spans(a: u64) -> u64:
         for _ in 0..4 {
             let b = emit(LEAF, RELEASE_OPTS);
             assert_eq!(b.conventions, a.conventions);
+        }
+    }
+}
+
+/// plans/codegen-pareto-2.md **item I** — the coalescing oracles.
+///
+/// Item E's allocator deleted 134 memory operations from the appliance
+/// image and added **161 register moves** doing it, a net *rise* in word
+/// count: it relocated the data movement instead of deleting it. These
+/// oracles are stated against the emitted words of that same shape — a
+/// copy, a call, and a pair of values that genuinely overlap.
+#[cfg(test)]
+mod item_i_tests {
+    use super::regalloc_tests::emit;
+    use super::*;
+    use crate::opts::{OptId, RELEASE_OPTS};
+
+    /// Every `mov Xd, Xn` in a function, as `(dst, src)` pairs.
+    fn movs(prog: &CodegenProgram, key: &str) -> Vec<(u8, u8)> {
+        prog.fns
+            .get(key)
+            .unwrap_or_else(|| panic!("no fn `{key}` in {:?}", prog.fns.keys().collect::<Vec<_>>()))
+            .code
+            .iter()
+            .filter(|w| w.text.starts_with("mov x") && w.text.contains(", x"))
+            .filter_map(|w| Some((w.dst?, *w.srcs[..w.src_len as usize].first()?)))
+            .collect()
+    }
+
+    fn words(prog: &CodegenProgram, key: &str) -> usize {
+        prog.fns.get(key).expect("fn present").code.len()
+    }
+
+    /// The registers a function's emission names at all.
+    fn named_regs(prog: &CodegenProgram, key: &str) -> BTreeSet<u8> {
+        let mut out = BTreeSet::new();
+        for w in &prog.fns[key].code {
+            if let Some(d) = w.dst {
+                out.insert(d);
+            }
+            for &s in &w.srcs[..w.src_len as usize] {
+                out.insert(s);
+            }
+        }
+        out
+    }
+
+    /// A straight-line chain of copies between values that are never
+    /// simultaneously live. The dev form is a `str`/`ldr` per link; item
+    /// E's form was a `mov` per link; item I's is **neither** — the whole
+    /// chain collapses onto one register.
+    const CHAIN: &str = r#"
+module examples.coalesce_chain
+
+pub fn chain(a: u64) -> u64:
+    x: u64 = a +% 1
+    y: u64 = x
+    z: u64 = y
+    return z +% z
+"#;
+
+    /// **A copy whose operands do not interfere emits no instruction.**
+    /// `y = x` and `z = y` are copies between values whose live ranges
+    /// meet at a point and are otherwise disjoint; the allocator can and
+    /// does put them in one register, and item I is what makes the
+    /// emitter say so by naming that register in the *reader's* operand
+    /// field instead of moving the value into a scratch one.
+    #[test]
+    fn a_copy_between_non_interfering_values_emits_nothing() {
+        let after = emit(CHAIN, RELEASE_OPTS);
+        assert!(
+            movs(&after, "chain").is_empty(),
+            "the copy chain still moves registers: {:?} in\n{}",
+            movs(&after, "chain"),
+            after.fns["chain"]
+                .code
+                .iter()
+                .map(|w| w.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+
+    /// ...and the same program is strictly smaller than it was without
+    /// coalescing, measured rather than asserted: `RELEASE_OPTS` minus
+    /// `RegAlloc` is the baseline the allocator itself is ranked against.
+    #[test]
+    fn coalescing_makes_the_allocated_form_smaller_than_the_spilled_one() {
+        let without: Vec<OptId> = RELEASE_OPTS
+            .iter()
+            .copied()
+            .filter(|o| *o != OptId::RegAlloc && *o != OptId::InterprocRegs)
+            .collect();
+        let base = emit(CHAIN, &without);
+        let after = emit(CHAIN, RELEASE_OPTS);
+        assert!(
+            words(&after, "chain") < words(&base, "chain"),
+            "the allocated form must be smaller, not merely different: {} -> {}",
+            words(&base, "chain"),
+            words(&after, "chain")
+        );
+    }
+
+    /// **Two values that genuinely interfere are not coalesced.** `p` and
+    /// `q` are both live across the `+`, so they cannot share a register
+    /// and the emitter must not pretend they do: whatever registers they
+    /// end up in, the two operand fields of the add are different.
+    const OVERLAP: &str = r#"
+module examples.coalesce_overlap
+
+pub fn overlap(a: u64, b: u64) -> u64:
+    p: u64 = a +% 1
+    q: u64 = b +% 2
+    r: u64 = p +% q
+    return r +% p
+"#;
+
+    #[test]
+    fn two_interfering_values_are_not_coalesced() {
+        let after = emit(OVERLAP, RELEASE_OPTS);
+        // Read the operand fields off the asm text rather than off
+        // `srcs`: `emit_arith_wrapping` deliberately pushes this word
+        // untagged, and an oracle that read the tag would be testing the
+        // tag instead of the instruction.
+        let mut checked = 0usize;
+        for w in &after.fns["overlap"].code {
+            let Some(rest) = w.text.strip_prefix("add ") else {
+                continue;
+            };
+            let ops: Vec<&str> = rest.split(", ").collect();
+            if ops.len() != 3 || !ops[2].starts_with('x') {
+                continue;
+            }
+            checked += 1;
+            assert_ne!(
+                ops[1], ops[2],
+                "`{}` reads one register twice: two simultaneously live values \
+                 were coalesced onto one home",
+                w.text
+            );
+        }
+        assert!(checked >= 2, "the program must still add ({checked} found)");
+    }
+
+    /// A value computed, then handed straight to a call.
+    const CALLARG: &str = r#"
+module examples.coalesce_callarg
+
+fn sink(v: u64) -> u64:
+    return v +% v
+
+pub fn forward(a: u64) -> u64:
+    n: u64 = a +% 7
+    return sink(n)
+"#;
+
+    /// The whole point, on the shape the plan measured: with `RegAlloc`
+    /// on, coalescing must not leave *more* words than it deleted memory
+    /// operations. Stated as a comparison against the same program built
+    /// without the allocator, over the emitted words.
+    #[test]
+    fn residency_no_longer_costs_more_words_than_it_saves() {
+        let without: Vec<OptId> = RELEASE_OPTS
+            .iter()
+            .copied()
+            .filter(|o| *o != OptId::RegAlloc && *o != OptId::InterprocRegs)
+            .collect();
+        for src in [CHAIN, OVERLAP, CALLARG] {
+            let base = emit(src, &without);
+            let after = emit(src, RELEASE_OPTS);
+            for key in base.fns.keys() {
+                let (b, a) = (words(&base, key), words(&after, key));
+                assert!(
+                    a <= b,
+                    "fn `{key}`: the allocator grew the code, {b} -> {a} words"
+                );
+            }
         }
     }
 }

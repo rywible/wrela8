@@ -4670,9 +4670,10 @@ mod tests {
         );
         assert_eq!(
             (w_form, x_form),
-            (93, 96),
-            "the measured size of C1's win once item E removed the frame slack; \
-             re-measure this rather than rescaling it"
+            (89, 93),
+            "the measured size of C1's win once item E removed the frame slack \
+             and item I coalesced the allocator's copies; re-measure this rather \
+             than rescaling it"
         );
 
         // Walk the counterfactual X-form latency up until it does not, so
