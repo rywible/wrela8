@@ -181,11 +181,11 @@ ImageReport v0
   Pool name=BlockControl kind=dma payload=BlkReqHeader slots=8 slot_bytes=16 base=0x40540150 size=128 align=8 coherency=coherent device=device#0
   Pool name=CacheBuffers kind=image payload=u32 slots=4 slot_bytes=64 base=0x405401d0 size=256 align=8 coherency=coherent device=none
   BlkPool name=BlockControl device=device#0 base=0x40540150 size=0x80
-  Cost version=3 digest=043f8dc4b21c4b12 total=24583 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=24583
-    Owner name=app proxy_cycles=1576
-    Owner name=runtime proxy_cycles=23007
+  Cost version=3 digest=043f8dc4b21c4b12 total=26013 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=26013
+    Owner name=app proxy_cycles=1640
+    Owner name=runtime proxy_cycles=24373
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=237 max_turn_proxy=66 turns_per_sec=36363636.363636367 ms_per_turn_model=0.0000275
+    Core n=0 proxy_cycles=237 max_turn_proxy=69 turns_per_sec=34782608.695652172 ms_per_turn_model=0.00002875
     Budget n=0 hot_text_bytes=89792 l1i_bytes=65536 over_l1i_lines=379 over_l2_lines=0 text_pages=22 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=5 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=2653
-    Shared proxy_cycles=24346
+    Shared proxy_cycles=25776

@@ -19,11 +19,11 @@ ImageReport v0
   Section name=abort base=0x405001a4 size=120
   Section name=checkpoint base=0x4050021c size=4
   Entry base=0x40500000
-  Cost version=3 digest=043f8dc4b21c4b12 total=70 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=70
-    Owner name=app proxy_cycles=70
+  Cost version=3 digest=043f8dc4b21c4b12 total=73 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=73
+    Owner name=app proxy_cycles=73
     Owner name=runtime proxy_cycles=0
     Owner name=driver proxy_cycles=0
     Core n=0 proxy_cycles=0 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn_model=n/a
     Budget n=0 hot_text_bytes=384 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 text_pages=1 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=1 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0
-    Shared proxy_cycles=70
+    Shared proxy_cycles=73

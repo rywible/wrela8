@@ -1,16 +1,16 @@
 Program
-  Fn key=double_identity frame=32 bytes
-    0000: d10083ff  sub sp, sp, #32
-    0001: f9000bfe  str lr, [sp, #16]
+  Fn key=double_identity frame=48 bytes
+    0000: d100c3ff  sub sp, sp, #48
+    0001: f90013fe  str lr, [sp, #32]
     0002: f90003e0  str x0, [sp, #0]
     0003: f94003e0  ldr x0, [sp, #0]
     0004: 94000000  bl <fn:identity[u64]>
     0005: f90007e0  str x0, [sp, #8]
     0006: f94003e0  ldr x0, [sp, #0]
     0007: 94000000  bl <fn:identity[u64]>
-    0008: aa0003f3  mov x19, x0
+    0008: f9000be0  str x0, [sp, #16]
     0009: f94007e9  ldr x9, [sp, #8]
-    0010: aa1303ea  mov x10, x19
+    0010: f9400bea  ldr x10, [sp, #16]
     0011: ab0a012b  adds x11, x9, x10
     0012: 54000123  b.cc #36
     0013: d10043ff  sub sp, sp, #16  ; abort Bytes slot
@@ -21,21 +21,21 @@ Program
     0018: f90007e9  str x9, [sp, #8]  ; Bytes.len
     0019: 910003e0  add x0, sp, #0  ; *Bytes
     0020: 94000000  bl <__wrela_abort>
-    0021: aa0b03f4  mov x20, x11
-    0022: aa1403e0  mov x0, x20
+    0021: f9000feb  str x11, [sp, #24]
+    0022: f9400fe0  ldr x0, [sp, #24]
     0023: 14000002  b #8
     0024: 14000001  b #4
-    0025: f9400bfe  ldr lr, [sp, #16]
-    0026: 910083ff  add sp, sp, #32
+    0025: f94013fe  ldr lr, [sp, #32]
+    0026: 9100c3ff  add sp, sp, #48
     0027: d65f03c0  ret
   Fn key=fn:identity[u64] frame=16 bytes
     0000: d10043ff  sub sp, sp, #16
-    0001: f90003fe  str lr, [sp, #0]
-    0002: aa0003f3  mov x19, x0
-    0003: aa1303e0  mov x0, x19
+    0001: f90007fe  str lr, [sp, #8]
+    0002: f90003e0  str x0, [sp, #0]
+    0003: f94003e0  ldr x0, [sp, #0]
     0004: 14000002  b #8
     0005: 14000001  b #4
-    0006: f94003fe  ldr lr, [sp, #0]
+    0006: f94007fe  ldr lr, [sp, #8]
     0007: 910043ff  add sp, sp, #16
     0008: d65f03c0  ret
   Rodata
