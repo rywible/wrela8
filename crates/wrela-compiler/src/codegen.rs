@@ -5351,13 +5351,6 @@ impl TailPlan {
             suppressed: vec![false; n],
         }
     }
-
-    /// How many sites this plan substitutes — reported by `report.rs`,
-    /// so "how many tail calls does this image have" is a published
-    /// number rather than something a reader has to grep the asm for.
-    pub(crate) fn count(&self) -> usize {
-        self.at.iter().filter(|k| k.is_some()).count()
-    }
 }
 
 /// Decide item F5's substitution for one function.

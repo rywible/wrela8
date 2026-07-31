@@ -82,6 +82,13 @@
 //!    three Owner lines and (when placement is non-empty) Core + Shared
 //!    lines. Scored from the same `CodegenProgram` layout built; omitted
 //!    when layout soft-fails (`Ok(None)`). Not Terms / Placeable.
+//! 8d. **Convention** (plans/codegen-pareto.md item F): one line per
+//!    function whose calling convention is not the default one — its
+//!    frame size, its resident temps and their registers, the registers
+//!    a caller must assume it destroys, and how many registers its own
+//!    pool reached. Rendered by `append_convention_section`; absent
+//!    entirely under `dev`, where every function has the same
+//!    convention.
 //! 9. Registered layout asserts: recorded in the raw `--stage=image`
 //!    graph dump, then **run** after layout against a real stdlib
 //!    `ImageReport` value (`eval::layout_assert`, plans/M9.md item H).
@@ -627,6 +634,82 @@ pub fn format_cost_summary(
     Ok(out)
 }
 
+/// **Section 8d — the calling convention this build chose, per function**
+/// (plans/codegen-pareto.md item F).
+///
+/// The plan's own words: *"the report should show each function's chosen
+/// convention — otherwise the most consequential decision in the compiler
+/// is invisible."* Item F computes a different convention for every
+/// function in the image, from a whole-program analysis, and nothing
+/// downstream of codegen could otherwise say what it chose.
+///
+/// **A function with nothing to say is absent**, exactly as every other
+/// section of this report is. Under `dev`, and under item E's
+/// per-function allocator, no function has a convention of its own, so
+/// the whole section disappears and every `dev` report is unchanged. A
+/// function that got no residents, no frame deletion and no tail call
+/// contributes no line even under `release`: the section is the list of
+/// functions whose convention is not the default one.
+///
+/// One line per such function:
+///
+/// ```text
+///   Convention fns=3 frameless=1 tail_calls=1
+///     Fn key=blend frame=0 residents=4 regs=x2-x5 clobbers=x0-x1,x9,x30-x31 pool=19
+///     Fn key=spans frame=16 residents=3 regs=x2-x4 clobbers=all pool=14
+/// ```
+///
+/// `clobbers=all` is the fail-closed answer — a function on a call-graph
+/// cycle, or one that reaches a body this compiler does not hold — and it
+/// is spelled by name rather than as a mask so it cannot be mistaken for
+/// a function that happens to touch every register.
+pub fn append_convention_section(out: &mut String, program: &CodegenProgram) {
+    if program.conventions.is_empty() {
+        return;
+    }
+    let mut rows: Vec<String> = Vec::new();
+    let mut frameless = 0usize;
+    for (key, conv) in &program.conventions {
+        let frame = program.fns.get(key).map(|f| f.frame_size);
+        let residents = conv.assignment.resident_count();
+        let interesting = residents > 0 || frame == Some(0);
+        if !interesting {
+            continue;
+        }
+        if frame == Some(0) {
+            frameless += 1;
+        }
+        let regs: u32 = conv
+            .assignment
+            .residents()
+            .iter()
+            .fold(0u32, |m, &(_, r)| m | crate::regalloc::reg_bit(r));
+        rows.push(format!(
+            "    Fn key={key} frame={} residents={residents} regs={} clobbers={} pool={}\n",
+            frame.map_or_else(|| "?".to_string(), |f| f.to_string()),
+            crate::regalloc::render_reg_set(regs),
+            crate::regalloc::render_reg_set(conv.clobbers),
+            conv.pool.len(),
+        ));
+    }
+    if rows.is_empty() {
+        return;
+    }
+    let tail_calls: usize = program
+        .fns
+        .values()
+        .flat_map(|f| f.code.iter())
+        .filter(|w| w.text.ends_with("; tail call"))
+        .count();
+    out.push_str(&format!(
+        "  Convention fns={} frameless={frameless} tail_calls={tail_calls}\n",
+        rows.len()
+    ));
+    for r in rows {
+        out.push_str(&r);
+    }
+}
+
 // --- the digest (plans/M4.md item D, decision 9): one hardcoded SHA-256
 // shared with the VMM via `wrela_machine::sha256` (06 §3 / §8). ---------
 
@@ -792,6 +875,71 @@ mod tests {
         let text = render(&[], &enums, &g, &PlacementTable::default())
             .expect("registered layout asserts must not block render");
         assert!(text.starts_with("ImageReport v0\n"));
+    }
+
+    /// plans/codegen-pareto.md item F: **a function's chosen convention
+    /// appears in `--stage=report`.** Built from a real compile rather
+    /// than a hand-made `CodegenProgram`, because the claim is about what
+    /// the compiler decides, not about a formatter.
+    #[test]
+    fn the_convention_section_publishes_what_the_whole_program_pass_chose() {
+        use crate::opts::{CompileMode, apply_mode};
+        const SRC: &str = r#"
+module examples.report_convention
+
+fn leaf(a: u64) -> u64:
+    x: u64 = a +% 1
+    return x +% x
+
+pub fn caller(a: u64) -> u64:
+    keep: u64 = a *% 3
+    p: u64 = leaf(a)
+    return (keep +% p) +% keep
+"#;
+        let build = |mode: CompileMode| -> String {
+            apply_mode(mode);
+            let tokens = crate::syntax::lexer::lex(SRC).expect("lex");
+            let module = crate::syntax::parser::parse(tokens).expect("parse");
+            let typed = crate::sema::check_typed(&module, "<t>").expect("check");
+            let mwir = crate::lower::lower_program(&typed).expect("lower");
+            let ctx = crate::mwir::build_layout_ctx(&module, &Default::default()).expect("ctx");
+            let prog = crate::codegen::codegen_program(&mwir, &ctx).expect("codegen");
+            let mut out = String::new();
+            append_convention_section(&mut out, &prog);
+            out
+        };
+
+        // Under `dev` every function has the same convention, so the
+        // section has nothing to say and is absent — the report's own
+        // rule, applied to the new section.
+        assert_eq!(build(CompileMode::Dev), "", "dev must add no section");
+
+        let text = build(CompileMode::Release);
+        apply_mode(CompileMode::Release);
+        assert!(
+            text.starts_with("  Convention fns="),
+            "the section must lead with its own counts:\n{text}"
+        );
+        assert!(
+            text.contains("    Fn key=leaf frame=0 "),
+            "the frameless leaf must be published as frameless:\n{text}"
+        );
+        for want in ["residents=", "regs=x", "clobbers=", "pool="] {
+            assert!(text.contains(want), "missing `{want}`:\n{text}");
+        }
+        // The clobber set is the fact a caller reads, so it must be a
+        // measured one for a leaf, never the fail-closed answer.
+        let leaf_line = text
+            .lines()
+            .find(|l| l.contains("Fn key=leaf "))
+            .expect("leaf line");
+        assert!(
+            !leaf_line.contains("clobbers=all"),
+            "a leaf's clobber set must be measured: {leaf_line}"
+        );
+        // Same input, same bytes.
+        assert_eq!(build(CompileMode::Release), text);
+        apply_mode(CompileMode::Release);
     }
 
     /// plans/M7.md item B: the exact-bytes section is appended by the
