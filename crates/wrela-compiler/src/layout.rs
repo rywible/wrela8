@@ -1804,6 +1804,51 @@ fn verify_section_sizes(
             "internal error: the emitted blob is {blob_len} bytes but the section table implies {want_len}"
         )));
     }
+    verify_branch_region(sections)?;
+    Ok(())
+}
+
+/// plans/codegen-pareto.md decision 1705 / 1754 — SOG §4.8's **same-region
+/// property**: every branch and its target must sit inside one aligned
+/// 2 MiB region.
+///
+/// Every branch this backend emits is `PC`-relative within the text, and
+/// every branchable target — fn entries, block leaders, the abort tail, the
+/// checkpoint service — lives between `entry` and `checkpoint`. So the
+/// property is exactly "that span does not straddle a 2 MiB boundary", and
+/// it is checked here rather than bought by moving the text base: the base
+/// `IMAGE_BASE + 0x50` is *not* 2 MiB-aligned, but nothing branches across
+/// a boundary because the whole text is two orders of magnitude smaller
+/// than a region. Aligning the base instead would cost ~1 MiB of image
+/// padding (`IMAGE_BASE` is `0x4050_0000`, the next 2 MiB boundary is
+/// `0x4060_0000`) or a machine-contract move of `IMAGE_BASE` itself —
+/// see `plans/codegen-pareto-D.md`.
+///
+/// **Fail closed, not assumed.** The property holds today by a factor of
+/// ~24, but unlike its neighbours in [`verify_section_sizes`] this one is
+/// *reachable from a source program*: an image whose text outgrows 2 MiB
+/// breaks it without any editing mistake. So it is a build error, not an
+/// internal error, and it says what to do about it.
+fn verify_branch_region(sections: &[Section]) -> Result<(), LayoutError> {
+    let branchable: Vec<&Section> = sections
+        .iter()
+        .filter(|s| matches!(s.name, "entry" | "code" | "abort" | "checkpoint"))
+        .collect();
+    let (Some(first), Some(last)) = (branchable.first(), branchable.last()) else {
+        return Ok(());
+    };
+    let lo = first.base;
+    let hi = last.base + last.size;
+    if !crate::blocklayout::same_region_holds(lo, hi) {
+        return Err(LayoutError::new(format!(
+            "branchable text spans {lo:#x}..{hi:#x} ({} bytes), which straddles a \
+             {region}-byte region boundary — SOG §4.8 requires every branch and its target to \
+             share one 2 MiB region, so the text base must move to a region boundary \
+             (plans/codegen-pareto.md decision 1754)",
+            hi - lo,
+            region = crate::blocklayout::REGION_BYTES
+        )));
+    }
     Ok(())
 }
 
@@ -5656,6 +5701,57 @@ fn two():
             },
         ];
         assert!(verify_section_sizes(&sections, 0x1000, 48).is_ok());
+    }
+
+    /// plans/codegen-pareto.md decision 1754: the same-region property is
+    /// **proved**, not assumed from an aligned base. A branchable text span
+    /// that straddles a 2 MiB boundary is refused, and one that does not is
+    /// accepted whether or not its base is aligned.
+    #[test]
+    fn verify_branch_region_refuses_a_straddling_text_span() {
+        let straddle = vec![
+            Section {
+                name: "entry",
+                base: 0x405F_FFF0,
+                size: 16,
+            },
+            Section {
+                name: "code",
+                base: 0x4060_0000,
+                size: 16,
+            },
+        ];
+        let err = verify_branch_region(&straddle).expect_err("straddling must fail closed");
+        assert!(err.message.contains("straddles"), "{}", err.message);
+
+        // The image as it is actually laid out today (`boot-actors`, items
+        // A+B+C): an unaligned base whose whole text still lives in one
+        // region, by a factor of ~24. The sizes are a fixture — the real
+        // check runs on every image build — but they are the real sizes, so
+        // the margin this fixture claims is the margin the image has.
+        let real = vec![
+            Section {
+                name: "entry",
+                base: 0x4050_0000,
+                size: 80,
+            },
+            Section {
+                name: "code",
+                base: 0x4050_0050,
+                size: 85136,
+            },
+            Section {
+                name: "abort",
+                base: 0x4051_4ff4,
+                size: 120,
+            },
+            Section {
+                name: "checkpoint",
+                base: 0x4051_506c,
+                size: 28,
+            },
+        ];
+        assert!(verify_branch_region(&real).is_ok());
     }
 
     #[test]

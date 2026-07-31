@@ -5009,7 +5009,14 @@ fn emit_fn(
 /// Integrity Phase 2 Item M: dumb leader set for a flat MWIR body —
 /// index 0, every branch target, and the fallthrough after a branch /
 /// return. Same shape Item L uses for block-split `s(b)`.
-fn mwir_block_leaders(body: &[Inst]) -> Vec<bool> {
+///
+/// plans/codegen-pareto.md item D / decision 1753: `crate::blocklayout`
+/// reorders exactly this partition, so it calls **this** function rather
+/// than growing a second definition of "what a block is". The Lane 2 block
+/// ids a sidecar is keyed by are ordinals over this leader set
+/// (`assign_mwir_block_ids` just below), which is what makes a class looked
+/// up at index `k` describe the run item D is about to move.
+pub(crate) fn mwir_block_leaders(body: &[Inst]) -> Vec<bool> {
     let n = body.len();
     let mut leaders = vec![false; n];
     if n == 0 {

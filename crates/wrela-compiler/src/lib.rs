@@ -28,6 +28,7 @@
 //! differential oracle (`cargo xtask diff-eval`): compiled code must agree
 //! with it on every pure program.
 
+pub mod blocklayout;
 pub mod census;
 pub mod codegen;
 pub mod cost;
