@@ -58,10 +58,10 @@ ImageReport v0
   Cores count=1
   CoreStack core=0 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=82064
-  Section name=rodata base=0x405140e0 size=511
-  Section name=abort base=0x405142e0 size=120
-  Section name=checkpoint base=0x40514358 size=28
+  Section name=code base=0x40500050 size=80016
+  Section name=rodata base=0x405138e0 size=511
+  Section name=abort base=0x40513ae0 size=120
+  Section name=checkpoint base=0x40513b58 size=28
   Section name=rtdata base=0x40540000 size=184
   Entry base=0x40500000
   PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
@@ -157,11 +157,11 @@ ImageReport v0
   Actor name=Store mailbox=4 slot=16 frame=64 state=8
   Turns count=1 stride=64 bytes=64
   Totals actors=1 drivers=0 ready_queue=2 group_arena=0 bytes=184
-  Cost version=3 digest=043f8dc4b21c4b12 total=29243 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=29243
-    Owner name=app proxy_cycles=1575
-    Owner name=runtime proxy_cycles=27668
+  Cost version=3 digest=043f8dc4b21c4b12 total=28952 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=28952
+    Owner name=app proxy_cycles=1561
+    Owner name=runtime proxy_cycles=27391
     Owner name=driver proxy_cycles=0
     Core n=0 proxy_cycles=109 max_turn_proxy=55 turns_per_sec=43636363.636363633 ms_per_turn_model=0.0000229167
-    Budget n=0 hot_text_bytes=89280 l1i_bytes=65536 over_l1i_lines=371 over_l2_lines=0 text_pages=22 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=5 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=2597
-    Shared proxy_cycles=29134
+    Budget n=0 hot_text_bytes=87040 l1i_bytes=65536 over_l1i_lines=336 over_l2_lines=0 text_pages=22 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=5 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=2352
+    Shared proxy_cycles=28843

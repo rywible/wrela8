@@ -63,10 +63,10 @@ ImageReport v0
   Cores count=1
   CoreStack core=0 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=82036
-  Section name=rodata base=0x405140c8 size=511
-  Section name=abort base=0x405142c8 size=120
-  Section name=checkpoint base=0x40514340 size=28
+  Section name=code base=0x40500050 size=79992
+  Section name=rodata base=0x405138c8 size=511
+  Section name=abort base=0x40513ac8 size=120
+  Section name=checkpoint base=0x40513b40 size=28
   Section name=rtdata base=0x40540000 size=192
   Section name=devregs base=0x405400c0 size=8
   Entry base=0x40500000
@@ -165,11 +165,11 @@ ImageReport v0
   Turns count=1 stride=64 bytes=64
   Totals actors=1 drivers=1 ready_queue=2 group_arena=0 bytes=192
   DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x405400c0 size=8
-  Cost version=3 digest=043f8dc4b21c4b12 total=29231 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=29231
-    Owner name=app proxy_cycles=1574
-    Owner name=runtime proxy_cycles=27657
+  Cost version=3 digest=043f8dc4b21c4b12 total=28942 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=28942
+    Owner name=app proxy_cycles=1560
+    Owner name=runtime proxy_cycles=27382
     Owner name=driver proxy_cycles=0
     Core n=0 proxy_cycles=108 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn_model=n/a
-    Budget n=0 hot_text_bytes=89152 l1i_bytes=65536 over_l1i_lines=369 over_l2_lines=0 text_pages=22 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=5 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=2583
-    Shared proxy_cycles=29123
+    Budget n=0 hot_text_bytes=87040 l1i_bytes=65536 over_l1i_lines=336 over_l2_lines=0 text_pages=22 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=5 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=2352
+    Shared proxy_cycles=28834
