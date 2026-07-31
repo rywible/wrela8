@@ -1,9 +1,55 @@
 # Plan: codegen Pareto — registers, the ABI, and layout
 
-**Status: PROPOSED (2026-07-29).** Not activated. Decision block 1700–1799
-reserved. Prior rung: [M20.md](M20.md) (ACTIVE) — **this plan cannot
-activate before M20 closes**, because every item is scored by M20's ruler
-and item A consumes M20's Lane 2 block-grain sidecar.
+**Status: ACTIVE (2026-07-31).** Activated at `eb42af7c`, with M20 closed
+(its evidence block committed at `82dad845`, its post-close corrections at
+`9ef284f5`/`eb42af7c`). Decision block 1700–1799 is this plan's. Prior rung:
+[M20.md](M20.md) — every item is scored by M20's ruler and item A consumes
+M20's Lane 2 block-grain sidecar.
+
+## Activation record (item 0, 2026-07-31)
+
+**Baseline.** `cargo xtask check --fast` green at `eb42af7c`. The full gate
+(HVF + measurement lanes) is the close's job, per CLAUDE.md.
+
+**Kept the name, not a milestone number.** The header's doctrine note says an
+activated plan takes a number. `M21.md` is already taken by a *different*
+proposed rung (wire types, decision block 1800–1899), so numbering this one
+M21 would make every "M21" citation ambiguous. It stays
+`codegen-pareto.md` with its own 1700-block; the number is the human's to
+assign if they want the file renamed.
+
+**Re-check of the item ordering against what M20 actually measured** (the
+header demanded exactly this). Three items are *not* as scoreable as the
+plan assumed. None is a reason to reorder A–F; each is a reason the item
+owns a gate-visibility sub-task before it claims a win:
+
+| Item | What M20 actually leaves | Disposition |
+| --- | --- | --- |
+| **D** hot/cold layout | The score is an order-invariant total over a flat all-hot footprint at synthetic addresses. Block *order* is invisible to it, so D can pass the ∀ gate while changing nothing the model can see — and equally can be right while scoring zero. | D lands as a **reported artifact plus a boot transcript**, not as a `RELEASE_OPTS` entry, unless it first makes the footprint term order-sensitive. Decision 1750. |
+| **C1** type-driven W/X width | The table has no W-form `MADD`/`MSUB`/divide rows; W and X score identically today. | C1 must add the two rows (SOG §3.6 notes 2/4, the same provenance discipline M20 item A used) *before* it can be ranked. Decision 1740. |
+| **F6** argument-specialized cloning | Wedged: block frequency is flat `f≡1` for anything Lane 2 did not measure, so a clone's win is invisible, while its extra words read as `CoverageFell`. | F6 is **cut from this plan** unless items A+D make per-call-site frequency real. Decision 1770. |
+
+**The ledger is gone.** `aa05bf75` deleted `ledger/ledger.toml` and
+`ROADMAP.md`. Items A and G still say "ledger clauses"; there is nothing to
+open. The evidence block in item G is the whole record instead. Decision
+1706.
+
+**1706. No ledger clauses this plan.** The ledger was deleted before
+activation. Every claim this plan makes lands in item G's evidence block and
+in a pinned oracle — nowhere else. If the ledger returns, this plan's claims
+are re-derivable from G.
+
+**1707. Decision sub-blocks, one per item** (the parallel-agent collision
+this repo hits every round): A `1720–1729` · B `1730–1739` · C `1740–1749` ·
+D `1750–1759` · E `1760–1769` · F `1770–1789` · G `1790–1799`. An item may
+not number outside its block.
+
+**1708. One golden owner per round — the orchestrator.** Items report
+before/after numbers and update only the expectation files their own item
+moves; `cargo xtask golden`, `check`, and every HVF lane are run centrally
+after each merge, so one re-pin tests the round's changes *for interaction*
+rather than in isolation. (Concurrent golden runs deadlock on HVF; this is
+not a style preference.)
 
 **Doctrine note on numbering.** ROADMAP holds that milestone plans are
 written when a milestone activates, never earlier, "because each milestone
@@ -120,14 +166,15 @@ constant-divisor strength reduction; `MOVN`/bitmask immediate
 materialization; basic-block hot/cold layout with a 2 MiB text base;
 per-function linear-scan register allocation; interprocedural register
 allocation with per-function conventions, frameless functions, no
-callee-saved discipline, universal tail calls, argument-specialized
-cloning.
+callee-saved discipline, universal tail calls.
 
 **OUT** (each with its owner):
 
 | Out | Owner |
 | --- | --- |
 | Interim spill peepholes (ladder 1a/1b) | decision 1700 — pull in only if E slips |
+| Argument-specialized cloning (was F6) | decision 1770 — cut at activation; back to the ladder |
+| Making the footprint term order-sensitive (would let D score) | decision 1750 — a ruler change, named as D's prerequisite |
 | Inliner, GVN/SCCP/DCE | [opts-ladder.md](opts-ladder.md) pull-in #1 and #2 |
 | Range propagation pass (Tier 7 beyond 1704's type-known widths) | backlog |
 | SIMD infrastructure + vectorizer (Tiers 9–10) | backlog; gated on pixels rung |
@@ -229,8 +276,16 @@ M pipe for 5–20 cycles; well-understood technique.
 **C5. `MOVN` and bitmask-immediate constant materialization** — the
 `NarrowImm` sequel; small negatives go 4 words → 1.
 
+**1740 (activation).** C1 cannot be ranked on the ruler as committed: the
+cost table has no W-form `MADD`/`MSUB`/`SDIV`/`UDIV` rows, so W and X score
+identically. C1 owns adding them, with M20 item A's provenance discipline
+(`source`/`mechanism`/`note`/`ambiguity`, tier stated) — the table and
+provenance digests both move and that is the review surface. If the rows
+cannot be justified from published material, C1 lands as a *reported* form
+change with no win claimed, and says so.
+
 **Files:** `codegen.rs`, `mwir.rs` (width-carrying forms if needed),
-`encode.rs` (`UBFX`/`SBFX`/`MOVN` if absent).
+`encode.rs` (`UBFX`/`SBFX`/`MOVN` if absent), `cost/table.rs` (C1's rows).
 **Cheap:** one unit per item asserting the *emitted form* changed and the
 semantics did not; `cost-arith` diff; `diff-eval` on the checked-arithmetic
 corpus specifically for C2 (the highest-risk item — an overflow check that
@@ -246,6 +301,15 @@ per SOG §4.8.
 **Why this is the cheap large win:** static text stops mattering once the
 hot subset is dense. It is the item that makes the ladder's code-growing
 opts affordable later, and it is the direct answer to 93–98 KB vs 64 KiB.
+
+**1750 (activation).** The ruler cannot see block order: its footprint term
+totals a flat, all-hot text at synthetic addresses, and the total is
+order-invariant. So D **does not become a `RELEASE_OPTS` entry** on this
+plan. It lands as (a) the layout itself, (b) the per-core hot-text
+footprint number in the report before/after, (c) the named boot transcripts,
+and (d) an honest statement that the ∀ gate scored it at zero. Making the
+footprint term order-sensitive is a ruler change and is out of scope here;
+if D wants a gate win later, that change is its prerequisite, named.
 
 **Files:** `layout.rs`, `codegen.rs` (block ordering), `report.rs` (the
 per-core hot-text line M20 item F adds — cite it, do not duplicate it).
@@ -299,9 +363,14 @@ limit, no x8 indirect-result convention.
 **F5. Universal tail calls.** Every tail-position call is a jump,
 unconditionally.
 
-**F6. Argument-specialized cloning.** All call sites are known, so clone per
-call site's known constants **without inlining** — the enabling effect at a
-fraction of the size cost. Uses item A's call-frequency table.
+**F6. Argument-specialized cloning. CUT at activation (decision 1770).** The
+ruler scores unmeasured blocks at flat `f≡1`, so a clone's win is invisible
+while its extra words read as a coverage fall — the item is wedged between
+two terms, and no amount of implementation effort moves it. It returns to
+[opts-ladder.md](opts-ladder.md) as a pull-in whose named prerequisite is
+per-call-site measured frequency (item A's table extended to call sites, or a
+frequency-aware footprint term). F1–F5 are unaffected: none of them depends
+on it.
 
 **Files:** `regalloc.rs` (whole-program mode), `codegen.rs`, `layout.rs`
 (call sites become convention-aware), `report.rs` (the report should show
