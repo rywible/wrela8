@@ -76,10 +76,10 @@ ImageReport v0
   Cores count=1
   CoreStack core=0 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=85024
-  Section name=rodata base=0x40514c70 size=842
-  Section name=abort base=0x40514fbc size=120
-  Section name=checkpoint base=0x40515034 size=28
+  Section name=code base=0x40500050 size=82692
+  Section name=rodata base=0x40514358 size=842
+  Section name=abort base=0x405146a4 size=120
+  Section name=checkpoint base=0x4051471c size=28
   Section name=rtdata base=0x40540000 size=2328
   Section name=devregs base=0x40540918 size=104
   Section name=pooldata base=0x40540980 size=512
@@ -185,11 +185,11 @@ ImageReport v0
   BlkDevice device=device#0 capacity_sectors=16 features=0x100000200
   BlkQueue index=0 size=8 desc=0x40540980 avail=0x40540a00 used=0x40540a18 doorbell=0x40540a60
   BlkAccounting descriptors_per_op=3 queue_depth=8 occupancy_bound=2
-  Cost version=3 digest=043f8dc4b21c4b12 total=30560 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=30560
-    Owner name=app proxy_cycles=2785
-    Owner name=runtime proxy_cycles=27775
+  Cost version=3 digest=b2484a1b9c00d7fa total=26804 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=26804
+    Owner name=app proxy_cycles=2693
+    Owner name=runtime proxy_cycles=24111
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=390 max_turn_proxy=75 turns_per_sec=32000000 ms_per_turn_model=0.00003125
-    Budget n=0 hot_text_bytes=92096 l1i_bytes=65536 over_l1i_lines=415 over_l2_lines=0 text_pages=23 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=2905
-    Shared proxy_cycles=30170
+    Core n=0 proxy_cycles=382 max_turn_proxy=73 turns_per_sec=32876712.3287671246 ms_per_turn_model=0.0000304167
+    Budget n=0 hot_text_bytes=89792 l1i_bytes=65536 over_l1i_lines=379 over_l2_lines=0 text_pages=22 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=2653
+    Shared proxy_cycles=26422

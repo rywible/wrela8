@@ -68,15 +68,15 @@ ImageReport v0
   CoreStack core=1 base=0x7fe00000 size=0x100000
   CoreStack core=2 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=88636
-  Section name=rodata base=0x40515a90 size=742
-  Section name=abort base=0x40515d78 size=120
-  Section name=checkpoint base=0x40515df0 size=28
+  Section name=code base=0x40500050 size=86272
+  Section name=rodata base=0x40515150 size=742
+  Section name=abort base=0x40515438 size=120
+  Section name=checkpoint base=0x405154b0 size=28
   Section name=rtdata base=0x40540000 size=2176
   Section name=devregs base=0x40540880 size=8
   Entry base=0x40500000
-  CoreEntry core=1 base=0x40515a04
-  CoreEntry core=2 base=0x40515a48
+  CoreEntry core=1 base=0x405150c8
+  CoreEntry core=2 base=0x4051510c
   PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
@@ -178,15 +178,15 @@ ImageReport v0
   Rings count=4 stride=64 padding=80 bytes=352
   Totals actors=1 drivers=1 ready_queue=3 group_arena=0 bytes=2176
   DeviceRegs device=device#0 type=Hw driver=Stub base=0x40540880 size=8
-  Cost version=3 digest=043f8dc4b21c4b12 total=31538 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=31538
-    Owner name=app proxy_cycles=2657
-    Owner name=runtime proxy_cycles=28881
+  Cost version=3 digest=b2484a1b9c00d7fa total=27554 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=27554
+    Owner name=app proxy_cycles=2574
+    Owner name=runtime proxy_cycles=24980
     Owner name=driver proxy_cycles=0
     Core n=0 proxy_cycles=173 max_turn_proxy=64 turns_per_sec=37500000 ms_per_turn_model=0.0000266667
-    Budget n=0 hot_text_bytes=94912 l1i_bytes=65536 over_l1i_lines=459 over_l2_lines=0 text_pages=24 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=3213
-    Core n=1 proxy_cycles=366 max_turn_proxy=291 turns_per_sec=8247422.6804123707 ms_per_turn_model=0.00012125
-    Budget n=1 hot_text_bytes=95104 l1i_bytes=65536 over_l1i_lines=462 over_l2_lines=0 text_pages=24 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=3234
+    Budget n=0 hot_text_bytes=92736 l1i_bytes=65536 over_l1i_lines=425 over_l2_lines=0 text_pages=23 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=2975
+    Core n=1 proxy_cycles=365 max_turn_proxy=290 turns_per_sec=8275862.068965517 ms_per_turn_model=0.0001208333
+    Budget n=1 hot_text_bytes=92928 l1i_bytes=65536 over_l1i_lines=428 over_l2_lines=0 text_pages=23 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=2996
     Core n=2 proxy_cycles=21 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn_model=n/a
-    Budget n=2 hot_text_bytes=94592 l1i_bytes=65536 over_l1i_lines=454 over_l2_lines=0 text_pages=24 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=3178
-    Shared proxy_cycles=30978
+    Budget n=2 hot_text_bytes=92416 l1i_bytes=65536 over_l1i_lines=420 over_l2_lines=0 text_pages=23 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=2940
+    Shared proxy_cycles=26995

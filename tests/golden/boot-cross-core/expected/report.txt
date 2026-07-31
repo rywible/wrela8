@@ -63,14 +63,14 @@ ImageReport v0
   CoreStack core=1 base=0x7fe00000 size=0x100000
   CoreStack core=2 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=85216
-  Section name=rodata base=0x40514d30 size=641
-  Section name=abort base=0x40514fb4 size=120
-  Section name=checkpoint base=0x4051502c size=28
+  Section name=code base=0x40500050 size=82900
+  Section name=rodata base=0x40514428 size=641
+  Section name=abort base=0x405146ac size=120
+  Section name=checkpoint base=0x40514724 size=28
   Section name=rtdata base=0x40540000 size=1792
   Entry base=0x40500000
-  CoreEntry core=1 base=0x40514ca8
-  CoreEntry core=2 base=0x40514cec
+  CoreEntry core=1 base=0x4051439c
+  CoreEntry core=2 base=0x405143e0
   PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
@@ -166,15 +166,15 @@ ImageReport v0
   Turn fn=cross_core frame=288
   Turns count=3 stride=512 bytes=1536
   Totals actors=2 drivers=0 ready_queue=3 group_arena=0 bytes=1792
-  Cost version=3 digest=043f8dc4b21c4b12 total=30363 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=30363
-    Owner name=app proxy_cycles=2112
-    Owner name=runtime proxy_cycles=28251
+  Cost version=3 digest=b2484a1b9c00d7fa total=26518 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=26518
+    Owner name=app proxy_cycles=2032
+    Owner name=runtime proxy_cycles=24486
     Owner name=driver proxy_cycles=0
     Core n=0 proxy_cycles=109 max_turn_proxy=55 turns_per_sec=43636363.636363633 ms_per_turn_model=0.0000229167
-    Budget n=0 hot_text_bytes=92096 l1i_bytes=65536 over_l1i_lines=415 over_l2_lines=0 text_pages=23 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=2905
+    Budget n=0 hot_text_bytes=89856 l1i_bytes=65536 over_l1i_lines=380 over_l2_lines=0 text_pages=22 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=2660
     Core n=1 proxy_cycles=130 max_turn_proxy=55 turns_per_sec=43636363.636363633 ms_per_turn_model=0.0000229167
-    Budget n=1 hot_text_bytes=92160 l1i_bytes=65536 over_l1i_lines=416 over_l2_lines=0 text_pages=23 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=2912
+    Budget n=1 hot_text_bytes=89920 l1i_bytes=65536 over_l1i_lines=381 over_l2_lines=0 text_pages=22 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=2667
     Core n=2 proxy_cycles=21 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn_model=n/a
-    Budget n=2 hot_text_bytes=91968 l1i_bytes=65536 over_l1i_lines=413 over_l2_lines=0 text_pages=23 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=2891
-    Shared proxy_cycles=30103
+    Budget n=2 hot_text_bytes=89728 l1i_bytes=65536 over_l1i_lines=378 over_l2_lines=0 text_pages=22 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=2646
+    Shared proxy_cycles=26258

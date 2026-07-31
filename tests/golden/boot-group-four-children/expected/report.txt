@@ -58,10 +58,10 @@ ImageReport v0
   Cores count=1
   CoreStack core=0 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=89500
-  Section name=rodata base=0x40515df0 size=735
-  Section name=abort base=0x405160d0 size=120
-  Section name=checkpoint base=0x40516148 size=28
+  Section name=code base=0x40500050 size=87116
+  Section name=rodata base=0x405154a0 size=735
+  Section name=abort base=0x40515780 size=120
+  Section name=checkpoint base=0x405157f8 size=28
   Section name=rtdata base=0x40540000 size=6512
   Entry base=0x40500000
   PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
@@ -162,11 +162,11 @@ ImageReport v0
   Turn fn=test_join_four frame=528
   Turns count=6 stride=1024 bytes=6144
   Totals actors=1 drivers=0 ready_queue=2 group_arena=1 bytes=6512
-  Cost version=3 digest=043f8dc4b21c4b12 total=34147 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=34147
-    Owner name=app proxy_cycles=6242
-    Owner name=runtime proxy_cycles=27905
+  Cost version=3 digest=b2484a1b9c00d7fa total=30361 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=30361
+    Owner name=app proxy_cycles=6154
+    Owner name=runtime proxy_cycles=24207
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=40 max_turn_proxy=40 turns_per_sec=60000000 ms_per_turn_model=0.0000166667
-    Budget n=0 hot_text_bytes=96704 l1i_bytes=65536 over_l1i_lines=487 over_l2_lines=0 text_pages=24 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=3409
-    Shared proxy_cycles=34107
+    Core n=0 proxy_cycles=39 max_turn_proxy=39 turns_per_sec=61538461.5384615362 ms_per_turn_model=0.00001625
+    Budget n=0 hot_text_bytes=94272 l1i_bytes=65536 over_l1i_lines=449 over_l2_lines=0 text_pages=24 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=3143
+    Shared proxy_cycles=30322
