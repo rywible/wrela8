@@ -125,13 +125,84 @@
 //! "the guest observes vectors **only at checkpoints and parks**". A
 //! checkpoint is an inline poll plus a `BL`, i.e. an ordinary
 //! `CostRule::Call` word, so it is already a barrier here.
+//!
+//! ## Item F: the convention is the function's own
+//!
+//! Everything above describes item E, which is still exactly what runs
+//! when `OptId::InterprocRegs` is off. Item F
+//! (plans/codegen-pareto-F.md) replaces the two facts that were global
+//! constants with facts computed **per function, over the whole
+//! program**:
+//!
+//! - **The pool.** [`POOL`] is nine registers because item E could not
+//!   know which of `x0..x17` the emitter would want. It never had to
+//!   guess: the probe already reports every register the function's own
+//!   emission names, so the honest pool is [`WIDE_POOL`] minus that
+//!   measured set. See [`free_pool`].
+//! - **The call barrier.** Item E refuses any temp whose value spans a
+//!   returning call, because "this ABI preserves nothing but x30". That
+//!   is a statement about a convention written for strangers. A sealed
+//!   image has no strangers: [`allocate_program`] computes, for every
+//!   function, the set of registers a *caller* must assume it destroys,
+//!   bottom-up over the call graph, and a temp is then refused only from
+//!   the registers its own spanned callees actually clobber.
+//!
+//! Both are still measurements, never models. A callee whose body this
+//! compiler did not emit — a runtime helper, an async turn body, a
+//! `rt_enqueue` key layout may redirect, anything at all outside
+//! `MwirProgram::fns` — clobbers **everything** ([`ALL_REGS`]), and so
+//! does every function on a call-graph cycle. Failing closed there is
+//! what makes the win on the rest believable.
 
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// A set of physical registers, one bit per register number 0..=31.
+/// A bitmask rather than a `BTreeSet` because it is unioned once per
+/// call site per interval and because a mask has exactly one ordering
+/// (CLAUDE.md: determinism through dumbness).
+pub type RegSet = u32;
+
+/// Every register, the answer for any callee this compiler cannot see
+/// the body of and for every function on a call-graph cycle.
+pub const ALL_REGS: RegSet = u32::MAX;
+
+/// `1 << r`, guarded so a bogus register number cannot silently wrap
+/// into some other register's bit.
+pub fn reg_bit(r: u8) -> RegSet {
+    debug_assert!(r < 32, "register number {r} out of range");
+    1u32 << (r & 31)
+}
+
 /// The physical registers a resident temp may occupy. See the module
 /// doc for why this set and not a larger one.
 pub const POOL: &[u8] = &[19, 20, 21, 22, 23, 24, 25, 26, 27];
+
+/// Item F's pool: every general-purpose register that is not fixed by
+/// the machine or by this backend's own permanent choices, before the
+/// per-function subtraction of what the emitter measurably uses.
+///
+/// What is *not* here, and why each is not negotiable:
+///
+/// - **`x18`** — the AArch64 platform register. Nothing in a wrela image
+///   uses it and taking it would be a free extra register, but item E's
+///   one line of restraint is kept: a register the architecture reserves
+///   is not a place to find a win.
+/// - **`x28`** — `X_FRAME`, the async turn base. Its whole job is to
+///   survive a `BL`, and codegen reloads it after every one.
+/// - **`x29`/`x30`/`sp`** — frame pointer (never touched by this ABI),
+///   link register, stack pointer.
+///
+/// `x0..x17` are in the *base* pool and were not in item E's, which is
+/// the single largest change to the pool this plan makes. They are not
+/// free for the taking: they are the argument/result registers and the
+/// emitter's scratch set, so [`free_pool`] subtracts every one of them
+/// the function's own probe emission names. What survives is the part of
+/// the register file this particular function genuinely does not use.
+pub const WIDE_POOL: &[u8] = &[
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 19, 20, 21, 22, 23, 24, 25, 26,
+    27,
+];
 
 // Decision 1760: the allocator is a named opt with a TLS knob, exactly
 // like `codegen::set_narrow_imm` (M19 freeze 1402 — `RELEASE_OPTS` is
@@ -140,6 +211,7 @@ pub const POOL: &[u8] = &[19, 20, 21, 22, 23, 24, 25, 26, 27];
 // 1407) and every caller that has not opted in is unaffected.
 thread_local! {
     static REGALLOC: Cell<bool> = const { Cell::new(false) };
+    static INTERPROC: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Enable/disable per-function register allocation for the current
@@ -151,6 +223,18 @@ pub fn set_regalloc(enabled: bool) {
 /// Whether register allocation is enabled (default false).
 pub fn regalloc() -> bool {
     REGALLOC.with(|c| c.get())
+}
+
+/// Item F / decision 1771: enable/disable the whole-program convention
+/// (widened per-function pool + per-callee clobber sets). Inert unless
+/// [`regalloc`] is also on — there is no allocation for it to extend.
+pub fn set_interproc_regs(enabled: bool) {
+    INTERPROC.with(|c| c.set(enabled));
+}
+
+/// Whether the whole-program convention is enabled (default false).
+pub fn interproc_regs() -> bool {
+    INTERPROC.with(|c| c.get())
 }
 
 /// How the emitter reached a temp's frame bytes at one program point.
@@ -167,6 +251,17 @@ pub enum Touch {
     Escape,
 }
 
+/// One returning call, as the probe emission performed it: the word
+/// index within its own point, and the callee's key when the emitter
+/// named one (`Reloc::Call`). `None` is every other returning `BL` —
+/// the checkpoint service, a runtime helper, anything whose target this
+/// module cannot look up — and it resolves to [`ALL_REGS`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallWord {
+    pub word: usize,
+    pub callee: Option<String>,
+}
+
 /// What one program point does. Point `0` is the prologue, points
 /// `1..=body.len()` are `body[i - 1]`, and point `body.len() + 1` is the
 /// epilogue — so the parameter stores the prologue emits and the
@@ -178,12 +273,11 @@ pub struct PointFacts {
     /// order. The word index is what makes the call barrier precise
     /// enough to be worth having — see [`allocate`]'s step 4.
     pub touches: Vec<(usize, Touch, usize)>,
-    /// Word indices, within this point, of every `CostRule::Call` word:
-    /// a call that returns, and therefore a point at which every pool
-    /// register may have been clobbered by the callee.
-    /// `CostRule::Abort`/`AbortVal` are noreturn and are deliberately
-    /// not barriers.
-    pub call_words: Vec<usize>,
+    /// Every `CostRule::Call` word this point emits: a call that
+    /// returns, and therefore a point at which the callee's clobber set
+    /// takes effect. `CostRule::Abort`/`AbortVal` are noreturn and are
+    /// deliberately not barriers.
+    pub call_words: Vec<CallWord>,
     /// Every register this point's baseline emission names as a `dst` or
     /// a `src`. The pool is intersected with the complement of the union
     /// over all points.
@@ -199,6 +293,21 @@ pub struct FnFacts {
     /// `(source point, target point)` for every branch whose target is
     /// at or before its own index — see the module doc's proof.
     pub back_edges: Vec<(usize, usize)>,
+    /// Item F: every function this one transfers control to and may
+    /// return from, from the `Reloc::Call` entries the emitter itself
+    /// pushed. **Tail calls are in here and are not in `call_words`**,
+    /// which is exactly right for both readers: a tail call clobbers
+    /// registers on this function's behalf (so its callers must know)
+    /// but nothing of this function's is live across it.
+    pub calls: BTreeSet<String>,
+    /// True when this function made a returning call the emitter did not
+    /// name — the checkpoint service is the one that occurs in practice.
+    /// It forces the whole function's clobber set to [`ALL_REGS`].
+    pub opaque_calls: bool,
+    /// True when any point emits a returning call at all. F3 reads it:
+    /// a function that can return from a `BL` must save `x30`, and
+    /// saving `x30` is the last reason a leaf needs a frame.
+    pub has_returning_call: bool,
 }
 
 /// The decision: one optional physical register per temp.
@@ -248,13 +357,75 @@ struct Interval {
     temp: usize,
     start: usize,
     end: usize,
+    /// Registers this interval may **not** occupy, because a callee it
+    /// spans destroys them. `0` for an interval that spans no returning
+    /// call; [`ALL_REGS`] under item E's total barrier, which is why
+    /// the same scan expresses both policies.
+    forbidden: RegSet,
 }
 
-/// Decide residency for one function.
+/// Every register this function's own baseline emission names, as a
+/// mask. The one input the pool is subtracted from; see [`free_pool`].
+fn measured_regs(facts: &FnFacts) -> RegSet {
+    let mut m: RegSet = 0;
+    for p in &facts.points {
+        for &r in &p.regs {
+            m |= reg_bit(r);
+        }
+    }
+    m
+}
+
+/// The registers this function may hand to a temp: `base_pool` minus
+/// every register its own probe emission was measured naming.
+///
+/// This is the whole of item F's "reaching the rest of the register
+/// file". Nothing about it is a new proof: item E already intersected
+/// [`POOL`] with this complement as a *safety net* behind a hand-picked
+/// nine. Item F deletes the hand-picked part and keeps the net, because
+/// the net was always the load-bearing half. A register the emitter
+/// touches for any reason — an argument register at a call site, `x8`
+/// for an aggregate result, `X_A..X_F` scratch, the digit-loop pair — is
+/// named by some word of some point and is therefore out, per function,
+/// without anyone having to enumerate the reasons correctly.
+pub fn free_pool(facts: &FnFacts, base_pool: &[u8]) -> Vec<u8> {
+    let used = measured_regs(facts);
+    base_pool
+        .iter()
+        .copied()
+        .filter(|&r| used & reg_bit(r) == 0)
+        .collect()
+}
+
+/// Decide residency for one function under item E's rules: the nine-
+/// register [`POOL`], and a **total** call barrier.
 ///
 /// `scalar_slot[t]` says the temp occupies exactly one 8-byte frame
 /// slot; anything wider is refused before the scan even looks at it.
 pub fn allocate(facts: &FnFacts, scalar_slot: &[bool]) -> Assignment {
+    allocate_with(facts, scalar_slot, POOL, None, true)
+}
+
+/// Decide residency for one function under item F's rules.
+///
+/// `base_pool` is the register set before the per-function subtraction
+/// ([`free_pool`]). `callee_clobbers` is `None` for item E's total call
+/// barrier and `Some(map)` for item F's per-callee one; a callee absent
+/// from the map clobbers [`ALL_REGS`], which is the same refusal item E
+/// applied to every call.
+/// `pays_for_itself` is decision 1765's two-read rule. It is `true`
+/// everywhere except in the one place item F3 turns it off: see
+/// [`allocate_one`], where a function whose *only* remaining frame bytes
+/// belong to single-read temps is re-asked without it, because deleting
+/// the whole frame is worth more than the copy the rule was protecting
+/// against.
+pub fn allocate_with(
+    facts: &FnFacts,
+    scalar_slot: &[bool],
+    base_pool: &[u8],
+    callee_clobbers: Option<&BTreeMap<String, RegSet>>,
+    pays_for_itself: bool,
+) -> Assignment {
     let n = facts.temp_count;
     let mut out = Assignment::none(n);
     if n == 0 || facts.points.is_empty() {
@@ -305,9 +476,11 @@ pub fn allocate(facts: &FnFacts, scalar_slot: &[bool]) -> Assignment {
             }
         }
     }
-    for t in 0..n {
-        if reads[t] < 2 {
-            eligible[t] = false;
+    if pays_for_itself {
+        for t in 0..n {
+            if reads[t] < 2 {
+                eligible[t] = false;
+            }
         }
     }
 
@@ -332,6 +505,7 @@ pub fn allocate(facts: &FnFacts, scalar_slot: &[bool]) -> Assignment {
                 temp: t,
                 start: a,
                 end: b,
+                forbidden: 0,
             }),
             _ => None,
         })
@@ -373,12 +547,34 @@ pub fn allocate(facts: &FnFacts, scalar_slot: &[bool]) -> Assignment {
         }
     }
 
-    // --- 4. a temp live across a returning call is refused ------------
+    // --- 5. the pool this function may actually use -------------------
     //
-    // No callee-saved discipline exists in this ABI: only x30 survives a
-    // `BL` (`codegen.rs`'s module doc), so a resident value cannot. Item
-    // F is exactly the item that computes what a callee really clobbers
-    // and lifts this.
+    // Hoisted above the barrier because item F's barrier is a *register*
+    // question, not a yes/no one: an interval survives a call iff some
+    // register in this function's pool is one the callee does not
+    // destroy, and that cannot be asked before the pool is known.
+    let pool: Vec<u8> = free_pool(facts, base_pool);
+    if pool.is_empty() {
+        return out;
+    }
+    let pool_mask: RegSet = pool.iter().fold(0, |m, &r| m | reg_bit(r));
+
+    // --- 4. what a temp live across a returning call may occupy -------
+    //
+    // **Item E:** nothing. Only x30 survives a `BL` under a convention
+    // written so that strangers can call your code, so a resident value
+    // cannot, and the interval is dropped.
+    //
+    // **Item F (`callee_clobbers = Some`):** the caller knows exactly
+    // which registers this callee destroys, because the whole program is
+    // in the image and [`allocate_program`] computed the answer bottom-up
+    // before this function was reached. The interval is not dropped; it
+    // is *constrained*, and it is dropped only when the constraint
+    // leaves no register at all. That is F2 — the conservative
+    // save/restore does not shrink, it never existed, and the callee-
+    // saved discipline that would have replaced it is not created either:
+    // the caller simply picks a register this callee was measured not to
+    // touch.
     //
     // The test is at **word** grain, not point grain, and that is what
     // makes it worth having. A point-grain rule would refuse every call
@@ -390,7 +586,7 @@ pub fn allocate(facts: &FnFacts, scalar_slot: &[bool]) -> Assignment {
     // register at all? A temp that is only read *before* the `bl` and a
     // temp that is only written *after* it are both fine; only a value
     // that must span the `bl` is refused.
-    intervals.retain(|iv| {
+    for iv in intervals.iter_mut() {
         for i in iv.start..=iv.end.min(facts.points.len().saturating_sub(1)) {
             let p = &facts.points[i];
             if p.call_words.is_empty() {
@@ -422,32 +618,32 @@ pub fn allocate(facts: &FnFacts, scalar_slot: &[bool]) -> Assignment {
                 // Not live anywhere inside this point.
                 continue;
             }
-            if p.call_words.iter().any(|&c| c >= lo && c <= hi) {
-                return false;
+            for cw in &p.call_words {
+                if cw.word < lo || cw.word > hi {
+                    continue;
+                }
+                iv.forbidden |= match callee_clobbers {
+                    // Item E: nothing survives a `BL`.
+                    None => ALL_REGS,
+                    // Item F: exactly what this callee destroys, and
+                    // everything when the callee is one whose body this
+                    // compiler does not hold.
+                    Some(map) => match &cw.callee {
+                        Some(k) => map.get(k).copied().unwrap_or(ALL_REGS),
+                        None => ALL_REGS,
+                    },
+                };
             }
         }
-        true
-    });
+    }
+    intervals.retain(|iv| pool_mask & !iv.forbidden != 0);
     if intervals.is_empty() {
-        return out;
-    }
-
-    // --- 5. the pool this function may actually use -------------------
-    let mut used_regs: BTreeSet<u8> = BTreeSet::new();
-    for p in &facts.points {
-        used_regs.extend(p.regs.iter().copied());
-    }
-    let mut free: BTreeSet<u8> = POOL
-        .iter()
-        .copied()
-        .filter(|r| !used_regs.contains(r))
-        .collect();
-    if free.is_empty() {
         return out;
     }
 
     // --- 6. the scan --------------------------------------------------
     intervals.sort_by_key(|iv| (iv.start, iv.temp));
+    let mut free: BTreeSet<u8> = pool.iter().copied().collect();
     // `active` stays sorted by (end, temp): the eviction victim is its
     // last element, and expiry drops everything that ended earlier.
     let mut active: Vec<(usize, usize, u8)> = Vec::new(); // (end, temp, reg)
@@ -465,7 +661,14 @@ pub fn allocate(facts: &FnFacts, scalar_slot: &[bool]) -> Assignment {
         }
         active = still;
 
-        match free.iter().next().copied() {
+        // The lowest free register this interval is *allowed* to take.
+        // Under item E `forbidden` is only ever `0` or `ALL_REGS`, so
+        // this reduces exactly to "the lowest free register".
+        let pick = free
+            .iter()
+            .copied()
+            .find(|&r| iv.forbidden & reg_bit(r) == 0);
+        match pick {
             Some(reg) => {
                 free.remove(&reg);
                 assigned.insert(iv.temp, reg);
@@ -473,9 +676,14 @@ pub fn allocate(facts: &FnFacts, scalar_slot: &[bool]) -> Assignment {
             }
             None => {
                 // Furthest-end heuristic: keep the shorter-lived value.
+                // Only an occupant whose register this interval could
+                // actually use is a candidate victim — evicting one whose
+                // register is forbidden here would spill a live value and
+                // buy nothing.
                 let victim = active
                     .iter()
                     .copied()
+                    .filter(|&(_, _, reg)| iv.forbidden & reg_bit(reg) == 0)
                     .max_by_key(|&(end, temp, _)| (end, temp));
                 match victim {
                     Some((vend, vtemp, vreg)) if vend > iv.end => {
@@ -499,6 +707,251 @@ pub fn allocate(facts: &FnFacts, scalar_slot: &[bool]) -> Assignment {
     out
 }
 
+// --- item F: the whole-program convention -----------------------------------
+
+/// Everything the allocator is told about one function, plus the one
+/// derived fact `build_frame` needs. Assembled by `codegen.rs` for every
+/// sync fn before any of them is emitted.
+#[derive(Clone, Debug, Default)]
+pub struct FnInput {
+    pub facts: FnFacts,
+    /// `scalar_slot[t]`: the temp occupies exactly one 8-byte slot.
+    pub scalar_slot: Vec<bool>,
+    /// **This key's body is not this compiler's last word on it**
+    /// (decision 1781): a compiler-synthesized symbol that `layout.rs`
+    /// may replace outright, alias onto another body, or re-point at a
+    /// cross-core trampoline. Codegen decides it from the key's spelling
+    /// and this module never looks at spellings itself.
+    ///
+    /// Such a function still gets its own allocation — its emitted code
+    /// is its own — but it publishes [`ALL_REGS`], because a caller's
+    /// residency decision would otherwise be about a body that is not
+    /// the one that runs. This is the failure the boot transcripts
+    /// caught and neither the units nor `diff-eval` could: layout's
+    /// `install_abort_tail_floor` and `inject_test_runner_fns` overwrite
+    /// `__wrela_abort_tail` and `__test_call_*` with hand-assembled
+    /// bodies *after* codegen has published a convention for the wrela
+    /// stubs they replace.
+    pub opaque_body: bool,
+}
+
+/// One function's **chosen convention** — the thing the report has to
+/// show, because it is the most consequential decision in the compiler
+/// and it is otherwise invisible.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Convention {
+    /// Which temps live in which physical registers.
+    pub assignment: Assignment,
+    /// The registers this function was allowed to use, after subtracting
+    /// what its own emission names.
+    pub pool: Vec<u8>,
+    /// Every register a **caller** must assume this function destroys:
+    /// its own emission's registers, its residents' homes, and the union
+    /// of the same over everything it calls. [`ALL_REGS`] for a function
+    /// on a call-graph cycle or one that reaches a body this compiler
+    /// does not hold.
+    pub clobbers: RegSet,
+    /// Whether the clobber set is the fail-closed [`ALL_REGS`] answer
+    /// rather than a measured one. Reported, not inferred from the mask:
+    /// a function that genuinely touches every register would otherwise
+    /// be indistinguishable from one that was refused.
+    pub opaque: bool,
+}
+
+/// Compute every sync function's convention, over the whole program.
+///
+/// **The algorithm, in one paragraph.** Build the call graph from the
+/// probe's own `Reloc::Call` targets — never from a second walk of MWIR,
+/// so a call the emitter makes and the analysis does not see cannot
+/// exist. Then process functions in *callee-before-caller* order, by
+/// repeated passes that take every function all of whose named callees
+/// are already done (Kahn's algorithm, run over a `BTreeMap` so the
+/// order is a function of the keys alone). Each function so reached is
+/// allocated with the real clobber set of each callee it spans, and its
+/// own clobber set is then `measured ∪ homes ∪ ⋃ callees`. When a pass
+/// makes no progress, everything left is on or above a call-graph cycle:
+/// every one of those is stamped [`ALL_REGS`] *before* any of them is
+/// allocated, so a recursive callee can never be believed. That is the
+/// whole of the fail-closed story — there is no iteration to a fixpoint,
+/// because `homes` is not monotone in the clobber sets it is computed
+/// from and a fixpoint over a non-monotone function is not a proof.
+pub fn allocate_program(fns: &BTreeMap<String, FnInput>) -> BTreeMap<String, Convention> {
+    // The call graph, and which functions name a callee we do not hold.
+    let mut callees: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    let mut opaque_callee: BTreeMap<&str, bool> = BTreeMap::new();
+    for (key, input) in fns {
+        let mut set: BTreeSet<&str> = BTreeSet::new();
+        let mut unknown = input.facts.opaque_calls;
+        for k in &input.facts.calls {
+            match fns.get_key_value(k) {
+                Some((held, held_input)) if !held_input.opaque_body => {
+                    set.insert(held.as_str());
+                }
+                // A helper, an async turn body, a symbol only the glue
+                // emitters define — or a key this compiler emitted a body
+                // for that a later stage may replace (decision 1781).
+                _ => unknown = true,
+            }
+        }
+        callees.insert(key.as_str(), set);
+        opaque_callee.insert(key.as_str(), unknown);
+    }
+
+    let mut clobbers: BTreeMap<String, RegSet> = BTreeMap::new();
+    let mut out: BTreeMap<String, Convention> = BTreeMap::new();
+    let mut done: BTreeSet<&str> = BTreeSet::new();
+
+    loop {
+        let mut progressed = false;
+        for (key, input) in fns {
+            let k = key.as_str();
+            if done.contains(k) {
+                continue;
+            }
+            if !callees[k].iter().all(|c| done.contains(c)) {
+                continue;
+            }
+            let mut conv = allocate_one(input, &clobbers, opaque_callee[k], &callees[k]);
+            if input.opaque_body {
+                conv.clobbers = ALL_REGS;
+                conv.opaque = true;
+            }
+            clobbers.insert(key.clone(), conv.clobbers);
+            out.insert(key.clone(), conv);
+            done.insert(k);
+            progressed = true;
+        }
+        if !progressed {
+            break;
+        }
+    }
+
+    // Everything still undone is on, or reaches, a call-graph cycle.
+    // Stamp them all opaque *first*: a member allocated while another
+    // member's answer was still missing would be reading a hole.
+    let cyclic: Vec<&str> = fns
+        .keys()
+        .map(|k| k.as_str())
+        .filter(|k| !done.contains(k))
+        .collect();
+    for k in &cyclic {
+        clobbers.insert((*k).to_string(), ALL_REGS);
+    }
+    for k in &cyclic {
+        let input = &fns[*k];
+        let mut conv = allocate_one(input, &clobbers, true, &callees[*k]);
+        conv.clobbers = ALL_REGS;
+        conv.opaque = true;
+        out.insert((*k).to_string(), conv);
+    }
+    out
+}
+
+/// One function's convention, given final answers for its callees.
+fn allocate_one(
+    input: &FnInput,
+    clobbers: &BTreeMap<String, RegSet>,
+    opaque_callee: bool,
+    callees: &BTreeSet<&str>,
+) -> Convention {
+    let pool = free_pool(&input.facts, WIDE_POOL);
+    let assignment = allocate_with(
+        &input.facts,
+        &input.scalar_slot,
+        WIDE_POOL,
+        Some(clobbers),
+        true,
+    );
+    // **Decision 1775, and what the ∀ gate did to it.**
+    //
+    // The first landing of F3 had a feedback edge here: when the *only*
+    // thing standing between a function and no frame at all was a handful
+    // of temps decision 1765 refuses (read once, so a register turns an
+    // `str`/`ldr` pair into a serial two-`mov` chain), the question was
+    // re-asked without the rule and the relaxed answer taken if it landed
+    // the function at zero frame bytes. The trade looked obviously right:
+    // four more words deleted (`sub sp`, `str x30`, `ldr x30`, `add sp`)
+    // against a copy that costs nothing when the forwarding latency is
+    // low.
+    //
+    // **It is not right, and the gate said so at both tiers.** With the
+    // relaxation on, `Frameless` was refused for `cost-branch-bias`
+    // rising **267 -> 310** at every corner with
+    // `store_to_load_forwarding=1`, and for `cost-product-receipt` rising
+    // **7551 -> 7554** at the same corners — the identical shape item E
+    // measured when it promoted every scalar (plans/codegen-pareto-E.md,
+    // "what the ∀ gate caught"). Four deleted words do not pay for a
+    // serialized copy chain in the body, and the frame that F3 removes
+    // was never on the critical path to begin with.
+    //
+    // So decision 1765 is **inherited, not re-derived**: item E's
+    // hand-off called it "a policy, not an invariant; the ∀ gate is what
+    // decides it", and the gate has now decided it a second time, on a
+    // second baseline, over a corpus that includes four programs the
+    // appliance ships. F3 fires only where the two-read rule already left
+    // the frame empty.
+    let mut mask = measured_regs(&input.facts);
+    for (_, r) in assignment.residents() {
+        mask |= reg_bit(r);
+    }
+    let mut opaque = opaque_callee;
+    for c in callees {
+        match clobbers.get(*c) {
+            Some(&m) => mask |= m,
+            // Unreachable by construction (every callee in `callees` is
+            // in `fns`, and every member of `fns` has an entry by the
+            // time it is read). Fail closed rather than assume.
+            None => {
+                mask = ALL_REGS;
+                opaque = true;
+            }
+        }
+    }
+    if opaque_callee {
+        mask = ALL_REGS;
+    }
+    Convention {
+        assignment,
+        pool,
+        clobbers: mask,
+        opaque,
+    }
+}
+
+/// `x19-x21,x27` — the compact spelling the report uses for a register
+/// set. `ALL_REGS` is rendered by its name, because "every register"
+/// is a different fact from "these thirty-two registers".
+pub fn render_reg_set(mask: RegSet) -> String {
+    if mask == ALL_REGS {
+        return "all".to_string();
+    }
+    if mask == 0 {
+        return "none".to_string();
+    }
+    let mut out = String::new();
+    let mut r = 0u8;
+    while r < 32 {
+        if mask & reg_bit(r) == 0 {
+            r += 1;
+            continue;
+        }
+        let start = r;
+        while r < 31 && mask & reg_bit(r + 1) != 0 {
+            r += 1;
+        }
+        if !out.is_empty() {
+            out.push(',');
+        }
+        if start == r {
+            out.push_str(&format!("x{start}"));
+        } else {
+            out.push_str(&format!("x{start}-x{r}"));
+        }
+        r += 1;
+    }
+    out
+}
+
 #[cfg(test)]
 pub(crate) mod tests_support {
     use super::*;
@@ -513,11 +966,20 @@ pub(crate) mod tests_support {
         }
     }
 
-    /// A point that is nothing but a returning call.
+    /// A point that is nothing but a returning call to an unnamed
+    /// target — the shape item E's barrier tests need.
     pub(crate) fn call_point() -> PointFacts {
+        call_point_to(None)
+    }
+
+    /// A point that is nothing but a returning call to `callee`.
+    pub(crate) fn call_point_to(callee: Option<&str>) -> PointFacts {
         PointFacts {
             touches: Vec::new(),
-            call_words: vec![0],
+            call_words: vec![CallWord {
+                word: 0,
+                callee: callee.map(str::to_string),
+            }],
             regs: BTreeSet::new(),
         }
     }
@@ -539,6 +1001,7 @@ mod tests {
                 point(&[(0, Touch::Read), (1, Touch::Read)]),
             ],
             back_edges: Vec::new(),
+            ..Default::default()
         };
         let a = allocate(&facts, &[true, true]);
         assert_eq!(a.resident_count(), 2);
@@ -561,6 +1024,7 @@ mod tests {
                 point(&[(0, Touch::Read)]),
             ],
             back_edges: Vec::new(),
+            ..Default::default()
         };
         assert_eq!(allocate(&facts, &[true]).of(0), None);
     }
@@ -577,6 +1041,7 @@ mod tests {
                 point(&[(0, Touch::Read)]),
             ],
             back_edges: Vec::new(),
+            ..Default::default()
         };
         assert_eq!(allocate(&facts, &[false]).of(0), None);
     }
@@ -594,6 +1059,7 @@ mod tests {
                 point(&[(0, Touch::Read)]),
             ],
             back_edges: Vec::new(),
+            ..Default::default()
         };
         assert_eq!(allocate(&facts, &[true]).of(0), None);
 
@@ -607,6 +1073,7 @@ mod tests {
                 call_point(),
             ],
             back_edges: Vec::new(),
+            ..Default::default()
         };
         assert!(allocate(&facts, &[true]).of(0).is_some());
     }
@@ -626,6 +1093,7 @@ mod tests {
             temp_count: n,
             points: vec![point(&defs), point(&uses), point(&uses)],
             back_edges: Vec::new(),
+            ..Default::default()
         };
         let a = allocate(&facts, &vec![true; n]);
         assert_eq!(
@@ -651,6 +1119,7 @@ mod tests {
                 point(&[(0, Touch::Read), (1, Touch::Read)]),
             ],
             back_edges: Vec::new(),
+            ..Default::default()
         };
         let a = allocate(&facts, &[true, true]);
         assert_eq!(a.resident_count(), 1, "only the untouched register is free");
@@ -676,6 +1145,7 @@ mod tests {
                 point(&[(0, Touch::Read)]),
             ],
             back_edges: vec![(3, 1)],
+            ..Default::default()
         };
         let a = allocate(&facts, &[true, true]);
         assert_eq!(a.resident_count(), 2);
@@ -701,6 +1171,7 @@ mod tests {
                 point(&[(1, Touch::Read)]),
             ],
             back_edges: Vec::new(),
+            ..Default::default()
         };
         let a = allocate(&facts, &[true, true]);
         assert_eq!(a.of(0), a.of(1));
@@ -730,6 +1201,7 @@ mod tests {
                 ]),
             ],
             back_edges: Vec::new(),
+            ..Default::default()
         };
         let first = allocate(&facts, &[true; 4]);
         for _ in 0..8 {
@@ -764,6 +1236,7 @@ mod pays_for_itself_tests {
             temp_count: 1,
             points: vec![point(&[(0, Touch::Write)]), point(&[(0, Touch::Read)])],
             back_edges: Vec::new(),
+            ..Default::default()
         };
         assert_eq!(allocate(&facts, &[true]).of(0), None);
     }
@@ -779,6 +1252,7 @@ mod pays_for_itself_tests {
                 point(&[(0, Touch::Read)]),
             ],
             back_edges: Vec::new(),
+            ..Default::default()
         };
         assert!(allocate(&facts, &[true]).of(0).is_some());
     }
@@ -791,6 +1265,7 @@ mod pays_for_itself_tests {
             temp_count: 1,
             points: vec![point(&[(0, Touch::Write)]), point(&[(0, Touch::Write)])],
             back_edges: Vec::new(),
+            ..Default::default()
         };
         assert_eq!(allocate(&facts, &[true]).of(0), None);
     }

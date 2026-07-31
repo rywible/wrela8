@@ -2659,16 +2659,29 @@ mod tests {
     /// blind to it. It survives on cycles alone.
     #[test]
     fn narrow_imm_wins_on_cycles_while_its_footprint_win_is_priced_at_zero() {
-        let configs: [(&str, &[OptId]); 8] = [
-            ("dev", &[]),
-            ("BoundsElide", &[OptId::BoundsElide]),
-            ("NarrowImm", &[OptId::NarrowImm]),
-            ("AdrAddressing", &[OptId::AdrAddressing]),
-            ("BfxNarrow", &[OptId::BfxNarrow]),
-            ("MaskCheck", &[OptId::MaskCheck]),
-            ("RegAlloc", &[OptId::RegAlloc]),
-            ("release", RELEASE_OPTS),
-        ];
+        // **Derived from `RELEASE_OPTS`, not hand-listed** (item F). The
+        // comment on `rankable` below already names the trap a hand-list
+        // walks into — "silently becomes `release beats two of its six
+        // opts`" — and the array underneath it was itself a hand-list, so
+        // item F's three ids appeared in `rankable` and not in `configs`
+        // and the lookup panicked. One source, both readers.
+        let singles: Vec<(String, Vec<OptId>)> = RELEASE_OPTS
+            .iter()
+            .map(|id| (format!("{id:?}"), vec![*id]))
+            .collect();
+        let mut configs: Vec<(&str, &[OptId])> = vec![("dev", &[])];
+        for (label, opts) in &singles {
+            configs.push((label.as_str(), opts.as_slice()));
+        }
+        // The list as it stood before item F, so the sum-of-singles bound
+        // below can still be asked where every member is rankable alone.
+        let pre_f: Vec<OptId> = RELEASE_OPTS
+            .iter()
+            .copied()
+            .take_while(|id| *id != OptId::InterprocRegs)
+            .collect();
+        configs.push(("release-minus-F", pre_f.as_slice()));
+        configs.push(("release", RELEASE_OPTS));
         let rows = attribute_opts(&configs);
         let table = format_attribution_table(&rows);
         eprintln!("per-opt attribution (plans/M20.md item K):\n{table}");
@@ -2792,7 +2805,16 @@ mod tests {
         // is excluded here by name and gated on its own baseline in
         // `ITEM_C_SMOKE`. The exclusion is asserted to be exactly that one
         // id, so a future opt cannot join it silently.
-        const UNRANKABLE_ALONE: &[OptId] = &[OptId::WideImmForms];
+        //
+        // **Item F adds two more, for the same structural reason.**
+        // Neither is a transform of its own against `dev`:
+        // `InterprocRegs` changes which register the allocator may pick
+        // and `Frameless` is read off the allocation's own result, so
+        // with `RegAlloc` off both are the identity. Each is gated on its
+        // real baseline in `ITEM_F_SMOKE`, which is a chain rather than a
+        // single baseline precisely because they compose in this order.
+        const UNRANKABLE_ALONE: &[OptId] =
+            &[OptId::WideImmForms, OptId::InterprocRegs, OptId::Frameless];
         let rankable: Vec<OptId> = RELEASE_OPTS
             .iter()
             .copied()
@@ -2821,12 +2843,39 @@ mod tests {
             "every rankable opt must contribute on cycles: {wins:?}
 {table}"
         );
+        // **The sum-of-singles bound, restated by item F (decision 1777).**
+        //
+        // Through item E the claim was `rel_win <= Σ singles`: the opts
+        // overlap rather than compose, so none of them creates cycles
+        // that none creates alone. Item F breaks that, and the break is
+        // the finding rather than a bug. Three of its four ids
+        // (`InterprocRegs`, `Frameless`, `TailCalls`) are *unreachable*
+        // against a `dev` baseline — none of them is a transform of its
+        // own, each only fires once the one before it has — so their
+        // singles are all exactly zero while their joint contribution is
+        // not. Measuring `Σ singles` against `release` therefore compares
+        // a sum that is missing three terms with a total that has them.
+        //
+        // So the bound is asked where it is still a real question: over
+        // the list **as it stood before item F**, whose members are all
+        // rankable alone. `release` is then required to beat that, which
+        // is the claim item F is actually making.
+        let e_win = dev_cycles - sum("release-minus-F", |c| c.proxy_cycles);
         assert!(
-            rel_win <= wins.iter().map(|(_, w)| *w).sum::<i64>(),
-            "release's win cannot exceed the sum of the singles — that would \
-             mean the opts create cycles together that none creates alone: \
-             release {rel_win} vs {wins:?}
+            e_win <= wins.iter().map(|(_, w)| *w).sum::<i64>(),
+            "the pre-item-F list's win cannot exceed the sum of its singles: \
+             {e_win} vs {wins:?}
 {table}"
+        );
+        assert!(
+            rel_win > e_win,
+            "item F's three ids must add cycles on top of the whole list \
+             before them: release {rel_win} vs release-minus-F {e_win}
+{table}"
+        );
+        eprintln!(
+            "item F block win (release-minus-F -> release): {} proxy cycles",
+            rel_win - e_win
         );
         assert!(
             wins.iter().all(|(_, w)| rel_win > *w),
@@ -2990,9 +3039,24 @@ mod tests {
             // product tier and everything about the question being
             // unanswerable. Asking the wrong question and pinning the
             // answer is worse than not asking.
-            let base: &[OptId] = match opt {
-                OptId::WideImmForms => &[OptId::NarrowImm],
-                _ => &[],
+            //
+            // **Item F's two ids need the same treatment, and for the
+            // same reason** (decision 1780). Neither is a transform of
+            // its own: `InterprocRegs` changes which register the
+            // allocator may hand out, and `Frameless` is read off the
+            // allocation's own result, so with `RegAlloc` off both are
+            // the identity and a `dev` baseline would pin a veto that
+            // says nothing. Each is asked over its own link in item F's
+            // chain, derived from `RELEASE_OPTS` rather than written out.
+            let base: Vec<OptId> = match opt {
+                OptId::WideImmForms => vec![OptId::NarrowImm],
+                OptId::InterprocRegs => item_f_baseline(),
+                OptId::Frameless => {
+                    let mut b = item_f_baseline();
+                    b.push(OptId::InterprocRegs);
+                    b
+                }
+                _ => Vec::new(),
             };
             let base_label = if base.is_empty() {
                 "dev".to_string()
@@ -3000,8 +3064,8 @@ mod tests {
                 format!("{base:?}")
             };
             let cmp = compare_opt_lists_over_box_in_tier(
-                base,
-                &[base, &[*opt][..]].concat(),
+                &base,
+                &[&base[..], &[*opt][..]].concat(),
                 CostTier::Product,
             )
             .unwrap_or_else(|e| panic!("{label}: product-tier sweep: {e}"));
@@ -3090,6 +3154,21 @@ mod tests {
         // G owns confirming or killing it.
         ("WideImmForms", "veto"),
         ("RegAlloc", "wins"),
+        // **plans/codegen-pareto.md item F, decision 1780.** Both win on
+        // all four borrowed programs, which is the question decision 1717
+        // exists to ask: neither is carried by a microbenchmark it wrote
+        // itself. At the pinned point each of the four product cases
+        // falls by **-47** under `InterprocRegs` and by a further
+        // **-108** under `Frameless` — the same number on every one of
+        // them, because what both delete lives in the shared runtime
+        // closure all four borrow rather than in any one program.
+        //
+        // F5 (tail calls) has no row because it has no id: the gate
+        // scores it at exactly zero on all twenty cases of both tiers
+        // (decision 1779, `unit:f5_has_no_opt_id` and the deep lane
+        // beside it).
+        ("InterprocRegs", "wins"),
+        ("Frameless", "wins"),
     ];
 
     /// Decision 1453: swapped opt-list order vs RELEASE_OPTS — document
@@ -4479,7 +4558,7 @@ mod tests {
         );
         assert_eq!(
             (w_form, x_form),
-            (149, 152),
+            (93, 96),
             "the measured size of C1's win once item E removed the frame slack; \
              re-measure this rather than rescaling it"
         );
@@ -4639,6 +4718,164 @@ mod tests {
         eprintln!("∀ sweep (release-minus-RegAlloc → release):\n{table}");
         assert_sweep_wins(&cmp, "release", "release-minus-RegAlloc");
         assert!(cmp.wins());
+    }
+
+    // --- plans/codegen-pareto.md item F: the no-ABI gate ---------------
+    //
+    // Two ids, asked over a **chain** of baselines rather than over `dev`.
+    // Neither is a transform of its own: `InterprocRegs` changes which
+    // register the allocator may hand out and `Frameless` is read off the
+    // allocation's own result, so `dev -> [it]` is the identity for both
+    // and a verdict from it would be a verdict about nothing (decision
+    // 1747's lesson, applied a second time).
+    // ---------------------------------------------------------------
+
+    /// Everything in `RELEASE_OPTS` before item F's first id — the list as
+    /// it stood at the end of item E, and the baseline the first link of
+    /// the chain is measured against.
+    fn item_f_baseline() -> Vec<OptId> {
+        RELEASE_OPTS
+            .iter()
+            .copied()
+            .take_while(|o| *o != OptId::InterprocRegs)
+            .collect()
+    }
+
+    /// `(opt, smoke case)` in `RELEASE_OPTS` order; each row's baseline is
+    /// `item_f_baseline()` plus every row before it.
+    ///
+    /// The **case** is the one whose shapes the transform actually
+    /// reaches, measured rather than guessed (freeze 1714):
+    ///
+    /// - `InterprocRegs` moves six of the twenty cases at the pinned
+    ///   point. `cost-crosscore` moves by the most (4142 -> 4052, -90) but
+    ///   carries **16 384** corners — a 53 s smoke lane on its own, which
+    ///   is a lane changing kind, not a smoke test
+    ///   (`bench/thresholds.toml`'s `[tests]` note). `cost-runtime` falls
+    ///   by -47 over 1 024 corners and is the same transform.
+    /// - `Frameless` moves eighteen of twenty; `cost-arith` is the
+    ///   largest *relative* fall (136 -> 74, **-46 %**) and is four
+    ///   functions, so it is also the cheapest of the eighteen to sweep.
+    const ITEM_F_SMOKE: &[(OptId, &str)] = &[
+        (OptId::InterprocRegs, "cost-runtime"),
+        (OptId::Frameless, "cost-arith"),
+    ];
+
+    /// **Item F's smoke lane.** Each id falls at *every* point of its own
+    /// case's residual box, over its own place in the chain, and is
+    /// refused for nothing. Same code path, same probe and same refusals
+    /// as the whole-corpus lane below.
+    #[test]
+    fn each_item_f_opt_wins_at_every_box_point_on_its_smoke_case() {
+        let mut base = item_f_baseline();
+        for &(id, case) in ITEM_F_SMOKE {
+            let mut candidate = base.clone();
+            candidate.push(id);
+            let (sweep, reasons) = sweep_one(case, &base, &candidate);
+            let labels: Vec<String> = reasons.iter().map(SweepVeto::label).collect();
+            assert!(
+                labels.is_empty(),
+                "{id:?} refused on {case}: {}",
+                labels.join(" ")
+            );
+            assert!(
+                !sweep.points.is_empty(),
+                "{id:?} on {case}: the probe enumerated no corners"
+            );
+            assert!(
+                sweep.points.iter().all(|p| p.candidate < p.baseline),
+                "{id:?} must fall at every point of {case}; got {:?}",
+                sweep
+                    .points
+                    .iter()
+                    .map(|p| (p.baseline, p.candidate))
+                    .collect::<Vec<_>>()
+            );
+            eprintln!(
+                "item F smoke: {id:?} on {case} — {} corners, {} -> {} at the first",
+                sweep.points.len(),
+                sweep.points[0].baseline,
+                sweep.points[0].candidate
+            );
+            base = candidate;
+        }
+    }
+
+    /// **The land gate for item F.** Each id, over the whole `cost-*`
+    /// corpus at every point of the residual box, against its own link in
+    /// the chain: no case may rise anywhere, and at least one must fall
+    /// everywhere — asked once per tier (decision 1782), so the micro
+    /// corpus cannot satisfy the quantifier on the product tier's behalf.
+    ///
+    /// **Deep lane**: two whole-corpus sweeps.
+    #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
+    #[test]
+    fn each_item_f_opt_wins_over_the_whole_box_alone() {
+        let mut base = item_f_baseline();
+        for &(id, _) in ITEM_F_SMOKE {
+            let mut candidate = base.clone();
+            candidate.push(id);
+            let cmp = compare_opt_lists_over_box(&base, &candidate).expect("sweep");
+            eprintln!(
+                "item F ∀ (+{id:?} over {} opts):\n{}",
+                base.len(),
+                format_sweep_table(&cmp, "base", &format!("+{id:?}"))
+            );
+            assert_sweep_wins(&cmp, &format!("+{id:?}"), "base");
+            base = candidate;
+        }
+    }
+
+    /// The cheap half of decision 1779: F5 is not a `RELEASE_OPTS`
+    /// member, so nothing can quietly re-add it without also having to
+    /// explain the zero the deep lane below pins.
+    #[test]
+    fn f5_has_no_opt_id() {
+        assert!(
+            !format!("{RELEASE_OPTS:?}").contains("TailCalls"),
+            "F5 has no id: the gate scores it at zero on both tiers \
+             (decision 1779)"
+        );
+    }
+
+    /// **F5's verdict, and why it is not an `OptId`** (decision 1779).
+    ///
+    /// The tail-call substitution scores **exactly zero on every case of
+    /// both tiers**: the cost-stage closures the gate ranks contain no
+    /// frameless tail-caller at all, so the transform never fires there.
+    /// Freeze 1714 keeps an unrankable transform out of `RELEASE_OPTS`,
+    /// so F5 lands unconditionally instead, exactly as item C1 did
+    /// (decision 1746) — and this pins the zero, so if a later change
+    /// makes it fire on the corpus, that is loud rather than silent and
+    /// the id question is re-opened with evidence.
+    /// **Deep lane**: this compiles the whole corpus once under
+    /// `release`. The cheap half of the claim — that F5 has no id — is
+    /// `unit:f5_has_no_opt_id`.
+    #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
+    #[test]
+    fn tail_calls_are_not_rankable_because_the_gate_corpus_never_fires_them() {
+        let mut fired = Vec::new();
+        for case in discover_cost_cases() {
+            let side = compile_side(case.input.as_path(), RELEASE_OPTS).expect("release side");
+            let tails = side
+                .program
+                .fns
+                .values()
+                .flat_map(|f| f.code.iter())
+                .filter(|w| w.text.ends_with("; tail call"))
+                .count();
+            if tails > 0 {
+                fired.push((case.name.clone(), tails));
+            }
+        }
+        apply_mode(CompileMode::Release);
+        assert!(
+            fired.is_empty(),
+            "a cost-corpus case now fires a tail call: {fired:?}. That is not a \
+             failure — it is the evidence F5 lacked. Re-run the ∀ gate over it \
+             and, if it wins, give F5 an `OptId` and record the numbers in \
+             plans/codegen-pareto-F.md."
+        );
     }
 
     /// Sweep one named case only — the ∀ machinery on a single input, for

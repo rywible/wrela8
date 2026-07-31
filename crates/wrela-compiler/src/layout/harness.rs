@@ -2261,6 +2261,7 @@ mod harness_jit {
         let mut program = CodegenProgram {
             fns,
             rodata: Vec::new(),
+            ..Default::default()
         };
         install_abort_tail_floor(&mut program).expect("install");
 
@@ -2294,6 +2295,7 @@ mod harness_jit {
         let mut orphan = CodegenProgram {
             fns: BTreeMap::new(),
             rodata: Vec::new(),
+            ..Default::default()
         };
         orphan.fns.insert("__wrela_abort_val".to_string(), stub);
         let err = install_abort_tail_floor(&mut orphan).unwrap_err();

@@ -321,6 +321,7 @@ mod tests {
         CodegenProgram {
             fns: map,
             rodata: Vec::new(),
+            ..Default::default()
         }
     }
 

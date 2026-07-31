@@ -648,6 +648,28 @@ pub(crate) fn wide_imm_forms() -> bool {
     WIDE_IMM_FORMS.with(|c| c.get())
 }
 
+// plans/codegen-pareto.md item F3, decision 1772: one more knob, default
+// **off**, so `dev` keeps every frame the reference model has.
+//
+// F5 (tail calls) has **no knob** (decision 1779). It fires only where F3
+// has already removed the frame, so it is unreachable under `dev` without
+// one — and the ∀ gate scores it at exactly zero on both tiers, which
+// freeze 1714 says disqualifies it as an `OptId`. An unconditional
+// transform that cannot fire in the reference mode needs no switch.
+thread_local! {
+    static FRAMELESS_FNS: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Item F3: a function with no frame bytes left and no returning call
+/// gets no prologue, no epilogue teardown and no `sub sp`.
+pub fn set_frameless_fns(enabled: bool) {
+    FRAMELESS_FNS.with(|c| c.set(enabled));
+}
+
+pub(crate) fn frameless_fns() -> bool {
+    FRAMELESS_FNS.with(|c| c.get())
+}
+
 // plans/M6.md decision 6 / plans/M11.md decision 740: a *backward*
 // unconditional `Jump` (`target <= idx`) is a loop's own back-edge —
 // the exact shape `lower.rs` / `flowwir_lower.rs` emit for a `while`/
@@ -956,6 +978,11 @@ pub struct CodegenFn {
 pub struct CodegenProgram {
     pub fns: BTreeMap<String, CodegenFn>,
     pub rodata: Vec<Vec<u8>>,
+    /// plans/codegen-pareto.md item F: the convention this build chose
+    /// for each sync fn, carried alongside the code so `report.rs` can
+    /// publish it. Empty under `dev` and under item E's per-function
+    /// allocator, both of which have one convention for everybody.
+    pub conventions: BTreeMap<String, regalloc::Convention>,
 }
 
 // --- rodata pool (BTreeMap dedup, CLAUDE.md) --------------------------------
@@ -1198,7 +1225,32 @@ struct Frame {
     /// ops in this fn).
     entropy_scratch_size: usize,
     lr_off: usize,
+    /// plans/codegen-pareto.md item F3 (decision 1772): whether this
+    /// function saves `x30` at all. It has to only if some `BL` in its
+    /// body **returns** — an abort `BL` is `noreturn` (03's abort
+    /// contract), and a tail call's `B` does not touch `x30`, so a leaf
+    /// in that sense reaches its own `ret` with the caller's return
+    /// address still in the register it arrived in. When this is false
+    /// `lr_off` is not a frame offset and is never consulted.
+    ///
+    /// This is F2 read from the callee's side: the save exists to
+    /// protect a value against a clobber, and where the compiler can see
+    /// that no clobber happens the save is not shortened, it is absent.
+    lr_saved: bool,
     size: usize,
+    /// plans/codegen-pareto.md item F3 (decision 1772): this function
+    /// has **no frame at all**. Every temp is resident, nothing needs a
+    /// saved pointer, and no `BL` in the body ever returns — so nothing
+    /// has to survive anything and `x30` still holds the caller's return
+    /// address at the `ret`. `sub sp`, `str x30`, `ldr x30` and `add sp`
+    /// are not emitted; `size` is 0 and `lr_off` is never consulted.
+    ///
+    /// The three conditions are checked, not assumed: the first two are
+    /// `build_frame`'s own byte count reaching zero, and the third comes
+    /// from the probe's measured `has_returning_call`. An abort `BL` is
+    /// not a returning call (03's abort contract is `noreturn`), which is
+    /// what lets a leaf that can abort still be frameless.
+    frameless: bool,
     /// plans/codegen-pareto.md item E: virtual slot offset -> the
     /// physical register that **resident** temp lives in. Empty in `dev`
     /// and on the async path, which is exactly what makes the frame
@@ -1273,6 +1325,10 @@ fn build_frame(
     entropy_scratch_size: usize,
     slot_bias: usize,
     assign: &regalloc::Assignment,
+    // Item F3: `false` only when the `Frameless` opt is on **and** the
+    // probe measured no returning call in this function. `true`
+    // reproduces every pre-item-F frame byte for byte.
+    save_lr: bool,
 ) -> Result<Frame, CodegenError> {
     let mut offset = 0usize;
     let mut temp_offset = Vec::with_capacity(f.temp_types.len());
@@ -1332,8 +1388,23 @@ fn build_frame(
     } else {
         (None, 0)
     };
+    // Item F3, in two steps, because they are two different savings and
+    // the second is much rarer than the first.
+    //
+    // 1. **The link register.** A function no `BL` ever returns into does
+    //    not save `x30`: the slot goes, and with it a `str` in the
+    //    prologue and an `ldr` in the epilogue. This is independent of
+    //    residency, so every leaf gets it — including the ones whose
+    //    temps are still spilled.
+    // 2. **The frame itself.** If dropping the `x30` slot leaves *no*
+    //    bytes at all, there is nothing to point `sp` at and the
+    //    `sub sp`/`add sp` pair goes too.
+    let lr_saved = save_lr || slot_bias != 0;
     let lr_off = offset;
-    offset += 8;
+    if lr_saved {
+        offset += 8;
+    }
+    let frameless = offset == 0;
     let size = round_up_16(offset);
     // The imm12 ceiling is on the immediate that actually gets encoded,
     // and for an async fn every slot reference is biased past the turn
@@ -1362,7 +1433,9 @@ fn build_frame(
         entropy_scratch_off,
         entropy_scratch_size,
         lr_off,
+        lr_saved,
         size,
+        frameless,
         virt_to_reg,
     })
 }
@@ -4650,14 +4723,19 @@ fn emit_convert(
 // --- prologue/epilogue -------------------------------------------------------
 
 fn emit_prologue(f: &MwirFn, frame: &Frame, ctx: &mut FnCtx) -> Result<(), CodegenError> {
-    ctx.push(
-        encode::enc_sub_imm(X_SP, X_SP, frame.size as u16, true),
-        format!("sub sp, sp, #{}", frame.size),
-        CostRule::Alu,
-        Some(X_SP),
-        &[X_SP],
-    );
-    ctx.store_slot(X_LR, frame.lr_off);
+    // Item F3, both steps.
+    if !frame.frameless {
+        ctx.push(
+            encode::enc_sub_imm(X_SP, X_SP, frame.size as u16, true),
+            format!("sub sp, sp, #{}", frame.size),
+            CostRule::Alu,
+            Some(X_SP),
+            &[X_SP],
+        );
+    }
+    if frame.lr_saved {
+        ctx.store_slot(X_LR, frame.lr_off);
+    }
     let mut next_reg = 0u8;
     if let Some((self_temp, mode)) = f.receiver {
         let self_ty = &f.temp_types[self_temp.0];
@@ -4753,14 +4831,7 @@ fn emit_epilogue(f: &MwirFn, frame: &Frame, ctx: &mut FnCtx) -> Result<(), Codeg
             w += 8;
         }
     }
-    ctx.load_slot(X_LR, frame.lr_off);
-    ctx.push(
-        encode::enc_add_imm(X_SP, X_SP, frame.size as u16, true),
-        format!("add sp, sp, #{}", frame.size),
-        CostRule::Alu,
-        Some(X_SP),
-        &[X_SP],
-    );
+    emit_frame_teardown(frame, ctx);
     ctx.push(
         encode::enc_ret(X_LR),
         "ret".to_string(),
@@ -4769,6 +4840,25 @@ fn emit_epilogue(f: &MwirFn, frame: &Frame, ctx: &mut FnCtx) -> Result<(), Codeg
         &[X_LR],
     );
     Ok(())
+}
+
+/// Restore `x30` and drop the frame — the two words that precede every
+/// `ret`, and that precede every framed tail call's own `B` (item F5).
+/// Emits nothing for a frameless function (item F3).
+fn emit_frame_teardown(frame: &Frame, ctx: &mut FnCtx) {
+    if frame.lr_saved {
+        ctx.load_slot(X_LR, frame.lr_off);
+    }
+    if frame.frameless {
+        return;
+    }
+    ctx.push(
+        encode::enc_add_imm(X_SP, X_SP, frame.size as u16, true),
+        format!("add sp, sp, #{}", frame.size),
+        CostRule::Alu,
+        Some(X_SP),
+        &[X_SP],
+    );
 }
 
 // --- plans/M7.md item G, decision 17: InterruptCell live-cell addressing ---
@@ -5098,6 +5188,14 @@ fn probe_fn_facts(
     frame: &Frame,
     block_ids: &[Option<u32>],
 ) -> Result<regalloc::FnFacts, CodegenError> {
+    // **The probe never substitutes a tail call** (decision 1776). It
+    // emits the ordinary `bl`, records the barrier, and records the call
+    // edge — so whatever the allocator decides is sound whether or not
+    // the jump is finally emitted. That is what breaks the circle: F5's
+    // substitution is conditional on F3's frameless answer, F3's answer
+    // is conditional on the allocation, and the allocation would
+    // otherwise be conditional on F5.
+    let plan = &TailPlan::none(f.body.len());
     let dummy_targets = vec![0usize; f.body.len() + 1];
     let mut points: Vec<regalloc::PointFacts> = Vec::with_capacity(f.body.len() + 2);
 
@@ -5114,11 +5212,21 @@ fn probe_fn_facts(
                 touches.push((temp, how, word));
             }
         }
+        // Item F: the callee's *identity*, taken from the reloc the
+        // emitter itself pushed, never from a second walk of the MWIR
+        // body. A `CostRule::Call` word with no `Reloc::Call` beside it
+        // is a call to something this compiler does not name — the
+        // checkpoint service, a runtime helper — and `None` is exactly
+        // the fail-closed answer for it.
         let mut call_words = Vec::new();
         let mut regs = BTreeSet::new();
         for (i, w) in ctx.words.iter().enumerate() {
             if w.rule == CostRule::Call {
-                call_words.push(i);
+                let callee = ctx.relocs.iter().find_map(|r| match r {
+                    Reloc::Call { word, key } if *word == i => Some(key.clone()),
+                    _ => None,
+                });
+                call_words.push(regalloc::CallWord { word: i, callee });
             }
             if let Some(d) = w.dst {
                 regs.insert(d);
@@ -5154,7 +5262,7 @@ fn probe_fn_facts(
     }
 
     // Points 1..=body.len(): one per instruction.
-    for (i, inst) in f.body.iter().enumerate() {
+    for i in 0..f.body.len() {
         let mut ctx = FnCtx {
             frame,
             layout,
@@ -5168,12 +5276,7 @@ fn probe_fn_facts(
             slot_accesses: Vec::new(),
             resident_misuse: None,
         };
-        if let Some(id) = block_ids[i] {
-            if block_count() {
-                ctx.emit_block_hit(id);
-            }
-        }
-        emit_one(inst, f, &mut ctx)?;
+        emit_body_inst(i, f, &mut ctx, plan, block_ids)?;
         points.push(finish(ctx));
     }
 
@@ -5212,23 +5315,255 @@ fn probe_fn_facts(
         }
     }
 
+    // The call graph, and whether this function made a returning call the
+    // emitter did not name. Both are read off the same probe emission the
+    // points came from — the tail-call `B` is in `calls` (it clobbers on
+    // this function's behalf) and not in any point's `call_words` (it
+    // ends the function, so nothing of this function's spans it).
+    let mut calls: BTreeSet<String> = BTreeSet::new();
+    let mut has_returning_call = false;
+    for p in &points {
+        if !p.call_words.is_empty() {
+            has_returning_call = true;
+        }
+    }
+    let opaque_calls = points
+        .iter()
+        .any(|p| p.call_words.iter().any(|c| c.callee.is_none()));
+    for p in &points {
+        for cw in &p.call_words {
+            if let Some(k) = &cw.callee {
+                calls.insert(k.clone());
+            }
+        }
+    }
     Ok(regalloc::FnFacts {
         temp_count: f.temp_types.len(),
         points,
         back_edges,
+        calls,
+        opaque_calls,
+        has_returning_call,
     })
 }
 
-fn emit_fn(
-    _key: &str,
+// --- item F5: tail calls (decision 1773) -------------------------------------
+
+/// Which `Call` instructions in one body are in tail position, decided
+/// from **MWIR shape alone** so the probe pass and both emission passes
+/// reach the same answer without consulting the frame (which the probe
+/// does not yet have in its final form).
+#[derive(Clone, Debug, Default)]
+struct TailPlan {
+    /// `at[i] = Some(key)`: `body[i]` is a `Call` that jumps instead of
+    /// linking.
+    at: Vec<Option<String>>,
+    /// `suppressed[i]`: `body[i]` emits nothing, because the tail call
+    /// at `i - 1` already left the function.
+    suppressed: Vec<bool>,
+}
+
+impl TailPlan {
+    fn none(n: usize) -> TailPlan {
+        TailPlan {
+            at: vec![None; n],
+            suppressed: vec![false; n],
+        }
+    }
+}
+
+/// Decide item F5's substitution for one function.
+///
+/// Every condition here is a *reason the jump is legal*, and each is
+/// checked rather than assumed:
+///
+/// - **Nothing of this frame may outlive the jump.** An aggregate
+///   argument and a `mut` write-back are both bare pointers into this
+///   function's own slots (the module doc's calling convention), and the
+///   callee's own `sub sp` would sit straight on top of them once this
+///   frame is dropped. Both are refused; only by-value scalar arguments
+///   and a scalar result are tail-callable.
+/// - **The epilogue must have nothing to do.** A `mut` receiver or a
+///   `mut` parameter makes the epilogue copy bytes back out through a
+///   saved pointer, which is work that has to happen *after* the callee
+///   returns and therefore cannot be jumped over.
+/// - **Nothing may branch to the `Return` this swallows**, and that
+///   `Return` may not begin a counted block — otherwise the deleted
+///   instruction is either a live branch target or a Lane 2 measurement
+///   that silently stops being taken.
+/// - **The callee must be a key layout will not redirect.** A
+///   `rt_enqueue` target can be re-pointed at a cross-core trampoline
+///   after codegen has run; a jump is the wrong shape to hand that.
+fn plan_tail_calls(f: &MwirFn, block_ids: &[Option<u32>]) -> TailPlan {
+    let n = f.body.len();
+    let mut plan = TailPlan::none(n);
+    // The epilogue must be a bare teardown: no receiver write-back, no
+    // `mut` parameter write-back.
+    if let Some((_, mode)) = f.receiver {
+        if mode == AccessMode::Mut {
+            return plan;
+        }
+    }
+    if f.params.iter().any(|(_, m)| *m == AccessMode::Mut) {
+        return plan;
+    }
+    if is_aggregate(&f.ret) {
+        return plan;
+    }
+    let mut branch_targets: BTreeSet<usize> = BTreeSet::new();
+    for inst in &f.body {
+        match inst {
+            Inst::Jump { target } => {
+                branch_targets.insert(*target);
+            }
+            Inst::JumpIfFalse { target, .. } => {
+                branch_targets.insert(*target);
+            }
+            _ => {}
+        }
+    }
+    for i in 0..n {
+        let Inst::Call {
+            dst,
+            write_backs,
+            key,
+            args,
+        } = &f.body[i]
+        else {
+            continue;
+        };
+        if !write_backs.is_empty() || args.len() > 8 {
+            continue;
+        }
+        if args.iter().any(|a| is_aggregate(&f.temp_types[a.0])) {
+            continue;
+        }
+        if is_aggregate(&f.temp_types[dst.0]) {
+            continue;
+        }
+        if is_compiler_glue_symbol(key) || rt_enqueue_actor(key).is_some() {
+            continue;
+        }
+        if i + 1 >= n {
+            continue;
+        }
+        let returns_this = match &f.body[i + 1] {
+            Inst::Return { value: Some(v) } => *v == *dst,
+            Inst::Return { value: None } => true,
+            _ => false,
+        };
+        if !returns_this {
+            continue;
+        }
+        if branch_targets.contains(&(i + 1)) || block_ids[i + 1].is_some() {
+            continue;
+        }
+        plan.at[i] = Some(key.clone());
+        plan.suppressed[i + 1] = true;
+    }
+    plan
+}
+
+/// Emit one tail call: the arguments, this frame's teardown, and a `B`.
+///
+/// The `Reloc::Call` is deliberately the *same* reloc an ordinary call
+/// pushes, so every downstream consumer — the reachability walk, the
+/// cross-core resolver, `validate` — keeps seeing a call edge, which is
+/// what it is. `layout::patch_bl` preserves the `BL`/`B` bit the emitter
+/// already encoded rather than overwriting it.
+fn emit_tail_call(key: &str, args: &[Temp], ctx: &mut FnCtx) -> Result<(), CodegenError> {
+    if args.len() > 8 {
+        return Err(CodegenError::unimplemented("more than 8 call arguments"));
+    }
+    for (i, arg) in args.iter().enumerate() {
+        ctx.load_slot(i as u8, ctx.frame.off(*arg));
+    }
+    emit_frame_teardown(ctx.frame, ctx);
+    let srcs: Vec<u8> = (0..args.len()).map(|i| i as u8).collect();
+    let word = ctx.cur_word();
+    ctx.push(
+        encode::enc_b(0),
+        format!("b <{key}>  ; tail call"),
+        CostRule::Branch,
+        None,
+        &srcs,
+    );
+    ctx.relocs.push(Reloc::Call {
+        word,
+        key: key.to_string(),
+    });
+    Ok(())
+}
+
+/// One body instruction, with item F5's substitution and the Lane 2
+/// block counter applied — the single place all three emission passes
+/// (probe, sizing, real) go through, so they cannot drift.
+fn emit_body_inst(
+    i: usize,
+    f: &MwirFn,
+    ctx: &mut FnCtx,
+    plan: &TailPlan,
+    block_ids: &[Option<u32>],
+) -> Result<(), CodegenError> {
+    if plan.suppressed[i] {
+        return Ok(());
+    }
+    // plans/M11.md decision 740: no checkpoint on sync loop back-edges.
+    if let Some(id) = block_ids[i] {
+        if block_count() {
+            ctx.emit_block_hit(id);
+        }
+    }
+    if let Some(key) = &plan.at[i] {
+        let Inst::Call { args, .. } = &f.body[i] else {
+            return Err(CodegenError::internal(
+                "tail-call plan names an instruction that is not a Call",
+            ));
+        };
+        return emit_tail_call(key, args, ctx);
+    }
+    emit_one(&f.body[i], f, ctx)
+}
+
+/// Everything about one sync fn that is decided **before** any function
+/// in the program is emitted (plans/codegen-pareto-F.md, decision 1771).
+///
+/// Item E decided residency inside `emit_fn`, one function at a time,
+/// which is all a per-function allocator can do. Item F's convention is
+/// a fact about the whole call graph, so the probe pass is hoisted out
+/// of emission: every function is prepared first, the conventions are
+/// computed once over the resulting map, and only then is anything
+/// emitted. Under `dev` and under `RegAlloc`-without-`InterprocRegs`
+/// this changes nothing observable — `facts` is `None` in the first case
+/// and the per-function answer is already final in the second.
+struct PreparedFn {
+    block_ids: Vec<Option<u32>>,
+    plan: TailPlan,
+    /// Item E's per-function answer, or `Assignment::none` under `dev`.
+    /// Overridden by the whole-program convention when there is one.
+    assign: regalloc::Assignment,
+    /// Present exactly when the whole-program pass will run.
+    input: Option<regalloc::FnInput>,
+    /// Whether the probe measured a returning call — item F3's last
+    /// condition. `None` when nothing probed, which refuses frameless.
+    has_returning_call: Option<bool>,
+}
+
+/// Phase 1: block ids, the tail-call plan, and (under `release`) the
+/// probe emission. Called for every sync fn, in key order, before any
+/// of them is emitted — the block-id counter and the rodata pool are
+/// both order-sensitive and both see the identical sequence they saw
+/// when this work lived inside `emit_fn`.
+fn prepare_fn(
+    key: &str,
     f: &MwirFn,
     layout: &LayoutCtx,
     rodata: &mut RodataPool,
-) -> Result<CodegenFn, CodegenError> {
+) -> Result<PreparedFn, CodegenError> {
     // A sync fn never awaits, so it never stages a reply (0). Entropy
     // scratch is reserved when the body emits `Inst::Entropy` (item Es).
     let naive = regalloc::Assignment::none(f.temp_types.len());
-    let frame = build_frame(f, layout, 0, mwir_entropy_scratch_size(f), 0, &naive)?;
+    let frame = build_frame(f, layout, 0, mwir_entropy_scratch_size(f), 0, &naive, true)?;
 
     // plans/M20.md item B / decision 1607: Lane 2 instruments **every**
     // owner, not just `app`. `cost-runtime` is the largest corpus case
@@ -5237,31 +5572,157 @@ fn emit_fn(
     // load-bearing at block grain. Freeze 1627: the coverage denominator
     // is still the whole scored set, not the instrumented subset. The one
     // exclusion is the counter helper itself (`block_count_instruments`).
-    let block_ids = if block_count_instruments(_key) {
+    let block_ids = if block_count_instruments(key) {
         assign_mwir_block_ids(&f.body)?
     } else {
         vec![None; f.body.len()]
     };
+    let plan = plan_tail_calls(f, &block_ids);
+
+    if !regalloc::regalloc() {
+        return Ok(PreparedFn {
+            block_ids,
+            plan,
+            assign: naive,
+            input: None,
+            has_returning_call: None,
+        });
+    }
 
     // plans/codegen-pareto.md item E: decide residency from a real
-    // emission against the naive frame, then rebuild the frame without
-    // the temps that no longer need slots. `dev` never runs either step
-    // and keeps the spill-everything reference (M19 freeze 1407).
-    let frame = if regalloc::regalloc() {
-        let facts = probe_fn_facts(f, layout, rodata, &frame, &block_ids)?;
-        let scalar_slot: Vec<bool> = frame
-            .temp_size
-            .iter()
-            .map(|&s| s == FRAME_SLOT_BYTES as usize)
-            .collect();
-        let assign = regalloc::allocate(&facts, &scalar_slot);
-        if assign.is_empty() {
-            frame
-        } else {
-            build_frame(f, layout, 0, mwir_entropy_scratch_size(f), 0, &assign)?
-        }
+    // emission against the naive frame. `dev` never runs this step and
+    // keeps the spill-everything reference (M19 freeze 1407).
+    let facts = probe_fn_facts(f, layout, rodata, &frame, &block_ids)?;
+    let scalar_slot: Vec<bool> = frame
+        .temp_size
+        .iter()
+        .map(|&s| s == FRAME_SLOT_BYTES as usize)
+        .collect();
+    // **The returning calls that would still be there after F5** — the
+    // one question F3 has to answer, and it cannot be `facts`' own
+    // number, because the probe deliberately did not substitute
+    // (decision 1776). A planned tail site's `BL` becomes a `B` if the
+    // frame turns out to be gone, so it does not count against the frame
+    // being gone; every other returning call does, including a `BL` the
+    // emitter never named.
+    let has_returning_call = facts.opaque_calls
+        || facts.points.iter().enumerate().any(|(p, pf)| {
+            !pf.call_words.is_empty()
+                && match p.checked_sub(1) {
+                    Some(i) if i < plan.at.len() => plan.at[i].is_none(),
+                    // The prologue and the epilogue: never a tail site.
+                    _ => true,
+                }
+        });
+    let (assign, input) = if regalloc::interproc_regs() {
+        // The whole-program pass owns the answer; this per-function one
+        // is not computed at all, so the two can never disagree.
+        (
+            regalloc::Assignment::none(f.temp_types.len()),
+            Some(regalloc::FnInput {
+                facts,
+                scalar_slot,
+                // Decision 1781: a synthesized key is a key some later
+                // stage may own the body of. `layout.rs` replaces
+                // `__wrela_abort_tail` and every `__test_call_*` /
+                // `__test_prefix_*` outright, aliases `rt_boot_init` and
+                // `__enqueue_*`, and re-points `rt_enqueue` targets at
+                // cross-core trampolines. Rather than enumerate that list
+                // here — a second source of truth that would drift the
+                // moment layout grows another substitution, which is the
+                // defect class itself — the rule is the dumb one: any key
+                // that is not a plain source symbol publishes `ALL_REGS`.
+                opaque_body: is_compiler_glue_symbol(key) || key.starts_with("__"),
+            }),
+        )
     } else {
-        frame
+        (regalloc::allocate(&facts, &scalar_slot), None)
+    };
+    Ok(PreparedFn {
+        block_ids,
+        plan,
+        assign,
+        input,
+        has_returning_call: Some(has_returning_call),
+    })
+}
+
+/// Phase 1 + phase 2 for a whole program: prepare every sync fn, then
+/// compute the conventions if the whole-program pass is on.
+///
+/// The last published record of each function's convention comes out of
+/// here too — `report.rs` renders it, because a compiler that decides
+/// the calling convention of every function in the image and then does
+/// not say what it decided has hidden its most consequential output.
+fn prepare_sync_fns(
+    mwir: &MwirProgram,
+    layout: &LayoutCtx,
+    rodata: &mut RodataPool,
+) -> Result<
+    (
+        BTreeMap<String, PreparedFn>,
+        BTreeMap<String, regalloc::Convention>,
+    ),
+    CodegenError,
+> {
+    let mut prepared: BTreeMap<String, PreparedFn> = BTreeMap::new();
+    for (key, f) in &mwir.fns {
+        prepared.insert(key.clone(), prepare_fn(key, f, layout, rodata)?);
+    }
+    let inputs: BTreeMap<String, regalloc::FnInput> = prepared
+        .iter()
+        .filter_map(|(k, p)| p.input.as_ref().map(|i| (k.clone(), i.clone())))
+        .collect();
+    let conventions = if inputs.is_empty() {
+        BTreeMap::new()
+    } else {
+        regalloc::allocate_program(&inputs)
+    };
+    Ok((prepared, conventions))
+}
+
+/// Phase 3: emit one sync fn against a decided convention.
+fn emit_fn(
+    key: &str,
+    f: &MwirFn,
+    layout: &LayoutCtx,
+    rodata: &mut RodataPool,
+    prepared: &PreparedFn,
+    convention: Option<&regalloc::Convention>,
+) -> Result<CodegenFn, CodegenError> {
+    let block_ids = &prepared.block_ids;
+    let assign = match convention {
+        Some(c) => &c.assignment,
+        None => &prepared.assign,
+    };
+    // Item F3's condition: a function that can return from a `BL` must
+    // keep `x30` somewhere, and the frame is the only somewhere.
+    let save_lr = !frameless_fns() || prepared.has_returning_call != Some(false);
+    let frame = build_frame(
+        f,
+        layout,
+        0,
+        mwir_entropy_scratch_size(f),
+        0,
+        assign,
+        save_lr,
+    )?;
+
+    // **F5 fires only where the jump deletes words** (decision 1776).
+    // A tail call in a function that saves `x30` has to *reload* it
+    // before it can jump, which puts a `Load` where a `Call` and a
+    // `Store` were and is measurably worse on the ruler: +29 proxy cycles
+    // across the runtime closure, four sites (plans/codegen-pareto-F.md).
+    // Where `x30` was never saved — item F3's condition, and the same
+    // condition — the teardown is at most one `add sp`, so the jump
+    // replaces three or four words with one or two and deletes a returning
+    // call outright. So the substitution rides on `lr_saved`, and every
+    // other tail site keeps the ordinary call it had.
+    let no_tails = TailPlan::none(f.body.len());
+    let plan: &TailPlan = if frame.lr_saved {
+        &no_tails
+    } else {
+        &prepared.plan
     };
 
     let empty: [usize; 0] = [];
@@ -5283,7 +5744,7 @@ fn emit_fn(
 
     let dummy_targets = vec![0usize; f.body.len() + 1];
     let mut counts = Vec::with_capacity(f.body.len());
-    for (i, inst) in f.body.iter().enumerate() {
+    for i in 0..f.body.len() {
         let mut probe = FnCtx {
             frame: &frame,
             layout,
@@ -5297,13 +5758,7 @@ fn emit_fn(
             slot_accesses: Vec::new(),
             resident_misuse: None,
         };
-        // plans/M11.md decision 740: no checkpoint on sync loop back-edges.
-        if let Some(id) = block_ids[i] {
-            if block_count() {
-                probe.emit_block_hit(id);
-            }
-        }
-        emit_one(inst, f, &mut probe)?;
+        emit_body_inst(i, f, &mut probe, plan, block_ids)?;
         counts.push(probe.words.len());
     }
     let mut word_offsets = vec![0usize; f.body.len() + 1];
@@ -5329,17 +5784,12 @@ fn emit_fn(
     };
     emit_prologue(f, &frame, &mut ctx)?;
     debug_assert_eq!(ctx.words.len(), prologue_len);
-    for (i, inst) in f.body.iter().enumerate() {
+    for i in 0..f.body.len() {
         // plans/M11.md decision 740: sync loop back-edges carry trip
         // counters only — no `FnCtx::checkpoint` (M10 decision 597
         // dissolved for console helpers; multi-core layout ownership
         // of `Reloc::CheckpointService` stays async-only).
-        if let Some(id) = block_ids[i] {
-            if block_count() {
-                ctx.emit_block_hit(id);
-            }
-        }
-        emit_one(inst, f, &mut ctx)?;
+        emit_body_inst(i, f, &mut ctx, plan, block_ids)?;
     }
     debug_assert_eq!(ctx.words.len(), word_offsets[f.body.len()]);
     emit_epilogue(f, &frame, &mut ctx)?;
@@ -5353,7 +5803,7 @@ fn emit_fn(
     }
 
     if block_bridge() {
-        record_spans(_key, &block_ids, &word_offsets, ctx.words.len());
+        record_spans(key, block_ids, &word_offsets, ctx.words.len());
     }
 
     Ok(CodegenFn {
@@ -6182,6 +6632,9 @@ fn build_frame_flow(f: &FlowWirFn, layout: &LayoutCtx) -> Result<(Frame, Temp), 
         // turn area exist. Spill-everything is not a limitation here, it
         // is the contract.
         &regalloc::Assignment::none(synthetic.temp_types.len()),
+        // Item F3 for the same reason: a turn body's `x30` is the
+        // scheduler's, and every suspension is a `ret` back to it.
+        true,
     )?;
     Ok((frame, state_temp))
 }
@@ -10485,8 +10938,19 @@ pub fn codegen_program_with_async(
         child_index,
     };
     let mut fns = BTreeMap::new();
+    let (prepared, conventions) = prepare_sync_fns(mwir, layout, &mut rodata)?;
     for (key, f) in &mwir.fns {
-        fns.insert(key.clone(), emit_fn(key, f, layout, &mut rodata)?);
+        fns.insert(
+            key.clone(),
+            emit_fn(
+                key,
+                f,
+                layout,
+                &mut rodata,
+                &prepared[key],
+                conventions.get(key),
+            )?,
+        );
     }
     for (key, f) in &flow.fns {
         fns.insert(
@@ -10495,10 +10959,13 @@ pub fn codegen_program_with_async(
         );
     }
     // M11 J: rt_enqueue bodies are generic wrela; layout aliases keys.
-    Ok(CodegenProgram {
+    let out = CodegenProgram {
         fns,
         rodata: rodata.entries,
-    })
+        conventions,
+    };
+    verify_conventions(&out).map_err(CodegenError::internal)?;
+    Ok(out)
 }
 
 // --- top-level entry ----------------------------------------------------------
@@ -10516,14 +10983,25 @@ pub fn codegen_program(
     let mut rodata = RodataPool::new();
     rodata.seed(&mwir.rodata);
     let mut fns = BTreeMap::new();
+    let (prepared, conventions) = prepare_sync_fns(mwir, layout, &mut rodata)?;
     for (key, f) in &mwir.fns {
-        let cf = emit_fn(key, f, layout, &mut rodata)?;
+        let cf = emit_fn(
+            key,
+            f,
+            layout,
+            &mut rodata,
+            &prepared[key],
+            conventions.get(key),
+        )?;
         fns.insert(key.clone(), cf);
     }
-    Ok(CodegenProgram {
+    let out = CodegenProgram {
         fns,
         rodata: rodata.entries,
-    })
+        conventions,
+    };
+    verify_conventions(&out).map_err(CodegenError::internal)?;
+    Ok(out)
 }
 
 // --- the `--stage=asm` dump --------------------------------------------------
@@ -10629,6 +11107,80 @@ fn render_bytes(bytes: &[u8]) -> String {
 /// specifically so the fuzzer can call it on arbitrary fuzzed-and-codegen'd
 /// programs and report a clean diagnostic rather than an out-of-bounds
 /// index panic reaching all the way out to `catch_unwind`.
+/// **plans/codegen-pareto.md item F, decision 1781: the convention is
+/// checked against the emitted code, not trusted.**
+///
+/// `regalloc::allocate_program` decides, before anything is emitted,
+/// which registers each function destroys — and every caller's residency
+/// decision rides on that answer being an over-approximation of what the
+/// callee's *final* code actually does. Item E's whole discipline was
+/// that the allocator is handed facts a real emission measured; this is
+/// the other end of the same argument, and it is the half item F was
+/// missing. The probe measures a function against the **naive** frame,
+/// before allocation and before every opt that reads the allocation; if
+/// the final emission names one register the probe did not, or reaches
+/// one callee the probe did not, a caller has already been told a value
+/// survives a call that destroys it — and nothing downstream would
+/// notice until a guest transcript did.
+///
+/// So this runs over the finished program and refuses it if any
+/// function's published clobber set is not a superset of
+///
+/// > every register its own emitted words name, unioned with every
+/// > callee's published clobber set, over every `Reloc::Call` the
+/// > emission actually pushed
+///
+/// with a callee that has no published convention — an async turn body,
+/// a hand-assembled glue routine, a key layout re-points — contributing
+/// [`regalloc::ALL_REGS`]. It is O(words) on the whole program, it runs
+/// on every `release` build, and it fails the build rather than
+/// approximating (CLAUDE.md: fail closed).
+pub fn verify_conventions(program: &CodegenProgram) -> Result<(), String> {
+    if program.conventions.is_empty() {
+        return Ok(());
+    }
+    for (key, conv) in &program.conventions {
+        let Some(f) = program.fns.get(key) else {
+            return Err(format!(
+                "internal error: fn `{key}` has a convention but no emitted code"
+            ));
+        };
+        let mut actual: regalloc::RegSet = 0;
+        for w in &f.code {
+            if let Some(d) = w.dst {
+                actual |= regalloc::reg_bit(d);
+            }
+            for &sr in &w.srcs[..w.src_len as usize] {
+                actual |= regalloc::reg_bit(sr);
+            }
+        }
+        let mut worst = String::new();
+        for r in &f.relocs {
+            let Reloc::Call { key: target, .. } = r else {
+                continue;
+            };
+            let reached = match program.conventions.get(target) {
+                Some(c) => c.clobbers,
+                None => regalloc::ALL_REGS,
+            };
+            if reached & !conv.clobbers != 0 && worst.is_empty() {
+                worst = format!(" (via its call to `{target}`)");
+            }
+            actual |= reached;
+        }
+        let missing = actual & !conv.clobbers;
+        if missing != 0 {
+            return Err(format!(
+                "internal error: fn `{key}` was published as clobbering {} but its emitted                  code reaches {}{worst} — every caller that kept a value in {} across a                  call to it has been miscompiled",
+                regalloc::render_reg_set(conv.clobbers),
+                regalloc::render_reg_set(actual),
+                regalloc::render_reg_set(missing),
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub fn validate(program: &CodegenProgram) -> Result<(), String> {
     let rodata_len: usize = program.rodata.iter().map(Vec::len).sum();
     for (key, f) in &program.fns {
@@ -10968,7 +11520,7 @@ mod tests {
             body: vec![Inst::Return { value: None }],
         };
         let layout = LayoutCtx::default();
-        let frame = build_frame(&f, &layout, 0, 0, 0, &regalloc::Assignment::none(64))
+        let frame = build_frame(&f, &layout, 0, 0, 0, &regalloc::Assignment::none(64), true)
             .expect("build_frame");
         // Every scalar is one 8-byte slot regardless of its own declared
         // width (mwir's own "no packing, ever" rule) — offsets are a
@@ -10996,7 +11548,7 @@ mod tests {
         layout
             .structs
             .insert("Point".to_string(), vec![Type::U64, Type::U64]);
-        let frame = build_frame(&f, &layout, 0, 0, 0, &regalloc::Assignment::none(64))
+        let frame = build_frame(&f, &layout, 0, 0, 0, &regalloc::Assignment::none(64), true)
             .expect("build_frame");
         // temps: t0 (Point, 16 bytes) at [0,16); self_ptr at 16; ret_ptr
         // at 24 (the receiver's own aggregate type is also the return
@@ -11025,12 +11577,12 @@ mod tests {
             body: vec![Inst::Return { value: None }],
         };
         let layout = LayoutCtx::default();
-        let none = build_frame(&f, &layout, 0, 0, 0, &regalloc::Assignment::none(64))
+        let none = build_frame(&f, &layout, 0, 0, 0, &regalloc::Assignment::none(64), true)
             .expect("build_frame");
         assert_eq!(none.reply_stage_off, None);
         assert_eq!(none.lr_off, 8);
         assert_eq!(none.size, 16);
-        let staged = build_frame(&f, &layout, 24, 0, 0, &regalloc::Assignment::none(64))
+        let staged = build_frame(&f, &layout, 24, 0, 0, &regalloc::Assignment::none(64), true)
             .expect("build_frame");
         assert_eq!(staged.reply_stage_off, Some(8));
         assert_eq!(staged.lr_off, 32);
@@ -11050,7 +11602,7 @@ mod tests {
             body: vec![Inst::Return { value: None }],
         };
         let layout = LayoutCtx::default();
-        assert!(build_frame(&f, &layout, 0, 0, 0, &regalloc::Assignment::none(64)).is_err());
+        assert!(build_frame(&f, &layout, 0, 0, 0, &regalloc::Assignment::none(64), true).is_err());
     }
 
     /// plans/M9.md item RR: the imm12 ceiling is on `off + slot_bias`, the
@@ -11079,7 +11631,7 @@ mod tests {
         };
         let layout = LayoutCtx::default();
 
-        let sync = build_frame(&f, &layout, 0, 0, 0, &regalloc::Assignment::none(64))
+        let sync = build_frame(&f, &layout, 0, 0, 0, &regalloc::Assignment::none(64), true)
             .expect("legal for a sync frame");
         assert_eq!(sync.size, 4048);
 
@@ -11088,7 +11640,15 @@ mod tests {
             sync.size + bias > 4095,
             "this fixture must straddle the boundary to be a regression lock"
         );
-        let Err(err) = build_frame(&f, &layout, 0, 0, bias, &regalloc::Assignment::none(64)) else {
+        let Err(err) = build_frame(
+            &f,
+            &layout,
+            0,
+            0,
+            bias,
+            &regalloc::Assignment::none(64),
+            true,
+        ) else {
             panic!("the same frame must be refused once biased past the turn record");
         };
         assert!(
@@ -11113,6 +11673,7 @@ mod tests {
             0,
             bias,
             &regalloc::Assignment::none(64),
+            true,
         )
         .expect("fits under 4031 with the bias");
         assert!(ok.size + bias <= 4095);
@@ -12632,7 +13193,7 @@ mod regalloc_tests {
     const WITHOUT: &[OptId] = &[OptId::BoundsElide, OptId::NarrowImm];
     const WITH: &[OptId] = &[OptId::BoundsElide, OptId::NarrowImm, OptId::RegAlloc];
 
-    fn emit(src: &str, opts: &[OptId]) -> CodegenProgram {
+    pub(super) fn emit(src: &str, opts: &[OptId]) -> CodegenProgram {
         apply_opts(opts);
         let tokens = lexer::lex(src).expect("lex");
         let module = parser::parse(tokens).expect("parse");
@@ -12645,7 +13206,7 @@ mod regalloc_tests {
     }
 
     /// Count emitted words of one `CostRule` in a named fn.
-    fn rule_count(prog: &CodegenProgram, key: &str, rule: CostRule) -> usize {
+    pub(super) fn rule_count(prog: &CodegenProgram, key: &str, rule: CostRule) -> usize {
         prog.fns
             .get(key)
             .unwrap_or_else(|| panic!("no fn `{key}` in {:?}", prog.fns.keys().collect::<Vec<_>>()))
@@ -12655,7 +13216,7 @@ mod regalloc_tests {
             .count()
     }
 
-    fn frame_of(prog: &CodegenProgram, key: &str) -> usize {
+    pub(super) fn frame_of(prog: &CodegenProgram, key: &str) -> usize {
         prog.fns.get(key).expect("fn present").frame_size
     }
 
@@ -12844,7 +13405,7 @@ pub fn used_twice(a: u64) -> u64:
             body: Vec::new(),
         };
         let layout = LayoutCtx::default();
-        let frame = build_frame(&f, &layout, 0, 0, 0, &naive).expect("naive frame");
+        let frame = build_frame(&f, &layout, 0, 0, 0, &naive, true).expect("naive frame");
         assert!(frame.virt_to_reg.is_empty());
         for t in 0..3 {
             assert!(
@@ -12852,6 +13413,491 @@ pub fn used_twice(a: u64) -> u64:
                 "temp {t} must have a real frame offset"
             );
             assert_eq!(frame.reg_at(frame.off(Temp(t))), None);
+        }
+    }
+}
+
+/// plans/codegen-pareto.md **item F** — the no-ABI oracles.
+///
+/// Each of these fails if its own claim stops being true of the *emitted
+/// words*, never of an internal data structure (freeze 1714: a green unit
+/// that never exercises the new path is not an oracle).
+#[cfg(test)]
+mod item_f_tests {
+    use super::regalloc_tests::{emit, frame_of, rule_count};
+    use super::*;
+    use crate::opts::{OptId, RELEASE_OPTS};
+
+    /// Everything before item F, so each claim is measured against the
+    /// state of the world it changes rather than against `dev`.
+    #[rustfmt::skip]
+    const E: &[OptId] = &[
+        OptId::BoundsElide,
+        OptId::NarrowImm,
+        OptId::AdrAddressing,
+        OptId::BfxNarrow,
+        OptId::MaskCheck,
+        OptId::WideImmForms,
+        OptId::RegAlloc,
+    ];
+
+    fn mnems<'a>(prog: &'a CodegenProgram, key: &str) -> Vec<&'a str> {
+        prog.fns
+            .get(key)
+            .unwrap_or_else(|| panic!("no fn `{key}` in {:?}", prog.fns.keys().collect::<Vec<_>>()))
+            .code
+            .iter()
+            .map(|w| w.text.as_str())
+            .collect()
+    }
+
+    const LEAF: &str = r#"
+module examples.item_f_leaf
+
+pub fn blend(a: u64, b: u64) -> u64:
+    x: u64 = a +% b
+    return (x +% x) +% (x *% 2)
+"#;
+
+    /// **F3, the half that fires everywhere: a leaf does not save `x30`.**
+    ///
+    /// This is F2 read from the callee's side. The save exists to protect
+    /// the return address against a `BL` that returns; a function that
+    /// has none reaches its own `ret` with the caller's address still in
+    /// the register it arrived in, so the `str`, the `ldr` and the slot
+    /// all go. It is independent of residency, which is why it reaches
+    /// every leaf rather than the handful whose temps all happen to fit.
+    #[test]
+    fn a_leaf_does_not_save_the_link_register() {
+        let before = emit(LEAF, E);
+        let after = emit(LEAF, RELEASE_OPTS);
+        let b = mnems(&before, "blend");
+        assert!(
+            b.iter().any(|t| t.starts_with("str lr")),
+            "item E saved x30 here; if not, the oracle is vacuous: {b:?}"
+        );
+        let a = mnems(&after, "blend");
+        assert!(
+            !a.iter().any(|t| t.contains("lr")),
+            "a leaf must not touch the link register at all: {a:?}"
+        );
+        assert_eq!(*a.last().expect("nonempty"), "ret");
+        assert!(
+            after.fns["blend"].code.len() < before.fns["blend"].code.len(),
+            "and the two words must be gone: {} -> {}",
+            before.fns["blend"].code.len(),
+            after.fns["blend"].code.len()
+        );
+    }
+
+    /// **F3, the half that needs everything to fit: a function whose
+    /// values all live in registers gets no frame at all.** With `x30`
+    /// no longer taking a slot, a body with nothing left to spill has
+    /// nothing to point `sp` at, so `sub sp` and `add sp` go too.
+    #[test]
+    fn a_function_whose_values_all_fit_gets_no_frame() {
+        const SRC: &str = r#"
+module examples.item_f_no_frame
+
+pub fn nothing():
+    pass
+"#;
+        let before = emit(SRC, E);
+        let after = emit(SRC, RELEASE_OPTS);
+        assert!(
+            frame_of(&before, "nothing") > 0,
+            "item E framed even this; if not, the oracle is vacuous"
+        );
+        assert_eq!(frame_of(&after, "nothing"), 0, "item F3 must delete it");
+        let a = mnems(&after, "nothing");
+        assert!(
+            !a.iter()
+                .any(|t| t.starts_with("sub sp") || t.starts_with("add sp")),
+            "a frameless fn must not adjust sp: {a:?}"
+        );
+        assert_eq!(rule_count(&after, "nothing", CostRule::Load), 0);
+        assert_eq!(rule_count(&after, "nothing", CostRule::Store), 0);
+    }
+
+    const TAIL: &str = r#"
+module examples.item_f_tail
+
+fn add_one(x: u64) -> u64:
+    return x +% 1
+
+pub fn use_it(x: u64) -> u64:
+    return add_one(x)
+"#;
+
+    /// **F5: a tail call emits `B`, not `BL` + `RET`.**
+    #[test]
+    fn a_tail_call_emits_b_not_bl_and_ret() {
+        let before = emit(TAIL, E);
+        let after = emit(TAIL, RELEASE_OPTS);
+
+        let b = mnems(&before, "use_it");
+        assert!(
+            b.iter().any(|t| *t == "bl <add_one>"),
+            "before item F this must be a linking call: {b:?}"
+        );
+
+        let a = mnems(&after, "use_it");
+        assert!(
+            a.iter().any(|t| t.starts_with("b <add_one>")),
+            "item F5 must emit a jump: {a:?}"
+        );
+        assert!(
+            !a.iter().any(|t| *t == "bl <add_one>"),
+            "no linking call may survive: {a:?}"
+        );
+        assert_eq!(
+            rule_count(&after, "use_it", CostRule::Call),
+            0,
+            "a tail call is a branch, not a call"
+        );
+        // The jump is the last thing the reachable path does, and the
+        // `Reloc::Call` is still there so layout still sees a call edge.
+        assert!(
+            after.fns["use_it"]
+                .relocs
+                .iter()
+                .any(|r| matches!(r, Reloc::Call { key, .. } if key == "add_one")),
+            "the call edge must survive for layout and reachability"
+        );
+        // Word-for-word: this one is strictly shorter.
+        assert!(
+            after.fns["use_it"].code.len() < before.fns["use_it"].code.len(),
+            "the tail call must not cost words: {} -> {}",
+            before.fns["use_it"].code.len(),
+            after.fns["use_it"].code.len()
+        );
+    }
+
+    /// A call that is **not** in tail position is left alone: the result
+    /// is used afterwards, so the function has work to do after the
+    /// callee returns and cannot jump away.
+    #[test]
+    fn a_non_tail_call_is_still_a_linking_call() {
+        const SRC: &str = r#"
+module examples.item_f_not_tail
+
+fn add_one(x: u64) -> u64:
+    return x +% 1
+
+pub fn twice(x: u64) -> u64:
+    y: u64 = add_one(x)
+    return y +% y
+"#;
+        let prog = emit(SRC, RELEASE_OPTS);
+        let a = mnems(&prog, "twice");
+        assert!(
+            a.iter().any(|t| *t == "bl <add_one>"),
+            "a non-tail call must still link: {a:?}"
+        );
+    }
+
+    /// **F1/F2: a caller does not save a register the callee provably
+    /// never touches** — stated the way this backend can state it, since
+    /// it never saved anything in the first place: a value that spans a
+    /// call now *stays in a register*, and the reload item E was forced
+    /// to keep disappears.
+    #[test]
+    fn a_value_survives_a_call_in_a_register_the_callee_does_not_clobber() {
+        const SRC: &str = r#"
+module examples.item_f_across_call
+
+fn small(a: u64) -> u64:
+    return a +% 1
+
+pub fn spans(a: u64) -> u64:
+    keep: u64 = a *% 3
+    p: u64 = small(a)
+    q: u64 = small(p)
+    return (keep +% p) +% (q +% keep)
+"#;
+        let before = emit(SRC, E);
+        let after = emit(SRC, RELEASE_OPTS);
+        let bl = rule_count(&before, "spans", CostRule::Load);
+        let al = rule_count(&after, "spans", CostRule::Load);
+        assert!(
+            al < bl,
+            "cross-call residency must delete reloads: {bl} -> {al}"
+        );
+        assert!(
+            frame_of(&after, "spans") < frame_of(&before, "spans"),
+            "and the frame must shrink with them: {} -> {}",
+            frame_of(&before, "spans"),
+            frame_of(&after, "spans")
+        );
+        // The convention is a published fact, not an internal one.
+        let conv = after
+            .conventions
+            .get("spans")
+            .expect("every sync fn gets a convention under release");
+        assert!(
+            conv.assignment.resident_count() > 0,
+            "the caller must have residents to have kept anything"
+        );
+        let small = after.conventions.get("small").expect("callee convention");
+        assert!(
+            !small.opaque,
+            "a leaf's clobber set must be measured, not the fail-closed answer"
+        );
+        // Every register the caller left live across the call is one the
+        // callee was measured not to touch. That is the whole claim.
+        assert_ne!(small.clobbers, regalloc::ALL_REGS);
+    }
+
+    /// **The fail-closed half.** A callee this compiler does not hold the
+    /// body of clobbers everything, so nothing is left live across it.
+    /// `__wrela_abort` is not such a callee — it never returns — so this
+    /// uses a real opaque one: a checkpoint-bearing async dispatch is not
+    /// reachable from a sync unit, so the property is asserted on the
+    /// analysis' own answer for an absent key.
+    #[test]
+    fn an_unheld_callee_clobbers_everything() {
+        use std::collections::BTreeMap;
+        let facts = regalloc::FnFacts {
+            temp_count: 1,
+            points: vec![
+                regalloc::PointFacts::default(),
+                regalloc::PointFacts::default(),
+            ],
+            back_edges: Vec::new(),
+            calls: ["nowhere".to_string()].into_iter().collect(),
+            opaque_calls: false,
+            has_returning_call: true,
+        };
+        let mut fns = BTreeMap::new();
+        fns.insert(
+            "f".to_string(),
+            regalloc::FnInput {
+                facts,
+                scalar_slot: vec![true],
+                opaque_body: false,
+            },
+        );
+        let out = regalloc::allocate_program(&fns);
+        assert_eq!(out["f"].clobbers, regalloc::ALL_REGS);
+        assert!(out["f"].opaque);
+    }
+
+    /// **F4, as far as it goes: the pool reaches past nine registers.**
+    /// Item E could hand a temp one of `x19..=x27` and nothing else. The
+    /// convention subtracts what *this* function's own emission was
+    /// measured naming from the whole caller-usable file instead, so a
+    /// function that does not use the scratch set gets the scratch set.
+    #[test]
+    fn the_pool_reaches_past_item_es_nine_registers() {
+        let after = emit(LEAF, RELEASE_OPTS);
+        let conv = after.conventions.get("blend").expect("convention");
+        assert!(
+            conv.pool.len() > regalloc::POOL.len(),
+            "item F's pool must be wider than item E's nine: {} vs {}",
+            conv.pool.len(),
+            regalloc::POOL.len()
+        );
+        assert!(
+            conv.pool.iter().any(|r| !regalloc::POOL.contains(r)),
+            "and must actually contain a register item E could not reach"
+        );
+        for r in &conv.pool {
+            assert!(
+                ![18u8, 28, 29, 30, 31].contains(r),
+                "x{r} is reserved and must never enter a pool"
+            );
+        }
+    }
+
+    /// **Decision 1781, the rule.** Every key some later stage may own
+    /// the body of publishes `ALL_REGS`, and the predicate that decides
+    /// it is checked against the *symbol constructors themselves* rather
+    /// than against hand-written spellings — the whole defect was a
+    /// second source of truth about which keys layout owns.
+    #[test]
+    fn every_key_a_later_stage_may_own_is_opaque_to_the_allocator() {
+        // Every key `layout.rs` is known to replace or alias:
+        // `install_abort_tail_floor`, `inject_test_runner_fns`,
+        // `inject_rt_enqueue_and_dispatch_fns`, `inject_rt_cross_core_fns`,
+        // `inject_boot_init_fn`, `apply_resume_remaps`.
+        let owned_by_layout: Vec<String> = vec![
+            "__wrela_abort_tail".to_string(),
+            "__test_call_0".to_string(),
+            "__test_prefix_0".to_string(),
+            "__method_0".to_string(),
+            "__enqueue_0".to_string(),
+            "__resume_0".to_string(),
+            "__boot_call_0".to_string(),
+            "__irq_call_0".to_string(),
+            rt_boot_init_symbol(),
+            rt_enqueue_symbol("Actor"),
+            rt_secondary_core_entry_symbol(1),
+        ];
+        for key in &owned_by_layout {
+            assert!(
+                is_compiler_glue_symbol(key) || key.starts_with("__"),
+                "`{key}` is a key layout may replace, but the allocator would \
+                 give it a measured clobber set and every caller of it would \
+                 be compiled against a body that is not the one that runs"
+            );
+        }
+        // ...and a plain source symbol is *not* opaque, or the rule would
+        // be "everything is opaque" and item F would have landed nothing.
+        for key in [
+            "chain",
+            "Outer.relay",
+            "copy_bytes_range",
+            "fn:identity[u64]",
+        ] {
+            assert!(
+                !(is_compiler_glue_symbol(key) || key.starts_with("__")),
+                "`{key}` is an ordinary source fn and must keep a measured \
+                 clobber set"
+            );
+        }
+    }
+
+    /// **Decision 1781, the oracle — and the negative half of it.** A
+    /// check that cannot fail is not a check, so this hands
+    /// `verify_conventions` a program whose published clobber set
+    /// understates what its code does, and requires a refusal that names
+    /// the function and the registers.
+    #[test]
+    fn verify_conventions_refuses_a_clobber_set_the_code_exceeds() {
+        let mut program = CodegenProgram::default();
+        let mut f = CodegenFn {
+            frame_size: 0,
+            code: Vec::new(),
+            relocs: Vec::new(),
+        };
+        f.code.push(EmittedWord::new(
+            encode::enc_mov_reg(4, 9, true),
+            "mov x4, x9".to_string(),
+            CostRule::Alu,
+            Some(4),
+            &[9],
+        ));
+        program.fns.insert("victim".to_string(), f);
+        // Published as touching nothing, while its one word names x4/x9.
+        program
+            .conventions
+            .insert("victim".to_string(), regalloc::Convention::default());
+        let err = verify_conventions(&program).expect_err("understated clobbers must be refused");
+        assert!(err.contains("victim"), "{err}");
+        assert!(err.contains("x4") && err.contains("x9"), "{err}");
+
+        // Honest is accepted.
+        let mut ok = program.clone();
+        ok.conventions.get_mut("victim").expect("present").clobbers =
+            regalloc::reg_bit(4) | regalloc::reg_bit(9);
+        verify_conventions(&ok).expect("an honest clobber set must pass");
+    }
+
+    /// ...and the transitive half: a callee's clobber set is part of its
+    /// caller's, so understating it through a call is refused too. This
+    /// is the exact shape of the real defect — `__boot_call_0` published
+    /// `x30-x31` while reaching `x0,x9-x10` through a call layout had
+    /// filled in after codegen ran.
+    #[test]
+    fn verify_conventions_refuses_a_clobber_set_a_callee_exceeds() {
+        let mut program = CodegenProgram::default();
+        let mut caller = CodegenFn {
+            frame_size: 0,
+            code: Vec::new(),
+            relocs: Vec::new(),
+        };
+        caller.code.push(EmittedWord::new(
+            encode::enc_bl(0),
+            "bl <callee>".to_string(),
+            CostRule::Call,
+            Some(0),
+            &[],
+        ));
+        caller.relocs.push(Reloc::Call {
+            word: 0,
+            key: "callee".to_string(),
+        });
+        program.fns.insert("caller".to_string(), caller);
+        program.fns.insert(
+            "callee".to_string(),
+            CodegenFn {
+                frame_size: 0,
+                code: Vec::new(),
+                relocs: Vec::new(),
+            },
+        );
+        program.conventions.insert(
+            "caller".to_string(),
+            regalloc::Convention {
+                clobbers: regalloc::reg_bit(0),
+                ..Default::default()
+            },
+        );
+        program.conventions.insert(
+            "callee".to_string(),
+            regalloc::Convention {
+                clobbers: regalloc::reg_bit(0) | regalloc::reg_bit(19),
+                ..Default::default()
+            },
+        );
+
+        let err = verify_conventions(&program).expect_err("a callee's clobbers must propagate");
+        assert!(err.contains("caller") && err.contains("callee"), "{err}");
+        assert!(err.contains("x19"), "{err}");
+    }
+
+    /// A callee with **no** published convention — an async turn body, a
+    /// hand-assembled glue routine, a key layout re-points — contributes
+    /// `ALL_REGS`, so its caller must have been published opaque.
+    #[test]
+    fn an_unconventioned_callee_forces_its_caller_to_be_opaque() {
+        let mut program = CodegenProgram::default();
+        let mut caller = CodegenFn {
+            frame_size: 0,
+            code: Vec::new(),
+            relocs: Vec::new(),
+        };
+        caller.code.push(EmittedWord::new(
+            encode::enc_bl(0),
+            "bl <glue>".to_string(),
+            CostRule::Call,
+            Some(0),
+            &[],
+        ));
+        caller.relocs.push(Reloc::Call {
+            word: 0,
+            key: "glue".to_string(),
+        });
+        program.fns.insert("caller".to_string(), caller);
+        program.conventions.insert(
+            "caller".to_string(),
+            regalloc::Convention {
+                clobbers: regalloc::reg_bit(0),
+                ..Default::default()
+            },
+        );
+        assert!(
+            verify_conventions(&program).is_err(),
+            "a call into a body this compiler does not hold must force ALL_REGS"
+        );
+
+        program
+            .conventions
+            .get_mut("caller")
+            .expect("present")
+            .clobbers = regalloc::ALL_REGS;
+        verify_conventions(&program).expect("ALL_REGS covers anything");
+    }
+
+    /// Determinism through dumbness: the whole-program pass is a pure
+    /// function of the program, and the order it visits functions in is a
+    /// function of their keys.
+    #[test]
+    fn the_whole_program_convention_is_deterministic() {
+        let a = emit(LEAF, RELEASE_OPTS);
+        for _ in 0..4 {
+            let b = emit(LEAF, RELEASE_OPTS);
+            assert_eq!(b.conventions, a.conventions);
         }
     }
 }

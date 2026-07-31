@@ -105,7 +105,22 @@ mod tests {
             // — the exact twins of the `Reloc::Rodata` guards beside them,
             // unreachable for the identical reason (interning a literal is
             // what fills the pool).
-            210,
+            // 210 -> 211: plans/codegen-pareto.md item F5 makes
+            // `layout::patch_bl` refuse a relocation word that is not
+            // already a `B`/`BL`. A tail call is patched as the `B` the
+            // emitter encoded, so the patcher reads the word's own opcode
+            // instead of overwriting it — and a word that is neither form
+            // means the reloc names a site the emitter did not put a
+            // branch at, which is a producer bug and now says so.
+            // 211 -> 213: plans/codegen-pareto.md item F, decision 1781.
+            // `codegen::verify_conventions` checks every published clobber
+            // set against the emitted code and refuses the build if one is
+            // not a superset — two producer-bug sites, one for a
+            // convention with no code behind it and one for the check
+            // itself. Both are unreachable from any source program and are
+            // meant to stay that way; the boot transcripts are what proved
+            // the check was missing.
+            213,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }

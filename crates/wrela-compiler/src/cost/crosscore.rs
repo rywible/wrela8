@@ -620,6 +620,7 @@ mod tests {
         CodegenProgram {
             fns,
             rodata: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -1057,6 +1058,7 @@ mod tests {
                 &CodegenProgram {
                     fns,
                     rodata: Vec::new(),
+                    ..Default::default()
                 },
                 &t,
                 &one,

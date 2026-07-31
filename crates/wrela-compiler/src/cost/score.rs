@@ -1253,6 +1253,7 @@ mod tests {
         CodegenProgram {
             fns,
             rodata: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -2425,6 +2426,7 @@ mod tests {
         let p = CodegenProgram {
             fns,
             rodata: Vec::new(),
+            ..Default::default()
         };
         let r = score(&p);
         let by_key: BTreeMap<_, _> = r.fns.iter().map(|f| (f.key.as_str(), f)).collect();

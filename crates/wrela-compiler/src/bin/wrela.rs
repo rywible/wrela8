@@ -679,6 +679,10 @@ fn build_report(
                                                 format!("error[build]: {e}\n")
                                             }
                                         })?;
+                                        // plans/codegen-pareto.md item F:
+                                        // publish the per-fn convention the
+                                        // whole-program pass chose.
+                                        report::append_convention_section(&mut text, &codegen);
                                         // plans/M9.md item H: run registered
                                         // `@layout_assert` fns against a real
                                         // ImageReport after layout (04 §8).

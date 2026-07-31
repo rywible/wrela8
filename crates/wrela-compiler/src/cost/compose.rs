@@ -827,12 +827,15 @@ Worker.report=2
         assert!(attach.block_frequencies.is_empty());
         // The pin moves with the release form it pins. `cost-branchy`'s
         // flat total: 172 before this plan, 170 after item B1 turned its
-        // two `ADRP`+`ADD` rodata pairs into `ADR`s, and lower again once
-        // item C's arithmetic forms and item E's allocator landed. The
-        // number is pinned so the *wiring* stays inert, not to pin a cost
-        // model — re-measure it, never rescale it.
-        assert_eq!(report.total_proxy_cycles, 134, "the pinned flat total");
-        assert_eq!(report.workload_totals["flat"], 134);
+        // two `ADRP`+`ADD` rodata pairs into `ADR`s, lower again once
+        // item C's arithmetic forms and item E's allocator landed
+        // (134), and **110 once item F's whole-program convention did**
+        // — an 18 % fall on one case from the `x30` saves F3 deletes and
+        // the reloads F1/F2 keep in registers across calls. The number is
+        // pinned so the *wiring* stays inert, not to pin a cost model —
+        // re-measure it, never rescale it.
+        assert_eq!(report.total_proxy_cycles, 110, "the pinned flat total");
+        assert_eq!(report.workload_totals["flat"], 110);
         assert_eq!(report.workload_totals.len(), 1, "flat row only");
     }
 
