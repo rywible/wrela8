@@ -86,6 +86,10 @@ fn main() {
         i += 1;
     }
 
+    if args.iter().any(|a| a == "--cycles") {
+        cycle_model(cfg.w, cfg.h, cfg.max_depth, cfg.base_tile);
+        return;
+    }
     if args.iter().any(|a| a == "--deform") {
         deform_bench(cfg.w, cfg.h, cfg.max_depth, cfg.base_tile);
         return;
@@ -805,4 +809,80 @@ fn deform_bench(w: u32, h: u32, max_depth: u32, base_tile: f32) {
             );
         }
     }
+}
+
+/// The port model: replace §1's "assume ~30% of peak" with a computed bound.
+///
+/// §1 derives 16 fp32 FLOP/cycle/core from two NEON pipes and then assumes
+/// "~30% of peak until measured", which is a reasonable prior for
+/// hand-tuned packet code and a guess all the same. Every resolution number
+/// in plans/pixels.md scales linearly in it.
+///
+/// For *this* loop the assumption is unnecessary. `bench/a76-pi5.toml` pins
+/// both FP/ASIMD pipes (`port_v0`/`port_v1`, SOG §2.1 pipelines 7 and 8,
+/// T1) at `thru 1/1`, so a register-resident branch-free interpreter is
+/// V-port-limited at **2 vector uops per cycle** — and §9.3's register
+/// arithmetic says the measured median pruned tape (28 ops) *is*
+/// register-resident at 4-wide fp32 or 8-wide fp16.
+///
+/// What the table cannot yet supply is per-group ASIMD throughput: it keeps
+/// one coarse `[latency.neon]` row, which cannot separate `FMLA` from
+/// `FSQRT`. Those groups are swept rather than pinned.
+fn cycle_model(w: u32, h: u32, max_depth: u32, base_tile: f32) {
+    const GHZ: f64 = 2.4e9;
+    const RENDER_CORES: f64 = 2.4;
+    println!("fieldprobe — port model from bench/a76-pi5.toml");
+    println!("  port_v0 = SOG pipeline 7, port_v1 = pipeline 8, both T1, thru 1/1");
+    println!("  => 2 V-uops/cycle/core, {} render-core-equivalents, {} GHz",
+        RENDER_CORES, GHZ / 1e9);
+    println!("  SWEPT (no per-group ASIMD rows yet — opts-ladder 9c / M20 row 35):");
+    println!("    sqrt 6..12 uops   sin 8..16   rep 3..8");
+    println!();
+    for (name, mk) in [
+        ("colonnade", 0u8),
+        ("colonnade-flat", 1),
+        ("melee", 2),
+    ] {
+        let sc = match mk {
+            0 => scene::colonnade(w, h),
+            1 => scene::colonnade_flat(w, h),
+            _ => scene::melee(w, h),
+        };
+        let mut s = Scratch::default();
+        let cl = probe::run_classify(&sc, max_depth, base_tile, &mut s);
+        println!("  {name}:");
+        for (label, sw) in [
+            ("pessimistic", tape::UopSweep::pessimistic()),
+            ("optimistic ", tape::UopSweep::optimistic()),
+        ] {
+            let fc = probe::run_framecost_sw(&sc, &cl, &sw, &mut s);
+            for &(pk, tag) in &[(4.0f64, "4x fp32"), (8.0, "8x fp16")] {
+                let uops = fc.v_uops_lane / pk;
+                let cycles = uops / 2.0;
+                let per_px = cycles / fc.pixels as f64;
+                // Frames per second at this resolution, all render cores.
+                let fps = GHZ * RENDER_CORES / cycles;
+                // §1's peak is 16 fp32 FLOP/cycle/core; across the render
+                // share that is 16 * RENDER_CORES per wall-cycle. `cycles`
+                // is total work, so wall-cycles = cycles / RENDER_CORES.
+                let flop_per_wall_cycle = fc.total() / (cycles / RENDER_CORES);
+                let peak = 16.0 * RENDER_CORES;
+                println!(
+                    "    {label} {tag}: {:>6.1} cyc/px  {:>8.2} Mcyc/frame  \
+                     {:>7.1} fps @ {}x{}   {:>5.1}% of fp32 peak",
+                    per_px,
+                    cycles / 1e6,
+                    fps,
+                    w, h,
+                    100.0 * flop_per_wall_cycle / peak
+                );
+            }
+        }
+    }
+    println!();
+    println!("  §1 assumes 30% of peak sustained. This model is the V-port");
+    println!("  bound: it assumes register residency, no L-pipe pressure and");
+    println!("  no interpreter dispatch, so it is an UPPER bound where §1's");
+    println!("  30% is a lower one. fp16 rows exceed 100% legitimately -- they");
+    println!("  do 2x the lanes against an fp32 peak.");
 }

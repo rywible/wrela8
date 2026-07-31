@@ -37,6 +37,7 @@ is a correction to how everything else was being read.
 | **Interval arithmetic beats affine arithmetic on box SDFs** (20–50×) | `eval_range` must carry both domains |
 | **Deformation is structurally free** (peak/mean 1.01× across a swing) | §4.2's time-Lipschitz escape hatch is not needed at these rates |
 | **Over-relaxation is start-point-dependent** | rejected; it broke §4's reuse and inflated edge density |
+| **§1's "30% of peak sustained" is ~2× conservative** for this loop | the V-port bound is 60–84%; the ladder brackets rather than assumes |
 
 The correction is the important one and it is worth stating plainly: for
 most of this design's life, the reconstruction factor was measured at
@@ -85,6 +86,56 @@ warn[FIELD_DISPLACE_COST]: 2 octaves at amplitude 0.020 on 'ground' raise
   --> world/terrain.wr:9
   help: at @output(3840, 2160, 60) this is the term that does not fit.
 ```
+
+### 1.1 The port model replaces §1's sustained-FLOPs guess
+
+§1 derives 16 fp32 FLOP/cycle/core from two NEON pipes and then assumes
+*"~30% of peak until measured"*. That is a reasonable prior for hand-tuned
+packet code and a guess all the same, and **every resolution number scales
+linearly in it**.
+
+For *this* loop the guess is unnecessary. `bench/a76-pi5.toml` pins both
+FP/ASIMD pipes — `port_v0` (SOG §2.1 pipeline 7) and `port_v1` (pipeline
+8), both **T1** — at `thru 1/1`. A register-resident, branch-free packet
+interpreter is therefore V-port-limited at **2 vector uops per cycle**, and
+§9.3's register arithmetic says the measured median pruned tape (28 ops)
+*is* register-resident at 4-wide fp32 or 8-wide fp16.
+
+Counting V-uops per tape op and dividing by the port width:
+
+| scene | 4× fp32 | 8× fp16 |
+| --- | --- | --- |
+| colonnade | 379 cyc/px — **59.6%** of fp32 peak | 189 — 119% |
+| colonnade-flat | 225 — **66.5%** | 112 — 133% |
+| melee | 270 — **66.3%** | 135 — 133% |
+
+(pessimistic sweep end; the optimistic end reaches 79–84% and 158–168%.
+fp16 exceeds 100% legitimately — twice the lanes against an fp32 peak.)
+
+**So §1's 30% is roughly 2× conservative for this loop.** That is not a
+licence to replace it: this model assumes register residency, no L-pipe
+pressure and **no interpreter dispatch at all**, so it is an *upper* bound
+where §1's 30% is a lower one. The gap between them is exactly the
+unmeasured quantity in §13.1. §10 therefore brackets rather than assumes.
+
+**What the table cannot yet supply.** `[latency.neon]` is one coarse row
+for all FP/ASIMD — *"kept as one coarse row per dimension inventory row 35
+… no live emit site; do not expand into per-group FP/ASIMD rows"* — and it
+cannot separate `FMLA` from `FSQRT`, whose throughputs differ by an order
+of magnitude. `opts-ladder.md` 9c records that **row 35's trigger condition
+has fired**: wrela now emits FP/ASIMD, so the freeze that declined those
+rows *"is satisfied by adding them, not violated"*.
+
+The three groups the pixels work needs, stated as sweep dimensions per the
+over-cost rule rather than pinned as guesses:
+
+| dimension | bracket | what resolves it |
+| --- | --- | --- |
+| `sqrt` | 6 – 12 uops | `FSQRT` vs `FRSQRTE` + 2 Newton steps |
+| `sin` | 8 – 16 | range reduction + minimax polynomial length |
+| `rep` | 3 – 8 | reciprocal multiply, `FRINTN`, `FMLS` |
+
+That is the concrete deliverable to whoever expands the ASIMD rows.
 
 ---
 
@@ -607,6 +658,19 @@ reconstruction factor at that resolution.
 AO/GI + shading (§3), continuation at its measured 2.01× on the 92.4% of
 primary that is smooth.
 
+The table above uses §1's 30% prior. §1.1's V-port bound is 60–66%
+(pessimistic sweep, 4× fp32), which **halves every figure**:
+
+| mode, at the port bound | melee | colonnade-flat | colonnade |
+| --- | --- | --- | --- |
+| **4K60**, shade at 60 | 47% | 52% \* | **73%** \* |
+| **4K60**, shade at 30 + raster at 60 | 31% | 33% \* | 44% \* |
+
+**At the port bound, 4K60 closes on all three scenes with shading at the
+full 60 Hz** — the 30 Hz-shade trick becomes headroom rather than a
+requirement. The truth lies between the two tables, and what decides it is
+§13.1.
+
 **1080p60 fits everywhere with room. 4K60 fits everywhere if shading runs
 at 30 Hz and the representation is re-rastered at 60.** colonnade sits at
 88% of budget — 12% of headroom against §6.1's measured 1.21× camera-whip
@@ -700,12 +764,16 @@ gates. Any successor implementation should carry the same ones.
 In descending order of how much rests on them.
 
 1. **Packet-interpreter dispatch amortisation.** The largest assumption
-   under §10. Every FLOP figure assumes op-by-op interpretation amortises
-   across a packet; §16.1 says the M4 proxy biases interpreter overhead
-   optimistic. Needs an A76.
-2. **§1's 30%-sustained figure.** Every projection scales linearly in it,
-   and the proxy structurally cannot measure it. colonnade's 4K60 verdict
-   flips on it alone.
+   under §10, and now the *only* thing separating §1's 30% from §1.1's
+   60–66% port bound. Every figure assumes op-by-op interpretation
+   amortises across a packet; §16.1 says the M4 proxy biases interpreter
+   overhead optimistic. Needs an A76 — but the port model has narrowed what
+   the measurement has to settle to a single ratio between two computed
+   ends.
+2. **Where in 30–66% the loop actually lands.** §1.1 brackets it: 30% is
+   the prior, the V-port bound is 60–66%, and the gap is the same dispatch
+   and L-pipe overhead as item 1. Not a separate unknown — the *same*
+   unknown, seen from the other end.
 3. **§14.2's display path.** Whether the HVS scales during scanout,
    composites two planes at different scales, and its maximum upscale
    factor. A datasheet question that decides §7's bandwidth lever.

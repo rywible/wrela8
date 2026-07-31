@@ -1309,6 +1309,10 @@ pub struct FrameCost {
     /// Pixels the classifier proved empty that the marcher nonetheless hits.
     /// Must be zero.
     pub exterior_hits: u64,
+    /// Vector micro-ops on the V pipes, summed per lane-evaluation. Divide
+    /// by packet width for uops, then by 2 for cycles — two FP/ASIMD pipes
+    /// at `thru 1/1`, both T1 in `bench/a76-pi5.toml`.
+    pub v_uops_lane: f64,
     /// Same frame, costed as if the interior certificate were perfect —
     /// every empirically-smooth cell resolved from corner depths instead of
     /// marched. The gap between this and `total()` is what a stronger §2.1
@@ -1351,6 +1355,15 @@ impl FrameCost {
 /// price of that enclosure alone, which is §2.1 earning its keep mid-ray
 /// rather than only at classification time.
 pub fn run_framecost(sc: &Scene, cl: &ClassifyOut, s: &mut Scratch) -> FrameCost {
+    run_framecost_sw(sc, cl, &crate::tape::UopSweep::pessimistic(), s)
+}
+
+pub fn run_framecost_sw(
+    sc: &Scene,
+    cl: &ClassifyOut,
+    sweep: &crate::tape::UopSweep,
+    s: &mut Scratch,
+) -> FrameCost {
     let cam = &sc.cam;
     let mut fc = FrameCost {
         pixels: (cam.w as u64) * (cam.h as u64),
@@ -1367,6 +1380,7 @@ pub fn run_framecost(sc: &Scene, cl: &ClassifyOut, s: &mut Scratch) -> FrameCost
         post: 0.0,
         mean_steps: 0.0,
         exterior_hits: 0,
+        v_uops_lane: 0.0,
         total_ideal: 0.0,
     };
     let mut covered = 0u64;
@@ -1423,6 +1437,7 @@ pub fn run_framecost(sc: &Scene, cl: &ClassifyOut, s: &mut Scratch) -> FrameCost
             }
             first = false;
             let w = tape.weight() as f64;
+            let wu = tape.v_uops(sweep) as f64;
 
             let mut still = Vec::with_capacity(pend.len());
             for &(px, py) in &pend {
@@ -1433,6 +1448,7 @@ pub fn run_framecost(sc: &Scene, cl: &ClassifyOut, s: &mut Scratch) -> FrameCost
                 let charged = if lf.class == Class::Interior { 6.0 } else { steps as f64 };
                 step_sum += steps as u64;
                 fc.primary += charged * w;
+                fc.v_uops_lane += charged * wu;
                 ideal_primary += if lf.class == Class::Interior {
                     charged * w
                 } else {
@@ -1443,6 +1459,10 @@ pub fn run_framecost(sc: &Scene, cl: &ClassifyOut, s: &mut Scratch) -> FrameCost
                     fc.shadow += SHADOW_EVALS * w;
                     fc.ao_gi += AO_GI_EVALS * w;
                     fc.shade += SHADE_FLOP;
+                    fc.v_uops_lane += (SHADOW_EVALS + AO_GI_EVALS) * wu;
+                    // §1's shading model read as FMLA-dominated: two FLOP
+                    // per lane-MAC.
+                    fc.v_uops_lane += SHADE_FLOP * 0.5;
                 } else {
                     still.push((px, py));
                 }
@@ -1455,6 +1475,7 @@ pub fn run_framecost(sc: &Scene, cl: &ClassifyOut, s: &mut Scratch) -> FrameCost
 
     fc.exterior_px = fc.pixels.saturating_sub(covered);
     fc.post += fc.exterior_px as f64 * POST_FLOP;
+    fc.v_uops_lane += fc.pixels as f64 * POST_FLOP * 0.5;
     // Soundness gate: a pixel with no leaf was *proved* to contain no
     // surface. If the full tape finds one there, every area fraction is void.
     {

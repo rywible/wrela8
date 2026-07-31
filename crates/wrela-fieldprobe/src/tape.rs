@@ -114,6 +114,48 @@ impl Op {
         }
     }
 
+    /// V-pipe micro-ops this op costs **per packet**, for the port model.
+    ///
+    /// `bench/a76-pi5.toml` pins two FP/ASIMD pipes (`port_v0` = SOG
+    /// pipeline 7, `port_v1` = pipeline 8, both T1) at `thru 1/1`, so the
+    /// packet interpreter retires **2 V-uops per cycle** when it is
+    /// register-resident and V-limited. That replaces §1's "assume ~30% of
+    /// peak until measured" with a computed bound for this specific loop.
+    ///
+    /// The table's `[latency.neon]` is one coarse row for all FP/ASIMD
+    /// ("kept as one coarse row per dimension inventory row 35 — no live
+    /// emit site; do not expand"). It cannot distinguish `FMLA` from
+    /// `FSQRT`, whose throughputs differ by an order of magnitude. So the
+    /// ops that need a group the coarse row cannot express take a **sweep
+    /// bracket** rather than a pinned value, per the over-cost rule: the
+    /// pessimistic end is charged and the bracket is reported.
+    pub fn v_uops(&self, sw: &UopSweep) -> f32 {
+        match self {
+            Op::X | Op::Y | Op::Z | Op::Const(_) => 0.0,
+            // One data-processing uop each; the coarse T1 row covers these.
+            Op::Neg(_)
+            | Op::Add(..)
+            | Op::Sub(..)
+            | Op::Mul(..)
+            | Op::Square(_)
+            | Op::Abs(_)
+            | Op::Min(..)
+            | Op::Max(..)
+            | Op::AddC(..)
+            | Op::MulC(..) => 1.0,
+            // FMIN + FMAX against two constants.
+            Op::Clamp01(_) => 2.0,
+            // Fused polynomial smin, all of it certain ops:
+            // sub, mul_c, add_c, clamp(2), sub, mul, sub, mul, mul_c.
+            Op::SMin(..) | Op::SMax(..) => 10.0,
+            Op::Sqrt(_) => sw.sqrt,
+            Op::Len2(..) => 2.0 + sw.sqrt,
+            Op::Len3(..) => 3.0 + sw.sqrt,
+            Op::Sin(_) => sw.sin,
+            Op::Rep(..) => sw.rep,
+        }
+    }
+
     pub fn is_blend(&self) -> bool {
         matches!(self, Op::SMin(..) | Op::SMax(..))
     }
@@ -146,6 +188,35 @@ impl Op {
     }
 }
 
+/// The ASIMD groups `bench/a76-pi5.toml` does not yet resolve.
+///
+/// Each is a bracket, not a value. `opts-ladder.md` 9c records that M20
+/// inventory **row 35's trigger condition has fired** — wrela now emits
+/// FP/ASIMD, so the freeze that declined per-group rows "is satisfied by
+/// adding them, not violated". Until those rows exist, these are the
+/// dimensions the pixels work needs, stated as sweep brackets so the
+/// uncertainty is data rather than a guess baked into a total.
+#[derive(Clone, Copy, Debug)]
+pub struct UopSweep {
+    /// `FSQRT` (poorly pipelined) versus `FRSQRTE` + 2 Newton refinements.
+    pub sqrt: f32,
+    /// Range reduction plus a minimax polynomial.
+    pub sin: f32,
+    /// Reciprocal multiply, `FRINTN`, `FMLS`.
+    pub rep: f32,
+}
+
+impl UopSweep {
+    /// The pessimistic end of every bracket (over-cost rule, decision 1609).
+    pub fn pessimistic() -> UopSweep {
+        UopSweep { sqrt: 12.0, sin: 16.0, rep: 8.0 }
+    }
+    /// The optimistic end: rsqrt-chain `length`, a short minimax sine.
+    pub fn optimistic() -> UopSweep {
+        UopSweep { sqrt: 6.0, sin: 8.0, rep: 3.0 }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Tape {
     pub ops: Vec<Op>,
@@ -162,6 +233,11 @@ impl Tape {
     /// against.
     pub fn weight(&self) -> u32 {
         self.ops.iter().map(|o| o.weight()).sum()
+    }
+
+    /// Total V-uops for one full evaluation of this tape, per packet.
+    pub fn v_uops(&self, sw: &UopSweep) -> f32 {
+        self.ops.iter().map(|o| o.v_uops(sw)).sum()
     }
 
     pub fn blend_count(&self) -> usize {
