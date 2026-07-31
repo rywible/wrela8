@@ -2,14 +2,14 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
   Provenance T1=39 T2=19 T3=0 T4=10 T5=16 rows=84
   Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method valid_for=static_shape_opts workload=flat pseudo_lru=modelled_as_lru
   Composition sum_of_fn_schedules=1
-  Total proxy_cycles=29583
-  Workload name=flat proxy_cycles=29583
+  Total proxy_cycles=29577
+  Workload name=flat proxy_cycles=29577
   Owner name=app proxy_cycles=28390
-  Owner name=runtime proxy_cycles=1193
+  Owner name=runtime proxy_cycles=1187
   Owner name=driver proxy_cycles=0
   Core n=0 proxy_cycles=64 max_turn_proxy=64 turns_per_sec=37500000 ms_per_turn_model=0.0000266667
-  Budget n=0 hot_text_bytes=92800 l1i_bytes=65536 over_l1i_lines=426 over_l2_lines=0 text_pages=23 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=5 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=2982
-  Shared proxy_cycles=29519
+  Budget n=0 hot_text_bytes=92736 l1i_bytes=65536 over_l1i_lines=425 over_l2_lines=0 text_pages=23 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=5 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=2975
+  Shared proxy_cycles=29513
   Placeable id=actor#0 type=Hot core=0 turn_proxy=64 method=Hot.run
   Fn key=Hot.run owner=app proxy_cycles=64
     Term rule=alu count=6
@@ -68,16 +68,16 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=load count=5
     Term rule=mov_wide count=2
     Term rule=store count=5
-  Fn key=__wrela_line_commit owner=runtime proxy_cycles=199
-    Term rule=abort count=2
+  Fn key=__wrela_line_commit owner=runtime proxy_cycles=193
+    Term rule=abort count=1
     Term rule=abort_val count=4
-    Term rule=adrp count=6
-    Term rule=alu count=38
-    Term rule=branch count=10
+    Term rule=adrp count=5
+    Term rule=alu count=33
+    Term rule=branch count=9
     Term rule=load count=49
-    Term rule=mov_wide count=38
+    Term rule=mov_wide count=34
     Term rule=mul count=5
-    Term rule=store count=58
+    Term rule=store count=56
   Fn key=__wrela_runtime_probe owner=runtime proxy_cycles=15
     Term rule=alu count=2
     Term rule=branch count=3

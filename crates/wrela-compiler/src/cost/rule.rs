@@ -7,16 +7,21 @@
 //! (freeze 1630), measured from codegen's own encoder call sites, not the
 //! ISA's group list. Deliberately *not* variants, each because no site
 //! emits it: extend-and-shift arithmetic, LSR/ASR/ROR-shifted arithmetic,
-//! flagset logical (`ANDS`/`BICS`), `LDP`/`STP`, `BFM` insert, and the
-//! W-form (32-bit) **divide** group — every `enc_sdiv` / `enc_udiv` site
-//! in `codegen.rs` passes `sf = true`, and `SMULH`/`UMULH` have no W-form
-//! at all.
+//! `LDP`/`STP`, `BFM` insert, and the W-form (32-bit) **divide** group —
+//! every `enc_sdiv` / `enc_udiv` site in `codegen.rs` passes `sf = true`,
+//! and `SMULH`/`UMULH` have no W-form at all.
+//!
+//! **`ANDS` is emitted after all**, as `TST Xn, #mask`
+//! (plans/codegen-pareto.md item C2). It is tagged `Alu` rather than given
+//! a row: the "logical, shift, flagset" group SOG §3.4 prices at lat 2 /
+//! thru 1 / port M is the *shifted-register* form; `ANDS` with a bitmask
+//! **immediate** is the "logical, basic" group, which is the `alu` row
+//! already. Same for the bitmask-immediate `ORR` item C5 emits.
 //!
 //! **W-form multiply-accumulate is a variant since item C1** (decision
-//! 1740). The row and the variant land one commit ahead of the emit site
-//! that uses them, so the two digests move on their own review surface;
-//! `emit_arith_wrapping` starts passing `sf = false` in the next commit.
-//! See [`CostRule::MulW`].
+//! 1740): `emit_arith_wrapping` now passes `sf = false` for a declared
+//! type of 32 bits or fewer, so the group is emitted and freeze 1630
+//! requires it priced. See [`CostRule::MulW`].
 
 /// ISA op-class for proxy-cycle ranking. Never parsed from mnemonics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -397,26 +402,59 @@ mod tests {
             .expect("codegen.rs test module marker");
         let prod = &src[..cut];
 
-        // (encoder, expected rule, expected site count)
-        let expected: &[(&str, CostRule, usize)] = &[
-            ("enc_sdiv", CostRule::Sdiv, 1),
-            ("enc_udiv", CostRule::Udiv, 2),
-            ("enc_smulh", CostRule::MulHigh, 1),
-            ("enc_umulh", CostRule::MulHigh, 1),
-            ("enc_mul(", CostRule::Mul, 3),
-            ("enc_msub", CostRule::Mul, 2),
-            ("enc_stlr_w", CostRule::StoreRelease, 3),
-            ("enc_stlr_x", CostRule::StoreRelease, 3),
-            ("enc_ldar_w", CostRule::LoadAcquire, 2),
-            ("enc_ldar_x", CostRule::LoadAcquire, 2),
-            ("enc_dmb_ishst", CostRule::Barrier, 1),
-            ("enc_dmb_ishld", CostRule::Barrier, 1),
-            ("enc_brk", CostRule::System, 1),
+        // (encoder, the expected tag at each site **in file order**)
+        //
+        // A list rather than one rule plus a count since
+        // plans/codegen-pareto.md item C1: `enc_mul` now has sites in two
+        // different SOG groups, because the same encoder emits the X-form
+        // and the W-form depending on `sf`. The list pins both the tags and
+        // (by its length) the count, so a new site still has to be
+        // classified deliberately and moved here in the same commit.
+        let expected: &[(&str, &[CostRule])] = &[
+            ("enc_sdiv", &[CostRule::Sdiv]),
+            ("enc_udiv", &[CostRule::Udiv, CostRule::Udiv]),
+            ("enc_smulh", &[CostRule::MulHigh]),
+            ("enc_umulh", &[CostRule::MulHigh]),
+            // Sites in file order: the `narrow_to_width` helper's `mul_reg`,
+            // the checked narrow multiply, the **W-form** wrapping multiply
+            // (item C1), and the X-form wrapping multiply it falls back to.
+            (
+                "enc_mul(",
+                &[CostRule::Mul, CostRule::Mul, CostRule::MulW, CostRule::Mul],
+            ),
+            ("enc_msub", &[CostRule::Mul, CostRule::Mul]),
+            (
+                "enc_stlr_w",
+                &[
+                    CostRule::StoreRelease,
+                    CostRule::StoreRelease,
+                    CostRule::StoreRelease,
+                ],
+            ),
+            (
+                "enc_stlr_x",
+                &[
+                    CostRule::StoreRelease,
+                    CostRule::StoreRelease,
+                    CostRule::StoreRelease,
+                ],
+            ),
+            (
+                "enc_ldar_w",
+                &[CostRule::LoadAcquire, CostRule::LoadAcquire],
+            ),
+            (
+                "enc_ldar_x",
+                &[CostRule::LoadAcquire, CostRule::LoadAcquire],
+            ),
+            ("enc_dmb_ishst", &[CostRule::Barrier]),
+            ("enc_dmb_ishld", &[CostRule::Barrier]),
+            ("enc_brk", &[CostRule::System]),
         ];
 
-        for &(enc, want, count) in expected {
+        for &(enc, want) in expected {
             let needle = format!("encode::{enc}");
-            let mut sites = 0usize;
+            let mut tags: Vec<Option<CostRule>> = Vec::new();
             let mut at = 0usize;
             while let Some(off) = prod[at..].find(&needle) {
                 let start = at + off;
@@ -432,21 +470,15 @@ mod tests {
                             .collect::<String>()
                     })
                     .unwrap_or_default();
-                assert_eq!(
-                    CostRule::from_str_variant(&tag),
-                    Some(want),
-                    "{enc} site #{} is tagged `CostRule::{tag}`, expected `{:?}` \
-                     (plans/M20.md item D: the tag is the SOG instruction group)",
-                    sites + 1,
-                    want
-                );
-                sites += 1;
+                tags.push(CostRule::from_str_variant(&tag));
                 at = start + 1;
             }
+            let want_tags: Vec<Option<CostRule>> = want.iter().copied().map(Some).collect();
             assert_eq!(
-                sites, count,
-                "{enc} site count moved ({sites} live, {count} pinned) — classify the \
-                 new site deliberately and move the count in the same commit"
+                tags, want_tags,
+                "{enc} emit-site tags moved (plans/M20.md item D: the tag is the \
+                 SOG instruction group). Classify each new site deliberately and \
+                 move this list in the same commit"
             );
         }
     }

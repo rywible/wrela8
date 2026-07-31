@@ -215,9 +215,19 @@ mod tests {
         //     `FnCtx::{add_reg,mul_reg,orr_reg,and_reg,cmp_reg}`, and the
         //     three identical park-and-return tails onto
         //     `emit_park_and_return`.
+        // 347 -> 354 at plans/codegen-pareto.md item C, deliberately
+        // upward and for the first time in this ratchet's life. Seven new
+        // `encode::enc_` sites in `codegen.rs`, all of them alternative
+        // *forms* of a sequence that already existed rather than new
+        // emission: `UBFX`/`SBFX` for `narrow_to_width` (C3, 2), `SBFX` +
+        // `TST` for the narrow range check (C2, 2), `MOVN` + the
+        // bitmask-immediate `MOV` for one-word materialization (C5, 2),
+        // and the W-form `MUL` (C1, 1). Every one is guarded by a knob or
+        // a declared width and falls back to the site it replaced, which
+        // is why the count rises while emitted words fall.
         assert_eq!(
             encode_enc_site_count(),
-            347,
+            354,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }

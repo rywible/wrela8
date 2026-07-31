@@ -969,7 +969,7 @@ Program
     0018: d2800029  movz x9, #0x1
     0019: f90017e9  str x9, [sp, #40]
     0020: f94017e0  ldr x0, [sp, #40]
-    0021: 140000ba  b #744
+    0021: 140000ac  b #688
     0022: 14000001  b #4
     0023: d2a80009  movz x9, #0x4000, lsl #16
     0024: f9001be9  str x9, [sp, #48]
@@ -1104,60 +1104,46 @@ Program
     0153: 9b0a7d2b  mul x11, x9, x10
     0154: f90087eb  str x11, [sp, #264]
     0155: f94087e9  ldr x9, [sp, #264]
-    0156: d280000c  movz x12, #0x0
-    0157: eb0c013f  cmp x9, x12
-    0158: 5400012a  b.ge #36
-    0159: d10043ff  sub sp, sp, #16  ; abort Bytes slot
-    0160: 90000009  adrp x9, rodata+0xb0
-    0161: 91000129  add x9, x9, rodata+0xb0
-    0162: f90003e9  str x9, [sp]  ; Bytes.base
-    0163: d2800489  movz x9, #0x24
-    0164: f90007e9  str x9, [sp, #8]  ; Bytes.len
-    0165: 910003e0  add x0, sp, #0  ; *Bytes
-    0166: 94000000  bl <__wrela_abort>
-    0167: d29fffec  movz x12, #0xffff
-    0168: f2bfffec  movk x12, #0xffff, lsl #16
-    0169: eb0c013f  cmp x9, x12
-    0170: 5400012d  b.le #36
-    0171: d10043ff  sub sp, sp, #16  ; abort Bytes slot
-    0172: 90000009  adrp x9, rodata+0xb0
-    0173: 91000129  add x9, x9, rodata+0xb0
-    0174: f90003e9  str x9, [sp]  ; Bytes.base
-    0175: d2800489  movz x9, #0x24
-    0176: f90007e9  str x9, [sp, #8]  ; Bytes.len
-    0177: 910003e0  add x0, sp, #0  ; *Bytes
-    0178: 94000000  bl <__wrela_abort>
-    0179: aa0903eb  mov x11, x9
-    0180: d3607d6b  lsl x11, x11, #32
-    0181: d360fd6b  lsr x11, x11, #32
-    0182: f9008beb  str x11, [sp, #272]
-    0183: d2820009  movz x9, #0x1000
-    0184: f2a80009  movk x9, #0x4000, lsl #16
-    0185: f9008fe9  str x9, [sp, #280]
-    0186: f9408fe9  ldr x9, [sp, #280]
-    0187: f9408bea  ldr x10, [sp, #272]
-    0188: b910012a  str w10, [x9, #4096]
-    0189: d2a80009  movz x9, #0x4000, lsl #16
-    0190: f90093e9  str x9, [sp, #288]
-    0191: f94093e9  ldr x9, [sp, #288]
-    0192: f9407fea  ldr x10, [sp, #248]
-    0193: f9002d2a  str x10, [x9, #88]
-    0194: d2800029  movz x9, #0x1
-    0195: f90097e9  str x9, [sp, #296]
-    0196: d2820009  movz x9, #0x1000
-    0197: f2a80009  movk x9, #0x4000, lsl #16
-    0198: f9009be9  str x9, [sp, #304]
-    0199: f9409be9  ldr x9, [sp, #304]
-    0200: f94097ea  ldr x10, [sp, #296]
-    0201: f90d052a  str x10, [x9, #6664]
-    0202: d2800009  movz x9, #0x0
-    0203: f9009fe9  str x9, [sp, #312]
-    0204: f9409fe0  ldr x0, [sp, #312]
-    0205: 14000002  b #8
-    0206: 14000001  b #4
-    0207: f940a3fe  ldr lr, [sp, #320]
-    0208: 910543ff  add sp, sp, #336
-    0209: d65f03c0  ret
+    0156: f2607d3f  tst x9, #0xffffffff00000000
+    0157: 54000120  b.eq #36
+    0158: d10043ff  sub sp, sp, #16  ; abort Bytes slot
+    0159: 90000009  adrp x9, rodata+0xb0
+    0160: 91000129  add x9, x9, rodata+0xb0
+    0161: f90003e9  str x9, [sp]  ; Bytes.base
+    0162: d2800489  movz x9, #0x24
+    0163: f90007e9  str x9, [sp, #8]  ; Bytes.len
+    0164: 910003e0  add x0, sp, #0  ; *Bytes
+    0165: 94000000  bl <__wrela_abort>
+    0166: aa0903eb  mov x11, x9
+    0167: d3407d6b  ubfx x11, x11, #0, #32
+    0168: f9008beb  str x11, [sp, #272]
+    0169: d2820009  movz x9, #0x1000
+    0170: f2a80009  movk x9, #0x4000, lsl #16
+    0171: f9008fe9  str x9, [sp, #280]
+    0172: f9408fe9  ldr x9, [sp, #280]
+    0173: f9408bea  ldr x10, [sp, #272]
+    0174: b910012a  str w10, [x9, #4096]
+    0175: d2a80009  movz x9, #0x4000, lsl #16
+    0176: f90093e9  str x9, [sp, #288]
+    0177: f94093e9  ldr x9, [sp, #288]
+    0178: f9407fea  ldr x10, [sp, #248]
+    0179: f9002d2a  str x10, [x9, #88]
+    0180: d2800029  movz x9, #0x1
+    0181: f90097e9  str x9, [sp, #296]
+    0182: d2820009  movz x9, #0x1000
+    0183: f2a80009  movk x9, #0x4000, lsl #16
+    0184: f9009be9  str x9, [sp, #304]
+    0185: f9409be9  ldr x9, [sp, #304]
+    0186: f94097ea  ldr x10, [sp, #296]
+    0187: f90d052a  str x10, [x9, #6664]
+    0188: d2800009  movz x9, #0x0
+    0189: f9009fe9  str x9, [sp, #312]
+    0190: f9409fe0  ldr x0, [sp, #312]
+    0191: 14000002  b #8
+    0192: 14000001  b #4
+    0193: f940a3fe  ldr lr, [sp, #320]
+    0194: 910543ff  add sp, sp, #336
+    0195: d65f03c0  ret
   Fn key=__wrela_runtime_probe frame=16 bytes
     0000: d10043ff  sub sp, sp, #16
     0001: f90003fe  str lr, [sp, #0]

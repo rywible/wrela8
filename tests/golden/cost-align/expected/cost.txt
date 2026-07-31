@@ -8,18 +8,18 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
   Owner name=runtime proxy_cycles=0
   Owner name=driver proxy_cycles=0
   Fn key=byte_lane owner=app proxy_cycles=155
-    Term rule=alu count=48
+    Term rule=alu count=33
     Term rule=branch count=3
     Term rule=load count=75
     Term rule=store count=59
   Fn key=packed_fields owner=app proxy_cycles=121
-    Term rule=alu count=23
+    Term rule=alu count=19
     Term rule=branch count=3
     Term rule=load count=49
     Term rule=mov_wide count=5
     Term rule=store count=44
   Fn key=widths owner=app proxy_cycles=55
-    Term rule=alu count=18
+    Term rule=alu count=15
     Term rule=branch count=3
     Term rule=load count=26
     Term rule=store count=22
