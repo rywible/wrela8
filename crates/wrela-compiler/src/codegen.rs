@@ -5619,7 +5619,21 @@ fn prepare_fn(
         // is not computed at all, so the two can never disagree.
         (
             regalloc::Assignment::none(f.temp_types.len()),
-            Some(regalloc::FnInput { facts, scalar_slot }),
+            Some(regalloc::FnInput {
+                facts,
+                scalar_slot,
+                // Decision 1781: a synthesized key is a key some later
+                // stage may own the body of. `layout.rs` replaces
+                // `__wrela_abort_tail` and every `__test_call_*` /
+                // `__test_prefix_*` outright, aliases `rt_boot_init` and
+                // `__enqueue_*`, and re-points `rt_enqueue` targets at
+                // cross-core trampolines. Rather than enumerate that list
+                // here — a second source of truth that would drift the
+                // moment layout grows another substitution, which is the
+                // defect class itself — the rule is the dumb one: any key
+                // that is not a plain source symbol publishes `ALL_REGS`.
+                opaque_body: is_compiler_glue_symbol(key) || key.starts_with("__"),
+            }),
         )
     } else {
         (regalloc::allocate(&facts, &scalar_slot), None)
@@ -10945,11 +10959,13 @@ pub fn codegen_program_with_async(
         );
     }
     // M11 J: rt_enqueue bodies are generic wrela; layout aliases keys.
-    Ok(CodegenProgram {
+    let out = CodegenProgram {
         fns,
         rodata: rodata.entries,
         conventions,
-    })
+    };
+    verify_conventions(&out).map_err(CodegenError::internal)?;
+    Ok(out)
 }
 
 // --- top-level entry ----------------------------------------------------------
@@ -10979,11 +10995,13 @@ pub fn codegen_program(
         )?;
         fns.insert(key.clone(), cf);
     }
-    Ok(CodegenProgram {
+    let out = CodegenProgram {
         fns,
         rodata: rodata.entries,
         conventions,
-    })
+    };
+    verify_conventions(&out).map_err(CodegenError::internal)?;
+    Ok(out)
 }
 
 // --- the `--stage=asm` dump --------------------------------------------------
@@ -11089,6 +11107,80 @@ fn render_bytes(bytes: &[u8]) -> String {
 /// specifically so the fuzzer can call it on arbitrary fuzzed-and-codegen'd
 /// programs and report a clean diagnostic rather than an out-of-bounds
 /// index panic reaching all the way out to `catch_unwind`.
+/// **plans/codegen-pareto.md item F, decision 1781: the convention is
+/// checked against the emitted code, not trusted.**
+///
+/// `regalloc::allocate_program` decides, before anything is emitted,
+/// which registers each function destroys — and every caller's residency
+/// decision rides on that answer being an over-approximation of what the
+/// callee's *final* code actually does. Item E's whole discipline was
+/// that the allocator is handed facts a real emission measured; this is
+/// the other end of the same argument, and it is the half item F was
+/// missing. The probe measures a function against the **naive** frame,
+/// before allocation and before every opt that reads the allocation; if
+/// the final emission names one register the probe did not, or reaches
+/// one callee the probe did not, a caller has already been told a value
+/// survives a call that destroys it — and nothing downstream would
+/// notice until a guest transcript did.
+///
+/// So this runs over the finished program and refuses it if any
+/// function's published clobber set is not a superset of
+///
+/// > every register its own emitted words name, unioned with every
+/// > callee's published clobber set, over every `Reloc::Call` the
+/// > emission actually pushed
+///
+/// with a callee that has no published convention — an async turn body,
+/// a hand-assembled glue routine, a key layout re-points — contributing
+/// [`regalloc::ALL_REGS`]. It is O(words) on the whole program, it runs
+/// on every `release` build, and it fails the build rather than
+/// approximating (CLAUDE.md: fail closed).
+pub fn verify_conventions(program: &CodegenProgram) -> Result<(), String> {
+    if program.conventions.is_empty() {
+        return Ok(());
+    }
+    for (key, conv) in &program.conventions {
+        let Some(f) = program.fns.get(key) else {
+            return Err(format!(
+                "internal error: fn `{key}` has a convention but no emitted code"
+            ));
+        };
+        let mut actual: regalloc::RegSet = 0;
+        for w in &f.code {
+            if let Some(d) = w.dst {
+                actual |= regalloc::reg_bit(d);
+            }
+            for &sr in &w.srcs[..w.src_len as usize] {
+                actual |= regalloc::reg_bit(sr);
+            }
+        }
+        let mut worst = String::new();
+        for r in &f.relocs {
+            let Reloc::Call { key: target, .. } = r else {
+                continue;
+            };
+            let reached = match program.conventions.get(target) {
+                Some(c) => c.clobbers,
+                None => regalloc::ALL_REGS,
+            };
+            if reached & !conv.clobbers != 0 && worst.is_empty() {
+                worst = format!(" (via its call to `{target}`)");
+            }
+            actual |= reached;
+        }
+        let missing = actual & !conv.clobbers;
+        if missing != 0 {
+            return Err(format!(
+                "internal error: fn `{key}` was published as clobbering {} but its emitted                  code reaches {}{worst} — every caller that kept a value in {} across a                  call to it has been miscompiled",
+                regalloc::render_reg_set(conv.clobbers),
+                regalloc::render_reg_set(actual),
+                regalloc::render_reg_set(missing),
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub fn validate(program: &CodegenProgram) -> Result<(), String> {
     let rodata_len: usize = program.rodata.iter().map(Vec::len).sum();
     for (key, f) in &program.fns {
@@ -13582,6 +13674,7 @@ pub fn spans(a: u64) -> u64:
             regalloc::FnInput {
                 facts,
                 scalar_slot: vec![true],
+                opaque_body: false,
             },
         );
         let out = regalloc::allocate_program(&fns);
@@ -13614,6 +13707,186 @@ pub fn spans(a: u64) -> u64:
                 "x{r} is reserved and must never enter a pool"
             );
         }
+    }
+
+    /// **Decision 1781, the rule.** Every key some later stage may own
+    /// the body of publishes `ALL_REGS`, and the predicate that decides
+    /// it is checked against the *symbol constructors themselves* rather
+    /// than against hand-written spellings — the whole defect was a
+    /// second source of truth about which keys layout owns.
+    #[test]
+    fn every_key_a_later_stage_may_own_is_opaque_to_the_allocator() {
+        // Every key `layout.rs` is known to replace or alias:
+        // `install_abort_tail_floor`, `inject_test_runner_fns`,
+        // `inject_rt_enqueue_and_dispatch_fns`, `inject_rt_cross_core_fns`,
+        // `inject_boot_init_fn`, `apply_resume_remaps`.
+        let owned_by_layout: Vec<String> = vec![
+            "__wrela_abort_tail".to_string(),
+            "__test_call_0".to_string(),
+            "__test_prefix_0".to_string(),
+            "__method_0".to_string(),
+            "__enqueue_0".to_string(),
+            "__resume_0".to_string(),
+            "__boot_call_0".to_string(),
+            "__irq_call_0".to_string(),
+            rt_boot_init_symbol(),
+            rt_enqueue_symbol("Actor"),
+            rt_secondary_core_entry_symbol(1),
+        ];
+        for key in &owned_by_layout {
+            assert!(
+                is_compiler_glue_symbol(key) || key.starts_with("__"),
+                "`{key}` is a key layout may replace, but the allocator would \
+                 give it a measured clobber set and every caller of it would \
+                 be compiled against a body that is not the one that runs"
+            );
+        }
+        // ...and a plain source symbol is *not* opaque, or the rule would
+        // be "everything is opaque" and item F would have landed nothing.
+        for key in [
+            "chain",
+            "Outer.relay",
+            "copy_bytes_range",
+            "fn:identity[u64]",
+        ] {
+            assert!(
+                !(is_compiler_glue_symbol(key) || key.starts_with("__")),
+                "`{key}` is an ordinary source fn and must keep a measured \
+                 clobber set"
+            );
+        }
+    }
+
+    /// **Decision 1781, the oracle — and the negative half of it.** A
+    /// check that cannot fail is not a check, so this hands
+    /// `verify_conventions` a program whose published clobber set
+    /// understates what its code does, and requires a refusal that names
+    /// the function and the registers.
+    #[test]
+    fn verify_conventions_refuses_a_clobber_set_the_code_exceeds() {
+        let mut program = CodegenProgram::default();
+        let mut f = CodegenFn {
+            frame_size: 0,
+            code: Vec::new(),
+            relocs: Vec::new(),
+        };
+        f.code.push(EmittedWord::new(
+            encode::enc_mov_reg(4, 9, true),
+            "mov x4, x9".to_string(),
+            CostRule::Alu,
+            Some(4),
+            &[9],
+        ));
+        program.fns.insert("victim".to_string(), f);
+        // Published as touching nothing, while its one word names x4/x9.
+        program
+            .conventions
+            .insert("victim".to_string(), regalloc::Convention::default());
+        let err = verify_conventions(&program).expect_err("understated clobbers must be refused");
+        assert!(err.contains("victim"), "{err}");
+        assert!(err.contains("x4") && err.contains("x9"), "{err}");
+
+        // Honest is accepted.
+        let mut ok = program.clone();
+        ok.conventions.get_mut("victim").expect("present").clobbers =
+            regalloc::reg_bit(4) | regalloc::reg_bit(9);
+        verify_conventions(&ok).expect("an honest clobber set must pass");
+    }
+
+    /// ...and the transitive half: a callee's clobber set is part of its
+    /// caller's, so understating it through a call is refused too. This
+    /// is the exact shape of the real defect — `__boot_call_0` published
+    /// `x30-x31` while reaching `x0,x9-x10` through a call layout had
+    /// filled in after codegen ran.
+    #[test]
+    fn verify_conventions_refuses_a_clobber_set_a_callee_exceeds() {
+        let mut program = CodegenProgram::default();
+        let mut caller = CodegenFn {
+            frame_size: 0,
+            code: Vec::new(),
+            relocs: Vec::new(),
+        };
+        caller.code.push(EmittedWord::new(
+            encode::enc_bl(0),
+            "bl <callee>".to_string(),
+            CostRule::Call,
+            Some(0),
+            &[],
+        ));
+        caller.relocs.push(Reloc::Call {
+            word: 0,
+            key: "callee".to_string(),
+        });
+        program.fns.insert("caller".to_string(), caller);
+        program.fns.insert(
+            "callee".to_string(),
+            CodegenFn {
+                frame_size: 0,
+                code: Vec::new(),
+                relocs: Vec::new(),
+            },
+        );
+        program.conventions.insert(
+            "caller".to_string(),
+            regalloc::Convention {
+                clobbers: regalloc::reg_bit(0),
+                ..Default::default()
+            },
+        );
+        program.conventions.insert(
+            "callee".to_string(),
+            regalloc::Convention {
+                clobbers: regalloc::reg_bit(0) | regalloc::reg_bit(19),
+                ..Default::default()
+            },
+        );
+
+        let err = verify_conventions(&program).expect_err("a callee's clobbers must propagate");
+        assert!(err.contains("caller") && err.contains("callee"), "{err}");
+        assert!(err.contains("x19"), "{err}");
+    }
+
+    /// A callee with **no** published convention — an async turn body, a
+    /// hand-assembled glue routine, a key layout re-points — contributes
+    /// `ALL_REGS`, so its caller must have been published opaque.
+    #[test]
+    fn an_unconventioned_callee_forces_its_caller_to_be_opaque() {
+        let mut program = CodegenProgram::default();
+        let mut caller = CodegenFn {
+            frame_size: 0,
+            code: Vec::new(),
+            relocs: Vec::new(),
+        };
+        caller.code.push(EmittedWord::new(
+            encode::enc_bl(0),
+            "bl <glue>".to_string(),
+            CostRule::Call,
+            Some(0),
+            &[],
+        ));
+        caller.relocs.push(Reloc::Call {
+            word: 0,
+            key: "glue".to_string(),
+        });
+        program.fns.insert("caller".to_string(), caller);
+        program.conventions.insert(
+            "caller".to_string(),
+            regalloc::Convention {
+                clobbers: regalloc::reg_bit(0),
+                ..Default::default()
+            },
+        );
+        assert!(
+            verify_conventions(&program).is_err(),
+            "a call into a body this compiler does not hold must force ALL_REGS"
+        );
+
+        program
+            .conventions
+            .get_mut("caller")
+            .expect("present")
+            .clobbers = regalloc::ALL_REGS;
+        verify_conventions(&program).expect("ALL_REGS covers anything");
     }
 
     /// Determinism through dumbness: the whole-program pass is a pure

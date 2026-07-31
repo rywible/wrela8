@@ -3,7 +3,7 @@
 # Update deliberately in the same commit that changes a locked surface.
 
 [internal_error]
-total = 211
+total = 213
 
 [internal_error.sites_by_file]
 "layout.rs" = 60
@@ -12,7 +12,7 @@ total = 211
 "layout/rtdata.rs" = 2
 "eval/interp.rs" = 85
 "lower.rs" = 5
-"codegen.rs" = 4
+"codegen.rs" = 6
 "eval/mod.rs" = 2
 "placement.rs" = 3
 "sema/mod.rs" = 3

@@ -1224,6 +1224,23 @@ fn patch_bl(
     Ok(())
 }
 
+/// Item F / decision 1781: `codegen::verify_conventions` against the
+/// post-substitution program. Wrapped rather than inlined so the failure
+/// names *layout* as the stage that broke the contract, which is the
+/// fact a reader needs — the convention itself was consistent when
+/// codegen published it.
+fn verify_conventions_after_layout(program: &CodegenProgram) -> Result<(), LayoutError> {
+    crate::codegen::verify_conventions(program).map_err(|e| {
+        LayoutError::new(format!(
+            "{e}.\n\nThis check runs *after* layout's `inject_*` and floor substitutions, so \
+             the usual cause is a body this stage replaced or aliased under a key codegen had \
+             already published a convention for. A key a later stage may own must be opaque to \
+             the whole-program allocator (`regalloc::FnInput::opaque_body`), never given a \
+             measured clobber set."
+        ))
+    })
+}
+
 /// Patches the four-word `load_imm` starting at `word` (a
 /// `Reloc::TurnFrameAddr` site — `MOVZ` + three `MOVK`s) with `value`,
 /// preserving the destination register the emitter already encoded
@@ -2575,6 +2592,21 @@ pub fn layout_program(
     } else {
         program
     };
+
+    // **plans/codegen-pareto.md item F, decision 1781.** Re-check every
+    // published convention against the program *as layout has finally
+    // assembled it*, not as codegen handed it over.
+    //
+    // This is the oracle the boot transcripts had to stand in for. The
+    // `inject_*` calls above and `install_abort_tail_floor` **replace**
+    // compiled bodies — `__wrela_abort_tail`, every `__test_call_*` and
+    // `__test_prefix_*`, `rt_boot_init` — with hand-assembled ones, under
+    // keys codegen has already told every caller the clobber set of. A
+    // caller that kept a value in a register the *replacement* destroys
+    // is miscompiled, and nothing between here and a guest transcript
+    // would have said so. Codegen's own pre-layout check cannot see it by
+    // construction: the substitution has not happened yet.
+    verify_conventions_after_layout(program)?;
 
     let entry_words = build_entry_stub();
 

@@ -717,6 +717,22 @@ pub struct FnInput {
     pub facts: FnFacts,
     /// `scalar_slot[t]`: the temp occupies exactly one 8-byte slot.
     pub scalar_slot: Vec<bool>,
+    /// **This key's body is not this compiler's last word on it**
+    /// (decision 1781): a compiler-synthesized symbol that `layout.rs`
+    /// may replace outright, alias onto another body, or re-point at a
+    /// cross-core trampoline. Codegen decides it from the key's spelling
+    /// and this module never looks at spellings itself.
+    ///
+    /// Such a function still gets its own allocation — its emitted code
+    /// is its own — but it publishes [`ALL_REGS`], because a caller's
+    /// residency decision would otherwise be about a body that is not
+    /// the one that runs. This is the failure the boot transcripts
+    /// caught and neither the units nor `diff-eval` could: layout's
+    /// `install_abort_tail_floor` and `inject_test_runner_fns` overwrite
+    /// `__wrela_abort_tail` and `__test_call_*` with hand-assembled
+    /// bodies *after* codegen has published a convention for the wrela
+    /// stubs they replace.
+    pub opaque_body: bool,
 }
 
 /// One function's **chosen convention** — the thing the report has to
@@ -768,12 +784,13 @@ pub fn allocate_program(fns: &BTreeMap<String, FnInput>) -> BTreeMap<String, Con
         let mut unknown = input.facts.opaque_calls;
         for k in &input.facts.calls {
             match fns.get_key_value(k) {
-                Some((held, _)) => {
+                Some((held, held_input)) if !held_input.opaque_body => {
                     set.insert(held.as_str());
                 }
-                // A helper, an async turn body, a key layout may
-                // redirect, or a symbol only the glue emitters define.
-                None => unknown = true,
+                // A helper, an async turn body, a symbol only the glue
+                // emitters define — or a key this compiler emitted a body
+                // for that a later stage may replace (decision 1781).
+                _ => unknown = true,
             }
         }
         callees.insert(key.as_str(), set);
@@ -794,7 +811,11 @@ pub fn allocate_program(fns: &BTreeMap<String, FnInput>) -> BTreeMap<String, Con
             if !callees[k].iter().all(|c| done.contains(c)) {
                 continue;
             }
-            let conv = allocate_one(input, &clobbers, opaque_callee[k], &callees[k]);
+            let mut conv = allocate_one(input, &clobbers, opaque_callee[k], &callees[k]);
+            if input.opaque_body {
+                conv.clobbers = ALL_REGS;
+                conv.opaque = true;
+            }
             clobbers.insert(key.clone(), conv.clobbers);
             out.insert(key.clone(), conv);
             done.insert(k);
