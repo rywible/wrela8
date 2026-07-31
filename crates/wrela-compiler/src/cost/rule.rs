@@ -8,9 +8,15 @@
 //! ISA's group list. Deliberately *not* variants, each because no site
 //! emits it: extend-and-shift arithmetic, LSR/ASR/ROR-shifted arithmetic,
 //! flagset logical (`ANDS`/`BICS`), `LDP`/`STP`, `BFM` insert, and the
-//! W-form (32-bit) multiply-accumulate and divide groups — every
-//! `enc_mul` / `enc_msub` / `enc_sdiv` / `enc_udiv` site in `codegen.rs`
-//! passes `sf = true`, and `SMULH`/`UMULH` have no W-form at all.
+//! W-form (32-bit) **divide** group — every `enc_sdiv` / `enc_udiv` site
+//! in `codegen.rs` passes `sf = true`, and `SMULH`/`UMULH` have no W-form
+//! at all.
+//!
+//! **W-form multiply-accumulate is a variant since item C1** (decision
+//! 1740). The row and the variant land one commit ahead of the emit site
+//! that uses them, so the two digests move on their own review surface;
+//! `emit_arith_wrapping` starts passing `sf = false` in the next commit.
+//! See [`CostRule::MulW`].
 
 /// ISA op-class for proxy-cycle ranking. Never parsed from mnemonics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -45,6 +51,16 @@ pub enum CostRule {
     /// `XZR`). Lat 4 (acc 3), thru 1/3, port M, and stalls pipe M 2 extra
     /// cycles (SOG §3.6 note 4).
     Mul,
+    /// Multiply-accumulate, **W-form** — the same `MADD`/`MSUB` group read
+    /// at 32-bit operand width. Lat 2 (acc 1), thru 1, port M, and **no**
+    /// M-pipe stall: SOG §3.6 note 4 attaches to the X-form row only.
+    ///
+    /// Split out by plans/codegen-pareto.md item C1 (decision 1740). Until
+    /// that item this group was deliberately *not* a variant, because no
+    /// emit site passed `sf = false`; item C1's width selection creates the
+    /// site, and freeze 1630 ("model only what wrela emits") is what makes
+    /// the row legitimate now and would have made it a fabrication before.
+    MulW,
     /// `SMULH` / `UMULH`. Lat 5 (acc 3), thru 1/4, port M, and stalls pipe
     /// M 3 extra cycles (SOG §3.6 note 5). Emitted by `narrow_to_width`
     /// and the checked-multiply overflow check.
@@ -78,6 +94,7 @@ impl CostRule {
         CostRule::AbortVal,
         CostRule::MovWide,
         CostRule::Mul,
+        CostRule::MulW,
         CostRule::MulHigh,
         CostRule::Sdiv,
         CostRule::Udiv,
@@ -101,6 +118,7 @@ impl CostRule {
             CostRule::AbortVal => "abort_val",
             CostRule::MovWide => "mov_wide",
             CostRule::Mul => "mul",
+            CostRule::MulW => "mul_w",
             CostRule::MulHigh => "mul_high",
             CostRule::Sdiv => "sdiv",
             CostRule::Udiv => "udiv",
@@ -124,6 +142,7 @@ impl CostRule {
             "abort_val" => CostRule::AbortVal,
             "mov_wide" => CostRule::MovWide,
             "mul" => CostRule::Mul,
+            "mul_w" => CostRule::MulW,
             "mul_high" => CostRule::MulHigh,
             "sdiv" => CostRule::Sdiv,
             "udiv" => CostRule::Udiv,

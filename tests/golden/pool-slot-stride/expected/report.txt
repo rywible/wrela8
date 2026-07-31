@@ -178,7 +178,7 @@ ImageReport v0
   Pool name=Scratch kind=dma payload=Tiny slots=1 slot_bytes=1 base=0x40540044 size=1 align=1 coherency=coherent device=device#0
   BlkPool name=Control device=device#0 base=0x40540020 size=0x24
   BlkPool name=Scratch device=device#0 base=0x40540044 size=0x1
-  Cost version=3 digest=043f8dc4b21c4b12 total=29005 ghz=2.4 workloads_digest=ad0a87410c842eff
+  Cost version=3 digest=b2484a1b9c00d7fa total=29005 ghz=2.4 workloads_digest=ad0a87410c842eff
     Workload name=flat proxy_cycles=29005
     Owner name=app proxy_cycles=1575
     Owner name=runtime proxy_cycles=27430

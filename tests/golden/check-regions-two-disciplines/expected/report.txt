@@ -165,7 +165,7 @@ ImageReport v0
   Turns count=4 stride=512 bytes=2048
   Totals actors=1 drivers=0 ready_queue=2 group_arena=1 bytes=2296
   Pool name=Parts kind=image payload=u32 slots=4 slot_bytes=8 base=0x405408f8 size=32 align=8 coherency=coherent device=none
-  Cost version=3 digest=043f8dc4b21c4b12 total=32289 ghz=2.4 workloads_digest=ad0a87410c842eff
+  Cost version=3 digest=b2484a1b9c00d7fa total=32289 ghz=2.4 workloads_digest=ad0a87410c842eff
     Workload name=flat proxy_cycles=32289
     Owner name=app proxy_cycles=4543
     Owner name=runtime proxy_cycles=27746

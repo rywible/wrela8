@@ -173,7 +173,7 @@ ImageReport v0
   Totals actors=1 drivers=1 ready_queue=2 group_arena=0 bytes=400
   DeviceRegs device=device#0 type=NicHw driver=Blk base=0x40540190 size=8
   Pool name=Buffers kind=image payload=u32 slots=4 slot_bytes=64 base=0x40540198 size=256 align=8 coherency=coherent device=none
-  Cost version=3 digest=043f8dc4b21c4b12 total=29426 ghz=2.4 workloads_digest=ad0a87410c842eff
+  Cost version=3 digest=b2484a1b9c00d7fa total=29426 ghz=2.4 workloads_digest=ad0a87410c842eff
     Workload name=flat proxy_cycles=29426
     Owner name=app proxy_cycles=1694
     Owner name=runtime proxy_cycles=27732

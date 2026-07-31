@@ -191,7 +191,7 @@ ImageReport v0
   BlkDevice device=device#0 capacity_sectors=16 features=0x100000200
   BlkQueue index=0 size=8 desc=0x40540098 avail=0x40540118 used=0x40540130 doorbell=0x40540178
   BlkAccounting descriptors_per_op=3 queue_depth=8 occupancy_bound=2
-  Cost version=3 digest=043f8dc4b21c4b12 total=29272 ghz=2.4 workloads_digest=ad0a87410c842eff
+  Cost version=3 digest=b2484a1b9c00d7fa total=29272 ghz=2.4 workloads_digest=ad0a87410c842eff
     Workload name=flat proxy_cycles=29272
     Owner name=app proxy_cycles=1842
     Owner name=runtime proxy_cycles=27430

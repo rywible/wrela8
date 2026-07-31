@@ -157,7 +157,7 @@ ImageReport v0
   Actor name=Store mailbox=4 slot=16 frame=64 state=8
   Turns count=1 stride=64 bytes=64
   Totals actors=1 drivers=0 ready_queue=2 group_arena=0 bytes=184
-  Cost version=3 digest=043f8dc4b21c4b12 total=29243 ghz=2.4 workloads_digest=ad0a87410c842eff
+  Cost version=3 digest=b2484a1b9c00d7fa total=29243 ghz=2.4 workloads_digest=ad0a87410c842eff
     Workload name=flat proxy_cycles=29243
     Owner name=app proxy_cycles=1575
     Owner name=runtime proxy_cycles=27668

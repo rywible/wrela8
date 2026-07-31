@@ -57,10 +57,14 @@
 # from codegen's own encoder call sites. Deliberately absent, each because
 # no site emits it: extend-and-shift arithmetic, LSR/ASR/ROR-shifted
 # arithmetic, flagset logical (`ANDS`/`BICS`), `LDP`/`STP`, `BFM` insert,
-# and the W-form (32-bit) multiply-accumulate and divide groups — every
-# `enc_mul` / `enc_msub` / `enc_sdiv` / `enc_udiv` site in
-# `crates/wrela-compiler/src/codegen.rs` passes `sf = true`, and
+# and the W-form (32-bit) **divide** group — every `enc_sdiv` / `enc_udiv`
+# site in `crates/wrela-compiler/src/codegen.rs` passes `sf = true`, and
 # `SMULH`/`UMULH` have no W-form at all.
+#
+# `[latency.mul_w]` leaves that list here and gains its emit site in the
+# **next** commit (plans/codegen-pareto.md item C1). The row is landed one
+# step ahead of the site on purpose: both digests move with the row, and
+# that move is its own review surface, separate from the codegen change.
 
 version = 3
 
@@ -300,10 +304,14 @@ ports = "I"
 tier = "T1"
 source = "SOG §3.5 move immed (`MOVZ`, `MOVK`, `MOVN`)"
 
-# X-form only: every `enc_mul` / `enc_msub` site passes `sf = true`.
 # `MUL Xd, Xn, Xm` is `MADD Xd, Xn, Xm, XZR`, so it is this group.
 # §3.6 note 4: X-form MAC stalls pipe M **2 extra cycles** before another
 # M uop can issue.
+#
+# Since plans/codegen-pareto.md item C1 this row is the X-form **half** of
+# the group; `[latency.mul_w]` below is the other. Every `enc_msub` site
+# and every checked-multiply `enc_mul` site still passes `sf = true`; the
+# wrapping multiply is the one that will pass `sf = false`.
 [latency.mul]
 lat = 4
 acc_lat = 3
@@ -313,6 +321,53 @@ ports = "M"
 m_pipe_stall = 2
 tier = "T1"
 source = "SOG §3.6 multiply-accumulate, X-form + note 4"
+
+# W-form (32-bit) multiply-accumulate — `MADD Wd, Wn, Wm, Wa`, and `MUL Wd,
+# Wn, Wm` as its `WZR` accumulator form. The row plans/codegen-pareto.md
+# decision 1740 says item C1 must add before C1 can be *ranked* at all: with
+# only `[latency.mul]` in the table, a W-form multiply and an X-form
+# multiply score identically and the ruler cannot see the substitution.
+#
+# Every number here is read off the **same SOG §3.6 table row set** as
+# `[latency.mul]` — the same T1 source, transcribed into plans/M20.md's own
+# integer table at plan time ("Multiply-accumulate, W-form | `MADD`,
+# `MSUB` | 2 (acc 1) | 1 | M"), months before this item existed. Nothing
+# here is derived, inferred, or chosen to make item C1 win; the pinned
+# X-form row is the row directly above, transcribed from the same table by
+# the same rule.
+#
+# `m_pipe_stall` is **absent, deliberately, and that is the whole payoff.**
+# SOG §3.6 note 4 attaches to the X-form multiply-accumulate row only; the
+# W-form row carries no note. Writing `m_pipe_stall = 0` and writing
+# nothing are the same value here, but the omission is the claim: this
+# group does not hold pipe M beyond its own occupancy.
+#
+# **No `ambiguity` field, because the record has none to record.** The two
+# rows disagree about nothing: they are different rows of one published
+# table. Compare `[latency.sdiv]`, whose 5-20 range is a genuine bracket and
+# is therefore swept.
+#
+# ⚠ **The W-form *divide* row is deliberately NOT added here**, though SOG
+# §3.6 publishes it (5-12, thru 1/12-1/5, port M) to exactly the same
+# standard. Two reasons, both recorded in plans/codegen-pareto-C.md:
+# freeze 1630 forbids a row with no emit site, and item C1 did not land
+# W-form divides; and the bracket geometry makes the substitution
+# unrankable anyway — an independent `[5,12]` dimension beside the existing
+# `[5,20]` one puts the corner (`divide_x_latency = 5`,
+# `divide_w_latency = 12`) inside the box, where a 32-bit divide scores
+# *slower* than the 64-bit divide it replaced. That corner is physically
+# impossible on one divider and is an artefact of modelling two correlated
+# brackets as independent dimensions, which is a ruler change and out of
+# this plan's scope (freeze 1710).
+[latency.mul_w]
+lat = 2
+acc_lat = 1
+thru_num = 1
+thru_den = 1
+ports = "M"
+tier = "T1"
+source = "SOG §3.6 multiply-accumulate, W-form (32-bit); note 4's M-pipe stall is on the X-form row only"
+note = "no m_pipe_stall: SOG §3.6 note 4 attaches to the X-form row, not this one"
 
 # §3.6 note 5: `SMULH`/`UMULH` stall pipe M **3 extra cycles**. These are
 # not incidental — `narrow_to_width` and the checked-multiply overflow
