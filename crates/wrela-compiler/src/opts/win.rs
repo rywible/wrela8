@@ -40,16 +40,21 @@
 //! footprint", which is a statement about the **change**. The delta keeps
 //! that sentence true wherever the baseline sits relative to the ceiling.
 //!
-//! The cost-stage closure this gate scores is in fact comfortably **inside**
-//! every budget — largest is `cost-runtime` at 10432 B of hot text against a
-//! 65536 B L1I, 3 text pages against 48 entries, `charge = 0` on both sides
-//! of every case — so an absolute rule is implementable here; it is simply
-//! the wrong rule. (Item F's 91–92 KiB figure is the **image** program, a
-//! different and much larger closure that prints a line with the same name.
-//! Nothing constrains this gate's inputs to be cost-stage closures, and
-//! handed the image program's budgets an absolute veto would refuse every
-//! candidate including the identity — pinned as
-//! `unit:an_over_budget_identity_is_refused_absolutely_and_allowed_as_a_delta`.)
+//! **plans/codegen-pareto-2.md decision 1954 made that reasoning load-
+//! bearing rather than hypothetical.** This gate used to score the
+//! cost-stage closure, which is comfortably inside every budget — the
+//! flagship at 7 936 B of hot text against a 65 536 B L1I, `charge = 0` on
+//! both sides. Item F's 91–92 KiB figure was the **image** program, a
+//! different and much larger closure printing a line with the same name,
+//! and item H measured the gap on the flagship at 11×. The gate now scores
+//! the image each root would ship ([`crate::cost::stage::codegen_shipped_program`]),
+//! so *every* image-bearing case is 89–391 KB of hot text and 367–5 092
+//! lines over its L1I on both sides. An absolute veto would now refuse
+//! every candidate including the identity, on every program the appliance
+//! ships — pinned as
+//! `unit:an_over_budget_identity_is_refused_absolutely_and_allowed_as_a_delta`.
+//! The delta rule ranks them, and it is no longer silent: `release` takes
+//! the flagship's `charge` from 6132 to 2569.
 //!
 //! **One** absolute assertion is kept alongside the delta: `within_budget()`
 //! on every `cost-*` case in the corpus oracle, so the rule is live and
@@ -106,7 +111,7 @@ use crate::cost::crosscore::{
 };
 use crate::cost::footprint::CoreBudget;
 use crate::cost::score::{CostReport, score_program_at};
-use crate::cost::stage::{codegen_cost_stage_with_placement, report_cost_stage_path};
+use crate::cost::stage::{TextScope, codegen_shipped_program, report_cost_stage_path};
 use crate::cost::sweep::{SweepPoint, endpoint_corners, record_reads};
 use crate::cost::table::{CostTable, load_default};
 use crate::cost::workload::{self, FLAT_NAME, WorkloadSet};
@@ -122,6 +127,9 @@ pub struct CaseDelta {
     /// every table: decision 1717 forbids a reader having to guess which
     /// corpus a verdict came from.
     pub tier: CostTier,
+    /// Which program was scored (decision 1954): the shipped image, or a
+    /// closure for a root that declares no `@image`.
+    pub scope: TextScope,
     pub baseline: u64,
     pub candidate: u64,
     /// Static emitted word counts — a **reported column** since item J
@@ -578,6 +586,22 @@ pub fn report_path_under_opts(path: &Path, opts: &[OptId]) -> CostReport {
     })
 }
 
+/// [`report_path_under_opts`] over the program that would **ship**
+/// (decision 1954) — the image where the root declares one, the closure
+/// where it does not — plus which of the two it was.
+///
+/// The corpus gate and the ∀ sweep both go through this, so they rank the
+/// same program as each other and as `wrela build`.
+fn shipped_report_under_opts(path: &Path, opts: &[OptId]) -> (CostReport, TextScope) {
+    apply_opts(opts);
+    let (program, placement, scope) = codegen_shipped_program(path)
+        .unwrap_or_else(|e| panic!("shipped-program score {}: {e}", path.display()));
+    let table = load_default().unwrap_or_else(|e| panic!("cost table: {e}"));
+    let report = crate::cost::score::score_program(&program, &table, &placement)
+        .unwrap_or_else(|e| panic!("score {}: {e}", path.display()));
+    (report, scope)
+}
+
 /// Score every cost-* case under `baseline` vs `candidate` opt lists
 /// (decision 1451–1452). Restores `CompileMode::Release` afterward.
 pub fn compare_opt_lists(baseline: &[OptId], candidate: &[OptId]) -> CorpusCompare {
@@ -596,8 +620,13 @@ pub fn compare_opt_lists(baseline: &[OptId], candidate: &[OptId]) -> CorpusCompa
     for case in &corpus {
         let path = case.input.as_path();
         let name = case.name.clone();
-        let b = report_path_under_opts(path, baseline);
-        let c = report_path_under_opts(path, candidate);
+        let (b, scope) = shipped_report_under_opts(path, baseline);
+        let (c, cscope) = shipped_report_under_opts(path, candidate);
+        assert_eq!(
+            scope, cscope,
+            "{name}: the two sides compiled different programs — one shipped an image \
+             and the other did not, which is an error rather than a rank"
+        );
         baseline_sum = baseline_sum.saturating_add(b.total_proxy_cycles);
         candidate_sum = candidate_sum.saturating_add(c.total_proxy_cycles);
         baseline_words = baseline_words.saturating_add(b.total_words);
@@ -605,6 +634,7 @@ pub fn compare_opt_lists(baseline: &[OptId], candidate: &[OptId]) -> CorpusCompa
         cases.push(CaseDelta {
             name,
             tier: case.tier,
+            scope,
             baseline: b.total_proxy_cycles,
             candidate: c.total_proxy_cycles,
             baseline_words: b.total_words,
@@ -1122,6 +1152,10 @@ impl SweepCompare {
 struct CompiledSide {
     program: CodegenProgram,
     placement: PlacementTable,
+    /// Which program this is (decision 1954). Reported on every table row
+    /// so nobody has to infer from a case name whether a verdict is about
+    /// the shipped image or about a truncated closure.
+    scope: TextScope,
 }
 
 /// Everything the gate reads from one side at one point.
@@ -1139,10 +1173,28 @@ impl SideScore {
     }
 }
 
+/// **Decision 1954: the gate scores what would ship.**
+///
+/// This used to be [`codegen_cost_stage_with_placement`] — the
+/// guest-reachable closure against a *stub* `core.__image_runtime`, which
+/// on the flagship is 21 fns and 7 936 B of hot text with `charge = 0`.
+/// The image `wrela build` emits for the same root is 325 fns and 89 024 B,
+/// 367 lines over its 64 KiB L1I, charged 2 569. Both printed a line called
+/// `Budget`, and the gate read the small one — so every landing decision on
+/// this plan was taken against a program the appliance does not ship, and
+/// round 1's item D could not be scored because its premise lived in the
+/// other column (item H's decision 1788).
+///
+/// A case whose root declares no `@image` ships nothing; its closure *is*
+/// its program, and [`TextScope::Closure`] says so on the row.
 fn compile_side(path: &Path, opts: &[OptId]) -> Result<CompiledSide, String> {
     apply_opts(opts);
-    let (program, placement) = codegen_cost_stage_with_placement(path)?;
-    Ok(CompiledSide { program, placement })
+    let (program, placement, scope) = codegen_shipped_program(path)?;
+    Ok(CompiledSide {
+        program,
+        placement,
+        scope,
+    })
 }
 
 fn score_side_at(
@@ -3887,6 +3939,7 @@ mod tests {
         let cmp = CorpusCompare {
             cases: vec![CaseDelta {
                 tier: CostTier::Micro,
+                scope: TextScope::Closure,
                 name: "cost-crosscore".to_string(),
                 baseline: 1000,
                 candidate: 900,
@@ -4073,31 +4126,82 @@ mod tests {
         apply_mode(CompileMode::Release);
     }
 
+    /// **Decision 1954, stated as a set rather than as a claim.** Every
+    /// case whose root declares an `@image` is scored as the image the
+    /// appliance would ship; every other is scored as its closure and says
+    /// so. The two lists are pinned so a case silently changing sides — a
+    /// root losing its `@image`, or the image build starting to fail and
+    /// falling back — is a failure rather than a quiet re-tiering.
+    ///
+    /// This is the K2 regression test: on the old behaviour every row here
+    /// was a closure, including the flagship, and `hot_text_bytes` on the
+    /// gate's side of the appliance read 7 936 B against the 89 024 B
+    /// `--stage=report` printed for the same root.
+    #[test]
+    fn the_gate_scores_the_image_every_root_would_ship() {
+        let cmp = compare_opt_lists(RELEASE_OPTS, RELEASE_OPTS);
+        let mut image: Vec<&str> = Vec::new();
+        let mut closure: Vec<&str> = Vec::new();
+        for c in &cmp.cases {
+            match c.scope {
+                TextScope::Image => image.push(&c.name),
+                TextScope::Closure => closure.push(&c.name),
+            }
+        }
+        assert_eq!(
+            image,
+            vec![
+                "cost-crosscore",
+                "cost-icache-cliff",
+                "cost-itlb-span",
+                "cost-product-actors",
+                "cost-product-appliance",
+                "cost-product-blk",
+                "cost-product-receipt",
+            ],
+            "the image-bearing cases changed"
+        );
+        assert_eq!(closure.len(), cmp.cases.len() - image.len());
+        assert!(
+            !closure.contains(&"cost-product-appliance"),
+            "the flagship must never be ranked as a closure again"
+        );
+        // Every product-tier case ships an image: the tier exists to ask
+        // the gate about programs the appliance runs, and a product case
+        // that ranked as a closure would not be doing that.
+        for c in cmp.cases.iter().filter(|c| c.tier == CostTier::Product) {
+            assert_eq!(c.scope, TextScope::Image, "{}", c.name);
+        }
+        apply_mode(CompileMode::Release);
+    }
+
     /// **Freeze 1626 on the corpus gate, both halves in one test.** Words
     /// are still a column and are recorded here; the condition the corpus
     /// gate now enforces on the same run is the per-core budget delta.
     ///
     /// The rule's coverage on this corpus is stated rather than assumed,
-    /// and **plans/M20.md item M changed what that statement is**. Before
-    /// item M no `cost-*` case declared an `@image`, so every case got the
-    /// default one-core placement and fitted that core entirely: the rule
-    /// was live and *silent*. Item M added three image-bearing cases, two
-    /// of which exist precisely to break a budget —
-    /// `cost-icache-cliff` (92 800 B of hot text against a 64 KiB L1I) and
-    /// `cost-itlb-span` (229 568 B and 57 text pages against 48 I-TLB
-    /// entries, on core 0 only) — plus `cost-crosscore` and
-    /// `cost-itlb-span` at `cores = 2`. So the assertions here are now:
+    /// and **plans/codegen-pareto-2.md decision 1954 changed what that
+    /// statement is**. The gate used to score the cost-stage closure, which
+    /// fits its L1I on every case but the two item M built to breach one:
+    /// the constraint was live and almost entirely silent, and item H
+    /// recorded that as "the budget rule is inert on real programs". It was
+    /// inert on the *wrong* program. Scoring the image each root would
+    /// actually ship, the claim inverts and becomes a clean one:
     ///
+    /// * **every shipped image is over its L1I; no closure is.** 89–391 KB
+    ///   of hot text against 64 KiB, on all eight image-bearing cases and
+    ///   on both cores of the two-core ones. `within_budget()` is false on
+    ///   exactly the `TextScope::Image` rows.
     /// * the **delta** rule still holds everywhere (no core's overflow
     ///   grows from `dev` to `release`) — that is the rule freeze 1626
-    ///   installed and it is what this gate enforces;
-    /// * `within_budget()` is false on exactly the cases built to breach
-    ///   it, and true on every other, which is the coverage claim in its
-    ///   new form: the rule is live and **firing**, not merely silent.
+    ///   installed and it is what this gate enforces. It is now doing real
+    ///   work: `release` takes the flagship from `charge = 6132` to 2569.
     ///
-    /// This is also the tree's only live demonstration of decision 1619's
-    /// central point — an *absolute* whole-budget veto would refuse those
-    /// two cases' identity, while the delta rule ranks them fine.
+    /// This is also the tree's live demonstration of decision 1619's
+    /// central point, now on the whole product tier rather than on two
+    /// fixtures — an *absolute* whole-budget veto would refuse the identity
+    /// of every program the appliance ships, while the delta rule ranks
+    /// them fine.
     #[test]
     fn release_words_are_reported_and_the_budget_is_the_live_condition() {
         let cmp = compare_opt_lists(&[], RELEASE_OPTS);
@@ -4124,7 +4228,7 @@ mod tests {
                 c.name
             );
             let cores = match c.name.as_str() {
-                // plans/M20.md item M's image-bearing cases.
+                // plans/M20.md item M's two-core image-bearing cases.
                 "cost-crosscore" | "cost-itlb-span" => 2,
                 _ => 1,
             };
@@ -4134,22 +4238,22 @@ mod tests {
                 "{}: expected {cores} core(s) of placement",
                 c.name
             );
-            let breaches = matches!(c.name.as_str(), "cost-icache-cliff" | "cost-itlb-span");
+            let ships = c.scope == TextScope::Image;
             for b in c.baseline_budgets.iter().chain(c.candidate_budgets.iter()) {
-                if breaches && b.n == 0 {
+                if ships {
                     assert!(
                         !b.within_budget(),
-                        "{}: this case exists to breach its core's budget; if it \
-                         stops doing so it has stopped being the witness item M \
-                         built it to be: {}",
+                        "{}: every image this tree ships is over its 64 KiB L1I; if \
+                         that stops being true it is the biggest result on this plan \
+                         and must be reported, not absorbed: {}",
                         c.name,
                         b.render()
                     );
                 } else {
                     assert!(
                         b.within_budget(),
-                        "{}: this case fits its core; if that stops being true \
-                         the gate's coverage claim changes: {}",
+                        "{}: a closure that ships nothing fits its core; if that \
+                         stops being true the gate's coverage claim changes: {}",
                         c.name,
                         b.render()
                     );
@@ -4167,6 +4271,7 @@ mod tests {
         let grew = CorpusCompare {
             cases: vec![CaseDelta {
                 tier: CostTier::Micro,
+                scope: TextScope::Closure,
                 name: "cost-synthetic".to_string(),
                 baseline: 1000,
                 candidate: 900,
@@ -5201,6 +5306,7 @@ mod tests {
         );
         // The corpus gate's own refusal is untouched by item J.
         let removed = CaseDelta {
+            scope: TextScope::Closure,
             tier: CostTier::Micro,
             name: "cost-crosscore".to_string(),
             baseline: 1000,
