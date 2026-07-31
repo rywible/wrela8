@@ -507,11 +507,27 @@ rasterising at 60 Hz works because the two costs are wildly asymmetric —
 is cheap; running the shade twice is not. And the guest can re-march
 disocclusions, which a decoder never could.
 
-**Bandwidth, separately.** The two-plane composite — a 1080p interior plane
-plus a sparse native-resolution edge plane, composited by the HVS — cuts
-scanout traffic from ~4.0 GB/s to ~1.05 GB/s, because edge pixels are
-0.32–1.06% of a 4K frame. That is orthogonal to who computes the pixels and
-is the real bandwidth lever. It depends on §14.2's open HVS questions.
+**Bandwidth, and a claim withdrawn.** An earlier draft proposed a two-plane
+composite — a 1080p interior plane plus a sparse native-resolution edge
+plane, scaled and composited by the Pi's HVS — cutting scanout traffic from
+~4.0 GB/s to ~1.05 GB/s. **That is not available under the machine
+contract.**
+
+[06 §7](../docs/language/06-machine.md) already specifies the display path,
+and it has no hardware scaler in it: framebuffers are *"blob resources —
+guest-owned pages the VMM maps and scans out directly"*, `transfer` is a
+no-op, and the host backends are *"DRM dumb buffers / Mesa-V3D present"*. A
+dumb buffer is a plain linear framebuffer. The guest therefore produces
+pixels **at scanout resolution**, and a two-plane composite would be a
+change to the machine contract, not an implementation detail.
+
+The contract is otherwise a close fit for everything above. Zero-copy blob
+resources mean there is no guest→host copy at all, which is strictly better
+than the §7 table's "guest writes pixels" column assumed. And scanout
+*"accepts a tile list (scatter-gather): the compositor's workers fill
+disjoint `own[Tiles] Tile` buffers on their assigned cores"* — which is
+precisely §5's tile fusion and the tiled reconstruction recommended above,
+already normative.
 
 ---
 
@@ -774,7 +790,13 @@ In descending order of how much rests on them.
    the prior, the V-port bound is 60–66%, and the gap is the same dispatch
    and L-pipe overhead as item 1. Not a separate unknown — the *same*
    unknown, seen from the other end.
-3. **§14.2's display path.** Whether the HVS scales during scanout,
+3. **§14.2's display path — narrower than graphics.md thought.** graphics.md
+   §14.2 says *"There is no scanout contract, no framebuffer device, no
+   display driver."* The first is wrong: [06 §7](../docs/language/06-machine.md)
+   specifies blob-resource framebuffers, scatter-gather tile lists, a vsync
+   frame vector and the host backends. What is missing is the *driver* and
+   the VMM device model, not the contract. That is a smaller and much
+   better-specified job than the plan assumed. Whether the HVS scales during scanout,
    composites two planes at different scales, and its maximum upscale
    factor. A datasheet question that decides §7's bandwidth lever.
 4. **The edge-sample charge.** §2 charges one full shaded sample per edge
@@ -806,8 +828,11 @@ In descending order of how much rests on them.
 8. **Auto-vectorisation, not a vector language surface** (§9.4).
 9. **`rsqrt` is an explicit Newton sequence in stdlib** (§9.4).
 10. **Over-relaxation is rejected** — start-point-dependent (§3.4).
-11. **4K60 is the target, at 30 Hz shading and 60 Hz raster**; 1080p60 is
-    the floor (§10).
+11. **1080p60 is the flagship; 4K is a stretch profile.** Not this
+    document's choice — [06 §7](../docs/language/06-machine.md) already
+    says so normatively, and an earlier draft of §10 overrode it. The
+    measurements are consistent with it: 1080p60 fits every scene with
+    room, and 4K60 is reachable as a stretch (§10).
 
 ## 15. Order of work
 
@@ -824,7 +849,25 @@ In descending order of how much rests on them.
    one-variable experiment; the numbers currently live in a text file
    nothing enforces.
 4. **FieldWir**: the sema pass, the evaluator extension, the flatten pass,
-   and their dump goldens.
+   and their dump goldens. **Spiked, and cheaper than feared** — see §15.1.
 5. **The stdlib renderer**: classify, prune, fit, trace, raster.
 6. **Tiers 9–10**, against `codegen-pareto`'s existing land gate.
-7. **§14.2's display contract.**
+7. **§14.2's display *driver*** — the contract already exists (§13.3).
+
+### 15.1 Two spikes, run before estimating
+
+**The evaluator's `Symbolic` value kind is not invasive.** The concern was
+that `eval::value::Value` is a 20-variant enum matched across 20 files, so
+adding a variant might break exhaustiveness everywhere. Measured by adding
+it and compiling: **5 errors in 4 files.** All four are at comptime→runtime
+boundaries — `eval/image.rs`, `layout/boot_init.rs` (×2), `lower.rs` —
+which is exactly where a symbolic value must *never* arrive, so they want
+one fail-closed reject each rather than real handling (CLAUDE.md: "an
+unimplemented path errors loudly"). The extension is a day, not a milestone
+risk, and FieldWir stays a single milestone.
+
+**The display contract exists.** See §13.3. This both shrinks the §14.2
+work and withdraws the two-plane bandwidth claim in §7 — net favourable for
+the schedule, net unfavourable for the 4K bandwidth budget, which now
+carries the full ~4.0 GB/s at 4K60 against §1's 8–9 GB/s shared bus. At
+1080p60, the flagship mode, it is ~1.0 GB/s and untroubling.
