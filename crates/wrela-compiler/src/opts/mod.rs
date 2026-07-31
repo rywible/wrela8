@@ -21,9 +21,10 @@ pub enum CompileMode {
 /// Named opts that `apply_mode(Release)` may enable.
 ///
 /// Two ids at M19 (decision 1421): lower-side bounds elision and codegen
-/// narrow immediates. plans/codegen-pareto.md adds four more: item B's
-/// one-word `ADR` addressing (decision 1730) and item C's three
-/// arithmetic substitutions, one per transform that passes the ∀ gate.
+/// narrow immediates. plans/codegen-pareto.md adds five more: item B's
+/// one-word `ADR` addressing (decision 1730), item C's three arithmetic
+/// substitutions, and item E's per-function register allocation
+/// (decision 1760).
 ///
 /// **Item C's five sub-items are not five ids** (decision 1745). C2, C3
 /// and C5 are separable transforms and each gets its own id, so the gate
@@ -47,6 +48,8 @@ pub enum OptId {
     MaskCheck,
     /// Item C5: `MOVN` and bitmask-immediate constant materialization.
     WideImmForms,
+    /// Item E: per-function linear-scan register allocation.
+    RegAlloc,
 }
 
 /// Fixed release order. Add opts here — nowhere else.
@@ -57,12 +60,21 @@ pub enum OptId {
 /// because `MaskCheck` deletes most of the constant materializations
 /// `WideImmForms` would otherwise shorten, and the gate is run in this
 /// order so that is the credit each one actually earns rather than the
-/// credit it would earn alone.
+/// credit it would earn alone — and **`RegAlloc` last**.
 ///
 /// `AdrAddressing` was appended by item B under decision 1733, before
 /// item C existed; it is independent of all four others (it shortens
 /// rodata address materialization and changes nothing they read), so its
 /// position ahead of C's three is convention, not dependency.
+///
+/// **RegAlloc is last, and that is a decision, not an accident**
+/// (plans/codegen-pareto.md decision 1763). The allocator reads the
+/// emitter's *output* — which temps are touched as whole scalars, where
+/// a returning call sits, which registers are already spoken for — so it
+/// must decide against the same emission the image will get. Any opt
+/// that changes what `emit_one` produces has to run before it, or the
+/// probe measures a program that is never built. Items B and C all change
+/// emission, so all of them precede it.
 pub const RELEASE_OPTS: &[OptId] = &[
     OptId::BoundsElide,
     OptId::NarrowImm,
@@ -70,6 +82,7 @@ pub const RELEASE_OPTS: &[OptId] = &[
     OptId::BfxNarrow,
     OptId::MaskCheck,
     OptId::WideImmForms,
+    OptId::RegAlloc,
 ];
 
 /// Enable exactly the named opts (decision 1452). Product modes go
@@ -81,6 +94,7 @@ pub fn apply_opts(opts: &[OptId]) {
     crate::codegen::set_bfx_narrow(opts.contains(&OptId::BfxNarrow));
     crate::codegen::set_mask_check(opts.contains(&OptId::MaskCheck));
     crate::codegen::set_wide_imm_forms(opts.contains(&OptId::WideImmForms));
+    crate::regalloc::set_regalloc(opts.contains(&OptId::RegAlloc));
 }
 
 /// Single front door for product-mode TLS knobs (decision 1422).
@@ -108,6 +122,7 @@ mod tests {
             (OptId::BfxNarrow, bfx_narrow()),
             (OptId::MaskCheck, mask_check()),
             (OptId::WideImmForms, wide_imm_forms()),
+            (OptId::RegAlloc, crate::regalloc::regalloc()),
         ]
     }
 
@@ -118,10 +133,17 @@ mod tests {
 
         apply_mode(CompileMode::Dev);
         for (id, on) in live_knobs() {
-            assert!(!on, "{id:?} still enabled under Dev");
+            assert!(
+                !on,
+                "{id:?} still enabled under Dev — `dev` keeps spill-everything \
+                 and every reference form (M19 freeze 1407)"
+            );
         }
     }
 
+    /// plans/codegen-pareto.md decision 1763: RegAlloc is last because
+    /// it decides against the emitter's *output*, so every opt that
+    /// changes emission must already be on when its probe runs.
     #[test]
     fn release_enables_every_opt_in_the_list() {
         apply_mode(CompileMode::Dev);
@@ -162,7 +184,13 @@ mod tests {
                 OptId::BfxNarrow,
                 OptId::MaskCheck,
                 OptId::WideImmForms,
+                OptId::RegAlloc,
             ]
+        );
+        assert_eq!(
+            RELEASE_OPTS.last(),
+            Some(&OptId::RegAlloc),
+            "the allocator must run after every emission-changing opt"
         );
     }
 
@@ -172,16 +200,25 @@ mod tests {
         assert!(!bounds_elide());
         assert!(narrow_imm());
         assert!(!adr_addressing());
+        assert!(!crate::regalloc::regalloc());
 
         apply_opts(&[OptId::BoundsElide]);
         assert!(bounds_elide());
         assert!(!narrow_imm());
         assert!(!adr_addressing());
+        assert!(!crate::regalloc::regalloc());
 
         apply_opts(&[OptId::AdrAddressing]);
         assert!(!bounds_elide());
         assert!(!narrow_imm());
         assert!(adr_addressing());
+        assert!(!crate::regalloc::regalloc());
+
+        apply_opts(&[OptId::RegAlloc]);
+        assert!(!bounds_elide());
+        assert!(!narrow_imm());
+        assert!(!adr_addressing());
+        assert!(crate::regalloc::regalloc());
 
         apply_mode(CompileMode::Release);
     }

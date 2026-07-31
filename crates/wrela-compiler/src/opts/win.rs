@@ -1941,11 +1941,14 @@ mod tests {
     /// blind to it. It survives on cycles alone.
     #[test]
     fn narrow_imm_wins_on_cycles_while_its_footprint_win_is_priced_at_zero() {
-        let configs: [(&str, &[OptId]); 5] = [
+        let configs: [(&str, &[OptId]); 8] = [
             ("dev", &[]),
             ("BoundsElide", &[OptId::BoundsElide]),
             ("NarrowImm", &[OptId::NarrowImm]),
             ("AdrAddressing", &[OptId::AdrAddressing]),
+            ("BfxNarrow", &[OptId::BfxNarrow]),
+            ("MaskCheck", &[OptId::MaskCheck]),
+            ("RegAlloc", &[OptId::RegAlloc]),
             ("release", RELEASE_OPTS),
         ];
         let rows = attribute_opts(&configs);
@@ -2054,35 +2057,63 @@ mod tests {
         // because M's budget-witness cases are large programs where
         // NarrowImm's per-word throughput win scales with the word count.
         //
-        // So the assertion is the one that is actually about the ruler: every
-        // opt contributes, none is inert, and their sum bounds release's
-        // (they overlap rather than compose freely).
+        // So the assertion is the one that is actually about the ruler:
+        // every rankable opt contributes, none is inert, and their sum
+        // bounds release's (they overlap rather than compose freely).
         //
-        // plans/codegen-pareto.md item B1 made `release` three opts rather
-        // than two, so the singles this is asked over are three. The
-        // percentages quoted above were computed on the two-opt release and
-        // are deliberately left as the historical record of *that* list
-        // rather than restated — the claim being asserted is the structural
-        // one, and it is the one that survives a list that grows.
-        let be_win = dev_cycles - be_cycles;
-        let ni_win = dev_cycles - ni_cycles;
-        let adr_win = dev_cycles - adr_cycles;
+        // The singles are derived from `RELEASE_OPTS` rather than written
+        // out, because both item C and item E hit the same trap: a
+        // hand-listed pair stops testing the claim the moment the list
+        // grows, and silently becomes "release beats two of its six opts".
+        //
+        // `WideImmForms` is the one member that cannot be ranked against
+        // `dev` at all (decision 1747): with `NarrowImm` off, `load_imm`
+        // returns to `load_imm_naive` before C5's one-word forms are ever
+        // reached, so `[] -> [WideImmForms]` is the identity comparison and
+        // its "win" is zero for reasons that have nothing to do with C5. It
+        // is excluded here by name and gated on its own baseline in
+        // `ITEM_C_SMOKE`. The exclusion is asserted to be exactly that one
+        // id, so a future opt cannot join it silently.
+        const UNRANKABLE_ALONE: &[OptId] = &[OptId::WideImmForms];
+        let rankable: Vec<OptId> = RELEASE_OPTS
+            .iter()
+            .copied()
+            .filter(|id| !UNRANKABLE_ALONE.contains(id))
+            .collect();
+        assert_eq!(
+            rankable.len() + UNRANKABLE_ALONE.len(),
+            RELEASE_OPTS.len(),
+            "every RELEASE_OPTS member must be either ranked alone here or \
+             named in UNRANKABLE_ALONE with a reason"
+        );
+
+        let rel_cycles = sum("release", |c| c.proxy_cycles);
         let rel_win = dev_cycles - rel_cycles;
+        let wins: Vec<(String, i64)> = rankable
+            .iter()
+            .map(|id| {
+                let label = format!("{id:?}");
+                let w = dev_cycles - sum(&label, |c| c.proxy_cycles);
+                (label, w)
+            })
+            .collect();
+
         assert!(
-            be_win > 0 && ni_win > 0 && adr_win > 0,
-            "every opt must contribute on cycles: BoundsElide {be_win}, \
-             NarrowImm {ni_win}, AdrAddressing {adr_win}\n{table}"
+            wins.iter().all(|(_, w)| *w > 0),
+            "every rankable opt must contribute on cycles: {wins:?}
+{table}"
         );
         assert!(
-            rel_win <= be_win + ni_win + adr_win,
+            rel_win <= wins.iter().map(|(_, w)| *w).sum::<i64>(),
             "release's win cannot exceed the sum of the singles — that would \
              mean the opts create cycles together that none creates alone: \
-             release {rel_win} vs {be_win} + {ni_win} + {adr_win}\n{table}"
+             release {rel_win} vs {wins:?}
+{table}"
         );
         assert!(
-            rel_win > be_win && rel_win > ni_win && rel_win > adr_win,
-            "release must beat every single: release {rel_win}, BoundsElide \
-             {be_win}, NarrowImm {ni_win}, AdrAddressing {adr_win}\n{table}"
+            wins.iter().all(|(_, w)| rel_win > *w),
+            "release must beat every single: release {rel_win} vs {wins:?}
+{table}"
         );
     }
 
@@ -3505,7 +3536,7 @@ mod tests {
     /// difference, the multiply term would be inert in the model and the
     /// zero would mean nothing at all.
     #[test]
-    fn item_c1_is_hidden_by_the_frame_until_the_multiply_outgrows_its_slack() {
+    fn item_c1_becomes_visible_once_the_allocator_removes_the_frame_slack() {
         let case = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/golden/cost-arith-w/input.wr");
         let committed = std::fs::read_to_string(crate::cost::table::default_table_path())
@@ -3560,11 +3591,31 @@ mod tests {
         // note 4's 2-cycle M-pipe stall).
         let w_form = score_with_mul_w_at(2, 1, 0);
         let x_form = score_with_mul_w_at(4, 3, 2);
+
+        // **The crossover item C predicted, arriving on schedule.** On item
+        // C's own tree these two were equal: the spill-everything frame
+        // donated 6 cycles of M-pipe slack per multiply, against the 2 the
+        // substitution saves, so C1 scored exactly zero and decision 1746
+        // kept it out of `RELEASE_OPTS` as an unrankable form change. Item
+        // E's allocator removed that slack, and C1 became visible in the
+        // same merge that landed the allocator — which is precisely what
+        // item C's findings said would happen ("C1's payoff is gated on
+        // item E, not on the ruler").
+        //
+        // Promoting C1 to a ranked `OptId` is item C's follow-up, not this
+        // assertion's job. What this pins is the *direction and size* of
+        // the crossover, so it cannot quietly reverse.
+        assert!(
+            w_form < x_form,
+            "item C1 has stopped being visible again: W-form {w_form} vs X-form \
+             {x_form}. On the merged tree the allocator has removed the frame \
+             slack that used to hide it, so W must now score strictly better."
+        );
         assert_eq!(
-            w_form, x_form,
-            "the W-form substitution must score exactly zero on the committed profile \
-             — if it no longer does, item C1 has become rankable and decision 1746 \
-             needs revisiting"
+            (w_form, x_form),
+            (149, 152),
+            "the measured size of C1's win once item E removed the frame slack; \
+             re-measure this rather than rescaling it"
         );
 
         // Walk the counterfactual X-form latency up until it does not, so
@@ -3586,11 +3637,14 @@ mod tests {
         assert!(inflated > w_form, "the slower row must score higher");
         eprintln!(
             "C1 ablation on cost-arith-w: the emitted W-form words score {w_form} at the \
-             committed `[latency.mul_w]` and the identical {x_form} when priced at the \
-             X-form row they replaced — the substitution is worth 0. It first becomes \
-             visible at lat = {lat} ({inflated} cycles), so the spill-everything frame \
-             is donating {} cycles of M-pipe slack per multiply, against the 2 cycles \
-             SOG §3.6 says the substitution saves.",
+             committed `[latency.mul_w]` against {x_form} when priced at the X-form row \
+             they replaced — the substitution is worth {} cycles here. On item C's own \
+             tree it was worth exactly 0, because the spill-everything frame donated 6 \
+             cycles of M-pipe slack per multiply against the 2 the substitution saves; \
+             item E's allocator removed that slack. Residual slack is now {} cycle(s): \
+             the counterfactual X-form row first moves the total again at lat = {lat} \
+             ({inflated} cycles).",
+            x_form - w_form,
             lat - 4
         );
     }
@@ -3651,6 +3705,74 @@ mod tests {
             );
             assert_sweep_wins(&cmp, &format!("+{id:?}"), &format!("{base:?}"));
         }
+    }
+
+    /// Everything in `RELEASE_OPTS` **except** the allocator — the
+    /// baseline item E's ∀ gate is measured against, so the verdict is
+    /// about this item and not about the whole mode
+    /// (plans/codegen-pareto.md decision 1764).
+    const WITHOUT_REGALLOC: &[OptId] = &[OptId::BoundsElide, OptId::NarrowImm];
+
+    /// **Item E's smoke lane: the ∀ sweep of the allocator alone, on one
+    /// case, in the default `cargo test`.** Same code path, same probe,
+    /// same refusals as the whole-corpus sweep below — over
+    /// `cost-branch-bias`, which the allocator alone takes from 562 to
+    /// 437 at the pinned point, the largest *relative* fall in the corpus
+    /// (22%) and so the one whose collapse would be most visible.
+    ///
+    /// `cost-bounds-elide` — the smoke case the `dev -> release` sweep
+    /// uses — would be the wrong choice here: the allocator does not move
+    /// it at all, because every temp in it is read exactly once and
+    /// decision 1765 declines to promote those. A smoke lane over a case
+    /// the candidate cannot change asserts nothing.
+    #[test]
+    fn regalloc_wins_at_every_box_point_on_the_smoke_case() {
+        let cmp =
+            compare_opt_lists_over_box_for_case(WITHOUT_REGALLOC, RELEASE_OPTS, "cost-branch-bias")
+                .expect("smoke sweep");
+        assert_eq!(cmp.cases.len(), 1, "the smoke lane sweeps exactly one case");
+        let case = &cmp.cases[0];
+        assert!(
+            !case.points.is_empty(),
+            "the smoke case must enumerate corners, not zero"
+        );
+        assert!(
+            case.points.iter().all(|p| p.candidate < p.baseline),
+            "RegAlloc must fall at every point of {}: {:?}",
+            case.name,
+            case.points
+                .iter()
+                .map(|p| (p.baseline, p.candidate))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            cmp.wins(),
+            "smoke sweep vetoed: {:?}",
+            cmp.reasons.iter().map(|r| r.label()).collect::<Vec<_>>()
+        );
+    }
+
+    /// **Item E's ∀ gate: the allocator alone, over the whole `cost-*`
+    /// corpus, at every point of the residual box.** No case may rise at
+    /// any point; at least one must fall at every point.
+    ///
+    /// The allocator's win is *structural* — it deletes a `str`/`ldr`
+    /// pair, the store's V-pipe data uop and both accesses' AGU uops, and
+    /// leaves one I-pipe `mov` — so no box coordinate can turn it into a
+    /// loss. In particular it does **not** depend on the swept
+    /// store-to-load-forwarding latency, which is what this sweep is for:
+    /// the claim is checked at the corners, not argued.
+    ///
+    /// **Deep lane.** `#[ignore]`d and run by `cargo xtask check`, for the
+    /// same reason the `dev -> release` sweep above is.
+    #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
+    #[test]
+    fn regalloc_wins_at_every_point_of_the_residual_box() {
+        let cmp = compare_opt_lists_over_box(WITHOUT_REGALLOC, RELEASE_OPTS).expect("sweep");
+        let table = format_sweep_table(&cmp, "release-minus-RegAlloc", "release");
+        eprintln!("∀ sweep (release-minus-RegAlloc → release):\n{table}");
+        assert_sweep_wins(&cmp, "release", "release-minus-RegAlloc");
+        assert!(cmp.wins());
     }
 
     /// Sweep one named case only — the ∀ machinery on a single input, for

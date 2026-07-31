@@ -1,67 +1,67 @@
 Program
-  Fn key=good frame=192 bytes
-    0000: d10303ff  sub sp, sp, #192
-    0001: f9005bfe  str lr, [sp, #176]
+  Fn key=good frame=176 bytes
+    0000: d102c3ff  sub sp, sp, #176
+    0001: f90057fe  str lr, [sp, #168]
     0002: f9400009  ldr x9, [x0, #0]
-    0003: f90003e9  str x9, [sp, #0]
+    0003: aa0903f3  mov x19, x9
     0004: f9400029  ldr x9, [x1, #0]
-    0005: f90007e9  str x9, [sp, #8]
+    0005: f90003e9  str x9, [sp, #0]
     0006: f9400429  ldr x9, [x1, #8]
-    0007: f9000be9  str x9, [sp, #16]
+    0007: f90007e9  str x9, [sp, #8]
     0008: f9400829  ldr x9, [x1, #16]
-    0009: f9000fe9  str x9, [sp, #24]
+    0009: f9000be9  str x9, [sp, #16]
     0010: f9400c29  ldr x9, [x1, #24]
-    0011: f90013e9  str x9, [sp, #32]
-    0012: f90057e8  str x8, [sp, #168]
+    0011: f9000fe9  str x9, [sp, #24]
+    0012: f90053e8  str x8, [sp, #160]
     0013: d2800069  movz x9, #0x3
-    0014: f90017e9  str x9, [sp, #40]
-    0015: f94003e9  ldr x9, [sp, #0]
-    0016: f94017ea  ldr x10, [sp, #40]
+    0014: f90013e9  str x9, [sp, #32]
+    0015: aa1303e9  mov x9, x19
+    0016: f94013ea  ldr x10, [sp, #32]
     0017: eb0a013f  cmp x9, x10
     0018: 9a9fc7eb  cset x11, le
-    0019: f9001beb  str x11, [sp, #48]
-    0020: f9401be9  ldr x9, [sp, #48]
+    0019: f90017eb  str x11, [sp, #40]
+    0020: f94017e9  ldr x9, [sp, #40]
     0021: b40000c9  cbz x9, #24
     0022: d2800009  movz x9, #0x0
-    0023: f9001fe9  str x9, [sp, #56]
-    0024: f94003e9  ldr x9, [sp, #0]
-    0025: f90023e9  str x9, [sp, #64]
+    0023: f9001be9  str x9, [sp, #48]
+    0024: aa1303e9  mov x9, x19
+    0025: f9001fe9  str x9, [sp, #56]
     0026: 14000007  b #28
     0027: d2800009  movz x9, #0x0
-    0028: f90027e9  str x9, [sp, #72]
+    0028: f90023e9  str x9, [sp, #64]
     0029: d2800029  movz x9, #0x1
-    0030: f9001fe9  str x9, [sp, #56]
-    0031: f94027e9  ldr x9, [sp, #72]
-    0032: f90023e9  str x9, [sp, #64]
-    0033: f9401fe9  ldr x9, [sp, #56]
-    0034: f9002be9  str x9, [sp, #80]
+    0030: f9001be9  str x9, [sp, #48]
+    0031: f94023e9  ldr x9, [sp, #64]
+    0032: f9001fe9  str x9, [sp, #56]
+    0033: f9401be9  ldr x9, [sp, #48]
+    0034: f90027e9  str x9, [sp, #72]
     0035: d2800009  movz x9, #0x0
-    0036: f9002fe9  str x9, [sp, #88]
-    0037: f9402be9  ldr x9, [sp, #80]
-    0038: f9402fea  ldr x10, [sp, #88]
+    0036: f9002be9  str x9, [sp, #80]
+    0037: f94027e9  ldr x9, [sp, #72]
+    0038: f9402bea  ldr x10, [sp, #80]
     0039: eb0a013f  cmp x9, x10
     0040: 9a9f17eb  cset x11, eq
-    0041: f90033eb  str x11, [sp, #96]
-    0042: f94033e9  ldr x9, [sp, #96]
+    0041: f9002feb  str x11, [sp, #88]
+    0042: f9402fe9  ldr x9, [sp, #88]
     0043: b4000089  cbz x9, #16
-    0044: f94023e9  ldr x9, [sp, #64]
-    0045: f90037e9  str x9, [sp, #104]
+    0044: f9401fe9  ldr x9, [sp, #56]
+    0045: f90033e9  str x9, [sp, #96]
     0046: 1400000d  b #52
-    0047: f94023e9  ldr x9, [sp, #64]
-    0048: f9003be9  str x9, [sp, #112]
+    0047: f9401fe9  ldr x9, [sp, #56]
+    0048: f90037e9  str x9, [sp, #104]
     0049: d2800029  movz x9, #0x1
-    0050: f9003fe9  str x9, [sp, #120]
-    0051: f9403be9  ldr x9, [sp, #112]
-    0052: f90043e9  str x9, [sp, #128]
-    0053: f94057e9  ldr x9, [sp, #168]
-    0054: f9403fea  ldr x10, [sp, #120]
+    0050: f9003be9  str x9, [sp, #112]
+    0051: f94037e9  ldr x9, [sp, #104]
+    0052: f9003fe9  str x9, [sp, #120]
+    0053: f94053e9  ldr x9, [sp, #160]
+    0054: f9403bea  ldr x10, [sp, #112]
     0055: f900012a  str x10, [x9, #0]
-    0056: f94043ea  ldr x10, [sp, #128]
+    0056: f9403fea  ldr x10, [sp, #120]
     0057: f900052a  str x10, [x9, #8]
     0058: 14000027  b #156
-    0059: f94037e9  ldr x9, [sp, #104]
-    0060: f90047e9  str x9, [sp, #136]
-    0061: f94047e9  ldr x9, [sp, #136]
+    0059: f94033e9  ldr x9, [sp, #96]
+    0060: f90043e9  str x9, [sp, #128]
+    0061: f94043e9  ldr x9, [sp, #128]
     0062: d280008a  movz x10, #0x4
     0063: eb0a013f  cmp x9, x10
     0064: 54000203  b.cc #64
@@ -80,25 +80,25 @@ Program
     0077: d2800002  movz x2, #0x0
     0078: 910043e3  add x3, sp, #16  ; *suffix
     0079: 94000000  bl <__wrela_abort_val>
-    0080: 910023eb  add x11, sp, #8
+    0080: 910003eb  add x11, sp, #0
     0081: d280010c  movz x12, #0x8
     0082: 9b0c7d2d  mul x13, x9, x12
     0083: 8b0d016b  add x11, x11, x13
     0084: f940016e  ldr x14, [x11, #0]
-    0085: f9004bee  str x14, [sp, #144]
+    0085: f90047ee  str x14, [sp, #136]
     0086: d2800009  movz x9, #0x0
-    0087: f9004fe9  str x9, [sp, #152]
-    0088: f9404be9  ldr x9, [sp, #144]
-    0089: f90053e9  str x9, [sp, #160]
-    0090: f94057e9  ldr x9, [sp, #168]
-    0091: f9404fea  ldr x10, [sp, #152]
+    0087: f9004be9  str x9, [sp, #144]
+    0088: f94047e9  ldr x9, [sp, #136]
+    0089: f9004fe9  str x9, [sp, #152]
+    0090: f94053e9  ldr x9, [sp, #160]
+    0091: f9404bea  ldr x10, [sp, #144]
     0092: f900012a  str x10, [x9, #0]
-    0093: f94053ea  ldr x10, [sp, #160]
+    0093: f9404fea  ldr x10, [sp, #152]
     0094: f900052a  str x10, [x9, #8]
     0095: 14000002  b #8
     0096: 14000001  b #4
-    0097: f9405bfe  ldr lr, [sp, #176]
-    0098: 910303ff  add sp, sp, #192
+    0097: f94057fe  ldr lr, [sp, #168]
+    0098: 9102c3ff  add sp, sp, #176
     0099: d65f03c0  ret
   Rodata
     0: offset=0x0 index 

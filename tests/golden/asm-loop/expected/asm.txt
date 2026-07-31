@@ -1,7 +1,7 @@
 Program
-  Fn key=sum_array frame=160 bytes
-    0000: d10283ff  sub sp, sp, #160
-    0001: f9004bfe  str lr, [sp, #144]
+  Fn key=sum_array frame=128 bytes
+    0000: d10203ff  sub sp, sp, #128
+    0001: f9003ffe  str lr, [sp, #120]
     0002: f9400009  ldr x9, [x0, #0]
     0003: f90003e9  str x9, [sp, #0]
     0004: f9400409  ldr x9, [x0, #8]
@@ -13,37 +13,37 @@ Program
     0010: d2800009  movz x9, #0x0
     0011: f90013e9  str x9, [sp, #32]
     0012: f94013e9  ldr x9, [sp, #32]
-    0013: f90017e9  str x9, [sp, #40]
+    0013: aa0903f3  mov x19, x9
     0014: d2800009  movz x9, #0x0
-    0015: f9001be9  str x9, [sp, #48]
+    0015: aa0903f4  mov x20, x9
     0016: d2800009  movz x9, #0x0
-    0017: f9001fe9  str x9, [sp, #56]
+    0017: aa0903f5  mov x21, x9
     0018: d2800089  movz x9, #0x4
-    0019: f90023e9  str x9, [sp, #64]
-    0020: f9401fe9  ldr x9, [sp, #56]
-    0021: f94023ea  ldr x10, [sp, #64]
+    0019: f90017e9  str x9, [sp, #40]
+    0020: aa1503e9  mov x9, x21
+    0021: f94017ea  ldr x10, [sp, #40]
     0022: eb0a013f  cmp x9, x10
     0023: 9a9fa7eb  cset x11, lt
-    0024: f90027eb  str x11, [sp, #72]
-    0025: f94027e9  ldr x9, [sp, #72]
+    0024: f9001beb  str x11, [sp, #48]
+    0025: f9401be9  ldr x9, [sp, #48]
     0026: b4000869  cbz x9, #268
     0027: d2800029  movz x9, #0x1
-    0028: f9002be9  str x9, [sp, #80]
-    0029: f9401be9  ldr x9, [sp, #48]
-    0030: f9402bea  ldr x10, [sp, #80]
+    0028: f9001fe9  str x9, [sp, #56]
+    0029: aa1403e9  mov x9, x20
+    0030: f9401fea  ldr x10, [sp, #56]
     0031: 8b0a012b  add x11, x9, x10
-    0032: f9002feb  str x11, [sp, #88]
-    0033: f9402fe9  ldr x9, [sp, #88]
-    0034: f9001be9  str x9, [sp, #48]
+    0032: f90023eb  str x11, [sp, #64]
+    0033: f94023e9  ldr x9, [sp, #64]
+    0034: aa0903f4  mov x20, x9
     0035: d2884809  movz x9, #0x4240
     0036: f2a001e9  movk x9, #0xf, lsl #16
-    0037: f90033e9  str x9, [sp, #96]
-    0038: f9401be9  ldr x9, [sp, #48]
-    0039: f94033ea  ldr x10, [sp, #96]
+    0037: f90027e9  str x9, [sp, #72]
+    0038: aa1403e9  mov x9, x20
+    0039: f94027ea  ldr x10, [sp, #72]
     0040: eb0a013f  cmp x9, x10
     0041: 9a9fc7eb  cset x11, le
-    0042: f90037eb  str x11, [sp, #104]
-    0043: f94037e9  ldr x9, [sp, #104]
+    0042: f9002beb  str x11, [sp, #80]
+    0043: f9402be9  ldr x9, [sp, #80]
     0044: b4000049  cbz x9, #8
     0045: 14000008  b #32
     0046: d10043ff  sub sp, sp, #16  ; abort Bytes slot
@@ -53,7 +53,7 @@ Program
     0050: f90007e9  str x9, [sp, #8]  ; Bytes.len
     0051: 910003e0  add x0, sp, #0  ; *Bytes
     0052: 94000000  bl <__wrela_abort>
-    0053: f9401fe9  ldr x9, [sp, #56]
+    0053: aa1503e9  mov x9, x21
     0054: d280008a  movz x10, #0x4
     0055: eb0a013f  cmp x9, x10
     0056: 54000203  b.cc #64
@@ -77,66 +77,66 @@ Program
     0074: 9b0c7d2d  mul x13, x9, x12
     0075: 8b0d016b  add x11, x11, x13
     0076: f940016e  ldr x14, [x11, #0]
-    0077: f9003bee  str x14, [sp, #112]
-    0078: f94017e9  ldr x9, [sp, #40]
-    0079: f9403bea  ldr x10, [sp, #112]
+    0077: f9002fee  str x14, [sp, #88]
+    0078: aa1303e9  mov x9, x19
+    0079: f9402fea  ldr x10, [sp, #88]
     0080: 8b0a012b  add x11, x9, x10
-    0081: f9003feb  str x11, [sp, #120]
-    0082: f9403fe9  ldr x9, [sp, #120]
-    0083: f90017e9  str x9, [sp, #40]
+    0081: f90033eb  str x11, [sp, #96]
+    0082: f94033e9  ldr x9, [sp, #96]
+    0083: aa0903f3  mov x19, x9
     0084: d2800029  movz x9, #0x1
-    0085: f90043e9  str x9, [sp, #128]
-    0086: f9401fe9  ldr x9, [sp, #56]
-    0087: f94043ea  ldr x10, [sp, #128]
+    0085: f90037e9  str x9, [sp, #104]
+    0086: aa1503e9  mov x9, x21
+    0087: f94037ea  ldr x10, [sp, #104]
     0088: 8b0a012b  add x11, x9, x10
-    0089: f90047eb  str x11, [sp, #136]
-    0090: f94047e9  ldr x9, [sp, #136]
-    0091: f9001fe9  str x9, [sp, #56]
+    0089: f9003beb  str x11, [sp, #112]
+    0090: f9403be9  ldr x9, [sp, #112]
+    0091: aa0903f5  mov x21, x9
     0092: 17ffffb8  b #-288
-    0093: f94017e0  ldr x0, [sp, #40]
+    0093: aa1303e0  mov x0, x19
     0094: 14000002  b #8
     0095: 14000001  b #4
-    0096: f9404bfe  ldr lr, [sp, #144]
-    0097: 910283ff  add sp, sp, #160
+    0096: f9403ffe  ldr lr, [sp, #120]
+    0097: 910203ff  add sp, sp, #128
     0098: d65f03c0  ret
-  Fn key=sum_to frame=128 bytes
-    0000: d10203ff  sub sp, sp, #128
-    0001: f9003bfe  str lr, [sp, #112]
+  Fn key=sum_to frame=96 bytes
+    0000: d10183ff  sub sp, sp, #96
+    0001: f9002ffe  str lr, [sp, #88]
     0002: f90003e0  str x0, [sp, #0]
     0003: d2800009  movz x9, #0x0
     0004: f90007e9  str x9, [sp, #8]
     0005: f94007e9  ldr x9, [sp, #8]
-    0006: f9000be9  str x9, [sp, #16]
+    0006: aa0903f3  mov x19, x9
     0007: d2800009  movz x9, #0x0
-    0008: f9000fe9  str x9, [sp, #24]
-    0009: f9400fe9  ldr x9, [sp, #24]
-    0010: f90013e9  str x9, [sp, #32]
+    0008: f9000be9  str x9, [sp, #16]
+    0009: f9400be9  ldr x9, [sp, #16]
+    0010: aa0903f4  mov x20, x9
     0011: d2800009  movz x9, #0x0
-    0012: f90017e9  str x9, [sp, #40]
-    0013: f94013e9  ldr x9, [sp, #32]
+    0012: aa0903f5  mov x21, x9
+    0013: aa1403e9  mov x9, x20
     0014: f94003ea  ldr x10, [sp, #0]
     0015: eb0a013f  cmp x9, x10
     0016: 9a9fa7eb  cset x11, lt
-    0017: f9001beb  str x11, [sp, #48]
-    0018: f9401be9  ldr x9, [sp, #48]
+    0017: f9000feb  str x11, [sp, #24]
+    0018: f9400fe9  ldr x9, [sp, #24]
     0019: b4000749  cbz x9, #232
     0020: d2800029  movz x9, #0x1
-    0021: f9001fe9  str x9, [sp, #56]
-    0022: f94017e9  ldr x9, [sp, #40]
-    0023: f9401fea  ldr x10, [sp, #56]
+    0021: f90013e9  str x9, [sp, #32]
+    0022: aa1503e9  mov x9, x21
+    0023: f94013ea  ldr x10, [sp, #32]
     0024: 8b0a012b  add x11, x9, x10
-    0025: f90023eb  str x11, [sp, #64]
-    0026: f94023e9  ldr x9, [sp, #64]
-    0027: f90017e9  str x9, [sp, #40]
+    0025: f90017eb  str x11, [sp, #40]
+    0026: f94017e9  ldr x9, [sp, #40]
+    0027: aa0903f5  mov x21, x9
     0028: d2884809  movz x9, #0x4240
     0029: f2a001e9  movk x9, #0xf, lsl #16
-    0030: f90027e9  str x9, [sp, #72]
-    0031: f94017e9  ldr x9, [sp, #40]
-    0032: f94027ea  ldr x10, [sp, #72]
+    0030: f9001be9  str x9, [sp, #48]
+    0031: aa1503e9  mov x9, x21
+    0032: f9401bea  ldr x10, [sp, #48]
     0033: eb0a013f  cmp x9, x10
     0034: 9a9fc7eb  cset x11, le
-    0035: f9002beb  str x11, [sp, #80]
-    0036: f9402be9  ldr x9, [sp, #80]
+    0035: f9001feb  str x11, [sp, #56]
+    0036: f9401fe9  ldr x9, [sp, #56]
     0037: b4000049  cbz x9, #8
     0038: 14000008  b #32
     0039: d10043ff  sub sp, sp, #16  ; abort Bytes slot
@@ -146,8 +146,8 @@ Program
     0043: f90007e9  str x9, [sp, #8]  ; Bytes.len
     0044: 910003e0  add x0, sp, #0  ; *Bytes
     0045: 94000000  bl <__wrela_abort>
-    0046: f9400be9  ldr x9, [sp, #16]
-    0047: f94013ea  ldr x10, [sp, #32]
+    0046: aa1303e9  mov x9, x19
+    0047: aa1403ea  mov x10, x20
     0048: ab0a012b  adds x11, x9, x10
     0049: 54000103  b.cc #32
     0050: d10043ff  sub sp, sp, #16  ; abort Bytes slot
@@ -157,13 +157,13 @@ Program
     0054: f90007e9  str x9, [sp, #8]  ; Bytes.len
     0055: 910003e0  add x0, sp, #0  ; *Bytes
     0056: 94000000  bl <__wrela_abort>
-    0057: f9002feb  str x11, [sp, #88]
-    0058: f9402fe9  ldr x9, [sp, #88]
-    0059: f9000be9  str x9, [sp, #16]
+    0057: f90023eb  str x11, [sp, #64]
+    0058: f94023e9  ldr x9, [sp, #64]
+    0059: aa0903f3  mov x19, x9
     0060: d2800029  movz x9, #0x1
-    0061: f90033e9  str x9, [sp, #96]
-    0062: f94013e9  ldr x9, [sp, #32]
-    0063: f94033ea  ldr x10, [sp, #96]
+    0061: f90027e9  str x9, [sp, #72]
+    0062: aa1403e9  mov x9, x20
+    0063: f94027ea  ldr x10, [sp, #72]
     0064: ab0a012b  adds x11, x9, x10
     0065: 54000103  b.cc #32
     0066: d10043ff  sub sp, sp, #16  ; abort Bytes slot
@@ -173,15 +173,15 @@ Program
     0070: f90007e9  str x9, [sp, #8]  ; Bytes.len
     0071: 910003e0  add x0, sp, #0  ; *Bytes
     0072: 94000000  bl <__wrela_abort>
-    0073: f90037eb  str x11, [sp, #104]
-    0074: f94037e9  ldr x9, [sp, #104]
-    0075: f90013e9  str x9, [sp, #32]
+    0073: f9002beb  str x11, [sp, #80]
+    0074: f9402be9  ldr x9, [sp, #80]
+    0075: aa0903f4  mov x20, x9
     0076: 17ffffc1  b #-252
-    0077: f9400be0  ldr x0, [sp, #16]
+    0077: aa1303e0  mov x0, x19
     0078: 14000002  b #8
     0079: 14000001  b #4
-    0080: f9403bfe  ldr lr, [sp, #112]
-    0081: 910203ff  add sp, sp, #128
+    0080: f9402ffe  ldr lr, [sp, #88]
+    0081: 910183ff  add sp, sp, #96
     0082: d65f03c0  ret
   Rodata
     0: offset=0x0 assertion failed: loop budget exceeded

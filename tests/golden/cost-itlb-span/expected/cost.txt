@@ -2,154 +2,154 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
   Provenance T1=39 T2=19 T3=0 T4=10 T5=16 rows=84
   Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method valid_for=static_shape_opts workload=flat pseudo_lru=modelled_as_lru
   Composition sum_of_fn_schedules=1
-  Total proxy_cycles=70222
-  Workload name=flat proxy_cycles=70222
-  Owner name=app proxy_cycles=69050
-  Owner name=runtime proxy_cycles=1172
+  Total proxy_cycles=53828
+  Workload name=flat proxy_cycles=53828
+  Owner name=app proxy_cycles=52711
+  Owner name=runtime proxy_cycles=1117
   Owner name=driver proxy_cycles=0
-  Core n=0 proxy_cycles=68263 max_turn_proxy=5251 turns_per_sec=457055.7988954485 ms_per_turn_model=0.0021879167
+  Core n=0 proxy_cycles=51987 max_turn_proxy=3999 turns_per_sec=600150.0375093773 ms_per_turn_model=0.00166625
   Budget n=0 hot_text_bytes=214336 l1i_bytes=65536 over_l1i_lines=2325 over_l2_lines=0 text_pages=53 itlb_entries=48 over_itlb_pages=5 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=5 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=16565
   Core n=1 proxy_cycles=55 max_turn_proxy=55 turns_per_sec=43636363.636363633 ms_per_turn_model=0.0000229167
   Budget n=1 hot_text_bytes=7296 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 text_pages=2 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=5 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0
-  Shared proxy_cycles=1904
-  Placeable id=actor#0 type=Big core=0 turn_proxy=5251 method=Big.m0
+  Shared proxy_cycles=1786
+  Placeable id=actor#0 type=Big core=0 turn_proxy=3999 method=Big.m0
   Placeable id=actor#1 type=Small core=1 turn_proxy=55 method=Small.poke
-  Fn key=Big.m0 owner=app proxy_cycles=5251
+  Fn key=Big.m0 owner=app proxy_cycles=3999
     Term rule=abort count=294
     Term rule=adrp count=294
-    Term rule=alu count=884
+    Term rule=alu count=1268
     Term rule=branch count=297
-    Term rule=load count=638
+    Term rule=load count=299
     Term rule=mov_wide count=294
     Term rule=mul count=168
     Term rule=mul_high count=168
-    Term rule=store count=932
-  Fn key=Big.m1 owner=app proxy_cycles=5251
+    Term rule=store count=887
+  Fn key=Big.m1 owner=app proxy_cycles=3999
     Term rule=abort count=294
     Term rule=adrp count=294
-    Term rule=alu count=884
+    Term rule=alu count=1268
     Term rule=branch count=297
-    Term rule=load count=638
+    Term rule=load count=299
     Term rule=mov_wide count=294
     Term rule=mul count=168
     Term rule=mul_high count=168
-    Term rule=store count=932
-  Fn key=Big.m10 owner=app proxy_cycles=5251
+    Term rule=store count=887
+  Fn key=Big.m10 owner=app proxy_cycles=3999
     Term rule=abort count=294
     Term rule=adrp count=294
-    Term rule=alu count=884
+    Term rule=alu count=1268
     Term rule=branch count=297
-    Term rule=load count=638
+    Term rule=load count=299
     Term rule=mov_wide count=294
     Term rule=mul count=168
     Term rule=mul_high count=168
-    Term rule=store count=932
-  Fn key=Big.m11 owner=app proxy_cycles=5251
+    Term rule=store count=887
+  Fn key=Big.m11 owner=app proxy_cycles=3999
     Term rule=abort count=294
     Term rule=adrp count=294
-    Term rule=alu count=884
+    Term rule=alu count=1268
     Term rule=branch count=297
-    Term rule=load count=638
+    Term rule=load count=299
     Term rule=mov_wide count=294
     Term rule=mul count=168
     Term rule=mul_high count=168
-    Term rule=store count=932
-  Fn key=Big.m12 owner=app proxy_cycles=5251
+    Term rule=store count=887
+  Fn key=Big.m12 owner=app proxy_cycles=3999
     Term rule=abort count=294
     Term rule=adrp count=294
-    Term rule=alu count=884
+    Term rule=alu count=1268
     Term rule=branch count=297
-    Term rule=load count=638
+    Term rule=load count=299
     Term rule=mov_wide count=294
     Term rule=mul count=168
     Term rule=mul_high count=168
-    Term rule=store count=932
-  Fn key=Big.m2 owner=app proxy_cycles=5251
+    Term rule=store count=887
+  Fn key=Big.m2 owner=app proxy_cycles=3999
     Term rule=abort count=294
     Term rule=adrp count=294
-    Term rule=alu count=884
+    Term rule=alu count=1268
     Term rule=branch count=297
-    Term rule=load count=638
+    Term rule=load count=299
     Term rule=mov_wide count=294
     Term rule=mul count=168
     Term rule=mul_high count=168
-    Term rule=store count=932
-  Fn key=Big.m3 owner=app proxy_cycles=5251
+    Term rule=store count=887
+  Fn key=Big.m3 owner=app proxy_cycles=3999
     Term rule=abort count=294
     Term rule=adrp count=294
-    Term rule=alu count=884
+    Term rule=alu count=1268
     Term rule=branch count=297
-    Term rule=load count=638
+    Term rule=load count=299
     Term rule=mov_wide count=294
     Term rule=mul count=168
     Term rule=mul_high count=168
-    Term rule=store count=932
-  Fn key=Big.m4 owner=app proxy_cycles=5251
+    Term rule=store count=887
+  Fn key=Big.m4 owner=app proxy_cycles=3999
     Term rule=abort count=294
     Term rule=adrp count=294
-    Term rule=alu count=884
+    Term rule=alu count=1268
     Term rule=branch count=297
-    Term rule=load count=638
+    Term rule=load count=299
     Term rule=mov_wide count=294
     Term rule=mul count=168
     Term rule=mul_high count=168
-    Term rule=store count=932
-  Fn key=Big.m5 owner=app proxy_cycles=5251
+    Term rule=store count=887
+  Fn key=Big.m5 owner=app proxy_cycles=3999
     Term rule=abort count=294
     Term rule=adrp count=294
-    Term rule=alu count=884
+    Term rule=alu count=1268
     Term rule=branch count=297
-    Term rule=load count=638
+    Term rule=load count=299
     Term rule=mov_wide count=294
     Term rule=mul count=168
     Term rule=mul_high count=168
-    Term rule=store count=932
-  Fn key=Big.m6 owner=app proxy_cycles=5251
+    Term rule=store count=887
+  Fn key=Big.m6 owner=app proxy_cycles=3999
     Term rule=abort count=294
     Term rule=adrp count=294
-    Term rule=alu count=884
+    Term rule=alu count=1268
     Term rule=branch count=297
-    Term rule=load count=638
+    Term rule=load count=299
     Term rule=mov_wide count=294
     Term rule=mul count=168
     Term rule=mul_high count=168
-    Term rule=store count=932
-  Fn key=Big.m7 owner=app proxy_cycles=5251
+    Term rule=store count=887
+  Fn key=Big.m7 owner=app proxy_cycles=3999
     Term rule=abort count=294
     Term rule=adrp count=294
-    Term rule=alu count=884
+    Term rule=alu count=1268
     Term rule=branch count=297
-    Term rule=load count=638
+    Term rule=load count=299
     Term rule=mov_wide count=294
     Term rule=mul count=168
     Term rule=mul_high count=168
-    Term rule=store count=932
-  Fn key=Big.m8 owner=app proxy_cycles=5251
+    Term rule=store count=887
+  Fn key=Big.m8 owner=app proxy_cycles=3999
     Term rule=abort count=294
     Term rule=adrp count=294
-    Term rule=alu count=884
+    Term rule=alu count=1268
     Term rule=branch count=297
-    Term rule=load count=638
+    Term rule=load count=299
     Term rule=mov_wide count=294
     Term rule=mul count=168
     Term rule=mul_high count=168
-    Term rule=store count=932
-  Fn key=Big.m9 owner=app proxy_cycles=5251
+    Term rule=store count=887
+  Fn key=Big.m9 owner=app proxy_cycles=3999
     Term rule=abort count=294
     Term rule=adrp count=294
-    Term rule=alu count=884
+    Term rule=alu count=1268
     Term rule=branch count=297
-    Term rule=load count=638
+    Term rule=load count=299
     Term rule=mov_wide count=294
     Term rule=mul count=168
     Term rule=mul_high count=168
-    Term rule=store count=932
+    Term rule=store count=887
   Fn key=Small.poke owner=app proxy_cycles=55
-    Term rule=alu count=3
+    Term rule=alu count=7
     Term rule=branch count=3
-    Term rule=load count=10
+    Term rule=load count=8
     Term rule=mov_wide count=1
-    Term rule=store count=9
+    Term rule=store count=7
   Fn key=__wrela_abort owner=runtime proxy_cycles=86
     Term rule=alu count=5
     Term rule=branch count=5
@@ -169,31 +169,31 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=load count=27
     Term rule=mov_wide count=4
     Term rule=store count=33
-  Fn key=__wrela_console_append_bytes owner=runtime proxy_cycles=110
-    Term rule=alu count=12
+  Fn key=__wrela_console_append_bytes owner=runtime proxy_cycles=102
+    Term rule=alu count=20
     Term rule=branch count=12
     Term rule=call count=1
-    Term rule=load count=29
+    Term rule=load count=23
     Term rule=mov_wide count=7
-    Term rule=store count=23
-  Fn key=__wrela_console_append_line_buf owner=runtime proxy_cycles=93
-    Term rule=alu count=9
+    Term rule=store count=21
+  Fn key=__wrela_console_append_line_buf owner=runtime proxy_cycles=87
+    Term rule=alu count=16
     Term rule=branch count=9
     Term rule=call count=1
-    Term rule=load count=22
+    Term rule=load count=17
     Term rule=mov_wide count=6
-    Term rule=store count=18
-  Fn key=__wrela_fmt_dec owner=runtime proxy_cycles=485
+    Term rule=store count=16
+  Fn key=__wrela_fmt_dec owner=runtime proxy_cycles=457
     Term rule=abort count=4
     Term rule=abort_val count=16
     Term rule=adrp count=20
-    Term rule=alu count=84
+    Term rule=alu count=104
     Term rule=branch count=30
     Term rule=call count=1
-    Term rule=load count=87
+    Term rule=load count=74
     Term rule=mov_wide count=83
     Term rule=mul count=8
-    Term rule=store count=120
+    Term rule=store count=113
     Term rule=udiv count=2
   Fn key=__wrela_line_begin owner=runtime proxy_cycles=55
     Term rule=alu count=2
@@ -201,16 +201,16 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=load count=5
     Term rule=mov_wide count=2
     Term rule=store count=5
-  Fn key=__wrela_line_commit owner=runtime proxy_cycles=190
+  Fn key=__wrela_line_commit owner=runtime proxy_cycles=177
     Term rule=abort count=1
     Term rule=abort_val count=4
     Term rule=adrp count=5
-    Term rule=alu count=28
+    Term rule=alu count=39
     Term rule=branch count=9
-    Term rule=load count=49
+    Term rule=load count=41
     Term rule=mov_wide count=34
     Term rule=mul count=5
-    Term rule=store count=56
+    Term rule=store count=53
   Fn key=__wrela_runtime_probe owner=runtime proxy_cycles=15
     Term rule=alu count=2
     Term rule=branch count=3
@@ -236,32 +236,32 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=mov_wide count=10
     Term rule=mul count=1
     Term rule=store count=11
-  Fn key=ascii_digit owner=app proxy_cycles=191
-    Term rule=alu count=22
+  Fn key=ascii_digit owner=app proxy_cycles=139
+    Term rule=alu count=33
     Term rule=branch count=33
-    Term rule=load count=42
+    Term rule=load count=32
     Term rule=mov_wide count=21
-    Term rule=store count=33
-  Fn key=copy_bytes_range owner=app proxy_cycles=166
+    Term rule=store count=32
+  Fn key=copy_bytes_range owner=app proxy_cycles=165
     Term rule=abort count=1
     Term rule=abort_val count=4
     Term rule=adrp count=5
-    Term rule=alu count=23
+    Term rule=alu count=33
     Term rule=branch count=9
-    Term rule=load count=25
+    Term rule=load count=19
     Term rule=mov_wide count=16
     Term rule=mul count=1
-    Term rule=store count=31
-  Fn key=copy_line_buf_range owner=app proxy_cycles=138
+    Term rule=store count=27
+  Fn key=copy_line_buf_range owner=app proxy_cycles=128
     Term rule=abort count=1
     Term rule=abort_val count=4
     Term rule=adrp count=5
-    Term rule=alu count=23
+    Term rule=alu count=33
     Term rule=branch count=9
-    Term rule=load count=22
+    Term rule=load count=16
     Term rule=mov_wide count=20
     Term rule=mul count=2
-    Term rule=store count=30
+    Term rule=store count=26
   Fn key=finish_abort owner=app proxy_cycles=57
     Term rule=alu count=3
     Term rule=branch count=3

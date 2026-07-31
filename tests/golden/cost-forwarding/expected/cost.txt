@@ -2,21 +2,21 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
   Provenance T1=39 T2=19 T3=0 T4=10 T5=16 rows=84
   Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method valid_for=static_shape_opts workload=flat pseudo_lru=modelled_as_lru
   Composition sum_of_fn_schedules=1
-  Total proxy_cycles=341
-  Workload name=flat proxy_cycles=341
-  Owner name=app proxy_cycles=341
+  Total proxy_cycles=319
+  Workload name=flat proxy_cycles=319
+  Owner name=app proxy_cycles=319
   Owner name=runtime proxy_cycles=0
   Owner name=driver proxy_cycles=0
-  Fn key=cross_block owner=app proxy_cycles=50
-    Term rule=alu count=6
+  Fn key=cross_block owner=app proxy_cycles=35
+    Term rule=alu count=14
     Term rule=branch count=6
-    Term rule=load count=14
-    Term rule=store count=10
-  Fn key=forwarded owner=app proxy_cycles=33
-    Term rule=alu count=6
+    Term rule=load count=8
+    Term rule=store count=8
+  Fn key=forwarded owner=app proxy_cycles=26
+    Term rule=alu count=15
     Term rule=branch count=3
-    Term rule=load count=14
-    Term rule=store count=11
+    Term rule=load count=8
+    Term rule=store count=8
   Fn key=l1_path owner=app proxy_cycles=258
     Term rule=alu count=9
     Term rule=branch count=3

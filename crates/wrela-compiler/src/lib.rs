@@ -48,6 +48,7 @@ pub mod mwir;
 pub mod opts;
 pub mod placed_static_census;
 pub mod placement;
+pub mod regalloc;
 pub mod report;
 pub mod rtconfig;
 pub mod sema;

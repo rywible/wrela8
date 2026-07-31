@@ -165,11 +165,11 @@ ImageReport v0
   Turns count=4 stride=512 bytes=2048
   Totals actors=1 drivers=0 ready_queue=2 group_arena=1 bytes=2296
   Pool name=Parts kind=image payload=u32 slots=4 slot_bytes=8 base=0x405408f8 size=32 align=8 coherency=coherent device=none
-  Cost version=3 digest=b2484a1b9c00d7fa total=31967 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=31967
-    Owner name=app proxy_cycles=4520
-    Owner name=runtime proxy_cycles=27447
+  Cost version=3 digest=b2484a1b9c00d7fa total=28559 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=28559
+    Owner name=app proxy_cycles=4460
+    Owner name=runtime proxy_cycles=24099
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=117 max_turn_proxy=63 turns_per_sec=38095238.095238097 ms_per_turn_model=0.00002625
+    Core n=0 proxy_cycles=120 max_turn_proxy=66 turns_per_sec=36363636.363636367 ms_per_turn_model=0.0000275
     Budget n=0 hot_text_bytes=91392 l1i_bytes=65536 over_l1i_lines=404 over_l2_lines=0 text_pages=23 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=2828
-    Shared proxy_cycles=31850
+    Shared proxy_cycles=28439

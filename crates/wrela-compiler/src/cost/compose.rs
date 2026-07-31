@@ -825,11 +825,14 @@ Worker.report=2
         assert!(attach.bridge.is_none());
         assert!(attach.measured_footprint.is_empty());
         assert!(attach.block_frequencies.is_empty());
-        // 172 until plans/codegen-pareto.md item B1 turned `cost-branchy`'s
-        // two `ADRP`+`ADD` rodata pairs into two `ADR`s (`OptId::
-        // AdrAddressing`); the pin moves with the release form it pins.
-        assert_eq!(report.total_proxy_cycles, 170, "the pinned flat total");
-        assert_eq!(report.workload_totals["flat"], 170);
+        // The pin moves with the release form it pins. `cost-branchy`'s
+        // flat total: 172 before this plan, 170 after item B1 turned its
+        // two `ADRP`+`ADD` rodata pairs into `ADR`s, and lower again once
+        // item C's arithmetic forms and item E's allocator landed. The
+        // number is pinned so the *wiring* stays inert, not to pin a cost
+        // model — re-measure it, never rescale it.
+        assert_eq!(report.total_proxy_cycles, 134, "the pinned flat total");
+        assert_eq!(report.workload_totals["flat"], 134);
         assert_eq!(report.workload_totals.len(), 1, "flat row only");
     }
 
