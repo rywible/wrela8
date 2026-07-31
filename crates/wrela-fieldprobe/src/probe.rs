@@ -1928,3 +1928,396 @@ pub fn run_motion(
     }
     out
 }
+
+// ---------------------------------------------------------------------------
+// E6d — edge-aware reconstruction: what a curve-bounded representation gets.
+// ---------------------------------------------------------------------------
+
+pub struct EdgeRecon {
+    pub pixels: u64,
+    pub edge_px: u64,
+    pub patch_samples: u64,
+    pub edge_samples: u64,
+    pub dense_samples: u64,
+    pub patches: Vec<(u32, u64)>,
+}
+
+impl EdgeRecon {
+    pub fn samples(&self) -> u64 {
+        self.patch_samples + self.edge_samples + self.dense_samples
+    }
+    pub fn factor(&self) -> f64 {
+        self.pixels as f64 / self.samples().max(1) as f64
+    }
+}
+
+struct Field {
+    w: usize,
+    h: usize,
+    depth: Vec<f32>,
+    edge: Vec<bool>,
+}
+
+/// Fit `1/z` over the *non-edge* pixels of a cell and test the residual there.
+///
+/// The uniform and quadtree versions of this experiment both condemned a
+/// whole cell for touching a single discontinuity, which is a property of
+/// axis-aligned containers, not of the scene: the per-pixel census puts true
+/// discontinuity density at 7.6%/2.4% against the quadtree's 34%/47%
+/// residue. A vector representation bounds patches by *curves*, so an edge
+/// crossing a region splits it rather than destroying it.
+///
+/// This measures that directly without implementing curve extraction: edges
+/// are charged one sample each (they are the analytic edge plane, and
+/// §9.4's coverage-based AA is what actually renders them), and the patch
+/// fit is judged only on the smooth pixels it would actually have to carry.
+fn recon_edge_cell(
+    f: &Field,
+    cam: &Camera,
+    x0: usize,
+    y0: usize,
+    size: usize,
+    tol_px: f32,
+    out: &mut EdgeRecon,
+) {
+    let x1 = (x0 + size).min(f.w);
+    let y1 = (y0 + size).min(f.h);
+    if x0 >= x1 || y0 >= y1 {
+        return;
+    }
+    // Partition the cell.
+    let mut smooth: Vec<(f32, f32, f32)> = Vec::new(); // (fx, fy, z)
+    let mut n_edge = 0u64;
+    let mut n_miss = 0u64;
+    let mut zref = 0.0f32;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let i = y * f.w + x;
+            if f.edge[i] {
+                n_edge += 1;
+                continue;
+            }
+            let t = f.depth[i];
+            if !t.is_finite() {
+                n_miss += 1;
+                continue;
+            }
+            let d = cam.dir_at_pixel(x as f32 + 0.5, y as f32 + 0.5);
+            let cz = (d[0] * cam.fwd[0] + d[1] * cam.fwd[1] + d[2] * cam.fwd[2]).max(1e-6);
+            smooth.push((
+                (x - x0) as f32 / size as f32,
+                (y - y0) as f32 / size as f32,
+                t * cz,
+            ));
+            zref = t;
+        }
+    }
+    // Background inside a cell is free: no surface, nothing to reconstruct.
+    let _ = n_miss;
+    if smooth.is_empty() {
+        out.edge_samples += n_edge;
+        return;
+    }
+
+    // Least squares for a bivariate quadratic in inverse view-axis depth.
+    let mut ata = [[0.0f64; 6]; 6];
+    let mut atb = [0.0f64; 6];
+    for &(fx, fy, z) in &smooth {
+        let b = [
+            1.0,
+            fx as f64,
+            fy as f64,
+            (fx * fx) as f64,
+            (fx * fy) as f64,
+            (fy * fy) as f64,
+        ];
+        for r in 0..6 {
+            for c in 0..6 {
+                ata[r][c] += b[r] * b[c];
+            }
+            atb[r] += b[r] / z as f64;
+        }
+    }
+    let ok = if smooth.len() >= 6 {
+        match solve6(ata, atb) {
+            Some(coef) => {
+                let tol = tol_px * zref * 2.0 * cam.tan_half / cam.h as f32;
+                smooth.iter().all(|&(fx, fy, z)| {
+                    let q = coef[0]
+                        + coef[1] * fx as f64
+                        + coef[2] * fy as f64
+                        + coef[3] * (fx * fx) as f64
+                        + coef[4] * (fx * fy) as f64
+                        + coef[5] * (fy * fy) as f64;
+                    q.abs() > 1e-9 && ((1.0 / q) as f32 - z).abs() <= tol
+                })
+            }
+            None => false,
+        }
+    } else {
+        // Too few smooth pixels to fit: they are cheaper sampled directly.
+        false
+    };
+
+    if ok {
+        // Charge the edge pixels once, where the cell terminates. Charging
+        // on the way down counted every edge pixel again at each level of
+        // the descent and inflated the sample total ~4x.
+        out.edge_samples += n_edge;
+        out.patch_samples += 9;
+        let sz = size as u32;
+        match out.patches.iter_mut().find(|(s, _)| *s == sz) {
+            Some((_, n)) => *n += 1,
+            None => out.patches.push((sz, 1)),
+        }
+        return;
+    }
+    if size <= 2 {
+        out.edge_samples += n_edge;
+        out.dense_samples += smooth.len() as u64;
+        return;
+    }
+    let hs = size / 2;
+    for (dx, dy) in [(0, 0), (hs, 0), (0, hs), (hs, hs)] {
+        recon_edge_cell(f, cam, x0 + dx, y0 + dy, hs, tol_px, out);
+    }
+}
+
+pub fn run_edge_recon(sc: &Scene, tol_px: f32, base: usize, s: &mut Scratch) -> (EdgeCensus, EdgeRecon) {
+    let cam = &sc.cam;
+    let (w, h) = (cam.w as usize, cam.h as usize);
+    let mut depth = vec![f32::INFINITY; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let d = cam.dir_at_pixel(x as f32 + 0.5, y as f32 + 0.5);
+            if let (Some(t), _) = march(&sc.tape, cam.eye, d, sc.t_near, sc.t_far, s) {
+                depth[y * w + x] = t;
+            }
+        }
+    }
+    let mut edge = vec![false; w * h];
+    let mut cen = EdgeCensus { pixels: (w * h) as u64, silhouette: 0, depth_step: 0, edge: 0 };
+    for y in 0..h {
+        for x in 0..w {
+            let c = depth[y * w + x];
+            let (mut sil, mut stp) = (false, false);
+            for (dx, dy) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)] {
+                let (nx, ny) = (x as i32 + dx, y as i32 + dy);
+                if nx < 0 || ny < 0 || nx >= w as i32 || ny >= h as i32 {
+                    continue;
+                }
+                let n = depth[ny as usize * w + nx as usize];
+                match (c.is_finite(), n.is_finite()) {
+                    (a, b) if a != b => sil = true,
+                    (true, true) => {
+                        if (c - n).abs() / c.min(n).max(1e-6) > 0.05 {
+                            stp = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if sil {
+                cen.silhouette += 1;
+            }
+            if stp {
+                cen.depth_step += 1;
+            }
+            if sil || stp {
+                cen.edge += 1;
+                edge[y * w + x] = true;
+            }
+        }
+    }
+
+    let f = Field { w, h, depth, edge };
+    let mut out = EdgeRecon {
+        pixels: (w * h) as u64,
+        edge_px: cen.edge,
+        patch_samples: 0,
+        edge_samples: 0,
+        dense_samples: 0,
+        patches: Vec::new(),
+    };
+    let mut y = 0;
+    while y < h {
+        let mut x = 0;
+        while x < w {
+            recon_edge_cell(&f, cam, x, y, base, tol_px, &mut out);
+            x += base;
+        }
+        y += base;
+    }
+    out.patches.sort_by(|a, b| b.0.cmp(&a.0));
+    (cen, out)
+}
+
+// ---------------------------------------------------------------------------
+// E10 — the light bake: what the field has no shortcut for.
+// ---------------------------------------------------------------------------
+
+pub struct LightBake {
+    pub dims: [usize; 3],
+    pub cell: f32,
+    pub cells: u64,
+    pub bake_rays: u64,
+    pub bytes_f32: u64,
+    /// Error of the trilinear lookup against directly-computed occlusion at
+    /// random surface points.
+    pub tested: u64,
+    pub mean_err: f64,
+    pub p95_err: f32,
+    pub max_err: f32,
+}
+
+const AO_RADIUS: f32 = 0.6;
+const AO_RAYS: usize = 8;
+
+/// Deterministic direction set on the sphere (a fixed spiral, no clock).
+fn ao_dirs() -> [[f32; 3]; AO_RAYS] {
+    let mut d = [[0.0f32; 3]; AO_RAYS];
+    let ga = std::f32::consts::PI * (3.0 - 5.0f32.sqrt());
+    for i in 0..AO_RAYS {
+        let z = 1.0 - 2.0 * (i as f32 + 0.5) / AO_RAYS as f32;
+        let r = (1.0 - z * z).max(0.0).sqrt();
+        let th = ga * i as f32;
+        d[i] = [r * th.cos(), z, r * th.sin()];
+    }
+    d
+}
+
+fn ao_at(tape: &Tape, p: [f32; 3], dirs: &[[f32; 3]; AO_RAYS], s: &mut Scratch) -> f32 {
+    let mut acc = 0.0;
+    for d in dirs.iter() {
+        // Occlusion along a short ray, the cheap standard estimator.
+        let mut occ = 1.0f32;
+        let mut t = 0.02f32;
+        let mut steps = 0;
+        while t < AO_RADIUS && steps < 24 {
+            let q = [p[0] + t * d[0], p[1] + t * d[1], p[2] + t * d[2]];
+            let f = eval(tape, q, &mut s.f);
+            steps += 1;
+            if f < 1e-3 {
+                occ = t / AO_RADIUS;
+                break;
+            }
+            t += f.max(0.01);
+        }
+        acc += occ.min(1.0);
+    }
+    acc / AO_RAYS as f32
+}
+
+/// Bake ambient occlusion on a grid, then measure what the lookup costs in
+/// *accuracy*, not just in FLOP.
+///
+/// This is the bake the atlas experiment argued for. §13's objection to
+/// baking is staleness, and it is answered the same way: the image is
+/// recompiled whole, so the grid cannot outlive its expression. But the
+/// reason to bake *this* and not visibility is measured, not asserted — an
+/// SDF is already its own acceleration structure for ray casting (E9: an
+/// octree came in at 0.69-0.98x), and it offers no comparable shortcut for
+/// integrating occlusion over a hemisphere. Lighting is 28.4% of the
+/// measured frame and there is nothing free to compete with.
+///
+/// The reported error is the honest part: a trilinear tap is worthless if it
+/// does not agree with the integral it replaces.
+pub fn run_light_bake(sc: &Scene, lo: [f32; 3], hi: [f32; 3], cell: f32, rng: &mut Rng, s: &mut Scratch) -> LightBake {
+    let dims = [
+        (((hi[0] - lo[0]) / cell).ceil() as usize + 1).max(2),
+        (((hi[1] - lo[1]) / cell).ceil() as usize + 1).max(2),
+        (((hi[2] - lo[2]) / cell).ceil() as usize + 1).max(2),
+    ];
+    let dirs = ao_dirs();
+    let n = dims[0] * dims[1] * dims[2];
+    let mut grid = vec![1.0f32; n];
+    for iz in 0..dims[2] {
+        for iy in 0..dims[1] {
+            for ix in 0..dims[0] {
+                let p = [
+                    lo[0] + ix as f32 * cell,
+                    lo[1] + iy as f32 * cell,
+                    lo[2] + iz as f32 * cell,
+                ];
+                grid[(iz * dims[1] + iy) * dims[0] + ix] = ao_at(&sc.tape, p, &dirs, s);
+            }
+        }
+    }
+
+    let sample = |g: &Vec<f32>, p: [f32; 3]| -> f32 {
+        let f = [
+            ((p[0] - lo[0]) / cell).clamp(0.0, (dims[0] - 1) as f32 - 1e-3),
+            ((p[1] - lo[1]) / cell).clamp(0.0, (dims[1] - 1) as f32 - 1e-3),
+            ((p[2] - lo[2]) / cell).clamp(0.0, (dims[2] - 1) as f32 - 1e-3),
+        ];
+        let i = [f[0] as usize, f[1] as usize, f[2] as usize];
+        let d = [f[0] - i[0] as f32, f[1] - i[1] as f32, f[2] - i[2] as f32];
+        let at = |dx: usize, dy: usize, dz: usize| -> f32 {
+            g[((i[2] + dz) * dims[1] + i[1] + dy) * dims[0] + i[0] + dx]
+        };
+        let l = |a: f32, b: f32, t: f32| a + (b - a) * t;
+        let c00 = l(at(0, 0, 0), at(1, 0, 0), d[0]);
+        let c10 = l(at(0, 1, 0), at(1, 1, 0), d[0]);
+        let c01 = l(at(0, 0, 1), at(1, 0, 1), d[0]);
+        let c11 = l(at(0, 1, 1), at(1, 1, 1), d[0]);
+        l(l(c00, c10, d[1]), l(c01, c11, d[1]), d[2])
+    };
+
+    // Validate at real surface points, found by marching random primary rays.
+    let cam = &sc.cam;
+    let mut out = LightBake {
+        dims,
+        cell,
+        cells: n as u64,
+        bake_rays: n as u64 * AO_RAYS as u64,
+        bytes_f32: (n * 4) as u64,
+        tested: 0,
+        mean_err: 0.0,
+        p95_err: 0.0,
+        max_err: 0.0,
+    };
+    let mut errs: Vec<f32> = Vec::new();
+    for _ in 0..1500 {
+        let px = rng.range(0.0, cam.w as f32);
+        let py = rng.range(0.0, cam.h as f32);
+        let d = cam.dir_at_pixel(px, py);
+        let t = match march(&sc.tape, cam.eye, d, sc.t_near, sc.t_far, s).0 {
+            Some(t) => t,
+            None => continue,
+        };
+        let p = [cam.eye[0] + t * d[0], cam.eye[1] + t * d[1], cam.eye[2] + t * d[2]];
+        if p[0] < lo[0] || p[1] < lo[1] || p[2] < lo[2] || p[0] > hi[0] || p[1] > hi[1] || p[2] > hi[2] {
+            continue;
+        }
+        let truth = ao_at(&sc.tape, p, &dirs, s);
+        // Sampled at the surface point itself.
+        //
+        // Offsetting the lookup along the normal by half a cell -- the
+        // standard fix for volumetric AO looking blurry at creases -- was
+        // tried and made it *worse*, mean error 0.060 -> 0.218. It biases
+        // the lookup toward free-space occlusion while the truth being
+        // compared against is still surface occlusion; the offset only pays
+        // when the bake shares the convention.
+        //
+        // The finding this experiment actually delivers is that AO is the
+        // wrong thing to bake. §8 already prices it at "4-5 distance samples
+        // along the normal, near-free", and the measurement agrees: a volume
+        // grid reproduces surface AO to a p95 of 0.17 even at 0.125 cells,
+        // which is visible banding, in exchange for replacing something that
+        // was already cheap. The expensive lighting term is the *shadow* ray
+        // (5 evals/hit), and sun visibility is a long-range quantity that
+        // interpolates far better than contact occlusion does.
+        let got = sample(&grid, p);
+        let e = (truth - got).abs();
+        errs.push(e);
+        out.mean_err += e as f64;
+        out.max_err = out.max_err.max(e);
+        out.tested += 1;
+    }
+    if out.tested > 0 {
+        out.mean_err /= out.tested as f64;
+        errs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        out.p95_err = errs[(errs.len() * 95 / 100).min(errs.len() - 1)];
+    }
+    out
+}

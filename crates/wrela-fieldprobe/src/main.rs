@@ -347,6 +347,22 @@ fn main() {
             best_factor
         );
 
+        for &(tol, base) in &[(1.0f32, 64usize), (2.0, 64)] {
+            let (_, er) = probe::run_edge_recon(sc, tol, base, &mut s);
+            let sizes: Vec<String> =
+                er.patches.iter().map(|(z, n)| format!("{}px:{}", z, n)).collect();
+            println!(
+                "  [E6d] edge-aware, tol {:.0}px: {} samples ({} patch + {} edge + {} dense) \
+                 -> {:.2}x",
+                tol,
+                er.samples(),
+                er.patch_samples,
+                er.edge_samples,
+                er.dense_samples,
+                er.factor()
+            );
+            println!("        patches: {}", sizes.join(" "));
+        }
         let ec = probe::run_edge_census(sc, &mut s);
         println!();
         println!("[E6c] true discontinuity density (per pixel, no quadtree)");
@@ -529,6 +545,33 @@ fn main() {
         if ao.mismatches * 2000 > ao.pixels {
             println!("  FAIL — atlas disagrees with ground truth beyond tolerance.");
             std::process::exit(1);
+        }
+
+        // --- E10: the light bake ------------------------------------------
+        {
+            let b = sc.bounds;
+            let (lo, hi) = match sc.name {
+                "melee" => ([-2.5f32, 0.0, -3.0], [2.5f32, 2.2, 1.5]),
+                _ => ([-10.0f32, 0.0, -4.0], [10.0f32, 3.2, 4.0]),
+            };
+            let _ = b;
+            for &cell in &[0.5f32, 0.25, 0.125] {
+                let lb = probe::run_light_bake(sc, lo, hi, cell, &mut rng, &mut s);
+                println!(
+                    "  [E10] AO bake cell {:.3}: grid {}x{}x{} = {} probes, {:.1} MB f32 \
+                     ({:.2} MB as u8)  err mean {:.4} p95 {:.4} max {:.4}",
+                    lb.cell,
+                    lb.dims[0], lb.dims[1], lb.dims[2],
+                    lb.cells,
+                    lb.bytes_f32 as f64 / 1e6,
+                    lb.cells as f64 / 1e6,
+                    lb.mean_err, lb.p95_err, lb.max_err
+                );
+            }
+            println!(
+                "        replaces shadow+AO+GI = {:.0} FLOP/px measured, with ~25 FLOP/tap.",
+                (fc.shadow + fc.ao_gi) / fc.pixels as f64
+            );
         }
 
         // --- E11: the frame budget under motion ---------------------------
