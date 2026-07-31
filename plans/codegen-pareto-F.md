@@ -64,7 +64,9 @@ refusal item E applied to every call.
 | **1779** | **F5 gets no `OptId`.** The ∀ gate scores the substitution at exactly zero on all twenty cases of both tiers, and freeze 1714 keeps an unrankable transform out of `RELEASE_OPTS` — item C1's disposition under decision 1746, reached for the same reason. It lands unconditionally instead: it can only fire where `x30` was never saved, where it strictly deletes words, and it is unreachable under `dev` without `Frameless`, so it needs no knob. Two units pin this: `f5_has_no_opt_id` (cheap) and a deep lane that pins the zero, so a change that makes it fire re-opens the question loudly. |
 | **1780** | Item F's two ids join `PINNED_PRODUCT_TIER_VERDICTS` rather than getting a second pinned table, and each is asked there over its own link in the chain for decision 1747's reason. Both rows read `wins`. |
 
-Nothing outside 1770–1780 was numbered; 1770 is the plan's own F6 cut and
+| **1781** | **A key some later stage may own the body of is opaque to the allocator, and every published convention is verified against the emitted code — twice.** This is the defect the boot lanes caught; it has its own section below. |
+
+Nothing outside 1770–1781 was numbered; 1770 is the plan's own F6 cut and
 was not re-used.
 
 ## The pool: nine registers, then twenty-seven
@@ -157,7 +159,7 @@ decision 1750 and item C1's under 1746.
 
 | case | base | +InterprocRegs | Δ cycles | Δ words |
 | --- | --- | --- | --- | --- |
-| cost-crosscore | 4 142 | 4 052 | **−90** | 0 |
+| cost-crosscore | 4 142 | 4 095 | −47 | 0 |
 | cost-icache-cliff | 21 735 | 21 679 | −56 | 0 |
 | cost-itlb-span | 53 828 | 53 781 | −47 | 0 |
 | cost-runtime | 1 801 | 1 754 | −47 | 0 |
@@ -166,10 +168,10 @@ decision 1750 and item C1's under 1746.
 | cost-product-blk | 5 148 | 5 101 | −47 | 0 |
 | cost-product-receipt | 6 673 | 6 626 | −47 | 0 |
 | the other twelve | — | — | 0 | 0 |
-| **SUM** | **103 479** | **103 051** | **−428** | **0** |
+| **SUM** | **103 479** | **103 094** | **−385** | **0** |
 
 `Δ words = 0` everywhere is the point: this id emits nothing new and
-deletes nothing. Every one of the 428 cycles is a `str`/`ldr` pair
+deletes nothing. Every one of the 385 cycles is a `str`/`ldr` pair
 against a temp that used to be evicted at a call and now is not, replaced
 one word for one word by a `mov`. The identical −47 on five different
 programs is the shared runtime closure all of them borrow.
@@ -181,7 +183,7 @@ programs is the shared runtime closure all of them borrow.
 | cost-product-receipt | 6 626 | 6 427 | **−199** | −46 |
 | cost-icache-cliff | 21 679 | 21 541 | −138 | −28 |
 | cost-product-blk | 5 101 | 4 976 | −125 | −32 |
-| cost-crosscore | 4 052 | 3 933 | −119 | −28 |
+| cost-crosscore | 4 095 | 3 976 | −119 | −28 |
 | cost-product-appliance | 2 105 | 1 986 | −119 | −30 |
 | cost-itlb-span | 53 781 | 53 671 | −110 | −46 |
 | cost-product-actors | 4 074 | 3 978 | −96 | −22 |
@@ -195,10 +197,10 @@ programs is the shared runtime closure all of them borrow.
 | cost-assoc-conflict | 946 | 922 | −24 | −4 |
 | cost-forwarding | 319 | 306 | −13 | −6 |
 | cost-bounds-elide | 314 | 304 | −10 | −2 |
-| **SUM** | **103 051** | **101 668** | **−1 383** | **−326** |
+| **SUM** | **103 094** | **101 711** | **−1 383** | **−326** |
 
 **All twenty cases fall.** Item F's block total, `RELEASE_OPTS` minus F →
-`RELEASE_OPTS`: **−1 811 proxy cycles, −326 words, −105 hot-text bytes**,
+`RELEASE_OPTS`: **−1 768 proxy cycles, −326 words, −105 hot-text bytes**,
 printed by `unit:narrow_imm_wins_on_cycles_...` as "item F block win".
 
 ## Frame, word and cycle deltas on named cases
@@ -243,13 +245,13 @@ inside the rounding.
 Whole-image, `boot-blk-two-devices` under `--stage=report`:
 
 ```
-  Convention fns=96 frameless=50 tail_calls=4
+  Convention fns=88 frameless=50 tail_calls=4
     Fn key=BlkDriver.drain frame=2432 residents=36 regs=x1-x8 clobbers=x0-x12,x30-x31 pool=22
     Fn key=BlkDriver.init frame=880 residents=17 regs=x4-x7,x12 clobbers=x0-x12,x30-x31 pool=19
     Fn key=Ledger.mark frame=64 residents=1 regs=x2 clobbers=x0-x2,x9-x12,x30-x31 pool=21
 ```
 
-96 functions with a convention of their own, 50 of them frameless, 4 tail
+88 functions with a convention of their own, 50 of them frameless, 4 tail
 calls (`__wrela_boot_call` twice, `__wrela_irq_invoke`,
 `__wrela_wake_invoke`). `BlkDriver.drain` keeps 36 temps in `x1..x8` — a
 set item E could not reach at all — and publishes a clobber set of
@@ -323,6 +325,154 @@ jump replaces three or four words with one or two while deleting a
 returning call. So F5 fires there and nowhere else. On the gate corpus
 that is *nowhere*, hence decision 1779.
 
+## The defect the boot lanes caught (decision 1781)
+
+**The first landing of this item broke 14 guest transcripts**, and every
+cheap oracle was green while it did: 851 units, both ∀ tiers at 35 328
+points a side, and `diff-eval` agreeing on 129 tests across 47 cases. The
+orchestrator found it by merging and re-pinning the boot lanes. This
+section is the post-mortem, because the lesson is worth more than the
+fix.
+
+### Root cause
+
+`allocate_program` gave a callee a **measured** clobber set whenever its
+key was present in `MwirProgram::fns`. That is the wrong test. `layout.rs`
+runs after codegen and **replaces compiled bodies under keys codegen has
+already published a convention for**:
+
+| layout site | what it replaces |
+| --- | --- |
+| `harness::install_abort_tail_floor` | "*Replace the compiled `__wrela_abort_tail` stub* with the floor long-jump." |
+| `harness::inject_test_runner_fns` | "*overwrite `__test_call_*` / `__test_prefix_*`* with specialized bodies." |
+| `harness::inject_boot_init_fn` | fills in `rt_boot_init`, aliasing `rt_boot_init 0` |
+| `harness::inject_rt_enqueue_and_dispatch_fns` | republishes `__enqueue_i` under `rt_enqueue <Actor>`, and inserts `__method_i` stubs |
+| `harness::inject_rt_cross_core_fns` | prepends an SP install and republishes as `rt_secondary_core_entry <n>` |
+| `apply_resume_remaps`, `resolve_cross_core_edge` | re-point calls at `__rt_xsend_*` trampolines |
+
+So a caller was told "`__boot_call_0` clobbers `x30` and `sp`", kept a
+live value in `x0`/`x9`/`x10` across it, and layout then filled in a body
+that destroys exactly those. The corruption lands in the boot-init and
+test-runner path, which is why the failure signature was the scheduler:
+`boot-actor-chain` went `turns=2 run_one=3` → `turns=1 run_one=1`, and
+`boot-actor-reply-result` blew its loop budget with `turns=0`.
+
+Bisected in three boot runs: `RELEASE_OPTS` minus `Frameless` still fails
+(so not F3/F5); minus `InterprocRegs` passes (so F1/F2); and narrowing
+the base pool back to item E's nine **while keeping the per-callee
+barrier** still fails — so it is the barrier, not the widened pool.
+
+### Why nothing cheap saw it
+
+`diff-eval` compares the tree-walking evaluator against the backend on
+`@test` bodies. It never runs the scheduler, never crosses a turn
+boundary, and — decisively — it never runs `layout`'s substitutions
+against a program whose callers were compiled against the *pre*-
+substitution bodies. The ∀ gate scores `CodegenProgram`s and does not
+execute anything at all. The units test the analysis against itself. Every
+one of those oracles was asking "is this consistent?" and none was asking
+"is this **true of the program that finally ships?**"
+
+### The fix, and why it is a rule and not a list
+
+`FnInput::opaque_body`: a key some later stage may own publishes
+`ALL_REGS`. Codegen decides it from the spelling —
+`is_compiler_glue_symbol(key) || key.starts_with("__")` — and
+deliberately does **not** enumerate the table above. A second source of
+truth about which keys layout owns is the defect class itself, not a fix
+for it: the table would be correct today and wrong the next time layout
+grows a substitution, and nothing would say so.
+
+Cost of the rule: **43 proxy cycles** of item F's 1 768-cycle block win
+(`InterprocRegs` −428 → −385), and 96 → 88 functions with a convention of
+their own on `boot-blk-two-devices`. The frameless count and the tail-call
+count are unchanged, because F3 and F5 are properties of a function's own
+body rather than claims about somebody else's.
+
+### The oracle — the part that matters
+
+`codegen::verify_conventions` refuses a program in which any published
+clobber set is not a superset of
+
+> every register that function's own **emitted** words name, unioned with
+> every callee's published clobber set over the `Reloc::Call`s the
+> emission actually pushed
+
+with an unconventioned callee — an async turn body, hand-assembled glue,
+a key layout re-points — contributing `ALL_REGS`. It is O(words) and it
+runs **twice**:
+
+1. at the end of `codegen_program` / `codegen_program_with_async`, where
+   it catches an analysis that disagrees with its own emitter; and
+2. in `layout_program`, **after** every `inject_*` and floor
+   substitution, where it catches a body some later stage replaced. This
+   is the one that would have caught the real defect; codegen's own check
+   cannot see it by construction, because the substitution has not
+   happened yet.
+
+Reverting the fix and building `boot-actor-chain` now fails the build
+with the function, the registers and the call named:
+
+```
+error[build]: layout: internal error: fn `__boot_call_0` was published as
+clobbering x30-x31, but its emitted code reaches x0,x9-x10,x30-x31 (via
+its call to `Inner.init`). Every caller that kept a value in x0,x9-x10
+across a call to it has been miscompiled.
+
+This check runs *after* layout's `inject_*` and floor substitutions, so
+the usual cause is a body this stage replaced or aliased under a key
+codegen had already published a convention for. A key a later stage may
+own must be opaque to the whole-program allocator
+(`regalloc::FnInput::opaque_body`), never given a measured clobber set.
+```
+
+Four cheap units back it, in `codegen::item_f_tests`:
+
+- `verify_conventions_refuses_a_clobber_set_the_code_exceeds` — the
+  negative case. A check that cannot fail is not a check.
+- `verify_conventions_refuses_a_clobber_set_a_callee_exceeds` — the
+  transitive case, which is the real defect's exact shape.
+- `an_unconventioned_callee_forces_its_caller_to_be_opaque`.
+- `every_key_a_later_stage_may_own_is_opaque_to_the_allocator` — asserted
+  against the symbol **constructors** (`rt_boot_init_symbol()`,
+  `rt_enqueue_symbol`, `rt_secondary_core_entry_symbol`) rather than
+  hand-written spellings, and paired with the converse, so the rule
+  cannot degenerate into "everything is opaque".
+
+Because the check runs inside `layout_program`, it is exercised by every
+golden case that lays out an image, by the `async` fuzz lane (which lays
+out test images), and by any future item that builds one — not only by a
+boot transcript.
+
+### The general lesson, stated for the plan
+
+Six items have now shipped on units plus `diff-eval`. That pair verifies
+**semantics of a computation**. It does not verify a **claim one compiler
+stage makes about another stage's output**, and item F is the first item
+whose central mechanism is exactly such a claim. The generalisable rule
+this suggests: *when a stage publishes a fact that a later stage can
+falsify, the fact must be re-checked against the later stage's output,
+and that check belongs in the build rather than in a test.* Items E and F
+both had a version of this available and only item E took it — item E's
+probe measures a real emission rather than modelling one, and the
+equivalent for item F was to measure the real *final program* rather than
+the one codegen handed over.
+
+## Boot lanes (run after the orchestrator lifted the restriction)
+
+`cargo xtask golden --only-boot`, whole suite: **zero `[test]`
+expectations differ**. Every guest transcript matches its pinned
+expectation byte for byte, including all fourteen the orchestrator
+listed. The 60 remaining differences are pinned artifacts for the
+orchestrator to re-pin: 24 `asm.txt`, 33 `report.txt`, 1 `cost.txt`.
+
+Individually confirmed green on the guest transcript:
+`boot-actor-chain`, `boot-actor-reply-result`, `boot-actor-reply-struct`,
+`boot-actors`, `boot-blk-roundtrip`, `boot-blk-two-devices`,
+`boot-cores-1`, `boot-dma-pool`, `boot-driver-message`, `boot-init-args`,
+`boot-receipt-handoff`, `check-await-question-mark`,
+`err-boot-driver-message`, `err-boot-receipt-handoff`.
+
 ## `diff-eval`, verbatim
 
 `cargo xtask diff-eval`, exit code 0:
@@ -363,11 +513,11 @@ anywhere in the corpus** — the same property item E reported.
 The `asm`/`cost`/`img` moves are the expected ones: every leaf loses two
 words, every address after it shifts. The 29 `report.txt` moves are
 section sizes plus the new `Convention` section, which is the largest
-single addition this item makes to a pinned artifact: **8 873 bytes on a
-23 223-byte report** for `boot-blk-two-devices`, 97 lines. It is a real
-cost to the review surface and it is deliberate — the plan's own reason
-is that the convention is otherwise invisible — but a future item that
-moves residency will move 96 lines of golden with it. The section is
+single addition this item makes to a pinned artifact: **~8 KB on a
+23 KB report** for `boot-blk-two-devices`, 89 lines. It is a real cost to
+the review surface and it is deliberate — the plan's own reason is that
+the convention is otherwise invisible — but a future item that moves
+residency will move 88 lines of golden with it. The section is
 absent under `dev` and under item E's per-function allocator, so no `dev`
 report moves.
 
@@ -378,6 +528,7 @@ report moves.
 | `tests/census.toml` `[emitted_a64] backend_emitters` | — | `+emit_frame_teardown`, `+emit_tail_call` | two new emitters |
 | `[emitted_a64.encode_enc_sites_by_file]` | codegen 317, layout 9, total 356 | 318 / 10 / 358 | `emit_tail_call`'s `B` and `patch_bl`'s form-preserving `enc_b` |
 | `[internal_error]` `layout.rs` / total | 59 / 210 | 60 / 211 | `patch_bl` refuses a word that is neither `B` nor `BL` |
+| `[internal_error]` `codegen.rs` / total | 4 / 211 | 6 / 213 | `verify_conventions`' two producer-bug guards (decision 1781) |
 | `cost-branchy` flat total (`cost::compose`) | 134 | **110** | −18 % on one case |
 | item C1's crossover (`opts::win`) | (149, 152) | **(93, 96)** | item F removes more frame slack, so C1's W-form win grows from 3 cycles to 3 on a much smaller base — the crossover item C predicted is now wider, not narrower |
 | `blocklayout` `BEFORE_HOT_TEXT_BYTES` | 7 616 | **7 616 (unchanged)** | F3's deletions land in leaves that are cold on `boot-actors`' measured vector; the constant was re-derived, not assumed |
@@ -390,29 +541,23 @@ pointed at `cost-runtime` (1 024 corners), which is the same transform;
 
 ## What I could not do, and why
 
-- **No boot lanes** (decision 1708; four worktrees share one
-  hypervisor). The focused boots this item would otherwise run are
-  **`boot-actors`**, **`boot-cores-3`** and one driver case
-  (**`boot-blk-roundtrip`** is the right one — it is the closure whose
-  report shows 96 conventions and all 4 tail calls). What each would be
-  testing, and what a failure would mean:
-  - `boot-actors`: that a value the analysis believed survives a call
-    actually does. A failure means a callee clobbers a register its
-    measured `regs` union did not name — the first suspects are a
-    `Reloc::Call` whose target layout *redirects* (glue keys and
-    `rt_enqueue` targets are excluded from the graph for exactly this
-    reason, so a *new* redirect class would be the bug) and a
-    `CostRule::Call` word with no reloc beside it, which is supposed to
-    force `ALL_REGS`.
-  - `boot-cores-3`: the same, across the cross-core send path, where the
-    `__rt_xsend_*` redirect is live.
-  - `boot-blk-roundtrip`: F3 and F5 on the ISR-bound sync path. A failure
-    here means a `BL` that returns was not counted as one — the whole of
-    F3 rests on `has_returning_call`, and a `bl` emitted with a
-    `CostRule` other than `Call` would make a leaf look like a leaf when
-    it is not, and would corrupt `x30`. The abort `BL`s are deliberately
-    excluded because 03's abort contract is `noreturn`; if any abort path
-    ever returned, this is where it would show.
+- **The boot lanes were the only oracle that saw the real defect, and my
+  own prediction about them was half right in an instructive way.** Before
+  running them I wrote that a `boot-actors` failure would mean "a callee
+  clobbers a register its measured `regs` union did not name", and named
+  the first suspect as "a `Reloc::Call` whose target layout *redirects* —
+  glue keys and `rt_enqueue` targets are excluded from the graph for
+  exactly this reason, so a **new** redirect class would be the bug". The
+  mechanism was right and the scope was wrong: the exclusions I had built
+  covered *redirects* and not *replacements*, and `layout.rs` does both.
+  Writing down what a failure would mean was worth doing — it named the
+  right mechanism in one line — but it is not a substitute for running the
+  lane, because the thing it got wrong is precisely the thing I could not
+  have reasoned my way to. Decision 1708 was the right call for the round
+  and it cost this item a merge; the durable answer is not "run more boot
+  lanes" but the build-time check in decision 1781, which makes the class
+  fail without one.
+
 - **F4's arity ceiling and multi-value returns did not move.** The
   `more than 8 call arguments` refusal is still there, and MWIR has no
   multi-value return to lower. Both are buildable; neither is
