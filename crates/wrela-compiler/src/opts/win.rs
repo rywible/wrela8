@@ -3570,6 +3570,9 @@ mod tests {
         CoreBudget {
             n,
             hot_text_bytes: 91712,
+            hot_code_bytes: 84284,
+            packing_floor_lines: 1318,
+            slack_lines: 115,
             l1i_bytes: 65536,
             over_l1i_lines,
             over_l2_lines: 0,

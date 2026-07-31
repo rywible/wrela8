@@ -1148,9 +1148,26 @@ mod tests {
             budget_before[0].hot_text_bytes,
             budget_after[0].hot_text_bytes
         );
+        // **plans/codegen-pareto-2.md item K3 (decision 1955).** This
+        // assertion used to read `charge == charge`, both zero: both sides
+        // are far inside the L1I, and the only thing the footprint term
+        // charged for was overflow — so the model could not see block order
+        // at all, which is decision 1750's "the forall gate scores this at
+        // zero, and here is why". The density term charges the slack
+        // between the fetched line set and the per-fn packing floor, and it
+        // does see the order:
+        assert!(
+            budget_after[0].charge < budget_before[0].charge,
+            "packing the hot blocks must now be visible to the model: {} -> {}",
+            budget_before[0].charge,
+            budget_after[0].charge
+        );
         assert_eq!(
-            budget_before[0].charge, budget_after[0].charge,
-            "both sides are inside the L1I budget, so the model charges neither"
+            (budget_before[0].charge, budget_after[0].charge),
+            (91, 49),
+            "item D's measured win under the order-sensitive footprint term. Pinned, \
+             not tracked, for decision 1757's reason: when this moves, re-measure \
+             plans/codegen-pareto-D.md rather than rescaling it."
         );
     }
 
