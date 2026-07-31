@@ -585,6 +585,17 @@ const BL_HALF_RANGE_BYTES: i64 = 1i64 << 27;
 /// `imm21`'s own signed *page* range (`ADRP`'s 21-bit signed page count).
 const ADRP_HALF_RANGE_PAGES: i64 = 1i64 << 20;
 
+/// `imm21`'s own signed *byte* range (`ADR`'s 21-bit signed byte offset):
+/// ±1 MiB either side of the instruction's own address.
+///
+/// plans/codegen-pareto.md decision 1703 / freeze 1713. This is the whole
+/// content of "the range proof": every `Reloc::RodataAdr` site's
+/// `target − this` distance is measured against it at layout time, once the
+/// addresses are real, and a site outside it **fails the build**
+/// ([`adr_out_of_range`]). It is never widened, never rounded, and there is
+/// no path that emits an `ADR` without passing through here.
+const ADR_HALF_RANGE_BYTES: i64 = 1i64 << 20;
+
 /// The one diagnostic both image flavors report for a `Reloc::Call` whose
 /// target is neither a compiled fn nor one of this image's own runtime-glue
 /// routines.
@@ -1683,6 +1694,52 @@ fn patch_adrp_add(
     words[word_adrp] = encode::enc_adrp(reg, page_delta as i32);
     words[word_adrp + 1] = encode::enc_add_imm(reg, reg, (target_addr & 0xFFF) as u16, true);
     Ok(())
+}
+
+/// **The `ADR` range proof** (plans/codegen-pareto.md decision 1731, freeze
+/// 1713). Patch the single-word `ADR` at `word_adr` to reach `target_addr`,
+/// or refuse.
+///
+/// The refusal is a **hard build error**, not a fallback (decision 1732).
+/// A fallback is not available at this point even in principle: the
+/// `ADRP`+`ADD` pair is two words where codegen already committed one, so
+/// widening here would move every address after this site — including the
+/// addresses this pass has already patched and the section sizes
+/// `verify_section_sizes` is about to check. The honest choices were "prove
+/// it at layout and error" or "iterate layout to a fixpoint"; the second is
+/// a whole new pass shape for a condition that is 4–10× away from firing
+/// (decision 1703's measured headroom), so this errors, loudly, naming the
+/// site and the distance, and telling the reader which knob turns the
+/// substitution off.
+fn patch_adr(
+    words: &mut [u32],
+    word_adr: usize,
+    this_addr: u64,
+    target_addr: u64,
+) -> Result<(), LayoutError> {
+    let reg = (words[word_adr] & 0x1F) as u8;
+    let delta = target_addr as i64 - this_addr as i64;
+    if !(-ADR_HALF_RANGE_BYTES..ADR_HALF_RANGE_BYTES).contains(&delta) {
+        return Err(adr_out_of_range(this_addr, target_addr, delta));
+    }
+    words[word_adr] = encode::enc_adr(reg, delta as i32);
+    Ok(())
+}
+
+/// The one diagnostic freeze 1713 demands: an out-of-range `ADR` site names
+/// itself, its target, its distance and the ±1 MiB bound, and says what to
+/// do. Split out of [`patch_adr`] so the unit that proves the refusal fires
+/// asserts on the *same* text a build would print.
+fn adr_out_of_range(this_addr: u64, target_addr: u64, delta: i64) -> LayoutError {
+    LayoutError::new(format!(
+        "relocation out of range: an `ADR` at {this_addr:#x} targets {target_addr:#x}, \
+         {delta} bytes away — outside `ADR`'s own ±1 MiB (±{ADR_HALF_RANGE_BYTES} byte) \
+         reach. `OptId::AdrAddressing` (plans/codegen-pareto.md item B) substitutes one \
+         `ADR` for an `ADRP`+`ADD` pair only where the whole image proves every site is \
+         in reach; this image is too large between its code and its rodata for that. \
+         Build in `dev`, or drop `OptId::AdrAddressing` from `RELEASE_OPTS`, to get the \
+         two-word page-relative form back."
+    ))
 }
 
 // --- section-size verification (image.layout.sections-verified's teeth) --
@@ -2786,6 +2843,17 @@ pub fn layout_program(
                         this_addr,
                         target_addr,
                     )?;
+                }
+                Reloc::RodataAdr { word, byte_offset } => {
+                    let rb = rodata_base.ok_or_else(|| {
+                        LayoutError::new(
+                            "internal error: a Reloc::RodataAdr exists but the rodata section is \
+                             empty",
+                        )
+                    })?;
+                    let this_addr = code_base + ((base + word) * 4) as u64;
+                    let target_addr = rb + *byte_offset as u64;
+                    patch_adr(&mut all_code_words, base + word, this_addr, target_addr)?;
                 }
                 Reloc::AbortFixed { word } => {
                     let this_addr = code_base + ((base + word) * 4) as u64;
@@ -5060,6 +5128,142 @@ fn two():
         patch_adrp_add(&mut words, 0, 0x4050_1000, 0x4050_0040).unwrap();
         assert_eq!(words[0], encode::enc_adrp(10, -1));
         assert_eq!(words[1], encode::enc_add_imm(10, 10, 0x040, true));
+    }
+
+    // --- ADR byte math + the fail-closed range proof (item B1) -----------
+
+    /// plans/codegen-pareto.md decision 1731: `ADR` is byte-granular, so a
+    /// forward and a backward site both resolve to a plain signed byte
+    /// distance from the instruction's **own** address — no page rounding,
+    /// no paired `ADD`, and the live register number read back out of the
+    /// placeholder exactly as `patch_adrp_add` reads it.
+    #[test]
+    fn patch_adr_resolves_a_byte_distance_in_both_directions() {
+        let mut words = vec![encode::enc_adr(9, 0)];
+        patch_adr(&mut words, 0, 0x4050_0004, 0x4050_0ABC).unwrap();
+        assert_eq!(words[0], encode::enc_adr(9, 0x0ABC - 0x0004));
+
+        let mut words = vec![encode::enc_adr(10, 0)];
+        patch_adr(&mut words, 0, 0x4050_1000, 0x4050_0040).unwrap();
+        assert_eq!(words[0], encode::enc_adr(10, 0x0040 - 0x1000));
+    }
+
+    /// The **whole point of freeze 1713**: a site outside `ADR`'s ±1 MiB
+    /// reach fails the build, in both directions, and the diagnostic names
+    /// the site, the target, the distance and the way out. It never emits a
+    /// wrong `ADR` and it never silently falls back (decision 1732).
+    #[test]
+    fn patch_adr_out_of_range_fails_the_build_rather_than_emitting_a_wrong_adr() {
+        // One byte past the positive edge.
+        let mut words = vec![encode::enc_adr(9, 0)];
+        let this = 0x4050_0000u64;
+        let far = this + ADR_HALF_RANGE_BYTES as u64;
+        let err = patch_adr(&mut words, 0, this, far).expect_err("must refuse");
+        assert!(
+            err.message.contains("relocation out of range")
+                && err.message.contains("`ADR` at 0x40500000")
+                && err.message.contains("1048576 bytes away")
+                && err.message.contains("±1 MiB")
+                && err.message.contains("OptId::AdrAddressing"),
+            "the refusal must name the site, the distance and the way out: {}",
+            err.message
+        );
+        assert_eq!(
+            words[0],
+            encode::enc_adr(9, 0),
+            "the placeholder must be left untouched on refusal"
+        );
+
+        // One byte past the negative edge.
+        let mut words = vec![encode::enc_adr(9, 0)];
+        let this = 0x4050_0000u64;
+        let back = this - ADR_HALF_RANGE_BYTES as u64 - 4;
+        patch_adr(&mut words, 0, this, back).expect_err("must refuse backward too");
+
+        // And the last in-range site on each side still resolves, so the
+        // bound is a bound and not an off-by-one moat.
+        let mut words = vec![encode::enc_adr(9, 0)];
+        patch_adr(&mut words, 0, this, this + ADR_HALF_RANGE_BYTES as u64 - 4).unwrap();
+        let mut words = vec![encode::enc_adr(9, 0)];
+        patch_adr(&mut words, 0, this, this - ADR_HALF_RANGE_BYTES as u64).unwrap();
+    }
+
+    /// The proof is live on a **real** image, not only on the helper: a
+    /// program whose rodata references go through `OptId::AdrAddressing`
+    /// lays out, and every `Reloc::RodataAdr` site's resolved word decodes
+    /// back to the address the rodata section actually sits at.
+    #[test]
+    fn an_adr_addressed_image_lays_out_and_every_site_resolves_to_its_rodata_byte() {
+        use crate::opts::{CompileMode, apply_mode};
+
+        apply_mode(CompileMode::Release);
+        let src = "module examples.layout_adr_rodata\n\npub fn add(a: u8, b: u8) -> u8:\n    \
+                   return a + b\n";
+        let tokens = crate::syntax::lexer::lex(src).expect("lex");
+        let module = crate::syntax::parser::parse(tokens).expect("parse");
+        let typed = crate::sema::check_typed(&module, "<test>").expect("check");
+        let lctx = crate::mwir::build_layout_ctx(&module, &Default::default()).expect("layout ctx");
+        let mwir = crate::lower::lower_program(&typed).expect("lower");
+        let program = crate::codegen::codegen_program(&mwir, &lctx).expect("codegen");
+
+        let sites: usize = program
+            .fns
+            .values()
+            .map(|f| {
+                f.relocs
+                    .iter()
+                    .filter(|r| matches!(r, Reloc::RodataAdr { .. }))
+                    .count()
+            })
+            .sum();
+        assert!(sites > 0, "this fixture must exercise the new reloc class");
+
+        let out = layout_program(&program, None).expect("an ADR-addressed image must lay out");
+        let rodata = out
+            .sections
+            .iter()
+            .find(|s| s.name == "rodata")
+            .expect("rodata section");
+        let rodata_end = rodata.base + rodata.size as u64;
+
+        // Scan every instruction-bearing section (never `rodata` itself —
+        // string bytes can spell any encoding) for `ADR`-shaped words and
+        // resolve each one. `enc_adr` has exactly one production caller,
+        // `push_rodata_addr`/`load_rodata_addr`, so the count is the site
+        // count and each target must land inside rodata.
+        let mut found = 0usize;
+        for s in &out.sections {
+            if s.name == "rodata" {
+                continue;
+            }
+            for i in (0..s.size).step_by(4) {
+                let addr = s.base + i as u64;
+                let at = (addr - machine_layout::IMAGE_BASE) as usize;
+                if at + 4 > out.blob.len() {
+                    break;
+                }
+                let w = u32::from_le_bytes(out.blob[at..at + 4].try_into().expect("4 bytes"));
+                if w & 0x9F00_0000 != 0x1000_0000 {
+                    continue;
+                }
+                // Decode imm21 back out of `ADR` and sign-extend it.
+                let imm = (((w >> 5) & 0x7FFFF) << 2) | ((w >> 29) & 0x3);
+                let imm = ((imm << 11) as i32) >> 11;
+                let target = (addr as i64 + imm as i64) as u64;
+                assert!(
+                    (rodata.base..rodata_end).contains(&target),
+                    "section `{}` +{i}: a resolved ADR points at {target:#x}, outside rodata \
+                     [{:#x},{rodata_end:#x})",
+                    s.name,
+                    rodata.base
+                );
+                found += 1;
+            }
+        }
+        assert_eq!(
+            found, sites,
+            "every emitted Reloc::RodataAdr site must appear in the blob as a resolved ADR"
+        );
     }
 
     // --- section packing / alignment -------------------------------------

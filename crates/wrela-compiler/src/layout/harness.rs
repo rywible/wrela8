@@ -18,7 +18,7 @@ use super::{
     Section, WakeDrainEntry, build_irq_host_injects, checkpoint_irq_shape, device_register_windows,
     driver_irq_vector, driver_state_addr, driver_wake_pending_addr, group_service_ctx,
     group_service_shape, image_pool_backings, intern_fallible_init_abort_messages, pad_to,
-    patch_adrp_add, patch_bl, patch_load_imm_words, place_device_regs, place_pools,
+    patch_adr, patch_adrp_add, patch_bl, patch_load_imm_words, place_device_regs, place_pools,
     place_pools_unchecked, place_runtime_tables, resolve_cross_core_edge,
     resolve_mailbox_actor_addrs, resolve_xreply_edge, round_up, steer_rtdata_base,
     turns_deref_needs_rtdata, unresolved_call_target, verify_device_windows, verify_pool_windows,
@@ -216,7 +216,8 @@ fn shift_reloc_words(r: &mut crate::codegen::Reloc, delta: usize) {
         | Reloc::DriverState { word, .. }
         | Reloc::DeviceRegsBase { word, .. }
         | Reloc::PoolBase { word, .. }
-        | Reloc::PoolSlot { word, .. } => *word += delta,
+        | Reloc::PoolSlot { word, .. }
+        | Reloc::RodataAdr { word, .. } => *word += delta,
         Reloc::Rodata { word_adrp, .. } => *word_adrp += delta,
     }
 }
@@ -1497,6 +1498,20 @@ pub fn layout_test_image(
                 let target_addr = rb + *byte_offset as u64;
                 patch_adrp_add(&mut harness_words, *word_adrp, this_addr, target_addr)?;
             }
+            Reloc::RodataAdr { word, byte_offset } => {
+                // plans/codegen-pareto.md item B1: the `OptId::AdrAddressing`
+                // one-word form of the arm above. `patch_adr` proves the
+                // ±1 MiB reach here rather than assuming it (freeze 1713).
+                let rb = rodata_base.ok_or_else(|| {
+                    LayoutError::new(
+                        "internal error: a harness Reloc::RodataAdr exists but the rodata \
+                         section is empty",
+                    )
+                })?;
+                let this_addr = harness_base + (*word as u64) * 4;
+                let target_addr = rb + *byte_offset as u64;
+                patch_adr(&mut harness_words, *word, this_addr, target_addr)?;
+            }
             Reloc::TurnFrameAddr { word, key } => {
                 // The entry driver's own root-turn-area loads (the
                 // scheduler loop reads `resume_ready` through them).
@@ -1599,6 +1614,17 @@ pub fn layout_test_image(
                     let this_addr = code_base + ((base + word_adrp) * 4) as u64;
                     let target_addr = rb + *byte_offset as u64;
                     patch_adrp_add(&mut code_words, base + word_adrp, this_addr, target_addr)?;
+                }
+                Reloc::RodataAdr { word, byte_offset } => {
+                    let rb = rodata_base.ok_or_else(|| {
+                        LayoutError::new(
+                            "internal error: a Reloc::RodataAdr exists but the rodata section is \
+                             empty",
+                        )
+                    })?;
+                    let this_addr = code_base + ((base + word) * 4) as u64;
+                    let target_addr = rb + *byte_offset as u64;
+                    patch_adr(&mut code_words, base + word, this_addr, target_addr)?;
                 }
                 Reloc::AbortFixed { word } => {
                     // plans/M10.md item C: resolve to force-rooted
