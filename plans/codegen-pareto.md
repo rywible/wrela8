@@ -41,8 +41,38 @@ are re-derivable from G.
 
 **1707. Decision sub-blocks, one per item** (the parallel-agent collision
 this repo hits every round): A `1720–1729` · B `1730–1739` · C `1740–1749` ·
-D `1750–1759` · E `1760–1769` · F `1770–1789` · G `1790–1799`. An item may
-not number outside its block.
+D `1750–1759` · E `1760–1769` · F `1770–1779` · H `1780–1789` ·
+G `1790–1799`. An item may not number outside its block. (F's block was
+halved when item H was added; F6's cut freed the numbers.)
+
+**1716. The gate corpus and the product image are disjoint — item H fixes
+that, and it is a prerequisite for believing any of A–G's claims.** The ∀
+gate ranks over `tests/golden/cost-*`: fifteen synthetic microbenchmarks,
+median ~95 lines, smallest nine lines. Nothing the appliance actually ships
+is in it. Three consequences, all of which land on *this* plan rather than
+on M20:
+
+- **Self-selection.** Every item here is told to add a `cost-*` case if none
+  exercises its opt — so each opt is graded on a program written to show it
+  off. That is the same failure M20 item M found when four intended witness
+  cases turned out not to witness anything.
+- **E and F are whole-program changes.** Register pressure in a 13-line
+  `cost-calls` is not register pressure in the driver set, and F changes the
+  calling convention of every function in the image. An allocator that never
+  spills anywhere in the corpus is untested where it matters.
+- **D's premise is unmeasurable on the corpus that gates it.** 93–98 KB of
+  text against a 64 KiB L1I is a fact about the real image; the largest
+  corpus case is 684 lines. This is a deeper reason D scores zero than
+  decision 1750's order-invariance.
+
+Item H is therefore **not** a new optimization candidate and freeze 1710 does
+not park it: it adds no opt and changes no emission. It makes the existing
+gate measure the thing the plan claims to improve.
+
+**1717. An item may not gate on a case it authored alone.** An opt's ∀
+verdict must hold over the product-scale tier item H adds, not only over the
+microbenchmark it shipped with. Where the two disagree, both numbers are
+reported and the product-scale one governs.
 
 **1709. Each item's findings land in `plans/codegen-pareto-<ITEM>.md`.** Every
 parallel item otherwise edits the same plan file and the round ends in a
@@ -389,6 +419,34 @@ save a register the callee provably never touches; a tail call emits `B` not
 one. `diff-eval` is doing heavy lifting here — budget fuzz effort on the
 `lower`/`sema` lanes accordingly.
 **Focused boot:** `boot-actors`, `boot-cores-3`, one driver case.
+
+### H. Product-scale cost corpus (added 2026-07-31, decision 1716)
+
+Widen what the ∀ gate ranks over, from fifteen microbenchmarks to something
+that includes the code the appliance ships.
+
+**H1. A product-scale tier.** Add cost cases built from real programs — the
+appliance image, `boot-actors`, a driver-heavy closure, and the stdlib
+closure — so the sweep scores programs whose register pressure, text
+footprint, and call graph are the product's rather than a fixture's.
+
+**H2. Tier the lanes by cost, per CLAUDE.md** ("a test's home is chosen by
+its cost, not its subject"). The micro corpus stays the smoke lane; the
+product-scale tier runs in the deep lane. Measure and report what the
+addition costs the deep lane before choosing — the whole-corpus sweep is
+~4 minutes today, and a bound that refuses the corpus is not a bound
+(M20's own lesson at `MAX_SWEPT_DIMS`).
+
+**H3. Report both numbers.** Where the micro tier and the product tier
+disagree about an opt, that disagreement is the finding — decision 1717 says
+the product tier governs and both get printed.
+
+**Files:** `tests/golden/cost-*` (new cases), `crates/wrela-compiler/src/opts/win.rs`
+(corpus discovery + tiering), `crates/xtask` (which lane runs which tier).
+**Cheap:** a unit that the tier split is explicit and that a case cannot
+silently belong to neither tier; the measured deep-lane cost, before/after.
+**Out:** no new opt, no emission change, no cost-table row. If H wants to
+change what the model *reads*, that is a ruler change and is out of scope.
 
 ### G. Close
 
