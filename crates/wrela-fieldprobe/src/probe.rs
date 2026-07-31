@@ -480,6 +480,22 @@ pub struct MarchOut {
 const HIT_EPS: f32 = 1e-4;
 const MAX_STEPS: u32 = 192;
 
+/// Over-relaxation factor, Keinert et al. 2014 (plans/graphics.md §2.5:
+/// "thirty lines, 30-50% fewer steps, no risk").
+///
+/// Step by `w·d` and back off on overshoot. Sphere tracing's worst case is
+/// the linear asymptotic crawl along a grazing surface, and a ray that
+/// crawls into the step cap is recorded as a *miss* — which, in the
+/// reconstruction experiment, manufactures a depth discontinuity where the
+/// geometry is perfectly smooth. Getting grazing rays to converge is
+/// therefore not a performance tweak here; it decides whether the
+/// per-pixel residue is a property of the scene or of the marcher.
+const OVER_RELAX: f32 = 1.6;
+
+/// Rays that exhausted the step budget, counted globally so the report can
+/// state whether "miss" ever means "gave up".
+pub static STEP_CAP_HITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Naive sphere trace, the §1 baseline. No over-relaxation, no segment
 /// tracing — §1's "pre-pruning landing zone" assumes the classical
 /// amortisations, so the count reported here is the thing those
@@ -487,6 +503,8 @@ const MAX_STEPS: u32 = 192;
 pub fn march(tape: &Tape, o: [f32; 3], d: [f32; 3], t_near: f32, t_far: f32, s: &mut Scratch) -> (Option<f32>, u32) {
     let mut t = t_near;
     let mut steps = 0;
+    let mut prev = 0.0f32;
+    let mut relax = OVER_RELAX;
     while t < t_far && steps < MAX_STEPS {
         let p = [o[0] + t * d[0], o[1] + t * d[1], o[2] + t * d[2]];
         let dist = eval(tape, p, &mut s.f);
@@ -494,7 +512,25 @@ pub fn march(tape: &Tape, o: [f32; 3], d: [f32; 3], t_near: f32, t_far: f32, s: 
         if dist < HIT_EPS * t.max(1.0) {
             return (Some(t), steps);
         }
-        t += dist.max(HIT_EPS);
+        // Over-relaxation with the standard overshoot test: the relaxed step
+        // is only safe while consecutive unbounding spheres still overlap.
+        let step = if relax > 1.0 && dist + prev < relax * prev {
+            // Overshot: the relaxed step jumped past the surface, so undo
+            // its excess *before* dropping back to plain sphere tracing.
+            // Computing the backtrack after zeroing `relax` makes it a
+            // no-op, which silently tunnels — it cost 2,159 ground-truth
+            // rays on one scene before this ordering was fixed.
+            t -= (relax - 1.0) * prev;
+            relax = 1.0;
+            dist
+        } else {
+            dist * relax
+        };
+        prev = dist;
+        t += step.max(HIT_EPS);
+    }
+    if steps >= MAX_STEPS {
+        STEP_CAP_HITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     (None, steps)
 }
@@ -783,6 +819,21 @@ pub struct ReconOut {
     pub passed: u64,
 }
 
+/// Which quantity the patch is fitted in.
+///
+/// Fitting `t` was the original choice and it is the wrong one. Under a
+/// pinhole projection the **inverse** depth of a plane is exactly affine in
+/// screen coordinates — that is why every rasterizer since 1995 interpolates
+/// `1/z` rather than `z`. A quadratic in `1/t` is therefore *exact* on any
+/// planar surface and near-exact on low curvature, while the same quadratic
+/// in `t` has to chase a hyperbola. On scenes made of ground, walls and
+/// steps that distinction is most of the answer.
+#[derive(Clone, Copy, PartialEq)]
+pub enum FitSpace {
+    Depth,
+    InverseDepth,
+}
+
 /// Fit a quadratic `t(x,y)` over a cell from a 3×3 sample grid and measure
 /// the worst residual on a 7×7 check grid, in pixels of parallax.
 ///
@@ -794,6 +845,8 @@ pub fn run_reconstruction_capped(
     sc: &Scene,
     cell_px: f32,
     cap: u64,
+    space: FitSpace,
+    tol_px: f32,
     s: &mut Scratch,
 ) -> ReconOut {
     let cam = &sc.cam;
@@ -836,11 +889,15 @@ pub fn run_reconstruction_capped(
                             (fx * fy) as f64,
                             (fy * fy) as f64,
                         ];
+                        let target = match space {
+                            FitSpace::Depth => t as f64,
+                            FitSpace::InverseDepth => 1.0 / t as f64,
+                        };
                         for r in 0..6 {
                             for c in 0..6 {
                                 a[r][c] += b[r] * b[c];
                             }
-                            rhs[r] += b[r] * t as f64;
+                            rhs[r] += b[r] * target;
                         }
                         depth_ref = t;
                     } else {
@@ -857,7 +914,7 @@ pub fn run_reconstruction_capped(
                 None => continue,
             };
             let foot = depth_ref * 2.0 * cam.tan_half / cam.h as f32;
-            let tol = 0.5 * foot;
+            let tol = tol_px * foot;
             let mut worst = 0.0f32;
             let mut ok = true;
             for j in 0..7 {
@@ -880,7 +937,19 @@ pub fn run_reconstruction_capped(
                         + coef[3] * (fx * fx) as f64
                         + coef[4] * (fx * fy) as f64
                         + coef[5] * (fy * fy) as f64;
-                    let e = (fit as f32 - truth).abs();
+                    // Compare in depth either way, so the tolerance keeps
+                    // meaning the same thing: pixels of parallax.
+                    let fit_t = match space {
+                        FitSpace::Depth => fit,
+                        FitSpace::InverseDepth => {
+                            if fit.abs() < 1e-9 {
+                                ok = false;
+                                continue;
+                            }
+                            1.0 / fit
+                        }
+                    };
+                    let e = (fit_t as f32 - truth).abs();
                     worst = worst.max(e);
                 }
             }
@@ -1256,15 +1325,21 @@ impl FrameCost {
         (self.total() - self.primary_fallback) / self.pixels.max(1) as f64
     }
 }
-
-/// Cost the frame by marching every pixel with the tape that actually
-/// survived pruning in its own leaf.
+/// Cost the frame by running the renderer the design actually describes.
 ///
-/// This is the point of keeping the pruned tapes: §1's cost model multiplies
-/// "evals per pixel" by "FLOP per eval" as two independent averages, and on a
-/// pruned renderer they are strongly anti-correlated — the pixels that need
-/// the most steps are the ones whose tape pruned the least. Multiplying the
-/// means overstates the frame. This measures the product directly.
+/// The first version of this charged every ray that missed inside its cell
+/// for marching on to the far plane with a weakly-pruned tape. That was
+/// 52–63% of the modelled frame and it was pure modelling slack: §2.1/§2.2's
+/// renderer does not do it. It **advances slab by slab and re-prunes at each
+/// one**, so a ray that clears the near geometry meets a fresh, short tape
+/// rather than the union of everything it might ever hit.
+///
+/// Re-pruning is not free and is charged: each (cell, slab) pays one affine
+/// evaluation of the incoming tape. So this is not simply "the optimistic
+/// bracket" — it trades marching for traversal, and the trade is measured
+/// rather than assumed. A slab the enclosure proves empty is skipped for the
+/// price of that enclosure alone, which is §2.1 earning its keep mid-ray
+/// rather than only at classification time.
 pub fn run_framecost(sc: &Scene, cl: &ClassifyOut, s: &mut Scratch) -> FrameCost {
     let cam = &sc.cam;
     let mut fc = FrameCost {
@@ -1287,64 +1362,91 @@ pub fn run_framecost(sc: &Scene, cl: &ClassifyOut, s: &mut Scratch) -> FrameCost
     let mut covered = 0u64;
     let mut step_sum = 0u64;
     let mut ideal_primary = 0.0f64;
-    // Empirically-smooth area is reported as a fraction; apply it as the
-    // share of marched pixels a perfect certificate would have lifted.
     let total_area = (cam.w as f64) * (cam.h as f64);
     let liftable = ((cl.area_interior_empirical - cl.area_interior).max(0.0) / total_area)
         .clamp(0.0, 1.0);
+    let ratio = (sc.t_far / sc.t_near).powf(1.0 / NSLAB as f32);
+    let mut aff = Vec::new();
+    let mut ivs = Vec::new();
 
     for lf in &cl.leaves {
-        let w = lf.tape.weight() as f64;
         let x1 = (lf.x0 + lf.size).min(cam.w as f32);
         let y1 = (lf.y0 + lf.size).min(cam.h as f32);
+        let (u0, u1) = (cam.u_of(lf.x0), cam.u_of(lf.x0 + lf.size));
+        let (v0, v1) = (cam.v_of(lf.y0 + lf.size), cam.v_of(lf.y0));
+
+        let mut pend: Vec<(f32, f32)> = Vec::new();
         let mut x = lf.x0;
         while x < x1 {
             let mut y = lf.y0;
             while y < y1 {
-                covered += 1;
-                let d = cam.dir_at_pixel(x + 0.5, y + 0.5);
-                // The renderer enters the leaf already knowing the slab that
-                // brackets the surface — marching from `t_near` would charge
-                // the frame for traversal the classifier already paid for.
-                // Slab-local march with the tight tape; on a miss, carry on
-                // to the far plane with the wide one. Both are charged.
-                let (lo, hi) = (lf.t0.max(sc.t_near), lf.t1.min(sc.t_far));
-                let (mut hit, steps) = march(&lf.tape, cam.eye, d, lo, hi, s);
-                let mut extra = 0.0f64;
-                if hit.is_none() && hi < lf.t_far {
-                    let (h2, st2) = march(&lf.tape_wide, cam.eye, d, hi, lf.t_far, s);
-                    hit = h2;
-                    extra = st2 as f64 * lf.tape_wide.weight() as f64;
-                    fc.primary_fallback += extra;
+                pend.push((x, y));
+                y += 1.0;
+            }
+            x += 1.0;
+        }
+        let npix = pend.len() as u64;
+        covered += npix;
+        if lf.class == Class::Interior {
+            fc.interior_px += npix;
+        } else {
+            fc.marched_px += npix;
+        }
+        fc.post += npix as f64 * POST_FLOP;
+
+        let mut tape = lf.tape.clone();
+        let mut lo = lf.t0.max(sc.t_near);
+        let mut hi = lf.t1.min(sc.t_far);
+        let mut first = true;
+
+        while !pend.is_empty() && lo < sc.t_far && hi > lo {
+            if !first {
+                let p = cam.wedge(u0, u1, v0, v1, lo, hi);
+                eval_aff(&lf.tape_wide, p, &mut aff, &mut ivs);
+                fc.traversal += lf.tape_wide.weight() as f64 * AA_OP_COST;
+                if ivs[lf.tape_wide.root as usize].lo > 0.0 {
+                    lo = hi;
+                    hi = (lo * ratio).min(sc.t_far);
+                    continue;
                 }
-                if lf.class == Class::Interior {
-                    fc.interior_px += 1;
-                    fc.primary += 2.0 * 3.0 * w + extra;
-                    ideal_primary += 2.0 * 3.0 * w + extra;
+                tape = prune(&lf.tape_wide, &ivs).tape;
+            }
+            first = false;
+            let w = tape.weight() as f64;
+
+            let mut still = Vec::with_capacity(pend.len());
+            for &(px, py) in &pend {
+                let d = cam.dir_at_pixel(px + 0.5, py + 0.5);
+                let (hit, steps) = march(&tape, cam.eye, d, lo, hi, s);
+                // A certified-interior cell resolves from corner depths plus
+                // a Newton polish — two gradient evaluations, no search.
+                let charged = if lf.class == Class::Interior { 6.0 } else { steps as f64 };
+                step_sum += steps as u64;
+                fc.primary += charged * w;
+                ideal_primary += if lf.class == Class::Interior {
+                    charged * w
                 } else {
-                    fc.marched_px += 1;
-                    step_sum += steps as u64;
-                    fc.primary += steps as f64 * w + extra;
-                    // A lifted pixel costs the Newton polish instead.
-                    ideal_primary += (1.0 - liftable) * (steps as f64 * w + extra)
-                        + liftable * 2.0 * 3.0 * w;
-                }
+                    (1.0 - liftable) * charged * w + liftable * 6.0 * w
+                };
                 if hit.is_some() {
                     fc.hits += 1;
                     fc.shadow += SHADOW_EVALS * w;
                     fc.ao_gi += AO_GI_EVALS * w;
                     fc.shade += SHADE_FLOP;
+                } else {
+                    still.push((px, py));
                 }
-                fc.post += POST_FLOP;
-                y += 1.0;
             }
-            x += 1.0;
+            pend = still;
+            lo = hi;
+            hi = (lo * ratio).min(sc.t_far);
         }
     }
+
     fc.exterior_px = fc.pixels.saturating_sub(covered);
-    // Soundness gate. A pixel with no leaf was *proved* to contain no
-    // surface; if the full tape finds one there, the enclosure lied and
-    // every area fraction in this report is void.
+    fc.post += fc.exterior_px as f64 * POST_FLOP;
+    // Soundness gate: a pixel with no leaf was *proved* to contain no
+    // surface. If the full tape finds one there, every area fraction is void.
     {
         let mut mask = vec![false; (cam.w as usize) * (cam.h as usize)];
         for lf in &cl.leaves {
@@ -1368,10 +1470,269 @@ pub fn run_framecost(sc: &Scene, cl: &ClassifyOut, s: &mut Scratch) -> FrameCost
             }
         }
     }
-    // Exterior pixels still pay post-processing.
-    fc.post += fc.exterior_px as f64 * POST_FLOP;
     fc.mean_steps = step_sum as f64 / fc.marched_px.max(1) as f64;
     fc.total_ideal =
         fc.traversal + ideal_primary + fc.shadow + fc.ao_gi + fc.shade + fc.post;
     fc
+}
+
+// ---------------------------------------------------------------------------
+// E6b — adaptive reconstruction: the factor a quadtree actually achieves.
+// ---------------------------------------------------------------------------
+
+/// `cos` between a ray and the view axis: converts distance-along-ray to
+/// depth-along-view-axis and back.
+#[inline]
+fn cosine(cam: &Camera, d: [f32; 3]) -> f32 {
+    (d[0] * cam.fwd[0] + d[1] * cam.fwd[1] + d[2] * cam.fwd[2]).max(1e-6)
+}
+
+pub struct ReconAdaptive {
+    /// Samples the guest must shade.
+    pub samples: u64,
+    /// Screen pixels those samples reconstruct.
+    pub pixels: u64,
+    /// Area that fell through to per-pixel sampling.
+    pub dense_px: u64,
+    /// Patches emitted, by size.
+    pub patches: Vec<(f32, u64)>,
+}
+
+impl ReconAdaptive {
+    pub fn factor(&self) -> f64 {
+        self.pixels as f64 / self.samples.max(1) as f64
+    }
+}
+
+/// Subdivide only where a quadratic patch fails, and count what it costs.
+///
+/// The uniform-grid version of this experiment measured the wrong thing.
+/// Reconstruction does not fail because depth is curved — fitting inverse
+/// depth instead of depth moved the 16px pass rate by 3 points, which rules
+/// curvature out. It fails because a cell that straddles a silhouette cannot
+/// be fitted by *any* smooth function, and on a uniform grid most cells at
+/// 16px straddle something.
+///
+/// That is exactly the structure a vector representation is supposed to
+/// exploit: large patches between the discontinuities, dense sampling only
+/// on them. So the honest number is not "what cell size passes everywhere",
+/// it is "how many samples does an adaptive subdivision need for the whole
+/// frame" — which is what this measures, and it is the reconstruction factor
+/// the §14.2 upsample can actually be given.
+#[allow(clippy::too_many_arguments)]
+fn recon_cell(
+    sc: &Scene,
+    x0: f32,
+    y0: f32,
+    size: f32,
+    min_size: f32,
+    tol_px: f32,
+    s: &mut Scratch,
+    out: &mut ReconAdaptive,
+) {
+    let cam = &sc.cam;
+    let vx = (x0 + size).min(cam.w as f32) - x0;
+    let vy = (y0 + size).min(cam.h as f32) - y0;
+    if vx <= 0.0 || vy <= 0.0 {
+        return;
+    }
+    let area = (vx * vy) as u64;
+
+    // Fit a quadratic in inverse depth from a 3x3 grid.
+    let mut a = [[0.0f64; 6]; 6];
+    let mut rhs = [0.0f64; 6];
+    let mut all_hit = true;
+    let mut depth_ref = 0.0f32;
+    for j in 0..3 {
+        for i in 0..3 {
+            let (fx, fy) = (i as f32 * 0.5, j as f32 * 0.5);
+            let d = cam.dir_at_pixel(x0 + fx * size, y0 + fy * size);
+            match march(&sc.tape, cam.eye, d, sc.t_near, sc.t_far, s).0 {
+                Some(t) => {
+                    // Fit 1/z, not 1/t. Perspective linearity is a property
+                    // of depth along the *view axis*: for a plane, 1/z is
+                    // exactly affine in screen coordinates, which is why
+                    // rasterizers interpolate 1/z. Distance along the ray
+                    // carries an extra |d_raw| = sqrt(1+u²+v²) factor that
+                    // destroys the affinity — and destroys it worst on the
+                    // large planar surfaces (ground, walls) that dominate
+                    // the scene, which is precisely where the patch
+                    // representation has to win to be worth anything.
+                    let z = t * cosine(cam, d);
+                    let b = [
+                        1.0,
+                        fx as f64,
+                        fy as f64,
+                        (fx * fx) as f64,
+                        (fx * fy) as f64,
+                        (fy * fy) as f64,
+                    ];
+                    for r in 0..6 {
+                        for c in 0..6 {
+                            a[r][c] += b[r] * b[c];
+                        }
+                        rhs[r] += b[r] / z as f64;
+                    }
+                    depth_ref = t;
+                }
+                None => all_hit = false,
+            }
+        }
+    }
+
+    let mut ok = all_hit && depth_ref > 0.0;
+    if ok {
+        if let Some(coef) = solve6(a, rhs) {
+            let tol = tol_px * depth_ref * 2.0 * cam.tan_half / cam.h as f32;
+            'check: for j in 0..5 {
+                for i in 0..5 {
+                    let (fx, fy) = (i as f32 / 4.0, j as f32 / 4.0);
+                    let d = cam.dir_at_pixel(x0 + fx * size, y0 + fy * size);
+                    let truth = match march(&sc.tape, cam.eye, d, sc.t_near, sc.t_far, s).0 {
+                        Some(t) => t,
+                        None => {
+                            ok = false;
+                            break 'check;
+                        }
+                    };
+                    let q = coef[0]
+                        + coef[1] * fx as f64
+                        + coef[2] * fy as f64
+                        + coef[3] * (fx * fx) as f64
+                        + coef[4] * (fx * fy) as f64
+                        + coef[5] * (fy * fy) as f64;
+                    if q.abs() < 1e-9 {
+                        ok = false;
+                        break 'check;
+                    }
+                    // Back to distance along the ray, so the tolerance keeps
+                    // meaning pixels of parallax.
+                    let t_fit = (1.0 / q) as f32 / cosine(cam, d);
+                    if (t_fit - truth).abs() > tol {
+                        ok = false;
+                        break 'check;
+                    }
+                }
+            }
+        } else {
+            ok = false;
+        }
+    }
+
+    if ok {
+        out.samples += 9;
+        out.pixels += area;
+        match out.patches.iter_mut().find(|(sz, _)| *sz == size) {
+            Some((_, n)) => *n += 1,
+            None => out.patches.push((size, 1)),
+        }
+        return;
+    }
+    if size <= min_size {
+        // The residue: sampled per pixel, which is what a silhouette band
+        // costs and what the edge plane in a two-plane composite carries.
+        out.samples += area;
+        out.pixels += area;
+        out.dense_px += area;
+        return;
+    }
+    let h = size * 0.5;
+    for (dx, dy) in [(0.0, 0.0), (h, 0.0), (0.0, h), (h, h)] {
+        recon_cell(sc, x0 + dx, y0 + dy, h, min_size, tol_px, s, out);
+    }
+}
+
+pub fn run_recon_adaptive(sc: &Scene, base: f32, min_size: f32, tol_px: f32, s: &mut Scratch) -> ReconAdaptive {
+    let mut out = ReconAdaptive {
+        samples: 0,
+        pixels: 0,
+        dense_px: 0,
+        patches: Vec::new(),
+    };
+    let cam = &sc.cam;
+    let nx = (cam.w as f32 / base).ceil() as u32;
+    let ny = (cam.h as f32 / base).ceil() as u32;
+    for ty in 0..ny {
+        for tx in 0..nx {
+            recon_cell(sc, tx as f32 * base, ty as f32 * base, base, min_size, tol_px, s, &mut out);
+        }
+    }
+    out.patches.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    out
+}
+
+// ---------------------------------------------------------------------------
+// E6c — true discontinuity density, free of quadtree granularity.
+// ---------------------------------------------------------------------------
+
+pub struct EdgeCensus {
+    pub pixels: u64,
+    /// Pixels adjacent to a hit/miss transition — a silhouette.
+    pub silhouette: u64,
+    /// Pixels adjacent to a relative depth jump — an occlusion boundary or
+    /// a CSG seam.
+    pub depth_step: u64,
+    /// Either of the above.
+    pub edge: u64,
+}
+
+/// The adaptive quadtree reports a 34-47% per-pixel residue, but it cannot
+/// align a square cell to a diagonal edge: a one-pixel edge crossing a 2px
+/// cell condemns all four of its children, inflating the residue by 2-4x.
+///
+/// This measures the same quantity with no cells at all — march every pixel,
+/// then ask whether any 4-neighbour differs in hit/miss or in relative depth.
+/// The gap between this number and the quadtree residue is exactly what a
+/// genuine vector representation (curves bounding patches, rather than
+/// axis-aligned subdivision) would recover, and it is the difference between
+/// "the scene is too edge-dense for patches" and "square cells are the wrong
+/// container".
+pub fn run_edge_census(sc: &Scene, s: &mut Scratch) -> EdgeCensus {
+    let cam = &sc.cam;
+    let (w, h) = (cam.w as usize, cam.h as usize);
+    let mut depth = vec![f32::INFINITY; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let d = cam.dir_at_pixel(x as f32 + 0.5, y as f32 + 0.5);
+            if let (Some(t), _) = march(&sc.tape, cam.eye, d, sc.t_near, sc.t_far, s) {
+                depth[y * w + x] = t;
+            }
+        }
+    }
+    let mut o = EdgeCensus { pixels: (w * h) as u64, silhouette: 0, depth_step: 0, edge: 0 };
+    for y in 0..h {
+        for x in 0..w {
+            let c = depth[y * w + x];
+            let mut sil = false;
+            let mut step = false;
+            for (dx, dy) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)] {
+                let (nx, ny) = (x as i32 + dx, y as i32 + dy);
+                if nx < 0 || ny < 0 || nx >= w as i32 || ny >= h as i32 {
+                    continue;
+                }
+                let n = depth[ny as usize * w + nx as usize];
+                match (c.is_finite(), n.is_finite()) {
+                    (a, b) if a != b => sil = true,
+                    (true, true) => {
+                        // Relative jump: scale-free, so it means the same
+                        // thing near and far.
+                        if (c - n).abs() / c.min(n).max(1e-6) > 0.05 {
+                            step = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if sil {
+                o.silhouette += 1;
+            }
+            if step {
+                o.depth_step += 1;
+            }
+            if sil || step {
+                o.edge += 1;
+            }
+        }
+    }
+    o
 }

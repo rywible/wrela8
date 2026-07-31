@@ -235,6 +235,10 @@ fn main() {
         println!("  evals/pixel (naive, unpruned)   {:.1}", mo.evals as f64 / mo.rays as f64);
         println!("  worst-case steps on one ray     {}", mo.steps_max);
         println!(
+            "  rays that exhausted the step budget (recorded as misses)  {}",
+            probe::STEP_CAP_HITS.swap(0, std::sync::atomic::Ordering::Relaxed)
+        );
+        println!(
             "  blend-band ray fraction         {}   <-- §16.3's most load-bearing number",
             fmt_pct(mo.band_len, mo.total_len)
         );
@@ -275,37 +279,85 @@ fn main() {
 
         // --- E6: reconstruction factor ------------------------------------
         println!();
-        println!("[E6] quadratic patch reconstruction (tolerance = 0.5 px parallax)");
-        println!("  cell_px   cells tested   pass rate   samples/frame if adopted");
-        let mut best = 0.0f32;
-        for &cp in &[4.0f32, 8.0, 16.0, 32.0] {
-            let r = probe::run_reconstruction_capped(sc, cp, cfg.recon_cap, &mut s);
-            let rate = r.passed as f64 / r.tested.max(1) as f64;
-            let nsamp = (cfg.w as f64 / cp as f64) * (cfg.h as f64 / cp as f64) * 9.0;
-            println!(
-                "  {:>7.0}   {:>12}   {:>8}   {:>10.0}",
-                cp,
-                r.tested,
-                fmt_pct(r.passed as f64, r.tested.max(1) as f64),
-                nsamp
-            );
-            if rate >= 0.90 {
-                best = best.max(cp);
+        println!("[E6] quadratic patch reconstruction — depth vs inverse depth");
+        println!("  9 samples per cell reconstruct cell_px^2 pixels, so the");
+        println!("  reconstruction factor is cell_px^2/9.");
+        let mut recon_factor = 1.0f64;
+        for (space, sname) in [
+            (probe::FitSpace::Depth, "t"),
+            (probe::FitSpace::InverseDepth, "1/t"),
+        ] {
+            for &tol in &[0.5f32, 1.0] {
+                print!("  fit {:<4} tol {:.1}px  ", sname, tol);
+                let mut best = 0.0f32;
+                for &cp in &[4.0f32, 8.0, 16.0, 32.0, 64.0] {
+                    let r = probe::run_reconstruction_capped(
+                        sc, cp, cfg.recon_cap, space, tol, &mut s,
+                    );
+                    let rate = r.passed as f64 / r.tested.max(1) as f64;
+                    print!("{:>3.0}px {:>6}  ", cp, fmt_pct(r.passed as f64, r.tested.max(1) as f64));
+                    if rate >= 0.90 {
+                        best = best.max(cp);
+                    }
+                }
+                let f = if best > 0.0 { (best * best / 9.0) as f64 } else { 1.0 };
+                println!("=> {:.1}x", f);
+                if space == probe::FitSpace::InverseDepth && tol == 1.0 {
+                    recon_factor = f;
+                }
             }
         }
-        if best > 0.0 {
-            let nsamp = (cfg.w as f64 / best as f64) * (cfg.h as f64 / best as f64) * 9.0;
+
+        println!();
+        println!("[E6b] adaptive reconstruction (quadtree, inverse-depth patches)");
+        println!("  tol_px  samples/frame  reconstruction  per-pixel residue  patch sizes");
+        let mut best_factor = 1.0f64;
+        for &tol in &[0.5f32, 1.0, 2.0, 4.0, 8.0] {
+            let ra = probe::run_recon_adaptive(sc, 64.0, 1.0, tol, &mut s);
+            let sizes: Vec<String> = ra
+                .patches
+                .iter()
+                .map(|(sz, n)| format!("{:.0}px:{}", sz, n))
+                .collect();
             println!(
-                "  -> largest cell meeting 90% pass: {}px = {:.0} samples/frame at {}x{} \
-                 ({:.1}x fewer than one sample per pixel)",
-                best,
-                nsamp,
-                cfg.w,
-                cfg.h,
-                (cfg.w as f64 * cfg.h as f64) / nsamp
+                "  {:>5.1}   {:>13}   {:>12.2}x   {:>16}   {}",
+                tol,
+                ra.samples,
+                ra.factor(),
+                fmt_pct(ra.dense_px as f64, ra.pixels.max(1) as f64),
+                sizes.join(" ")
             );
-        } else {
-            println!("  -> no cell size met the 90% bar; reconstruction is per-pixel here");
+            if tol == 1.0 {
+                best_factor = ra.factor();
+            }
+        }
+        println!(
+            "  -> at 1px tolerance the guest shades {:.2}x fewer samples than output pixels",
+            best_factor
+        );
+
+        let ec = probe::run_edge_census(sc, &mut s);
+        println!();
+        println!("[E6c] true discontinuity density (per pixel, no quadtree)");
+        println!(
+            "  silhouette (hit/miss) {}   depth step (>5%) {}   either {}",
+            fmt_pct(ec.silhouette as f64, ec.pixels as f64),
+            fmt_pct(ec.depth_step as f64, ec.pixels as f64),
+            fmt_pct(ec.edge as f64, ec.pixels as f64)
+        );
+        {
+            // What a curve-bounded representation could reach: edge pixels
+            // sampled densely, everything else carried by 16px patches
+            // (9 samples each), which the quadtree already achieves wherever
+            // a cell is clean.
+            let e = ec.edge as f64;
+            let smooth = ec.pixels as f64 - e;
+            let samples = e + smooth / (16.0 * 16.0) * 9.0;
+            println!(
+                "  ceiling if edges were curves not cells: {:.0} samples -> {:.2}x reconstruction",
+                samples,
+                ec.pixels as f64 / samples
+            );
         }
 
         // --- E7: reprojection ---------------------------------------------

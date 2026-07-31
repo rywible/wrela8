@@ -42,49 +42,63 @@ scene: colonnade
   mean width ratio IA/AA      0.04x  (<1 means IA is tighter)
 
 [E2/E3] naive sphere tracing                         §1, §2.3
-  rays 36864  hit rate  68.67%
-  evals/pixel (naive, unpruned)   20.6
+  rays 36864  hit rate  68.76%
+  evals/pixel (naive, unpruned)   19.5
   worst-case steps on one ray     192
-  blend-band ray fraction          17.91%   <-- §16.3's most load-bearing number
-    (hitting rays only)            26.47%
-    (by sample count)              22.92%
+  rays that exhausted the step budget (recorded as misses)  81
+  blend-band ray fraction          17.88%   <-- §16.3's most load-bearing number
+    (hitting rays only)            26.34%
+    (by sample count)              22.83%
 
 [E5] continuation on the hit manifold vs marching
   interior cells walked      193 (of 193)
   samples                    591
-  converged to the true hit   94.25%
-  eval-equiv / sample: continuation 10.0   marching 20.2   ratio 2.03x
-  worst depth error          0.104 px of parallax
+  converged to the true hit   97.12%
+  eval-equiv / sample: continuation 10.0   marching 20.7   ratio 2.07x
+  worst depth error          0.102 px of parallax
 
-[E6] quadratic patch reconstruction (tolerance = 0.5 px parallax)
-  cell_px   cells tested   pass rate   samples/frame if adopted
-        4            872     82.00%        82944
-        8           1480     66.08%        20736
-       16            332     35.24%         5184
-       32             71      9.86%         1296
-  -> no cell size met the 90% bar; reconstruction is per-pixel here
+[E6] quadratic patch reconstruction — depth vs inverse depth
+  9 samples per cell reconstruct cell_px^2 pixels, so the
+  reconstruction factor is cell_px^2/9.
+  fit t    tol 0.5px    4px  78.92%    8px  61.31%   16px  34.34%   32px   9.86%   64px   0.00%  => 1.0x
+  fit t    tol 1.0px    4px  81.90%    8px  64.35%   16px  37.65%   32px   9.86%   64px   0.00%  => 1.0x
+  fit 1/t  tol 0.5px    4px  79.15%    8px  62.32%   16px  36.14%   32px   9.86%   64px   0.00%  => 1.0x
+  fit 1/t  tol 1.0px    4px  81.90%    8px  64.28%   16px  38.86%   32px  11.27%   64px   0.00%  => 1.0x
+
+[E6b] adaptive reconstruction (quadtree, inverse-depth patches)
+  tol_px  samples/frame  reconstruction  per-pixel residue  patch sizes
+    0.5          150885           0.98x             35.04%   64px:1 32px:4 16px:98 8px:432 4px:1109 2px:3261 1px:6119
+    1.0          140759           1.05x             34.94%   64px:1 32px:5 16px:99 8px:452 4px:1111 2px:2823 1px:5424
+    2.0          135134           1.09x             34.88%   64px:1 32px:5 16px:107 8px:479 4px:958 2px:2576 1px:5174
+    4.0          129888           1.14x             34.61%   64px:1 32px:7 16px:123 8px:435 4px:822 2px:2452 1px:4922
+    8.0          123933           1.19x             34.30%   64px:1 32px:12 16px:112 8px:439 4px:759 2px:2266 1px:4561
+  -> at 1px tolerance the guest shades 1.05x fewer samples than output pixels
+
+[E6c] true discontinuity density (per pixel, no quadtree)
+  silhouette (hit/miss)   2.83%   depth step (>5%)   4.95%   either   7.62%
+  ceiling if edges were curves not cells: 16018 samples -> 9.21x reconstruction
 
 [E7] reprojection across the pose pair               §4.4
   pixels                     36864
-  had a reprojected hint      65.66%
-  disoccluded (no hint)       34.34%
-  hint verified by the march  97.72%
-  hint tunnelled/wrong         2.28%
+  had a reprojected hint      65.75%
+  disoccluded (no hint)       34.25%
+  hint verified by the march  53.04%
+  hint tunnelled/wrong        46.96%
 
 [E8] modelled frame cost at 512x288          §1, §16.1
-  pixels 147456: interior 3232 / marched 106560 / exterior 37664   hit rate  68.91%
-  mean marching steps on marched pixels  6.9
+  pixels 147456: interior 3232 / marched 106560 / exterior 37664   hit rate  68.89%
+  mean marching steps on marched pixels  12.5
   SOUNDNESS: pixels proved empty that the marcher hits  0
-    traversal (affine classify+prune)             32.4 MFLOP    4.80%
-    primary: slab march (tight tape)              58.7 MFLOP    8.71%
-    primary: past-slab fallback (wide tape)      364.4 MFLOP   54.05%
-    shadow rays                                   42.4 MFLOP    6.28%
-    AO + GI taps                                  50.9 MFLOP    7.54%
-    shading arithmetic (§1 model)                 81.3 MFLOP   12.06%
-    post (§1 model)                               44.2 MFLOP    6.56%
-  TOTAL 674.3 MFLOP/frame = 4573 FLOP/pixel
-  with a perfect §2.1 interior certificate: 3316 FLOP/pixel (1.38x better)
-  BRACKET: 2101 FLOP/pixel (slab re-classification) .. 4573 (as modelled)
+    traversal (affine classify+prune)             54.2 MFLOP   10.84%
+    primary: slab march (tight tape)             178.4 MFLOP   35.70%
+    primary: past-slab fallback (wide tape)        0.0 MFLOP    0.00%
+    shadow rays                                   64.4 MFLOP   12.89%
+    AO + GI taps                                  77.3 MFLOP   15.47%
+    shading arithmetic (§1 model)                 81.3 MFLOP   16.26%
+    post (§1 model)                               44.2 MFLOP    8.85%
+  TOTAL 499.8 MFLOP/frame = 3390 FLOP/pixel
+  with a perfect §2.1 interior certificate: 3279 FLOP/pixel (1.03x better)
+  BRACKET: 3390 FLOP/pixel (slab re-classification) .. 3390 (as modelled)
 
   Excluded, because they are unbuilt and would only help:
     continuation (E5, measured 1.8-2.0x on primary), fp16 (§3, 2x on
@@ -92,12 +106,12 @@ scene: colonnade
 
   Pi 5 projection — peak 92 GFLOP/s over 2.4 render-core-equivalents
   sustained   rate    budget/frame    16:9 frame (bracket)        mode at each end
-      20%    30 Hz       0.61 GFLOP      488x274 .. 720x404     below the §1 floor .. 360p
-      20%    60 Hz       0.31 GFLOP      344x194 .. 508x286     below the §1 floor .. below the §1 floor
-      30%    30 Hz       0.92 GFLOP      598x336 .. 882x496     288p (the §1 floor) .. 480p
-      30%    60 Hz       0.46 GFLOP      422x238 .. 624x350     below the §1 floor .. 288p (the §1 floor)
-      40%    30 Hz       1.23 GFLOP      690x388 .. 1018x572    360p .. 540p
-      40%    60 Hz       0.61 GFLOP      488x274 .. 720x404     below the §1 floor .. 360p
+      20%    30 Hz       0.61 GFLOP      566x318 .. 566x318     288p (the §1 floor) .. 288p (the §1 floor)
+      20%    60 Hz       0.31 GFLOP      400x224 .. 400x224     below the §1 floor .. below the §1 floor
+      30%    30 Hz       0.92 GFLOP      694x390 .. 694x390     360p .. 360p
+      30%    60 Hz       0.46 GFLOP      490x276 .. 490x276     below the §1 floor .. below the §1 floor
+      40%    30 Hz       1.23 GFLOP      802x450 .. 802x450     360p .. 360p
+      40%    60 Hz       0.61 GFLOP      566x318 .. 566x318     288p (the §1 floor) .. 288p (the §1 floor)
 
 ========================================================
 scene: colonnade-flat
@@ -140,49 +154,63 @@ scene: colonnade-flat
   mean width ratio IA/AA      0.04x  (<1 means IA is tighter)
 
 [E2/E3] naive sphere tracing                         §1, §2.3
-  rays 36864  hit rate  68.67%
-  evals/pixel (naive, unpruned)   20.6
+  rays 36864  hit rate  68.76%
+  evals/pixel (naive, unpruned)   19.5
   worst-case steps on one ray     192
-  blend-band ray fraction          17.91%   <-- §16.3's most load-bearing number
-    (hitting rays only)            26.46%
-    (by sample count)              22.93%
+  rays that exhausted the step budget (recorded as misses)  3209
+  blend-band ray fraction          17.87%   <-- §16.3's most load-bearing number
+    (hitting rays only)            26.33%
+    (by sample count)              22.83%
 
 [E5] continuation on the hit manifold vs marching
   interior cells walked      209 (of 209)
   samples                    643
-  converged to the true hit   91.45%
-  eval-equiv / sample: continuation 10.0   marching 20.7   ratio 2.07x
-  worst depth error          0.102 px of parallax
+  converged to the true hit   95.02%
+  eval-equiv / sample: continuation 10.0   marching 21.3   ratio 2.13x
+  worst depth error          0.100 px of parallax
 
-[E6] quadratic patch reconstruction (tolerance = 0.5 px parallax)
-  cell_px   cells tested   pass rate   samples/frame if adopted
-        4            872     82.22%        82944
-        8           1480     66.89%        20736
-       16            332     38.86%         5184
-       32             71      9.86%         1296
-  -> no cell size met the 90% bar; reconstruction is per-pixel here
+[E6] quadratic patch reconstruction — depth vs inverse depth
+  9 samples per cell reconstruct cell_px^2 pixels, so the
+  reconstruction factor is cell_px^2/9.
+  fit t    tol 0.5px    4px  79.27%    8px  62.26%   16px  37.65%   32px   9.86%   64px   0.00%  => 1.0x
+  fit t    tol 1.0px    4px  81.79%    8px  64.35%   16px  38.55%   32px   9.86%   64px   0.00%  => 1.0x
+  fit 1/t  tol 0.5px    4px  79.15%    8px  62.46%   16px  38.86%   32px  11.27%   64px   0.00%  => 1.0x
+  fit 1/t  tol 1.0px    4px  81.90%    8px  64.28%   16px  38.86%   32px  11.27%   64px   0.00%  => 1.0x
+
+[E6b] adaptive reconstruction (quadtree, inverse-depth patches)
+  tol_px  samples/frame  reconstruction  per-pixel residue  patch sizes
+    0.5          149543           0.99x             35.02%   64px:1 32px:5 16px:98 8px:422 4px:1103 2px:3218 1px:6031
+    1.0          140076           1.05x             34.92%   64px:1 32px:5 16px:100 8px:451 4px:1109 2px:2802 1px:5374
+    2.0          134354           1.10x             34.86%   64px:1 32px:5 16px:110 8px:473 4px:946 2px:2543 1px:5138
+    4.0          129530           1.14x             34.60%   64px:1 32px:7 16px:123 8px:438 4px:815 2px:2442 1px:4898
+    8.0          124079           1.19x             34.31%   64px:1 32px:12 16px:112 8px:437 4px:765 2px:2272 1px:4567
+  -> at 1px tolerance the guest shades 1.05x fewer samples than output pixels
+
+[E6c] true discontinuity density (per pixel, no quadtree)
+  silhouette (hit/miss)   2.83%   depth step (>5%)   4.95%   either   7.62%
+  ceiling if edges were curves not cells: 16021 samples -> 9.20x reconstruction
 
 [E7] reprojection across the pose pair               §4.4
   pixels                     36864
-  had a reprojected hint      65.66%
-  disoccluded (no hint)       34.34%
-  hint verified by the march  97.68%
-  hint tunnelled/wrong         2.32%
+  had a reprojected hint      65.75%
+  disoccluded (no hint)       34.25%
+  hint verified by the march  53.00%
+  hint tunnelled/wrong        47.00%
 
 [E8] modelled frame cost at 512x288          §1, §16.1
-  pixels 147456: interior 3536 / marched 106256 / exterior 37664   hit rate  68.91%
-  mean marching steps on marched pixels  6.9
+  pixels 147456: interior 3536 / marched 106256 / exterior 37664   hit rate  68.89%
+  mean marching steps on marched pixels  12.4
   SOUNDNESS: pixels proved empty that the marcher hits  0
-    traversal (affine classify+prune)             21.4 MFLOP    4.27%
-    primary: slab march (tight tape)              36.4 MFLOP    7.26%
-    primary: past-slab fallback (wide tape)      260.0 MFLOP   51.89%
-    shadow rays                                   26.3 MFLOP    5.24%
-    AO + GI taps                                  31.5 MFLOP    6.29%
-    shading arithmetic (§1 model)                 81.3 MFLOP   16.22%
-    post (§1 model)                               44.2 MFLOP    8.83%
-  TOTAL 501.1 MFLOP/frame = 3398 FLOP/pixel
-  with a perfect §2.1 interior certificate: 2511 FLOP/pixel (1.35x better)
-  BRACKET: 1635 FLOP/pixel (slab re-classification) .. 3398 (as modelled)
+    traversal (affine classify+prune)             37.0 MFLOP   11.00%
+    primary: slab march (tight tape)              94.8 MFLOP   28.22%
+    primary: past-slab fallback (wide tape)        0.0 MFLOP    0.00%
+    shadow rays                                   35.8 MFLOP   10.66%
+    AO + GI taps                                  43.0 MFLOP   12.79%
+    shading arithmetic (§1 model)                 81.3 MFLOP   24.18%
+    post (§1 model)                               44.2 MFLOP   13.16%
+  TOTAL 336.1 MFLOP/frame = 2280 FLOP/pixel
+  with a perfect §2.1 interior certificate: 2235 FLOP/pixel (1.02x better)
+  BRACKET: 2280 FLOP/pixel (slab re-classification) .. 2280 (as modelled)
 
   Excluded, because they are unbuilt and would only help:
     continuation (E5, measured 1.8-2.0x on primary), fp16 (§3, 2x on
@@ -190,12 +218,12 @@ scene: colonnade-flat
 
   Pi 5 projection — peak 92 GFLOP/s over 2.4 render-core-equivalents
   sustained   rate    budget/frame    16:9 frame (bracket)        mode at each end
-      20%    30 Hz       0.61 GFLOP      566x318 .. 816x458     288p (the §1 floor) .. 360p
-      20%    60 Hz       0.31 GFLOP      400x224 .. 576x324     below the §1 floor .. 288p (the §1 floor)
-      30%    30 Hz       0.92 GFLOP      694x390 .. 1000x562    360p .. 540p
-      30%    60 Hz       0.46 GFLOP      490x276 .. 706x398     below the §1 floor .. 360p
-      40%    30 Hz       1.23 GFLOP      800x450 .. 1154x650    360p .. 540p
-      40%    60 Hz       0.61 GFLOP      566x318 .. 816x458     288p (the §1 floor) .. 360p
+      20%    30 Hz       0.61 GFLOP      692x388 .. 692x388     360p .. 360p
+      20%    60 Hz       0.31 GFLOP      488x274 .. 488x274     below the §1 floor .. below the §1 floor
+      30%    30 Hz       0.92 GFLOP      846x476 .. 846x476     360p .. 360p
+      30%    60 Hz       0.46 GFLOP      598x336 .. 598x336     288p (the §1 floor) .. 288p (the §1 floor)
+      40%    30 Hz       1.23 GFLOP      978x550 .. 978x550     540p .. 540p
+      40%    60 Hz       0.61 GFLOP      692x388 .. 692x388     360p .. 360p
 
 ========================================================
 scene: melee
@@ -239,8 +267,9 @@ scene: melee
 
 [E2/E3] naive sphere tracing                         §1, §2.3
   rays 36864  hit rate  54.38%
-  evals/pixel (naive, unpruned)   19.2
+  evals/pixel (naive, unpruned)   17.1
   worst-case steps on one ray     154
+  rays that exhausted the step budget (recorded as misses)  3128
   blend-band ray fraction          96.25%   <-- §16.3's most load-bearing number
     (hitting rays only)            87.38%
     (by sample count)              93.42%
@@ -248,39 +277,52 @@ scene: melee
 [E5] continuation on the hit manifold vs marching
   interior cells walked      942 (of 942)
   samples                    3106
-  converged to the true hit   99.39%
-  eval-equiv / sample: continuation 9.5   marching 17.4   ratio 1.84x
+  converged to the true hit   99.61%
+  eval-equiv / sample: continuation 9.6   marching 17.9   ratio 1.87x
   worst depth error          0.095 px of parallax
 
-[E6] quadratic patch reconstruction (tolerance = 0.5 px parallax)
-  cell_px   cells tested   pass rate   samples/frame if adopted
-        4            706     91.93%        82944
-        8           1212     84.65%        20736
-       16            296     64.19%         5184
-       32             68     39.71%         1296
-  -> largest cell meeting 90% pass: 4px = 82944 samples/frame at 512x288 (1.8x fewer than one sample per pixel)
+[E6] quadratic patch reconstruction — depth vs inverse depth
+  9 samples per cell reconstruct cell_px^2 pixels, so the
+  reconstruction factor is cell_px^2/9.
+  fit t    tol 0.5px    4px  91.93%    8px  84.57%   16px  64.19%   32px  39.71%   64px   0.00%  => 1.8x
+  fit t    tol 1.0px    4px  92.92%    8px  85.73%   16px  71.96%   32px  55.88%   64px   0.00%  => 1.8x
+  fit 1/t  tol 0.5px    4px  91.93%    8px  84.65%   16px  76.01%   32px  72.06%   64px  10.00%  => 1.8x
+  fit 1/t  tol 1.0px    4px  92.92%    8px  85.81%   16px  76.35%   32px  72.06%   64px  50.00%  => 1.8x
+
+[E6b] adaptive reconstruction (quadtree, inverse-depth patches)
+  tol_px  samples/frame  reconstruction  per-pixel residue  patch sizes
+    0.5          102262           1.44x             46.84%   64px:9 32px:20 16px:28 8px:135 4px:457 2px:1025 1px:2014
+    1.0          100538           1.47x             46.81%   64px:9 32px:20 16px:32 8px:139 4px:402 2px:952 1px:1947
+    2.0           99596           1.48x             46.78%   64px:9 32px:20 16px:37 8px:131 4px:365 2px:930 1px:1910
+    4.0           97358           1.51x             46.68%   64px:11 32px:16 16px:39 8px:135 4px:355 2px:850 1px:1763
+    8.0           95572           1.54x             46.61%   64px:13 32px:12 16px:44 8px:132 4px:315 2px:784 1px:1682
+  -> at 1px tolerance the guest shades 1.47x fewer samples than output pixels
+
+[E6c] true discontinuity density (per pixel, no quadtree)
+  silhouette (hit/miss)   0.92%   depth step (>5%)   1.48%   either   2.38%
+  ceiling if edges were curves not cells: 8572 samples -> 17.20x reconstruction
 
 [E7] reprojection across the pose pair               §4.4
   pixels                     36864
   had a reprojected hint      38.55%
   disoccluded (no hint)       61.45%
-  hint verified by the march  98.61%
-  hint tunnelled/wrong         1.39%
+  hint verified by the march  83.06%
+  hint tunnelled/wrong        16.94%
 
 [E8] modelled frame cost at 512x288          §1, §16.1
-  pixels 147456: interior 18432 / marched 67328 / exterior 61696   hit rate  54.53%
-  mean marching steps on marched pixels  7.4
+  pixels 147456: interior 18432 / marched 67328 / exterior 61696   hit rate  54.51%
+  mean marching steps on marched pixels  17.6
   SOUNDNESS: pixels proved empty that the marcher hits  0
-    traversal (affine classify+prune)             33.4 MFLOP    6.09%
-    primary: slab march (tight tape)              17.8 MFLOP    3.25%
-    primary: past-slab fallback (wide tape)      346.2 MFLOP   63.24%
-    shadow rays                                   18.9 MFLOP    3.45%
-    AO + GI taps                                  22.6 MFLOP    4.13%
-    shading arithmetic (§1 model)                 64.3 MFLOP   11.75%
-    post (§1 model)                               44.2 MFLOP    8.08%
-  TOTAL 547.4 MFLOP/frame = 3712 FLOP/pixel
-  with a perfect §2.1 interior certificate: 3057 FLOP/pixel (1.21x better)
-  BRACKET: 1364 FLOP/pixel (slab re-classification) .. 3712 (as modelled)
+    traversal (affine classify+prune)             64.9 MFLOP   15.69%
+    primary: slab march (tight tape)             132.1 MFLOP   31.93%
+    primary: past-slab fallback (wide tape)        0.0 MFLOP    0.00%
+    shadow rays                                   49.2 MFLOP   11.88%
+    AO + GI taps                                  59.0 MFLOP   14.26%
+    shading arithmetic (§1 model)                 64.3 MFLOP   15.54%
+    post (§1 model)                               44.2 MFLOP   10.69%
+  TOTAL 413.8 MFLOP/frame = 2806 FLOP/pixel
+  with a perfect §2.1 interior certificate: 2791 FLOP/pixel (1.01x better)
+  BRACKET: 2806 FLOP/pixel (slab re-classification) .. 2806 (as modelled)
 
   Excluded, because they are unbuilt and would only help:
     continuation (E5, measured 1.8-2.0x on primary), fp16 (§3, 2x on
@@ -288,12 +330,12 @@ scene: melee
 
   Pi 5 projection — peak 92 GFLOP/s over 2.4 render-core-equivalents
   sustained   rate    budget/frame    16:9 frame (bracket)        mode at each end
-      20%    30 Hz       0.61 GFLOP      542x304 .. 894x502     288p (the §1 floor) .. 480p
-      20%    60 Hz       0.31 GFLOP      382x214 .. 632x354     below the §1 floor .. 288p (the §1 floor)
-      30%    30 Hz       0.92 GFLOP      664x372 .. 1094x616    360p .. 540p
-      30%    60 Hz       0.46 GFLOP      468x264 .. 774x434     below the §1 floor .. 360p
-      40%    30 Hz       1.23 GFLOP      766x430 .. 1264x710    360p .. 540p
-      40%    60 Hz       0.61 GFLOP      542x304 .. 894x502     288p (the §1 floor) .. 480p
+      20%    30 Hz       0.61 GFLOP      622x350 .. 622x350     288p (the §1 floor) .. 288p (the §1 floor)
+      20%    60 Hz       0.31 GFLOP      440x248 .. 440x248     below the §1 floor .. below the §1 floor
+      30%    30 Hz       0.92 GFLOP      764x428 .. 764x428     360p .. 360p
+      30%    60 Hz       0.46 GFLOP      540x302 .. 540x302     288p (the §1 floor) .. 288p (the §1 floor)
+      40%    30 Hz       1.23 GFLOP      882x496 .. 882x496     480p .. 480p
+      40%    60 Hz       0.61 GFLOP      622x350 .. 622x350     288p (the §1 floor) .. 288p (the §1 floor)
 
 ========================================================
 §16.4 kill criterion
