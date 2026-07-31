@@ -15,7 +15,7 @@
 //!
 //! The reorder unit is the **MWIR block**: a contiguous run of
 //! `MwirFn::body` indices starting at a leader, where the leader set is
-//! [`crate::codegen::mwir_block_leaders`] — the *same* function that assigns
+//! `codegen::mwir_block_leaders` — the *same* function that assigns
 //! Lane 2 its block ids. That identity is not a convenience, it is the whole
 //! correctness argument: the sidecar's `<fn_key>#<block_index>` keys are
 //! ordinals over exactly this partition, so a class looked up at index `k`
@@ -88,7 +88,7 @@
 //!
 //! One consequence to be honest about: `cargo xtask diff-eval` compares the
 //! evaluator against the **default** compile path, so it cannot see this
-//! pass at all. [`verify_successors`] is what stands in its place — the
+//! pass at all. `verify_successors` is what stands in its place — the
 //! pass proves CFG equivalence for every fn it moves, on real programs, and
 //! refuses to emit a body it cannot prove.
 
@@ -120,7 +120,7 @@ pub fn block_ranges(body: &[Inst]) -> Vec<(usize, usize)> {
 
 /// Whether a block ending at `end` (exclusive) falls through to `end`.
 ///
-/// Exactly the complement of [`crate::codegen::mwir_block_leaders`]'s two
+/// Exactly the complement of `codegen::mwir_block_leaders`'s two
 /// unconditional terminators. `JumpIfFalse` **does** fall through (it
 /// branches only when the condition is false), and so does every
 /// non-control instruction.

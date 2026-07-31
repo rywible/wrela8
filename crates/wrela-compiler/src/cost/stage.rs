@@ -170,7 +170,7 @@ pub fn codegen_cost_stage_with_placement(
 ///
 /// This is the pass's real pipeline entry point. `classes` comes from
 /// [`super::layout_classes`] over the *same* path's sidecar and a block
-/// partition; [`crate::blocklayout::LayoutClasses::Unmeasured`] plans the
+/// partition; [`crate::cost::LayoutClasses::Unmeasured`] plans the
 /// identity for every fn, so this reduces to
 /// [`codegen_cost_stage_with_placement`] exactly (proved, not asserted:
 /// `unit:no_sidecar_degrades_to_a_byte_identical_layout` at the pass, and
@@ -178,7 +178,7 @@ pub fn codegen_cost_stage_with_placement(
 ///
 /// It is a **second** entry point rather than a parameter on the first
 /// because item D is not installed on the default compile path — see
-/// `blocklayout`'s `WHY NOT WIRED` note and decision 1755.
+/// `blocklayout`'s "Why this pass is not installed" note and decision 1755.
 pub fn codegen_cost_stage_with_block_layout(
     path: &Path,
     classes: &crate::cost::LayoutClasses,
