@@ -1,0 +1,15 @@
+[package]
+name = "wrela-fieldprobe"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+# No dependencies. The probe measures counts, and counts need no crates.
+# It is deliberately standalone from `wrela-compiler`: the whole point of
+# plans/graphics.md §16 is to produce these numbers *before* FieldWir is
+# committed, so a dependency edge here would defeat the exercise.
+[dependencies]
+
+[[bin]]
+name = "fieldprobe"
+path = "src/main.rs"

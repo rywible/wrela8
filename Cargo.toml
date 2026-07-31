@@ -5,6 +5,7 @@ members = [
     "crates/wrela-compiler",
     "crates/wrela-vmm",
     "crates/xtask",
+    "crates/wrela-fieldprobe",
 ]
 
 [workspace.package]

@@ -1,0 +1,452 @@
+//! `fieldprobe` — the plans/graphics.md §16 benchmark, in counts.
+//!
+//! Runs before any FieldWir exists, deliberately: §16.4 says *do not commit
+//! FieldWir before these numbers exist*, and a measurement that needs the
+//! thing it is meant to justify arrives too late to change anything.
+//!
+//! Everything printed is a count or a ratio. Per §16.1 the probe never
+//! times: on the M4 proxy, counts port to a Pi 5 and wall-clock does not.
+//! Converting counts to Pi 5 cycles is `bench/a76-pi5.toml`'s job.
+
+mod aff;
+mod camera;
+mod eval;
+mod probe;
+mod prune;
+mod report;
+mod scene;
+mod tape;
+
+use probe::{Rng, Scratch};
+use report::{fmt_pct, median, nearest_mode, peak_flops, res_16x9};
+
+struct Config {
+    w: u32,
+    h: u32,
+    max_depth: u32,
+    base_tile: f32,
+    march_stride: u32,
+    band_samples: u32,
+    cont_cells: usize,
+    recon_cap: u64,
+    reproj_stride: u32,
+    ppm: bool,
+}
+
+fn main() {
+    let mut cfg = Config {
+        // §1's floor. Ratios below are scale-relative, but the edge-cell and
+        // reconstruction numbers are per-pixel, so the resolution is part of
+        // the result and is printed with it.
+        w: 512,
+        h: 288,
+        max_depth: 4,
+        base_tile: 64.0,
+        march_stride: 2,
+        band_samples: 24,
+        cont_cells: 900,
+        recon_cap: 1200,
+        reproj_stride: 2,
+        ppm: false,
+    };
+    let mut only: Option<String> = None;
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].clone();
+        let mut next = || -> String {
+            i += 1;
+            args.get(i).cloned().unwrap_or_default()
+        };
+        match a.as_str() {
+            "--width" => cfg.w = next().parse().unwrap_or(cfg.w),
+            "--height" => cfg.h = next().parse().unwrap_or(cfg.h),
+            "--depth" => cfg.max_depth = next().parse().unwrap_or(cfg.max_depth),
+            "--scene" => only = Some(next()),
+            "--ppm" => cfg.ppm = true,
+            "--quick" => {
+                cfg.march_stride = 4;
+                cfg.cont_cells = 200;
+                cfg.recon_cap = 300;
+                cfg.reproj_stride = 4;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    println!("fieldprobe — plans/graphics.md §16, counts only");
+    println!(
+        "resolution {}x{}  base tile {}px  max depth {}  leaf {}px",
+        cfg.w,
+        cfg.h,
+        cfg.base_tile,
+        cfg.max_depth,
+        cfg.base_tile / (1u32 << cfg.max_depth) as f32
+    );
+    println!();
+
+    let scenes = [
+        scene::colonnade(cfg.w, cfg.h),
+        scene::colonnade_flat(cfg.w, cfg.h),
+        scene::melee(cfg.w, cfg.h),
+    ];
+    let mut summary: Vec<(String, f64, f64, f64)> = Vec::new();
+
+    for sc in scenes.iter() {
+        if let Some(o) = &only {
+            if o != sc.name {
+                continue;
+            }
+        }
+        let mut s = Scratch::default();
+        let mut rng = Rng(0x5eed_1234);
+
+        println!("========================================================");
+        println!("scene: {}", sc.name);
+        println!("  spec: {}", sc.spec);
+        println!(
+            "  tape: {} ops, {} FLOP-equiv, {} blend nodes, t in [{}, {}]",
+            sc.tape.len(),
+            sc.tape.weight(),
+            sc.tape.blend_count(),
+            sc.t_near,
+            sc.t_far
+        );
+        println!("========================================================");
+
+        // --- self-check: nothing below means anything until this passes ---
+        let chk = probe::run_selfcheck(sc, 240, 32, &mut rng, &mut s);
+        println!();
+        println!("[selfcheck]  (the instrument, not the design)");
+        println!("  samples                 {}", chk.samples);
+        println!("  AA containment failures {}", chk.containment_failures);
+        println!("  prune bit-mismatches    {}", chk.prune_mismatches);
+        println!(
+            "  grad rel err            max {:.2e}  p99 {:.2e}  ({} smooth samples)",
+            chk.grad_max_rel_err, chk.grad_p99_rel_err, chk.grad_tested
+        );
+        println!(
+            "  non-differentiable pts  {}  ({} of sampled axes — no gradient for §2.5 there)",
+            chk.grad_kink_skips,
+            fmt_pct(
+                chk.grad_kink_skips as f64,
+                (chk.grad_kink_skips + chk.grad_tested).max(1) as f64
+            )
+        );
+        println!(
+            "  median enclosure overwidth {:.2}x  (1.0 = exact)",
+            chk.mean_overwidth
+        );
+        // Gate on p99, not max: a central difference within ~eps of a kink is
+        // genuinely neither one-sided derivative, so the tail measures the
+        // scene's non-smoothness, not the instrument's correctness.
+        if chk.containment_failures > 0
+            || chk.prune_mismatches > 0
+            || chk.grad_p99_rel_err > 1e-2
+        {
+            println!();
+            println!("  FAIL — the instrument is unsound; every number below is void.");
+            std::process::exit(1);
+        }
+
+        // --- E1: classification + pruning by depth -------------------------
+        let cl = probe::run_classify(sc, cfg.max_depth, cfg.base_tile, &mut s);
+        let total_area = (cfg.w as f64) * (cfg.h as f64);
+        println!();
+        println!("[E1] tile classification and tape pruning by depth   §2.1, §2.2");
+        println!("  depth  cells    tile_px   live_ops(mean/med/max)   blends  weight");
+        for (d, st) in cl.per_depth.iter().enumerate() {
+            if st.cells == 0 {
+                continue;
+            }
+            let tile = cfg.base_tile / (1u32 << d) as f32;
+            let mut h = st.ops_hist.clone();
+            h.sort_unstable();
+            println!(
+                "  {:>5}  {:>7}  {:>6.1}   {:>6.1} / {:>4} / {:>4}      {:>5.2}  {:>6.1}",
+                d,
+                st.cells,
+                tile,
+                st.ops_sum as f64 / st.cells as f64,
+                median(&h),
+                st.ops_max,
+                st.blends_sum as f64 / st.cells as f64,
+                st.weight_sum as f64 / st.cells as f64,
+            );
+        }
+        println!(
+            "  (full tape = {} ops, {} FLOP-equiv)",
+            sc.tape.len(),
+            sc.tape.weight()
+        );
+        println!();
+        println!("  screen area by outcome:");
+        println!("    exterior (no ray traced)   {}", fmt_pct(cl.area_exterior, total_area));
+        println!("    certified interior         {}", fmt_pct(cl.area_interior, total_area));
+        println!("    edge cells (sil. or seam)  {}", fmt_pct(cl.area_edge, total_area));
+        println!("    unresolved residue         {}", fmt_pct(cl.area_unresolved, total_area));
+        println!("    non-finite enclosures      {}", cl.nonfinite);
+        println!(
+            "  interior certificate rejected at leaf: dt-straddles {} / face-test {}",
+            cl.fail_dt_straddles, cl.fail_faces
+        );
+        let leaf = cfg.base_tile / (1u32 << cfg.max_depth) as f32;
+        let edge_len = cl.edge_cells as f64 * leaf as f64;
+        println!();
+        println!(
+            "  edge cells {} at {}px  ->  est. edge length ~{:.0} px",
+            cl.edge_cells, leaf, edge_len
+        );
+        println!(
+            "    = {:.2} screen-widths; scaled to 4K, edge pixels ~{:.0}k = {} of a 4K frame",
+            edge_len / cfg.w as f64,
+            edge_len * (3840.0 / cfg.w as f64) * 2.0 / 1000.0,
+            fmt_pct(edge_len * (3840.0 / cfg.w as f64) * 2.0, 3840.0 * 2160.0)
+        );
+
+        // --- E4: AA vs plain IA -------------------------------------------
+        let ti = probe::run_tightness(sc, 32.0, &mut s);
+        println!();
+        println!("[E4] affine vs plain interval arithmetic             §2.1");
+        println!("  cells tested                {}", ti.cells);
+        println!(
+            "  proven empty by AA alone    {}",
+            fmt_pct(ti.aa_empty as f64, ti.cells as f64)
+        );
+        println!(
+            "  proven empty by plain IA    {}",
+            fmt_pct(ti.iv_empty as f64, ti.cells as f64)
+        );
+        println!(
+            "  mean width ratio IA/AA      {:.2}x  (<1 means IA is tighter)",
+            ti.width_ratio_sum / ti.width_ratio_n.max(1) as f64
+        );
+
+        // --- E2/E3: marching ----------------------------------------------
+        let mo = probe::run_march(sc, cfg.march_stride, cfg.band_samples, &mut s);
+        println!();
+        println!("[E2/E3] naive sphere tracing                         §1, §2.3");
+        println!(
+            "  rays {}  hit rate {}",
+            mo.rays,
+            fmt_pct(mo.hits as f64, mo.rays as f64)
+        );
+        println!("  evals/pixel (naive, unpruned)   {:.1}", mo.evals as f64 / mo.rays as f64);
+        println!("  worst-case steps on one ray     {}", mo.steps_max);
+        println!(
+            "  blend-band ray fraction         {}   <-- §16.3's most load-bearing number",
+            fmt_pct(mo.band_len, mo.total_len)
+        );
+        println!(
+            "    (hitting rays only)           {}",
+            fmt_pct(mo.band_len_hit, mo.total_len_hit)
+        );
+        println!(
+            "    (by sample count)             {}",
+            fmt_pct(mo.band_active_samples as f64, mo.band_samples as f64)
+        );
+
+        // --- E5: continuation ---------------------------------------------
+        let step = (cl.interior_cells.len() / cfg.cont_cells.max(1)).max(1);
+        let cells: Vec<_> = cl.interior_cells.iter().step_by(step).copied().collect();
+        let co = probe::run_continuation(sc, &cells, &mut s);
+        println!();
+        println!("[E5] continuation on the hit manifold vs marching");
+        println!(
+            "  interior cells walked      {} (of {})",
+            cells.len(),
+            cl.interior_cells.len()
+        );
+        println!("  samples                    {}", co.samples);
+        println!(
+            "  converged to the true hit  {}",
+            fmt_pct(co.converged as f64, co.samples.max(1) as f64)
+        );
+        if co.samples > 0 {
+            println!(
+                "  eval-equiv / sample: continuation {:.1}   marching {:.1}   ratio {:.2}x",
+                co.cont_evals / co.samples as f64,
+                co.march_evals / co.samples as f64,
+                co.march_evals / co.cont_evals.max(1e-9)
+            );
+        }
+        println!("  worst depth error          {:.3} px of parallax", co.max_err_px);
+
+        // --- E6: reconstruction factor ------------------------------------
+        println!();
+        println!("[E6] quadratic patch reconstruction (tolerance = 0.5 px parallax)");
+        println!("  cell_px   cells tested   pass rate   samples/frame if adopted");
+        let mut best = 0.0f32;
+        for &cp in &[4.0f32, 8.0, 16.0, 32.0] {
+            let r = probe::run_reconstruction_capped(sc, cp, cfg.recon_cap, &mut s);
+            let rate = r.passed as f64 / r.tested.max(1) as f64;
+            let nsamp = (cfg.w as f64 / cp as f64) * (cfg.h as f64 / cp as f64) * 9.0;
+            println!(
+                "  {:>7.0}   {:>12}   {:>8}   {:>10.0}",
+                cp,
+                r.tested,
+                fmt_pct(r.passed as f64, r.tested.max(1) as f64),
+                nsamp
+            );
+            if rate >= 0.90 {
+                best = best.max(cp);
+            }
+        }
+        if best > 0.0 {
+            let nsamp = (cfg.w as f64 / best as f64) * (cfg.h as f64 / best as f64) * 9.0;
+            println!(
+                "  -> largest cell meeting 90% pass: {}px = {:.0} samples/frame at {}x{} \
+                 ({:.1}x fewer than one sample per pixel)",
+                best,
+                nsamp,
+                cfg.w,
+                cfg.h,
+                (cfg.w as f64 * cfg.h as f64) / nsamp
+            );
+        } else {
+            println!("  -> no cell size met the 90% bar; reconstruction is per-pixel here");
+        }
+
+        // --- E7: reprojection ---------------------------------------------
+        let rp = probe::run_reprojection(sc, cfg.reproj_stride, 0.08, &mut s);
+        println!();
+        println!("[E7] reprojection across the pose pair               §4.4");
+        println!("  pixels                     {}", rp.pixels);
+        println!(
+            "  had a reprojected hint     {}",
+            fmt_pct(rp.hinted as f64, rp.pixels as f64)
+        );
+        println!(
+            "  disoccluded (no hint)      {}",
+            fmt_pct(rp.disoccluded as f64, rp.pixels as f64)
+        );
+        println!(
+            "  hint verified by the march {}",
+            fmt_pct(rp.verified as f64, rp.hinted.max(1) as f64)
+        );
+        println!(
+            "  hint tunnelled/wrong       {}",
+            fmt_pct(rp.tunnelled as f64, rp.hinted.max(1) as f64)
+        );
+
+        // --- E8: modelled frame cost, and the resolution it buys ----------
+        let fc = probe::run_framecost(sc, &cl, &mut s);
+        println!();
+        println!("[E8] modelled frame cost at {}x{}          §1, §16.1", cfg.w, cfg.h);
+        println!(
+            "  pixels {}: interior {} / marched {} / exterior {}   hit rate {}",
+            fc.pixels,
+            fc.interior_px,
+            fc.marched_px,
+            fc.exterior_px,
+            fmt_pct(fc.hits as f64, fc.pixels as f64)
+        );
+        println!("  mean marching steps on marched pixels  {:.1}", fc.mean_steps);
+        println!(
+            "  SOUNDNESS: pixels proved empty that the marcher hits  {}",
+            fc.exterior_hits
+        );
+        if fc.exterior_hits > 0 {
+            println!("  FAIL — the enclosure lied; every area fraction above is void.");
+            std::process::exit(1);
+        }
+        let t = fc.total();
+        for (label, v) in [
+            ("traversal (affine classify+prune)", fc.traversal),
+            ("primary: slab march (tight tape)", fc.primary - fc.primary_fallback),
+            ("primary: past-slab fallback (wide tape)", fc.primary_fallback),
+            ("shadow rays", fc.shadow),
+            ("AO + GI taps", fc.ao_gi),
+            ("shading arithmetic (§1 model)", fc.shade),
+            ("post (§1 model)", fc.post),
+        ] {
+            println!("    {:<40} {:>9.1} MFLOP  {}", label, v / 1e6, fmt_pct(v, t));
+        }
+        println!("  TOTAL {:.1} MFLOP/frame = {:.0} FLOP/pixel", t / 1e6, fc.per_pixel());
+        println!(
+            "  with a perfect §2.1 interior certificate: {:.0} FLOP/pixel ({:.2}x better)",
+            fc.per_pixel_ideal(),
+            fc.per_pixel() / fc.per_pixel_ideal().max(1e-9)
+        );
+        println!(
+            "  BRACKET: {:.0} FLOP/pixel (slab re-classification) .. {:.0} (as modelled)",
+            fc.per_pixel_optimistic(),
+            fc.per_pixel()
+        );
+        println!();
+        println!("  Excluded, because they are unbuilt and would only help:");
+        println!("    continuation (E5, measured 1.8-2.0x on primary), fp16 (§3, 2x on");
+        println!("    secondary+shading), temporal reuse (§4/E7 hint rate 39-66%).");
+
+        println!();
+        println!("  Pi 5 projection — peak {:.0} GFLOP/s over 2.4 render-core-equivalents",
+            peak_flops() / 1e9);
+        println!("  sustained   rate    budget/frame    16:9 frame (bracket)        mode at each end");
+        for sust in [0.20f64, 0.30, 0.40] {
+            for rate in [30.0f64, 60.0] {
+                let budget = peak_flops() * sust / rate;
+                let lo = budget / fc.per_pixel();
+                let hi = budget / fc.per_pixel_optimistic();
+                println!(
+                    "  {:>6.0}%   {:>3.0} Hz   {:>8.2} GFLOP   {:>10} .. {:<10}  {} .. {}",
+                    sust * 100.0,
+                    rate,
+                    budget / 1e9,
+                    res_16x9(lo),
+                    res_16x9(hi),
+                    nearest_mode(lo),
+                    nearest_mode(hi)
+                );
+            }
+        }
+
+        if cfg.ppm {
+            let img = probe::debug_ppm(sc, &mut s);
+            let path = format!("{}.ppm", sc.name);
+            let _ = std::fs::write(&path, img);
+            println!();
+            println!("  wrote {} (eyeball only, not an oracle)", path);
+        }
+
+        let d3 = cl
+            .per_depth
+            .get(3)
+            .map(|st| st.ops_sum as f64 / st.cells.max(1) as f64)
+            .unwrap_or(0.0);
+        summary.push((
+            sc.name.to_string(),
+            d3,
+            cl.area_interior / total_area,
+            mo.band_len / mo.total_len.max(1e-9),
+        ));
+        println!();
+    }
+
+    // --- §16.4's kill criterion, evaluated -------------------------------
+    println!("========================================================");
+    println!("§16.4 kill criterion");
+    println!("  \"if the worst-case scene shows pruned tapes above ~100 ops at depth 3,");
+    println!("   interior-tile fraction under ~50%, and blend-band ray fraction above ~30%");
+    println!("   together, the 512x288 floor is the ceiling too\"");
+    println!();
+    for (name, d3, interior, band) in &summary {
+        let a = *d3 > 100.0;
+        let b = *interior < 0.50;
+        let c = *band > 0.30;
+        println!(
+            "  {:<15} depth-3 ops {:>6.1} [{}]  interior {:>5.1}% [{}]  band {:>5.1}% [{}]  => {}",
+            name,
+            d3,
+            if a { "FAIL" } else { "ok" },
+            interior * 100.0,
+            if b { "FAIL" } else { "ok" },
+            band * 100.0,
+            if c { "FAIL" } else { "ok" },
+            if a && b && c { "KILL" } else { "survives" }
+        );
+    }
+    println!();
+    println!("Counts only. Converting these to Pi 5 time is bench/a76-pi5.toml's job,");
+    println!("deliberately not done here (§16.1: wall-clock on the M4 proxy does not port).");
+}
