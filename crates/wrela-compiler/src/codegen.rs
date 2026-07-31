@@ -346,6 +346,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::cost::{CostRule, EmittedWord, FlagEffect, MEM_SP_REG, MemClass, MemRef};
 use crate::encode::{self, Cond};
 use crate::mwir::{self, Inst, LayoutCtx, MwirFn, MwirProgram, Temp};
+use crate::regalloc;
 use crate::sema::types::Type;
 use crate::syntax::ast::{AccessMode, BinOp};
 
@@ -1074,7 +1075,35 @@ struct Frame {
     entropy_scratch_size: usize,
     lr_off: usize,
     size: usize,
+    /// plans/codegen-pareto.md item E: the physical register each
+    /// **resident** temp lives in, or `None` for a temp that keeps its
+    /// frame slot. Always all-`None` in `dev` and on the async path.
+    temp_reg: Vec<Option<u8>>,
+    /// Reverse index for [`Self::reg_at`]: virtual offset -> register.
+    virt_to_reg: BTreeMap<usize, u8>,
 }
+
+/// The first byte offset [`build_frame`] hands out for a **resident**
+/// temp (plans/codegen-pareto.md item E).
+///
+/// A resident temp has no frame bytes at all, but `Frame::off` still has
+/// to answer for it, because ~220 emission sites in this file ask for a
+/// temp's offset and then hand it to `load_slot`/`store_slot`. Rather
+/// than rewrite every one of them — the exact "layers for their own
+/// sake" the doctrine refuses — a resident temp gets a **virtual**
+/// offset far above any legal frame, and the three slot helpers
+/// (`load_slot`, `store_slot`, `addr_of_slot`) translate it. Two
+/// consequences make this fail closed rather than merely convenient:
+///
+/// - Any virtual offset that reaches a slot helper *without* a register
+///   behind it — an interior word of a resident temp, say — is not a
+///   legal frame offset and never can be, so it is caught and reported
+///   as a producer bug instead of silently truncating into an `imm12`.
+/// - `addr_of_slot` on a resident temp is refused outright. It cannot
+///   happen (the probe marks any address-taken temp `Touch::Escape`, and
+///   an escaped temp is never resident), which is exactly why reaching
+///   it means the probe and the emitter have diverged.
+const VIRT_SLOT_BASE: usize = 1 << 20;
 
 /// The alignment this ABI keeps `sp` at: `Frame::size` is rounded up to
 /// 16 (AAPCS64's own requirement, kept even though nothing here calls out
@@ -1109,21 +1138,42 @@ fn round_up_16(n: usize) -> usize {
 /// something this fn assumes, because the imm12 ceiling below is a bound
 /// on what `addr_of_slot` finally encodes, and that is `off + slot_bias`,
 /// not `off`.
+/// `assign` is item E's residency decision. Every temp it names gets a
+/// **virtual** offset (see [`VIRT_SLOT_BASE`]) and contributes zero
+/// bytes to the frame — which is where the frame-size win comes from.
+/// `Assignment::none(..)` reproduces the naive spill-everything frame
+/// byte for byte, and is what `dev` and the async path pass.
 fn build_frame(
     f: &MwirFn,
     layout: &LayoutCtx,
     reply_stage_size: usize,
     entropy_scratch_size: usize,
     slot_bias: usize,
+    assign: &regalloc::Assignment,
 ) -> Result<Frame, CodegenError> {
     let mut offset = 0usize;
     let mut temp_offset = Vec::with_capacity(f.temp_types.len());
     let mut temp_size = Vec::with_capacity(f.temp_types.len());
-    for ty in &f.temp_types {
+    let mut temp_reg: Vec<Option<u8>> = Vec::with_capacity(f.temp_types.len());
+    let mut virt_to_reg: BTreeMap<usize, u8> = BTreeMap::new();
+    let mut next_virt = VIRT_SLOT_BASE;
+    for (t, ty) in f.temp_types.iter().enumerate() {
         let sz = mwir::size_of(ty, layout).map_err(|e| CodegenError::unimplemented(&e))?;
-        temp_offset.push(offset);
-        temp_size.push(sz);
-        offset += sz;
+        match assign.of(t) {
+            Some(reg) => {
+                temp_offset.push(next_virt);
+                virt_to_reg.insert(next_virt, reg);
+                next_virt += FRAME_SLOT_BYTES as usize;
+                temp_size.push(sz);
+                temp_reg.push(Some(reg));
+            }
+            None => {
+                temp_offset.push(offset);
+                temp_size.push(sz);
+                temp_reg.push(None);
+                offset += sz;
+            }
+        }
     }
     let self_ptr_off = if f.receiver.is_some() {
         let o = offset;
@@ -1193,6 +1243,8 @@ fn build_frame(
         entropy_scratch_size,
         lr_off,
         size,
+        temp_reg,
+        virt_to_reg,
     })
 }
 
@@ -1203,6 +1255,54 @@ impl Frame {
 
     fn size_of_temp(&self, t: Temp) -> usize {
         self.temp_size[t.0]
+    }
+
+    /// The register behind a virtual slot offset, or `None` for a real
+    /// frame offset. See [`VIRT_SLOT_BASE`].
+    fn reg_at(&self, off: usize) -> Option<u8> {
+        if off < VIRT_SLOT_BASE {
+            None
+        } else {
+            self.virt_to_reg.get(&off).copied()
+        }
+    }
+
+    /// True for an offset that is virtual but has no register behind it
+    /// — an interior word of a resident temp, which cannot happen and is
+    /// reported as a producer bug if it does.
+    fn is_stray_virtual(&self, off: usize) -> bool {
+        off >= VIRT_SLOT_BASE && !self.virt_to_reg.contains_key(&off)
+    }
+
+    /// Which temp owns byte offset `off` in the **baseline** (all-spilled)
+    /// frame, if any. Used only by the probe pass, where every temp has a
+    /// real slot: a hit at exactly `temp_offset[t]` is a base access, a
+    /// hit inside the slot is an interior one.
+    fn temp_at_offset(&self, off: usize) -> Option<(usize, bool)> {
+        for (t, (&base, &size)) in self
+            .temp_offset
+            .iter()
+            .zip(self.temp_size.iter())
+            .enumerate()
+        {
+            if base >= VIRT_SLOT_BASE {
+                continue;
+            }
+            if off >= base && off < base + size.max(1) {
+                return Some((t, off == base));
+            }
+        }
+        None
+    }
+
+    /// Resident temps and their registers, for the `--stage=asm` header
+    /// and the unit oracles.
+    fn residents(&self) -> Vec<(usize, u8)> {
+        self.temp_reg
+            .iter()
+            .enumerate()
+            .filter_map(|(t, r)| r.map(|p| (t, p)))
+            .collect()
     }
 }
 
@@ -1264,6 +1364,18 @@ struct FnCtx<'a> {
     /// Sequence for Cold-unique MemRefs when a Load/Store address is not
     /// a proven `[base, #imm]` (cost hard-cut item B).
     cold_seq: u64,
+    /// plans/codegen-pareto.md item E: every frame-slot access this
+    /// context performed, as `(byte offset, how)`. Read only by the
+    /// probe pass (`probe_fn_facts`), which turns it into the live
+    /// ranges and the escape set `regalloc::allocate` consumes. Always
+    /// recorded — a `Vec` push per slot access — rather than gated on a
+    /// flag, so the probe can never observe a different emitter than the
+    /// one that runs.
+    slot_accesses: Vec<(usize, regalloc::Touch, usize)>,
+    /// Set when a virtual slot offset reached a helper that cannot
+    /// serve it (see [`VIRT_SLOT_BASE`]). `emit_fn` turns it into a
+    /// producer-bug error rather than emitting a wrong instruction.
+    resident_misuse: Option<String>,
 }
 
 /// Integrity item D: structural emit-tag shape checked at `FnCtx::push` /
@@ -1455,7 +1567,45 @@ impl<'a> FnCtx<'a> {
 
     // --- loads/stores between a frame slot and a scratch register -----
 
+    /// plans/codegen-pareto.md item E: `dst = src`, the whole substitute
+    /// for a spill/reload pair once a temp is resident. Deleting the
+    /// `str`/`ldr` deletes the store's V-pipe data uop and both
+    /// accesses' AGU uops with them; what is left is one I-pipe move.
+    fn mov_reg(&mut self, dst: u8, src: u8) {
+        if dst == src {
+            return;
+        }
+        self.push(
+            encode::enc_mov_reg(dst, src, true),
+            format!("mov {}, {}", reg_name(dst), reg_name(src)),
+            CostRule::Alu,
+            Some(dst),
+            &[src],
+        );
+    }
+
+    /// A virtual slot offset reached a helper that cannot serve it: the
+    /// probe and the emitter disagree about how a temp is addressed.
+    /// Recorded rather than emitted-around (`emit_fn` fails the build).
+    fn note_resident_misuse(&mut self, what: &str, off: usize) {
+        if self.resident_misuse.is_none() {
+            self.resident_misuse = Some(format!(
+                "register-allocated temp reached through {what} at virtual slot offset {off}"
+            ));
+        }
+    }
+
     fn load_slot(&mut self, reg: u8, off: usize) {
+        self.slot_accesses
+            .push((off, regalloc::Touch::Read, self.words.len()));
+        if let Some(home) = self.frame.reg_at(off) {
+            self.mov_reg(reg, home);
+            return;
+        }
+        if self.frame.is_stray_virtual(off) {
+            self.note_resident_misuse("load_slot", off);
+            return;
+        }
         let off = (off + self.slot_bias) as u16;
         let base = self.slot_base;
         let mem = MemRef::for_base_imm(base, off as u64);
@@ -1470,6 +1620,16 @@ impl<'a> FnCtx<'a> {
     }
 
     fn store_slot(&mut self, reg: u8, off: usize) {
+        self.slot_accesses
+            .push((off, regalloc::Touch::Write, self.words.len()));
+        if let Some(home) = self.frame.reg_at(off) {
+            self.mov_reg(home, reg);
+            return;
+        }
+        if self.frame.is_stray_virtual(off) {
+            self.note_resident_misuse("store_slot", off);
+            return;
+        }
         let off = (off + self.slot_bias) as u16;
         let base = self.slot_base;
         let mem = MemRef::for_base_imm(base, off as u64);
@@ -1544,6 +1704,14 @@ impl<'a> FnCtx<'a> {
     /// base address before index-scaling (`slot_base`/`slot_bias`: sp for
     /// sync fns, the persistent turn area for async fns).
     fn addr_of_slot(&mut self, reg: u8, off: usize) {
+        self.slot_accesses
+            .push((off, regalloc::Touch::Escape, self.words.len()));
+        if off >= VIRT_SLOT_BASE {
+            // Cannot happen: the probe marks every address-taken temp
+            // `Touch::Escape`, and an escaped temp is never resident.
+            self.note_resident_misuse("addr_of_slot", off);
+            return;
+        }
         let off = (off + self.slot_bias) as u16;
         let base = self.slot_base;
         self.push(
@@ -4552,6 +4720,149 @@ fn emit_slotmap_mint_id(map: Temp, ctx: &mut FnCtx<'_>) -> Result<(), CodegenErr
     Ok(())
 }
 
+/// plans/codegen-pareto.md item E, decision 1761: run the real emitter
+/// once against the **baseline** (all-spilled) frame and report what it
+/// did, so `regalloc::allocate` decides from measurement rather than
+/// from a second, drifting model of `emit_one`'s operand shapes.
+///
+/// Program points are `0` = prologue, `1..=body.len()` = the body, and
+/// `body.len() + 1` = the epilogue, so parameter stores and `mut`
+/// write-backs are ordinary touches. The emitted words of each point
+/// supply the two remaining facts: whether it contains a returning call
+/// (`CostRule::Call`; `Abort`/`AbortVal` are noreturn and are not
+/// barriers) and which registers it already names.
+///
+/// This pass costs one extra emission per function under `release`, and
+/// nothing at all under `dev` — the caller does not run it when the opt
+/// is off. It is thrown away: nothing it emits reaches the image.
+fn probe_fn_facts(
+    f: &MwirFn,
+    layout: &LayoutCtx,
+    rodata: &mut RodataPool,
+    frame: &Frame,
+    block_ids: &[Option<u32>],
+) -> Result<regalloc::FnFacts, CodegenError> {
+    let dummy_targets = vec![0usize; f.body.len() + 1];
+    let mut points: Vec<regalloc::PointFacts> = Vec::with_capacity(f.body.len() + 2);
+
+    let finish = |ctx: FnCtx| -> regalloc::PointFacts {
+        let mut touches = Vec::new();
+        for &(off, how, word) in &ctx.slot_accesses {
+            if let Some((temp, is_base)) = frame.temp_at_offset(off) {
+                let whole_slot = frame.temp_size[temp] == FRAME_SLOT_BYTES as usize;
+                let how = if how == regalloc::Touch::Escape || !is_base || !whole_slot {
+                    regalloc::Touch::Escape
+                } else {
+                    how
+                };
+                touches.push((temp, how, word));
+            }
+        }
+        let mut call_words = Vec::new();
+        let mut regs = BTreeSet::new();
+        for (i, w) in ctx.words.iter().enumerate() {
+            if w.rule == CostRule::Call {
+                call_words.push(i);
+            }
+            if let Some(d) = w.dst {
+                regs.insert(d);
+            }
+            for &s in &w.srcs[..w.src_len as usize] {
+                regs.insert(s);
+            }
+        }
+        regalloc::PointFacts {
+            touches,
+            call_words,
+            regs,
+        }
+    };
+
+    // Point 0: the prologue.
+    {
+        let mut ctx = FnCtx {
+            frame,
+            layout,
+            rodata,
+            word_offsets: &dummy_targets,
+            words: Vec::new(),
+            relocs: Vec::new(),
+            slot_base: X_SP,
+            slot_bias: 0,
+            cold_seq: 0,
+            slot_accesses: Vec::new(),
+            resident_misuse: None,
+        };
+        emit_prologue(f, frame, &mut ctx)?;
+        points.push(finish(ctx));
+    }
+
+    // Points 1..=body.len(): one per instruction.
+    for (i, inst) in f.body.iter().enumerate() {
+        let mut ctx = FnCtx {
+            frame,
+            layout,
+            rodata,
+            word_offsets: &dummy_targets,
+            words: Vec::new(),
+            relocs: Vec::new(),
+            slot_base: X_SP,
+            slot_bias: 0,
+            cold_seq: 0,
+            slot_accesses: Vec::new(),
+            resident_misuse: None,
+        };
+        if let Some(id) = block_ids[i] {
+            if block_count() {
+                ctx.emit_block_hit(id);
+            }
+        }
+        emit_one(inst, f, &mut ctx)?;
+        points.push(finish(ctx));
+    }
+
+    // Point body.len()+1: the epilogue.
+    {
+        let mut ctx = FnCtx {
+            frame,
+            layout,
+            rodata,
+            word_offsets: &dummy_targets,
+            words: Vec::new(),
+            relocs: Vec::new(),
+            slot_base: X_SP,
+            slot_bias: 0,
+            cold_seq: 0,
+            slot_accesses: Vec::new(),
+            resident_misuse: None,
+        };
+        emit_epilogue(f, frame, &mut ctx)?;
+        points.push(finish(ctx));
+    }
+
+    // Back edges: a branch whose target index is at or before its own.
+    // `Return` targets the epilogue sentinel and is always forward.
+    let mut back_edges = Vec::new();
+    for (i, inst) in f.body.iter().enumerate() {
+        let target = match inst {
+            Inst::Jump { target } => Some(*target),
+            Inst::JumpIfFalse { target, .. } => Some(*target),
+            _ => None,
+        };
+        if let Some(t) = target {
+            if t <= i {
+                back_edges.push((i + 1, t + 1));
+            }
+        }
+    }
+
+    Ok(regalloc::FnFacts {
+        temp_count: f.temp_types.len(),
+        points,
+        back_edges,
+    })
+}
+
 fn emit_fn(
     _key: &str,
     f: &MwirFn,
@@ -4560,7 +4871,8 @@ fn emit_fn(
 ) -> Result<CodegenFn, CodegenError> {
     // A sync fn never awaits, so it never stages a reply (0). Entropy
     // scratch is reserved when the body emits `Inst::Entropy` (item Es).
-    let frame = build_frame(f, layout, 0, mwir_entropy_scratch_size(f), 0)?;
+    let naive = regalloc::Assignment::none(f.temp_types.len());
+    let frame = build_frame(f, layout, 0, mwir_entropy_scratch_size(f), 0, &naive)?;
 
     // plans/M20.md item B / decision 1607: Lane 2 instruments **every**
     // owner, not just `app`. `cost-runtime` is the largest corpus case
@@ -4575,6 +4887,27 @@ fn emit_fn(
         vec![None; f.body.len()]
     };
 
+    // plans/codegen-pareto.md item E: decide residency from a real
+    // emission against the naive frame, then rebuild the frame without
+    // the temps that no longer need slots. `dev` never runs either step
+    // and keeps the spill-everything reference (M19 freeze 1407).
+    let frame = if regalloc::regalloc() {
+        let facts = probe_fn_facts(f, layout, rodata, &frame, &block_ids)?;
+        let scalar_slot: Vec<bool> = frame
+            .temp_size
+            .iter()
+            .map(|&s| s == FRAME_SLOT_BYTES as usize)
+            .collect();
+        let assign = regalloc::allocate(&facts, &scalar_slot);
+        if assign.is_empty() {
+            frame
+        } else {
+            build_frame(f, layout, 0, mwir_entropy_scratch_size(f), 0, &assign)?
+        }
+    } else {
+        frame
+    };
+
     let empty: [usize; 0] = [];
     let mut probe_pro = FnCtx {
         frame: &frame,
@@ -4586,6 +4919,8 @@ fn emit_fn(
         slot_base: X_SP,
         slot_bias: 0,
         cold_seq: 0,
+        slot_accesses: Vec::new(),
+        resident_misuse: None,
     };
     emit_prologue(f, &frame, &mut probe_pro)?;
     let prologue_len = probe_pro.words.len();
@@ -4603,6 +4938,8 @@ fn emit_fn(
             slot_base: X_SP,
             slot_bias: 0,
             cold_seq: 0,
+            slot_accesses: Vec::new(),
+            resident_misuse: None,
         };
         // plans/M11.md decision 740: no checkpoint on sync loop back-edges.
         if let Some(id) = block_ids[i] {
@@ -4631,6 +4968,8 @@ fn emit_fn(
         slot_base: X_SP,
         slot_bias: 0,
         cold_seq: 0,
+        slot_accesses: Vec::new(),
+        resident_misuse: None,
     };
     emit_prologue(f, &frame, &mut ctx)?;
     debug_assert_eq!(ctx.words.len(), prologue_len);
@@ -4648,6 +4987,14 @@ fn emit_fn(
     }
     debug_assert_eq!(ctx.words.len(), word_offsets[f.body.len()]);
     emit_epilogue(f, &frame, &mut ctx)?;
+
+    // plans/codegen-pareto.md item E: fail closed. A virtual slot offset
+    // that reached a helper which cannot serve it means the probe and
+    // the emitter disagree about how a temp is addressed, which would
+    // otherwise be a wrong instruction rather than a refusal.
+    if let Some(what) = ctx.resident_misuse.take() {
+        return Err(CodegenError::internal(what));
+    }
 
     if block_bridge() {
         record_spans(_key, &block_ids, &word_offsets, ctx.words.len());
@@ -5465,6 +5812,13 @@ fn build_frame_flow(f: &FlowWirFn, layout: &LayoutCtx) -> Result<(Frame, Temp), 
         flow_reply_stage_size(f, layout)?,
         flow_entropy_scratch_size(f),
         TURN_RECORD_SIZE as usize,
+        // plans/codegen-pareto.md item E / decision 1762: the async path
+        // never allocates. An async fn's locals must survive its own
+        // `ret`-to-scheduler suspension, and a physical register does
+        // not — that is the whole reason `X_FRAME` and the persistent
+        // turn area exist. Spill-everything is not a limitation here, it
+        // is the contract.
+        &regalloc::Assignment::none(synthetic.temp_types.len()),
     )?;
     Ok((frame, state_temp))
 }
@@ -8465,6 +8819,8 @@ fn emit_flowwir_fn(
         slot_base: X_FRAME,
         slot_bias: TURN_RECORD_SIZE as usize,
         cold_seq: 0,
+        slot_accesses: Vec::new(),
+        resident_misuse: None,
     };
     emit_async_entry(
         &synthetic,
@@ -8486,6 +8842,8 @@ fn emit_flowwir_fn(
             slot_base: X_FRAME,
             slot_bias: TURN_RECORD_SIZE as usize,
             cold_seq: 0,
+            slot_accesses: Vec::new(),
+            resident_misuse: None,
         };
         if let Some(id) = block_ids[i] {
             if block_count() {
@@ -8531,6 +8889,8 @@ fn emit_flowwir_fn(
         slot_base: X_FRAME,
         slot_bias: TURN_RECORD_SIZE as usize,
         cold_seq: 0,
+        slot_accesses: Vec::new(),
+        resident_misuse: None,
     };
     emit_async_epilogue(&synthetic, &mut probe_epi)?;
     word_offsets[total + 1] = acc + probe_epi.words.len();
@@ -8545,6 +8905,8 @@ fn emit_flowwir_fn(
         slot_base: X_FRAME,
         slot_bias: TURN_RECORD_SIZE as usize,
         cold_seq: 0,
+        slot_accesses: Vec::new(),
+        resident_misuse: None,
     };
     emit_async_entry(&synthetic, fn_key, &mut ctx, state_temp, &resume_target)?;
     debug_assert_eq!(ctx.words.len(), prologue_len);
@@ -10206,7 +10568,8 @@ mod tests {
             body: vec![Inst::Return { value: None }],
         };
         let layout = LayoutCtx::default();
-        let frame = build_frame(&f, &layout, 0, 0, 0).expect("build_frame");
+        let frame = build_frame(&f, &layout, 0, 0, 0, &regalloc::Assignment::none(64))
+            .expect("build_frame");
         // Every scalar is one 8-byte slot regardless of its own declared
         // width (mwir's own "no packing, ever" rule) — offsets are a
         // plain running sum, never sub-word-aligned.
@@ -10233,7 +10596,8 @@ mod tests {
         layout
             .structs
             .insert("Point".to_string(), vec![Type::U64, Type::U64]);
-        let frame = build_frame(&f, &layout, 0, 0, 0).expect("build_frame");
+        let frame = build_frame(&f, &layout, 0, 0, 0, &regalloc::Assignment::none(64))
+            .expect("build_frame");
         // temps: t0 (Point, 16 bytes) at [0,16); self_ptr at 16; ret_ptr
         // at 24 (the receiver's own aggregate type is also the return
         // type here, but the two slots are still distinct — self_write_
@@ -10261,11 +10625,13 @@ mod tests {
             body: vec![Inst::Return { value: None }],
         };
         let layout = LayoutCtx::default();
-        let none = build_frame(&f, &layout, 0, 0, 0).expect("build_frame");
+        let none = build_frame(&f, &layout, 0, 0, 0, &regalloc::Assignment::none(64))
+            .expect("build_frame");
         assert_eq!(none.reply_stage_off, None);
         assert_eq!(none.lr_off, 8);
         assert_eq!(none.size, 16);
-        let staged = build_frame(&f, &layout, 24, 0, 0).expect("build_frame");
+        let staged = build_frame(&f, &layout, 24, 0, 0, &regalloc::Assignment::none(64))
+            .expect("build_frame");
         assert_eq!(staged.reply_stage_off, Some(8));
         assert_eq!(staged.lr_off, 32);
         assert_eq!(staged.size, 48);
@@ -10284,7 +10650,7 @@ mod tests {
             body: vec![Inst::Return { value: None }],
         };
         let layout = LayoutCtx::default();
-        assert!(build_frame(&f, &layout, 0, 0, 0).is_err());
+        assert!(build_frame(&f, &layout, 0, 0, 0, &regalloc::Assignment::none(64)).is_err());
     }
 
     /// plans/M9.md item RR: the imm12 ceiling is on `off + slot_bias`, the
@@ -10313,7 +10679,8 @@ mod tests {
         };
         let layout = LayoutCtx::default();
 
-        let sync = build_frame(&f, &layout, 0, 0, 0).expect("legal for a sync frame");
+        let sync = build_frame(&f, &layout, 0, 0, 0, &regalloc::Assignment::none(64))
+            .expect("legal for a sync frame");
         assert_eq!(sync.size, 4048);
 
         let bias = TURN_RECORD_SIZE as usize;
@@ -10321,7 +10688,7 @@ mod tests {
             sync.size + bias > 4095,
             "this fixture must straddle the boundary to be a regression lock"
         );
-        let Err(err) = build_frame(&f, &layout, 0, 0, bias) else {
+        let Err(err) = build_frame(&f, &layout, 0, 0, bias, &regalloc::Assignment::none(64)) else {
             panic!("the same frame must be refused once biased past the turn record");
         };
         assert!(
@@ -10339,7 +10706,15 @@ mod tests {
             )],
             ..f
         };
-        let ok = build_frame(&smaller, &layout, 0, 0, bias).expect("fits under 4031 with the bias");
+        let ok = build_frame(
+            &smaller,
+            &layout,
+            0,
+            0,
+            bias,
+            &regalloc::Assignment::none(64),
+        )
+        .expect("fits under 4031 with the bias");
         assert!(ok.size + bias <= 4095);
     }
 
@@ -11536,5 +11911,215 @@ mod rt_cross_core_tests {
 
         let sp = emit_secondary_sp_install(1, 2);
         assert_eq!(sp.len(), 5); // floor-cat1 SP (decision 811)
+    }
+}
+
+/// **Item E oracles** (plans/codegen-pareto.md, freeze 1714: a green unit
+/// that never exercises the new path is not an oracle). Every test here
+/// drives the real pipeline — lex, parse, check, lower, codegen — and
+/// asserts on emitted words, never on the allocator's internal state.
+#[cfg(test)]
+mod regalloc_tests {
+    use super::*;
+    use crate::opts::{CompileMode, OptId, apply_mode, apply_opts};
+    use crate::sema;
+    use crate::syntax::{lexer, parser};
+
+    /// Everything before `RegAlloc` in the release order, so a comparison
+    /// isolates this item instead of measuring the whole mode.
+    const WITHOUT: &[OptId] = &[OptId::BoundsElide, OptId::NarrowImm];
+    const WITH: &[OptId] = &[OptId::BoundsElide, OptId::NarrowImm, OptId::RegAlloc];
+
+    fn emit(src: &str, opts: &[OptId]) -> CodegenProgram {
+        apply_opts(opts);
+        let tokens = lexer::lex(src).expect("lex");
+        let module = parser::parse(tokens).expect("parse");
+        let typed = sema::check_typed(&module, "<test>").expect("check");
+        let mwir = crate::lower::lower_program(&typed).expect("lower");
+        let layout = mwir::build_layout_ctx(&module, &Default::default()).expect("layout ctx");
+        let prog = codegen_program(&mwir, &layout).expect("codegen");
+        apply_mode(CompileMode::Release);
+        prog
+    }
+
+    /// Count emitted words of one `CostRule` in a named fn.
+    fn rule_count(prog: &CodegenProgram, key: &str, rule: CostRule) -> usize {
+        prog.fns
+            .get(key)
+            .unwrap_or_else(|| panic!("no fn `{key}` in {:?}", prog.fns.keys().collect::<Vec<_>>()))
+            .code
+            .iter()
+            .filter(|w| w.rule == rule)
+            .count()
+    }
+
+    fn frame_of(prog: &CodegenProgram, key: &str) -> usize {
+        prog.fns.get(key).expect("fn present").frame_size
+    }
+
+    const TWICE: &str = r#"
+module examples.regalloc_twice
+
+pub fn used_twice(a: u64) -> u64:
+    x: u64 = a +% 1
+    return x +% x
+"#;
+
+    /// **A value used twice in a row loads once — in fact zero times.**
+    /// The item asked for one load; residency removes the frame slot
+    /// entirely, so the two uses are register reads and the only memory
+    /// traffic left in the function is saving and restoring `lr`.
+    #[test]
+    fn a_value_used_twice_stops_round_tripping_through_the_frame() {
+        let before = emit(TWICE, WITHOUT);
+        let after = emit(TWICE, WITH);
+
+        let (lb, sb) = (
+            rule_count(&before, "used_twice", CostRule::Load),
+            rule_count(&before, "used_twice", CostRule::Store),
+        );
+        let (la, sa) = (
+            rule_count(&after, "used_twice", CostRule::Load),
+            rule_count(&after, "used_twice", CostRule::Store),
+        );
+        assert!(
+            lb >= 4 && sb >= 3,
+            "the spill-everything baseline must really round-trip: {lb} loads, {sb} stores"
+        );
+        // One load and one store survive: the `lr` save/restore, which is
+        // item F3's frameless-function job, not this item's.
+        assert_eq!(la, 1, "only the `lr` reload may remain, got {la} loads");
+        assert_eq!(sa, 1, "only the `lr` save may remain, got {sa} stores");
+    }
+
+    /// **The frame shrinks on a named case: `asm-arith`'s `checked_add`.**
+    /// Three scalar temps (`a`, `b`, the sum) plus `lr` is 32 bytes of
+    /// spill-everything frame; all three go resident and 16 bytes of
+    /// `lr`-only frame is left.
+    #[test]
+    fn the_frame_shrinks_on_asm_arith_checked_add() {
+        let src = std::fs::read_to_string(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/golden/asm-arith/input.wr"),
+        )
+        .expect("the asm-arith golden input");
+        assert_eq!(frame_of(&emit(&src, WITHOUT), "checked_add"), 32);
+        assert_eq!(frame_of(&emit(&src, WITH), "checked_add"), 16);
+    }
+
+    /// **A program with more live values than registers still spills
+    /// correctly.** Every value is live at once, so the pool cannot cover
+    /// them; the surplus keeps its frame slot, the frame stays large
+    /// enough to hold them, and the build succeeds rather than
+    /// approximating. (`diff-eval` is the oracle for what the code
+    /// *computes*; this one pins that the allocator degrades instead of
+    /// failing.)
+    #[test]
+    fn more_live_values_than_registers_still_spills_correctly() {
+        let mut src =
+            String::from("module examples.regalloc_pressure\n\npub fn wide(a: u64) -> u64:\n");
+        let n = regalloc::POOL.len() * 3;
+        for i in 0..n {
+            src.push_str(&format!("    v{i}: u64 = a +% {i}\n"));
+        }
+        src.push_str("    total: u64 = 0\n");
+        for i in 0..n {
+            src.push_str(&format!("    total = total +% v{i}\n"));
+        }
+        src.push_str("    return total\n");
+
+        let after = emit(&src, WITH);
+        let before = emit(&src, WITHOUT);
+        assert!(
+            rule_count(&after, "wide", CostRule::Store) > 1,
+            "the surplus must still be spilled, not silently dropped"
+        );
+        assert!(
+            frame_of(&after, "wide") < frame_of(&before, "wide"),
+            "the pool's worth of temps must still leave the frame"
+        );
+        assert!(
+            rule_count(&after, "wide", CostRule::Load)
+                < rule_count(&before, "wide", CostRule::Load),
+            "and the resident ones must stop being reloaded"
+        );
+    }
+
+    /// **`dev` keeps the spill-everything reference, byte for byte**
+    /// (M19 freeze 1407). The allocator is a named opt, so turning it off
+    /// must reproduce the naive frame exactly — not approximately.
+    #[test]
+    fn dev_is_byte_for_byte_the_naive_frame() {
+        let with_opt_off = emit(TWICE, WITHOUT);
+        apply_mode(CompileMode::Dev);
+        let dev = {
+            let tokens = lexer::lex(TWICE).expect("lex");
+            let module = parser::parse(tokens).expect("parse");
+            let typed = sema::check_typed(&module, "<test>").expect("check");
+            let mwir = crate::lower::lower_program(&typed).expect("lower");
+            let layout = mwir::build_layout_ctx(&module, &Default::default()).expect("layout ctx");
+            codegen_program(&mwir, &layout).expect("codegen")
+        };
+        apply_mode(CompileMode::Release);
+        assert_eq!(
+            frame_of(&dev, "used_twice"),
+            frame_of(&with_opt_off, "used_twice"),
+            "`dev` and `release`-minus-RegAlloc must agree on the frame"
+        );
+        assert!(
+            dev.fns["used_twice"]
+                .code
+                .iter()
+                .any(|w| w.rule == CostRule::Load),
+            "`dev` must still round-trip through the frame"
+        );
+    }
+
+    /// A resident temp never occupies a register the emitter itself uses,
+    /// and never one outside the pool. Checked on the *emitted words*, so
+    /// it fails if the substitution in `load_slot`/`store_slot` ever
+    /// widens beyond what `regalloc::POOL` allows.
+    #[test]
+    fn no_emitted_word_names_a_pool_register_outside_the_pool() {
+        let prog = emit(TWICE, WITH);
+        for (key, f) in &prog.fns {
+            for w in &f.code {
+                let mut regs: Vec<u8> = w.srcs[..w.src_len as usize].to_vec();
+                if let Some(d) = w.dst {
+                    regs.push(d);
+                }
+                for r in regs {
+                    assert!(
+                        !(18..=18).contains(&r) && !(28..=29).contains(&r),
+                        "fn `{key}`: word `{}` names reserved x{r}",
+                        w.text
+                    );
+                }
+            }
+        }
+    }
+
+    /// The frame's own view of residency agrees with what was emitted:
+    /// every resident temp is in the pool, and no two share a register
+    /// while both are resident at the same time is the allocator's job —
+    /// here we pin the surface `Frame` exposes.
+    #[test]
+    fn frame_residency_surface_only_names_pool_registers() {
+        let naive = regalloc::Assignment::none(3);
+        let f = MwirFn {
+            receiver: None,
+            params: Vec::new(),
+            ret: crate::sema::types::Type::Unit,
+            temp_types: vec![
+                crate::sema::types::Type::U64,
+                crate::sema::types::Type::U64,
+                crate::sema::types::Type::U64,
+            ],
+            body: Vec::new(),
+        };
+        let layout = LayoutCtx::default();
+        let frame = build_frame(&f, &layout, 0, 0, 0, &naive).expect("naive frame");
+        assert!(frame.residents().is_empty());
+        assert_eq!(frame.temp_reg, vec![None, None, None]);
     }
 }
