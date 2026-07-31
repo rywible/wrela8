@@ -1,0 +1,238 @@
+module examples.tile_compositor
+
+# One compositor worker's share of one frame.
+#
+# 06-machine.md §7 fixes the flagship's rendering path and this file is
+# written to it, not to a benchmark: "Rendering is pure CPU (NEON) in the
+# guest"; scanout takes a tile list, "the compositor's workers fill
+# disjoint `own[Tiles] Tile` buffers on their assigned cores and the frame
+# actor submits the assembled list"; and §8 makes a per-frame digest one of
+# the recorded outputs ("digests of every output (block writes, packets,
+# frames, audio periods)") that replay and CI compare. So a worker's job,
+# for each tile in its strip, is: fill the background, blit the sprites
+# that overlap the tile with per-pixel coverage, and fold the finished tile
+# into the frame digest it hands back.
+#
+# Everything here is integer. 02-language.md §6.1 has `f32`/`f64` only
+# "where the target enables them", and a console's software rasterizer is
+# fixed-point regardless: source stepping is 16.16, blend weights carry
+# eight fractional bits over `0..=256`, and a pixel is packed ARGB8888 in a
+# `u32` — the format a DRM dumb buffer scans out.
+#
+# **Tile geometry, and why the buffers are bare arrays.** A shipping
+# compositor would use 32x32 tiles behind a `Tile` type. These are 16x8
+# `[u32; 128]`, for two reasons that are compiler limits rather than design
+# (both written up in plans/codegen-pareto-2-M.md §"language gaps"):
+# `[elem; N]` is a full unroll, which caps a constructed array at about 168
+# elements, and indexing an *array field of a struct* materialises a
+# whole-array temp per access, so a `Tile` wrapper costs three copies of the
+# buffer in every function that touches it. 06 §7's own answer — an
+# `own[Tiles] Tile` out of an image pool — has no source construct yet
+# either (`golden/boot-dma-pool`'s comment says so). None of that touches
+# the *shape* of the work: the loop nest, the fixed-point stepping, the
+# indexing and the call graph are what they would be at 32x32, and the strip
+# loop below puts eight tiles through them.
+
+const TILE_W: usize = 16
+const TILE_H: usize = 8
+const TILE_PIXELS: usize = 128
+
+## This worker's run of horizontally adjacent tiles.
+const STRIP_TILES: usize = 8
+const STRIP_W: usize = 128
+
+const SPRITE_W: usize = 8
+const SPRITE_H: usize = 8
+
+## A blank scanout tile: `TILE_PIXELS` of packed ARGB8888, row-major with
+## a `TILE_W` stride. Its own function because the repeat has to be unrolled
+## into some frame and this is the smallest one it can have.
+fn blank_tile() -> [u32; 128]:
+    return [0; 128]
+
+# ---- pixel arithmetic -------------------------------------------------
+
+## One 8-bit channel out of a packed pixel.
+fn chan(px: u32, shift: u32) -> u32:
+    return (px >> shift) & 0xFF
+
+## Pack four 8-bit channels. Each operand is masked first so the shift
+## cannot lose bits (02 §6.1: `<<` abandons when it does).
+fn pack(a: u32, r: u32, g: u32, b: u32) -> u32:
+    return ((a & 0xFF) << 24) | ((r & 0xFF) << 16) | ((g & 0xFF) << 8) | (b & 0xFF)
+
+## `a` toward `b` by `t`, eight fractional bits, `t` in `0..=256`.
+fn lerp8(a: u32, b: u32, t: u32) -> u32:
+    return (a * (256 - t) + b * t) >> 8
+
+## Source-over composite of `src` onto `dst`, modulated by `cover`
+## (`0..=256`). The `+ (a >> 7)` widens `0..255` to `0..256` so a fully
+## opaque texel really replaces the destination instead of leaving 1/256
+## of it behind — the standard 8-bit blend correction.
+fn blend_pixel(dst: u32, src: u32, cover: u32) -> u32:
+    a = (chan(src, 24) * cover) >> 8
+    t = a + (a >> 7)
+    r = lerp8(chan(dst, 16), chan(src, 16), t)
+    g = lerp8(chan(dst, 8), chan(src, 8), t)
+    b = lerp8(chan(dst, 0), chan(src, 0), t)
+    return pack(255, r, g, b)
+
+# ---- the tile passes --------------------------------------------------
+
+## A 4x4 ordered-dither bias, the standard repair for banding in an 8-bit
+## gradient. Derived rather than tabled so the pass stays arithmetic.
+fn dither_bias(x: usize, y: usize) -> u32:
+    cell = ((y & 3) * 4 + (x & 3)).to[u32]()
+    return (cell * 17) >> 4
+
+## Two-axis dithered gradient. The horizontal term is in *strip* space, so
+## each tile of the strip gets its own slice of one continuous background
+## rather than eight copies of the same one.
+fn fill_background(mut pixels: [u32; 128], origin_x: usize, top: u32, bottom: u32):
+    @budget(bound=TILE_H)
+    for y in 0 .. TILE_H:
+        ty = ((y * 256) / (TILE_H - 1)).to[u32]()
+        row = y * TILE_W
+        @budget(bound=TILE_W)
+        for x in 0 .. TILE_W:
+            tx = (((origin_x + x) * 256) / (STRIP_W - 1)).to[u32]()
+            tw = (ty + tx) / 2 + dither_bias(x, y)
+            if tw > 256:
+                tw = 256
+            r = lerp8(chan(top, 16), chan(bottom, 16), tw)
+            g = lerp8(chan(top, 8), chan(bottom, 8), tw)
+            b = lerp8(chan(top, 0), chan(bottom, 0), tw)
+            pixels[row + x] = pack(255, r, g, b)
+
+## Nearest-neighbour scaled blit with 16.16 source stepping, clipped to the
+## tile on the right and bottom. This is the loop the file exists for: two
+## array reads, one array write and one call per destination pixel, with
+## every index computed rather than constant.
+fn blit_scaled(mut pixels: [u32; 128], sprite: [u32; 64],
+               dst_x: usize, dst_y: usize, dst_w: usize, dst_h: usize,
+               cover: u32):
+    if dst_w == 0 or dst_h == 0:
+        return
+    u_step = (SPRITE_W << 16) / dst_w
+    v_step = (SPRITE_H << 16) / dst_h
+    v: usize = 0
+    @budget(bound=TILE_H)
+    for row in 0 .. dst_h:
+        y = dst_y + row
+        sy = v >> 16
+        v = v + v_step
+        if y >= TILE_H:
+            continue
+        src_row = sy * SPRITE_W
+        dst_row = y * TILE_W
+        u: usize = 0
+        @budget(bound=TILE_W)
+        for col in 0 .. dst_w:
+            x = dst_x + col
+            sx = u >> 16
+            u = u + u_step
+            if x < TILE_W:
+                texel = sprite[src_row + sx]
+                pixels[dst_row + x] = blend_pixel(pixels[dst_row + x], texel, cover)
+
+## FNV-1a over one finished tile — the per-tile half of §8's frame digest.
+fn tile_digest(pixels: [u32; 128]) -> u64:
+    h: u64 = 0xcbf29ce484222325
+    @budget(bound=TILE_PIXELS)
+    for i in 0 .. TILE_PIXELS:
+        h = h ^ pixels[i].to[u64]()
+        h = h *% 0x100000001b3
+    return h
+
+## Fold one tile's digest into the strip's.
+fn fold_digest(h: u64, v: u64) -> u64:
+    return (h ^ v) *% 0x100000001b3
+
+# ---- the procedural sprite --------------------------------------------
+
+fn axis_delta(p: usize, c: usize) -> usize:
+    if p >= c:
+        return p - c
+    return c - p
+
+## A soft radial glow, tinted across the sprite: the particle a title
+## generates at boot instead of shipping an atlas for.
+pub fn make_sprite() -> [u32; 64]:
+    s: [u32; 64] = [0; 64]
+    @budget(bound=SPRITE_H)
+    for y in 0 .. SPRITE_H:
+        dy = axis_delta(y, SPRITE_H / 2)
+        @budget(bound=SPRITE_W)
+        for x in 0 .. SPRITE_W:
+            dx = axis_delta(x, SPRITE_W / 2)
+            d2 = dx * dx + dy * dy
+            a = 255 - (d2 * 255) / 32
+            r = (x * 255) / (SPRITE_W - 1)
+            g = (y * 255) / (SPRITE_H - 1)
+            b = 255 - (r + g) / 2
+            s[y * SPRITE_W + x] = pack(a.to[u32](), r.to[u32](), g.to[u32](), b.to[u32]())
+    return s
+
+# ---- one worker's strip -----------------------------------------------
+
+## Background, then two sprites at a tile-dependent position and scale —
+## one tile's whole turn. The sprite positions move and resize across the
+## strip, so no two tiles run the same schedule through the blit's clip
+## tests.
+fn render_tile(mut pixels: [u32; 128], sprite: [u32; 64], index: usize):
+    fill_background(mut pixels, index * TILE_W, 0x1B2838, 0x0B0F14)
+    dx = (index * 5) % TILE_W
+    dy = (index * 3) % TILE_H
+    blit_scaled(mut pixels, sprite, dx, dy, 6 + (index % 3) * 2, 5 + (index % 2) * 2, 256)
+    blit_scaled(mut pixels, sprite, (dx + 7) % TILE_W, (dy + 2) % TILE_H, 8, 4, 128)
+
+## The worker's whole frame contribution: eight tiles through one reused
+## buffer, folded into the digest the frame actor forwards to the recorder.
+pub fn render_strip(sprite: [u32; 64]) -> u64:
+    pixels = blank_tile()
+    h: u64 = 0xcbf29ce484222325
+    @budget(bound=STRIP_TILES)
+    for index in 0 .. STRIP_TILES:
+        render_tile(mut pixels, sprite, index)
+        h = fold_digest(h, tile_digest(pixels))
+    return h
+
+# ---- oracles ----------------------------------------------------------
+#
+# Every expected number below came from an independent transcription of the
+# same arithmetic into Python (plans/codegen-pareto-2-M.md §"oracles"), not
+# from reading a run back. A miscompile therefore fails these tests instead
+# of re-pinning itself.
+
+## The pixel kernel is small enough to run in the build evaluator, so the
+## reference implementation (CLAUDE.md: "evaluator before backend") and the
+## backend are held to the same identities. The frame passes are far past
+## the 20 000-step comptime quota and are runtime tests below.
+@test
+pub fn pixel_kernel_identities():
+    assert lerp8(10, 200, 0) == 10, "t=0 keeps the destination"
+    assert lerp8(10, 200, 256) == 200, "t=256 takes the source"
+    assert blend_pixel(0x00204060, 0xFF8090A0, 256) == 0xFF8090A0, "opaque src replaces dst"
+    assert blend_pixel(0x00204060, 0xFF8090A0, 0) == 0xFF204060, "zero coverage keeps dst"
+    assert chan(0x11223344, 16) == 0x22, "channel extract"
+    assert dither_bias(3, 3) == 15, "the dither cell's last entry"
+
+@test(runtime)
+pub fn sprite_is_exact():
+    sprite = make_sprite()
+    assert sprite[4 * SPRITE_W + 4] == 0xFF91916E, "opaque tinted centre"
+    assert sprite[0] == 0x000000FF, "transparent corner"
+
+@test(runtime)
+pub fn background_pass_is_exact():
+    pixels = blank_tile()
+    fill_background(mut pixels, 0, 0x1B2838, 0x0B0F14)
+    assert pixels[0] == 0xFF1B2838, "the strip's top-left is the top colour"
+    assert pixels[127] == 0xFF111821, "the tile's bottom-right"
+    assert tile_digest(pixels) == 0xBA777EC337403A3F, "background digest"
+
+@test(runtime)
+pub fn strip_digest_matches():
+    sprite = make_sprite()
+    digest = render_strip(sprite)
+    assert digest == 0x5E7FDA3AD980AD39, "strip digest"
