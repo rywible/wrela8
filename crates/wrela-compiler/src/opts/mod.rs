@@ -18,25 +18,36 @@ pub enum CompileMode {
     Release,
 }
 
-/// Named opts that `apply_mode(Release)` may enable. Two ids today
-/// (decision 1421): lower-side bounds elision and codegen narrow
-/// immediates.
+/// Named opts that `apply_mode(Release)` may enable. Three ids today:
+/// lower-side bounds elision and codegen narrow immediates (decision 1421),
+/// plus one-word `ADR` addressing (plans/codegen-pareto.md item B,
+/// decision 1730).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OptId {
     BoundsElide,
     NarrowImm,
+    AdrAddressing,
 }
 
 /// Fixed release order. Add opts here — nowhere else.
-/// Order is part of the product (decision 1423): BoundsElide then
-/// NarrowImm.
-pub const RELEASE_OPTS: &[OptId] = &[OptId::BoundsElide, OptId::NarrowImm];
+/// Order is part of the product (decision 1423): BoundsElide, then
+/// NarrowImm, then AdrAddressing.
+///
+/// `AdrAddressing` goes **last** (decision 1733). The three are mutually
+/// independent — `BoundsElide` deletes lower-side bounds checks,
+/// `NarrowImm` shortens constant materialization, `AdrAddressing` shortens
+/// rodata address materialization, and no one of them changes what another
+/// sees — so order is a convention here rather than a dependency. Appending
+/// is the convention that keeps the existing pair's pinned order (1423)
+/// exactly as it was.
+pub const RELEASE_OPTS: &[OptId] = &[OptId::BoundsElide, OptId::NarrowImm, OptId::AdrAddressing];
 
 /// Enable exactly the named opts (decision 1452). Product modes go
 /// through [`apply_mode`]; tests and candidate A/B use this directly.
 pub fn apply_opts(opts: &[OptId]) {
     crate::lower::set_bounds_elide(opts.contains(&OptId::BoundsElide));
     crate::codegen::set_narrow_imm(opts.contains(&OptId::NarrowImm));
+    crate::codegen::set_adr_addressing(opts.contains(&OptId::AdrAddressing));
 }
 
 /// Single front door for product-mode TLS knobs (decision 1422).
@@ -50,34 +61,41 @@ pub fn apply_mode(mode: CompileMode) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codegen::narrow_imm;
+    use crate::codegen::{adr_addressing, narrow_imm};
     use crate::lower::bounds_elide;
 
     #[test]
-    fn dev_disables_both_opts() {
+    fn dev_disables_every_opt() {
         apply_mode(CompileMode::Release);
         assert!(bounds_elide());
         assert!(narrow_imm());
+        assert!(adr_addressing());
 
         apply_mode(CompileMode::Dev);
         assert!(!bounds_elide());
         assert!(!narrow_imm());
+        assert!(!adr_addressing());
     }
 
     #[test]
-    fn release_enables_both_opts() {
+    fn release_enables_every_opt() {
         apply_mode(CompileMode::Dev);
         assert!(!bounds_elide());
         assert!(!narrow_imm());
+        assert!(!adr_addressing());
 
         apply_mode(CompileMode::Release);
         assert!(bounds_elide());
         assert!(narrow_imm());
+        assert!(adr_addressing());
     }
 
     #[test]
-    fn release_opts_order_is_bounds_elide_then_narrow_imm() {
-        assert_eq!(RELEASE_OPTS, &[OptId::BoundsElide, OptId::NarrowImm]);
+    fn release_opts_order_is_bounds_elide_then_narrow_imm_then_adr_addressing() {
+        assert_eq!(
+            RELEASE_OPTS,
+            &[OptId::BoundsElide, OptId::NarrowImm, OptId::AdrAddressing]
+        );
     }
 
     #[test]
@@ -85,10 +103,17 @@ mod tests {
         apply_opts(&[OptId::NarrowImm]);
         assert!(!bounds_elide());
         assert!(narrow_imm());
+        assert!(!adr_addressing());
 
         apply_opts(&[OptId::BoundsElide]);
         assert!(bounds_elide());
         assert!(!narrow_imm());
+        assert!(!adr_addressing());
+
+        apply_opts(&[OptId::AdrAddressing]);
+        assert!(!bounds_elide());
+        assert!(!narrow_imm());
+        assert!(adr_addressing());
 
         apply_mode(CompileMode::Release);
     }

@@ -549,6 +549,32 @@ pub(crate) fn narrow_imm() -> bool {
     NARROW_IMM.with(|c| c.get())
 }
 
+// plans/codegen-pareto.md item B1/B2 (decisions 1730–1733, freeze 1713): TLS
+// knob for one-word `ADR` addressing. Default **off** — `dev` keeps the
+// `ADRP`+`ADD` pair as the reference form. `opts::apply_mode(Release)` turns
+// it on when `OptId::AdrAddressing` is in `RELEASE_OPTS`.
+//
+// The knob is read at *emission* time because it decides a word count, and
+// the range proof it depends on is a *layout*-time fact. That split is
+// deliberate and is what decision 1731 is about: codegen commits to one
+// word, layout proves the commitment was legal, and an out-of-range site is
+// a hard build error rather than a silent widening (which layout cannot do
+// anyway without re-running every address it just fixed).
+thread_local! {
+    static ADR_ADDRESSING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// plans/codegen-pareto.md item B: enable/disable `ADR` addressing for the
+/// current thread.
+pub fn set_adr_addressing(enabled: bool) {
+    ADR_ADDRESSING.with(|c| c.set(enabled));
+}
+
+/// Whether one-word `ADR` addressing is enabled (default false).
+pub(crate) fn adr_addressing() -> bool {
+    ADR_ADDRESSING.with(|c| c.get())
+}
+
 // plans/M6.md decision 6 / plans/M11.md decision 740: a *backward*
 // unconditional `Jump` (`target <= idx`) is a loop's own back-edge —
 // the exact shape `lower.rs` / `flowwir_lower.rs` emit for a `while`/
@@ -674,6 +700,19 @@ pub enum Reloc {
         word_adrp: usize,
         byte_offset: usize,
     },
+    /// plans/codegen-pareto.md item B1 (decision 1730): the **single**
+    /// `ADR` at `word` targets rodata byte offset `byte_offset`. The
+    /// `OptId::AdrAddressing` form of `Reloc::Rodata` above — one word
+    /// instead of two, byte-granular instead of page-plus-offset, and no
+    /// paired `ADD` to keep in step.
+    ///
+    /// A separate variant rather than a `form:` field on `Rodata` because
+    /// the two carry genuinely different contracts: `Rodata`'s
+    /// `word_adrp + 1` must exist and must be the paired `ADD`, and
+    /// `RodataAdr`'s must not be assumed to be anything at all. One
+    /// variant with a discriminant field would make every reader re-derive
+    /// which contract it is holding; two variants let the type say it.
+    RodataAdr { word: usize, byte_offset: usize },
     /// The `BL` at `word` targets `__wrela_abort`.
     AbortFixed { word: usize },
     /// The `BL` at `word` targets `__wrela_abort_val`.
@@ -1733,10 +1772,25 @@ impl<'a> FnCtx<'a> {
 
     // --- rodata + abort calls -------------------------------------------
 
-    /// `reg = &rodata_bytes` (symbolic `ADRP`+`ADD`, `Reloc::Rodata`).
+    /// `reg = &rodata_bytes` — symbolic `ADRP`+`ADD` (`Reloc::Rodata`), or
+    /// one `ADR` (`Reloc::RodataAdr`) under `OptId::AdrAddressing`.
     fn load_rodata_addr(&mut self, reg: u8, data_index: usize) {
         let byte_offset = self.rodata.byte_offset(data_index);
         let word_adrp = self.cur_word();
+        if adr_addressing() {
+            self.push(
+                encode::enc_adr(reg, 0),
+                format!("adr {}, rodata+{byte_offset:#x}", reg_name(reg)),
+                CostRule::Adrp,
+                Some(reg),
+                &[],
+            );
+            self.relocs.push(Reloc::RodataAdr {
+                word: word_adrp,
+                byte_offset,
+            });
+            return;
+        }
         self.push(
             encode::enc_adrp(reg, 0),
             format!("adrp {}, rodata+{byte_offset:#x}", reg_name(reg)),
@@ -8808,6 +8862,62 @@ fn push(
     words.push(EmittedWord::new(w, text, rule, dst, srcs));
 }
 
+/// Materialize a rodata address inside a **hand-assembled** stub (the ones
+/// that build a `Vec<EmittedWord>` directly rather than through `FnCtx`):
+/// one `ADR` + `Reloc::RodataAdr` under `OptId::AdrAddressing`, else the
+/// `ADRP`+`ADD` pair + `Reloc::Rodata`.
+///
+/// `off_text` is how the *call site* spells the offset in its dump text.
+/// The two callers predate each other and spell it differently (one decimal,
+/// one `{:#x}`); threading the already-formatted string keeps both `dev`
+/// dumps byte-identical to what they were before this fn existed, which is
+/// the only reason it is a parameter rather than a `{byte_offset:#x}` here.
+fn push_rodata_addr(
+    words: &mut Vec<EmittedWord>,
+    relocs: &mut Vec<Reloc>,
+    reg: u8,
+    byte_offset: usize,
+    off_text: &str,
+) {
+    let word = words.len();
+    if adr_addressing() {
+        push(
+            words,
+            encode::enc_adr(reg, 0),
+            format!("adr {}, rodata+{off_text}", reg_name(reg)),
+            CostRule::Adrp,
+            Some(reg),
+            &[],
+        );
+        relocs.push(Reloc::RodataAdr { word, byte_offset });
+        return;
+    }
+    push(
+        words,
+        encode::enc_adrp(reg, 0),
+        format!("adrp {}, rodata+{off_text}", reg_name(reg)),
+        CostRule::Adrp,
+        Some(reg),
+        &[],
+    );
+    push(
+        words,
+        encode::enc_add_imm(reg, reg, 0, true),
+        format!(
+            "add {}, {}, #rodata+{off_text}",
+            reg_name(reg),
+            reg_name(reg)
+        ),
+        CostRule::Alu,
+        Some(reg),
+        &[reg],
+    );
+    relocs.push(Reloc::Rodata {
+        word_adrp: word,
+        byte_offset,
+    });
+}
+
 fn load_imm(words: &mut Vec<EmittedWord>, reg: u8, value: u64, label: &str) {
     let h0 = (value & 0xFFFF) as u16;
     let h1 = ((value >> 16) & 0xFFFF) as u16;
@@ -9098,27 +9208,7 @@ pub fn emit_boot_init_call(slot: &BootInitSlotSpec) -> CodegenFn {
             Some(31),
             &[31],
         );
-        let word_adrp = words.len();
-        push(
-            &mut words,
-            encode::enc_adrp(10, 0),
-            format!("adrp x10, rodata+{msg_off}"),
-            CostRule::Adrp,
-            Some(10),
-            &[],
-        );
-        push(
-            &mut words,
-            encode::enc_add_imm(10, 10, 0, true),
-            format!("add x10, x10, #rodata+{msg_off}"),
-            CostRule::Alu,
-            Some(10),
-            &[10],
-        );
-        relocs.push(Reloc::Rodata {
-            word_adrp,
-            byte_offset: msg_off,
-        });
+        push_rodata_addr(&mut words, &mut relocs, 10, msg_off, &format!("{msg_off}"));
         push(
             &mut words,
             encode::enc_str_x_imm(10, 31, 0),
@@ -9608,27 +9698,13 @@ pub fn emit_test_prefix_stub(rodata_off: usize, len: u64) -> CodegenFn {
         None,
         &[30, 31],
     );
-    let word_adrp = words.len();
-    push(
+    push_rodata_addr(
         &mut words,
-        encode::enc_adrp(9, 0),
-        format!("adrp x9, rodata+{rodata_off:#x}"),
-        CostRule::Adrp,
-        Some(9),
-        &[],
+        &mut relocs,
+        9,
+        rodata_off,
+        &format!("{rodata_off:#x}"),
     );
-    push(
-        &mut words,
-        encode::enc_add_imm(9, 9, 0, true),
-        format!("add x9, x9, #rodata+{rodata_off:#x}"),
-        CostRule::Alu,
-        Some(9),
-        &[9],
-    );
-    relocs.push(Reloc::Rodata {
-        word_adrp,
-        byte_offset: rodata_off,
-    });
     push(
         &mut words,
         encode::enc_str_x_imm(9, 31, 0),
@@ -9954,6 +10030,21 @@ pub fn validate(program: &CodegenProgram) -> Result<(), String> {
                         return Err(format!(
                             "fn `{key}`: Reloc::Rodata byte_offset {byte_offset} is out of range \
                              (rodata is {rodata_len} byte(s))"
+                        ));
+                    }
+                }
+                Reloc::RodataAdr { word, byte_offset } => {
+                    if *word >= f.code.len() {
+                        return Err(format!(
+                            "fn `{key}`: Reloc::RodataAdr word {word} is out of range (code has \
+                             {} word(s))",
+                            f.code.len()
+                        ));
+                    }
+                    if *byte_offset >= rodata_len {
+                        return Err(format!(
+                            "fn `{key}`: Reloc::RodataAdr byte_offset {byte_offset} is out of \
+                             range (rodata is {rodata_len} byte(s))"
                         ));
                     }
                 }
@@ -10998,6 +11089,84 @@ pub fn r(a: u64, b: u64) -> u64:
         for ew in &adrps {
             assert_eq!(ew.mem, None, "adrp must not carry MemRef: {}", ew.text);
         }
+    }
+
+    /// plans/codegen-pareto.md item B1 (decision 1730): the substitution
+    /// itself. Every rodata reference is one `ADR` + one `Reloc::RodataAdr`
+    /// under the opt, and the `ADRP`+`ADD` pair with its `Reloc::Rodata`
+    /// without it — so the fn is strictly one word shorter per site, which
+    /// is the whole claimed win.
+    #[test]
+    fn adr_addressing_replaces_every_adrp_add_pair_with_one_adr() {
+        let (mwir_program, layout) = compile(
+            "module examples.codegen_adr_rodata\n\npub fn add(a: u8, b: u8) -> u8:\n    return a + b\n",
+        );
+
+        set_adr_addressing(false);
+        let pair = codegen_program(&mwir_program, &layout).expect("adrp+add side");
+        set_adr_addressing(true);
+        let adr = codegen_program(&mwir_program, &layout).expect("adr side");
+        set_adr_addressing(false);
+
+        let pf = &pair.fns["add"];
+        let af = &adr.fns["add"];
+
+        let sites = pf
+            .relocs
+            .iter()
+            .filter(|r| matches!(r, Reloc::Rodata { .. }))
+            .count();
+        assert!(sites > 0, "this fixture must emit rodata references at all");
+        assert_eq!(
+            af.relocs
+                .iter()
+                .filter(|r| matches!(r, Reloc::RodataAdr { .. }))
+                .count(),
+            sites,
+            "every Reloc::Rodata must become a Reloc::RodataAdr"
+        );
+        assert!(
+            !af.relocs.iter().any(|r| matches!(r, Reloc::Rodata { .. })),
+            "no ADRP+ADD reloc may survive the substitution"
+        );
+
+        // One word saved per site, and the surviving word is a real `ADR`
+        // (bit 31 clear) rather than the `ADRP` it replaced (bit 31 set).
+        assert_eq!(
+            pf.code.len() - af.code.len(),
+            sites,
+            "the ADR form must be exactly one word shorter per site"
+        );
+        for r in &af.relocs {
+            let Reloc::RodataAdr { word, .. } = r else {
+                continue;
+            };
+            let w = af.code[*word].word;
+            assert_eq!(
+                w & 0x9F00_0000,
+                0x1000_0000,
+                "word {word} must be an ADR, not an ADRP: {:#010x} / {}",
+                w,
+                af.code[*word].text
+            );
+            assert_eq!(
+                af.code[*word].rule,
+                CostRule::Adrp,
+                "ADR keeps the PC-relative rule class — it is the same \
+                 encoding family and the same A76 port; no cost row moves"
+            );
+        }
+    }
+
+    /// The opt is **off** by default and off in `dev`, so the reference
+    /// form stays the reference form (freeze 1407's shape).
+    #[test]
+    fn adr_addressing_is_off_under_dev() {
+        crate::opts::apply_mode(crate::opts::CompileMode::Dev);
+        assert!(!adr_addressing());
+        crate::opts::apply_mode(crate::opts::CompileMode::Release);
+        assert!(adr_addressing());
+        crate::opts::apply_mode(crate::opts::CompileMode::Release);
     }
 
     #[test]

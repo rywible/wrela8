@@ -11,34 +11,32 @@ Program
     0008: f9400be9  ldr x9, [sp, #16]
     0009: f94007ea  ldr x10, [sp, #8]
     0010: eb0a013f  cmp x9, x10
-    0011: 54000243  b.cc #72
+    0011: 54000203  b.cc #64
     0012: aa0903ea  mov x10, x9
     0013: d10083ff  sub sp, sp, #32  ; abort_val prefix+suffix Bytes
-    0014: 90000009  adrp x9, rodata+0x0
-    0015: 91000129  add x9, x9, rodata+0x0
-    0016: f90003e9  str x9, [sp]  ; prefix.base
-    0017: d28000c9  movz x9, #0x6
-    0018: f90007e9  str x9, [sp, #8]  ; prefix.len
-    0019: 90000009  adrp x9, rodata+0x6
-    0020: 91000129  add x9, x9, rodata+0x6
-    0021: f9000be9  str x9, [sp, #16]  ; suffix.base
-    0022: d28002c9  movz x9, #0x16
-    0023: f9000fe9  str x9, [sp, #24]  ; suffix.len
-    0024: 910003e0  add x0, sp, #0  ; *prefix
-    0025: aa0a03e1  mov x1, x10
-    0026: d2800002  movz x2, #0x0
-    0027: 910043e3  add x3, sp, #16  ; *suffix
-    0028: 94000000  bl <__wrela_abort_val>
-    0029: f94003eb  ldr x11, [sp, #0]
-    0030: 8b09016b  add x11, x11, x9
-    0031: 3940016a  ldrb w10, [x11, #0]
-    0032: f9000fea  str x10, [sp, #24]
-    0033: f9400fe0  ldr x0, [sp, #24]
-    0034: 14000002  b #8
-    0035: 14000001  b #4
-    0036: f94013fe  ldr lr, [sp, #32]
-    0037: 9100c3ff  add sp, sp, #48
-    0038: d65f03c0  ret
+    0014: 10000009  adr x9, rodata+0x0
+    0015: f90003e9  str x9, [sp]  ; prefix.base
+    0016: d28000c9  movz x9, #0x6
+    0017: f90007e9  str x9, [sp, #8]  ; prefix.len
+    0018: 10000009  adr x9, rodata+0x6
+    0019: f9000be9  str x9, [sp, #16]  ; suffix.base
+    0020: d28002c9  movz x9, #0x16
+    0021: f9000fe9  str x9, [sp, #24]  ; suffix.len
+    0022: 910003e0  add x0, sp, #0  ; *prefix
+    0023: aa0a03e1  mov x1, x10
+    0024: d2800002  movz x2, #0x0
+    0025: 910043e3  add x3, sp, #16  ; *suffix
+    0026: 94000000  bl <__wrela_abort_val>
+    0027: f94003eb  ldr x11, [sp, #0]
+    0028: 8b09016b  add x11, x11, x9
+    0029: 3940016a  ldrb w10, [x11, #0]
+    0030: f9000fea  str x10, [sp, #24]
+    0031: f9400fe0  ldr x0, [sp, #24]
+    0032: 14000002  b #8
+    0033: 14000001  b #4
+    0034: f94013fe  ldr lr, [sp, #32]
+    0035: 9100c3ff  add sp, sp, #48
+    0036: d65f03c0  ret
   Rodata
     0: offset=0x0 index 
     1: offset=0x6  out of bounds (Bytes)

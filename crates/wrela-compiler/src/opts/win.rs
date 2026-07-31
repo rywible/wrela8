@@ -1941,10 +1941,11 @@ mod tests {
     /// blind to it. It survives on cycles alone.
     #[test]
     fn narrow_imm_wins_on_cycles_while_its_footprint_win_is_priced_at_zero() {
-        let configs: [(&str, &[OptId]); 4] = [
+        let configs: [(&str, &[OptId]); 5] = [
             ("dev", &[]),
             ("BoundsElide", &[OptId::BoundsElide]),
             ("NarrowImm", &[OptId::NarrowImm]),
+            ("AdrAddressing", &[OptId::AdrAddressing]),
             ("release", RELEASE_OPTS),
         ];
         let rows = attribute_opts(&configs);
@@ -1959,6 +1960,7 @@ mod tests {
         let dev_cycles = sum("dev", |c| c.proxy_cycles);
         let be_cycles = sum("BoundsElide", |c| c.proxy_cycles);
         let ni_cycles = sum("NarrowImm", |c| c.proxy_cycles);
+        let adr_cycles = sum("AdrAddressing", |c| c.proxy_cycles);
         let rel_cycles = sum("release", |c| c.proxy_cycles);
 
         // (1) Not "near zero on cycles".
@@ -2052,27 +2054,35 @@ mod tests {
         // because M's budget-witness cases are large programs where
         // NarrowImm's per-word throughput win scales with the word count.
         //
-        // So the assertion is the one that is actually about the ruler: both
-        // opts contribute, neither is inert, and their sum is bounded by
-        // release's (they overlap rather than compose freely).
+        // So the assertion is the one that is actually about the ruler: every
+        // opt contributes, none is inert, and their sum bounds release's
+        // (they overlap rather than compose freely).
+        //
+        // plans/codegen-pareto.md item B1 made `release` three opts rather
+        // than two, so the singles this is asked over are three. The
+        // percentages quoted above were computed on the two-opt release and
+        // are deliberately left as the historical record of *that* list
+        // rather than restated — the claim being asserted is the structural
+        // one, and it is the one that survives a list that grows.
         let be_win = dev_cycles - be_cycles;
         let ni_win = dev_cycles - ni_cycles;
+        let adr_win = dev_cycles - adr_cycles;
         let rel_win = dev_cycles - rel_cycles;
         assert!(
-            be_win > 0 && ni_win > 0,
-            "both opts must contribute on cycles: BoundsElide {be_win}, \
-             NarrowImm {ni_win}\n{table}"
+            be_win > 0 && ni_win > 0 && adr_win > 0,
+            "every opt must contribute on cycles: BoundsElide {be_win}, \
+             NarrowImm {ni_win}, AdrAddressing {adr_win}\n{table}"
         );
         assert!(
-            rel_win <= be_win + ni_win,
+            rel_win <= be_win + ni_win + adr_win,
             "release's win cannot exceed the sum of the singles — that would \
-             mean the two opts create cycles together that neither creates \
-             alone: release {rel_win} vs {be_win} + {ni_win}\n{table}"
+             mean the opts create cycles together that none creates alone: \
+             release {rel_win} vs {be_win} + {ni_win} + {adr_win}\n{table}"
         );
         assert!(
-            rel_win > be_win && rel_win > ni_win,
-            "release must beat either single: release {rel_win}, BoundsElide \
-             {be_win}, NarrowImm {ni_win}\n{table}"
+            rel_win > be_win && rel_win > ni_win && rel_win > adr_win,
+            "release must beat every single: release {rel_win}, BoundsElide \
+             {be_win}, NarrowImm {ni_win}, AdrAddressing {adr_win}\n{table}"
         );
     }
 
@@ -2112,11 +2122,93 @@ mod tests {
         );
     }
 
+    /// **plans/codegen-pareto.md item B1, the land gate — smoke form.**
+    ///
+    /// `AdrAddressing` alone, over one case, at every point of that case's
+    /// residual box. `cost-arith` is the smoke case: it is small (147
+    /// proxy-cycles under release) and it emits six rodata references from
+    /// its checked-arithmetic abort stubs, so the substitution is the only
+    /// thing separating the two sides. Freeze 1714 in one sentence — the
+    /// oracle exercises the new path or it is not an oracle, and this one
+    /// scores zero delta if `load_rodata_addr` stops substituting.
+    #[test]
+    fn adr_addressing_wins_at_every_box_point_on_the_smoke_case() {
+        let cmp = compare_opt_lists_over_box_for_case(&[], &[OptId::AdrAddressing], "cost-arith")
+            .expect("smoke sweep");
+        assert_eq!(cmp.cases.len(), 1, "the smoke lane sweeps exactly one case");
+        let case = &cmp.cases[0];
+        assert!(
+            !case.points.is_empty(),
+            "the smoke case must enumerate corners, not zero"
+        );
+        assert!(
+            case.points.iter().all(|p| p.candidate < p.baseline),
+            "AdrAddressing must fall at every point of {}: {:?}",
+            case.name,
+            case.points
+                .iter()
+                .map(|p| (p.baseline, p.candidate))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            cmp.wins(),
+            "smoke sweep vetoed: {:?}",
+            cmp.reasons.iter().map(|r| r.label()).collect::<Vec<_>>()
+        );
+    }
+
+    /// The same gate asked the question that actually decides the landing:
+    /// not "is `AdrAddressing` a win against `dev`" but "does adding it to
+    /// the already-shipping list still fall". A candidate that only wins
+    /// from a `dev` baseline could be riding another opt's coattails; this
+    /// one holds `BoundsElide`+`NarrowImm` fixed on both sides.
+    #[test]
+    fn adr_addressing_is_a_marginal_win_over_the_previous_release_list() {
+        const WITHOUT: &[OptId] = &[OptId::BoundsElide, OptId::NarrowImm];
+        let cmp = compare_opt_lists_over_box_for_case(WITHOUT, RELEASE_OPTS, "cost-arith")
+            .expect("marginal smoke sweep");
+        let case = &cmp.cases[0];
+        assert!(
+            case.points.iter().all(|p| p.candidate < p.baseline),
+            "adding AdrAddressing must fall at every point of {}: {:?}",
+            case.name,
+            case.points
+                .iter()
+                .map(|p| (p.baseline, p.candidate))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            cmp.wins(),
+            "marginal smoke sweep vetoed: {:?}",
+            cmp.reasons.iter().map(|r| r.label()).collect::<Vec<_>>()
+        );
+    }
+
+    /// **plans/codegen-pareto.md item B1, the land gate — whole corpus.**
+    /// `RELEASE_OPTS` minus `AdrAddressing` vs `RELEASE_OPTS`, ∀ over the
+    /// residual box, over every `cost-*` case. **Deep lane**, same budget
+    /// argument as its two neighbours above.
+    #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
+    #[test]
+    fn adr_addressing_wins_at_every_point_of_the_residual_box() {
+        const WITHOUT: &[OptId] = &[OptId::BoundsElide, OptId::NarrowImm];
+        let cmp = compare_opt_lists_over_box(WITHOUT, RELEASE_OPTS).expect("sweep");
+        let table = format_sweep_table(&cmp, "release−AdrAddressing", "release");
+        eprintln!("∀ sweep (release−AdrAddressing → release):\n{table}");
+        assert_sweep_wins(&cmp, "release", "release−AdrAddressing");
+        assert!(cmp.wins());
+        eprintln!(
+            "AdrAddressing ∀-sweep: {} points/side over {} cases",
+            cmp.scored_points(),
+            cmp.cases.len()
+        );
+    }
+
     /// Decision 1453: swapped opt-list order vs RELEASE_OPTS — document
     /// independence when totals match (lower vs codegen axes).
     #[test]
     fn swapped_order_scores_same_as_release_opts() {
-        const SWAPPED: &[OptId] = &[OptId::NarrowImm, OptId::BoundsElide];
+        const SWAPPED: &[OptId] = &[OptId::AdrAddressing, OptId::NarrowImm, OptId::BoundsElide];
         let cmp = compare_opt_lists(RELEASE_OPTS, SWAPPED);
         let table = format_delta_table(&cmp, "RELEASE_OPTS", "swapped");
         eprintln!("order swap note:\n{table}");
