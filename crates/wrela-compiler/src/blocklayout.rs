@@ -19,8 +19,9 @@
 //! Lane 2 its block ids. That identity is not a convenience, it is the whole
 //! correctness argument: the sidecar's `<fn_key>#<block_index>` keys are
 //! ordinals over exactly this partition, so a class looked up at index `k`
-//! describes exactly the run this module is about to move
-//! (decision 1753, `unit:the_synthesized_partition_is_the_bridge_partition`).
+//! describes exactly the run this module is about to move. Decision 1753;
+//! checked against a real bridge-mode build rather than argued, inside
+//! `unit:the_measured_hot_text_footprint_before_and_after`.
 //!
 //! ## The algorithm (decision 1751)
 //!
@@ -57,7 +58,7 @@
 //! unit measures the growth instead of asserting it away
 //! (`unit:a_repair_after_a_conditional_costs_one_block`). This is a second,
 //! smaller reason a post-pass partition cannot be re-keyed against a
-//! pre-pass sidecar — see `WHY NOT WIRED` below.
+//! pre-pass sidecar — see "Why this pass is not installed" below.
 //!
 //! ## Unmeasured is laid out hot, never sunk (decision 1752)
 //!
@@ -70,17 +71,26 @@
 //!
 //! ## Why this pass is not installed on the emission path (decision 1755)
 //!
-//! See the module's `WHY NOT WIRED` note below and
-//! `plans/codegen-pareto-D.md`. In short: `cost::bridge::BlockBridge`
-//! requires a fn's recorded spans to satisfy `block_index == word order`
-//! ([bridge.rs](cost/bridge.rs) rejects `block ordinals out of order` and
-//! non-tiling `word_start`s). Reordering blocks re-keys that correspondence
-//! against a sidecar recorded under the old order, so wiring the pass in
-//! would leave the `MeasuredBudget` line of the one case that has a sidecar
-//! silently describing the wrong blocks. Fail closed: the pass is built,
-//! measured and pinned here; installing it needs a bridge that carries a
-//! block's identity instead of inferring it from position, and that is
-//! ruler plumbing, not this item.
+//! `cost::bridge::BlockBridge` requires a fn's recorded spans to satisfy
+//! `block_index == word order`: it rejects "block ordinals out of order"
+//! and any `word_start` that does not continue the previous span. So a
+//! sidecar key `fn#k` is resolved to the **k-th emitted block**, by
+//! position. Reordering blocks re-keys that correspondence against a
+//! sidecar recorded under the old order, and the one program in the tree
+//! with a sidecar (`tests/golden/boot-actors`) would then print a
+//! `MeasuredBudget` line describing the wrong blocks — silently.
+//!
+//! Fail closed: the pass is built, measured and pinned here, and it is not
+//! installed. Installing it needs a bridge that carries a block's identity
+//! ([`FnLayout::new_block_span`] is exactly that datum) instead of
+//! inferring it from position — ruler plumbing, and not this item's to
+//! change. `plans/codegen-pareto-D.md` names the change.
+//!
+//! One consequence to be honest about: `cargo xtask diff-eval` compares the
+//! evaluator against the **default** compile path, so it cannot see this
+//! pass at all. [`verify_successors`] is what stands in its place — the
+//! pass proves CFG equivalence for every fn it moves, on real programs, and
+//! refuses to emit a body it cannot prove.
 
 use std::collections::BTreeMap;
 
@@ -308,6 +318,7 @@ pub fn apply_fn(f: &MwirFn, plan: &FnLayout) -> Result<MwirFn, String> {
         }
     }
     debug_assert_eq!(out.len(), at);
+    verify_successors(body, &out, &new_index)?;
 
     Ok(MwirFn {
         receiver: f.receiver,
@@ -316,6 +327,78 @@ pub fn apply_fn(f: &MwirFn, plan: &FnLayout) -> Result<MwirFn, String> {
         temp_types: f.temp_types.clone(),
         body: out,
     })
+}
+
+/// The successors of body index `i`, in that body's own index space, where
+/// `body.len()` means the fn epilogue (`Inst::Return`'s destination, which
+/// `codegen::emit_fn` resolves through `word_offsets[body.len()]`).
+fn successors(body: &[Inst], i: usize) -> Vec<usize> {
+    let mut s = match &body[i] {
+        Inst::Jump { target } => vec![*target],
+        Inst::JumpIfFalse { target, .. } => vec![*target, i + 1],
+        Inst::Return { .. } => vec![body.len()],
+        _ => vec![i + 1],
+    };
+    s.sort_unstable();
+    s.dedup();
+    s
+}
+
+/// **The pass's own correctness invariant, checked on every fn it moves.**
+///
+/// A permutation is correct exactly when it preserves the successor
+/// relation: for every original index `i`, the successors of `i` in the new
+/// body — resolved through any inserted repair jump, which is pure
+/// forwarding — must be the image under `new_index` of `i`'s original
+/// successors.
+///
+/// This runs on real programs rather than only on the synthetic bodies in
+/// `unit:the_permuted_body_has_the_same_successor_relation`, which matters
+/// because `diff-eval` cannot reach this pass at all: it exercises the
+/// default compile path, and item D is not on it (decision 1755). So the
+/// evaluator-vs-backend oracle says nothing about a reordered body, and
+/// this check is what stands in its place. It fails closed — a permutation
+/// it cannot prove equivalent does not get emitted.
+fn verify_successors(before: &[Inst], after: &[Inst], new_index: &[usize]) -> Result<(), String> {
+    let n = before.len();
+    let real: std::collections::BTreeSet<usize> = new_index[..n].iter().copied().collect();
+    let resolve = |mut j: usize| -> Result<usize, String> {
+        for _ in 0..=after.len() {
+            if j >= after.len() || real.contains(&j) {
+                return Ok(j);
+            }
+            let Inst::Jump { target } = after[j] else {
+                return Err(format!(
+                    "blocklayout: instruction {j} of the reordered body is neither an original \
+                     instruction nor a repair jump (fail closed)"
+                ));
+            };
+            j = target;
+        }
+        Err("blocklayout: repair jumps form a cycle (fail closed)".to_string())
+    };
+    for i in 0..n {
+        let mut want: Vec<usize> = successors(before, i)
+            .into_iter()
+            .map(|s| new_index[s])
+            .collect();
+        want.sort_unstable();
+        want.dedup();
+        let mut got: Vec<usize> = successors(after, new_index[i])
+            .into_iter()
+            .map(resolve)
+            .collect::<Result<_, _>>()?;
+        got.sort_unstable();
+        got.dedup();
+        if got != want {
+            return Err(format!(
+                "blocklayout: the permutation changed the successors of instruction {i}: \
+                 {got:?} instead of {want:?} (fail closed, never emit a body this pass cannot \
+                 prove equivalent)"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn repair_needed(
