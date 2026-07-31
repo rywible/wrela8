@@ -160,11 +160,11 @@ ImageReport v0
   Turn fn=test_join frame=432
   Turns count=4 stride=512 bytes=2048
   Totals actors=1 drivers=0 ready_queue=2 group_arena=1 bytes=2288
-  Cost version=3 digest=043f8dc4b21c4b12 total=32070 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=32070
+  Cost version=3 digest=043f8dc4b21c4b12 total=32082 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=32082
     Owner name=app proxy_cycles=4405
-    Owner name=runtime proxy_cycles=27665
+    Owner name=runtime proxy_cycles=27677
     Owner name=driver proxy_cycles=0
     Core n=0 proxy_cycles=40 max_turn_proxy=40 turns_per_sec=60000000 ms_per_turn_model=0.0000166667
     Budget n=0 hot_text_bytes=93312 l1i_bytes=65536 over_l1i_lines=434 over_l2_lines=0 text_pages=23 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=3038
-    Shared proxy_cycles=32030
+    Shared proxy_cycles=32042

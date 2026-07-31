@@ -101,7 +101,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use crate::codegen::CodegenProgram;
-use crate::cost::crosscore::{OrderingRemoval, ordering_removals, ordering_word_counts};
+use crate::cost::crosscore::{
+    OrderingCounts, OrderingRemoval, ordering_removals, ordering_word_counts,
+};
 use crate::cost::footprint::CoreBudget;
 use crate::cost::score::{CostReport, score_program_at};
 use crate::cost::stage::{codegen_cost_stage_with_placement, report_cost_stage_path};
@@ -128,8 +130,8 @@ pub struct CaseDelta {
     pub candidate_budgets: Vec<CoreBudget>,
     /// Ordering-word counts per `[crosscore]`-priced rule — the freeze-1633
     /// refusal input (plans/M20.md item G).
-    pub baseline_ordering: BTreeMap<&'static str, u64>,
-    pub candidate_ordering: BTreeMap<&'static str, u64>,
+    pub baseline_ordering: OrderingCounts,
+    pub candidate_ordering: OrderingCounts,
 }
 
 impl CaseDelta {
@@ -545,33 +547,41 @@ pub fn format_delta_table(cmp: &CorpusCompare, base_label: &str, cand_label: &st
 
 /// Fail-closed bound on how many dimensions one case may sweep.
 ///
-/// `2^12 = 4096` corners for one case, `8192` scorings. Measured on this
-/// tree: the whole six-case corpus survives at `k = 9` or `10`, 4096 points
-/// per side in total, and takes ~36 s. One case at the bound would be about
-/// the same again on its own; much past it the gate stops being a gate.
-///
 /// The bound exists so a model change that makes many more dimensions live
 /// **errors** rather than silently truncating the sweep — decision 1604
 /// forbids dropping a dimension, so the only honest response to a box this
-/// gate cannot enumerate is to refuse to rank. Item M's planned
-/// `cost-crosscore` golden is the known collision: it will read the four
-/// `[crosscore]` dimensions this corpus never reaches, taking `k` to 13–14
-/// and tripping this bound. That is left as a refusal to be dealt with
-/// deliberately, not pre-weakened here.
+/// gate cannot enumerate is to refuse to rank. It is not a performance
+/// target and never a knob to turn until a candidate passes.
 ///
-/// **plans/M20.md item M (2026-07-30): the collision landed, `k` is 14, and
-/// the bound is deliberately NOT raised here.** `cost-crosscore` reads
-/// `dmb_cost`, `snoop_cost`, `load_acquire_cost` and `store_release_cost`,
-/// so its probe reports 14 surviving dimensions and
-/// `release_wins_at_every_point_of_the_residual_box` refuses to rank —
-/// visibly, and by name. Raising the bound to 14 was **measured** rather
-/// than guessed before being reverted: at 14 the test ran **1916 s
-/// (31 m 58 s)** and still failed, on a different refusal (see
-/// the retired absolute I-TLB veto). 16384 corners x 2 sides x 15 cases is not a
-/// unit-test-lane cost, so which lane this gate belongs in is a structural
-/// call for the milestone close, not something a goldens item buys by
-/// editing this number.
-pub const MAX_SWEPT_DIMS: usize = 12;
+/// **Set to 14 deliberately, on a measurement, 2026-07-30.** `cost-crosscore`
+/// reads `dmb_cost`, `snoop_cost`, `load_acquire_cost` and
+/// `store_release_cost` on top of the ten the rest of the corpus reaches,
+/// so its probe reports 14 surviving dimensions. At the old bound of 12
+/// the whole-corpus gate did not rank *anything*: it refused at
+/// `cost-crosscore` before reaching any candidate, and since freeze 1714
+/// routes every landing through `compare_opt_lists_over_box`, no opt could
+/// be ranked over the box at all. A bound that refuses the entire corpus
+/// is not a fail-closed bound, it is an outage.
+///
+/// The cost is measured, not guessed. On this tree
+/// `release_wins_at_every_point_of_the_residual_box` enumerates **26 112
+/// points per side** across the 15 cases and wins at every one of them;
+/// the whole deep lane — that sweep plus
+/// `narrow_imm_alone_wins_at_every_box_point` — is **~4 minutes** in the
+/// profile `cargo test` actually runs (243 s standalone, 218 s inside
+/// `cargo xtask check`). The 1916 s (31 m 58 s) figure
+/// previously recorded here does not reproduce, and the run that produced
+/// it also *failed*, on the since-retired absolute I-TLB veto. Four
+/// minutes is a deep-lane cost, not a `cargo test` cost, which is why the
+/// sweep is
+/// `#[ignore]`d and run by `xtask::deep_lane` — a lane that, until that
+/// function landed, did not exist, so this gate was refusing into a void
+/// nothing executed.
+///
+/// Raising it further needs the same treatment: a measured wall time for
+/// the deep lane, in its own commit, with the reason the model now reads
+/// more of the box.
+pub const MAX_SWEPT_DIMS: usize = 14;
 
 /// A dimension the sensitivity probe proved cannot matter for one case, so
 /// it is held at its pinned value instead of being cornered over.
@@ -739,7 +749,7 @@ struct SideScore {
     cycles: u64,
     words: u64,
     budgets: Vec<CoreBudget>,
-    ordering: BTreeMap<&'static str, u64>,
+    ordering: OrderingCounts,
 }
 
 impl SideScore {
@@ -775,6 +785,7 @@ pub fn box_cardinality(table: &CostTable) -> u64 {
 }
 
 /// What the sensitivity probe learned about one case.
+#[derive(Debug)]
 struct Probe {
     swept: Vec<String>,
     held: Vec<HeldDim>,
@@ -802,6 +813,20 @@ fn probe_case(
     base: &CompiledSide,
     cand: &CompiledSide,
     table: &CostTable,
+) -> Result<Probe, String> {
+    probe_case_bounded(name, base, cand, table, MAX_SWEPT_DIMS)
+}
+
+/// [`probe_case`] with the fail-closed bound supplied, so the refusal path
+/// can be driven by a test at a bound the committed profile can exceed.
+/// Every production caller goes through `probe_case` and gets
+/// [`MAX_SWEPT_DIMS`].
+fn probe_case_bounded(
+    name: &str,
+    base: &CompiledSide,
+    cand: &CompiledSide,
+    table: &CostTable,
+    max_swept_dims: usize,
 ) -> Result<Probe, String> {
     let dims: Vec<String> = table
         .sweep_dimensions()
@@ -887,10 +912,10 @@ fn probe_case(
             });
         }
     }
-    if swept.len() > MAX_SWEPT_DIMS {
+    if swept.len() > max_swept_dims {
         return Err(format!(
             "{name}: {} dimensions survive the sensitivity probe, over the \
-             bound of {MAX_SWEPT_DIMS} (2^{} corners). Decision 1604 forbids \
+             bound of {max_swept_dims} (2^{} corners). Decision 1604 forbids \
              dropping a dimension, so this errors rather than truncating the \
              sweep: raise MAX_SWEPT_DIMS deliberately, with the cost of the \
              sweep measured, or narrow what the model reads.",
@@ -1470,7 +1495,7 @@ pub struct OverallSide {
     /// Ordering-word counts per `[crosscore]`-priced rule — the freeze-1633
     /// refusal input (plans/M20.md item G). Empty on both sides leaves the
     /// refusal inert, which is what a plumbing test wants.
-    pub ordering: BTreeMap<&'static str, u64>,
+    pub ordering: OrderingCounts,
 }
 
 impl OverallSide {
@@ -1504,7 +1529,7 @@ impl OverallSide {
         self
     }
 
-    pub fn with_ordering(mut self, ordering: BTreeMap<&'static str, u64>) -> Self {
+    pub fn with_ordering(mut self, ordering: OrderingCounts) -> Self {
         self.ordering = ordering;
         self
     }
@@ -2057,15 +2082,17 @@ mod tests {
     /// win is a dispatch/issue-bandwidth effect and not a latency or memory
     /// one — the box varies every bracketed latency the model has, and on five
     /// of six cases NarrowImm's delta does not move across it at all.
-    /// **Deep lane.** `#[ignore]`d by default and run explicitly by
-    /// `cargo xtask check`, matching how every `fuzz_*` lane already splits a
-    /// smoke budget from a deep one (`crates/xtask/src/main.rs`). This test
-    /// swept 4096 points per side across the six original cases in ~37 s;
-    /// with item M's nine new cases and `cost-crosscore`'s k=14 it is minutes,
-    /// which is not a cost the default `cargo test` loop should carry.
-    /// CLAUDE.md separates the cheap per-item lane from the expensive close
-    /// lane, and a whole-corpus ∀ gate belongs in the latter. Nothing about
-    /// the oracle's strength changed — only which lane runs it.
+    /// **Deep lane.** `#[ignore]`d by default and run by
+    /// `xtask::deep_lane`, which `cargo xtask check` calls — matching how
+    /// every `fuzz_*` lane already splits a smoke budget from a deep one
+    /// (`crates/xtask/src/main.rs`). Measured 2026-07-30 on this tree, in
+    /// the profile `cargo test` actually runs: **26 112 points per side**
+    /// across the 15 cases, and **~4 minutes** for the deep lane's two
+    /// sweeps together. That is not a cost the default `cargo test` loop
+    /// should carry; CLAUDE.md separates the
+    /// cheap per-item lane from the expensive close lane, and a
+    /// whole-corpus ∀ gate belongs in the latter. Nothing about the
+    /// oracle's strength changed — only which lane runs it.
     #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
     #[test]
     fn narrow_imm_alone_wins_at_every_box_point() {
@@ -2676,8 +2703,14 @@ mod tests {
     // Freeze 1633: the barrier-removal refusal (plans/M20.md item G)
     // -----------------------------------------------------------------------
 
-    fn ord(pairs: &[(&'static str, u64)]) -> BTreeMap<&'static str, u64> {
-        pairs.iter().copied().collect()
+    /// Ordering counts for a single-fn program. `OrderingCounts` is keyed
+    /// per fn (freeze 1633 is about *where* an ordering word is), so these
+    /// fixtures name one fn and vary the counts within it.
+    fn ord(pairs: &[(&'static str, u64)]) -> OrderingCounts {
+        pairs
+            .iter()
+            .map(|&(rule, n)| (("f".to_string(), rule), n))
+            .collect()
     }
 
     /// **Freeze 1633 on the overall gate.** Every cycle number falls and
@@ -2733,7 +2766,7 @@ mod tests {
             ("store_release", 6),
             ("system", 1),
         ]);
-        let side = |ordering: BTreeMap<&'static str, u64>| {
+        let side = |ordering: OrderingCounts| {
             totals(&[("flat", 900), ("boot-actors", 4000)]).with_ordering(ordering)
         };
         let baseline =
@@ -2743,14 +2776,14 @@ mod tests {
         assert!(!same.vetoed() && same.wins());
         // Adding is fine.
         let mut more = base_ord.clone();
-        more.insert("barrier", 7);
+        more.insert(("f".to_string(), "barrier"), 7);
         let added = compare_overall(&baseline, &side(more), &set).expect("cmp");
         assert!(!added.vetoed() && added.wins());
         // Dropping any one of the four is refused, and every dropped rule
         // is reported rather than only the first.
         for rule in ["barrier", "load_acquire", "store_release", "system"] {
             let mut fewer = base_ord.clone();
-            *fewer.get_mut(rule).unwrap() -= 1;
+            *fewer.get_mut(&("f".to_string(), rule)).unwrap() -= 1;
             let cmp = compare_overall(&baseline, &side(fewer), &set).expect("cmp");
             assert!(cmp.vetoed(), "{rule} removal must be refused");
             assert_eq!(cmp.veto_reasons().len(), 1, "{rule}");
@@ -2787,6 +2820,7 @@ mod tests {
         assert_eq!(
             cmp.cases[0].ordering_removed(),
             vec![crate::cost::crosscore::OrderingRemoval {
+                fn_key: "f".to_string(),
                 rule: "barrier",
                 baseline: 2,
                 candidate: 1,
@@ -2802,7 +2836,7 @@ mod tests {
             .unwrap_or("<non-string panic>")
             .to_string();
         assert!(
-            msg.contains("freeze 1633") && msg.contains("ordering_words_removed:barrier:2->1"),
+            msg.contains("freeze 1633") && msg.contains("ordering_words_removed:f:barrier:2->1"),
             "refusal must name freeze 1633 and the rule, got: {msg}"
         );
     }
@@ -2825,13 +2859,15 @@ mod tests {
                 "{}: release removed an ordering word",
                 c.name
             );
-            assert_eq!(
-                c.baseline_ordering.len(),
-                4,
-                "every crosscore rule must have a slot, present at 0"
+            // Keyed per fn: every fn carries a slot for each of the four
+            // rules, so the map is 4 x the case's fn count.
+            assert!(
+                c.baseline_ordering.len() % 4 == 0 && !c.baseline_ordering.is_empty(),
+                "{}: every crosscore rule must have a slot on every fn, present at 0",
+                c.name
             );
             for (rule, n) in &c.baseline_ordering {
-                *reached.entry(rule.to_string()).or_insert(0) += *n;
+                *reached.entry(rule.1.to_string()).or_insert(0) += *n;
             }
         }
         eprintln!("cost-* corpus ordering-word census: {reached:?}");
@@ -3198,15 +3234,17 @@ mod tests {
 
     /// **The live ∀ sweep: `release` vs `dev`.** Records the per-point
     /// table, the nominal box cardinality and the surviving `k` per case.
-    /// **Deep lane.** `#[ignore]`d by default and run explicitly by
-    /// `cargo xtask check`, matching how every `fuzz_*` lane already splits a
-    /// smoke budget from a deep one (`crates/xtask/src/main.rs`). This test
-    /// swept 4096 points per side across the six original cases in ~37 s;
-    /// with item M's nine new cases and `cost-crosscore`'s k=14 it is minutes,
-    /// which is not a cost the default `cargo test` loop should carry.
-    /// CLAUDE.md separates the cheap per-item lane from the expensive close
-    /// lane, and a whole-corpus ∀ gate belongs in the latter. Nothing about
-    /// the oracle's strength changed — only which lane runs it.
+    /// **Deep lane.** `#[ignore]`d by default and run by
+    /// `xtask::deep_lane`, which `cargo xtask check` calls — matching how
+    /// every `fuzz_*` lane already splits a smoke budget from a deep one
+    /// (`crates/xtask/src/main.rs`). Measured 2026-07-30 on this tree, in
+    /// the profile `cargo test` actually runs: **26 112 points per side**
+    /// across the 15 cases, and **~4 minutes** for the deep lane's two
+    /// sweeps together. That is not a cost the default `cargo test` loop
+    /// should carry; CLAUDE.md separates the
+    /// cheap per-item lane from the expensive close lane, and a
+    /// whole-corpus ∀ gate belongs in the latter. Nothing about the
+    /// oracle's strength changed — only which lane runs it.
     #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
     #[test]
     fn release_wins_at_every_point_of_the_residual_box() {
@@ -3419,7 +3457,7 @@ mod tests {
             ("system", 1),
         ]);
         let mut fewer = base.clone();
-        *fewer.get_mut("barrier").unwrap() -= 1;
+        *fewer.get_mut(&("f".to_string(), "barrier")).unwrap() -= 1;
         for r in ordering_removals(&base, &fewer) {
             reasons.push(SweepVeto::OrderingWordsRemoved {
                 case: "cost-crosscore".to_string(),
@@ -3467,19 +3505,47 @@ mod tests {
         );
     }
 
-    /// The fail-closed bound is a refusal, not a truncation.
+    /// **The fail-closed bound is a refusal, not a truncation** — driven
+    /// through the real probe, not asserted about a string this test wrote
+    /// itself. `probe_case_bounded` takes the bound so a test can put it
+    /// below what the committed profile reaches; every production caller
+    /// goes through `probe_case` at `MAX_SWEPT_DIMS`.
     #[test]
     fn too_many_surviving_dimensions_is_an_error_not_a_truncation() {
         assert!(
             MAX_SWEPT_DIMS < 17,
             "the bound must actually bound the declared box"
         );
-        // The message a caller gets names the bound and refuses to rank.
-        let msg = format!(
-            "cost-x: {} dimensions survive the sensitivity probe, over the \
-             bound of {MAX_SWEPT_DIMS}",
-            MAX_SWEPT_DIMS + 1
+        let table = load_default().expect("profile");
+        let path = discover_cost_corpus()
+            .into_iter()
+            .find(|p| case_name(p) == "cost-bounds-elide")
+            .expect("cost-bounds-elide must exist");
+        let b = compile_side(&path, &[]).expect("baseline");
+        let c = compile_side(&path, RELEASE_OPTS).expect("candidate");
+
+        // At a bound of 0 every surviving dimension is over it, so the
+        // probe must refuse rather than hand back a truncated `swept`.
+        let err = probe_case_bounded("cost-bounds-elide", &b, &c, &table, 0)
+            .expect_err("a bound the case exceeds must refuse");
+        assert!(
+            err.contains("survive the sensitivity probe")
+                && err.contains("over the bound of 0")
+                && err.contains("rather than truncating"),
+            "the refusal must name the bound and say it is not a truncation: {err}"
         );
-        assert!(msg.contains("over the bound of"));
+
+        // The same probe at the real bound succeeds and reports a `swept`
+        // set — so the refusal above is the bound firing, not the case
+        // being broken.
+        let ok = probe_case_bounded("cost-bounds-elide", &b, &c, &table, MAX_SWEPT_DIMS)
+            .expect("the smoke case must fit the committed bound");
+        assert!(!ok.swept.is_empty() && ok.swept.len() <= MAX_SWEPT_DIMS);
+        // And the bound is exactly what the refusal counted against.
+        assert!(
+            probe_case_bounded("cost-bounds-elide", &b, &c, &table, ok.swept.len() - 1).is_err(),
+            "one dimension under the surviving count must still refuse"
+        );
+        apply_mode(CompileMode::Release);
     }
 }

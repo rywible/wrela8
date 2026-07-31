@@ -601,13 +601,13 @@ source = "SOG §4.5 — avoid a store crossing a 16 B boundary; magnitude in [sw
 rule = "barrier"
 sweep = "dmb_cost"
 tier = "T5"
-mechanism = "SOG §4.10 / ARM ARM: `DMB ishst` / `DMB ishld` order the inner-shareable domain; four `@dmb` sites at cross-core publish/acquire (stdlib/core/runtime.wr:1290, :1319 ishst; :1362, :1391 ishld)"
+mechanism = "SOG §4.10 / ARM ARM: `DMB ishst` / `DMB ishld` order the inner-shareable domain; six `@dmb` sites at cross-core publish/acquire and quiesce (stdlib/core/runtime.wr:1363, :1392, :1880 ishst; :1437, :1466, :2156 ishld)"
 source = "unpriced by absence: no barrier entry anywhere in SOG §3.3-§3.21 or §4.1-§4.12"
 
 [crosscore.snoop]
 sweep = "snoop_cost"
 tier = "T5"
-mechanism = "DSU TRM 100453: a load of a line another core wrote is served through the DSU. Local-vs-remote is a **static** classification from sealed placement (`PlacementTable::core_of`, decision 1603), which is the one place this model can be better than a general-purpose compiler's."
+mechanism = "DSU TRM 100453: a load of a line another core wrote is served through the DSU, and a store to a line another core holds must take ownership of it through the same DSU — one transaction family, charged in both directions. Local-vs-remote is a **static** classification from sealed placement (`PlacementTable::core_of`, decision 1603), which is the one place this model can be better than a general-purpose compiler's."
 source = "unpriced by absence: no coherency / snoop latency in any source found"
 
 [crosscore.sysreg_flush]

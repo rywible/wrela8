@@ -78,10 +78,13 @@
 //!   `store_to_load_forwarding` (4) equals `lat_l1d_hit` (4), so forwarding
 //!   is never cheaper than the cache path it replaces and the pinned model
 //!   is monotone. At the bracket's **low** end (1) a store followed by a
-//!   load of the same line is cheaper than the load alone — inserting a
+//!   load of the same *slot* is cheaper than the load alone — inserting a
 //!   store can lower a total. That is the machine's real behaviour, not a
 //!   modelling slip, and `[sweep.store_to_load_forwarding]`'s upper bound
-//!   is pinned at `lat_l1d_hit` for exactly this reason.
+//!   is pinned at `lat_l1d_hit` for exactly this reason. The **slot**
+//!   qualifier is load-bearing: forwarding is matched per `MemRef`, so the
+//!   store-A / load-B pair that shares a line takes the L1D path and the
+//!   discount does not spread across the seven other slots of the line.
 
 use std::collections::{BTreeSet, VecDeque};
 
@@ -243,9 +246,24 @@ pub struct MemState {
     l2: Level,
     l3: Level,
     /// SOG §3.10: stores are split into address + data uops and "buffered
-    /// and committed in the background", so a load of a line a recent store
-    /// wrote is satisfied by **forwarding**. FIFO, oldest at the front.
-    store_buffer: VecDeque<LineId>,
+    /// and committed in the background", so a load of a **slot** a recent
+    /// store wrote is satisfied by **forwarding**. FIFO, oldest at the
+    /// front.
+    ///
+    /// Entries are `MemRef`s, not `LineId`s: forwarding is a store-buffer
+    /// address *match*, and A76 matches the accessed bytes, not the line
+    /// they sit in. Eight 8-byte spill slots share one 64 B line, so a
+    /// line-grained buffer would forward store-slot-A / load-slot-B — an
+    /// under-cost of the entire difference between `store_to_load_forwarding`
+    /// and `lat_l1d_hit` on every such pair. A non-forwarding load of a
+    /// stored line still takes the L1D-hit path, because `store` fills the
+    /// line (write-allocate).
+    ///
+    /// `None` is a store whose address the model could not resolve to a
+    /// slot (untagged, or a `Cold` unique key). It matches no load, but it
+    /// **occupies** an entry, because a real store buffer is a queue of
+    /// stores rather than a queue of known addresses.
+    store_buffer: VecDeque<Option<MemRef>>,
     store_buffer_depth: usize,
     /// Lines this block has already referenced. A line absent from all
     /// three levels **and** from this set is a compulsory reference; one
@@ -342,8 +360,9 @@ impl MemState {
         };
         // Store-to-load forwarding comes first: the buffer holds data that
         // has not reached cache yet, so it is the only structure that can
-        // answer before L1D (SOG §3.10).
-        if self.store_buffer.contains(&line) {
+        // answer before L1D (SOG §3.10). The match is on the **slot**, not
+        // on its line — see the `store_buffer` field docs.
+        if self.store_buffer.contains(&Some(m)) {
             self.fill(line);
             return MemVerdict {
                 level: MemLevel::Forwarded,
@@ -411,10 +430,14 @@ impl MemState {
             // the arithmetically larger number.
             self.seen.insert(line);
             self.fill(line);
-            self.store_buffer.push_back(line);
-            while self.store_buffer.len() > self.store_buffer_depth {
-                self.store_buffer.pop_front();
-            }
+        }
+        // Every store occupies an entry, including one whose address does
+        // not resolve: occupancy is what bounds forwarding, and an
+        // unresolved store still drains ahead of the stores behind it.
+        self.store_buffer
+            .push_back(mem.filter(|m| LineId::of(*m, self.line_bytes).is_some()));
+        while self.store_buffer.len() > self.store_buffer_depth {
+            self.store_buffer.pop_front();
         }
         MemVerdict {
             level: MemLevel::Buffered,
@@ -743,6 +766,58 @@ mod tests {
     }
 
     // --- the store buffer ---------------------------------------------------
+
+    /// **Forwarding is matched per slot, not per line.** Eight 8-byte spill
+    /// slots share one 64 B line, so a line-grained buffer would hand the
+    /// forwarding discount to every load of a *neighbouring* slot. Pinned
+    /// at the bracket's low end, where the two paths are numerically
+    /// distinguishable (forwarding 1 vs `lat_l1d_hit` 4) — at the pinned
+    /// point they are both 4 and the assertion would be vacuous.
+    #[test]
+    fn forwarding_matches_the_slot_and_not_its_line() {
+        let t = table();
+        let lo = SweepPoint::pinned(&t).with("store_to_load_forwarding", 1);
+        let mut s = MemState::new(&t, &lo);
+        // Slot 8 and slot 16 are the same 64 B line.
+        assert_eq!(
+            LineId::of(MemRef::stack(8), 64),
+            LineId::of(MemRef::stack(16), 64)
+        );
+        s.access(&store(8));
+        let other = s.access(&load(16));
+        assert_eq!(
+            other.level,
+            MemLevel::L1dHit,
+            "a load of a different slot of the stored line must not forward"
+        );
+        assert_eq!(other.latency, 4, "it pays the L1D hit the store allocated");
+        // The same slot still forwards, and is the cheaper path here.
+        let same = s.access(&load(8));
+        assert_eq!(same.level, MemLevel::Forwarded);
+        assert_eq!(same.latency, 1);
+    }
+
+    /// An unresolved store still **occupies** a buffer entry. Occupancy is
+    /// what bounds forwarding, and a real store buffer queues stores, not
+    /// known addresses — so `depth` unique-key stores drain a resolved one.
+    #[test]
+    fn an_unresolved_store_occupies_a_buffer_entry() {
+        let t = table();
+        let lo = SweepPoint::pinned(&t).with("store_to_load_forwarding", 1);
+        let mut s = MemState::new(&t, &lo);
+        let depth = s.store_buffer_depth();
+        s.access(&store(8));
+        for seq in 0..depth as u64 {
+            let w = EmittedWord::new(0, String::new(), CostRule::Store, None, &[0])
+                .with_mem(MemRef::cold_unique(seq));
+            assert_eq!(s.access(&w).level, MemLevel::Buffered);
+        }
+        assert_eq!(
+            s.access(&load(8)).level,
+            MemLevel::L1dHit,
+            "the unresolved stores pushed slot 8 out of the buffer"
+        );
+    }
 
     /// **A store-then-load of the same slot uses the forwarding path, not
     /// the L1 path.** At the pinned point both cost 4 — the bracket's high

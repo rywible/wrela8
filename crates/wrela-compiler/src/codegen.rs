@@ -1270,39 +1270,48 @@ struct FnCtx<'a> {
 /// `push_mem` (and `push_flags`). Fail closed — never silently under-tag.
 ///
 /// - `Call` ⇒ `dst == Some(0)` (x0 return / clobber)
-/// - `Load` with a known (non-unique) address MemRef ⇒ ≥1 src
-/// - `Store` with non-unique MemRef ⇒ that MemRef's base ∈ srcs
+/// - a load with a known (non-unique) address MemRef ⇒ ≥1 src
+/// - a store with non-unique MemRef ⇒ that MemRef's base ∈ srcs
+/// - a store ⇒ `dst == None`: a store produces no register, and its data
+///   register is a **source**. Tagging the data register as `dst` both
+///   drops the store-data RAW edge (the store could issue before its data
+///   is produced) and invents a producer edge on that register.
 /// - Unique-cold MemRefs stay exempt (pessimistic address unknown)
+///
+/// The ordered forms (`LDAR` / `STLR`) take the same checks as their plain
+/// twins — `is_load` / `is_store` is the predicate, not the variant — so an
+/// under-tagged ordered access fails closed rather than being skipped.
 fn check_push_shape(rule: CostRule, dst: Option<u8>, srcs: &[u8], mem: Option<&MemRef>) {
-    match rule {
-        CostRule::Call => {
-            assert_eq!(
-                dst,
-                Some(0),
-                "Call must declare dst=Some(0) (x0 return/clobber)"
-            );
-        }
-        CostRule::Load => {
-            if let Some(m) = mem {
-                if !memref_is_unique_cold(m) {
-                    assert!(
-                        !srcs.is_empty(),
-                        "Load with known address MemRef needs ≥1 src (address base)"
-                    );
-                }
+    if rule == CostRule::Call {
+        assert_eq!(
+            dst,
+            Some(0),
+            "Call must declare dst=Some(0) (x0 return/clobber)"
+        );
+    }
+    if rule.is_load() {
+        if let Some(m) = mem {
+            if !memref_is_unique_cold(m) {
+                assert!(
+                    !srcs.is_empty(),
+                    "{rule:?} with known address MemRef needs ≥1 src (address base)"
+                );
             }
         }
-        CostRule::Store => {
-            if let Some(m) = mem {
-                if let Some(base) = memref_nonunique_base(m) {
-                    assert!(
-                        srcs.iter().any(|&r| r == base),
-                        "Store with non-unique MemRef requires base reg {base} ∈ srcs (got {srcs:?})"
-                    );
-                }
+    }
+    if rule.is_store() {
+        assert_eq!(
+            dst, None,
+            "{rule:?} produces no register; its data register belongs in srcs"
+        );
+        if let Some(m) = mem {
+            if let Some(base) = memref_nonunique_base(m) {
+                assert!(
+                    srcs.iter().any(|&r| r == base),
+                    "{rule:?} with non-unique MemRef requires base reg {base} ∈ srcs (got {srcs:?})"
+                );
             }
         }
-        _ => {}
     }
 }
 
@@ -1325,12 +1334,15 @@ fn memref_nonunique_base(m: &MemRef) -> Option<u8> {
 impl<'a> FnCtx<'a> {
     // Best-effort dest/src regs at emit time; `dst=None` / empty `srcs` OK when unknown
     // (scoreboard treats missing operands as no register deps). Never parse mnemonics.
-    // Load/Store without a proven address get a unique Cold MemRef; Adrp stays untagged.
-    // Integrity item D: structural asserts on Call/Load/Store tag shape at push time.
+    // Any load/store without a proven address gets a unique Cold MemRef —
+    // the ordered forms included, so an `LDAR`/`STLR` is never invisible to
+    // the memory and D-TLB terms; Adrp stays untagged.
+    // Integrity item D: structural asserts on Call/load/store tag shape at push time.
     fn push(&mut self, word: u32, text: String, rule: CostRule, dst: Option<u8>, srcs: &[u8]) {
-        let mem = match rule {
-            CostRule::Load | CostRule::Store => Some(self.alloc_unique_cold()),
-            _ => None,
+        let mem = if rule.is_load() || rule.is_store() {
+            Some(self.alloc_unique_cold())
+        } else {
+            None
         };
         self.push_mem(word, text, rule, dst, srcs, mem);
     }
@@ -1419,10 +1431,11 @@ impl<'a> FnCtx<'a> {
         srcs: &[u8],
         mem: Option<MemRef>,
     ) {
-        // Untagged Load/Store → unique cold (pessimistic); proven tags keep their MemRef.
-        let mem = match (rule, mem) {
-            (CostRule::Load | CostRule::Store, None) => Some(self.alloc_unique_cold()),
-            (_, m) => m,
+        // Untagged load/store → unique cold (pessimistic); proven tags keep
+        // their MemRef. `is_load`/`is_store` so `LDAR`/`STLR` are covered.
+        let mem = match mem {
+            None if rule.is_load() || rule.is_store() => Some(self.alloc_unique_cold()),
+            m => m,
         };
         check_push_shape(rule, dst, srcs, mem.as_ref());
         let mut ew = EmittedWord::new(word, text, rule, dst, srcs);
@@ -2726,23 +2739,26 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             width,
         } => {
             emit_interrupt_cell_addr(ctx, *field_off)?;
+            let mem = Some(interrupt_cell_memref(*field_off));
             match *width {
                 4 => {
-                    ctx.push(
+                    ctx.push_mem(
                         encode::enc_ldar_w(X_B, X_A),
                         format!("ldar w{}, [{}]", X_B, reg_name(X_A)),
                         CostRule::LoadAcquire,
                         Some(X_B),
                         &[X_A],
+                        mem,
                     );
                 }
                 8 => {
-                    ctx.push(
+                    ctx.push_mem(
                         encode::enc_ldar_x(X_B, X_A),
                         format!("ldar {}, [{}]", reg_name(X_B), reg_name(X_A)),
                         CostRule::LoadAcquire,
                         Some(X_B),
                         &[X_A],
+                        mem,
                     );
                 }
                 w => {
@@ -2760,23 +2776,26 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
         } => {
             emit_interrupt_cell_addr(ctx, *field_off)?;
             ctx.load_slot(X_B, ctx.frame.off(*value));
+            let mem = Some(interrupt_cell_memref(*field_off));
             match *width {
                 4 => {
-                    ctx.push(
+                    ctx.push_mem(
                         encode::enc_stlr_w(X_B, X_A),
                         format!("stlr w{}, [{}]", X_B, reg_name(X_A)),
                         CostRule::StoreRelease,
-                        Some(X_B),
-                        &[X_A],
+                        None,
+                        &[X_A, X_B],
+                        mem,
                     );
                 }
                 8 => {
-                    ctx.push(
+                    ctx.push_mem(
                         encode::enc_stlr_x(X_B, X_A),
                         format!("stlr {}, [{}]", reg_name(X_B), reg_name(X_A)),
                         CostRule::StoreRelease,
-                        Some(X_B),
-                        &[X_A],
+                        None,
+                        &[X_A, X_B],
+                        mem,
                     );
                 }
                 w => {
@@ -4235,6 +4254,23 @@ enum InterruptCellRmw {
     FetchOr,
 }
 
+/// Address identity of an `InterruptCell` access, for the memory and D-TLB
+/// terms. Every one of these goes through `emit_interrupt_cell_addr`, which
+/// leaves `self_ptr + field_off` in `X_A` — so the access is a proven
+/// `[base, #imm]` with base `X_A` and displacement `field_off`.
+///
+/// Keying by `field_off` rather than by 0 is what keeps two *different*
+/// cells from aliasing onto one line: the displacement is folded into `X_A`
+/// by the time the access issues, so `(X_A, 0)` would make every cell the
+/// same address and manufacture reuse between unrelated fields.
+///
+/// Without a `MemRef` at all these accesses were invisible to the D-TLB
+/// page span and took the unresolved-address leaf in the hierarchy — the
+/// TLB side silently, which is the direction 04 §5 forbids.
+fn interrupt_cell_memref(field_off: usize) -> MemRef {
+    MemRef::for_base_imm(X_A, field_off as u64)
+}
+
 /// `X_A = self_ptr + field_off`. Requires a receiver (self_ptr_save).
 fn emit_interrupt_cell_addr(ctx: &mut FnCtx, field_off: usize) -> Result<(), CodegenError> {
     let self_ptr_off = ctx.frame.self_ptr_off.ok_or_else(|| {
@@ -4280,23 +4316,26 @@ fn emit_interrupt_cell_rmw(
 ) -> Result<(), CodegenError> {
     emit_interrupt_cell_addr(ctx, field_off)?;
     ctx.load_slot(X_B, value_off);
+    let mem = Some(interrupt_cell_memref(field_off));
     match width {
         4 => {
-            ctx.push(
+            ctx.push_mem(
                 encode::enc_ldar_w(X_C, X_A),
                 format!("ldar w{}, [{}]", X_C, reg_name(X_A)),
                 CostRule::LoadAcquire,
                 Some(X_C),
                 &[X_A],
+                mem,
             );
             match kind {
                 InterruptCellRmw::Swap => {
-                    ctx.push(
+                    ctx.push_mem(
                         encode::enc_stlr_w(X_B, X_A),
                         format!("stlr w{}, [{}]", X_B, reg_name(X_A)),
                         CostRule::StoreRelease,
-                        Some(X_B),
-                        &[X_A],
+                        None,
+                        &[X_A, X_B],
+                        mem,
                     );
                 }
                 InterruptCellRmw::FetchOr => {
@@ -4307,42 +4346,46 @@ fn emit_interrupt_cell_rmw(
                         Some(X_D),
                         &[X_C, X_B],
                     );
-                    ctx.push(
+                    ctx.push_mem(
                         encode::enc_stlr_w(X_D, X_A),
                         format!("stlr w{}, [{}]", X_D, reg_name(X_A)),
                         CostRule::StoreRelease,
-                        Some(X_D),
-                        &[X_A],
+                        None,
+                        &[X_A, X_D],
+                        mem,
                     );
                 }
             }
         }
         8 => {
-            ctx.push(
+            ctx.push_mem(
                 encode::enc_ldar_x(X_C, X_A),
                 format!("ldar {}, [{}]", reg_name(X_C), reg_name(X_A)),
                 CostRule::LoadAcquire,
                 Some(X_C),
                 &[X_A],
+                mem,
             );
             match kind {
                 InterruptCellRmw::Swap => {
-                    ctx.push(
+                    ctx.push_mem(
                         encode::enc_stlr_x(X_B, X_A),
                         format!("stlr {}, [{}]", reg_name(X_B), reg_name(X_A)),
                         CostRule::StoreRelease,
-                        Some(X_B),
-                        &[X_A],
+                        None,
+                        &[X_A, X_B],
+                        mem,
                     );
                 }
                 InterruptCellRmw::FetchOr => {
                     ctx.orr_reg(X_D, X_C, X_B);
-                    ctx.push(
+                    ctx.push_mem(
                         encode::enc_stlr_x(X_D, X_A),
                         format!("stlr {}, [{}]", reg_name(X_D), reg_name(X_A)),
                         CostRule::StoreRelease,
-                        Some(X_D),
-                        &[X_A],
+                        None,
+                        &[X_A, X_D],
+                        mem,
                     );
                 }
             }

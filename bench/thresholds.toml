@@ -148,11 +148,13 @@ boot_actors_median_us = 700000
 # a test whose *subject* belongs in the default `cargo test` lane grows a
 # *cost* that does not.
 #
-# The worked example is on the record. `sweep_deep` scored the whole program
-# once per corner, cost 31m58s, was `#[ignore]`d and moved out of the default
-# lane (plans/M20.md decision 1637), then reformulated by the corner engine to
-# ~9s and deliberately brought back (decision 1644). Both moves were correct;
-# both were found by a human noticing a slow gate rather than by an oracle.
+# The worked example is on the record. The whole-corpus ∀ sweep scores the
+# whole program once per corner, was measured at 31m58s, and was `#[ignore]`d
+# out of the default lane (plans/M20.md decision 1637). It was never
+# reformulated or brought back: it stayed `#[ignore]`d, and — until
+# `xtask::deep_lane` landed — nothing ran it at all, so the exile silently
+# became a deletion. That move was found by a human noticing a slow gate
+# rather than by an oracle, and its consequence by a human reading the gate.
 # Measured 2026-07-30, the same thing had happened again unnoticed:
 # `cost::branch::tests::branch_terms_census_over_the_cost_corpus` alone was
 # **393s of a 417s** compiler lib suite. This key is the oracle that says so.

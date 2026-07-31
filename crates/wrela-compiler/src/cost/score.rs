@@ -949,10 +949,18 @@ fn score_words(
         }
         let mut issue = base_ready;
         for u in &uops {
-            let mut earliest = base_ready;
-            if occupancy > 1 {
-                earliest = earliest.max(unit_free[u.class.index()]);
-            }
+            // **Waiting on the hold is unconditional; only setting one is
+            // not.** A functional unit an earlier uop is holding is busy
+            // for every uop of that class, not just for the ones that
+            // would take a hold themselves. Gating the wait on this uop's
+            // own `occupancy > 1` let an occupancy-1 uop issue straight
+            // through a live hold — inert today, because every M-pipe row
+            // in the profile has occupancy above 1, and live the moment one
+            // does not (a W-form multiply-accumulate is the obvious next
+            // one). `unit_free` is only ever written under `occupancy > 1`
+            // below, so a class nothing holds stays at 0 and this max is a
+            // no-op there.
+            let earliest = base_ready.max(unit_free[u.class.index()]);
             let (pipe, at) = earliest_pipe(u.pipes, earliest, &pipe_free)?;
             // Each pipeline accepts one uop per cycle (SOG §2.1).
             pipe_free[pipe] = at.saturating_add(1);

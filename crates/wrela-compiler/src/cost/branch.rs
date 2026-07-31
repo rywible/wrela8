@@ -208,35 +208,45 @@
 //!
 //! ## What the terms reach on the emitted stream (measured, not argued)
 //!
-//! `unit:branch_terms_census_over_the_cost_corpus`, over all six `cost-*`
-//! cases:
+//! `unit:branch_terms_census_over_the_cost_corpus`, over all 15 `cost-*`
+//! cases. The test prints these live and asserts the structural ones, so
+//! the table is a record and not a second source of truth:
 //!
 //! | Quantity | Count |
 //! | --- | --- |
-//! | `CostRule::Branch` words | 216 |
-//! | unconditional `B` — perfectly predicted, charged 0 as a **fact** | 115 |
-//! | `RET` — no PC-relative target, predicted by the return-address stack | 28 |
-//! | conditional with two resolvable successors — the biasable set | 73 |
+//! | `CostRule::Branch` words | 6211 |
+//! | unconditional `B` — perfectly predicted, charged 0 as a **fact** | 484 |
+//! | no PC-relative target (`RET` / `BR`) — the return-address stack | 122 |
+//! | conditional with two resolvable successors — the biasable set | 5605 |
 //! | branches with a bias under `W_flat` | **0** |
 //! | §4.8 `dense_excess` / `loop_crossings` | **0 / 0** |
 //!
 //! Two results worth stating plainly, because both are properties of the
 //! spill-everything frame rather than accidents:
 //!
-//! 1. **Only 73 of 216 branch words can ever carry a bias** — 115 are
-//!    unconditional `B` and 28 are `RET`. Neither is a want-of-data case,
-//!    and the census asserts that any *other* unresolvable branch (an
-//!    indirect `BR`, which nobody has priced) fails closed rather than
-//!    arriving as a silent zero.
+//! 1. **Only 5605 of 6211 branch words can ever carry a bias** — the rest
+//!    are unconditional `B` or have no PC-relative target. Neither is a
+//!    want-of-data case, and the census asserts that any *other*
+//!    unresolvable branch (an indirect `BR`, which nobody has priced) fails
+//!    closed rather than arriving as a silent zero.
 //! 2. **Both §4.8 terms are live but unexercised on this corpus, so the
-//!    flat row does not move at all** (153 / 172 / 90 / 314 / 169 / 1954,
-//!    byte-identical before and after item H). The frame is why: every
-//!    branch is preceded by the compare, the `cset`, the spill and the
-//!    reload that materialised its condition, so five branches never fit
-//!    inside one 32 B fetch region; and no loop body survives that same
-//!    frame at 32 bytes or less. The terms are witnessed synthetically, at
-//!    shapes `codegen.rs` does not emit — the same outcome item I recorded
-//!    for §4.5, and for the same underlying reason.
+//!    flat row does not move at all.** The frame is why: every branch is
+//!    preceded by the compare, the `cset`, the spill and the reload that
+//!    materialised its condition, so five branches never fit inside one
+//!    32 B fetch region; and no loop body survives that same frame at 32
+//!    bytes or less. The terms are witnessed synthetically, at shapes
+//!    `codegen.rs` does not emit — the same outcome item I recorded for
+//!    §4.5, and for the same underlying reason.
+//!
+//!    **This is measured over the whole B-pipe branch set, not just
+//!    `CostRule::Branch`.** The density rule counts every branch
+//!    instruction the front end predicts — `branch`, `call`, `abort` and
+//!    `abort_val`, the four `[latency]` rows on pipeline B — because the
+//!    emitted abort pattern (`cmp; b.cond; bl`) clusters exactly those
+//!    words, and a `Branch`-only count would score a 6-branch region as 3
+//!    and charge nothing. `dense_excess` is 0 over the corpus at the wider
+//!    set too, so this term's reach is a fact about the frame rather than
+//!    an artefact of which rules were counted.
 //!
 //! The mispredict term's **maximum** reach is measured too, as an upper
 //! bound rather than a prediction: with every block given its own
@@ -485,7 +495,7 @@ impl BranchTerms {
         if code.is_empty() {
             return Ok(out);
         }
-        out.bias = bias_per_branch(fn_key, code, counts, &mut out.summary);
+        out.bias = bias_per_branch(fn_key, code, counts, &mut out.summary)?;
         let fe = frontend_charges(code, table, point, &mut out.summary)?;
         out.frontend = fe;
         Ok(out)
@@ -542,6 +552,21 @@ fn is_unconditional_b(word: u32) -> bool {
     word & 0xFC00_0000 == 0x1400_0000
 }
 
+/// Unconditional branch (register): `1101011 opc op2 op3 Rn op4`. `RET` is
+/// `opc = 0010`; `BR` is `0000` and `BLR` is `0001`.
+const BR_REG_MASK: u32 = 0xFFFF_FC1F;
+const BR_REG_BR: u32 = 0xD61F_0000;
+const BR_REG_BLR: u32 = 0xD63F_0000;
+
+/// True for a **computed** branch — `BR` / `BLR`, the register-indirect
+/// forms. Nobody has priced one: it has no PC-relative target to compare
+/// successors with, and the return-address stack does not predict it the
+/// way it predicts `RET`. So it must never arrive as a silent 0.
+fn is_indirect_branch_register(word: u32) -> bool {
+    let masked = word & BR_REG_MASK;
+    masked == BR_REG_BR || masked == BR_REG_BLR
+}
+
 /// Word index → block index over [`basic_block_ranges`].
 fn block_of(ranges: &[(usize, usize)], n: usize) -> Vec<usize> {
     let mut out = vec![0usize; n];
@@ -558,7 +583,7 @@ fn bias_per_branch(
     code: &[EmittedWord],
     counts: &BlockCounts<'_>,
     summary: &mut BranchSummary,
-) -> BTreeMap<usize, BranchBias> {
+) -> Result<BTreeMap<usize, BranchBias>, String> {
     let n = code.len();
     // The CFG is score.rs's, not a second one: `basic_block_ranges` already
     // knows the leaders and `branch_target_index` already decodes the
@@ -577,9 +602,23 @@ fn bias_per_branch(
             summary.unconditional += 1;
             continue;
         }
+        // **Fail closed on a computed branch.** `RET` charges 0 as a fact
+        // — the return-address stack predicts it — and an inter-fn or
+        // synthetic word has no successors in this fn to compare. A `BR` /
+        // `BLR` is neither: nobody has priced a computed branch, so it must
+        // error here rather than arrive as a silent 0 mispredict. This is
+        // the model's own guard, not a corpus test's, so it holds on every
+        // stream and not only on the cases `cost-*` happens to cover.
+        if is_indirect_branch_register(code[i].word) {
+            return Err(format!(
+                "{fn_key}: word {i} is a computed branch (`BR`/`BLR`, {:#010x}); \
+                 no source prices one, so its mispredict charge is undecided",
+                code[i].word
+            ));
+        }
         let fallthrough = i + 1;
         let Some(target) = branch_target_index(code[i].word, i) else {
-            // `BR` / `RET` / an unencoded synthetic word: no target, so no
+            // `RET` or an unencoded synthetic word: no target, so no
             // successors to compare.
             summary.unresolved += 1;
             continue;
@@ -605,7 +644,7 @@ fn bias_per_branch(
             None => summary.no_data += 1,
         }
     }
-    out
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -663,15 +702,31 @@ fn frontend_charges(
     let loop_fit = region;
     let penalty = point.get(FRONTEND_SWEEP_DIM);
 
+    // §4.8's density rule counts **branch instructions** in a fetch region,
+    // and the front end does not care which rule row prices them: a `BL`
+    // and the `BL` an abort check emits occupy a predictor slot exactly as
+    // a `B.cond` does, and the profile itself puts all four on the B pipe.
+    // Counting only `CostRule::Branch` would miss them, and the emitted
+    // abort pattern (`cmp; b.cond; bl`) is dense in precisely those words —
+    // so a region holding 6 real branches would be scored as 3 and charged
+    // nothing.
     let branches: Vec<usize> = (0..code.len())
-        .filter(|&i| code[i].rule == CostRule::Branch)
+        .filter(|&i| is_branch_class(code[i].rule))
         .collect();
     // Backward branches: (branch word, target word). §4.8's loop rule only
     // speaks about a loop whose body is at most `loop_fit` bytes; a larger
     // loop cannot fit one region however it is placed, so the rule says
     // nothing about it and nothing is charged.
+    //
+    // The loop rule reads `CostRule::Branch` only, unlike the density rule
+    // above: a loop back-edge is a branch, and a backward `BL` is a
+    // recursive call whose body is the callee's, not the words between the
+    // call and its target.
     let mut loops: Vec<(usize, usize)> = Vec::new();
-    for &i in &branches {
+    for &i in branches
+        .iter()
+        .filter(|&&i| code[i].rule == CostRule::Branch)
+    {
         if let Some(t) = branch_target_index(code[i].word, i) {
             if t <= i && (i - t + 1) as u64 * WORD_BYTES <= loop_fit {
                 loops.push((i, t));
@@ -734,6 +789,21 @@ fn region_of(w: usize, r: u64, region: u64) -> u64 {
     (r + w as u64 * WORD_BYTES) / region
 }
 
+/// The rules whose words are **branch instructions** to the front end, and
+/// therefore occupy a slot under §4.8's density rule.
+///
+/// This is the profile's own B-pipe set, not a judgement call: `branch`,
+/// `call`, `abort` and `abort_val` are the four `[latency]` rows whose
+/// `ports` name pipeline B, and `abort` / `abort_val` are documented there
+/// as "branch and link, immed — the abort branch every check emits".
+/// `System` (`BRK`) is not a branch and does not predict.
+pub fn is_branch_class(rule: CostRule) -> bool {
+    matches!(
+        rule,
+        CostRule::Branch | CostRule::Call | CostRule::Abort | CostRule::AbortVal
+    )
+}
+
 fn density_excess(branches: &[usize], r: u64, region: u64, max_branches: u64) -> u64 {
     let mut per: BTreeMap<u64, u64> = BTreeMap::new();
     for &i in branches {
@@ -790,6 +860,13 @@ mod tests {
 
     fn alu(dst: u8) -> EmittedWord {
         EmittedWord::new(0, String::new(), CostRule::Alu, Some(dst), &[0, 0])
+    }
+
+    /// A real `BL` word under one of the three branch-and-link rules
+    /// (`call` / `abort` / `abort_val`). The displacement is 0 so it names
+    /// itself: `frontend_charges` only reads its position for density.
+    fn bl_rule(rule: CostRule) -> EmittedWord {
+        EmittedWord::new(encode::enc_bl(0), String::new(), rule, None, &[])
     }
 
     /// A real `CBZ` word so `branch_target_index` decodes it: `byte_offset`
@@ -1209,7 +1286,124 @@ mod tests {
         );
     }
 
+    /// **`BL` and the abort branches count toward §4.8's density.** The
+    /// front end predicts them like any other branch, and the emitted abort
+    /// pattern (`cmp; b.cond; bl`) is exactly where they cluster. Counting
+    /// only `CostRule::Branch` would score this region as three branches
+    /// and charge zero where the real one holds six.
+    #[test]
+    fn call_and_abort_words_count_toward_the_density_rule() {
+        // Three `B.cond`s and three abort `BL`s inside eight words: six
+        // branch instructions in one aligned 32 B region.
+        let code = vec![
+            cbz(4),
+            bl_rule(CostRule::Abort),
+            cbz(4),
+            bl_rule(CostRule::AbortVal),
+            cbz(4),
+            bl_rule(CostRule::Call),
+            alu(1),
+            alu(2),
+        ];
+        let t = terms(&code, &BlockCounts::Flat);
+        assert_eq!(
+            t.summary.dense_excess, 2,
+            "six branch instructions in one region is two over the limit of four"
+        );
+        assert_eq!(t.total_frontend_charge(), 2 * frontend_penalty());
+
+        // The control that isolates the fix: the same three `B.cond`s with
+        // the call/abort words replaced by ALU words is under the limit.
+        let control = vec![
+            cbz(4),
+            alu(3),
+            cbz(4),
+            alu(4),
+            cbz(4),
+            alu(5),
+            alu(1),
+            alu(2),
+        ];
+        assert_eq!(terms(&control, &BlockCounts::Flat).summary.dense_excess, 0);
+    }
+
+    /// The density set is the profile's own **B-pipe** set, so a profile
+    /// edit that moves a rule onto or off pipeline B cannot leave the rule
+    /// silently uncounted.
+    #[test]
+    fn the_density_set_is_exactly_the_profiles_b_pipe_rules() {
+        let t = table();
+        for &rule in CostRule::ALL {
+            // The cross-core rules are priced by `[crosscore]` and have no
+            // `[latency]` row at all; none of them is a branch.
+            if rule.is_crosscore() {
+                assert!(!is_branch_class(rule), "{rule:?} has no [latency] row");
+                continue;
+            }
+            let row = t
+                .latency_row(rule.as_str())
+                .unwrap_or_else(|| panic!("[latency.{}] is required", rule.as_str()));
+            let on_b = row.ports.split(',').any(|p| p.trim() == "B");
+            assert_eq!(
+                is_branch_class(rule),
+                on_b,
+                "{rule:?} is on ports {:?} but is_branch_class says {}",
+                row.ports,
+                is_branch_class(rule)
+            );
+        }
+    }
+
     // --- fail-closed ------------------------------------------------------
+
+    /// **A computed branch errors; a `RET` does not.** Nobody has priced a
+    /// `BR`/`BLR`, and it has no PC-relative target, so under the old
+    /// "no target → unresolved → charge 0" path it would have arrived as a
+    /// silent zero on the image surface. The guard is in the model, so it
+    /// holds on every stream rather than only on the `cost-*` corpus.
+    #[test]
+    fn a_computed_branch_fails_closed_and_a_ret_does_not() {
+        let t = table();
+        let p = point();
+        let br = vec![
+            alu(1),
+            EmittedWord::new(
+                encode::enc_br(9),
+                String::new(),
+                CostRule::Branch,
+                None,
+                &[9],
+            ),
+        ];
+        let err = BranchTerms::compute("F.m", &br, &t, &p, &BlockCounts::Flat)
+            .expect_err("a computed branch must not be priced silently");
+        assert!(
+            err.contains("computed branch"),
+            "the refusal must name what it refused: {err}"
+        );
+
+        // `RET` shares the encoding family and stays a fact-charged 0: the
+        // return-address stack predicts it.
+        let ret = vec![
+            alu(1),
+            EmittedWord::new(
+                encode::enc_ret(30),
+                String::new(),
+                CostRule::Branch,
+                None,
+                &[],
+            ),
+        ];
+        let terms = BranchTerms::compute("F.m", &ret, &t, &p, &BlockCounts::Flat).expect("ret");
+        assert_eq!(terms.summary.unresolved, 1);
+        assert_eq!(terms.summary.biased, 0);
+        assert_eq!(branch_mispredict_charge(penalty(), terms.bias_at(1)), 0);
+        assert!(
+            is_indirect_branch_register(encode::enc_br(9))
+                && !is_indirect_branch_register(encode::enc_ret(30)),
+            "the decoder must split BR from RET"
+        );
+    }
 
     /// The fetch region is read from the profile and cross-checked across
     /// the three rows that spell it, so a profile that splits them cannot
@@ -1323,25 +1517,19 @@ mod tests {
                     (s.dense_excess + s.loop_crossings) * fe,
                     "{case}/{key}: an undecidable §4.8 term charged something"
                 );
-                // Fail closed on a *new* kind of unresolvable branch. On
-                // this stream every one is a `RET`, whose 0 charge is a
-                // fact (the return-address stack predicts it) rather than a
-                // default. An indirect `BR` would land here too and nobody
-                // has decided what a computed branch costs, so it must not
-                // arrive silently.
+                // The census of *why* each unresolvable branch is charged
+                // 0. `BranchTerms::compute` above already fails closed on a
+                // computed branch, so reaching here means every one of them
+                // is a `RET` or an inter-fn displacement — decoded from the
+                // word, never sniffed from the mnemonic text.
                 for (i, ew) in f.code.iter().enumerate() {
                     if ew.rule != CostRule::Branch || is_unconditional_b(ew.word) {
                         continue;
                     }
-                    let resolvable = branch_target_index(ew.word, i)
-                        .is_some_and(|t| t < f.code.len() && i + 1 < f.code.len());
-                    if !resolvable {
-                        assert!(
-                            ew.text.trim_start().starts_with("ret"),
-                            "{case}/{key}: an unresolvable branch that is not a `ret`: {}",
-                            ew.text
-                        );
-                    }
+                    assert!(
+                        !is_indirect_branch_register(ew.word),
+                        "{case}/{key}: word {i} is a computed branch that reached the census"
+                    );
                 }
                 census.branches += s.branches;
                 census.unconditional += s.unconditional;

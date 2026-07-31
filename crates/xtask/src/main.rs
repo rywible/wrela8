@@ -304,16 +304,41 @@ fn main() -> ExitCode {
     }
 }
 
+/// Every `#[ignore]`d test in the workspace — the deep lane those tests
+/// say `cargo xtask check` runs. Until this existed they said it and it
+/// did not: `cargo test` does not include ignored tests, and no other lane
+/// named them.
+///
+/// Not part of `--fast`, and not inside the unit-suite timing window: this
+/// is minutes by construction (the whole-corpus ∀ sweep enumerates 2^k
+/// corners per case per side), which is precisely why it is not in the
+/// default `cargo test` loop.
+fn deep_lane() -> Result<(), String> {
+    run(
+        Command::new("cargo").args([
+            "test",
+            "--workspace",
+            "--exclude",
+            "wrela-vmm",
+            "--quiet",
+            "--",
+            "--ignored",
+        ]),
+        "cargo test -- --ignored (deep lane)",
+    )
+}
+
 /// The default `cargo test` lane has a **locked wall-time budget**, in
 /// exactly the sense `bench/thresholds.toml` already means by "lock": not
 /// a performance target, a regression tripwire. It exists because the
 /// failure it catches is one this repo has now hit twice — a test whose
 /// subject belongs in the default lane but whose *cost* does not.
 ///
-/// The precedent is on the record: `sweep_deep` scored the whole program
-/// once per corner, cost 31m58s, was `#[ignore]`d (plans/M20.md decision
-/// 1637), then reformulated to ~9s and brought back (decision 1644). That
-/// exile was found by a human noticing, not by an oracle. This is the
+/// The precedent is on the record: the whole-corpus ∀ sweep scored the
+/// whole program once per corner and was `#[ignore]`d out of this lane
+/// (plans/M20.md decision 1637). What made that exile a hazard rather than
+/// a decision is that nothing then ran it — see [`deep_lane`], which does.
+/// That exile was found by a human noticing, not by an oracle. This is the
 /// oracle: a test's home is chosen by its cost, and the gate says so out
 /// loud when the cost moves.
 ///
@@ -500,6 +525,16 @@ fn check(fast: bool) -> Result<(), String> {
         );
         return Ok(());
     }
+    // **The deep lane actually runs here.** `cargo test` above does not
+    // include `#[ignore]`d tests, so for as long as this call was missing,
+    // every test that named "run via `cargo xtask check`" — the whole-corpus
+    // ∀ sweep among them — was in the tree, described as gated, and run by
+    // nothing. A gate that is green while its central oracle never executes
+    // is exactly the "never fake a pass" failure the house rules forbid.
+    // Outside the timed window above on purpose: this lane is minutes by
+    // construction and the unit-suite budget must keep measuring the unit
+    // suite.
+    deep_lane()?;
     test_wrela_vmm_signed()?;
     golden(&GoldenOpts::default())?;
     // `report_determinism` is deliberately **not** called here: `repro`

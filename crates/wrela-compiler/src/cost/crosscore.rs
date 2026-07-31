@@ -13,11 +13,11 @@
 //!
 //! ## What wrela emits (census taken 2026-07-29, in this tree)
 //!
-//! - **6 `@dmb` call sites** in `stdlib/core/runtime.wr` — `:1323` and
-//!   `:1352` `ishst` (ring request / reply publish before the pending
-//!   raise), `:1397` and `:1426` `ishld` (reply / request drain acquire
-//!   before the payload loads), `:1840` `ishst` (a secondary's release
-//!   before it parks) and `:2097` `ishld` (the primary's acquire once the
+//! - **6 `@dmb` call sites** in `stdlib/core/runtime.wr` — `:1363` and
+//!   `:1392` `ishst` (ring request / reply publish before the pending
+//!   raise), `:1437` and `:1466` `ishld` (reply / request drain acquire
+//!   before the payload loads), `:1880` `ishst` (a secondary's release
+//!   before it parks) and `:2156` `ishld` (the primary's acquire once the
 //!   secondaries read idle). The plan's research pass recorded **four**;
 //!   the last two arrived with `lane1-per-core.md`'s quiesce work, which
 //!   landed after that pass. One codegen emit site (`Inst::Dmb`) reaches
@@ -70,6 +70,22 @@
 //!    is the instruction's whole reason for being emitted. With a peer core
 //!    in the image this is a certain remote verdict, carried by the ISA tag
 //!    itself rather than by an address analysis.
+//! 4b. **That an `STLR` is a cross-core publish.** Point 4 run backwards,
+//!    and it is the same strength of claim: the release half exists
+//!    *because* another agent is going to read the line, so the store has
+//!    to take the line away from whatever core holds it. That
+//!    invalidation / ownership transfer is the same DSU transaction family
+//!    as the load-side snoop and is charged the same swept `snoop_cost`.
+//!
+//!    **This is a write-side charge that used to be missing entirely.**
+//!    Every store classified `Local` by construction, so the publish half
+//!    of cross-core publish/acquire was priced at the swept
+//!    `store_release_cost` alone — pinned 0 — while its acquire half was
+//!    priced at 312. There is no source that makes a coherency event free
+//!    in one direction; the asymmetry was an omission, not a finding, and
+//!    it was an **under**-cost, which is the direction 04 §5 forbids. The
+//!    bracket is shared with the load side (`snoop_cost`, 0–312), so the
+//!    ∀ sweep still visits the point where cross-core traffic is free.
 //!
 //! **Not decidable, and therefore not claimed:**
 //!
@@ -87,9 +103,13 @@
 //!    recorded because it is the natural thing to assume it does.
 //!
 //! **The residual, named in the direction it biases.** Point 5 leaves a
-//! genuinely-remote plain load charged as local: an **under**-cost, which
-//! is the direction 04 §5 forbids. It is recorded rather than fixed, and
-//! the alternative is the decision-1609 conflict below.
+//! genuinely-remote plain load charged as local — and, symmetrically, a
+//! plain `STR` to a line a peer core holds: an **under**-cost, which is the
+//! direction 04 §5 forbids. It is recorded rather than fixed, and the
+//! alternative is the decision-1609 conflict below. The conflict paragraph
+//! is written about loads because that is the larger population, but it
+//! governs both halves: an unclassifiable cold **store** in a multi-core
+//! image is the same unnameable-owner problem and takes the same verdict.
 //!
 //! ### DECISION 1609 CONFLICT, RECORDED RATHER THAN RESOLVED SILENTLY
 //!
@@ -305,7 +325,11 @@ pub fn accessing_core(fn_key: &str, placement: &PlacementTable) -> Option<usize>
 ///
 /// The derivation, in the order the code takes it:
 ///
-/// 1. Only a **load** can be snooped; a store publishes.
+/// 1. Only an access to memory can be a coherency event. A load is served
+///    by a remote cache; a store must take the line away from one. Both
+///    are the same DSU transaction family and both are priced by
+///    `snoop_cost` — see the module doc's write-side paragraph for why
+///    the store half is *not* free.
 /// 2. A `MemClass::Stack` slot is proven SP-relative and therefore private
 ///    to the executing core.
 /// 3. A **peer core** must exist. Every core the image brings up runs the
@@ -318,9 +342,14 @@ pub fn accessing_core(fn_key: &str, placement: &PlacementTable) -> Option<usize>
 ///    verdict.
 /// 4. A `LoadAcquire` is then **certainly** remote: the acquire half exists
 ///    because another agent wrote the line.
-/// 5. Anything else cold is `Unclassified`.
+/// 5. A `StoreRelease` is **certainly** remote by the same argument run
+///    backwards: the release half exists because another agent is going to
+///    read the line, so the store must invalidate whatever copy that agent
+///    holds. Point 4's soundness is the ISA tag, not an address analysis,
+///    and the tag is exactly as informative in this direction.
+/// 6. Anything else cold is `Unclassified`.
 pub fn classify_line(fn_key: &str, ew: &EmittedWord, placement: &PlacementTable) -> Locality {
-    if !ew.rule.is_load() {
+    if !ew.rule.is_load() && !ew.rule.is_store() {
         return Locality::Local;
     }
     if matches!(ew.mem.map(|m| m.class), Some(MemClass::Stack)) {
@@ -334,7 +363,7 @@ pub fn classify_line(fn_key: &str, ew: &EmittedWord, placement: &PlacementTable)
     if !peer_exists {
         return Locality::Local;
     }
-    if ew.rule == CostRule::LoadAcquire {
+    if ew.rule == CostRule::LoadAcquire || ew.rule == CostRule::StoreRelease {
         return Locality::Remote;
     }
     Locality::Unclassified
@@ -444,15 +473,23 @@ pub fn ordering_rules() -> Vec<CostRule> {
         .collect()
 }
 
-/// Emitted-word counts for every ordering rule in a scored program, summed
-/// over functions. Always the full rule set, so a rule absent from the
-/// program reads as 0 rather than as a missing key.
-pub fn ordering_word_counts(report: &CostReport) -> BTreeMap<&'static str, u64> {
-    let mut out: BTreeMap<&'static str, u64> = ordering_rules()
-        .iter()
-        .map(|r| (r.as_str(), 0u64))
-        .collect();
+/// Ordering-word counts keyed by **(fn key, rule)**.
+///
+/// Per fn, not per program: a whole-program total is evadable by
+/// *relocation* — delete the barrier on the hot path, add one in cold code,
+/// and the totals match while the cycles improve. Freeze 1633 is about
+/// where an ordering word is, not how many exist.
+pub type OrderingCounts = BTreeMap<(String, &'static str), u64>;
+
+/// Emitted-word counts for every ordering rule in a scored program, per fn.
+/// Always the full rule set for every fn, so a rule absent from a fn reads
+/// as 0 rather than as a missing key.
+pub fn ordering_word_counts(report: &CostReport) -> OrderingCounts {
+    let mut out: OrderingCounts = BTreeMap::new();
     for f in &report.fns {
+        for r in ordering_rules() {
+            out.insert((f.key.clone(), r.as_str()), 0);
+        }
         for (rule, n) in &f.terms {
             let Some(r) = CostRule::from_str(rule) else {
                 continue;
@@ -460,15 +497,30 @@ pub fn ordering_word_counts(report: &CostReport) -> BTreeMap<&'static str, u64> 
             if !r.is_crosscore() {
                 continue;
             }
-            *out.get_mut(r.as_str()).expect("ordering rule slot") += n;
+            *out.get_mut(&(f.key.clone(), r.as_str()))
+                .expect("ordering rule slot") += n;
         }
     }
     out
 }
 
-/// One rule the candidate emits strictly fewer words of than the baseline.
+/// Program-wide totals per rule, for reporting only. **Not** the refusal
+/// input — see [`OrderingCounts`] for why the totals are evadable.
+pub fn ordering_word_totals(counts: &OrderingCounts) -> BTreeMap<&'static str, u64> {
+    let mut out: BTreeMap<&'static str, u64> = ordering_rules()
+        .iter()
+        .map(|r| (r.as_str(), 0u64))
+        .collect();
+    for ((_, rule), n) in counts {
+        *out.entry(rule).or_insert(0) += n;
+    }
+    out
+}
+
+/// One rule one fn emits strictly fewer words of than the baseline.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrderingRemoval {
+    pub fn_key: String,
     pub rule: &'static str,
     pub baseline: u64,
     pub candidate: u64,
@@ -479,14 +531,14 @@ impl OrderingRemoval {
     /// that fires to be reported).
     pub fn label(&self) -> String {
         format!(
-            "ordering_words_removed:{}:{}->{}",
-            self.rule, self.baseline, self.candidate
+            "ordering_words_removed:{}:{}:{}->{}",
+            self.fn_key, self.rule, self.baseline, self.candidate
         )
     }
 }
 
-/// **Freeze 1633, structurally.** Every ordering rule the candidate emits
-/// fewer words of than the baseline.
+/// **Freeze 1633, structurally.** Every (fn, ordering rule) pair the
+/// candidate emits fewer words of than the baseline.
 ///
 /// A non-empty result is a refusal, not a ranking input: barriers and the
 /// ordered accesses are correctness-load-bearing, so the gate may never
@@ -494,15 +546,26 @@ impl OrderingRemoval {
 /// **counts of emitted words** — there is no coefficient, sweep dimension
 /// or table row whose value can make a removed word un-removed, which is
 /// what makes the rule impossible to tune around.
+///
+/// It is keyed per fn for a second reason: a program-wide total is
+/// impossible to tune around but perfectly possible to *move* around. A fn
+/// present in the baseline and absent from the candidate reads as having
+/// lost all of its ordering words — deleting the fn that held the barrier
+/// is the same evasion wearing a different hat, and the refusal makes it a
+/// deliberate human decision rather than a silent credit.
 pub fn ordering_removals(
-    baseline: &BTreeMap<&'static str, u64>,
-    candidate: &BTreeMap<&'static str, u64>,
+    baseline: &OrderingCounts,
+    candidate: &OrderingCounts,
 ) -> Vec<OrderingRemoval> {
     let mut out = Vec::new();
-    for (rule, &b) in baseline {
-        let c = candidate.get(rule).copied().unwrap_or(0);
+    for ((fn_key, rule), &b) in baseline {
+        let c = candidate
+            .get(&(fn_key.clone(), *rule))
+            .copied()
+            .unwrap_or(0);
         if c < b {
             out.push(OrderingRemoval {
+                fn_key: fn_key.clone(),
                 rule,
                 baseline: b,
                 candidate: c,
@@ -666,9 +729,31 @@ mod tests {
         // (3) a frame slot is private to the executing core.
         let stack = word(CostRule::LoadAcquire, Some(1), &[31]).with_mem(MemRef::stack(8));
         assert_eq!(classify_line("Foo.turn", &stack, &three), Locality::Local);
-        // A store publishes; it is not snooped.
+        // (4b) an STLR with a peer core: certainly remote. The publish half
+        // of publish/acquire has to take the line away from whatever core
+        // holds it, and that is the same DSU transaction the acquire half
+        // pays for. Charging it in one direction only was an omission.
         let rel = word(CostRule::StoreRelease, None, &[0]).with_mem(MemRef::cold_unique(1));
-        assert_eq!(classify_line("Foo.turn", &rel, &three), Locality::Local);
+        assert_eq!(classify_line("Foo.turn", &rel, &three), Locality::Remote);
+        assert_eq!(classify_line("Foo.turn", &rel, &one), Locality::Local);
+        // A plain cold store is the write-side twin of (5): the MemRef
+        // names no owner, so it is the same recorded under-cost.
+        let str_cold = word(CostRule::Store, None, &[0]).with_mem(MemRef::cold_unique(2));
+        assert_eq!(
+            classify_line("Foo.turn", &str_cold, &three),
+            Locality::Unclassified
+        );
+        // A frame slot store stays private however many cores exist.
+        let str_stack = word(CostRule::Store, None, &[31]).with_mem(MemRef::stack(8));
+        assert_eq!(
+            classify_line("Foo.turn", &str_stack, &three),
+            Locality::Local
+        );
+        // A non-memory word is never a coherency event.
+        assert_eq!(
+            classify_line("Foo.turn", &word(CostRule::Alu, Some(1), &[0]), &three),
+            Locality::Local
+        );
         // Only `Remote` is chargeable — `Unclassified` is the named
         // under-cost, not a second remote verdict.
         assert!(Locality::Remote.is_remote());
@@ -1058,23 +1143,37 @@ mod tests {
             workload_coverage: BTreeMap::new(),
         };
         let counts = ordering_word_counts(&report);
-        assert_eq!(counts["barrier"], 6);
-        assert_eq!(counts["load_acquire"], 1);
-        assert_eq!(counts["store_release"], 3);
-        assert_eq!(counts["system"], 0, "an absent rule reads 0, not missing");
-        assert_eq!(counts.len(), 4, "no non-ordering rule leaks in");
+        // Per fn, so relocation between fns is visible.
+        assert_eq!(counts[&("a".to_string(), "barrier")], 2);
+        assert_eq!(counts[&("b".to_string(), "barrier")], 4);
+        assert_eq!(counts[&("a".to_string(), "load_acquire")], 1);
+        assert_eq!(counts[&("b".to_string(), "store_release")], 3);
+        assert_eq!(
+            counts[&("a".to_string(), "system")],
+            0,
+            "an absent rule reads 0, not missing"
+        );
+        assert_eq!(counts.len(), 8, "no non-ordering rule leaks in: 2 fns x 4");
+
+        // The program-wide totals are still available for reporting.
+        let totals = ordering_word_totals(&counts);
+        assert_eq!(totals["barrier"], 6);
+        assert_eq!(totals["load_acquire"], 1);
+        assert_eq!(totals["store_release"], 3);
+        assert_eq!(totals["system"], 0);
+        assert_eq!(totals.len(), 4);
     }
 
     /// **Freeze 1633.** Removing an ordering word is a refusal; adding or
     /// keeping one is not.
     #[test]
     fn ordering_removals_fire_only_on_a_drop() {
-        let counts = |b: u64, l: u64, s: u64, y: u64| -> BTreeMap<&'static str, u64> {
+        let counts = |b: u64, l: u64, s: u64, y: u64| -> OrderingCounts {
             BTreeMap::from([
-                ("barrier", b),
-                ("load_acquire", l),
-                ("store_release", s),
-                ("system", y),
+                (("f".to_string(), "barrier"), b),
+                (("f".to_string(), "load_acquire"), l),
+                (("f".to_string(), "store_release"), s),
+                (("f".to_string(), "system"), y),
             ])
         };
         let base = counts(6, 4, 6, 1);
@@ -1087,23 +1186,72 @@ mod tests {
         assert_eq!(
             dropped,
             vec![OrderingRemoval {
+                fn_key: "f".to_string(),
                 rule: "barrier",
                 baseline: 6,
                 candidate: 5
             }]
         );
-        assert_eq!(dropped[0].label(), "ordering_words_removed:barrier:6->5");
+        assert_eq!(dropped[0].label(), "ordering_words_removed:f:barrier:6->5");
         // Every dropped rule is reported, not just the first.
         assert_eq!(ordering_removals(&base, &counts(0, 0, 0, 0)).len(), 4);
         // A missing key is a drop to 0 — the `--omit-dmb` shape, where the
         // candidate emits no barrier word at all.
         let mut missing = base.clone();
-        missing.remove("barrier");
+        missing.remove(&("f".to_string(), "barrier"));
         assert_eq!(
             ordering_removals(&base, &missing),
             vec![OrderingRemoval {
+                fn_key: "f".to_string(),
                 rule: "barrier",
                 baseline: 6,
+                candidate: 0
+            }]
+        );
+    }
+
+    /// **The relocation evasion the program-wide total could not see.**
+    /// Delete the barrier on the hot path, add one in cold code: the totals
+    /// match exactly, so a net count passes it. Per fn it is a refusal.
+    #[test]
+    fn moving_a_barrier_between_fns_is_a_removal_even_at_equal_totals() {
+        let side = |hot: u64, cold: u64| -> OrderingCounts {
+            BTreeMap::from([
+                (("hot".to_string(), "barrier"), hot),
+                (("cold".to_string(), "barrier"), cold),
+            ])
+        };
+        let base = side(2, 0);
+        let moved = side(1, 1);
+        assert_eq!(
+            ordering_word_totals(&base),
+            ordering_word_totals(&moved),
+            "the evasion's premise: the program-wide totals are identical"
+        );
+        let removals = ordering_removals(&base, &moved);
+        assert_eq!(
+            removals,
+            vec![OrderingRemoval {
+                fn_key: "hot".to_string(),
+                rule: "barrier",
+                baseline: 2,
+                candidate: 1
+            }]
+        );
+
+        // Deleting the fn that held the barrier is the same evasion wearing
+        // a different hat, and reads as a drop to 0.
+        let recreated = BTreeMap::from([(("new".to_string(), "barrier"), 2u64)]);
+        assert_eq!(
+            ordering_word_totals(&base),
+            ordering_word_totals(&recreated)
+        );
+        assert_eq!(
+            ordering_removals(&base, &recreated),
+            vec![OrderingRemoval {
+                fn_key: "hot".to_string(),
+                rule: "barrier",
+                baseline: 2,
                 candidate: 0
             }]
         );

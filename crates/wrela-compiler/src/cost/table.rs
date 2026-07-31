@@ -495,23 +495,45 @@ impl CostTable {
         digest_lines(&self.content_lines())
     }
 
-    /// Stable hex digest over sorted `row=tier` lines alone (freeze 1629).
+    /// Stable hex digest over each row's **provenance**: its tier and the
+    /// prose that justifies it — `source`, `mechanism`, `note`,
+    /// `ambiguity` (freeze 1629).
+    ///
     /// A tier change moves this digest even when no value moves, so a
-    /// table's sourcing is part of its identity.
+    /// table's sourcing is part of its identity. The prose is in here for
+    /// the same reason and because the header's relock discipline promises
+    /// it: a row's `source` is the whole of what makes a pinned number
+    /// admissible under decision 1602, so silently rewriting it — pointing
+    /// a value at a different citation, or letting a `mechanism` census
+    /// drift away from the code it describes — must move a digest a
+    /// reviewer can see. Values alone stay in [`Self::table_digest`], so
+    /// the two remain separable.
     pub fn provenance_digest(&self) -> String {
         digest_lines(&self.tier_lines())
     }
 
+    /// Every row's tier, in `tier_lines` order — the summary's input, and
+    /// read from the rows rather than parsed back out of a digest line.
+    fn tiers(&self) -> Vec<Tier> {
+        let mut t = vec![self.profile_tier_name, self.profile_tier_ghz];
+        for rows in [&self.pipelines, &self.geometry, &self.branch, &self.align] {
+            t.extend(rows.values().map(|r| r.tier));
+        }
+        t.extend(self.latency.values().map(|r| r.tier));
+        t.extend(self.crosscore.values().map(|r| r.tier));
+        t.extend(self.sweep.values().map(|r| r.tier));
+        t
+    }
+
     /// Human-readable tier mix for the dump header.
     pub fn provenance_summary(&self) -> String {
-        let lines = self.tier_lines();
+        let tiers = self.tiers();
         let mut counts: BTreeMap<&'static str, usize> = BTreeMap::new();
         for t in Tier::ALL {
             counts.insert(t.as_str(), 0);
         }
-        for line in &lines {
-            let tier = line.rsplit('=').next().unwrap_or("");
-            if let Some(c) = counts.get_mut(tier) {
+        for t in &tiers {
+            if let Some(c) = counts.get_mut(t.as_str()) {
                 *c += 1;
             }
         }
@@ -519,7 +541,7 @@ impl CostTable {
         for t in Tier::ALL {
             out.push_str(&format!("{}={} ", t.as_str(), counts[t.as_str()]));
         }
-        out.push_str(&format!("rows={}", lines.len()));
+        out.push_str(&format!("rows={}", tiers.len()));
         out
     }
 
@@ -590,10 +612,15 @@ impl CostTable {
         l
     }
 
+    /// One line per row: tier plus the prose that justifies it. See
+    /// [`Self::provenance_digest`] for why the prose is in here.
     fn tier_lines(&self) -> Vec<String> {
         let mut l: Vec<String> = Vec::new();
         l.push(format!("profile.name={}", self.profile_tier_name.as_str()));
         l.push(format!("profile.ghz={}", self.profile_tier_ghz.as_str()));
+        // `\u{1}` cannot occur in TOML string content, so no combination of
+        // prose fields can forge another row's line.
+        let opt = |s: &Option<String>| s.clone().unwrap_or_default();
         for (section, rows) in [
             ("pipelines", &self.pipelines),
             ("geometry", &self.geometry),
@@ -601,17 +628,39 @@ impl CostTable {
             ("align", &self.align),
         ] {
             for (name, row) in rows {
-                l.push(format!("{section}.{name}={}", row.tier.as_str()));
+                l.push(format!(
+                    "{section}.{name}={}\u{1}{}\u{1}{}",
+                    row.tier.as_str(),
+                    row.source,
+                    opt(&row.note),
+                ));
             }
         }
         for (name, r) in &self.latency {
-            l.push(format!("latency.{name}={}", r.tier.as_str()));
+            l.push(format!(
+                "latency.{name}={}\u{1}{}\u{1}{}",
+                r.tier.as_str(),
+                r.source,
+                opt(&r.note),
+            ));
         }
         for (name, c) in &self.crosscore {
-            l.push(format!("crosscore.{name}={}", c.tier.as_str()));
+            l.push(format!(
+                "crosscore.{name}={}\u{1}{}\u{1}{}\u{1}{}",
+                c.tier.as_str(),
+                c.source,
+                c.mechanism,
+                opt(&c.note),
+            ));
         }
         for (name, s) in &self.sweep {
-            l.push(format!("sweep.{name}={}", s.tier.as_str()));
+            l.push(format!(
+                "sweep.{name}={}\u{1}{}\u{1}{}\u{1}{}",
+                s.tier.as_str(),
+                s.source,
+                opt(&s.ambiguity),
+                opt(&s.note),
+            ));
         }
         l.sort();
         l
@@ -1702,6 +1751,43 @@ mod tests {
             after.table_digest(),
             "no value moved, so the content digest must not move"
         );
+    }
+
+    /// **Rewriting a row's justification moves the provenance digest.**
+    /// The header's relock discipline promises that an edit here is visible
+    /// in a digest a reviewer compares; a row's `source` is the whole of
+    /// what makes its number admissible under decision 1602, so pointing a
+    /// value at a different citation — or letting a `mechanism` census
+    /// drift away from the code it describes — cannot be a silent edit.
+    /// The values did not move, so `table_digest` must not.
+    #[test]
+    fn provenance_digest_moves_when_only_a_justification_moves() {
+        let text = committed_text();
+        let base = parse(&text).expect("parse committed");
+        for (needle, replacement) in [
+            // `[latency.branch].source`
+            (
+                "SOG §3.3 branch immed / branch register / compare and branch",
+                "SOG §3.3 — reworded, same number",
+            ),
+            // `[crosscore.snoop].mechanism`
+            ("DSU TRM 100453: a load", "DSU TRM 100453 (rev B): a load"),
+            // `[sweep.call_overhead].ambiguity`
+            ("deleting a call is inlining and", "inlining, and"),
+        ] {
+            assert!(text.contains(needle), "fixture text drifted: {needle}");
+            let edited = parse(&text.replace(needle, replacement)).expect("parse edited");
+            assert_ne!(
+                base.provenance_digest(),
+                edited.provenance_digest(),
+                "rewriting `{needle}` must move the provenance digest"
+            );
+            assert_eq!(
+                base.table_digest(),
+                edited.table_digest(),
+                "no value moved, so the content digest must not move: `{needle}`"
+            );
+        }
     }
 
     #[test]

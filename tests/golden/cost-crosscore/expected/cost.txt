@@ -1,20 +1,20 @@
-Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reorder_window=128 digest=043f8dc4b21c4b12 provenance=a6e992e7d7f13fde ghz=2.4 workloads_digest=ad0a87410c842eff
+Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reorder_window=128 digest=043f8dc4b21c4b12 provenance=3f7c1c0356b12d8d ghz=2.4 workloads_digest=ad0a87410c842eff
   Provenance T1=38 T2=19 T3=0 T4=10 T5=16 rows=83
   Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method valid_for=static_shape_opts workload=flat pseudo_lru=modelled_as_lru
   Composition sum_of_fn_schedules=1
-  Total proxy_cycles=3733
-  Workload name=flat proxy_cycles=3733
-  Owner name=app proxy_cycles=1626
+  Total proxy_cycles=4319
+  Workload name=flat proxy_cycles=4319
+  Owner name=app proxy_cycles=1899
   Owner name=runtime proxy_cycles=1673
-  Owner name=driver proxy_cycles=434
-  Core n=0 proxy_cycles=898 max_turn_proxy=434 turns_per_sec=5529953.9170506913 ms_per_turn_model=0.0001808333
+  Owner name=driver proxy_cycles=747
+  Core n=0 proxy_cycles=1484 max_turn_proxy=747 turns_per_sec=3212851.4056224898 ms_per_turn_model=0.00031125
   Budget n=0 hot_text_bytes=10496 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 text_pages=3 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0
   Core n=1 proxy_cycles=55 max_turn_proxy=55 turns_per_sec=43636363.636363633 ms_per_turn_model=0.0000229167
   Budget n=1 hot_text_bytes=10048 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 text_pages=3 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0
   Shared proxy_cycles=2780
-  Placeable id=driver#0 type=Doorbell core=0 turn_proxy=434 method=Doorbell.on_irq
+  Placeable id=driver#0 type=Doorbell core=0 turn_proxy=747 method=Doorbell.on_irq
   Placeable id=actor#0 type=Peer core=1 turn_proxy=55 method=Peer.publish
-  Fn key=Doorbell.drain owner=app proxy_cycles=387
+  Fn key=Doorbell.drain owner=app proxy_cycles=356
     Term rule=alu count=3
     Term rule=branch count=2
     Term rule=load count=12
@@ -22,14 +22,14 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=mov_wide count=1
     Term rule=store count=11
     Term rule=store_release count=1
-  Fn key=Doorbell.init owner=app proxy_cycles=77
+  Fn key=Doorbell.init owner=app proxy_cycles=381
     Term rule=alu count=3
     Term rule=branch count=2
     Term rule=load count=20
     Term rule=mov_wide count=8
     Term rule=store count=23
     Term rule=store_release count=1
-  Fn key=Doorbell.on_irq owner=driver proxy_cycles=434
+  Fn key=Doorbell.on_irq owner=driver proxy_cycles=747
     Term rule=alu count=7
     Term rule=branch count=4
     Term rule=load count=20

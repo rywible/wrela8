@@ -134,12 +134,19 @@ pub struct CoreBudget {
     /// `[geometry] itlb_l1_entries`.
     pub itlb_entries: u64,
     pub over_itlb_pages: u64,
-    /// `[geometry] tlb_l2_entries`.
+    /// `[geometry] tlb_l2_entries` — the **unified** L2 TLB, shared by
+    /// instruction and data translations. There is one such structure, so
+    /// its overflow is computed once over `text_pages + data_pages`; see
+    /// [`unified_l2_tlb_overflow`].
     pub tlb_l2_entries: u64,
+    /// Text's attributed share of the unified L2 TLB overflow.
     pub over_tlb_l2_pages: u64,
     /// Distinct 4 KiB data pages the hot blocks' `MemRef`s span.
     pub data_pages: u64,
     pub over_dtlb_pages: u64,
+    /// Data's attributed share of the unified L2 TLB overflow. This and
+    /// `over_tlb_l2_pages` partition **one** overflow — they are not two
+    /// independent budgets.
     pub over_data_tlb_l2_pages: u64,
     /// Priced magnitude of every overflow above, in proxy cycles.
     pub charge: u64,
@@ -318,17 +325,26 @@ pub fn compute(
                     }
                 }
             }
-            at += fn_bytes.div_ceil(line_bytes) * line_bytes;
+            // Saturating like every other arithmetic on this path: a
+            // pathological word count must clamp the synthetic address, not
+            // panic partway through a scoring run.
+            at = at.saturating_add(fn_bytes.div_ceil(line_bytes).saturating_mul(line_bytes));
         }
 
         let over_l1i_lines = over_ways(&lines, l1i_sets, l1i_ways);
         let over_l2_lines = over_ways(&lines, l2_sets, l2_ways);
         let text_pages = pages.len() as u64;
         let data_pages = data.len() as u64;
+        // The L1 TLBs are split — 48 instruction entries, 32 data entries —
+        // so each is charged against its own axis. The L2 TLB is **one
+        // unified structure**, so it is charged once against the combined
+        // pressure; granting `tlb_l2` entries to text and another `tlb_l2`
+        // to data would let 1280 text pages plus 1280 data pages cost zero
+        // on a structure that holds 1280 in total.
         let over_itlb_pages = text_pages.saturating_sub(itlb);
-        let over_tlb_l2_pages = text_pages.saturating_sub(tlb_l2);
         let over_dtlb_pages = data_pages.saturating_sub(dtlb);
-        let over_data_tlb_l2_pages = data_pages.saturating_sub(tlb_l2);
+        let (over_tlb_l2_pages, over_data_tlb_l2_pages) =
+            unified_l2_tlb_overflow(text_pages, data_pages, tlb_l2);
         let charge = over_l1i_lines
             .saturating_mul(lat_l2.saturating_sub(lat_l1d_hit))
             .saturating_add(over_l2_lines.saturating_mul(lat_l3.saturating_sub(lat_l2)))
@@ -357,6 +373,29 @@ pub fn compute(
         });
     }
     Ok(out)
+}
+
+/// Overflow of the **unified** L2 TLB, attributed to (text, data).
+///
+/// A76's L2 TLB is a single 1280-entry structure behind both L1 TLBs, so
+/// the quantity that matters is `text + data - entries`, computed once.
+/// The two returned numbers are an *attribution* of that one overflow for
+/// the dump — they partition it, they are not two budgets. Capacity is
+/// split in proportion to demand because the model has no residency order
+/// to arbitrate with; the floor's remainder goes to text so the shares sum
+/// to `entries` and the overflows sum to the overflow. The clamps can round
+/// the total up by at most one page, which is 04 §5's safe direction.
+fn unified_l2_tlb_overflow(text: u64, data: u64, entries: u64) -> (u64, u64) {
+    let total = text.saturating_add(data);
+    if total <= entries {
+        return (0, 0);
+    }
+    let text_share =
+        u64::try_from((u128::from(entries) * u128::from(text)) / u128::from(total.max(1)))
+            .unwrap_or(u64::MAX)
+            .min(text);
+    let data_share = entries.saturating_sub(text_share).min(data);
+    (text - text_share, data - data_share)
 }
 
 #[cfg(test)]
@@ -651,6 +690,46 @@ mod tests {
             measured[0].hot_text_bytes <= flat[0].hot_text_bytes,
             "a colder f cannot span more text"
         );
+    }
+
+    /// **The L2 TLB is one structure, not two.** Text and data pressure
+    /// share its 1280 entries, so 700 text pages plus 700 data pages is
+    /// 120 pages of real pressure — not zero on both axes, which is what
+    /// charging each against the full 1280 produced.
+    #[test]
+    fn the_unified_l2_tlb_is_granted_once_and_not_per_axis() {
+        let entries = table()
+            .geometry("tlb_l2_entries")
+            .expect("[geometry.tlb_l2_entries]")
+            .value;
+        assert_eq!(entries, 1280);
+
+        // The case the split budgets missed entirely.
+        let (t, d) = unified_l2_tlb_overflow(700, 700, entries);
+        assert_eq!(t + d, 120, "700 + 700 pages over 1280 shared entries");
+
+        // Under the shared capacity nothing is charged on either axis —
+        // this is why every committed golden's two fields stay 0.
+        assert_eq!(unified_l2_tlb_overflow(640, 640, entries), (0, 0));
+        assert_eq!(unified_l2_tlb_overflow(1280, 0, entries), (0, 0));
+
+        // One-sided pressure still lands wholly on the axis that caused it.
+        assert_eq!(unified_l2_tlb_overflow(1300, 0, entries), (20, 0));
+        assert_eq!(unified_l2_tlb_overflow(0, 1300, entries), (0, 20));
+
+        // The attribution partitions one overflow: the shares sum to it,
+        // and rounding is never in the under-cost direction.
+        for text in [0u64, 1, 7, 640, 1279, 1280, 4000] {
+            for data in [0u64, 1, 7, 640, 1279, 1280, 4000] {
+                let (a, b) = unified_l2_tlb_overflow(text, data, entries);
+                let want = (text + data).saturating_sub(entries);
+                assert!(
+                    a + b >= want && a + b <= want + 1,
+                    "text={text} data={data}: {a}+{b} is not the unified overflow {want}"
+                );
+                assert!(a <= text && b <= data, "text={text} data={data}");
+            }
+        }
     }
 
     /// Monotonicity: a dead word never lowers a footprint or a TLB charge.

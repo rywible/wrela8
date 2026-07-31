@@ -186,11 +186,11 @@ ImageReport v0
   Totals actors=2 drivers=2 ready_queue=3 group_arena=0 bytes=3344
   DeviceRegs device=device#0 type=HwA driver=S0 base=0x40540d10 size=8
   DeviceRegs device=device#1 type=HwB driver=S1 base=0x40540d18 size=8
-  Cost version=3 digest=043f8dc4b21c4b12 total=32062 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=32062
+  Cost version=3 digest=043f8dc4b21c4b12 total=32074 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=32074
     Owner name=app proxy_cycles=3724
-    Owner name=runtime proxy_cycles=28338
+    Owner name=runtime proxy_cycles=28350
     Owner name=driver proxy_cycles=0
     Core n=0 proxy_cycles=672 max_turn_proxy=55 turns_per_sec=43636363.636363633 ms_per_turn_model=0.0000229167
     Budget n=0 hot_text_bytes=95616 l1i_bytes=65536 over_l1i_lines=470 over_l2_lines=0 text_pages=24 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=3290
-    Shared proxy_cycles=31390
+    Shared proxy_cycles=31402

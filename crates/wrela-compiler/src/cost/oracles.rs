@@ -694,18 +694,18 @@ mod tests {
             !refused.contains(&"call"),
             "`call` is not an ordering word: refusing to remove one would refuse inlining outright"
         );
-        let base = BTreeMap::from([
-            ("barrier", 1u64),
-            ("load_acquire", 0),
-            ("store_release", 0),
-            ("system", 0),
-        ]);
-        let gone = BTreeMap::from([
-            ("barrier", 0u64),
-            ("load_acquire", 0),
-            ("store_release", 0),
-            ("system", 0),
-        ]);
+        // Counts are keyed per fn: freeze 1633 is about where an ordering
+        // word is, not just how many the program has.
+        let side = |barrier: u64| {
+            BTreeMap::from([
+                (("f".to_string(), "barrier"), barrier),
+                (("f".to_string(), "load_acquire"), 0u64),
+                (("f".to_string(), "store_release"), 0),
+                (("f".to_string(), "system"), 0),
+            ])
+        };
+        let base = side(1);
+        let gone = side(0);
         assert!(
             !ordering_removals(&base, &gone).is_empty(),
             "freeze 1633: dropping a barrier must be refused structurally"
