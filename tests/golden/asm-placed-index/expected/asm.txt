@@ -1,10 +1,47 @@
 Program
   Fn key=read_mark frame=32 bytes
     0000: d10083ff  sub sp, sp, #32
-    0001: f9000ffe  str lr, [sp, #24]
-    0002: f90003e0  str x0, [sp, #0]
+    0001: f90003e0  str x0, [sp, #0]
+    0002: d2a80009  movz x9, #0x4000, lsl #16
+    0003: f90007e9  str x9, [sp, #8]
+    0004: f94003e9  ldr x9, [sp, #0]
+    0005: d280008a  movz x10, #0x4
+    0006: eb0a013f  cmp x9, x10
+    0007: 54000203  b.cc #64
+    0008: aa0903ea  mov x10, x9
+    0009: d10083ff  sub sp, sp, #32  ; abort_val prefix+suffix Bytes
+    0010: 10000009  adr x9, rodata+0x0
+    0011: f90003e9  str x9, [sp]  ; prefix.base
+    0012: d28000c9  movz x9, #0x6
+    0013: f90007e9  str x9, [sp, #8]  ; prefix.len
+    0014: 10000009  adr x9, rodata+0x6
+    0015: f9000be9  str x9, [sp, #16]  ; suffix.base
+    0016: d2800329  movz x9, #0x19
+    0017: f9000fe9  str x9, [sp, #24]  ; suffix.len
+    0018: 910003e0  add x0, sp, #0  ; *prefix
+    0019: aa0a03e1  mov x1, x10
+    0020: d2800002  movz x2, #0x0
+    0021: 910043e3  add x3, sp, #16  ; *suffix
+    0022: 94000000  bl <__wrela_abort_val>
+    0023: f94007eb  ldr x11, [sp, #8]
+    0024: d2800d0c  movz x12, #0x68
+    0025: 8b0c016b  add x11, x11, x12
+    0026: d280010c  movz x12, #0x8
+    0027: 9b0c7d2d  mul x13, x9, x12
+    0028: 8b0d016b  add x11, x11, x13
+    0029: f940016a  ldr x10, [x11, #0]
+    0030: f9000bea  str x10, [sp, #16]
+    0031: f9400be0  ldr x0, [sp, #16]
+    0032: 14000002  b #8
+    0033: 14000001  b #4
+    0034: 910083ff  add sp, sp, #32
+    0035: d65f03c0  ret
+  Fn key=write_mark frame=32 bytes
+    0000: d10083ff  sub sp, sp, #32
+    0001: f90003e0  str x0, [sp, #0]
+    0002: f90007e1  str x1, [sp, #8]
     0003: d2a80009  movz x9, #0x4000, lsl #16
-    0004: f90007e9  str x9, [sp, #8]
+    0004: f9000be9  str x9, [sp, #16]
     0005: f94003e9  ldr x9, [sp, #0]
     0006: d280008a  movz x10, #0x4
     0007: eb0a013f  cmp x9, x10
@@ -24,58 +61,17 @@ Program
     0021: d2800002  movz x2, #0x0
     0022: 910043e3  add x3, sp, #16  ; *suffix
     0023: 94000000  bl <__wrela_abort_val>
-    0024: f94007eb  ldr x11, [sp, #8]
+    0024: f9400beb  ldr x11, [sp, #16]
     0025: d2800d0c  movz x12, #0x68
     0026: 8b0c016b  add x11, x11, x12
     0027: d280010c  movz x12, #0x8
     0028: 9b0c7d2d  mul x13, x9, x12
     0029: 8b0d016b  add x11, x11, x13
-    0030: f940016a  ldr x10, [x11, #0]
-    0031: f9000bea  str x10, [sp, #16]
-    0032: f9400be0  ldr x0, [sp, #16]
-    0033: 14000002  b #8
-    0034: 14000001  b #4
-    0035: f9400ffe  ldr lr, [sp, #24]
-    0036: 910083ff  add sp, sp, #32
-    0037: d65f03c0  ret
-  Fn key=write_mark frame=32 bytes
-    0000: d10083ff  sub sp, sp, #32
-    0001: f9000ffe  str lr, [sp, #24]
-    0002: f90003e0  str x0, [sp, #0]
-    0003: f90007e1  str x1, [sp, #8]
-    0004: d2a80009  movz x9, #0x4000, lsl #16
-    0005: f9000be9  str x9, [sp, #16]
-    0006: f94003e9  ldr x9, [sp, #0]
-    0007: d280008a  movz x10, #0x4
-    0008: eb0a013f  cmp x9, x10
-    0009: 54000203  b.cc #64
-    0010: aa0903ea  mov x10, x9
-    0011: d10083ff  sub sp, sp, #32  ; abort_val prefix+suffix Bytes
-    0012: 10000009  adr x9, rodata+0x0
-    0013: f90003e9  str x9, [sp]  ; prefix.base
-    0014: d28000c9  movz x9, #0x6
-    0015: f90007e9  str x9, [sp, #8]  ; prefix.len
-    0016: 10000009  adr x9, rodata+0x6
-    0017: f9000be9  str x9, [sp, #16]  ; suffix.base
-    0018: d2800329  movz x9, #0x19
-    0019: f9000fe9  str x9, [sp, #24]  ; suffix.len
-    0020: 910003e0  add x0, sp, #0  ; *prefix
-    0021: aa0a03e1  mov x1, x10
-    0022: d2800002  movz x2, #0x0
-    0023: 910043e3  add x3, sp, #16  ; *suffix
-    0024: 94000000  bl <__wrela_abort_val>
-    0025: f9400beb  ldr x11, [sp, #16]
-    0026: d2800d0c  movz x12, #0x68
-    0027: 8b0c016b  add x11, x11, x12
-    0028: d280010c  movz x12, #0x8
-    0029: 9b0c7d2d  mul x13, x9, x12
-    0030: 8b0d016b  add x11, x11, x13
-    0031: f94007ea  ldr x10, [sp, #8]
-    0032: f900016a  str x10, [x11, #0]
-    0033: 14000001  b #4
-    0034: f9400ffe  ldr lr, [sp, #24]
-    0035: 910083ff  add sp, sp, #32
-    0036: d65f03c0  ret
+    0030: f94007ea  ldr x10, [sp, #8]
+    0031: f900016a  str x10, [x11, #0]
+    0032: 14000001  b #4
+    0033: 910083ff  add sp, sp, #32
+    0034: d65f03c0  ret
   Rodata
     0: offset=0x0 index 
     1: offset=0x6  out of bounds (length 4)

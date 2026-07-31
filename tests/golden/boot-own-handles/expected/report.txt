@@ -67,10 +67,10 @@ ImageReport v0
   Cores count=1
   CoreStack core=0 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=81368
-  Section name=rodata base=0x40513e28 size=753
-  Section name=abort base=0x4051411c size=120
-  Section name=checkpoint base=0x40514194 size=28
+  Section name=code base=0x40500050 size=79028
+  Section name=rodata base=0x40513508 size=753
+  Section name=abort base=0x405137fc size=120
+  Section name=checkpoint base=0x40513874 size=28
   Section name=rtdata base=0x40540000 size=1216
   Section name=pooldata base=0x405404c0 size=16
   Entry base=0x40500000
@@ -170,11 +170,96 @@ ImageReport v0
   Totals actors=1 drivers=0 ready_queue=2 group_arena=0 bytes=1216
   Pool name=BlockPayloads kind=dma payload=DmaBlock slots=1 slot_bytes=16 base=0x405404c0 size=16 align=8 coherency=coherent device=device#0
   BlkPool name=BlockPayloads device=device#0 base=0x405404c0 size=0x10
-  Cost version=3 digest=b2484a1b9c00d7fa total=26327 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=26327
-    Owner name=app proxy_cycles=2252
-    Owner name=runtime proxy_cycles=24075
+  Cost version=3 digest=b2484a1b9c00d7fa total=23489 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=23489
+    Owner name=app proxy_cycles=1617
+    Owner name=runtime proxy_cycles=21872
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=174 max_turn_proxy=60 turns_per_sec=40000000 ms_per_turn_model=0.000025
-    Budget n=0 hot_text_bytes=88512 l1i_bytes=65536 over_l1i_lines=359 over_l2_lines=0 text_pages=22 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=2513
-    Shared proxy_cycles=26153
+    Core n=0 proxy_cycles=150 max_turn_proxy=54 turns_per_sec=44444444.4444444478 ms_per_turn_model=0.0000225
+    Budget n=0 hot_text_bytes=88256 l1i_bytes=65536 over_l1i_lines=355 over_l2_lines=0 text_pages=22 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=2485
+    Shared proxy_cycles=23339
+  Convention fns=84 frameless=50 tail_calls=1
+    Fn key=Holder.init frame=48 residents=1 regs=x2 clobbers=x0-x2,x9-x10,x30-x31 pool=23
+    Fn key=Holder.read_word frame=48 residents=1 regs=x1 clobbers=x0-x1,x9-x10,x30-x31 pool=24
+    Fn key=__boot_call_0 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__boot_call_1 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__boot_call_10 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__boot_call_11 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__boot_call_12 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__boot_call_13 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__boot_call_14 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__boot_call_15 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__boot_call_16 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__boot_call_17 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__boot_call_18 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__boot_call_19 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__boot_call_2 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__boot_call_20 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__boot_call_21 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__boot_call_22 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__boot_call_23 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__boot_call_24 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__boot_call_25 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__boot_call_26 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__boot_call_27 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__boot_call_28 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__boot_call_29 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__boot_call_3 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__boot_call_30 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__boot_call_31 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__boot_call_4 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__boot_call_5 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__boot_call_6 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__boot_call_7 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__boot_call_8 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__boot_call_9 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__irq_call_0 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__irq_call_1 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__irq_call_2 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__irq_call_3 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__irq_call_4 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__irq_call_5 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__irq_call_6 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__irq_call_7 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__wake_call_0 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__wake_call_1 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__wake_call_2 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__wake_call_3 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__wake_call_4 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__wake_call_5 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__wake_call_6 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__wake_call_7 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__wrela_abort_tail frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__wrela_block_hit frame=112 residents=1 regs=x4 clobbers=all pool=18
+    Fn key=__wrela_child_poll frame=544 residents=4 regs=x4 clobbers=all pool=18
+    Fn key=__wrela_child_store_result frame=96 residents=4 regs=x4-x7 clobbers=all pool=18
+    Fn key=__wrela_console_append_bytes frame=160 residents=3 regs=x3-x4,x6 clobbers=all pool=21
+    Fn key=__wrela_console_append_line_buf frame=112 residents=3 regs=x2-x3,x6 clobbers=all pool=22
+    Fn key=__wrela_deadline_poll frame=336 residents=6 regs=x4-x7 clobbers=all pool=18
+    Fn key=__wrela_deadline_scan frame=512 residents=7 regs=x4-x7 clobbers=all pool=18
+    Fn key=__wrela_deliver_reply frame=288 residents=2 regs=x4 clobbers=all pool=17
+    Fn key=__wrela_fmt_dec frame=480 residents=7 regs=x4-x7 clobbers=all pool=17
+    Fn key=__wrela_lane1_record_method frame=176 residents=2 regs=x4 clobbers=all pool=18
+    Fn key=__wrela_line_commit frame=304 residents=3 regs=x4-x5 clobbers=all pool=18
+    Fn key=__wrela_mb_get_count frame=1040 residents=1 regs=x1 clobbers=all pool=23
+    Fn key=__wrela_mb_get_head frame=1040 residents=1 regs=x1 clobbers=all pool=23
+    Fn key=__wrela_mb_get_tail frame=1040 residents=1 regs=x1 clobbers=all pool=23
+    Fn key=__wrela_mb_load_word frame=1040 residents=2 regs=x4-x5 clobbers=all pool=18
+    Fn key=__wrela_mb_set_count frame=784 residents=2 regs=x2-x3 clobbers=all pool=22
+    Fn key=__wrela_mb_set_head frame=784 residents=2 regs=x2-x3 clobbers=all pool=22
+    Fn key=__wrela_mb_set_tail frame=784 residents=2 regs=x2-x3 clobbers=all pool=22
+    Fn key=__wrela_mb_store_word frame=784 residents=3 regs=x4-x6 clobbers=all pool=18
+    Fn key=__wrela_method_is_aggregate frame=112 residents=1 regs=x2 clobbers=all pool=22
+    Fn key=__wrela_method_suspends frame=112 residents=1 regs=x2 clobbers=all pool=22
+    Fn key=__wrela_rt_checkpoint frame=912 residents=2 regs=x4-x5 clobbers=all pool=18
+    Fn key=__wrela_rt_enqueue frame=544 residents=1 regs=x7 clobbers=all pool=14
+    Fn key=__wrela_rt_run_one frame=704 residents=1 regs=x4 clobbers=all pool=18
+    Fn key=__wrela_rt_select frame=1632 residents=4 regs=x5 clobbers=all pool=16
+    Fn key=__wrela_rt_xreply frame=368 residents=7 regs=x4-x8 clobbers=all pool=18
+    Fn key=__wrela_rt_xsend frame=592 residents=6 regs=x6-x8,x15 clobbers=all pool=15
+    Fn key=__wrela_runtime_probe frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__wrela_try_enqueue frame=112 residents=1 regs=x7 clobbers=all pool=17
+    Fn key=__wrela_try_select frame=64 residents=1 regs=x2 clobbers=all pool=22
+    Fn key=ascii_digit frame=256 residents=1 regs=x1 clobbers=x0-x1,x9-x11,x30-x31 pool=23
+    Fn key=copy_bytes_range frame=128 residents=2 regs=x4-x5 clobbers=x0-x5,x9-x13,x30-x31 pool=18
+    Fn key=copy_line_buf_range frame=112 residents=2 regs=x4-x5 clobbers=x0-x5,x9-x13,x30-x31 pool=18

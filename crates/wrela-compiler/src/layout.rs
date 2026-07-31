@@ -1224,7 +1224,7 @@ fn patch_bl(
     Ok(())
 }
 
-/// Item F / decision 1781: `codegen::verify_conventions` against the
+/// Item F / decision 1793: `codegen::verify_conventions` against the
 /// post-substitution program. Wrapped rather than inlined so the failure
 /// names *layout* as the stage that broke the contract, which is the
 /// fact a reader needs — the convention itself was consistent when
@@ -2593,7 +2593,7 @@ pub fn layout_program(
         program
     };
 
-    // **plans/codegen-pareto.md item F, decision 1781.** Re-check every
+    // **plans/codegen-pareto.md item F, decision 1793.** Re-check every
     // published convention against the program *as layout has finally
     // assembled it*, not as codegen handed it over.
     //

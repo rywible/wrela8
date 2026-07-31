@@ -2,41 +2,41 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
   Provenance T1=39 T2=19 T3=0 T4=10 T5=16 rows=84
   Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method valid_for=static_shape_opts workload=flat pseudo_lru=modelled_as_lru
   Composition sum_of_fn_schedules=1
-  Total proxy_cycles=149
-  Workload name=flat proxy_cycles=149
-  Owner name=app proxy_cycles=149
+  Total proxy_cycles=93
+  Workload name=flat proxy_cycles=93
+  Owner name=app proxy_cycles=93
   Owner name=runtime proxy_cycles=0
   Owner name=driver proxy_cycles=0
-  Fn key=checked_mul_u32 owner=app proxy_cycles=32
+  Fn key=checked_mul_u32 owner=app proxy_cycles=20
     Term rule=abort count=1
     Term rule=adrp count=1
     Term rule=alu count=5
     Term rule=branch count=4
-    Term rule=load count=4
+    Term rule=load count=3
     Term rule=mov_wide count=1
     Term rule=mul count=1
-    Term rule=store count=6
-  Fn key=wrap_mul_i16 owner=app proxy_cycles=26
+    Term rule=store count=5
+  Fn key=wrap_mul_i16 owner=app proxy_cycles=15
     Term rule=alu count=12
     Term rule=branch count=3
-    Term rule=load count=6
+    Term rule=load count=5
     Term rule=mul_w count=2
-    Term rule=store count=6
-  Fn key=wrap_mul_u16 owner=app proxy_cycles=26
+    Term rule=store count=5
+  Fn key=wrap_mul_u16 owner=app proxy_cycles=15
     Term rule=alu count=12
     Term rule=branch count=3
-    Term rule=load count=6
+    Term rule=load count=5
     Term rule=mul_w count=2
-    Term rule=store count=6
-  Fn key=wrap_mul_u32 owner=app proxy_cycles=40
+    Term rule=store count=5
+  Fn key=wrap_mul_u32 owner=app proxy_cycles=29
     Term rule=alu count=32
     Term rule=branch count=3
-    Term rule=load count=18
+    Term rule=load count=17
     Term rule=mul_w count=6
-    Term rule=store count=18
-  Fn key=wrap_mul_u64 owner=app proxy_cycles=25
+    Term rule=store count=17
+  Fn key=wrap_mul_u64 owner=app proxy_cycles=14
     Term rule=alu count=9
     Term rule=branch count=3
-    Term rule=load count=6
+    Term rule=load count=5
     Term rule=mul count=2
-    Term rule=store count=6
+    Term rule=store count=5

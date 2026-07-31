@@ -340,7 +340,7 @@ impl CorpusCompare {
 /// Every other shape — no source and no `root`, both `input.wr` and a
 /// `root`, a `root` that names nothing, a `root` pointing outside the case
 /// while `.wr` files sit inside it — is an **error**, never a default
-/// (decision 1781). M20's `MAX_SWEPT_DIMS` is the worked example of the
+/// (decision 1793). M20's `MAX_SWEPT_DIMS` is the worked example of the
 /// failure this avoids from the other side: a gate that silently does not
 /// run is worse than one that admits it is off.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -432,7 +432,7 @@ fn contains_wr_source(dir: &Path) -> bool {
     false
 }
 
-/// **Decision 1781 — a case belongs to exactly one tier, or the corpus
+/// **Decision 1793 — a case belongs to exactly one tier, or the corpus
 /// refuses to be discovered.**
 ///
 /// Returns `Err` with the case named and the shape described. There is no
@@ -2347,7 +2347,7 @@ mod tests {
     // Item H: the tier split (decisions 1780–1783)
     // -----------------------------------------------------------------------
 
-    /// **Decision 1781's oracle: every case is in exactly one tier, and
+    /// **Decision 1793's oracle: every case is in exactly one tier, and
     /// both tiers are populated.**
     ///
     /// The second half is the one M20 paid for. `MAX_SWEPT_DIMS` at 12 made
@@ -2407,7 +2407,7 @@ mod tests {
         );
     }
 
-    /// **Decision 1781: an unclassifiable case refuses the corpus, it does
+    /// **Decision 1793: an unclassifiable case refuses the corpus, it does
     /// not fall out of it.** Every shape that is neither tier is driven
     /// here, on real directories, because the failure mode being guarded is
     /// a case that scores in the gate while belonging to no tier's verdict.

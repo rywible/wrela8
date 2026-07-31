@@ -718,7 +718,7 @@ pub struct FnInput {
     /// `scalar_slot[t]`: the temp occupies exactly one 8-byte slot.
     pub scalar_slot: Vec<bool>,
     /// **This key's body is not this compiler's last word on it**
-    /// (decision 1781): a compiler-synthesized symbol that `layout.rs`
+    /// (decision 1793): a compiler-synthesized symbol that `layout.rs`
     /// may replace outright, alias onto another body, or re-point at a
     /// cross-core trampoline. Codegen decides it from the key's spelling
     /// and this module never looks at spellings itself.
@@ -789,7 +789,7 @@ pub fn allocate_program(fns: &BTreeMap<String, FnInput>) -> BTreeMap<String, Con
                 }
                 // A helper, an async turn body, a symbol only the glue
                 // emitters define — or a key this compiler emitted a body
-                // for that a later stage may replace (decision 1781).
+                // for that a later stage may replace (decision 1793).
                 _ => unknown = true,
             }
         }

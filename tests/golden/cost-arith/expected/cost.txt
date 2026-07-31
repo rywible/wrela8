@@ -2,38 +2,38 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
   Provenance T1=39 T2=19 T3=0 T4=10 T5=16 rows=84
   Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method valid_for=static_shape_opts workload=flat pseudo_lru=modelled_as_lru
   Composition sum_of_fn_schedules=1
-  Total proxy_cycles=136
-  Workload name=flat proxy_cycles=136
-  Owner name=app proxy_cycles=136
+  Total proxy_cycles=88
+  Workload name=flat proxy_cycles=88
+  Owner name=app proxy_cycles=88
   Owner name=runtime proxy_cycles=0
   Owner name=driver proxy_cycles=0
-  Fn key=checked_add owner=app proxy_cycles=29
+  Fn key=checked_add owner=app proxy_cycles=17
     Term rule=abort count=1
     Term rule=adrp count=1
     Term rule=alu count=6
     Term rule=branch count=4
-    Term rule=load count=4
+    Term rule=load count=3
     Term rule=mov_wide count=1
-    Term rule=store count=6
-  Fn key=checked_div owner=app proxy_cycles=53
+    Term rule=store count=5
+  Fn key=checked_div owner=app proxy_cycles=41
     Term rule=abort count=2
     Term rule=adrp count=2
     Term rule=alu count=10
     Term rule=branch count=6
-    Term rule=load count=4
+    Term rule=load count=3
     Term rule=mov_wide count=3
     Term rule=sdiv count=1
-    Term rule=store count=8
-  Fn key=mixed owner=app proxy_cycles=33
+    Term rule=store count=7
+  Fn key=mixed owner=app proxy_cycles=21
     Term rule=abort count=1
     Term rule=adrp count=1
     Term rule=alu count=8
     Term rule=branch count=4
-    Term rule=load count=8
+    Term rule=load count=7
     Term rule=mov_wide count=1
-    Term rule=store count=10
-  Fn key=wrapping_add owner=app proxy_cycles=21
+    Term rule=store count=9
+  Fn key=wrapping_add owner=app proxy_cycles=9
     Term rule=alu count=4
     Term rule=branch count=3
-    Term rule=load count=4
-    Term rule=store count=4
+    Term rule=load count=3
+    Term rule=store count=3

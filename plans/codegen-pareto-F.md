@@ -1,7 +1,7 @@
 # Item F — no-ABI: interprocedural allocation and its consequences
 
 Sibling working record for [codegen-pareto.md](codegen-pareto.md) item F
-(decision 1709). Decision block **1770–1779**, plus 1780. Branch `cp-F`,
+(decision 1709). Decision block **1770–1779**, plus **1792** and **1793** (decision 1718: this item exhausted its ten, and both numbers it first took, 1780 and 1793, were already item H's). Branch `cp-F`,
 based on `bac328db` — master with items A, B, C, D, E and H merged. F6
 was **cut at activation** by decision 1770 and nothing here builds it.
 
@@ -62,11 +62,11 @@ refusal item E applied to every call.
 | **1777** | The attribution oracle's `rel_win ≤ Σ singles` bound is restated. Item F breaks it and the break is the finding: both of its ids are unrankable against `dev`, so `Σ singles` is a sum missing two terms. The bound is now asked over the list **as it stood before item F**, whose members are all rankable alone, and `release` is required to beat that. |
 | **1778** | `blocklayout`'s "every extra word is an accounted repair jump" equality is kept, with the frames-regained term made explicit and asserted to be zero. Under decision 1775's refused form it was **not** zero — reordering blocks could cost a function its residency and hand back a frame — and the term is what makes the equality a measurement rather than an assumption about a pass that is not on the compile path. |
 | **1779** | **F5 gets no `OptId`.** The ∀ gate scores the substitution at exactly zero on all twenty cases of both tiers, and freeze 1714 keeps an unrankable transform out of `RELEASE_OPTS` — item C1's disposition under decision 1746, reached for the same reason. It lands unconditionally instead: it can only fire where `x30` was never saved, where it strictly deletes words, and it is unreachable under `dev` without `Frameless`, so it needs no knob. Two units pin this: `f5_has_no_opt_id` (cheap) and a deep lane that pins the zero, so a change that makes it fire re-opens the question loudly. |
-| **1780** | Item F's two ids join `PINNED_PRODUCT_TIER_VERDICTS` rather than getting a second pinned table, and each is asked there over its own link in the chain for decision 1747's reason. Both rows read `wins`. |
+| **1792** | Item F's two ids join `PINNED_PRODUCT_TIER_VERDICTS` rather than getting a second pinned table, and each is asked there over its own link in the chain for decision 1747's reason. Both rows read `wins`. |
 
-| **1781** | **A key some later stage may own the body of is opaque to the allocator, and every published convention is verified against the emitted code — twice.** This is the defect the boot lanes caught; it has its own section below. |
+| **1793** | **A key some later stage may own the body of is opaque to the allocator, and every published convention is verified against the emitted code — twice.** This is the defect the boot lanes caught; it has its own section below. |
 
-Nothing outside 1770–1781 was numbered; 1770 is the plan's own F6 cut and
+Nothing outside 1770–1779, 1792 and 1793 was numbered; 1770 is the plan's own F6 cut and
 was not re-used.
 
 ## The pool: nine registers, then twenty-seven
@@ -325,7 +325,7 @@ jump replaces three or four words with one or two while deleting a
 returning call. So F5 fires there and nowhere else. On the gate corpus
 that is *nowhere*, hence decision 1779.
 
-## The defect the boot lanes caught (decision 1781)
+## The defect the boot lanes caught (decision 1793)
 
 **The first landing of this item broke 14 guest transcripts**, and every
 cheap oracle was green while it did: 851 units, both ∀ tiers at 35 328
@@ -528,7 +528,7 @@ report moves.
 | `tests/census.toml` `[emitted_a64] backend_emitters` | — | `+emit_frame_teardown`, `+emit_tail_call` | two new emitters |
 | `[emitted_a64.encode_enc_sites_by_file]` | codegen 317, layout 9, total 356 | 318 / 10 / 358 | `emit_tail_call`'s `B` and `patch_bl`'s form-preserving `enc_b` |
 | `[internal_error]` `layout.rs` / total | 59 / 210 | 60 / 211 | `patch_bl` refuses a word that is neither `B` nor `BL` |
-| `[internal_error]` `codegen.rs` / total | 4 / 211 | 6 / 213 | `verify_conventions`' two producer-bug guards (decision 1781) |
+| `[internal_error]` `codegen.rs` / total | 4 / 211 | 6 / 213 | `verify_conventions`' two producer-bug guards (decision 1793) |
 | `cost-branchy` flat total (`cost::compose`) | 134 | **110** | −18 % on one case |
 | item C1's crossover (`opts::win`) | (149, 152) | **(93, 96)** | item F removes more frame slack, so C1's W-form win grows from 3 cycles to 3 on a much smaller base — the crossover item C predicted is now wider, not narrower |
 | `blocklayout` `BEFORE_HOT_TEXT_BYTES` | 7 616 | **7 616 (unchanged)** | F3's deletions land in leaves that are cold on `boot-actors`' measured vector; the constant was re-derived, not assumed |
@@ -555,7 +555,7 @@ pointed at `cost-runtime` (1 024 corners), which is the same transform;
   lane, because the thing it got wrong is precisely the thing I could not
   have reasoned my way to. Decision 1708 was the right call for the round
   and it cost this item a merge; the durable answer is not "run more boot
-  lanes" but the build-time check in decision 1781, which makes the class
+  lanes" but the build-time check in decision 1793, which makes the class
   fail without one.
 
 - **F4's arity ceiling and multi-value returns did not move.** The

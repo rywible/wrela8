@@ -41,9 +41,26 @@ are re-derivable from G.
 
 **1707. Decision sub-blocks, one per item** (the parallel-agent collision
 this repo hits every round): A `1720–1729` · B `1730–1739` · C `1740–1749` ·
-D `1750–1759` · E `1760–1769` · F `1770–1779` · H `1780–1789` ·
-G `1790–1799`. An item may not number outside its block. (F's block was
+D `1750–1759` · E `1760–1769` · F `1770–1779` (+1792) · H `1780–1789` ·
+G `1795–1799` (moved by decision 1718; C took 1790–1791). An item may not number outside its block. (F's block was
 halved when item H was added; F6's cut freed the numbers.)
+
+**1718. Ten numbers per item was not enough, and two items overflowed.**
+Decision 1707 gave each item a block of ten. Items C and F both exhausted
+theirs and continued outside — C into `1790–1791` and F onto `1780`, which
+was already item H's. Recorded rather than silently renumbered, because a
+decision number is cited from code comments and findings files and a quiet
+re-map is exactly the kind of edit that leaves a tree self-contradicting:
+
+- **F's `1780` is a genuine duplicate** of H's, so it is renumbered to
+  **1792**. It appeared only in F's findings file; every `1780` in the code
+  is H's tiering decision and is untouched.
+- **C's `1790–1791` stand.** They collide only with numbers reserved for a
+  close that had not yet been written, so the cheaper fix is to move the
+  close: **item G takes `1795–1799`**, and `1793–1794` are spare.
+
+The scheme itself held up — it caught both collisions at merge, which is
+what it is for. The lesson is the block width, not the block.
 
 **1716. The gate corpus and the product image are disjoint — item H fixes
 that, and it is a prerequisite for believing any of A–G's claims.** The ∀

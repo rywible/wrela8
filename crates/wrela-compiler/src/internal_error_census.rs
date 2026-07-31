@@ -112,7 +112,7 @@ mod tests {
             // instead of overwriting it — and a word that is neither form
             // means the reloc names a site the emitter did not put a
             // branch at, which is a producer bug and now says so.
-            // 211 -> 213: plans/codegen-pareto.md item F, decision 1781.
+            // 211 -> 213: plans/codegen-pareto.md item F, decision 1793.
             // `codegen::verify_conventions` checks every published clobber
             // set against the emitted code and refuses the build if one is
             // not a superset — two producer-bug sites, one for a

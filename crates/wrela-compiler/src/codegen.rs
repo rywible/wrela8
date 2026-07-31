@@ -5622,7 +5622,7 @@ fn prepare_fn(
             Some(regalloc::FnInput {
                 facts,
                 scalar_slot,
-                // Decision 1781: a synthesized key is a key some later
+                // Decision 1793: a synthesized key is a key some later
                 // stage may own the body of. `layout.rs` replaces
                 // `__wrela_abort_tail` and every `__test_call_*` /
                 // `__test_prefix_*` outright, aliases `rt_boot_init` and
@@ -11107,7 +11107,7 @@ fn render_bytes(bytes: &[u8]) -> String {
 /// specifically so the fuzzer can call it on arbitrary fuzzed-and-codegen'd
 /// programs and report a clean diagnostic rather than an out-of-bounds
 /// index panic reaching all the way out to `catch_unwind`.
-/// **plans/codegen-pareto.md item F, decision 1781: the convention is
+/// **plans/codegen-pareto.md item F, decision 1793: the convention is
 /// checked against the emitted code, not trusted.**
 ///
 /// `regalloc::allocate_program` decides, before anything is emitted,
@@ -13709,7 +13709,7 @@ pub fn spans(a: u64) -> u64:
         }
     }
 
-    /// **Decision 1781, the rule.** Every key some later stage may own
+    /// **Decision 1793, the rule.** Every key some later stage may own
     /// the body of publishes `ALL_REGS`, and the predicate that decides
     /// it is checked against the *symbol constructors themselves* rather
     /// than against hand-written spellings — the whole defect was a
@@ -13757,7 +13757,7 @@ pub fn spans(a: u64) -> u64:
         }
     }
 
-    /// **Decision 1781, the oracle — and the negative half of it.** A
+    /// **Decision 1793, the oracle — and the negative half of it.** A
     /// check that cannot fail is not a check, so this hands
     /// `verify_conventions` a program whose published clobber set
     /// understates what its code does, and requires a refusal that names
