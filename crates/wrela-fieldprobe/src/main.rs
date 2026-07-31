@@ -86,6 +86,10 @@ fn main() {
         i += 1;
     }
 
+    if args.iter().any(|a| a == "--deform") {
+        deform_bench(cfg.w, cfg.h, cfg.max_depth, cfg.base_tile);
+        return;
+    }
     if args.iter().any(|a| a == "--recon-sweep") {
         recon_sweep(&only);
         return;
@@ -714,4 +718,91 @@ fn recon_sweep(only: &Option<String>) {
     println!();
     println!("  Patch samples that stay flat while pixels grow 4x per row are the");
     println!("  whole 4K argument; patch samples that grow with pixels kill it.");
+}
+
+/// E12 — the deformation benchmark.
+///
+/// plans/pixels.md §13.3: "Both scenes are static. §4.2's time-Lipschitz
+/// certificates, §10.1's implicit skinning, and the cost of re-pruning a
+/// moving `smin` cluster every frame are entirely untested. This is the
+/// next benchmark, not the next feature."
+///
+/// Nine poses across a sword swing, camera held still so that everything
+/// measured is attributable to the geometry moving.
+fn deform_bench(w: u32, h: u32, max_depth: u32, base_tile: f32) {
+    println!("fieldprobe — E12 deformation (camera static, geometry swinging)");
+    println!("resolution {}x{}  poses 9 across one swing", w, h);
+    println!();
+
+    let poses: Vec<f32> = (0..9).map(|i| i as f32 / 8.0).collect();
+    let scenes: Vec<scene::Scene> =
+        poses.iter().map(|&p| scene::melee_at(w, h, p)).collect();
+
+    println!("[A] per-pose cost and structure");
+    println!("  pose  ops  d4_ops(mean/med)  blend%   FLOP/px   edge%   recon");
+    let mut costs = Vec::new();
+    for (i, sc) in scenes.iter().enumerate() {
+        let mut s = Scratch::default();
+        let cl = probe::run_classify(sc, max_depth, base_tile, &mut s);
+        let fc = probe::run_framecost(sc, &cl, &mut s);
+        let mo = probe::run_march(sc, 4, 16, &mut s);
+        let (cen, er) = probe::run_edge_recon(sc, 1.0, 64, &mut s);
+        let st = cl.per_depth.get(4);
+        let (mean, med) = match st {
+            Some(d) if d.cells > 0 => {
+                let mut hh = d.ops_hist.clone();
+                hh.sort_unstable();
+                (d.ops_sum as f64 / d.cells as f64, median(&hh))
+            }
+            _ => (0.0, 0),
+        };
+        println!(
+            "  {:>4}  {:>3}  {:>7.1} / {:>4}   {:>6}  {:>8.0}   {:>5}  {:>6.2}x",
+            i,
+            sc.tape.len(),
+            mean,
+            med,
+            fmt_pct(mo.band_len, mo.total_len),
+            fc.per_pixel(),
+            fmt_pct(cen.edge as f64, cen.pixels as f64),
+            er.factor()
+        );
+        costs.push(fc.per_pixel());
+        if fc.exterior_hits > 0 {
+            println!("  FAIL — classifier unsound at pose {i}: {} hits", fc.exterior_hits);
+            std::process::exit(1);
+        }
+    }
+    let worst = costs.iter().cloned().fold(0.0f64, f64::max);
+    let mean_c = costs.iter().sum::<f64>() / costs.len() as f64;
+    println!(
+        "  worst {:.0} FLOP/px, mean {:.0}  ->  peak/mean {:.2}x",
+        worst, mean_c, worst / mean_c.max(1e-9)
+    );
+
+    println!();
+    println!("[B] §4 temporal reuse across the deformation");
+    println!("  §4.1 bounds slack by rigid-instance velocity; a limb is not rigid.");
+    println!("  pose->pose   closing motion (mean/p99/max)   slack   hint%  verified%  tunnel%");
+    for i in 1..scenes.len() {
+        let mut s = Scratch::default();
+        for (j, &slack) in [0.02f32, 0.08, 0.25].iter().enumerate() {
+            let d = probe::run_deform_temporal(&scenes[i - 1], &scenes[i], slack, 2, &mut s);
+            if j == 0 {
+                print!(
+                    "  {:>2}->{:<2}       {:>6.4} / {:>6.4} / {:>6.4}",
+                    i - 1, i, d.mean_closing, d.p99_closing, d.max_closing
+                );
+            } else {
+                print!("  {:>2}->{:<2}       {:>24}", i - 1, i, "");
+            }
+            println!(
+                "   {:>5.2}   {:>5}  {:>8}  {:>7}",
+                slack,
+                fmt_pct(d.hinted as f64, d.pixels as f64),
+                fmt_pct(d.verified as f64, d.hinted.max(1) as f64),
+                fmt_pct(d.tunnelled as f64, d.hinted.max(1) as f64)
+            );
+        }
+    }
 }

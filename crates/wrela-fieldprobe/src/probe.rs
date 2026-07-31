@@ -480,17 +480,27 @@ pub struct MarchOut {
 const HIT_EPS: f32 = 1e-4;
 const MAX_STEPS: u32 = 192;
 
-/// Over-relaxation factor, Keinert et al. 2014 (plans/graphics.md §2.5:
-/// "thirty lines, 30-50% fewer steps, no risk").
+/// Over-relaxation factor, Keinert et al. 2014. **Disabled: 1.0.**
 ///
-/// Step by `w·d` and back off on overshoot. Sphere tracing's worst case is
-/// the linear asymptotic crawl along a grazing surface, and a ray that
-/// crawls into the step cap is recorded as a *miss* — which, in the
-/// reconstruction experiment, manufactures a depth discontinuity where the
-/// geometry is perfectly smooth. Getting grazing rays to converge is
-/// therefore not a performance tweak here; it decides whether the
-/// per-pixel residue is a property of the scene or of the marcher.
-const OVER_RELAX: f32 = 1.6;
+/// graphics.md §2.5 calls it "thirty lines, 30-50% fewer steps, **no
+/// risk**". Measured here it is 1.09% fewer steps, and the risk is real and
+/// specific: it makes the marcher **start-point-dependent**. Two marches
+/// toward the same surface from different starting points converge to
+/// different answers, because a relaxed step can overshoot a thin feature
+/// (this scene's blade is 0.011 thick) and the overshoot recovery re-uses a
+/// distance sampled at the pre-backtrack position.
+///
+/// That is fatal for §4, whose entire mechanism is varying the march start:
+/// with relaxation on, reprojection tunnelled on 4.5-13.2% of hinted pixels
+/// and — the tell — *more* slack made it **worse**, which is backwards from
+/// §4's model. With relaxation off the same measurement gives 0.20-0.71%
+/// and slack behaves monotonically.
+///
+/// 1.09% is not worth a start-point-dependent marcher in a reference
+/// implementation. A corrected version (re-evaluate after backtracking)
+/// could return under CLAUDE.md's cleverness budget, with this measurement
+/// as the before.
+const OVER_RELAX: f32 = 1.0;
 
 /// Rays that exhausted the step budget, counted globally so the report can
 /// state whether "miss" ever means "gave up".
@@ -2455,4 +2465,97 @@ pub fn run_sun_bake(
         out.p95_err = errs[(errs.len() * 95 / 100).min(errs.len() - 1)];
     }
     out
+}
+
+// ---------------------------------------------------------------------------
+// E12 — deformation: what moves when the geometry moves, not the camera.
+// ---------------------------------------------------------------------------
+
+pub struct DeformTemporal {
+    pub pixels: u64,
+    /// Pixels where both frames hit, so a depth hint exists at all.
+    pub hinted: u64,
+    /// The hint led the march to the same surface.
+    pub verified: u64,
+    /// The march started past the surface and tunnelled — §4's guarantee
+    /// broken, which it only ever claimed for *static* geometry.
+    pub tunnelled: u64,
+    /// Toward-camera surface motion between the two poses.
+    pub max_closing: f32,
+    pub p99_closing: f32,
+    pub mean_closing: f32,
+}
+
+/// Reproject a depth hint across a *deformation* with the camera held still.
+///
+/// §4 promises "a wrong hint costs performance, never correctness — the
+/// march *verifies* it", and then says plainly: "That guarantee holds only
+/// for static geometry. If a surface moved toward the camera by more than
+/// `slack`, the march starts past it and tunnels."
+///
+/// §4.1 proposes bounding `slack` by the maximum toward-camera velocity of
+/// any *rigid instance* whose bounds intersect the tile. A swinging limb is
+/// not rigid, so the question this measures is whether that bound is
+/// usable: what closing speed does a real swing actually produce at the
+/// pixel level, and what tunnelling rate does a given slack buy?
+pub fn run_deform_temporal(
+    prev: &Scene,
+    cur: &Scene,
+    slack: f32,
+    stride: u32,
+    s: &mut Scratch,
+) -> DeformTemporal {
+    let cam = &cur.cam;
+    let mut o = DeformTemporal {
+        pixels: 0,
+        hinted: 0,
+        verified: 0,
+        tunnelled: 0,
+        max_closing: 0.0,
+        p99_closing: 0.0,
+        mean_closing: 0.0,
+    };
+    let mut closings: Vec<f32> = Vec::new();
+    let mut y = 0;
+    while y < cam.h {
+        let mut x = 0;
+        while x < cam.w {
+            let d = cam.dir_at_pixel(x as f32 + 0.5, y as f32 + 0.5);
+            o.pixels += 1;
+            let p0 = march(&prev.tape, cam.eye, d, prev.t_near, prev.t_far, s).0;
+            let truth = march(&cur.tape, cam.eye, d, cur.t_near, cur.t_far, s).0;
+            if let (Some(a), Some(b)) = (p0, truth) {
+                // Positive = the surface came toward the camera.
+                let closing = a - b;
+                if closing > 0.0 {
+                    closings.push(closing);
+                    o.max_closing = o.max_closing.max(closing);
+                }
+            }
+            let hv = match p0 {
+                Some(t) => t,
+                None => {
+                    x += stride;
+                    continue;
+                }
+            };
+            o.hinted += 1;
+            let start = (hv - slack).max(cur.t_near);
+            let got = march(&cur.tape, cam.eye, d, start, cur.t_far, s).0;
+            match (truth, got) {
+                (Some(a), Some(b)) if (a - b).abs() < 3e-3 * a.max(1.0) => o.verified += 1,
+                (None, None) => o.verified += 1,
+                _ => o.tunnelled += 1,
+            }
+            x += stride;
+        }
+        y += stride;
+    }
+    if !closings.is_empty() {
+        let n = closings.len();
+        o.mean_closing = closings.iter().sum::<f32>() / n as f32;
+        closings.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        o.p99_closing = closings[(n * 99 / 100).min(n - 1)];
+    }
+    o
 }

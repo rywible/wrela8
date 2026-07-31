@@ -30,11 +30,13 @@ is a correction to how everything else was being read.
 
 | Finding | Effect |
 | --- | --- |
-| **Reconstruction factor grows with output resolution** (4.76→23.96, 14.0→70.1) | 4K becomes reachable; every earlier number was read off the worst data point |
+| **Reconstruction factor grows with output resolution** (5.2→29.0, 14.1→71.9) | 4K becomes reachable; every earlier number was read off the worst data point |
 | **Tape pruning delivers** — 173→28 ops, 312→**median 1** | §2.2 is confirmed as the load-bearing mechanism |
 | **A baked octree is *slower*** (0.69–0.98×) | no spatial acceleration structure, ever |
 | **Volumetric light bakes do not carry this geometry** (p95 0.27) | no irradiance/AO/shadow volume |
 | **Interval arithmetic beats affine arithmetic on box SDFs** (20–50×) | `eval_range` must carry both domains |
+| **Deformation is structurally free** (peak/mean 1.01× across a swing) | §4.2's time-Lipschitz escape hatch is not needed at these rates |
+| **Over-relaxation is start-point-dependent** | rejected; it broke §4's reuse and inflated edge density |
 
 The correction is the important one and it is worth stating plainly: for
 most of this design's life, the reconstruction factor was measured at
@@ -47,14 +49,14 @@ is resolution-independent. It is not, and the direction is favourable — see
 ## 1. The arithmetic, remeasured
 
 graphics.md §1 modelled **~4,500 FLOP/pixel** for a frame under the
-classical amortisations. Measured, with tape pruning, slab-advance
-traversal and over-relaxation:
+classical amortisations. Measured, with tape pruning and slab-advance
+traversal (over-relaxation is rejected — §3.4):
 
 | scene | FLOP/pixel | note |
 | --- | --- | --- |
-| colonnade | **3,390** | hard-surface architecture, 2-octave ground displacement |
-| colonnade-flat | **2,280** | the same scene, displacement off |
-| melee | **2,806** | 4-figure `smin` cluster, k=0.08 limbs |
+| colonnade | **3,609** | hard-surface architecture, 2-octave ground displacement |
+| colonnade-flat | **2,393** | the same scene, displacement off |
+| melee | **2,869** | 4-figure `smin` cluster, k=0.08 limbs |
 
 §1's model was accurate to about 25% on the pessimistic side. That is a
 better outcome than it sounds: the model was built from first principles
@@ -71,7 +73,7 @@ Composition (colonnade), which decides where effort is worth spending:
 | traversal — affine classify + prune | 10.8% |
 | post | 8.9% |
 
-**Displacement costs 1.49×** (3,390 vs 2,280). Two octaves at amplitude
+**Displacement costs 1.51×** (3,609 vs 2,393). Two octaves at amplitude
 0.02 on a large grazing surface. That is the single most expensive
 art-direction decision in the frame and it is the difference between 4K60
 closing comfortably and closing on a knife edge (§9). It belongs in the
@@ -79,7 +81,7 @@ closing comfortably and closing on a knife edge (§9). It belongs in the
 
 ```
 warn[FIELD_DISPLACE_COST]: 2 octaves at amplitude 0.020 on 'ground' raise
-  frame cost 1.49x (measured class: large-area grazing surface).
+  frame cost 1.51x (measured class: large-area grazing surface).
   --> world/terrain.wr:9
   help: at @output(3840, 2160, 60) this is the term that does not fit.
 ```
@@ -101,8 +103,8 @@ any 4-neighbour differs in hit/miss or in relative depth by >5%:
 
 | scene | 512×288 | 1024×576 | 1920×1080 | 3840×2160 |
 | --- | --- | --- | --- | --- |
-| colonnade | 7.62% | 3.87% | 2.08% | **1.06%** |
-| melee | 2.38% | 1.20% | 0.64% | **0.32%** |
+| colonnade | 7.13% | 3.58% | 1.94% | **0.98%** |
+| melee | 2.34% | 1.17% | 0.63% | **0.31%** |
 
 Edges are a 1-D set. Their pixel count grows linearly with resolution while
 the frame grows quadratically, so the edge *fraction* halves with every
@@ -119,12 +121,12 @@ the empirical answer is decisive:
 
 | scene | 512×288 | 1024×576 | 1920×1080 | **3840×2160** |
 | --- | --- | --- | --- | --- |
-| colonnade | 4.76× | 7.98× | 13.32× | **23.96×** |
-| melee | 14.02× | 24.29× | 40.41× | **70.10×** |
+| colonnade | 5.24× | 9.11× | 16.01× | **28.97×** |
+| melee | 14.11× | 24.84× | 41.09× | **71.90×** |
 
-Patch samples grow 14.8× while pixels grow 64×. At 4K, melee needs 118,320
-shaded samples for 8.29M pixels — about 8,500 patches averaging 31×31
-pixels, plus 26,890 edge samples.
+Patch samples grow 14.2× while pixels grow 64×. At 4K, melee needs 115,358
+shaded samples for 8.29M pixels — about 8,350 patches averaging 31×31
+pixels, plus 26,090 edge samples.
 
 ### 2.3 Three rules the fit must obey
 
@@ -138,7 +140,7 @@ Each was found by measuring a version that violated it.
    patch representation has to win. Worth 40%→72% pass rate on melee's 32px
    cells.
 2. **Judge the fit only on non-edge pixels.** Letting a single edge pixel
-   condemn its cell is what held reconstruction at 1.05× instead of 23.96×.
+   condemn its cell is what held reconstruction at 1.05× instead of 28.97×.
    Axis-aligned cells cannot align to a diagonal edge; a curve-bounded
    region splits rather than fails.
 3. **Subdivide adaptively.** A uniform grid measures the wrong thing — the
@@ -213,25 +215,49 @@ width ratio of exactly 1.00× at every slot, which is not agreement.
   than marching, 91–99.8% converging to the true hit, worst depth error
   0.10 px of parallax. `∂t/∂x = −F_x/F_t` with both terms from one
   `eval_grad`.
-- **Over-relaxation** (Keinert 2014): **1.09×**, well under the paper's
-  claimed 30–50%. Its overshoot backtrack must be computed *before* the
-  relaxation factor is reset, or it silently tunnels.
+- **Over-relaxation** (Keinert 2014): **removed.** graphics.md §2.5 calls
+  it *"thirty lines, 30–50% fewer steps, no risk"*. Measured: **1.09%**
+  fewer steps, and the risk is real, specific, and fatal to §4 — see below.
 
-### 3.4 "Solve, do not march" is scene-dependent (§2.3 — measured)
+### 3.4 Over-relaxation is rejected (§2.5 — measured, and reversed)
+
+It makes the marcher **start-point-dependent**: two marches toward the same
+surface from different starting points converge to different answers,
+because a relaxed step can overshoot a thin feature (this scene's blade is
+0.011 thick) and the overshoot recovery re-uses a distance sampled at the
+pre-backtrack position.
+
+That is fatal for §4, whose whole mechanism is varying the march start.
+With relaxation on, reprojection across a deformation tunnelled on
+**4.5–13.2%** of hinted pixels — and the tell was that *more* slack made it
+**worse**, which is backwards from §4's model. With it off, the same
+measurement gives **0.20–0.86%** and slack behaves monotonically.
+
+Removing it costs 2–6% of frame cost and **gains 3–21% of reconstruction
+factor**, because the tunnelling was manufacturing false discontinuities
+that inflated edge density. Net favourable, before counting the
+correctness.
+
+1.09% is not worth a start-point-dependent marcher in a reference
+implementation. A corrected version — re-evaluate the distance after
+backtracking — could return under CLAUDE.md's cleverness budget, with this
+measurement as the "before".
+
+### 3.5 "Solve, do not march" is scene-dependent (§2.3 — measured)
 
 Blend-band ray fraction — the share of traversed ray length where `smin`
 deviates from `min`, and closed-form solving is therefore unavailable:
 
 | colonnade | melee |
 | --- | --- |
-| **17.9%** | **96.3%** |
+| **17.9%** | **96.5%** |
 
 graphics.md guessed 5% and 40%. §2.3 is a real lever on hard-surface
 architecture and **nearly inapplicable to character work**. Its actual
 value on the 82% of colonnade ray length that *is* solvable remains
 unmeasured.
 
-### 3.5 The interior certificate is weak, and it does not matter
+### 3.6 The interior certificate is weak, and it does not matter
 
 Certified-interior screen area came in at 2.2%/12.5%, far under §2.1's
 expectation that *"the majority of screen area is interior"*. The cause is
@@ -317,6 +343,8 @@ brick map.
 
 ## 6. Motion
 
+### 6.1 Camera whip
+
 §16.2's camera whip, costed **every frame** rather than at one
 representative pose, because a frame budget is set by the worst frame.
 Sixteen frames ramping to 15.75°/frame:
@@ -340,6 +368,59 @@ This is what §4.4's velocity-scheduled resolution is for, and the table
 above is the curve to schedule against. It is also why reconstruction must
 happen guest-side (§7): a disoccluded region can be re-marched only by
 whoever holds the field.
+
+### 6.2 Deformation is nearly free — and that is the finding
+
+Nine poses across a sword swing, camera held still so that everything
+measured is attributable to the geometry moving. §10.2's arc-and-pace
+factoring, so angular rate peaks mid-swing where a real swing snaps, and
+§10.3's swept volume grows with it.
+
+| quantity | range across the whole swing |
+| --- | --- |
+| full tape ops | **313, constant** |
+| pruned ops at depth 4 | 22.5 – 23.1 |
+| blend-band ray fraction | 96.57% – 97.13% |
+| frame cost | 2809 – 2885 FLOP/px — **peak/mean 1.01×** |
+| edge density | 2.24% – 2.42% |
+| reconstruction factor | 13.95× – 14.32× |
+
+**Every structural quantity is invariant.** §6.3's line — topology is
+comptime, parameters are runtime — holds exactly: tape length never moves,
+because a pose changes coefficients and not shape. Pruning does not
+degrade, blend bands do not spike, and the reconstruction factor is flat.
+
+The frame budget varies by **1% across a full swing**, against **21% across
+a camera whip** (§6.1). Deformation is not the stress case. Camera motion
+is.
+
+### 6.3 §4's temporal reuse survives deformation
+
+The same nine poses, reprojecting a depth hint across each transition with
+the camera still. §4 promises a wrong hint costs performance and never
+correctness, then says plainly that the guarantee holds *only for static
+geometry*.
+
+| | slack 0.02 | slack 0.08 | slack 0.25 |
+| --- | --- | --- | --- |
+| hint verified | 99.17 – 99.86% | 99.30 – 99.87% | **99.47 – 99.87%** |
+| tunnelled | 0.14 – 0.83% | 0.13 – 0.70% | **0.13 – 0.53%** |
+
+Monotone in slack, as §4's model predicts. Closing motion is 0.03–0.19
+mean and 0.6–7.7 at p99; the p99 tail is occlusion *events* — a limb
+sweeping across a background — not surface velocity, so §4.1's
+rigid-instance bound does not need to cover it.
+
+**The hint rate equals the hit rate** (54.4% against 54.0%), which is the
+sharpest result here: with a static camera, deformation produces
+essentially **zero disocclusion**. Every pixel that had a surface last
+frame has a usable hint this frame.
+
+So §4.4's 61%-disocclusion problem is entirely **camera-driven**. Geometry
+motion contributes almost nothing to it, and §4.2's time-Lipschitz
+certificate — graphics.md's "escape hatch" for deforming fields — is not
+needed at these rates. §4.1's rigid-instance bound plus a modest slack
+covers it.
 
 ---
 
@@ -517,10 +598,10 @@ reconstruction factor at that resolution.
 
 | mode | melee | colonnade-flat | colonnade |
 | --- | --- | --- | --- |
-| **1080p60**, shade at 60 | 35% | 74% | 67% \* |
-| **4K30**, shade at 30 | 47% | 61% \* | 81% \* |
-| **4K60**, shade at 60 | 93% | 178% ✗ | 162% ✗ |
-| **4K60**, shade at 30 + raster at 60 | 61% | 72% \* | **96%** \* |
+| **1080p60**, shade at 60 | 35% | 66% | 60% \* |
+| **4K30**, shade at 30 | 47% | 52% \* | 73% \* |
+| **4K60**, shade at 60 | 93% | 103% ✗ | 146% ✗ |
+| **4K60**, shade at 30 + raster at 60 | 61% | 66% \* | **88%** \* |
 
 \* with the measured optimisation stack: fp16 on the 44.6% that is shadow +
 AO/GI + shading (§3), continuation at its measured 2.01× on the 92.4% of
@@ -528,10 +609,12 @@ primary that is smooth.
 
 **1080p60 fits everywhere with room. 4K60 fits everywhere if shading runs
 at 30 Hz and the representation is re-rastered at 60.** colonnade sits at
-96% of budget, which means no headroom for a whip — §6 measured peak/mean
-at 1.21× and 61% disocclusion, so colonnade at 4K60 depends on §4.4's
-velocity schedule rather than on slack. Dropping the ground displacement
-(§1) or reaching 35% sustained removes that dependency.
+88% of budget — 12% of headroom against §6.1's measured 1.21× camera-whip
+peak, so a whip still needs §4.4's velocity schedule, but the margin is no
+longer knife-edge. Deformation needs no headroom at all (§6.2, 1.01×).
+
+These numbers *improved* when over-relaxation was removed (§3.4): the
+reconstruction factor gained more than the frame cost lost.
 
 ---
 
@@ -560,6 +643,10 @@ stdlib implementation rules, locked by `diff-eval` and unit tests.
    shrinking `e` is a valid tightening. Keep the form, or collapse to an
    opaque interval.
 7. **`rsqrt` is defined as an explicit Newton sequence in stdlib** (§9.4).
+8. **The marcher must be start-point-independent.** Two marches toward the
+   same surface from different starting points must converge to the same
+   answer, because §4's temporal reuse varies the start by construction.
+   Over-relaxation violates this and is rejected (§3.4).
 
 ---
 
@@ -619,21 +706,16 @@ In descending order of how much rests on them.
 2. **§1's 30%-sustained figure.** Every projection scales linearly in it,
    and the proxy structurally cannot measure it. colonnade's 4K60 verdict
    flips on it alone.
-3. **Deforming fields.** *Both scenes are static.* §4.2's time-Lipschitz
-   certificates, §10.1's implicit skinning, and the cost of re-pruning a
-   moving `smin` cluster every frame are entirely untested. §6 moved the
-   camera, not the geometry. **This is the next benchmark, not the next
-   feature.**
-4. **§14.2's display path.** Whether the HVS scales during scanout,
+3. **§14.2's display path.** Whether the HVS scales during scanout,
    composites two planes at different scales, and its maximum upscale
    factor. A datasheet question that decides §7's bandwidth lever.
-5. **The edge-sample charge.** §2 charges one full shaded sample per edge
+4. **The edge-sample charge.** §2 charges one full shaded sample per edge
    pixel. A curve representation should beat that — an edge needs coverage
    plus its two neighbouring patches, not an independent shade —
    conservatively by 2–3×, which is exactly colonnade's remaining margin.
-6. **§2.3's closed-form solve.** 82% of colonnade ray length is outside
+5. **§2.3's closed-form solve.** 82% of colonnade ray length is outside
    blend bands; what that buys is unmeasured.
-7. **Store-data / V-pipe contention**, and op weights sourced from the SOG
+6. **Store-data / V-pipe contention**, and op weights sourced from the SOG
    rather than estimated (§9.5).
 
 ---
@@ -655,7 +737,8 @@ In descending order of how much rests on them.
    (§3.5).
 8. **Auto-vectorisation, not a vector language surface** (§9.4).
 9. **`rsqrt` is an explicit Newton sequence in stdlib** (§9.4).
-10. **4K60 is the target, at 30 Hz shading and 60 Hz raster**; 1080p60 is
+10. **Over-relaxation is rejected** — start-point-dependent (§3.4).
+11. **4K60 is the target, at 30 Hz shading and 60 Hz raster**; 1080p60 is
     the floor (§10).
 
 ## 15. Order of work
@@ -672,11 +755,8 @@ In descending order of how much rests on them.
    `cargo xtask check`. §16.1 asked for this so a later Pi 5 run is a
    one-variable experiment; the numbers currently live in a text file
    nothing enforces.
-4. **The deformation benchmark** (§13.3). Before FieldWir, not after — it
-   is the one remaining unknown that could change the design's shape rather
-   than its constants.
-5. **FieldWir**: the sema pass, the evaluator extension, the flatten pass,
+4. **FieldWir**: the sema pass, the evaluator extension, the flatten pass,
    and their dump goldens.
-6. **The stdlib renderer**: classify, prune, fit, trace, raster.
-7. **Tiers 9–10**, against `codegen-pareto`'s existing land gate.
-8. **§14.2's display contract.**
+5. **The stdlib renderer**: classify, prune, fit, trace, raster.
+6. **Tiers 9–10**, against `codegen-pareto`'s existing land gate.
+7. **§14.2's display contract.**

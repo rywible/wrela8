@@ -191,6 +191,30 @@ fn colonnade_amp(w: u32, h: u32, amp: f32, name: &'static str) -> Scene {
 /// - camera close enough that figures fill the frame; second pose is a 14°
 ///   whip, which is ~2.5× a fast human flick at 30 Hz
 pub fn melee(w: u32, h: u32) -> Scene {
+    melee_at(w, h, 0.35)
+}
+
+/// The melee scene at a point in a sword swing, `swing` in `0.0..1.0`.
+///
+/// Every measurement in plans/pixels.md before this one was taken on a
+/// *static* scene: §16.2's "character cluster mid-swing" was a pose, not a
+/// motion, and §6's camera whip moved the camera while the geometry stood
+/// still. That leaves §10's animation machinery and §4.2's time-Lipschitz
+/// certificates untested, which is the one remaining unknown that could
+/// change the design's shape rather than its constants.
+///
+/// The swing follows §10.2's arc-and-pace factoring: the blade tip travels
+/// an arc and the *timing* along it carries the weight, so the angular rate
+/// peaks in the middle where a real swing snaps. That is deliberately the
+/// stress case — peak deformation rate coincides with peak blend-band
+/// overlap between arm, blade and swept volume.
+pub fn melee_at(w: u32, h: u32, swing: f32) -> Scene {
+    // Slow, SNAP, settle: rate peaks at the midpoint.
+    let s_curve = 0.5 - 0.5 * (std::f32::consts::PI * swing).cos();
+    melee_build(w, h, s_curve)
+}
+
+fn melee_build(w: u32, h: u32, sw: f32) -> Scene {
     let mut b = Builder::new();
     let p = b.point();
 
@@ -220,8 +244,16 @@ pub fn melee(w: u32, h: u32) -> Scene {
         let arm_l_p = b.rot_z(arm_l_p, 0.5 + 0.35 * ph.sin());
         let arm_l = b.capsule_y(arm_l_p, 0.24, 0.075);
 
+        // Figure 0's right arm drives the swing; the others idle out of
+        // phase so the cluster's blend bands move relative to each other
+        // rather than rigidly.
+        let swing_ang = if i == 0 {
+            -0.35 - 1.75 * sw
+        } else {
+            -0.5 - 0.4 * (ph * 1.3 + sw * 0.6).sin()
+        };
         let arm_r_p = b.translate(fp, [0.28, 1.18, 0.0]);
-        let arm_r_p = b.rot_z(arm_r_p, -0.5 - 0.4 * (ph * 1.3).sin());
+        let arm_r_p = b.rot_z(arm_r_p, swing_ang);
         let arm_r = b.capsule_y(arm_r_p, 0.24, 0.075);
 
         let leg_l_p = b.translate(fp, [-0.11, 0.42, 0.0]);
@@ -243,11 +275,14 @@ pub fn melee(w: u32, h: u32) -> Scene {
             // The swing: blade, plus the §10.3 swept volume as a torus
             // segment — the smear frame, one primitive.
             let hand_p = b.translate(fp, [0.42, 1.25, 0.10]);
-            let hand_p = b.rot_z(hand_p, -1.15);
+            let hand_p = b.rot_z(hand_p, swing_ang - 0.8);
             let blade = b.round_box(hand_p, [0.035, 0.46, 0.011], 0.008);
+            // §10.3's smear: the swept volume grows with angular rate,
+            // which peaks mid-swing. A torus segment, one primitive.
+            let rate = (std::f32::consts::PI * sw).sin();
             let swept_p = b.translate(fp, [0.30, 1.22, 0.0]);
-            let swept_p = b.rot_z(swept_p, -0.55);
-            let swept = b.torus(swept_p, 0.44, 0.020);
+            let swept_p = b.rot_z(swept_p, swing_ang * 0.5);
+            let swept = b.torus(swept_p, 0.44, 0.020 + 0.03 * rate);
             let arc = b.smin(blade, swept, 0.06);
             b.smin(body, arc, 0.05)
         } else {
