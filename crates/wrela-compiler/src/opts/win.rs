@@ -1941,10 +1941,16 @@ mod tests {
     /// blind to it. It survives on cycles alone.
     #[test]
     fn narrow_imm_wins_on_cycles_while_its_footprint_win_is_priced_at_zero() {
-        let configs: [(&str, &[OptId]); 4] = [
+        let configs: [(&str, &[OptId]); 5] = [
             ("dev", &[]),
             ("BoundsElide", &[OptId::BoundsElide]),
             ("NarrowImm", &[OptId::NarrowImm]),
+            // plans/codegen-pareto.md item E. Every member of
+            // `RELEASE_OPTS` gets a singles row, or the "release's win
+            // cannot exceed the sum of the singles" bound below stops
+            // being a statement about overlap and becomes an accident of
+            // which opts this array happens to list.
+            ("RegAlloc", &[OptId::RegAlloc]),
             ("release", RELEASE_OPTS),
         ];
         let rows = attribute_opts(&configs);
@@ -2055,24 +2061,26 @@ mod tests {
         // So the assertion is the one that is actually about the ruler: both
         // opts contribute, neither is inert, and their sum is bounded by
         // release's (they overlap rather than compose freely).
+        let ra_cycles = sum("RegAlloc", |c| c.proxy_cycles);
         let be_win = dev_cycles - be_cycles;
         let ni_win = dev_cycles - ni_cycles;
+        let ra_win = dev_cycles - ra_cycles;
         let rel_win = dev_cycles - rel_cycles;
         assert!(
-            be_win > 0 && ni_win > 0,
-            "both opts must contribute on cycles: BoundsElide {be_win}, \
-             NarrowImm {ni_win}\n{table}"
+            be_win > 0 && ni_win > 0 && ra_win > 0,
+            "every opt must contribute on cycles: BoundsElide {be_win}, \
+             NarrowImm {ni_win}, RegAlloc {ra_win}\n{table}"
         );
         assert!(
-            rel_win <= be_win + ni_win,
+            rel_win <= be_win + ni_win + ra_win,
             "release's win cannot exceed the sum of the singles — that would \
-             mean the two opts create cycles together that neither creates \
-             alone: release {rel_win} vs {be_win} + {ni_win}\n{table}"
+             mean the opts create cycles together that none creates \
+             alone: release {rel_win} vs {be_win} + {ni_win} + {ra_win}\n{table}"
         );
         assert!(
-            rel_win > be_win && rel_win > ni_win,
-            "release must beat either single: release {rel_win}, BoundsElide \
-             {be_win}, NarrowImm {ni_win}\n{table}"
+            rel_win > be_win && rel_win > ni_win && rel_win > ra_win,
+            "release must beat every single: release {rel_win}, BoundsElide \
+             {be_win}, NarrowImm {ni_win}, RegAlloc {ra_win}\n{table}"
         );
     }
 
@@ -2116,7 +2124,7 @@ mod tests {
     /// independence when totals match (lower vs codegen axes).
     #[test]
     fn swapped_order_scores_same_as_release_opts() {
-        const SWAPPED: &[OptId] = &[OptId::NarrowImm, OptId::BoundsElide];
+        const SWAPPED: &[OptId] = &[OptId::RegAlloc, OptId::NarrowImm, OptId::BoundsElide];
         let cmp = compare_opt_lists(RELEASE_OPTS, SWAPPED);
         let table = format_delta_table(&cmp, "RELEASE_OPTS", "swapped");
         eprintln!("order swap note:\n{table}");
@@ -3267,6 +3275,70 @@ mod tests {
             );
         }
         assert_sweep_wins(&cmp, "release", "dev");
+        assert!(cmp.wins());
+    }
+
+    /// Everything in `RELEASE_OPTS` **except** the allocator — the
+    /// baseline item E's ∀ gate is measured against, so the verdict is
+    /// about this item and not about the whole mode
+    /// (plans/codegen-pareto.md decision 1764).
+    const WITHOUT_REGALLOC: &[OptId] = &[OptId::BoundsElide, OptId::NarrowImm];
+
+    /// **Item E's smoke lane: the ∀ sweep of the allocator alone, on one
+    /// case, in the default `cargo test`.** Same code path, same probe,
+    /// same refusals as the whole-corpus sweep below — over
+    /// `cost-bounds-elide`, whose release total the allocator takes from
+    /// 314 to 225 at the pinned point.
+    #[test]
+    fn regalloc_wins_at_every_box_point_on_the_smoke_case() {
+        let cmp = compare_opt_lists_over_box_for_case(
+            WITHOUT_REGALLOC,
+            RELEASE_OPTS,
+            "cost-bounds-elide",
+        )
+        .expect("smoke sweep");
+        assert_eq!(cmp.cases.len(), 1, "the smoke lane sweeps exactly one case");
+        let case = &cmp.cases[0];
+        assert!(
+            !case.points.is_empty(),
+            "the smoke case must enumerate corners, not zero"
+        );
+        assert!(
+            case.points.iter().all(|p| p.candidate < p.baseline),
+            "RegAlloc must fall at every point of {}: {:?}",
+            case.name,
+            case.points
+                .iter()
+                .map(|p| (p.baseline, p.candidate))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            cmp.wins(),
+            "smoke sweep vetoed: {:?}",
+            cmp.reasons.iter().map(|r| r.label()).collect::<Vec<_>>()
+        );
+    }
+
+    /// **Item E's ∀ gate: the allocator alone, over the whole `cost-*`
+    /// corpus, at every point of the residual box.** No case may rise at
+    /// any point; at least one must fall at every point.
+    ///
+    /// The allocator's win is *structural* — it deletes a `str`/`ldr`
+    /// pair, the store's V-pipe data uop and both accesses' AGU uops, and
+    /// leaves one I-pipe `mov` — so no box coordinate can turn it into a
+    /// loss. In particular it does **not** depend on the swept
+    /// store-to-load-forwarding latency, which is what this sweep is for:
+    /// the claim is checked at the corners, not argued.
+    ///
+    /// **Deep lane.** `#[ignore]`d and run by `cargo xtask check`, for the
+    /// same reason the `dev -> release` sweep above is.
+    #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
+    #[test]
+    fn regalloc_wins_at_every_point_of_the_residual_box() {
+        let cmp = compare_opt_lists_over_box(WITHOUT_REGALLOC, RELEASE_OPTS).expect("sweep");
+        let table = format_sweep_table(&cmp, "release-minus-RegAlloc", "release");
+        eprintln!("∀ sweep (release-minus-RegAlloc → release):\n{table}");
+        assert_sweep_wins(&cmp, "release", "release-minus-RegAlloc");
         assert!(cmp.wins());
     }
 

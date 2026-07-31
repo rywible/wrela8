@@ -18,25 +18,36 @@ pub enum CompileMode {
     Release,
 }
 
-/// Named opts that `apply_mode(Release)` may enable. Two ids today
-/// (decision 1421): lower-side bounds elision and codegen narrow
-/// immediates.
+/// Named opts that `apply_mode(Release)` may enable. Three ids today:
+/// lower-side bounds elision and codegen narrow immediates (decision
+/// 1421), plus per-function register allocation
+/// (plans/codegen-pareto.md item E, decision 1760).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OptId {
     BoundsElide,
     NarrowImm,
+    RegAlloc,
 }
 
 /// Fixed release order. Add opts here — nowhere else.
 /// Order is part of the product (decision 1423): BoundsElide then
-/// NarrowImm.
-pub const RELEASE_OPTS: &[OptId] = &[OptId::BoundsElide, OptId::NarrowImm];
+/// NarrowImm, then RegAlloc.
+///
+/// **RegAlloc is last, and that is a decision, not an accident**
+/// (plans/codegen-pareto.md decision 1763). The allocator reads the
+/// emitter's *output* — which temps are touched as whole scalars, where
+/// a returning call sits, which registers are already spoken for — so it
+/// must decide against the same emission the image will get. Any opt
+/// that changes what `emit_one` produces has to run before it, or the
+/// probe measures a program that is never built.
+pub const RELEASE_OPTS: &[OptId] = &[OptId::BoundsElide, OptId::NarrowImm, OptId::RegAlloc];
 
 /// Enable exactly the named opts (decision 1452). Product modes go
 /// through [`apply_mode`]; tests and candidate A/B use this directly.
 pub fn apply_opts(opts: &[OptId]) {
     crate::lower::set_bounds_elide(opts.contains(&OptId::BoundsElide));
     crate::codegen::set_narrow_imm(opts.contains(&OptId::NarrowImm));
+    crate::regalloc::set_regalloc(opts.contains(&OptId::RegAlloc));
 }
 
 /// Single front door for product-mode TLS knobs (decision 1422).
@@ -58,10 +69,16 @@ mod tests {
         apply_mode(CompileMode::Release);
         assert!(bounds_elide());
         assert!(narrow_imm());
+        assert!(crate::regalloc::regalloc());
 
         apply_mode(CompileMode::Dev);
         assert!(!bounds_elide());
         assert!(!narrow_imm());
+        assert!(
+            !crate::regalloc::regalloc(),
+            "`dev` keeps spill-everything as the correctness reference \
+             (M19 freeze 1407)"
+        );
     }
 
     #[test]
@@ -69,15 +86,28 @@ mod tests {
         apply_mode(CompileMode::Dev);
         assert!(!bounds_elide());
         assert!(!narrow_imm());
+        assert!(!crate::regalloc::regalloc());
 
         apply_mode(CompileMode::Release);
         assert!(bounds_elide());
         assert!(narrow_imm());
+        assert!(crate::regalloc::regalloc());
     }
 
+    /// plans/codegen-pareto.md decision 1763: RegAlloc is last because
+    /// it decides against the emitter's *output*, so every opt that
+    /// changes emission must already be on when its probe runs.
     #[test]
-    fn release_opts_order_is_bounds_elide_then_narrow_imm() {
-        assert_eq!(RELEASE_OPTS, &[OptId::BoundsElide, OptId::NarrowImm]);
+    fn release_opts_order_is_bounds_elide_then_narrow_imm_then_regalloc() {
+        assert_eq!(
+            RELEASE_OPTS,
+            &[OptId::BoundsElide, OptId::NarrowImm, OptId::RegAlloc]
+        );
+        assert_eq!(
+            RELEASE_OPTS.last(),
+            Some(&OptId::RegAlloc),
+            "the allocator must run after every emission-changing opt"
+        );
     }
 
     #[test]
@@ -85,10 +115,17 @@ mod tests {
         apply_opts(&[OptId::NarrowImm]);
         assert!(!bounds_elide());
         assert!(narrow_imm());
+        assert!(!crate::regalloc::regalloc());
 
         apply_opts(&[OptId::BoundsElide]);
         assert!(bounds_elide());
         assert!(!narrow_imm());
+        assert!(!crate::regalloc::regalloc());
+
+        apply_opts(&[OptId::RegAlloc]);
+        assert!(!bounds_elide());
+        assert!(!narrow_imm());
+        assert!(crate::regalloc::regalloc());
 
         apply_mode(CompileMode::Release);
     }
