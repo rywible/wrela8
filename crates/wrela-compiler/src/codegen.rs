@@ -1225,6 +1225,18 @@ struct Frame {
     /// ops in this fn).
     entropy_scratch_size: usize,
     lr_off: usize,
+    /// plans/codegen-pareto.md item F3 (decision 1772): whether this
+    /// function saves `x30` at all. It has to only if some `BL` in its
+    /// body **returns** — an abort `BL` is `noreturn` (03's abort
+    /// contract), and a tail call's `B` does not touch `x30`, so a leaf
+    /// in that sense reaches its own `ret` with the caller's return
+    /// address still in the register it arrived in. When this is false
+    /// `lr_off` is not a frame offset and is never consulted.
+    ///
+    /// This is F2 read from the callee's side: the save exists to
+    /// protect a value against a clobber, and where the compiler can see
+    /// that no clobber happens the save is not shortened, it is absent.
+    lr_saved: bool,
     size: usize,
     /// plans/codegen-pareto.md item F3 (decision 1772): this function
     /// has **no frame at all**. Every temp is resident, nothing needs a
@@ -1313,10 +1325,10 @@ fn build_frame(
     entropy_scratch_size: usize,
     slot_bias: usize,
     assign: &regalloc::Assignment,
-    // Item F3: `Some(true)` when the probe measured no returning call in
-    // this function and the caller has the `Frameless` opt on. `None`
+    // Item F3: `false` only when the `Frameless` opt is on **and** the
+    // probe measured no returning call in this function. `true`
     // reproduces every pre-item-F frame byte for byte.
-    frameless_ok: Option<bool>,
+    save_lr: bool,
 ) -> Result<Frame, CodegenError> {
     let mut offset = 0usize;
     let mut temp_offset = Vec::with_capacity(f.temp_types.len());
@@ -1376,14 +1388,24 @@ fn build_frame(
     } else {
         (None, 0)
     };
-    // Item F3. Everything above this line is a *byte* of frame; if the
-    // running total is still zero, the only thing left to put in a frame
-    // is the saved link register, and a function that never returns from
-    // a `BL` does not need that either.
-    let frameless = offset == 0 && frameless_ok == Some(true) && slot_bias == 0;
+    // Item F3, in two steps, because they are two different savings and
+    // the second is much rarer than the first.
+    //
+    // 1. **The link register.** A function no `BL` ever returns into does
+    //    not save `x30`: the slot goes, and with it a `str` in the
+    //    prologue and an `ldr` in the epilogue. This is independent of
+    //    residency, so every leaf gets it — including the ones whose
+    //    temps are still spilled.
+    // 2. **The frame itself.** If dropping the `x30` slot leaves *no*
+    //    bytes at all, there is nothing to point `sp` at and the
+    //    `sub sp`/`add sp` pair goes too.
+    let lr_saved = save_lr || slot_bias != 0;
     let lr_off = offset;
-    offset += 8;
-    let size = if frameless { 0 } else { round_up_16(offset) };
+    if lr_saved {
+        offset += 8;
+    }
+    let frameless = offset == 0;
+    let size = round_up_16(offset);
     // The imm12 ceiling is on the immediate that actually gets encoded,
     // and for an async fn every slot reference is biased past the turn
     // record: `addr_of_slot` hands `off + slot_bias` straight to
@@ -1411,6 +1433,7 @@ fn build_frame(
         entropy_scratch_off,
         entropy_scratch_size,
         lr_off,
+        lr_saved,
         size,
         frameless,
         virt_to_reg,
@@ -4700,8 +4723,7 @@ fn emit_convert(
 // --- prologue/epilogue -------------------------------------------------------
 
 fn emit_prologue(f: &MwirFn, frame: &Frame, ctx: &mut FnCtx) -> Result<(), CodegenError> {
-    // Item F3: no bytes, nothing to save. The two words below are the
-    // entire prologue of a frameless function, and they are not emitted.
+    // Item F3, both steps.
     if !frame.frameless {
         ctx.push(
             encode::enc_sub_imm(X_SP, X_SP, frame.size as u16, true),
@@ -4710,6 +4732,8 @@ fn emit_prologue(f: &MwirFn, frame: &Frame, ctx: &mut FnCtx) -> Result<(), Codeg
             Some(X_SP),
             &[X_SP],
         );
+    }
+    if frame.lr_saved {
         ctx.store_slot(X_LR, frame.lr_off);
     }
     let mut next_reg = 0u8;
@@ -4822,10 +4846,12 @@ fn emit_epilogue(f: &MwirFn, frame: &Frame, ctx: &mut FnCtx) -> Result<(), Codeg
 /// `ret`, and that precede every framed tail call's own `B` (item F5).
 /// Emits nothing for a frameless function (item F3).
 fn emit_frame_teardown(frame: &Frame, ctx: &mut FnCtx) {
+    if frame.lr_saved {
+        ctx.load_slot(X_LR, frame.lr_off);
+    }
     if frame.frameless {
         return;
     }
-    ctx.load_slot(X_LR, frame.lr_off);
     ctx.push(
         encode::enc_add_imm(X_SP, X_SP, frame.size as u16, true),
         format!("add sp, sp, #{}", frame.size),
@@ -5537,7 +5563,7 @@ fn prepare_fn(
     // A sync fn never awaits, so it never stages a reply (0). Entropy
     // scratch is reserved when the body emits `Inst::Entropy` (item Es).
     let naive = regalloc::Assignment::none(f.temp_types.len());
-    let frame = build_frame(f, layout, 0, mwir_entropy_scratch_size(f), 0, &naive, None)?;
+    let frame = build_frame(f, layout, 0, mwir_entropy_scratch_size(f), 0, &naive, true)?;
 
     // plans/M20.md item B / decision 1607: Lane 2 instruments **every**
     // owner, not just `app`. `cost-runtime` is the largest corpus case
@@ -5588,28 +5614,12 @@ fn prepare_fn(
                     _ => true,
                 }
         });
-    // Item F3: everything except the temps is already known to be zero
-    // bytes, so residency is the only remaining question. Read off the
-    // naive frame rather than restated, so a new auxiliary slot cannot
-    // be forgotten here.
-    let frameless_candidate = frameless_fns()
-        && !has_returning_call
-        && frame.self_ptr_off.is_none()
-        && frame.mut_param_ptr_offs.is_empty()
-        && frame.ret_ptr_off.is_none()
-        && frame.reply_stage_off.is_none()
-        && frame.entropy_scratch_off.is_none()
-        && scalar_slot.iter().all(|&s| s);
     let (assign, input) = if regalloc::interproc_regs() {
         // The whole-program pass owns the answer; this per-function one
         // is not computed at all, so the two can never disagree.
         (
             regalloc::Assignment::none(f.temp_types.len()),
-            Some(regalloc::FnInput {
-                facts,
-                scalar_slot,
-                frameless_candidate,
-            }),
+            Some(regalloc::FnInput { facts, scalar_slot }),
         )
     } else {
         (regalloc::allocate(&facts, &scalar_slot), None)
@@ -5671,13 +5681,9 @@ fn emit_fn(
         Some(c) => &c.assignment,
         None => &prepared.assign,
     };
-    // Item F3's third condition: a function that can return from a `BL`
-    // must keep `x30` somewhere, and the frame is the only somewhere.
-    let frameless_ok = if frameless_fns() {
-        prepared.has_returning_call.map(|c| !c)
-    } else {
-        None
-    };
+    // Item F3's condition: a function that can return from a `BL` must
+    // keep `x30` somewhere, and the frame is the only somewhere.
+    let save_lr = !frameless_fns() || prepared.has_returning_call != Some(false);
     let frame = build_frame(
         f,
         layout,
@@ -5685,23 +5691,24 @@ fn emit_fn(
         mwir_entropy_scratch_size(f),
         0,
         assign,
-        frameless_ok,
+        save_lr,
     )?;
 
-    // **F5 fires only where the teardown is free** (decision 1776). A
-    // framed tail call has to restore `x30` and drop the frame before it
-    // can jump, which is `ldr`+`add` in place of a `BL` and a result
-    // store — word-neutral, and measurably *worse* on the ruler
-    // (+29 proxy cycles across the runtime closure, four sites; see
-    // plans/codegen-pareto-F.md). A frameless one is a bare `B` in place
-    // of three or four words. So the substitution is conditional on the
-    // frame already being gone, and every other tail site keeps the
-    // ordinary call it had.
+    // **F5 fires only where the jump deletes words** (decision 1776).
+    // A tail call in a function that saves `x30` has to *reload* it
+    // before it can jump, which puts a `Load` where a `Call` and a
+    // `Store` were and is measurably worse on the ruler: +29 proxy cycles
+    // across the runtime closure, four sites (plans/codegen-pareto-F.md).
+    // Where `x30` was never saved — item F3's condition, and the same
+    // condition — the teardown is at most one `add sp`, so the jump
+    // replaces three or four words with one or two and deletes a returning
+    // call outright. So the substitution rides on `lr_saved`, and every
+    // other tail site keeps the ordinary call it had.
     let no_tails = TailPlan::none(f.body.len());
-    let plan: &TailPlan = if frame.frameless {
-        &prepared.plan
-    } else {
+    let plan: &TailPlan = if frame.lr_saved {
         &no_tails
+    } else {
+        &prepared.plan
     };
 
     let empty: [usize; 0] = [];
@@ -6613,7 +6620,7 @@ fn build_frame_flow(f: &FlowWirFn, layout: &LayoutCtx) -> Result<(Frame, Temp), 
         &regalloc::Assignment::none(synthetic.temp_types.len()),
         // Item F3 for the same reason: a turn body's `x30` is the
         // scheduler's, and every suspension is a `ret` back to it.
-        None,
+        true,
     )?;
     Ok((frame, state_temp))
 }
@@ -11421,7 +11428,7 @@ mod tests {
             body: vec![Inst::Return { value: None }],
         };
         let layout = LayoutCtx::default();
-        let frame = build_frame(&f, &layout, 0, 0, 0, &regalloc::Assignment::none(64), None)
+        let frame = build_frame(&f, &layout, 0, 0, 0, &regalloc::Assignment::none(64), true)
             .expect("build_frame");
         // Every scalar is one 8-byte slot regardless of its own declared
         // width (mwir's own "no packing, ever" rule) — offsets are a
@@ -11449,7 +11456,7 @@ mod tests {
         layout
             .structs
             .insert("Point".to_string(), vec![Type::U64, Type::U64]);
-        let frame = build_frame(&f, &layout, 0, 0, 0, &regalloc::Assignment::none(64), None)
+        let frame = build_frame(&f, &layout, 0, 0, 0, &regalloc::Assignment::none(64), true)
             .expect("build_frame");
         // temps: t0 (Point, 16 bytes) at [0,16); self_ptr at 16; ret_ptr
         // at 24 (the receiver's own aggregate type is also the return
@@ -11478,12 +11485,12 @@ mod tests {
             body: vec![Inst::Return { value: None }],
         };
         let layout = LayoutCtx::default();
-        let none = build_frame(&f, &layout, 0, 0, 0, &regalloc::Assignment::none(64), None)
+        let none = build_frame(&f, &layout, 0, 0, 0, &regalloc::Assignment::none(64), true)
             .expect("build_frame");
         assert_eq!(none.reply_stage_off, None);
         assert_eq!(none.lr_off, 8);
         assert_eq!(none.size, 16);
-        let staged = build_frame(&f, &layout, 24, 0, 0, &regalloc::Assignment::none(64), None)
+        let staged = build_frame(&f, &layout, 24, 0, 0, &regalloc::Assignment::none(64), true)
             .expect("build_frame");
         assert_eq!(staged.reply_stage_off, Some(8));
         assert_eq!(staged.lr_off, 32);
@@ -11503,7 +11510,7 @@ mod tests {
             body: vec![Inst::Return { value: None }],
         };
         let layout = LayoutCtx::default();
-        assert!(build_frame(&f, &layout, 0, 0, 0, &regalloc::Assignment::none(64), None).is_err());
+        assert!(build_frame(&f, &layout, 0, 0, 0, &regalloc::Assignment::none(64), true).is_err());
     }
 
     /// plans/M9.md item RR: the imm12 ceiling is on `off + slot_bias`, the
@@ -11532,7 +11539,7 @@ mod tests {
         };
         let layout = LayoutCtx::default();
 
-        let sync = build_frame(&f, &layout, 0, 0, 0, &regalloc::Assignment::none(64), None)
+        let sync = build_frame(&f, &layout, 0, 0, 0, &regalloc::Assignment::none(64), true)
             .expect("legal for a sync frame");
         assert_eq!(sync.size, 4048);
 
@@ -11548,7 +11555,7 @@ mod tests {
             0,
             bias,
             &regalloc::Assignment::none(64),
-            None,
+            true,
         ) else {
             panic!("the same frame must be refused once biased past the turn record");
         };
@@ -11574,7 +11581,7 @@ mod tests {
             0,
             bias,
             &regalloc::Assignment::none(64),
-            None,
+            true,
         )
         .expect("fits under 4031 with the bias");
         assert!(ok.size + bias <= 4095);
@@ -13306,7 +13313,7 @@ pub fn used_twice(a: u64) -> u64:
             body: Vec::new(),
         };
         let layout = LayoutCtx::default();
-        let frame = build_frame(&f, &layout, 0, 0, 0, &naive, None).expect("naive frame");
+        let frame = build_frame(&f, &layout, 0, 0, 0, &naive, true).expect("naive frame");
         assert!(frame.virt_to_reg.is_empty());
         for t in 0..3 {
             assert!(
@@ -13360,62 +13367,64 @@ pub fn blend(a: u64, b: u64) -> u64:
     return (x +% x) +% (x *% 2)
 "#;
 
-    /// **F3: a leaf whose values fit gets no frame.** No `sub sp`, no
-    /// `add sp`, no saved `x30`, and `frame_size` is literally zero.
+    /// **F3, the half that fires everywhere: a leaf does not save `x30`.**
+    ///
+    /// This is F2 read from the callee's side. The save exists to protect
+    /// the return address against a `BL` that returns; a function that
+    /// has none reaches its own `ret` with the caller's address still in
+    /// the register it arrived in, so the `str`, the `ldr` and the slot
+    /// all go. It is independent of residency, which is why it reaches
+    /// every leaf rather than the handful whose temps all happen to fit.
     #[test]
-    fn a_leaf_whose_values_fit_gets_no_frame() {
+    fn a_leaf_does_not_save_the_link_register() {
         let before = emit(LEAF, E);
         let after = emit(LEAF, RELEASE_OPTS);
+        let b = mnems(&before, "blend");
         assert!(
-            frame_of(&before, "blend") > 0,
-            "item E still framed this leaf; if not, the oracle is vacuous"
+            b.iter().any(|t| t.starts_with("str lr")),
+            "item E saved x30 here; if not, the oracle is vacuous: {b:?}"
         );
-        assert_eq!(
-            frame_of(&after, "blend"),
-            0,
-            "item F3 must delete the frame"
-        );
-        let m = mnems(&after, "blend");
+        let a = mnems(&after, "blend");
         assert!(
-            !m.iter().any(|t| t.starts_with("sub sp")),
-            "a frameless fn must not adjust sp: {m:?}"
+            !a.iter().any(|t| t.contains("lr")),
+            "a leaf must not touch the link register at all: {a:?}"
         );
+        assert_eq!(*a.last().expect("nonempty"), "ret");
         assert!(
-            !m.iter().any(|t| t.starts_with("add sp")),
-            "a frameless fn must not adjust sp: {m:?}"
+            after.fns["blend"].code.len() < before.fns["blend"].code.len(),
+            "and the two words must be gone: {} -> {}",
+            before.fns["blend"].code.len(),
+            after.fns["blend"].code.len()
         );
-        assert!(
-            !m.iter().any(|t| t.contains("x30")),
-            "a frameless fn must not touch the link register: {m:?}"
-        );
-        assert_eq!(*m.last().expect("nonempty"), "ret");
-        // And it still computes: every operand is a register now, so the
-        // whole body has no memory traffic at all.
-        assert_eq!(rule_count(&after, "blend", CostRule::Load), 0);
-        assert_eq!(rule_count(&after, "blend", CostRule::Store), 0);
     }
 
-    /// A function that *can* return from a `BL` keeps its frame, because
-    /// `x30` has nowhere else to live. F3 is not "delete every frame".
+    /// **F3, the half that needs everything to fit: a function whose
+    /// values all live in registers gets no frame at all.** With `x30`
+    /// no longer taking a slot, a body with nothing left to spill has
+    /// nothing to point `sp` at, so `sub sp` and `add sp` go too.
     #[test]
-    fn a_caller_keeps_its_frame_because_x30_must_survive_the_call() {
+    fn a_function_whose_values_all_fit_gets_no_frame() {
         const SRC: &str = r#"
-module examples.item_f_caller
+module examples.item_f_no_frame
 
-fn leaf(a: u64) -> u64:
-    return a +% 1
-
-pub fn twice(a: u64) -> u64:
-    x: u64 = leaf(a)
-    y: u64 = leaf(x)
-    return x +% y
+pub fn nothing():
+    pass
 "#;
+        let before = emit(SRC, E);
         let after = emit(SRC, RELEASE_OPTS);
         assert!(
-            frame_of(&after, "twice") > 0,
-            "a fn that returns from a `BL` must keep somewhere for x30"
+            frame_of(&before, "nothing") > 0,
+            "item E framed even this; if not, the oracle is vacuous"
         );
-        assert_eq!(frame_of(&after, "leaf"), 0, "the leaf itself is frameless");
+        assert_eq!(frame_of(&after, "nothing"), 0, "item F3 must delete it");
+        let a = mnems(&after, "nothing");
+        assert!(
+            !a.iter()
+                .any(|t| t.starts_with("sub sp") || t.starts_with("add sp")),
+            "a frameless fn must not adjust sp: {a:?}"
+        );
+        assert_eq!(rule_count(&after, "nothing", CostRule::Load), 0);
+        assert_eq!(rule_count(&after, "nothing", CostRule::Store), 0);
     }
 
     const TAIL: &str = r#"
@@ -13573,7 +13582,6 @@ pub fn spans(a: u64) -> u64:
             regalloc::FnInput {
                 facts,
                 scalar_slot: vec![true],
-                frameless_candidate: false,
             },
         );
         let out = regalloc::allocate_program(&fns);

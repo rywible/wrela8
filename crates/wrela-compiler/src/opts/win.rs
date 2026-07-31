@@ -4558,7 +4558,7 @@ mod tests {
         );
         assert_eq!(
             (w_form, x_form),
-            (73, 83),
+            (93, 96),
             "the measured size of C1's win once item E removed the frame slack; \
              re-measure this rather than rescaling it"
         );

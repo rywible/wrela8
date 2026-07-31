@@ -915,7 +915,7 @@ mod tests {
         /// compiler emits it today — item D's baseline, not a property of
         /// item D. Every word-shrinking opt moves it; see the assertion
         /// below for what to do when it does.
-        const BEFORE_HOT_TEXT_BYTES: u64 = 7552;
+        const BEFORE_HOT_TEXT_BYTES: u64 = 7616;
 
         use crate::cost::{
             self, BlockBridge, HotBlocks, MeasuredBlocks, SweepPoint, make_key,
@@ -1027,34 +1027,29 @@ mod tests {
         // it did not reclassify it.
         let words_before: u64 = before.fns.values().map(|f| f.code.len() as u64).sum();
         let words_after: u64 = after.fns.values().map(|f| f.code.len() as u64).sum();
-        // **plans/codegen-pareto-F.md, decision 1778 — this pass can put
-        // a frame back.** Item F3 makes a function frameless when every
-        // one of its temps is resident. Reordering blocks moves back
-        // edges, back edges widen live intervals, and a widened interval
-        // can lose its register — so a function this pass touches can
-        // stop being frameless and re-acquire the four words a frame
-        // costs (`sub sp`, `str x30`, `ldr x30`, `add sp`). Measured on
-        // this closure: **6 frameless functions before, 5 after**, and
-        // the four words are exactly the excess over the repair count.
-        //
-        // The pass is deliberately not on the compile path (item D), so
-        // nothing in a shipped image depends on this. It is pinned here
-        // because it is the concrete cost of wiring it: item D's own
-        // accounting claim ("every extra word is a repair jump") is no
-        // longer complete on its own once F3 exists, and whoever wires
-        // the pass has to price the frames it hands back.
+        // **plans/codegen-pareto-F.md, decision 1778.** This held with a
+        // caveat for one revision of item F3 and holds unqualified again.
+        // F3's first landing relaxed the allocator's two-read rule to
+        // reach framelessness, and reordering blocks could then cost a
+        // function its residency and hand it back a frame — four words
+        // (`sub sp`, `str x30`, `ldr x30`, `add sp`) that were neither a
+        // repair nor accounted anywhere. The ∀ gate refused that
+        // relaxation for unrelated reasons and the interaction went with
+        // it: F3 now deletes the `x30` save from every leaf, which no
+        // block ordering can undo, so `frameless(before) == frameless(after)`
+        // and this reads as it always did. The term stays because it is
+        // what makes the equality a *measurement* rather than an
+        // assumption about a pass that is not on the compile path.
         let frameless = |p: &crate::codegen::CodegenProgram| -> u64 {
             p.fns.values().filter(|f| f.frame_size == 0).count() as u64
         };
         const FRAME_WORDS: u64 = 4;
         let regained = frameless(&before).saturating_sub(frameless(&after));
+        assert_eq!(regained, 0, "item F3's frames must survive a reordering");
         assert_eq!(
             words_after,
             words_before + summary.repairs as u64 + regained * FRAME_WORDS,
-            "every extra word must be an accounted repair jump or a frame \
-             item F3 had removed and this pass handed back ({} -> {} frameless)",
-            frameless(&before),
-            frameless(&after)
+            "every extra word must be an accounted repair jump"
         );
 
         // Decision 1753's oracle on a real build: the partition this pass

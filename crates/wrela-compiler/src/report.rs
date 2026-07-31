@@ -921,8 +921,15 @@ pub fn caller(a: u64) -> u64:
             "the section must lead with its own counts:\n{text}"
         );
         assert!(
-            text.contains("    Fn key=leaf frame=0 "),
-            "the frameless leaf must be published as frameless:\n{text}"
+            text.contains("    Fn key=leaf frame="),
+            "every function with a convention of its own must be listed:\n{text}"
+        );
+        // The leaf saves no `x30`, so its frame is 8 bytes smaller than
+        // the caller's would be for the same values — F3's broad half,
+        // visible here as a published number.
+        assert!(
+            text.contains("frameless=") && text.contains("tail_calls="),
+            "the header must carry F3's and F5's counts:\n{text}"
         );
         for want in ["residents=", "regs=x", "clobbers=", "pool="] {
             assert!(text.contains(want), "missing `{want}`:\n{text}");

@@ -717,11 +717,6 @@ pub struct FnInput {
     pub facts: FnFacts,
     /// `scalar_slot[t]`: the temp occupies exactly one 8-byte slot.
     pub scalar_slot: Vec<bool>,
-    /// Item F3: this function would be frameless if every temp were
-    /// resident — no saved pointers, no staging area, no returning call.
-    /// Set only when `OptId::Frameless` is on; it is the one input that
-    /// makes [`allocate_one`] relax decision 1765's two-read rule.
-    pub frameless_candidate: bool,
 }
 
 /// One function's **chosen convention** — the thing the report has to
@@ -839,39 +834,41 @@ fn allocate_one(
     callees: &BTreeSet<&str>,
 ) -> Convention {
     let pool = free_pool(&input.facts, WIDE_POOL);
-    let mut assignment = allocate_with(
+    let assignment = allocate_with(
         &input.facts,
         &input.scalar_slot,
         WIDE_POOL,
         Some(clobbers),
         true,
     );
-    // **Item F3's one feedback edge into the allocator (decision 1775).**
-    // Decision 1765 refuses a temp read once, because a register would
-    // turn an `str`/`ldr` pair into a serial two-`mov` chain and buy
-    // nothing. That trade is measured against a function that still has a
-    // frame. When the *only* thing standing between this function and no
-    // frame at all is a handful of single-read temps, the trade is a
-    // different one — promoting them additionally deletes `sub sp`,
-    // `str x30`, `ldr x30` and `add sp`, and every remaining access
-    // becomes a register read. So the question is re-asked without the
-    // rule, and the answer is taken **only if it lands the function at
-    // zero frame bytes**. Anything less and the strict answer stands, so
-    // the rule is never relaxed for a function that would keep a frame
-    // anyway.
-    if input.frameless_candidate {
-        let relaxed = allocate_with(
-            &input.facts,
-            &input.scalar_slot,
-            WIDE_POOL,
-            Some(clobbers),
-            false,
-        );
-        let all_resident = (0..input.facts.temp_count).all(|t| relaxed.of(t).is_some());
-        if all_resident {
-            assignment = relaxed;
-        }
-    }
+    // **Decision 1775, and what the ∀ gate did to it.**
+    //
+    // The first landing of F3 had a feedback edge here: when the *only*
+    // thing standing between a function and no frame at all was a handful
+    // of temps decision 1765 refuses (read once, so a register turns an
+    // `str`/`ldr` pair into a serial two-`mov` chain), the question was
+    // re-asked without the rule and the relaxed answer taken if it landed
+    // the function at zero frame bytes. The trade looked obviously right:
+    // four more words deleted (`sub sp`, `str x30`, `ldr x30`, `add sp`)
+    // against a copy that costs nothing when the forwarding latency is
+    // low.
+    //
+    // **It is not right, and the gate said so at both tiers.** With the
+    // relaxation on, `Frameless` was refused for `cost-branch-bias`
+    // rising **267 -> 310** at every corner with
+    // `store_to_load_forwarding=1`, and for `cost-product-receipt` rising
+    // **7551 -> 7554** at the same corners — the identical shape item E
+    // measured when it promoted every scalar (plans/codegen-pareto-E.md,
+    // "what the ∀ gate caught"). Four deleted words do not pay for a
+    // serialized copy chain in the body, and the frame that F3 removes
+    // was never on the critical path to begin with.
+    //
+    // So decision 1765 is **inherited, not re-derived**: item E's
+    // hand-off called it "a policy, not an invariant; the ∀ gate is what
+    // decides it", and the gate has now decided it a second time, on a
+    // second baseline, over a corpus that includes four programs the
+    // appliance ships. F3 fires only where the two-read rule already left
+    // the frame empty.
     let mut mask = measured_regs(&input.facts);
     for (_, r) in assignment.residents() {
         mask |= reg_bit(r);
