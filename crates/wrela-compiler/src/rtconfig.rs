@@ -1,8 +1,4 @@
-//! Image runtime config generator (plans/M11.md item D, decisions 700–702 /
-//! 709 / 760–769; item E, decisions 780–786; item F, decisions 790–796;
-//! item G, decisions 800–809; item H, decisions 810–815; item I, decisions
-//! 820–829; item J, decisions 830–849; plans/M15.md item E, decisions
-//! 1050–1056 — `CORE_SLOTS` emit + `N_CORES-1` secondary trampoline pool).
+//! Image runtime config generator: `CORE_SLOTS` emit + `N_CORES-1` secondary trampoline pool.
 //!
 //! After `@image` evaluation + placement, the compiler pretty-prints a
 //! hidden facts-only module (`core.__image_runtime`) as source text and
@@ -15,7 +11,7 @@ use crate::syntax::ast::Module;
 use crate::syntax::{lexer, parser};
 use wrela_machine::layout::RTDATA_BASE;
 
-/// One static `g.start` site (plans/M11.md item F / decision 791).
+/// One static `g.start` site.
 #[derive(Debug, Clone)]
 pub struct ChildSiteFact {
     /// Free-async / group-child callee key (`program.fns` spelling).
@@ -26,7 +22,7 @@ pub struct ChildSiteFact {
     pub turn_index: usize,
 }
 
-/// One cross-core ring's placed facts (plans/M11.md item G / decision 800).
+/// One cross-core ring's placed facts.
 #[derive(Debug, Clone)]
 pub struct RingFact {
     pub kind: RingKind,
@@ -39,13 +35,13 @@ pub struct RingFact {
     pub tail: u64,
     pub count: u64,
     /// Request lane: image handle word of the target mailbox root
-    /// (decision 801 — handle identity, not type-alone).
+    /// Handle identity, not type-alone.
     pub target_handle: Option<u64>,
     /// Request lane: mailbox-root name for `rt_enqueue` remap until item J.
     pub target_actor: Option<String>,
 }
 
-/// One mailbox-root's placed facts (plans/M11.md item J / decision 830).
+/// One mailbox-root's placed facts.
 #[derive(Debug, Clone)]
 pub struct MailboxFact {
     pub name: String,
@@ -60,7 +56,7 @@ pub struct MailboxFact {
     pub methods: Vec<MethodFact>,
 }
 
-/// One dispatch method on a mailbox root (decision 831).
+/// One dispatch method on a mailbox root.
 #[derive(Debug, Clone)]
 pub struct MethodFact {
     pub key: String,
@@ -68,8 +64,7 @@ pub struct MethodFact {
     pub reply_is_aggregate: bool,
 }
 
-/// Image-specific facts beyond [`RuntimeTables`] (item F / decision 790;
-/// item G / decision 800; item J / decision 830).
+/// Image-specific facts beyond [`RuntimeTables`].
 /// Empty vectors yield match ladders that always return 0 (stub / dump).
 #[derive(Debug, Clone, Default)]
 pub struct RtconfigExtras {
@@ -89,19 +84,19 @@ pub struct RtconfigExtras {
     /// M11 J: per-root mailbox overlays + method facts (enqueue_actors order).
     pub mailboxes: Vec<MailboxFact>,
     /// M11 H / M12 item E: `(state_addr, nwords)` zero-fill slots — actors
-    /// then drivers (decision 813). Generator coalesces adjacent ranges into
-    /// maximal `INIT_SPAN{k}` overlays (decisions 883–885); `N_INIT_SLOTS` is
+    /// then drivers. Generator coalesces adjacent ranges into maximal
+    /// `INIT_SPAN{k}` overlays; `N_INIT_SLOTS` is
     /// the span count.
     pub init_slots: Vec<(u64, u64)>,
     /// M11 H: number of boot `init` calls (drivers then actors).
     pub n_boot_calls: usize,
-    /// M11 I: pending-vector bit indices for sealed IRQ binds.
+    /// Pending-vector bit indices for sealed IRQ binds.
     pub irq_vector_bits: Vec<u64>,
     /// M11 I / M12 item D: absolute addresses of each `WAKE.wake_pending[i]`
     /// word (contiguous array; drain index aligned with `__wake_call_{i}`).
     pub wake_pending_addrs: Vec<u64>,
-    /// M11 K: `@test(runtime)` runner facts (decision 851). Empty for
-    /// ordinary images / stub; test-image reinject fills these.
+    /// `@test(runtime)` runner facts. Empty for ordinary images / stub;
+    /// test-image reinject fills these.
     pub tests: Vec<TestRunnerFact>,
     /// M11 K: call `__wrela_rt_boot_init` from the primary entry (wiring
     /// present). Stub / ordinary dump leave this false.
@@ -109,7 +104,6 @@ pub struct RtconfigExtras {
 }
 
 /// One `@test(runtime)` root for the generated test-runner ladders
-/// (plans/M11.md item K / decision 851).
 #[derive(Debug, Clone)]
 pub struct TestRunnerFact {
     pub name: String,
@@ -119,37 +113,37 @@ pub struct TestRunnerFact {
     pub turn_index: usize,
 }
 
-/// Hidden module address (decision 701). Loader key is `["core", "__image_runtime"]`;
+/// Hidden module address. Loader key is `["core", "__image_runtime"]`;
 /// the file declares plain `module __image_runtime` like every other `core.*` file.
 pub const MODULE_PATH: &[&str] = &["__image_runtime"];
 
 /// Dotted address used in TypedProgram / report maps.
 pub const MODULE_ADDR: &str = "core.__image_runtime";
 
-/// Report `Input path=` spelling for the generated module (decision 701 / 764).
+/// Report `Input path=` spelling for the generated module.
 pub const GENERATED_INPUT_PATH: &str = "<generated>";
 
-/// Dump stage name (decision 701).
+/// Dump stage name.
 pub const DUMP_STAGE: &str = "rtconfig";
 
-/// Fixed stub pools (decision 791 / 802): `runtime.wr` always imports every
-/// stub so spliced match-ladder bodies can Call them. Counts are hard
-/// ceilings — generator fails closed if an image needs more.
+/// Fixed stub pools: `runtime.wr` always imports every stub so spliced
+/// match-ladder bodies can Call them. Counts are hard ceilings — generator
+/// fails closed if an image needs more.
 pub const SELECT_STUB_COUNT: usize = 32;
 pub const RESUME_STUB_COUNT: usize = 16;
-/// Cross-core ring / xsend / xreply pool (decision 802). Matches the
-/// handwritten trampoline pools in `runtime.wr`.
+/// Cross-core ring / xsend / xreply pool. Matches the handwritten
+/// trampoline pools in `runtime.wr`.
 pub const RING_POOL_COUNT: usize = 8;
 pub const ENQUEUE_STUB_COUNT: usize = 32;
-/// Mailbox-root overlay pool (decision 830). Same ceiling as enqueue stubs.
+/// Mailbox-root overlay pool. Same ceiling as enqueue stubs.
 pub const MB_POOL_COUNT: usize = 32;
-/// Flat method-call stub pool (decision 831). `runtime.wr` imports every
-/// `__method_N` so `__wrela_call_method` bodies can Call them.
+/// Flat method-call stub pool. `runtime.wr` imports every `__method_N`
+/// so `__wrela_call_method` bodies can Call them.
 pub const METHOD_CALL_POOL_COUNT: usize = 128;
 /// Integrity Phase 2 Item M — Lane 2 in-guest block-counter pool. Codegen
 /// fails closed if exhausted ([`crate::codegen`]'s `alloc_block_id`).
 ///
-/// plans/M20.md item B / decision 1607 raised this from 1024: with
+/// Raised from 1024: with
 /// `runtime` and `driver` instrumented, the measured id count of a
 /// `@test(runtime)` image is 2344 (`boot-hello`) to **2788**
 /// (`boot-cross-core-mailbox-depth`), `boot-actors` 2524 (2527 after item C's
@@ -169,7 +163,7 @@ pub const BLOCK_POOL_COUNT: usize = 3072;
 /// `--block-count` (Item M). Must stay ≤ console DATA_SIZE headroom after
 /// Lane 1.
 ///
-/// **This is a reservation, not a proof, and after plans/M20.md item B it is
+/// **This is a reservation, not a proof, and after item B it is
 /// knowingly smaller than the worst case.** It was already a deliberate
 /// under-reservation ("the dump emits non-zero entries only"), and item B's
 /// widening blew through the claim that came with it: measured non-zero
@@ -189,24 +183,24 @@ pub const BLOCK_POOL_COUNT: usize = 3072;
 /// per-pair worst case, a larger console, or making the Lane 3 host snapshot
 /// the normative Lane 2 sink (`wrela-vmm --dump-lane2` already exists).
 pub const BLOCK_BOUND_PRINT_PAIRS: usize = 128;
-/// Boot `init` call stub pool (decision 812).
+/// Boot `init` call stub pool.
 pub const BOOT_CALL_POOL_COUNT: usize = 32;
-/// Coalesced init-span overlay pool (M12 item E / decisions 883–885).
+/// Coalesced init-span overlay pool.
 /// `runtime.wr` imports every `INIT_SPAN*` so reinject can lower store
 /// ladders; unused slots are 1-word high-zone placeholders. Live span
 /// count (`N_INIT_SLOTS`) is at most this ceiling.
 pub const INIT_SPAN_POOL_COUNT: usize = 8;
-/// IRQ handler / wake `@task` stub pools (decision 823).
+/// IRQ handler / wake `@task` stub pools.
 pub const IRQ_CALL_POOL_COUNT: usize = 8;
 pub const WAKE_CALL_POOL_COUNT: usize = 8;
-/// `@test(runtime)` call / prefix stub pool (plans/M11.md item K / decision 851).
+/// `@test(runtime)` call / prefix stub pool.
 /// Ceiling above measured peak (`boot-many-tests` = 13).
 pub const TEST_CALL_POOL_COUNT: usize = 16;
-/// Sentinel edge index from match ladders when no ring matches (decision 801).
+/// Sentinel edge index from match ladders when no ring matches.
 pub const NO_EDGE: usize = 255;
 
 /// Batch-1 stub text so `runtime.wr` can import counts / `RT` / `GROUPS`
-/// before a real image is evaluated (plans/M11.md item E / decision 780).
+/// before a real image is evaluated.
 /// Addresses are placeholders; live images replace this via [`generate`].
 pub fn stub_text() -> String {
     let mut tables = RuntimeTables {
@@ -228,21 +222,21 @@ pub fn stub_text() -> String {
 ///
 /// `tables.cores` must already reflect `PlacementTable.cores` (call
 /// [`RuntimeTables::stripe_for_cores`] first). Emits `const N_CORES: usize =
-/// <tables.cores>` with that exact spelling (decision 709 / 761).
+/// <tables.cores>` with that exact spelling.
 ///
-/// Item E (decision 781): structured `TurnArea` / `GroupSlot` overlays.
-/// Item F (decisions 790–792): `SCHED` stripe; child tag/payload fields;
-/// match ladders + fixed stub pools from `tables.select_by_core` /
-/// `drain_by_core` / `child_sites` (filled by `RuntimeWiring::derive`).
-/// Item G (decisions 800–802): ring overlays + handle-identity ladders.
+/// Item E: structured `TurnArea` / `GroupSlot` overlays.
+/// Item F: `SCHED` stripe; child tag/payload fields; match ladders +
+/// fixed stub pools from `tables.select_by_core` / `drain_by_core` /
+/// `child_sites` (filled by `RuntimeWiring::derive`).
+/// Item G: ring overlays + handle-identity ladders.
 pub fn generate(tables: &RuntimeTables) -> Result<String, String> {
     let extras = extras_from_tables(tables)?;
     generate_with(tables, &extras)
 }
 
 /// Build [`RtconfigExtras`] from stamped `RuntimeTables` fields (shared by
-/// dump `generate` and live reinject — decision 800 / 813). Placement
-/// holes fail closed rather than silently aliasing `RTDATA_BASE`.
+/// dump `generate` and live reinject. Placement holes fail closed rather
+/// than silently aliasing `RTDATA_BASE`.
 pub fn extras_from_tables(tables: &RuntimeTables) -> Result<RtconfigExtras, String> {
     let placement = place_runtime_tables(RTDATA_BASE, tables);
     let mut init_slots: Vec<(u64, u64)> = Vec::new();
@@ -409,7 +403,7 @@ pub fn extras_from_tables(tables: &RuntimeTables) -> Result<RtconfigExtras, Stri
 }
 
 /// Live coalesced init-span count (`N_INIT_SLOTS`) for the placed-static
-/// census (plans/M12.md item G / decisions 890–893). Independent of the
+/// census. Independent of the
 /// `INIT_SPAN_POOL_COUNT` placeholder pool the stub still emits.
 pub fn live_init_span_count(tables: &RuntimeTables) -> Result<usize, String> {
     let extras = extras_from_tables(tables)?;
@@ -417,7 +411,7 @@ pub fn live_init_span_count(tables: &RuntimeTables) -> Result<usize, String> {
 }
 
 /// Sort live `(addr, nwords)` init slots and merge adjacent ranges into
-/// maximal spans (M12 item E / decisions 883–885). Adjacency is
+/// maximal spans. Adjacency is
 /// `addr_i + nwords_i*8 == addr_{i+1}` — mailboxes between actor states
 /// break the predicate, so spans never bridge them.
 fn coalesce_init_spans(slots: &[(u64, u64)]) -> Vec<(u64, u64)> {
@@ -444,14 +438,14 @@ fn coalesce_init_spans(slots: &[(u64, u64)]) -> Vec<(u64, u64)> {
 ///
 /// `tables.cores` must already reflect `PlacementTable.cores` (call
 /// [`RuntimeTables::stripe_for_cores`] first). Emits `const N_CORES: usize =
-/// <tables.cores>` with that exact spelling (decision 709 / 761).
+/// <tables.cores>` with that exact spelling.
 ///
-/// Item E (decision 781): structured `TurnArea` / `GroupSlot` overlays.
-/// Item F (decisions 790–792): `SchedCore` / `SCHED` for RR cursors;
-/// child tag/payload fields; match ladders + placeholder stubs that layout
-/// remaps onto `rt_select_and_run` / resume callees.
-/// Item G (decisions 800–802): ring overlays + handle-identity / drain
-/// lane ladders; enqueue stubs remapped to `rt_enqueue` until item J.
+/// Item E: structured `TurnArea` / `GroupSlot` overlays.
+/// Item F: `SchedCore` / `SCHED` for RR cursors; child tag/payload fields;
+/// match ladders + placeholder stubs that layout remaps onto
+/// `rt_select_and_run` / resume callees.
+/// Item G: ring overlays + handle-identity / drain lane ladders;
+/// enqueue stubs remapped to `rt_enqueue` until item J.
 pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<String, String> {
     let placement = place_runtime_tables(RTDATA_BASE, tables);
     let init_spans = coalesce_init_spans(&extras.init_slots);
@@ -459,7 +453,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     // Overlay stride is at least 0x48 so `ambient_group` at TURN_RECORD_SIZE
     // (0x40) always fits for batch-2 typecheck of deadline helpers. Live
     // reinject still requires `tables.turn_stride >= 0x48` so indexing
-    // matches rtdata packing (decision 781 / 785). G adds `reply_tag` at
+    // matches rtdata packing. G adds `reply_tag` at
     // 0x38 (OFF_TURN_REPLY_TAG) so drain can write it through RT.turns.
     let turn_stride = if tables.turn_stride == 0 {
         128
@@ -468,7 +462,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     };
     let group_cap = tables.group_arena_capacity as usize;
     let group_slots = group_cap.max(1);
-    // plans/M12.md item F: image GROUP_MAX_CHILDREN / GROUP_SLOT_SIZE facts.
+    // image GROUP_MAX_CHILDREN / GROUP_SLOT_SIZE facts.
     let max_children = tables
         .group_max_children
         .max(crate::codegen::GROUP_MAX_CHILDREN_FLOOR);
@@ -476,7 +470,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     // When the arena is empty, `place_runtime_tables` still returns a
     // `group_arena` cursor equal to the first ring's base (0-byte arena).
     // Overlay GROUPS at a non-colliding placeholder so RINGS_CTL/DATA can
-    // own the real ring addresses (decision 800 / M12 item C) — same move
+    // own the real ring addresses — same move
     // as empty-sched. Placeholder width tracks the image GROUP_SLOT_SIZE
     // fact (floor 2 → 96 when the arena is empty).
     let n_rings = extras.rings.len();
@@ -510,59 +504,59 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     let n_child = extras.child_sites.len();
     if select_flat.len() > SELECT_STUB_COUNT {
         return Err(format!(
-            "image needs {} select stubs; pool is {SELECT_STUB_COUNT} (decision 791)",
+            "image needs {} select stubs; pool is {SELECT_STUB_COUNT}",
             select_flat.len()
         ));
     }
     if n_child > RESUME_STUB_COUNT {
         return Err(format!(
-            "image needs {n_child} resume stubs; pool is {RESUME_STUB_COUNT} (decision 791)"
+            "image needs {n_child} resume stubs; pool is {RESUME_STUB_COUNT}"
         ));
     }
     if n_rings > RING_POOL_COUNT {
         return Err(format!(
-            "image needs {n_rings} rings; pool is {RING_POOL_COUNT} (decision 802)"
+            "image needs {n_rings} rings; pool is {RING_POOL_COUNT}"
         ));
     }
     if extras.enqueue_actors.len() > ENQUEUE_STUB_COUNT {
         return Err(format!(
-            "image needs {} enqueue stubs; pool is {ENQUEUE_STUB_COUNT} (decision 802)",
+            "image needs {} enqueue stubs; pool is {ENQUEUE_STUB_COUNT}",
             extras.enqueue_actors.len()
         ));
     }
     if extras.mailboxes.len() > MB_POOL_COUNT {
         return Err(format!(
-            "image needs {} mailboxes; pool is {MB_POOL_COUNT} (decision 830)",
+            "image needs {} mailboxes; pool is {MB_POOL_COUNT}",
             extras.mailboxes.len()
         ));
     }
     let n_methods: usize = extras.mailboxes.iter().map(|m| m.methods.len()).sum();
     if n_methods > METHOD_CALL_POOL_COUNT {
         return Err(format!(
-            "image needs {n_methods} method stubs; pool is {METHOD_CALL_POOL_COUNT} (decision 831)"
+            "image needs {n_methods} method stubs; pool is {METHOD_CALL_POOL_COUNT}"
         ));
     }
     if init_spans.len() > INIT_SPAN_POOL_COUNT {
         return Err(format!(
-            "image needs {} init spans; pool is {INIT_SPAN_POOL_COUNT} (decision 883)",
+            "image needs {} init spans; pool is {INIT_SPAN_POOL_COUNT}",
             init_spans.len()
         ));
     }
     if extras.n_boot_calls > BOOT_CALL_POOL_COUNT {
         return Err(format!(
-            "image needs {} boot calls; pool is {BOOT_CALL_POOL_COUNT} (decision 812)",
+            "image needs {} boot calls; pool is {BOOT_CALL_POOL_COUNT}",
             extras.n_boot_calls
         ));
     }
     if extras.irq_vector_bits.len() > IRQ_CALL_POOL_COUNT {
         return Err(format!(
-            "image needs {} IRQ stubs; pool is {IRQ_CALL_POOL_COUNT} (decision 823)",
+            "image needs {} IRQ stubs; pool is {IRQ_CALL_POOL_COUNT}",
             extras.irq_vector_bits.len()
         ));
     }
     if extras.wake_pending_addrs.len() > WAKE_CALL_POOL_COUNT {
         return Err(format!(
-            "image needs {} wake stubs; pool is {WAKE_CALL_POOL_COUNT} (decision 823)",
+            "image needs {} wake stubs; pool is {WAKE_CALL_POOL_COUNT}",
             extras.wake_pending_addrs.len()
         ));
     }
@@ -573,7 +567,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     out.push_str("# generated by wrela; do not edit (dump --stage=rtconfig)\n");
     out.push_str("\n");
     push_const(&mut out, "N_CORES", n_cores);
-    // plans/M15.md item E / decision 1050: packing ceiling for guest overlays
+    // packing ceiling for guest overlays
     // (must match wrela_machine::CORE_SLOTS). Algorithms still index N_CORES.
     push_const(&mut out, "CORE_SLOTS", wrela_machine::CORE_SLOTS);
     // Wave 1: machine addresses from wrela-machine (not hand-copied in runtime.wr).
@@ -599,7 +593,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     push_const(&mut out, "READY_QUEUE_CAPACITY", ready_cap);
     push_const(&mut out, "GROUP_ARENA_CAPACITY", group_cap);
     push_const(&mut out, "GROUP_SLOTS", group_slots);
-    // plans/M12.md item F (decisions 886–889): image facts, not Rust consts.
+    // image facts, not Rust consts.
     push_const(&mut out, "GROUP_MAX_CHILDREN", max_children);
     push_const(&mut out, "GROUP_SLOT_SIZE", group_slot_size as usize);
     push_const(&mut out, "TURN_STRIDE", turn_stride);
@@ -642,7 +636,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     out.push('\n');
 
     // Turn header. Waker / cur_method / reply_slot fill the gap before
-    // reply_tag (decision 832 — select/deliver through RT.turns).
+    // reply_tag — select/deliver through RT.turns.
     out.push_str("@layout(runtime, endian=little)\n");
     out.push_str("struct TurnArea:\n");
     out.push_str("    busy: u64\n");
@@ -662,7 +656,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     }
     out.push('\n');
 
-    // Group arena slot (plans/M12.md item F): header through +56, then
+    // Group arena slot: header through +56, then
     // `GROUP_MAX_CHILDREN` (tag, payload) pairs from +64. Slot size is the
     // image fact `GROUP_SLOT_SIZE` (2→96, 4→128).
     out.push_str("@layout(runtime, endian=little)\n");
@@ -687,7 +681,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     out.push('\n');
 
     // Per-core ready queue + RR cursor, matching `place_runtime_tables`
-    // after the turn array (decision 790).
+    // after the turn array.
     out.push_str("@layout(runtime, endian=little)\n");
     out.push_str("struct SchedCore:\n");
     out.push_str("    ready: [u64; READY_QUEUE_CAPACITY]\n");
@@ -700,8 +694,8 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     out.push('\n');
     // When `n_turns == 0`, `place_runtime_tables` packs driver/actor state at
     // `RTDATA_BASE`. Keep the RT overlay off that cursor so INIT_SPAN* can
-    // own the live state addresses (decision 813 / 883) — same empty-arena
-    // move as GROUPS (decision 800). Placeholder sits just below the INIT
+    // own the live state addresses — same empty-arena move as GROUPS.
+    // Placeholder sits just below the INIT
     // span pool.
     let rt_addr = if tables.n_turns == 0 {
         RTDATA_BASE + wrela_machine::layout::RTDATA_SIZE_MAX
@@ -742,7 +736,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     out.push_str("pub static GROUPS: GroupArena\n");
     out.push('\n');
 
-    // Cross-core ring overlays (decision 800 / M12 item C decisions
+    // Cross-core ring overlays
     // 875–879): two uniformly-strided statics — all CTLs, then DATA.
     // `N_RINGS_LEN` is at least 1 so the array length rule (03 §3.1) holds
     // for the empty-ring stub; live images size to `N_RINGS`.
@@ -795,7 +789,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     out.push_str("pub static RINGS_DATA: RingsData\n");
     out.push('\n');
 
-    // Mailbox overlays (decision 830). Pool is fixed so runtime.wr can
+    // Mailbox overlays. Pool is fixed so runtime.wr can
     // import every MB*_CTL / MB*_DATA; unused slots sit at placeholders.
     out.push_str("@layout(runtime, endian=little)\n");
     out.push_str("struct MbCtl:\n");
@@ -831,7 +825,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
         out.push('\n');
     }
 
-    // Resume stubs (decision 791) + method-call stubs (decision 831).
+    // Resume stubs + method-call stubs.
     // Select/enqueue stubs deleted in item J — algorithms live in runtime.wr;
     // method stubs are overwritten at inject with state/x8/bl bodies.
     for i in 0..RESUME_STUB_COUNT {
@@ -846,14 +840,14 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
         out.push_str("    return 0\n");
         out.push('\n');
     }
-    // Boot init call stubs (decision 812): placeholder bodies overwritten at
+    // Boot init call stubs: placeholder bodies overwritten at
     // inject with specialized A64 (Relocs for DeviceRegs/Pool/Own*).
     for i in 0..BOOT_CALL_POOL_COUNT {
         out.push_str(&format!("pub fn __boot_call_{i}():\n"));
         out.push_str("    return\n");
         out.push('\n');
     }
-    // IRQ / wake stubs (decision 823): overwritten at inject with
+    // IRQ / wake stubs: overwritten at inject with
     // `x0 = driver_state; bl handler/task`.
     for i in 0..IRQ_CALL_POOL_COUNT {
         out.push_str(&format!("pub fn __irq_call_{i}():\n"));
@@ -866,7 +860,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
         out.push('\n');
     }
 
-    // plans/M15.md item E / decisions 1053–1054: exactly N_CORES-1 secondary
+    // exactly N_CORES-1 secondary
     // entry trampolines (no spare pool to CORE_SLOTS-1). Each Calls a facts
     // body stub; inject remaps the Call onto `__wrela_rt_secondary_entry` and
     // prepends SP before republishing as `rt_secondary_core_entry <core>`.
@@ -882,7 +876,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
         }
     }
 
-    // Init-span overlays (M12 item E / decisions 883–885): maximal adjacent
+    // Init-span overlays: maximal adjacent
     // `(addr, nwords)` ranges after sort+merge. Fixed pool so `runtime.wr`
     // can import every INIT_SPAN* (report PlacedStatic walks the stub's
     // imported statics). Live spans use place_runtime_tables state
@@ -907,7 +901,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
         out.push('\n');
     }
 
-    // Contiguous WAKE.wake_pending (M12 item D / decisions 880–882). Live
+    // Contiguous WAKE.wake_pending. Live
     // drains place after rings; N_WAKE_DRAINS == 0 uses a floor-1 high-zone
     // placeholder so the static always exists (item G census).
     let wake_addr = if n_wake == 0 {
@@ -936,7 +930,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     out.push_str("            return 0\n");
     out.push('\n');
 
-    // (core, RR slot) → mailbox-root index (decision 833). Runtime
+    // (core, RR slot) → mailbox-root index. Runtime
     // `__wrela_try_select` Calls `__wrela_rt_select(core, root)`.
     out.push_str("pub fn __wrela_select_root(core: usize, slot: usize) -> usize:\n");
     out.push_str("    match core:\n");
@@ -993,7 +987,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     out.push_str("            return 0\n");
     out.push('\n');
 
-    // plans/M12.md item F: store a harvested child result into the image's
+    // store a harvested child result into the image's
     // GroupSlot childN_* fields. Covers `GROUP_MAX_CHILDREN`; fail-closed
     // above (returns 0 — `__wrela_child_poll` treats that as no progress).
     out.push_str(
@@ -1014,7 +1008,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     out.push_str("            return 0\n");
     out.push('\n');
 
-    // --- item G: ring / handle-identity ladders (decision 801) ------------
+    // --- item G: ring / handle-identity ladders -------
     emit_ring_u64_ladder(&mut out, "capacity", extras, |r| r.capacity);
     emit_ring_usize_ladder(&mut out, "slot_words", extras, |r| {
         (r.slot_size / 8) as usize
@@ -1032,7 +1026,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     // deleted — runtime.wr indexes RINGS_CTL / RINGS_DATA directly. Fact
     // ladders above stay.
 
-    // --- item J: mailbox accessors + method dispatch (decision 830–831) ---
+    // --- item J: mailbox accessors + method dispatch ---
     emit_mb_u64_ladder(&mut out, "capacity", extras, |m| m.capacity);
     emit_mb_usize_ladder(&mut out, "slot_words", extras, |m| {
         (m.slot_size / 8) as usize
@@ -1176,7 +1170,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     out.push('\n');
 
     // Exhaustive actor/method match → direct Calls to `__method_N`
-    // (inject overwrites with state/x8/bl — decision 831).
+    // (inject overwrites with state/x8/bl).
     out.push_str(
         "pub fn __wrela_call_method(root: usize, method: usize, arg0: u64, arg1: u64, stage: u64) -> u64:\n",
     );
@@ -1203,7 +1197,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     out.push_str("            return 0\n");
     out.push('\n');
 
-    // Handle-identity xsend edge lookup (decision 801).
+    // Handle-identity xsend edge lookup.
     out.push_str("pub fn __wrela_xsend_edge(handle: usize, src_core: usize) -> usize:\n");
     out.push_str("    match src_core:\n");
     let mut xsend_by_src: std::collections::BTreeMap<usize, Vec<(usize, usize)>> =
@@ -1252,7 +1246,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     out.push_str(&format!("            return {NO_EDGE}\n"));
     out.push('\n');
 
-    // Per-core drain lane lists (reply first, then request — decision 803).
+    // Per-core drain lane lists (reply first, then request).
     let mut reply_by_dst: Vec<Vec<usize>> = vec![Vec::new(); n_cores];
     let mut request_by_dst: Vec<Vec<usize>> = vec![Vec::new(); n_cores];
     for (ei, r) in extras.rings.iter().enumerate() {
@@ -1324,7 +1318,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     out.push_str(&format!("            return {NO_EDGE}\n"));
     out.push('\n');
 
-    // Handle → mailbox-root index (decision 833). Runtime
+    // Handle → mailbox-root index. Runtime
     // `__wrela_try_enqueue` Calls `__wrela_rt_enqueue(core, root, …)`.
     out.push_str("pub fn __wrela_enqueue_root(handle: usize) -> usize:\n");
     out.push_str("    match handle:\n");
@@ -1336,7 +1330,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     out.push_str(&format!("            return {NO_EDGE}\n"));
     out.push('\n');
 
-    // Init zero-fill accessors (decision 813 / 883): one arm per live
+    // Init zero-fill accessors: one arm per live
     // coalesced span — pool placeholders stay unreachable from boot_init
     // (`N_INIT_SLOTS` is the live count).
     out.push_str("pub fn __wrela_init_nwords(slot: usize) -> usize:\n");
@@ -1360,7 +1354,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     out.push_str("            return\n");
     out.push('\n');
 
-    // Boot call dispatch (decision 812) — only live arms so unused stubs
+    // Boot call dispatch — only live arms so unused stubs
     // stay unreachable (code must pack below RTDATA_BASE).
     out.push_str("pub fn __wrela_boot_call(i: usize):\n");
     out.push_str("    match i:\n");
@@ -1373,7 +1367,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     out.push_str("            return\n");
     out.push('\n');
 
-    // IRQ / wake ladders (decision 823).
+    // IRQ / wake ladders.
     out.push_str("pub fn __wrela_irq_mask(i: usize) -> u64:\n");
     out.push_str("    match i:\n");
     for (i, &bit) in extras.irq_vector_bits.iter().enumerate() {
@@ -1409,11 +1403,11 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     out.push_str("            return\n");
     out.push('\n');
 
-    // M11 K: `@test(runtime)` runner ladders (decision 851). Fixed stub
+    // `@test(runtime)` runner ladders. Fixed stub
     // pool; inject overwrites live `__test_call_*` / `__test_prefix_*`.
     assert!(
         extras.tests.len() <= TEST_CALL_POOL_COUNT,
-        "image needs {} runtime tests; pool is {TEST_CALL_POOL_COUNT} (decision 851)",
+        "image needs {} runtime tests; pool is {TEST_CALL_POOL_COUNT}",
         extras.tests.len()
     );
     push_const(&mut out, "N_TESTS", extras.tests.len());
@@ -1550,9 +1544,9 @@ fn emit_mb_usize_ladder(
     out.push('\n');
 }
 
-/// Call-key remaps from generated stubs onto resume targets (decision 791).
+/// Call-key remaps from generated stubs onto resume targets.
 /// Item J: select/enqueue remaps deleted — those bodies are generic wrela.
-/// Item E / decision 1054: secondary trampoline body → `__wrela_rt_secondary_entry`.
+/// Item E: secondary trampoline body → `__wrela_rt_secondary_entry`.
 pub fn stub_call_remaps(extras: &RtconfigExtras, n_cores: usize) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for (i, site) in extras.child_sites.iter().enumerate() {
@@ -1591,7 +1585,7 @@ pub fn parse_generated(text: &str) -> Result<Module, String> {
 }
 
 /// True when `text` contains a forbidden facts-only keyword as a whole word
-/// (decision 702 / 763). Deliberately dumb: substring-in-comment would also
+/// Deliberately dumb: substring-in-comment would also
 /// fail, which is fine — the generator never emits those words.
 pub fn contains_forbidden_construct(text: &str) -> bool {
     for word in ["while", "for", "async", "@actor"] {
@@ -1607,7 +1601,7 @@ pub fn contains_forbidden_construct(text: &str) -> bool {
 
 /// Insert `Input path=<generated> sha256=…` after the last existing
 /// `Input path=` line in a rendered report, or after the quota block if
-/// none. Stable across runs (decision 764).
+/// none. Stable across runs.
 pub fn insert_generated_input_line(report: &mut String, digest: &str) {
     let line = format!("  Input path={GENERATED_INPUT_PATH} sha256={digest}\n");
     let mut last_input_end: Option<usize> = None;
@@ -1637,13 +1631,13 @@ pub fn insert_generated_input_line(report: &mut String, digest: &str) {
     }
 }
 
-/// Batch-2 front end (decision 704 / 723 / 765 / 780): parse generated text +
+/// Batch-2 front end: parse generated text +
 /// unstripped `runtime.wr`, run the ordinary `check_program_typed`.
 pub fn typecheck_batch2(generated_text: &str) -> Result<(), String> {
     if contains_forbidden_construct(generated_text) {
         return Err(
             "error[build]: generated rtconfig contains a forbidden construct \
-             (while/for/async/@actor); facts-only rule (plans/M11.md decision 702)"
+             (while/for/async/@actor); facts-only rule"
                 .to_string(),
         );
     }
@@ -1744,7 +1738,7 @@ mod tests {
 
     #[test]
     fn secondary_entry_pool_is_exactly_n_cores_minus_one() {
-        // plans/M15.md item E / decision 1053 / 1056.
+        // secondary entry trampolines.
         for n in [1usize, 2, 3] {
             let text = generate(&sample_tables(n)).unwrap();
             let expected = n.saturating_sub(1);
@@ -1780,7 +1774,7 @@ mod tests {
     #[test]
     fn placed_uses_rtdata_base_literal() {
         // Empty-turn sample: RT moves to a placeholder so state/INIT_SPAN can
-        // own RTDATA_BASE (decision 813 / 883); SCHED still uses a numeric literal.
+        // own RTDATA_BASE; SCHED still uses a numeric literal.
         let text = generate(&sample_tables(1)).unwrap();
         assert!(!text.contains("@placed(RTDATA_BASE)"));
         assert!(

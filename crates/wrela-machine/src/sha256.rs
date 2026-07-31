@@ -2,7 +2,7 @@
 //! Shared by the compiler's report digests and the VMM's image / choice-log
 //! digests (06-machine.md §3 / §8).
 
-// --- the digest (06-machine.md §3/§8; plans/M4.md item D decision 9): one hardcoded,
+// --- the digest (06-machine.md §3/§8): one hardcoded,
 // hand-rolled SHA-256, plain u32 ops, no new dependency. Standard public
 // test vectors (empty string, "abc") below. ---------------------------------
 

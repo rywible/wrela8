@@ -12,7 +12,7 @@ use crate::sema::typed::{TypedExpr, TypedExprKind, TypedProgram};
 use crate::sema::types::{LayoutField, Type};
 
 /// Declared offset of `field` in a `@layout(runtime)` type — same table
-/// `check_layouts` produced (plans/M10.md item A2c).
+/// `check_layouts` produced.
 pub fn runtime_layout_field_offset(
     prog: &TypedProgram,
     layout: &str,
@@ -21,8 +21,8 @@ pub fn runtime_layout_field_offset(
     Ok(runtime_layout_field(prog, layout, field)?.offset)
 }
 
-/// Offset and dense byte size of a `@layout(runtime)` field (plans/M10.md
-/// item B1 uses `size` as `len * elem_stride` for array fields).
+/// Offset and dense byte size of a `@layout(runtime)` field. The `size`
+/// is `len * elem_stride` for array fields.
 pub fn runtime_layout_field(
     prog: &TypedProgram,
     layout: &str,
@@ -60,14 +60,14 @@ pub fn layout_dma_size(ty: &Type, prog: &TypedProgram) -> Option<u64> {
     prog.layouts
         .iter()
         .find(|l| l.name == name && matches!(l.kind, crate::sema::types::LayoutKind::Dma))
-        // plans/M10.md item A2b: `None` also covers a layout whose sizing is
+        // `None` also covers a layout whose sizing is
         // still deferred, which is the same answer this fn already gives for
         // a missing layout.
         .and_then(|l| l.size)
 }
 
 /// `STATIC.array_field[i]` place parts: layout field offset, dense element
-/// stride, and compile-time length (plans/M10.md item B1).
+/// stride, and compile-time length.
 pub fn placed_array_field_index(
     array_place: &TypedExpr,
     prog: &TypedProgram,
@@ -110,7 +110,7 @@ pub fn placed_array_field_index(
 }
 
 /// `STATIC.struct_array[i].field` — scalar through a placed array of
-/// `@layout(runtime)` structs (plans/M11.md item E / decision 786).
+/// `@layout(runtime)` structs.
 pub fn placed_struct_array_scalar_field(
     elem_place: &TypedExpr,
     field_name: &str,
@@ -152,12 +152,12 @@ pub fn placed_struct_array_scalar_field(
     )))
 }
 
-/// plans/M13.md item M: when a use site coerced
-/// `Result[QueuePermit, CapacityError]` to `QueuePermit`, the typed
-/// node carries the success type but the temp still holds a Result —
-/// project the Ok payload. Returns `true` when the caller should emit
-/// `EnumPayload { index: 0 }` into a fresh temp of `expr_ty` (tiny
-/// predicate surface — each lowerer owns its own `fresh`/`emit`).
+/// When a use site coerced `Result[QueuePermit, CapacityError]` to
+/// `QueuePermit`, the typed node carries the success type but the temp
+/// still holds a Result — project the Ok payload. Returns `true` when
+/// the caller should emit `EnumPayload { index: 0 }` into a fresh temp
+/// of `expr_ty` (tiny predicate surface — each lowerer owns its own
+/// `fresh`/`emit`).
 pub fn needs_collapse_reserve_permit(expr_ty: &Type, src_ty: &Type) -> bool {
     let is_permit = matches!(expr_ty, Type::Named(n, t) if n == "QueuePermit" && t.is_empty());
     if !is_permit {
@@ -193,7 +193,7 @@ pub enum PrepareBlockUnpackError {
 }
 
 /// Unpack `permit=`/`header=`/`payload=`/`status=`/`device_writes_payload=`
-/// from a `VirtQueue.prepare_block` call site (plans/M7.md item E4).
+/// from a `VirtQueue.prepare_block` call site.
 pub fn unpack_prepare_block_args(
     args: &[(String, TypedExpr)],
 ) -> Result<PrepareBlockParts<'_>, PrepareBlockUnpackError> {
