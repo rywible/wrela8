@@ -2269,7 +2269,22 @@ impl FnCtx<'_> {
     /// encodable this falls back to the two-compare form rather than
     /// emitting a word that tests a different mask.
     fn check_int_range_or_abort(&mut self, value_reg: u8, bits: u32, signed: bool, message: &str) {
-        if !mask_check() || bits >= 64 {
+        // **Narrow widths only, and that is a precondition rather than a
+        // case to handle.** Both callers reach here only below 64 bits —
+        // `emit_arith_checked` after its own `bits < 64` test, and
+        // `emit_convert` in the arm both 64-bit target branches fall past.
+        // At 64 bits there is nothing for either form to do: `u64` has no
+        // representable upper bound to compare against (`int_bounds_i64`
+        // says so in its own doc) and the flag-based `ADDS`/`SUBS` scheme
+        // is what handles that width. Writing a `bits >= 64` fallback here
+        // would route into `int_bounds_for`, which is exact only below 64
+        // — a branch that reads as handled and is not.
+        assert!(
+            bits < 64,
+            "check_int_range_or_abort is the narrow-width check; {bits}-bit \
+             values use the flag-based scheme"
+        );
+        if !mask_check() {
             let (min, max) = int_bounds_for(bits, signed);
             self.check_bounds_i64_or_abort(value_reg, min, max, message);
             return;
