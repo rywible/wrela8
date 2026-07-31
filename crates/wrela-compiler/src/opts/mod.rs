@@ -50,8 +50,6 @@ pub enum OptId {
     WideImmForms,
     /// Item E: per-function linear-scan register allocation.
     RegAlloc,
-    /// Item F5: a call in tail position is a jump (decision 1773).
-    TailCalls,
     /// Item F1/F2/F4: the whole-program convention — a per-function
     /// register pool measured from that function's own emission, and a
     /// per-callee clobber set in place of a blanket call barrier
@@ -107,7 +105,6 @@ pub const RELEASE_OPTS: &[OptId] = &[
     OptId::RegAlloc,
     OptId::InterprocRegs,
     OptId::Frameless,
-    OptId::TailCalls,
 ];
 
 /// Enable exactly the named opts (decision 1452). Product modes go
@@ -120,7 +117,6 @@ pub fn apply_opts(opts: &[OptId]) {
     crate::codegen::set_mask_check(opts.contains(&OptId::MaskCheck));
     crate::codegen::set_wide_imm_forms(opts.contains(&OptId::WideImmForms));
     crate::regalloc::set_regalloc(opts.contains(&OptId::RegAlloc));
-    crate::codegen::set_tail_calls(opts.contains(&OptId::TailCalls));
     crate::regalloc::set_interproc_regs(opts.contains(&OptId::InterprocRegs));
     crate::codegen::set_frameless_fns(opts.contains(&OptId::Frameless));
 }
@@ -137,8 +133,7 @@ pub fn apply_mode(mode: CompileMode) {
 mod tests {
     use super::*;
     use crate::codegen::{
-        adr_addressing, bfx_narrow, frameless_fns, mask_check, narrow_imm, tail_calls,
-        wide_imm_forms,
+        adr_addressing, bfx_narrow, frameless_fns, mask_check, narrow_imm, wide_imm_forms,
     };
     use crate::lower::bounds_elide;
 
@@ -154,7 +149,6 @@ mod tests {
             (OptId::MaskCheck, mask_check()),
             (OptId::WideImmForms, wide_imm_forms()),
             (OptId::RegAlloc, crate::regalloc::regalloc()),
-            (OptId::TailCalls, tail_calls()),
             (OptId::InterprocRegs, crate::regalloc::interproc_regs()),
             (OptId::Frameless, frameless_fns()),
         ]
@@ -221,7 +215,6 @@ mod tests {
                 OptId::RegAlloc,
                 OptId::InterprocRegs,
                 OptId::Frameless,
-                OptId::TailCalls,
             ]
         );
         // Decision 1774: everything the *probe* must see precedes
@@ -235,7 +228,7 @@ mod tests {
             .collect();
         assert_eq!(
             after,
-            vec![OptId::InterprocRegs, OptId::Frameless, OptId::TailCalls],
+            vec![OptId::InterprocRegs, OptId::Frameless],
             "only allocation-reading opts may follow the allocator"
         );
     }

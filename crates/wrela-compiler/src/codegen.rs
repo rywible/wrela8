@@ -648,13 +648,16 @@ pub(crate) fn wide_imm_forms() -> bool {
     WIDE_IMM_FORMS.with(|c| c.get())
 }
 
-// plans/codegen-pareto.md item F, decisions 1772/1773: two more knobs, both
-// default **off**. They are separate ids because they are separate claims:
-// F3 deletes a frame that no longer holds anything, F5 deletes a return that
-// nothing needs, and the ∀ gate ranks one at a time.
+// plans/codegen-pareto.md item F3, decision 1772: one more knob, default
+// **off**, so `dev` keeps every frame the reference model has.
+//
+// F5 (tail calls) has **no knob** (decision 1779). It fires only where F3
+// has already removed the frame, so it is unreachable under `dev` without
+// one — and the ∀ gate scores it at exactly zero on both tiers, which
+// freeze 1714 says disqualifies it as an `OptId`. An unconditional
+// transform that cannot fire in the reference mode needs no switch.
 thread_local! {
     static FRAMELESS_FNS: Cell<bool> = const { Cell::new(false) };
-    static TAIL_CALLS: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Item F3: a function with no frame bytes left and no returning call
@@ -665,16 +668,6 @@ pub fn set_frameless_fns(enabled: bool) {
 
 pub(crate) fn frameless_fns() -> bool {
     FRAMELESS_FNS.with(|c| c.get())
-}
-
-/// Item F5: a call in tail position is a jump, not a `BL` followed by a
-/// return through this function's own epilogue.
-pub fn set_tail_calls(enabled: bool) {
-    TAIL_CALLS.with(|c| c.set(enabled));
-}
-
-pub(crate) fn tail_calls() -> bool {
-    TAIL_CALLS.with(|c| c.get())
 }
 
 // plans/M6.md decision 6 / plans/M11.md decision 740: a *backward*
@@ -5378,9 +5371,6 @@ impl TailPlan {
 fn plan_tail_calls(f: &MwirFn, block_ids: &[Option<u32>]) -> TailPlan {
     let n = f.body.len();
     let mut plan = TailPlan::none(n);
-    if !tail_calls() {
-        return plan;
-    }
     // The epilogue must be a bare teardown: no receiver write-back, no
     // `mut` parameter write-back.
     if let Some((_, mode)) = f.receiver {
