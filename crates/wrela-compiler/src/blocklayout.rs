@@ -1043,8 +1043,33 @@ mod tests {
             );
         }
 
+        // What it cost: the flat (all-hot) footprint is the static-text row
+        // decision 1617's veto is argued against, and the repair jumps are
+        // real words in it. Reported beside the win, never netted against
+        // it.
+        let flat = |p: &crate::codegen::CodegenProgram| {
+            cost::footprint::compute(
+                p,
+                &table,
+                &SweepPoint::pinned(&table),
+                &placement,
+                HotBlocks::All,
+            )
+            .expect("flat footprint")
+        };
+        let (flat_before, flat_after) = (flat(&before), flat(&after));
+
         eprintln!("D-MEASURE {}", summary.render());
+        eprintln!(
+            "D-MEASURE fns sync={} total={}",
+            summary.fns_total,
+            before.fns.len()
+        );
         eprintln!("D-MEASURE words before={words_before} after={words_after}");
+        eprintln!(
+            "D-MEASURE flat_hot_text before={} after={}",
+            flat_before[0].hot_text_bytes, flat_after[0].hot_text_bytes
+        );
         eprintln!(
             "D-MEASURE hot_bytes={hot_bytes} per_fn_packing_floor={floor} \
              headroom={} captured={}",
