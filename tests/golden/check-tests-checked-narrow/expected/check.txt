@@ -1,0 +1,9 @@
+Module path=examples.check_tests_checked_narrow
+  Fn test_u8_checked_ops_reach_the_boundary() -> unit
+  Fn test_u16_checked_ops_reach_the_boundary() -> unit
+  Fn test_u32_checked_ops_reach_the_boundary() -> unit
+  Fn test_i8_checked_ops_reach_both_ends() -> unit
+  Fn test_i16_checked_ops_reach_both_ends() -> unit
+  Fn test_i32_checked_ops_reach_both_ends() -> unit
+  Fn test_signed_checked_ops_cross_zero() -> unit
+  Fn test_narrowing_conversion_at_the_boundary() -> unit

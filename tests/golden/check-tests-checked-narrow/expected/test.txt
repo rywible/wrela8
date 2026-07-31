@@ -1,0 +1,9 @@
+test test_u8_checked_ops_reach_the_boundary: ok
+test test_u16_checked_ops_reach_the_boundary: ok
+test test_u32_checked_ops_reach_the_boundary: ok
+test test_i8_checked_ops_reach_both_ends: ok
+test test_i16_checked_ops_reach_both_ends: ok
+test test_i32_checked_ops_reach_both_ends: ok
+test test_signed_checked_ops_cross_zero: ok
+test test_narrowing_conversion_at_the_boundary: ok
+8 passed, 0 failed
