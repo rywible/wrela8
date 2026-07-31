@@ -125,7 +125,7 @@
 //! "the guest observes vectors **only at checkpoints and parks**". A
 //! checkpoint is an inline poll plus a `BL`, i.e. an ordinary
 //! `CostRule::Call` word, so it is already a barrier here.
-
+//!
 //! ## Item F: the convention is the function's own
 //!
 //! Everything above describes item E, which is still exactly what runs
