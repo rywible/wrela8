@@ -44,6 +44,13 @@ this repo hits every round): A `1720–1729` · B `1730–1739` · C `1740–174
 D `1750–1759` · E `1760–1769` · F `1770–1789` · G `1790–1799`. An item may
 not number outside its block.
 
+**1709. Each item's findings land in `plans/codegen-pareto-<ITEM>.md`.** Every
+parallel item otherwise edits the same plan file and the round ends in a
+merge conflict over prose. An item writes its numbers, its decisions, and its
+oracles to its own sibling file; **item G folds them into the evidence block
+here** and the siblings stay as the working record. Item A's three derived
+tables live in `plans/codegen-pareto-A.md` for the same reason.
+
 **1708. One golden owner per round — the orchestrator.** Items report
 before/after numbers and update only the expectation files their own item
 moves; `cargo xtask golden`, `check`, and every HVF lane are run centrally
