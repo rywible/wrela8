@@ -835,23 +835,32 @@ pub fn format_delta_table(cmp: &CorpusCompare, base_label: &str, cand_label: &st
 /// recorded here does not reproduce, and the run that produced it also
 /// *failed*, on the since-retired absolute I-TLB veto.
 ///
-/// | when | corpus | points/side (release sweep) | deep lane |
+/// The honest unit is **∀ points enumerated per side**, not wall clock.
+/// Item H measured both, and the wall clock did not survive: on a laptop
+/// running four sibling worktrees, the three-test deep lane over 19 cases
+/// (93 184 points/side) finished in **362 s** while the two-test lane over
+/// 15 cases (52 224 points/side) took **411 s** — more work, less time. So
+/// the table below states the work, which is determined, and quotes wall
+/// clock only as the range it was observed in.
+///
+/// | when | corpus | release sweep pts/side | whole deep lane pts/side |
 /// | --- | --- | --- | --- |
-/// | 2026-07-30 (M20) | 15 micro | 26 112 | 411 s (243 s on an idle tree) |
-/// | 2026-07-31 (item H) | 15 micro + 4 product | 36 352 | 597 s + 230 s |
+/// | 2026-07-30 (M20) | 15 micro | 26 112 | 52 224 |
+/// | 2026-07-31 (item H) | 15 micro + 4 product | 36 352 | **93 184** |
 ///
 /// Item H's four product cases raise the release sweep by 10 240
-/// points/side and add a third deep test
-/// (`each_release_opt_is_re_asked_alone_on_the_product_tier`, 230 s), for
-/// **~14 minutes** total. Both figures were measured on this tree with
-/// four sibling worktrees compiling concurrently, so they are upper
-/// bounds; the M20 row re-measured at 411 s under the same load against
-/// its own 243 s idle number. Minutes is a deep-lane cost, not a
-/// `cargo test` cost, which is why these sweeps are `#[ignore]`d and run
-/// by `xtask::deep_lane` — a lane that, until that function landed, did
-/// not exist, so this gate was refusing into a void nothing executed.
-/// `--fast` does not reach it (`xtask::check` returns first), so the cost
-/// lands at milestone close and nowhere else.
+/// points/side (28% of it) and add a third deep test,
+/// `each_release_opt_is_re_asked_alone_on_the_product_tier`, for **×1.78
+/// the deep lane's ∀ work**. Observed wall clock across four runs: 230–597 s
+/// per invocation, 362 s for the whole lane as `deep_lane` runs it.
+/// Against M20's 243 s idle baseline, ×1.78 projects to roughly seven
+/// minutes on a quiet tree — a projection from the ratio, not an
+/// observation, and worth re-measuring idle at close. Minutes is a
+/// deep-lane cost, not a `cargo test` cost, which is why these sweeps are
+/// `#[ignore]`d and run by `xtask::deep_lane` — a lane that, until that
+/// function landed, did not exist, so this gate was refusing into a void
+/// nothing executed. `--fast` does not reach it (`xtask::check` returns
+/// first), so the cost lands at milestone close and nowhere else.
 ///
 /// No product case pushes the probe past this bound: the widest is
 /// `cost-product-blk`/`cost-product-receipt` at `k=12`, under
@@ -2793,9 +2802,10 @@ mod tests {
     /// every `fuzz_*` lane already splits a smoke budget from a deep one
     /// (`crates/xtask/src/main.rs`). Measured 2026-07-31, after item H
     /// widened the corpus: **36 352 points per side** across 19 cases —
-    /// 15 micro and 4 product — and **~14 minutes** for the deep lane's
-    /// three sweeps together (see [`MAX_SWEPT_DIMS`] for the before/after
-    /// table). That is not a cost the default `cargo test` loop
+    /// 15 micro and 4 product — for **×1.78** the deep lane's ∀ work, and
+    /// 230–597 s per invocation depending on what else the machine was
+    /// doing (see [`MAX_SWEPT_DIMS`] for why the work and not the wall
+    /// clock is the stated number). That is not a cost the default `cargo test` loop
     /// should carry; CLAUDE.md separates the
     /// cheap per-item lane from the expensive close lane, and a
     /// whole-corpus ∀ gate belongs in the latter. Nothing about the
@@ -2842,7 +2852,6 @@ mod tests {
             "an empty RELEASE_OPTS would make this lane vacuous"
         );
         let mut verdicts = Vec::new();
-        let mut refused = Vec::new();
         let mut measured: Vec<(String, &'static str)> = Vec::new();
         for opt in RELEASE_OPTS {
             let label = format!("{opt:?}");
@@ -2869,18 +2878,9 @@ mod tests {
                 cmp.cases_in(CostTier::Product).len(),
                 reasons.join(" ")
             ));
-            if !cmp.wins_in_tier(CostTier::Product) {
-                refused.push(format!("{label}: {}\n{table}", reasons.join(" ")));
-            }
         }
         eprintln!(
             "RELEASE_OPTS re-asked alone on the product tier:\n{}",
-            verdicts.join("\n")
-        );
-        assert_eq!(
-            refused.len(),
-            1,
-            "the product-tier verdict set moved:\n{}",
             verdicts.join("\n")
         );
         let measured: Vec<(&str, &str)> = measured.iter().map(|(l, v)| (l.as_str(), *v)).collect();
@@ -4057,9 +4057,10 @@ mod tests {
     /// every `fuzz_*` lane already splits a smoke budget from a deep one
     /// (`crates/xtask/src/main.rs`). Measured 2026-07-31, after item H
     /// widened the corpus: **36 352 points per side** across 19 cases —
-    /// 15 micro and 4 product — and **~14 minutes** for the deep lane's
-    /// three sweeps together (see [`MAX_SWEPT_DIMS`] for the before/after
-    /// table). That is not a cost the default `cargo test` loop
+    /// 15 micro and 4 product — for **×1.78** the deep lane's ∀ work, and
+    /// 230–597 s per invocation depending on what else the machine was
+    /// doing (see [`MAX_SWEPT_DIMS`] for why the work and not the wall
+    /// clock is the stated number). That is not a cost the default `cargo test` loop
     /// should carry; CLAUDE.md separates the
     /// cheap per-item lane from the expensive close lane, and a
     /// whole-corpus ∀ gate belongs in the latter. Nothing about the

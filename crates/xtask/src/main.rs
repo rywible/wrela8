@@ -323,10 +323,12 @@ fn main() -> ExitCode {
 /// | smoke | default `cargo test` | one **micro** case, ∀ over its box |
 /// | deep | this function | **both tiers**, plus each `RELEASE_OPTS` member alone over the **product** tier |
 ///
-/// Measured on this tree: 411 s before item H, 827 s after (597 s for the
-/// widened release + NarrowImm sweeps, 230 s for the new per-opt
-/// product-tier lane). The product tier is 4 of 19 cases and 10 240 of
-/// 36 352 points per side.
+/// Measured 2026-07-31: item H's product tier is 4 of 19 cases and 10 240
+/// of 36 352 points per side, taking the whole lane from 52 224 to 93 184
+/// ∀ points per side (**×1.78**). Wall clock on the machine that measured
+/// it ranged 230–597 s per invocation and 362 s for the whole lane, which
+/// is why the work and not the clock is the number recorded — see
+/// `wrela_compiler::opts::win::MAX_SWEPT_DIMS`.
 fn deep_lane() -> Result<(), String> {
     run(
         Command::new("cargo").args([
