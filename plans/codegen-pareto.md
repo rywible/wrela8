@@ -6,6 +6,128 @@
 [M20.md](M20.md) — every item is scored by M20's ruler and item A consumes
 M20's Lane 2 block-grain sidecar.
 
+## Evidence block (close, 2026-07-31)
+
+**Gate.** `cargo xtask check` **ok** — every lane, including the deep ∀
+lanes, all boot transcripts, `repro`, `diff-eval`, eight fuzz lanes at 1000
+iterations each, the census ratchets and every bench lock. 1001 golden
+expectations, 855 units. `release` beats `dev` at **every point of both
+tiers**.
+
+**Nine named opts** in `RELEASE_OPTS`, in order: `BoundsElide`,
+`NarrowImm`, `AdrAddressing` (B1), `BfxNarrow` (C3), `MaskCheck` (C2),
+`WideImmForms` (C5), `RegAlloc` (E), `InterprocRegs` (F1/F2),
+`Frameless` (F3). Seven of the nine are this plan's.
+
+**The product tier, `dev` → `release`** — the number that did not exist
+before this plan, because the gate could not see a shipped program:
+
+| program | dev | release | Δ |
+| --- | --- | --- | --- |
+| `cost-product-actors` | 4517 | 3978 | −11.9 % |
+| `cost-product-appliance` | 2460 | 1986 | −19.3 % |
+| `cost-product-blk` | 6070 | 4976 | −18.0 % |
+| `cost-product-receipt` | 7494 | 6427 | −14.2 % |
+| **total** | **20 541** | **17 367** | **−15.5 %** |
+
+**Per-opt verdicts, each asked over its own baseline** (decision 1717).
+`PINNED_PRODUCT_TIER_VERDICTS`: eight `wins`, one `veto` — `BoundsElide`,
+which is byte-identical to `dev` on all four shipped programs.
+
+**Correctness.** Not one guest transcript moved across the whole plan —
+addressing, three arithmetic forms, block layout, the frame model and the
+calling convention of every function all changed, and the machine's
+observable behaviour did not. `diff-eval` 129 agree / 47 cases.
+
+### What this plan learned, as distinct from what it built
+
+Six of the plan's own premises were **falsified by measurement**. That is
+the more valuable half of the output, and it is recorded here so the next
+rung does not re-derive it:
+
+1. **Item D's premise does not survive.** "93–98 KB against a 64 KiB L1I"
+   is the *all-hot* row, order-invariant by construction and unmovable by
+   block layout. The measured hot subset is ~23 KB and already **84.9 %
+   dense**. D also proved to be a **substitute** for the word-shrinking
+   items, not a complement: B and C deleted 78 words from the closure and
+   *none* of it reached the packed layout. The framing that ranked D into
+   the Pareto three — "it makes everything else affordable" — is wrong.
+2. **"~28 usable GPRs" was nine** for a per-function allocator (item E),
+   with every missing register accounted for. F's interprocedural pass
+   reached **27**. The plan's number was right about the machine and wrong
+   about which item could have it.
+3. **C1 was never gated on the ruler.** Activation decision 1740 blamed a
+   missing W-form cost row; item C added the row and W still scored
+   identically to X. The real cause was the spill-everything frame donating
+   6 cycles of M-pipe slack per multiply. C1 was gated on **item E** all
+   along, and the same mechanism later explained C5.
+4. **Two opts do not survive contact with the shipped image.**
+   `BoundsElide` — credited by M20 with 43.2 % of release's win — is
+   byte-identical to `dev` on all four product programs; its whole measured
+   effect is six microbenchmarks, the largest of which was written for it.
+   `WideImmForms` was flat too until `RegAlloc` existed.
+5. **"Universal" tail calls (F5) are measurably worse** (+29 cycles on
+   every case borrowing the runtime closure). The restricted form scores
+   exactly zero on all twenty cases of both tiers, so F5 lands
+   unconditionally with no `OptId`.
+6. **Unrolling is not worth pulling in**, on measurement rather than
+   argument: the peak measured trip count in the entire boot workload is
+   **13.0**, and that loop runs once. The busiest loop by mass is 3.7 trips.
+
+### The defect, and what it says about the oracles
+
+Item F's first landing was **green on 851 units, both ∀ tiers and
+`diff-eval` — and silently miscompiled the guest**, flipping fourteen boot
+transcripts from passing to failing. `layout.rs` runs after codegen and
+replaces compiled bodies under keys codegen has already published a
+convention for, so a caller kept live values across a call whose body was
+then substituted.
+
+The lesson is item F's own, and it generalizes past this plan: **units and
+`diff-eval` verify the semantics of a computation; they do not verify a
+claim one stage makes about another stage's output** — and F is the first
+item whose central mechanism *is* such a claim. The oracle
+(`codegen::verify_conventions`, run once at the end of codegen and again in
+`layout_program` after every substitution) lives in the build, so every
+golden that lays out an image exercises it rather than only a boot
+transcript.
+
+**This was also a process failure of decision 1708.** Barring parallel
+agents from the hypervisor prevented HVF deadlock, and it meant the
+keystone item developed for hours against oracles that could not see a
+correctness break. Any future rung with a runtime-touching item must give
+that item a boot lane, serialized if necessary.
+
+### What the measured results justify pulling in next
+
+- **The inliner + GVN/SCCP/DCE** (ladder pull-in #1/#2) — unchanged in
+  priority; nothing here contradicts it.
+- **Making the footprint term order-sensitive** — the named prerequisite
+  for item D ever scoring. Without it D cannot be ranked, and with the
+  density number above it may not be worth ranking.
+- **`BoundsElide`'s disposition** — delete, keep on correctness grounds, or
+  find a product-scale program where array indexing is hot. Now a question
+  that can be *asked*, pinned so it cannot be quietly un-asked.
+- **Deferred from this plan, with owners:** B2 (`ADR` for placed statics,
+  needs a boot transcript), B4 (branch-chain cleanup — *wins on all 15
+  cases* but is blocked by M20 decision 1608's bridge contract), C4
+  (constant-divisor strength reduction, blocked on the divide-lo corner
+  defect below), F4's >8-argument ceiling (no producer exists), and
+  call-site `mov` coalescing (needs a per-point interference model).
+- **Two ruler defects found in passing**, neither fixed here: the
+  divide-lo corner models correlated brackets as independent, so a 32-bit
+  divide can score slower than the 64-bit one it replaced; and the
+  `--stage=cost` and `--stage=report` hot-text columns disagree for the
+  same program (8 256 B vs 91 456 B), which is why item D's premise lives
+  in a column the ∀ gate does not read.
+
+**1795. The plan's three Pareto items did not rank as predicted.** E was
+the win it was billed as. F delivered, but only after the defect above. D
+did not, and its own measurement says why. The Pareto selection was made
+from unmeasured priors, and two of the three priors were wrong — which is
+an argument for measuring the ruler's blind spots *before* selecting a
+subset, not after.
+
 ## Activation record (item 0, 2026-07-31)
 
 **Baseline.** `cargo xtask check --fast` green at `eb42af7c`. The full gate
