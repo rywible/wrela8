@@ -26,7 +26,7 @@ total = 210
 "cost/bridge.rs" = 1
 
 [emitted_a64]
-encode_enc_site_total = 348
+encode_enc_site_total = 355
 floor_sum_of_rows = 67
 floor_words = 52
 image_static_sum_of_rows = 0
@@ -38,7 +38,7 @@ non_inventory = ["codegen.rs::load_imm", "layout.rs::patch_bl", "layout.rs::patc
 wrapper_emitters = []
 
 [emitted_a64.encode_enc_sites_by_file]
-"codegen.rs" = 309
+"codegen.rs" = 316
 "layout.rs" = 9
 "layout/harness.rs" = 30
 

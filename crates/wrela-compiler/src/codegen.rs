@@ -575,6 +575,53 @@ pub(crate) fn adr_addressing() -> bool {
     ADR_ADDRESSING.with(|c| c.get())
 }
 
+// plans/codegen-pareto.md item C, decisions 1742–1744: three more TLS knobs,
+// one per separable arithmetic substitution, all default **off** and all
+// turned on only by an `OptId` in `RELEASE_OPTS` (freeze 1402). They are
+// deliberately three knobs and not one `arith_opts` bitset: the ∀ gate ranks
+// one `OptId` at a time, and a knob that switches two substitutions at once
+// cannot be attributed when it is refused.
+//
+// Item C1 (W-form width selection) has **no** knob here: the ∀ gate scores
+// it at zero, so freeze 1714 keeps it out of `RELEASE_OPTS`, and it lands
+// unconditionally as a reported form change instead (decision 1746).
+thread_local! {
+    static BFX_NARROW: Cell<bool> = const { Cell::new(false) };
+    static MASK_CHECK: Cell<bool> = const { Cell::new(false) };
+    static WIDE_IMM_FORMS: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Item C3: `narrow_to_width` emits one `UBFX`/`SBFX` instead of the
+/// `LSL`+`LSR`/`ASR` pair.
+pub fn set_bfx_narrow(enabled: bool) {
+    BFX_NARROW.with(|c| c.set(enabled));
+}
+
+pub(crate) fn bfx_narrow() -> bool {
+    BFX_NARROW.with(|c| c.get())
+}
+
+/// Item C2: the narrow checked-arithmetic range test becomes one masked
+/// test against one abort, instead of two constant materializations, two
+/// compares and two aborts.
+pub fn set_mask_check(enabled: bool) {
+    MASK_CHECK.with(|c| c.set(enabled));
+}
+
+pub(crate) fn mask_check() -> bool {
+    MASK_CHECK.with(|c| c.get())
+}
+
+/// Item C5: `load_imm` may use `MOVN` or the bitmask-immediate `MOV`
+/// when either materializes the value in one word.
+pub fn set_wide_imm_forms(enabled: bool) {
+    WIDE_IMM_FORMS.with(|c| c.set(enabled));
+}
+
+pub(crate) fn wide_imm_forms() -> bool {
+    WIDE_IMM_FORMS.with(|c| c.get())
+}
+
 // plans/M6.md decision 6 / plans/M11.md decision 740: a *backward*
 // unconditional `Jump` (`target <= idx`) is a loop's own back-edge —
 // the exact shape `lower.rs` / `flowwir_lower.rs` emit for a `while`/
@@ -1068,6 +1115,19 @@ fn int_bounds_i64(ty: &Type) -> Option<(i64, i64)> {
         Type::I32 => Some((i32::MIN as i64, i32::MAX as i64)),
         Type::I64 | Type::Isize => Some((i64::MIN, i64::MAX)),
         _ => None,
+    }
+}
+
+/// `[min,max]` for a declared integer width/signedness, as
+/// [`int_bounds_i64`] would give it for the type that has that shape.
+/// The one caller ([`FnCtx::check_int_range_or_abort`]) only reaches this
+/// for `bits < 64`, where every bound fits an `i64` exactly.
+fn int_bounds_for(bits: u32, signed: bool) -> (i64, i64) {
+    debug_assert!(bits < 64, "int_bounds_for is exact only below 64 bits");
+    if signed {
+        (-(1i64 << (bits - 1)), (1i64 << (bits - 1)) - 1)
+    } else {
+        (0, (1i64 << bits) - 1)
     }
 }
 
@@ -1624,6 +1684,65 @@ impl<'a> FnCtx<'a> {
         }
     }
 
+    /// Item C5's one-word materializations. Returns `false` when neither
+    /// applies and the caller must fall through to the `MOVZ`/`MOVK`
+    /// chain. Never emits more than one word, so a `true` here is always
+    /// at least as short as the chain — `MOVZ #0` already covers the one
+    /// value (`0`) the chain also does in one word, and it is tried first
+    /// so this never displaces it.
+    fn try_load_imm_one_word(&mut self, reg: u8, value: i64) -> bool {
+        let bits = value as u64;
+        // `MOVZ` already handles anything that is one non-zero halfword;
+        // leave those to the chain so the emitted form does not change for
+        // values NarrowImm alone already did in one word.
+        let halves = [
+            (bits & 0xFFFF) as u16,
+            ((bits >> 16) & 0xFFFF) as u16,
+            ((bits >> 32) & 0xFFFF) as u16,
+            ((bits >> 48) & 0xFFFF) as u16,
+        ];
+        if halves.iter().filter(|h| **h != 0).count() <= 1 {
+            return false;
+        }
+        // `MOVN Xd, #h, lsl #s` = `NOT(h << s)`: one word iff the inverse
+        // has exactly one non-zero halfword.
+        let inv = !bits;
+        let inv_halves = [
+            (inv & 0xFFFF) as u16,
+            ((inv >> 16) & 0xFFFF) as u16,
+            ((inv >> 32) & 0xFFFF) as u16,
+            ((inv >> 48) & 0xFFFF) as u16,
+        ];
+        if inv_halves.iter().filter(|h| **h != 0).count() <= 1 {
+            let idx = inv_halves.iter().position(|h| *h != 0).unwrap_or(0);
+            let imm = inv_halves[idx];
+            let shift = (idx * 16) as u8;
+            self.push(
+                encode::enc_movn(reg, imm, shift, true),
+                if shift == 0 {
+                    format!("movn {}, #{imm:#x}", reg_name(reg))
+                } else {
+                    format!("movn {}, #{imm:#x}, lsl #{shift}", reg_name(reg))
+                },
+                CostRule::MovWide,
+                Some(reg),
+                &[],
+            );
+            return true;
+        }
+        if let Some(enc) = encode::enc_mov_bitmask_imm(reg, bits) {
+            self.push(
+                enc,
+                format!("mov {}, #{bits:#x}", reg_name(reg)),
+                CostRule::Alu,
+                Some(reg),
+                &[],
+            );
+            return true;
+        }
+        false
+    }
+
     /// Materializes a 64-bit constant into `reg`.
     ///
     /// NarrowImm off (`dev`): always `MOVZ` + three `MOVK`s (four words).
@@ -1634,6 +1753,28 @@ impl<'a> FnCtx<'a> {
     fn load_imm(&mut self, reg: u8, value: i64) {
         if !narrow_imm() {
             self.load_imm_naive(reg, value);
+            return;
+        }
+        // plans/codegen-pareto.md item C5 (decision 1744) — the NarrowImm
+        // sequel. NarrowImm skips *zero* halfwords, which is why a small
+        // **negative** still costs four words: `-1` is `0xFFFF` in all four
+        // halves and none of them is zero. Two one-word forms cover most of
+        // what is left:
+        //
+        //   * `MOVN Xd, #h, lsl #s` writes `NOT(h << s)`, so any value
+        //     whose *inverse* is a single non-zero halfword is one word —
+        //     every small negative, which is what the signed narrow bounds
+        //     check and the `MIN`/`-1` divide guard materialize.
+        //   * `MOV Xd, #imm` (the `ORR Xd, XZR, #imm` bitmask alias) covers
+        //     every value that is a rotated repeating run of ones — the
+        //     `0xFFFF_FFFF_0000_0000`-shaped masks, and 5334 values in all.
+        //
+        // Both are checked *before* the `MOVZ`/`MOVK` chain and only taken
+        // when they are strictly shorter, so this can never lengthen a
+        // materialization. `MOVN` is the same `[latency.mov_wide]` row as
+        // `MOVZ`/`MOVK` (SOG §3.5 names all three); the bitmask `ORR` is
+        // "logical, basic", the same 1-cycle/thru-3/port-I `alu` row.
+        if wide_imm_forms() && self.try_load_imm_one_word(reg, value) {
             return;
         }
         let bits = value as u64;
@@ -1710,6 +1851,29 @@ impl<'a> FnCtx<'a> {
     /// invariant" section — a no-op at `bits == 64`.
     fn narrow_to_width(&mut self, reg: u8, bits: u32, signed: bool) {
         if bits >= 64 {
+            return;
+        }
+        // plans/codegen-pareto.md item C3 (decision 1743). `LSL #s` then
+        // `LSR #s` is `UBFM` twice where one `UBFM` says the same thing:
+        // the pair extracts the low `64-s = bits` bits and zero- (or, with
+        // `ASR`, sign-) extends them, which is the definition of
+        // `UBFX`/`SBFX` at lsb 0. Same SOG group ("bitfield move, basic",
+        // 1 cycle, thru 3, port I), one word instead of two, and one link
+        // of dependence chain instead of two.
+        if bfx_narrow() {
+            let w = bits as u8;
+            let (enc, mnem) = if signed {
+                (encode::enc_sbfx(reg, reg, 0, w, true), "sbfx")
+            } else {
+                (encode::enc_ubfx(reg, reg, 0, w, true), "ubfx")
+            };
+            self.push(
+                enc,
+                format!("{mnem} {}, {}, #0, #{bits}", reg_name(reg), reg_name(reg)),
+                CostRule::Alu,
+                Some(reg),
+                &[reg],
+            );
             return;
         }
         let shift = (64 - bits) as u8;
@@ -2131,6 +2295,91 @@ impl FnCtx<'_> {
     /// `value_reg` must lie outside `[min,max]` (both signed 64-bit
     /// constants) to abort — narrow-width checked `+ - *`'s own scheme
     /// (module doc). Clobbers `X_D`.
+    /// `value_reg` must be a canonical `bits`-wide integer of the given
+    /// signedness to survive — the check every narrow checked `+ - *` and
+    /// every narrowing `.to[T]()` emits.
+    ///
+    /// **plans/codegen-pareto.md item C2 (decision 1742).** With
+    /// `MASK_CHECK` off this is exactly the two-constant, two-compare,
+    /// two-abort form [`Self::check_bounds_i64_or_abort`] has always
+    /// emitted, and `bits == 64` always is. With it on:
+    ///
+    /// - **Unsigned.** In range iff no bit outside the low `bits` is set:
+    ///   `v & !(2^bits − 1) == 0`. That covers both failure directions at
+    ///   once — a value above `2^bits − 1` sets a bit inside the mask, and
+    ///   a *negative* value (which `SUB` can produce from two canonical
+    ///   unsigned operands) sets bit 63, which is also inside the mask
+    ///   because `bits < 64`. Every such mask is an encodable AArch64
+    ///   bitmask immediate, so the whole test is one `TST`.
+    /// - **Signed.** In range iff `v` is its own sign-extension from
+    ///   `bits`, which is the definition of the range and is computed by
+    ///   one `SBFX`; the check is that `SBFX` against `v`.
+    ///
+    /// Both forms reach **one** abort site where the old form had two,
+    /// which is where most of the words go.
+    ///
+    /// The `TST` encoding is fail-closed at the encoder (see
+    /// `encode::encode_bitmask_imm`): if the mask were somehow not
+    /// encodable this falls back to the two-compare form rather than
+    /// emitting a word that tests a different mask.
+    fn check_int_range_or_abort(&mut self, value_reg: u8, bits: u32, signed: bool, message: &str) {
+        // **Narrow widths only, and that is a precondition rather than a
+        // case to handle.** Both callers reach here only below 64 bits —
+        // `emit_arith_checked` after its own `bits < 64` test, and
+        // `emit_convert` in the arm both 64-bit target branches fall past.
+        // At 64 bits there is nothing for either form to do: `u64` has no
+        // representable upper bound to compare against (`int_bounds_i64`
+        // says so in its own doc) and the flag-based `ADDS`/`SUBS` scheme
+        // is what handles that width. Writing a `bits >= 64` fallback here
+        // would route into `int_bounds_for`, which is exact only below 64
+        // — a branch that reads as handled and is not.
+        assert!(
+            bits < 64,
+            "check_int_range_or_abort is the narrow-width check; {bits}-bit \
+             values use the flag-based scheme"
+        );
+        if !mask_check() {
+            let (min, max) = int_bounds_for(bits, signed);
+            self.check_bounds_i64_or_abort(value_reg, min, max, message);
+            return;
+        }
+        if signed {
+            self.push(
+                encode::enc_sbfx(X_D, value_reg, 0, bits as u8, true),
+                format!(
+                    "sbfx {}, {}, #0, #{bits}",
+                    reg_name(X_D),
+                    reg_name(value_reg)
+                ),
+                CostRule::Alu,
+                Some(X_D),
+                &[value_reg],
+            );
+            self.cmp_reg(value_reg, X_D);
+            let skip = self.emit_skip(SkipKind::Cond(Cond::Eq));
+            self.abort_fixed(message);
+            self.patch_skip(skip, SkipKind::Cond(Cond::Eq));
+            return;
+        }
+        let mask = !((1u64 << bits) - 1);
+        let Some(enc) = encode::enc_tst_imm(value_reg, mask) else {
+            let (min, max) = int_bounds_for(bits, signed);
+            self.check_bounds_i64_or_abort(value_reg, min, max, message);
+            return;
+        };
+        self.push_flags(
+            enc,
+            format!("tst {}, #{mask:#x}", reg_name(value_reg)),
+            CostRule::Alu,
+            None,
+            &[value_reg],
+            FlagEffect::Write,
+        );
+        let skip = self.emit_skip(SkipKind::Cond(Cond::Eq));
+        self.abort_fixed(message);
+        self.patch_skip(skip, SkipKind::Cond(Cond::Eq));
+    }
+
     fn check_bounds_i64_or_abort(&mut self, value_reg: u8, min: i64, max: i64, message: &str) {
         self.load_imm(X_D, min);
         self.cmp_reg(value_reg, X_D);
@@ -3734,8 +3983,7 @@ fn emit_arith_checked(
             Some(X_C),
             &[X_A, X_B],
         );
-        let (min, max) = int_bounds_i64(ty).unwrap();
-        ctx.check_bounds_i64_or_abort(X_C, min, max, abort);
+        ctx.check_int_range_or_abort(X_C, bits, signed, abort);
         ctx.store_slot(X_C, ctx.frame.off(dst));
         return Ok(());
     }
@@ -3864,6 +4112,48 @@ fn emit_arith_wrapping(
             "sub",
             CostRule::Alu,
         ),
+        // plans/codegen-pareto.md item C1 (decisions 1704 / 1740 / 1746).
+        //
+        // **Not gated on an `OptId`, and not a claimed win.** The ∀ gate
+        // scores this substitution at exactly zero on every case in the
+        // corpus — measured, with the reason, in
+        // `unit:item_c1_is_hidden_by_the_frame_until_the_multiply_outgrows_its_slack`
+        // — so freeze 1714 forbids it being a named opt, and decision 1740
+        // prescribed the alternative in advance: land C1 "as a reported
+        // form change with no win claimed". This is instruction
+        // *selection* from a width the type system already proves, the
+        // same category as choosing `STRB` over `STR` for a `u8` field,
+        // and it is emitted in `dev` and `release` alike.
+        //
+        // A **wrapping** multiply of a declared type of `bits <= 32` is
+        // defined modulo 2^bits, and `narrow_to_width` below re-canonicalizes
+        // to exactly `bits` in either case — so the high 32 bits of the
+        // X-form product are dead on arrival, and the W-form computes the
+        // low 32 exactly. Driven by the *declared* type, which the type
+        // system already proves (decision 1704): no range propagation.
+        //
+        // This is the only multiply that gets the substitution. The
+        // **checked** multiply (`emit_arith_checked`) keeps `sf = true`
+        // even at `bits < 64`, because its overflow test reads bits the
+        // W-form would have discarded: `u32 * u32` reaches 2^64 and the
+        // whole point of the following bounds check is to see it. Emitting
+        // W-form there would not be an optimization, it would silently
+        // delete overflow detection.
+        BinOp::MulW if bits <= 32 => {
+            // The one W-form site, so it is the one that prints `w`
+            // registers: an asm dump that said `mul x2, x0, x1` over a
+            // `sf = 0` word would be a lie in a pinned golden.
+            ctx.push(
+                encode::enc_mul(X_C, X_A, X_B, false),
+                format!("mul w{X_C}, w{X_A}, w{X_B}"),
+                CostRule::MulW,
+                None,
+                &[],
+            );
+            ctx.narrow_to_width(X_C, bits, signed);
+            ctx.store_slot(X_C, ctx.frame.off(dst));
+            return Ok(());
+        }
         BinOp::MulW => (encode::enc_mul(X_C, X_A, X_B, true), "mul", CostRule::Mul),
         other => {
             return Err(CodegenError::internal(format!(
@@ -4162,8 +4452,10 @@ fn emit_convert(
             ctx.patch_skip(skip, SkipKind::Cond(Cond::Ge));
         }
     } else {
-        let (min, max) = int_bounds_i64(target_ty).unwrap();
-        ctx.check_bounds_i64_or_abort(X_A, min, max, abort);
+        // Reached only when `tbits < 64` (both 64-bit target arms are
+        // handled above), which is exactly `check_int_range_or_abort`'s
+        // narrow domain.
+        ctx.check_int_range_or_abort(X_A, tbits, tsigned, abort);
     }
     ctx.push(
         encode::enc_mov_reg(X_C, X_A, true),
@@ -11158,6 +11450,68 @@ pub fn r(a: u64, b: u64) -> u64:
         }
     }
 
+    // --- plans/codegen-pareto.md item C: one form oracle per sub-item ---
+    //
+    // Each of these asserts the two halves freeze 1714 asks for: the
+    // **emitted form changed** (the new word is there and the words it
+    // replaced are gone), and the **semantics did not** (the same abort
+    // messages are still reachable, the same value is still narrowed to
+    // the same width). The equivalence argument each rests on is written
+    // at the transform, not here.
+
+    /// Compile `src` under an explicit opt list and return one fn's words.
+    fn words_under(src: &str, key: &str, opts: &[crate::opts::OptId]) -> Vec<EmittedWord> {
+        crate::opts::apply_opts(opts);
+        let (mwir_program, layout) = compile(src);
+        let program = codegen_program(&mwir_program, &layout).expect("codegen_program");
+        let out = program.fns[key].code.clone();
+        crate::opts::apply_mode(crate::opts::CompileMode::Release);
+        out
+    }
+
+    fn texts(words: &[EmittedWord]) -> Vec<String> {
+        words.iter().map(|w| w.text.clone()).collect()
+    }
+
+    /// **Item C3.** `narrow_to_width` emits one `UBFX`/`SBFX` where it
+    /// emitted an `LSL`+`LSR`/`ASR` pair, and nothing else moves.
+    #[test]
+    fn item_c3_narrow_to_width_becomes_one_bitfield_extract() {
+        use crate::opts::OptId;
+        const SRC: &str = "module examples.item_c3\n\n\
+             pub fn wrap_u8(a: u8, b: u8) -> u8:\n    return a +% b\n\n\
+             pub fn wrap_i16(a: i16, b: i16) -> i16:\n    return a +% b\n";
+
+        for (key, want, gone) in [
+            ("wrap_u8", "ubfx x11, x11, #0, #8", "lsr x11, x11, #56"),
+            ("wrap_i16", "sbfx x11, x11, #0, #16", "asr x11, x11, #48"),
+        ] {
+            let off = texts(&words_under(SRC, key, &[]));
+            let on = texts(&words_under(SRC, key, &[OptId::BfxNarrow]));
+
+            assert!(
+                off.iter().any(|t| t == gone) && off.iter().any(|t| t.starts_with("lsl x11")),
+                "{key}: the baseline must be the shift pair, got {off:?}"
+            );
+            assert!(
+                on.iter().any(|t| t == want),
+                "{key}: expected `{want}`, got {on:?}"
+            );
+            assert!(
+                !on.iter().any(|t| t == gone)
+                    && !on.iter().any(|t| t.starts_with("lsl x11, x11, #")),
+                "{key}: the shift pair must be gone, got {on:?}"
+            );
+            // Semantics: exactly one word fewer, and it is the pair's
+            // second half that went.
+            assert_eq!(
+                on.len() + 1,
+                off.len(),
+                "{key}: the substitution must remove exactly one word"
+            );
+        }
+    }
+
     /// The opt is **off** by default and off in `dev`, so the reference
     /// form stays the reference form (freeze 1407's shape).
     #[test]
@@ -11167,6 +11521,168 @@ pub fn r(a: u64, b: u64) -> u64:
         crate::opts::apply_mode(crate::opts::CompileMode::Release);
         assert!(adr_addressing());
         crate::opts::apply_mode(crate::opts::CompileMode::Release);
+    }
+
+    /// **Item C2.** The narrow range check becomes one masked test against
+    /// **one** abort, and both failure directions still abort.
+    #[test]
+    fn item_c2_narrow_range_check_becomes_one_masked_test() {
+        use crate::opts::OptId;
+        const SRC: &str = "module examples.item_c2\n\n\
+             pub fn add_u32(a: u32, b: u32) -> u32:\n    return a + b\n\n\
+             pub fn add_i16(a: i16, b: i16) -> i16:\n    return a + b\n";
+
+        // Unsigned: one `TST` against the high mask.
+        let off = words_under(SRC, "add_u32", &[]);
+        let on = words_under(SRC, "add_u32", &[OptId::MaskCheck]);
+        let on_t = texts(&on);
+        assert!(
+            on_t.iter().any(|t| t == "tst x11, #0xffffffff00000000"),
+            "expected the high-mask TST, got {on_t:?}"
+        );
+        assert!(
+            !on_t.iter().any(|t| t.starts_with("cmp x11, x12")),
+            "the two constant compares must be gone, got {on_t:?}"
+        );
+        // The mask really is the complement of the type's value range.
+        assert_eq!(!((1u64 << 32) - 1), 0xFFFF_FFFF_0000_0000);
+
+        // Signed: `SBFX` re-derives the canonical value and one compare
+        // asks whether it changed.
+        let on_s = texts(&words_under(SRC, "add_i16", &[OptId::MaskCheck]));
+        assert!(
+            on_s.iter().any(|t| t == "sbfx x12, x11, #0, #16"),
+            "expected the SBFX range test, got {on_s:?}"
+        );
+
+        // Semantics: one abort call where there were two, and it is the
+        // *same* abort — same message, still reachable by falling through.
+        let aborts = |w: &[EmittedWord]| w.iter().filter(|e| e.rule == CostRule::Abort).count();
+        assert_eq!(aborts(&off), 2, "the baseline had one abort per direction");
+        assert_eq!(aborts(&on), 1, "the masked form needs only one");
+        // And the abort is still there at all — a check that aborted
+        // *never* would also pass every assertion above.
+        assert!(
+            on_t.iter().any(|t| t.contains("__wrela_abort")),
+            "the overflow abort must survive, got {on_t:?}"
+        );
+    }
+
+    /// **Item C5.** A small negative goes from four `MOVZ`/`MOVK` words to
+    /// one `MOVN`, and a high mask to one bitmask-immediate `MOV`.
+    #[test]
+    fn item_c5_one_word_immediates() {
+        use crate::opts::OptId;
+        // `-1` is `0xFFFF` in all four halfwords, so `NarrowImm` alone
+        // cannot shorten it: this is exactly the gap C5 fills. The
+        // `MIN`/`-1` guard of a signed divide materializes it.
+        const SRC: &str = "module examples.item_c5\n\n\
+             pub fn div(a: i32, b: i32) -> i32:\n    return a / b\n";
+
+        let ni = texts(&words_under(SRC, "div", &[OptId::NarrowImm]));
+        let c5 = texts(&words_under(
+            SRC,
+            "div",
+            &[OptId::NarrowImm, OptId::WideImmForms],
+        ));
+
+        assert_eq!(
+            ni.iter()
+                .filter(|t| t.starts_with("movz x13, #0xffff"))
+                .count(),
+            1,
+            "NarrowImm alone must still open the -1 chain with a MOVZ: {ni:?}"
+        );
+        assert_eq!(
+            ni.iter().filter(|t| t.starts_with("movk x13,")).count(),
+            3,
+            "NarrowImm alone must still need three MOVKs for -1: {ni:?}"
+        );
+        assert!(
+            c5.iter().any(|t| t == "movn x13, #0x0"),
+            "expected `movn x13, #0x0` for -1, got {c5:?}"
+        );
+        assert!(
+            !c5.iter().any(|t| t.starts_with("movk x13,")),
+            "the -1 MOVK chain must be gone, got {c5:?}"
+        );
+        // The other constant this fn materializes is `i32::MIN`
+        // (`0xffffffff80000000`), which is *not* a `MOVN` — its inverse
+        // has two non-zero halfwords — but **is** a bitmask immediate: 33
+        // contiguous ones. So it takes C5's other one-word form, and the
+        // two together remove five words from this one function.
+        assert!(
+            c5.iter().any(|t| t == "mov x12, #0xffffffff80000000"),
+            "expected the bitmask-immediate MOV for i32::MIN, got {c5:?}"
+        );
+        assert_eq!(
+            c5.len() + 5,
+            ni.len(),
+            "-1 goes 4 words -> 1 and i32::MIN goes 3 -> 1"
+        );
+    }
+
+    /// **Item C1.** A wrapping multiply of a declared type of 32 bits or
+    /// fewer emits the W-form; 64-bit and *checked* multiplies do not.
+    ///
+    /// Unconditional (decision 1746), so there is no opt to toggle — the
+    /// oracle is the width discrimination itself, which is the whole
+    /// claim: driven by the declared type (decision 1704), never by a
+    /// range.
+    #[test]
+    fn item_c1_only_narrow_wrapping_multiplies_take_the_w_form() {
+        const SRC: &str = "module examples.item_c1\n\n\
+             pub fn w32(a: u32, b: u32) -> u32:\n    return a *% b\n\n\
+             pub fn w8(a: u8, b: u8) -> u8:\n    return a *% b\n\n\
+             pub fn wi32(a: i32, b: i32) -> i32:\n    return a *% b\n\n\
+             pub fn w64(a: u64, b: u64) -> u64:\n    return a *% b\n\n\
+             pub fn c32(a: u32, b: u32) -> u32:\n    return a * b\n";
+
+        for key in ["w32", "w8", "wi32"] {
+            let w = words_under(SRC, key, crate::opts::RELEASE_OPTS);
+            let muls: Vec<&EmittedWord> = w
+                .iter()
+                .filter(|e| matches!(e.rule, CostRule::Mul | CostRule::MulW))
+                .collect();
+            assert_eq!(muls.len(), 1, "{key}: exactly one multiply");
+            assert_eq!(
+                muls[0].rule,
+                CostRule::MulW,
+                "{key}: a wrapping multiply at <= 32 bits must be W-form, got `{}`",
+                muls[0].text
+            );
+            // sf = 0 is the claim; read it off the word, not the text.
+            assert_eq!(muls[0].word >> 31, 0, "{key}: sf bit must be 0");
+            assert!(
+                muls[0].text.starts_with("mul w"),
+                "{key}: the dump must print W registers, got `{}`",
+                muls[0].text
+            );
+        }
+
+        for (key, why) in [
+            ("w64", "64 bits is not a narrow type"),
+            (
+                "c32",
+                "a checked multiply's overflow test reads the high half",
+            ),
+        ] {
+            let w = words_under(SRC, key, crate::opts::RELEASE_OPTS);
+            let muls: Vec<&EmittedWord> = w
+                .iter()
+                .filter(|e| matches!(e.rule, CostRule::Mul | CostRule::MulW))
+                .collect();
+            assert!(!muls.is_empty(), "{key}: expected a multiply");
+            for m in muls {
+                assert_eq!(
+                    m.rule,
+                    CostRule::Mul,
+                    "{key} must stay X-form — {why}; got `{}`",
+                    m.text
+                );
+                assert_eq!(m.word >> 31, 1, "{key}: sf bit must be 1");
+            }
+        }
     }
 
     #[test]

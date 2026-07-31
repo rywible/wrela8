@@ -215,15 +215,23 @@ mod tests {
         //     `FnCtx::{add_reg,mul_reg,orr_reg,and_reg,cmp_reg}`, and the
         //     three identical park-and-return tails onto
         //     `emit_park_and_return`.
-        // 347 -> 348: plans/codegen-pareto.md item B1 adds `layout.rs::
-        // patch_adr`, the `ADR` twin of `patch_adrp_add`. `codegen.rs` is
-        // unchanged at 309 — the two hand-assembled stubs' four sites
-        // (`enc_adrp` + `enc_add_imm`, twice) collapsed onto one
-        // `push_rodata_addr` with three, and `load_rodata_addr` gained the
-        // one `enc_adr`.
+        // 347 -> 355 at plans/codegen-pareto.md items B and C, merged.
+        // Item B1 adds one site in `layout.rs` (`patch_adr`, the `ADR`
+        // twin of `patch_adrp_add`) while leaving `codegen.rs` alone:
+        // the two hand-assembled stubs' four sites (`enc_adrp` +
+        // `enc_add_imm`, twice) collapsed onto one `push_rodata_addr`
+        // with three, and `load_rodata_addr` gained the one `enc_adr`.
+        // Item C adds seven in `codegen.rs`, all alternative *forms* of a
+        // sequence that already existed rather than new emission:
+        // `UBFX`/`SBFX` for `narrow_to_width` (C3, 2), `SBFX` + `TST` for
+        // the narrow range check (C2, 2), `MOVN` + the bitmask-immediate
+        // `MOV` for one-word materialization (C5, 2), and the W-form
+        // `MUL` (C1, 1). Every one is guarded by a knob or a declared
+        // width and falls back to the site it replaced, which is why the
+        // count rises while emitted words fall.
         assert_eq!(
             encode_enc_site_count(),
-            348,
+            355,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }

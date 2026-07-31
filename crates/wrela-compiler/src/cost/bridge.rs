@@ -1186,12 +1186,23 @@ mod tests {
         // resolves the same 81 keys and leaves the same 291 uncovered
         // (decision 1617: do not "fix" coverage).
         assert_eq!((mb.resolved_keys, mb.unresolved_keys), (81, 291));
+        // **190 -> 188 at plans/codegen-pareto.md item C2** (decision
+        // 1748), and the pair of numbers above is what makes that a safe
+        // move rather than a coverage loss: `MaskCheck` replaces a
+        // two-constant, two-compare, **two-abort** narrow range check with
+        // a one-`TST`, one-abort one, so the closure has two fewer basic
+        // blocks (`all_word_blocks` 333 -> 331) and both of them happened
+        // to be measured. The join still resolves the same 81 keys and
+        // still leaves the same 291 unresolved — the measurement explains
+        // exactly what it explained before, in two fewer blocks. Attributed
+        // by ablation: with `MaskCheck` alone removed from `RELEASE_OPTS`
+        // every number here returns to its M20 value.
         assert_eq!(
-            mb.measured_word_blocks, 190,
+            mb.measured_word_blocks, 188,
             "emitted-word blocks the measurement reaches"
         );
         assert_eq!(
-            mb.hot_word_blocks, 190,
+            mb.hot_word_blocks, 188,
             "the committed sidecar carries only non-zero hits, so every measured block is hot"
         );
         assert_eq!(mb.fn_count(), 14, "scored fns the measurement reaches");
@@ -1203,7 +1214,7 @@ mod tests {
             .map(|f| basic_block_ranges(&f.code).len() as u64)
             .sum();
         assert_eq!(
-            all_word_blocks, 333,
+            all_word_blocks, 331,
             "emitted-word blocks in the scored closure — every one of them is hot under W_flat"
         );
         assert!(
@@ -1228,14 +1239,14 @@ mod tests {
                     branch_mispredict_charge(point.get("mispredict_penalty"), terms.bias_at(w));
             }
         }
-        assert_eq!(branches, 265, "branch words in the scored closure");
+        assert_eq!(branches, 264, "branch words in the scored closure");
         assert_eq!(
             biased, 14,
             "branches a real measured vector can bias — the number item J must not mistake \
              for a fine-grained ranking signal (decision 1617)"
         );
         assert_eq!(
-            no_data, 104,
+            no_data, 103,
             "conditional branches with no usable ratio: unmeasured, or both successors \
              inside one Lane 2 span (the `source` guard)"
         );

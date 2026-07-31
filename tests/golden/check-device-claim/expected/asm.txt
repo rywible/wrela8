@@ -949,7 +949,7 @@ Program
     0018: d2800029  movz x9, #0x1
     0019: f90017e9  str x9, [sp, #40]
     0020: f94017e0  ldr x0, [sp, #40]
-    0021: 140000b4  b #720
+    0021: 140000a7  b #668
     0022: 14000001  b #4
     0023: d2a80009  movz x9, #0x4000, lsl #16
     0024: f9001be9  str x9, [sp, #48]
@@ -1080,58 +1080,45 @@ Program
     0149: 9b0a7d2b  mul x11, x9, x10
     0150: f90087eb  str x11, [sp, #264]
     0151: f94087e9  ldr x9, [sp, #264]
-    0152: d280000c  movz x12, #0x0
-    0153: eb0c013f  cmp x9, x12
-    0154: 5400010a  b.ge #32
-    0155: d10043ff  sub sp, sp, #16  ; abort Bytes slot
-    0156: 10000009  adr x9, rodata+0xb0
-    0157: f90003e9  str x9, [sp]  ; Bytes.base
-    0158: d2800489  movz x9, #0x24
-    0159: f90007e9  str x9, [sp, #8]  ; Bytes.len
-    0160: 910003e0  add x0, sp, #0  ; *Bytes
-    0161: 94000000  bl <__wrela_abort>
-    0162: d29fffec  movz x12, #0xffff
-    0163: f2bfffec  movk x12, #0xffff, lsl #16
-    0164: eb0c013f  cmp x9, x12
-    0165: 5400010d  b.le #32
-    0166: d10043ff  sub sp, sp, #16  ; abort Bytes slot
-    0167: 10000009  adr x9, rodata+0xb0
-    0168: f90003e9  str x9, [sp]  ; Bytes.base
-    0169: d2800489  movz x9, #0x24
-    0170: f90007e9  str x9, [sp, #8]  ; Bytes.len
-    0171: 910003e0  add x0, sp, #0  ; *Bytes
-    0172: 94000000  bl <__wrela_abort>
-    0173: aa0903eb  mov x11, x9
-    0174: d3607d6b  lsl x11, x11, #32
-    0175: d360fd6b  lsr x11, x11, #32
-    0176: f9008beb  str x11, [sp, #272]
+    0152: f2607d3f  tst x9, #0xffffffff00000000
+    0153: 54000100  b.eq #32
+    0154: d10043ff  sub sp, sp, #16  ; abort Bytes slot
+    0155: 10000009  adr x9, rodata+0xb0
+    0156: f90003e9  str x9, [sp]  ; Bytes.base
+    0157: d2800489  movz x9, #0x24
+    0158: f90007e9  str x9, [sp, #8]  ; Bytes.len
+    0159: 910003e0  add x0, sp, #0  ; *Bytes
+    0160: 94000000  bl <__wrela_abort>
+    0161: aa0903eb  mov x11, x9
+    0162: d3407d6b  ubfx x11, x11, #0, #32
+    0163: f9008beb  str x11, [sp, #272]
+    0164: d2820009  movz x9, #0x1000
+    0165: f2a80009  movk x9, #0x4000, lsl #16
+    0166: f9008fe9  str x9, [sp, #280]
+    0167: f9408fe9  ldr x9, [sp, #280]
+    0168: f9408bea  ldr x10, [sp, #272]
+    0169: b910012a  str w10, [x9, #4096]
+    0170: d2a80009  movz x9, #0x4000, lsl #16
+    0171: f90093e9  str x9, [sp, #288]
+    0172: f94093e9  ldr x9, [sp, #288]
+    0173: f9407fea  ldr x10, [sp, #248]
+    0174: f9002d2a  str x10, [x9, #88]
+    0175: d2800029  movz x9, #0x1
+    0176: f90097e9  str x9, [sp, #296]
     0177: d2820009  movz x9, #0x1000
     0178: f2a80009  movk x9, #0x4000, lsl #16
-    0179: f9008fe9  str x9, [sp, #280]
-    0180: f9408fe9  ldr x9, [sp, #280]
-    0181: f9408bea  ldr x10, [sp, #272]
-    0182: b910012a  str w10, [x9, #4096]
-    0183: d2a80009  movz x9, #0x4000, lsl #16
-    0184: f90093e9  str x9, [sp, #288]
-    0185: f94093e9  ldr x9, [sp, #288]
-    0186: f9407fea  ldr x10, [sp, #248]
-    0187: f9002d2a  str x10, [x9, #88]
-    0188: d2800029  movz x9, #0x1
-    0189: f90097e9  str x9, [sp, #296]
-    0190: d2820009  movz x9, #0x1000
-    0191: f2a80009  movk x9, #0x4000, lsl #16
-    0192: f9009be9  str x9, [sp, #304]
-    0193: f9409be9  ldr x9, [sp, #304]
-    0194: f94097ea  ldr x10, [sp, #296]
-    0195: f90d052a  str x10, [x9, #6664]
-    0196: d2800009  movz x9, #0x0
-    0197: f9009fe9  str x9, [sp, #312]
-    0198: f9409fe0  ldr x0, [sp, #312]
-    0199: 14000002  b #8
-    0200: 14000001  b #4
-    0201: f940a3fe  ldr lr, [sp, #320]
-    0202: 910543ff  add sp, sp, #336
-    0203: d65f03c0  ret
+    0179: f9009be9  str x9, [sp, #304]
+    0180: f9409be9  ldr x9, [sp, #304]
+    0181: f94097ea  ldr x10, [sp, #296]
+    0182: f90d052a  str x10, [x9, #6664]
+    0183: d2800009  movz x9, #0x0
+    0184: f9009fe9  str x9, [sp, #312]
+    0185: f9409fe0  ldr x0, [sp, #312]
+    0186: 14000002  b #8
+    0187: 14000001  b #4
+    0188: f940a3fe  ldr lr, [sp, #320]
+    0189: 910543ff  add sp, sp, #336
+    0190: d65f03c0  ret
   Fn key=__wrela_runtime_probe frame=16 bytes
     0000: d10043ff  sub sp, sp, #16
     0001: f90003fe  str lr, [sp, #0]
