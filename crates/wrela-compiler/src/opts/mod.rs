@@ -50,6 +50,16 @@ pub enum OptId {
     WideImmForms,
     /// Item E: per-function linear-scan register allocation.
     RegAlloc,
+    /// Item F5: a call in tail position is a jump (decision 1773).
+    TailCalls,
+    /// Item F1/F2/F4: the whole-program convention — a per-function
+    /// register pool measured from that function's own emission, and a
+    /// per-callee clobber set in place of a blanket call barrier
+    /// (decision 1771).
+    InterprocRegs,
+    /// Item F3: a function with nothing left to keep gets no frame
+    /// (decision 1772).
+    Frameless,
 }
 
 /// Fixed release order. Add opts here — nowhere else.
@@ -75,6 +85,18 @@ pub enum OptId {
 /// that changes what `emit_one` produces has to run before it, or the
 /// probe measures a program that is never built. Items B and C all change
 /// emission, so all of them precede it.
+///
+/// **Item F's three ids all follow `RegAlloc`, and decision 1763 still
+/// holds exactly as written (decision 1774).** 1763's requirement is
+/// that every opt whose transform the *probe* must see runs before the
+/// allocator. None of item F's three is such an opt: `InterprocRegs`
+/// changes which register the allocator may choose, `Frameless` is read
+/// off the allocation's own result, and `TailCalls` is applied at
+/// emission only where `Frameless` already removed the frame — the probe
+/// deliberately never substitutes it (decision 1776), so it measures the
+/// conservative program in every case. They are ordered by their
+/// dependence: each one's transform is only reachable once the one
+/// before it has fired.
 pub const RELEASE_OPTS: &[OptId] = &[
     OptId::BoundsElide,
     OptId::NarrowImm,
@@ -83,6 +105,9 @@ pub const RELEASE_OPTS: &[OptId] = &[
     OptId::MaskCheck,
     OptId::WideImmForms,
     OptId::RegAlloc,
+    OptId::InterprocRegs,
+    OptId::Frameless,
+    OptId::TailCalls,
 ];
 
 /// Enable exactly the named opts (decision 1452). Product modes go
@@ -95,6 +120,9 @@ pub fn apply_opts(opts: &[OptId]) {
     crate::codegen::set_mask_check(opts.contains(&OptId::MaskCheck));
     crate::codegen::set_wide_imm_forms(opts.contains(&OptId::WideImmForms));
     crate::regalloc::set_regalloc(opts.contains(&OptId::RegAlloc));
+    crate::codegen::set_tail_calls(opts.contains(&OptId::TailCalls));
+    crate::regalloc::set_interproc_regs(opts.contains(&OptId::InterprocRegs));
+    crate::codegen::set_frameless_fns(opts.contains(&OptId::Frameless));
 }
 
 /// Single front door for product-mode TLS knobs (decision 1422).
@@ -108,7 +136,10 @@ pub fn apply_mode(mode: CompileMode) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::codegen::{adr_addressing, bfx_narrow, mask_check, narrow_imm, wide_imm_forms};
+    use crate::codegen::{
+        adr_addressing, bfx_narrow, frameless_fns, mask_check, narrow_imm, tail_calls,
+        wide_imm_forms,
+    };
     use crate::lower::bounds_elide;
 
     /// Every knob `apply_opts` drives, read back. Written as one list so a
@@ -123,6 +154,9 @@ mod tests {
             (OptId::MaskCheck, mask_check()),
             (OptId::WideImmForms, wide_imm_forms()),
             (OptId::RegAlloc, crate::regalloc::regalloc()),
+            (OptId::TailCalls, tail_calls()),
+            (OptId::InterprocRegs, crate::regalloc::interproc_regs()),
+            (OptId::Frameless, frameless_fns()),
         ]
     }
 
@@ -185,12 +219,24 @@ mod tests {
                 OptId::MaskCheck,
                 OptId::WideImmForms,
                 OptId::RegAlloc,
+                OptId::InterprocRegs,
+                OptId::Frameless,
+                OptId::TailCalls,
             ]
         );
+        // Decision 1774: everything the *probe* must see precedes
+        // `RegAlloc`; only the two opts that read the allocation's own
+        // result follow it.
+        let after: Vec<OptId> = RELEASE_OPTS
+            .iter()
+            .skip_while(|o| **o != OptId::RegAlloc)
+            .skip(1)
+            .copied()
+            .collect();
         assert_eq!(
-            RELEASE_OPTS.last(),
-            Some(&OptId::RegAlloc),
-            "the allocator must run after every emission-changing opt"
+            after,
+            vec![OptId::InterprocRegs, OptId::Frameless, OptId::TailCalls],
+            "only allocation-reading opts may follow the allocator"
         );
     }
 

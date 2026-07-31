@@ -878,6 +878,7 @@ mod tests {
         let program = CodegenProgram {
             fns,
             rodata: Vec::new(),
+            ..Default::default()
         };
         let mut out = String::from("ImageReport v0\n");
         append_cost_summary(

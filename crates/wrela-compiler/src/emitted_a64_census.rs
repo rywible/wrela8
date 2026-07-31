@@ -240,7 +240,11 @@ mod tests {
         // emitted words fall.
         assert_eq!(
             encode_enc_site_count(),
-            356,
+            // 356 -> 358: item F adds `emit_tail_call`'s own `B` and
+            // `layout::patch_bl`'s `enc_b` (the form-preserving patch).
+            // `emit_frame_teardown` is a *move* of `emit_epilogue`'s two
+            // words, not a new site, so it adds none.
+            358,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }

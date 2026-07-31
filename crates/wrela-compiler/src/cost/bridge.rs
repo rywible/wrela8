@@ -556,6 +556,7 @@ mod tests {
         CodegenProgram {
             fns,
             rodata: Vec::new(),
+            ..Default::default()
         }
     }
 

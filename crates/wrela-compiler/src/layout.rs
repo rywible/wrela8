@@ -1198,7 +1198,29 @@ fn patch_bl(
              ({delta} bytes away) — outside the imm26 encoder's own +/-128 MiB reach"
         )));
     }
-    words[idx] = encode::enc_bl(delta as i32);
+    // plans/codegen-pareto.md item F5: **preserve the form the emitter
+    // encoded**. A tail call is an ordinary call edge — same
+    // `Reloc::Call`, same reachability, same cross-core resolution — but
+    // it is a `B`, not a `BL`, and rewriting it as a `BL` here would
+    // silently reinstate a return through a frame that no longer exists.
+    // Bit 31 is the `op` field that distinguishes the two
+    // (`encode::b_bl`), and it is the only difference between them.
+    // Fail closed on anything that is not already a `B`/`BL`: the class
+    // field is bits [30:26] = 0b00101 for exactly those two, and a
+    // placeholder that is neither means the reloc names a word the
+    // emitter did not put a branch at.
+    if (words[idx] >> 26) & 0b1_1111 != 0b00101 {
+        return Err(LayoutError::new(format!(
+            "internal error: a call relocation names word {idx} at {this_addr:#x}, which holds              {:#010x} — not a `B`/`BL`",
+            words[idx]
+        )));
+    }
+    let links = words[idx] & 0x8000_0000 != 0;
+    words[idx] = if links {
+        encode::enc_bl(delta as i32)
+    } else {
+        encode::enc_b(delta as i32)
+    };
     Ok(())
 }
 
@@ -4141,6 +4163,7 @@ pub fn t():
         let codegen = crate::codegen::CodegenProgram {
             fns,
             rodata: codegen.rodata.clone(),
+            ..Default::default()
         };
         // Wave 1+: test-image layout seeds `__wrela_rt_primary_entry` via
         // `lower_and_codegen_image`. This unit only needs the probe to
@@ -5132,21 +5155,39 @@ fn two():
 
     #[test]
     fn patch_bl_encodes_a_forward_offset() {
-        let mut words = vec![0u32];
+        let mut words = vec![encode::enc_bl(0)];
         patch_bl(&mut words, 0, 0x1000, 0x1010).unwrap();
         assert_eq!(words[0], encode::enc_bl(0x10));
     }
 
     #[test]
     fn patch_bl_encodes_a_negative_offset() {
-        let mut words = vec![0u32];
+        let mut words = vec![encode::enc_bl(0)];
         patch_bl(&mut words, 0, 0x2000, 0x1000).unwrap();
         assert_eq!(words[0], encode::enc_bl(-0x1000));
     }
 
+    /// plans/codegen-pareto.md item F5: a tail call is patched as the
+    /// `B` the emitter encoded, never rewritten into a `BL`. A `BL`
+    /// here would return into a frame this function already dropped.
+    #[test]
+    fn patch_bl_keeps_a_tail_calls_own_b_form() {
+        let mut words = vec![encode::enc_b(0)];
+        patch_bl(&mut words, 0, 0x1000, 0x1010).unwrap();
+        assert_eq!(words[0], encode::enc_b(0x10));
+        assert_ne!(words[0], encode::enc_bl(0x10));
+    }
+
+    /// ...and a word that is neither form is a refusal, not a guess.
+    #[test]
+    fn patch_bl_fails_closed_on_a_word_that_is_not_a_branch() {
+        let mut words = vec![0u32];
+        assert!(patch_bl(&mut words, 0, 0x1000, 0x1010).is_err());
+    }
+
     #[test]
     fn patch_bl_fails_closed_out_of_range() {
-        let mut words = vec![0u32];
+        let mut words = vec![encode::enc_bl(0)];
         let far = 1u64 << 40;
         assert!(patch_bl(&mut words, 0, 0, far).is_err());
     }
@@ -5320,6 +5361,7 @@ fn two():
         let program = CodegenProgram {
             fns,
             rodata: Vec::new(),
+            ..Default::default()
         };
         let out = layout_program(&program, None).unwrap();
         let names: Vec<&str> = out.sections.iter().map(|s| s.name).collect();
@@ -5341,6 +5383,7 @@ fn two():
         let program = CodegenProgram {
             fns,
             rodata: vec![b"hello".to_vec()],
+            ..Default::default()
         };
         let out = layout_program(&program, None).unwrap();
         let names: Vec<&str> = out.sections.iter().map(|s| s.name).collect();
@@ -5355,7 +5398,7 @@ fn two():
     fn call_reloc_resolves_to_the_callees_own_base() {
         let mut fns = BTreeMap::new();
         // `g` calls `f`; `f`'s own code sorts before `g`'s (BTree order).
-        let mut g = fn_words(&[0]);
+        let mut g = fn_words(&[encode::enc_bl(0)]);
         g.relocs.push(Reloc::Call {
             word: 0,
             key: "f".to_string(),
@@ -5365,6 +5408,7 @@ fn two():
         let program = CodegenProgram {
             fns,
             rodata: Vec::new(),
+            ..Default::default()
         };
         let out = layout_program(&program, None).unwrap();
         let code = out.sections.iter().find(|s| s.name == "code").unwrap();
@@ -5392,6 +5436,7 @@ fn two():
         let program = CodegenProgram {
             fns,
             rodata: Vec::new(),
+            ..Default::default()
         };
         assert!(layout_program(&program, None).is_err());
     }
@@ -5837,6 +5882,7 @@ fn two():
         let program = CodegenProgram {
             fns,
             rodata: vec![b"x".to_vec()],
+            ..Default::default()
         };
         let a = layout_program(&program, None).unwrap();
         let b = layout_program(&program, None).unwrap();
@@ -5849,6 +5895,7 @@ fn two():
         CodegenProgram {
             fns: BTreeMap::new(),
             rodata: vec![longest.to_vec()],
+            ..Default::default()
         }
     }
 
@@ -5884,6 +5931,7 @@ fn two():
         let program = CodegenProgram {
             fns: BTreeMap::new(),
             rodata: Vec::new(),
+            ..Default::default()
         };
         let tests = vec!["only_test".to_string()];
         let bound = compute_transcript_bound(&program, &tests);
@@ -6038,6 +6086,7 @@ fn two():
         let program = CodegenProgram {
             fns,
             rodata: Vec::new(),
+            ..Default::default()
         };
         let layout = layout_program(&program, None).unwrap();
         let abort = layout

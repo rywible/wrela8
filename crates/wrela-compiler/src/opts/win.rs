@@ -2659,16 +2659,29 @@ mod tests {
     /// blind to it. It survives on cycles alone.
     #[test]
     fn narrow_imm_wins_on_cycles_while_its_footprint_win_is_priced_at_zero() {
-        let configs: [(&str, &[OptId]); 8] = [
-            ("dev", &[]),
-            ("BoundsElide", &[OptId::BoundsElide]),
-            ("NarrowImm", &[OptId::NarrowImm]),
-            ("AdrAddressing", &[OptId::AdrAddressing]),
-            ("BfxNarrow", &[OptId::BfxNarrow]),
-            ("MaskCheck", &[OptId::MaskCheck]),
-            ("RegAlloc", &[OptId::RegAlloc]),
-            ("release", RELEASE_OPTS),
-        ];
+        // **Derived from `RELEASE_OPTS`, not hand-listed** (item F). The
+        // comment on `rankable` below already names the trap a hand-list
+        // walks into — "silently becomes `release beats two of its six
+        // opts`" — and the array underneath it was itself a hand-list, so
+        // item F's three ids appeared in `rankable` and not in `configs`
+        // and the lookup panicked. One source, both readers.
+        let singles: Vec<(String, Vec<OptId>)> = RELEASE_OPTS
+            .iter()
+            .map(|id| (format!("{id:?}"), vec![*id]))
+            .collect();
+        let mut configs: Vec<(&str, &[OptId])> = vec![("dev", &[])];
+        for (label, opts) in &singles {
+            configs.push((label.as_str(), opts.as_slice()));
+        }
+        // The list as it stood before item F, so the sum-of-singles bound
+        // below can still be asked where every member is rankable alone.
+        let pre_f: Vec<OptId> = RELEASE_OPTS
+            .iter()
+            .copied()
+            .take_while(|id| *id != OptId::InterprocRegs)
+            .collect();
+        configs.push(("release-minus-F", pre_f.as_slice()));
+        configs.push(("release", RELEASE_OPTS));
         let rows = attribute_opts(&configs);
         let table = format_attribution_table(&rows);
         eprintln!("per-opt attribution (plans/M20.md item K):\n{table}");
@@ -2792,7 +2805,22 @@ mod tests {
         // is excluded here by name and gated on its own baseline in
         // `ITEM_C_SMOKE`. The exclusion is asserted to be exactly that one
         // id, so a future opt cannot join it silently.
-        const UNRANKABLE_ALONE: &[OptId] = &[OptId::WideImmForms];
+        //
+        // **Item F adds three more, for the same structural reason.**
+        // None of its ids is a transform of its own against `dev`:
+        // `InterprocRegs` changes which register the allocator may pick,
+        // `Frameless` is read off the allocation's own result, and
+        // `TailCalls` only substitutes where `Frameless` already removed
+        // the frame (decision 1776). With `RegAlloc` off all three are
+        // the identity. Each is gated on its real baseline in
+        // `ITEM_F_SMOKE`, which is a chain rather than a single
+        // baseline precisely because they compose in this order.
+        const UNRANKABLE_ALONE: &[OptId] = &[
+            OptId::WideImmForms,
+            OptId::InterprocRegs,
+            OptId::Frameless,
+            OptId::TailCalls,
+        ];
         let rankable: Vec<OptId> = RELEASE_OPTS
             .iter()
             .copied()
@@ -2821,12 +2849,39 @@ mod tests {
             "every rankable opt must contribute on cycles: {wins:?}
 {table}"
         );
+        // **The sum-of-singles bound, restated by item F (decision 1777).**
+        //
+        // Through item E the claim was `rel_win <= Σ singles`: the opts
+        // overlap rather than compose, so none of them creates cycles
+        // that none creates alone. Item F breaks that, and the break is
+        // the finding rather than a bug. Three of its four ids
+        // (`InterprocRegs`, `Frameless`, `TailCalls`) are *unreachable*
+        // against a `dev` baseline — none of them is a transform of its
+        // own, each only fires once the one before it has — so their
+        // singles are all exactly zero while their joint contribution is
+        // not. Measuring `Σ singles` against `release` therefore compares
+        // a sum that is missing three terms with a total that has them.
+        //
+        // So the bound is asked where it is still a real question: over
+        // the list **as it stood before item F**, whose members are all
+        // rankable alone. `release` is then required to beat that, which
+        // is the claim item F is actually making.
+        let e_win = dev_cycles - sum("release-minus-F", |c| c.proxy_cycles);
         assert!(
-            rel_win <= wins.iter().map(|(_, w)| *w).sum::<i64>(),
-            "release's win cannot exceed the sum of the singles — that would \
-             mean the opts create cycles together that none creates alone: \
-             release {rel_win} vs {wins:?}
+            e_win <= wins.iter().map(|(_, w)| *w).sum::<i64>(),
+            "the pre-item-F list's win cannot exceed the sum of its singles: \
+             {e_win} vs {wins:?}
 {table}"
+        );
+        assert!(
+            rel_win > e_win,
+            "item F's three ids must add cycles on top of the whole list \
+             before them: release {rel_win} vs release-minus-F {e_win}
+{table}"
+        );
+        eprintln!(
+            "item F block win (release-minus-F -> release): {} proxy cycles",
+            rel_win - e_win
         );
         assert!(
             wins.iter().all(|(_, w)| rel_win > *w),
@@ -4479,7 +4534,7 @@ mod tests {
         );
         assert_eq!(
             (w_form, x_form),
-            (149, 152),
+            (73, 83),
             "the measured size of C1's win once item E removed the frame slack; \
              re-measure this rather than rescaling it"
         );
