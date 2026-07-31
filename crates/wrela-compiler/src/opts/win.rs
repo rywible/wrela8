@@ -3287,16 +3287,20 @@ mod tests {
     /// **Item E's smoke lane: the ∀ sweep of the allocator alone, on one
     /// case, in the default `cargo test`.** Same code path, same probe,
     /// same refusals as the whole-corpus sweep below — over
-    /// `cost-bounds-elide`, whose release total the allocator takes from
-    /// 314 to 225 at the pinned point.
+    /// `cost-branch-bias`, which the allocator alone takes from 562 to
+    /// 437 at the pinned point, the largest *relative* fall in the corpus
+    /// (22%) and so the one whose collapse would be most visible.
+    ///
+    /// `cost-bounds-elide` — the smoke case the `dev -> release` sweep
+    /// uses — would be the wrong choice here: the allocator does not move
+    /// it at all, because every temp in it is read exactly once and
+    /// decision 1765 declines to promote those. A smoke lane over a case
+    /// the candidate cannot change asserts nothing.
     #[test]
     fn regalloc_wins_at_every_box_point_on_the_smoke_case() {
-        let cmp = compare_opt_lists_over_box_for_case(
-            WITHOUT_REGALLOC,
-            RELEASE_OPTS,
-            "cost-bounds-elide",
-        )
-        .expect("smoke sweep");
+        let cmp =
+            compare_opt_lists_over_box_for_case(WITHOUT_REGALLOC, RELEASE_OPTS, "cost-branch-bias")
+                .expect("smoke sweep");
         assert_eq!(cmp.cases.len(), 1, "the smoke lane sweeps exactly one case");
         let case = &cmp.cases[0];
         assert!(

@@ -11967,8 +11967,9 @@ pub fn used_twice(a: u64) -> u64:
 
     /// **A value used twice in a row loads once — in fact zero times.**
     /// The item asked for one load; residency removes the frame slot
-    /// entirely, so the two uses are register reads and the only memory
-    /// traffic left in the function is saving and restoring `lr`.
+    /// entirely, so the two uses are register reads. What memory traffic
+    /// is left belongs to `lr` and to the single-read temps decision 1765
+    /// declines to promote — never to `x`, the twice-read value.
     #[test]
     fn a_value_used_twice_stops_round_tripping_through_the_frame() {
         let before = emit(TWICE, WITHOUT);
@@ -11986,25 +11987,49 @@ pub fn used_twice(a: u64) -> u64:
             lb >= 4 && sb >= 3,
             "the spill-everything baseline must really round-trip: {lb} loads, {sb} stores"
         );
-        // One load and one store survive: the `lr` save/restore, which is
-        // item F3's frameless-function job, not this item's.
-        assert_eq!(la, 1, "only the `lr` reload may remain, got {la} loads");
-        assert_eq!(sa, 1, "only the `lr` save may remain, got {sa} stores");
+        assert!(
+            la < lb && sa < sb,
+            "residency must delete memory traffic: {lb} -> {la} loads, {sb} -> {sa} stores"
+        );
+        // The twice-read value itself is gone from the frame entirely:
+        // two of the baseline's loads were its reloads.
+        assert!(
+            lb - la >= 2,
+            "both reloads of the twice-read value must go: {lb} -> {la}"
+        );
     }
 
-    /// **The frame shrinks on a named case: `asm-arith`'s `checked_add`.**
-    /// Three scalar temps (`a`, `b`, the sum) plus `lr` is 32 bytes of
-    /// spill-everything frame; all three go resident and 16 bytes of
-    /// `lr`-only frame is left.
+    /// **The frame shrinks on a named case: `asm-loop`'s `sum_array`.**
+    /// 160 bytes of spill-everything frame down to 128, because its loop
+    /// counter, accumulator and bound are each read more than once and go
+    /// resident.
+    ///
+    /// The case is `asm-loop` and not `asm-arith` deliberately.
+    /// `asm-arith`'s `checked_add` reads every one of its temps exactly
+    /// once, so decision 1765 refuses all of them and its frame is
+    /// **unchanged** at 32 — which this test also pins, because "the
+    /// allocator declines where a register would not pay" is as much a
+    /// property to hold as the shrink itself.
     #[test]
-    fn the_frame_shrinks_on_asm_arith_checked_add() {
-        let src = std::fs::read_to_string(
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../tests/golden/asm-arith/input.wr"),
-        )
-        .expect("the asm-arith golden input");
-        assert_eq!(frame_of(&emit(&src, WITHOUT), "checked_add"), 32);
-        assert_eq!(frame_of(&emit(&src, WITH), "checked_add"), 16);
+    fn the_frame_shrinks_on_asm_loop_sum_array() {
+        let read = |case: &str| {
+            std::fs::read_to_string(
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join(format!("../../tests/golden/{case}/input.wr")),
+            )
+            .unwrap_or_else(|e| panic!("the {case} golden input: {e}"))
+        };
+        let loop_src = read("asm-loop");
+        assert_eq!(frame_of(&emit(&loop_src, WITHOUT), "sum_array"), 160);
+        assert_eq!(frame_of(&emit(&loop_src, WITH), "sum_array"), 128);
+
+        let arith_src = read("asm-arith");
+        assert_eq!(frame_of(&emit(&arith_src, WITHOUT), "checked_add"), 32);
+        assert_eq!(
+            frame_of(&emit(&arith_src, WITH), "checked_add"),
+            32,
+            "every temp is read once, so a register buys nothing (decision 1765)"
+        );
     }
 
     /// **A program with more live values than registers still spills

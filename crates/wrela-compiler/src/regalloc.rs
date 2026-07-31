@@ -273,6 +273,44 @@ pub fn allocate(facts: &FnFacts, scalar_slot: &[bool]) -> Assignment {
         }
     }
 
+    // --- 1b. a register has to pay for itself -------------------------
+    //
+    // Residency rewrites each access one-for-one: a `store_slot` becomes
+    // `mov home, reg` and a `load_slot` becomes `mov reg, home`. So a
+    // temp written once and read once is not a residency at all, it is a
+    // **copy** — the value is moved into its home register and moved
+    // straight back out, and what used to be an independent `str`/`ldr`
+    // pair (linked only through memory, and free to slack around the
+    // code between them) becomes a strictly serial two-`mov` chain.
+    //
+    // Measured, not assumed (plans/codegen-pareto-E.md, decision 1765).
+    // `cost-calls` is a program made entirely of such copies, and it is
+    // the one case in the corpus the ∀ gate caught rising: **+2 at every
+    // `store_to_load_forwarding=1` corner**, against −13 at every
+    // `=4` corner. That is exactly the shape the plan warned this item
+    // must not have — a win that depends on the swept forwarding
+    // latency. Refusing single-read temps removes the dependence
+    // instead of arguing with the ruler: what is left is only the temps
+    // whose reloads are genuinely eliminated, and those fall at every
+    // point of the box.
+    //
+    // The rule is about **reads**, not touches, because reads are what a
+    // register saves. One write and two reads deletes a reload; one
+    // write and one read deletes nothing.
+    let mut reads: Vec<usize> = vec![0; n];
+    for p in &facts.points {
+        for &(t, touch, _) in &p.touches {
+            if t < n && touch == Touch::Read {
+                reads[t] += 1;
+            }
+        }
+    }
+    for t in 0..n {
+        if reads[t] < 2 {
+            eligible[t] = false;
+        }
+    }
+
     // --- 2. intervals from first touch to last touch ------------------
     let mut first: Vec<Option<usize>> = vec![None; n];
     let mut last: Vec<Option<usize>> = vec![None; n];
@@ -462,12 +500,12 @@ pub fn allocate(facts: &FnFacts, scalar_slot: &[bool]) -> Assignment {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests_support {
     use super::*;
 
     /// One point whose touches all sit at word 0 and which contains no
     /// call — the shape most of these oracles need.
-    fn point(touches: &[(usize, Touch)]) -> PointFacts {
+    pub(crate) fn point(touches: &[(usize, Touch)]) -> PointFacts {
         PointFacts {
             touches: touches.iter().map(|&(t, h)| (t, h, 0usize)).collect(),
             call_words: Vec::new(),
@@ -476,13 +514,19 @@ mod tests {
     }
 
     /// A point that is nothing but a returning call.
-    fn call_point() -> PointFacts {
+    pub(crate) fn call_point() -> PointFacts {
         PointFacts {
             touches: Vec::new(),
             call_words: vec![0],
             regs: BTreeSet::new(),
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tests_support::*;
+    use super::*;
 
     /// Straight-line: two overlapping scalars, both resident, distinct.
     #[test]
@@ -491,6 +535,7 @@ mod tests {
             temp_count: 2,
             points: vec![
                 point(&[(0, Touch::Write), (1, Touch::Write)]),
+                point(&[(0, Touch::Read), (1, Touch::Read)]),
                 point(&[(0, Touch::Read), (1, Touch::Read)]),
             ],
             back_edges: Vec::new(),
@@ -513,6 +558,7 @@ mod tests {
                 point(&[(0, Touch::Write)]),
                 point(&[(0, Touch::Escape)]),
                 point(&[(0, Touch::Read)]),
+                point(&[(0, Touch::Read)]),
             ],
             back_edges: Vec::new(),
         };
@@ -525,7 +571,11 @@ mod tests {
     fn a_non_scalar_slot_is_never_resident() {
         let facts = FnFacts {
             temp_count: 1,
-            points: vec![point(&[(0, Touch::Write)]), point(&[(0, Touch::Read)])],
+            points: vec![
+                point(&[(0, Touch::Write)]),
+                point(&[(0, Touch::Read)]),
+                point(&[(0, Touch::Read)]),
+            ],
             back_edges: Vec::new(),
         };
         assert_eq!(allocate(&facts, &[false]).of(0), None);
@@ -539,6 +589,7 @@ mod tests {
             temp_count: 1,
             points: vec![
                 point(&[(0, Touch::Write)]),
+                point(&[(0, Touch::Read)]),
                 call_point(),
                 point(&[(0, Touch::Read)]),
             ],
@@ -551,6 +602,7 @@ mod tests {
             temp_count: 1,
             points: vec![
                 point(&[(0, Touch::Write)]),
+                point(&[(0, Touch::Read)]),
                 point(&[(0, Touch::Read)]),
                 call_point(),
             ],
@@ -572,7 +624,7 @@ mod tests {
         }
         let facts = FnFacts {
             temp_count: n,
-            points: vec![point(&defs), point(&uses)],
+            points: vec![point(&defs), point(&uses), point(&uses)],
             back_edges: Vec::new(),
         };
         let a = allocate(&facts, &vec![true; n]);
@@ -596,6 +648,7 @@ mod tests {
             points: vec![
                 p0,
                 point(&[(0, Touch::Read), (1, Touch::Write), (1, Touch::Read)]),
+                point(&[(0, Touch::Read), (1, Touch::Read)]),
             ],
             back_edges: Vec::new(),
         };
@@ -618,8 +671,8 @@ mod tests {
             points: vec![
                 point(&[]),
                 point(&[(0, Touch::Write)]),
-                point(&[(1, Touch::Write)]),
-                point(&[(1, Touch::Read)]),
+                point(&[(1, Touch::Write), (1, Touch::Read)]),
+                point(&[(1, Touch::Read), (0, Touch::Read)]),
                 point(&[(0, Touch::Read)]),
             ],
             back_edges: vec![(3, 1)],
@@ -642,7 +695,9 @@ mod tests {
             points: vec![
                 point(&[(0, Touch::Write)]),
                 point(&[(0, Touch::Read)]),
+                point(&[(0, Touch::Read)]),
                 point(&[(1, Touch::Write)]),
+                point(&[(1, Touch::Read)]),
                 point(&[(1, Touch::Read)]),
             ],
             back_edges: Vec::new(),
@@ -661,6 +716,12 @@ mod tests {
             points: vec![
                 point(&[(0, Touch::Write), (1, Touch::Write)]),
                 point(&[(2, Touch::Write), (3, Touch::Write)]),
+                point(&[
+                    (0, Touch::Read),
+                    (1, Touch::Read),
+                    (2, Touch::Read),
+                    (3, Touch::Read),
+                ]),
                 point(&[
                     (0, Touch::Read),
                     (1, Touch::Read),
@@ -686,5 +747,51 @@ mod tests {
             assert!((19..=27).contains(r), "pool register x{r} is out of range");
         }
         assert_eq!(POOL.len(), 9);
+    }
+}
+
+#[cfg(test)]
+mod pays_for_itself_tests {
+    use super::tests_support::*;
+    use super::*;
+
+    /// **Decision 1765.** A temp written once and read once is a *copy*,
+    /// not a residency: residency would turn an independent `str`/`ldr`
+    /// pair into a serial two-`mov` chain and buy nothing. It is refused.
+    #[test]
+    fn a_single_read_temp_is_refused_because_a_register_buys_nothing() {
+        let facts = FnFacts {
+            temp_count: 1,
+            points: vec![point(&[(0, Touch::Write)]), point(&[(0, Touch::Read)])],
+            back_edges: Vec::new(),
+        };
+        assert_eq!(allocate(&facts, &[true]).of(0), None);
+    }
+
+    /// ...and the second read is exactly what tips it.
+    #[test]
+    fn a_second_read_makes_the_register_pay() {
+        let facts = FnFacts {
+            temp_count: 1,
+            points: vec![
+                point(&[(0, Touch::Write)]),
+                point(&[(0, Touch::Read)]),
+                point(&[(0, Touch::Read)]),
+            ],
+            back_edges: Vec::new(),
+        };
+        assert!(allocate(&facts, &[true]).of(0).is_some());
+    }
+
+    /// A write-only temp is never resident either: nothing reads it, so
+    /// there is no reload to delete.
+    #[test]
+    fn a_write_only_temp_is_refused() {
+        let facts = FnFacts {
+            temp_count: 1,
+            points: vec![point(&[(0, Touch::Write)]), point(&[(0, Touch::Write)])],
+            back_edges: Vec::new(),
+        };
+        assert_eq!(allocate(&facts, &[true]).of(0), None);
     }
 }

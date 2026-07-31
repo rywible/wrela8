@@ -826,11 +826,12 @@ Worker.report=2
         assert!(attach.measured_footprint.is_empty());
         assert!(attach.block_frequencies.is_empty());
         // plans/codegen-pareto.md item E re-pinned this: `cost-branchy`'s
-        // release total fell 172 -> 153 when the allocator stopped
-        // round-tripping its scalars through the frame. The number is
-        // pinned so the *wiring* stays inert, not to pin a cost model.
-        assert_eq!(report.total_proxy_cycles, 153, "the pinned flat total");
-        assert_eq!(report.workload_totals["flat"], 153);
+        // release total fell 172 -> 136 when the allocator stopped
+        // round-tripping its multiply-read scalars through the frame. The
+        // number is pinned so the *wiring* stays inert, not to pin a cost
+        // model.
+        assert_eq!(report.total_proxy_cycles, 136, "the pinned flat total");
+        assert_eq!(report.workload_totals["flat"], 136);
         assert_eq!(report.workload_totals.len(), 1, "flat row only");
     }
 
