@@ -831,20 +831,33 @@ pub fn format_delta_table(cmp: &CorpusCompare, base_label: &str, cand_label: &st
 /// be ranked over the box at all. A bound that refuses the entire corpus
 /// is not a fail-closed bound, it is an outage.
 ///
-/// The cost is measured, not guessed. On this tree
-/// `release_wins_at_every_point_of_the_residual_box` enumerates **26 112
-/// points per side** across the 15 cases and wins at every one of them;
-/// the whole deep lane — that sweep plus
-/// `narrow_imm_alone_wins_at_every_box_point` — is **~4 minutes** in the
-/// profile `cargo test` actually runs (243 s standalone, 218 s inside
-/// `cargo xtask check`). The 1916 s (31 m 58 s) figure
-/// previously recorded here does not reproduce, and the run that produced
-/// it also *failed*, on the since-retired absolute I-TLB veto. Four
-/// minutes is a deep-lane cost, not a `cargo test` cost, which is why the
-/// sweep is
-/// `#[ignore]`d and run by `xtask::deep_lane` — a lane that, until that
-/// function landed, did not exist, so this gate was refusing into a void
-/// nothing executed.
+/// The cost is measured, not guessed. The 1916 s (31 m 58 s) figure once
+/// recorded here does not reproduce, and the run that produced it also
+/// *failed*, on the since-retired absolute I-TLB veto.
+///
+/// | when | corpus | points/side (release sweep) | deep lane |
+/// | --- | --- | --- | --- |
+/// | 2026-07-30 (M20) | 15 micro | 26 112 | 411 s (243 s on an idle tree) |
+/// | 2026-07-31 (item H) | 15 micro + 4 product | 36 352 | 597 s + 230 s |
+///
+/// Item H's four product cases raise the release sweep by 10 240
+/// points/side and add a third deep test
+/// (`each_release_opt_is_re_asked_alone_on_the_product_tier`, 230 s), for
+/// **~14 minutes** total. Both figures were measured on this tree with
+/// four sibling worktrees compiling concurrently, so they are upper
+/// bounds; the M20 row re-measured at 411 s under the same load against
+/// its own 243 s idle number. Minutes is a deep-lane cost, not a
+/// `cargo test` cost, which is why these sweeps are `#[ignore]`d and run
+/// by `xtask::deep_lane` — a lane that, until that function landed, did
+/// not exist, so this gate was refusing into a void nothing executed.
+/// `--fast` does not reach it (`xtask::check` returns first), so the cost
+/// lands at milestone close and nowhere else.
+///
+/// No product case pushes the probe past this bound: the widest is
+/// `cost-product-blk`/`cost-product-receipt` at `k=12`, under
+/// `cost-crosscore`'s 14. That was the risk worth naming — a borrowed
+/// program reaching `k=15` would have made the widened corpus refuse to
+/// rank at all, which is this constant's own worked failure.
 ///
 /// Raising it further needs the same treatment: a measured wall time for
 /// the deep lane, in its own commit, with the reason the model now reads
@@ -2778,10 +2791,11 @@ mod tests {
     /// **Deep lane.** `#[ignore]`d by default and run by
     /// `xtask::deep_lane`, which `cargo xtask check` calls — matching how
     /// every `fuzz_*` lane already splits a smoke budget from a deep one
-    /// (`crates/xtask/src/main.rs`). Measured 2026-07-30 on this tree, in
-    /// the profile `cargo test` actually runs: **26 112 points per side**
-    /// across the 15 cases, and **~4 minutes** for the deep lane's two
-    /// sweeps together. That is not a cost the default `cargo test` loop
+    /// (`crates/xtask/src/main.rs`). Measured 2026-07-31, after item H
+    /// widened the corpus: **36 352 points per side** across 19 cases —
+    /// 15 micro and 4 product — and **~14 minutes** for the deep lane's
+    /// three sweeps together (see [`MAX_SWEPT_DIMS`] for the before/after
+    /// table). That is not a cost the default `cargo test` loop
     /// should carry; CLAUDE.md separates the
     /// cheap per-item lane from the expensive close lane, and a
     /// whole-corpus ∀ gate belongs in the latter. Nothing about the
@@ -2804,6 +2818,110 @@ mod tests {
             cmp.cases.len()
         );
     }
+
+    /// **Deep lane. Decision 1784 — every `RELEASE_OPTS` member is
+    /// re-asked, alone, on the product tier.**
+    ///
+    /// Decision 1717 says an opt may not gate on a case it authored alone.
+    /// That sentence has no force unless somebody actually re-runs the
+    /// landing question over the borrowed programs, so this is that run:
+    /// for each opt in `RELEASE_OPTS`, `dev` vs `[opt]` over the product
+    /// tier only, ∀ across each case's residual box.
+    ///
+    /// Product tier only, deliberately. The whole-corpus sweep above
+    /// already covers both tiers for the list as a whole; repeating it per
+    /// member would triple a lane that item H already measured at
+    /// 411 s → 597 s. What is not covered anywhere else is the *member's*
+    /// verdict on the programs it did not choose, and that is 4 cases
+    /// rather than 19.
+    #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
+    #[test]
+    fn each_release_opt_is_re_asked_alone_on_the_product_tier() {
+        assert!(
+            !RELEASE_OPTS.is_empty(),
+            "an empty RELEASE_OPTS would make this lane vacuous"
+        );
+        let mut verdicts = Vec::new();
+        let mut refused = Vec::new();
+        let mut measured: Vec<(String, &'static str)> = Vec::new();
+        for opt in RELEASE_OPTS {
+            let label = format!("{opt:?}");
+            let cmp = compare_opt_lists_over_box_in_tier(&[], &[*opt], CostTier::Product)
+                .unwrap_or_else(|e| panic!("{label}: product-tier sweep: {e}"));
+            let table = format_sweep_table(&cmp, "dev", &label);
+            eprintln!("∀ sweep, product tier only (dev → {label}):\n{table}");
+            assert_eq!(cmp.tiers(), vec![CostTier::Product]);
+            assert!(
+                cmp.scored_points_in(CostTier::Product) > 0,
+                "{label}: the product tier enumerated no points"
+            );
+            let reasons: Vec<String> = cmp.reasons.iter().map(SweepVeto::label).collect();
+            let verdict = if cmp.wins_in_tier(CostTier::Product) {
+                "wins"
+            } else {
+                "veto"
+            };
+            measured.push((label.clone(), verdict));
+            verdicts.push(format!(
+                "{label}: product={} ({} points/side over {} case(s)) reasons=[{}]",
+                verdict,
+                cmp.scored_points_in(CostTier::Product),
+                cmp.cases_in(CostTier::Product).len(),
+                reasons.join(" ")
+            ));
+            if !cmp.wins_in_tier(CostTier::Product) {
+                refused.push(format!("{label}: {}\n{table}", reasons.join(" ")));
+            }
+        }
+        eprintln!(
+            "RELEASE_OPTS re-asked alone on the product tier:\n{}",
+            verdicts.join("\n")
+        );
+        assert_eq!(
+            refused.len(),
+            1,
+            "the product-tier verdict set moved:\n{}",
+            verdicts.join("\n")
+        );
+        let measured: Vec<(&str, &str)> = measured.iter().map(|(l, v)| (l.as_str(), *v)).collect();
+        assert_eq!(
+            measured.as_slice(),
+            PINNED_PRODUCT_TIER_VERDICTS,
+            "**Decision 1785 — the pinned product-tier verdict set moved.**\n\
+             \n\
+             This is a *measurement*, pinned so that it cannot change \
+             quietly in either direction, not a target. What it currently \
+             records is item H's headline finding (plans/codegen-pareto-H.md):\n\
+             \n\
+             - `NarrowImm` alone falls at every point of every borrowed \
+             program. It is justified by the appliance, not only by the \
+             corpus.\n\
+             - `BoundsElide` alone is **byte-identical to `dev` on all four \
+             product cases** — same cycles, same emitted words, same hot \
+             text. Its entire measured effect lives on six microbenchmarks, \
+             the largest of which (`cost-bounds-elide`, 1839 → 314) was \
+             written for it. It is decision 1716's self-selection failure, \
+             found by exactly the widening item H exists to do.\n\
+             \n\
+             `RELEASE_OPTS` as a *list* still wins ∀ in both tiers \
+             (`unit:release_wins_at_every_point_of_the_residual_box`), which \
+             is what freeze 1714 gates, so nothing here un-lands anything. \
+             Item H adds no opt and removes none. If this assertion fires, \
+             re-derive the row it names and update the finding — do not \
+             delete the row to get green.\n\
+             \n{}",
+            verdicts.join("\n")
+        );
+    }
+
+    /// **Decision 1785.** The measured per-tier verdict of each
+    /// `RELEASE_OPTS` member, standing alone, over the product tier —
+    /// pinned so a change in either direction is loud. See
+    /// `unit:each_release_opt_is_re_asked_alone_on_the_product_tier` for
+    /// what the two rows mean and why a `veto` row is a finding rather
+    /// than a broken gate.
+    const PINNED_PRODUCT_TIER_VERDICTS: &[(&str, &str)] =
+        &[("BoundsElide", "veto"), ("NarrowImm", "wins")];
 
     /// Decision 1453: swapped opt-list order vs RELEASE_OPTS — document
     /// independence when totals match (lower vs codegen axes).
@@ -3937,10 +4055,11 @@ mod tests {
     /// **Deep lane.** `#[ignore]`d by default and run by
     /// `xtask::deep_lane`, which `cargo xtask check` calls — matching how
     /// every `fuzz_*` lane already splits a smoke budget from a deep one
-    /// (`crates/xtask/src/main.rs`). Measured 2026-07-30 on this tree, in
-    /// the profile `cargo test` actually runs: **26 112 points per side**
-    /// across the 15 cases, and **~4 minutes** for the deep lane's two
-    /// sweeps together. That is not a cost the default `cargo test` loop
+    /// (`crates/xtask/src/main.rs`). Measured 2026-07-31, after item H
+    /// widened the corpus: **36 352 points per side** across 19 cases —
+    /// 15 micro and 4 product — and **~14 minutes** for the deep lane's
+    /// three sweeps together (see [`MAX_SWEPT_DIMS`] for the before/after
+    /// table). That is not a cost the default `cargo test` loop
     /// should carry; CLAUDE.md separates the
     /// cheap per-item lane from the expensive close lane, and a
     /// whole-corpus ∀ gate belongs in the latter. Nothing about the

@@ -313,6 +313,20 @@ fn main() -> ExitCode {
 /// is minutes by construction (the whole-corpus ∀ sweep enumerates 2^k
 /// corners per case per side), which is precisely why it is not in the
 /// default `cargo test` loop.
+///
+/// **Which tier runs where** (plans/codegen-pareto.md item H, decision
+/// 1787). The cost corpus has two tiers and they are split by *cost*, per
+/// CLAUDE.md, not by subject:
+///
+/// | lane | who runs it | what it sweeps |
+/// | --- | --- | --- |
+/// | smoke | default `cargo test` | one **micro** case, ∀ over its box |
+/// | deep | this function | **both tiers**, plus each `RELEASE_OPTS` member alone over the **product** tier |
+///
+/// Measured on this tree: 411 s before item H, 827 s after (597 s for the
+/// widened release + NarrowImm sweeps, 230 s for the new per-opt
+/// product-tier lane). The product tier is 4 of 19 cases and 10 240 of
+/// 36 352 points per side.
 fn deep_lane() -> Result<(), String> {
     run(
         Command::new("cargo").args([
@@ -2802,6 +2816,17 @@ fn diff_eval_over_cases(vmm: &Path, filter: Option<&[&str]>) -> Result<DiffEvalT
             continue;
         };
         if !target.exists() {
+            continue;
+        }
+        // plans/codegen-pareto.md item H, decision 1786: a **borrowed**
+        // case (`root` naming a program outside the case dir — the
+        // product-scale cost tier) owns no program of its own, so the case
+        // that *does* own it is already in this loop. Running it twice
+        // proves nothing twice and doubles the compile.
+        if golden_case_is_borrowed(&case)? {
+            println!(
+                "diff-eval: case {name}: borrows its program — covered by the case that owns it"
+            );
             continue;
         }
         let source = std::fs::read_to_string(&target)

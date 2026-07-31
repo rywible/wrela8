@@ -38,6 +38,42 @@ pub(crate) fn hex_dump(bytes: &[u8]) -> String {
     out
 }
 
+/// Does this case **borrow** its program from elsewhere in the tree?
+///
+/// plans/codegen-pareto.md item H (decision 1780): the product-scale cost
+/// tier is built from cases that contain no `.wr` source at all — a
+/// one-line `root` naming a program that already exists for its own
+/// reasons, which is what makes it impossible for the program to have been
+/// tuned for the gate that scores it. Scans that walk every case dir and do
+/// per-*program* work (`diff-eval`) must not do that work twice; the case
+/// that owns the program is in the same walk.
+///
+/// The predicate is exactly `opts::win::classify_cost_case`'s, restated on
+/// the harness side rather than shared: xtask does not depend on the
+/// compiler's opt module, and a five-line path comparison is cheaper than
+/// the seam.
+pub(crate) fn golden_case_is_borrowed(case: &Path) -> Result<bool, String> {
+    let Some(target) = golden_case_target(case)? else {
+        return Ok(false);
+    };
+    let norm = |p: &Path| -> PathBuf {
+        let mut out = PathBuf::new();
+        for c in p.components() {
+            match c {
+                std::path::Component::CurDir => {}
+                std::path::Component::ParentDir => {
+                    if !out.pop() {
+                        out.push("..");
+                    }
+                }
+                other => out.push(other),
+            }
+        }
+        out
+    };
+    Ok(!norm(&target).starts_with(norm(case)))
+}
+
 pub(crate) fn golden_case_target(case: &Path) -> Result<Option<PathBuf>, String> {
     let root_marker = case.join("root");
     if root_marker.is_file() {
