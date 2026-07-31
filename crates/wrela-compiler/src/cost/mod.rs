@@ -46,6 +46,7 @@ pub mod branch;
 pub mod bridge;
 pub mod compose;
 pub mod crosscore;
+pub mod derive;
 pub mod dump;
 pub mod footprint;
 pub mod freq;
@@ -67,6 +68,10 @@ pub use bridge::{BlockBridge, BridgedBlock, MeasuredBlocks, Resolved, make_key, 
 pub use compose::{
     BlockGrainMeasure, WorkloadAttach, attach_workloads, block_grain_fxs, method_grain_fxs,
     uncovered_charge,
+};
+pub use derive::{
+    BlockClass, BlockRow, CallRow, DerivedTables, LayoutClasses, LoopRow, PartitionCheck,
+    layout_classes,
 };
 pub use dump::{dump, dump_for_source};
 pub use footprint::{CoreBudget, HotBlocks, PAGE_BYTES};
