@@ -59,8 +59,27 @@
 //!
 //! ## Frame layout (decision 4: spill-everything, fixed frame)
 //!
+//! **Amended by plans/codegen-pareto.md item E.** Decision 4's frame is
+//! still the whole story under `dev`, byte for byte, and it is still the
+//! correctness reference every equivalence oracle is stated against (M19
+//! freeze 1407). Under `release` with `OptId::RegAlloc`, a temp that is
+//! read more than once, never has its address taken, and is not live
+//! across a returning call is **resident**: it lives in one of
+//! `x19..=x27` for its whole live range and contributes **no bytes** to
+//! the map below, which is where the frame-size win comes from. Every
+//! other temp spills exactly as described. `regalloc.rs` owns the
+//! decision; `build_frame` gives a resident temp a virtual offset (see
+//! `VIRT_SLOT_BASE`) so the emission sites below are unchanged, and
+//! `load_slot`/`store_slot` turn its accesses into register moves.
+//!
+//! What decision 4's clause locked *besides* the frame — **emit every
+//! check** — is untouched on both paths. No abort branch, bounds check
+//! or overflow check moved.
+//!
 //! ```text
-//! [sp+0                 .. temps_end)   one region per mwir Temp, in
+//! [sp+0                 .. temps_end)   one region per **spilled** mwir
+//!                                       Temp (item E: a resident temp
+//!                                       has no region at all), in
 //!                                       temp-number order; temp `t`
 //!                                       occupies [offset(t), offset(t)
 //!                                       + mwir::size_of(temp_types[t])),
@@ -105,6 +124,12 @@
 //! is saved/restored. Scratch computation always uses `x9`-`x14`
 //! (never overlapping the `x0`-`x8` call-argument/result registers,
 //! and never `x29`/`x30`/`sp`).
+//!
+//! Item E adds `x19`-`x27` as the register-residency pool and changes
+//! nothing about that sentence: because *nothing* survives a `BL` here,
+//! a temp is simply never left resident across one. There is still no
+//! callee-saved discipline, and item F is where that stops being a
+//! restriction (it computes what each callee actually clobbers).
 //!
 //! ## Calling convention (decision 4, AAPCS64-*shaped*, not AAPCS64)
 //!
