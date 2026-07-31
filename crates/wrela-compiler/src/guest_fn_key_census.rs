@@ -1,7 +1,7 @@
 //! **Census of required `Fn key=` spellings in backend golden dumps**
 //! (plans/M9.md item KK; closes decision 324's coverage-loss audit).
 //!
-//! Allowlists live in `ledger/census.toml` (`[guest_fn_key]`); this module
+//! Allowlists live in `tests/census.toml` (`[guest_fn_key]`); this module
 //! owns the golden-dump scan that locks against them.
 
 use crate::census;
@@ -96,7 +96,7 @@ mod tests {
                 if !zero.contains_key(rel.as_str()) {
                     failures.push(format!(
                         "{rel}: dump has zero Fn keys but is not in zero_fn_dumps.\n\
-                         Allowlist it deliberately in ledger/census.toml or restore a guest \
+                         Allowlist it deliberately in tests/census.toml or restore a guest \
                          path so the feature is reachable (plans/M9.md item KK)."
                     ));
                 }
@@ -105,14 +105,14 @@ mod tests {
             if zero.contains_key(rel.as_str()) {
                 failures.push(format!(
                     "{rel}: listed in zero_fn_dumps but dump now has keys {keys:?}.\n\
-                     Remove it from ledger/census.toml [guest_fn_key]."
+                     Remove it from tests/census.toml [guest_fn_key]."
                 ));
                 continue;
             }
             let Some(need) = required.get(rel.as_str()) else {
                 failures.push(format!(
                     "{rel}: backend dump is not in required_fn_keys.\n\
-                     Add its required Fn keys to ledger/census.toml \
+                     Add its required Fn keys to tests/census.toml \
                      (plans/M9.md item KK)."
                 ));
                 continue;
@@ -127,7 +127,7 @@ mod tests {
                     "{rel}: missing required Fn keys {missing:?}.\n\
                      live keys: {keys:?}.\n\
                      Restore a guest-reachable path (`@test(runtime)`, actor `pub`, \
-                     or `@task`) that calls the feature, or update ledger/census.toml \
+                     or `@task`) that calls the feature, or update tests/census.toml \
                      deliberately (plans/M9.md item KK)."
                 ));
             }

@@ -302,7 +302,7 @@ mod tests {
         assert!(again.is_empty(), "recorder leaked across scopes: {again:?}");
     }
 
-    // `#[should_panic]` first so `xtask ledger`'s `#[test]`-then-`fn` scan
+    // `#[should_panic]` first so `xtask check`'s `#[test]`-then-`fn` scan
     // can see this name (the same shape `cost::crosscore` uses).
     #[should_panic(expected = "already recording")]
     #[test]

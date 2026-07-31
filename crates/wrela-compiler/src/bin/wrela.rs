@@ -10,7 +10,7 @@
 //! stdout and accept a nonzero exit when the pinned expectation is itself
 //! a diagnostic (see `xtask`'s golden runner).
 //!
-//! `--timings` (ROADMAP.md's compiler measurement lane, M1) adds one more
+//! `--timings` (CLAUDE.md's compiler measurement lane, M1) adds one more
 //! line, to STDERR only, so it never touches a golden: per-phase wall
 //! clock time (read, lex, parse, dump, total) in microseconds, measured
 //! with `std::time::Instant` at each phase boundary. Dumb on purpose — no
@@ -1049,7 +1049,7 @@ fn dump(args: &[String]) -> ExitCode {
                 let parse_start = Instant::now();
                 let parsed = parser::parse(tokens);
                 parse_time = parse_start.elapsed();
-                // Sema has no phase timer of its own yet (ROADMAP.md:
+                // Sema has no phase timer of its own yet (CLAUDE.md:
                 // measurement only lands with a profile); its time folds
                 // into "dump" here, exactly like every other stage's
                 // artifact-production step.

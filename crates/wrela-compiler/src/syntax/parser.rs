@@ -1,6 +1,6 @@
 //! Recursive-descent parser: token stream -> `ast::Module` (02-language.md,
 //! whole chapter). A hand-written `Parser` struct with `pos` plus small
-//! peek/bump/expect helpers (ROADMAP.md: no combinators, no traits, no
+//! peek/bump/expect helpers (CLAUDE.md: no combinators, no traits, no
 //! lookahead machinery) — dumb and correct: one function per grammar
 //! production, precedence realized as a chain of functions (parse_or ->
 //! parse_and -> ... -> parse_postfix -> parse_primary), no Pratt tables.
@@ -28,7 +28,7 @@
 //! handled by `parse_inline_stmt_seq` — restricted to exactly one statement,
 //! since two statements jammed onto one line with no separator token is a
 //! genuine grammar ambiguity (`plans/pre-M3-findings.md`'s roundtrip-
-//! ambiguity finding; ledger clause syntax.lexer.layout-islands).
+//! ambiguity finding; the pinned rule).
 //!
 //! Errors are fail-fast (plans/M1.md decision 2): the first one stops
 //! parsing.
@@ -1142,7 +1142,7 @@ impl Parser {
     /// whether one may exist for real is a later milestone's question).
     ///
     /// Narrow fix (found by `xtask fuzz sema`'s sema-roundtrip oracle,
-    /// ledger clause sema.check.roundtrip-stable; golden/err-empty-body-
+    /// the pinned rule; golden/err-empty-body-
     /// continuation): this branch's continuation line shares its one
     /// INDENT with the body itself (see the doc comment above), so the
     /// body never gets a fresh INDENT token the way `parse_stmt_suite`'s

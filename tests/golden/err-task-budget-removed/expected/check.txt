@@ -1,1 +1,1 @@
-error[type]: `@task(budget=...)` was cut at the revision boundary (plans/M13.md item C / decision 13); the FIFO+RR scheduler cannot honor a per-task budget — see ROADMAP recorded intentions for bands at 23:11
+error[type]: `@task(budget=...)` was cut at the revision boundary (plans/M13.md item C / decision 13); the FIFO+RR scheduler cannot honor a per-task budget; budget bands are a recorded future intention at 23:11

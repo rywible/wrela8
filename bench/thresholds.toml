@@ -1,4 +1,4 @@
-# Locked bench thresholds (ROADMAP.md "cleverness budget": a threshold is
+# Locked bench thresholds (CLAUDE.md "cleverness budget": a threshold is
 # a regression *lock*, not a performance target). Each is set once, by
 # measuring on a real machine and rounding up generously — 10x the
 # measured median — so the lock catches an algorithmic blowup (e.g. an
@@ -140,3 +140,41 @@ build_appliance_median_us = 2000000
 # on purpose, so it catches a real algorithmic blowup in the boot /
 # scheduler path and never a false alarm from ordinary machine noise.
 boot_actors_median_us = 700000
+
+# --- the default unit lane's placement budget ------------------------------
+#
+# `[tests]` is not a speed target and not a bench lane. It is a **placement**
+# lock: a tripwire on the one failure mode this repo has now hit twice, where
+# a test whose *subject* belongs in the default `cargo test` lane grows a
+# *cost* that does not.
+#
+# The worked example is on the record. `sweep_deep` scored the whole program
+# once per corner, cost 31m58s, was `#[ignore]`d and moved out of the default
+# lane (plans/M20.md decision 1637), then reformulated by the corner engine to
+# ~9s and deliberately brought back (decision 1644). Both moves were correct;
+# both were found by a human noticing a slow gate rather than by an oracle.
+# Measured 2026-07-30, the same thing had happened again unnoticed:
+# `cost::branch::tests::branch_terms_census_over_the_cost_corpus` alone was
+# **393s of a 417s** compiler lib suite. This key is the oracle that says so.
+#
+# Measured after the `[profile.dev]` optimization landed (Apple M4, warm
+# target dir, `--no-run` build excluded so this times execution only):
+# **56.6s** for `cargo test --workspace --exclude wrela-vmm`, and that
+# measurement was taken with another build saturating a core.
+#
+# The multiple is deliberately *tighter* than the 10x every `[compiler]` /
+# `[build]` / `[guest]` lock in this file uses, and for a stated reason: those
+# guard against algorithmic blowup, where 10x is the smallest thing worth
+# calling a regression, and diluting them costs nothing. This one guards
+# against a lane changing kind, and a 10x budget (~9 minutes) would happily
+# admit the exact 393s test it exists to catch. 4x admits ordinary contention
+# — several agent worktrees compiling at once, the scenario `[compiler]`'s own
+# comment already describes — and refuses a minutes-long newcomer.
+#
+# A trip is not "make the number bigger". It is: find the long pole
+# (`cargo test -p wrela-compiler --lib 2>&1 | tail -20` — libtest prints each
+# test as it finishes, so the slow ones are last), then either reformulate it
+# cheap or move it behind `#[ignore]` plus an xtask deep lane the close item
+# runs. Re-lock only deliberately, in its own commit, citing why.
+[tests]
+workspace_suite_max_us = 240000000

@@ -10,7 +10,7 @@
 //! not lexed); and the operator set of 02 §8.2. Anything unsupported is a
 //! lex error, never a guess.
 //!
-//! ## Layout islands (ledger clause syntax.lexer.layout-islands)
+//! ## Layout islands
 //!
 //! `()[]{}` suppress NEWLINE/INDENT/DEDENT — except a `:` immediately
 //! followed by a newline while bracket depth > 0 is unambiguously a suite

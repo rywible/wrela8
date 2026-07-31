@@ -398,7 +398,7 @@ pub(crate) const MAX_LAYOUT_NEST_DEPTH: usize = 16;
 /// wrong answer, it is no answer at all — the pass would appear to hang, and
 /// the fuzzer's `sema` lane reaches `check_layouts` on every iteration.
 /// Bounded by counting expansions rather than by memoizing them: a cache is
-/// the clever fix and needs a profile to buy (ROADMAP.md's cleverness
+/// the clever fix and needs a profile to buy (CLAUDE.md's cleverness
 /// budget), while a budget is the dumb one and fails closed. 1024 is three
 /// orders of magnitude above any table 03 §3.1 describes.
 pub(crate) const MAX_LAYOUT_NEST_EXPANSIONS: u32 = 1024;
@@ -411,7 +411,7 @@ pub(crate) const MAX_LAYOUT_NEST_EXPANSIONS: u32 = 1024;
 /// table into a `2^40`-element one, and every number downstream of a
 /// `@layout` size (a DMA pool's backing bytes, a placed table's extent) is a
 /// real allocation. The flagship machine is 1 GiB in total
-/// (ROADMAP.md/06-machine.md), so a *single* exact-bytes declaration
+/// (CLAUDE.md/06-machine.md), so a *single* exact-bytes declaration
 /// claiming more than 16 MiB is a mistake in the declaration and not a
 /// table; refused by name rather than reported as a size nothing can hold.
 /// Raise it in the item that has an image needing more — never silently.

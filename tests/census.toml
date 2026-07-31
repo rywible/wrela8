@@ -1,4 +1,4 @@
-# Census allowlists (plans/M9–M13 ratchets).
+# Census allowlists (ratchets: locked surface counts + corpus sema pins).
 # Loaded by crates/wrela-compiler/src/census.rs and xtask corpus pins.
 # Update deliberately in the same commit that changes a locked surface.
 
@@ -468,7 +468,9 @@ kind = "ok"
 key = "ae1b6fca2a64"
 loc = "docs/language/02-language.md:206"
 kind = "disagreement"
-gap = "values.regions.two-binding-disciplines"
+why = """04 §3's scoped-pool half (`with pool`) is `error[unimplemented]`, so the \
+block that pairs it against `with group` cannot typecheck. Unblocks when \
+`with pool` lands."""
 
 [[corpus_sema.pins]]
 key = "dd7b0c3dadfe"
@@ -529,7 +531,9 @@ kind = "ok"
 key = "ca57644b1058"
 loc = "docs/language/02-language.md:698"
 kind = "disagreement"
-gap = "actors.messages.take-non-own-resource"
+why = """02 §9.4's send example moves a non-`own[P]` resource with `take`; sema \
+checks only `take` of `own[P] T` into an awaitable driver call, and anything \
+else is `error[unimplemented]` (sema/bodies.rs)."""
 
 [[corpus_sema.pins]]
 key = "7c68d809d413"

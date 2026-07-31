@@ -1,6 +1,6 @@
 //! The comptime evaluator (plans/M3.md item B): a tree-walking
 //! interpreter over the typed tree (`sema::typed`), the reference
-//! implementation of comptime semantics (ROADMAP.md: "the tree-walking
+//! implementation of comptime semantics (CLAUDE.md: "the tree-walking
 //! evaluator is the reference implementation of the semantics").
 //!
 //! - `value.rs` — `Value`, decision 5's one plain enum, plus exact

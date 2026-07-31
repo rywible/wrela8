@@ -1,5 +1,5 @@
 //! **The intrinsic surface, written down** (plans/M9.md item AA,
-//! decisions 56–59; ledger `library.intrinsics.closed-surface`).
+//! decisions 56–59; the pinned rule).
 //!
 //! An *intrinsic* here means exactly one thing: a name `sema::bodies`
 //! recognizes by spelling and turns into a `TypedExprKind::Intrinsic`
@@ -9,7 +9,7 @@
 //!
 //! ## Why this file exists
 //!
-//! ROADMAP M10 warns that migrating item-by-item while adding whatever
+//! plans/M10.md warns that migrating item-by-item while adding whatever
 //! intrinsic each item needs "designs the permanent surface by
 //! accretion, in the one place this project can least afford it." That
 //! pressure is in **M9**, not M10: every stdlib item can quietly reach
@@ -590,8 +590,7 @@ mod tests {
             .collect()
     }
 
-    /// **The ratchet** (plans/M9.md item AA, ledger
-    /// `library.intrinsics.closed-surface`): the set of intrinsic keys
+    /// **The ratchet** (plans/M9.md item AA): the set of intrinsic keys
     /// `sema::bodies` can construct equals the set written down in this
     /// file. Fails when a name is added to the compiler without being
     /// added here, and when a name is removed from the compiler without

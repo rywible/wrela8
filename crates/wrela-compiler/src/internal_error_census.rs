@@ -1,7 +1,7 @@
 //! **Census of `internal error:` producer sites** (plans/M9.md item II;
-//! ledger `compiler.diagnostics.no-reachable-internal-error`).
+//! the pinned rule).
 //!
-//! Allowlist lives in `ledger/census.toml` (`[internal_error]`); this
+//! Allowlist lives in `tests/census.toml` (`[internal_error]`); this
 //! module owns the source-tree scan that locks against it.
 
 use crate::census;
@@ -81,7 +81,7 @@ mod tests {
         assert_eq!(
             live, expected,
             "producer-bug site census drifted.\n\
-             Update [internal_error] in ledger/census.toml in the same \
+             Update [internal_error] in tests/census.toml in the same \
              commit that adds or removes a site (plans/M9.md item II).\n\
              live={live:?}\n\
              expected={expected:?}"

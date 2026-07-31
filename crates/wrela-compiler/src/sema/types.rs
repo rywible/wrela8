@@ -1851,7 +1851,7 @@ fn check_task_attr_args(attr: &Attr) -> Result<(), SemaError> {
                     "type",
                     "`@task(priority=...)` was cut at the revision boundary (plans/M13.md \
                      item C / decision 13); scheduling is FIFO-per-mailbox + round-robin \
-                     (04-compiler.md §2) — see ROADMAP recorded intentions for bands"
+                     (04-compiler.md §2); priority bands are a recorded future intention"
                         .to_string(),
                     a.span,
                 ));
@@ -1861,7 +1861,7 @@ fn check_task_attr_args(attr: &Attr) -> Result<(), SemaError> {
                     "type",
                     "`@task(budget=...)` was cut at the revision boundary (plans/M13.md \
                      item C / decision 13); the FIFO+RR scheduler cannot honor a \
-                     per-task budget — see ROADMAP recorded intentions for bands"
+                     per-task budget; budget bands are a recorded future intention"
                         .to_string(),
                     a.span,
                 ));

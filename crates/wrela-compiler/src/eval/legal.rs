@@ -325,7 +325,7 @@ pub fn classify(program: &TypedProgram) -> Legality {
 // under bare keys) would silently *accept* a touching fn merely because
 // some other module happened to declare a same-named fn that a driver
 // calls. The diagnostic says "in this module" so the boundary is in the
-// message, not only in the ledger.
+// message, not only in the pinned rules.
 
 /// One provenance check's declaration-side inputs, computed by
 /// `sema::types::capability_authority` (which owns the walk that answers

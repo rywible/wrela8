@@ -800,8 +800,7 @@ fn print_closure(c: &ClosureExpr, indent: usize) -> String {
     match &c.body {
         ClosureBody::Expr(e) => format!("|{params}| {}", print_expr(e, indent)),
         ClosureBody::Suite(stmts) => {
-            // Keep `print_stmts`'s own trailing newline (ledger clause
-            // syntax.lexer.layout-islands, sema-roundtrip fuzz finding): a
+            // Keep `print_stmts`'s own trailing newline (pinned rule, sema-roundtrip fuzz finding): a
             // suite-form closure can be a non-final call argument
             // (`f(x, |p|:\n    a\n    b, y)`), and whatever the caller
             // glues on after this string — a `, next_arg`, a bare `)` —

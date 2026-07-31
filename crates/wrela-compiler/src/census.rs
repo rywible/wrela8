@@ -1,17 +1,17 @@
-//! Ledger census tables (`ledger/census.toml`).
+//! Census tables (`tests/census.toml`).
 //!
 //! Allowlists that used to live as `pub const` tables in per-surface
 //! `*_census.rs` modules are data. This module is the one reader; the
 //! thin census modules keep their scan/test logic and pull the locked
 //! tables from here.
 //!
-//! `toml` is justified: the tables are ledger data, edited next to
-//! `ledger/ledger.toml`, not compiler structure.
+//! `toml` is justified: these are ratchet tables, edited as data next to
+//! the tests they lock, not compiler structure.
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
-const CENSUS_TOML: &str = include_str!("../../../ledger/census.toml");
+const CENSUS_TOML: &str = include_str!("../../../tests/census.toml");
 
 /// Parsed census file (owned strings; built once).
 #[derive(Debug)]
@@ -74,10 +74,10 @@ pub struct CorpusSemaPin {
     pub key: String,
     pub loc: String,
     pub kind: String,
-    pub gap: Option<String>,
+    pub why: Option<String>,
 }
 
-/// The process-wide parsed census. Panics if `ledger/census.toml` is
+/// The process-wide parsed census. Panics if `tests/census.toml` is
 /// malformed — a broken lock file is a build bug, not a soft miss.
 pub fn data() -> &'static CensusFile {
     static DATA: OnceLock<CensusFile> = OnceLock::new();
@@ -87,7 +87,7 @@ pub fn data() -> &'static CensusFile {
 fn parse_census() -> CensusFile {
     let value: toml::Value = CENSUS_TOML
         .parse()
-        .unwrap_or_else(|e| panic!("ledger/census.toml: parse failed: {e}"));
+        .unwrap_or_else(|e| panic!("tests/census.toml: parse failed: {e}"));
     CensusFile {
         internal_error: parse_internal_error(&value),
         emitted_a64: parse_emitted_a64(&value),
@@ -285,7 +285,7 @@ fn parse_corpus_sema(value: &toml::Value) -> Vec<CorpusSemaPin> {
                 .and_then(|v| v.as_str())
                 .expect("pin.kind")
                 .to_string(),
-            gap: e.get("gap").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            why: e.get("why").and_then(|v| v.as_str()).map(|s| s.to_string()),
         });
     }
     out

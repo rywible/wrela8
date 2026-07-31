@@ -118,7 +118,7 @@ pub(crate) fn extract_example_files() -> Result<Vec<DocBlock>, String> {
 /// lex; from M1 item D on, every one of them must also *parse* — except a
 /// block whose body contains the literal substring `...`, which is a doc
 /// fragment (an illustrative snippet, not a complete construct) and stays
-/// lex-only. `docs.examples.wrela-blocks-parse` is the ledger clause for
+/// lex-only. `docs.examples.wrela-blocks-parse` is the the pinned rule
 /// the parse half; `docs.examples.wrela-blocks-lex` already covered lexing.
 ///
 /// Always then sema-classifies the parseable non-aspirational set against
@@ -662,7 +662,7 @@ pub(crate) fn verify_corpus_sema_keys(rows: &[CorpusSemaRow]) -> Result<(), Stri
     for p in corpus_sema_census::pins() {
         if let Some(prev) = pinned_keys.insert(p.key.as_str(), p.loc.as_str()) {
             problems.push(format!(
-                "ledger/census.toml [[corpus_sema.pins]] key `{}` twice (`{prev}` and `{}`)",
+                "tests/census.toml [[corpus_sema.pins]] key `{}` twice (`{prev}` and `{}`)",
                 p.key, p.loc
             ));
         }
@@ -721,10 +721,12 @@ pub(crate) fn verify_corpus_sema_contexts(rows: &[CorpusSemaRow]) -> Result<(), 
 /// Compare live corpus-sema rows against the pinned census (plans/M9.md
 /// item J3). Fails in both directions: an `ok` block that starts
 /// disagreeing (`ok-decay`), and an accepted disagreement that starts
-/// typechecking (`accepted-disagreement-cleared`, naming the cited ledger
-/// gap). Also fails if a pin's shape is wrong, a block is unpinned /
-/// missing, or an accepted row's ledger gap is missing / no longer
-/// `status = "gap"`.
+/// typechecking (`accepted-disagreement-cleared`). Also fails if a pin's
+/// shape is wrong or a block is unpinned / missing.
+///
+/// An accepted disagreement must carry a non-empty `why` — the reason the
+/// doc block does not typecheck, written where the pin is. That is what
+/// keeps acceptance from being silent.
 ///
 /// Matching is on the block's **content key**, never on `path:line`
 /// (plans/M10.md item A3, decision 710) — an insertion above a fence must
@@ -743,15 +745,16 @@ pub(crate) fn verify_corpus_sema_census(rows: &[CorpusSemaRow]) -> Result<(), St
     for (key, pin) in &pinned {
         let loc = pin.loc.as_str();
         let kind = pin.kind.as_str();
-        // Structural: ok rows have no gap; disagreements must cite one.
-        match (kind, pin.gap.as_deref()) {
+        // Structural: ok rows carry no reason; disagreements must give one.
+        match (kind, pin.why.as_deref().map(str::trim)) {
             ("ok", None) => {}
-            ("disagreement", Some(_)) => {}
-            ("ok", Some(gap)) => {
-                problems.push(format!("pin `{loc}`: kind=ok must not cite gap `{gap}`"))
-            }
-            ("disagreement", None) => problems.push(format!(
-                "pin `{loc}`: accepted disagreement must cite a ledger gap id"
+            ("disagreement", Some(w)) if !w.is_empty() => {}
+            ("ok", Some(w)) => problems.push(format!(
+                "pin `{loc}`: kind=ok must not carry a reason (`{w}`)"
+            )),
+            ("disagreement", _) => problems.push(format!(
+                "pin `{loc}`: an accepted disagreement must carry a non-empty `why` \
+                 saying which normative rule has no implementation yet"
             )),
             (other, _) => problems.push(format!(
                 "pin `{loc}`: unknown kind `{other}` (want ok or disagreement)"
@@ -765,7 +768,7 @@ pub(crate) fn verify_corpus_sema_census(rows: &[CorpusSemaRow]) -> Result<(), St
                  decay and not a line-number shift: the edited block's \
                  classification must be re-reviewed. Run `cargo xtask corpus \
                  --sema`, read the block's new classification, then update this \
-                 row's `key` (and `loc`) in ledger/census.toml \
+                 row's `key` (and `loc`) in tests/census.toml \
                  — or delete the row if the block is gone."
             )),
             Some(row) if row.kind.as_str() != kind => {
@@ -776,13 +779,12 @@ pub(crate) fn verify_corpus_sema_census(rows: &[CorpusSemaRow]) -> Result<(), St
                         "ok-decay: `{at}` [{key}] was pinned ok, now {live_kind}"
                     ));
                 } else if kind == "disagreement" && live_kind == "ok" {
-                    let gap = pin.gap.as_deref().unwrap_or("<missing gap>");
+                    let why = pin.why.as_deref().unwrap_or("<missing reason>");
                     problems.push(format!(
                         "accepted-disagreement-cleared: `{at}` [{key}] was pinned as \
-                         disagreement citing gap `{gap}`, but now typechecks — \
-                         update ledger/census.toml and flip that ledger gap \
-                         to `test` (or restore the disagreement if the clearance \
-                         is wrong)"
+                         a disagreement because {why} — but it now typechecks. Drop \
+                         the row to `kind = \"ok\"` in tests/census.toml (or restore \
+                         the disagreement if the clearance is wrong)"
                     ));
                 } else {
                     problems.push(format!(
@@ -801,7 +803,7 @@ pub(crate) fn verify_corpus_sema_census(rows: &[CorpusSemaRow]) -> Result<(), St
                  (editing a body changes its key by design). An edited block's \
                  pinned classification must be re-reviewed and updated: after \
                  reviewing `cargo xtask corpus --sema`, add or repin the row in \
-                 ledger/census.toml with key `{}`.",
+                 tests/census.toml with key `{}`.",
                 key,
                 row.loc,
                 row.kind.as_str(),
@@ -810,66 +812,14 @@ pub(crate) fn verify_corpus_sema_census(rows: &[CorpusSemaRow]) -> Result<(), St
         }
     }
 
-    // Coupling: every accepted disagreement's gap must exist and still be
-    // a gap. Flipping the ledger without un-accepting the row (or the
-    // reverse) fails here.
-    let gap_status = ledger_clause_statuses()?;
-    for pin in corpus_sema_census::pins() {
-        let Some(gap) = pin.gap.as_deref() else {
-            continue;
-        };
-        match gap_status.get(gap).map(String::as_str) {
-            Some("gap") => {}
-            Some(status) => problems.push(format!(
-                "accepted-disagreement gap `{gap}` (cited by `{}`) is \
-                 status=`{status}` in ledger/ledger.toml — un-accept the \
-                 census row or reopen the gap; they must move together",
-                pin.loc
-            )),
-            None => problems.push(format!(
-                "accepted-disagreement cites unknown ledger gap `{gap}` \
-                 (cited by `{}`) — add the clause or fix the pin",
-                pin.loc
-            )),
-        }
-    }
-
     if !problems.is_empty() {
         for p in &problems {
             eprintln!("corpus sema census: {p}");
         }
         return Err(format!(
-            "corpus sema census: {} mismatch(es); update ledger/census.toml after review",
+            "corpus sema census: {} mismatch(es); update tests/census.toml after review",
             problems.len()
         ));
     }
     Ok(())
-}
-
-/// Map every `[[clause]]` id in `ledger/ledger.toml` to its `status`
-/// string. Used by the corpus-sema pin so accepted-disagreement gap cites
-/// cannot drift from the gap list (plans/M9.md item J3).
-pub(crate) fn ledger_clause_statuses() -> Result<std::collections::BTreeMap<String, String>, String>
-{
-    let path = root().join("ledger/ledger.toml");
-    let text =
-        std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
-    let value: toml::Value = text.parse().map_err(|e| format!("parse ledger: {e}"))?;
-    let clauses = value
-        .get("clause")
-        .and_then(|c| c.as_array())
-        .ok_or("ledger has no [[clause]] entries")?;
-    let mut out = std::collections::BTreeMap::new();
-    for (i, clause) in clauses.iter().enumerate() {
-        let id = clause
-            .get("id")
-            .and_then(|v| v.as_str())
-            .ok_or(format!("clause {i}: missing id"))?;
-        let status = clause
-            .get("status")
-            .and_then(|v| v.as_str())
-            .ok_or(format!("clause `{id}`: missing status"))?;
-        out.insert(id.to_string(), status.to_string());
-    }
-    Ok(out)
 }

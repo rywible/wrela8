@@ -397,7 +397,7 @@ pub const DEADLOCK_MSG: &str =
 // need to remember more than the *current* test's own resume point.
 //
 // ## The M5-G adversarial-sweep find/fix: one descriptor per LINE, plus a
-// static build-time bound (ledger `machine.console.transcript-pinned`)
+// static build-time bound
 //
 // The original design (this module doc, pre-fix) span one
 // `__wrela_ring_write` call — and so one consumed descriptor — per

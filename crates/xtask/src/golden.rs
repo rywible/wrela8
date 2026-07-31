@@ -69,7 +69,18 @@ pub(crate) fn golden_case_target(case: &Path) -> Result<Option<PathBuf>, String>
 /// tests never depends on this step at all, and the boot golden's own
 /// failure on a non-macOS host is an honest, expected gap, not a silent
 /// skip.
+/// Built and signed **once per process**. Eight call sites reach this, and
+/// a single `cargo xtask check` hits several of them (golden, the bench
+/// lanes, repro, diff-eval). The `cargo build` is cached by cargo, but
+/// `codesign --force` is not — it re-signed the same binary on every call,
+/// which is pure waste and, worse, a window where a concurrently-running
+/// boot sees a binary mid-signature.
 pub(crate) fn build_and_sign_vmm() -> Result<PathBuf, String> {
+    static VMM: std::sync::OnceLock<Result<PathBuf, String>> = std::sync::OnceLock::new();
+    VMM.get_or_init(build_and_sign_vmm_uncached).clone()
+}
+
+fn build_and_sign_vmm_uncached() -> Result<PathBuf, String> {
     run(
         Command::new("cargo").args(["build", "--quiet", "-p", "wrela-vmm", "--bin", "wrela-vmm"]),
         "cargo build wrela-vmm",
@@ -161,26 +172,113 @@ pub(crate) fn test_wrela_vmm_signed() -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn golden(update: bool) -> Result<(), String> {
-    run(
-        Command::new("cargo").args(["build", "--quiet", "-p", "wrela-compiler", "--bin", "wrela"]),
-        "cargo build wrela",
-    )?;
-    let wrela = root().join("target/debug/wrela");
-    let vmm = build_and_sign_vmm()?;
-    let golden_dir = root().join("tests/golden");
+/// Which half of the corpus to run. The two halves cost very differently
+/// and — decisively — parallelize differently, so they are separable at
+/// the command line rather than only together (see `GoldenOpts::jobs`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BootSel {
+    /// Everything (the gate's own setting).
+    All,
+    /// Only the cases that boot under HVF.
+    Only,
+    /// Skip every case that boots — the per-item lane, since an item that
+    /// does not claim HVF has no business paying for 122 boots.
+    None,
+}
+
+pub(crate) struct GoldenOpts {
+    pub(crate) update: bool,
+    /// Substring match against the case directory name. `None` means all.
+    pub(crate) filter: Option<String>,
+    pub(crate) boot: BootSel,
+    /// Worker count for the non-booting cases. Each worker runs whole
+    /// cases (never single stages: a case's stages are order-dependent —
+    /// `build.txt` writes the image `img.hex` then reads).
+    pub(crate) jobs: usize,
+    /// Worker count for the booting cases, deliberately separate and
+    /// deliberately smaller. **Measured, not guessed** (2026-07-30, M4,
+    /// 4 performance + 6 efficiency cores, 35 boot cases):
+    ///
+    /// | jobs | wall | transcripts differing from their pin |
+    /// | ---- | ---- | ------------------------------------ |
+    /// | 1    | 22s  | 0 |
+    /// | 2    | 12s  | 0 |
+    /// | 4    | 7s   | 0 |
+    /// | 6    | 6s   | 0 |
+    /// | 8    | 7s   | **2** |
+    ///
+    /// At 8 the guest loses a race it wins at every lower count:
+    /// `boot-cross-core` grew a `lane1 quiesce=timeout` line that five
+    /// serial repeats never produce. That is a wall-clock-bounded
+    /// quiescence wait starving under CPU pressure — a real property of
+    /// the VMM, not of this runner, and the honest fix is to make that
+    /// wait not wall-clock-bounded. Until then this lane stays under the
+    /// performance-core count, and 8 buys nothing anyway (7s vs 6s).
+    ///
+    /// `--jobs 1` still forces the fully serial lane for a paranoid
+    /// confirmation at milestone close.
+    pub(crate) boot_jobs: usize,
+}
+
+/// The default worker count for the non-booting half: every core. Those
+/// cases are independent `wrela dump` subprocesses that read pinned files
+/// and write nothing shared, and the mismatch set is byte-identical
+/// serial vs. `-P 10` (measured over all 845 dump expectations).
+pub(crate) fn default_jobs() -> usize {
+    std::thread::available_parallelism().map_or(1, |n| n.get())
+}
+
+/// See `GoldenOpts::boot_jobs` for the measurement this number comes from.
+pub(crate) const DEFAULT_BOOT_JOBS: usize = 4;
+
+impl Default for GoldenOpts {
+    fn default() -> Self {
+        Self {
+            update: false,
+            filter: None,
+            boot: BootSel::All,
+            jobs: default_jobs(),
+            boot_jobs: DEFAULT_BOOT_JOBS,
+        }
+    }
+}
+
+/// Does this case boot a guest? True when it carries a `wrela test`
+/// expectation — the only stage that runs `wrela-vmm`.
+fn case_boots(expected_dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(expected_dir) else {
+        return false;
+    };
+    entries.filter_map(Result::ok).any(|e| {
+        e.path()
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .is_some_and(|s| s == "test" || s == "test-omit-dmb")
+    })
+}
+
+/// One case's expectations, start to finish, in the same order and with
+/// the same meaning as before this function existed. Returns how many
+/// expectations it checked plus this case's failures; the caller merges
+/// them back in case order so output does not depend on scheduling.
+fn run_case(
+    case: &Path,
+    wrela: &Path,
+    vmm: &Path,
+    update: bool,
+) -> Result<(usize, Vec<String>), String> {
     let mut cases = 0usize;
     let mut failures = Vec::new();
-    for case in golden_case_dirs(&golden_dir)? {
+    {
         let expected_dir = case.join("expected");
-        let input = match golden_case_target(&case)? {
+        let input = match golden_case_target(case)? {
             Some(target) if target.exists() && expected_dir.is_dir() => target,
             _ => {
                 failures.push(format!(
                     "{}: missing input.wr (or `root`'s target) or expected/",
                     case.display()
                 ));
-                continue;
+                return Ok((cases, failures));
             }
         };
         let mut expected_files: Vec<_> = std::fs::read_dir(&expected_dir)
@@ -463,17 +561,168 @@ pub(crate) fn golden(update: bool) -> Result<(), String> {
                 .map_err(|e| format!("remove {}: {e}", build_out_dir_abs.display()))?;
         }
     }
-    if update {
+    Ok((cases, failures))
+}
+
+/// Runs `cases` across `jobs` workers, each worker taking whole cases off
+/// a shared cursor. Results come back keyed by the case's index and are
+/// sorted before use, so the printed failure list is identical to the
+/// serial one whatever order the workers finished in — the same reason
+/// every output-touching path in this repo is a `BTreeMap` rather than a
+/// `HashMap`.
+///
+/// This is a *harness* worker pool, not a compiler one: CLAUDE.md's
+/// "no threads" doctrine is about the compiler's own determinism, and
+/// nothing here threads the compiler. Each worker spawns the same
+/// independent `wrela` subprocess the serial loop spawned, reads the same
+/// pinned files, and writes only into its own case-named directory.
+fn run_cases_parallel(
+    cases: &[PathBuf],
+    wrela: &Path,
+    vmm: &Path,
+    update: bool,
+    jobs: usize,
+) -> Result<(usize, Vec<String>), String> {
+    if cases.is_empty() {
+        return Ok((0, Vec::new()));
+    }
+    let jobs = jobs.max(1).min(cases.len());
+    let cursor = std::sync::atomic::AtomicUsize::new(0);
+    let results: std::sync::Mutex<Vec<(usize, usize, Vec<String>)>> =
+        std::sync::Mutex::new(Vec::new());
+    let hard_error: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+    std::thread::scope(|scope| {
+        for _ in 0..jobs {
+            scope.spawn(|| {
+                loop {
+                    let i = cursor.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if i >= cases.len() {
+                        return;
+                    }
+                    match run_case(&cases[i], wrela, vmm, update) {
+                        Ok((n, f)) => results.lock().expect("results lock").push((i, n, f)),
+                        Err(e) => {
+                            // A plumbing failure (unreadable expectation,
+                            // undeletable temp dir) is this harness
+                            // malfunctioning, not a golden result. Keep
+                            // the first one and let the rest drain.
+                            let mut slot = hard_error.lock().expect("error lock");
+                            if slot.is_none() {
+                                *slot = Some(e);
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    });
+
+    if let Some(e) = hard_error.into_inner().expect("error lock") {
+        return Err(e);
+    }
+    let mut out = results.into_inner().expect("results lock");
+    out.sort_by_key(|(i, _, _)| *i);
+    let mut total = 0usize;
+    let mut failures = Vec::new();
+    for (_, n, f) in out {
+        total += n;
+        failures.extend(f);
+    }
+    Ok((total, failures))
+}
+
+pub(crate) fn golden(opts: &GoldenOpts) -> Result<(), String> {
+    run(
+        Command::new("cargo").args(["build", "--quiet", "-p", "wrela-compiler", "--bin", "wrela"]),
+        "cargo build wrela",
+    )?;
+    let wrela = root().join("target/debug/wrela");
+    let vmm = build_and_sign_vmm()?;
+    let golden_dir = root().join("tests/golden");
+
+    // Partition first, then run the two halves in their own phases. Not
+    // cosmetic: the booting half is timing-sensitive (see
+    // `GoldenOpts::boot_jobs`), so it must not share the machine with 10
+    // concurrent compiles either.
+    let mut dump_cases = Vec::new();
+    let mut boot_cases = Vec::new();
+    let mut selected_names = Vec::new();
+    for case in golden_case_dirs(&golden_dir)? {
+        let name = case
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_string();
+        if let Some(f) = &opts.filter {
+            if !name.contains(f.as_str()) {
+                continue;
+            }
+        }
+        let boots = case_boots(&case.join("expected"));
+        match (boots, opts.boot) {
+            (true, BootSel::None) => continue,
+            (false, BootSel::Only) => continue,
+            _ => {}
+        }
+        selected_names.push(name);
+        if boots {
+            boot_cases.push(case);
+        } else {
+            dump_cases.push(case);
+        }
+    }
+
+    // Fail closed on a filter that selects nothing: a green "0
+    // expectation(s) ok" from a typo'd `--filter` is the exact shape of a
+    // faked pass this repo refuses everywhere else.
+    if dump_cases.is_empty() && boot_cases.is_empty() {
+        return Err(match &opts.filter {
+            Some(f) => format!("golden: --filter `{f}` matched no case under tests/golden/"),
+            None => "golden: no cases selected".to_string(),
+        });
+    }
+
+    let (n1, mut failures) = run_cases_parallel(&dump_cases, &wrela, &vmm, opts.update, opts.jobs)?;
+    let (n2, boot_failures) = run_cases_parallel(
+        &boot_cases,
+        &wrela,
+        &vmm,
+        opts.update,
+        opts.boot_jobs.min(opts.jobs),
+    )?;
+    failures.extend(boot_failures);
+    let cases = n1 + n2;
+
+    if opts.update {
         println!("golden: updated {cases} expectation(s) — review the diff before committing");
         return Ok(());
     }
     // plans/M9.md item II: pinning `internal error:` as an expected
     // diagnostic is itself a bug (house rule: each is a compiler bug, not
     // an outcome). Catch it at the golden surface so a `--update` that
-    // baked one in fails the next gate run.
+    // baked one in fails the next gate run. Whole-corpus regardless of
+    // `--filter`: it reads pinned text off disk and costs nothing, and a
+    // filtered run must not be able to hide one.
     assert_no_internal_error_in_goldens(&golden_dir)?;
     if failures.is_empty() {
-        println!("golden: {cases} expectation(s) ok");
+        let scope = match (&opts.filter, opts.boot) {
+            (None, BootSel::All) => String::new(),
+            _ => format!(
+                " ({} case(s){}{})",
+                selected_names.len(),
+                match &opts.filter {
+                    Some(f) => format!(", filter `{f}`"),
+                    None => String::new(),
+                },
+                match opts.boot {
+                    BootSel::All => "",
+                    BootSel::Only => ", boots only",
+                    BootSel::None => ", boots skipped",
+                }
+            ),
+        };
+        println!("golden: {cases} expectation(s) ok{scope}");
         Ok(())
     } else {
         for f in &failures {

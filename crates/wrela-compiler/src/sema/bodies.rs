@@ -40,8 +40,7 @@
 //! is included (plans/M9.md item J2c). What still fails closed via
 //! `unimplemented_at("generic instantiation is", ...)` is item H's own
 //! documented scope boundary: a generic *method*'s own type parameters
-//! (beyond its struct's, if any — never instantiated; ledger gap
-//! `sema.generics.method-params`), associated functions on a still-
+//! (beyond its struct's, if any — never instantiated; an open gap), associated functions on a still-
 //! generic enum type name, a bare reference to a generic type/fn as a
 //! first-class value without calling it, and a generic-argument shape
 //! deeper than this item resolves.
@@ -126,7 +125,7 @@ pub(crate) struct QueuedInstantiation {
 /// Fixed recursion cap on the instantiation chain (item H): a cycle or a
 /// genuinely unbounded generic recursion both hit this before the process
 /// stack would. Deliberately small and fixed — no measurement, no
-/// configuration (ROADMAP.md's "dumbness is permanent").
+/// configuration (CLAUDE.md's "dumbness is permanent").
 pub(crate) const MAX_GENERIC_DEPTH: usize = 64;
 
 // --- module-wide lookup context ------------------------------------------
@@ -859,7 +858,7 @@ impl FnCtx {
 /// leak its own typed (`name: T = value`) declarations sideways to a
 /// sibling branch or past the construct: an `if`/`elif`/`else` branch, a
 /// `while`/`for` body, a `match` arm's pattern-bindings + guard + body
-/// (err-mwir-if-else-scope-leak, ledger `sema.init.definite`). This is
+/// (err-mwir-if-else-scope-leak). This is
 /// the one place `lower.rs`'s own per-block `LEnv` push/pop is mirrored
 /// here — see `check_assign`'s doc comment for how a *plain* (untyped)
 /// assignment still reaches an outer scope instead (the arm-merge idiom,
@@ -2500,7 +2499,7 @@ fn check_no_silent_err_discard(
                 ast_arm.span,
             );
             e.extra_lines = vec![
-                "  ROADMAP.md: no silent `Err` discard without `@discard(reason=)`".to_string(),
+                "  no silent `Err` discard without `@discard(reason=)`".to_string(),
                 "  plans/M13.md item L / decision 9".to_string(),
             ];
             let _ = match_span;

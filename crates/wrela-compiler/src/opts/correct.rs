@@ -117,8 +117,7 @@ mod tests {
     use super::*;
 
     /// plans/M19.md item G / decisions 1470–1472: dual-mode semantic
-    /// oracle on the representative `@test` slice. Ledger
-    /// `compiler.opts.dev-correct` cites this name at flip (item L).
+    /// oracle on the representative `@test` slice. The pinned rule    ///  cites this name at flip (item L).
     #[test]
     fn dev_and_release_agree_on_semantic_test_slice() {
         assert_dev_release_agree_on_test_slice();

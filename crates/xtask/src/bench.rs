@@ -371,7 +371,7 @@ pub(crate) fn profile() -> Result<(), String> {
 
 // --- bench ------------------------------------------------------------
 //
-// ROADMAP.md's "cleverness budget": the compiler lane lands at M1 because
+// CLAUDE.md's "cleverness budget": the compiler lane lands at M1 because
 // it needs nothing but the compiler and a clock (the guest lane needs the
 // VMM and record/replay, so it waits for M5 — `bench guest` and bare
 // `bench` still fail closed below). `cargo xtask bench compiler` times the
@@ -388,13 +388,20 @@ pub(crate) fn profile() -> Result<(), String> {
 // quadratic behavior is visible on its own. The median is then compared
 // against the locked threshold in `bench/thresholds.toml` — exceeding it
 // is a bench failure with both numbers printed. Wired into `check` (after
-// roundtrip, before ledger): the corpus is small enough today that 18
-// full passes run in milliseconds, well under `check`'s budget, and the
-// median prints on every gate run so a creeping trend is visible long
-// before it trips the (deliberately loose, 10x) lock.
-
+// roundtrip); the median prints on every gate run so a creeping trend is
+// visible long before it trips the (deliberately loose, 10x) lock.
+//
+// Timed iterations cut 15 -> 5 on 2026-07-30. The comment here used to say
+// "18 full passes run in milliseconds"; that stopped being true as the
+// corpus grew, and measurement put `bench compiler` at 13.2s and `bench
+// build` at 14.3s inside a gate that is now ~2 minutes total. Precision
+// past a handful of samples buys nothing a **10x** lock can spend: the
+// median of 5 and the median of 15 are both orders of magnitude away from
+// the threshold, and the lock exists to catch an algorithmic blowup, not
+// to track a few percent of machine noise. Raise these again only if a
+// lane starts producing false trips, and say so here when you do.
 pub(crate) const BENCH_WARMUP_ITERS: usize = 3;
-pub(crate) const BENCH_TIMED_ITERS: usize = 15;
+pub(crate) const BENCH_TIMED_ITERS: usize = 5;
 
 /// One corpus entry for the compiler bench: a name (for reporting) and its
 /// full source text. Reuses exactly the entries `xtask corpus` walks

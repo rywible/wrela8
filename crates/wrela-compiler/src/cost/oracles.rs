@@ -70,7 +70,7 @@
 //! [`inventory_rows`] maps every `CostRule` to the dimension-inventory
 //! rows in `plans/M20.md` that account for it. The match is exhaustive
 //! and carries no wildcard, so **adding a `CostRule` variant without
-//! giving it an inventory row does not compile**; `xtask ledger` then
+//! giving it an inventory row does not compile**; `xtask check` then
 //! checks that every row number named here actually exists in the plan's
 //! inventory table, so deleting a row from the table is caught too.
 
@@ -164,7 +164,7 @@ pub fn plan_inventory_rows(plan_text: &str) -> Result<BTreeSet<u32>, String> {
     Ok(rows)
 }
 
-/// Freeze 1632, as a check `xtask ledger` runs: every `CostRule` names at
+/// Freeze 1632, as a check `xtask check` runs: every `CostRule` names at
 /// least one inventory row, and every row it names exists in the plan's
 /// table. Returns a one-line summary on success.
 ///
@@ -212,7 +212,7 @@ pub fn check_dimension_inventory(plan_text: &str) -> Result<String, String> {
     ))
 }
 
-/// `plans/M20.md`'s text, read from the repo. Used by the ledger check and
+/// `plans/M20.md`'s text, read from the repo. Used by the pinned rules check and
 /// by this module's units.
 pub fn plan_text() -> Result<String, String> {
     let path = super::repo_root().join("plans/M20.md");

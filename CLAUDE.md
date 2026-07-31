@@ -2,141 +2,161 @@
 
 One designed machine, front to back: a language and compiler (no LLVM, no
 external linker), a stdlib with the drivers, and a VMM implementing the
-wrela machine. Flagship: wrela OS on Raspberry Pi 5 / 1 GiB.
+wrela machine. Flagship: wrela OS on Raspberry Pi 5 / 1 GiB — a
+**fixed-function games console** appliance ([01 §1](docs/language/01-model.md)).
+Titles ship inside the image; every update is a full image recompile
+shipped as an A/B triple. The only thing that survives an update is the
+device's storage, so any on-disk format is a product compatibility
+surface, not an implementation detail.
 
 ## Ground truth, in order
 
-0. `ROADMAP.md` — the standing doctrine (dumb-and-correct) and milestone
-   ladder — plus `plans/M<n>.md`, the active milestone's ordered plan
-   (its first deliverable; sessions pick the next item from it). Neither
-   is relitigated mid-milestone.
 1. `docs/language/` — normative. If code disagrees with the docs, the code
    is wrong. Doc changes are deliberate and human-reviewed.
-2. `ledger/ledger.toml` — maps every normative clause to tests (or an
-   explicit `gap`). Progress = shrinking the gap list.
-3. `tests/golden/` — pinned artifact dumps. The golden diff is the review
+2. `tests/golden/` — pinned artifact dumps. The golden diff is the review
    surface.
-4. The code — disposable. Any crate should be rewritable from docs +
-   contracts + tests alone. If that stops being true, the structure is
-   wrong, not the rewrite.
+3. The code — disposable. Any crate should be rewritable from docs +
+   tests alone. If that stops being true, the structure is wrong, not the
+   rewrite.
+
+`plans/M<n>.md` is the active milestone's ordered plan; sessions pick the
+next item from it and do not relitigate it mid-milestone.
+
+## Doctrine (decided once; sessions do not relitigate)
+
+- **Compiler:** single-threaded batch pipeline. No query system, no
+  incremental compilation, no interning, no arenas. Clone freely.
+  Hand-written recursive-descent parser. Sema as whole-tree passes.
+- **Determinism through dumbness:** `BTreeMap`/sorted `Vec` on every
+  output-touching path, never `HashMap` iteration; no threads; no wall
+  clock. Reproducibility passes by construction. (This governs the
+  _compiler_. The xtask harness may run independent cases in parallel.)
+- **Evaluator before backend:** the tree-walking comptime evaluator is the
+  reference implementation of the semantics. No bytecode.
+- **Backend: embarrassingly naive.** Fixed frames, spill everything, every
+  check emitted, identity FlowWir "optimization". `diff-eval` makes it
+  trustworthy.
+- **VMM:** no QEMU. The machine has no GIC; a minimal wrela VMM is the
+  runner we keep.
+- **Diagnostics are the one place not to be dumb** — errors are pinned
+  golden artifacts and a core feature.
+- **No foreign code in an image, ever.** No dynamic loader, JIT, or fused
+  foreign driver. Read a Linux driver as a _specification_ of the
+  hardware's register contract, then write the driver in wrela under 03's
+  rules — documentation that happens to be C, not fusion.
 
 ## Commands (no CI — these run locally, always)
 
-- `cargo xtask check` — the gate: fmt, tests, golden, ledger. Run before
-  calling a milestone (or any multi-item body of work) done — **not**
-  after every plan item (see Verification below).
-- `cargo xtask golden [--update]` — golden tests; `--update` rewrites
-  expectations, then you review the diff and cite a ledger clause id in
-  the commit.
-- `cargo xtask corpus` — every ```wrela block in the docs must lex (and,
-  from M1, parse). The docs are test inputs; drift is a failure.
-- `cargo xtask stdlib-test` — comptime `@test`/`@test(exhaustive)` under
-  `stdlib/tests/`; fail closed if empty. Wired into `check`.
-- `cargo xtask fuzz [lexer|parser|sema|eval|lower|async|imports]
-  [--iters N] [--seed S]` — deterministic in-tree fuzzer, no external
-  engine. All seven lanes are live: seeded splitmix64, random bytes /
-  corpus mutation / token soup (plus fixed shapes where a lane needs
-  them), checked every iteration for panics, nondeterminism, rejections
-  outside the fixed category set, and `internal error:` messages (each
-  of which is a bug, not an outcome). Bare `fuzz` runs `lexer` at its
-  deep default (200_000 iterations); every lane has its own deep default
-  and its own smoke budget wired into `check`. Every lane's summary
-  prints its **measured reach** into the pass it exists to test
-  (plans/M9.md item PP) — modelled on the `async` lane — so a collapse
-  to "clean about nothing" is visible in the output. `async`
-  (plans/M7.md item Y) is the one lane that reaches `flowwir_lower` and
-  the async codegen/image-layout path — it mutates the async/actor
-  goldens, since no random byte stream ever spells a valid actor image.
-- `cargo xtask ledger` — validate spec coverage, list gaps.
-- `cargo xtask repro` / `cargo xtask diff-eval` — determinism and
-  evaluator-vs-backend oracles; they fail closed until implemented and
-  must never fake a pass.
-- `cargo xtask profile` / `cargo xtask bench` — measurement, two lanes:
-  compiler speed (**live**: `wrela --timings` prints per-phase wall time
-  to stderr; `xtask bench compiler` times lex+parse over the full corpus
-  in-process and locks the median against `bench/thresholds.toml`, wired
-  into `check`) and guest speed (`bench guest`, replay-based, alive at
-  M5 — still fails closed, like bare `bench` and `profile`). The only
-  path to cleverness — in the compiler too — runs through them.
+- `cargo xtask check` — the gate: fmt, tests, golden, corpus, fuzz smoke,
+  repro, bench locks. Run before calling a milestone (or any multi-item
+  body of work) done — **not** after every plan item.
+  `check --fast` drops the HVF and measurement lanes and names what it
+  skipped; it is not the gate.
+- `cargo xtask golden` — pinned dumps. Flags: `--update`, `--filter
+  <substr>`, `--only-boot`, `--no-boot`, `--jobs N`, `--boot-jobs N`.
+  `--update` rewrites expectations; review the diff before committing.
+  `--filter` selects by substring and **fails closed when it matches
+  nothing**.
+  Non-booting cases run across every core; booting cases run at
+  `--boot-jobs` (default 4) because guest transcripts are wall-clock
+  sensitive and diverge above the performance-core count. `--jobs 1`
+  forces the serial lane.
+- `cargo xtask corpus [--sema]` — every fenced `wrela` block in the docs
+  must lex and parse, then sema-classify against `tests/census.toml`. The
+  docs are test inputs; drift is a failure.
+- `cargo xtask stdlib-test` — comptime `@test` under `stdlib/tests/`.
+- `cargo xtask fuzz <lane> [--iters N] [--seed S]` — deterministic in-tree
+  fuzzer, no external engine. Lanes: `lexer parser sema eval lower async
+  imports report`. Every iteration is checked for panics, nondeterminism,
+  out-of-category rejections, and `internal error:` (each a bug, not an
+  outcome). Every lane prints its **measured reach**, so a collapse to
+  "clean about nothing" is visible. `async` is the one lane reaching
+  `flowwir_lower` and image layout.
+- `cargo xtask repro` / `diff-eval` — determinism and
+  evaluator-vs-backend oracles. They fail closed; they never fake a pass.
+- `cargo xtask cost-inventory` — every `CostRule` names an inventory row
+  in `plans/M20.md`, and every row it names exists.
+- `cargo xtask bench <compiler|build|guest>` / `profile` — measurement.
+  The only path to cleverness runs through them.
 
 ## Verification (cheap per item; expensive at close)
 
-`cargo xtask check` is the gate — fmt, all tests, **all** goldens
-(including HVF boots), corpus, fuzz smoke, ledger, repro lanes. It is
-**too expensive to run after every plan item.** Active milestone plans
-split verification; agents follow that split (or this default when the
-plan is silent):
+`cargo xtask check` is the gate and is too expensive to run after every
+plan item. Active milestone plans split verification; follow that split,
+or this default when the plan is silent:
 
-| Lane | When | What |
-| --- | --- | --- |
-| **Cheap (required per item)** | Before that item's commit | Unit tests + dumps for **new/changed** behavior only; no full golden suite; no deep fuzz; no `bench guest` |
-| **Focused boot (only if the item claims HVF)** | Before that item's commit | Run **the one or two boot goldens the item names**, via `wrela` + `wrela-vmm` on those paths alone — not the whole `boot-*` corpus |
-| **Expensive (close item only)** | Milestone close | Full `cargo xtask check`; deep fuzz when the plan requires it; `bench guest` deltas when the plan records them |
-
-**Cheap recipes (use these, not `xtask check`, between items):**
+| Lane             | When                                           | What                                                                        |
+| ---------------- | ---------------------------------------------- | --------------------------------------------------------------------------- |
+| **Cheap**        | Before each item's commit                      | Unit tests + `golden --filter` for **new/changed** behavior only            |
+| **Focused boot** | Before the commit, only if the item claims HVF | `golden --only-boot --filter <case>` on the one or two cases the item names |
+| **Fast**         | Before merging a body of work                  | `cargo xtask check --fast`                                                  |
+| **Expensive**    | Milestone close                                | Full `cargo xtask check`; deep fuzz and `bench guest` when the plan says so |
 
 ```bash
-# Unit filter (pick the crate the item touched)
-cargo test -p wrela-machine --lib <filter>
 cargo test -p wrela-compiler --lib <filter>
-cargo test -p wrela-vmm --lib <filter>
-
-# One non-boot golden: build wrela, dump/build the case, diff expected/
-cargo build -q -p wrela-compiler --bin wrela
-./target/debug/wrela dump --stage=<image|check|rtconfig|report|asm> \
-  tests/golden/<case>/input.wr | diff -u tests/golden/<case>/expected/<stage>.txt -
-
-# Docs-only items
-cargo xtask corpus          # or corpus --sema when relevant
-cargo xtask ledger
-
-# Focused boot (only named cases the item claims)
-cargo build -q -p wrela-compiler --bin wrela
-# build image + boot with wrela-vmm for that case only (same shape the
-# golden runner uses; do not loop every boot-*)
+cargo xtask golden --filter <case-substring>
+cargo xtask golden --only-boot --filter <case-substring>
+cargo xtask corpus            # docs-only items
+cargo xtask check --fast      # a body of work, before its merge
 ```
 
-**Rules:**
+**Choose the oracle before writing the code, not after.** Write the
+expected output first, from the docs; the cheap lane is then whatever
+pins that artifact. Every plan item names its oracle from this menu:
 
-1. Every item's **Cheap** oracle must fail if the new behavior is wrong
-   and pass when it is right — a green unit filter that never touches
-   the new code is not an oracle.
-2. Do **not** run full `cargo xtask check` or deep fuzz on ordinary
-   items. Drift in untouched goldens is the close item's job.
-3. Items that **move** a large golden surface update the expected files
-   in that commit and cheap-verify with dump/report on a representative
-   sample plus unit tests; the full corpus is re-checked at close.
-4. Claims of byte-identical transcripts are verified on the **named**
-   control case in Cheap/Focused, not by replaying the entire suite.
-5. The close item is not optional. A milestone is not COMPLETE until
-   the expensive lane is green.
+| What the item changes     | Its oracle                               |
+| ------------------------- | ---------------------------------------- |
+| A diagnostic              | a golden pinning the `error[…]` text     |
+| A pipeline stage's output | that stage's dump golden                 |
+| Codegen / layout          | `asm` / `image` / `img.hex` goldens      |
+| Runtime / VMM behavior    | the **named** boot transcript            |
+| Semantics                 | `diff-eval`                              |
+| Lexer / parser surface    | `corpus` + that fuzz lane's reach number |
+| A cost-model term         | a `cost.txt` golden                      |
+| Compiler-visible perf     | a `bench` lane + a re-locked threshold   |
+
+**A test's home is chosen by its cost, not its subject.** Sub-second →
+`cargo test`. Seconds → an xtask lane in `check`. Minutes → a deep lane,
+`#[ignore]`d, run by the close item and named in the plan. The default
+`cargo test` lane has a locked wall-time budget in `bench/thresholds.toml`
+(`[tests] workspace_suite_max_us`), enforced by `check`.
+
+**Rules.** An item's cheap oracle must fail if the new behavior is wrong —
+a green unit filter that never touches the new code is not an oracle.
+Drift in untouched goldens is the close item's job. Items that move a
+large golden surface update the expectations in that commit and
+cheap-verify a representative sample. Claims of byte-identical transcripts
+are verified on the **named** control case, not by replaying the suite.
+The close item is not optional.
 
 ## Layout
 
 - `crates/wrela-machine` — machine-contract types shared by compiler & VMM.
-- `crates/wrela-compiler` — the whole pipeline, one crate (split only when
-  build times demand, along artifact boundaries). Binary: `wrela`; every
-  stage is reachable as `wrela dump --stage=<s> file.wr`.
-- `crates/wrela-vmm` — KVM (Linux) + Hypervisor.framework (macOS) backends,
-  device models, recorder. Consumes the image report as its whole config.
+- `crates/wrela-compiler` — the whole pipeline, one crate. Binary:
+  `wrela`; every stage reachable as `wrela dump --stage=<s> file.wr`.
+- `crates/wrela-vmm` — KVM (Linux) + Hypervisor.framework (macOS)
+  backends, device models, recorder. Consumes the image report as its
+  whole config.
 - `crates/xtask` — the harness above.
 - `stdlib/` — wrela source: core + the machine's driver set.
+- `tests/census.toml` — ratchet allowlists (locked surface counts, corpus
+  sema pins). Update deliberately, in the commit that moves the surface.
 - `docs/archive/` — the superseded draft spec; read-only history.
 
 ## Rules for working here
 
-- Rigor lives in oracles (goldens, ledger, verifiers, differential runs),
-  not in architecture. Do not add: traits with one implementation,
+- Rigor lives in oracles (goldens, verifiers, differential runs), not in
+  architecture. Do not add traits with one implementation,
   generic-over-backend seams, plugin systems, or layers for their own
   sake. There is one machine and one backend — hardcode them.
-- Dumbness is permanent, not v0-only. Cleverness is bought with a profile:
-  an optimization needs a replayable workload's flame graph, a
-  before/after on that same recording, and a regression lock — or it does
-  not land, however obviously fast (ROADMAP.md, "cleverness budget").
+- Dumbness is permanent, not v0-only. **The cleverness budget:** an
+  optimization needs a replayable workload's flame graph, a before/after
+  on that same recording, and a regression lock — or it does not land,
+  however obviously fast.
 - Every pipeline stage gets a stable text dump and golden coverage before
   it gets features.
 - Fail closed: an unimplemented path errors loudly; it never approximates.
-- New/changed doc rules get a ledger clause in the same commit.
 - Prefer long obvious files over deep indirection; keep behavior local.
-- Dependencies are liabilities; adding one needs a reason the ledger can't
-  provide.
+- Dependencies are liabilities; adding one needs a reason.
+- A session that cannot reach green ends with `git restore`, not a
+  "mostly done" tree.

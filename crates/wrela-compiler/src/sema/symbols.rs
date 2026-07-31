@@ -31,7 +31,7 @@ use crate::sema::imports::ImportBindings;
 use crate::syntax::ast::*;
 
 /// The module item table: declared name -> declaring span. `BTreeMap`
-/// throughout sema, per ROADMAP's determinism doctrine, even though only
+/// throughout sema, per CLAUDE.md's determinism doctrine, even though only
 /// exact-name lookups are ever done against it — the ordering guarantee
 /// is free and keeps any future iteration stable too.
 pub type SymbolTable = BTreeMap<String, Span>;

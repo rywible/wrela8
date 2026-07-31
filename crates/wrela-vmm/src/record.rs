@@ -1,8 +1,8 @@
 //! Recorder/replayer for the determinism boundary (06-machine.md §8,
-//! plans/M6.md item E, decision 9's own ROADMAP-constrained shape): "the
+//! plans/M6.md item E, decision 9's own constraint-driven shape): "the
 //! record file becomes a sequence of explicit choice points ... the FORMAT
 //! (choice-tagged, enumerable — a later milestone can swap the chooser for
-//! an enumerator) is the deliverable ROADMAP's constraint names." This
+//! an enumerator) is the deliverable the recorded constraint names." This
 //! module extends M5's clock-log-only recorder (plans/M5.md item F) into
 //! that shape: `ChoiceEntry` is one tagged nondeterministic decision the
 //! machine made — a clock read, a deadline wake, a vector raise, a device
@@ -66,7 +66,7 @@ pub fn digest_hex(bytes: &[u8]) -> String {
 
 /// One nondeterministic choice the machine's own record/replay boundary
 /// resolved, in order — the enumerable schedule representation the
-/// ROADMAP's own recorded design constraint names (module doc above).
+/// the recorded design constraint names (module doc above).
 /// Every variant is a plain, named fact — never a raw "diverged" bit —
 /// so a mismatch can always say *which* choice, and *what*, disagreed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -594,7 +594,7 @@ enum ChooserMode {
 }
 
 /// The single-point-of-choice structure decision 9 explicitly buys
-/// (CLAUDE.md's "the one piece of architecture the ROADMAP explicitly
+/// (CLAUDE.md's "the one piece of architecture CLAUDE.md explicitly
 /// bought — build it plainly"): every nondeterministic decision
 /// `boot_image_core`'s exit loop makes — what a clock read returns,
 /// whether/how long a deadline park sleeps, which vector a wake raises —

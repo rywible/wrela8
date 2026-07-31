@@ -5102,7 +5102,7 @@ pub const TURN_STATUS_SUSPENDED: u64 = 1;
 /// consumer of this ABI (`rt_select_and_run`'s actor dispatch arms) is
 /// untouched and still only ever sees 0/1 — no required M6 golden runs an
 /// actor method inside a cancelled group's own domain, a disclosed gap
-/// recorded in this item's own ledger note, not silently widened here.
+/// recorded in this item's own note, not silently widened here.
 pub const TURN_STATUS_CANCELLED: u64 = 2;
 
 // --- the group arena record (plans/M6.md item F, 02-language.md §9.5) ------

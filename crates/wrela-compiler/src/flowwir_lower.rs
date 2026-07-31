@@ -3152,7 +3152,7 @@ mod integration_tests {
     }
 
     /// State-count assertions for each of the seven required golden
-    /// shapes (`compiler.lower.flowwir-stable`'s own ledger note) —
+    /// shapes (the pinned rule) —
     /// mirrors `tests/golden/<case>/input.wr` verbatim, so a drift here
     /// would also show up as a golden diff; this test locks the *count*
     /// specifically, independent of the dump's exact text.

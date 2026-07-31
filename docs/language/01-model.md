@@ -184,7 +184,7 @@ M13's revision-boundary cuts (plans/M13.md item C / decisions 2 and 13)
 add, each with its surviving replacement named:
 
 - `race(...)` — replacement: selection with a loser-cancellation witness
-  (ROADMAP recorded intention; cheap once the resolution cell exists);
+  (a recorded future intention; cheap once the resolution cell exists);
 - `@detached` — replacement: `send` (fire-and-forget) or an installed
   `@task`;
 - `@no_promote` — replacement: the worked example's
@@ -192,12 +192,12 @@ add, each with its surviving replacement named:
 - `group(budget=)` — replacement: `deadline=` / `capacity=` only
   ([02 §9.5](02-language.md));
 - function-level `@budget` — replacement: report-priced copies; a hard
-  budget on copies is a future cost-proof intention (ROADMAP);
+  budget on copies is a recorded future cost-proof intention;
 - priority bands, `must_service_within`, `@task(priority=)`,
   `@task(budget=)`, and priority/deadline inheritance — replacement:
   FIFO-per-mailbox + round-robin across ready actors
   ([04 §2](04-compiler.md)); bands return only under the cleverness
-  budget (ROADMAP recorded intention).
+  budget (a recorded future intention).
 
 Each exclusion is reversible in a later revision without breaking the
 model; a new device or a change to the memory-map rules is a machine

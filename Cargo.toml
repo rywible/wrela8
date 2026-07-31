@@ -31,8 +31,50 @@ toml = "0.8"
 # The cost is irrelevant at this scale: `wrela` is a single-threaded batch
 # compiler whose whole golden corpus lexes+parses inside one locked
 # `xtask bench compiler` threshold. Cheapness is bought with a profile
-# (ROADMAP.md's cleverness budget), and no profile has been produced that
+# (CLAUDE.md's cleverness budget), and no profile has been produced that
 # asks for these back.
 [profile.release]
+debug-assertions = true
+overflow-checks = true
+
+# The dev profile is not a debugging preference here — it is what every
+# gate lane actually runs on. `cargo test`, `xtask golden`, `corpus`,
+# `report-determinism`, `roundtrip` and every fuzz lane execute this
+# compiler, not the release one, so an unoptimized `dev` is a tax paid
+# once per lane per gate run.
+#
+# Measured 2026-07-30 (Apple M4, 4 performance + 6 efficiency cores, fresh
+# target dir per row) against the worst single test in the suite,
+# `cost::branch::tests::branch_terms_census_over_the_cost_corpus`, which
+# was 94% of the compiler lib suite's wall time:
+#
+#   profile                     cold build   that test   target/
+#   opt-level = 0 (default)          11.2s      395.0s     550MB
+#   opt-level = 1                    35.9s       53.4s     727MB
+#   opt-level = 2                    40.3s       56.9s     717MB
+#   opt-level = 3                    39.6s       76.9s    1295MB
+#   opt-level = 2, line-tables       30.8s       44.0s     567MB   <- this
+#
+# Two things that measurement decided, neither of which was the guess:
+# **3 is worse than 2** (more aggressive inlining on a 125k-line crate
+# costs more than it wins, and doubles the target directory), and
+# **dropping full DWARF is free speed** — `line-tables-only` keeps file
+# and line numbers in every panic backtrace, which is all this codebase
+# reads out of a failing `debug_assert!`, while cutting both the codegen
+# work and the linker's input.
+#
+# LTO is deliberately absent. It is the one lever that trades away
+# incremental rebuilds, which is the number that governs the edit loop —
+# and no profile has been produced asking for it (CLAUDE.md's cleverness
+# budget applies to the build as much as to the compiler).
+#
+# `debug-assertions` and `overflow-checks` are on by default at this
+# profile and are named here for the same reason `[profile.release]`
+# names them: they are load-bearing, not incidental. `encode.rs`'s
+# out-of-range immediates and `layout.rs`'s placement bookkeeping fail
+# loudly only while they are live, and the goldens run on this binary.
+[profile.dev]
+opt-level = 2
+debug = "line-tables-only"
 debug-assertions = true
 overflow-checks = true

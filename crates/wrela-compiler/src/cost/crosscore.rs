@@ -1142,7 +1142,7 @@ mod tests {
     /// `CostRule` and so its absence is not caught by the "every rule
     /// priced" check.
     // `#[should_panic]` first so `#[test]` sits directly above the `fn`:
-    // xtask's ledger validator verifies a `unit:` citation by finding a
+    // a textual scan attributes this name by finding a
     // `#[test]` immediately followed by that function.
     #[should_panic(expected = "[crosscore.snoop] is required")]
     #[test]

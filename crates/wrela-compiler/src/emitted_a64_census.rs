@@ -1,6 +1,6 @@
 //! **Census of hand-emitted A64 instruction words** (plans/M10.md item F0).
 //!
-//! Allowlist / inventory live in `ledger/census.toml` (`[emitted_a64]`);
+//! Allowlist / inventory live in `tests/census.toml` (`[emitted_a64]`);
 //! this module owns the live measurement and source-site scan locks.
 
 use crate::census;
@@ -189,7 +189,7 @@ mod tests {
         assert_eq!(
             live, expected,
             "encode::enc_ emission-site census drifted.\n\
-             Update ledger/census.toml [emitted_a64.encode_enc_sites_by_file] in the \
+             Update tests/census.toml [emitted_a64.encode_enc_sites_by_file] in the \
              same commit that adds or removes a call site \
              (plans/M10.md item F0 — addition lock).\n\
              live={live:?}\n\
@@ -320,7 +320,7 @@ mod tests {
         assert_eq!(
             live, expected,
             "hand-emitted A64 census drifted.\n\
-             Update ledger/census.toml [[emitted_a64.entries]] in the same \
+             Update tests/census.toml [[emitted_a64.entries]] in the same \
              commit that adds, removes, or grows an emitter \
              (plans/M10.md item F0).\n\
              live={live:?}\n\
@@ -413,7 +413,7 @@ mod tests {
         }
         assert!(
             unexpected.is_empty(),
-            "new encode::enc_ emitter(s) not in ledger/census.toml entries, \
+            "new encode::enc_ emitter(s) not in tests/census.toml entries, \
              backend_emitters, or non_inventory — classify deliberately \
              (plans/M10.md item F0):\n  {}",
             unexpected.join("\n  ")
@@ -426,7 +426,7 @@ mod tests {
             assert!(
                 candidates.contains_key(key),
                 "census entry `{key}` no longer scans as an encode::enc_ \
-                 emitter — remove it from ledger/census.toml in the same \
+                 emitter — remove it from tests/census.toml in the same \
                  commit that removes a hand-asm twin after its specialized \
                  replacement is proven (E4 deleted build_rt_run_one / \
                  build_group_child_poll)"
@@ -435,7 +435,7 @@ mod tests {
         for key in wrappers.keys() {
             assert!(
                 census_keys.contains_key(*key),
-                "wrapper_emitters entry `{key}` missing from ledger/census.toml"
+                "wrapper_emitters entry `{key}` missing from tests/census.toml"
             );
         }
     }

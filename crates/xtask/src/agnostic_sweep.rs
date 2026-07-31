@@ -45,14 +45,6 @@ const EXCLUDED_PREFIXES: &[(&str, &str)] = &[
     ),
 ];
 
-/// The ledger is scanned, but by a different rule (see `sweep_ledger`).
-const LEDGER: &str = "ledger/ledger.toml";
-
-/// The marker a line must carry to be allowed to quote a superseded
-/// phrase. Deliberately specific: any text containing it is text that is
-/// recording this exact lift, not text still asserting the old claim.
-const LIFT_MARKER: &str = "plans/M20.md item A";
-
 /// Every superseded assertion, in the normalized (whitespace-collapsed)
 /// form the scanner matches. Enumerated by grepping the tree before item A
 /// touched it, not guessed: each entry had at least one live occurrence,
@@ -188,11 +180,7 @@ pub(crate) fn agnostic_sweep() -> Result<(), String> {
         // tree is valid UTF-8 today, so this never actually lossifies.
         let text = String::from_utf8_lossy(&bytes);
         scanned += 1;
-        if rel == LEDGER {
-            sweep_ledger(rel, &text, &mut hits);
-        } else {
-            sweep_prose(rel, &text, &mut hits);
-        }
+        sweep_prose(rel, &text, &mut hits);
     }
 
     let mut missing: Vec<String> = Vec::new();
@@ -254,7 +242,7 @@ fn tracked_files() -> Result<Vec<String>, String> {
 /// Ordinary files: whitespace-collapsed whole-file matching, no exemption.
 ///
 /// Whole-file rather than per-line because the two normative documents and
-/// ROADMAP.md wrap prose at ~72 columns, so "not an A76 SOG port map"
+/// CLAUDE.md wrap prose at ~72 columns, so "not an A76 SOG port map"
 /// routinely straddles a newline and a line-at-a-time matcher would sail
 /// straight past the very sites this check exists to catch.
 ///
@@ -273,36 +261,6 @@ fn sweep_prose(rel: &str, text: &str, hits: &mut Vec<Hit>) {
                 phrase,
                 why,
             });
-        }
-    }
-}
-
-/// `ledger/ledger.toml`: per **line**, exempt when the same line carries
-/// `LIFT_MARKER`.
-///
-/// The ledger is append-only by house convention — a clause's `note` grows
-/// note-updates and never loses its history — so it legitimately quotes
-/// the phrase it is retiring, and excluding the file outright would leave
-/// the largest concentration of these assertions unchecked. One `note`
-/// is one physical line here (every clause in the file is written that
-/// way), so "the quote and the record of its lift are on the same line"
-/// is exactly "the quote sits inside a note that records the lift". A
-/// future multi-line note would put the quote on a line without the
-/// marker and fail this check — the safe direction.
-fn sweep_ledger(rel: &str, text: &str, hits: &mut Vec<Hit>) {
-    for (i, line) in text.lines().enumerate() {
-        if line.contains(LIFT_MARKER) {
-            continue;
-        }
-        for (phrase, why) in SUPERSEDED {
-            if line.contains(phrase) {
-                hits.push(Hit {
-                    path: rel.to_string(),
-                    line: (i + 1) as u32,
-                    phrase,
-                    why,
-                });
-            }
         }
     }
 }
@@ -368,27 +326,6 @@ mod tests {
         assert!(
             !hits.is_empty(),
             "ordinary prose must not be exempted by the marker"
-        );
-    }
-
-    #[test]
-    fn ledger_sweep_exempts_only_marked_lines() {
-        let mut hits = Vec::new();
-        sweep_ledger(
-            LEDGER,
-            "note = \"a: not A76 SOG ports. Note-update (plans/M20.md item A): lifted.\"\n\
-             note = \"b: not A76 SOG ports.\"\n",
-            &mut hits,
-        );
-        // The fixture's phrase trips two entries at once ("not A76" and
-        // "A76 SOG ports" both match), which is fine — what the exemption
-        // has to get right is *which line* is reported, not how many
-        // phrases a line manages to violate.
-        assert!(!hits.is_empty(), "the unmarked line must be reported");
-        assert!(
-            hits.iter().all(|h| h.line == 2),
-            "the marked line leaked: {:?}",
-            hits.iter().map(|h| (h.phrase, h.line)).collect::<Vec<_>>()
         );
     }
 

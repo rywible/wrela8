@@ -1294,7 +1294,7 @@ mod tests {
 
     // --- One encoding golden: a fixed instruction list, review-visible as
     // an inline hex table (plans/M5.md item A's own "dumbest reviewable
-    // form" call — recorded in ledger/ledger.toml under
+    // form" call — recorded in the pinned rules under
     // `compiler.encode.a76-pinned`). Every line is one instruction from
     // the subset, chosen to touch every encoder function at least once;
     // the expected column is the literal bit math, not copied from any

@@ -51,14 +51,14 @@ use crate::{golden_case_dirs, root};
 
 pub(crate) const FUZZ_LEXER_DEEP_ITERS: u64 = 200_000;
 pub(crate) const FUZZ_LEXER_DEEP_SEED: u64 = 1;
-// Wired into `check` (after corpus, before ledger): two fixed seeds, 1_000
+// Wired into `check` (after corpus): two fixed seeds, 1_000
 // iterations each, so the gate stays well under a second and fully
 // deterministic — no seed ever comes from the clock or the environment.
 pub(crate) const FUZZ_LEXER_SMOKE_SEEDS: &[u64] = &[1, 2];
 pub(crate) const FUZZ_LEXER_SMOKE_ITERS_PER_SEED: u64 = 1_000;
 
 /// splitmix64: the entire PRNG. No external crate — a fuzzer this dumb
-/// does not need one, and determinism-by-construction (ROADMAP.md) means
+/// does not need one, and determinism-by-construction (CLAUDE.md) means
 /// the generator itself must never change behavior across platforms.
 pub(crate) struct Rng(u64);
 
@@ -847,7 +847,7 @@ pub(crate) fn fuzz_parser_smoke() -> Result<(), String> {
 // iteration so it reproduces; every find is minimized by hand into a
 // `tests/golden/sema-fuzz-*` case before the underlying bug is fixed.
 //
-// Two more invariants (ledger clause sema.check.roundtrip-stable,
+// Two more invariants (the pinned rule,
 // `check_sema_roundtrip_and_rotation`/`_guarded`, defined further down
 // this file next to the shared `sema_outcome_summary`/
 // `sema_outcomes_agree` comparison machinery `xtask roundtrip` also
@@ -870,7 +870,7 @@ pub(crate) fn fuzz_parser_smoke() -> Result<(), String> {
 // parse and never reach a pass.
 //
 // Re-measured after adding `check_sema_roundtrip_and_rotation_guarded`
-// (ledger clause sema.check.roundtrip-stable — a second lex+parse+check
+// (the pinned rule — a second lex+parse+check
 // pass to recover the parsed module, a pretty-print+reparse+recheck for
 // the roundtrip oracle, and a clone+recheck for the item-rotation oracle,
 // on every iteration whose input parses): ~61us/iteration (500_000 iters
@@ -879,7 +879,7 @@ pub(crate) fn fuzz_parser_smoke() -> Result<(), String> {
 // most iterations never reach a parseable module at all. 2_000_000 still
 // lands a bare `cargo xtask fuzz sema` at a bit over two minutes, inside
 // the "roughly a minute or two"/1-3 minute band plans/M2.md item I and
-// this ledger clause both target, so the deep default is unchanged.
+// this the pinned rule target, so the deep default is unchanged.
 pub(crate) const FUZZ_SEMA_DEEP_ITERS: u64 = 2_000_000;
 pub(crate) const FUZZ_SEMA_DEEP_SEED: u64 = 1;
 pub(crate) const FUZZ_SEMA_SMOKE_SEEDS: &[u64] = &[1, 2];
@@ -1153,7 +1153,7 @@ pub(crate) fn check_sema_invariants(input: &str) -> Result<SemaReach, String> {
 
 // --- fuzz: sema roundtrip stability + item-rotation invariance ----------
 //
-// ledger clause sema.check.roundtrip-stable. Two more invariants, checked
+// the pinned rule Two more invariants, checked
 // whenever an input parses (regardless of whether sema accepts or rejects
 // it) — shared by `fuzz sema` (below) and `xtask roundtrip`
 // (`sema_roundtrip_check`, further down this file), since both boil down

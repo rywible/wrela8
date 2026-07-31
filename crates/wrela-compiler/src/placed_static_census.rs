@@ -35,7 +35,7 @@ use crate::layout::PlacedStatic;
 use crate::rtconfig::{INIT_SPAN_POOL_COUNT, MB_POOL_COUNT};
 
 /// Machine pages + runtime overlays (excluding the MB pool and live
-/// init spans). From `ledger/census.toml` `[placed_static]`.
+/// init spans). From `tests/census.toml` `[placed_static]`.
 pub fn fixed_core_names() -> &'static [String] {
     &census::data().placed_static_fixed_core_names
 }

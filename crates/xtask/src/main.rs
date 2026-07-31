@@ -2,7 +2,7 @@
 //! definition of "the tree is good", run locally before calling anything
 //! done. Subcommands:
 //!
-//!   check      fmt + tests + golden + corpus + fuzz(smoke) + ledger (the gate)
+//!   check      fmt + tests + golden + corpus + fuzz(smoke) + repro (the gate)
 //!   golden     run golden tests; `--update` rewrites expectations
 //!   field-visibility-census  empty-census gate (plans/M13.md G3)
 //!   corpus     extract every ```wrela block from docs/ and lex it
@@ -10,8 +10,7 @@
 //!              block (plans/M9.md item J3; per-block stubs / nest from
 //!              J1b/J1c) and ratchets the pinned census: ok-decay fails,
 //!              an accepted disagreement that starts passing fails (naming
-//!              its ledger gap), and every accepted row's gap must still
-//!              be `status = "gap"` in `ledger/ledger.toml`. `--sema` only
+//!              a non-empty `why`. `--sema` only
 //!              prints the verbose per-block report for humans; the gate
 //!              itself is the same path `check` runs. A standing guard
 //!              refuses any wrap that discards fence item text.
@@ -24,8 +23,7 @@
 //!              `check`. `sema` runs lex -> parse -> `sema::check` over
 //!              corpus/golden-input
 //!              mutations and token-soup, same shape as `parser`, plus (on
-//!              every iteration whose input parses, ledger clause
-//!              sema.check.roundtrip-stable) two more invariants: sema
+//!              every iteration whose input parses) two more invariants: sema
 //!              roundtrip stability (pretty-print, reparse, recheck — the
 //!              two sema outcomes must agree) and item-rotation acceptance
 //!              invariance (rotating the module's top-level items by one
@@ -35,8 +33,7 @@
 //!              `eval::run_tests` over every comptime-legal `@test`, same
 //!              corpus/token-soup shape again; invariants: never panics,
 //!              deterministic across two runs, and every outcome is a
-//!              well-formed diagnostic or test report (ledger clause
-//!              comptime.eval.no-panics). `lower` runs lex -> parse ->
+//!              well-formed diagnostic or test report (pinned rule). `lower` runs lex -> parse ->
 //!              `sema::check_typed` -> on success, `lower::lower_program`
 //!              -> on success, `codegen::codegen_program`, over the same
 //!              corpus/token-soup shape again (the seed set's own
@@ -50,8 +47,7 @@
 //!              blob, all byte-compared), a lowering/codegen rejection is
 //!              always the fixed `unimplemented` diagnostic category, and
 //!              every successfully codegen'd program passes
-//!              `codegen::validate`'s own structural checks (ledger clause
-//!              compiler.lower.no-panics). `async` (plans/M7.md item Y) is
+//!              `codegen::validate`'s own structural checks (pinned rule). `async` (plans/M7.md item Y) is
 //!              the same pipeline's *async* half, which `lower` has
 //!              disclosed since M6-D that it never reaches at all: lex ->
 //!              parse -> `sema::check_typed` -> `lower::lower_program` +
@@ -71,13 +67,12 @@
 //!              deterministic across two runs (FlowWir dump, codegen'd
 //!              words, image bytes, and the reach itself), every rejection
 //!              in the fixed category set, and `"internal error: "`
-//!              anywhere is a bug (ledger clause compiler.lower.no-panics).
+//!              anywhere is a bug.
 //!   roundtrip  pretty-print every parseable corpus entry and golden input,
 //!              reparse it, and compare the two AST dumps (spans stripped)
 //!              — the parser's `diff-eval` (plans/M1.md item E). Also runs
 //!              the same sema-roundtrip oracle as `fuzz sema` above,
-//!              whenever the entry parses as a whole `Module` (ledger
-//!              clause sema.check.roundtrip-stable). Wired into `check`,
+//!              whenever the entry parses as a whole `Module` (pinned rule). Wired into `check`,
 //!              after `corpus`.
 //!   report-determinism
 //!              plans/M4.md item D, decision 9, grown by plans/M5.md item D
@@ -117,7 +112,9 @@
 //!              fail-closed error, never a nearest-offset guess. Not part
 //!              of `check`: it *writes* a committed fixture, so it is run
 //!              deliberately and the diff is reviewed.
-//!   ledger     verify spec-coverage ledger (ledger/ledger.toml)
+//!   cost-inventory
+//!              every `CostRule` names an inventory row in plans/M20.md,
+//!              and every row it names exists (freeze 1632).
 //!   agnostic-sweep
 //!              plans/M20.md item A: fail closed if any of the cost
 //!              model's superseded board-independence claims survives in
@@ -127,11 +124,9 @@
 //!              phrase list itself lives in `agnostic_sweep.rs` (which is
 //!              the one path excluded for that reason), along with
 //!              `docs/archive/` (read-only history) and `plans/` (which
-//!              record the superseded state on purpose).
-//!              `ledger/ledger.toml` is scanned per line, exempt only
-//!              where the line also records the lift. Also asserts the
-//!              replacement strings are present in the dump source. Wired
-//!              into `check` beside `ledger`.
+//!              record the superseded state on purpose). Also asserts
+//!              the replacement strings are present in the dump source. Wired
+//!              into `check`.
 //!   stdlib-test
 //!              plans/M16.md item F / decisions 1160–1166: discover every
 //!              `stdlib/tests/**/*.wr`, load+check in-process, count
@@ -143,7 +138,7 @@
 //!   diff-eval  evaluator-vs-backend differential      (fails closed today)
 //!   profile    replay a recorded workload under counters (fails closed today)
 //!   bench      cargo xtask bench compiler|build|guest; the compiler lane
-//!              is live (plans/M1.md, ROADMAP.md "cleverness budget"): lex +
+//!              is live (plans/M1.md, CLAUDE.md "cleverness budget"): lex +
 //!              parse, in-process, over every doc/example corpus entry
 //!              plus every tests/golden/*/input.wr (3 warmup + 15 timed
 //!              iterations), reporting min/median/max total wall time and
@@ -177,14 +172,14 @@
 //!              closed — the guest lane needs the VMM and record/replay,
 //!              which land at M5.
 //!
-//! The cleverness budget (ROADMAP.md): optimizations land only with a
+//! The cleverness budget (CLAUDE.md): optimizations land only with a
 //! profile, a before/after on the same recording, and a lock. `bench
 //! compiler` is that lock for the compiler's own speed; the guest lane
 //! (`bench guest`) and `profile` still refuse to fake results until M5
 //! gives them a machine to measure.
 //!
 //! Golden discipline: an expectation file changes only together with a
-//! ledger clause that justifies it. The golden diff is the review surface.
+//! the pinned rule justifies it. The golden diff is the review surface.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -250,17 +245,20 @@ pub(crate) fn golden_case_dirs(golden_dir: &Path) -> Result<Vec<PathBuf>, String
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
-        Some("check") => check(),
-        Some("golden") => golden(args.iter().any(|a| a == "--update")),
+        Some("check") => check(args.iter().any(|a| a == "--fast")),
+        Some("golden") => match parse_golden_opts(&args[1..]) {
+            Ok(opts) => golden(&opts),
+            Err(e) => Err(e),
+        },
         Some("corpus") => corpus(&args[1..]),
         Some("roundtrip") => roundtrip(),
         Some("report-determinism") => report_determinism(),
-        Some("ledger") => ledger(),
         // plans/M20.md item A: no superseded board-independence claim
         // survives outside `docs/archive/` and `plans/`. Item A's own
         // oracle — the failure mode of a two-dozen-site doc sweep is a
         // *missed* site, which greps catch and diff reviews do not.
         Some("agnostic-sweep") => agnostic_sweep(),
+        Some("cost-inventory") => cost_inventory(),
         // plans/M16.md item F / decisions 1160–1166: comptime stdlib
         // suite under `stdlib/tests/` — in-process load/check/`run_tests`,
         // fail closed on zero discovered comptime/exhaustive `@test`s.
@@ -292,7 +290,7 @@ fn main() -> ExitCode {
         Some("bench") => bench(&args[1..]),
         _ => {
             eprintln!(
-                "usage: cargo xtask <check|golden [--update]|corpus [--sema]|fuzz [lexer|parser|sema|eval|lower|async|imports|report] [--iters N] [--seed S]|roundtrip|report-determinism|ledger|agnostic-sweep|stdlib-test|repro|diff-eval|diff-block-count|diff-blk|gen-lane2-freq <case>|profile|bench <compiler|build|guest>>"
+                "usage: cargo xtask <check [--fast]|golden [--update] [--filter <substr>] [--only-boot|--no-boot] [--jobs N] [--boot-jobs N]|corpus [--sema]|fuzz [lexer|parser|sema|eval|lower|async|imports|report] [--iters N] [--seed S]|roundtrip|report-determinism|agnostic-sweep|cost-inventory|stdlib-test|repro|diff-eval|diff-block-count|diff-blk|gen-lane2-freq <case>|profile|bench <compiler|build|guest>>"
             );
             return ExitCode::FAILURE;
         }
@@ -304,6 +302,116 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// The default `cargo test` lane has a **locked wall-time budget**, in
+/// exactly the sense `bench/thresholds.toml` already means by "lock": not
+/// a performance target, a regression tripwire. It exists because the
+/// failure it catches is one this repo has now hit twice — a test whose
+/// subject belongs in the default lane but whose *cost* does not.
+///
+/// The precedent is on the record: `sweep_deep` scored the whole program
+/// once per corner, cost 31m58s, was `#[ignore]`d (plans/M20.md decision
+/// 1637), then reformulated to ~9s and brought back (decision 1644). That
+/// exile was found by a human noticing, not by an oracle. This is the
+/// oracle: a test's home is chosen by its cost, and the gate says so out
+/// loud when the cost moves.
+///
+/// Deliberately loose, the same way every other lock in that file is —
+/// generous multiples over the measured number, so it fires on a lane
+/// that has changed *kind* and never on a busy laptop.
+fn assert_unit_suite_within_budget(elapsed: std::time::Duration) -> Result<(), String> {
+    let budget_us = bench_threshold_us("tests", "workspace_suite_max_us")?;
+    let measured_us = elapsed.as_micros();
+    if measured_us > budget_us {
+        return Err(format!(
+            "cargo test: the default unit lane took {:.1}s, over its locked budget of {:.1}s \
+             (bench/thresholds.toml `[tests] workspace_suite_max_us`).\n\
+             \n\
+             This is a *placement* failure, not a speed one. A test whose cost has grown into \
+             the minutes belongs behind `#[ignore]` with an xtask deep lane the close item \
+             runs, or reformulated until it is cheap again (plans/M20.md decisions 1637/1644 \
+             are the worked example of both moves). Find the long pole with:\n\
+             \n    cargo test -p wrela-compiler --lib 2>&1 | tail -20\n\n\
+             — libtest prints each test as it *finishes*, so the slow ones are the last lines.\n\
+             \n\
+             Re-lock this number only deliberately, in its own commit, citing why — never to \
+             make a regression quietly pass.",
+            measured_us as f64 / 1e6,
+            budget_us as f64 / 1e6,
+        ));
+    }
+    println!(
+        "cargo test: default unit lane {:.1}s, within locked budget {:.1}s (bench/thresholds.toml)",
+        measured_us as f64 / 1e6,
+        budget_us as f64 / 1e6,
+    );
+    Ok(())
+}
+
+/// `golden [--update] [--filter <substr>] [--only-boot|--no-boot]
+/// [--jobs N] [--boot-jobs N]`. Unknown flags are an error rather than a
+/// shrug: a mistyped `--fliter` that silently ran the whole corpus would
+/// waste three minutes and, worse, a mistyped one that silently ran
+/// *nothing* would print a green line.
+fn parse_golden_opts(args: &[String]) -> Result<GoldenOpts, String> {
+    let mut opts = GoldenOpts::default();
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        let mut value = |what: &str| -> Result<String, String> {
+            i += 1;
+            args.get(i)
+                .cloned()
+                .ok_or_else(|| format!("golden: `{what}` needs a value"))
+        };
+        match a {
+            "--update" => opts.update = true,
+            "--no-boot" => opts.boot = BootSel::None,
+            "--only-boot" => opts.boot = BootSel::Only,
+            "--filter" => opts.filter = Some(value("--filter")?),
+            "--jobs" => {
+                opts.jobs = value("--jobs")?
+                    .parse::<usize>()
+                    .map_err(|e| format!("golden: --jobs: {e}"))?
+                    .max(1)
+            }
+            "--boot-jobs" => {
+                opts.boot_jobs = value("--boot-jobs")?
+                    .parse::<usize>()
+                    .map_err(|e| format!("golden: --boot-jobs: {e}"))?
+                    .max(1)
+            }
+            other => {
+                if let Some(f) = other.strip_prefix("--filter=") {
+                    opts.filter = Some(f.to_string());
+                } else {
+                    return Err(format!("golden: unknown flag `{other}`"));
+                }
+            }
+        }
+        i += 1;
+    }
+    Ok(opts)
+}
+
+/// Freeze 1632 (plans/M20.md item L): the cost dimension inventory is
+/// machine-checked, not a prose table. Every `CostRule` variant must name
+/// at least one inventory row, and every row it names must exist in
+/// `plans/M20.md`'s table — so a `CostRule` added without an inventory row
+/// (or a row deleted from under one) fails here.
+///
+/// A whole-tree consistency check between code and a plan document. It
+/// used to ride inside the `ledger` command because that was already doing
+/// a cross-check of that shape; when the spec ledger was removed this kept
+/// its own lane, since nothing about it was ever about spec coverage.
+fn cost_inventory() -> Result<(), String> {
+    let plan = wrela_compiler::cost::plan_text()?;
+    println!(
+        "{}",
+        wrela_compiler::cost::check_dimension_inventory(&plan)?
+    );
+    Ok(())
 }
 
 pub(crate) fn fail_closed(name: &str, why: &str) -> Result<(), String> {
@@ -324,23 +432,85 @@ pub(crate) fn run(cmd: &mut Command, what: &str) -> Result<(), String> {
     }
 }
 
-fn check() -> Result<(), String> {
+/// `check` is the gate. `check --fast` is **not** — it is the per-item
+/// lane CLAUDE.md's verification table asks for, made into a command so
+/// nobody has to hand-roll a `dump | diff` pipeline and nobody reaches
+/// for the full gate between items because the cheap thing was awkward.
+///
+/// `--fast` drops exactly two families, and says so on the way out:
+///
+///  * **everything that boots a guest** — the golden `test.txt` cases,
+///    the signed `wrela-vmm` unit lane, `repro`, `bench guest`. These are
+///    the wall-clock-sensitive lanes, and an item that does not claim HVF
+///    has no business paying for them (the table's "focused boot" row is
+///    `golden --only-boot --filter <case>` instead).
+///  * **the measurement lanes** — `bench compiler`/`bench build`, plus
+///    `report-determinism` and `diff-eval`, whose oracles are re-derived
+///    at close over a corpus that has by then stopped moving.
+///
+/// The close item runs bare `check`. That is not optional and `--fast`
+/// does not shorten it.
+fn check(fast: bool) -> Result<(), String> {
     run(
         Command::new("cargo").args(["fmt", "--all", "--check"]),
         "cargo fmt --check",
     )?;
+    // Build first, untimed, so the lock below measures the suite's own
+    // execution rather than however stale this checkout's target/ was.
+    run(
+        Command::new("cargo").args([
+            "test",
+            "--workspace",
+            "--exclude",
+            "wrela-vmm",
+            "--no-run",
+            "--quiet",
+        ]),
+        "cargo test --no-run",
+    )?;
+    let unit_start = std::time::Instant::now();
     run(
         Command::new("cargo").args(["test", "--workspace", "--exclude", "wrela-vmm", "--quiet"]),
         "cargo test",
     )?;
+    assert_unit_suite_within_budget(unit_start.elapsed())?;
+    if fast {
+        golden(&GoldenOpts {
+            boot: BootSel::None,
+            ..GoldenOpts::default()
+        })?;
+        corpus(&[])?;
+        fuzz_lexer_smoke()?;
+        fuzz_parser_smoke()?;
+        fuzz_sema_smoke()?;
+        fuzz_eval_smoke()?;
+        fuzz_lower_smoke()?;
+        fuzz_async_smoke()?;
+        fuzz_imports_smoke()?;
+        fuzz_report_smoke()?;
+        roundtrip()?;
+        stdlib_test()?;
+        agnostic_sweep()?;
+        cost_inventory()?;
+        println!(
+            "xtask check --fast: ok — SKIPPED every HVF lane (golden boots, wrela-vmm units, \
+             repro, bench guest) and the measurement lanes (report-determinism, diff-eval, \
+             bench compiler/build). This is not the gate; a milestone is not COMPLETE until \
+             bare `cargo xtask check` is green."
+        );
+        return Ok(());
+    }
     test_wrela_vmm_signed()?;
-    sweep_deep()?;
-    golden(false)?;
-    report_determinism()?;
+    golden(&GoldenOpts::default())?;
+    // `report_determinism` is deliberately **not** called here: `repro`
+    // (below) runs it as its own first step, so calling it twice ran the
+    // same 92-case, two-fresh-compiles-each loop twice per gate — ~8s of
+    // duplicated work and no extra oracle. `cargo xtask report-determinism`
+    // remains a standalone command for the narrow case.
     diff_eval_smoke()?;
     // plans/M9.md item J3: bare `corpus` always sema-classifies and
-    // verifies the pinned census (accepted disagreements cite open ledger
-    // gaps). Same path as `corpus --sema`; the flag only adds the verbose
+    // verifies the pinned census (accepted disagreements carry a `why`).
+    // Same path as `corpus --sema`; the flag only adds the verbose
     // report. No second collection path.
     corpus(&[])?;
     fuzz_lexer_smoke()?;
@@ -397,10 +567,10 @@ fn check() -> Result<(), String> {
     // plans/M20.md item A: the docs are ground truth over the code
     // (CLAUDE.md), so a claim anywhere in the tracked tree that the cost
     // model is board-independent is a contradiction, not a stale
-    // comment. Runs beside `ledger` — both are whole-tree consistency
-    // checks over text rather than behavior, and both are cheap.
+    // comment. A whole-tree consistency check over text rather than
+    // behavior, and cheap.
     agnostic_sweep()?;
-    ledger()?;
+    cost_inventory()?;
     println!("xtask check: ok");
     Ok(())
 }
@@ -748,25 +918,109 @@ pub(crate) fn produce_report_and_image(target: &Path) -> Result<(String, Option<
 /// covered here.
 fn report_determinism() -> Result<(), String> {
     let golden_dir = root().join("tests/golden");
-    let mut cases = 0usize;
-    let mut failures = Vec::new();
-    for case in golden_case_dirs(&golden_dir)? {
-        if !case.join("expected/report.txt").exists() {
-            continue;
+    let targets: Vec<PathBuf> = golden_case_dirs(&golden_dir)?
+        .into_iter()
+        .filter(|c| c.join("expected/report.txt").exists())
+        .collect();
+
+    // Two fresh compiles per case, ~90 cases, and every one of them is
+    // independent of every other — the serial loop this replaced spent
+    // 72s on one core. Workers take whole cases; results carry their
+    // index and are sorted before use, so the failure list does not
+    // depend on scheduling.
+    //
+    // Worth being explicit about why threading here is not a doctrine
+    // violation: what this proves is that *one* compile of *one* case is
+    // reproducible, and each `produce_report_and_image` call is a fresh,
+    // self-contained loader+sema+eval+lower+codegen+layout with no state
+    // shared with any other call — that is the property the function's
+    // own doc comment already asserts and the reason it takes no context.
+    // The compiler stays single-threaded; this runs many of it.
+    let cursor = std::sync::atomic::AtomicUsize::new(0);
+    let collected: std::sync::Mutex<Vec<(usize, String, Vec<String>)>> =
+        std::sync::Mutex::new(Vec::new());
+    let hard_error: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+    let jobs = golden::default_jobs().min(targets.len().max(1));
+
+    std::thread::scope(|scope| {
+        for _ in 0..jobs {
+            scope.spawn(|| {
+                loop {
+                    let i = cursor.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if i >= targets.len() {
+                        return;
+                    }
+                    let case = &targets[i];
+                    let mut failures = Vec::new();
+                    let target = match golden_case_target(case) {
+                        Ok(Some(t)) if t.exists() => t,
+                        Ok(_) => {
+                            failures.push(format!(
+                                "{}: expected/report.txt exists but no input.wr/`root` target found",
+                                case.display()
+                            ));
+                            collected.lock().expect("lock").push((i, String::new(), failures));
+                            continue;
+                        }
+                        Err(e) => {
+                            let mut slot = hard_error.lock().expect("lock");
+                            if slot.is_none() {
+                                *slot = Some(e);
+                            }
+                            continue;
+                        }
+                    };
+                    let first = produce_report_and_image(&target);
+                    let second = produce_report_and_image(&target);
+                    match (first, second) {
+                        (Ok(a), Ok(b)) => {
+                            collected
+                                .lock()
+                                .expect("lock")
+                                .push((i, case.display().to_string(), compare_two_runs(case, a, b)));
+                        }
+                        (Err(e), _) | (_, Err(e)) => {
+                            let mut slot = hard_error.lock().expect("lock");
+                            if slot.is_none() {
+                                *slot = Some(e);
+                            }
+                        }
+                    }
+                }
+            });
         }
-        let target = match golden_case_target(&case)? {
-            Some(t) if t.exists() => t,
-            _ => {
-                failures.push(format!(
-                    "{}: expected/report.txt exists but no input.wr/`root` target found",
-                    case.display()
-                ));
-                continue;
-            }
-        };
-        let (first_text, first_img) = produce_report_and_image(&target)?;
-        let (second_text, second_img) = produce_report_and_image(&target)?;
-        cases += 1;
+    });
+
+    if let Some(e) = hard_error.into_inner().expect("lock") {
+        return Err(e);
+    }
+    let mut collected = collected.into_inner().expect("lock");
+    collected.sort_by_key(|(i, _, _)| *i);
+    let cases = collected.len();
+    let failures: Vec<String> = collected.into_iter().flat_map(|(_, _, f)| f).collect();
+
+    if failures.is_empty() {
+        println!(
+            "report-determinism: {cases} case(s) reproduced byte-for-byte (report + image where present) across two runs"
+        );
+        Ok(())
+    } else {
+        for f in &failures {
+            eprintln!("{f}\n");
+        }
+        Err(format!("report-determinism: {} failure(s)", failures.len()))
+    }
+}
+
+/// The byte-compare half of `report_determinism`, unchanged in meaning —
+/// lifted out only so the loop above can be a worker body.
+fn compare_two_runs(
+    case: &Path,
+    (first_text, first_img): (String, Option<Vec<u8>>),
+    (second_text, second_img): (String, Option<Vec<u8>>),
+) -> Vec<String> {
+    let mut failures = Vec::new();
+    {
         if first_text != second_text {
             let first_line = first_text.lines().next().unwrap_or("");
             let mismatch = first_text
@@ -793,17 +1047,7 @@ fn report_determinism() -> Result<(), String> {
             ));
         }
     }
-    if failures.is_empty() {
-        println!(
-            "report-determinism: {cases} case(s) reproduced byte-for-byte (report + image where present) across two runs"
-        );
-        Ok(())
-    } else {
-        for f in &failures {
-            eprintln!("{f}\n");
-        }
-        Err(format!("report-determinism: {} failure(s)", failures.len()))
-    }
+    failures
 }
 
 /// plans/M5.md item F: grows `repro`'s own full-corpus form beyond
@@ -842,7 +1086,7 @@ fn repro_test_image() -> Result<(), String> {
 
 /// plans/M6.md item E: the choice-sequence recorder's own citable
 /// conformance evidence (`machine.replay.clock-log`/`machine.replay.
-/// choice-sequence`'s own ledger notes) — shells out to the freshly
+/// choice-sequence`'s own notes) — shells out to the freshly
 /// built-and-signed `wrela-vmm` *binary* exactly once more (never the
 /// `wrela-vmm` *crate*: this file's own established "xtask stays
 /// unsigned, only the one signed binary calls HVF" boundary, the same
@@ -860,7 +1104,7 @@ fn repro_test_image() -> Result<(), String> {
 /// detects_tamper`), disclosed here rather than silently implied covered:
 /// those tests are real, but — like `machine.clock.trap-logged`'s own
 /// established precedent — `cargo test -p wrela-vmm` unit tests are not
-/// individually citable by `xtask ledger`'s own validator (no `tests/`
+/// individually citable by `xtask check`'s own validator (no `tests/`
 /// path, no `xtask:<command>`).
 fn repro_choice_log_roundtrip(vmm: &Path) -> Result<(), String> {
     let (img_bytes, report_text) = boot_hello_test_image()?;
@@ -2703,32 +2947,6 @@ fn diff_eval() -> Result<(), String> {
 /// comptime tests between them, exercising checked/wrapping arithmetic,
 /// structs, enums, `match`, loops, and a generic fn) — the closest
 /// existing cases to the plan's own naming, used verbatim rather than
-/// The ∀ sweep's **deep lane** (plans/M20.md decision 1637).
-///
-/// `opts::win`'s whole-corpus sweep is `#[ignore]`d in the default
-/// `cargo test` loop and run here instead, exactly as every `fuzz_*` lane
-/// keeps a deep default and a smoke budget. It costs minutes once item M's
-/// nine cases join the corpus (`k` reaches 14 on `cost-crosscore`, 16384
-/// corners), and CLAUDE.md puts that in the expensive close lane rather
-/// than on every per-item run. The smoke lane
-/// (`release_wins_at_every_box_point_on_the_smoke_case`) keeps the property
-/// under test on ordinary runs through the identical code path, so nothing
-/// about the oracle's strength moved — only which lane runs it.
-fn sweep_deep() -> Result<(), String> {
-    run(
-        Command::new("cargo").args([
-            "test",
-            "-p",
-            "wrela-compiler",
-            "--lib",
-            "--quiet",
-            "--",
-            "--ignored",
-        ]),
-        "sweep (deep lane)",
-    )
-}
-
 /// substituted.
 const DIFF_EVAL_SMOKE_CASES: [&str; 3] = ["boot-hello", "check-tests-arith", "check-tests-program"];
 
@@ -2759,7 +2977,7 @@ fn diff_eval_smoke() -> Result<(), String> {
 // mismatch prints both dumps' first divergence plus the pretty-printed
 // text that produced it, for direct debugging.
 //
-// ledger clause sema.check.roundtrip-stable adds a second oracle riding
+// the pinned rule adds a second oracle riding
 // the same parse -> pretty -> reparse cycle, on the same entries, whenever
 // the entry parses as a whole `Module` (sema has no fragment entry point):
 // A = sema outcome of the original module, B = sema outcome of the
@@ -2939,7 +3157,7 @@ fn roundtrip_one(name: &str, body: &str) -> (RoundtripResult, Option<Result<(), 
     }
 }
 
-/// The sema-roundtrip oracle (ledger clause sema.check.roundtrip-stable),
+/// The sema-roundtrip oracle,
 /// applied to one entry's original and reparsed modules — the same
 /// `sema_outcome_summary`/`sema_outcomes_agree` machinery `fuzz sema`
 /// uses. `Ok(())` on agreement.
@@ -2978,219 +3196,6 @@ fn first_divergence(a: &str, b: &str) -> (String, String) {
         }
     }
     ("<identical>".to_string(), "<identical>".to_string())
-}
-
-// --- ledger ---------------------------------------------------------------
-//
-// ledger/ledger.toml maps normative clauses in docs/language/ to the tests
-// that enforce them. Every clause has status "test" (with existing test
-// paths) or "gap" (explicit, visible debt). This measures coverage of the
-// SPEC, not of the code.
-
-/// Does any `.rs` file under `crates/` define `#[test] fn <name>(...)`?
-/// Backs the ledger's `unit:<fn name>` test references (plans/M9.md item
-/// AA): a clause may not name a unit test that does not exist.
-///
-/// **The `#[test]` attribute is required, not just the function**
-/// (plans/M9.md decision 59b). The first version of this checked only
-/// for `fn <name>(`, which meant `unit:main` — `fn main(` in this very
-/// file — satisfied a clause and counted it among the tested ones. A
-/// reference type satisfiable by a non-test lets a clause claim coverage
-/// it does not have, which is exactly what the sibling `golden/<name>`
-/// reference (a real directory under `tests/`) does not permit.
-///
-/// Deliberately not an attribute parser: it looks for a literal
-/// `#[test]` followed, past whitespace only, by `fn <name>(`. A test
-/// carrying a second attribute between the two (`#[should_panic]`) would
-/// be reported as missing — a false negative, which is the safe
-/// direction, and loud.
-///
-/// Walks the tree rather than shelling out, and fails closed — an
-/// unreadable tree yields no hits, which reports the clause as unbacked.
-fn crate_sources_have_test_fn(name: &str) -> bool {
-    let needle = format!("fn {name}(");
-    fn walk(dir: &std::path::Path, needle: &str) -> bool {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return false;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                if path.file_name().is_some_and(|n| n == "target") {
-                    continue;
-                }
-                if walk(&path, needle) {
-                    return true;
-                }
-            } else if path.extension().is_some_and(|e| e == "rs")
-                && std::fs::read_to_string(&path).is_ok_and(|s| {
-                    s.match_indices("#[test]").any(|(i, m)| {
-                        // The attribute must not be commented out
-                        // (plans/M9.md decision 59c, orchestrator
-                        // verification of 59b): a textual scan is happy
-                        // to find `#[test]` inside `// #[test]`, so
-                        // commenting out an attribute to disable a
-                        // flaky test would silently leave every clause
-                        // citing it counted as tested — the exact
-                        // silent-coverage failure `unit:` refs exist to
-                        // prevent. Checked by walking back to the line
-                        // start and rejecting a `//` before the
-                        // attribute; a `//` anywhere earlier on that
-                        // line comments the rest of it out.
-                        let line_start = s[..i].rfind('\n').map_or(0, |n| n + 1);
-                        if s[line_start..i].contains("//") {
-                            return false;
-                        }
-                        s[i + m.len()..].trim_start().starts_with(needle)
-                    })
-                })
-            {
-                return true;
-            }
-        }
-        false
-    }
-    walk(&root().join("crates"), &needle)
-}
-
-fn ledger() -> Result<(), String> {
-    let path = root().join("ledger/ledger.toml");
-    let text =
-        std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
-    let value: toml::Value = text.parse().map_err(|e| format!("parse ledger: {e}"))?;
-    let clauses = value
-        .get("clause")
-        .and_then(|c| c.as_array())
-        .ok_or("ledger has no [[clause]] entries")?;
-    let mut seen = std::collections::HashSet::new();
-    let mut tested = 0usize;
-    let mut gaps = Vec::new();
-    for (i, clause) in clauses.iter().enumerate() {
-        let id = clause
-            .get("id")
-            .and_then(|v| v.as_str())
-            .ok_or(format!("clause {i}: missing id"))?;
-        if !seen.insert(id.to_string()) {
-            return Err(format!("duplicate clause id `{id}`"));
-        }
-        let doc = clause
-            .get("doc")
-            .and_then(|v| v.as_str())
-            .ok_or(format!("clause `{id}`: missing doc reference"))?;
-        let doc_file = doc
-            .split('#')
-            .next()
-            .expect("split yields at least one part");
-        if !root().join("docs/language").join(doc_file).exists() {
-            return Err(format!(
-                "clause `{id}`: doc file `{doc_file}` does not exist"
-            ));
-        }
-        match clause.get("status").and_then(|v| v.as_str()) {
-            Some("test") => {
-                let tests = clause
-                    .get("tests")
-                    .and_then(|v| v.as_array())
-                    .ok_or(format!("clause `{id}`: status=test requires a tests list"))?;
-                if tests.is_empty() {
-                    return Err(format!("clause `{id}`: empty tests list"));
-                }
-                for t in tests {
-                    let t = t
-                        .as_str()
-                        .ok_or(format!("clause `{id}`: non-string test"))?;
-                    // `xtask:<command>` names a harness check instead of a
-                    // tests/ path (e.g. the doc corpus).
-                    if let Some(cmd) = t.strip_prefix("xtask:") {
-                        if !matches!(
-                            cmd,
-                            "corpus"
-                                | "repro"
-                                | "diff-eval"
-                                // plans/M7.md item F, decision 2a: the
-                                // QEMU differential oracle for ring
-                                // handling. Standalone (never wired into
-                                // `check`) because 06 §1 has QEMU
-                                // scheduled for retirement — see
-                                // `diff_blk`'s own doc comment.
-                                | "diff-blk"
-                                | "profile"
-                                | "bench"
-                                | "fuzz"
-                                | "roundtrip"
-                                | "report-determinism"
-                                // plans/M16.md item F / decisions 1160–1166.
-                                | "stdlib-test"
-                                // plans/M20.md item L / freeze 1632: the
-                                // cost dimension inventory cross-check
-                                // between `CostRule` and plans/M20.md's
-                                // table runs inside `ledger` itself, so a
-                                // clause may cite it the same way the doc
-                                // corpus cites `xtask:corpus`.
-                                | "ledger"
-                        ) {
-                            return Err(format!("clause `{id}`: unknown xtask check `{cmd}`"));
-                        }
-                        continue;
-                    }
-                    // `unit:<fn name>` names a `#[test]` inside a crate
-                    // (plans/M9.md item AA: the intrinsic-surface guard
-                    // locks compiler *source* against a written-down
-                    // list, so it is a cargo unit test rather than a
-                    // golden — there is no artifact to dump). Verified
-                    // mechanically the only way a name can be: a
-                    // `#[test]`-attributed function by that name must
-                    // exist under `crates/` (decision 59b — the
-                    // attribute is the whole point; without it any
-                    // function satisfied the reference). `cargo test` is
-                    // already the first step of `xtask check`, so a
-                    // failing one cannot reach here.
-                    if let Some(f) = t.strip_prefix("unit:") {
-                        if f.is_empty() {
-                            return Err(format!("clause `{id}`: empty unit test name"));
-                        }
-                        if !crate_sources_have_test_fn(f) {
-                            return Err(format!(
-                                "clause `{id}`: `{f}` is not a `#[test]` function under crates/"
-                            ));
-                        }
-                        continue;
-                    }
-                    if !root().join("tests").join(t).exists() {
-                        return Err(format!(
-                            "clause `{id}`: test `{t}` does not exist under tests/"
-                        ));
-                    }
-                }
-                tested += 1;
-            }
-            Some("gap") => gaps.push(id.to_string()),
-            _ => return Err(format!("clause `{id}`: status must be \"test\" or \"gap\"")),
-        }
-    }
-    // Freeze 1632 (plans/M20.md item L): the cost dimension inventory is
-    // machine-checked, not a prose table. Every `CostRule` variant must
-    // name at least one inventory row and every row it names must exist in
-    // `plans/M20.md`'s table — so a `CostRule` added without an inventory
-    // row (or an inventory row deleted from under one) fails the ledger.
-    // Runs here rather than as a unit because it is a whole-tree
-    // consistency check between code and a plan document, the same shape as
-    // the clause/doc cross-check above.
-    let plan = wrela_compiler::cost::plan_text()?;
-    println!(
-        "{}",
-        wrela_compiler::cost::check_dimension_inventory(&plan)?
-    );
-
-    println!(
-        "ledger: {} clause(s), {tested} tested, {} explicit gap(s)",
-        clauses.len(),
-        gaps.len()
-    );
-    for g in &gaps {
-        println!("  gap: {g}");
-    }
-    Ok(())
 }
 
 // --- diff-block-count (Integrity Phase 2 Item N) ----------------------------

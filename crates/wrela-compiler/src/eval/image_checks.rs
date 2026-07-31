@@ -33,7 +33,7 @@
 //! response), so it runs last. `img.seal()`'s own "every declaration
 //! is fully bound" (05-library.md §9) is exactly the conjunction of every
 //! check below, not a separate mechanism — `check_sealed` *is* the seal
-//! check; `image.graph.seal-fully-bound`'s own ledger clause cites the
+//! check; `image.graph.seal-fully-bound`'s own the pinned rule the
 //! same evidence as the others.
 //!
 //! One-image (decision 6's own "zero or more than one is a named
@@ -550,7 +550,7 @@ fn decl_refs_in_value(v: &Value, out: &mut Vec<ImageDeclRef>) {
 // argument back to reference an "earlier" one out of order — the one way
 // to construct a cycle at all, and unrepresentable in today's language
 // surface (no forward references exist yet). `image.graph.construction-dag`'s
-// own ledger clause records this honestly: this check is real code, real
+// own the pinned rule this honestly: this check is real code, real
 // unit-tested, and has no source-level failing golden — by construction,
 // not because the check was skipped.
 fn identified_decls(graph: &ImageGraph) -> Vec<(ImageDeclRef, &[DeclArg])> {
@@ -1322,7 +1322,7 @@ pub fn check_pool_decls(
 // own "a resource `init` argument without one recovery source is a build
 // error" falls out of this exact same case (decision 7's own sub-note:
 // no separate mechanism exists or is needed, `image.graph.init-args-match`'s
-// own ledger clause covers both).
+// own the pinned rule both).
 #[derive(Clone, Copy)]
 enum DeclKind {
     Driver,

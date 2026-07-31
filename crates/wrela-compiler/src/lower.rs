@@ -5182,8 +5182,18 @@ mod integration_tests {
             })
             .max()
             .expect("a budget bound literal must be present");
+        // Raised 4096 -> 262144 on 2026-07-30, deliberately, with the
+        // measurement in `runtime.wr` beside the constant: at 4096 the boot
+        // corpus produced 1-3 transcript mismatches per round under 8
+        // concurrent boots on a 10-core host, because the bound races the
+        // *host* scheduler rather than guest work. At 262144 that is 1 in
+        // five rounds, and all 993 golden expectations are byte-identical
+        // either way. What this oracle exists to protect is unchanged and
+        // is asserted above: the wait is `@budget`-bounded and halts rather
+        // than hanging. The number is the mitigation; the bound is the
+        // contract.
         assert_eq!(
-            bound, 4096,
+            bound, 262_144,
             "QUIESCE_POLL_BOUND changed; update this oracle deliberately"
         );
     }

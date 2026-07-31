@@ -2097,7 +2097,26 @@ pub fn __wrela_abort_deadlock():
 # quiesce in a golden.
 # ---------------------------------------------------------------------------
 
-const QUIESCE_POLL_BOUND: usize = 4096
+# Raised 4096 -> 262144 on 2026-07-30, measured, not guessed. The bound is
+# a race against the *host* scheduler, not against guest work: core 0 burns
+# its spins while the host has descheduled the secondary vCPU threads, so on
+# an oversubscribed machine core 0 can exhaust the bound before a secondary
+# ever runs. Measured over the 35 boot goldens, 8 concurrent boots on a
+# 10-core host (4 performance cores), transcripts compared to their pins:
+#
+#   bound = 4096     2, 3, 1 mismatches over three rounds
+#   bound = 262144   0, 0, 0, 1, 0 over five rounds (and 0 at 12 concurrent)
+#
+# All 993 golden expectations are byte-identical either way, so nothing
+# prices this constant.
+#
+# It is a mitigation, not a fix, and the residual is real: no spin bound can
+# be correct against an arbitrarily oversubscribed host. The actual fix is a
+# yield hint inside the loop so the host can schedule the cores this one is
+# waiting for — a machine-contract change, and a decision, not a constant.
+# Until then `xtask golden` keeps its boot lane at or below the performance-
+# core count (`--boot-jobs`, default 4), where the corpus measures clean.
+const QUIESCE_POLL_BOUND: usize = 262144
 
 # Every released core parked (`PENDING.idle`) with nothing pending for it.
 # Both halves matter: a core that has just been woken has a pending word and
