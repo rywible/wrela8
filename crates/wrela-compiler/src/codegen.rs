@@ -4290,18 +4290,30 @@ fn emit_arith_wrapping(
             "sub",
             CostRule::Alu,
         ),
-        // plans/codegen-pareto.md item C1 (decisions 1704 / 1740 / 1746).
+        // plans/codegen-pareto.md item C1 (decisions 1704 / 1740 / 1746 /
+        // **1790**).
         //
-        // **Not gated on an `OptId`, and not a claimed win.** The ∀ gate
-        // scores this substitution at exactly zero on every case in the
-        // corpus — measured, with the reason, in
-        // `unit:item_c1_is_hidden_by_the_frame_until_the_multiply_outgrows_its_slack`
-        // — so freeze 1714 forbids it being a named opt, and decision 1740
-        // prescribed the alternative in advance: land C1 "as a reported
-        // form change with no win claimed". This is instruction
-        // *selection* from a width the type system already proves, the
-        // same category as choosing `STRB` over `STR` for a `u8` field,
-        // and it is emitted in `dev` and `release` alike.
+        // **Not gated on an `OptId`, and not a claimed win** — still, but
+        // for a second and better reason than the first. Decision 1746
+        // kept C1 unconditional because the ∀ gate scored it at exactly
+        // zero everywhere and freeze 1714 forbids an unrankable named opt.
+        // Item E's allocator removed the frame slack that was hiding it,
+        // so that premise is gone: over `[RegAlloc]` this substitution is
+        // worth 3 cycles on `cost-arith-w`, and it is now perfectly
+        // rankable.
+        //
+        // Decision 1790 keeps it out anyway, because of *which* case
+        // falls. `cost-arith-w` is the only case in either tier that moves
+        // at all, and item C wrote it — no case in the corpus had a narrow
+        // wrapping multiply before this item added one. It is worth
+        // **exactly zero on all four programs the appliance ships**.
+        // Freeze 1717 says an opt may not gate on a case it authored
+        // alone, and that is the entire gate C1 would have. So it stays
+        // what decision 1740 prescribed in advance: a reported form change
+        // with no win claimed — instruction *selection* from a width the
+        // type system already proves, the same category as choosing
+        // `STRB` over `STR` for a `u8` field, emitted in `dev` and
+        // `release` alike.
         //
         // A **wrapping** multiply of a declared type of `bits <= 32` is
         // defined modulo 2^bits, and `narrow_to_width` below re-canonicalizes
