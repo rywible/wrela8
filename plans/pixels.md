@@ -19,12 +19,7 @@ changed is that the *shape* of the design is now decided by evidence rather
 than by argument, and three things graphics.md was open to are now known to
 be dead ends.
 
-Decision block **2000–2099** requested. Not claimed until a human activates.
-
-Not 1900–1999, which is what [graphics.md](graphics.md) asks for: master's
-`codegen-pareto-2` item K has since claimed **1950–1969** inside that
-range. graphics.md's request is now partially invalid and wants the same
-correction.
+Decision block **1900–1999** requested. Not claimed until a human activates.
 
 ---
 
@@ -35,14 +30,11 @@ is a correction to how everything else was being read.
 
 | Finding | Effect |
 | --- | --- |
-| **Reconstruction factor grows with output resolution** (5.2→29.0, 14.1→71.9) | 4K becomes reachable; every earlier number was read off the worst data point |
+| **Reconstruction factor grows with output resolution** (4.76→23.96, 14.0→70.1) | 4K becomes reachable; every earlier number was read off the worst data point |
 | **Tape pruning delivers** — 173→28 ops, 312→**median 1** | §2.2 is confirmed as the load-bearing mechanism |
 | **A baked octree is *slower*** (0.69–0.98×) | no spatial acceleration structure, ever |
 | **Volumetric light bakes do not carry this geometry** (p95 0.27) | no irradiance/AO/shadow volume |
 | **Interval arithmetic beats affine arithmetic on box SDFs** (20–50×) | `eval_range` must carry both domains |
-| **Deformation is structurally free** (peak/mean 1.01× across a swing) | §4.2's time-Lipschitz escape hatch is not needed at these rates |
-| **Over-relaxation is start-point-dependent** | rejected; it broke §4's reuse and inflated edge density |
-| **§1's "30% of peak sustained" is ~2× conservative** for this loop | the V-port bound is 60–84%; the ladder brackets rather than assumes |
 
 The correction is the important one and it is worth stating plainly: for
 most of this design's life, the reconstruction factor was measured at
@@ -55,14 +47,14 @@ is resolution-independent. It is not, and the direction is favourable — see
 ## 1. The arithmetic, remeasured
 
 graphics.md §1 modelled **~4,500 FLOP/pixel** for a frame under the
-classical amortisations. Measured, with tape pruning and slab-advance
-traversal (over-relaxation is rejected — §3.4):
+classical amortisations. Measured, with tape pruning, slab-advance
+traversal and over-relaxation:
 
 | scene | FLOP/pixel | note |
 | --- | --- | --- |
-| colonnade | **3,609** | hard-surface architecture, 2-octave ground displacement |
-| colonnade-flat | **2,393** | the same scene, displacement off |
-| melee | **2,869** | 4-figure `smin` cluster, k=0.08 limbs |
+| colonnade | **3,390** | hard-surface architecture, 2-octave ground displacement |
+| colonnade-flat | **2,280** | the same scene, displacement off |
+| melee | **2,806** | 4-figure `smin` cluster, k=0.08 limbs |
 
 §1's model was accurate to about 25% on the pessimistic side. That is a
 better outcome than it sounds: the model was built from first principles
@@ -79,7 +71,7 @@ Composition (colonnade), which decides where effort is worth spending:
 | traversal — affine classify + prune | 10.8% |
 | post | 8.9% |
 
-**Displacement costs 1.51×** (3,609 vs 2,393). Two octaves at amplitude
+**Displacement costs 1.49×** (3,390 vs 2,280). Two octaves at amplitude
 0.02 on a large grazing surface. That is the single most expensive
 art-direction decision in the frame and it is the difference between 4K60
 closing comfortably and closing on a knife edge (§9). It belongs in the
@@ -87,60 +79,10 @@ closing comfortably and closing on a knife edge (§9). It belongs in the
 
 ```
 warn[FIELD_DISPLACE_COST]: 2 octaves at amplitude 0.020 on 'ground' raise
-  frame cost 1.51x (measured class: large-area grazing surface).
+  frame cost 1.49x (measured class: large-area grazing surface).
   --> world/terrain.wr:9
   help: at @output(3840, 2160, 60) this is the term that does not fit.
 ```
-
-### 1.1 The port model replaces §1's sustained-FLOPs guess
-
-§1 derives 16 fp32 FLOP/cycle/core from two NEON pipes and then assumes
-*"~30% of peak until measured"*. That is a reasonable prior for hand-tuned
-packet code and a guess all the same, and **every resolution number scales
-linearly in it**.
-
-For *this* loop the guess is unnecessary. `bench/a76-pi5.toml` pins both
-FP/ASIMD pipes — `port_v0` (SOG §2.1 pipeline 7) and `port_v1` (pipeline
-8), both **T1** — at `thru 1/1`. A register-resident, branch-free packet
-interpreter is therefore V-port-limited at **2 vector uops per cycle**, and
-§9.3's register arithmetic says the measured median pruned tape (28 ops)
-*is* register-resident at 4-wide fp32 or 8-wide fp16.
-
-Counting V-uops per tape op and dividing by the port width:
-
-| scene | 4× fp32 | 8× fp16 |
-| --- | --- | --- |
-| colonnade | 379 cyc/px — **59.6%** of fp32 peak | 189 — 119% |
-| colonnade-flat | 225 — **66.5%** | 112 — 133% |
-| melee | 270 — **66.3%** | 135 — 133% |
-
-(pessimistic sweep end; the optimistic end reaches 79–84% and 158–168%.
-fp16 exceeds 100% legitimately — twice the lanes against an fp32 peak.)
-
-**So §1's 30% is roughly 2× conservative for this loop.** That is not a
-licence to replace it: this model assumes register residency, no L-pipe
-pressure and **no interpreter dispatch at all**, so it is an *upper* bound
-where §1's 30% is a lower one. The gap between them is exactly the
-unmeasured quantity in §13.1. §10 therefore brackets rather than assumes.
-
-**What the table cannot yet supply.** `[latency.neon]` is one coarse row
-for all FP/ASIMD — *"kept as one coarse row per dimension inventory row 35
-… no live emit site; do not expand into per-group FP/ASIMD rows"* — and it
-cannot separate `FMLA` from `FSQRT`, whose throughputs differ by an order
-of magnitude. `opts-ladder.md` 9c records that **row 35's trigger condition
-has fired**: wrela now emits FP/ASIMD, so the freeze that declined those
-rows *"is satisfied by adding them, not violated"*.
-
-The three groups the pixels work needs, stated as sweep dimensions per the
-over-cost rule rather than pinned as guesses:
-
-| dimension | bracket | what resolves it |
-| --- | --- | --- |
-| `sqrt` | 6 – 12 uops | `FSQRT` vs `FRSQRTE` + 2 Newton steps |
-| `sin` | 8 – 16 | range reduction + minimax polynomial length |
-| `rep` | 3 – 8 | reciprocal multiply, `FRINTN`, `FMLS` |
-
-That is the concrete deliverable to whoever expands the ASIMD rows.
 
 ---
 
@@ -159,8 +101,8 @@ any 4-neighbour differs in hit/miss or in relative depth by >5%:
 
 | scene | 512×288 | 1024×576 | 1920×1080 | 3840×2160 |
 | --- | --- | --- | --- | --- |
-| colonnade | 7.13% | 3.58% | 1.94% | **0.98%** |
-| melee | 2.34% | 1.17% | 0.63% | **0.31%** |
+| colonnade | 7.62% | 3.87% | 2.08% | **1.06%** |
+| melee | 2.38% | 1.20% | 0.64% | **0.32%** |
 
 Edges are a 1-D set. Their pixel count grows linearly with resolution while
 the frame grows quadratically, so the edge *fraction* halves with every
@@ -177,12 +119,12 @@ the empirical answer is decisive:
 
 | scene | 512×288 | 1024×576 | 1920×1080 | **3840×2160** |
 | --- | --- | --- | --- | --- |
-| colonnade | 5.24× | 9.11× | 16.01× | **28.97×** |
-| melee | 14.11× | 24.84× | 41.09× | **71.90×** |
+| colonnade | 4.76× | 7.98× | 13.32× | **23.96×** |
+| melee | 14.02× | 24.29× | 40.41× | **70.10×** |
 
-Patch samples grow 14.2× while pixels grow 64×. At 4K, melee needs 115,358
-shaded samples for 8.29M pixels — about 8,350 patches averaging 31×31
-pixels, plus 26,090 edge samples.
+Patch samples grow 14.8× while pixels grow 64×. At 4K, melee needs 118,320
+shaded samples for 8.29M pixels — about 8,500 patches averaging 31×31
+pixels, plus 26,890 edge samples.
 
 ### 2.3 Three rules the fit must obey
 
@@ -196,7 +138,7 @@ Each was found by measuring a version that violated it.
    patch representation has to win. Worth 40%→72% pass rate on melee's 32px
    cells.
 2. **Judge the fit only on non-edge pixels.** Letting a single edge pixel
-   condemn its cell is what held reconstruction at 1.05× instead of 28.97×.
+   condemn its cell is what held reconstruction at 1.05× instead of 23.96×.
    Axis-aligned cells cannot align to a diagonal edge; a curve-bounded
    region splits rather than fails.
 3. **Subdivide adaptively.** A uniform grid measures the wrong thing — the
@@ -271,49 +213,25 @@ width ratio of exactly 1.00× at every slot, which is not agreement.
   than marching, 91–99.8% converging to the true hit, worst depth error
   0.10 px of parallax. `∂t/∂x = −F_x/F_t` with both terms from one
   `eval_grad`.
-- **Over-relaxation** (Keinert 2014): **removed.** graphics.md §2.5 calls
-  it *"thirty lines, 30–50% fewer steps, no risk"*. Measured: **1.09%**
-  fewer steps, and the risk is real, specific, and fatal to §4 — see below.
+- **Over-relaxation** (Keinert 2014): **1.09×**, well under the paper's
+  claimed 30–50%. Its overshoot backtrack must be computed *before* the
+  relaxation factor is reset, or it silently tunnels.
 
-### 3.4 Over-relaxation is rejected (§2.5 — measured, and reversed)
-
-It makes the marcher **start-point-dependent**: two marches toward the same
-surface from different starting points converge to different answers,
-because a relaxed step can overshoot a thin feature (this scene's blade is
-0.011 thick) and the overshoot recovery re-uses a distance sampled at the
-pre-backtrack position.
-
-That is fatal for §4, whose whole mechanism is varying the march start.
-With relaxation on, reprojection across a deformation tunnelled on
-**4.5–13.2%** of hinted pixels — and the tell was that *more* slack made it
-**worse**, which is backwards from §4's model. With it off, the same
-measurement gives **0.20–0.86%** and slack behaves monotonically.
-
-Removing it costs 2–6% of frame cost and **gains 3–21% of reconstruction
-factor**, because the tunnelling was manufacturing false discontinuities
-that inflated edge density. Net favourable, before counting the
-correctness.
-
-1.09% is not worth a start-point-dependent marcher in a reference
-implementation. A corrected version — re-evaluate the distance after
-backtracking — could return under CLAUDE.md's cleverness budget, with this
-measurement as the "before".
-
-### 3.5 "Solve, do not march" is scene-dependent (§2.3 — measured)
+### 3.4 "Solve, do not march" is scene-dependent (§2.3 — measured)
 
 Blend-band ray fraction — the share of traversed ray length where `smin`
 deviates from `min`, and closed-form solving is therefore unavailable:
 
 | colonnade | melee |
 | --- | --- |
-| **17.9%** | **96.5%** |
+| **17.9%** | **96.3%** |
 
 graphics.md guessed 5% and 40%. §2.3 is a real lever on hard-surface
 architecture and **nearly inapplicable to character work**. Its actual
 value on the 82% of colonnade ray length that *is* solvable remains
 unmeasured.
 
-### 3.6 The interior certificate is weak, and it does not matter
+### 3.5 The interior certificate is weak, and it does not matter
 
 Certified-interior screen area came in at 2.2%/12.5%, far under §2.1's
 expectation that *"the majority of screen area is interior"*. The cause is
@@ -399,8 +317,6 @@ brick map.
 
 ## 6. Motion
 
-### 6.1 Camera whip
-
 §16.2's camera whip, costed **every frame** rather than at one
 representative pose, because a frame budget is set by the worst frame.
 Sixteen frames ramping to 15.75°/frame:
@@ -424,59 +340,6 @@ This is what §4.4's velocity-scheduled resolution is for, and the table
 above is the curve to schedule against. It is also why reconstruction must
 happen guest-side (§7): a disoccluded region can be re-marched only by
 whoever holds the field.
-
-### 6.2 Deformation is nearly free — and that is the finding
-
-Nine poses across a sword swing, camera held still so that everything
-measured is attributable to the geometry moving. §10.2's arc-and-pace
-factoring, so angular rate peaks mid-swing where a real swing snaps, and
-§10.3's swept volume grows with it.
-
-| quantity | range across the whole swing |
-| --- | --- |
-| full tape ops | **313, constant** |
-| pruned ops at depth 4 | 22.5 – 23.1 |
-| blend-band ray fraction | 96.57% – 97.13% |
-| frame cost | 2809 – 2885 FLOP/px — **peak/mean 1.01×** |
-| edge density | 2.24% – 2.42% |
-| reconstruction factor | 13.95× – 14.32× |
-
-**Every structural quantity is invariant.** §6.3's line — topology is
-comptime, parameters are runtime — holds exactly: tape length never moves,
-because a pose changes coefficients and not shape. Pruning does not
-degrade, blend bands do not spike, and the reconstruction factor is flat.
-
-The frame budget varies by **1% across a full swing**, against **21% across
-a camera whip** (§6.1). Deformation is not the stress case. Camera motion
-is.
-
-### 6.3 §4's temporal reuse survives deformation
-
-The same nine poses, reprojecting a depth hint across each transition with
-the camera still. §4 promises a wrong hint costs performance and never
-correctness, then says plainly that the guarantee holds *only for static
-geometry*.
-
-| | slack 0.02 | slack 0.08 | slack 0.25 |
-| --- | --- | --- | --- |
-| hint verified | 99.17 – 99.86% | 99.30 – 99.87% | **99.47 – 99.87%** |
-| tunnelled | 0.14 – 0.83% | 0.13 – 0.70% | **0.13 – 0.53%** |
-
-Monotone in slack, as §4's model predicts. Closing motion is 0.03–0.19
-mean and 0.6–7.7 at p99; the p99 tail is occlusion *events* — a limb
-sweeping across a background — not surface velocity, so §4.1's
-rigid-instance bound does not need to cover it.
-
-**The hint rate equals the hit rate** (54.4% against 54.0%), which is the
-sharpest result here: with a static camera, deformation produces
-essentially **zero disocclusion**. Every pixel that had a surface last
-frame has a usable hint this frame.
-
-So §4.4's 61%-disocclusion problem is entirely **camera-driven**. Geometry
-motion contributes almost nothing to it, and §4.2's time-Lipschitz
-certificate — graphics.md's "escape hatch" for deforming fields — is not
-needed at these rates. §4.1's rigid-instance bound plus a modest slack
-covers it.
 
 ---
 
@@ -512,27 +375,11 @@ rasterising at 60 Hz works because the two costs are wildly asymmetric —
 is cheap; running the shade twice is not. And the guest can re-march
 disocclusions, which a decoder never could.
 
-**Bandwidth, and a claim withdrawn.** An earlier draft proposed a two-plane
-composite — a 1080p interior plane plus a sparse native-resolution edge
-plane, scaled and composited by the Pi's HVS — cutting scanout traffic from
-~4.0 GB/s to ~1.05 GB/s. **That is not available under the machine
-contract.**
-
-[06 §7](../docs/language/06-machine.md) already specifies the display path,
-and it has no hardware scaler in it: framebuffers are *"blob resources —
-guest-owned pages the VMM maps and scans out directly"*, `transfer` is a
-no-op, and the host backends are *"DRM dumb buffers / Mesa-V3D present"*. A
-dumb buffer is a plain linear framebuffer. The guest therefore produces
-pixels **at scanout resolution**, and a two-plane composite would be a
-change to the machine contract, not an implementation detail.
-
-The contract is otherwise a close fit for everything above. Zero-copy blob
-resources mean there is no guest→host copy at all, which is strictly better
-than the §7 table's "guest writes pixels" column assumed. And scanout
-*"accepts a tile list (scatter-gather): the compositor's workers fill
-disjoint `own[Tiles] Tile` buffers on their assigned cores"* — which is
-precisely §5's tile fusion and the tiled reconstruction recommended above,
-already normative.
+**Bandwidth, separately.** The two-plane composite — a 1080p interior plane
+plus a sparse native-resolution edge plane, composited by the HVS — cuts
+scanout traffic from ~4.0 GB/s to ~1.05 GB/s, because edge pixels are
+0.32–1.06% of a 4K frame. That is orthogonal to who computes the pixels and
+is the real bandwidth lever. It depends on §14.2's open HVS questions.
 
 ---
 
@@ -670,36 +517,21 @@ reconstruction factor at that resolution.
 
 | mode | melee | colonnade-flat | colonnade |
 | --- | --- | --- | --- |
-| **1080p60**, shade at 60 | 35% | 66% | 60% \* |
-| **4K30**, shade at 30 | 47% | 52% \* | 73% \* |
-| **4K60**, shade at 60 | 93% | 103% ✗ | 146% ✗ |
-| **4K60**, shade at 30 + raster at 60 | 61% | 66% \* | **88%** \* |
+| **1080p60**, shade at 60 | 35% | 74% | 67% \* |
+| **4K30**, shade at 30 | 47% | 61% \* | 81% \* |
+| **4K60**, shade at 60 | 93% | 178% ✗ | 162% ✗ |
+| **4K60**, shade at 30 + raster at 60 | 61% | 72% \* | **96%** \* |
 
 \* with the measured optimisation stack: fp16 on the 44.6% that is shadow +
 AO/GI + shading (§3), continuation at its measured 2.01× on the 92.4% of
 primary that is smooth.
 
-The table above uses §1's 30% prior. §1.1's V-port bound is 60–66%
-(pessimistic sweep, 4× fp32), which **halves every figure**:
-
-| mode, at the port bound | melee | colonnade-flat | colonnade |
-| --- | --- | --- | --- |
-| **4K60**, shade at 60 | 47% | 52% \* | **73%** \* |
-| **4K60**, shade at 30 + raster at 60 | 31% | 33% \* | 44% \* |
-
-**At the port bound, 4K60 closes on all three scenes with shading at the
-full 60 Hz** — the 30 Hz-shade trick becomes headroom rather than a
-requirement. The truth lies between the two tables, and what decides it is
-§13.1.
-
 **1080p60 fits everywhere with room. 4K60 fits everywhere if shading runs
 at 30 Hz and the representation is re-rastered at 60.** colonnade sits at
-88% of budget — 12% of headroom against §6.1's measured 1.21× camera-whip
-peak, so a whip still needs §4.4's velocity schedule, but the margin is no
-longer knife-edge. Deformation needs no headroom at all (§6.2, 1.01×).
-
-These numbers *improved* when over-relaxation was removed (§3.4): the
-reconstruction factor gained more than the frame cost lost.
+96% of budget, which means no headroom for a whip — §6 measured peak/mean
+at 1.21× and 61% disocclusion, so colonnade at 4K60 depends on §4.4's
+velocity schedule rather than on slack. Dropping the ground displacement
+(§1) or reaching 35% sustained removes that dependency.
 
 ---
 
@@ -728,10 +560,6 @@ stdlib implementation rules, locked by `diff-eval` and unit tests.
    shrinking `e` is a valid tightening. Keep the form, or collapse to an
    opaque interval.
 7. **`rsqrt` is defined as an explicit Newton sequence in stdlib** (§9.4).
-8. **The marcher must be start-point-independent.** Two marches toward the
-   same surface from different starting points must converge to the same
-   answer, because §4's temporal reuse varies the start by construction.
-   Over-relaxation violates this and is rejected (§3.4).
 
 ---
 
@@ -785,32 +613,27 @@ gates. Any successor implementation should carry the same ones.
 In descending order of how much rests on them.
 
 1. **Packet-interpreter dispatch amortisation.** The largest assumption
-   under §10, and now the *only* thing separating §1's 30% from §1.1's
-   60–66% port bound. Every figure assumes op-by-op interpretation
-   amortises across a packet; §16.1 says the M4 proxy biases interpreter
-   overhead optimistic. Needs an A76 — but the port model has narrowed what
-   the measurement has to settle to a single ratio between two computed
-   ends.
-2. **Where in 30–66% the loop actually lands.** §1.1 brackets it: 30% is
-   the prior, the V-port bound is 60–66%, and the gap is the same dispatch
-   and L-pipe overhead as item 1. Not a separate unknown — the *same*
-   unknown, seen from the other end.
-3. **§14.2's display path — narrower than graphics.md thought.** graphics.md
-   §14.2 says *"There is no scanout contract, no framebuffer device, no
-   display driver."* The first is wrong: [06 §7](../docs/language/06-machine.md)
-   specifies blob-resource framebuffers, scatter-gather tile lists, a vsync
-   frame vector and the host backends. What is missing is the *driver* and
-   the VMM device model, not the contract. That is a smaller and much
-   better-specified job than the plan assumed. Whether the HVS scales during scanout,
+   under §10. Every FLOP figure assumes op-by-op interpretation amortises
+   across a packet; §16.1 says the M4 proxy biases interpreter overhead
+   optimistic. Needs an A76.
+2. **§1's 30%-sustained figure.** Every projection scales linearly in it,
+   and the proxy structurally cannot measure it. colonnade's 4K60 verdict
+   flips on it alone.
+3. **Deforming fields.** *Both scenes are static.* §4.2's time-Lipschitz
+   certificates, §10.1's implicit skinning, and the cost of re-pruning a
+   moving `smin` cluster every frame are entirely untested. §6 moved the
+   camera, not the geometry. **This is the next benchmark, not the next
+   feature.**
+4. **§14.2's display path.** Whether the HVS scales during scanout,
    composites two planes at different scales, and its maximum upscale
    factor. A datasheet question that decides §7's bandwidth lever.
-4. **The edge-sample charge.** §2 charges one full shaded sample per edge
+5. **The edge-sample charge.** §2 charges one full shaded sample per edge
    pixel. A curve representation should beat that — an edge needs coverage
    plus its two neighbouring patches, not an independent shade —
    conservatively by 2–3×, which is exactly colonnade's remaining margin.
-5. **§2.3's closed-form solve.** 82% of colonnade ray length is outside
+6. **§2.3's closed-form solve.** 82% of colonnade ray length is outside
    blend bands; what that buys is unmeasured.
-6. **Store-data / V-pipe contention**, and op weights sourced from the SOG
+7. **Store-data / V-pipe contention**, and op weights sourced from the SOG
    rather than estimated (§9.5).
 
 ---
@@ -832,12 +655,8 @@ In descending order of how much rests on them.
    (§3.5).
 8. **Auto-vectorisation, not a vector language surface** (§9.4).
 9. **`rsqrt` is an explicit Newton sequence in stdlib** (§9.4).
-10. **Over-relaxation is rejected** — start-point-dependent (§3.4).
-11. **1080p60 is the flagship; 4K is a stretch profile.** Not this
-    document's choice — [06 §7](../docs/language/06-machine.md) already
-    says so normatively, and an earlier draft of §10 overrode it. The
-    measurements are consistent with it: 1080p60 fits every scene with
-    room, and 4K60 is reachable as a stretch (§10).
+10. **4K60 is the target, at 30 Hz shading and 60 Hz raster**; 1080p60 is
+    the floor (§10).
 
 ## 15. Order of work
 
@@ -853,26 +672,11 @@ In descending order of how much rests on them.
    `cargo xtask check`. §16.1 asked for this so a later Pi 5 run is a
    one-variable experiment; the numbers currently live in a text file
    nothing enforces.
-4. **FieldWir**: the sema pass, the evaluator extension, the flatten pass,
-   and their dump goldens. **Spiked, and cheaper than feared** — see §15.1.
-5. **The stdlib renderer**: classify, prune, fit, trace, raster.
-6. **Tiers 9–10**, against `codegen-pareto`'s existing land gate.
-7. **§14.2's display *driver*** — the contract already exists (§13.3).
-
-### 15.1 Two spikes, run before estimating
-
-**The evaluator's `Symbolic` value kind is not invasive.** The concern was
-that `eval::value::Value` is a 20-variant enum matched across 20 files, so
-adding a variant might break exhaustiveness everywhere. Measured by adding
-it and compiling: **5 errors in 4 files.** All four are at comptime→runtime
-boundaries — `eval/image.rs`, `layout/boot_init.rs` (×2), `lower.rs` —
-which is exactly where a symbolic value must *never* arrive, so they want
-one fail-closed reject each rather than real handling (CLAUDE.md: "an
-unimplemented path errors loudly"). The extension is a day, not a milestone
-risk, and FieldWir stays a single milestone.
-
-**The display contract exists.** See §13.3. This both shrinks the §14.2
-work and withdraws the two-plane bandwidth claim in §7 — net favourable for
-the schedule, net unfavourable for the 4K bandwidth budget, which now
-carries the full ~4.0 GB/s at 4K60 against §1's 8–9 GB/s shared bus. At
-1080p60, the flagship mode, it is ~1.0 GB/s and untroubling.
+4. **The deformation benchmark** (§13.3). Before FieldWir, not after — it
+   is the one remaining unknown that could change the design's shape rather
+   than its constants.
+5. **FieldWir**: the sema pass, the evaluator extension, the flatten pass,
+   and their dump goldens.
+6. **The stdlib renderer**: classify, prune, fit, trace, raster.
+7. **Tiers 9–10**, against `codegen-pareto`'s existing land gate.
+8. **§14.2's display contract.**
