@@ -342,12 +342,26 @@ pub mod machine_info {
     /// VMM after a zero exit).
     pub const OFF_ABORT_LATCH: u64 = 0x208;
 
-    /// Offset 0x210 (528): next `SlotMap` instance id (05-library.md §7).
+    /// Offset 0x210 (528): the runtime test runner's own next-test index
+    /// (`stdlib/core/runtime.wr`'s `@offset(0x210) test_next`, M11 K),
+    /// advanced before each invoke so an abort long-jump into
+    /// `__wrela_rt_primary_entry` skips the failed test. No Rust code
+    /// reads it — the const exists so the overlap test below can see the
+    /// field at all. Until this landed, only the wrela struct named this
+    /// word, and `OFF_SLOTMAP_NEXT_ID` was declared at the same 0x210:
+    /// every `SlotMap` a runtime test constructed overwrote the runner's
+    /// loop counter with a map id, silently *skipping* that many later
+    /// tests (`check-slotmap-key-discipline`: 5 declared, 2 ever run).
+    pub const OFF_TEST_NEXT: u64 = 0x210;
+
+    /// Offset 0x328 (808): next `SlotMap` instance id (05-library.md §7).
     /// Guest `SlotMap.init` mints by loading, adding one, and storing back
     /// (non-wrapping — exhaustion aborts). Zero at boot means the first
     /// mint returns `1`. Comptime evaluation keeps its own counter; both
     /// start at the same initial value so the first map is always id 1.
-    pub const OFF_SLOTMAP_NEXT_ID: u64 = 0x210;
+    /// First free word after the entropy staging slots (0x320 + 8), moved
+    /// off 0x210 where it aliased [`OFF_TEST_NEXT`].
+    pub const OFF_SLOTMAP_NEXT_ID: u64 = 0x328;
 }
 
 /// Console: a runtime-owned tx ring, virtio-shaped (plans/M5.md decision
@@ -979,8 +993,8 @@ mod tests {
         assert!(marks_end <= machine_info::OFF_VECTOR0_OBSERVED);
         assert!(marks_end <= machine_info::OFF_TEST_LINE_BUF);
         assert!(machine_info::OFF_VECTOR0_OBSERVED + 8 <= machine_info::OFF_ABORT_LATCH);
-        assert!(machine_info::OFF_ABORT_LATCH + 8 <= machine_info::OFF_SLOTMAP_NEXT_ID);
-        assert!(machine_info::OFF_SLOTMAP_NEXT_ID + 8 <= machine_info::OFF_TEST_LINE_BUF);
+        assert!(machine_info::OFF_ABORT_LATCH + 8 <= machine_info::OFF_TEST_NEXT);
+        assert!(machine_info::OFF_TEST_NEXT + 8 <= machine_info::OFF_TEST_LINE_BUF);
         // Entropy staging slots sit immediately after the test line buf
         // (0x218 + 256 = 0x318); both must fit the page (plans/M17.md B).
         assert!(
@@ -988,7 +1002,8 @@ mod tests {
                 <= machine_info::OFF_ENTROPY_DEST
         );
         assert!(machine_info::OFF_ENTROPY_DEST + 8 <= machine_info::OFF_ENTROPY_LEN);
-        assert!(machine_info::OFF_ENTROPY_LEN + 8 <= layout::MACHINE_INFO_SIZE);
+        assert!(machine_info::OFF_ENTROPY_LEN + 8 <= machine_info::OFF_SLOTMAP_NEXT_ID);
+        assert!(machine_info::OFF_SLOTMAP_NEXT_ID + 8 <= layout::MACHINE_INFO_SIZE);
         assert!(machine_info::ENTROPY_LEN_MAX == 64);
     }
 

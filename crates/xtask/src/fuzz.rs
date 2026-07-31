@@ -3242,6 +3242,7 @@ pub(crate) fn run_async_pipeline_once(input: &str) -> (AsyncFuzzOutcome, AsyncRe
             &graph,
             &runtime_tests,
             &async_tests,
+            false,
         ) {
             Ok(c) => c,
             Err(e) => {

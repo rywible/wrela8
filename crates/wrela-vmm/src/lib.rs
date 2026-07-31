@@ -963,6 +963,7 @@ mod tests {
             &graph,
             &runtime_tests,
             &async_tests,
+            false,
         )
         .expect("lower_and_codegen_image");
         let boot = layout::BootCtx {
@@ -1035,6 +1036,7 @@ mod tests {
             &graph,
             &[],
             &empty_async,
+            false,
         )
         .expect("lower_and_codegen_image");
         let boot = layout::BootCtx {

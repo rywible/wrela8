@@ -1900,6 +1900,7 @@ fn test_cmd(args: &[String]) -> ExitCode {
         &graph,
         &runtime_tests,
         &async_tests,
+        false,
     ) {
         Ok(c) => c,
         Err(e) => {

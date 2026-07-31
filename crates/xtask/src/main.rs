@@ -2579,6 +2579,11 @@ pub(crate) fn build_runtime_test_image(
         &graph,
         test_names,
         &async_tests,
+        // 02 §12.2 keeps a comptime-legal bare `@test` out of production
+        // images; this oracle boots those same bodies as guest code to
+        // compare tiers, so it opts back in. Without this every case
+        // fails closed with "runtime test `X` was never codegen'd".
+        true,
     )?;
     let boot = layout::BootCtx {
         graph: &graph,
@@ -2879,11 +2884,22 @@ fn diff_eval_over_cases(vmm: &Path, filter: Option<&[&str]>) -> Result<DiffEvalT
         }
 
         let t_lines: Vec<&str> = boot.transcript.lines().collect();
-        if t_lines.len() != backend_names.len() + 1 {
+        // N test lines, then the summary, then the harness's own trailing
+        // counter dump (`__wrela_lane1_dump` / `__wrela_lane2_dump`, the
+        // `lane1 `/`lane2 ` lines every `boot-*` `test.txt` golden also
+        // pins). Only the test lines are this oracle's comparison surface;
+        // the tail is checked for shape so a *changed* tail is still a
+        // loud failure rather than a silently ignored suffix.
+        let n = backend_names.len();
+        let well_formed = t_lines.len() > n
+            && t_lines[n].ends_with(" failed")
+            && t_lines[n + 1..]
+                .iter()
+                .all(|l| l.starts_with("lane1 ") || l.starts_with("lane2 "));
+        if !well_formed {
             return Err(format!(
-                "diff-eval: case {name}: guest transcript is not well-formed (expected {} test \
-                 line(s) then a summary, got {} line(s)):\n{}",
-                backend_names.len(),
+                "diff-eval: case {name}: guest transcript is not well-formed (expected {n} test \
+                 line(s), a summary, then only `lane1 `/`lane2 ` counter lines; got {} line(s)):\n{}",
                 t_lines.len(),
                 boot.transcript
             ));
@@ -2920,6 +2936,16 @@ fn diff_eval_over_cases(vmm: &Path, filter: Option<&[&str]>) -> Result<DiffEvalT
 
 /// `cargo xtask diff-eval`: the unrestricted, full-corpus form (decision
 /// 9's own "the full corpus on demand").
+/// Measured reach floor for the full corpus, in the same spirit as every
+/// fuzz lane's own printed reach: this oracle spent the whole M20 window
+/// reporting `0 test(s) agree across 0 case(s)` and **exiting 0**, because
+/// a signature change dropped `emit_comptime_tests` and every case fell
+/// into the `lowering failed closed` skip bucket. A skip is a legitimate
+/// outcome one case at a time and a collapse in aggregate, so the
+/// aggregate is what gets a floor. Raise it deliberately when the corpus
+/// grows; it is a floor, not a lock, so an added case never fails here.
+const DIFF_EVAL_MIN_AGREE: usize = 100;
+
 fn diff_eval() -> Result<(), String> {
     let vmm = build_and_sign_vmm()?;
     let tally = diff_eval_over_cases(&vmm, None)?;
@@ -2933,6 +2959,14 @@ fn diff_eval() -> Result<(), String> {
         tally.quota_skips,
         tally.import_skips
     );
+    if tally.agree < DIFF_EVAL_MIN_AGREE {
+        return Err(format!(
+            "diff-eval: reach collapsed — {} test(s) agreed, floor is {DIFF_EVAL_MIN_AGREE} \
+             (DIFF_EVAL_MIN_AGREE). Every comparison was skipped, so this lane proved nothing; \
+             the skip lines above name why.",
+            tally.agree
+        ));
+    }
     Ok(())
 }
 
@@ -2950,6 +2984,15 @@ fn diff_eval() -> Result<(), String> {
 /// substituted.
 const DIFF_EVAL_SMOKE_CASES: [&str; 3] = ["boot-hello", "check-tests-arith", "check-tests-program"];
 
+/// The smoke set is three *named* cases, so its reach is an exact number,
+/// not a floor: 7 comptime tests in `check-tests-arith` + 7 in
+/// `check-tests-program`, across those same 2 cases (`boot-hello`
+/// contributes the build+sign+boot chain and no comptime tests). `check`
+/// running this lane green while comparing nothing is the failure this
+/// pins — see [`DIFF_EVAL_MIN_AGREE`].
+const DIFF_EVAL_SMOKE_AGREE: usize = 14;
+const DIFF_EVAL_SMOKE_CASES_AGREED: usize = 2;
+
 fn diff_eval_smoke() -> Result<(), String> {
     let vmm = build_and_sign_vmm()?;
     let tally = diff_eval_over_cases(&vmm, Some(&DIFF_EVAL_SMOKE_CASES))?;
@@ -2963,6 +3006,15 @@ fn diff_eval_smoke() -> Result<(), String> {
         tally.quota_skips,
         tally.import_skips
     );
+    if tally.agree != DIFF_EVAL_SMOKE_AGREE || tally.cases_agreed != DIFF_EVAL_SMOKE_CASES_AGREED {
+        return Err(format!(
+            "diff-eval (smoke): reach changed — {} test(s) agreed across {} case(s), expected \
+             exactly {DIFF_EVAL_SMOKE_AGREE} across {DIFF_EVAL_SMOKE_CASES_AGREED} \
+             (DIFF_EVAL_SMOKE_AGREE). If a smoke case's own @test set moved, update the number \
+             deliberately; if the count fell to zero, the lane compared nothing.",
+            tally.agree, tally.cases_agreed
+        ));
+    }
     Ok(())
 }
 

@@ -3404,6 +3404,16 @@ pub struct ImageCodegen {
 /// Eval wiring facts → live `rtconfig::generate_with` → swap stub
 /// `__image_runtime` → re-check → single lower/codegen with
 /// wiring-conditional force-root seeds. No second `CodegenProgram`.
+///
+/// `emit_comptime_tests` is `LowerOpts`' own flag, threaded through
+/// because this fn owns every `LowerOpts` the image path builds: 02 §12.2
+/// keeps a comptime-legal bare `@test` out of production images, and
+/// `diff-eval` — the one caller that boots those same bodies as guest
+/// code to compare tiers — opts back in. Without it the oracle's own
+/// `runtime_tests` are marked host-only, never lower, and every case
+/// fails closed at `layout_test_image`'s "was never codegen'd" guard.
+/// Every production caller (`wrela build`/`test`, the VMM's conformance
+/// images, `fuzz async`) passes `false`.
 pub fn lower_and_codegen_image(
     modules: &BTreeMap<String, Module>,
     programs: &BTreeMap<String, TypedProgram>,
@@ -3411,6 +3421,7 @@ pub fn lower_and_codegen_image(
     graph: &ImageGraph,
     runtime_tests: &[String],
     async_tests: &BTreeSet<String>,
+    emit_comptime_tests: bool,
 ) -> Result<ImageCodegen, String> {
     let capacity = crate::eval::image_checks::blk_capacity_sectors(graph);
     let mut layout_ctx = layout_ctx.clone();
@@ -3418,10 +3429,13 @@ pub fn lower_and_codegen_image(
 
     // Pass 1: FlowWir against stub-checked programs — enough for
     // `RuntimeWiring::derive` (rings / tables; no CodegenProgram).
-    let reachable =
-        crate::lower::guest_reachable_keys_closure(programs, &crate::lower::LowerOpts::default());
+    let reach_opts = crate::lower::LowerOpts {
+        emit_comptime_tests,
+        only: None,
+    };
+    let reachable = crate::lower::guest_reachable_keys_closure(programs, &reach_opts);
     let derive_opts = crate::lower::LowerOpts {
-        emit_comptime_tests: false,
+        emit_comptime_tests,
         only: Some(reachable),
     };
     let flow_derive = lower_flow_closure(programs, capacity, &derive_opts)?;
@@ -3459,13 +3473,10 @@ pub fn lower_and_codegen_image(
         )
     };
 
-    let mut only = crate::lower::guest_reachable_keys_closure(
-        &live_programs,
-        &crate::lower::LowerOpts::default(),
-    );
+    let mut only = crate::lower::guest_reachable_keys_closure(&live_programs, &reach_opts);
     crate::lower::seed_image_force_roots(&mut only, &live_programs, force_opts);
     let lower_opts = crate::lower::LowerOpts {
-        emit_comptime_tests: false,
+        emit_comptime_tests,
         only: Some(only),
     };
     let mwir = lower_mwir_closure(&live_programs, capacity, &lower_opts)?;
@@ -3688,6 +3699,7 @@ pub fn try_layout_with_codegen(
         graph,
         empty_tests,
         &empty_async,
+        false,
     ) {
         Ok(c) => c,
         // A fail-closed resource violation is **hard** — a blown pool bound

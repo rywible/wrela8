@@ -7,7 +7,7 @@ Program
     0004: 910003e0  add x0, sp, #0
     0005: 94000000  bl <struct:SlotMap[u64, 2].init>
     0006: f90033e0  str x0, [sp, #96]
-    0007: d2804209  movz x9, #0x210
+    0007: d2806509  movz x9, #0x328
     0008: f2a80009  movk x9, #0x4000, lsl #16
     0009: f940012a  ldr x10, [x9]  ; SlotMap next id
     0010: 9100054b  add x11, x10, #1

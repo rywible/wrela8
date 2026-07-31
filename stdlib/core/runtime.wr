@@ -458,6 +458,10 @@ struct MachineInfoPage:
     @offset(0x208) abort_latch: u64
     # M11 K: next `@test(runtime)` index; advanced before each invoke so an
     # abort long-jump into `__wrela_rt_primary_entry` skips the failed test.
+    # Mirrored as `wrela_machine::machine_info::OFF_TEST_NEXT` — every word
+    # of this page needs a const there, or the Rust-side overlap test cannot
+    # see the field (0x210 was handed out twice: this counter and the
+    # SlotMap id mint, which silently ate later tests).
     @offset(0x210) test_next: u64
 
 @placed(0x40000000)
