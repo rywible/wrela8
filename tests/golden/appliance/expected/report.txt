@@ -183,11 +183,11 @@ ImageReport v0
   Totals actors=2 drivers=1 ready_queue=3 group_arena=0 bytes=496
   DeviceRegs device=device#0 type=BlockHw driver=StorageDriver base=0x405401f0 size=8
   Pool name=CacheBuffers kind=image payload=u32 slots=8 slot_bytes=4096 base=0x405401f8 size=32768 align=8 coherency=coherent device=none
-  Cost version=3 digest=043f8dc4b21c4b12 total=29901 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=29901
-    Owner name=app proxy_cycles=1832
-    Owner name=runtime proxy_cycles=28069
+  Cost version=3 digest=043f8dc4b21c4b12 total=25006 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=25006
+    Owner name=app proxy_cycles=1691
+    Owner name=runtime proxy_cycles=23315
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=366 max_turn_proxy=67 turns_per_sec=35820895.5223880634 ms_per_turn_model=0.0000279167
+    Core n=0 proxy_cycles=352 max_turn_proxy=60 turns_per_sec=40000000 ms_per_turn_model=0.000025
     Budget n=0 hot_text_bytes=91456 l1i_bytes=65536 over_l1i_lines=405 over_l2_lines=0 text_pages=23 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=5 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=2835
-    Shared proxy_cycles=29535
+    Shared proxy_cycles=24654
