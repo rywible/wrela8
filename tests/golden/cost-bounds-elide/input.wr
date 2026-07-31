@@ -1,8 +1,17 @@
 module examples.cost_bounds_elide
 
 # Capstone proxy smoke (plans/M18.md item J): straight-line fn with many
-# literal `[T; N]` indices. Elide-on (default) drops bounds cmp/abort_val
-# words; elide-off restores them so the scoreboard total rises.
+# literal `[T; N]` indices.
+#
+# It was written for `BoundsElide`, which plans/codegen-pareto-2.md item L
+# deleted (decision 1970). **The case is kept, and the name is now
+# historical** (decision 1972): it is the corpus's only array-indexing-heavy
+# straight-line program, and six probes unrelated to that opt name it by
+# hand as their smoke case — the bounded-sweep refusals
+# (`probe_case_bounded`), the tier-label check, the corpus-discovery
+# assertion and the inside-the-budget list. What it witnesses now is the
+# bounds *check*, which was never the thing deleted: every index below
+# emits `cmp` + `bl __wrela_abort_val` in `dev` and `release` alike.
 
 pub fn hot(a: [u64; 32]) -> u64:
     s0: u64 = a[0] +% a[1]

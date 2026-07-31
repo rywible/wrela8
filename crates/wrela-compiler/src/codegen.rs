@@ -11933,13 +11933,11 @@ pub fn r(a: u64, b: u64) -> u64:
     }
 
     /// plans/M19.md item I Cheap: cost-calls proxy rank drops with NarrowImm
-    /// on vs off while BoundsElide stays fixed (many small immediates).
+    /// on vs off (many small immediates).
     #[test]
     fn narrow_imm_lowers_cost_calls_proxy_rank() {
         use crate::cost::score::score_program;
         use crate::cost::table::load_default;
-        use crate::lower::set_bounds_elide;
-
         let src = include_str!("../../../tests/golden/cost-calls/input.wr");
         let tokens = lexer::lex(src).expect("lex");
         let module = parser::parse(tokens).expect("parse");
@@ -11947,8 +11945,6 @@ pub fn r(a: u64, b: u64) -> u64:
         let layout = mwir::build_layout_ctx(&module, &Default::default()).expect("layout");
         let table = load_default().expect("bench/a76-pi5.toml");
 
-        // Hold BoundsElide fixed on (golden/default path).
-        set_bounds_elide(true);
         let mwir_program = crate::lower::lower_program(&typed).expect("lower");
 
         let place = crate::placement::PlacementTable::default();
@@ -13202,8 +13198,8 @@ mod regalloc_tests {
 
     /// Everything before `RegAlloc` in the release order, so a comparison
     /// isolates this item instead of measuring the whole mode.
-    const WITHOUT: &[OptId] = &[OptId::BoundsElide, OptId::NarrowImm];
-    const WITH: &[OptId] = &[OptId::BoundsElide, OptId::NarrowImm, OptId::RegAlloc];
+    const WITHOUT: &[OptId] = &[OptId::NarrowImm];
+    const WITH: &[OptId] = &[OptId::NarrowImm, OptId::RegAlloc];
 
     pub(super) fn emit(src: &str, opts: &[OptId]) -> CodegenProgram {
         apply_opts(opts);
@@ -13444,7 +13440,6 @@ mod item_f_tests {
     /// state of the world it changes rather than against `dev`.
     #[rustfmt::skip]
     const E: &[OptId] = &[
-        OptId::BoundsElide,
         OptId::NarrowImm,
         OptId::AdrAddressing,
         OptId::BfxNarrow,

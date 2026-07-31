@@ -2594,22 +2594,6 @@ mod tests {
         );
     }
 
-    /// Decision 1453: BoundsElide alone wins on cost-bounds-elide.
-    #[test]
-    fn bounds_elide_alone_wins_cost_bounds_elide() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/golden/cost-bounds-elide/input.wr");
-        let dev = score_path_under_opts(&path, &[]);
-        let alone = score_path_under_opts(&path, &[OptId::BoundsElide]);
-        apply_mode(CompileMode::Release);
-        assert!(
-            alone < dev,
-            "BoundsElide alone {} must beat dev {} on cost-bounds-elide",
-            alone,
-            dev
-        );
-    }
-
     /// Decision 1453: NarrowImm alone wins on at least one cost-* case.
     #[test]
     fn narrow_imm_alone_wins_some_cost_case() {
@@ -2673,14 +2657,28 @@ mod tests {
         for (label, opts) in &singles {
             configs.push((label.as_str(), opts.as_slice()));
         }
-        // The list as it stood before item F, so the sum-of-singles bound
-        // below can still be asked where every member is rankable alone.
+        // The list as it stood before item F.
         let pre_f: Vec<OptId> = RELEASE_OPTS
             .iter()
             .copied()
             .take_while(|id| *id != OptId::InterprocRegs)
             .collect();
         configs.push(("release-minus-F", pre_f.as_slice()));
+        // **The list every member of which is rankable alone** — the only
+        // list the sum-of-singles bound below can honestly be asked over
+        // (decision 1971). Kept in sync with `UNRANKABLE_ALONE`, asserted
+        // there.
+        let rankable_only: Vec<OptId> = RELEASE_OPTS
+            .iter()
+            .copied()
+            .filter(|id| {
+                !matches!(
+                    id,
+                    OptId::WideImmForms | OptId::InterprocRegs | OptId::Frameless
+                )
+            })
+            .collect();
+        configs.push(("rankable-only", rankable_only.as_slice()));
         configs.push(("release", RELEASE_OPTS));
         let rows = attribute_opts(&configs);
         let table = format_attribution_table(&rows);
@@ -2692,10 +2690,7 @@ mod tests {
                 .sum()
         };
         let dev_cycles = sum("dev", |c| c.proxy_cycles);
-        let be_cycles = sum("BoundsElide", |c| c.proxy_cycles);
         let ni_cycles = sum("NarrowImm", |c| c.proxy_cycles);
-        let adr_cycles = sum("AdrAddressing", |c| c.proxy_cycles);
-        let rel_cycles = sum("release", |c| c.proxy_cycles);
 
         // (1) Not "near zero on cycles".
         assert!(
@@ -2762,31 +2757,14 @@ mod tests {
              candidate again and decision 1638 needs rewriting.\n{table}"
         );
 
-        // (3) The two opts reach disjoint parts of this corpus: NarrowImm is
-        // the *sole* mover wherever BoundsElide is exactly flat. `>= 4` rather
-        // than `== 4` so a new cost-* case cannot silently weaken the claim.
-        let sole: Vec<&str> = rows
-            .iter()
-            .filter(|r| {
-                let d = r.cell("dev").expect("dev").proxy_cycles;
-                let b = r.cell("BoundsElide").expect("be").proxy_cycles;
-                let n = r.cell("NarrowImm").expect("ni").proxy_cycles;
-                b == d && n < d
-            })
-            .map(|r| r.name.as_str())
-            .collect();
-        assert!(
-            sole.len() >= 4,
-            "NarrowImm must be the sole mover on ≥4 cases BoundsElide never \
-             touches; got {sole:?}\n{table}"
-        );
-
-        // (4) Which opt "carries the corpus" is a fact about the **corpus**,
-        // not about the ruler, and item M's nine cases moved it. On the six
-        // original cases BoundsElide carried 91.3% of release's cycle win
-        // (-1899 of -2080); across all fifteen it is 43.2% (-4592 of -10640),
-        // because M's budget-witness cases are large programs where
-        // NarrowImm's per-word throughput win scales with the word count.
+        // (3) Which opt "carries the corpus" is a fact about the **corpus**,
+        // not about the ruler. M20's evidence block credited `BoundsElide`
+        // with 43.2% of release's cycle win across the fifteen micro
+        // cases; item H then measured it byte-identical to `dev` on all
+        // four programs the appliance ships, and item L deleted it
+        // (decision 1970). That 43.2% was a fact about six fixtures, and
+        // the disjointness claim that used to sit here — "NarrowImm is the
+        // sole mover wherever BoundsElide is flat" — went with it.
         //
         // So the assertion is the one that is actually about the ruler:
         // every rankable opt contributes, none is inert, and their sum
@@ -2843,7 +2821,8 @@ mod tests {
             "every rankable opt must contribute on cycles: {wins:?}
 {table}"
         );
-        // **The sum-of-singles bound, restated by item F (decision 1777).**
+        // **The sum-of-singles bound, restated by item F (decision 1777)
+        // and corrected by item L (decision 1971).**
         //
         // Through item E the claim was `rel_win <= Σ singles`: the opts
         // overlap rather than compose, so none of them creates cycles
@@ -2856,16 +2835,87 @@ mod tests {
         // not. Measuring `Σ singles` against `release` therefore compares
         // a sum that is missing three terms with a total that has them.
         //
-        // So the bound is asked where it is still a real question: over
-        // the list **as it stood before item F**, whose members are all
-        // rankable alone. `release` is then required to beat that, which
-        // is the claim item F is actually making.
-        let e_win = dev_cycles - sum("release-minus-F", |c| c.proxy_cycles);
+        // **On the whole corpus the bound is now false, and that is the
+        // finding (decision 1971).** Deleting `BoundsElide` did not create
+        // the violation; it removed what was hiding it. `BoundsElide` was
+        // byte-identical on all four product cases, so it contributed
+        // exactly 0 to both sides of the product-tier arithmetic, while on
+        // the micro tier its 4592-cycle single was strongly sub-additive
+        // inside the list. That micro slack covered a product-tier excess
+        // that was already there.
+        //
+        // Measured, over the list every member of which really is
+        // rankable alone (`release-minus-F` is *not* such a list — it
+        // carries `WideImmForms`, the id `UNRANKABLE_ALONE` names below):
+        //
+        // | tier | joint win | Σ singles | excess |
+        // | --- | ---: | ---: | ---: |
+        // | micro | 35 349 | 35 375 | **−26** |
+        // | product | 2 445 | 2 397 | **+48** |
+        //
+        // and the +48 is `cost-product-blk` (+29) and
+        // `cost-product-receipt` (+27), the two largest borrowed programs.
+        // Localized to one **pair**: `NarrowImm` + `RegAlloc` beats the
+        // sum of its own two singles by +33 and +31 on those two cases,
+        // and every other pair of rankable ids is flat or sub-additive.
+        // The mechanism is the obvious one — `NarrowImm` turns a four-word
+        // `movk` chain into one word, and the allocator then keeps live
+        // what the vanished chain's scratch pressure used to spill; each
+        // opt alone leaves the other's saving on the table.
+        //
+        // So the bound is asserted on the tier where it was established
+        // and still holds, and the tier where it fails is *localized* by a
+        // positive claim rather than absorbed by a tolerance. Weakening
+        // this to `Σ singles + fudge` would be exactly the tuning this
+        // round forbids.
+        let tier_sum = |tier: CostTier, label: &str| -> i64 {
+            rows.iter()
+                .filter(|r| r.tier == tier)
+                .map(|r| r.cell(label).expect("config scored").proxy_cycles as i64)
+                .sum()
+        };
+        let tier_win = |tier: CostTier, label: &str| tier_sum(tier, "dev") - tier_sum(tier, label);
+        let tier_singles =
+            |tier: CostTier| -> i64 { wins.iter().map(|(label, _)| tier_win(tier, label)).sum() };
+        let micro_win = tier_win(CostTier::Micro, "rankable-only");
+        let micro_singles = tier_singles(CostTier::Micro);
         assert!(
-            e_win <= wins.iter().map(|(_, w)| *w).sum::<i64>(),
-            "the pre-item-F list's win cannot exceed the sum of its singles: \
-             {e_win} vs {wins:?}
-{table}"
+            micro_win <= micro_singles,
+            "the micro tier is where this bound was established and it must \
+             still hold there: joint {micro_win} vs Σ singles \
+             {micro_singles}\n{table}"
+        );
+        let product_win = tier_win(CostTier::Product, "rankable-only");
+        let product_singles = tier_singles(CostTier::Product);
+        eprintln!(
+            "sum-of-singles by tier: micro joint={micro_win} Σ={micro_singles} \
+             (excess {}); product joint={product_win} Σ={product_singles} \
+             (excess {})",
+            micro_win - micro_singles,
+            product_win - product_singles
+        );
+
+        // The localization, asserted rather than asserted-away: the one
+        // super-additive pair is `NarrowImm` + `RegAlloc`, on the largest
+        // borrowed program. If this interaction stops existing, the table
+        // above stops describing anything and the comment must be redone.
+        let e_win = dev_cycles - sum("release-minus-F", |c| c.proxy_cycles);
+
+        let blk = discover_cost_cases_in(CostTier::Product)
+            .into_iter()
+            .find(|c| c.name == "cost-product-blk")
+            .expect("cost-product-blk must exist");
+        let blk_dev = score_path_under_opts(&blk.input, &[]) as i64;
+        let solo_ni = blk_dev - score_path_under_opts(&blk.input, &[OptId::NarrowImm]) as i64;
+        let solo_ra = blk_dev - score_path_under_opts(&blk.input, &[OptId::RegAlloc]) as i64;
+        let joint_ni_ra = blk_dev
+            - score_path_under_opts(&blk.input, &[OptId::NarrowImm, OptId::RegAlloc]) as i64;
+        apply_mode(CompileMode::Release);
+        assert!(
+            joint_ni_ra > solo_ni + solo_ra,
+            "the product tier's super-additivity is claimed to be \
+             NarrowImm+RegAlloc on cost-product-blk: joint {joint_ni_ra} vs \
+             {solo_ni} + {solo_ra}"
         );
         assert!(
             rel_win > e_win,
@@ -2961,10 +3011,10 @@ mod tests {
     /// not "is `AdrAddressing` a win against `dev`" but "does adding it to
     /// the already-shipping list still fall". A candidate that only wins
     /// from a `dev` baseline could be riding another opt's coattails; this
-    /// one holds `BoundsElide`+`NarrowImm` fixed on both sides.
+    /// one holds `NarrowImm` fixed on both sides.
     #[test]
     fn adr_addressing_is_a_marginal_win_over_the_previous_release_list() {
-        const WITHOUT: &[OptId] = &[OptId::BoundsElide, OptId::NarrowImm];
+        const WITHOUT: &[OptId] = &[OptId::NarrowImm];
         let cmp = compare_opt_lists_over_box_for_case(WITHOUT, RELEASE_OPTS, "cost-arith")
             .expect("marginal smoke sweep");
         let case = &cmp.cases[0];
@@ -2991,7 +3041,7 @@ mod tests {
     #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
     #[test]
     fn adr_addressing_wins_at_every_point_of_the_residual_box() {
-        const WITHOUT: &[OptId] = &[OptId::BoundsElide, OptId::NarrowImm];
+        const WITHOUT: &[OptId] = &[OptId::NarrowImm];
         let cmp = compare_opt_lists_over_box(WITHOUT, RELEASE_OPTS).expect("sweep");
         let table = format_sweep_table(&cmp, "release−AdrAddressing", "release");
         eprintln!("∀ sweep (release−AdrAddressing → release):\n{table}");
@@ -3120,12 +3170,12 @@ mod tests {
              - `NarrowImm` alone falls at every point of every borrowed \
              program. It is justified by the appliance, not only by the \
              corpus.\n\
-             - `BoundsElide` alone is **byte-identical to `dev` on all four \
-             product cases** — same cycles, same emitted words, same hot \
-             text. Its entire measured effect lives on six microbenchmarks, \
-             the largest of which (`cost-bounds-elide`, 1839 → 314) was \
-             written for it. It is decision 1716's self-selection failure, \
-             found by exactly the widening item H exists to do.\n\
+             - There is **no `BoundsElide` row**. Item H measured it \
+             byte-identical to `dev` on all four product cases — same \
+             cycles, same emitted words, same hot text — and \
+             plans/codegen-pareto-2.md item L deleted the opt (decision \
+             1970). A `veto` row that stays a `veto` forever is an opt \
+             kept disabled, and losers are deleted.\n\
              \n\
              `RELEASE_OPTS` as a *list* still wins ∀ in both tiers \
              (`unit:release_wins_at_every_point_of_the_residual_box`), which \
@@ -3144,11 +3194,13 @@ mod tests {
     /// `unit:each_release_opt_is_re_asked_alone_on_the_product_tier` for
     /// what the two rows mean and why a `veto` row is a finding rather
     /// than a broken gate.
+    ///
+    /// **Every row here is `wins` (decision 1970).** The one `veto` row
+    /// this set ever carried was `BoundsElide`'s, and item L deleted the
+    /// opt rather than leave a permanent veto in the product's own list.
+    /// A future `veto` row is therefore a finding to act on, not a shape
+    /// this table is expected to have.
     const PINNED_PRODUCT_TIER_VERDICTS: &[(&str, &str)] = &[
-        // The finding: byte-identical to `dev` on all four borrowed
-        // programs. Its whole measured effect is on six microbenchmarks,
-        // the largest of which was written for it.
-        ("BoundsElide", "veto"),
         ("NarrowImm", "wins"),
         ("AdrAddressing", "wins"),
         ("BfxNarrow", "wins"),
@@ -3232,13 +3284,11 @@ mod tests {
         let _ = assert_candidate_wins(&[], &[]);
     }
 
-    /// Disabling a winning opt (drop BoundsElide) as candidate vs current
-    /// release raises cost-bounds-elide — oracle fails.
+    /// Dropping every opt but `NarrowImm` from the shipped list raises
+    /// cases the dropped opts carry — the candidate oracle must refuse it.
     #[test]
     #[should_panic(expected = "raised proxy total")]
-    fn disabling_bounds_elide_fails_candidate_oracle() {
-        // baseline = full release; candidate = NarrowImm only → elide off
-        // raises the bounds-elide case relative to release.
+    fn disabling_shipped_opts_fails_candidate_oracle() {
         let _ = assert_candidate_wins(RELEASE_OPTS, &[OptId::NarrowImm]);
     }
 
@@ -4506,30 +4556,15 @@ mod tests {
             ("release", RELEASE_OPTS),
             (
                 "rel-noBfx",
-                &[
-                    OptId::BoundsElide,
-                    OptId::NarrowImm,
-                    OptId::MaskCheck,
-                    OptId::WideImmForms,
-                ],
+                &[OptId::NarrowImm, OptId::MaskCheck, OptId::WideImmForms],
             ),
             (
                 "rel-noMask",
-                &[
-                    OptId::BoundsElide,
-                    OptId::NarrowImm,
-                    OptId::BfxNarrow,
-                    OptId::WideImmForms,
-                ],
+                &[OptId::NarrowImm, OptId::BfxNarrow, OptId::WideImmForms],
             ),
             (
                 "rel-noWideImm",
-                &[
-                    OptId::BoundsElide,
-                    OptId::NarrowImm,
-                    OptId::BfxNarrow,
-                    OptId::MaskCheck,
-                ],
+                &[OptId::NarrowImm, OptId::BfxNarrow, OptId::MaskCheck],
             ),
         ]);
         eprintln!("item C attribution:\n{}", format_attribution_table(&rows));
@@ -4768,7 +4803,7 @@ mod tests {
     /// baseline item E's ∀ gate is measured against, so the verdict is
     /// about this item and not about the whole mode
     /// (plans/codegen-pareto.md decision 1764).
-    const WITHOUT_REGALLOC: &[OptId] = &[OptId::BoundsElide, OptId::NarrowImm];
+    const WITHOUT_REGALLOC: &[OptId] = &[OptId::NarrowImm];
 
     /// **Item E's smoke lane: the ∀ sweep of the allocator alone, on one
     /// case, in the default `cargo test`.** Same code path, same probe,
