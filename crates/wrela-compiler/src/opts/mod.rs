@@ -196,22 +196,35 @@ pub const RELEASE_OPTS: &[OptId] = &[
 /// self-selection failure, caught by exactly the widening item H exists
 /// to do.
 ///
-/// **The named condition for re-asking it.** A shipped program with a
-/// tight indexed loop over a fixed-size array whose indices are *proved
-/// constants at lowering time* — either because they are written as
-/// literals, or because a constant-propagating pass has made them so.
-/// Item M's tile compositor (`tests/golden/boot-tile-compositor`,
-/// scored as `cost-product-compositor`) is the first program in this
-/// repo with that shape: tight loops over `[u32; 128]` tile buffers.
-/// Item N measured it there — see plans/codegen-pareto-2-N.md for the
-/// number. Re-ask when either (a) that measurement turns positive on the
-/// compositor or a successor compute title, or (b) `ConstProp` grows the
-/// capability to *rewrite* a folded index into an `Int` literal in MWIR,
-/// which is what would give this transform, whose precondition is
-/// syntactic, a source of customers that is not the programmer's typing.
+/// **The named condition for re-asking it — a *capability*, not a
+/// workload (decision 1916).** The obvious candidate was a workload:
+/// item M's tile compositor (`tests/golden/boot-tile-compositor`, scored
+/// as `cost-product-compositor`), the repo's first compute title, tight
+/// loops over `[u32; 128]` tile buffers. Item N measured it there, and
+/// the answer is instructive: the opt moves the case by −127 cycles /
+/// −135 words and falls at every one of the 512 points of its box — and
+/// **not one of those words is in the kernel**. The only two functions
+/// it changes are `sprite_is_exact` and `background_pass_is_exact`, the
+/// case's own `@test(runtime)` assertions, which check `pixels[0]` and
+/// `pixels[127]`. `fill_background`, `blit_scaled`, `make_sprite` and
+/// `render_strip` are untouched, because — as that file says of its own
+/// hot loop — every index is computed rather than constant. A compute
+/// workload was not what this opt was missing.
+///
+/// So the condition is the capability: **`ConstProp` (or an index-range
+/// analysis) able to turn a folded index into a proved-in-range constant
+/// that this transform can see.** Its precondition is syntactic — a
+/// `TypedExprKind::Int` at the index, at lowering time — so today its
+/// only supplier is what the programmer typed, and an unrolled or
+/// constant-folded index is known to the compiler and still misses,
+/// because by the time it is known, lowering is over. Item J's
+/// `ConstProp` runs on MWIR, one stage too late to feed it. Re-ask when
+/// that gap closes, or when a title indexes a fixed-size array at
+/// literals in its *hot* code rather than in its assertions.
 ///
 /// Un-parking is a human decision, and it needs the ∀ product-tier gate
-/// green — not a microbenchmark.
+/// green — not a microbenchmark, and not a delta that lives in test
+/// scaffolding.
 pub const PARKED_OPTS: &[OptId] = &[OptId::BoundsElide];
 
 /// Every id the compiler knows, shipped then parked. Both lists in one

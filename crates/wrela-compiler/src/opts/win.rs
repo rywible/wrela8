@@ -2369,7 +2369,7 @@ pub fn assert_overall_wins(cmp: &OverallCompare, cand_label: &str, base_label: &
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::opts::OptId;
+    use crate::opts::{OptId, PARKED_OPTS};
 
     #[test]
     fn discover_cost_corpus_is_sorted_cost_star() {
@@ -2646,6 +2646,115 @@ mod tests {
         );
     }
 
+    /// **The parked opt, measured — the cheap half** (decision 1914).
+    ///
+    /// `BoundsElide` ships nowhere, so nothing else in this file scores
+    /// it: every gate here iterates `RELEASE_OPTS`. Without this, the
+    /// park's three written claims would be prose with no oracle under
+    /// them, and the first refactor to break the transform would leave
+    /// them describing something that no longer exists.
+    ///
+    /// Three claims, one per assertion:
+    ///
+    /// 1. **It still transforms.** On `cost-bounds-elide`, the
+    ///    microbenchmark written for it, naming the opt takes the
+    ///    scored program from 1839 to 314 proxy cycles.
+    /// 2. **The refusal still holds where it was made.** On the four
+    ///    programs the appliance ships it is exactly flat — same cycles,
+    ///    same words — which is item H's finding and the reason it is
+    ///    parked rather than shipped.
+    /// 3. **On item M's compute title it is not flat — and where the
+    ///    delta sits is the finding.** `cost-product-compositor` moves
+    ///    10 975 → 10 848 cycles and 11 658 → 11 523 words, but the only
+    ///    two functions that change are `sprite_is_exact` and
+    ///    `background_pass_is_exact`, the case's own `@test(runtime)`
+    ///    assertions. The kernel — `fill_background`, `blit_scaled`,
+    ///    `make_sprite`, `render_strip` — is untouched, because every
+    ///    index in it is computed rather than constant. Pinned as a
+    ///    strict inequality rather than as those numbers, so ordinary
+    ///    drift does not re-pin it; what it defends is the sentence in
+    ///    `PARKED_OPTS` that says where the delta comes from.
+    ///
+    /// Point estimates under the committed profile, deliberately: the ∀
+    /// box sweep over the product tier is the deep lane
+    /// (`each_release_opt_is_re_asked_alone_on_the_product_tier`), and
+    /// un-parking is a human decision that needs that sweep, not this
+    /// test.
+    #[test]
+    fn parked_bounds_elide_still_transforms_and_is_still_flat_on_the_appliance() {
+        assert!(
+            PARKED_OPTS.contains(&OptId::BoundsElide)
+                && !RELEASE_OPTS.contains(&OptId::BoundsElide),
+            "this test measures a parked opt; if BoundsElide has been \
+             un-parked it belongs in the RELEASE_OPTS gates above"
+        );
+
+        let micro = discover_cost_cases()
+            .into_iter()
+            .find(|c| c.name == "cost-bounds-elide")
+            .expect("cost-bounds-elide must exist");
+        let dev = score_path_under_opts(&micro.input, &[]);
+        let alone = score_path_under_opts(&micro.input, &[OptId::BoundsElide]);
+        assert!(
+            alone < dev,
+            "the parked transform is inert on its own fixture: {alone} vs dev {dev}. \
+             A park whose transform no longer fires is not the opt that was refused."
+        );
+
+        // The appliance's four, and item M's compositor, scored as the
+        // program each would actually ship (decision 1954).
+        let mut compositor: Option<(u64, u64, u64, u64)> = None;
+        for case in discover_cost_cases_in(CostTier::Product) {
+            let (dev, _) = shipped_report_under_opts(&case.input, &[]);
+            let (on, _) = shipped_report_under_opts(&case.input, &[OptId::BoundsElide]);
+            eprintln!(
+                "parked BoundsElide on {}: cycles {} -> {}, words {} -> {}",
+                case.name,
+                dev.total_proxy_cycles,
+                on.total_proxy_cycles,
+                dev.total_words,
+                on.total_words
+            );
+            if case.name == "cost-product-compositor" {
+                compositor = Some((
+                    dev.total_proxy_cycles,
+                    on.total_proxy_cycles,
+                    dev.total_words,
+                    on.total_words,
+                ));
+                continue;
+            }
+            assert_eq!(
+                (dev.total_proxy_cycles, dev.total_words),
+                (on.total_proxy_cycles, on.total_words),
+                "{}: item H measured `BoundsElide` byte-identical to `dev` on \
+                 every program the appliance ships, and that measurement is \
+                 why it is parked. If it has stopped being flat here, the \
+                 refusal recorded on `PARKED_OPTS` is out of date — re-run \
+                 the product-tier ∀ sweep before believing either side.",
+                case.name
+            );
+        }
+
+        let (dev_c, on_c, dev_w, on_w) = compositor.expect(
+            "cost-product-compositor must exist — it is the named re-ask \
+             condition for this parked opt",
+        );
+        assert!(
+            on_c < dev_c && on_w < dev_w,
+            "item M's compositor is the one product-tier case this opt is \
+             not flat on, and `PARKED_OPTS` records both the delta and \
+             where it comes from — the case's own `@test(runtime)` \
+             assertions, not its kernel. It measured 10975 -> 10848 cycles \
+             and 11658 -> 11523 words; it is now {dev_c} -> {on_c} and \
+             {dev_w} -> {on_w}. If it has gone flat here too, the park's \
+             re-ask condition is describing a corpus that no longer \
+             exists — rewrite it, do not delete it."
+        );
+
+        apply_mode(CompileMode::Release);
+    }
+
     /// Decision 1453: NarrowImm alone wins on at least one cost-* case.
     #[test]
     fn narrow_imm_alone_wins_some_cost_case() {
@@ -2816,8 +2925,9 @@ mod tests {
         // not about the ruler. M20's evidence block credited `BoundsElide`
         // with 43.2% of release's cycle win across the fifteen micro
         // cases; item H then measured it byte-identical to `dev` on all
-        // four programs the appliance ships, and item L deleted it
-        // (decision 1970). That 43.2% was a fact about six fixtures, and
+        // four programs the appliance ships, and item L dropped it from
+        // `RELEASE_OPTS` (decision 1970; it is parked, not deleted —
+        // decision 1911). That 43.2% was a fact about six fixtures, and
         // the disjointness claim that used to sit here — "NarrowImm is the
         // sole mover wherever BoundsElide is flat" — went with it.
         //
@@ -2898,8 +3008,8 @@ mod tests {
         // a sum that is missing three terms with a total that has them.
         //
         // **On the whole corpus the bound is now false, and that is the
-        // finding (decision 1971).** Deleting `BoundsElide` did not create
-        // the violation; it removed what was hiding it. `BoundsElide` was
+        // finding (decision 1971).** Unshipping `BoundsElide` did not
+        // create the violation; it removed what was hiding it. It was
         // byte-identical on all four product cases, so it contributed
         // exactly 0 to both sides of the product-tier arithmetic, while on
         // the micro tier its 4592-cycle single was strongly sub-additive
@@ -3268,12 +3378,15 @@ mod tests {
              - `NarrowImm` alone falls at every point of every borrowed \
              program. It is justified by the appliance, not only by the \
              corpus.\n\
-             - There is **no `BoundsElide` row**. Item H measured it \
-             byte-identical to `dev` on all four product cases — same \
-             cycles, same emitted words, same hot text — and \
-             plans/codegen-pareto-2.md item L deleted the opt (decision \
-             1970). A `veto` row that stays a `veto` forever is an opt \
-             kept disabled, and losers are deleted.\n\
+             - There is **no `BoundsElide` row**, because this loop asks \
+             `RELEASE_OPTS` and `BoundsElide` is **parked** — in the tree, \
+             out of the shipped list (`opts::PARKED_OPTS`, decisions \
+             1970/1911). Item H measured it byte-identical to `dev` on all \
+             four product cases: same cycles, same emitted words, same hot \
+             text. Its `veto` row was the only one this set ever carried, \
+             and a permanent `veto` does not belong in the product's own \
+             list; the refusal, the mechanism and the condition for \
+             re-asking it live on `PARKED_OPTS` instead.\n\
              \n\
              `RELEASE_OPTS` as a *list* still wins ∀ in both tiers \
              (`unit:release_wins_at_every_point_of_the_residual_box`), which \
@@ -3293,11 +3406,12 @@ mod tests {
     /// what the two rows mean and why a `veto` row is a finding rather
     /// than a broken gate.
     ///
-    /// **Every row here is `wins` (decision 1970).** The one `veto` row
-    /// this set ever carried was `BoundsElide`'s, and item L deleted the
-    /// opt rather than leave a permanent veto in the product's own list.
-    /// A future `veto` row is therefore a finding to act on, not a shape
-    /// this table is expected to have.
+    /// **Every row here is `wins` (decisions 1970/1911).** This set has
+    /// one row per `RELEASE_OPTS` member, so a refused opt leaves it by
+    /// leaving the shipped list — the one `veto` row it ever carried was
+    /// `BoundsElide`'s, now parked (`opts::PARKED_OPTS`). A future `veto`
+    /// row is therefore a finding to act on, not a shape this table is
+    /// expected to have.
     const PINNED_PRODUCT_TIER_VERDICTS: &[(&str, &str)] = &[
         // **plans/codegen-pareto-2.md item J** (decision 1937). All three
         // fall on the product tier over their own baseline. `Gvn`'s is

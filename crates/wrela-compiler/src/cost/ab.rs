@@ -6,11 +6,17 @@
 //!
 //! The three `BoundsElide` A/B oracles that used to live here — the
 //! capstone smoke, its mode-named twin, and the per-fn corpus
-//! monotonicity run — went with the opt (plans/codegen-pareto-2.md item
-//! L, decision 1970). Ranking two *opt lists* is
-//! `opts::win::compare_opt_lists_over_box`'s job and always was; these
-//! asked the same question at one point of the box, about an opt that
-//! moved nothing in a shipped image.
+//! monotonicity run — left with the opt's `RELEASE_OPTS` membership
+//! (plans/codegen-pareto-2.md item L, decision 1970) and did **not**
+//! come back when item N parked the opt (decision 1912). Two of them
+//! asked `Release < Dev` on a fixture, which is simply false for an opt
+//! the product does not ship, and the third re-scored the whole cost
+//! corpus twice to assert a monotonicity that the transform's own shape
+//! guarantees. What replaced them is one artifact-level oracle over the
+//! opt *named explicitly* —
+//! `opts::win::tests::parked_bounds_elide_still_transforms_and_is_still_flat_on_the_appliance`
+//! — plus `diff-eval --with-opt BoundsElide`. Ranking two *opt lists* is
+//! `opts::win::compare_opt_lists_over_box`'s job and always was.
 //!
 //! Cost tags / scoreboard stay always-on in both modes (freeze 1408);
 //! modes flip emission, not instrumentation.

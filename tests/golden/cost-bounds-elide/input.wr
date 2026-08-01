@@ -4,14 +4,20 @@ module examples.cost_bounds_elide
 # literal `[T; N]` indices.
 #
 # It was written for `BoundsElide`, which plans/codegen-pareto-2.md item L
-# deleted (decision 1970). **The case is kept, and the name is now
-# historical** (decision 1972): it is the corpus's only array-indexing-heavy
+# dropped from `RELEASE_OPTS` (decision 1970) and item N **parked** rather
+# than deleted (decision 1911, `opts::PARKED_OPTS`). **The case is kept**
+# (decision 1972): it is the corpus's only array-indexing-heavy
 # straight-line program, and six probes unrelated to that opt name it by
 # hand as their smoke case — the bounded-sweep refusals
 # (`probe_case_bounded`), the tier-label check, the corpus-discovery
-# assertion and the inside-the-budget list. What it witnesses now is the
-# bounds *check*, which was never the thing deleted: every index below
-# emits `cmp` + `bl __wrela_abort_val` in `dev` and `release` alike.
+# assertion and the inside-the-budget list.
+#
+# The pinned `cost.txt` is the **shipped** program, so what it witnesses is
+# the bounds *check*, which was never the thing refused: every index below
+# emits `cmp` + `bl __wrela_abort_val` in `dev` and `release` alike. The
+# case is also where the parked opt is still exercised by name — under
+# `apply_opts(&[OptId::BoundsElide])` this fn scores 314 proxy cycles
+# against dev's 1839, which is the whole of what item H found it worth.
 
 pub fn hot(a: [u64; 32]) -> u64:
     s0: u64 = a[0] +% a[1]
