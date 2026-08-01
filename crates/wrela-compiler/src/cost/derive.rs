@@ -906,7 +906,14 @@ mod tests {
             }
         }
         assert_eq!(hot + cold + unmeasured, spans.len() as u64);
-        assert_eq!((hot, cold, unmeasured), (81, 85, 18));
+        // **85 -> 83 cold at plans/codegen-pareto-2.md item J** (decision
+        // 1934). Item J leaves the shared runtime closure alone by
+        // construction (decision 1932), so every *hot* block — every key
+        // the committed sidecar resolves — is untouched at 81, and the
+        // two blocks that go are cold ones in `boot-actors`' own actor
+        // methods. The three-valued classification is what makes that
+        // legible rather than a bare total moving.
+        assert_eq!((hot, cold, unmeasured), (81, 83, 18));
         assert_eq!(hot, check.matched_keys, "every resolved key is a hot block");
         assert!(
             unmeasured > 0,

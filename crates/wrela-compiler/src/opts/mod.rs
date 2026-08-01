@@ -68,6 +68,18 @@ pub enum OptId {
     /// unconditional branch to the next emitted word is deleted, where
     /// deleting it merges no Lane 2 block (decision 1973).
     BranchCleanup,
+    /// plans/codegen-pareto-2.md item J / decision 1924: constant propagation and folding over an
+    /// extended basic block, through the evaluator's own arithmetic,
+    /// plus resolution of a constant-condition branch. Item J's SCCP
+    /// slot, named for what it is — MWIR is not SSA.
+    ConstProp,
+    /// Item J / decision 1925: value numbering of pure scalar
+    /// computations over an extended basic block.
+    Gvn,
+    /// Item J / decision 1926: deletion of non-trapping pure
+    /// instructions whose result is read nowhere, and of unreachable
+    /// instructions.
+    Dce,
 }
 
 /// Fixed release order. Add opts here — nowhere else.
@@ -106,7 +118,22 @@ pub enum OptId {
 /// conservative program in every case. They are ordered by their
 /// dependence: each one's transform is only reachable once the one
 /// before it has fired.
+/// **Item J's three ids lead the list, and that is pipeline order, not
+/// preference** (decision 1928). All three rewrite MWIR, which is the
+/// stage before every other id's own: `NarrowImm`, item B's and item C's
+/// three all rewrite *emitted words*, and decision 1763 puts everything
+/// the allocator's probe must see ahead of `RegAlloc`. Their order among
+/// themselves is dependence: constant propagation folds first, GVN
+/// numbers what is left, and DCE collects what the other two orphaned.
+///
+/// **There is no `Inline` id.** The ladder's 2a was built and measured
+/// and it lost on both words and cycles in every framing it was asked in
+/// (decision 1935, `mwir_opt.rs`'s module doc and
+/// plans/codegen-pareto-2-J.md). Losers are deleted.
 pub const RELEASE_OPTS: &[OptId] = &[
+    OptId::ConstProp,
+    OptId::Gvn,
+    OptId::Dce,
     OptId::NarrowImm,
     OptId::AdrAddressing,
     OptId::BfxNarrow,
@@ -122,6 +149,9 @@ pub const RELEASE_OPTS: &[OptId] = &[
 /// Enable exactly the named opts (decision 1452). Product modes go
 /// through [`apply_mode`]; tests and candidate A/B use this directly.
 pub fn apply_opts(opts: &[OptId]) {
+    crate::mwir_opt::set_const_prop(opts.contains(&OptId::ConstProp));
+    crate::mwir_opt::set_gvn(opts.contains(&OptId::Gvn));
+    crate::mwir_opt::set_dce(opts.contains(&OptId::Dce));
     crate::codegen::set_narrow_imm(opts.contains(&OptId::NarrowImm));
     crate::codegen::set_adr_addressing(opts.contains(&OptId::AdrAddressing));
     crate::codegen::set_bfx_narrow(opts.contains(&OptId::BfxNarrow));
@@ -154,6 +184,9 @@ mod tests {
     /// rather than as a silently inert entry in `RELEASE_OPTS`.
     fn live_knobs() -> Vec<(OptId, bool)> {
         vec![
+            (OptId::ConstProp, crate::mwir_opt::const_prop()),
+            (OptId::Gvn, crate::mwir_opt::gvn()),
+            (OptId::Dce, crate::mwir_opt::dce()),
             (OptId::NarrowImm, narrow_imm()),
             (OptId::AdrAddressing, adr_addressing()),
             (OptId::BfxNarrow, bfx_narrow()),
@@ -219,6 +252,9 @@ mod tests {
         assert_eq!(
             RELEASE_OPTS,
             &[
+                OptId::ConstProp,
+                OptId::Gvn,
+                OptId::Dce,
                 OptId::NarrowImm,
                 OptId::AdrAddressing,
                 OptId::BfxNarrow,

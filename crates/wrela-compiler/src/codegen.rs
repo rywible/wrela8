@@ -11348,6 +11348,11 @@ pub fn codegen_program_with_async(
     // image has no mailbox roots (dump without an `@image`, sync-only).
     _enqueue_specs: &[(String, u64, u64)],
 ) -> Result<CodegenProgram, CodegenError> {
+    // plans/codegen-pareto-2.md item J, decision 1920: the three MWIR
+    // passes run here, at the one choke point every path shares, so the
+    // program the ∀ gate scores is byte-for-byte the program that ships.
+    let optimized = crate::mwir_opt::optimize(mwir);
+    let mwir = optimized.as_ref().unwrap_or(mwir);
     if block_ids_active() {
         NEXT_BLOCK_ID.with(|c| c.set(0));
     }
@@ -11399,6 +11404,9 @@ pub fn codegen_program(
     mwir: &MwirProgram,
     layout: &LayoutCtx,
 ) -> Result<CodegenProgram, CodegenError> {
+    // Item J, decision 1920 — same hook as `codegen_program_with_async`.
+    let optimized = crate::mwir_opt::optimize(mwir);
+    let mwir = optimized.as_ref().unwrap_or(mwir);
     if block_ids_active() {
         NEXT_BLOCK_ID.with(|c| c.set(0));
     }
@@ -13865,6 +13873,24 @@ mod item_f_tests {
         OptId::RegAlloc,
     ];
 
+    /// `RELEASE_OPTS` without plans/codegen-pareto-2.md item J's three
+    /// MWIR passes.
+    ///
+    /// Three of the claims below are about **a call** — that a tail call
+    /// becomes a `B`, that a non-tail call stays a `BL`, that a value
+    /// survives one in a register — and each of these test sources is a
+    /// two-line callee whose result item J's constant propagation and
+    /// DCE simply fold away, leaving no call site to assert about. Item
+    /// F's transform is unchanged; its subject is what moved, so these
+    /// ask over the list that still has one (decision 1933).
+    fn release_without_item_j() -> Vec<OptId> {
+        RELEASE_OPTS
+            .iter()
+            .copied()
+            .filter(|o| !matches!(o, OptId::ConstProp | OptId::Gvn | OptId::Dce))
+            .collect()
+    }
+
     fn mnems<'a>(prog: &'a CodegenProgram, key: &str) -> Vec<&'a str> {
         prog.fns
             .get(key)
@@ -13957,7 +13983,7 @@ pub fn use_it(x: u64) -> u64:
     #[test]
     fn a_tail_call_emits_b_not_bl_and_ret() {
         let before = emit(TAIL, E);
-        let after = emit(TAIL, RELEASE_OPTS);
+        let after = emit(TAIL, &release_without_item_j());
 
         let b = mnems(&before, "use_it");
         assert!(
@@ -14012,7 +14038,7 @@ pub fn twice(x: u64) -> u64:
     y: u64 = add_one(x)
     return y +% y
 "#;
-        let prog = emit(SRC, RELEASE_OPTS);
+        let prog = emit(SRC, &release_without_item_j());
         let a = mnems(&prog, "twice");
         assert!(
             a.iter().any(|t| *t == "bl <add_one>"),
@@ -14040,7 +14066,7 @@ pub fn spans(a: u64) -> u64:
     return (keep +% p) +% (q +% keep)
 "#;
         let before = emit(SRC, E);
-        let after = emit(SRC, RELEASE_OPTS);
+        let after = emit(SRC, &release_without_item_j());
         let bl = rule_count(&before, "spans", CostRule::Load);
         let al = rule_count(&after, "spans", CostRule::Load);
         assert!(
