@@ -80,6 +80,25 @@ pub enum OptId {
     /// instructions whose result is read nowhere, and of unreachable
     /// instructions.
     Dce,
+    /// **plans/codegen-pareto-2.md item P / decision 1980: the shrinking
+    /// inliner — present, wired, and deliberately *not* in
+    /// [`RELEASE_OPTS`].**
+    ///
+    /// The ladder's 2a. Item J built it, measured it, refused it
+    /// (decision 1935) and deleted it before it was ever committed, so
+    /// the numbers that re-ranked the ladder's #1 candidate could not be
+    /// reproduced from this repository. CLAUDE.md's rule changed on the
+    /// strength of that: a refused opt is *parked*, not deleted — it
+    /// stays in the tree carrying its refusal measurement, its mechanism
+    /// and the named condition that would make it worth re-asking, and it
+    /// must still compile and pass `diff-eval` so it cannot rot into a
+    /// miscompile while parked.
+    ///
+    /// An id rather than a bare knob because the refusal has to be
+    /// re-derivable by exactly the machinery that ranks everything else:
+    /// `compare_opt_lists(&[..], &[.., Inline])`. Membership of
+    /// `RELEASE_OPTS` is the product decision and this is not in it.
+    Inline,
 }
 
 /// Fixed release order. Add opts here — nowhere else.
@@ -126,10 +145,14 @@ pub enum OptId {
 /// themselves is dependence: constant propagation folds first, GVN
 /// numbers what is left, and DCE collects what the other two orphaned.
 ///
-/// **There is no `Inline` id.** The ladder's 2a was built and measured
-/// and it lost on both words and cycles in every framing it was asked in
-/// (decision 1935, `mwir_opt.rs`'s module doc and
-/// plans/codegen-pareto-2-J.md). Losers are deleted.
+/// **`OptId::Inline` exists and is not here, and that is the point**
+/// (item P, decision 1980). The ladder's 2a lost on both words and cycles
+/// in every framing item J asked it in, and item P re-derives that with
+/// the pipeline-position question item J's measurement could not answer.
+/// A parked opt is one that compiles, passes `diff-eval` and carries its
+/// own refusal; it is not one that ships. `each_release_opt_...` and the
+/// two order tests below read this slice, so adding it here would be the
+/// whole product change and nothing else has to move.
 pub const RELEASE_OPTS: &[OptId] = &[
     OptId::ConstProp,
     OptId::Gvn,
@@ -149,6 +172,7 @@ pub const RELEASE_OPTS: &[OptId] = &[
 /// Enable exactly the named opts (decision 1452). Product modes go
 /// through [`apply_mode`]; tests and candidate A/B use this directly.
 pub fn apply_opts(opts: &[OptId]) {
+    crate::mwir_opt::set_inline(opts.contains(&OptId::Inline));
     crate::mwir_opt::set_const_prop(opts.contains(&OptId::ConstProp));
     crate::mwir_opt::set_gvn(opts.contains(&OptId::Gvn));
     crate::mwir_opt::set_dce(opts.contains(&OptId::Dce));
@@ -184,6 +208,7 @@ mod tests {
     /// rather than as a silently inert entry in `RELEASE_OPTS`.
     fn live_knobs() -> Vec<(OptId, bool)> {
         vec![
+            (OptId::Inline, crate::mwir_opt::inlining()),
             (OptId::ConstProp, crate::mwir_opt::const_prop()),
             (OptId::Gvn, crate::mwir_opt::gvn()),
             (OptId::Dce, crate::mwir_opt::dce()),
@@ -203,7 +228,11 @@ mod tests {
     #[test]
     fn dev_disables_every_opt() {
         apply_mode(CompileMode::Release);
-        assert!(live_knobs().iter().all(|(_, on)| *on));
+        // Every knob `RELEASE_OPTS` names, and only those: item P's
+        // `Inline` is wired and parked, so `release` must leave it off.
+        for (id, on) in live_knobs() {
+            assert_eq!(on, RELEASE_OPTS.contains(&id), "{id:?} under release");
+        }
 
         apply_mode(CompileMode::Dev);
         for (id, on) in live_knobs() {
@@ -238,13 +267,39 @@ mod tests {
     /// identity while believing it measured something.
     #[test]
     fn each_opt_id_drives_exactly_its_own_knob() {
-        for &id in RELEASE_OPTS {
+        // Over every *wired* id, not just the shipped ones — a parked opt
+        // whose knob were cross-wired would make its own refusal
+        // measurement a measurement of something else.
+        let ids: Vec<OptId> = live_knobs().into_iter().map(|(id, _)| id).collect();
+        for id in ids {
             apply_opts(&[id]);
             for (other, on) in live_knobs() {
                 assert_eq!(on, other == id, "enabling {id:?} also moved {other:?}");
             }
         }
         apply_mode(CompileMode::Release);
+    }
+
+    /// **The park, asserted** (item P / decision 1980, CLAUDE.md's
+    /// 2026-07-31 rule). `Inline` is in `OptId` — so the refusal can be
+    /// re-derived by the same machinery that ranks everything else — and
+    /// is not in `RELEASE_OPTS`, because it lost. Deleting it is what
+    /// item J did, and it cost the tree the reproducibility of the
+    /// measurement that re-ranked the ladder's #1 candidate.
+    #[test]
+    fn the_inliner_is_wired_and_parked() {
+        assert!(
+            live_knobs().iter().any(|(id, _)| *id == OptId::Inline),
+            "`OptId::Inline` must reach a knob, or the park is a graveyard"
+        );
+        assert!(
+            !RELEASE_OPTS.contains(&OptId::Inline),
+            "item P reports the number; a human decides whether it ships"
+        );
+        apply_opts(&[OptId::Inline]);
+        assert!(crate::mwir_opt::inlining());
+        apply_mode(CompileMode::Release);
+        assert!(!crate::mwir_opt::inlining());
     }
 
     #[test]

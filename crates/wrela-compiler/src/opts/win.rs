@@ -3576,6 +3576,184 @@ mod tests {
         apply_mode(CompileMode::Release);
     }
 
+    // --- item P: the parked inliner, in both pipeline positions ---------
+
+    /// **The measurement item P exists for** (decisions 1986/1987).
+    ///
+    /// Item J refused the inliner on `[ConstProp,Gvn,Dce] → +Inline` =
+    /// +628 cycles and `release-minus-Inline → release` = +221 cycles /
+    /// +308 words. Both framings look like the right question. But **the
+    /// opt list's order is not the pipeline's order**: all four passes
+    /// run inside one `mwir_opt::optimize` call, and where the inliner
+    /// sat *inside* that call was never committed. An inliner is an
+    /// *enabling* pass — its value is not what it does alone but what
+    /// redundancy elimination can do to the merged body afterwards — so
+    /// an inliner measured after GVN/DCE is a measurement of nothing.
+    ///
+    /// This asks both orders, on both framings, over the whole corpus,
+    /// and prints cycles *and* words for each. If the two positions
+    /// differ materially, item J's refusal was measuring the wrong thing.
+    /// If they do not, the refusal stands and is now re-derivable from
+    /// this repository — which is the whole reason the opt is parked
+    /// rather than deleted.
+    ///
+    /// The third framing is **rule (i) alone** (decision 1988): only a
+    /// callee whose splice consumes its one and only reference, so the
+    /// body moves rather than duplicates and the callee is deleted.
+    /// That is the framing item J called "the result that settles it",
+    /// and it is one of the numbers this repository could not re-derive.
+    ///
+    /// **Deep lane**: six whole-corpus comparisons.
+    #[ignore = "deep lane: six whole-corpus comparisons (--ignored)"]
+    #[test]
+    fn the_inliner_measured_in_both_pipeline_positions() {
+        let mut framings: Vec<(&str, Vec<OptId>, Vec<OptId>, bool)> = Vec::new();
+        for (label, base, rule_one_only) in [
+            (
+                "[ConstProp,Gvn,Dce]",
+                vec![OptId::ConstProp, OptId::Gvn, OptId::Dce],
+                false,
+            ),
+            ("release-minus-Inline", RELEASE_OPTS.to_vec(), false),
+            (
+                "release-minus-Inline, rule (i)",
+                RELEASE_OPTS.to_vec(),
+                true,
+            ),
+        ] {
+            let mut cand = base.clone();
+            cand.push(OptId::Inline);
+            framings.push((label, base, cand, rule_one_only));
+        }
+
+        let mut summary = String::from(
+            "\nitem P — the inliner in both pipeline positions\n\
+             framing                              position                 Δcycles   Δwords\n",
+        );
+        let mut moved_somewhere = false;
+        for (label, base, cand, rule_one_only) in &framings {
+            crate::mwir_opt::set_inline_rule_one_only(*rule_one_only);
+            for after in [false, true] {
+                crate::mwir_opt::set_inline_after_redundancy(after);
+                let position = if after {
+                    "ConstProp/Gvn/Dce → inline"
+                } else {
+                    "inline → ConstProp/Gvn/Dce"
+                };
+                let cmp = compare_opt_lists(base, cand);
+                eprintln!(
+                    "item P: {label} → +Inline, {position}:\n{}",
+                    format_delta_table(&cmp, label, "+Inline")
+                );
+                if cmp.sum_delta() != 0 || cmp.words_delta() != 0 {
+                    moved_somewhere = true;
+                }
+                summary.push_str(&format!(
+                    "{label:<36} {position:<26} {:>+8} {:>+8}\n",
+                    cmp.sum_delta(),
+                    cmp.words_delta()
+                ));
+            }
+        }
+        crate::mwir_opt::set_inline_rule_one_only(false);
+        crate::mwir_opt::set_inline_after_redundancy(false);
+        apply_mode(CompileMode::Release);
+        eprintln!("{summary}");
+        assert!(
+            moved_somewhere,
+            "the inliner reached nothing anywhere on this corpus — a refusal \
+             measured over zero call sites is clean about nothing"
+        );
+        assert!(
+            !RELEASE_OPTS.contains(&OptId::Inline),
+            "item P reports the number and parks the opt; a human decides"
+        );
+    }
+
+    /// The same question on the **two shipped images** — the appliance
+    /// and item M's compute workload — in emitted words, which is the
+    /// currency an inliner is supposed to be spending. The reach counters
+    /// say how many sites each one actually offered it.
+    ///
+    /// **And the mechanism, as a measurement rather than a story.** The
+    /// per-mnemonic counts are what say *why* a splice costs words on
+    /// this backend: a callee's temps become the caller's frame slots,
+    /// the caller's live ranges grow, and item E's per-function
+    /// linear-scan allocator answers by spilling. If that is the
+    /// mechanism, `str`/`ldr` rise with the splice; if it were merely
+    /// duplication, every mnemonic would rise together.
+    ///
+    /// **Deep lane**: six image compilations.
+    #[ignore = "deep lane: six shipped-image compilations (--ignored)"]
+    #[test]
+    fn the_inliner_on_the_two_shipped_images_in_both_positions() {
+        let appliance = golden_root().join("appliance/src/image.wr");
+        let compositor = golden_root().join("boot-tile-compositor/input.wr");
+        assert!(appliance.is_file(), "{}", appliance.display());
+        assert!(compositor.is_file(), "{}", compositor.display());
+        let mut with_inline: Vec<OptId> = RELEASE_OPTS.to_vec();
+        with_inline.push(OptId::Inline);
+        const MNEMONICS: [&str; 6] = ["str", "ldr", "mov", "bl", "movz", "movk"];
+
+        // (words, per-mnemonic counts), under whatever opts are set.
+        let measure = |path: &Path, opts: &[OptId]| -> (u64, Vec<usize>) {
+            let (report, _) = shipped_report_under_opts(path, opts);
+            let (program, ..) = crate::cost::stage::codegen_shipped_program(path)
+                .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            let asm = crate::codegen::dump(&program);
+            // `  0007: 910003e0  add x0, sp, #0  ; ...` — the mnemonic is
+            // the third whitespace-separated token of a body line.
+            let counts = MNEMONICS
+                .iter()
+                .map(|m| {
+                    asm.lines()
+                        .filter(|l| l.split_whitespace().nth(2) == Some(m))
+                        .count()
+                })
+                .collect();
+            (report.total_words, counts)
+        };
+
+        let mut table = String::from("\nitem P — shipped images, emitted words\n");
+        table.push_str(&format!(
+            "{:<12} {:<27} {:>8} {:>8} {:>6} {:>5} {:>5}",
+            "image", "position", "release", "+Inline", "Δ", "sites", "moved"
+        ));
+        for m in MNEMONICS {
+            table.push_str(&format!(" {m:>7}"));
+        }
+        table.push('\n');
+        for (name, path) in [("appliance", &appliance), ("compositor", &compositor)] {
+            crate::mwir_opt::set_inline_after_redundancy(false);
+            let (base_words, base_counts) = measure(path, RELEASE_OPTS);
+            let _ = crate::mwir_opt::take_inline_reach();
+            for after in [false, true] {
+                crate::mwir_opt::set_inline_after_redundancy(after);
+                let (cand_words, cand_counts) = measure(path, &with_inline);
+                // Two compilations per side (score + dump), so halve.
+                let (sites, moved) = crate::mwir_opt::take_inline_reach();
+                let position = if after {
+                    "ConstProp/Gvn/Dce → inline"
+                } else {
+                    "inline → ConstProp/Gvn/Dce"
+                };
+                table.push_str(&format!(
+                    "{name:<12} {position:<27} {base_words:>8} {cand_words:>8} {:>+6} {:>5} {:>5}",
+                    cand_words as i64 - base_words as i64,
+                    sites / 2,
+                    moved / 2,
+                ));
+                for (b, c) in base_counts.iter().zip(cand_counts.iter()) {
+                    table.push_str(&format!(" {:>+7}", *c as i64 - *b as i64));
+                }
+                table.push('\n');
+            }
+        }
+        crate::mwir_opt::set_inline_after_redundancy(false);
+        apply_mode(CompileMode::Release);
+        eprintln!("{table}\n(the mnemonic columns are Δ against release)");
+    }
+
     /// Decision 1453: swapped opt-list order vs RELEASE_OPTS — document
     /// independence when totals match (lower vs codegen axes).
     #[test]
