@@ -277,7 +277,7 @@ fn main() -> ExitCode {
         // making bare `cargo xtask repro` a strict superset of `cargo
         // xtask report-determinism` rather than a bare synonym for it.
         Some("repro") => repro(),
-        Some("diff-eval") => diff_eval(),
+        Some("diff-eval") => diff_eval(&args[1..]),
         Some("diff-block-count") => diff_block_count(),
         Some("diff-blk") => diff_blk(),
         // plans/M20.md item C: the Lane 2 block-grain sidecar generator.
@@ -290,7 +290,7 @@ fn main() -> ExitCode {
         Some("bench") => bench(&args[1..]),
         _ => {
             eprintln!(
-                "usage: cargo xtask <check [--fast]|golden [--update] [--filter <substr>] [--only-boot|--no-boot] [--jobs N] [--boot-jobs N]|corpus [--sema]|fuzz [lexer|parser|sema|eval|lower|async|imports|report] [--iters N] [--seed S]|roundtrip|report-determinism|agnostic-sweep|cost-inventory|stdlib-test|repro|diff-eval|diff-block-count|diff-blk|gen-lane2-freq <case>|profile|bench <compiler|build|guest>>"
+                "usage: cargo xtask <check [--fast]|golden [--update] [--filter <substr>] [--only-boot|--no-boot] [--jobs N] [--boot-jobs N]|corpus [--sema]|fuzz [lexer|parser|sema|eval|lower|async|imports|report] [--iters N] [--seed S]|roundtrip|report-determinism|agnostic-sweep|cost-inventory|stdlib-test|repro|diff-eval [--with-opt <OptId>]|diff-block-count|diff-blk|gen-lane2-freq <case>|profile|bench <compiler|build|guest>>"
             );
             return ExitCode::FAILURE;
         }
@@ -2800,8 +2800,25 @@ pub(crate) fn parse_guest_record(text: &str) -> Result<GuestRecord, String> {
 /// Product-default `release` (plans/M19.md decision 1470 follow-up): TLS
 /// opt knobs default NarrowImm **off**; without `apply_mode` this lane
 /// would score a half-release backend. Call once before any lower/codegen.
-fn diff_eval_over_cases(vmm: &Path, filter: Option<&[&str]>) -> Result<DiffEvalTally, String> {
-    opts::apply_mode(CompileMode::Release);
+///
+/// `extra_opts` (plans/codegen-pareto-2.md item N, decision 1913) adds
+/// ids **on top of** `RELEASE_OPTS` rather than replacing it — the point
+/// of running this lane under a parked opt is to prove that opt correct
+/// in the configuration the product otherwise is, not in a
+/// half-configured backend nobody builds.
+fn diff_eval_over_cases(
+    vmm: &Path,
+    filter: Option<&[&str]>,
+    extra_opts: &[opts::OptId],
+) -> Result<DiffEvalTally, String> {
+    if extra_opts.is_empty() {
+        opts::apply_mode(CompileMode::Release);
+    } else {
+        let mut list = opts::RELEASE_OPTS.to_vec();
+        list.extend_from_slice(extra_opts);
+        opts::apply_opts(&list);
+        println!("diff-eval: opt list = RELEASE_OPTS + {extra_opts:?}");
+    }
     let golden_dir = root().join("tests/golden");
     let mut tally = DiffEvalTally::default();
     for case in golden_case_dirs(&golden_dir)? {
@@ -3009,9 +3026,45 @@ fn diff_eval_over_cases(vmm: &Path, filter: Option<&[&str]>) -> Result<DiffEvalT
 /// grows; it is a floor, not a lock, so an added case never fails here.
 const DIFF_EVAL_MIN_AGREE: usize = 100;
 
-fn diff_eval() -> Result<(), String> {
+/// `cargo xtask diff-eval [--with-opt <Name>]`.
+///
+/// **`--with-opt` exists for the parked opts** (CLAUDE.md 2026-07-31,
+/// decision 1913). A `PARKED_OPTS` member is reachable from no
+/// `CompileMode`, so without a way to name it here the doctrine's "a
+/// parked opt must still pass `diff-eval`" would be unenforceable and the
+/// park would silently become a graveyard. The flag names ids by their
+/// `Debug` spelling and **fails closed on a name no id has**, in the
+/// spirit of `golden --filter`: a typo must not quietly run the plain
+/// release lane and report a pass about the wrong thing. It may name a
+/// shipped id too — that is a no-op, and saying so is cheaper than a
+/// special case.
+fn diff_eval(args: &[String]) -> Result<(), String> {
+    let mut extra: Vec<opts::OptId> = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--with-opt" => {
+                let name = args.get(i + 1).ok_or_else(|| {
+                    "usage: cargo xtask diff-eval [--with-opt <OptId>]".to_string()
+                })?;
+                let id = opts::opt_by_name(name).ok_or_else(|| {
+                    format!(
+                        "diff-eval: --with-opt {name}: no such opt. Known ids: {}",
+                        opts::all_opts()
+                            .iter()
+                            .map(|o| format!("{o:?}"))
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    )
+                })?;
+                extra.push(id);
+                i += 2;
+            }
+            other => return Err(format!("diff-eval: unknown argument {other:?}")),
+        }
+    }
     let vmm = build_and_sign_vmm()?;
-    let tally = diff_eval_over_cases(&vmm, None)?;
+    let tally = diff_eval_over_cases(&vmm, None, &extra)?;
     println!(
         "diff-eval: {} test(s) agree across {} case(s), {} lowering-skips, {} exhaustive-skips, \
          {} quota-skips, {} import-skips",
@@ -3058,7 +3111,7 @@ const DIFF_EVAL_SMOKE_CASES_AGREED: usize = 2;
 
 fn diff_eval_smoke() -> Result<(), String> {
     let vmm = build_and_sign_vmm()?;
-    let tally = diff_eval_over_cases(&vmm, Some(&DIFF_EVAL_SMOKE_CASES))?;
+    let tally = diff_eval_over_cases(&vmm, Some(&DIFF_EVAL_SMOKE_CASES), &[])?;
     println!(
         "diff-eval (smoke): {} test(s) agree across {} case(s), {} lowering-skips, {} \
          exhaustive-skips, {} quota-skips, {} import-skips",
