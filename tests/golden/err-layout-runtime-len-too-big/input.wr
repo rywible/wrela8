@@ -1,17 +1,5 @@
 module examples.err_layout_runtime_len_too_big
 
-# plans/M10.md item A2b, bounded by construction: `2^40` elements of 8 bytes is
-# 8 TiB, and it is spelled by a one-line `const` edit. Before this item a
-# length was a literal, so a table this size had to be typed out; now it can
-# arrive from arithmetic, which is exactly why the pass grew a total-size bound
-# (`MAX_LAYOUT_BYTES` = 16 MiB) in the same commit.
-#
-# The bound is a fail-closed floor, like `MAX_LAYOUT_NEST_DEPTH` before it: the
-# flagship machine is 1 GiB in total, so a single exact-bytes declaration
-# claiming more is a mistake in the declaration and not a table. It is *not* an
-# overflow check — `2^43` fits a `u64` comfortably, which is the point: without
-# the bound this compiles and reports a size no image can hold, and every
-# number downstream of a `@layout` size is a real allocation.
 
 const N_TURNS: u64 = 1099511627776
 

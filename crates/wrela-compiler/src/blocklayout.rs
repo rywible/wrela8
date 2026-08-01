@@ -1,151 +1,9 @@
-//! Hot/cold basic-block layout (plans/codegen-pareto.md item D).
-//!
-//! **PARKED — present, compiling, tested, and deliberately not wired**
-//! (CLAUDE.md's "a refused opt is parked, not deleted";
-//! plans/codegen-pareto-2.md decisions 1910 and 1940). The three things the
-//! parking rule requires, stated here so they cannot drift from the code:
-//!
-//! - **The measurement that refused it.** Under the order-sensitive
-//!   footprint term (item K, decision 1955) this pass moves `boot-actors`'
-//!   *measured* density charge, but the column the ∀ gate reads is
-//!   `HotBlocks::All`, where the density charge is **identically zero by
-//!   construction** — every block hot means every fn's hot bytes are all
-//!   its bytes, so the fetched line count equals the packing floor and the
-//!   slack is zero. The pass therefore scores 0 in the gate under every
-//!   wiring available in this tree (item K, decision 1956).
-//! - **The mechanism.** Sinking cold blocks only ever shrinks a *fetched
-//!   line set*, and a line set can only shrink where some blocks are cold.
-//!   The gate's column has no cold blocks. Separately, only one program in
-//!   the tree carries a block-grain sidecar
-//!   (`tests/golden/boot-actors/lane2-freq.txt`), so even a gate reading
-//!   the measured column could see this pass move at most one case.
-//! - **What would make it worth re-asking — and it has already half
-//!   happened.** Item M's `boot-tile-compositor` is the first program here
-//!   with L1I headroom (47 744 B of flat hot text in `dev`, 28 480 B in
-//!   `release`, against a 65 536 B L1I). Item O ran `cargo xtask
-//!   gen-lane2-freq boot-tile-compositor` once, off-tree, and measured this
-//!   pass against that sidecar: **measured hot text 28 736 → 26 688 B and
-//!   density charge 63 → 0**, 16 of 32 fns moved, 88 cold blocks sunk, for
-//!   +244 words. On the workload that did not exist when it was refused,
-//!   the pass does exactly what it claims — the opposite of its result on
-//!   `boot-actors`. Two things still block ranking it, and both are the
-//!   ruler's, not the pass's: the ∀ gate reads `HotBlocks::All` (zero slack
-//!   by construction), and that sidecar does **not resolve** against a
-//!   `RELEASE_OPTS` closure at all, because `gen-lane2-freq` measures a
-//!   `dev` image while `--stage=cost` scores a `release` one and item J's
-//!   `Dce` now makes those two partitions disagree (decision 1947). The
-//!   numbers above are therefore taken with `ConstProp`/`Gvn`/`Dce` off,
-//!   which is the only configuration where the bridge resolves.
-//!   `plans/codegen-pareto-2-O.md` has the full run.
-//! - **The other rung, untouched.** `plans/codegen-pareto-D.md` §8.4
-//!   measured 36 % of hot blocks in **async** fns, which this pass does not
-//!   reach at all (decision 1756).
-//!
-//! Wiring it also still re-keys the Lane 2 bridge — see "Why this pass is
-//! not installed on the emission path" below, which is unchanged.
-//!
-//! Pack the measured-hot blocks of a fn contiguously and sink the measured
-//! **cold** ones — abort paths, error handling, rare branches — below them,
-//! so a core's L1I holds hot text instead of hot text interleaved with
-//! never-executed text.
-//!
-//! The whole input is item A's classifier: [`crate::cost::layout_classes`]
-//! returns a [`LayoutClasses`] and [`LayoutClasses::class_of`] answers
-//! [`BlockClass`] per `(fn_key, block_index)`. This module adds no
-//! measurement, no heuristic and no second source of truth — if the
-//! classifier says `Unmeasured`, the block stays exactly where it was.
-//!
-//! ## What a block is here
-//!
-//! The reorder unit is the **MWIR block**: a contiguous run of
-//! `MwirFn::body` indices starting at a leader, where the leader set is
-//! `codegen::mwir_block_leaders` — the *same* function that assigns
-//! Lane 2 its block ids. That identity is not a convenience, it is the whole
-//! correctness argument: the sidecar's `<fn_key>#<block_index>` keys are
-//! ordinals over exactly this partition, so a class looked up at index `k`
-//! describes exactly the run this module is about to move. Decision 1753;
-//! checked against a real bridge-mode build rather than argued, inside
-//! `unit:the_measured_hot_text_footprint_before_and_after`.
-//!
-//! ## The algorithm (decision 1751)
-//!
-//! A **stable two-way partition**. Walk the blocks in original order and
-//! emit, first, every block that is `Hot` **or** `Unmeasured`, then every
-//! block that is `Cold` — each run keeping its original relative order.
-//! Nothing else moves: no chain layout, no trace formation, no
-//! frequency sort. Two properties follow from stability and they are the
-//! reason it is the algorithm:
-//!
-//! - a fn with no cold block, or no measurement at all, permutes to the
-//!   **identity** and its emitted words are byte-identical;
-//! - every fallthrough edge whose two ends land in the same run survives
-//!   untouched, so the repair cost is one word per hot/cold *boundary*
-//!   rather than one word per block.
-//!
-//! ## Fallthrough repair
-//!
-//! MWIR control flow is index-relative: `Jump`/`JumpIfFalse` name a body
-//! index and every other instruction falls through to `i + 1`.
-//! [`apply_fn`] therefore does two things beyond permuting: it rewrites
-//! every target through the old→new index map, and it appends an explicit
-//! `Inst::Jump` to any block whose successor is no longer the block
-//! physically after it. A block ending in `Jump` or `Return` has no
-//! fallthrough and never gets one (`Inst::Return` is itself a jump to
-//! `body.len()`, which the remap carries).
-//!
-//! A repair costs **one word**, and it costs one extra *block* only when
-//! the block it repairs ends in a conditional branch: `mwir_block_leaders`
-//! marks the instruction after any branch as a leader, so a `Jump` appended
-//! after a `JumpIfFalse` becomes a one-instruction block of its own, while a
-//! `Jump` appended after an ordinary instruction stays inside the block it
-//! repairs. The pass does **not** claim to preserve the block count and the
-//! unit measures the growth instead of asserting it away
-//! (`unit:a_repair_after_a_conditional_costs_one_block`). This is a second,
-//! smaller reason a post-pass partition cannot be re-keyed against a
-//! pre-pass sidecar — see "Why this pass is not installed" below.
-//!
-//! ## Unmeasured is laid out hot, never sunk (decision 1752)
-//!
-//! Item A's §6 is explicit and this module obeys it literally:
-//! `BlockClass::Unmeasured` means *no evidence*, and sinking code on no
-//! evidence is a guess. It is grouped with `Hot`, not with `Cold`.
-//! `cost::bridge::MeasuredBlocks::is_hot` answers `false` for unmeasured —
-//! correct for the footprint term, wrong here — and is deliberately not
-//! used.
-//!
-//! ## Why this pass is not installed on the emission path (decision 1755)
-//!
-//! `cost::bridge::BlockBridge` requires a fn's recorded spans to satisfy
-//! `block_index == word order`: it rejects "block ordinals out of order"
-//! and any `word_start` that does not continue the previous span. So a
-//! sidecar key `fn#k` is resolved to the **k-th emitted block**, by
-//! position. Reordering blocks re-keys that correspondence against a
-//! sidecar recorded under the old order, and the one program in the tree
-//! with a sidecar (`tests/golden/boot-actors`) would then print a
-//! `MeasuredBudget` line describing the wrong blocks — silently.
-//!
-//! Fail closed: the pass is built, measured and pinned here, and it is not
-//! installed. Installing it needs a bridge that carries a block's identity
-//! ([`FnLayout::new_block_span`] is exactly that datum) instead of
-//! inferring it from position — ruler plumbing, and not this item's to
-//! change. `plans/codegen-pareto-D.md` names the change.
-//!
-//! One consequence to be honest about: `cargo xtask diff-eval` compares the
-//! evaluator against the **default** compile path, so it cannot see this
-//! pass at all. `verify_successors` is what stands in its place — the
-//! pass proves CFG equivalence for every fn it moves, on real programs, and
-//! refuses to emit a body it cannot prove.
-
 use std::collections::BTreeMap;
 
 use crate::codegen;
 use crate::cost::{BlockClass, LayoutClasses};
 use crate::mwir::{Inst, MwirFn, MwirProgram};
 
-/// The MWIR-block partition of one body: `(start, end)` per block, in
-/// original order. `end` is exclusive; the last block ends at `body.len()`.
-///
-/// Empty for an empty body, which is the one case with no blocks at all.
 pub fn block_ranges(body: &[Inst]) -> Vec<(usize, usize)> {
     let leaders = codegen::mwir_block_leaders(body);
     let starts: Vec<usize> = leaders
@@ -162,68 +20,30 @@ pub fn block_ranges(body: &[Inst]) -> Vec<(usize, usize)> {
         .collect()
 }
 
-/// Whether a block ending at `end` (exclusive) falls through to `end`.
-///
-/// Exactly the complement of `codegen::mwir_block_leaders`'s two
-/// unconditional terminators. `JumpIfFalse` **does** fall through (it
-/// branches only when the condition is false), and so does every
-/// non-control instruction.
 fn falls_through(body: &[Inst], end: usize) -> bool {
     match body.get(end.wrapping_sub(1)) {
         Some(Inst::Jump { .. } | Inst::Return { .. }) => false,
         Some(_) => true,
-        // An empty block cannot exist (`block_ranges` never produces one),
-        // but if it somehow did, treating it as falling through is the
-        // safe direction: an unnecessary `b` is correct, a missing one is
-        // not.
         None => true,
     }
 }
 
-/// One fn's layout plan: the new order of its blocks, by original block
-/// index.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FnLayout {
-    /// A permutation of `0..block_count`.
     pub order: Vec<usize>,
-    /// Blocks classified `Hot`.
     pub hot: usize,
-    /// Blocks classified `Cold` — the ones this plan sinks.
     pub cold: usize,
-    /// Blocks the sidecar has no evidence about. Laid out **hot**
-    /// (decision 1752).
     pub unmeasured: usize,
-    /// Fallthrough edges the permutation broke, each costing one extra
-    /// `Inst::Jump` word.
     pub repairs: usize,
-    /// **Where original block `b` went**, as the half-open range of block
-    /// ordinals it occupies in the *post-pass* partition:
-    /// `new_block_span[b] == (lo, hi)`.
-    ///
-    /// Usually one block wide. It is two exactly when block `b` needed a
-    /// repair and ended in a conditional branch, because the appended
-    /// `Jump` is then a leader of its own (see the module doc). This vector
-    /// is the block **identity** a post-pass partition needs and that
-    /// `cost::bridge` infers from position instead — decision 1755's whole
-    /// subject, and the reason it is carried rather than recomputed.
     pub new_block_span: Vec<(usize, usize)>,
 }
 
 impl FnLayout {
-    /// True when the plan moves nothing — the degrade path's whole
-    /// contract (decision 1752).
     pub fn is_identity(&self) -> bool {
         self.order.iter().enumerate().all(|(i, &b)| i == b)
     }
 }
 
-/// Plan one fn's block order from its per-block classes.
-///
-/// `classes[k]` is the class of block `k` of `body`'s partition; the caller
-/// gets it from [`LayoutClasses::class_of`] at `(fn_key, k)`. A `classes`
-/// shorter than the partition is a caller bug and errors rather than
-/// defaulting — a block with no class must never be laid out as if it had
-/// one (fail closed).
 pub fn plan_fn(body: &[Inst], classes: &[BlockClass]) -> Result<FnLayout, String> {
     let blocks = block_ranges(body);
     if classes.len() != blocks.len() {
@@ -243,7 +63,6 @@ pub fn plan_fn(body: &[Inst], classes: &[BlockClass]) -> Result<FnLayout, String
                 hot += 1;
                 warm.push(k);
             }
-            // Decision 1752: no evidence is not evidence of coldness.
             BlockClass::Unmeasured => {
                 unmeasured += 1;
                 warm.push(k);
@@ -255,8 +74,6 @@ pub fn plan_fn(body: &[Inst], classes: &[BlockClass]) -> Result<FnLayout, String
     let mut order = warm;
     order.extend(cold);
 
-    // One repair per block whose fallthrough successor is no longer the
-    // block physically after it.
     let mut position_of = vec![0usize; blocks.len()];
     for (p, &b) in order.iter().enumerate() {
         position_of[b] = p;
@@ -266,9 +83,6 @@ pub fn plan_fn(body: &[Inst], classes: &[BlockClass]) -> Result<FnLayout, String
     let mut next_ordinal = 0usize;
     for (p, &b) in order.iter().enumerate() {
         let (_, end) = blocks[b];
-        // The successor block is the one starting at `end`; `end ==
-        // body.len()` means the fn's epilogue, which only the physically
-        // last block reaches by falling through.
         let repaired = falls_through(body, end)
             && !match blocks.iter().position(|&(s, _)| s == end) {
                 Some(succ) => position_of[succ] == p + 1,
@@ -277,8 +91,6 @@ pub fn plan_fn(body: &[Inst], classes: &[BlockClass]) -> Result<FnLayout, String
         if repaired {
             repairs += 1;
         }
-        // A repair appended after a conditional branch is a leader of its
-        // own; after an ordinary instruction it joins the block it repairs.
         let split = repaired && matches!(body.get(end - 1), Some(Inst::JumpIfFalse { .. }));
         let width = 1 + usize::from(split);
         new_block_span[b] = (next_ordinal, next_ordinal + width);
@@ -295,14 +107,6 @@ pub fn plan_fn(body: &[Inst], classes: &[BlockClass]) -> Result<FnLayout, String
     })
 }
 
-/// Where every old body index lands under `plan`, plus one final entry:
-/// `map[body.len()]` is the new body length, which is the epilogue position
-/// `Inst::Return` branches to (`codegen::emit_fn` resolves it through
-/// `word_offsets[body.len()]`).
-///
-/// Also the relabelling a *wired* version of this pass would hand the Lane 2
-/// span recorder, which is why it is public rather than a local of
-/// [`apply_fn`].
 pub fn new_index_map(body: &[Inst], plan: &FnLayout) -> Result<Vec<usize>, String> {
     let blocks = block_ranges(body);
     if plan.order.len() != blocks.len() {
@@ -333,11 +137,6 @@ pub fn new_index_map(body: &[Inst], plan: &FnLayout) -> Result<Vec<usize>, Strin
     Ok(map)
 }
 
-/// Apply a plan to one fn, producing the reordered body with every target
-/// remapped and every broken fallthrough repaired.
-///
-/// The identity plan returns a body equal to the input, instruction for
-/// instruction (`unit:an_identity_plan_is_byte_identical`).
 pub fn apply_fn(f: &MwirFn, plan: &FnLayout) -> Result<MwirFn, String> {
     let body = &f.body;
     let blocks = block_ranges(body);
@@ -348,7 +147,6 @@ pub fn apply_fn(f: &MwirFn, plan: &FnLayout) -> Result<MwirFn, String> {
         position_of[b] = p;
     }
 
-    // Pass 2: emit.
     let mut out: Vec<Inst> = Vec::with_capacity(at);
     for &b in &plan.order {
         let (s, e) = blocks[b];
@@ -373,9 +171,6 @@ pub fn apply_fn(f: &MwirFn, plan: &FnLayout) -> Result<MwirFn, String> {
     })
 }
 
-/// The successors of body index `i`, in that body's own index space, where
-/// `body.len()` means the fn epilogue (`Inst::Return`'s destination, which
-/// `codegen::emit_fn` resolves through `word_offsets[body.len()]`).
 fn successors(body: &[Inst], i: usize) -> Vec<usize> {
     let mut s = match &body[i] {
         Inst::Jump { target } => vec![*target],
@@ -388,21 +183,6 @@ fn successors(body: &[Inst], i: usize) -> Vec<usize> {
     s
 }
 
-/// **The pass's own correctness invariant, checked on every fn it moves.**
-///
-/// A permutation is correct exactly when it preserves the successor
-/// relation: for every original index `i`, the successors of `i` in the new
-/// body — resolved through any inserted repair jump, which is pure
-/// forwarding — must be the image under `new_index` of `i`'s original
-/// successors.
-///
-/// This runs on real programs rather than only on the synthetic bodies in
-/// `unit:the_permuted_body_has_the_same_successor_relation`, which matters
-/// because `diff-eval` cannot reach this pass at all: it exercises the
-/// default compile path, and item D is not on it (decision 1755). So the
-/// evaluator-vs-backend oracle says nothing about a reordered body, and
-/// this check is what stands in its place. It fails closed — a permutation
-/// it cannot prove equivalent does not get emitted.
 fn verify_successors(before: &[Inst], after: &[Inst], new_index: &[usize]) -> Result<(), String> {
     let n = before.len();
     let real: std::collections::BTreeSet<usize> = new_index[..n].iter().copied().collect();
@@ -484,21 +264,14 @@ fn remap(inst: &Inst, new_index: &[usize]) -> Result<Inst, String> {
     })
 }
 
-/// What [`relayout_program`] did, for the findings file and for the units.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LayoutSummary {
-    /// Fns whose plan was not the identity.
     pub fns_moved: usize,
-    /// Fns considered (every fn of the program).
     pub fns_total: usize,
     pub hot: usize,
     pub cold: usize,
     pub unmeasured: usize,
-    /// Extra `Inst::Jump` words the repairs cost, program-wide.
     pub repairs: usize,
-    /// The per-fn plan, by fn key. Keyed by the same `fn_key` the sidecar
-    /// and `codegen::block_spans` use, so a caller can follow an original
-    /// block index to where it landed ([`FnLayout::new_block_span`]).
     pub plans: BTreeMap<String, FnLayout>,
 }
 
@@ -511,19 +284,6 @@ impl LayoutSummary {
     }
 }
 
-/// Lay out every sync MWIR fn of `program` against `classes`.
-///
-/// **Sync fns only** (decision 1756): async fns are emitted from FlowWir
-/// through `codegen`'s state-machine path, whose flattened stream is
-/// indexed by `state_flat_base` from the dispatch header, and permuting it
-/// is a different job with a different correctness argument. Async fns keep
-/// their emission order and this is reported, not hidden — `MwirProgram`
-/// simply does not contain them.
-///
-/// [`LayoutClasses::Unmeasured`] — no sidecar beside the source, or no
-/// source — makes every class `Unmeasured`, every plan the identity, and
-/// this function a deep clone. That is the degrade path and it is the one
-/// this repo will take for every program but one.
 pub fn relayout_program(
     program: &MwirProgram,
     classes: &LayoutClasses,
@@ -558,12 +318,6 @@ pub fn relayout_program(
     ))
 }
 
-/// How many times [`relayout_program`] has run on this thread.
-///
-/// The parked pass's own tripwire (decision 1940): "it is not on the
-/// compile path" is a claim about what *runs*, so it is counted rather
-/// than argued — see `unit:the_parked_pass_is_not_on_the_compile_path`.
-/// Test-only; the shipped compiler carries no counter.
 #[cfg(test)]
 thread_local! {
     static RELAYOUT_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -573,18 +327,6 @@ thread_local! {
 fn relayout_calls() -> usize {
     RELAYOUT_CALLS.with(|c| c.get())
 }
-
-// ---------------------------------------------------------------------------
-// The 2 MiB same-region property (decision 1705 / decision 1754) lives in
-// `layout.rs`, not here — item K moved it to its only consumer when it
-// deleted this module (decision 1956), and decision 1943 keeps it there.
-// The property is independent of this pass and outlives it:
-// `layout::verify_branch_region` still fails any image build whose
-// branchable text straddles a 2 MiB region, and its two units
-// (`same_region_is_the_span_property_not_the_base_property`,
-// `the_region_constant_agrees_with_the_cost_table`) live beside it.
-// Restoring the pass must not un-do that consolidation.
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -600,13 +342,6 @@ mod tests {
     }
 
     fn body_hot_cold() -> Vec<Inst> {
-        // 0: b0  const                 (block 0, falls through)
-        // 1:     jumpiffalse -> 4      (block 0 tail)
-        // 2: b1  const                 (block 1, the cold arm)
-        // 3:     jump -> 6             (block 1 tail)
-        // 4: b2  const                 (block 2, the hot arm)
-        // 5:     jump -> 6
-        // 6: b3  return                (block 3)
         vec![
             cbool(0),
             Inst::JumpIfFalse {
@@ -637,16 +372,14 @@ mod tests {
         assert_eq!(block_ranges(&b), vec![(0, 2), (2, 4), (4, 6), (6, 7)]);
     }
 
-    /// The named oracle: a synthetic hot/cold program orders as expected —
-    /// hot blocks contiguous, cold blocks out of the hot region.
     #[test]
     fn a_synthetic_hot_cold_program_packs_its_hot_blocks() {
         let b = body_hot_cold();
         let classes = vec![
-            BlockClass::Hot,  // 0 entry
-            BlockClass::Cold, // 1 the rare arm
-            BlockClass::Hot,  // 2 the taken arm
-            BlockClass::Hot,  // 3 the exit
+            BlockClass::Hot,
+            BlockClass::Cold,
+            BlockClass::Hot,
+            BlockClass::Hot,
         ];
         let plan = plan_fn(&b, &classes).expect("plan");
         assert_eq!(
@@ -657,42 +390,29 @@ mod tests {
         assert_eq!((plan.hot, plan.cold, plan.unmeasured), (3, 1, 0));
 
         let out = apply_fn(&fnof(b), &plan).expect("apply");
-        // The hot run is now contiguous: block 0, then block 2, then block
-        // 3, and only then the sunk cold block.
         assert_eq!(
             out.body,
             vec![
                 cbool(0),
-                // block 0's conditional now branches to block 2, which
-                // starts at index 3 — index 2 is block 0's own repair.
                 Inst::JumpIfFalse {
                     cond: Temp(0),
                     target: 3,
                 },
-                // Block 0's fallthrough to block 1 is broken, so it gains
-                // one repair jump to block 1's new home (index 6).
                 Inst::Jump { target: 6 },
                 cbool(2),
-                Inst::Jump { target: 5 }, // block 2 -> block 3, remapped
+                Inst::Jump { target: 5 },
                 Inst::Return { value: None },
                 cbool(1),
-                Inst::Jump { target: 5 }, // block 1 -> block 3, remapped
+                Inst::Jump { target: 5 },
             ]
         );
         assert_eq!(plan.repairs, 1);
-        // The hot text is now the prefix `0..6` and the cold block is the
-        // suffix `6..8` — which is the whole point of the item.
         let ranges = block_ranges(&out.body);
         assert_eq!(ranges, vec![(0, 2), (2, 3), (3, 5), (5, 6), (6, 8)]);
     }
 
-    /// The honest cost of a repair, measured rather than assumed: a repair
-    /// appended after a **conditional** branch is a leader of its own, so
-    /// the block count grows by one; after an ordinary instruction it is
-    /// not, and the count does not move.
     #[test]
     fn a_repair_after_a_conditional_costs_one_block() {
-        // Case 1: block 0 ends in `JumpIfFalse`, so its repair splits off.
         let b = body_hot_cold();
         let before = block_ranges(&b).len();
         let plan = plan_fn(
@@ -709,13 +429,6 @@ mod tests {
         assert_eq!(plan.repairs, 1);
         assert_eq!(block_ranges(&out.body).len(), before + 1);
 
-        // Case 2: the repaired block ends in an ordinary instruction, so
-        // the repair joins it and the count does not move.
-        //  0: const           (block 0)
-        //  1: jumpiffalse -> 4
-        //  2: const           (block 1 — ordinary tail, falls through)
-        //  3: const
-        //  4: return          (block 2)
         let b2 = vec![
             cbool(0),
             Inst::JumpIfFalse {
@@ -731,14 +444,10 @@ mod tests {
             plan_fn(&b2, &[BlockClass::Hot, BlockClass::Cold, BlockClass::Hot]).expect("plan");
         assert_eq!(plan2.order, vec![0, 2, 1]);
         let out2 = apply_fn(&fnof(b2.clone()), &plan2).expect("apply");
-        // Two repairs: block 0's broken fallthrough (after a conditional,
-        // +1 block) and block 1's (after an ordinary instruction, +0).
         assert_eq!(plan2.repairs, 2);
         assert_eq!(block_ranges(&out2.body).len(), block_ranges(&b2).len() + 1);
     }
 
-    /// The degrade path, and the one most likely to silently misbehave:
-    /// no measurement at all must be byte-identical to today.
     #[test]
     fn no_sidecar_degrades_to_a_byte_identical_layout() {
         let f = fnof(body_hot_cold());
@@ -755,9 +464,6 @@ mod tests {
         assert_eq!(summary.cold, 0);
     }
 
-    /// Decision 1752, stated as a test rather than as a comment:
-    /// `Unmeasured` is laid out with the hot run and is never sunk, even
-    /// when real cold blocks exist beside it.
     #[test]
     fn unmeasured_blocks_are_not_sunk() {
         let b = body_hot_cold();
@@ -774,9 +480,6 @@ mod tests {
             "only the Cold block moves; the Unmeasured one keeps its place"
         );
         assert_eq!((plan.hot, plan.cold, plan.unmeasured), (2, 1, 1));
-        // And the reverse reading — treating Unmeasured as Cold — would
-        // have produced this instead, which is the bug this test exists to
-        // catch.
         assert_ne!(plan.order, vec![0, 3, 1, 2]);
     }
 
@@ -791,21 +494,11 @@ mod tests {
         assert_eq!(apply_fn(&f, &plan).expect("apply").body, b);
     }
 
-    /// The correctness oracle: the reordered body has **the same successor
-    /// relation**, instruction for instruction.
-    ///
-    /// For every old index `i` the new body's successor set at
-    /// `new_index[i]` — resolved through any inserted repair jump, which is
-    /// a pure forwarding instruction — must be exactly the image of `i`'s
-    /// old successor set under `new_index`. Checked over every
-    /// hot/cold assignment of a four-block body, so the permutation is
-    /// exercised in every direction rather than in one.
     #[test]
     fn the_permuted_body_has_the_same_successor_relation() {
         let b = body_hot_cold();
         let n = b.len();
 
-        // Successors of old index i, in old index space (n == epilogue).
         let succ = |body: &[Inst], i: usize| -> Vec<usize> {
             let mut s = Vec::new();
             match &body[i] {
@@ -838,8 +531,6 @@ mod tests {
             let inserted: std::collections::BTreeSet<usize> =
                 (0..out.body.len()).filter(|j| !map.contains(j)).collect();
 
-            // A repair jump forwards; resolve through it (never a cycle —
-            // an inserted jump always targets a real instruction).
             let resolve = |mut j: usize| -> usize {
                 let mut guard = 0;
                 while inserted.contains(&j) {
@@ -881,9 +572,6 @@ mod tests {
         assert!(err.contains("3 class(es) for a 4-block partition"), "{err}");
     }
 
-    /// [`FnLayout::new_block_span`] must say exactly where the applied body
-    /// put each original block. Checked by re-deriving the post-pass
-    /// partition and matching widths, over every hot/cold assignment.
     #[test]
     fn new_block_span_locates_every_original_block() {
         let b = body_hot_cold();
@@ -903,7 +591,6 @@ mod tests {
             let map = new_index_map(&b, &plan).expect("map");
             let before = block_ranges(&b);
 
-            // Spans must tile `0..after.len()` in physical order …
             let mut covered = 0usize;
             for &p in &plan.order {
                 let (lo, hi) = plan.new_block_span[p];
@@ -912,8 +599,6 @@ mod tests {
             }
             assert_eq!(covered, after.len(), "bits={bits:b}");
 
-            // … and each one must start at the new index of that block's
-            // own first instruction.
             for (p, &(s, _)) in before.iter().enumerate() {
                 let (lo, _) = plan.new_block_span[p];
                 assert_eq!(after[lo].0, map[s], "bits={bits:b} block {p}");
@@ -921,33 +606,8 @@ mod tests {
         }
     }
 
-    /// **The number that justifies the item** (plans/codegen-pareto.md item
-    /// D's cheap oracle), measured end to end on the one program in the
-    /// tree that has a block-grain sidecar.
-    ///
-    /// Emits the real `boot-actors` cost-stage closure twice — once as the
-    /// compiler emits it today, once with item D's layout applied — and
-    /// asks the **unmodified** `cost::footprint::compute` for each core's
-    /// measured hot text. No model was changed and no term was made
-    /// order-sensitive (decision 1750); the measured term already is, and
-    /// this is what it says.
-    ///
-    /// The `after` hot predicate is built from [`FnLayout::new_block_span`]
-    /// rather than from `MeasuredBlocks::resolve`, because after the pass
-    /// the sidecar's `fn#k` no longer names the k-th *emitted* block —
-    /// which is decision 1755 in one sentence, and the reason this pass is
-    /// not on the compile path.
-    ///
-    /// Numbers land in `plans/codegen-pareto-D.md`. Print them with:
-    /// `cargo test -p wrela-compiler --lib
-    /// blocklayout::tests::the_measured_hot_text_footprint_before_and_after
-    /// -- --nocapture`
     #[test]
     fn the_measured_hot_text_footprint_before_and_after() {
-        /// Measured hot text of the `boot-actors` cost-stage closure as the
-        /// compiler emits it today — item D's baseline, not a property of
-        /// item D. Every word-shrinking opt moves it; see the assertion
-        /// below for what to do when it does.
         const BEFORE_HOT_TEXT_BYTES: u64 = 6080;
 
         use crate::cost::{
@@ -965,7 +625,6 @@ mod tests {
 
         crate::opts::apply_mode(crate::opts::CompileMode::Release);
 
-        // --- before: exactly what the compiler emits today ---------------
         crate::codegen::set_block_bridge(true);
         let (before, placement) =
             cost::codegen_cost_stage_with_placement(&input).expect("cost-stage codegen");
@@ -985,11 +644,6 @@ mod tests {
         )
         .expect("footprint");
 
-        // The per-fn packing floor: what the footprint term would say if
-        // every fn's hot blocks were perfectly contiguous from its own
-        // 64 B-aligned base. `footprint::compute` gives each fn such a base,
-        // so this is the hard lower bound on what *any* intra-fn block
-        // ordering can reach — the headroom the item is spending.
         let line = 64u64;
         let mut hot_bytes = 0u64;
         let mut floor = 0u64;
@@ -1004,7 +658,6 @@ mod tests {
             floor += hb.div_ceil(line) * line;
         }
 
-        // --- after: the same closure under item D's layout ---------------
         let classes = cost::layout_classes(Some(&input), &spans_before).expect("classify");
         assert!(classes.is_measured(), "the committed sidecar must classify");
 
@@ -1018,8 +671,6 @@ mod tests {
         let bridge_after =
             BlockBridge::build(&after, &spans_after, &table, &placement).expect("bridge after");
 
-        // Hot word blocks of the *after* program, followed through the
-        // block identity the pass carries.
         let bridged: BTreeMap<&String, &cost::BridgedBlock> = bridge_after.blocks().collect();
         let mut hot_words: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
         for (key, count) in &counts {
@@ -1028,8 +679,6 @@ mod tests {
             }
             let (fn_key, orig) = cost::split_key(key).expect("a committed sidecar key");
             let ords = match summary.plans.get(fn_key) {
-                // A fn the pass did not touch (async, or absent from this
-                // closure) keeps its ordinals.
                 None => (orig as usize, orig as usize + 1),
                 Some(p) => match p.new_block_span.get(orig as usize) {
                     Some(&(lo, hi)) => (lo, hi),
@@ -1056,8 +705,6 @@ mod tests {
         )
         .expect("footprint after");
 
-        // The same set of blocks must still be hot — the pass moved code,
-        // it did not reclassify it.
         let words_before: u64 = before.fns.values().map(|f| f.code.len() as u64).sum();
         let words_after: u64 = after.fns.values().map(|f| f.code.len() as u64).sum();
         let frameless = |p: &crate::codegen::CodegenProgram| -> u64 {
@@ -1065,10 +712,6 @@ mod tests {
         };
         let regained = frameless(&before).saturating_sub(frameless(&after));
 
-        // Which fns changed, and by how much — printed before anything is
-        // asserted, because the interesting failures of this test are
-        // *interactions* with other opts and a bare `left != right` hides
-        // them (decision 1944).
         for (key, bf) in &before.fns {
             let Some(af) = after.fns.get(key) else {
                 continue;
@@ -1087,25 +730,17 @@ mod tests {
             }
         }
 
-        // Decision 1753's oracle on a real build: the partition this pass
-        // reorders is exactly the partition Lane 2 keyed its ids over.
-        // Collected rather than asserted inline so the whole measurement
-        // prints before anything fails (decision 1944).
         let mut partition_mismatch: Vec<(String, usize, usize)> = Vec::new();
         for (key, plan) in &summary.plans {
             let recorded = spans_before.iter().filter(|s| &s.fn_key == key).count();
             if recorded == 0 {
-                continue; // the counter helper, which carries no spans
+                continue;
             }
             if plan.order.len() != recorded {
                 partition_mismatch.push((key.clone(), plan.order.len(), recorded));
             }
         }
 
-        // What it cost: the flat (all-hot) footprint is the static-text row
-        // decision 1617's veto is argued against, and the repair jumps are
-        // real words in it. Reported beside the win, never netted against
-        // it.
         let flat = |p: &crate::codegen::CodegenProgram| {
             cost::footprint::compute(
                 p,
@@ -1167,8 +802,6 @@ mod tests {
             );
         }
 
-        // The pinned facts. These are the item's claim; if a future change
-        // moves them the claim is re-argued, not silently updated.
         assert_eq!(budget_before.len(), budget_after.len());
         assert!(!budget_before.is_empty(), "boot-actors places one core");
         assert_eq!(
@@ -1191,32 +824,6 @@ mod tests {
              rescaled arithmetically. Do not update this constant without doing that; \
              a green test over stale prose is worse than a red one."
         );
-        // **Decision 1941 — an invariant that is genuinely gone, recorded
-        // rather than relaxed.** This assertion used to read
-        //
-        //     assert!(after.hot_text_bytes <= before.hot_text_bytes,
-        //             "packing the hot blocks must never grow the hot line set");
-        //
-        // and it is now **false**: 6080 → 6528 B, 95 → 102 fetched lines.
-        // The pass did not stop packing; the allocator started reacting to
-        // the packing. `regalloc::allocate` builds each temp's live
-        // interval as `[first point, last point]` in *emission* order and
-        // item I's `hint_admissible` (decision 1902) walks that whole
-        // interval to decide whether an argument/return register is free
-        // over it. Sinking a cold block that used a value stretches that
-        // value's interval across the entire function, the hint stops
-        // being admissible, the temp loses its home and goes back to the
-        // frame — and every word that costs is a *hot* word, because it is
-        // spill traffic in the hot blocks. Leave-one-out over
-        // `RELEASE_OPTS` attributes the whole effect to `OptId::RegAlloc`
-        // (decision 1942): with it off the reordered program is exactly
-        // `+repairs` words, with it on it is `+repairs + 207` under every
-        // other combination.
-        //
-        // So the pinned pair below is a *measurement of the interaction*,
-        // not a claim that the pass wins. The pass's honest verdict on
-        // `boot-actors` today is: it lowers the modelled density charge and
-        // raises the real hot-text footprint.
         assert_eq!(
             (
                 budget_before[0].hot_text_bytes,
@@ -1228,14 +835,6 @@ mod tests {
              order-dependent, so reordering blocks costs spill words. Do not restore \
              the old `<=` — re-measure and re-argue."
         );
-        // **plans/codegen-pareto-2.md item K3 (decision 1955).** This
-        // assertion used to read `charge == charge`, both zero: both sides
-        // are far inside the L1I, and the only thing the footprint term
-        // charged for was overflow — so the model could not see block order
-        // at all, which is decision 1750's "the forall gate scores this at
-        // zero, and here is why". The density term charges the slack
-        // between the fetched line set and the per-fn packing floor, and it
-        // does see the order:
         assert!(
             budget_after[0].charge < budget_before[0].charge,
             "packing the hot blocks must now be visible to the model: {} -> {}",
@@ -1260,11 +859,6 @@ mod tests {
              not a footprint metric and must not be read as one."
         );
 
-        // **The word budget, decomposed rather than asserted away.** This
-        // used to be `words_after == words_before + repairs + regained*4`
-        // and it no longer closes: the same interaction above adds spill
-        // words that are neither repairs nor prologue words. Pin all four
-        // quantities so the *shape* of the excess is visible when it moves.
         assert_eq!(
             (words_before, words_after, summary.repairs, regained),
             (1982, 2204, 15, 1),
@@ -1282,20 +876,6 @@ mod tests {
              release-minus-RegAlloc) and 207 with every other single opt removed."
         );
 
-        // **Decision 1948 — decision 1753's identity no longer holds for
-        // every fn, and that is a finding, not a test to loosen.** The
-        // reorder unit is the MWIR block; the Lane 2 id space is keyed over
-        // the *emitted* partition. Item J's `mwir_opt` runs **inside**
-        // `codegen`, after this pass has already planned, and its `Dce`
-        // deletes whole blocks from app methods — so for `Ledger.mark` and
-        // `Ledger.read_marks` this pass plans over a 2-block partition that
-        // is emitted as 1 block. Attribution: the list below is empty with
-        // `OptId::Dce` off and is exactly these two fns with it on.
-        //
-        // It is a *second*, independent reason not to wire the pass (the
-        // first is decision 1755's positional bridge): a class looked up at
-        // ordinal `k` no longer necessarily describes the run being moved.
-        // Pinned as an exact list so a third fn joining it is a failure.
         assert_eq!(
             partition_mismatch
                 .iter()
@@ -1308,18 +888,6 @@ mod tests {
         );
     }
 
-    /// **Decision 1942's attribution, as the control half of a
-    /// leave-one-out** the measurement unit above is the treatment half of.
-    ///
-    /// With `OptId::RegAlloc` removed and everything else in `RELEASE_OPTS`
-    /// left on, the reordered program is `words_before + repairs` words —
-    /// **exactly**, no excess and no frame regained. The 207-word excess
-    /// and the lost frame in the release measurement are therefore the
-    /// allocator's reaction to the reordering and nothing else's. The full
-    /// thirteen-way sweep was run once and is written up in
-    /// `plans/codegen-pareto-2-O.md`; only the one leave-one-out that
-    /// carries the whole effect is committed here, because the other twelve
-    /// cost seconds to re-prove a null.
     #[test]
     fn without_the_allocator_a_reordering_costs_exactly_its_repairs() {
         use crate::cost;
@@ -1362,23 +930,6 @@ mod tests {
         );
     }
 
-    /// **The park's own oracle: the pass is present and is not wired.**
-    ///
-    /// Two independent checks, because either alone is weak.
-    ///
-    /// 1. **Dynamic.** A normal release build of a real program never
-    ///    reaches [`relayout_program`] — counted, not argued. Then the
-    ///    parked entry point is driven with the *measured* classification
-    ///    that moves seven fns, and the normal build is repeated: it is
-    ///    byte-identical, word for word, to the one taken before. A parked
-    ///    pass that leaked into the compile path through a global would
-    ///    fail here.
-    /// 2. **Static.** No file in the crate calls the parked entry points
-    ///    except the entry point's own definition and this test module. A
-    ///    future session that wires it has to delete this assertion, which
-    ///    is the point: wiring re-keys the Lane 2 bridge (decision 1755)
-    ///    and diverges from the emitted partition (decision 1948), and both
-    ///    are decisions, not edits.
     #[test]
     fn the_parked_pass_is_not_on_the_compile_path() {
         use crate::cost;
@@ -1420,7 +971,6 @@ mod tests {
             "the normal build after it must still not reach the pass"
         );
 
-        // (2) the static half.
         let src = cost::repo_root().join("crates/wrela-compiler/src");
         let mut callers: Vec<String> = Vec::new();
         let mut stack = vec![src.clone()];
@@ -1460,20 +1010,6 @@ mod tests {
         );
     }
 
-    /// **The compositor measurement — decision 1946**, and the reason this
-    /// module is back in the tree.
-    ///
-    /// Item K deleted this pass partly on the argument that no image in the
-    /// tree has L1I headroom, so density can never matter. Item M's
-    /// `boot-tile-compositor` landed hours later and is the first program
-    /// here with real headroom. This unit asks the question that could not
-    /// be asked then, on the workload that did not exist then, and pins
-    /// the answer.
-    ///
-    /// Print the numbers with
-    /// `cargo test -p wrela-compiler --lib
-    /// blocklayout::tests::the_compositor_is_the_workload_that_could_re_ask
-    /// -- --nocapture`.
     #[test]
     fn the_compositor_is_the_workload_that_could_re_ask() {
         use crate::cost::{self, HotBlocks, SweepPoint};
@@ -1511,19 +1047,6 @@ mod tests {
             flat.push((words, budget[0].clone()));
         }
 
-        // **The answer, in the tree, is a null with a named cause.** The
-        // pass is the identity on this program, because it reorders on
-        // *measured* coldness and no block-grain sidecar is committed here.
-        //
-        // Item O ran `cargo xtask gen-lane2-freq boot-tile-compositor` once
-        // and measured the pass against the result (decision 1946): hot
-        // text 28 736 → 26 688 B, density charge 63 → 0, 16/32 fns moved,
-        // 88 cold blocks sunk, +244 words. That sidecar is **not**
-        // committed, because it does not resolve against a `RELEASE_OPTS`
-        // closure at all (decision 1947) and because committing it moves
-        // `cost-product-compositor`'s golden. So the tree's answer is the
-        // null below and the real number lives in the findings file — which
-        // is what the assertion's message is for.
         assert!(
             cost::sibling_block_freq_path(&input).is_none(),
             "a `lane2-freq.txt` appeared next to the compositor. That is the named \
@@ -1553,12 +1076,6 @@ mod tests {
             assert_eq!(&after.fns[key].code, &f.code, "fn `{key}`");
         }
 
-        // And the second half of the null, which no sidecar can fix: the
-        // column the ∀ gate reads is `HotBlocks::All`, where `slack_lines`
-        // is zero **by construction** (item K, decision 1955) — every block
-        // hot means each fn's fetched line count *is* its packing floor.
-        // So even a compositor sidecar would move the measured column only,
-        // and ranking this pass would still need a gate that reads it.
         let after_flat = cost::footprint::compute(
             &after,
             &table,
@@ -1570,10 +1087,6 @@ mod tests {
         assert_eq!(flat[1].1.slack_lines, 0);
         assert_eq!(flat[1].1.charge, after_flat[0].charge);
 
-        // The headroom that makes the question worth re-asking at all.
-        // Pinned rather than tracked, for the same reason
-        // `BEFORE_HOT_TEXT_BYTES` is: when it moves, decision 1946 is
-        // re-argued from the new number, not rescaled from the old one.
         assert_eq!(
             (
                 flat[0].1.hot_text_bytes,
@@ -1596,14 +1109,6 @@ mod tests {
         );
     }
 
-    /// A stale sidecar must **fail the build**, not lay out an image.
-    ///
-    /// Item A owns the three staleness directions; this is item D's own
-    /// obligation: the pass's pipeline entry point must never be reached
-    /// with a classification the checker rejected. Driven through the real
-    /// entry point with a real (deliberately shrunken) partition rather
-    /// than a fixture, so a future refactor that swallows the error fails
-    /// here.
     #[test]
     fn a_stale_sidecar_fails_the_build_rather_than_laying_out() {
         use crate::cost;
@@ -1615,16 +1120,12 @@ mod tests {
         let spans = crate::codegen::block_spans();
         crate::codegen::set_block_bridge(false);
 
-        // A fresh partition classifies.
         assert!(
             cost::layout_classes(Some(&input), &spans)
                 .expect("fresh")
                 .is_measured()
         );
 
-        // Now pretend a measured fn was recompiled into fewer blocks —
-        // exactly what a stale profile looks like. `copy_line_buf_range` is
-        // in both the sidecar and this closure (item A's table 2).
         let shrunk: Vec<_> = spans
             .iter()
             .filter(|s| !(s.fn_key == "copy_line_buf_range" && s.block_index >= 2))
@@ -1634,8 +1135,6 @@ mod tests {
         let err = cost::layout_classes(Some(&input), &shrunk).expect_err("stale must fail closed");
         assert!(err.contains("is stale"), "{err}");
 
-        // And an empty partition — the caller forgot bridge mode — is a
-        // failure too, never a silent "nothing to lay out".
         assert!(cost::layout_classes(Some(&input), &[]).is_err());
     }
 }

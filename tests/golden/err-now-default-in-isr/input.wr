@@ -1,10 +1,5 @@
 module examples.err_now_default_in_isr
 
-# plans/M9.md item K1: `now()` via a parameter default must not reach an
-# ISR. Direct `now()` in the handler is refused (err-now-in-isr); routing
-# through an omitted default was not scanned by `check_isr_effects`
-# because Call args store `None` for defaulted slots and the intrinsic
-# lives on `TypedParam::default`, not in either body.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

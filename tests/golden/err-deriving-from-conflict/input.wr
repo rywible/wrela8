@@ -1,7 +1,5 @@
 module examples.err_deriving_from_conflict
 
-# plans/M9.md item B3 decision 137: deriving(From) and an explicit `from`
-# on the same type conflict — 02 §7.5's closed list is not a merge.
 
 pub struct Src:
     n: u32

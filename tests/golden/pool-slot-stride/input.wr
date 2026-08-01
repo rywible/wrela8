@@ -1,45 +1,5 @@
 module examples.pool_slot_stride
 
-# plans/M7.md item I (the adversarial sweep). This case **accepts**, and
-# pins numbers that record a rule the compiler does not yet have, so that
-# plans/M7.md item E cannot derive a slot address without meeting them.
-#
-# THE FINDING, in the report this file produces:
-#
-#     Pool name=Control kind=dma payload=Odd slots=4 slot_bytes=9
-#          base=0x... size=36 align=8 coherency=coherent device=device#0
-#
-# `align=8` is the *pool base's* alignment, derived (correctly) from the
-# payload's widest scalar field. The *stride* between slots is
-# `slot_bytes`, with no round-up — 03-hardware.md §3's own "there is no
-# trailing padding and no alignment round-up: a `@layout` type is exactly
-# the bytes its fields cover" (item B's rule, and the right one for a
-# single wire/dma record). The two are consistent only when
-# `slot_bytes % align == 0`. Here it is 9 % 8, so:
-#
-#     slot 0 at base + 0   -> `Odd.sector` 8-byte aligned      OK
-#     slot 1 at base + 9   -> `Odd.sector` at (base + 9)       NOT aligned
-#     slot 2 at base + 18  -> ...                              NOT aligned
-#
-# `hardware.dma.pool-backing`'s own note said deriving the alignment from
-# the same rule item B enforces means "the two cannot disagree". That is
-# true of one instance at offset 0 and false of every later slot, because
-# nothing relates the *stride* to the alignment. Corrected there.
-#
-# NOT FIXED HERE, deliberately. Three answers are available — reject a
-# payload whose exact size its own alignment does not divide; pad the
-# stride up to the alignment and report stride separately from
-# `slot_bytes`; or keep the packed stride and require the payload's own
-# `@offset`s to tolerate it — and choosing is item E's call, because item
-# E is what turns a slot index into an address (`own[P] T`'s runtime
-# handle, 05-library.md §9's "create the initial handles"). Nothing
-# computes a slot address today, so this is latent, not live.
-#
-# `Tiny` is here so the case also pins the *adjacent-pool* boundary: a
-# 1-byte, 1-aligned pool placed immediately after a 36-byte one, with no
-# gap — `place_pools` rounds each pool to its own alignment and
-# `verify_pool_windows` proves the two windows do not overlap and both
-# lie inside `pooldata`.
 
 @layout(dma, endian=little)
 struct Odd:

@@ -1,13 +1,5 @@
 module examples.check_tests_mixed
 
-# Pins the non-`ok` report lines (plans/M3.md item E, decision 9/10): a
-# passing test, a failing one (an ordinary `assert`), a quota-exhausted
-# one, and (plans/M5.md item E: the runtime tier lifted the old fail-
-# closed placeholder here — this file used to pin "FAILED `@test(runtime)`
-# is not run yet", now pins a real boot of the one-test image instead) a
-# trivially passing `@test(runtime)` — all in one file, in declaration
-# order, no fail-fast across them, comptime lines first then the runtime
-# line then one merged summary (decision 1).
 
 pub fn double(n: u64) -> u64:
     return n * 2

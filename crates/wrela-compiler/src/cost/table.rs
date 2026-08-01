@@ -1,44 +1,12 @@
-//! The pinned cost table (`bench/a76-pi5.toml`, schema `version = 3`).
-//!
-//! Rank direction only — not host wall time. The documented A76 port map
-//! **is** the model as of plans/M20.md item A: real pipelines, real
-//! latency and throughput per instruction group, real cache and TLB
-//! geometry, every row sourced from the published record and carrying its
-//! provenance tier.
-//!
-//! Schema `version = 3` (plans/M20.md item D): `[profile]`, `[pipelines]`,
-//! `[latency.<group>]`, `[geometry]`, `[branch]`, `[align]`,
-//! `[crosscore]`, `[sweep.<dimension>]`. Every row carries `tier` and
-//! `source`. Fail closed in every direction — a half-migrated table, an
-//! unsourced row, a **pinned T5 row** (freeze 1629), a pinned value that is
-//! not its bracket's pessimistic end (decision 1609), or a `[crosscore]`
-//! term carrying a magnitude at all (decision 1602) each refuse to load
-//! rather than score. The `issue_width` rejection survives the bump from
-//! `version = 2`.
-//!
-//! The v2 rows (`[ports]` dual issue, `[mem]` hit/miss latencies) are gone,
-//! and so is item D's `[transitional]` quarantine: plans/M20.md item F
-//! deleted its three unsourced holdovers along with the reuse-window model
-//! that read them, so a table still carrying the section is **refused by
-//! name** — a quarantine that outlives its owning item is just an unsourced
-//! row again. The memory model reads `[geometry]` and `[sweep]` directly
-//! ([`super::mem`]), so there is no derived second spelling of the leaf
-//! latencies left to drift.
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use super::{CostRule, Fnv64, repo_root};
 
-/// Expected `version` field in `bench/a76-pi5.toml`.
 pub const EXPECTED_VERSION: u64 = 3;
 
-/// The one profile there will be (freeze 1621). Any other `[profile.name]`
-/// is refused: a second board profile is out of scope by mandate.
 pub const PROFILE_NAME: &str = "a76-pi5";
 
-/// Sections a `version < 3` table may not carry (a half-migrated table
-/// fails by name rather than half-parsing).
 const V3_SECTIONS: &[&str] = &[
     "profile",
     "pipelines",
@@ -50,11 +18,6 @@ const V3_SECTIONS: &[&str] = &[
     "sweep",
 ];
 
-/// Sections that must be gone at `version = 3`: the v2 rows, and item D's
-/// `[transitional]` quarantine, which plans/M20.md item F deleted together
-/// with the reuse-window model that was its only consumer. A quarantine
-/// that outlives its owning item is an unsourced row again, so the section
-/// is refused by name rather than tolerated.
 const RETIRED_SECTIONS: &[(&str, &str)] = &[
     (
         "ports",
@@ -71,7 +34,6 @@ const RETIRED_SECTIONS: &[(&str, &str)] = &[
     ),
 ];
 
-/// Top-level keys `version = 3` allows.
 const TOP_KEYS: &[&str] = &[
     "version",
     "profile",
@@ -83,8 +45,6 @@ const TOP_KEYS: &[&str] = &[
     "crosscore",
     "sweep",
 ];
-
-// --- required row names, per section ---------------------------------------
 
 const PROFILE_ROWS: &[&str] = &["name", "ghz"];
 
@@ -142,8 +102,6 @@ const BRANCH_ROWS: &[&str] = &[
 
 const ALIGN_ROWS: &[&str] = &["load_line_bytes", "store_boundary_bytes"];
 
-// --- allowed keys, per row shape -------------------------------------------
-
 const VALUE_ROW_KEYS: &[&str] = &[
     "value",
     "tier",
@@ -195,26 +153,16 @@ const SWEEP_ROW_KEYS: &[&str] = &[
     "le_physics",
 ];
 
-/// Keys a `[crosscore]` term may **never** carry: a magnitude of any kind.
-/// Rows 17-19 of the dimension inventory are T5 by absence, so decision
-/// 1602 forbids pinning them at all — this list is that rule's teeth.
 const CROSSCORE_FORBIDDEN_KEYS: &[&str] = &[
     "value", "lat", "acc_lat", "cost", "cycles", "penalty", "pinned", "lo", "hi",
 ];
 
-/// Provenance tier. The tier is data, not decoration: it decides whether a
-/// value may be pinned at all (decision 1602 / freeze 1629).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Tier {
-    /// Vendor, this core, normative (Cortex-A76 SOG).
     T1,
-    /// Vendor, this core or cluster, descriptive (Core TRM / DSU TRM).
     T2,
-    /// Third-party measured **on this board** (tinymembench, Pi 5).
     T3,
-    /// Third-party measured / derived, generic A76.
     T4,
-    /// Unresolved, conflicting, or unpriced by any source. Never pinned.
     T5,
 }
 
@@ -243,7 +191,6 @@ impl Tier {
     pub const ALL: &'static [Tier] = &[Tier::T1, Tier::T2, Tier::T3, Tier::T4, Tier::T5];
 }
 
-/// Which end of a bracket over-costs. Asserted against `pinned`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum End {
     Lo,
@@ -259,14 +206,9 @@ impl End {
     }
 }
 
-/// A pinned scalar row: `value` plus its provenance, and (when the record
-/// gives a bracket rather than a number) the sweep dimension it pins.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
-    /// Integer payload. String-valued rows keep their text in `text`.
     pub value: u64,
-    /// Text payload for rows whose value is not a number (`profile.name`,
-    /// the `[pipelines]` port map).
     pub text: Option<String>,
     pub tier: Tier,
     pub source: String,
@@ -275,38 +217,26 @@ pub struct Row {
     pub note: Option<String>,
 }
 
-/// One SOG instruction-group latency row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LatRow {
     pub lat: u64,
     pub acc_lat: Option<u64>,
-    /// Throughput is the rational `thru_num / thru_den` — 3-per-cycle is
-    /// 3/1, one-per-three-cycles is 1/3. A single reciprocal integer
-    /// cannot express both directions.
     pub thru_num: u64,
     pub thru_den: u64,
     pub ports: String,
-    /// Extra cycles this uop holds pipe M against any other M uop.
     pub m_pipe_stall: u64,
-    /// Blocks subsequent uops of its own kind until complete (divide).
     pub m_pipe_block: bool,
     pub tier: Tier,
     pub source: String,
     pub bracket: Option<(u64, u64)>,
-    /// The dimension this row's own `lat` is swept over.
     pub sweep: Option<String>,
-    /// A swept residual **added** to this row (the callee-side cost `BL`
-    /// itself does not include).
     pub sweep_add: Option<String>,
     pub note: Option<String>,
 }
 
-/// A declared cross-core term. Carries no magnitude — by construction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CrossRow {
-    /// `CostRule` key this term prices, when it prices one.
     pub rule: Option<String>,
-    /// `[latency]` row this term is an increment **on**.
     pub base: Option<String>,
     pub sweep: String,
     pub tier: Tier,
@@ -315,34 +245,14 @@ pub struct CrossRow {
     pub note: Option<String>,
 }
 
-/// A **joint constraint** on the residual box: `this <= minuend` or
-/// `this <= minuend - subtrahend`, where `minuend` and `subtrahend` are
-/// other sweep dimensions (plans/codegen-pareto-2.md item K, decision
-/// 1950).
-///
-/// The box is a product of independent brackets. Two brackets that measure
-/// **correlated physical quantities** therefore admit corners no silicon
-/// can be at — and because the ∀ gate treats every corner as equally
-/// admissible, one impossible corner is enough to veto a correct
-/// optimization. A constraint is the statement of the correlation, in the
-/// same file and under the same relock discipline as the brackets it
-/// relates.
-///
-/// Deliberately just this shape. It is what the two instances in the record
-/// need (`w_form <= x_form`; `snoop <= dram - l3`), and a general
-/// expression language here would be a place to hide an assumption.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SweepBound {
     pub minuend: String,
     pub subtrahend: Option<String>,
-    /// Why the inequality is a fact about the machine and not a
-    /// convenience. Required: removing corners can only ever make a
-    /// candidate easier to land, so the physics has to be written down.
     pub physics: String,
 }
 
 impl SweepBound {
-    /// Canonical `le` text, as written in the profile.
     pub fn expr(&self) -> String {
         match &self.subtrahend {
             Some(s) => format!("{} - {s}", self.minuend),
@@ -350,44 +260,29 @@ impl SweepBound {
         }
     }
 
-    /// The bound's value given the other dimensions' values at a point.
-    /// Saturating: a subtraction that would go negative bounds `this` at 0,
-    /// which is the tightest honest reading and never widens the box.
     pub fn bound_at(&self, minuend: u64, subtrahend: u64) -> u64 {
         minuend.saturating_sub(subtrahend)
     }
 }
 
-/// One residual-uncertainty dimension.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SweepRow {
     pub lo: u64,
     pub hi: u64,
     pub pinned: u64,
-    /// The end that over-costs; `pinned` must equal it (decision 1609).
     pub pessimistic: End,
-    /// A term whose *removal* is the win (freeze 1633). Must pin `lo` and
-    /// must state its ambiguity.
     pub removal_sensitive: bool,
     pub ambiguity: Option<String>,
-    /// Joint constraint on this dimension (decision 1950). `None` — the
-    /// ordinary case — is an independent bracket.
     pub le: Option<SweepBound>,
     pub tier: Tier,
     pub source: String,
     pub note: Option<String>,
 }
 
-/// Parsed A76 cost profile (schema version 3).
-///
-/// Not `Eq`: `ghz` is an `f64` from the profile (decision 1601).
 #[derive(Debug, Clone, PartialEq)]
 pub struct CostTable {
     pub version: u64,
     profile_name: String,
-    /// Held as text so the dump's `ghz=` stays byte-identical through
-    /// `fmt_compact` and so a non-finite / non-positive value fails closed
-    /// through `ghz::parse_ghz`.
     ghz_text: String,
     ghz: f64,
     profile_tier_name: Tier,
@@ -399,23 +294,12 @@ pub struct CostTable {
     align: BTreeMap<String, Row>,
     crosscore: BTreeMap<String, CrossRow>,
     sweep: BTreeMap<String, SweepRow>,
-    /// Derived: latency in proxy-cycles for every `CostRule` in `ALL`.
     latencies: BTreeMap<&'static str, u64>,
-    /// Derived: the swept increment a `[crosscore]` term adds **above** its
-    /// `base` latency row, for the ordered accesses (`LDAR` / `STLR`) that
-    /// take the same memory path as their plain twins.
     crosscore_extra: BTreeMap<&'static str, u64>,
-    /// Derived: the `[sweep]` dimension name behind each `crosscore_extra`
-    /// entry, so the scorer can read the **swept** increment through a
-    /// `SweepPoint` instead of only the pinned scalar (plans/M20.md item E;
-    /// item G replaces the flat add with the placement-classified charge).
     crosscore_extra_dim: BTreeMap<&'static str, String>,
 }
 
 impl CostTable {
-    /// Latency for `rule`. Panics only if the table was built without that
-    /// key — `parse` / `load_*` always require every `CostRule::ALL` key to
-    /// be covered by `[latency]` or `[crosscore]`.
     pub fn latency(&self, rule: CostRule) -> u64 {
         *self
             .latencies
@@ -423,9 +307,6 @@ impl CostTable {
             .unwrap_or_else(|| panic!("cost table missing rule {}", rule.as_str()))
     }
 
-    /// Swept increment a `[crosscore]` term adds above its `base` latency
-    /// row; 0 for a rule with no such term. Item G replaces the flat
-    /// addition with the placement-classified charge.
     pub fn crosscore_extra(&self, rule: CostRule) -> u64 {
         self.crosscore_extra
             .get(rule.as_str())
@@ -433,10 +314,6 @@ impl CostTable {
             .unwrap_or(0)
     }
 
-    /// `[sweep]` dimension behind `crosscore_extra(rule)`, or `None` for a
-    /// rule with no cross-core increment. The scorer reads the point's
-    /// value through this so item J's ∀ sweep actually moves the ordered
-    /// accesses instead of only their pinned end.
     pub fn crosscore_extra_dim(&self, rule: CostRule) -> Option<&str> {
         self.crosscore_extra_dim
             .get(rule.as_str())
@@ -447,13 +324,10 @@ impl CostTable {
         &self.profile_name
     }
 
-    /// Clock from the profile (decision 1601). `ghz::DEFAULT_GHZ` is a
-    /// fallback for callers with no profile loaded, not a second source.
     pub fn ghz(&self) -> f64 {
         self.ghz
     }
 
-    /// Pipeline count (SOG §2.1's eight).
     pub fn pipelines(&self) -> u64 {
         self.pipelines["count"].value
     }
@@ -470,36 +344,21 @@ impl CostTable {
         self.pipelines["reorder_window"].value
     }
 
-    /// One `[pipelines]` row — the dispatch caps and the `port_*` pipe
-    /// ranges the scoreboard's port map is built from (plans/M20.md item
-    /// E). Same shape as `geometry` / `branch_row` / `align`.
     pub fn pipeline_row(&self, key: &str) -> Option<&Row> {
         self.pipelines.get(key)
     }
 
-    /// Integer-ALU pipes — **derived** from `[pipelines] port_i` (pipes
-    /// 2-4), never restated as its own row.
     pub fn alu_ports(&self) -> u64 {
         self.pipelines["port_i"].value
     }
 
-    /// Load/store AGUs — derived from `[pipelines] port_l` (pipes 5-6).
     pub fn mem_ports(&self) -> u64 {
         self.pipelines["port_l"].value
     }
 
-    /// Global issue cap — dispatch uops/cycle.
     pub fn max_issue_per_cycle(&self) -> u64 {
         self.dispatch_uops()
     }
-
-    // `branch_penalty()` — the pre-M20 accessor that returned a constant 0
-    // "only until item H" — is **deleted** by item H rather than set to a
-    // number, exactly as its own note promised. The mispredict charge is now
-    // bias-derived (`cost::branch`), reads its magnitude from `[sweep]
-    // mispredict_penalty` through a `SweepPoint`, and cannot be spelled as a
-    // single table constant at all: an unconditional per-branch number is
-    // the thing the zero existed to refuse.
 
     pub fn geometry(&self, key: &str) -> Option<&Row> {
         self.geometry.get(key)
@@ -525,43 +384,22 @@ impl CostTable {
         self.sweep.get(key)
     }
 
-    /// Every sweep dimension name, sorted.
     pub fn sweep_dimensions(&self) -> Vec<&str> {
         self.sweep.keys().map(String::as_str).collect()
     }
 
-    /// Sweep-box cardinality at bracket endpoints (2 points per dimension)
-    /// — the number item J's ∀ sweep visits.
     pub fn sweep_cardinality(&self) -> u128 {
         1u128 << self.sweep.len().min(127)
     }
 
-    /// Stable hex digest of canonical table content: every row of every
-    /// section as sorted `path=value` lines. FNV-1a 64-bit; not
-    /// cryptographic.
     pub fn table_digest(&self) -> String {
         digest_lines(&self.content_lines())
     }
 
-    /// Stable hex digest over each row's **provenance**: its tier and the
-    /// prose that justifies it — `source`, `mechanism`, `note`,
-    /// `ambiguity` (freeze 1629).
-    ///
-    /// A tier change moves this digest even when no value moves, so a
-    /// table's sourcing is part of its identity. The prose is in here for
-    /// the same reason and because the header's relock discipline promises
-    /// it: a row's `source` is the whole of what makes a pinned number
-    /// admissible under decision 1602, so silently rewriting it — pointing
-    /// a value at a different citation, or letting a `mechanism` census
-    /// drift away from the code it describes — must move a digest a
-    /// reviewer can see. Values alone stay in [`Self::table_digest`], so
-    /// the two remain separable.
     pub fn provenance_digest(&self) -> String {
         digest_lines(&self.tier_lines())
     }
 
-    /// Every row's tier, in `tier_lines` order — the summary's input, and
-    /// read from the rows rather than parsed back out of a digest line.
     fn tiers(&self) -> Vec<Tier> {
         let mut t = vec![self.profile_tier_name, self.profile_tier_ghz];
         for rows in [&self.pipelines, &self.geometry, &self.branch, &self.align] {
@@ -573,7 +411,6 @@ impl CostTable {
         t
     }
 
-    /// Human-readable tier mix for the dump header.
     pub fn provenance_summary(&self) -> String {
         let tiers = self.tiers();
         let mut counts: BTreeMap<&'static str, usize> = BTreeMap::new();
@@ -655,9 +492,6 @@ impl CostTable {
                 s.pessimistic.as_str(),
                 u8::from(s.removal_sensitive),
             ));
-            // A joint constraint is *box shape*, not prose: it decides
-            // which points the ∀ gate visits, so it moves the value
-            // digest (decision 1950).
             if let Some(b) = &s.le {
                 l.push(format!("sweep.{name}.le={}", b.expr()));
             }
@@ -666,14 +500,10 @@ impl CostTable {
         l
     }
 
-    /// One line per row: tier plus the prose that justifies it. See
-    /// [`Self::provenance_digest`] for why the prose is in here.
     fn tier_lines(&self) -> Vec<String> {
         let mut l: Vec<String> = Vec::new();
         l.push(format!("profile.name={}", self.profile_tier_name.as_str()));
         l.push(format!("profile.ghz={}", self.profile_tier_ghz.as_str()));
-        // `\u{1}` cannot occur in TOML string content, so no combination of
-        // prose fields can forge another row's line.
         let opt = |s: &Option<String>| s.clone().unwrap_or_default();
         for (section, rows) in [
             ("pipelines", &self.pipelines),
@@ -733,9 +563,6 @@ fn digest_lines(lines: &[String]) -> String {
     format!("{:016x}", h.finish())
 }
 
-/// Workspace-relative path to the committed profile, or `WRELA_COST_TABLE`
-/// when set. Resolves repo root from `CARGO_MANIFEST_DIR` (this crate lives
-/// at `crates/wrela-compiler`).
 pub fn default_table_path() -> PathBuf {
     if let Ok(p) = std::env::var("WRELA_COST_TABLE") {
         return PathBuf::from(p);
@@ -743,16 +570,10 @@ pub fn default_table_path() -> PathBuf {
     repo_root().join("bench/a76-pi5.toml")
 }
 
-/// Load and parse the default table path. Fail closed if missing/malformed.
 pub fn load_default() -> Result<CostTable, String> {
     load_from_path(&default_table_path())
 }
 
-/// Clock from the committed profile, falling back to `DEFAULT_GHZ` when no
-/// profile can be loaded (decision 1601: the constant is a fallback, not a
-/// second source of truth). Every path that actually *scores* loads the
-/// table itself and fails closed there, so this fallback only ever affects
-/// the displayed clock ahead of that error.
 pub fn profile_ghz() -> f64 {
     match load_default() {
         Ok(t) => t.ghz(),
@@ -760,7 +581,6 @@ pub fn profile_ghz() -> f64 {
     }
 }
 
-/// Load and parse a cost table from `path`.
 pub fn load_from_path(path: &Path) -> Result<CostTable, String> {
     let text = std::fs::read_to_string(path).map_err(|e| {
         format!(
@@ -772,7 +592,6 @@ pub fn load_from_path(path: &Path) -> Result<CostTable, String> {
     parse(&text).map_err(|e| format!("cost table {}: {e}", path.display()))
 }
 
-/// Parse table TOML text (schema version 3).
 pub fn parse(text: &str) -> Result<CostTable, String> {
     let value: toml::Value = text.parse().map_err(|e| format!("parse failed: {e}"))?;
 
@@ -832,8 +651,6 @@ pub fn parse(text: &str) -> Result<CostTable, String> {
         }
     }
 
-    // Sweeps first: every bracketed row names one, so they must exist
-    // before anything can be validated against them.
     let sweep = parse_sweeps(section(root, "sweep")?)?;
 
     let profile_tbl = section(root, "profile")?;
@@ -871,8 +688,6 @@ pub fn parse(text: &str) -> Result<CostTable, String> {
     let branch = parse_value_section(root, "branch", BRANCH_ROWS, &sweep)?;
     let align = parse_value_section(root, "align", ALIGN_ROWS, &sweep)?;
 
-    // Port map: `port_i` = "2-4" is three pipes, `port_l` = "5-6" is two.
-    // The derived accessors count them rather than restating the count.
     let pipe_count = pipelines["count"].value;
     for key in [
         "port_i", "port_m", "port_l", "port_d", "port_b", "port_v0", "port_v1",
@@ -942,10 +757,6 @@ pub fn parse(text: &str) -> Result<CostTable, String> {
                 .to_string(),
         );
     }
-    // plans/M20.md item F: `cost::mem` resolves **one** 64 B line identity
-    // per `MemRef` and indexes every level's sets from it, so a profile
-    // whose levels disagree on the line size describes a hierarchy this
-    // model cannot express. Refuse it rather than pick a level's size.
     for key in ["l1i_line_bytes", "l2_line_bytes", "l3_line_bytes"] {
         if geometry[key].value != geometry["l1d_line_bytes"].value {
             return Err(format!(
@@ -973,10 +784,6 @@ pub fn parse(text: &str) -> Result<CostTable, String> {
     let latency = parse_latency(section(root, "latency")?, &sweep)?;
     let crosscore = parse_crosscore(section(root, "crosscore")?, &latency, &sweep)?;
 
-    // Every CostRule must be priced exactly once — by a `[latency]` group
-    // or by a `[crosscore]` term naming it. Neither is optional: an
-    // unpriced rule would score as a panic, and a rule priced twice would
-    // make the table's identity ambiguous.
     let mut latencies: BTreeMap<&'static str, u64> = BTreeMap::new();
     let mut crosscore_extra: BTreeMap<&'static str, u64> = BTreeMap::new();
     let mut crosscore_extra_dim: BTreeMap<&'static str, String> = BTreeMap::new();
@@ -1045,8 +852,6 @@ pub fn parse(text: &str) -> Result<CostTable, String> {
         crosscore_extra_dim,
     })
 }
-
-// --- section helpers -------------------------------------------------------
 
 type Tbl = toml::map::Map<String, toml::Value>;
 
@@ -1128,9 +933,6 @@ fn req_tier(path: &str, tbl: &Tbl) -> Result<Tier, String> {
     Tier::from_str(&s).ok_or_else(|| format!("{path}.tier `{s}`: expected one of T1..T5"))
 }
 
-/// Freeze 1629: a T5 value may never be pinned. It lives in a
-/// `[sweep.<dimension>]` row or nowhere — plans/M20.md item F deleted the
-/// one transitional exception there ever was.
 fn reject_pinned_t5(section: &str, name: &str, tier: Tier) -> Result<(), String> {
     if tier == Tier::T5 {
         Err(format!(
@@ -1142,8 +944,6 @@ fn reject_pinned_t5(section: &str, name: &str, tier: Tier) -> Result<(), String>
     }
 }
 
-/// `"4"` -> `(4, 4)`; `"2-4"` -> `(2, 4)`. The scoreboard's port map reads
-/// the same ranges (plans/M20.md item E) rather than restating them.
 pub(crate) fn pipe_range(spec: &str) -> Option<(u64, u64)> {
     let (lo, hi) = match spec.split_once('-') {
         Some((a, b)) => (a.trim().parse::<u64>().ok()?, b.trim().parse::<u64>().ok()?),
@@ -1158,9 +958,6 @@ pub(crate) fn pipe_range(spec: &str) -> Option<(u64, u64)> {
     Some((lo, hi))
 }
 
-/// A `value` row: integer or pipe-range string. A string-valued row's
-/// `value` field is the **count** of pipes it names, which is what the
-/// derived port accessors read.
 fn value_row(
     section: &str,
     name: &str,
@@ -1182,8 +979,6 @@ fn value_row(
         toml::Value::String(s) => {
             let count = match pipe_range(s) {
                 Some((lo, hi)) => hi - lo + 1,
-                // Not a pipe range (`profile.name`, `profile.ghz`): the
-                // text is the payload and there is no numeric value.
                 None => 0,
             };
             (count, Some(s.clone()))
@@ -1228,10 +1023,6 @@ fn bracket_of(path: &str, tbl: &Tbl) -> Result<Option<(u64, u64)>, String> {
     }
 }
 
-/// Decision 1604 / 1609: a bracketed row must name its sweep dimension,
-/// the bracket must be that dimension's, and the pinned value must be the
-/// dimension's pinned point (which the sweep row itself already asserts is
-/// the pessimistic end).
 fn check_bracket(
     path: &str,
     value: u64,
@@ -1376,8 +1167,6 @@ fn parse_crosscore(
         let row = raw
             .as_table()
             .ok_or_else(|| format!("[{path}] must be a sub-table (term)"))?;
-        // Decision 1602's teeth: these terms are T5 by absence, so they
-        // cannot carry a magnitude at all — only a sweep dimension.
         for forbidden in CROSSCORE_FORBIDDEN_KEYS {
             if row.contains_key(*forbidden) {
                 return Err(format!(
@@ -1513,8 +1302,6 @@ fn parse_sweeps(tbl: &Tbl) -> Result<BTreeMap<String, SweepRow>, String> {
     Ok(out)
 }
 
-/// `le = "<dim>"` or `le = "<dim> - <dim>"`, plus its required
-/// `le_physics` justification (decision 1950).
 fn parse_sweep_bound(path: &str, row: &Tbl) -> Result<Option<SweepBound>, String> {
     let Some(expr) = opt_str(path, row, "le")? else {
         if opt_str(path, row, "le_physics")?.is_some() {
@@ -1548,19 +1335,11 @@ fn parse_sweep_bound(path: &str, row: &Tbl) -> Result<Option<SweepBound>, String
     }))
 }
 
-/// Every joint constraint must name real dimensions, must not be
-/// self-referential, must leave the box non-empty, must be satisfied at
-/// the pinned point, and must actually **cut** something (decision 1950).
-///
-/// The last two are the ones that keep this from becoming a knob. A
-/// constraint the pinned point violates would mean the committed profile
-/// pins a physically impossible model; a constraint no corner violates is
-/// decoration that a later bracket edit would silently turn load-bearing.
 fn check_sweep_bounds(sweep: &BTreeMap<String, SweepRow>) -> Result<(), String> {
     for (name, row) in sweep {
         let Some(b) = &row.le else { continue };
         let path = format!("sweep.{name}");
-        let mut ends: Vec<(u64, u64)> = Vec::new(); // (lo, hi) of each named dim
+        let mut ends: Vec<(u64, u64)> = Vec::new();
         for dim in [Some(&b.minuend), b.subtrahend.as_ref()]
             .into_iter()
             .flatten()
@@ -1586,8 +1365,6 @@ fn check_sweep_bounds(sweep: &BTreeMap<String, SweepRow>) -> Result<(), String> 
         }
         let (m_lo, m_hi) = ends[0];
         let (s_lo, s_hi) = ends.get(1).copied().unwrap_or((0, 0));
-        // Non-empty: the loosest bound the box can offer must still admit
-        // this dimension's own low end.
         if row.lo > b.bound_at(m_hi, s_lo) {
             return Err(format!(
                 "{path}.le `{}`: unsatisfiable — {name} >= {} but the bound is at most {} \
@@ -1597,8 +1374,6 @@ fn check_sweep_bounds(sweep: &BTreeMap<String, SweepRow>) -> Result<(), String> 
                 b.bound_at(m_hi, s_lo)
             ));
         }
-        // Satisfied at the pinned point: the model's own committed point
-        // may not be a point the machine cannot be at.
         let m_pin = sweep[&b.minuend].pinned;
         let s_pin = b.subtrahend.as_ref().map(|d| sweep[d].pinned).unwrap_or(0);
         if row.pinned > b.bound_at(m_pin, s_pin) {
@@ -1610,8 +1385,6 @@ fn check_sweep_bounds(sweep: &BTreeMap<String, SweepRow>) -> Result<(), String> 
                 b.bound_at(m_pin, s_pin)
             ));
         }
-        // Non-vacuous: some corner of the *unconstrained* product box must
-        // violate it, or the row constrains nothing.
         if row.hi <= b.bound_at(m_lo, s_hi) {
             return Err(format!(
                 "{path}.le `{}`: vacuous — no corner of the box violates it, so it is a \
@@ -1627,16 +1400,11 @@ fn check_sweep_bounds(sweep: &BTreeMap<String, SweepRow>) -> Result<(), String> 
 mod tests {
     use super::*;
 
-    /// The fixture is the **committed profile itself**, mutated per case.
-    /// A hand-written miniature would let the real table drift out from
-    /// under every fail-closed direction below (CLAUDE.md verification rule
-    /// 1: an oracle that never touches the new behavior is not an oracle).
     fn committed_text() -> String {
         std::fs::read_to_string(repo_root().join("bench/a76-pi5.toml"))
             .expect("read bench/a76-pi5.toml")
     }
 
-    /// Drop every `[section.*]` block, leaving the section absent.
     fn without_section(text: &str, section: &str) -> String {
         let head = format!("[{section}.");
         let mut out = String::new();
@@ -1654,7 +1422,6 @@ mod tests {
         out
     }
 
-    /// Drop one row block by its exact header.
     fn without_block(text: &str, header: &str) -> String {
         let mut out = String::new();
         let mut dropping = false;
@@ -1674,7 +1441,6 @@ mod tests {
         out
     }
 
-    /// Replace one exact line inside one row block.
     fn edit_block(text: &str, header: &str, from: &str, to: &str) -> String {
         let mut out = String::new();
         let mut inside = false;
@@ -1697,7 +1463,6 @@ mod tests {
         out
     }
 
-    /// Append a line to one row block.
     fn add_to_block(text: &str, header: &str, line: &str) -> String {
         let mut out = String::new();
         let mut done = false;
@@ -1726,8 +1491,6 @@ mod tests {
         assert!(e.contains(needle), "error should name `{needle}`, got: {e}");
     }
 
-    // --- round trip ---------------------------------------------------------
-
     #[test]
     fn parse_and_digest_stable() {
         let text = committed_text();
@@ -1738,7 +1501,6 @@ mod tests {
         assert_eq!(a.profile_name(), PROFILE_NAME);
         assert_eq!(a.ghz(), 2.4);
 
-        // [pipelines] and the accessors derived from it — never restated.
         assert_eq!(a.pipelines(), 8);
         assert_eq!(a.dispatch_mops(), 4);
         assert_eq!(a.dispatch_uops(), 8);
@@ -1746,13 +1508,9 @@ mod tests {
         assert_eq!(a.alu_ports(), 3, "port_i = pipes 2-4");
         assert_eq!(a.mem_ports(), 2, "port_l = pipes 5-6");
         assert_eq!(a.max_issue_per_cycle(), 8);
-        // `branch_penalty()` is gone (item H): the mispredict charge is
-        // bias-derived and swept, so the pinned row is a bracket end rather
-        // than a scoreboard addend.
         assert_eq!(a.branch_row("mispredict_penalty").expect("row").value, 14);
         assert_eq!(a.sweep("mispredict_penalty").expect("row").lo, 11);
 
-        // T1 latency rows.
         assert_eq!(a.latency(CostRule::Alu), 1);
         assert_eq!(a.latency(CostRule::Load), 4, "L1D-hit path only");
         assert_eq!(a.latency(CostRule::Store), 1, "to the store buffer");
@@ -1767,8 +1525,6 @@ mod tests {
         assert_eq!(a.latency(CostRule::Udiv), 20);
         assert_eq!(a.latency(CostRule::Adrp), 1);
 
-        // The crosscore rules are priced by their sweep dimension's pinned
-        // point, never by a pinned latency row.
         assert_eq!(a.latency(CostRule::Barrier), 1);
         assert_eq!(a.latency(CostRule::System), 1);
         assert_eq!(a.latency(CostRule::LoadAcquire), 4, "load base + 0");
@@ -1782,22 +1538,16 @@ mod tests {
             "system has no pinned row"
         );
 
-        // M-pipe behaviour item E implements.
         assert_eq!(a.latency_row("mul").unwrap().m_pipe_stall, 2);
         assert_eq!(a.latency_row("mul_high").unwrap().m_pipe_stall, 3);
         assert!(a.latency_row("sdiv").unwrap().m_pipe_block);
         assert!(!a.latency_row("alu").unwrap().m_pipe_block);
-        // Fractional throughput, honestly: 3-per-cycle and 1-per-3-cycles.
         let alu = a.latency_row("alu").unwrap();
         assert_eq!((alu.thru_num, alu.thru_den), (3, 1));
         let mul = a.latency_row("mul").unwrap();
         assert_eq!((mul.thru_num, mul.thru_den), (1, 3));
-        // The store's address/data split is in the port field for item E.
         assert_eq!(a.latency_row("store").unwrap().ports, "L,D");
 
-        // [geometry] — read directly by `cost::mem` / `cost::footprint`.
-        // Item F deleted the derived `MemCosts` mirror of these rows: one
-        // spelling of the leaf latencies, so there is nothing to drift.
         assert_eq!(a.geometry("l1d_bytes").unwrap().value, 65536);
         assert_eq!(a.geometry("l1d_ways").unwrap().value, 4);
         assert_eq!(a.geometry("l2_bytes").unwrap().value, 524288);
@@ -1812,13 +1562,11 @@ mod tests {
         assert_eq!(a.geometry("lat_dram").unwrap().value, 347);
         assert_eq!(a.latency_row("store").unwrap().lat, 1, "to the buffer");
 
-        // [branch] / [align].
         assert_eq!(a.branch_row("mispredict_penalty").unwrap().value, 14);
         assert_eq!(a.branch_row("max_branches_per_32b").unwrap().value, 4);
         assert_eq!(a.align("load_line_bytes").unwrap().value, 64);
         assert_eq!(a.align("store_boundary_bytes").unwrap().value, 16);
 
-        // Digests.
         assert_eq!(a.table_digest(), b.table_digest());
         assert_eq!(a.provenance_digest(), b.provenance_digest());
         assert_eq!(a.table_digest().len(), 16);
@@ -1837,9 +1585,6 @@ mod tests {
         assert!(summary.contains("rows="), "got: {summary}");
     }
 
-    /// Every row carries a non-empty source; every tier parses. The parser
-    /// already enforces this, so this unit pins that it keeps doing so
-    /// across the whole committed file rather than one sampled row.
     #[test]
     fn every_committed_row_carries_a_tier_and_a_source() {
         let t = parse(&committed_text()).expect("parse");
@@ -1872,14 +1617,12 @@ mod tests {
         assert!(rows > 60, "expected a full profile, counted {rows} rows");
     }
 
-    /// The number item J needs: 2 points per dimension over the box.
     #[test]
     fn sweep_box_cardinality_is_endpoints_per_dimension() {
         let t = parse(&committed_text()).expect("parse");
         let dims = t.sweep_dimensions();
         assert_eq!(dims.len(), 17, "sweep box dimensions: {dims:?}");
         assert_eq!(t.sweep_cardinality(), 131_072);
-        // Decision 1604 names these explicitly; each must be present.
         for named in [
             "l2_latency",
             "l3_latency",
@@ -1901,8 +1644,6 @@ mod tests {
         }
     }
 
-    /// A tier change moves the provenance digest and **not** the table
-    /// digest: sourcing is part of the table's identity on its own.
     #[test]
     fn provenance_digest_moves_when_only_a_tier_moves() {
         let base = parse(&committed_text()).expect("parse");
@@ -1921,26 +1662,16 @@ mod tests {
         );
     }
 
-    /// **Rewriting a row's justification moves the provenance digest.**
-    /// The header's relock discipline promises that an edit here is visible
-    /// in a digest a reviewer compares; a row's `source` is the whole of
-    /// what makes its number admissible under decision 1602, so pointing a
-    /// value at a different citation — or letting a `mechanism` census
-    /// drift away from the code it describes — cannot be a silent edit.
-    /// The values did not move, so `table_digest` must not.
     #[test]
     fn provenance_digest_moves_when_only_a_justification_moves() {
         let text = committed_text();
         let base = parse(&text).expect("parse committed");
         for (needle, replacement) in [
-            // `[latency.branch].source`
             (
                 "SOG §3.3 branch immed / branch register / compare and branch",
                 "SOG §3.3 — reworded, same number",
             ),
-            // `[crosscore.snoop].mechanism`
             ("DSU TRM 100453: a load", "DSU TRM 100453 (rev B): a load"),
-            // `[sweep.call_overhead].ambiguity`
             ("deleting a call is inlining and", "inlining, and"),
         ] {
             assert!(text.contains(needle), "fixture text drifted: {needle}");
@@ -1960,7 +1691,6 @@ mod tests {
 
     #[test]
     fn profile_ghz_reads_the_committed_profile() {
-        // decision 1601: the constant is a fallback, not a second source.
         assert_eq!(profile_ghz(), parse(&committed_text()).unwrap().ghz());
     }
 
@@ -1983,8 +1713,6 @@ mod tests {
         assert_eq!(pipe_range("2.4"), None);
     }
 
-    // --- fail closed: schema shape -----------------------------------------
-
     #[test]
     fn reject_issue_width() {
         assert_err_names(
@@ -1998,8 +1726,6 @@ mod tests {
         assert_err_names("version = 2\n".to_string(), "expected 3");
     }
 
-    /// A half-migrated table — v2 version number, v3 sections — fails by
-    /// naming the sections rather than half-parsing.
     #[test]
     fn reject_version_2_carrying_v3_sections() {
         let text = committed_text().replace("version = 3", "version = 2");
@@ -2081,8 +1807,6 @@ mod tests {
         );
     }
 
-    /// Drop the first line in `header`'s block whose trimmed form starts
-    /// with `prefix`.
     fn without_line(text: &str, header: &str, prefix: &str) -> String {
         let mut out = String::new();
         let mut inside = false;
@@ -2102,8 +1826,6 @@ mod tests {
         assert!(done, "without_line: `{prefix}` not found in {header}");
         out
     }
-
-    // --- fail closed: values -----------------------------------------------
 
     #[test]
     fn reject_negative_value() {
@@ -2217,11 +1939,6 @@ mod tests {
         }
     }
 
-    // --- fail closed: provenance (freeze 1629) ------------------------------
-
-    /// **The one this file exists for.** A T5 value may not be pinned in any
-    /// pinned section — that is what makes decision 1602 machine-checked
-    /// rather than commented.
     #[test]
     fn reject_pinned_t5_row() {
         let cases = [
@@ -2256,11 +1973,8 @@ mod tests {
         );
     }
 
-    // --- fail closed: the over-cost rule (decision 1609) -------------------
-
     #[test]
     fn reject_pinned_value_that_is_not_the_pessimistic_end() {
-        // A cost term pinned at its optimistic (low) end.
         let e = err_of(edit_block(
             &committed_text(),
             "[sweep.l3_latency]",
@@ -2268,7 +1982,6 @@ mod tests {
             "pinned = 26",
         ));
         assert!(e.contains("pessimistic end"), "got: {e}");
-        // A **capacity** pinned high: more cache is the optimistic end.
         let e = err_of(edit_block(
             &committed_text(),
             "[sweep.effective_l3_bytes]",
@@ -2304,12 +2017,6 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------
-    // Joint constraints (plans/codegen-pareto-2.md item K, decision 1950)
-    // -----------------------------------------------------------------
-
-    /// The committed profile's one constraint, parsed as data rather than
-    /// read as prose.
     #[test]
     fn the_committed_snoop_constraint_is_parsed_and_names_its_physics() {
         let t = load_default().expect("committed profile");
@@ -2327,8 +2034,6 @@ mod tests {
             "the constraint must say why it holds on the machine: {}",
             b.physics
         );
-        // Every other dimension is an independent bracket, so a reader can
-        // tell at a glance how much of the box is a product.
         let constrained: Vec<&str> = t
             .sweep_dimensions()
             .into_iter()
@@ -2337,9 +2042,6 @@ mod tests {
         assert_eq!(constrained, vec!["snoop_cost"]);
     }
 
-    /// Replace, inside `header`'s block, the whole line starting with
-    /// `prefix`. `edit_block` matches a full line and the constraint fields
-    /// carry long prose, so this is its by-prefix twin.
     fn edit_line_starting(text: &str, header: &str, prefix: &str, to: &str) -> String {
         let mut out = String::new();
         let mut inside = false;
@@ -2364,9 +2066,6 @@ mod tests {
 
     const SNOOP: &str = "[sweep.snoop_cost]";
 
-    /// A constraint with no stated physics is refused. Removing corners can
-    /// only ever make a candidate easier to land, so this is the field that
-    /// keeps decision 1950 from being a knob.
     #[test]
     fn reject_a_constraint_with_no_physics() {
         assert_err_names(
@@ -2396,9 +2095,6 @@ mod tests {
         );
     }
 
-    /// A constraint no corner violates is a comment. It is refused so a
-    /// later bracket edit cannot silently turn a decoration load-bearing —
-    /// or leave a real correlation looking like it is already handled.
     #[test]
     fn reject_a_vacuous_constraint() {
         assert_err_names(
@@ -2412,8 +2108,6 @@ mod tests {
         );
     }
 
-    /// The committed model may not be pinned at a point the machine cannot
-    /// be at.
     #[test]
     fn reject_a_constraint_the_pinned_point_violates() {
         let text = edit_block(
@@ -2434,8 +2128,6 @@ mod tests {
         );
     }
 
-    /// A constraint is box shape, so it moves `table_digest`; its physics is
-    /// prose, so it moves `provenance_digest`. Both, and separably.
     #[test]
     fn a_constraint_moves_the_value_digest_and_its_physics_the_provenance_one() {
         let base = load_default().expect("committed profile");
@@ -2490,8 +2182,6 @@ mod tests {
         );
     }
 
-    /// Freeze 1633, generalized: a term whose *removal* is the win must pin
-    /// the low end and must state the ambiguity.
     #[test]
     fn reject_removal_sensitive_pinning_the_high_end() {
         let text = edit_block(
@@ -2560,10 +2250,6 @@ mod tests {
         );
     }
 
-    // --- fail closed: crosscore is unpinnable (decision 1602) ---------------
-
-    /// The model's most consequential term for a message-passing machine is
-    /// exactly the one no source prices. It may not carry a magnitude.
     #[test]
     fn reject_crosscore_term_carrying_a_magnitude() {
         for pinned in [
@@ -2616,8 +2302,6 @@ mod tests {
         );
     }
 
-    // --- fail closed: every CostRule priced exactly once -------------------
-
     #[test]
     fn reject_latency_group_that_is_not_a_costrule() {
         assert_err_names(
@@ -2650,14 +2334,6 @@ mod tests {
         );
     }
 
-    // --- fail closed: the retired sections ---------------------------------
-
-    /// Item D quarantined three unsourced v2 holdovers in `[transitional]`
-    /// with `deleted_by = "item F"`. **Item F deleted the section**, and the
-    /// parser now refuses a table that still carries it — by name, with the
-    /// reason, rather than as a generic unknown key. A quarantine that
-    /// outlives its owning item is an unsourced row again, so the door has
-    /// to be shut and not merely unused.
     #[test]
     fn reject_a_table_still_carrying_the_transitional_quarantine() {
         let revived = format!(
@@ -2672,7 +2348,6 @@ mod tests {
         );
         assert!(err.contains("item F"), "got: {err}");
         assert!(err.contains("reuse distance"), "got: {err}");
-        // The v2 sections stay shut by the same rule, in both spellings.
         for stale in ["ports", "mem"] {
             let err = parse(&format!(
                 "{}\n[{stale}.alu]\nvalue = 2\ntier = \"T1\"\nsource = \"x\"\n",
@@ -2686,9 +2361,6 @@ mod tests {
         }
     }
 
-    /// The three deleted knobs may not come back anywhere else either: a
-    /// `[geometry]` row named after one of them is an unknown row, so the
-    /// deletion cannot be undone by relocating it into a sourced section.
     #[test]
     fn the_deleted_knobs_cannot_reappear_in_a_sourced_section() {
         for knob in [
@@ -2706,9 +2378,6 @@ mod tests {
         }
     }
 
-    /// `cost::mem` resolves one line identity for every level, so levels
-    /// that disagree on the line size describe a hierarchy this model
-    /// cannot express (plans/M20.md item F).
     #[test]
     fn reject_levels_that_disagree_on_the_line_size() {
         assert_err_names(
@@ -2722,8 +2391,6 @@ mod tests {
         );
     }
 
-    // --- the committed file ------------------------------------------------
-
     #[test]
     fn load_committed_table() {
         let t = load_default().expect("load bench/a76-pi5.toml");
@@ -2734,8 +2401,6 @@ mod tests {
         assert_eq!(t.latency(CostRule::Alu), 1);
         assert_eq!(t.latency(CostRule::Load), 4);
         assert_eq!(t.geometry("lat_l1d_hit").expect("row").value, 4);
-        // Item F's deletion, asserted rather than assumed: none of the three
-        // `[transitional]` knobs is reachable, and the section is gone.
         assert!(t.geometry("mem_reuse_window").is_none());
         assert!(t.geometry("mem_working_set_cap").is_none());
         assert!(t.geometry("working_set_surcharge").is_none());
@@ -2743,7 +2408,6 @@ mod tests {
             !committed_text().contains("\n[transitional."),
             "the committed profile must not carry the quarantine"
         );
-        // Digests must be stable across loads of the same file.
         let again = load_default().expect("reload");
         assert_eq!(t.table_digest(), again.table_digest());
         assert_eq!(t.provenance_digest(), again.provenance_digest());

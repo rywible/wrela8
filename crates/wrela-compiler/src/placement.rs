@@ -1,40 +1,3 @@
-//! Actor/driver core placement (plans/M8.md item B, plans/M15.md item C,
-//! 04-compiler.md §3).
-//!
-//! Placement is a **build output**: every `@actor` / `@driver` declaration
-//! gets exactly one core in `0..N` where `N` is the image's sealed
-//! `Image(..., cores=N?)` (default 1). Explicit `core=K` annotations are
-//! fixed first (`core ≥ N` is a build error); the virtio-blk driver is
-//! pinned to core 0; everything else is inferred deterministically from
-//! published facts, or rejected by name when a fact the algorithm needs
-//! cannot be produced.
-//!
-//! ## The inference rule (04 §3)
-//!
-//! Published sort key for an unfixed placeable: descending
-//! `(work, bytes)`, then ascending canonical identity (`driver#i` before
-//! `actor#j`, construction order within each kind). Each unfixed placeable
-//! is then assigned to the core whose resulting `(work, bytes)` load pair
-//! is lexicographically smallest (lowest core index breaks remaining
-//! ties).
-//!
-//! - **work**: proved maximum uninterrupted turn work. The cost model that
-//!   would prove it is OUT of M8 (`compiler.costs.predicted-vs-measured`,
-//!   M11). Until then every placeable publishes `work=0` with
-//!   `work_source=unproved` — equal work, never an invented ranking.
-//! - **bytes**: owned image state + mailbox physical bytes + reserved pool
-//!   bytes attributed to that placeable (DMA pools via their `device=` to
-//!   the bound driver; image pools with no single owner contribute 0).
-//!
-//! **Domain = N (plans/M15.md item C):** `PlacementTable.cores` is always
-//! the image's `N`. There is no binary floor that jumps to a machine-wide
-//! packing width when any pin names `core ≥ 1` — the packing domain is
-//! exactly `{0 .. N-1}`.
-//!
-//! Inputs, the chosen core, and the source of each assignment
-//! (`explicit` / `pinned-virtio-blk` / `inferred`) are published in the
-//! image report so causality is not hidden (04 §7).
-
 use std::collections::BTreeMap;
 
 use crate::eval::image::{DeclArg, ImageDeclRef, ImageGraph};
@@ -43,14 +6,10 @@ use crate::mwir::{self, LayoutCtx};
 use crate::sema::types::{self, Type};
 use crate::syntax::ast::Module;
 
-/// How a placeable got its core.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlacementSource {
-    /// Source wrote `core=N`.
     Explicit,
-    /// Virtio-blk driver (and its ISR/bottom half): pinned to core 0.
     PinnedVirtioBlk,
-    /// 04 §3 inference over the image's N-core domain.
     Inferred,
 }
 
@@ -64,8 +23,6 @@ impl PlacementSource {
     }
 }
 
-/// One driver or actor's sealed core assignment, with the facts that
-/// produced it (04 §3: inputs + inference + final table).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlacementEntry {
     pub id: ImageDeclRef,
@@ -80,15 +37,9 @@ pub struct PlacementEntry {
     pub bytes_pool: u64,
 }
 
-/// The whole image's placement table, construction order (drivers then
-/// actors, matching the report's declaration walk).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlacementTable {
     pub entries: Vec<PlacementEntry>,
-    /// How many cores this image **brings up** — always equal to the
-    /// sealed `Image(..., cores=N)` (plans/M15.md item C). The packing
-    /// domain, secondary entry blocks, and report `CoreEntry` lines all
-    /// follow this same N.
     pub cores: usize,
 }
 
@@ -106,12 +57,6 @@ impl PlacementTable {
         self.entries.iter().find(|e| e.id == *id).map(|e| e.core)
     }
 
-    /// The core every actor instance of struct `type_name` is placed on.
-    /// More than one distinct core for one struct name is `None` — the
-    /// caller (plans/M8.md item C1's cross-core edge check) fails closed
-    /// rather than picking one, because the generated admission routine is
-    /// keyed by struct name (`codegen::rt_enqueue_symbol`) and cannot tell
-    /// two same-named instances apart.
     pub fn core_of_actor_type(&self, type_name: &str) -> Option<usize> {
         let mut found: Option<usize> = None;
         for e in self.entries.iter().filter(|e| e.type_name == type_name) {
@@ -125,10 +70,6 @@ impl PlacementTable {
     }
 }
 
-/// Validates every `core=` annotation on drivers/actors without sizing:
-/// range `0..N` (`N = graph.cores`), integer shape, and virtio-blk may not
-/// leave core 0. Called from `check_sealed` so `--stage=image` rejects bad
-/// annotations even when the report is not rendered.
 pub fn check_annotations(graph: &ImageGraph) -> Result<(), String> {
     let n = graph.cores;
     for (i, d) in graph.drivers.iter().enumerate() {
@@ -154,10 +95,6 @@ pub fn check_annotations(graph: &ImageGraph) -> Result<(), String> {
     Ok(())
 }
 
-/// Infers every actor/driver core. `cores` is the image's sealed N
-/// (`graph.cores`); callers pass it explicitly so report/build paths name
-/// the same fact. `check_annotations` must already have passed (same
-/// rules; this re-reads `core=` for the fixed set).
 pub fn place(
     graph: &ImageGraph,
     modules: &BTreeMap<String, Module>,
@@ -173,8 +110,6 @@ pub fn place(
     check_annotations(graph)?;
 
     let empty_frames = BTreeMap::new();
-    // Placement only needs actor/driver byte weights; group child census is
-    // a later BootCtx fact — floor 2 is enough here (plans/M12.md item F).
     let tables = crate::layout::compute_runtime_tables(
         graph,
         modules,
@@ -190,11 +125,6 @@ pub fn place(
     for (i, d) in graph.drivers.iter().enumerate() {
         let type_name = types::render_type(&d.actor_type);
         let state = tables.drivers.get(i).map(|r| r.state_size).unwrap_or(0);
-        // plans/M8.md item D: a `@driver` declared with `mailbox=` owns a
-        // real ring plus bookkeeping, sized by the same arithmetic an
-        // actor's is below. 04 §3 packs on owned image + mailbox bytes, so
-        // reporting 0 here would understate a messageable driver's load and
-        // make the Placement line disagree with the Driver line.
         let mailbox = tables
             .drivers
             .get(i)
@@ -236,17 +166,13 @@ pub fn place(
         });
     }
 
-    // Domain = N: packing width is the sealed image cores, always.
     let live_cores = cores;
 
     let mut core_load: Vec<(u64, u64)> = vec![(0, 0); live_cores];
     let mut assigned: BTreeMap<ImageDeclRef, (usize, PlacementSource)> = BTreeMap::new();
 
-    // Fixed first: explicit, then virtio-blk pin (explicit already
-    // forbids non-zero on virtio-blk via check_annotations).
     for p in &placeables {
         if let Some(core) = p.explicit {
-            // `check_annotations` already proved `core < N`.
             add_load(&mut core_load, core, p.work, p.bytes());
             assigned.insert(p.id.clone(), (core, PlacementSource::Explicit));
         } else if p.pinned_virtio_blk {
@@ -259,7 +185,6 @@ pub fn place(
         .iter()
         .filter(|p| !assigned.contains_key(&p.id))
         .collect();
-    // Descending work, then bytes, then ascending identity (ImageDeclRef Ord).
     unfixed.sort_by(|a, b| {
         b.work
             .cmp(&a.work)
@@ -301,8 +226,6 @@ pub fn place(
     })
 }
 
-/// Appends the placement section (facts only; absent when the image has
-/// no actors and no drivers). Fixed order after OnFailure in the report.
 pub fn render_placement_section(out: &mut String, table: &PlacementTable) {
     for e in &table.entries {
         crate::eval::image::push_line(
@@ -325,10 +248,6 @@ pub fn render_placement_section(out: &mut String, table: &PlacementTable) {
         );
     }
 }
-
-// ---------------------------------------------------------------------------
-// internals
-// ---------------------------------------------------------------------------
 
 const MAILBOX_BOOKKEEPING: u64 = 3 * 8;
 
@@ -410,9 +329,6 @@ fn driver_is_virtio_blk(graph: &ImageGraph, decl: &crate::eval::image::DriverDec
         .is_some_and(|d| matches!(&d.device_type, Type::Named(n, _) if n == "VirtioBlock"))
 }
 
-/// DMA pool backing bytes attributed to the driver bound to the pool's
-/// `device=`. Image pools (`img.pool`) have no single owner here and
-/// contribute 0 — inventing a split would hide causality.
 fn dma_pool_bytes_by_driver(
     graph: &ImageGraph,
     layout_ctx: &LayoutCtx,
@@ -426,8 +342,6 @@ fn dma_pool_bytes_by_driver(
                 .and_then(|a| match &a.value {
                     Value::ImageDecl(ImageDeclRef::Device(i)) => Some(*i),
                     Value::ImageDecl(ImageDeclRef::Driver(di)) => {
-                        // device= may name the driver in some fixtures; resolve
-                        // through that driver's own device= when so.
                         graph.drivers.get(*di).and_then(|d| {
                             d.args.iter().find(|a| a.label == "device").and_then(|a| {
                                 match &a.value {
@@ -515,7 +429,6 @@ mod tests {
                 Value::Enum(0, vec![]),
             ),
         );
-        // Default N=1: core=1 is refused (no silent jump to a wider domain).
         g.actors.push(ActorDecl {
             actor_type: Type::Named("Store".to_string(), vec![]),
             args: vec![
@@ -537,8 +450,6 @@ mod tests {
                 Value::Enum(0, vec![]),
             ),
         );
-        // N must admit core=1 so the virtio-blk pin rule, not the range
-        // rule, is the one that fires.
         g.cores = 2;
         g.devices.push(DeviceDecl {
             device_type: Type::Named("VirtioBlock".to_string(), vec![]),
@@ -563,7 +474,6 @@ mod tests {
     #[test]
     fn pick_core_prefers_lexicographically_smallest_load() {
         let loads = [(1, 100), (0, 50), (0, 50)];
-        // core 1 and 2 both (0,50); lowest index among minima is 1.
         assert_eq!(pick_core(&loads), 1);
         let loads2 = [(0, 10), (0, 20), (0, 5)];
         assert_eq!(pick_core(&loads2), 2);
@@ -608,7 +518,6 @@ mod tests {
                 .then_with(|| y.bytes().cmp(&x.bytes()))
                 .then_with(|| x.id.cmp(&y.id))
         });
-        // bytes 200: driver#0 before actor#1; then actor#0 at 100.
         assert_eq!(v[0].id, ImageDeclRef::Driver(0));
         assert_eq!(v[1].id, ImageDeclRef::Actor(1));
         assert_eq!(v[2].id, ImageDeclRef::Actor(0));

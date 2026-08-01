@@ -1,1 +1,1 @@
-error[type]: f-string operand of type `Opaque` has no Format (unbounded / no max_formatted_len; 05-library.md §6) at 11:35
+error[type]: f-string operand of type `Opaque` has no Format (unbounded / no max_formatted_len; 05-library.md §6) at 8:35

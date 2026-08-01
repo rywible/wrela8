@@ -1,1 +1,1 @@
-error[actor]: an `Actor[T]` handle cannot appear in a message (`Outer.relay`'s own `target: Actor[Inner]` — 02-language.md §9.1) at 26:5
+error[actor]: an `Actor[T]` handle cannot appear in a message (`Outer.relay`'s own `target: Actor[Inner]` — 02-language.md §9.1) at 12:5

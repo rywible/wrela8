@@ -1,8 +1,5 @@
 module examples.err_fstring_secret
 
-# plans/M9.md item D / 05 §6: Secret has no Format. Item G owns `Secret[T]`
-# proper (still the marked-value refusal); until then this golden pins the
-# same f-string refusal against a type with no Format at all.
 
 pub struct Opaque:
     n: u32

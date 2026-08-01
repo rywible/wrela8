@@ -1,12 +1,3 @@
-//! `cargo xtask stdlib-test` — plans/M16.md item F / decisions 1160–1166.
-//!
-//! In-process discovery of `stdlib/tests/**/*.wr`, then load + check +
-//! `eval::run_tests` for every comptime / `@test(exhaustive)` fn. Fail
-//! closed on a missing suite root, an empty suite (no `.wr` files), or
-//! zero discovered comptime/exhaustive tests — `wrela test` alone can
-//! exit 0 on `0 passed, 0 failed`, which is exactly the quiet pass this
-//! lane exists to refuse.
-
 use std::path::{Path, PathBuf};
 
 use wrela_compiler::eval;
@@ -18,14 +9,10 @@ use wrela_compiler::syntax::ast::Module;
 use crate::fuzz::collect_wr_files;
 use crate::root;
 
-/// `cargo xtask stdlib-test` entry: suite root is the checkout's
-/// `stdlib/tests/`.
 pub(crate) fn stdlib_test() -> Result<(), String> {
     run_stdlib_tests(&root().join("stdlib/tests"))
 }
 
-/// Core lane body, parameterized on the suite root so the empty-root
-/// unit test can point at a temp dir without touching the real tree.
 pub(crate) fn run_stdlib_tests(tests_root: &Path) -> Result<(), String> {
     if !tests_root.exists() {
         return Err(format!(

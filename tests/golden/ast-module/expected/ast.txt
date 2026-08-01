@@ -1,34 +1,32 @@
-Module @2:1 path=examples.catalogue
-  Doc @1:1 text="Widget catalogue: counters and lookup tables."
-  Import @4:1 from=core.bytes
-    ImportName @4:24 name=Bytes
-  Import @5:1 from=core.time
-    ImportName @5:23 name=now
-    ImportName @5:28 name=ms alias=Millis
-  Import @6:1 from=core.result pub=true
-    ImportName @7:5 name=Result
-    ImportName @8:5 name=Err alias=ResultErr
-  Const @11:1 name=LIMIT
-    TypeName @11:14 name=u64
-    Int @11:20 text=0x1000_0000
-  Pool @13:1 name=Widgets
-  Fn @16:1 name=increment pub=true
-    Doc @15:1 text="Increments the shared counter by one."
-    Param @16:18 name=counter mode=mut
-      TypeName @16:31 name=u64
-    TypeName @16:39 name=u64
+Module @1:1 path=examples.catalogue
+  Import @3:1 from=core.bytes
+    ImportName @3:24 name=Bytes
+  Import @4:1 from=core.time
+    ImportName @4:23 name=now
+    ImportName @4:28 name=ms alias=Millis
+  Import @5:1 from=core.result pub=true
+    ImportName @6:5 name=Result
+    ImportName @7:5 name=Err alias=ResultErr
+  Const @10:1 name=LIMIT
+    TypeName @10:14 name=u64
+    Int @10:20 text=0x1000_0000
+  Pool @12:1 name=Widgets
+  Fn @14:1 name=increment pub=true
+    Param @14:18 name=counter mode=mut
+      TypeName @14:31 name=u64
+    TypeName @14:39 name=u64
     Body
-      Return @17:5
-        Binary @17:20 op=+
-          Name @17:12 name=counter
-          Int @17:22 text=1
-  Struct @19:1 name=Ledger resource=true
-    Field @20:5 name=entries
-      TypeName @20:14 name=u64
-  ComptimeIf @22:1
-    Field @22:20 name=debug
-      Name @22:13 name=target
+      Return @15:5
+        Binary @15:20 op=+
+          Name @15:12 name=counter
+          Int @15:22 text=1
+  Struct @17:1 name=Ledger resource=true
+    Field @18:5 name=entries
+      TypeName @18:14 name=u64
+  ComptimeIf @20:1
+    Field @20:20 name=debug
+      Name @20:13 name=target
     Then
-      Const @23:5 name=TRACE
-        TypeName @23:18 name=bool
-        Bool @23:25 value=true
+      Const @21:5 name=TRACE
+        TypeName @21:18 name=bool
+        Bool @21:25 value=true

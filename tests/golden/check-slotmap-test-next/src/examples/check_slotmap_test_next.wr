@@ -1,15 +1,5 @@
 module examples.check_slotmap_test_next
 
-# The machine-info page hands every word out exactly once. `SlotMap`'s id
-# mint (`machine_info::OFF_SLOTMAP_NEXT_ID`) and the runtime test runner's
-# own loop counter (`runtime.wr`'s `@offset(0x210) test_next`) were both
-# declared at 0x210, so constructing a map inside a runtime test stored a
-# map id over the counter and the runner *skipped* that many later tests —
-# silently, with a green summary line counting only the tests it ran.
-#
-# The oracle is the transcript below: three tests declared, three lines,
-# `3 passed`. `mints_two` constructs two maps, so under the alias it alone
-# consumed the remaining indices and this transcript was one line long.
 
 from core.slotmap import SlotMap
 

@@ -1,8 +1,5 @@
 module examples.check_generic_order_f64
 
-# plans/M13.md item A / 02-language.md §7.4 / 05-library.md §8:
-# a generic instantiated at f64 uses the builtin `<` (not OpCall
-# less_than) and inherits IEEE semantics — NaN is incomparable.
 
 pub fn min[T](a: T, b: T) -> T:
     if a < b:

@@ -1,1 +1,1 @@
-error[type]: `wake` requires a statically bound `@task` (03-hardware.md §6); `BlkDriver.not_a_task` is not marked `@task` at 27:14
+error[type]: `wake` requires a statically bound `@task` (03-hardware.md §6); `BlkDriver.not_a_task` is not marked `@task` at 26:14

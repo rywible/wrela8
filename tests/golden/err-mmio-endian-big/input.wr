@@ -1,18 +1,5 @@
 module examples.err_mmio_endian_big
 
-# plans/M7.md item C, 03-hardware.md §2: "The compiler and target ABI
-# check width, alignment, non-overlap, bounds, and **endianness**."
-#
-# The wrela machine is little-endian A76 (06-machine.md §2), so a
-# `@layout(mmio, endian=big)` register access needs a byte swap on the
-# way in and out. This compiler emits none, so the access fails closed,
-# naming the disagreement — rather than reading the right bytes in the
-# wrong order, which is the failure a "checked endianness" that only
-# recorded the declaration would produce.
-#
-# The layout itself stays perfectly legal (`golden/check-layout-wire` has
-# a big-endian layout and is accepted): it is the *access* on this target
-# that does not exist.
 
 @layout(mmio, endian=big)
 struct VirtioIrqMmio:

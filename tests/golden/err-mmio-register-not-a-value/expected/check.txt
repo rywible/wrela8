@@ -1,1 +1,1 @@
-error[type]: register `VirtioIrqMmio.interrupt_status` is not a value; an MMIO register exists only as an access — write `.read()` or `.write(v)` (03-hardware.md §2) at 24:29
+error[type]: register `VirtioIrqMmio.interrupt_status` is not a value; an MMIO register exists only as an access — write `.read()` or `.write(v)` (03-hardware.md §2) at 14:29

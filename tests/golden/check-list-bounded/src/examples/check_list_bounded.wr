@@ -1,7 +1,5 @@
 module examples.check_list_bounded
 
-# plans/M9.md item F2: List[T, ..N] never exceeds N; Bound annotation
-# equals Const construction. Comptime-only.
 
 from core.list import List, ListFull
 

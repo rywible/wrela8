@@ -1,13 +1,3 @@
-# End-to-end design example for revision 0.1 (trimmed language).
-#
-# ASPIRATIONAL — not a boot claim. Imports modules the stdlib does not yet
-# ship. Demonstrates ownership and scheduling shape for a didactic
-# write-back extent filesystem (not crash-consistent).
-#
-# A multi-client Storage should use the service slot idiom (02 §9.7): short
-# admitting turns, a bounded in-flight SlotMap, slot.resolve(take receipt).
-# This single-client sketch forwards to ExtentFs for clarity; do not copy
-# that pattern into a concurrent appliance.
 
 module examples.virtio_storage
 
@@ -34,9 +24,6 @@ from drivers.virtio.core import (
 from services.console import Console
 
 
-# ---------------------------------------------------------------------------
-# Constants, pool names, device-visible layouts
-# ---------------------------------------------------------------------------
 
 const INT_VRING: u32 = 1
 const INT_CONFIG: u32 = 2
@@ -48,8 +35,6 @@ const BLOCK_MODE: DriverMode = DriverMode.Irq
 const BLK_T_IN: u32 = 0
 const BLK_T_OUT: u32 = 1
 
-# Pool names. Each is bound to exactly one pool node by the image below;
-# `own[Name] T` handles carry the binding through every signature.
 pool BlockControl
 pool BlockPayloads
 pool AppBuffers
@@ -73,17 +58,11 @@ struct BlkReqStatus:
     status: u8
 
 
-# A cache block is allocated from image-declared memory reachable by this
-# block device. Storage owns the handle while idle; the driver owns it in
-# flight.
 @layout(dma, alignment=SECTOR)
 struct DmaBlock:
     bytes: Bytes[SECTOR]
 
 
-# ---------------------------------------------------------------------------
-# Driver actor
-# ---------------------------------------------------------------------------
 
 @driver
 pub struct BlkDriver[const MODE: DriverMode]:
@@ -98,25 +77,16 @@ pub struct BlkDriver[const MODE: DriverMode]:
          take cap: DeviceCap[VirtioBlock],
          take control_pool: DmaPool[BlockControl, 256.KiB])
         -> Result[unit, BootError]:
-        # Fields of `self` check exactly like uninitialized locals (02 §7.1).
-        # Each fallible transition consumes its protocol state and, on `?`,
-        # routes the capability to its manifest restart provision (03 §9) —
-        # a straight line with no cleanup choreography.
-        claimed = VirtioBlock.claim(cap=take cap)   # reset + acknowledge
+        claimed = VirtioBlock.claim(cap=take cap)
 
-        # The sealed transport owns status, feature selectors, queue
-        # addresses/reset, config generation, and block config. Source maps
-        # only the disjoint ISR partition.
         self.irq_regs = claimed.map_partition(VirtioIrqMmio)
         self.pending = InterruptCell(0)
 
-        negotiated = claimed.negotiate(             # consumes `claimed`
+        negotiated = claimed.negotiate(
             required=[VirtioFeature.Flush],
             optional=[VirtioFeature.RingReset],
         )?
 
-        # VirtQueue owns DmaShared control memory. Driver source never reads
-        # used.idx with a plain load or places a standalone fence.
         self.queue = VirtQueue.configure(
             pool=take control_pool,
             device=mut negotiated,
@@ -127,8 +97,6 @@ pub struct BlkDriver[const MODE: DriverMode]:
 
         comptime if MODE == DriverMode.Irq:
             irq_cap = negotiated.take_irq()
-            # Binding fixes on_queue_irq as this vector's handler; the
-            # compiler restricts its transitive effects to the ISR set.
             irq_cap.bind(self.on_queue_irq)
             irq_cap.unmask()
             self.irq = Some(take irq_cap)
@@ -140,7 +108,6 @@ pub struct BlkDriver[const MODE: DriverMode]:
         return Ok(unit)
 
     comptime if MODE == DriverMode.Irq:
-        # ISR: effect-checked because it is vector-bound in `init`.
         fn on_queue_irq(self):
             status = self.irq_regs.interrupt_status.read()
             handled = status & (INT_VRING | INT_CONFIG)
@@ -149,9 +116,6 @@ pub struct BlkDriver[const MODE: DriverMode]:
                 self.irq_regs.interrupt_ack.write(handled)
                 wake(BlkDriver[MODE].drain_used)
 
-    # Bottom half. IRQ builds schedule it on wake; poll builds run it once
-    # per event-loop pass. It never stays active while waiting, so
-    # submission turns are not re-entered.
     @task(
         trigger=wake,
         poll=(MODE == DriverMode.Poll),
@@ -165,33 +129,21 @@ pub struct BlkDriver[const MODE: DriverMode]:
         if status & INT_CONFIG != 0:
             self.device.handle_config_change()
 
-        # `drain` acquires used-index visibility, validates IDs/generations/
-        # epochs and device lengths, returns payload ownership, and resolves
-        # the matching sealed receipt.
         self.queue.drain(max=QDEPTH)
 
         if self.queue.completions_pending():
             self.pending.fetch_or_release(INT_VRING)
             wake(BlkDriver[MODE].drain_used)
 
-    # Actor transport is awaitable at the caller; the handler is synchronous
-    # and returns a receipt promptly, so the driver accepts the next bounded
-    # submission before hardware completes. The signature — one `take`
-    # parameter, result Receipt of the same payload — gives this method the
-    # atomic handoff convention (03 §5); no annotation is needed.
     pub fn submit_read(mut self, lba: u64,
                        take buffer: own[BlockPayloads] DmaBlock)
         -> Receipt[own[BlockPayloads] DmaBlock]:
         if lba >= self.capacity_sectors:
-            # Even pre-publication rejection resolves the receipt so the
-            # payload returns before its error status is exposed.
             return self.queue.reject(
                 payload=take buffer,
                 error=IoError.OutOfRange,
             )
 
-        # Whole-image analysis proves this appliance keeps at most 42 direct
-        # requests in flight; reserve is infallible or a build error.
         permit = self.queue.reserve(descriptors=3)
 
         operation = self.queue.prepare_block(
@@ -203,9 +155,6 @@ pub struct BlkDriver[const MODE: DriverMode]:
             idempotent=true,
         )
 
-        # publish performs descriptor/payload release, available-ring and
-        # index publication, and doorbell ordering. The receipt owns the
-        # device-owned state and reset teardown.
         return self.queue.publish(operation=take operation)
 
     pub fn submit_write(mut self, lba: u64,
@@ -229,9 +178,6 @@ pub struct BlkDriver[const MODE: DriverMode]:
         return self.queue.publish(operation=take operation)
 
 
-# ---------------------------------------------------------------------------
-# Cache and filesystem, both owned by one Storage actor
-# ---------------------------------------------------------------------------
 
 enum CacheState:
     Invalid
@@ -248,11 +194,6 @@ struct CacheLine:
         return CacheLine(state=CacheState.Invalid, data=Some(take block))
 
 
-# A cache fill describes a line temporarily removed from the cache while its
-# replacement I/O is in flight. It is an ordinary owned value holding an
-# index, a data fallback, and an owned handle — nothing lent — so it lives
-# across any number of awaits, and recovery on failure is the explicit
-# begin_replace / resolve_replace contract.
 struct CacheFill:
     index: usize
     fallback: CacheState
@@ -278,10 +219,8 @@ struct BlockCache:
             case _:
                 return None
 
-    # Moves the block out and marks the slot unavailable. The caller owns
-    # the returned CacheFill across awaits and must eventually resolve it.
     fn begin_replace(mut self, index: usize) -> CacheFill:
-        prior = self.lines[index].state          # CacheState is data: copies
+        prior = self.lines[index].state
         match self.lines[index].data.take():
             case .Some(take block):
                 data = take block
@@ -290,15 +229,10 @@ struct BlockCache:
         self.lines[index].state = CacheState.Replacing
         return CacheFill(index=index, fallback=prior, data=take data)
 
-    # Restores the payload and sets the resulting state: `next` on success,
-    # or the fill's recorded fallback on failure or cancellation.
     fn resolve_replace(mut self, take fill: CacheFill, next: Option[CacheState]):
         self.lines[fill.index].data = Some(take fill.data)
         self.lines[fill.index].state = next.unwrap_or(fill.fallback)
 
-    # Lending accessors: a non-escaping closure borrows the payload for
-    # exactly one synchronous call. Nothing here can be stored, escape, or
-    # cross an await — the closure rules guarantee it without view types.
     fn peek[R](read self, index: usize, body: fn(read DmaBlock) -> R) -> R:
         match self.lines[index].data:
             case .Some(data):
@@ -338,8 +272,6 @@ struct BlockCache:
                     case .Ok(receipt):
                         write_receipt = take receipt
                     case .Err(error):
-                        # Cancelled, deadline, or peer failure: the write
-                        # was consumed; restore the line to its fallback.
                         self.resolve_replace(take fill, next=None)
                         return Err(FsError.from(error))
                 write_done = await write_receipt
@@ -355,9 +287,6 @@ struct BlockCache:
             case .Replacing:
                 panic("non-reentrant cache entered replacing state")
 
-        # The device may partially overwrite a read payload. From here,
-        # cancellation or failure must leave the line invalid, never stale
-        # metadata for the previous contents.
         fill.invalidate_fallback()
         match await disk.submit_read(lba=lba, buffer=take fill.data):
             case .Ok(receipt):
@@ -408,8 +337,6 @@ struct ExtentFs:
         inode_lba = INODE_LBA + (ino / 16).to[u64]()
         inode_index = await self.cache.ensure(self.disk, inode_lba)?
 
-        # The closure lends the block for one synchronous call; `node` is an
-        # owned value decoded from the versioned little-endian wire layout.
         node = self.cache.peek(inode_index, |block: DmaBlock|
             block.bytes.read_wire[Inode](offset=((ino % 16) * 32).to[usize]()))?
         if node.magic != MAGIC_FS:
@@ -431,8 +358,6 @@ struct ExtentFs:
                 node.start_lba + block_index.to[u64](),
             )?
             count = min(SECTOR, size - written)
-            # Lend the cache line, mutate the captured output buffer; both
-            # accesses are disjoint and end when the call returns.
             self.cache.peek(index, |block: DmaBlock|:
                 out.copy_from_at(
                     offset=written,
@@ -466,9 +391,6 @@ struct ExtentFs:
         inode_lba = INODE_LBA + (ino / 16).to[u64]()
         inode_index = await self.cache.ensure(self.disk, inode_lba)?
 
-        # `?` inside a closure would propagate from the closure, so fallible
-        # conversions happen before the lend; the closure returns the wire
-        # writer's Result and `?` applies outside.
         size_u32 = data.len().checked_to[u32]()?
         blocks_u32 = block_count.checked_to[u32]()?
         self.cache.edit(inode_index, |mut block: DmaBlock|
@@ -539,9 +461,6 @@ pub struct Storage:
         return await self.fs.write_file(ino, take data)
 
 
-# ---------------------------------------------------------------------------
-# App actor
-# ---------------------------------------------------------------------------
 
 @actor
 pub struct Notes:
@@ -566,15 +485,10 @@ pub struct Notes:
             output = self.buffers.get(capacity=4096)
             output = await self.storage.read_file(ino=7, out=take output)?
 
-            # Console is another actor, so ownership moves rather than
-            # lending across the boundary.
             await self.console.write(data=take output)?
         return Ok(unit)
 
 
-# ---------------------------------------------------------------------------
-# Image
-# ---------------------------------------------------------------------------
 
 @image
 pub fn build() -> Image:
@@ -597,8 +511,6 @@ pub fn build() -> Image:
         control_dma=DmaPoolSpec[BlockControl](capacity=256.KiB),
     )
 
-    # Storage-owned but device-reachable payloads: every handle can move
-    # Storage -> BlkDriver -> Storage while its slot stays in this pool.
     cache_blocks = img.dma_pool[DmaBlock](
         name=BlockPayloads,
         device=disk,
@@ -627,7 +539,6 @@ pub fn build() -> Image:
 
     img.on_failure(policy=Failure.Halt)
 
-    # The whole @image body is a comptime context; mkfs runs at build time.
     img.seed_disk(extentfs_mkfs(
         files=[SeedFile(ino=7, data=b"hello from comptime\n")],
     ))

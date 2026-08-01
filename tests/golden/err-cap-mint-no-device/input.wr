@@ -1,15 +1,5 @@
 module examples.err_cap_mint_no_device
 
-# plans/M7.md item A, 03-hardware.md §1: "The device itself is named once,
-# at the image binding (`img.driver(BlkDriver, device=blk_device)`), the
-# single source of truth."
-#
-# `golden/check-cap-mint` is this file with `device=blk_device` restored.
-# Without it there is no source of truth to mint from — and before item A
-# this was *accepted*: plans/M4.md decision 7's substitution rule
-# recognized a capability parameter by type name and called it "satisfied
-# by the declaration's own device wiring" whether or not any wiring
-# existed. This is the same rule, checked against the wiring it names.
 
 struct BlockHw:
     id: u32

@@ -1,13 +1,5 @@
 module examples.err_recursion_direct
 
-# 04-compiler.md §1 / 01-model.md §5: "unbounded recursion in either the
-# sync or async call graph is rejected". The direct case — `down` calls
-# itself, and a `@test(runtime)` root actually enters it, so the cycle is
-# real guest stack depth. Nothing in the emitted code or the machine
-# catches a blown stack: prologues are a bare `sub sp, sp, #N`, the VMM
-# maps the whole DRAM reservation RW with no guard page, and per-core
-# stacks are packed contiguously, so an overrun silently walks into the
-# next core's frames.
 
 fn down(n: u64) -> u64:
     if n == 0:

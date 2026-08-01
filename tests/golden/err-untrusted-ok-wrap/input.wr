@@ -1,7 +1,5 @@
 module examples.err_untrusted_ok_wrap
 
-# plans/M9.md item G1 / decision 356: wrapping into `Ok` / `Some` does
-# not wash the mark — expected payload is unmarked.
 
 fn bad(reported: Untrusted[usize]) -> Result[usize, unit]:
     return Ok(reported)

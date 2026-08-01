@@ -1,1 +1,1 @@
-error[type]: unknown `@layout` argument `packed=` on struct `BlkReqHeader`; `@layout` takes its kind plus `endian=` and nothing else — every argument that exists changes the reported bytes (03-hardware.md §3) at 12:29
+error[type]: unknown `@layout` argument `packed=` on struct `BlkReqHeader`; `@layout` takes its kind plus `endian=` and nothing else — every argument that exists changes the reported bytes (03-hardware.md §3) at 4:29

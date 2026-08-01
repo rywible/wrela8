@@ -1,85 +1,3 @@
-//! The loader: root anchoring + transitive import closure (plans/M4.md
-//! item A, decisions 1-3; 02-language.md §2, §2.1; 04-compiler.md §1
-//! "Closure").
-//!
-//! A build (and every other tool that resolves imports — `wrela dump
-//! --stage=check` included, once the target module has any) is pointed
-//! at one file: the root. Everything else is derived from it.
-//!
-//! **Root anchoring** (`anchor_package_root`): a module's declared
-//! `module a.b.c` path must agree with its file path — the file name is
-//! the path's last segment (`c.wr`), each enclosing directory (innermost
-//! first) is the next segment up (`b`, then `a`), and whatever directory
-//! remains after consuming every segment is the package root. This rule
-//! is applied to *every* file the closure reaches, not just the root
-//! (02-language.md §2: "must match the file's path under the package
-//! source root" is a per-file rule); the root file is simply the one
-//! file whose walk *discovers* the root instead of merely confirming it
-//! agrees with an already-known one. Disagreement anywhere is one
-//! `error[build]` diagnostic naming the exact mismatch.
-//!
-//! **The import closure** (`load_closure`): starting from the root,
-//! every `from path import Name` is resolved to `<pkgroot>/<path with
-//! dots as slashes>.wr` and loaded if not already visited. The visited
-//! set (this module's own `LoadedProgram::modules` keys) is exactly
-//! what makes import cycles free (plans/M4.md decision 3, amended
-//! 2026-07-23: 02-language.md §2 already settles this — "imports are
-//! compile-time name bindings and run no code, so import cycles between
-//! modules are legal"): a module already loaded is never re-read,
-//! cycle or not, and the walk simply terminates. A missing file for an
-//! imported module path is `error[build]`, naming the path.
-//!
-//! **The `core` alias**: `from core.X import ...` resolves inside the
-//! toolchain's `stdlib/core/` tree, addressed throughout this compiler as
-//! `["core", ...]` regardless of what `X`'s own file declares (`core`
-//! is an import-side alias over that tree, not a real package segment —
-//! `stdlib/README.md` calls `stdlib/core/` the `core` package root, so
-//! a file at `stdlib/core/io_error.wr` declares plain `module io_error`,
-//! agreeing with its path under `stdlib/core/` as *its* package root; the
-//! `core` prefix is stripped before mapping the remaining segments onto
-//! that root). Locating `stdlib/core/` itself uses the dumbest
-//! deterministic rule that still lets a self-contained fixture (this
-//! repo's own project-shaped golden cases included) ship its own, in
-//! preference to the real toolchain tree: (1) a directory literally
-//! named `stdlib/core` sitting next to the package root (a sibling of
-//! `pkgroot`, i.e. `pkgroot.parent()/stdlib/core`) wins if it exists as
-//! a directory; (2) otherwise, the real toolchain `stdlib/core/`, baked
-//! in at compile time via this very crate's own `CARGO_MANIFEST_DIR`
-//! (`crates/wrela-compiler/../../stdlib/core`) — wherever the compiled
-//! `wrela` binary is actually run from. No environment variable, no
-//! search path: exactly these two candidates, in this fixed order, every
-//! time (recorded here per plans/M4.md item A's brief; plans/M9.md item
-//! A2 decision 78 nested the package root under `core/`). If a sibling
-//! `stdlib/` directory exists but has no `core/` subdirectory — or if
-//! the chosen candidate is not a directory at all — the loader fails
-//! closed with a named `error[build]: stdlib not found: ...` rather than
-//! falling through to a missing-module diagnostic that would hide the
-//! real cause (plans/M9.md item A2, golden/err-stdlib-missing). A bare
-//! `from core import <name>` (no further segment) names a *submodule*,
-//! not a declaration — the same "more than trivial" shape
-//! `sema::imports` fails closed on (02-language.md §2's own
-//! "`from core.bytes import Bytes` and `from core import time` are the
-//! same construct" — but `core` alone has no declaration to look inside
-//! at all, per that section, so this shape is unambiguous the moment
-//! the path is just `["core"]`); the loader has nothing to load for it
-//! (no file backs bare `core`), so such an import contributes nothing
-//! to the closure and is left for `sema::imports::resolve_imports` to
-//! reject once names are in scope.
-//!
-//! **The `drivers` alias**: same two-candidate rule as `core`, over
-//! `stdlib/drivers/` (plans/M16.md item B / decisions 1120–1125;
-//! golden/err-stdlib-drivers-missing). Address keys stay
-//! `["drivers", ...]`. Bare `from drivers import <name>` is skipped
-//! here and rejected in `sema::imports`, mirroring bare `core`.
-//!
-//! Every diagnostic this file itself raises (root disagreement, a
-//! missing module file) uses the new `build` category (plans/M4.md
-//! decision 1), rendered exactly like every other sema diagnostic
-//! (`error[build]: <message> at <line>:<col>`) — see `sema::SemaError`.
-//! A lex or parse failure in any file the closure reaches is *not* a
-//! loader diagnostic; it is that file's own `error[lex]`/`error[parse]`,
-//! unchanged, via `LoadError::Lex`/`LoadError::Parse`.
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -87,29 +5,17 @@ use crate::sema::SemaError;
 use crate::syntax::ast::{Expr, Item, Member, Module, Span};
 use crate::syntax::{lexer, parser};
 
-/// One failure while loading the closure: a lex/parse error from some
-/// file the closure reaches (rendered exactly like the single-file CLI
-/// path's own diagnostics), or a `build`-category diagnostic for the
-/// loader's own two obligations (root anchoring, closure resolution).
 pub enum LoadError {
     Lex(lexer::LexError),
     Parse(parser::ParseError),
     Build(SemaError),
 }
 
-/// One loaded file: where it came from and what it parsed to.
 pub struct LoadedModule {
     pub file: PathBuf,
     pub module: Module,
 }
 
-/// The whole build's module graph (plans/M4.md decisions 1-2): every
-/// module the root's transitive import closure reaches, keyed by its
-/// own *address* — a plain module's declared dotted path unchanged, or
-/// `["core", ...]` / `["drivers", ...]` for a module reached through a
-/// reserved stdlib alias.
-/// `BTreeMap` gives the whole-program BTree-order-by-module-path walk
-/// decision 2 asks for, free of any extra sorting step.
 pub struct LoadedProgram {
     pub root: Vec<String>,
     pub modules: BTreeMap<Vec<String>, LoadedModule>,
@@ -130,14 +36,6 @@ fn parse_file(file: &Path) -> Result<Module, LoadError> {
     parser::parse(tokens).map_err(LoadError::Parse)
 }
 
-/// Walks `module_path` upward against `file`'s own path, one segment per
-/// directory level (innermost first), and returns whatever directory
-/// remains once every segment is consumed — the package root this file
-/// implies. See the module doc comment above for the exact rule.
-///
-/// `pub(crate)` so `sema` can recover the package root for
-/// [`stdlib_core_root`] when preparing auto-visible stdlib enums
-/// (plans/M9.md item QQ).
 pub(crate) fn anchor_package_root(
     file: &Path,
     module_path: &[String],
@@ -176,10 +74,6 @@ pub(crate) fn anchor_package_root(
     Ok(dir)
 }
 
-/// Every file this loader reaches must agree with `expected_root` (the
-/// package root already anchored from the build's own root file, or
-/// `core_root` for a `core`-mapped file) — not just agree with *some*
-/// root of its own (`anchor_package_root` alone only proves the latter).
 fn check_agrees(file: &Path, module: &Module, expected_root: &Path) -> Result<(), LoadError> {
     let root = anchor_package_root(file, &module.path, module.span)?;
     if root != expected_root {
@@ -197,10 +91,6 @@ fn check_agrees(file: &Path, module: &Module, expected_root: &Path) -> Result<()
     Ok(())
 }
 
-/// Refuse a module file whose resolved path escapes `expected_root` via
-/// a symlink (or any other path remapping). Canonicalizes both sides and
-/// requires the file to sit under the root — a package-root-relative
-/// import must never open a file outside that tree.
 fn ensure_under_package_root(
     file: &Path,
     expected_root: &Path,
@@ -238,8 +128,6 @@ fn ensure_under_package_root(
     Ok(())
 }
 
-/// `<root>/<path[0]>/<path[1]>/.../<path[n]>.wr` — every segment but the
-/// last becomes a directory, the last becomes the file name.
 fn module_file_path(root: &Path, module_path: &[String]) -> PathBuf {
     let mut p = root.to_path_buf();
     for seg in module_path {
@@ -249,20 +137,10 @@ fn module_file_path(root: &Path, module_path: &[String]) -> PathBuf {
     p
 }
 
-/// The toolchain's baked-in `stdlib/core/` (plans/M9.md item A2 / QQ).
-/// Used when no package root is available and as the second candidate of
-/// [`stdlib_core_root`].
 pub fn toolchain_stdlib_core() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../stdlib/core")
 }
 
-/// Locates `stdlib/core/` — see the module doc comment above for the
-/// exact two-candidate priority this implements. Returns a named
-/// `error[build]` when the chosen candidate is missing (plans/M9.md
-/// item A2: golden/err-stdlib-missing).
-///
-/// `pub` so `sema::stdlib_enums` shares this exact rule rather than a
-/// second hardcoded toolchain path (plans/M9.md item QQ).
 pub fn stdlib_core_root(pkgroot: &Path, span: Span) -> Result<PathBuf, LoadError> {
     if let Some(parent) = pkgroot.parent() {
         let sibling_stdlib = parent.join("stdlib");
@@ -271,9 +149,6 @@ pub fn stdlib_core_root(pkgroot: &Path, span: Span) -> Result<PathBuf, LoadError
             if core.is_dir() {
                 return Ok(core);
             }
-            // Sibling `stdlib/` shadows the toolchain tree, so a missing
-            // `core/` here is not "fall through to CARGO_MANIFEST_DIR" —
-            // it is the fail-closed "stdlib not found" case A2 pins.
             return Err(build_error(
                 "stdlib not found: sibling `stdlib/` exists but has no `core/` directory"
                     .to_string(),
@@ -291,21 +166,14 @@ pub fn stdlib_core_root(pkgroot: &Path, span: Span) -> Result<PathBuf, LoadError
     Ok(toolchain)
 }
 
-/// Locates the toolchain's `stdlib/core/` tree — see [`stdlib_core_root`].
 fn core_root(pkgroot: &Path, span: Span) -> Result<PathBuf, LoadError> {
     stdlib_core_root(pkgroot, span)
 }
 
-/// The toolchain's baked-in `stdlib/drivers/` (plans/M16.md item B).
-/// Used when no package root is available and as the second candidate of
-/// [`stdlib_drivers_root`].
 pub fn toolchain_stdlib_drivers() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../stdlib/drivers")
 }
 
-/// Locates `stdlib/drivers/` — same two-candidate priority as
-/// [`stdlib_core_root`]. Returns a named `error[build]` when the chosen
-/// candidate is missing (plans/M16.md item B: golden/err-stdlib-drivers-missing).
 pub fn stdlib_drivers_root(pkgroot: &Path, span: Span) -> Result<PathBuf, LoadError> {
     if let Some(parent) = pkgroot.parent() {
         let sibling_stdlib = parent.join("stdlib");
@@ -314,9 +182,6 @@ pub fn stdlib_drivers_root(pkgroot: &Path, span: Span) -> Result<PathBuf, LoadEr
             if drivers.is_dir() {
                 return Ok(drivers);
             }
-            // Sibling `stdlib/` shadows the toolchain tree, so a missing
-            // `drivers/` here is not "fall through to CARGO_MANIFEST_DIR" —
-            // it is the fail-closed "stdlib not found" case B pins.
             return Err(build_error(
                 "stdlib not found: sibling `stdlib/` exists but has no `drivers/` directory"
                     .to_string(),
@@ -334,16 +199,10 @@ pub fn stdlib_drivers_root(pkgroot: &Path, span: Span) -> Result<PathBuf, LoadEr
     Ok(toolchain)
 }
 
-/// Locates the toolchain's `stdlib/drivers/` tree — see [`stdlib_drivers_root`].
 fn drivers_root(pkgroot: &Path, span: Span) -> Result<PathBuf, LoadError> {
     stdlib_drivers_root(pkgroot, span)
 }
 
-/// Resolves one `from path import ...` statement's `path` to the module
-/// address it loads under, the file it lives at, and the package root
-/// that file must itself agree with. Never called for a bare `["core"]`
-/// or `["drivers"]` path (the submodule-import shape) — callers filter
-/// that out first, see `load_closure`.
 fn import_target(
     pkgroot: &Path,
     import_path: &[String],
@@ -365,8 +224,6 @@ fn import_target(
     }
 }
 
-/// Loads the root file and its whole transitive import closure
-/// (plans/M4.md item A). See the module doc comment for the full rule.
 pub fn load_closure(root_file: &Path) -> Result<LoadedProgram, LoadError> {
     let root_module = parse_file(root_file)?;
     let pkgroot = anchor_package_root(root_file, &root_module.path, root_module.span)?;
@@ -381,14 +238,6 @@ pub fn load_closure(root_file: &Path) -> Result<LoadedProgram, LoadError> {
         },
     );
 
-    // Visited-set walk (decision 3: import cycles between modules are
-    // legal) — `modules`'s own keys *are* the visited set, so a module
-    // already loaded is simply skipped, cycle or not. `queue` grows as
-    // new modules are discovered; a plain index cursor avoids
-    // recursion. Final iteration order is always by module path
-    // (`modules` is a `BTreeMap`) regardless of discovery order, so the
-    // order new modules are *found* in here has no effect on anything
-    // downstream.
     let mut queue: Vec<Vec<String>> = vec![root_key.clone()];
     let mut head = 0;
     while head < queue.len() {
@@ -397,12 +246,8 @@ pub fn load_closure(root_file: &Path) -> Result<LoadedProgram, LoadError> {
         let imports = modules[&current].module.imports.clone();
         for import in &imports {
             if import.path.len() == 1 && (import.path[0] == "core" || import.path[0] == "drivers") {
-                // Bare `from core|drivers import <name>` — nothing to load;
-                // see the module doc comment's own note on this shape.
                 continue;
             }
-            // plans/M11.md item D / decision 765: generated config module
-            // is not on disk; batch-1 strips the import from `runtime.wr`.
             if is_image_runtime_import(&import.path) {
                 continue;
             }
@@ -411,15 +256,6 @@ pub fn load_closure(root_file: &Path) -> Result<LoadedProgram, LoadError> {
                 continue;
             }
             if !file.is_file() {
-                // Deliberately does not print `file`'s own resolved
-                // path: for a `core`-mapped import, that path can
-                // bottom out in `core_root`'s compile-time
-                // `CARGO_MANIFEST_DIR` fallback — an absolute path
-                // baked in at compiler build time, which would bake
-                // *this checkout's own location* into a pinned golden
-                // the moment it differs from another clone's. The
-                // dotted module path is everything the diagnostic
-                // needs and is stable everywhere.
                 return Err(build_error(
                     format!("module `{}` not found: no such file", key.join(".")),
                     import.span,
@@ -428,29 +264,17 @@ pub fn load_closure(root_file: &Path) -> Result<LoadedProgram, LoadError> {
             ensure_under_package_root(&file, &expected_root, &key, import.span)?;
             let module = parse_file(&file)?;
             check_agrees(&file, &module, &expected_root)?;
-            // `core.runtime` keeps its `core.__image_runtime` import; the
-            // stub module is injected after the closure walk (decision 780).
             queue.push(key.clone());
             modules.insert(key, LoadedModule { file, module });
         }
     }
 
-    // plans/M9.md item E: load `core.time` only when the closure mentions
-    // a time-prelude name (or `now`). Always-loading would put
-    // `Module path=time` in every project check dump; lazy keeps the
-    // golden review surface honest.
     if closure_mentions_time(&modules) {
         ensure_time_module(&pkgroot, &mut modules)?;
     }
 
-    // plans/M10.md item A2d / decision 582: every runtime-bearing image
-    // loads `core.runtime` without a user import. Dump/report omission of
-    // the auto-injected module is decision 667 — not lazy load.
     if closure_is_runtime_bearing(&modules) {
         ensure_runtime_module(&pkgroot, &mut modules)?;
-        // plans/M11.md item E / decision 780: stub `core.__image_runtime`
-        // so runtime.wr's import typechecks before a real image is
-        // evaluated. Live images overwrite via `rtconfig::generate`.
         ensure_image_runtime_stub(&mut modules)?;
     }
 
@@ -460,37 +284,20 @@ pub fn load_closure(root_file: &Path) -> Result<LoadedProgram, LoadError> {
     })
 }
 
-/// Loader key for `stdlib/core/time.wr` — the `core` alias prefix plus
-/// the file's own `module time` address (same shape as `io_error`).
 pub const TIME_MODULE_KEY: &[&str] = &["core", "time"];
 
-/// True when any loaded module's source mentions a time-prelude name or
-/// `now` (plans/M9.md item E: lazy load of `core.time`).
 pub fn closure_mentions_time(modules: &BTreeMap<Vec<String>, LoadedModule>) -> bool {
     modules.values().any(|m| module_mentions_time(&m.module))
 }
 
-/// True when `module`'s pretty-printed source mentions a time-prelude
-/// name or `now` (plans/M9.md item E / PP). Shared by the loader's lazy
-/// `core.time` splice and by `mwir::build_layout_ctx`'s matching type
-/// inject — the two must agree on the predicate, or a module `check_typed`
-/// accepts via the prelude can still fail declare one layer down.
 pub fn module_mentions_time(module: &Module) -> bool {
-    // Pretty-print and scan tokens — cheaper and less brittle than
-    // mirroring every Expr/Stmt variant, and false positives from a
-    // comment spelling `seconds` only cost a harmless stdlib load.
     let text = crate::syntax::printer::pretty(module);
     text.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
         .any(|tok| tok == "now" || TIME_PRELUDE_NAMES.contains(&tok))
 }
 
-/// Names item E keeps prelude-visible while their implementations live
-/// in `stdlib/core/time.wr`. Canonical slice lives in
-/// [`crate::sema::prelude_scope::TIME_PRELUDE_NAMES`].
 pub use crate::sema::prelude_scope::TIME_PRELUDE_NAMES;
 
-/// Ensures `core.time` is present in `modules`. Idempotent when the
-/// closure already imported it explicitly.
 pub fn ensure_time_module(
     pkgroot: &Path,
     modules: &mut BTreeMap<Vec<String>, LoadedModule>,
@@ -514,9 +321,6 @@ pub fn ensure_time_module(
     Ok(())
 }
 
-/// Parses toolchain `stdlib/core/time.wr` into a standalone loaded module
-/// (plans/M9.md item E: the single-module `check_typed` entry still
-/// needs the time surface without a user-facing import).
 pub fn load_time_module() -> Result<(Vec<String>, LoadedModule), LoadError> {
     let key: Vec<String> = TIME_MODULE_KEY.iter().map(|s| (*s).to_string()).collect();
     let toolchain = toolchain_stdlib_core();
@@ -533,21 +337,12 @@ pub fn load_time_module() -> Result<(Vec<String>, LoadedModule), LoadError> {
     Ok((key, LoadedModule { file, module }))
 }
 
-/// Loader key for `stdlib/core/runtime.wr` — the `core` alias prefix plus
-/// the file's own `module runtime` address (plans/M10.md item A2d).
 pub const RUNTIME_MODULE_KEY: &[&str] = &["core", "runtime"];
 
-/// Loader key for the generated image-runtime config module (plans/M11.md
-/// item D / decision 701). Never loaded from disk — supplied after `@image`
-/// evaluation by `rtconfig::generate`.
 pub const IMAGE_RUNTIME_MODULE_KEY: &[&str] = &["core", "__image_runtime"];
 
-/// Package-root-relative report path for auto-injected `core.runtime`
-/// (`report::address_to_relative_path` of the dotted address).
 pub const RUNTIME_INPUT_PATH: &str = "core/runtime.wr";
 
-/// Inject the facts-only stub `core.__image_runtime` when absent
-/// (plans/M11.md item E / decision 780). Idempotent.
 pub fn ensure_image_runtime_stub(
     modules: &mut BTreeMap<Vec<String>, LoadedModule>,
 ) -> Result<(), LoadError> {
@@ -577,7 +372,6 @@ pub fn ensure_image_runtime_stub(
     Ok(())
 }
 
-/// True when `path` is the deferred generated config module.
 pub fn is_image_runtime_import(path: &[String]) -> bool {
     path.len() == IMAGE_RUNTIME_MODULE_KEY.len()
         && path
@@ -586,17 +380,12 @@ pub fn is_image_runtime_import(path: &[String]) -> bool {
             .all(|(a, b)| a == *b)
 }
 
-/// True when any loaded module is runtime-bearing (plans/M10.md item A2d /
-/// decision 582): `@test(runtime)`, free/method `async fn`, `@actor`, or
-/// `@driver`.
 pub fn closure_is_runtime_bearing(modules: &BTreeMap<Vec<String>, LoadedModule>) -> bool {
     modules
         .values()
         .any(|m| module_is_runtime_bearing(&m.module))
 }
 
-/// True when `module` declares a runtime surface that needs `core.runtime`
-/// in the image (plans/M10.md item A2d / decision 582).
 pub fn module_is_runtime_bearing(module: &Module) -> bool {
     items_are_runtime_bearing(&module.items)
 }
@@ -661,8 +450,6 @@ fn fn_is_runtime_test(f: &crate::syntax::ast::FnItem) -> bool {
     })
 }
 
-/// Ensures `core.runtime` is present in `modules`. Idempotent when the
-/// closure already imported it explicitly (plans/M10.md item A2d).
 pub fn ensure_runtime_module(
     pkgroot: &Path,
     modules: &mut BTreeMap<Vec<String>, LoadedModule>,
@@ -689,11 +476,6 @@ pub fn ensure_runtime_module(
     Ok(())
 }
 
-/// Parses toolchain `stdlib/core/runtime.wr` into a standalone loaded
-/// module (plans/M10.md item A2d: no-import runtime-bearing images still
-/// need the module in the programs map). Keeps the `core.__image_runtime`
-/// import; callers must pair with [`ensure_image_runtime_stub`] or a real
-/// generated module (plans/M11.md item E / decision 780).
 pub fn load_runtime_module() -> Result<(Vec<String>, LoadedModule), LoadError> {
     let key: Vec<String> = RUNTIME_MODULE_KEY
         .iter()
@@ -713,8 +495,6 @@ pub fn load_runtime_module() -> Result<(Vec<String>, LoadedModule), LoadError> {
     Ok((key, LoadedModule { file, module }))
 }
 
-/// Like [`load_runtime_module`] — same body after decision 780 (import is
-/// always kept; stub or real generated module supplies the symbols).
 pub fn load_runtime_module_with_image_runtime_import()
 -> Result<(Vec<String>, LoadedModule), LoadError> {
     load_runtime_module()
@@ -960,10 +740,6 @@ mod tests {
 
     #[test]
     fn visited_set_admits_a_two_module_cycle() {
-        // A pure exercise of the walk's own termination logic, without
-        // touching the filesystem: two modules whose only import is
-        // each other must not infinite-loop and must load exactly the
-        // two of them. Mirrors `load_closure`'s own loop body.
         let mut modules: BTreeMap<Vec<String>, Vec<Vec<String>>> = BTreeMap::new();
         modules.insert(vec![seg("a")], vec![vec![seg("b")]]);
         modules.insert(vec![seg("b")], vec![vec![seg("a")]]);

@@ -1,8 +1,5 @@
 module examples.check_format_bound
 
-# plans/M9.md item C2. Format contract on `String[..N]`: scalar `.format()`,
-# `String + String`, and `deriving(Format)` for a fieldful struct and a
-# unit enum. Value pins (not mere compilation).
 
 pub struct Point deriving(Format):
     x: u32
@@ -13,7 +10,6 @@ pub enum Hue deriving(Format):
     Green
 
 fn digest(s: String[..33]) -> u64:
-    # occupied*1_000_000 + b0*1_000 + b1 — same shape as check-string-bound.
     return s.len.to[u64]() * 1000000 + s[0].to[u64]() * 1000 + s[1].to[u64]()
 
 fn digest_small(s: String[..10]) -> u64:
@@ -25,12 +21,9 @@ fn digest_hue(s: String[..5]) -> u64:
 fn digest_concat(s: String[..3]) -> u64:
     return s.len.to[u64]() * 1000000 + s[0].to[u64]() * 1000 + s[1].to[u64]()
 
-# Scalar Format: 42u32 → "42" in String[..10].
 const FORTY_TWO: u32 = 42
 const SCALAR: u64 = digest_small(FORTY_TWO.format())
 
-# plans/M9.md item D2: literal / inferred receivers (02 §1.1 defaulting).
-# These are the spellings users type; annotated consts alone hid the gap.
 fn digest_i64(s: String[..20]) -> u64:
     return s.len.to[u64]() * 1000000 + s[0].to[u64]() * 1000 + s[1].to[u64]()
 
@@ -42,26 +35,21 @@ fn inferred_format() -> u64:
 
 const INFERRED: u64 = inferred_format()
 
-# Bool Format: true → "true".
 fn bool_digest(s: String[..5]) -> u64:
     return s.len.to[u64]() * 1000000 + s[0].to[u64]() * 1000 + s[1].to[u64]()
 
 const FLAG: bool = true
 const BOOL: u64 = bool_digest(FLAG.format())
 
-# String concat: "hi" + "!" → "hi!" in String[..3].
 const CONCAT: u64 = digest_concat("hi" + "!")
 
-# Fieldful deriving: Point(x=3, y=7) → "Point(x=3, y=7)".
 const POINT: u64 = digest(Point(x=3, y=7).format())
 
-# Bound associated fn: Point.max_formatted_len() == 33.
 fn as_u64(n: usize) -> u64:
     return n.to[u64]()
 
 const BOUND: u64 = as_u64(Point.max_formatted_len())
 
-# Unit enum: Hue.Red → "Red".
 const HUE: u64 = digest_hue(Hue.Red.format())
 
 @test
@@ -97,8 +85,6 @@ pub fn t_hue():
     assert HUE == 3082101, "Hue.Red formats as \"Red\""
 
 
-# Guest-reachable path (plans/M9.md item KK): H3 dropped Format helpers from
-# mwir; `@test(runtime)` seeds scalar/deriving Format + concat.
 @test(runtime)
 pub fn guest_format():
     assert digest_small(FORTY_TWO.format()) == 2052050, "scalar at guest"

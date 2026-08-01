@@ -1,15 +1,5 @@
-# plans/M10.md item A2d / B2 / B3 / B4 / C / D
-# Always-loaded runtime module. Names are not auto-visible (decision 584);
-# harness reaches helpers via force-rooted CalleeKeys + Asm::bl_call_key.
 module runtime
 
-# plans/M11.md item D / E / F / G / H: import the generated facts module.
-# Batch-1 injects a stub `core.__image_runtime` (decision 780); live images
-# replace it with `rtconfig::generate_with` before force-rooting runtime keys.
-# Fixed stub pools (decision 791 / 802 / 812) are always imported so spliced
-# match ladders can Call them (sema forbids reaching non-imported helpers).
-# M12 item E: INIT_SPAN0..INIT_SPAN_POOL_COUNT-1 are always imported (span
-# pool); boot_init zeros live spans via __wrela_init_* (`N_INIT_SLOTS`).
 from core.__image_runtime import (
     N_CORES,
     CORE_SLOTS,
@@ -427,22 +417,11 @@ TURNS_BASE,
     __test_prefix_15,
 )
 
-# M10 B2: machine pages the console formatter speaks to (decision 593).
-# Addresses match wrela-machine::layout / console — bytes live in the VMM's
-# pages, not the image blob (decision 588).
-# M10 B4: packed CONSOLE_DATA.bytes for append (decisions 594–596);
-# M11 B: OFF_TEST_LINE_BUF is packed `[u8; 21]` (decision 740).
-# M10 C: abort latch + fail counter (decision 591); long-jump is floor
-# category 4 hand-asm (`__wrela_abort_tail`).
 
 const QUEUE_SIZE: u64 = 256
 const DESC_WORD_COUNT: usize = 512
-# CONSOLE_DATA_BASE imported from core.__image_runtime (wrela-machine).
 const DATA_SIZE: usize = 16384
 
-# Soft packing ceiling (rtconfig CORE_SLOTS == wrela_machine::CORE_SLOTS;
-# plans/M15.md item E / decisions 1050–1051). Arrays are slot-sized;
-# every live loop / release / mark path indexes N_CORES only (1052).
 
 @layout(runtime, endian=little)
 struct MachineInfoPage:
@@ -456,19 +435,11 @@ struct MachineInfoPage:
     @offset(0x68) core_marks: [u64; CORE_SLOTS]
     @offset(0x200) vector0_observed: u64
     @offset(0x208) abort_latch: u64
-    # M11 K: next `@test(runtime)` index; advanced before each invoke so an
-    # abort long-jump into `__wrela_rt_primary_entry` skips the failed test.
-    # Mirrored as `wrela_machine::machine_info::OFF_TEST_NEXT` — every word
-    # of this page needs a const there, or the Rust-side overlap test cannot
-    # see the field (0x210 was handed out twice: this counter and the
-    # SlotMap id mint, which silently ate later tests).
     @offset(0x210) test_next: u64
 
 @placed(0x40000000)
 static MACHINE_INFO: MachineInfoPage
 
-# Monotonic clock MMIO (wrela_machine::mmio::CLOCK_MMIO_ADDR) — same trapping
-# load `now()` issues; deadline poll/scan read it as a placed u64.
 @layout(runtime, endian=little)
 struct ClockMmio:
     now_ns: u64
@@ -476,7 +447,6 @@ struct ClockMmio:
 @placed(0x08000000)
 static CLOCK: ClockMmio
 
-# Park MMIO (wrela_machine::mmio::PARK_MMIO_ADDR) — trapping store; VMM wakes.
 @layout(runtime, endian=little)
 struct ParkMmio:
     word: u64
@@ -484,23 +454,12 @@ struct ParkMmio:
 @placed(0x08002000)
 static PARK: ParkMmio
 
-# Exit / release MMIO (wrela_machine::mmio::{EXIT,RELEASE}_MMIO_ADDR).
 @placed(0x08001000)
 static EXIT: ParkMmio
 
 @placed(0x08003000)
 static RELEASE: ParkMmio
 
-# Per-core pending-vector page (pending::BASE). Capacity is CORE_SLOTS;
-# algorithms index with N_CORES only (decisions 1051–1052).
-# `idle` is the second array in the page (`pending::IDLE_OFF`, that module's
-# own doc has the protocol): a released core stores 1 there, behind a store
-# barrier, immediately before it parks with nothing to do, and 0 at its loop
-# head before it does any work. It is what lets core 0 tell "every other core
-# has finished" from "every other core has not started yet" before it dumps
-# the Lane 1 totals (plans/lane1-per-core.md item B / decision 1504). Half a
-# page apart from `words` so the VMM's doorbell stores and core 0's idle polls
-# never share a cache line.
 @layout(runtime, endian=little)
 struct PendingPage:
     @offset(0x0) words: [u64; CORE_SLOTS]
@@ -509,8 +468,6 @@ struct PendingPage:
 @placed(0x40007000)
 static PENDING: PendingPage
 
-# Descriptor table as 512 u64 words (256 × 16-byte entries). Word 2i is
-# desc.addr; word 2i+1 packs virtio len:u32 (low) + flags/next:u32 (high).
 @layout(runtime, endian=little)
 struct ConsoleRingPage:
     @offset(0x0) desc_words: [u64; DESC_WORD_COUNT]
@@ -520,8 +477,6 @@ struct ConsoleRingPage:
 @placed(0x40001000)
 static CONSOLE_RING: ConsoleRingPage
 
-# Packed transcript bytes (decision 596). line_commit still materializes
-# CONSOLE_DATA_BASE as a const; append indexes `.bytes` densely.
 @layout(runtime, endian=little)
 struct ConsoleDataPage:
     bytes: [u8; DATA_SIZE]
@@ -529,22 +484,13 @@ struct ConsoleDataPage:
 @placed(0x40003000)
 static CONSOLE_DATA: ConsoleDataPage
 
-# Force-root seed (A2d / decision 583). Per-actor mailbox admission
-# (`rt_enqueue <Actor>`) is synthesized into CodegenProgram under
-# specialized keys (item D / decisions 613–615) — not spelled here,
-# because the key contains a space no wrela identifier may carry.
 pub fn __wrela_runtime_probe():
     return
 
-# M10 B2: snapshot OFF_RING_DATA_BUMP into OFF_LINE_START.
 pub fn __wrela_line_begin():
     MACHINE_INFO.line_start = MACHINE_INFO.ring_data_bump
     return
 
-# M10 B2: scalar status dissolves BRK_LINE_COMMIT_OVERFLOW (decision 592).
-# Returns 0 = Ok, 1 = Overflow. A sum type would be an aggregate return
-# (x8 pointer) that harness bl_call_key sites do not arm — keep it a
-# register-sized value so callers can ignore x0.
 pub fn __wrela_line_commit() -> u64:
     desc_bump = MACHINE_INFO.ring_desc_bump
     if desc_bump >= QUEUE_SIZE:
@@ -555,7 +501,6 @@ pub fn __wrela_line_commit() -> u64:
     data_addr = CONSOLE_DATA_BASE.to[u64]() +% line_start
     wi = (desc_bump *% 2).to[usize]()
     CONSOLE_RING.desc_words[wi] = data_addr
-    # flags/next = 0 occupies the high half of this word (little-endian).
     CONSOLE_RING.desc_words[(desc_bump *% 2 +% 1).to[usize]()] = len
     new_idx = desc_bump +% 1
     CONSOLE_RING.avail_flags_idx = (new_idx *% 65536).to[u32]()
@@ -563,14 +508,6 @@ pub fn __wrela_line_commit() -> u64:
     CONSOLE_RING.doorbell = 1
     return 0
 
-# M11 B: `__wrela_fmt_dec` — dumb digit render into OFF_TEST_LINE_BUF.
-# Sole copy after M10 B5 deleted the hand-asm twin. Digit extract, reverse,
-# and append copies are ordinary `@budget`-bounded sync loops over a packed
-# `[u8; 21]` (decisions 740–742). Sync loops emit trip counters, not
-# checkpoints (M11 item A / decision 721), so a back-edge cannot splice
-# `__wrela_checkpoint_service` onto console formatting (M10 decision 597
-# dissolved). Index bounds still emit `bl __wrela_abort_val`; the abort
-# latch (M10 decision 591) keeps a second entry from recursing into print.
 
 const LINE_BUF_SIZE: usize = 21
 
@@ -578,60 +515,10 @@ const LINE_BUF_SIZE: usize = 21
 struct TestLineBuf:
     bytes: [u8; LINE_BUF_SIZE]
 
-# MACHINE_INFO_BASE + OFF_TEST_LINE_BUF (0x40000000 + 0x218).
-# After test_next @ 0x210 — CORE_SLOTS marks at 0x68 pack through 0x168
-# and must not overlap this scratch (plans/M15.md item F layout fix).
 @placed(0x40000218)
 static TEST_LINE_BUF: TestLineBuf
 
-# ---------------------------------------------------------------------------
-# Integrity Phase 2 Item I — Lane 1 scheduler counters.
-# Method hits are indexed by the same flat `__method_N` order
-# `__wrela_call_method` uses (sum of prior mailboxes' method_count + local mi).
-# Dump is a deterministic transcript block.
-# ---------------------------------------------------------------------------
 
-# plans/lane1-per-core.md item A (decisions 1500–1502): ONE ROW PER CORE,
-# summed at dump. Every update below used to be a non-atomic read-modify-write
-# on one shared static, executed by whichever core drains
-# (`__wrela_rt_run_one`, `__wrela_rt_select`, `__wrela_rt_enqueue`,
-# `__wrela_lane1_record_method`). Since plans/M15.md item I deleted the baton,
-# two cores draining different mailboxes run concurrently, so an increment
-# COULD BE LOST — and ledger.toml:697 makes Lane 1 a cost-model frequency
-# source, so a lost increment biases `sum f(fn) x s(fn)` toward "measuring
-# less". A `@dmb` cannot fix it: a barrier orders visibility, not
-# read-modify-write atomicity, and this language exposes no atomic add
-# (decision 1500 rejects adding one to buy mutual exclusion this design does
-# not need). The fix is ownership: each core writes only `cores[core]`, so
-# there is no concurrent RMW left to make atomic, and `__wrela_lane1_dump`
-# folds the rows in core order (decision 1502). Decision 1501 sizes the stripe
-# by the generated `N_CORES`, not `CORE_SLOTS`, so a one-core image keeps
-# exactly one row and its previous byte size.
-#
-# What the three scalars mean, since two of them are read as a cost-model
-# frequency vector and one of them used to be a poll count
-# (plans/lane1-per-core.md item C):
-#   * `turns`     — one per message dequeued into a turn (`__wrela_rt_select`).
-#   * `messages`  — one per message admitted to a mailbox (`__wrela_rt_enqueue`).
-#   * `run_one_hits` — one unit of work *completed* per `__wrela_rt_run_one`
-#     tick that did something: the **number of messages drained** (not the
-#     number of drain calls — see `__wrela_rt_drain`), one per turn slice run,
-#     one per group-child slice run. An unproductive poll counts nothing, and
-#     that includes every spin of item B's quiesce loop, which is what keeps
-#     the total independent of how the host happened to schedule the cores.
-# Every one of those quantities is fixed by the program, not by an
-# interleaving: measured 20/20 identical trailers on `ring-full`,
-# `admission-order`, `two-senders`, `boot-cores-2` and `boot-cores-3` after
-# items A+B (2026-07-29).
-#
-# One array per counter, indexed by core — not `[Lane1Counters; N_CORES]`.
-# `lower.rs`'s `placed_array_field_index` resolves exactly **one** array-field
-# index into a placed static, so `LANE1.cores[core].method_hits[flat]` does not
-# lower at all ("an array length expression that is not a literal is not
-# implemented yet") and the generic array path is not a placed-memory store.
-# Transposing keeps every access single-level, and keeps the byte layout of a
-# one-core image identical to the pre-stripe `Lane1Counters`
-# (turns@0x0, run_one_hits@0x8, messages@0x10, method_hits@0x18).
 const LANE1_METHOD_HITS_LEN: usize = N_CORES * METHOD_CALL_POOL_COUNT
 
 @layout(runtime, endian=little)
@@ -641,23 +528,9 @@ struct Lane1Stripe:
     messages: [u64; N_CORES]
     method_hits: [u64; LANE1_METHOD_HITS_LEN]
 
-# In the reserved device-page growth window (0x40008000..0x40010000);
-# DRAM-mapped, zero at boot. Placed **above** the fixed-size LANE2 page on
-# purpose: the stripe is `N_CORES` rows wide, so its extent is image-dependent,
-# and growing it must not walk into LANE2 — whose base the host pins as a
-# constant in `crates/wrela-vmm/src/lane3.rs`. `collect_placed_statics`'s
-# device-window verifier refuses an image whose rows would leave the window,
-# rather than letting a row overwrite the next static.
-#
-# plans/M20.md item B / decision 1607 moved this base up from 0x4000b000:
-# BLOCK_POOL_COUNT grew 1024 -> 3072, so LANE2 (8 + 8*3072 = 24584 bytes at
-# 0x40008800) now ends at 0x4000e808 and the stripe has to start above that.
-# The cost is stated in rtconfig.rs's BLOCK_POOL_COUNT comment: the window's
-# remaining 5888 bytes hold N_CORES <= 5 rows, where 0x4000b000 held 19.
 @placed(0x4000e900)
 static LANE1: Lane1Stripe
 
-# Flat method index matching `__wrela_call_method`'s `__method_N` numbering.
 pub fn __wrela_lane1_method_flat(root: usize, method: usize) -> usize:
     flat: usize = 0
     r: usize = 0
@@ -668,10 +541,6 @@ pub fn __wrela_lane1_method_flat(root: usize, method: usize) -> usize:
         r = r +% 1
     return flat +% method
 
-# `core` is the core running this turn — threaded from `__wrela_rt_select`,
-# never re-derived here (decision 1500: the writer owns its row). Out of range
-# is impossible by construction; fail closed loudly rather than default to row
-# 0, which would reintroduce the shared read-modify-write.
 pub fn __wrela_lane1_record_method(core: usize, root: usize, method: usize):
     if core >= N_CORES:
         MACHINE_INFO.test_failed = MACHINE_INFO.test_failed +% 1
@@ -687,9 +556,6 @@ pub fn __wrela_lane1_append_u64(value: u64) -> u64:
     digs = __wrela_fmt_dec(value, 0)
     return __wrela_console_append_line_buf(digs.to[usize]())
 
-# Fold the per-core rows, in core order (decision 1502). The emitted text keeps
-# its shape — what changed is where a count comes from, not what it means — so
-# a single-core image dumps exactly the bytes it dumped before item A.
 pub fn __wrela_lane1_sum_turns() -> u64:
     total: u64 = 0
     c: usize = 0
@@ -726,12 +592,8 @@ pub fn __wrela_lane1_sum_method_hits(flat: usize) -> u64:
         c = c +% 1
     return total
 
-# Compact Lane 1 block (two console lines, after the summary):
-#   lane1 turns=<t> run_one=<r> messages=<m>
-#   lane1 hits=<flat>:<count>,...   (non-zero only, ascending flat)
 pub fn __wrela_lane1_dump():
     __wrela_line_begin()
-    # "lane1 turns="
     TEST_LINE_BUF.bytes[0] = 108
     TEST_LINE_BUF.bytes[1] = 97
     TEST_LINE_BUF.bytes[2] = 110
@@ -746,7 +608,6 @@ pub fn __wrela_lane1_dump():
     TEST_LINE_BUF.bytes[11] = 61
     _ = __wrela_console_append_line_buf(12)
     _ = __wrela_lane1_append_u64(__wrela_lane1_sum_turns())
-    # " run_one="
     TEST_LINE_BUF.bytes[0] = 32
     TEST_LINE_BUF.bytes[1] = 114
     TEST_LINE_BUF.bytes[2] = 117
@@ -758,7 +619,6 @@ pub fn __wrela_lane1_dump():
     TEST_LINE_BUF.bytes[8] = 61
     _ = __wrela_console_append_line_buf(9)
     _ = __wrela_lane1_append_u64(__wrela_lane1_sum_run_one())
-    # " messages="
     TEST_LINE_BUF.bytes[0] = 32
     TEST_LINE_BUF.bytes[1] = 109
     TEST_LINE_BUF.bytes[2] = 101
@@ -774,7 +634,6 @@ pub fn __wrela_lane1_dump():
     TEST_LINE_BUF.bytes[0] = 10
     _ = __wrela_console_append_line_buf(1)
     _ = __wrela_line_commit()
-    # hits line
     __wrela_line_begin()
     TEST_LINE_BUF.bytes[0] = 108
     TEST_LINE_BUF.bytes[1] = 97
@@ -815,12 +674,6 @@ pub fn __wrela_lane1_dump():
     _ = __wrela_line_commit()
     return
 
-# ---------------------------------------------------------------------------
-# Integrity Phase 2 Item M — Lane 2 in-guest block counters.
-# Placed after LANE1 in the device-page growth window. Hits are indexed by
-# stable codegen-assigned leader ids (BTreeMap fn order × leaders-in-order).
-# Dump is a no-op unless `--block-count` emission set `enabled`.
-# ---------------------------------------------------------------------------
 
 @layout(runtime, endian=little)
 struct Lane2Counters:
@@ -831,9 +684,6 @@ struct Lane2Counters:
 static LANE2: Lane2Counters
 
 pub fn __wrela_block_hit(id: usize):
-    # enabled: 0 = off (no emission this boot yet), 1 = counting,
-    # 2 = frozen after `__wrela_lane2_dump` (Item N: dump must match the
-    # host DRAM snapshot at halt; refuse post-dump increments).
     if LANE2.enabled == 2:
         return
     if id >= BLOCK_POOL_COUNT:
@@ -842,31 +692,11 @@ pub fn __wrela_block_hit(id: usize):
     LANE2.hits[id] = LANE2.hits[id] +% 1
     return
 
-# Compact Lane 2 block (one console line after Lane 1, when enabled):
-#   lane2 hits=<id>:<count>,... truncated=<N>   (non-zero only, ascending id)
-#
-# plans/M20.md item C / decision 1610: this line is a **bounded, explicitly
-# truncating diagnostic**, not Lane 2's normative sink. At most
-# BLOCK_BOUND_PRINT_PAIRS pairs are printed; `truncated=<N>` then names how
-# many non-zero blocks were dropped, so a dropped pair is loud and never
-# silent. The marker prints unconditionally (N=0 when nothing was dropped) so
-# that its absence identifies a pre-1610 transcript rather than a complete
-# one. Real boots do truncate: measured non-zero blocks are 372 (boot-actors)
-# to 609 (boot-cross-core-mailbox-depth) against 128 printable pairs, and
-# console::DATA_SIZE (16 KiB) cannot bound 609 pairs at any honest per-pair
-# worst case. The **full** f vector comes from the host DRAM snapshot
-# (`wrela-vmm --dump-lane2`), which has no console bound; 04 §5 names the
-# snapshot as Lane 2's normative sink and this line as the diagnostic, and
-# Lane 3 agreement compares the snapshot against the pairs this line
-# actually carries.
 pub fn __wrela_lane2_dump():
     if LANE2.enabled == 0:
         return
-    # Freeze before printing so post-dump app code cannot move the vector
-    # under the dump / Lane 3 host DRAM agreement (Integrity Item N).
     LANE2.enabled = 2
     __wrela_line_begin()
-    # "lane2 hits="
     TEST_LINE_BUF.bytes[0] = 108
     TEST_LINE_BUF.bytes[1] = 97
     TEST_LINE_BUF.bytes[2] = 110
@@ -883,7 +713,6 @@ pub fn __wrela_lane2_dump():
     i: usize = 0
     printed: usize = 0
     dropped: u64 = 0
-    # plans/M20.md item B: BLOCK_POOL_COUNT is 3072.
     @budget(bound=4096)
     while i < BLOCK_POOL_COUNT:
         c = LANE2.hits[i]
@@ -901,7 +730,6 @@ pub fn __wrela_lane2_dump():
             else:
                 dropped = dropped +% 1
         i = i +% 1
-    # " truncated=" — always printed, N=0 when nothing was dropped.
     TEST_LINE_BUF.bytes[0] = 32
     TEST_LINE_BUF.bytes[1] = 116
     TEST_LINE_BUF.bytes[2] = 114
@@ -943,15 +771,10 @@ fn ascii_digit(d: u64) -> u8:
         return 57
     return 48
 
-# ABI: x0=value bits, x1=is_signed (nonzero => signed), x0=len. Magnitude
-# via wrapping negation (decision 652); never checked. Not Format (598).
 pub fn __wrela_fmt_dec(value: u64, is_signed: u64) -> u64:
     mag = value
     neg = false
     if is_signed != 0:
-        # MSB set <=> negative as i64. Use `>> 63` (LSR) — ordered
-        # compare is always signed in this backend and is wrong for the
-        # upper half of u64 (codegen Compare invariant).
         if (value >> 63) != 0:
             neg = true
             mag = 0 -% value
@@ -963,7 +786,6 @@ pub fn __wrela_fmt_dec(value: u64, is_signed: u64) -> u64:
     if mag == 0:
         TEST_LINE_BUF.bytes[pos] = 48
         return (pos +% 1).to[u64]()
-    # u64 has at most 20 decimal digits.
     @budget(bound=20)
     while mag != 0:
         TEST_LINE_BUF.bytes[pos] = ascii_digit(mag % 10)
@@ -971,7 +793,6 @@ pub fn __wrela_fmt_dec(value: u64, is_signed: u64) -> u64:
         pos = pos +% 1
     lo = digits_start
     hi = pos -% 1
-    # At most 10 swaps for 20 digits.
     @budget(bound=10)
     while lo < hi:
         t = TEST_LINE_BUF.bytes[lo]
@@ -981,10 +802,6 @@ pub fn __wrela_fmt_dec(value: u64, is_signed: u64) -> u64:
         hi = hi -% 1
     return pos.to[u64]()
 
-# M11 B: linear copy under a trip-counter bound (decision 741). Callers
-# have already status-returned on ring overflow, so `n ≤ LINE_BUF_SIZE`
-# / `n ≤ DATA_SIZE` on the green path; a bounds fail still hits the
-# abort latch (decision 742).
 fn copy_line_buf_range(bump: usize, n: usize):
     i: usize = 0
     @budget(bound=21)
@@ -1001,11 +818,6 @@ fn copy_bytes_range(src: Bytes, bump: usize, n: usize):
         i = i +% 1
     return
 
-# plans/M17.md item H: guest-importable u64 → one console transcript line
-# (`"<decimal>\n"`). Self-contained (no calls to other fns) so an importer
-# that pulls only this name does not hit the "private helper not imported"
-# wall. Digit / append / commit logic mirrors `__wrela_fmt_dec` +
-# append_line_buf + line_commit — keep in lockstep if those change.
 pub fn __wrela_trace_u64(value: u64):
     mag = value
     pos: usize = 0
@@ -1028,10 +840,8 @@ pub fn __wrela_trace_u64(value: u64):
             TEST_LINE_BUF.bytes[hi] = t
             lo = lo +% 1
             hi = hi -% 1
-    # Trailing newline so the test harness's next "ok" starts a fresh line.
     TEST_LINE_BUF.bytes[pos] = 10
     pos = pos +% 1
-    # line_begin
     MACHINE_INFO.line_start = MACHINE_INFO.ring_data_bump
     bump: usize = MACHINE_INFO.ring_data_bump.to[usize]()
     end: usize = bump +% pos
@@ -1045,7 +855,6 @@ pub fn __wrela_trace_u64(value: u64):
         CONSOLE_DATA.bytes[bump +% i] = TEST_LINE_BUF.bytes[i]
         i = i +% 1
     MACHINE_INFO.ring_data_bump = end.to[u64]()
-    # line_commit
     desc_bump = MACHINE_INFO.ring_desc_bump
     if desc_bump >= QUEUE_SIZE:
         return
@@ -1062,13 +871,7 @@ pub fn __wrela_trace_u64(value: u64):
     CONSOLE_RING.doorbell = 1
     return
 
-# M10 B4: append from OFF_TEST_LINE_BUF. No pointer — the buffer address
-# is a placed-static fact. Returns 0 on success, 1 on overflow
-# (decision 592: status, not BRK / abort).
 pub fn __wrela_console_append_line_buf(len: usize) -> u64:
-    # Layout field is u64 (decision 563); index wants usize. Same width
-    # on this machine — `.to` abort is unreachable for a bump that
-    # passed the ring-capacity check below (decision 591).
     bump: usize = MACHINE_INFO.ring_data_bump.to[usize]()
     end: usize = bump +% len
     if end < bump:
@@ -1079,9 +882,6 @@ pub fn __wrela_console_append_line_buf(len: usize) -> u64:
     MACHINE_INFO.ring_data_bump = end.to[u64]()
     return 0
 
-# M10 B4: append `len` packed bytes from an unbounded Bytes handle
-# (base, capacity). `len` must be ≤ handle capacity; longer / ring
-# overflow returns 1 (decision 592).
 pub fn __wrela_console_append_bytes(src: Bytes, len: usize) -> u64:
     bump: usize = MACHINE_INFO.ring_data_bump.to[usize]()
     if len > src.len:
@@ -1095,25 +895,15 @@ pub fn __wrela_console_append_bytes(src: Bytes, len: usize) -> u64:
     MACHINE_INFO.ring_data_bump = end.to[u64]()
     return 0
 
-# M10 C: floor category 4 long-jump (decision 650). Body is overwritten
-# by layout with hand-asm `LDR`+`BR` against OFF_TEST_CONTINUATION — the
-# `return` here is only so the call graph type-checks; it must never
-# remain in a test image.
 fn __wrela_abort_tail():
     return
 
-# Shared landing-pad bookkeeping (decision 591): clear latch, count a
-# fail, then the computed long-jump. Both first-entry and re-entry end
-# here so a bounds failure inside the print path cannot recurse.
 fn finish_abort():
     MACHINE_INFO.abort_latch = 0
     MACHINE_INFO.test_failed = MACHINE_INFO.test_failed +% 1
     __wrela_abort_tail()
     return
 
-# "FAILED " via line-buf stores — Static[Bytes[N]] still cannot coerce
-# to an unbounded Bytes parameter (decision 595), and abort must not
-# depend on harness-interned rodata.
 fn append_failed_literal() -> u64:
     TEST_LINE_BUF.bytes[0] = 70
     TEST_LINE_BUF.bytes[1] = 65
@@ -1128,12 +918,6 @@ fn append_newline_literal() -> u64:
     TEST_LINE_BUF.bytes[0] = 10
     return __wrela_console_append_line_buf(1)
 
-# M10 C: `__wrela_abort(msg: Bytes)` — Bytes is by-pointer (one ABI rule
-# with every other non-scalar); Reloc::AbortFixed callers pass `x0 =`
-# address of a stack `(base, len)` slot (capacity equals length).
-# Re-entrancy latch at OFF_ABORT_LATCH (decision 591); overflow from
-# append/commit is status (decision 592); wrapping arith (decision 652);
-# console helpers use `@budget`-bounded sync loops (M11 decisions 740–742).
 pub fn __wrela_abort(msg: Bytes):
     if MACHINE_INFO.abort_latch != 0:
         finish_abort()
@@ -1145,9 +929,6 @@ pub fn __wrela_abort(msg: Bytes):
     _ = __wrela_line_commit()
     finish_abort()
 
-# M10 C: `__wrela_abort_val` — by-pointer Bytes for prefix/suffix plus
-# value / value_signed scalars (`x0=*prefix, x1=value, x2=signed,
-# x3=*suffix`), matching Reloc::AbortVal callers.
 pub fn __wrela_abort_val(prefix: Bytes, value: u64, value_signed: u64, suffix: Bytes):
     if MACHINE_INFO.abort_latch != 0:
         finish_abort()
@@ -1162,15 +943,7 @@ pub fn __wrela_abort_val(prefix: Bytes, value: u64, value_signed: u64, suffix: B
     _ = __wrela_line_commit()
     finish_abort()
 
-# ---------------------------------------------------------------------------
-# M11 item E: deadline poll + scan (decisions 782–783). Generic @budget
-# loops over RT.turns / GROUPS.slots; force-rooted into `code`. The old
-# ImageStatic emitters (`emit_deadline_poll` / `emit_deadline_scan_and_
-# delivery`) are deleted — checkpoint vector0 and the entry driver BL here.
-# ---------------------------------------------------------------------------
 
-# Minimum live deadline → MACHINE_INFO.next_deadline; if already due, raise
-# pending bits on every live core (N_CORES — decision 709).
 pub fn __wrela_deadline_poll():
     min_dl: u64 = 0
     i: usize = 0
@@ -1196,8 +969,6 @@ pub fn __wrela_deadline_poll():
                 c = c +% 1
     return
 
-# Vector-0 body: mark expired groups cancelled, then force-resume parked
-# non-owner turns whose ambient group was just cancelled.
 pub fn __wrela_deadline_scan():
     now = CLOCK.now_ns
     i: usize = 0
@@ -1225,28 +996,14 @@ pub fn __wrela_deadline_scan():
         t = t +% 1
     return
 
-# ---------------------------------------------------------------------------
-# M11 item F: rt_run_one + rt_child_poll (decisions 790–794). Generic
-# @budget loops over RT.sched / generated select+child ladders. Call sites
-# BL `__wrela_rt_run_one(core)`; child harvest reads `TurnArea.reply`
-# (async epilogue stores the completing scalar there — decision 793).
-# ---------------------------------------------------------------------------
 
 const TURN_STATUS_COMPLETED: u64 = 0
 const TURN_STATUS_SUSPENDED: u64 = 1
 const TURN_STATUS_CANCELLED: u64 = 2
 
-# Per-core scheduler tick. ABI: x0 = core on entry; returns 1 if work ran.
-# `core` indexes `SCHED.cores` and every `LANE1` counter array, all `N_CORES`
-# wide, so an
-# out-of-range core aborts on the index rather than defaulting to row 0.
 pub fn __wrela_rt_run_one(core: usize) -> u64:
     drained = __wrela_try_drain(core)
     if drained != 0:
-        # Add the message count, not 1: one drain call empties the ring, so
-        # counting calls makes this tick count depend on how the producer's
-        # publishes happened to interleave with this consumer's polls (see
-        # `__wrela_rt_drain`). Counting messages is interleaving-invariant.
         LANE1.run_one_hits[core] = LANE1.run_one_hits[core] +% drained
         return 1
     n = __wrela_select_count(core)
@@ -1285,7 +1042,6 @@ pub fn __wrela_rt_run_one(core: usize) -> u64:
             s = s +% 1
     return 0
 
-# Poll one static g.start site. Returns 1 if a slice ran / completed.
 pub fn __wrela_child_poll(site: usize) -> u64:
     ti = __wrela_child_turn_index(site)
     if RT.turns[ti].busy == 0:
@@ -1304,8 +1060,6 @@ pub fn __wrela_child_poll(site: usize) -> u64:
     ag = RT.turns[ti].ambient_group
     gi: usize = (ag -% 1).to[usize]()
     slot = __wrela_child_slot(site)
-    # plans/M12.md item F: fail closed above the image GROUP_MAX_CHILDREN fact
-    # (store ladder covers 0..N-1 and also returns 0 for slot >= N).
     if slot >= GROUP_MAX_CHILDREN:
         return 0
     if __wrela_child_store_result(gi, slot, tag, payload) == 0:
@@ -1320,16 +1074,7 @@ pub fn __wrela_child_poll(site: usize) -> u64:
             RT.turns[wi].resume_ready = 1
     return 1
 
-# ---------------------------------------------------------------------------
-# M11 item G: rt_xsend / rt_xreply / rt_drain (decisions 800–805). Generic
-# @budget algorithms over ring accessors + handle-identity ladders. Call
-# sites BL fixed trampolines `__wrela_xsend_N` / `__wrela_xreply_N`; run_one
-# drains via `__wrela_try_drain` → `__wrela_rt_drain`. Helpers are inlined
-# so force-root reachability does not need a second closure pass.
-# ---------------------------------------------------------------------------
 
-# Cross-core request publish. ABI matches former emit_rt_xsend / rt_enqueue.
-# M12 item C: index RINGS_CTL / RINGS_DATA directly (data ladders deleted).
 pub fn __wrela_rt_xsend(edge: usize, method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
     if edge >= N_RINGS:
         return 1
@@ -1359,13 +1104,11 @@ pub fn __wrela_rt_xsend(edge: usize, method: u64, arg0: u64, arg1: u64, waker_tu
         t = 0
     RINGS_CTL.edges[edge].tail = t
     RINGS_CTL.edges[edge].count = count +% 1
-    # plans/M15.md item H: publish barrier before pending raise.
     @dmb(ishst)
     dst = __wrela_ring_dst_core(edge)
     PENDING.words[dst] = PENDING.words[dst] | 1
     return 0
 
-# Cross-core reply publish. Leaf ABI: x0=turn_and_tag, x1=reply.
 pub fn __wrela_rt_xreply(edge: usize, turn_and_tag: u64, reply: u64):
     if edge >= N_RINGS:
         return
@@ -1374,10 +1117,8 @@ pub fn __wrela_rt_xreply(edge: usize, turn_and_tag: u64, reply: u64):
     cap = __wrela_ring_capacity(edge)
     count = RINGS_CTL.edges[edge].count
     if count >= cap:
-        # Unreachable by construction (reply_ring_capacity); fail closed.
         MACHINE_INFO.test_failed = MACHINE_INFO.test_failed +% 1
         return
-    # Reply slots are always 2 u64 words (decision 665).
     tail = RINGS_CTL.edges[edge].tail
     base = (tail *% 2).to[usize]()
     row = edge *% RING_STRIDE_WORDS
@@ -1388,40 +1129,11 @@ pub fn __wrela_rt_xreply(edge: usize, turn_and_tag: u64, reply: u64):
         t = 0
     RINGS_CTL.edges[edge].tail = t
     RINGS_CTL.edges[edge].count = count +% 1
-    # plans/M15.md item H: publish barrier before pending raise.
     @dmb(ishst)
     dst = __wrela_ring_dst_core(edge)
     PENDING.words[dst] = PENDING.words[dst] | 1
     return
 
-# Inbound drain for one core: reply lanes first, then request → enqueue.
-# M13 item N: secondary wake-doorbell clear also lives in
-# `__wrela_rt_checkpoint(core)` (loop-head BL). Dual-clear kept here —
-# level-triggered, idempotent — so a park-vs-loop-head reorder or a raise
-# whose consumer never runs (e.g. ring-full reject) cannot strand the word
-# for the VMM baton (plans/M13.md risk note).
-# Returns the **number of messages drained**, not a 0/1 flag. Callers only
-# ever test it against zero, but the count is what makes `LANE1.run_one_hits`
-# deterministic: this fn drains a ring to empty in one call, so a flag would
-# make "one tick" mean one message when a producer publishes slowly and two
-# when it publishes in a burst. That difference is pure host interleaving
-# under concurrent record (plans/M15.md item I), and it is what made
-# `golden/boot-cross-core-admission-order` flake by exactly one between
-# runs (12 vs 13, ~1 run in 4). Messages drained is batching-invariant:
-# however the publishes interleave, the total is the same (adversarial
-# audit, 2026-07-29).
-#
-# It did **not**, on its own, fix `golden/boot-cross-core-ring-full`, whose
-# Lane 1 trailer varied in every field (`turns` 0/1, `run_one` 0/1/2,
-# `messages` 0/1, `hits` empty or `0:1`) — that case is racy for a different
-# and deeper reason: it asserts a *rejection*, so it deliberately halts with
-# one admitted-but-unprocessed message outstanding, and whether core 1 had
-# drained and run that turn before core 0 reached
-# `__wrela_rt_summary_and_halt` was pure host timing. No counter definition
-# can settle that. plans/lane1-per-core.md item B did, with the
-# quiesce-before-halt step this note asked for
-# (`__wrela_quiesce_before_halt`); the case pins its trailer again, and
-# `xtask repro`'s `repro_lane1_trailer_repeats` re-boots it on every check.
 pub fn __wrela_rt_drain(core: usize) -> u64:
     moved: u64 = 0
     if core != 0:
@@ -1433,7 +1145,6 @@ pub fn __wrela_rt_drain(core: usize) -> u64:
         edge = __wrela_drain_reply_edge(core, ri)
         @budget(bound=256)
         while RINGS_CTL.edges[edge].count != 0:
-            # plans/M15.md item H: acquire barrier before payload loads.
             @dmb(ishld)
             head = RINGS_CTL.edges[edge].head
             base = (head *% 2).to[usize]()
@@ -1462,7 +1173,6 @@ pub fn __wrela_rt_drain(core: usize) -> u64:
         edge = __wrela_drain_request_edge(core, qi)
         @budget(bound=256)
         while RINGS_CTL.edges[edge].count != 0:
-            # plans/M15.md item H: acquire barrier before payload loads.
             @dmb(ishld)
             slot_words = __wrela_ring_slot_words(edge)
             head = RINGS_CTL.edges[edge].head
@@ -1481,7 +1191,6 @@ pub fn __wrela_rt_drain(core: usize) -> u64:
             handle = __wrela_ring_target_handle(edge)
             rejected = __wrela_try_enqueue(core, handle, method, arg0, arg1, wt, wc)
             if rejected != 0:
-                # Mailbox full — leave the ring slot; try again next tick.
                 return moved
             h = head +% 1
             cap = __wrela_ring_capacity(edge)
@@ -1494,15 +1203,12 @@ pub fn __wrela_rt_drain(core: usize) -> u64:
         qi = qi +% 1
     return moved
 
-# run_one entry: skip the ImageStatic drain body (deleted — decision 805).
 pub fn __wrela_try_drain(core: usize) -> u64:
     n = __wrela_drain_reply_count(core) +% __wrela_drain_request_count(core)
     if n == 0:
         return 0
     return __wrela_rt_drain(core)
 
-# Fixed trampoline pools (decision 802): layout remaps `rt_xsend` /
-# `rt_xreply` Call keys onto these; each bakes its edge index.
 pub fn __wrela_xsend_0(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
     return __wrela_rt_xsend(0, method, arg0, arg1, waker_turn, waker_core)
 pub fn __wrela_xsend_1(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
@@ -1546,24 +1252,10 @@ pub fn __wrela_xreply_7(turn_and_tag: u64, reply: u64):
     return
 
 
-# ---------------------------------------------------------------------------
-# M11 item J: rt_enqueue + rt_select_and_run (decisions 830–835). Generic
-# @budget algorithms over mailbox overlays + generated method dispatch.
-# Send sites alias `rt_enqueue <Actor>` onto `__enqueue_N` trampolines;
-# run_one Calls `__wrela_try_select` → `__wrela_rt_select`.
-# ---------------------------------------------------------------------------
 
 const REPLY_TAG_OK: u64 = 0
 const CALL_ERROR_TAG_CANCELLED: u64 = 1
 
-# Admission: bounded ring insert. ABI matches former emit_rt_enqueue, plus the
-# leading `core` plans/lane1-per-core.md item A threads for the Lane 1 row: the
-# admitting core owns `LANE1`'s `core` slot, and it is always the core that owns
-# `root` (`layout.rs::resolve_cross_core_edge` keeps a direct
-# `__rt_enqueue_<Actor>` Call only for a same-core edge; every cross-core send
-# rides a ring and is admitted by the destination core's own drain). Passed in
-# rather than re-derived here so the caller that *knows* which core is running
-# says so (decision 1500), and refused rather than defaulted below.
 pub fn __wrela_rt_enqueue(core: usize, root: usize, method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
     if core >= N_CORES:
         MACHINE_INFO.test_failed = MACHINE_INFO.test_failed +% 1
@@ -1594,21 +1286,12 @@ pub fn __wrela_rt_enqueue(core: usize, root: usize, method: u64, arg0: u64, arg1
     LANE1.messages[core] = LANE1.messages[core] +% 1
     return 0
 
-# Handle-identity → enqueue (drain request lane). `core` is the draining core
-# (`__wrela_rt_drain`'s own argument), which owns every mailbox its request
-# rings target.
 pub fn __wrela_try_enqueue(core: usize, handle: usize, method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
     root = __wrela_enqueue_root(handle)
     if root == NO_EDGE:
         return 1
     return __wrela_rt_enqueue(core, root, method, arg0, arg1, waker_turn, waker_core)
 
-# Fixed trampolines so layout can alias `rt_enqueue <Actor>` → `__enqueue_N`.
-# The Call ABI is codegen's (method, arg0, arg1, waker_turn, waker_core) and
-# carries no core, so this one helper supplies the baked root's owning core —
-# which *is* the core executing the trampoline, by `resolve_cross_core_edge`'s
-# same-core rule (see `__wrela_rt_enqueue`). One shared derivation site rather
-# than thirty-two copies of the same ladder call.
 pub fn __wrela_enqueue_local(root: usize, method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
     return __wrela_rt_enqueue(__wrela_mb_core(root), root, method, arg0, arg1, waker_turn, waker_core)
 
@@ -1677,7 +1360,6 @@ pub fn __enqueue_30(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_co
 pub fn __enqueue_31(method: u64, arg0: u64, arg1: u64, waker_turn: u64, waker_core: u64) -> u64:
     return __wrela_enqueue_local(31, method, arg0, arg1, waker_turn, waker_core)
 
-# Invoke cross-core reply trampoline by edge index.
 pub fn __wrela_invoke_xreply(edge: usize, turn_and_tag: u64, reply: u64):
     match edge:
         case 0:
@@ -1707,7 +1389,6 @@ pub fn __wrela_invoke_xreply(edge: usize, turn_and_tag: u64, reply: u64):
         case _:
             return
 
-# Deliver reply to waker (local TurnArea or remote xreply ring).
 pub fn __wrela_deliver_reply(root: usize, ti: usize, reply: u64, tag: u64):
     wt = RT.turns[ti].waker_turn.to[u64]()
     if wt == 0:
@@ -1726,10 +1407,6 @@ pub fn __wrela_deliver_reply(root: usize, ti: usize, reply: u64, tag: u64):
     RT.turns[wi].resume_ready = 1
     return
 
-# Select + dispatch one mailbox root. Returns 1 if a turn(-slice) ran.
-# `core` is the selecting core, threaded from `__wrela_try_select` for the
-# Lane 1 row (plans/lane1-per-core.md item A): only the core that owns `root`'s
-# RR slot ever selects it, so that core alone writes `LANE1`'s `core` slot.
 pub fn __wrela_rt_select(core: usize, root: usize) -> u64:
     if core >= N_CORES:
         MACHINE_INFO.test_failed = MACHINE_INFO.test_failed +% 1
@@ -1825,21 +1502,12 @@ pub fn __wrela_rt_select(core: usize, root: usize) -> u64:
     RT.turns[ti].waker_core = 0
     return 1
 
-# RR slot → select (replaces generated try_select → ImageStatic remap).
 pub fn __wrela_try_select(core: usize, slot: usize) -> u64:
     root = __wrela_select_root(core, slot)
     if root == NO_EDGE:
         return 0
     return __wrela_rt_select(core, root)
 
-# ---------------------------------------------------------------------------
-# M11 item H: boot_init + secondary_core_entry (decisions 810–815).
-# `__wrela_rt_boot_init` zeros actor/driver state via coalesced INIT_SPAN*
-# overlays (M12 item E / decisions 883–885; `N_INIT_SLOTS` = span count) then
-# Calls `__boot_call_*` stubs (specialized A64 with Relocs, overwritten at
-# inject — decision 812). Secondary park/run loop omits sync `@budget`
-# (decision 810); floor-cat1 SP install is prepended at inject (decision 811).
-# ---------------------------------------------------------------------------
 
 pub fn __wrela_rt_boot_init():
     i: usize = 0
@@ -1859,41 +1527,19 @@ pub fn __wrela_rt_boot_init():
         k = k +% 1
     return
 
-# Per-core secondary entry (decision 810): mark + unbounded park/run loop.
-# SP install is floor-cat1 words prepended at inject (decision 811 / 636).
-# M13 item N / decision 11: loop head BLs per-core checkpoint so every
-# head→back-edge path observes (wake doorbell consumed here, not by name).
 pub fn __wrela_rt_secondary_entry(core: usize):
     MACHINE_INFO.core_marks[core] = (core +% 1).to[u64]()
     while true:
-        # plans/lane1-per-core.md item B: "I am awake and about to look for
-        # work" — cleared before the poll, so core 0 can never read a stale 1
-        # for a core that is running.
         PENDING.idle[core] = 0
         __wrela_rt_checkpoint(core)
         ran = __wrela_rt_run_one(core)
         if ran == 0:
-            # Release, same shape as the ring publish barrier (M15 item H):
-            # every Lane 1 store this core made must be visible before the
-            # word core 0 reads to conclude this core is finished. The barrier
-            # is what makes the dumped totals a total and not a sample.
             @dmb(ishst)
             PENDING.idle[core] = 1
             PARK.word = 0
     return
 
-# Secondary trampolines `__wrela_secondary_entry_k` (k in 1..N_CORES) live in
-# generated rtconfig (plans/M15.md item E / decisions 1053–1054) — facts-only
-# BL targets remapped onto `__wrela_rt_secondary_entry`; inject prepends SP
-# and republishes under `rt_secondary_core_entry <core>`.
 
-# ---------------------------------------------------------------------------
-# M11 item I: checkpoint / vector0 (decisions 820–825). Floor-cat2 LR frame
-# stays in the checkpoint section (decision 821); algorithms here are
-# force-rooted. Vector0 may call deadline_scan only when a group arena
-# exists (`comptime if` — decision 784 reinject rule). IRQ/wake use generated
-# stubs overwritten at inject (decision 823).
-# ---------------------------------------------------------------------------
 
 pub fn __wrela_vector0():
     MACHINE_INFO.vector0_observed = MACHINE_INFO.vector0_observed +% 1
@@ -1901,9 +1547,6 @@ pub fn __wrela_vector0():
         __wrela_deadline_scan()
     return
 
-# M13 item N / decision 11: per-core pending word. Core 0 keeps the
-# vector0/IRQ/wake ladders; secondary cores only consume their wake doorbell
-# (the clear formerly sole in `__wrela_rt_drain`).
 pub fn __wrela_rt_checkpoint(core: usize):
     if core != 0:
         @budget(bound=64)
@@ -1960,13 +1603,6 @@ pub fn __wrela_rt_checkpoint(core: usize):
             return
     return
 
-# ---------------------------------------------------------------------------
-# M11 item K: primary entry / `@test(runtime)` runner (decisions 850–859).
-# `__wrela_rt_primary_entry` is the 810 event-loop key: supervised root turns
-# over the migrated runtime (run_one / select / enqueue). Floor trampoline
-# installs SP, arms OFF_TEST_CONTINUATION at this fn, then BLs boot setup.
-# Abort long-jump (floor cat4) stays — stack abandon still needs BR.
-# ---------------------------------------------------------------------------
 
 pub fn __wrela_append_ok_literal() -> u64:
     TEST_LINE_BUF.bytes[0] = 111
@@ -1998,7 +1634,6 @@ pub fn __wrela_append_failed_tail_literal() -> u64:
     return __wrela_console_append_line_buf(8)
 
 pub fn __wrela_append_deadlock_literal() -> u64:
-    # "runtime deadlock: no turn is ready and the root turn has not completed"
     TEST_LINE_BUF.bytes[0] = 114
     TEST_LINE_BUF.bytes[1] = 117
     TEST_LINE_BUF.bytes[2] = 110
@@ -2085,47 +1720,9 @@ pub fn __wrela_abort_deadlock():
     _ = __wrela_line_commit()
     finish_abort()
 
-# ---------------------------------------------------------------------------
-# plans/lane1-per-core.md item B — bounded quiesce before the halt dump
-# (decision 1504). What it buys: `turns` / `messages` / `method_hits` are
-# totals over work the program does, which is fixed; only the *instant* core 0
-# sampled them was racy, because a released core can still be draining when
-# core 0 reaches `__wrela_rt_summary_and_halt`. That is the whole reason
-# `boot-cross-core-ring-full` could not pin its trailer: it asserts a
-# rejection, so it deliberately halts with one admitted-but-unprocessed
-# message outstanding.
-#
-# Bounded, and it halts anyway when the bound runs out (decision 1504): an
-# unbounded wait would turn a scheduling bug into a hang. A timeout is
-# *printed*, in one fixed spelling, so it can never be mistaken for a clean
-# quiesce in a golden.
-# ---------------------------------------------------------------------------
 
-# Raised 4096 -> 262144 on 2026-07-30, measured, not guessed. The bound is
-# a race against the *host* scheduler, not against guest work: core 0 burns
-# its spins while the host has descheduled the secondary vCPU threads, so on
-# an oversubscribed machine core 0 can exhaust the bound before a secondary
-# ever runs. Measured over the 35 boot goldens, 8 concurrent boots on a
-# 10-core host (4 performance cores), transcripts compared to their pins:
-#
-#   bound = 4096     2, 3, 1 mismatches over three rounds
-#   bound = 262144   0, 0, 0, 1, 0 over five rounds (and 0 at 12 concurrent)
-#
-# All 993 golden expectations are byte-identical either way, so nothing
-# prices this constant.
-#
-# It is a mitigation, not a fix, and the residual is real: no spin bound can
-# be correct against an arbitrarily oversubscribed host. The actual fix is a
-# yield hint inside the loop so the host can schedule the cores this one is
-# waiting for — a machine-contract change, and a decision, not a constant.
-# Until then `xtask golden` keeps its boot lane at or below the performance-
-# core count (`--boot-jobs`, default 4), where the corpus measures clean.
 const QUIESCE_POLL_BOUND: usize = 262144
 
-# Every released core parked (`PENDING.idle`) with nothing pending for it.
-# Both halves matter: a core that has just been woken has a pending word and
-# will clear its own idle flag at its loop head, so checking the flag alone
-# could read "finished" for a core that is about to run.
 pub fn __wrela_secondaries_idle() -> u64:
     c: usize = 1
     @budget(bound=CORE_SLOTS)
@@ -2137,29 +1734,20 @@ pub fn __wrela_secondaries_idle() -> u64:
         c = c +% 1
     return 1
 
-# Returns 1 if the machine quiesced, 0 if the poll bound ran out first.
 pub fn __wrela_quiesce_before_halt() -> u64:
     if N_CORES <= 1:
         return 1
     spins: usize = 0
     @budget(bound=QUIESCE_POLL_BOUND)
     while spins < QUIESCE_POLL_BOUND:
-        # Core 0's own inbound lane first: an admission or reply this core
-        # still owes can be exactly what another core is waiting for. Same
-        # call the entry driver's own loop makes, so no new behavior class —
-        # and any work it finds is work the program had left to do.
         __wrela_rt_checkpoint(0)
         _ = __wrela_rt_run_one(0)
         if __wrela_secondaries_idle() != 0:
-            # Acquire, pairing with the secondary's release store before its
-            # park: every counter store it made is visible from here on.
             @dmb(ishld)
             return 1
         spins = spins +% 1
     return 0
 
-# "lane1 quiesce=timeout" — the one spelling a timed-out quiesce prints, so a
-# golden shows it instead of silently pinning a sampled-mid-flight total.
 pub fn __wrela_lane1_quiesce_timeout_line():
     __wrela_line_begin()
     TEST_LINE_BUF.bytes[0] = 108
@@ -2190,8 +1778,6 @@ pub fn __wrela_lane1_quiesce_timeout_line():
     return
 
 pub fn __wrela_rt_summary_and_halt():
-    # Before the summary, not after: the counters the Lane 1 block dumps are
-    # only a total once every released core has finished (item B).
     quiesced = __wrela_quiesce_before_halt()
     __wrela_line_begin()
     digs = __wrela_fmt_dec(MACHINE_INFO.test_passed, 0)
@@ -2203,9 +1789,7 @@ pub fn __wrela_rt_summary_and_halt():
     _ = __wrela_line_commit()
     if quiesced == 0:
         __wrela_lane1_quiesce_timeout_line()
-    # Lane 1 counter block trails the summary (well-formedness allows it).
     __wrela_lane1_dump()
-    # Lane 2 block-hit vector (no-op unless `--block-count` enabled emission).
     __wrela_lane2_dump()
     code: u64 = 0
     if MACHINE_INFO.test_failed != 0:
@@ -2214,8 +1798,6 @@ pub fn __wrela_rt_summary_and_halt():
     EXIT.word = code
     return
 
-# Boot setup for the test image (not 810). Floor trampoline arms
-# continuation at `__wrela_rt_primary_entry` then BLs here.
 pub fn __wrela_rt_primary_boot():
     MACHINE_INFO.test_passed = 0
     MACHINE_INFO.test_failed = 0
@@ -2224,8 +1806,6 @@ pub fn __wrela_rt_primary_boot():
     MACHINE_INFO.line_start = 0
     MACHINE_INFO.abort_latch = 0
     MACHINE_INFO.test_next = 0
-    # Every row, not just row 0 (plans/lane1-per-core.md item A) — and before
-    # `RELEASE.word` below hands the secondaries their rows.
     zc: usize = 0
     @budget(bound=CORE_SLOTS)
     while zc < N_CORES:
@@ -2240,16 +1820,12 @@ pub fn __wrela_rt_primary_boot():
         zi = zi +% 1
     LANE2.enabled = 0
     zj: usize = 0
-    # plans/M20.md item B: BLOCK_POOL_COUNT is 3072.
     @budget(bound=4096)
     while zj < BLOCK_POOL_COUNT:
         LANE2.hits[zj] = 0
         zj = zj +% 1
     if N_CORES > 1:
         MACHINE_INFO.core_marks[0] = 1
-        # "not idle yet" for every core, before release: a released core that
-        # the host has not scheduled yet must read as unfinished, not as
-        # finished (item B).
         zq: usize = 0
         @budget(bound=CORE_SLOTS)
         while zq < N_CORES:
@@ -2262,15 +1838,7 @@ pub fn __wrela_rt_primary_boot():
     __wrela_rt_primary_entry()
     return
 
-# Decision 810 primary event-loop entry: one supervised root turn per
-# `@test(runtime)`, driving async roots through run_one / park / checkpoint.
-# Boot-init abort long-jumps here with `test_next == 0` and `test_failed > 0`
-# — skip straight to summary (old driver armed continuation at the summary).
 pub fn __wrela_rt_primary_entry():
-    # M13 item N: observation discharge (not a name allowlist). Outer
-    # back-edge observes via the trailing checkpoint; abort long-jumps to
-    # the fn head must still see `test_failed` before any service work.
-    # Inner park/run loop observes at its head.
     while true:
         if MACHINE_INFO.test_failed != 0:
             if MACHINE_INFO.test_next == 0:

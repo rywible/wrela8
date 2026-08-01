@@ -1,6 +1,5 @@
 module err.enum_pool_member
 
-# plans/M9.md item B2: an enum may not declare a `pool`.
 
 enum Color:
     Red

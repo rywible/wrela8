@@ -1,6 +1,5 @@
 module lib.tag
 
-# plans/M9.md item C2 fixture: deriving(Format) under an importer alias.
 
 pub struct Tag deriving(Format):
     pub n: u32

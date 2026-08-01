@@ -1,1 +1,1 @@
-error[unimplemented]: bodyless functions are not checked yet at 9:5
+error[unimplemented]: bodyless functions are not checked yet at 6:5

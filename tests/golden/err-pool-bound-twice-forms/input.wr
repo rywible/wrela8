@@ -1,14 +1,5 @@
 module examples.err_pool_bound_twice_forms
 
-# plans/M7.md item D, 05-library.md §9: "bind the previously unbound pool
-# name `P` exactly once ... Binding a name twice ... is a build error."
-#
-# `golden/err-image-pool-double-bind` pins the same rule for two
-# `img.pool` calls. This is the case item D *made reachable*: before it,
-# `img.dma_pool` failed the whole build the instant it was called, so a
-# second binding of an already-bound name through the other form could
-# never run at all, and each recorder only ever consulted its own map. A
-# pool name names one pool node (02-language.md §4), not one per form.
 
 @layout(dma, endian=little)
 struct BlkReqStatus:

@@ -1,1 +1,1 @@
-error[type]: `with Image(...)` is not a `with` form: `with` opens exactly two intrinsic suspend-safe scopes, `group` and scoped `pool`, and there are no others (02-language.md §10 — an acquire/release API is an ordinary function used with `defer`, or a closure-taking function) at 23:5
+error[type]: `with Image(...)` is not a `with` form: `with` opens exactly two intrinsic suspend-safe scopes, `group` and scoped `pool`, and there are no others (02-language.md §10 — an acquire/release API is an ordinary function used with `defer`, or a closure-taking function) at 6:5

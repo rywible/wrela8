@@ -1,1 +1,1 @@
-error[parse]: an enum may not declare fields; a variant is `Name` or `Name(...)` at 8:5
+error[parse]: an enum may not declare fields; a variant is `Name` or `Name(...)` at 6:5

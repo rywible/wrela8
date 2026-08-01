@@ -1,7 +1,5 @@
 module examples.err_irq_vector_0
 
-# plans/M7.md item G self-audit: bit 0 is M6's deadline/cancel vector
-# (06-machine.md §4). A device-owned vector is 1..=63.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

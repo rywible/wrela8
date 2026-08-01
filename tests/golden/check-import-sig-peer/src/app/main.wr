@@ -3,8 +3,6 @@ module app.main
 from lib.pk import Hand
 from lib.pk import Src
 
-# plans/M9.md item GG: unaliased peer in a signature must keep working
-# under whole-signature re-key (identity subs). PLAIN = 5 + 300 = 305.
 
 fn drive() -> u32:
     s = Src(n=5)

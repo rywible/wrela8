@@ -1,9 +1,5 @@
 module examples.err_layout_overlap
 
-# plans/M7.md item B, 03-hardware.md §2: the compiler checks "non-overlap"
-# — "two live layouts can never alias a register", and neither can two
-# fields of one layout. `interrupt_ack`'s explicit offset lands inside the
-# four bytes `interrupt_status` already covers.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

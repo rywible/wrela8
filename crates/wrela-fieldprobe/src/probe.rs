@@ -1,12 +1,3 @@
-//! The experiments. Every output here is a *count*.
-//!
-//! plans/graphics.md §16.1 splits the metrics into those that port off the
-//! M4 proxy and those that do not. This module measures only the first kind:
-//! tape lengths, area fractions, ray-length fractions, eval counts, hit
-//! rates. It deliberately does not time anything — "achieved GFLOP/s as a
-//! fraction of peak" is on §16.1's *do not port* list, and the counts→cycles
-//! conversion belongs to the pinned `bench/a76-pi5.toml` table, not here.
-
 use crate::aff::{Aff, Iv};
 use crate::camera::Camera;
 use crate::eval::{DAff, eval, eval_aff, eval_blend_active, eval_daff, eval_grad, eval_iv};
@@ -14,9 +5,6 @@ use crate::prune::{Pruned, prune};
 use crate::scene::Scene;
 use crate::tape::Tape;
 
-/// Deterministic xorshift. No `rand`, no clock — CLAUDE.md's determinism
-/// doctrine applies to the instrument as much as to the compiler, or the
-/// numbers are not re-derivable.
 pub struct Rng(pub u32);
 
 impl Rng {
@@ -29,7 +17,6 @@ impl Rng {
         self.0 = x;
         x
     }
-    /// Uniform in `[0, 1)`.
     #[inline]
     pub fn unit(&mut self) -> f32 {
         (self.next_u32() >> 8) as f32 / 16_777_216.0
@@ -39,10 +26,6 @@ impl Rng {
         lo + (hi - lo) * self.unit()
     }
 }
-
-// ---------------------------------------------------------------------------
-// Shared scratch, so an inner loop never allocates.
-// ---------------------------------------------------------------------------
 
 #[derive(Default)]
 pub struct Scratch {
@@ -54,10 +37,6 @@ pub struct Scratch {
     pub i: Vec<Iv>,
 }
 
-// ---------------------------------------------------------------------------
-// E1 — tile classification, pruning by depth, edge cells.
-// ---------------------------------------------------------------------------
-
 #[derive(Default, Clone)]
 pub struct DepthStat {
     pub cells: u64,
@@ -65,48 +44,24 @@ pub struct DepthStat {
     pub weight_sum: u64,
     pub blends_sum: u64,
     pub ops_max: usize,
-    /// Live op counts, kept so the report can quote a median rather than
-    /// only a mean — a mean hides the tail that decides whether the L1
-    /// budget in §5 holds.
     pub ops_hist: Vec<u32>,
 }
 
 #[derive(Default)]
 pub struct ClassifyOut {
     pub per_depth: Vec<DepthStat>,
-    /// Screen area (px²) by outcome.
     pub area_exterior: f64,
     pub area_interior: f64,
     pub area_unresolved: f64,
     pub area_edge: f64,
-    /// Leaf cells carrying a silhouette or CSG seam.
     pub edge_cells: u64,
     pub leaf_px: f32,
-    /// Cells the enclosure could not evaluate finitely — must be zero.
     pub nonfinite: u64,
-    /// Interior leaf cells, kept for E5/E6.
     pub interior_cells: Vec<InteriorCell>,
-    /// Why the interior certificate failed, by cause. §16.3's "instrument it
-    /// like a fuzz lane": a low interior fraction is only a finding once you
-    /// know which clause rejected it.
     pub fail_dt_straddles: u64,
     pub fail_faces: u64,
-    /// Screen area that *is* a single smooth sheet, decided by marching
-    /// rather than by proving.
-    ///
-    /// The certificate is a lower bound and a weak one: `min(m, 0)` inside a
-    /// box SDF has an ambiguous derivative at the face, even though that
-    /// non-smoothness cancels against the `max(q,0)` term in the sum. Fixing
-    /// that needs fused box/cylinder primitives with analytic gradients.
-    /// Until then, measuring the truth separately brackets the answer —
-    /// certified area is what §2.1 delivers today, empirical area is what a
-    /// perfect certificate could deliver, and the cost model reports both.
     pub area_interior_empirical: f64,
-    /// Every leaf, with the tape that survived pruning there. The frame-cost
-    /// model marches these directly, so its FLOP count is measured rather
-    /// than extrapolated from a mean.
     pub leaves: Vec<Leaf>,
-    /// Affine-domain op-evaluations spent on traversal (weight × evals).
     pub traversal_ops: u64,
 }
 
@@ -122,16 +77,9 @@ pub struct Leaf {
     pub y0: f32,
     pub size: f32,
     pub class: Class,
-    /// Pruned over the found slab: what the renderer executes there.
     pub tape: Tape,
-    /// Pruned over `[t0, t_far]`: the fallback when the slab march misses
-    /// and the ray must carry on to the next slab.
     pub tape_wide: Tape,
     pub t_far: f32,
-    /// The `t` range the pruned tape is valid over. Outside it the tape is
-    /// simply wrong — pruning deleted branches that provably lose *in this
-    /// slab*, not everywhere — so a renderer marches the pruned tape only
-    /// here, and so does the cost model.
     pub t0: f32,
     pub t1: f32,
 }
@@ -148,11 +96,6 @@ pub struct InteriorCell {
 const NSLAB: u32 = 20;
 const BISECT: u32 = 7;
 
-/// Recursive tile classification with per-cell tape pruning.
-///
-/// The child recurses on the *pruned* tape, which is the whole point of
-/// §2.2: the cost of `map()` falls with subdivision depth because the tape
-/// shortens on the way down, and the shortening compounds.
 #[allow(clippy::too_many_arguments)]
 fn classify(
     cam: &Camera,
@@ -168,10 +111,6 @@ fn classify(
     s: &mut Scratch,
     out: &mut ClassifyOut,
 ) {
-    // Only the on-screen part of a cell counts. The base tiling is a whole
-    // number of tiles and the screen usually is not (288/64 = 4.5), so
-    // unclamped areas sum to 111% of the frame and every "fraction of screen
-    // area" below is quietly inflated.
     let vx = (x0 + size).min(cam.w as f32) - x0;
     let vy = (y0 + size).min(cam.h as f32) - y0;
     if vx <= 0.0 || vy <= 0.0 {
@@ -181,7 +120,6 @@ fn classify(
     let (u0, u1) = (cam.u_of(x0), cam.u_of(x0 + size));
     let (v0, v1) = (cam.v_of(y0 + size), cam.v_of(y0));
 
-    // --- find the first t-slab that can contain a surface ------------------
     let mut ta = t_lo;
     let mut tb = t_hi;
     let mut found = false;
@@ -213,32 +151,6 @@ fn classify(
         return;
     }
 
-    // --- prune over this cell ---------------------------------------------
-    //
-    // The pruning region is `[ta, t_hi]`, **not** the slab `[ta, tb]` that
-    // was just found. A pruned tape is only valid over the region it was
-    // pruned for: outside it, a deleted branch can be the true minimum. The
-    // children recurse on this tape and sweep out to `t_hi`, so pruning to
-    // the narrower slab lets a child prove "no surface here" with a tape
-    // that no longer contains the surface.
-    //
-    // That was a real bug, and it is exactly the kind that flatters: it
-    // reported 37.8% of the colonnade frame as provably empty, of which
-    // 15,012 pixels (10% of the frame) were hit by the marcher. The
-    // `exterior_hits` gate in `run_framecost` exists to catch it, and does.
-    // Two prunings, because they answer two different questions.
-    //
-    // `pr_wide` is pruned over `[ta, t_hi]` — everything the children will
-    // ever look at. Children recurse on it, because a tape is only valid
-    // over the region it was pruned for and a child that sweeps past `tb`
-    // with a slab-pruned tape can prove "empty" using a tape from which the
-    // surface has been deleted. That bug reported 37.8% of the colonnade as
-    // provably empty while the marcher hit 15,012 of those pixels; the
-    // `exterior_hits` gate catches it.
-    //
-    // `pr_cell` is pruned over the found slab `[ta, tb]` alone. That is the
-    // tape a renderer actually executes inside the cell, so it is what §2.2's
-    // "pruned tape length by depth" means and what the frame cost charges.
     let p = cam.wedge(u0, u1, v0, v1, ta, t_hi);
     eval_aff(tape, p, &mut s.a, &mut s.av);
     let pr_wide: Pruned = prune(tape, &s.av);
@@ -260,13 +172,6 @@ fn classify(
     st.ops_hist.push(pr.ops as u32);
     let _ = full_len;
 
-    // --- interior certificate ---------------------------------------------
-    // A cell is certifiably interior when the field is strictly monotone in
-    // t across the whole wedge (no silhouette: ∂f/∂t ≠ 0), *and* the near
-    // face is entirely outside while the far face is entirely inside. Then
-    // every ray in the cell has exactly one crossing and the visible surface
-    // is a single smooth sheet — §16.3's "resolved as interior, no ray
-    // traced". Bisect t to give the face test a chance to succeed.
     let mut lo = ta;
     let mut hi = tb;
     let mut bounds: Vec<Aff> = Vec::new();
@@ -279,8 +184,6 @@ fn classify(
         let r = eval_daff(&pr.tape, dp, &biv, &mut s.d);
         let (dlo, dhi) = r.dt.interval();
         if !r.dt.is_finite() || (dlo <= 0.0 && dhi >= 0.0) {
-            // ∂f/∂t may vanish: a silhouette is possible here, so there is
-            // no single sheet to certify.
             if depth == max_depth {
                 out.fail_dt_straddles += 1;
             }
@@ -321,17 +224,11 @@ fn classify(
             });
             return;
         }
-        // Narrow toward the crossing: keep the half that still brackets it.
         let mid = 0.5 * (lo + hi);
         let m = cam.slice(u0, u1, v0, v1, mid);
         eval_aff(&pr.tape, m, &mut s.a, &mut s.av);
         let mf = s.av[pr.tape.root as usize];
         if mf.lo <= 0.0 && mf.hi >= 0.0 {
-            // The tile's own depth spread exceeds what bisection can
-            // separate: the mid-depth screen slice is partly in front of the
-            // surface and partly behind. Monotone in t, but not resolvable
-            // as one flat slab — the certificate wants a *fitted* sheet, not
-            // an axis-aligned one.
             if depth == max_depth {
                 out.fail_faces += 1;
             }
@@ -345,7 +242,6 @@ fn classify(
         }
     }
 
-    // --- subdivide or give up ---------------------------------------------
     if depth < max_depth {
         let hs = size * 0.5;
         for (dx, dy) in [(0.0, 0.0), (hs, 0.0), (0.0, hs), (hs, hs)] {
@@ -367,7 +263,6 @@ fn classify(
         return;
     }
 
-    // Leaf, uncertified. Is it an edge (silhouette or CSG seam)?
     let wp = cam.wedge(u0, u1, v0, v1, ta, tb);
     let mut lb: Vec<Aff> = Vec::new();
     let mut lbi: Vec<Iv> = Vec::new();
@@ -385,11 +280,6 @@ fn classify(
         out.area_unresolved += area;
         Class::Unresolved
     };
-    // Ground truth for §2.1's actual claim — "resolved from tile-corner
-    // depths plus a Newton polish". March the corners and the centre; if
-    // bilinear interpolation of the corner depths predicts the centre to
-    // under half a pixel of parallax, the cell really is one smooth sheet,
-    // whatever the certificate managed to prove.
     if empirically_smooth(cam, &pr.tape, x0, y0, size, ta, tb, s) {
         out.area_interior_empirical += area;
     }
@@ -467,19 +357,13 @@ pub fn run_classify(sc: &Scene, max_depth: u32, base_tile: f32, s: &mut Scratch)
     out
 }
 
-// ---------------------------------------------------------------------------
-// E2/E3 — marching: evals per pixel, blend-band ray fraction.
-// ---------------------------------------------------------------------------
-
 pub struct MarchOut {
     pub rays: u64,
     pub hits: u64,
     pub evals: u64,
     pub steps_max: u32,
-    /// Uniformly-sampled ray length inside a blend band, and the total.
     pub band_len: f64,
     pub total_len: f64,
-    /// Same, restricted to rays that hit.
     pub band_len_hit: f64,
     pub total_len_hit: f64,
     pub band_samples: u64,
@@ -489,36 +373,10 @@ pub struct MarchOut {
 const HIT_EPS: f32 = 1e-4;
 const MAX_STEPS: u32 = 192;
 
-/// Over-relaxation factor, Keinert et al. 2014. **Disabled: 1.0.**
-///
-/// graphics.md §2.5 calls it "thirty lines, 30-50% fewer steps, **no
-/// risk**". Measured here it is 1.09% fewer steps, and the risk is real and
-/// specific: it makes the marcher **start-point-dependent**. Two marches
-/// toward the same surface from different starting points converge to
-/// different answers, because a relaxed step can overshoot a thin feature
-/// (this scene's blade is 0.011 thick) and the overshoot recovery re-uses a
-/// distance sampled at the pre-backtrack position.
-///
-/// That is fatal for §4, whose entire mechanism is varying the march start:
-/// with relaxation on, reprojection tunnelled on 4.5-13.2% of hinted pixels
-/// and — the tell — *more* slack made it **worse**, which is backwards from
-/// §4's model. With relaxation off the same measurement gives 0.20-0.71%
-/// and slack behaves monotonically.
-///
-/// 1.09% is not worth a start-point-dependent marcher in a reference
-/// implementation. A corrected version (re-evaluate after backtracking)
-/// could return under CLAUDE.md's cleverness budget, with this measurement
-/// as the before.
 const OVER_RELAX: f32 = 1.0;
 
-/// Rays that exhausted the step budget, counted globally so the report can
-/// state whether "miss" ever means "gave up".
 pub static STEP_CAP_HITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Naive sphere trace, the §1 baseline. No over-relaxation, no segment
-/// tracing — §1's "pre-pruning landing zone" assumes the classical
-/// amortisations, so the count reported here is the thing those
-/// amortisations have to beat.
 pub fn march(
     tape: &Tape,
     o: [f32; 3],
@@ -538,14 +396,7 @@ pub fn march(
         if dist < HIT_EPS * t.max(1.0) {
             return (Some(t), steps);
         }
-        // Over-relaxation with the standard overshoot test: the relaxed step
-        // is only safe while consecutive unbounding spheres still overlap.
         let step = if relax > 1.0 && dist + prev < relax * prev {
-            // Overshot: the relaxed step jumped past the surface, so undo
-            // its excess *before* dropping back to plain sphere tracing.
-            // Computing the backtrack after zeroing `relax` makes it a
-            // no-op, which silently tunnels — it cost 2,159 ground-truth
-            // rays on one scene before this ordering was fixed.
             t -= (relax - 1.0) * prev;
             relax = 1.0;
             dist
@@ -561,12 +412,6 @@ pub fn march(
     (None, steps)
 }
 
-/// March a subsampled grid and measure §16.3's blend-band ray fraction.
-///
-/// The band measurement uses *uniform* samples along the traversed segment,
-/// not march steps: march steps bunch up near the surface, which is exactly
-/// where blends live, so stepping-weighted sampling would inflate the
-/// fraction and flatter §2.3's opposition.
 pub fn run_march(sc: &Scene, stride: u32, band_samples: u32, s: &mut Scratch) -> MarchOut {
     let mut o = MarchOut {
         rays: 0,
@@ -624,13 +469,8 @@ pub fn run_march(sc: &Scene, stride: u32, band_samples: u32, s: &mut Scratch) ->
     o
 }
 
-// ---------------------------------------------------------------------------
-// E4 — affine vs plain interval tightness.
-// ---------------------------------------------------------------------------
-
 pub struct TightOut {
     pub cells: u64,
-    /// Cells affine arithmetic proves empty that interval arithmetic cannot.
     pub aa_empty: u64,
     pub iv_empty: u64,
     pub width_ratio_sum: f64,
@@ -661,9 +501,6 @@ pub fn run_tightness(sc: &Scene, tile: f32, s: &mut Scratch) -> TightOut {
                 let p = cam.wedge(u0, u1, v0, v1, t0, t1);
                 eval_aff(&sc.tape, p, &mut s.a, &mut s.av);
                 let a = s.a[sc.tape.root as usize];
-                // The same wedge as an axis-aligned interval box: this is
-                // the fairest available comparison, since plain IA has no
-                // way to represent the wedge's correlation at all.
                 let bx = [
                     Iv::new(p[0].lo(), p[0].hi()),
                     Iv::new(p[1].lo(), p[1].hi()),
@@ -693,25 +530,15 @@ pub fn run_tightness(sc: &Scene, tile: f32, s: &mut Scratch) -> TightOut {
     o
 }
 
-// ---------------------------------------------------------------------------
-// E5 — continuation on the hit manifold vs marching.
-// ---------------------------------------------------------------------------
-
 pub struct ContinuationOut {
     pub samples: u64,
     pub converged: u64,
     pub diverged: u64,
-    /// Eval-equivalents: an `eval_grad` counts as `GRAD_COST` evals.
     pub cont_evals: f64,
     pub march_evals: f64,
     pub max_err_px: f32,
 }
 
-/// Cost of one forward-mode gradient relative to one value evaluation.
-///
-/// Forward-mode over a 3-component dual carries four numbers where `eval`
-/// carries one, but the value work is shared and the derivative of most ops
-/// is one FMA. 3.0 is the conservative (continuation-unfriendly) end.
 const GRAD_COST: f64 = 3.0;
 
 fn dhat_du(cam: &Camera, u: f32, v: f32) -> ([f32; 3], [f32; 3], f32) {
@@ -731,12 +558,6 @@ fn dhat_du(cam: &Camera, u: f32, v: f32) -> ([f32; 3], [f32; 3], f32) {
     (dh, ddu, l)
 }
 
-/// Walk the surface across a certified-interior cell instead of marching
-/// each pixel from scratch.
-///
-/// `∂t/∂u = −F_u / F_t` with `F_t = ∇f·d̂` and `F_u = ∇f·(t ∂d̂/∂u)`, both
-/// from one `eval_grad`. Predictor from the previous sample's screen-space
-/// depth gradient, corrector by Newton in `t`.
 pub fn run_continuation(sc: &Scene, cells: &[InteriorCell], s: &mut Scratch) -> ContinuationOut {
     let cam = &sc.cam;
     let mut o = ContinuationOut {
@@ -750,7 +571,6 @@ pub fn run_continuation(sc: &Scene, cells: &[InteriorCell], s: &mut Scratch) -> 
     for c in cells {
         let n = c.size.max(1.0) as u32;
         let v = cam.v_of(c.y0 + 0.5 * c.size);
-        // Seed the walk with one honest march at the left edge.
         let u_seed = cam.u_of(c.x0 + 0.5);
         let d_seed = cam.dir(u_seed, v);
         let (hit, steps) = match march(&sc.tape, cam.eye, d_seed, c.t0, c.t1 * 1.05, s) {
@@ -770,7 +590,6 @@ pub fn run_continuation(sc: &Scene, cells: &[InteriorCell], s: &mut Scratch) -> 
             let u = cam.u_of(px);
             let du = u - u_prev;
 
-            // Predictor: one gradient at the previous solution.
             let (dh, ddu, _) = dhat_du(cam, u_prev, v);
             let p = [
                 cam.eye[0] + t * dh[0],
@@ -787,7 +606,6 @@ pub fn run_continuation(sc: &Scene, cells: &[InteriorCell], s: &mut Scratch) -> 
             }
             let mut tn = t - (fu / ft) * du;
 
-            // Corrector: up to two Newton steps in t.
             let (dh2, _, _) = dhat_du(cam, u, v);
             let mut ok = false;
             for _ in 0..2 {
@@ -809,15 +627,12 @@ pub fn run_continuation(sc: &Scene, cells: &[InteriorCell], s: &mut Scratch) -> 
                 }
             }
 
-            // Ground truth: an independent march for the same pixel.
             let (truth, msteps) = march(&sc.tape, cam.eye, dh2, sc.t_near, sc.t_far, s);
             o.march_evals += msteps as f64;
             o.samples += 1;
             match truth {
                 Some(tt) if ok && (tn - tt).abs() < 2.0 * HIT_EPS * tt.max(1.0) + 1e-3 => {
                     o.converged += 1;
-                    // Screen-space error of the reconstructed depth, in
-                    // pixels of parallax at this depth.
                     let foot = tt * 2.0 * cam.tan_half / cam.h as f32;
                     let err = (tn - tt).abs() / foot.max(1e-9);
                     o.max_err_px = o.max_err_px.max(err);
@@ -835,38 +650,18 @@ pub fn run_continuation(sc: &Scene, cells: &[InteriorCell], s: &mut Scratch) -> 
     o
 }
 
-// ---------------------------------------------------------------------------
-// E6 — the reconstruction factor: how far apart may samples be?
-// ---------------------------------------------------------------------------
-
 pub struct ReconOut {
     pub cell_px: f32,
     pub tested: u64,
     pub passed: u64,
 }
 
-/// Which quantity the patch is fitted in.
-///
-/// Fitting `t` was the original choice and it is the wrong one. Under a
-/// pinhole projection the **inverse** depth of a plane is exactly affine in
-/// screen coordinates — that is why every rasterizer since 1995 interpolates
-/// `1/z` rather than `z`. A quadratic in `1/t` is therefore *exact* on any
-/// planar surface and near-exact on low curvature, while the same quadratic
-/// in `t` has to chase a hyperbola. On scenes made of ground, walls and
-/// steps that distinction is most of the answer.
 #[derive(Clone, Copy, PartialEq)]
 pub enum FitSpace {
     Depth,
     InverseDepth,
 }
 
-/// Fit a quadratic `t(x,y)` over a cell from a 3×3 sample grid and measure
-/// the worst residual on a 7×7 check grid, in pixels of parallax.
-///
-/// This is the empirical stand-in for `eval_hess`-driven sample placement:
-/// if a quadratic patch reconstructs the depth of an `N×N` block to under
-/// half a pixel, the renderer needs 9 samples for `N²` pixels, and the
-/// reconstruction factor is `N²/9`.
 pub fn run_reconstruction_capped(
     sc: &Scene,
     cell_px: f32,
@@ -883,8 +678,6 @@ pub fn run_reconstruction_capped(
     };
     let nx = (cam.w as f32 / cell_px) as u32;
     let ny = (cam.h as f32 / cell_px) as u32;
-    // Deterministic stride rather than a random sample: a fixed lattice is
-    // reproducible and cannot be re-rolled until it flatters.
     let total = (nx as u64) * (ny as u64);
     let stride = ((total / cap.max(1)) as u32).max(1);
     let mut idx: u64 = 0;
@@ -897,7 +690,6 @@ pub fn run_reconstruction_capped(
             }
             let x0 = tx as f32 * cell_px;
             let y0 = ty as f32 * cell_px;
-            // 3×3 fit samples.
             let mut a = [[0.0f64; 6]; 6];
             let mut rhs = [0.0f64; 6];
             let mut all_hit = true;
@@ -966,8 +758,6 @@ pub fn run_reconstruction_capped(
                         + coef[3] * (fx * fx) as f64
                         + coef[4] * (fx * fy) as f64
                         + coef[5] * (fy * fy) as f64;
-                    // Compare in depth either way, so the tolerance keeps
-                    // meaning the same thing: pixels of parallax.
                     let fit_t = match space {
                         FitSpace::Depth => fit,
                         FitSpace::InverseDepth => {
@@ -990,7 +780,6 @@ pub fn run_reconstruction_capped(
     o
 }
 
-/// Gaussian elimination with partial pivoting on the 6×6 normal equations.
 fn solve6(mut a: [[f64; 6]; 6], mut b: [f64; 6]) -> Option<[f64; 6]> {
     for c in 0..6 {
         let mut piv = c;
@@ -1023,10 +812,6 @@ fn solve6(mut a: [[f64; 6]; 6], mut b: [f64; 6]) -> Option<[f64; 6]> {
     Some(x)
 }
 
-// ---------------------------------------------------------------------------
-// E7 — reprojection hit rate and disocclusion area (§4.4).
-// ---------------------------------------------------------------------------
-
 pub struct ReprojOut {
     pub pixels: u64,
     pub hinted: u64,
@@ -1035,20 +820,12 @@ pub struct ReprojOut {
     pub tunnelled: u64,
 }
 
-/// Forward-scatter frame N−1's hit points into frame N, then check whether
-/// starting the march at `t_hint − slack` reaches the same surface.
-///
-/// §4 promises a wrong hint costs performance and never correctness — but
-/// only for static geometry, and only when `slack` covers the motion. This
-/// counts how often the hint exists at all (the complement is disocclusion)
-/// and how often it verifies.
 pub fn run_reprojection(sc: &Scene, stride: u32, slack: f32, s: &mut Scratch) -> ReprojOut {
     let (c0, c1) = (&sc.cam, &sc.cam2);
     let w = (c1.w / stride) as usize;
     let h = (c1.h / stride) as usize;
     let mut hint = vec![f32::INFINITY; w * h];
 
-    // Scatter.
     let mut y = 0;
     while y < c0.h {
         let mut x = 0;
@@ -1087,7 +864,6 @@ pub fn run_reprojection(sc: &Scene, stride: u32, slack: f32, s: &mut Scratch) ->
         y += stride;
     }
 
-    // Verify.
     let mut o = ReprojOut {
         pixels: 0,
         hinted: 0,
@@ -1122,35 +898,18 @@ pub fn run_reprojection(sc: &Scene, stride: u32, slack: f32, s: &mut Scratch) ->
     o
 }
 
-// ---------------------------------------------------------------------------
-// Self-checks. Nothing above means anything until these pass.
-// ---------------------------------------------------------------------------
-
 pub struct SelfCheck {
     pub samples: u64,
     pub containment_failures: u64,
     pub prune_mismatches: u64,
     pub grad_max_rel_err: f32,
     pub grad_p99_rel_err: f32,
-    /// Samples skipped because the field is not differentiable there — a
-    /// CSG kink or a repetition boundary between the two difference points.
-    /// Reported rather than hidden: it is the fraction of the scene where
-    /// §2.5's Newton refinement has no gradient to use.
     pub grad_kink_skips: u64,
     pub grad_tested: u64,
-    /// Mean (affine enclosure width) / (sampled true span). ≥ 1 by
-    /// definition; how far above 1 is how loose the instrument is.
     pub mean_overwidth: f64,
     pub overwidth_n: u64,
 }
 
-/// Sample inside random wedges and verify: the affine enclosure contains the
-/// truth, the pruned tape agrees with the full tape bit-for-bit, and the
-/// analytic gradient matches a central difference.
-///
-/// The bit-identity clause is §7's `diff-eval` gate applied to the
-/// instrument: a pruning bug that deletes a live branch would otherwise show
-/// up as a spectacular §2.2 result.
 pub fn run_selfcheck(
     sc: &Scene,
     cells: u32,
@@ -1190,14 +949,10 @@ pub fn run_selfcheck(
         }
         let pr = prune(&sc.tape, &s.av);
 
-        // Containment is checked against the *decision* interval — the
-        // intersected one that pruning and classification actually read.
         let (lo, hi) = (r.lo, r.hi);
         let mut tmin = f32::INFINITY;
         let mut tmax = f32::NEG_INFINITY;
         for _ in 0..pts {
-            // Sample the wedge in its own parameterisation, so the point is
-            // guaranteed to be inside the region the enclosure covers.
             let u = rng.range(u0.min(u1), u0.max(u1));
             let v = rng.range(v0.min(v1), v0.max(v1));
             let t = rng.range(t0, t1);
@@ -1231,12 +986,6 @@ pub fn run_selfcheck(
                 b[k] -= eps;
                 let fa = eval(&sc.tape, a, &mut full_scratch);
                 let fb = eval(&sc.tape, b, &mut full_scratch);
-                // A central difference is only a valid check where the field
-                // is differentiable. Across a CSG kink or a repetition
-                // boundary the two-sided slope is genuinely neither
-                // one-sided derivative, and comparing them measures nothing.
-                // The second difference separates the cases: it is O(f''·ε²)
-                // on a smooth patch and O(Δslope·ε) at a kink.
                 let d2 = (fa - 2.0 * f0 + fb).abs();
                 if d2 > 1e-2 * eps {
                     o.grad_kink_skips += 1;
@@ -1257,8 +1006,6 @@ pub fn run_selfcheck(
             o.overwidth_n += 1;
         }
     }
-    // Median, not mean: enclosure width has a long tail, and a mean lets one
-    // pathological wedge stand in for the instrument's typical tightness.
     if !overwidths.is_empty() {
         overwidths.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         o.mean_overwidth = overwidths[overwidths.len() / 2];
@@ -1270,9 +1017,6 @@ pub fn run_selfcheck(
     o
 }
 
-/// A tiny PPM of the scene, so the geometry can be eyeballed. Not an oracle
-/// — but a probe whose scenes are not what their author thinks they are is
-/// measuring nothing, and this is the cheapest way to notice.
 pub fn debug_ppm(sc: &Scene, s: &mut Scratch) -> Vec<u8> {
     let cam = &sc.cam;
     let mut buf = format!("P6\n{} {}\n255\n", cam.w, cam.h).into_bytes();
@@ -1301,23 +1045,8 @@ pub fn debug_ppm(sc: &Scene, s: &mut Scratch) -> Vec<u8> {
     buf
 }
 
-// ---------------------------------------------------------------------------
-// E8 — modelled frame cost, and the resolution it buys.
-// ---------------------------------------------------------------------------
-
-/// Cost of one affine-domain op relative to one scalar FLOP.
-///
-/// An `Aff` is five floats and the evaluator carries a plain interval beside
-/// it, so an affine `add` is ~7 scalar ops and an affine `mul` ~18. 8.0 is a
-/// deliberately unflattering single number for the mix; §16.1's discipline is
-/// that this factor is *stated* and swept, not buried. `run_framecost`'s
-/// output scales linearly in it and traversal is a minority of the frame, so
-/// a 2× error here moves the final resolution by well under 20%.
 const AA_OP_COST: f64 = 8.0;
 
-/// §1's shading model, unchanged. These are the doc's own numbers and are
-/// not what this probe is testing — replacing them with measurements is a
-/// separate exercise (§8's lighting stack does not exist yet).
 const SHADE_FLOP: f64 = 800.0;
 const POST_FLOP: f64 = 300.0;
 const SHADOW_EVALS: f64 = 5.0;
@@ -1331,28 +1060,14 @@ pub struct FrameCost {
     pub hits: u64,
     pub traversal: f64,
     pub primary: f64,
-    /// Split out of `primary`: cost of carrying on past the cell's own slab
-    /// with the weakly-pruned wide tape. A renderer that re-classified per
-    /// slab would pay less than this, so it is the conservative end of the
-    /// bracket, and it is reported separately rather than blended in.
     pub primary_fallback: f64,
     pub shadow: f64,
     pub ao_gi: f64,
     pub shade: f64,
     pub post: f64,
-    /// Mean marching steps over pixels that had to march.
     pub mean_steps: f64,
-    /// Pixels the classifier proved empty that the marcher nonetheless hits.
-    /// Must be zero.
     pub exterior_hits: u64,
-    /// Vector micro-ops on the V pipes, summed per lane-evaluation. Divide
-    /// by packet width for uops, then by 2 for cycles — two FP/ASIMD pipes
-    /// at `thru 1/1`, both T1 in `bench/a76-pi5.toml`.
     pub v_uops_lane: f64,
-    /// Same frame, costed as if the interior certificate were perfect —
-    /// every empirically-smooth cell resolved from corner depths instead of
-    /// marched. The gap between this and `total()` is what a stronger §2.1
-    /// certificate is worth.
     pub total_ideal: f64,
 }
 
@@ -1366,30 +1081,10 @@ impl FrameCost {
     pub fn per_pixel_ideal(&self) -> f64 {
         self.total_ideal / self.pixels.max(1) as f64
     }
-    /// The optimistic end of the bracket: a renderer that re-classifies each
-    /// slab as it advances, so a ray that misses in its cell never marches
-    /// the weakly-pruned wide tape. It would pay more traversal than modelled
-    /// here and less marching; this end charges neither, so the truth sits
-    /// between `per_pixel()` and this.
     pub fn per_pixel_optimistic(&self) -> f64 {
         (self.total() - self.primary_fallback) / self.pixels.max(1) as f64
     }
 }
-/// Cost the frame by running the renderer the design actually describes.
-///
-/// The first version of this charged every ray that missed inside its cell
-/// for marching on to the far plane with a weakly-pruned tape. That was
-/// 52–63% of the modelled frame and it was pure modelling slack: §2.1/§2.2's
-/// renderer does not do it. It **advances slab by slab and re-prunes at each
-/// one**, so a ray that clears the near geometry meets a fresh, short tape
-/// rather than the union of everything it might ever hit.
-///
-/// Re-pruning is not free and is charged: each (cell, slab) pays one affine
-/// evaluation of the incoming tape. So this is not simply "the optimistic
-/// bracket" — it trades marching for traversal, and the trade is measured
-/// rather than assumed. A slab the enclosure proves empty is skipped for the
-/// price of that enclosure alone, which is §2.1 earning its keep mid-ray
-/// rather than only at classification time.
 pub fn run_framecost(sc: &Scene, cl: &ClassifyOut, s: &mut Scratch) -> FrameCost {
     run_framecost_sw(sc, cl, &crate::tape::UopSweep::pessimistic(), s)
 }
@@ -1479,8 +1174,6 @@ pub fn run_framecost_sw(
             for &(px, py) in &pend {
                 let d = cam.dir_at_pixel(px + 0.5, py + 0.5);
                 let (hit, steps) = march(&tape, cam.eye, d, lo, hi, s);
-                // A certified-interior cell resolves from corner depths plus
-                // a Newton polish — two gradient evaluations, no search.
                 let charged = if lf.class == Class::Interior {
                     6.0
                 } else {
@@ -1500,8 +1193,6 @@ pub fn run_framecost_sw(
                     fc.ao_gi += AO_GI_EVALS * w;
                     fc.shade += SHADE_FLOP;
                     fc.v_uops_lane += (SHADOW_EVALS + AO_GI_EVALS) * wu;
-                    // §1's shading model read as FMLA-dominated: two FLOP
-                    // per lane-MAC.
                     fc.v_uops_lane += SHADE_FLOP * 0.5;
                 } else {
                     still.push((px, py));
@@ -1516,8 +1207,6 @@ pub fn run_framecost_sw(
     fc.exterior_px = fc.pixels.saturating_sub(covered);
     fc.post += fc.exterior_px as f64 * POST_FLOP;
     fc.v_uops_lane += fc.pixels as f64 * POST_FLOP * 0.5;
-    // Soundness gate: a pixel with no leaf was *proved* to contain no
-    // surface. If the full tape finds one there, every area fraction is void.
     {
         let mut mask = vec![false; (cam.w as usize) * (cam.h as usize)];
         for lf in &cl.leaves {
@@ -1549,25 +1238,15 @@ pub fn run_framecost_sw(
     fc
 }
 
-// ---------------------------------------------------------------------------
-// E6b — adaptive reconstruction: the factor a quadtree actually achieves.
-// ---------------------------------------------------------------------------
-
-/// `cos` between a ray and the view axis: converts distance-along-ray to
-/// depth-along-view-axis and back.
 #[inline]
 fn cosine(cam: &Camera, d: [f32; 3]) -> f32 {
     (d[0] * cam.fwd[0] + d[1] * cam.fwd[1] + d[2] * cam.fwd[2]).max(1e-6)
 }
 
 pub struct ReconAdaptive {
-    /// Samples the guest must shade.
     pub samples: u64,
-    /// Screen pixels those samples reconstruct.
     pub pixels: u64,
-    /// Area that fell through to per-pixel sampling.
     pub dense_px: u64,
-    /// Patches emitted, by size.
     pub patches: Vec<(f32, u64)>,
 }
 
@@ -1577,21 +1256,6 @@ impl ReconAdaptive {
     }
 }
 
-/// Subdivide only where a quadratic patch fails, and count what it costs.
-///
-/// The uniform-grid version of this experiment measured the wrong thing.
-/// Reconstruction does not fail because depth is curved — fitting inverse
-/// depth instead of depth moved the 16px pass rate by 3 points, which rules
-/// curvature out. It fails because a cell that straddles a silhouette cannot
-/// be fitted by *any* smooth function, and on a uniform grid most cells at
-/// 16px straddle something.
-///
-/// That is exactly the structure a vector representation is supposed to
-/// exploit: large patches between the discontinuities, dense sampling only
-/// on them. So the honest number is not "what cell size passes everywhere",
-/// it is "how many samples does an adaptive subdivision need for the whole
-/// frame" — which is what this measures, and it is the reconstruction factor
-/// the §14.2 upsample can actually be given.
 #[allow(clippy::too_many_arguments)]
 fn recon_cell(
     sc: &Scene,
@@ -1611,7 +1275,6 @@ fn recon_cell(
     }
     let area = (vx * vy) as u64;
 
-    // Fit a quadratic in inverse depth from a 3x3 grid.
     let mut a = [[0.0f64; 6]; 6];
     let mut rhs = [0.0f64; 6];
     let mut all_hit = true;
@@ -1622,15 +1285,6 @@ fn recon_cell(
             let d = cam.dir_at_pixel(x0 + fx * size, y0 + fy * size);
             match march(&sc.tape, cam.eye, d, sc.t_near, sc.t_far, s).0 {
                 Some(t) => {
-                    // Fit 1/z, not 1/t. Perspective linearity is a property
-                    // of depth along the *view axis*: for a plane, 1/z is
-                    // exactly affine in screen coordinates, which is why
-                    // rasterizers interpolate 1/z. Distance along the ray
-                    // carries an extra |d_raw| = sqrt(1+u²+v²) factor that
-                    // destroys the affinity — and destroys it worst on the
-                    // large planar surfaces (ground, walls) that dominate
-                    // the scene, which is precisely where the patch
-                    // representation has to win to be worth anything.
                     let z = t * cosine(cam, d);
                     let b = [
                         1.0,
@@ -1678,8 +1332,6 @@ fn recon_cell(
                         ok = false;
                         break 'check;
                     }
-                    // Back to distance along the ray, so the tolerance keeps
-                    // meaning pixels of parallax.
                     let t_fit = (1.0 / q) as f32 / cosine(cam, d);
                     if (t_fit - truth).abs() > tol {
                         ok = false;
@@ -1702,8 +1354,6 @@ fn recon_cell(
         return;
     }
     if size <= min_size {
-        // The residue: sampled per pixel, which is what a silhouette band
-        // costs and what the edge plane in a two-plane composite carries.
         out.samples += area;
         out.pixels += area;
         out.dense_px += area;
@@ -1750,32 +1400,13 @@ pub fn run_recon_adaptive(
     out
 }
 
-// ---------------------------------------------------------------------------
-// E6c — true discontinuity density, free of quadtree granularity.
-// ---------------------------------------------------------------------------
-
 pub struct EdgeCensus {
     pub pixels: u64,
-    /// Pixels adjacent to a hit/miss transition — a silhouette.
     pub silhouette: u64,
-    /// Pixels adjacent to a relative depth jump — an occlusion boundary or
-    /// a CSG seam.
     pub depth_step: u64,
-    /// Either of the above.
     pub edge: u64,
 }
 
-/// The adaptive quadtree reports a 34-47% per-pixel residue, but it cannot
-/// align a square cell to a diagonal edge: a one-pixel edge crossing a 2px
-/// cell condemns all four of its children, inflating the residue by 2-4x.
-///
-/// This measures the same quantity with no cells at all — march every pixel,
-/// then ask whether any 4-neighbour differs in hit/miss or in relative depth.
-/// The gap between this number and the quadtree residue is exactly what a
-/// genuine vector representation (curves bounding patches, rather than
-/// axis-aligned subdivision) would recover, and it is the difference between
-/// "the scene is too edge-dense for patches" and "square cells are the wrong
-/// container".
 pub fn run_edge_census(sc: &Scene, s: &mut Scratch) -> EdgeCensus {
     let cam = &sc.cam;
     let (w, h) = (cam.w as usize, cam.h as usize);
@@ -1808,8 +1439,6 @@ pub fn run_edge_census(sc: &Scene, s: &mut Scratch) -> EdgeCensus {
                 match (c.is_finite(), n.is_finite()) {
                     (a, b) if a != b => sil = true,
                     (true, true) => {
-                        // Relative jump: scale-free, so it means the same
-                        // thing near and far.
                         if (c - n).abs() / c.min(n).max(1e-6) > 0.05 {
                             step = true;
                         }
@@ -1831,20 +1460,11 @@ pub fn run_edge_census(sc: &Scene, s: &mut Scratch) -> EdgeCensus {
     o
 }
 
-// ---------------------------------------------------------------------------
-// E9 — the baked atlas: certified analytic solves instead of marching.
-// ---------------------------------------------------------------------------
-
 pub struct AtlasOut {
     pub cost: crate::atlas::TraceCost,
     pub pixels: u64,
     pub hits: u64,
-    /// Pixels where the atlas and an independent march disagree. Must be 0:
-    /// the proxy is an accelerator with a certificate, not a second source
-    /// of truth, so any disagreement means the certificate is wrong.
     pub mismatches: u64,
-    /// Mismatch taxonomy: guessing at the cause wasted two rounds, so the
-    /// gate reports which way it failed.
     pub miss_atlas_none: u64,
     pub miss_atlas_extra: u64,
     pub miss_depth: u64,
@@ -1902,10 +1522,6 @@ pub fn run_atlas(sc: &Scene, at: &crate::atlas::Atlas, s: &mut Scratch) -> Atlas
     o
 }
 
-// ---------------------------------------------------------------------------
-// E11 — the frame budget under motion.
-// ---------------------------------------------------------------------------
-
 pub struct FrameStat {
     pub deg: f32,
     pub primary_flop_px: f64,
@@ -1914,14 +1530,6 @@ pub struct FrameStat {
     pub verified: f64,
 }
 
-/// Cost every frame of a whip, not just a representative one.
-///
-/// A frame budget is set by the *worst* frame. §4.4 schedules resolution
-/// against camera velocity, which only works if the cost-versus-velocity
-/// curve is known — and a single static pose cannot show it. This walks the
-/// whole path: primary visibility through the atlas per frame, plus the
-/// reprojection hit rate from the preceding pose, so the two curves can be
-/// read against each other.
 pub fn run_motion(
     sc: &Scene,
     at: &crate::atlas::Atlas,
@@ -1952,7 +1560,6 @@ pub fn run_motion(
         }
         let n = (w * h) as f64;
 
-        // Reprojection from the previous pose: forward-scatter its hits.
         let (mut hinted, mut verified) = (0.0, 0.0);
         if let Some((p0, pd)) = &prev {
             let mut hint = vec![f32::INFINITY; w * h];
@@ -2008,7 +1615,6 @@ pub fn run_motion(
             }
         }
 
-        // Angular step from the previous pose.
         let deg = match &prev {
             Some((p0, _)) => {
                 let dot =
@@ -2030,10 +1636,6 @@ pub fn run_motion(
     }
     out
 }
-
-// ---------------------------------------------------------------------------
-// E6d — edge-aware reconstruction: what a curve-bounded representation gets.
-// ---------------------------------------------------------------------------
 
 pub struct EdgeRecon {
     pub pixels: u64,
@@ -2060,19 +1662,6 @@ struct Field {
     edge: Vec<bool>,
 }
 
-/// Fit `1/z` over the *non-edge* pixels of a cell and test the residual there.
-///
-/// The uniform and quadtree versions of this experiment both condemned a
-/// whole cell for touching a single discontinuity, which is a property of
-/// axis-aligned containers, not of the scene: the per-pixel census puts true
-/// discontinuity density at 7.6%/2.4% against the quadtree's 34%/47%
-/// residue. A vector representation bounds patches by *curves*, so an edge
-/// crossing a region splits it rather than destroying it.
-///
-/// This measures that directly without implementing curve extraction: edges
-/// are charged one sample each (they are the analytic edge plane, and
-/// §9.4's coverage-based AA is what actually renders them), and the patch
-/// fit is judged only on the smooth pixels it would actually have to carry.
 fn recon_edge_cell(
     f: &Field,
     cam: &Camera,
@@ -2087,8 +1676,7 @@ fn recon_edge_cell(
     if x0 >= x1 || y0 >= y1 {
         return;
     }
-    // Partition the cell.
-    let mut smooth: Vec<(f32, f32, f32)> = Vec::new(); // (fx, fy, z)
+    let mut smooth: Vec<(f32, f32, f32)> = Vec::new();
     let mut n_edge = 0u64;
     let mut n_miss = 0u64;
     let mut zref = 0.0f32;
@@ -2114,14 +1702,12 @@ fn recon_edge_cell(
             zref = t;
         }
     }
-    // Background inside a cell is free: no surface, nothing to reconstruct.
     let _ = n_miss;
     if smooth.is_empty() {
         out.edge_samples += n_edge;
         return;
     }
 
-    // Least squares for a bivariate quadratic in inverse view-axis depth.
     let mut ata = [[0.0f64; 6]; 6];
     let mut atb = [0.0f64; 6];
     for &(fx, fy, z) in &smooth {
@@ -2157,14 +1743,10 @@ fn recon_edge_cell(
             None => false,
         }
     } else {
-        // Too few smooth pixels to fit: they are cheaper sampled directly.
         false
     };
 
     if ok {
-        // Charge the edge pixels once, where the cell terminates. Charging
-        // on the way down counted every edge pixel again at each level of
-        // the descent and inflated the sample total ~4x.
         out.edge_samples += n_edge;
         out.patch_samples += 9;
         let sz = size as u32;
@@ -2264,18 +1846,12 @@ pub fn run_edge_recon(
     (cen, out)
 }
 
-// ---------------------------------------------------------------------------
-// E10 — the light bake: what the field has no shortcut for.
-// ---------------------------------------------------------------------------
-
 pub struct LightBake {
     pub dims: [usize; 3],
     pub cell: f32,
     pub cells: u64,
     pub bake_rays: u64,
     pub bytes_f32: u64,
-    /// Error of the trilinear lookup against directly-computed occlusion at
-    /// random surface points.
     pub tested: u64,
     pub mean_err: f64,
     pub p95_err: f32,
@@ -2285,7 +1861,6 @@ pub struct LightBake {
 const AO_RADIUS: f32 = 0.6;
 const AO_RAYS: usize = 8;
 
-/// Deterministic direction set on the sphere (a fixed spiral, no clock).
 fn ao_dirs() -> [[f32; 3]; AO_RAYS] {
     let mut d = [[0.0f32; 3]; AO_RAYS];
     let ga = std::f32::consts::PI * (3.0 - 5.0f32.sqrt());
@@ -2301,7 +1876,6 @@ fn ao_dirs() -> [[f32; 3]; AO_RAYS] {
 fn ao_at(tape: &Tape, p: [f32; 3], dirs: &[[f32; 3]; AO_RAYS], s: &mut Scratch) -> f32 {
     let mut acc = 0.0;
     for d in dirs.iter() {
-        // Occlusion along a short ray, the cheap standard estimator.
         let mut occ = 1.0f32;
         let mut t = 0.02f32;
         let mut steps = 0;
@@ -2320,20 +1894,6 @@ fn ao_at(tape: &Tape, p: [f32; 3], dirs: &[[f32; 3]; AO_RAYS], s: &mut Scratch) 
     acc / AO_RAYS as f32
 }
 
-/// Bake ambient occlusion on a grid, then measure what the lookup costs in
-/// *accuracy*, not just in FLOP.
-///
-/// This is the bake the atlas experiment argued for. §13's objection to
-/// baking is staleness, and it is answered the same way: the image is
-/// recompiled whole, so the grid cannot outlive its expression. But the
-/// reason to bake *this* and not visibility is measured, not asserted — an
-/// SDF is already its own acceleration structure for ray casting (E9: an
-/// octree came in at 0.69-0.98x), and it offers no comparable shortcut for
-/// integrating occlusion over a hemisphere. Lighting is 28.4% of the
-/// measured frame and there is nothing free to compete with.
-///
-/// The reported error is the honest part: a trilinear tap is worthless if it
-/// does not agree with the integral it replaces.
 pub fn run_light_bake(
     sc: &Scene,
     lo: [f32; 3],
@@ -2382,7 +1942,6 @@ pub fn run_light_bake(
         l(l(c00, c10, d[1]), l(c01, c11, d[1]), d[2])
     };
 
-    // Validate at real surface points, found by marching random primary rays.
     let cam = &sc.cam;
     let mut out = LightBake {
         dims,
@@ -2419,23 +1978,6 @@ pub fn run_light_bake(
             continue;
         }
         let truth = ao_at(&sc.tape, p, &dirs, s);
-        // Sampled at the surface point itself.
-        //
-        // Offsetting the lookup along the normal by half a cell -- the
-        // standard fix for volumetric AO looking blurry at creases -- was
-        // tried and made it *worse*, mean error 0.060 -> 0.218. It biases
-        // the lookup toward free-space occlusion while the truth being
-        // compared against is still surface occlusion; the offset only pays
-        // when the bake shares the convention.
-        //
-        // The finding this experiment actually delivers is that AO is the
-        // wrong thing to bake. §8 already prices it at "4-5 distance samples
-        // along the normal, near-free", and the measurement agrees: a volume
-        // grid reproduces surface AO to a p95 of 0.17 even at 0.125 cells,
-        // which is visible banding, in exchange for replacing something that
-        // was already cheap. The expensive lighting term is the *shadow* ray
-        // (5 evals/hit), and sun visibility is a long-range quantity that
-        // interpolates far better than contact occlusion does.
         let got = sample(&grid, p);
         let e = (truth - got).abs();
         errs.push(e);
@@ -2451,8 +1993,6 @@ pub fn run_light_bake(
     out
 }
 
-/// Soft sun visibility at a point: one sphere-traced ray with §8's penumbra
-/// estimator `min(k·d/t)`.
 fn sun_vis(tape: &Tape, p: [f32; 3], sun: [f32; 3], k: f32, s: &mut Scratch) -> f32 {
     let mut vis = 1.0f32;
     let mut t = 0.03f32;
@@ -2470,20 +2010,6 @@ fn sun_vis(tape: &Tape, p: [f32; 3], sun: [f32; 3], k: f32, s: &mut Scratch) -> 
     vis.clamp(0.0, 1.0)
 }
 
-/// Bake **sun visibility** rather than ambient occlusion.
-///
-/// E10 measured that a volume grid reproduces surface AO badly (p95 0.17 at
-/// 0.125 cells) while replacing something §8 already prices at "near-free" —
-/// the wrong trade in both directions. Sun visibility is the opposite case
-/// on both counts: it is the *expensive* lighting term (5 evals per hit,
-/// 12.9% of the measured frame, and each eval marches a long ray), and it is
-/// a long-range quantity that varies smoothly except across penumbra
-/// boundaries, so a volume grid should carry it far better than it carries
-/// contact occlusion.
-///
-/// Reported error is against directly-traced visibility at real surface
-/// points, because a tap that disagrees with the ray it replaces is not a
-/// saving, it is a bug with good performance.
 pub fn run_sun_bake(
     sc: &Scene,
     lo: [f32; 3],
@@ -2571,8 +2097,6 @@ pub fn run_sun_bake(
         {
             continue;
         }
-        // Lift off the surface by half a cell along the normal: the shadow
-        // ray starts there anyway, and it keeps the stencil out of the solid.
         let (_, g) = eval_grad(&sc.tape, p, &mut s.g);
         let gl = (g[0] * g[0] + g[1] * g[1] + g[2] * g[2]).sqrt().max(1e-6);
         let ps = [
@@ -2596,37 +2120,16 @@ pub fn run_sun_bake(
     out
 }
 
-// ---------------------------------------------------------------------------
-// E12 — deformation: what moves when the geometry moves, not the camera.
-// ---------------------------------------------------------------------------
-
 pub struct DeformTemporal {
     pub pixels: u64,
-    /// Pixels where both frames hit, so a depth hint exists at all.
     pub hinted: u64,
-    /// The hint led the march to the same surface.
     pub verified: u64,
-    /// The march started past the surface and tunnelled — §4's guarantee
-    /// broken, which it only ever claimed for *static* geometry.
     pub tunnelled: u64,
-    /// Toward-camera surface motion between the two poses.
     pub max_closing: f32,
     pub p99_closing: f32,
     pub mean_closing: f32,
 }
 
-/// Reproject a depth hint across a *deformation* with the camera held still.
-///
-/// §4 promises "a wrong hint costs performance, never correctness — the
-/// march *verifies* it", and then says plainly: "That guarantee holds only
-/// for static geometry. If a surface moved toward the camera by more than
-/// `slack`, the march starts past it and tunnels."
-///
-/// §4.1 proposes bounding `slack` by the maximum toward-camera velocity of
-/// any *rigid instance* whose bounds intersect the tile. A swinging limb is
-/// not rigid, so the question this measures is whether that bound is
-/// usable: what closing speed does a real swing actually produce at the
-/// pixel level, and what tunnelling rate does a given slack buy?
 pub fn run_deform_temporal(
     prev: &Scene,
     cur: &Scene,
@@ -2654,7 +2157,6 @@ pub fn run_deform_temporal(
             let p0 = march(&prev.tape, cam.eye, d, prev.t_near, prev.t_far, s).0;
             let truth = march(&cur.tape, cam.eye, d, cur.t_near, cur.t_far, s).0;
             if let (Some(a), Some(b)) = (p0, truth) {
-                // Positive = the surface came toward the camera.
                 let closing = a - b;
                 if closing > 0.0 {
                     closings.push(closing);

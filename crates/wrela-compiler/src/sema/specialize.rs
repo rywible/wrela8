@@ -1,97 +1,3 @@
-//! `comptime if` specialization (plans/M3.md item D, decision 8): "the
-//! unselected branch is dropped before body checking, so the graph that
-//! is checked is the graph that exists" (02-language.md §12). This pass
-//! runs first in `sema::check_typed`'s pipeline — before `symbols::collect`
-//! even sees the module — and returns a new `Module` with every
-//! `Item::ComptimeIf`/`Member::ComptimeIf`/`Stmt::ComptimeIf` node
-//! replaced by its selected branch's own items/members/statements,
-//! spliced in directly at the same position. Every later pass
-//! (`collect`/`resolve`/`declare`/`bodies`/`access`/`flow`/`matches`/
-//! `generics`) therefore only ever sees the specialized graph — module-
-//! scope and member-scope forms land exactly like a plain declaration
-//! always did (nothing downstream needed to change), and statement-scope
-//! specialization happens before `bodies::check` ever types the
-//! surrounding function, so its own long-standing `error[unimplemented]:
-//! \`comptime if\` is not checked yet` (bodies.rs, decision 7) simply
-//! never fires for a real program again — kept only as an unreachable
-//! defense-in-depth net (see bodies.rs/flow.rs/matches.rs's own comments)
-//! in case this pass ever leaves one behind.
-//!
-//! ## The normative-ordering reading this pass pins (my own, stated
-//! explicitly per the M3-D task brief: "where the doc leaves latitude,
-//! pick the dumbest workable reading")
-//!
-//! 02-language.md §12 says a `comptime if` condition "must be comptime-
-//! evaluable with the real evaluator" but does not spell out *when*,
-//! relative to the rest of the pipeline, that evaluation can happen —
-//! and the obvious answer ("whenever its referenced consts are typed and
-//! evaluated") is circular for module/member-scope specialization: those
-//! branches themselves may contain the very declarations (including
-//! `const`s) later specialization needs, and a plain `const`'s own value
-//! is not evaluated by the real evaluator until `eval::check_consts`,
-//! which runs at the very end of `check_typed` — long after `bodies`
-//! would need to have already specialized away every `comptime if` to
-//! know what to type in the first place.
-//!
-//! This pass resolves the circularity with one dedicated, deliberately
-//! narrow rule instead of a general const-propagation/data-flow analysis:
-//!
-//! - A `comptime if` condition (module scope, member scope, or statement
-//!   scope — identical rule everywhere, one shared vocabulary) may
-//!   reference **only literals, prelude fieldless-enum variants
-//!   (`DriverMode.Irq`), and plain top-level `const` items declared
-//!   directly in the module** (i.e. `Item::Const` appearing in
-//!   `module.items` itself, never nested inside *any* `comptime if`
-//!   branch, selected or not) — combined with unary/binary/logical
-//!   operators. No fn calls, no locals, no `self`.
-//! - **plans/M7.md item G, decision 18:** a member/statement `comptime if`
-//!   whose condition also names the enclosing struct's own const generic
-//!   parameters (e.g. `MODE == DriverMode.Irq` on
-//!   `BlkDriver[const MODE: DriverMode]`) is **deferred** — left in the
-//!   AST for `generics::instantiate_struct` to expand per instantiation.
-//!   Module-scope `comptime if` still cannot name a generic parameter.
-//! - This is checked and evaluated by building one small, self-contained
-//!   "const skeleton": a throwaway `Module` containing only the specific
-//!   top-level consts transitively reachable from *some* `comptime if`
-//!   condition somewhere in the whole module (computed once, up front,
-//!   by a plain name-harvesting walk — no typing needed for that part),
-//!   run through the ordinary `collect -> resolve -> declare -> bodies`
-//!   pipeline exactly like any other module. Every condition in the
-//!   whole file is then type-checked (`bodies::check_expr`, expecting
-//!   `bool` — reusing the real per-expression typing machinery, not a
-//!   hand-rolled duplicate) and evaluated (`eval::interp::eval_standalone`,
-//!   the real evaluator) against that one skeleton, in a single left-to-
-//!   right walk that expands `comptime if` nodes as it encounters them.
-//! - A condition referencing anything outside that vocabulary — a const
-//!   declared inside another (still-unresolved) `comptime if` branch, a
-//!   local, a call, a generic parameter — fails closed with a named
-//!   `error[unimplemented]`/`error[comptime]` diagnostic (see
-//!   `check_comptime_vocabulary` below) rather than attempting a wrong
-//!   answer. `err-comptime-if-not-comptime` pins the local-reference
-//!   case (the most "honestly producible" one — see the M3-D task
-//!   brief); a const hidden inside another branch fails identically,
-//!   unpinned by its own golden only because it is the same diagnostic
-//!   shape.
-//!
-//! ## What this pass deliberately does not specialize
-//!
-//! A `comptime if` nested inside a closure literal *embedded in an
-//! expression* (a const initializer, a call argument, ...) is not
-//! rewritten — only the statement lists of a `fn`/`init`/method's own
-//! body (and, recursively, every ordinary nested block: `if`/`match`/
-//! `for`/`while`/`defer`/`with`) are walked. Reaching one there still
-//! fails closed, honestly, via bodies.rs's own residual
-//! `error[unimplemented]` — a narrow, disclosed boundary (mirrors
-//! `eval::legal`'s own "Known scope boundary: field defaults" precedent),
-//! not a silent gap.
-//!
-//! Legality (plans/M3.md item C): since this vocabulary has no fn calls
-//! at all, a `comptime if` condition can never reach a callee — there is
-//! nothing for `eval::legal::require_legal` to gate here, so this pass
-//! does not call it (item D's legality wiring lands instead on `const`
-//! initializers and `comptime assert`, both of which do support calls —
-//! see `eval/mod.rs`).
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::eval::{interp, to_sema_error, value::Value};
@@ -106,14 +12,11 @@ use crate::syntax::ast::{
     Module, Stmt, StructItem, WhileStmt, WithStmt,
 };
 
-/// The one small typed context every `comptime if` condition in the
-/// whole module is checked/evaluated against (module doc above).
 struct ConstSkeleton {
     mctx: ModuleCtx,
     program: TypedProgram,
 }
 
-/// Entry point: `sema::check_typed`'s very first step.
 pub fn specialize(module: &Module) -> Result<Module, SemaError> {
     let known_consts = compute_known_consts(module);
     let skeleton = build_const_skeleton(module, &known_consts)?;
@@ -124,11 +27,6 @@ pub fn specialize(module: &Module) -> Result<Module, SemaError> {
     })
 }
 
-// --- step 1: which top-level consts are even in play ----------------------
-
-/// Every `Item::Const` declared directly in `module.items` (never nested
-/// inside a `comptime if` branch) — the only consts this pass may ever
-/// consult, name -> its own initializer expression.
 fn top_level_consts(module: &Module) -> Vec<&ConstItem> {
     module
         .items
@@ -140,15 +38,6 @@ fn top_level_consts(module: &Module) -> Vec<&ConstItem> {
         .collect()
 }
 
-/// The transitive closure of top-level const names any `comptime if`
-/// condition anywhere in the module (module/member/statement scope,
-/// selected or not — harvesting both branches is a conservative
-/// superset, never a correctness problem) could possibly reference,
-/// starting from every name literally written in some condition and
-/// growing through each such const's own initializer. A name that turns
-/// out not to be a top-level const at all is simply never added here —
-/// `check_comptime_vocabulary` (below) is what actually rejects a
-/// condition that reaches for one at evaluation time.
 fn compute_known_consts(module: &Module) -> BTreeSet<String> {
     let mut condition_exprs = Vec::new();
     harvest_conditions_items(&module.items, &mut condition_exprs);
@@ -179,8 +68,6 @@ fn compute_known_consts(module: &Module) -> BTreeSet<String> {
     }
     known
 }
-
-// --- harvesting: find every `comptime if` condition anywhere ---------------
 
 fn harvest_conditions_items<'a>(items: &'a [Item], out: &mut Vec<&'a Expr>) {
     for item in items {
@@ -274,13 +161,6 @@ fn harvest_conditions_stmt<'a>(stmt: &'a Stmt, out: &mut Vec<&'a Expr>) {
     }
 }
 
-/// Every bare name an expression reads, recursively — a generous
-/// superset (it does not distinguish "read as a value" from "used as a
-/// callee", and does not descend into a closure's own statement-suite
-/// body — module doc's "what this pass deliberately does not
-/// specialize"), used only to seed/grow `known_consts` above; being too
-/// generous here only ever pulls in a few extra, harmlessly-unused
-/// consts, never a correctness problem.
 fn collect_names_in_expr(e: &Expr, out: &mut BTreeSet<String>) {
     match e {
         Expr::Name(_, name) => {
@@ -346,8 +226,6 @@ fn collect_names_in_expr(e: &Expr, out: &mut BTreeSet<String>) {
     }
 }
 
-// --- step 2: the const skeleton every condition checks/evaluates against --
-
 fn build_const_skeleton(
     module: &Module,
     known_consts: &BTreeSet<String>,
@@ -358,12 +236,6 @@ fn build_const_skeleton(
         .filter(|i| matches!(i, Item::Const(c) if known_consts.contains(&c.name)))
         .cloned()
         .collect();
-    // No imports: this skeleton exists only to type/evaluate the const
-    // vocabulary a `comptime if` condition may use, which never includes
-    // an imported name (imports fail closed everywhere else in sema
-    // today regardless — `symbols::resolve`); carrying them here would
-    // only risk masking the real "imports are not checked yet" error
-    // behind this pass's own, unrelated, earlier call.
     let skeleton_module = Module {
         span: module.span,
         path: module.path.clone(),
@@ -384,15 +256,6 @@ fn build_const_skeleton(
     Ok(ConstSkeleton { mctx, program })
 }
 
-// --- step 3: vocabulary-gated condition evaluation -------------------------
-
-/// Rejects a condition expression outright the moment it uses anything
-/// outside this pass's own restricted vocabulary (module doc): a `Name`
-/// must be a `known_consts` member (a local, a generic parameter, or a
-/// const still hidden inside another `comptime if` branch all land here
-/// — `err-comptime-if-not-comptime`'s own case); anything else not in
-/// the small supported-operator set fails closed by construction/name
-/// instead of a wrong answer.
 fn check_comptime_vocabulary(
     e: &Expr,
     known_consts: &BTreeSet<String>,
@@ -416,11 +279,8 @@ fn check_comptime_vocabulary(
                 ))
             }
         }
-        // plans/M7.md item G, decision 18: `DriverMode.Irq` / `Target.*` /
-        // `Failure.*` in a condition (fieldless prelude enum variants).
         Expr::Field(base, span, variant) => match base.as_ref() {
             Expr::Name(_, ename) => {
-                // plans/M9.md item QQ: load failures are `error[build]`.
                 if stdlib_enums::variant_strs(ename)?
                     .is_some_and(|vs| vs.contains(&variant.as_str()))
                 {
@@ -468,11 +328,6 @@ fn condition_uses_enclosing_const_generic(
     }
 }
 
-/// Type-checks (`bodies::check_expr`, expecting `bool` — `err-comptime-
-/// if-not-bool`'s own case, the ordinary expected-type mismatch
-/// diagnostic) and evaluates (`eval::interp::eval_standalone`, the real
-/// evaluator) one `comptime if` condition against the whole module's one
-/// shared const skeleton.
 fn eval_condition(
     cond: &Expr,
     known_consts: &BTreeSet<String>,
@@ -496,8 +351,6 @@ fn eval_condition(
     }
 }
 
-// --- step 4: the expansion walk --------------------------------------------
-
 fn specialize_items(
     items: &[Item],
     known_consts: &BTreeSet<String>,
@@ -520,7 +373,6 @@ fn specialize_item(
 ) -> Result<(), SemaError> {
     match item {
         Item::ComptimeIf(c) => {
-            // Module-scope: never defer on a generic parameter.
             let selected: &[Item] =
                 if eval_condition(&c.cond, known_consts, enclosing_const_generics, skeleton)? {
                     &c.then_branch
@@ -625,7 +477,6 @@ fn specialize_member(
         Member::ComptimeIf(c) => {
             check_comptime_vocabulary(&c.cond, known_consts, enclosing_const_generics)?;
             if condition_uses_enclosing_const_generic(&c.cond, enclosing_const_generics) {
-                // Decision 18: defer for per-instantiation expansion.
                 out.push(Member::ComptimeIf(ComptimeIfMember {
                     then_branch: specialize_members(
                         &c.then_branch,
@@ -857,12 +708,6 @@ fn specialize_stmt(
     }
 }
 
-// ===========================================================================
-// plans/M7.md item G, decision 18: per-instantiation expansion of deferred
-// `comptime if` nodes that named the enclosing struct's const generics.
-// ===========================================================================
-
-/// Rewrite bare const-generic names to their concrete argument expressions.
 fn bind_const_names(e: &Expr, consts: &BTreeMap<String, Expr>) -> Expr {
     match e {
         Expr::Name(_, name) => consts.get(name).cloned().unwrap_or_else(|| e.clone()),
@@ -903,7 +748,6 @@ fn eval_bound_condition(cond: &Expr, mctx: &ModuleCtx) -> Result<bool, SemaError
     let typed_cond = bodies::check_expr(cond, Some(&Type::Bool), &mut fctx, mctx)?;
     let mut program = TypedProgram::default();
     for name in ["Target", "Failure", "DriverMode"] {
-        // plans/M9.md item QQ: load failures are `error[build]`.
         if let Some(vs) = stdlib_enums::variant_strs(name)? {
             program.enums.insert(
                 name.to_string(),
@@ -941,8 +785,6 @@ fn eval_bound_condition(cond: &Expr, mctx: &ModuleCtx) -> Result<bool, SemaError
     }
 }
 
-/// Expand deferred member `comptime if`s under a concrete const-generic
-/// substitution (`MODE` → `DriverMode.Irq`), returning only concrete members.
 pub(crate) fn expand_deferred_members(
     concrete: &[Member],
     deferred: &[Member],

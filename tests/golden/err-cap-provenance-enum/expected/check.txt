@@ -1,1 +1,1 @@
-error[type]: `ack_vector` touches hardware state (its own `held: Held`) but is not reachable through any `@driver`'s authority in this module — 03-hardware.md §1: a function that touches MMIO, DMA, or IRQ state must be reachable through the owning driver's authority at 38:1
+error[type]: `ack_vector` touches hardware state (its own `held: Held`) but is not reachable through any `@driver`'s authority in this module — 03-hardware.md §1: a function that touches MMIO, DMA, or IRQ state must be reachable through the owning driver's authority at 15:1

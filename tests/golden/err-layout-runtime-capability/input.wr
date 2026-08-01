@@ -1,17 +1,5 @@
 module examples.err_layout_runtime_capability
 
-# plans/M10.md item A2, 03-hardware.md §3.1's last clause: a `runtime`
-# layout "carries no capability". The rule was written into
-# `layout_field_bytes`' capability arm by item A and was unreachable there —
-# a `runtime` declaration was refused before any field was sized — so it is
-# pinned now that the class is live.
-#
-# The capability sits inside the *nested* table, and the table that nests it
-# is declared first, so the rejection is reached through the recursion
-# rather than by walking to `TurnArea`'s own declaration: the field that
-# breaks the rule is `TurnArea.owner`, found while sizing
-# `TurnTable.turns`. A check that only ever looked at top-level fields would
-# accept this file.
 
 @layout(runtime, endian=little)
 struct TurnTable:

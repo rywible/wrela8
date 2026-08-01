@@ -1,7 +1,5 @@
 module examples.err_untrusted_bound
 
-# plans/M7.md item H2a, 03-hardware.md §8: an `Untrusted[T]` used as a
-# range bound is a rejection naming `.checked_le(bound)`.
 
 fn bad(reported: Untrusted[usize]) -> usize:
     n = 0

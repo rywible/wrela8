@@ -1,50 +1,3 @@
-//! Statement/expression typing (plans/M2.md item C): assignment
-//! introduction/reassignment, `if`/`while` condition typing, `for`
-//! typing, operator desugar (02-language.md §7.4, §8.2, 05-library.md
-//! §8), call checking (arity, labels), enum literals and leading-dot
-//! inference, pattern typing, `is`, closures as structural `fn` types,
-//! `?`, `assert`, `defer`. Also where the fail-closed set (decision 7)
-//! beyond imports lands: `comptime if`/`comptime assert`, f-strings
-//! (item D: desugar onto Format + `String` concat), `await`/`send`/
-//! `with` (group/pool), `@image` bodies.
-//!
-//! Shape (decision 4): no unification, no constraint solver — every
-//! expression is either checked against an expected type the grammar
-//! already supplies (`check_expr`), or synthesized on its own
-//! (`synth_expr`, called by `check_expr`, which then gates the result
-//! against `expected` when one was given). Everything clones freely
-//! (`Type`/`DeclFn`/AST nodes all derive `Clone`): `ModuleCtx` below owns
-//! plain copies of every declared item's ast + resolved-type pair
-//! instead of borrowing, so no lifetime threads through the whole file.
-//!
-//! plans/M3.md item A: `check_expr`/`check_stmt` now return a typed node
-//! (`typed::TypedExpr`/`typed::TypedStmt`) instead of a bare `Type`/`()` —
-//! see `typed.rs`'s own module doc comment for the tree's shape. This
-//! file is still the one place that *produces* the typed tree;
-//! `access.rs`/`flow.rs`/`matches.rs` call `check_expr`/`check_pattern`
-//! exactly as before and only ever read `.ty` off the result where they
-//! previously got a bare `Type` back (a recorded non-goal: those three
-//! passes are not retrofitted onto the typed tree in M3).
-//!
-//! A generic declaration's *own* body is still not type-checked here: a
-//! generic struct/enum's members, and a generic fn/method's body, are
-//! skipped entirely (no error — just not visited) by `check_top_fn`/
-//! `check_struct_bodies` below. A *use* of a generic type/fn from a
-//! non-generic body (a construction, a call — explicit `[Args]` or, for
-//! a top-level generic `fn`, inferred — a field/method/variant lookup
-//! through an already-typed value) now resolves the concrete
-//! instantiation and enqueues it (item H, `generics.rs` owns
-//! substitution + the queue + the actual per-instantiation checking,
-//! `mod.rs::check` runs it last). Generic-enum *variant* construction
-//! under an expected instantiated type (`Lookup.Absent` → `Lookup[u32]`)
-//! is included (plans/M9.md item J2c). What still fails closed via
-//! `unimplemented_at("generic instantiation is", ...)` is item H's own
-//! documented scope boundary: a generic *method*'s own type parameters
-//! (beyond its struct's, if any — never instantiated; an open gap), associated functions on a still-
-//! generic enum type name, a bare reference to a generic type/fn as a
-//! first-class value without calling it, and a generic-argument shape
-//! deeper than this item resolves.
-
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -65,34 +18,11 @@ use crate::syntax::ast::{
     NamedType, Pattern, Span, Stmt, UnaryOp, VariantPayload, WhileStmt,
 };
 
-// --- item H: the generic-instantiation queue ------------------------------
-//
-// "Typing a `Generic[Args]` use enqueues the concrete instantiation"
-// (plans/M2.md item H): every fail-closed generic-instantiation point this
-// pass used to have now instead resolves the concrete use (`generics.rs`
-// owns substitution) and registers it here, keyed by a canonical
-// `"<kind>:<name>[<args>]"` string (decision 1's "BTreeSet-keyed by name +
-// resolved args", realized as a `BTreeMap` so the first discovery's call
-// site — the one used for the "instantiated at" chain — is kept rather
-// than overwritten by a later, redundant use of the same instantiation).
-// `current_chain` is the "instantiated at" stack this exact walk is
-// running under: empty for the module's own (non-generic) bodies, and set
-// by `generics::check`, which assigns `current_chain` directly around each
-// instantiation while it re-runs this same pass over one instantiation's
-// substituted declaration — so a
-// generic use *discovered while checking an instantiation* enqueues with
-// that instantiation's own chain plus one more frame, which is exactly
-// how a nested instantiation's diagnostic gets one `instantiated at` line
-// per level (decision 2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum InstKind {
     Struct,
     Enum,
     Fn,
-    /// A method's (or associated fn's) own type/const parameters
-    /// (plans/M13.md item Q): keyed `(receiver type, method, type-args)`.
-    /// `QueuedInstantiation::name` is the method name; `receiver` holds
-    /// the concrete `Type::Named` the call was made through.
     Method,
 }
 
@@ -112,49 +42,16 @@ pub(crate) struct QueuedInstantiation {
     pub(crate) kind: InstKind,
     pub(crate) name: String,
     pub(crate) args: Vec<types::TypeArg>,
-    /// Concrete receiver type for `InstKind::Method`
-    /// (`Type::Named(struct_or_enum, struct_args)`); `None` otherwise.
     pub(crate) receiver: Option<Type>,
-    /// The instantiation chain leading to this one, outermost first,
-    /// this instantiation's own triggering call site last (decision 2:
-    /// "one `instantiated at` line per level, innermost first" — printed
-    /// by reversing this).
     pub(crate) chain: Vec<Span>,
 }
 
-/// Fixed recursion cap on the instantiation chain (item H): a cycle or a
-/// genuinely unbounded generic recursion both hit this before the process
-/// stack would. Deliberately small and fixed — no measurement, no
-/// configuration (CLAUDE.md's "dumbness is permanent").
 pub(crate) const MAX_GENERIC_DEPTH: usize = 64;
 
-// --- module-wide lookup context ------------------------------------------
-
-/// One struct's declared shape, for body typing: the resolved
-/// declaration (`types::declare`'s output) plus a parallel, owned copy of
-/// its ast members (same order, `comptime if` members already filtered
-/// out — mirrors exactly what `types::declare_struct` iterated) so field
-/// defaults, method/init bodies, param defaults, and per-member generics
-/// are all available without re-walking the module.
-// `pub(crate)` throughout `StructInfo`/`FnInfo`/`ModuleCtx` (plans/M2.md
-// item D, decision 10's minimal-footprint rule): access.rs re-walks
-// bodies with the declared signatures exactly like this pass does, so it
-// reuses this same lookup context wholesale (`build_module_ctx`) rather
-// than duplicating struct/enum/fn table construction — nothing here is
-// restructured, only exposed. `Clone` (item H, generics.rs): a generic
-// instantiation's substituted `StructInfo` is built fresh (owned) per
-// use, so callers that also handle the plain (borrowed, from `mctx`)
-// case need both to fit one `Cow`-typed local.
 #[derive(Clone)]
 pub(crate) struct StructInfo {
     pub(crate) decl: types::DeclStruct,
     pub(crate) ast_members: Vec<Member>,
-    // =====================================================================
-    // plans/M7.md item G, decision 18: `comptime if` members deferred by
-    // `specialize` because they name this struct's own const generics
-    // (e.g. `MODE == DriverMode.Irq`). Concrete `ast_members` stay 1:1 with
-    // `decl.members` for the zip; instantiation expands these first.
-    // =====================================================================
     pub(crate) deferred_comptime_members: Vec<Member>,
 }
 
@@ -170,7 +67,6 @@ impl StructInfo {
         })
     }
 
-    /// Source `pub` on a field (02-language.md §2 / plans/M13.md item G3).
     pub(crate) fn field_is_pub(&self, name: &str) -> Option<bool> {
         self.decl.members.iter().find_map(|m| match m {
             DeclMember::Field(d) if d.name == name => Some(d.is_pub),
@@ -212,9 +108,6 @@ impl StructInfo {
     }
 }
 
-/// One enum's declared shape (plans/M9.md item B2): the resolved
-/// `DeclEnum` plus its AST method members, parallel to `StructInfo` so
-/// method/associated-fn lookup and body checking share one zip.
 #[derive(Clone)]
 pub(crate) struct EnumInfo {
     pub(crate) decl: types::DeclEnum,
@@ -265,26 +158,12 @@ impl std::ops::DerefMut for EnumInfo {
     }
 }
 
-/// One top-level fn's ast (params/defaults/generics/attrs/body) plus its
-/// resolved declaration. `Clone` (plans/M4.md item A): the multi-module
-/// entry (`sema::check_program`) splices an *already-built* `FnInfo`
-/// straight from the exporting module's own independent `ModuleCtx`
-/// into an importing module's, under the (possibly aliased) local name
-/// — a plain, owned copy, never a re-check (see that function's own doc
-/// comment for why this is sound even across an import cycle).
 #[derive(Clone)]
 pub(crate) struct FnInfo {
     pub(crate) ast: ast::FnItem,
     pub(crate) decl: types::DeclFn,
 }
 
-/// Everything body-typing needs to resolve names beyond the current
-/// function: struct/enum/fn/const declarations, generic arity (for
-/// annotation resolution and the generic-instantiation fail-closed
-/// check), and module-scope pool names. Built once per `check` call from
-/// `module` + `declare`'s already-resolved `decl_items`; nothing here
-/// borrows either, so no lifetime parameter is needed anywhere in this
-/// file (decision 4: clone freely).
 pub(crate) struct ModuleCtx {
     pub(crate) shapes: BTreeMap<String, usize>,
     pub(crate) module_pools: BTreeSet<String>,
@@ -292,87 +171,28 @@ pub(crate) struct ModuleCtx {
     pub(crate) enums: BTreeMap<String, EnumInfo>,
     pub(crate) fns: BTreeMap<String, FnInfo>,
     pub(crate) consts: BTreeMap<String, Type>,
-    /// Module-level placed statics (03-hardware.md §3.1, plans/M10.md item
-    /// A2c): name → (type, `@placed` address).
     pub(crate) statics: BTreeMap<String, StaticInfo>,
-    /// Every `@layout` type this module declares, by name (plans/M7.md
-    /// item C): `check_mmio_access` needs a register's declared direction,
-    /// width and offset, and `types::check_layouts` is the one pass that
-    /// computes them. Not spliced across an import, deliberately — an
-    /// `Mmio[L]`'s own `L` must be an `@layout(mmio)` struct declared in
-    /// the same module (`types::validate_capability_args`), so a layout
-    /// from another module can never be reached through one.
     pub(crate) layouts: BTreeMap<String, types::LayoutType>,
-    /// Every module-level `const`'s own initializer expression, by name
-    /// (item H, generics.rs): a const generic argument may spell a bare
-    /// `const` name (decision 4), so evaluating it needs the *value*, not
-    /// just the type `consts` above already carries.
     pub(crate) const_values: BTreeMap<String, Expr>,
-    /// Item H's instantiation worklist — see the module-level doc comment
-    /// above `InstKind`. Interior mutability (`RefCell`) is deliberate: it
-    /// lets every existing check function go on taking `&ModuleCtx`
-    /// unchanged (decision 10's minimal-footprint rule) while still
-    /// accumulating instantiation requests discovered arbitrarily deep in
-    /// the walk.
     pub(crate) generics_queue: RefCell<BTreeMap<String, QueuedInstantiation>>,
-    /// The instantiation chain the *current* walk over this `ModuleCtx`
-    /// is running under — empty for the module's own bodies, set by
-    /// `generics::check` while re-running this pass over a substituted
-    /// declaration. See the module-level doc comment above `InstKind`.
     pub(crate) current_chain: RefCell<Vec<Span>>,
-    /// plans/M7.md item E1: every `VirtQueue.configure(pool=take P, ...,
-    /// depth=N)` site observed while typing this module — `(pool name,
-    /// depth)`. Layout/report read this from `TypedProgram` (copied at
-    /// the end of `check`) so the ring geometry has one source of truth.
     pub(crate) virtqueue_configures: RefCell<Vec<(String, u16)>>,
-    /// plans/M13.md item M / decision 1: spans where
-    /// `VirtQueue.reserve` was typed as `QueuePermit` because the use
-    /// site expected a permit (`check_virtqueue_reserve`). `reserve_proof`
-    /// must succeed whenever this is non-empty; otherwise the site may
-    /// keep the Result (and item L refuses silent `Err` discard).
     pub(crate) reserve_permit_demands: RefCell<Vec<Span>>,
-    /// plans/M13.md item N: sync loops that omit `@budget`, pending the
-    /// observation-discharge check after bodies are typed.
     pub(crate) unbounded_sync_loops: RefCell<Vec<crate::sema::typed::UnboundedSyncLoop>>,
-    /// plans/M13.md item K: finalized return types for private
-    /// `-> Result[T]` fns (and methods, keyed `Owner.method`), filled
-    /// after each body is checked so a later caller sees the concrete
-    /// error set rather than the declare-time marker.
     pub(crate) inferred_rets: RefCell<BTreeMap<String, Type>>,
-    /// Dotted module path this `ModuleCtx` was built for (plans/M13.md
-    /// item G3): field visibility compares the use-site module against
-    /// each struct's declaring module.
     pub(crate) module_path: String,
-    /// Loader closure key for this module (plans/M15.md item H): equals
-    /// `module.path` for ordinary packages; `["core","runtime"]` for the
-    /// auto-injected stdlib runtime. `@dmb` is legal only on that key.
     pub(crate) loader_key: Vec<String>,
-    /// Local spelling → dotted declaring module for every struct in
-    /// `structs` (own declarations + spliced / HH-reachable imports).
     pub(crate) struct_decl_module: BTreeMap<String, String>,
-    /// Local spelling → dotted declaring module for free fns (generics
-    /// re-check of an imported body needs the exporter as use-site).
     pub(crate) fn_decl_module: BTreeMap<String, String>,
-    /// When `generics::check` re-types an exporter's body under an
-    /// importer's tables, the exporter's dotted path — field visibility
-    /// uses this instead of `module_path` while set.
     pub(crate) visibility_home: RefCell<Option<String>>,
 }
 
-/// One placed static's resolved type (plans/M10.md item A2c). Address lives
-/// on `DeclStatic` / `TypedStatic`; ModuleCtx only needs the type for name
-/// resolution in bodies.
 #[derive(Debug, Clone)]
 pub(crate) struct StaticInfo {
     pub(crate) ty: Type,
 }
 
 impl ModuleCtx {
-    /// Resolves an ast type exactly like `types::declare` did (reusing
-    /// its own `resolve_type`), with no generics in scope — every body
-    /// this pass actually checks lives inside a non-generic declaration
-    /// (item H's job otherwise), so a local annotation, closure param
-    /// annotation, etc. can never legally name a generic parameter here.
     pub(crate) fn resolve_type(
         &self,
         ty: &ast::Type,
@@ -389,16 +209,6 @@ impl ModuleCtx {
     }
 }
 
-/// Widened to `pub(crate)` (item G, matches.rs): the exhaustiveness pass
-/// rebuilds its own `ModuleCtx` the same dumb, no-state-threaded way
-/// every other pass does (mirrors `mod.rs::dump` re-running `declare`).
-///
-/// `imported` (plans/M9.md item A1) is the same imported-type arity table
-/// `types::declare_with_imports` was given — `shapes` below *is* the
-/// type-annotation arity table `ModuleCtx::resolve_type` reads, so
-/// without it a `let x: ImportedType = ...` annotation inside a body
-/// would still fail with `unknown type` after the signature positions had
-/// been fixed. One table, one answer, both passes.
 pub(crate) fn build_module_ctx(
     module: &Module,
     decl_items: &[types::DeclItem],
@@ -426,8 +236,6 @@ pub(crate) fn build_module_ctx(
         match (ai, di) {
             (Item::Struct(s), types::DeclItem::Struct(d)) => {
                 shapes.insert(s.name.clone(), s.generics.len());
-                // plans/M7.md item G, decision 18: keep deferred `comptime if`
-                // members aside so `ast_members` stays 1:1 with `decl.members`.
                 let mut ast_members = Vec::new();
                 let mut deferred_comptime_members = Vec::new();
                 for m in &s.members {
@@ -436,8 +244,6 @@ pub(crate) fn build_module_ctx(
                         other => ast_members.push(other.clone()),
                     }
                 }
-                // plans/M9.md item B3: Decl already carries the generated
-                // `from`; append the matching FnItem so the zip stays 1:1.
                 if s.deriving.iter().any(|d| d == "From") {
                     let field = s
                         .members
@@ -451,7 +257,6 @@ pub(crate) fn build_module_ctx(
                         &s.name, field, s.span,
                     )));
                 }
-                // plans/M9.md item C2: matching FnItems for Decl's generated Format.
                 if s.deriving.iter().any(|d| d == "Format") {
                     let fields: Vec<(String, Type)> = d
                         .members
@@ -489,7 +294,6 @@ pub(crate) fn build_module_ctx(
             (Item::Enum(e), types::DeclItem::Enum(d)) => {
                 shapes.insert(e.name.clone(), e.generics.len());
                 let mut ast_members = e.members.clone();
-                // plans/M9.md item B3: matching FnItem for Decl's generated `from`.
                 if e.deriving.iter().any(|d| d == "From") {
                     let v = &e.variants[0];
                     let source_ty = match &v.payload {
@@ -503,7 +307,6 @@ pub(crate) fn build_module_ctx(
                         &e.name, &v.name, source_ty, e.span,
                     )));
                 }
-                // plans/M9.md item C2: matching FnItems for Decl's generated Format.
                 if e.deriving.iter().any(|d| d == "Format") {
                     let bound = e.variants.iter().map(|v| v.name.len()).max().unwrap_or(0) as u64;
                     let names: Vec<String> = e.variants.iter().map(|v| v.name.clone()).collect();
@@ -546,17 +349,6 @@ pub(crate) fn build_module_ctx(
         }
     }
 
-    // plans/M7.md item C: `check_layouts` is a pure function of the
-    // already-specialized module and has *already run and succeeded* by
-    // the time any caller in the real pipeline reaches here
-    // (`sema::check_typed`/`check_program_typed` both call it first,
-    // deliberately, before name resolution). Recomputing it is cheaper and
-    // far less invasive than threading the table through every
-    // `build_module_ctx` call site; `unwrap_or_default` covers the one
-    // caller that builds a ctx outside that order (`specialize`'s own
-    // const skeleton), where the worst it can do is lose a register — an
-    // access then gets the ordinary named "declares no register"
-    // rejection, never a silent accept.
     let layouts = types::check_layouts(module)
         .unwrap_or_default()
         .into_iter()
@@ -587,16 +379,6 @@ pub(crate) fn build_module_ctx(
     }
 }
 
-/// Registers one concrete instantiation (item H): builds the canonical
-/// key (decision 1), checks the recursion depth cap against `mctx`'s
-/// *current* chain (the instantiation(s) already being checked when this
-/// use was discovered — empty for an ordinary module-level use), and
-/// inserts it if this exact `(kind, name, args)` has not been seen yet —
-/// first discovery wins the recorded call site, which is what makes the
-/// eventual "instantiated at" chain deterministic when the same
-/// instantiation is used from more than one place. Returns the canonical
-/// key either way, so a caller that only needs "has this been queued"
-/// doesn't have to re-render it.
 pub(crate) fn enqueue_instantiation(
     mctx: &ModuleCtx,
     kind: InstKind,
@@ -612,8 +394,6 @@ pub(crate) fn enqueue_instantiation(
     enqueue_instantiation_inner(mctx, kind, name, args, None, call_span)
 }
 
-/// Enqueues a method-owned generic instantiation (plans/M13.md item Q).
-/// Key is `method:{ReceiverType}.{method}[{args}]`.
 pub(crate) fn enqueue_method_instantiation(
     mctx: &ModuleCtx,
     receiver: &Type,
@@ -667,81 +447,15 @@ fn enqueue_instantiation_inner(
     Ok(key)
 }
 
-// --- per-body checking context -------------------------------------------
-
-/// One function/method/init/closure body's typing state: the current
-/// return type (for `return`/`?`), a local-variable scope stack — a
-/// closure pushes a new one, and so does every non-closure suite below
-/// the top of a function body (an `if`/`elif`/`else` branch, a
-/// `while`/`for` body, a `match` arm: see `scoped`), mirroring
-/// `symbols::Resolver`'s scope model and `lower.rs`'s own per-block
-/// `LEnv` push/pop (found+fixed: err-mwir-if-else-scope-leak — a typed
-/// declaration in each branch of an `if`/`else` was wrongly merged into
-/// one binding because no scope was pushed per branch), and the pool
-/// names visible by bare name inside `own[P]` annotations here (a
-/// struct's own `pool` members, when checking one of its methods/init;
-/// otherwise just the module's).
-/// Widened to `pub(crate)` (item G, matches.rs): the exhaustiveness pass
-/// re-derives scrutinee types by re-walking every body in lockstep with
-/// this same scope model, so it needs the same local-variable state
-/// `check_expr` reads/writes.
 pub(crate) struct FnCtx {
     pub(crate) ret_ty: Type,
     locals: Vec<BTreeMap<String, Type>>,
     pub(crate) local_pools: BTreeSet<String>,
-    /// Plans/M6.md item A: one `with group(...) as g:` block's own
-    /// children so far — `g`'s bare name to `(unified child return type,
-    /// count of static `g.start` call sites seen)`. Not scoped by
-    /// `push_scope`/`pop_scope` (a separate, flat map: `g`'s own *type*
-    /// binding already lives in `locals` and gets that ordinary scope
-    /// discipline) — `bodies::check_with` removes this entry itself once
-    /// the `with`-block's body is fully checked, so a *different*
-    /// `with group(...) as g:` later in the same fn never sees a stale
-    /// entry under the same reused variable name.
     pub(crate) group_children: BTreeMap<String, (Type, usize)>,
-    /// Plans/M6.md item A: is the body currently being checked an
-    /// `async fn`/method's own? `await`/`send`/`with group` all require
-    /// this (the whole actor/async statement surface is only meaningful
-    /// inside a body that can actually suspend — a plain `fn` "never
-    /// suspends", 02-language.md §5) — set once, right after `FnCtx::new`,
-    /// by `check_top_fn`/`check_struct_members`, never toggled mid-walk
-    /// (a closure body shares its enclosing fn's own `fctx`, so a closure
-    /// inside an async method still sees `in_async = true`, matching "a
-    /// lending call is synchronous" being about cross-await *paths*,
-    /// §9.2, not about whether `await` may textually appear there at all
-    /// — out of scope to refine further at M6).
     pub(crate) in_async: bool,
-    /// Bare function / method name for sync-loop discharge recording
-    /// (plans/M13.md item N). Empty for const/field-default contexts.
     pub(crate) fn_name: String,
-    /// plans/M8.md item G, decision 18: is the statement being checked
-    /// inside a `match` arm that can match 03-hardware.md §9's
-    /// `CompletionOutcome.Unknown`? Set by `check_match` for the duration
-    /// of one arm's body and restored after — the one place §9's "Source
-    /// must not auto-retry a non-idempotent operation on `Unknown`" has a
-    /// site to attach to. Counted rather than flagged so nested matches
-    /// (an `Unknown` arm containing another `match`) restore correctly.
     unknown_outcome_arms: usize,
-    /// plans/M8.md item H attack 1: pool brand a `VirtQueue.recover` just
-    /// quarantined on a named queue place, keyed by that place
-    /// (`self.queue`, a local, …). `reclaim`'s `pool=`/`payload=` must
-    /// match — the declaration otherwise mints an `own[P2]` handle whose
-    /// bytes still belong to `P1` (04-compiler.md §1: "DMA ownership
-    /// transitions are valid").
-    ///
-    /// **Scoped with `scoped()`, not by hand.** A brand recorded inside a
-    /// conditionally executed region must not be visible after it — the
-    /// first fix restored only across `match` arms and left `if`/`while`
-    /// leaking (item H follow-up, 2026-07-25): `recover` inside `if` then
-    /// `reclaim` outside typechecked, and a two-brand if/else overwrite
-    /// re-opened the original hole at runtime. `scoped()` already bounds
-    /// every `if`/`elif`/`else`/`while`/`for`/`match`-arm suite; folding
-    /// the map into that push/pop is the one place a future construct
-    /// cannot forget.
     pub(crate) quarantined_by_queue: BTreeMap<String, (String, String)>,
-    /// plans/M13.md item K: when `ret_ty` is private `Result[T]` (error
-    /// set still the declare-time marker), accumulate every `Err` /
-    /// `?` error source reaching `return`. `None` for ordinary signatures.
     inferred_errors: Option<Vec<Type>>,
 }
 
@@ -775,8 +489,6 @@ impl FnCtx {
         if matches!(ty, Type::Never) {
             return;
         }
-        // Flatten a previously-inferred multi-member set so `?` on a
-        // callee whose set is `A | B` contributes `A` and `B` separately.
         if let Type::Named(n, args) = &ty {
             if n == types::ERROR_SET_NAME {
                 for a in args {
@@ -796,7 +508,6 @@ impl FnCtx {
         v.push(ty);
     }
 
-    /// Is the current position inside a `CompletionOutcome.Unknown` arm?
     pub(crate) fn in_unknown_outcome_arm(&self) -> bool {
         self.unknown_outcome_arms > 0
     }
@@ -809,8 +520,6 @@ impl FnCtx {
         self.locals.pop();
     }
 
-    /// A read-position lookup: innermost scope outward, matching
-    /// `symbols::Resolver::resolve_name`'s search order.
     pub(crate) fn lookup_local(&self, name: &str) -> Option<Type> {
         for scope in self.locals.iter().rev() {
             if let Some(t) = scope.get(name) {
@@ -820,10 +529,6 @@ impl FnCtx {
         None
     }
 
-    /// plans/M7.md item E1: after `VirtQueue.configure(..., device=mut
-    /// <local>, ...)` succeeds, the local's type becomes
-    /// `QueuesConfiguredDevice[D]` — 03 §9's consuming transition, applied
-    /// to a `mut` argument that survives the call (the docs' own spelling).
     pub(crate) fn retype_local(&mut self, name: &str, ty: Type) -> bool {
         for scope in self.locals.iter_mut().rev() {
             if scope.contains_key(name) {
@@ -850,24 +555,6 @@ impl FnCtx {
     }
 }
 
-/// Runs `f` with a fresh innermost scope pushed, always popping it again
-/// before returning — even on error, so a rejected body never leaves a
-/// stray scope on the stack (only relevant because `mod.rs::check` keeps
-/// checking further items after one body errors, in `check_program`'s
-/// multi-module walk). Used for every non-closure suite that must NOT
-/// leak its own typed (`name: T = value`) declarations sideways to a
-/// sibling branch or past the construct: an `if`/`elif`/`else` branch, a
-/// `while`/`for` body, a `match` arm's pattern-bindings + guard + body
-/// (err-mwir-if-else-scope-leak). This is
-/// the one place `lower.rs`'s own per-block `LEnv` push/pop is mirrored
-/// here — see `check_assign`'s doc comment for how a *plain* (untyped)
-/// assignment still reaches an outer scope instead (the arm-merge idiom,
-/// 02-language.md §8.1).
-///
-/// Also restores `quarantined_by_queue` (plans/M8.md item H): a
-/// `VirtQueue.recover` brand recorded inside this suite must not be
-/// visible to a `reclaim` after it. Same boundary as the name scope —
-/// one push/pop, nothing for the next control-flow construct to forget.
 pub(crate) fn scoped<T>(
     fctx: &mut FnCtx,
     f: impl FnOnce(&mut FnCtx) -> Result<T, SemaError>,
@@ -880,19 +567,6 @@ pub(crate) fn scoped<T>(
     result
 }
 
-/// Binds `name` to `ty` in the current (innermost) scope: a plain insert
-/// if this is the first binding here, an equality check if `name` is
-/// already bound in *this same* scope (re-binding a match arm's own
-/// pattern name, a `for` binding, or a typed declaration a second time
-/// in the same block requires the same type — a dumb, sound stand-in for
-/// real flow-sensitivity, which items E/F's flow pass owns). Since
-/// `scoped` now pushes a fresh scope per `if`/`elif`/`else` branch,
-/// `while`/`for` body, and `match` arm, this never sees a sibling
-/// branch's own binding — only genuine same-block reuse. Reaching a
-/// *different* branch's binding of the same name (the arm-merge idiom,
-/// 02-language.md §8.1) is `check_assign`'s job for a plain, untyped
-/// assignment, which looks outward across scopes instead of calling
-/// this function — see its own doc comment.
 fn bind_local(fctx: &mut FnCtx, name: &str, ty: Type, span: Span) -> Result<(), SemaError> {
     if let Some(existing) = fctx.lookup_innermost(name) {
         if !types_eq(&existing, &ty) {
@@ -912,31 +586,6 @@ fn bind_local(fctx: &mut FnCtx, name: &str, ty: Type, span: Span) -> Result<(), 
     }
 }
 
-// --- entry point -----------------------------------------------------------
-
-/// The body-typing pass (plans/M2.md item C): runs after `declare`
-/// (types.rs), which this needs for every signature/field/classification
-/// already resolved. Fail-fast, source order, one module-wide walk: for
-/// each top-level `const`/`fn`/`struct`, checks its body/bodies; `enum`
-/// and `pool` items have none. A generic declaration's own body (or a
-/// generic member's, inside an otherwise-concrete struct) is skipped —
-/// not an error, just unchecked; item H (`generics::check`, run by
-/// `mod.rs::check` right after `matches::check`) checks each one exactly
-/// once, concretely, for every instantiation this walk (or item D's/G's
-/// re-walks of the same module) discovers and enqueues into `mctx`.
-///
-/// `mctx` is built once by the caller (`mod.rs::check`) and shared with
-/// `access::check`/`matches::check`/`generics::check` so item H's
-/// instantiation queue accumulates across all of them (see the doc
-/// comment on `InstKind` above).
-///
-/// plans/M3.md item A: also returns the typed program (decision 1) for
-/// every plain (non-generic) top-level `const`/`fn`/`struct` this walk
-/// checks; `mod.rs::check_typed` fills in `instantiations` afterward
-/// (`generics::check` drains the queue this — and `access`/`flow`/
-/// `matches`'s own re-derivation — populates). The plain `check` stage
-/// (`mod.rs::check`) discards this return value; the pass's own
-/// diagnostics/behavior are unchanged either way.
 pub(crate) fn check(
     module: &Module,
     decl_items: &[types::DeclItem],
@@ -948,33 +597,14 @@ pub(crate) fn check(
         .filter(|i| !matches!(i, Item::ComptimeIf(_)))
         .collect();
     let mut program = TypedProgram::default();
-    // plans/M4.md item C (`image.graph.pools-bound-once`/`seal-fully-bound`):
-    // this module's own module-scoped `pool` declarations, kept verbatim
-    // for the post-seal graph check (`eval::image_checks::check_pools_bound`)
-    // to name one that never got bound — see `TypedProgram::declared_pools`'s
-    // own doc comment.
     program.declared_pools = mctx.module_pools.clone();
-    // plans/M4.md item B / plans/M9.md item I: the five stdlib enums
-    // (`sema::stdlib_enums`) are injected into every module's own
-    // `TypedProgram` unconditionally — the dumbest way to make
-    // `eval::interp::variant_index` index `Target`/`Failure`/…
-    // constructions with no evaluator-side special case. Variant
-    // order comes from `stdlib/core/*.wr`. Harmless for a module that
-    // never mentions them (this field is not part of the typed dump).
     for name in [
         "Target",
         "Failure",
         "BootError",
-        // plans/M9.md item A2: `IoError` is no longer injected — it arrives
-        // through the ordinary import splice from `stdlib/core/io_error.wr`.
         "DriverMode",
-        // plans/M8.md item G: 03-hardware.md §9's `CompletionOutcome`.
-        // Injected for the same reason as the five above — it is what
-        // `lower::variant_index` reads to turn `case .Unknown:` into a
-        // tag compare, with no lowering-side special case.
         "CompletionOutcome",
     ] {
-        // plans/M9.md item QQ: load failures are `error[build]`, not panic.
         let variants = crate::sema::stdlib_enums::variant_strs(name)?
             .ok_or_else(|| {
                 SemaError::at(
@@ -1013,12 +643,6 @@ pub(crate) fn check(
                 );
             }
             (Item::Fn(f), types::DeclItem::Fn(d)) => {
-                // plans/M3.md item E: `@test`'s own shape validation runs
-                // whether or not the fn is generic (a generic `@test` fn
-                // fails closed below, symmetric with `@image`'s own
-                // whole-declaration fail-closed a few lines up) — done
-                // *before* `check_top_fn` so the diagnostic fires even
-                // when the body itself would otherwise check cleanly.
                 check_marker_attr_shape(f, true)?;
                 let test_kind = test_attr_kind(f)?;
                 if test_kind == Some(TestKind::Exhaustive) {
@@ -1027,20 +651,9 @@ pub(crate) fn check(
                 if test_kind == Some(TestKind::Runtime) {
                     check_runtime_test_params(f, d)?;
                 }
-                // plans/M9.md item H: `@layout_assert` signature before
-                // the body walk, same timing as `@test`/`@image` shape.
                 check_layout_assert_fn(f, d, mctx)?;
                 if let Some(tf) = check_top_fn(f, d, mctx)? {
                     if is_image_fn(f) {
-                        // plans/M4.md item B's own minimal slice of
-                        // decision 6 ("exactly one reachable `@image` in
-                        // the closure"): this only catches two `@image`
-                        // fns in the *same* module — the cross-module
-                        // "zero, or more than one, across the whole
-                        // build closure" case needs every module's own
-                        // `TypedProgram` at once and is the `--stage=image`
-                        // driver's own job (`bin/wrela.rs`); item C pins
-                        // the full "list every candidate" diagnostic.
                         if let Some(existing) = &program.image_fn {
                             return Err(SemaError::at(
                                 "build",
@@ -1065,11 +678,6 @@ pub(crate) fn check(
                 }
             }
             (Item::Struct(s), types::DeclItem::Struct(_)) => {
-                // M4-F sweep fix: `@test`/`@image` markers on a struct's
-                // own fn members were silently ignored (the fn simply
-                // never registered as a test or image candidate). Checked
-                // on the raw ast so it fires for generic structs too,
-                // whose bodies `check_struct_bodies` otherwise skips.
                 for m in &s.members {
                     if let ast::Member::Fn(mf) = m {
                         check_marker_attr_shape(mf, false)?;
@@ -1080,12 +688,6 @@ pub(crate) fn check(
                 }
             }
             (Item::Enum(e), types::DeclItem::Enum(_d)) => {
-                // A generic enum's own variant order is recorded once it
-                // is instantiated (item H's job); a plain enum's is
-                // recorded here, alongside every other plain top-level
-                // declaration this pass checks (`typed::TypedProgram::enums`'s
-                // own doc comment). Methods/associated fns (plans/M9.md
-                // item B2) are checked into the same entry.
                 if e.generics.is_empty() {
                     if let Some(te) = check_enum_bodies(e, mctx)? {
                         program.enums.insert(e.name.clone(), te);
@@ -1095,28 +697,12 @@ pub(crate) fn check(
             _ => {}
         }
     }
-    // plans/M7.md item E1: hand the configure sites to layout/report.
     program.virtqueue_configures = mctx.virtqueue_configures.borrow().clone();
-    // plans/M13.md item M: hand QueuePermit collapse demands to
-    // `reserve_proof`.
     program.reserve_permit_demands = mctx.reserve_permit_demands.borrow().clone();
-    // plans/M13.md item N: hand unbounded sync-loop sites to the
-    // observation-discharge check in `sema::mod`.
     program.unbounded_sync_loops = mctx.unbounded_sync_loops.borrow().clone();
     Ok(program)
 }
 
-/// M4-F sweep fix (plans/M4.md item F): the `@test`/`@image`/
-/// `@layout_assert` marker attributes were previously read through
-/// `find`/`any`, so a duplicate (`@image @image fn ...`) or a conflicting
-/// pair (`@test @image`) silently collapsed to one — a silent
-/// approximation of a declaration shape the docs never define. The dumb
-/// rule, pinned by goldens: at most one marker from the {`@test`,
-/// `@image`, `@layout_assert`} family per fn, and the family is only
-/// valid on a *top-level* fn — on a struct's method or assoc fn the
-/// marker used to be ignored entirely (the fn just never registered),
-/// which was a silent accept, not a decision. Category `type` (a bad
-/// declaration shape), same as `test_attr_kind`'s own diagnostics.
 pub(crate) fn check_marker_attr_shape(f: &ast::FnItem, top_level: bool) -> Result<(), SemaError> {
     let markers: Vec<&ast::Attr> = f
         .attrs
@@ -1155,11 +741,6 @@ pub(crate) fn is_layout_assert_fn(f: &ast::FnItem) -> bool {
     f.attrs.iter().any(|a| a.name == "layout_assert")
 }
 
-/// `@layout_assert` shape (plans/M9.md item H, 02-language.md §12.1):
-/// exactly one plain (read) parameter whose type is the stdlib
-/// `ImageReport` (named `ImageReport` after import, possibly aliased —
-/// identified by the fixed field set decision 220 freezes), returning
-/// `unit`. Attribute takes no arguments.
 pub(crate) fn check_layout_assert_fn(
     f: &ast::FnItem,
     d: &types::DeclFn,
@@ -1236,9 +817,6 @@ pub(crate) fn check_layout_assert_fn(
     Ok(())
 }
 
-/// True when `type_name` resolves in this module to a struct with the
-/// fixed `ImageReport` field set (decision 220) — the import's local
-/// spelling, or a same-module declaration of that shape.
 fn mctx_has_image_report(mctx: &ModuleCtx, type_name: &str) -> bool {
     const FIELDS: &[&str] = &[
         "machine_revision",
@@ -1265,21 +843,6 @@ fn mctx_has_image_report(mctx: &ModuleCtx, type_name: &str) -> bool {
     FIELDS.iter().all(|n| names.contains(n)) && names.len() == FIELDS.len()
 }
 
-/// `@test`/`@test(runtime)` recognition (plans/M3.md item E,
-/// 02-language.md §12.2). This is the *only* attribute-shape validation
-/// this milestone adds — every attribute besides `@image` (whole-body
-/// fail-closed, above) and `@test` (here) still goes entirely
-/// unvalidated by sema, exactly as it did before this item (13's own
-/// "unknown attributes are errors" rule is not yet enforced anywhere;
-/// see the session report). Returns `Ok(None)` when `f` carries no
-/// `@test` attribute at all (the overwhelmingly common case, so callers
-/// never need to special-case "not a test"); `Ok(Some(kind))` for a
-/// validated one; `Err` for a malformed one — a `@test` fn declared with
-/// parameters (decision 9's own "@test fns with parameters: diagnose"),
-/// or an attribute argument that is not the bare name `runtime`.
-/// Category `type`, `arity_error`'s own neighbor — a bad declaration
-/// shape, not a new diagnostic category (`xtask`'s `SEMA_CATEGORIES` is
-/// a fixed set, plans/M2.md decision 1; this item does not extend it).
 pub(crate) fn test_attr_kind(f: &ast::FnItem) -> Result<Option<TestKind>, SemaError> {
     let Some(attr) = f.attrs.iter().find(|a| a.name == "test") else {
         return Ok(None);
@@ -1306,10 +869,6 @@ pub(crate) fn test_attr_kind(f: &ast::FnItem) -> Result<Option<TestKind>, SemaEr
             ));
         }
     };
-    // An exhaustive test's whole point is its parameters (the enumerated
-    // domain — their types are validated against the *resolved*
-    // declaration in `check`'s own per-item loop, not here where only
-    // raw ast is visible); the other two kinds take none.
     match kind {
         TestKind::Exhaustive if f.params.is_empty() => Err(type_error(
             format!(
@@ -1322,27 +881,10 @@ pub(crate) fn test_attr_kind(f: &ast::FnItem) -> Result<Option<TestKind>, SemaEr
             format!("`@test` fn `{}` takes no arguments", f.name),
             f.span,
         )),
-        // plans/M6.md decision 11b, 02-language.md §12.2 (added at item-D
-        // verification): `@test(runtime)` may now declare `Actor[T]`
-        // params — the runner supplies the image's unique declared `T`
-        // instance's handle. Shape validation (mode `read`, type exactly
-        // `Actor[T]`) runs against the *resolved* declaration
-        // (`check_runtime_test_params`, below), mirroring
-        // `check_exhaustive_test_params`'s own split between "arity here,
-        // shape there" — this fn only sees raw `ast`.
         _ => Ok(Some(kind)),
     }
 }
 
-/// `@test(exhaustive)`'s parameter validation (02-language.md §12.2),
-/// run against the *resolved* declaration: every parameter must be
-/// default-mode (`read` — the domain is data handed in by value, never
-/// `mut`/`take`) and of an enumerable type — `bool`, `u8`, `i8`, or a
-/// fieldless non-generic module `enum` — the finite domains small
-/// enough to enumerate outright (`eval::quota::MAX_EXHAUSTIVE_CASES`
-/// caps the *product* at run time; this check bounds each factor's
-/// kind). Everything else is rejected here, at declaration, so
-/// `wrela test` never has to invent a domain.
 fn check_exhaustive_test_params(
     f: &ast::FnItem,
     d: &types::DeclFn,
@@ -1385,16 +927,6 @@ fn check_exhaustive_test_params(
     Ok(())
 }
 
-/// `@test(runtime)`'s own parameter validation (02-language.md §12.2,
-/// decision 11b): every parameter must be plain (`read` — a handle is
-/// borrowed for the run, never mutated or consumed) and of type exactly
-/// `Actor[T]`. `T` itself is already guaranteed to name a real
-/// `@actor`/`@driver` struct by this point — `types::validate_actor_handles`
-/// runs at declare time, over every fn's own resolved parameter types
-/// (`validate_fn_actor_types`, unconditional, not test-specific), so this
-/// fn only needs to confirm the *shape* (plain mode, bare `Actor[T]`, not
-/// nested in an array/tuple/aggregate) — re-deriving "is `T` an actor" a
-/// second time would duplicate a check that already ran.
 fn check_runtime_test_params(f: &ast::FnItem, d: &types::DeclFn) -> Result<(), SemaError> {
     for p in &d.params {
         if p.mode != AccessMode::Read {
@@ -1435,40 +967,12 @@ pub(crate) fn local_pool_names(info: &StructInfo) -> BTreeSet<String> {
         .collect()
 }
 
-/// `pub(crate)` (item H, generics.rs): re-run verbatim over a
-/// substituted, generics-cleared copy of a generic fn/method's own ast
-/// (`generics::instantiate_fn`) — the "dumbest workable shape" plans/M2.md
-/// item H asks for. Nothing below reads `f.generics` for anything but
-/// this guard, so a cleared copy behaves exactly like a real non-generic
-/// declaration; every type it needs instead comes from `d`, which the
-/// caller has already substituted.
-///
-/// Returns `Ok(None)` for a generic fn's own (unchecked) body — item H's
-/// job elsewhere — and `Ok(Some(typed_fn))` for every concrete body this
-/// checks (plans/M3.md item A): a plain top-level fn here, or (via
-/// `generics::check_one_instantiation`) an instantiated generic fn, which
-/// is always concrete by the time it reaches this function.
 pub(crate) fn check_top_fn(
     f: &ast::FnItem,
     d: &types::DeclFn,
     mctx: &ModuleCtx,
 ) -> Result<Option<TypedFn>, SemaError> {
     if is_image_fn(f) {
-        // plans/M4.md item B: the fail-closed above is lifted — an
-        // `@image` fn's body is ordinary comptime-legal code (checked
-        // exactly like any other plain fn below) plus the builder
-        // intrinsics 05-library.md §9 names (`check_call_by_name`/
-        // `check_call_by_field`/`check_call_index`'s own new arms,
-        // recognized by callee spelling, decision 5). The two shape
-        // rules 02-language.md §12.1 states directly are checked here,
-        // before the body walk, so a malformed `@image` declaration
-        // fails with its own honest diagnostic rather than a confusing
-        // one from deeper inside the ordinary body checker: it must be a
-        // plain (non-generic) fn — a generic `@image` constructor is not
-        // a documented shape, and generic instantiation of a "unique
-        // reachable @image" makes no sense — and it must declare
-        // `-> Image` (returning anything else can never be legal, since
-        // `img.seal()` is the only producer of an `Image` value).
         if !f.generics.is_empty() {
             return Err(unimplemented_at("a generic `@image` fn is", f.span));
         }
@@ -1484,7 +988,7 @@ pub(crate) fn check_top_fn(
         }
     }
     if !f.generics.is_empty() {
-        return Ok(None); // generic body: item H's job, not checked here.
+        return Ok(None);
     }
     let mut fctx = FnCtx::new(d.ret.clone(), mctx.module_pools.clone());
     fctx.in_async = f.is_async;
@@ -1492,10 +996,6 @@ pub(crate) fn check_top_fn(
     let params = check_params_with_defaults(&f.params, &d.params, &mut fctx, mctx)?;
     let body = match &f.body {
         Some(body) => check_stmts(body, &mut fctx, mctx)?,
-        // The parser accepts the bodyless signature shorthand a few doc
-        // tables use; whether a real declaration may be bodyless is a
-        // later milestone's question (see parse_fn_tail), so sema fails
-        // closed rather than treating it as an empty body.
         None => return Err(unimplemented_at("bodyless functions are", f.span)),
     };
     if f.is_async {
@@ -1524,9 +1024,6 @@ pub(crate) fn check_top_fn(
     }))
 }
 
-/// plans/M13.md item K: replace the declare-time `Result[T, <inferred>]`
-/// marker with the union of collected `Err`/`?` sources, and publish the
-/// concrete return type for later callers in the same module.
 fn finalize_inferred_ret(
     declared: &Type,
     inferred_errors: Option<Vec<Type>>,
@@ -1593,16 +1090,13 @@ fn check_struct_bodies(
     mctx: &ModuleCtx,
 ) -> Result<Option<TypedStruct>, SemaError> {
     if !s.generics.is_empty() {
-        return Ok(None); // generic struct: item H's job, not checked here.
+        return Ok(None);
     }
     let info = mctx.structs.get(&s.name).expect("struct present in mctx");
     let self_ty = Type::Named(s.name.clone(), vec![]);
     Ok(Some(check_struct_members(info, self_ty, mctx)?))
 }
 
-/// plans/M9.md item B2: check an enum's methods/associated fns into a
-/// `TypedEnum`, same body rules as `check_struct_bodies` (02 §5 applies
-/// unchanged). Variants themselves have no bodies.
 fn check_enum_bodies(e: &ast::EnumItem, mctx: &ModuleCtx) -> Result<Option<TypedEnum>, SemaError> {
     if !e.generics.is_empty() {
         return Ok(None);
@@ -1616,7 +1110,7 @@ fn check_enum_bodies(e: &ast::EnumItem, mctx: &ModuleCtx) -> Result<Option<Typed
             continue;
         };
         if !f.generics.is_empty() {
-            continue; // generic method: same boundary as structs.
+            continue;
         }
         if f.is_async && f.receiver.is_none() {
             return Err(unimplemented_at(
@@ -1668,9 +1162,6 @@ fn check_enum_bodies(e: &ast::EnumItem, mctx: &ModuleCtx) -> Result<Option<Typed
             assoc_fns.insert(f.name.clone(), tf);
         }
     }
-    // plans/M9.md item JJ: carry payload types so the importer's typed
-    // reachability closure can walk `Good(Payload)` the same way Decl-
-    // side already walked ModuleCtx.
     let variant_payload_types = info
         .variants
         .iter()
@@ -1689,18 +1180,6 @@ fn check_enum_bodies(e: &ast::EnumItem, mctx: &ModuleCtx) -> Result<Option<Typed
     }))
 }
 
-/// `pub(crate)` (item H, generics.rs): the guts of `check_struct_bodies`,
-/// pulled out to take a `StructInfo` (and its `self_ty`) directly instead
-/// of looking either up by name in `mctx` — `mctx.structs` only ever
-/// holds each struct's *declared* (unsubstituted) shape, never a
-/// substituted instantiation's, so item H's own re-run needs to hand this
-/// its already-substituted `StructInfo` straight through rather than
-/// stashing it under a name this function would then have to re-look-up.
-/// `check_struct_bodies` above is now just this with the ordinary
-/// (non-generic, `self_ty = Type::Named(name, [])`) case wired in. Always
-/// concrete (unlike `check_top_fn`): both callers only ever reach this
-/// with a non-generic struct/instantiation, so it always returns a real
-/// `TypedStruct` (plans/M3.md item A).
 pub(crate) fn check_struct_members(
     info: &StructInfo,
     self_ty: Type,
@@ -1721,10 +1200,6 @@ pub(crate) fn check_struct_members(
         match (am, dm) {
             (Member::Field(af), DeclMember::Field(df)) => {
                 fields.push(af.name.clone());
-                // The already-resolved declared type, kept by name
-                // (`TypedStruct::field_types`'s own doc comment) — the
-                // same `df.ty` this arm already uses as the expected type
-                // for the field's own default, just below.
                 field_types.insert(af.name.clone(), df.ty.clone());
                 if let Some(def) = &af.default {
                     let mut fctx = FnCtx::new(Type::Unit, local_pools.clone());
@@ -1735,15 +1210,8 @@ pub(crate) fn check_struct_members(
             }
             (Member::Fn(f), DeclMember::Fn(fd)) => {
                 if !f.generics.is_empty() {
-                    continue; // generic method: item H's job.
+                    continue;
                 }
-                // Plans/M6.md item A: an `async fn` with no receiver
-                // (an associated fn) is not a documented shape — 02
-                // §9.1/§9.5's whole async surface is methods (through
-                // `self` or `Actor[T]`) and top-level fns (group
-                // children); an associated fn is neither. Fail closed,
-                // named, rather than silently accepting an uncallable
-                // declaration.
                 if f.is_async && f.receiver.is_none() {
                     return Err(unimplemented_at(
                         "an `async fn` with no receiver (associated fn) is",
@@ -1757,11 +1225,6 @@ pub(crate) fn check_struct_members(
                 let params = check_params_with_defaults(&f.params, &fd.params, &mut fctx, mctx)?;
                 let body = match &f.body {
                     Some(body) => check_stmts(body, &mut fctx, mctx)?,
-                    // Same fail-closed rule as top-level fns: the
-                    // bodyless shorthand is doc-table syntax, not a
-                    // checked declaration (this shape also panicked
-                    // access.rs's effect inference before b78b95e — the
-                    // golden err-unimplemented-bodyless pins it).
                     None => return Err(unimplemented_at("bodyless functions are", f.span)),
                 };
                 if f.is_async {
@@ -1865,10 +1328,6 @@ pub(crate) fn check_struct_members(
     })
 }
 
-/// plans/M9.md item C2: when both Format contract members are present
-/// with the exact signatures (05 §6), prove the writer's max occupied
-/// length against `max_formatted_len`'s literal bound. A partial pair
-/// (wrong signature / only one name) is ordinary methods, not Format.
 fn validate_format_contract(
     type_name: &str,
     methods: &BTreeMap<String, TypedFn>,
@@ -2046,7 +1505,6 @@ fn collect_format_bound_returns(
     Ok(())
 }
 
-/// Max occupied length of a Format writer return expression.
 fn format_expr_max_len(e: &TypedExpr) -> Result<u64, SemaError> {
     match &e.kind {
         TypedExprKind::Str(text) => Ok(crate::eval::value::decode_str(text).len() as u64),
@@ -2127,8 +1585,6 @@ fn collect_format_string_returns(
     Ok(())
 }
 
-// --- statements --------------------------------------------------------
-
 pub(crate) fn check_stmts(
     stmts: &[Stmt],
     fctx: &mut FnCtx,
@@ -2170,15 +1626,6 @@ fn check_stmt(stmt: &Stmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedSt
             kind: TypedStmtKind::ExprStmt(check_expr(e, None, fctx, mctx)?),
         }),
         Stmt::Dmb(attr) => check_dmb(attr, mctx),
-        // plans/M3.md item D: `sema::specialize` runs before this pass
-        // (`mod.rs::check_typed`) and eliminates every `comptime if`
-        // node from the tree it hands to `collect`/`resolve`/`declare`/
-        // `bodies` — the selected branch's statements are spliced in
-        // directly, so the graph this pass ever sees already IS the
-        // specialized graph (decision 8). Reaching this arm would mean
-        // `specialize` left one behind (a producer bug); it stays fail-
-        // closed as a defense-in-depth net, not because it is expected
-        // to fire.
         Stmt::ComptimeIf(c) => Err(unimplemented_at("`comptime if` is", c.span)),
         Stmt::ComptimeAssert(span, cond, message) => {
             check_comptime_assert(*span, cond, message, fctx, mctx)
@@ -2186,10 +1633,6 @@ fn check_stmt(stmt: &Stmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedSt
     }
 }
 
-/// `@dmb(ishst)` / `@dmb(ishld)` (plans/M15.md item H, decisions 1080–1085).
-/// Legal only inside the auto-injected `stdlib/core/runtime.wr` (loader
-/// key `core.runtime`). Lowers to one DMB word; not an author-facing
-/// 05 §9 intrinsic.
 fn check_dmb(attr: &ast::Attr, mctx: &ModuleCtx) -> Result<TypedStmt, SemaError> {
     let runtime_ok = mctx.loader_key.len() == crate::loader::RUNTIME_MODULE_KEY.len()
         && mctx
@@ -2233,8 +1676,6 @@ fn check_dmb(attr: &ast::Attr, mctx: &ModuleCtx) -> Result<TypedStmt, SemaError>
             ));
         }
     };
-    // Two literal `key:` sites so plans/M9.md item AA's intrinsic surface
-    // census sees both spellings (plans/M15.md item H).
     let kind = match key {
         "dmb.ishst" => TypedExprKind::Intrinsic {
             key: "dmb.ishst".to_string(),
@@ -2262,15 +1703,6 @@ fn check_dmb(attr: &ast::Attr, mctx: &ModuleCtx) -> Result<TypedStmt, SemaError>
     })
 }
 
-/// `comptime assert` (plans/M3.md item D, decision 8): typed exactly
-/// like a plain `assert` (`check_assert` above) — condition typed as
-/// `bool`, message required to be a text literal — except the result
-/// carries the statement's own `span` (`TypedStmtKind::ComptimeAssert`'s
-/// own doc comment explains why) and is never evaluated here: evaluation
-/// is `eval::check_comptime_asserts`'s job, once the whole program is
-/// assembled, unconditionally (independent of whether anything calls the
-/// fn/method this statement lives in) — decision 8's "evaluates after
-/// typing."
 fn check_comptime_assert(
     span: Span,
     cond: &Expr,
@@ -2282,9 +1714,6 @@ fn check_comptime_assert(
     let message = match message {
         Some(msg) => match msg {
             Expr::Str(..) => Some(check_expr(msg, None, fctx, mctx)?),
-            // F-strings type as `String[..N]` (item D); assert messages
-            // stay literal-only so lower can bake a fixed `AssertFail`
-            // payload.
             other => {
                 return Err(type_error(
                     "comptime assert message must be a text literal".to_string(),
@@ -2304,12 +1733,6 @@ fn check_comptime_assert(
     })
 }
 
-/// Each branch is its own scope (`scoped`): a typed declaration made in
-/// `then_branch` must not be visible in an `elif`/`else` sibling, nor
-/// survive past the whole `if` (err-mwir-if-else-scope-leak). A *plain*
-/// (untyped) assignment reusing an outer name still crosses branches
-/// fine — `check_assign` reaches outward past whatever scope `scoped`
-/// pushed, so the arm-merge idiom (02-language.md §8.1) is unaffected.
 fn check_if(i: &IfStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedStmt, SemaError> {
     let cond = check_expr(&i.cond, Some(&Type::Bool), fctx, mctx)?;
     let then_branch = scoped(fctx, |fctx| check_stmts(&i.then_branch, fctx, mctx))?;
@@ -2354,19 +1777,10 @@ fn check_match(m: &MatchStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<Type
     };
     let scrutinee = check_expr(&m.scrutinee, None, fctx, mctx)?;
     let sty = scrutinee.ty.clone();
-    // plans/M8.md item G, decision 18: matching 03-hardware.md §9's
-    // `CompletionOutcome` is the only place the no-auto-retry rule has a
-    // site. Anything *other* than a `CompletionOutcome` scrutinee leaves
-    // the flag alone entirely.
     let outcome_match = matches!(&sty, Type::Named(n, targs)
         if n == "CompletionOutcome" && targs.is_empty());
     let mut arms = Vec::with_capacity(m.arms.len());
     for arm in &m.arms {
-        // Pattern bindings, guard, and body all share one pushed scope
-        // per arm: a binding from one arm's pattern must not leak into a
-        // sibling arm or past the whole `match`, exactly like an
-        // `if`/`elif`/`else` branch. `scoped()` also restores the
-        // reclaim-quarantine map (plans/M8.md item H).
         let unknown_arm = outcome_match && pattern_can_match_unknown(&arm.pattern);
         if unknown_arm {
             fctx.unknown_outcome_arms += 1;
@@ -2390,9 +1804,6 @@ fn check_match(m: &MatchStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<Type
             body,
         });
     }
-    // plans/M13.md item L / decision 9 (extended by item M): no silent
-    // `Err` discard of a CallError- or CapacityError-bearing Result
-    // without `@discard(reason="...")` on this match.
     if !discard_ok {
         check_no_silent_err_discard(&sty, &arms, &m.arms, m.span)?;
     }
@@ -2402,7 +1813,6 @@ fn check_match(m: &MatchStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<Type
     })
 }
 
-/// `@discard(reason="...")` — plans/M13.md decision 9 / 02 §13.
 fn check_discard_attr(attr: &crate::syntax::ast::Attr) -> Result<(), SemaError> {
     debug_assert_eq!(attr.name, "discard");
     if attr.args.len() != 1 {
@@ -2452,8 +1862,6 @@ fn check_discard_attr(attr: &crate::syntax::ast::Attr) -> Result<(), SemaError> 
     }
 }
 
-/// True when `ty` is `Result[_, CallError[...]]` (the await/send/`?`
-/// failure vocabulary after plans/M13.md items I/J).
 fn result_err_is_call_error(ty: &Type) -> bool {
     match ty {
         Type::Result(_, err) => matches!(&**err, Type::Named(n, _) if n == "CallError"),
@@ -2461,8 +1869,6 @@ fn result_err_is_call_error(ty: &Type) -> bool {
     }
 }
 
-/// True when `ty` is `Result[_, CapacityError]` (proof-conditioned
-/// `VirtQueue.reserve` after plans/M13.md item M).
 fn result_err_is_capacity_error(ty: &Type) -> bool {
     match ty {
         Type::Result(_, err) => {
@@ -2472,9 +1878,6 @@ fn result_err_is_capacity_error(ty: &Type) -> bool {
     }
 }
 
-/// plans/M13.md item L (+ M): a match arm that binds `Result.Err` of a
-/// CallError- or CapacityError-bearing Result via wildcard or an unused
-/// binding is a silent discard unless the match carries `@discard`.
 fn check_no_silent_err_discard(
     sty: &Type,
     arms: &[TypedMatchArm],
@@ -2509,8 +1912,6 @@ fn check_no_silent_err_discard(
     Ok(())
 }
 
-/// True when this pattern is a `Result.Err` arm (or a whole-Result
-/// wildcard/binding covering Err) that discards its payload.
 fn err_arm_is_silent_discard(pattern: &TypedPattern, body: &[TypedStmt]) -> bool {
     match &pattern.kind {
         TypedPatternKind::Variant {
@@ -2520,12 +1921,10 @@ fn err_arm_is_silent_discard(pattern: &TypedPattern, body: &[TypedStmt]) -> bool
         } if (enum_name == "Result" || enum_name.is_empty()) && variant == "Err" => {
             match payload.first() {
                 Some(inner) => pattern_is_silent_discard(inner, body),
-                // Fieldless Err — still a discard of the error value.
                 None => true,
             }
         }
         TypedPatternKind::Or(alts) => alts.iter().any(|a| err_arm_is_silent_discard(a, body)),
-        // A bare wildcard / binding against the whole Result covers Err.
         TypedPatternKind::Wildcard | TypedPatternKind::Binding(_) => {
             pattern_is_silent_discard(pattern, body)
         }
@@ -2568,9 +1967,6 @@ fn typed_stmts_use_local(stmts: &[TypedStmt], name: &str) -> bool {
 }
 
 fn walk_typed_stmt_locals(s: &TypedStmt, f: &mut dyn FnMut(&str)) {
-    // Deliberately walks every subexpression that can name a local — used
-    // only to decide whether an Err binding is read (item L). New typed
-    // stmt kinds must get a real arm (exhaustive match).
     match &s.kind {
         TypedStmtKind::Let { value, .. } => walk_typed_expr_locals(value, f),
         TypedStmtKind::Assign { target, value } => {
@@ -2760,20 +2156,12 @@ fn walk_typed_expr_locals(e: &TypedExpr, f: &mut dyn FnMut(&str)) {
     }
 }
 
-/// plans/M8.md item G, decision 18: can this arm's pattern match
-/// `CompletionOutcome.Unknown`? Deliberately **over**-approximate — a
-/// wildcard or a plain binding covers `Unknown` just as surely as
-/// `case .Unknown:` does, and 03-hardware.md §9's rule is about the value
-/// the arm may be looking at, not about how the author spelled it. Only a
-/// variant pattern that names one of the other two arms is excluded.
 fn pattern_can_match_unknown(p: &Pattern) -> bool {
     match p {
         Pattern::Wildcard(_) | Pattern::Binding(_, _) => true,
         Pattern::Take(_, inner) => pattern_can_match_unknown(inner),
         Pattern::Or(_, alts) => alts.iter().any(pattern_can_match_unknown),
         Pattern::Variant { variant, .. } => variant == "Unknown",
-        // A literal / tuple / array pattern against a fieldless enum is
-        // already a type error; answering `false` here changes nothing.
         Pattern::Literal(_, _) | Pattern::Tuple(_, _) | Pattern::Array(_, _) => false,
     }
 }
@@ -2820,9 +2208,6 @@ fn check_assert(
     let message = match &a.message {
         Some(msg) => match msg {
             Expr::Str(..) => Some(check_expr(msg, None, fctx, mctx)?),
-            // F-strings type as `String[..N]` (item D); assert messages
-            // stay literal-only so lower can bake a fixed `AssertFail`
-            // payload.
             other => {
                 return Err(type_error(
                     "assert message must be a text literal".to_string(),
@@ -2839,10 +2224,6 @@ fn check_assert(
 }
 
 fn check_for(f: &ForStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedStmt, SemaError> {
-    // Peel a surface `take` so the iterable types as an array/range, then
-    // re-wrap the typed node — access requires `TypedExprKind::Take` on
-    // `for take x in take arr` (the AST marker is not otherwise visible
-    // on `TypedForIter::Expr`).
     let iterable_taken = matches!(&f.iterable, Expr::Unary(_, UnaryOp::Take, _));
     let raw_iterable: &Expr = match &f.iterable {
         Expr::Unary(_, UnaryOp::Take, inner) => inner.as_ref(),
@@ -2899,9 +2280,6 @@ fn check_for(f: &ForStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedStm
             }
         }
     };
-    // The loop binding and any typed declaration inside the body are
-    // scoped to the body itself, same as `if`/`while`/`match` — see
-    // `scoped`'s doc comment.
     let body = scoped(fctx, |fctx| {
         bind_local(fctx, &f.name, elem_ty.clone(), f.span)?;
         check_stmts(&f.body, fctx, mctx)
@@ -2920,16 +2298,6 @@ fn check_for(f: &ForStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<TypedStm
     })
 }
 
-/// Sync-loop `@budget(bound=N)` / observation discharge (02 §8.1,
-/// plans/M11.md decision 721; plans/M12.md item B; plans/M13.md item N /
-/// decision 11).
-///
-/// - Sync (`!in_async`): `@budget` yields `Some(N)` for the trip counter;
-///   omitting it records the site for the post-body observation-discharge
-///   check (every head→back-edge path must observe) and returns `None`.
-/// - Async: attribute optional (checkpoint path unchanged); returns `None`
-///   so no trip counter is emitted. A present attribute is still shape-
-///   checked so a typo fails closed.
 fn resolve_loop_budget(
     budget: Option<&ast::Attr>,
     loop_span: Span,
@@ -2953,13 +2321,7 @@ fn resolve_loop_budget(
         }
         Some(attr) => {
             let n = parse_budget_bound_attr(attr, mctx)?;
-            if fctx.in_async {
-                // Async half stays a gap: keep checkpoint behaviour; do not
-                // emit a trip counter from this attribute yet.
-                Ok(None)
-            } else {
-                Ok(Some(n))
-            }
+            if fctx.in_async { Ok(None) } else { Ok(Some(n)) }
         }
     }
 }
@@ -3034,9 +2396,6 @@ fn parse_budget_bound_attr(attr: &ast::Attr, mctx: &ModuleCtx) -> Result<u64, Se
     }
 }
 
-/// Resolve `@budget(bound=NAME)` via the same maps layout lengths use:
-/// `mctx.consts` / `mctx.const_values` (imported consts are already spliced).
-/// Value rule matches `collect_length_consts` (integer comptime ≥ 1).
 fn budget_bound_from_const_name(
     name: &str,
     name_span: Span,
@@ -3089,9 +2448,6 @@ fn budget_bound_from_const_name(
                 attr_span,
             )
         })?,
-        // Chase a const whose initializer is another const name (same maps;
-        // no second evaluator — layout's full `eval_const` path is for the
-        // post-typing completion pass).
         Expr::Name(_, other) => {
             return budget_bound_from_const_name(other, name_span, attr_span, mctx);
         }
@@ -3150,27 +2506,6 @@ fn check_defer(d: &DeferStmt, fctx: &mut FnCtx, mctx: &ModuleCtx) -> Result<Type
     })
 }
 
-/// `name: T = value` (`a.ty.is_some()`) is a genuine declaration: it may
-/// only ever reuse a binding already sitting in *this exact* block
-/// (`lookup_innermost` — re-declaring the same name with the same type
-/// twice in one suite, `bind_local`'s job below); a name one scope out
-/// is a *different* binding as far as this statement is concerned (never
-/// merged with it — `symbols::resolve` has already rejected the case
-/// where that would shadow an outer local, 02-language.md §3.2, so
-/// reaching here with the name absent from the innermost scope always
-/// means "declare fresh, scoped to this block" is correct and safe).
-///
-/// `name = value` (`a.ty.is_none()`) is the arm-merge idiom's plain
-/// reassignment (02-language.md §8.1): it must find a binding introduced
-/// in *any* enclosing scope (`lookup_local`), including one made by an
-/// already-finished sibling branch's own untyped first assignment,
-/// because that is exactly how a name conditionally initialized in every
-/// arm survives to be read after the construct. Only when no scope at
-/// all already has the name does a plain assignment fall through to
-/// introducing a fresh binding (necessarily scoped to the innermost
-/// block, same as a typed declaration — a name first bound inside one
-/// branch, with no annotation, still cannot escape that branch, exactly
-/// like `lower.rs`'s own per-block `LEnv`).
 fn check_assign(
     a: &AssignStmt,
     fctx: &mut FnCtx,
@@ -3228,8 +2563,6 @@ fn check_assign(
             },
         });
     }
-    // A non-name target (field, index) already exists; its type comes
-    // from evaluating the place itself.
     let target_t = check_expr(&a.target, None, fctx, mctx)?;
     let value_t = if a.op == AssignOp::Assign {
         check_expr(&a.value, Some(&target_t.ty), fctx, mctx)?
@@ -3245,16 +2578,6 @@ fn check_assign(
     })
 }
 
-/// `a += b` desugars to `a = a.add(b)` (02-language.md §7.4): compute
-/// `b`'s type checked against `a`'s current type (same-type operand
-/// rule), run the same operator-resolution logic binary expressions use,
-/// and require the result still fit back into `a`'s type (true
-/// automatically for every builtin scalar op; for a user-type operator
-/// method it holds exactly when the method's declared return type is the
-/// operand type, the 05§8 shape). The returned `TypedExpr` is the fully
-/// desugared `target op value` computation — the typed tree's own
-/// `Assign` node has no separate "compound" shape (`typed.rs`'s own doc
-/// comment).
 fn check_compound_assign(
     op: AssignOp,
     target: &TypedExpr,
@@ -3292,14 +2615,6 @@ fn check_compound_assign(
     Ok(result)
 }
 
-// --- patterns (02-language.md §7.2) --------------------------------------
-
-/// Widened to `pub(crate)` (item G, matches.rs): the exhaustiveness pass
-/// reuses this verbatim to bind a match arm's/`is`'s pattern names into
-/// the re-walked `FnCtx` exactly as this pass does, rather than
-/// reimplementing pattern-binding. Its `Ok` payload (plans/M3.md item A)
-/// is the typed pattern; every existing caller outside this file
-/// discards it via `?;` unbound, so nothing there changes.
 pub(crate) fn check_pattern(
     p: &Pattern,
     scrutinee: &Type,
@@ -3430,9 +2745,6 @@ pub(crate) fn check_pattern(
             })
         }
         Pattern::Or(span, alts) => {
-            // Same-bindings-same-types across alternatives is item G's
-            // job (exhaustiveness); each alternative is independently
-            // well-formed against the scrutinee here.
             let mut typed_alts = Vec::with_capacity(alts.len());
             for alt in alts {
                 typed_alts.push(check_pattern(alt, scrutinee, fctx, mctx)?);
@@ -3446,21 +2758,10 @@ pub(crate) fn check_pattern(
     }
 }
 
-/// Resolves a scrutinee's own enum name for the typed tree (`typed.rs`'s
-/// `EnumConstruct`/`Variant` payload): `"Option"`/`"Result"` for the two
-/// builtin sums, else a user enum's bare name. Only ever called after
-/// `variant_payload_types_for` has already restricted `ty` to one of
-/// these three shapes (or returned an error), so the fallthrough is
-/// unreachable, not a fail-closed case.
 fn resolved_enum_name(ty: &Type) -> String {
     match ty {
         Type::Option(_) => "Option".to_string(),
         Type::Result(_, _) => "Result".to_string(),
-        // `CallError[E]` (plans/M6.md item A): carried as `Type::Named`
-        // (not a dedicated `Type` variant like `Option`/`Result` — see
-        // `compose_call_error`'s own doc comment), so this falls straight
-        // through the `Type::Named` arm below already — no special case
-        // needed here.
         Type::Named(name, _) => name.clone(),
         other => unreachable!(
             "resolved_enum_name: `{}` is not an enum-shaped type",
@@ -3469,60 +2770,25 @@ fn resolved_enum_name(ty: &Type) -> String {
     }
 }
 
-/// Widened to `pub(crate)` (item G, matches.rs): the exhaustiveness pass
-/// needs the same literal-length reading to decide whether a fixed array
-/// type is component-wise checkable (plans/M2.md item G) or must fall
-/// back to "unbounded, needs a wildcard" like an integer/`char`/string.
 pub(crate) fn literal_array_len(e: &Expr) -> Option<i128> {
     match e {
         Expr::Int(_, text) => parse_int_literal(text),
-        _ => None, // needs comptime evaluation; skip the arity check rather than fail closed.
+        _ => None,
     }
 }
 
-/// The largest fixed-array length / `Bytes[N]` length / `String[..N]`
-/// capacity a build accepts. Shared across the three surfaces so a
-/// declared `[T; N]` cannot sneak past the limit that `[elem; N]`
-/// expressions and `String[..N]` already enforce — without it,
-/// `mwir::size_of` multiplies by a guest-chosen `N` and panics under
-/// `[profile.release] overflow-checks = true` (adversarial audit, 2026-07-27).
 pub(crate) const MAX_ARRAY_LEN: i128 = 65_536;
 
-/// The largest `String[..N]` capacity a build accepts — the same bound
-/// `[elem; N]` already carries, for the same reason and with the same
-/// number: a `String[..N]` is one length word plus `N` byte slots, so
-/// `N` is an element count in exactly the sense an array's is. At the
-/// limit the aggregate is `8 * (1 + 65536)` = 512 KiB, which is already
-/// far past anything a 1 GiB guest image should hold in one value.
 pub(crate) const MAX_STRING_CAPACITY: i128 = MAX_ARRAY_LEN;
 
-/// Whether a literal array / `Bytes[N]` length is within the build limit.
 pub(crate) fn array_len_fits(n: i128) -> bool {
     (0..=MAX_ARRAY_LEN).contains(&n)
 }
 
-/// Whether `n` is a layout-representable `String[..N]` capacity
-/// (plans/M9.md item K1, corrected 2026-07-26 by a `fuzz lower` find).
-/// Layout is one length word plus `N` byte slots (`mwir::size_of`:
-/// `8 * (1 + N)`). An i128 sum that fits only in i128 (or a usize that
-/// overflows the slot product) used to typecheck and then panic the
-/// compiler at lowering.
-///
-/// **Arithmetic representability is not enough, which is what K1 got
-/// wrong.** `8 * (1 + N)` not overflowing `usize` admits `N = 2^60`: the
-/// byte count is computable, and then `lower::emit_string_aggregate` calls
-/// `Vec::with_capacity(1 + N)` and Rust aborts with `capacity overflow` —
-/// a non-`internal error` panic, i.e. exactly the fail-open this predicate
-/// exists to close. `cargo xtask fuzz lower --seed 101` found it at
-/// iteration 6134 by truncating `golden/err-fstring-bound-overflow` so the
-/// declared `String[..2^60]` survived without the concat sum that K1 did
-/// guard. So the bound is a **build limit**, not an overflow check.
 pub(crate) fn string_capacity_fits(n: i128) -> bool {
     (0..=MAX_STRING_CAPACITY).contains(&n)
 }
 
-/// Resolves a pattern's (or a leading-dot expression's) variant payload
-/// types against the scrutinee/expected type via [`crate::sema::sum::sum_ctors`].
 fn variant_payload_types_for(
     scrutinee: &Type,
     enum_name: Option<&str>,
@@ -3551,7 +2817,6 @@ fn variant_payload_types_for(
     let ctors = match crate::sema::sum::sum_ctors(scrutinee, mctx) {
         Ok(c) => c,
         Err(e) => {
-            // Preserve the call-site span; sum_ctors uses a zero span.
             return Err(SemaError::at(e.category, e.message, span));
         }
     };
@@ -3573,10 +2838,6 @@ fn variant_payload_types_for(
     }
 }
 
-/// Widened to `pub(crate)` (item G, matches.rs): the exhaustiveness pass
-/// needs a closed enum's own variant payload types (declaration order) to
-/// build its constructor matrix — the same mapping `bodies.rs` already
-/// uses for pattern typing and `?`'s `From` conversion.
 pub(crate) fn decl_variant_payload_types(dv: &types::DeclVariant) -> Vec<Type> {
     match &dv.payload {
         DeclVariantPayload::None => vec![],
@@ -3585,21 +2846,6 @@ pub(crate) fn decl_variant_payload_types(dv: &types::DeclVariant) -> Vec<Type> {
     }
 }
 
-// --- expressions: the central check/synth pair ---------------------------
-
-/// Checks `expr` against `expected` (decision 4): synthesizes its type
-/// (`synth_expr`, which uses `expected` internally wherever the grammar
-/// needs it — literal defaulting, closures, `Some`/`Ok`/`Err`/leading-dot
-/// construction, array/tuple literals), then gates the result against
-/// `expected` when one was supplied. Always returns the typed node (which
-/// embeds the actual type, plans/M3.md item A), so callers that need just
-/// the type (call-argument checking, `for`'s range endpoints, ...) read
-/// `.ty` off it.
-/// Widened to `pub(crate)` (item G, matches.rs): this is the one function
-/// that pass reuses to synthesize an expression's type in a local
-/// context — the "dumbest workable route" plans/M2.md item G calls for,
-/// rather than reimplementing expression typing to find a `match`/`is`
-/// scrutinee's type.
 pub(crate) fn check_expr(
     expr: &Expr,
     expected: Option<&Type>,
@@ -3610,8 +2856,6 @@ pub(crate) fn check_expr(
     actual.span = expr_span(expr);
     if let Some(exp) = expected {
         if !types_eq(&actual.ty, exp) {
-            // plans/M13.md item K: private `Result[T]` accepts any
-            // `Result[T, E]` and records `E` into the inferred set.
             if let (Type::Result(exp_ok, exp_err), Type::Result(act_ok, act_err)) =
                 (exp, &actual.ty)
             {
@@ -3620,13 +2864,6 @@ pub(crate) fn check_expr(
                     return Ok(actual);
                 }
             }
-            // plans/M13.md item M / decision 1: proof-conditioned collapse
-            // for `VirtQueue.reserve` — a use site that expects
-            // `QueuePermit` may take `Result[QueuePermit, CapacityError]`
-            // (including a local bound from `reserve`); the whole-image
-            // proof must then succeed (`reserve_proof`). Direct
-            // `reserve` calls with the same expected type also collapse
-            // inside `check_virtqueue_reserve`.
             if is_queue_permit(exp) && is_reserve_capacity_result(&actual.ty) {
                 mctx.reserve_permit_demands
                     .borrow_mut()
@@ -3634,10 +2871,6 @@ pub(crate) fn check_expr(
                 actual.ty = exp.clone();
                 return Ok(actual);
             }
-            // plans/M7.md item H2a: an `Untrusted[T]` is never silently
-            // coerced to a plain `T`. Prefer the mechanism's own wording
-            // over a bare expected/found mismatch whenever the found
-            // type is marked and the expected type is unmarked.
             if let Some(msg) = untrusted_coercion_message(exp, &actual.ty) {
                 return Err(type_error(msg, expr.span()));
             }
@@ -3682,9 +2915,6 @@ fn synth_expr(
         Expr::Int(span, text) => synth_int_literal(*span, text, expected),
         Expr::Float(span, text) => synth_float_literal(*span, text, expected),
         Expr::Str(span, text) => {
-            // plans/M9.md item C1: a text literal coerced into
-            // `String[..N]` when the expected type asks for one (02 §6.2 /
-            // §1.1). Occupied byte length must fit the capacity.
             if let Some(Type::String(n_expr)) = expected {
                 let n = literal_array_len(n_expr).ok_or_else(|| {
                     unimplemented_at("a `String[..N]` capacity that is not a literal is", *span)
@@ -4027,12 +3257,7 @@ fn check_field_expr(
                 ));
             }
             if let Some(e) = mctx.enums.get(bname.as_str()) {
-                // plans/M9.md item B2: associated fns share the `Type.name`
-                // spelling with fieldless variants. Look them up first so
-                // a method never surfaces as "no variant".
                 if let Some((_, d)) = e.assoc_fn(name) {
-                    // Associated fns on a generic enum (and method-owned
-                    // type params) stay item H / J2b's deferred boundary.
                     if !e.generics.is_empty() || !d.generics.is_empty() {
                         return Err(unimplemented_at("generic instantiation is", span));
                     }
@@ -4050,10 +3275,6 @@ fn check_field_expr(
                     ));
                 }
                 if e.variants.iter().any(|v| v.name == name) {
-                    // plans/M9.md item J2c: generic-enum variant construction
-                    // via expected type (`return Lookup.Absent` under
-                    // `Lookup[u32]`). `instantiate_enum` already existed;
-                    // this path simply refused before.
                     let (targs, decl) =
                         resolve_enum_for_variant_construction(bname, e, expected, span, mctx)?;
                     let dv = decl
@@ -4062,10 +3283,6 @@ fn check_field_expr(
                         .find(|v| v.name == name)
                         .expect("name membership checked above");
                     if matches!(dv.payload, DeclVariantPayload::None) {
-                        // plans/M9.md item DD / decision 9: the local
-                        // lookup key (`bname`), not `e.name` (the
-                        // exporter's spelling). Same rule as
-                        // `check_struct_construction` — one spelling.
                         return Ok(TypedExpr {
                             span: span,
                             ty: Type::Named(bname.clone(), targs),
@@ -4086,12 +3303,6 @@ fn check_field_expr(
                     span,
                 ));
             }
-            // plans/M4.md item B (05-library.md §9's own `Target`/
-            // `Failure` prelude enums, decision 5): recognized only once
-            // `bname` is not a real module struct/enum, so a module that
-            // declares its own `Target`/`Failure` shadows this fallback
-            // exactly like it would any other prelude name.
-            // plans/M9.md item QQ: load failures are `error[build]`, not panic.
             if let Some(variants) = crate::sema::stdlib_enums::variant_strs(bname.as_str())? {
                 if variants.contains(&name) {
                     return Ok(TypedExpr {
@@ -4113,24 +3324,13 @@ fn check_field_expr(
     }
     let base_t = check_expr(base, None, fctx, mctx)?;
     let base_ty = unwrap_own(base_t.ty.clone());
-    // plans/M7.md item C (03-hardware.md §2): a register selected out of
-    // an `Mmio[L]` is not a value. It has no representation, cannot be
-    // bound to a local, passed, stored or returned — the only two things
-    // that exist are `.read()` and `.write(v)`, handled one level up in
-    // `check_call_by_field`. Reaching *here* with an `Mmio[L]` base means
-    // the source wrote a bare selection, so this is where that is named.
     if let Type::Named(cap, targs) = &base_ty {
         if cap == "Mmio" {
             return Err(mmio_bare_selection_error(targs, name, span, mctx));
         }
     }
-    // plans/M7.md item E4: `IoCompletion[P]` fields — 03 §3/§8.
-    // 0 payload, 1 status (`Result[unit, IoError]`), 2 written_len
-    // (`Untrusted[usize]`).
     if let Type::Named(n, targs) = &base_ty {
         if n == "IoCompletion" {
-            // One ordered table, shared with `mwir::{size_of, field_offset}`
-            // and `lower::field_index` (`mwir::io_completion_fields`).
             let fields =
                 crate::mwir::io_completion_fields(targs).map_err(|e| type_error(e, span))?;
             let Some((_, field_ty)) = fields.into_iter().find(|(f, _)| *f == name) else {
@@ -4149,9 +3349,6 @@ fn check_field_expr(
             });
         }
     }
-    // plans/M9.md item C1: `String[..N].len` is the occupied byte length
-    // (slot 0 of the length-plus-N-bytes layout). Not a DeclStruct field;
-    // lower maps the name to Project index 0.
     if matches!(&base_ty, Type::String(_)) {
         if name == "len" {
             return Ok(TypedExpr {
@@ -4168,9 +3365,6 @@ fn check_field_expr(
             span,
         ));
     }
-    // plans/M10.md item B4 / decision 595: unbounded `Bytes` handle's
-    // capacity word. The base address is not a field — source cannot
-    // observe it.
     if matches!(&base_ty, Type::Bytes(None)) {
         if name == "len" {
             return Ok(TypedExpr {
@@ -4186,9 +3380,6 @@ fn check_field_expr(
     }
     match &base_ty {
         Type::Named(sname, targs) => {
-            // A generic instantiation's field (item H): substitute +
-            // enqueue it, then read the field's (now concrete) type off
-            // the substituted declaration instead of the declared one.
             let s = if targs.is_empty() {
                 match mctx.structs.get(sname.as_str()) {
                     Some(s) => std::borrow::Cow::Borrowed(s),
@@ -4228,11 +3419,6 @@ fn check_field_expr(
     }
 }
 
-/// plans/M13.md item G3 / 02-language.md §2: a non-`pub` field is usable
-/// only inside its declaring module (construct / read / write /
-/// pattern-bind). Generated `core.__image_runtime` tables stay exempt —
-/// handwritten `core.runtime` indexes them by design (same carve-out the
-/// G1 census used).
 pub(crate) fn check_field_privacy(
     type_name: &str,
     field: &str,
@@ -4296,9 +3482,6 @@ fn synth_index(
     }
     match &base_ty {
         Type::Array(elem, _) => {
-            // Bare integer literals must take the index's `usize` width
-            // (02-language.md §6.1); a named `Untrusted[usize]` must be
-            // rejected by the marked-value rule before any coercion.
             let idx_t = if is_bare_numeric_literal(&args[0]) {
                 check_expr(&args[0], Some(&Type::Usize), fctx, mctx)?
             } else {
@@ -4348,8 +3531,6 @@ fn synth_index(
                 kind: TypedExprKind::Index(Box::new(base_t), Box::new(idx_t)),
             })
         }
-        // plans/M9.md item C1: `String[..N][i]` → `u8` (bounds against
-        // occupied length at eval/lower time).
         Type::String(_) => {
             let idx_t = if is_bare_numeric_literal(&args[0]) {
                 check_expr(&args[0], Some(&Type::Usize), fctx, mctx)?
@@ -4472,9 +3653,6 @@ fn synth_list(
     })
 }
 
-/// `[elem; N]` (plans/M9.md item F1 decision 343): desugar to a fixed
-/// list of `N` copies. `N` must be a literal usize after const-generic
-/// substitution.
 fn synth_array_repeat(
     span: Span,
     elem: &Expr,
@@ -4532,8 +3710,6 @@ fn synth_array_repeat(
     })
 }
 
-// --- unary `-`, binary operators (02-language.md §7.4, §8.2; 05-library.md §8) --
-
 fn is_integer_scalar(t: &Type) -> bool {
     matches!(
         t,
@@ -4565,17 +3741,6 @@ fn is_numeric_scalar(t: &Type) -> bool {
     is_integer_scalar(t) || is_float_scalar(t)
 }
 
-/// Structural type equality, used everywhere in place of derived
-/// `PartialEq` on `Type`: `Type::Array`/`Type::Bytes` embed their length
-/// as an unevaluated `ast::Expr` (types.rs, item H evaluates the literal
-/// subset), and `Expr`'s derived `PartialEq` also compares spans — so
-/// the *same* `[T; 3]` written at two different source locations would
-/// otherwise never compare equal. `same_len_expr` below compares length
-/// expressions by value/name instead, ignoring span.
-/// Widened to `pub(crate)` (item G, matches.rs): the `|` alternative
-/// binding-consistency check (02-language.md §7.2: "same bindings, same
-/// types") needs the same span-insensitive comparison bodies.rs uses
-/// throughout, rather than the derived (span-sensitive) `PartialEq`.
 pub(crate) fn types_eq(a: &Type, b: &Type) -> bool {
     match (a, b) {
         (Type::Bool, Type::Bool)
@@ -4629,32 +3794,17 @@ fn type_args_eq(a: &types::TypeArg, b: &types::TypeArg) -> bool {
         (types::TypeArg::Type(x), types::TypeArg::Type(y)) => types_eq(x, y),
         (types::TypeArg::Const(x), types::TypeArg::Const(y)) => same_len_expr(x, y),
         (types::TypeArg::Bound(x), types::TypeArg::Bound(y)) => same_len_expr(x, y),
-        // plans/M9.md item F1 decision 341: `..N` and `N` are the same
-        // const argument at a `const` generic parameter.
         (types::TypeArg::Const(x), types::TypeArg::Bound(y))
         | (types::TypeArg::Bound(x), types::TypeArg::Const(y)) => same_len_expr(x, y),
-        // plans/M7.md item D introduced `TypeArg::Pool`; equality was
-        // incomplete (Pool vs Pool fell to `false`), so `Option[DmaShared
-        // [P, L]] = None` rendered identical expected/found and still
-        // rejected. Protocol-consumption needs that assignment to work.
         (types::TypeArg::Pool(x), types::TypeArg::Pool(y)) => x == y,
         _ => false,
     }
 }
 
-/// Only the two shapes an M2 length/const argument actually takes — a
-/// literal integer or a bare `const`/generic-param name — compare by
-/// value; anything else is conservatively unequal (comparing two
-/// arbitrary expressions honestly needs comptime evaluation, item M3).
 fn same_len_expr(a: &Expr, b: &Expr) -> bool {
     match (a, b) {
         (Expr::Int(_, t1), Expr::Int(_, t2)) => parse_int_literal(t1) == parse_int_literal(t2),
         (Expr::Name(_, n1), Expr::Name(_, n2)) => n1 == n2,
-        // plans/M8.md item G: `QueueOp[P, <idempotent>]`'s own const
-        // argument is a bool literal — the first non-integer one this
-        // comparator has seen. Without this arm two identically-declared
-        // operations compare unequal and render identically, which is the
-        // exact shape of the `TypeArg::Pool` bug noted just above.
         (Expr::Bool(_, b1), Expr::Bool(_, b2)) => b1 == b2,
         _ => false,
     }
@@ -4677,11 +3827,6 @@ fn check_int_range(value: i128, ty: &Type, span: Span) -> Result<(), SemaError> 
 
 pub(crate) use crate::eval::value::parse_int_literal;
 
-/// Decoded byte length of a byte-string literal's raw (still-escaped)
-/// source text (lexer.rs: "contents kept raw"): each escape (already
-/// validated at lex time — `\xNN`, or one of `\\ \" \' \n \r \t \0`)
-/// contributes exactly one byte; anything else contributes its own
-/// UTF-8 length.
 fn bstr_byte_len(text: &str) -> u64 {
     let mut len = 0u64;
     let mut chars = text.chars();
@@ -4784,8 +3929,6 @@ fn check_binary(
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
 ) -> Result<TypedExpr, SemaError> {
-    // plans/M9.md item C2: `String[..N] + String[..M] -> String[..N+M]`.
-    // Text literals coerce to `String[..len]` in this position.
     if op == BinOp::Add {
         if let Some(out) = check_string_add(l, r, span, fctx, mctx)? {
             return Ok(out);
@@ -4795,9 +3938,6 @@ fn check_binary(
     build_binop_expr(op, lt, rt, span, mctx)
 }
 
-/// `String[..N] + String[..M]` (and text-literal coercion into that form).
-/// Returns `None` when this is not a string add, so the ordinary numeric
-/// path can run.
 fn check_string_add(
     l: &Expr,
     r: &Expr,
@@ -4843,7 +3983,6 @@ fn check_string_add(
     }))
 }
 
-/// `Static[Str]` text literal → `String[..byte_len]` for Format concat.
 fn coerce_text_literal_to_string(te: TypedExpr, span: Span) -> Result<TypedExpr, SemaError> {
     match &te.ty {
         Type::String(_) => Ok(te),
@@ -4866,9 +4005,6 @@ fn coerce_text_literal_to_string(te: TypedExpr, span: Span) -> Result<TypedExpr,
     }
 }
 
-/// plans/M9.md item D: `f"..."` → Format + `String` concat, type
-/// `String[..N]` with `N` the sum of literal bytes and each operand's
-/// `max_formatted_len`.
 fn check_fstr(
     f: &crate::syntax::ast::FStringLit,
     fctx: &mut FnCtx,
@@ -4894,8 +4030,6 @@ fn check_fstr(
     }
 }
 
-/// Map a bare "no method `format`" onto the f-string wording (unbounded
-/// operand / no Format). `Secret` by type name keeps 05 §6's sentence.
 fn rewrite_fstring_format_error(e: SemaError) -> SemaError {
     if let Some((ty, method)) = &e.missing_method {
         if method == "format" {
@@ -4921,27 +4055,12 @@ fn rewrite_fstring_format_error(e: SemaError) -> SemaError {
     e
 }
 
-/// Checks two operands that must share one type (a binary operator's
-/// sides, a range's endpoints), with no unification (decision 4): one
-/// side is synthesized on its own, then the other is checked against it.
-/// A bare, unannotated integer/float literal defers to a concrete
-/// sibling when there is one — `0 .. n` (or `n + 1`) types the literal
-/// against `n`'s type rather than defaulting it first and rejecting `n`
-/// — so ordinary code with the literal on either side works the same
-/// way; only two bare literals together fall back to plain left-to-right
-/// (both then default identically, so it never matters which is first).
-/// Returns the typed pair in the *original* `(a, b)` order regardless of
-/// which side was synthesized first internally.
 fn check_same_type_operands(
     a: &Expr,
     b: &Expr,
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
 ) -> Result<(TypedExpr, TypedExpr), SemaError> {
-    // plans/M7.md item H2a: if either operand is `Untrusted[T]`, do not
-    // unify the other against it (a bare literal would otherwise be
-    // asked to type as `Untrusted[T]` and report a confusing mismatch).
-    // The caller (range / binary) then rejects the marked use by name.
     if is_bare_numeric_literal(a) && !is_bare_numeric_literal(b) {
         let bt = check_expr(b, None, fctx, mctx)?;
         if is_untrusted_type(&bt.ty) {
@@ -4965,14 +4084,6 @@ pub(crate) fn is_bare_numeric_literal(e: &Expr) -> bool {
     matches!(e, Expr::Int(..) | Expr::Float(..))
 }
 
-/// Both operands already share a type by the time this runs
-/// (`check_binary` calls `check_same_type_operands`;
-/// `check_compound_assign` checks the value against the target's type).
-/// Builtin scalar ops never desugar (02-language.md §7.4): a user
-/// (`Named`) type's `+ - * / %` and `<` resolve to the matching 05§8
-/// method (`OpCall`, decision 1); everything else in the table
-/// (wrapping, shifts, bitwise, `==`/`!=`) is core-scalar-only and stays
-/// the primitive `Binary` node.
 fn build_binop_expr(
     op: BinOp,
     l: TypedExpr,
@@ -4981,14 +4092,6 @@ fn build_binop_expr(
     mctx: &ModuleCtx,
 ) -> Result<TypedExpr, SemaError> {
     use BinOp::*;
-    // plans/M7.md item H2a / plans/M9.md item G1 decision 351: an
-    // `Untrusted[T]` has no arithmetic or comparison form — ordinary use
-    // with an unmarked value (or another marked one) is a rejection
-    // naming the narrowing transition, never a coercion that preserves
-    // taint. Archive 05 §8's "arithmetic preserves untrusted" reading is
-    // deliberately not taken: 03 §8 says the value cannot be used until
-    // checked-narrowed. Comparisons get their own use-kind so the
-    // diagnostic does not call `<`/`==` "arithmetic".
     if is_untrusted_type(&l.ty) || is_untrusted_type(&r.ty) {
         let use_kind = match op {
             Eq | Ne | Lt | Le | Gt | Ge => "a comparison",
@@ -5122,16 +4225,6 @@ fn build_binop_expr(
     }
 }
 
-/// Mirrors `types::classify_type` (already computed, memoized, per
-/// struct/enum in `mctx`) to answer the one question the operator pass
-/// needs: is this composite type's structural `==` forbidden because it
-/// (transitively) contains a resource? The compound-propagation rule
-/// itself (own/array/tuple/Option/Result propagate, everything else is
-/// data) is `types::resource_propagates`'s one exhaustive triage point,
-/// shared with `classify_type`; the only thing supplied here is the leaf
-/// question — a named type's resource-ness, read straight from `mctx`'s
-/// already-computed classifications rather than recursively re-deriving
-/// them.
 pub(crate) fn is_resource_type(ty: &Type, mctx: &ModuleCtx) -> bool {
     types::resource_propagates(ty, &mut |name, _args| {
         if crate::sema::classes::name_holds_authority(name) {
@@ -5149,15 +4242,6 @@ pub(crate) fn is_resource_type(ty: &Type, mctx: &ModuleCtx) -> bool {
     })
 }
 
-/// Resolves `<type-name>.<method>` as an operator-desugar target
-/// (05-library.md §8 shape: `fn <method>(read self, right: <Self>) ->
-/// R`), returning the method's declared result type `R` and the callee
-/// key the typed tree's `OpCall` node carries (plans/M3.md item A):
-/// `targs` is the operand's own (possibly empty) generic argument list
-/// (item H): a non-empty one substitutes + enqueues the concrete
-/// instantiation first (`generics::instantiate_struct`), so the shape
-/// check below runs against the concrete method exactly like it does for
-/// a non-generic operand, and the key names that instantiation.
 fn resolve_operator_method(
     name: &str,
     targs: &[TypeArg],
@@ -5217,8 +4301,6 @@ fn resolve_operator_method(
     Ok((d.ret.clone(), key))
 }
 
-// --- `?` (02-language.md §7.4, §8.2; 05-library.md §1) --------------------
-
 fn check_try(
     span: Span,
     inner: &Expr,
@@ -5229,7 +4311,6 @@ fn check_try(
     match inner_t.ty.clone() {
         Type::Result(t_ok, t_err) => match fctx.ret_ty.clone() {
             Type::Result(_, ret_err) if types::is_inferred_error_set(&ret_err) => {
-                // plans/M13.md item K: `?` widens the inferred set; no `from`.
                 if types::is_inferred_error_set(&t_err) {
                     return Err(type_error(
                         "`?` on a function whose error set is not yet inferred — declare \
@@ -5306,15 +4387,6 @@ fn check_try(
     }
 }
 
-/// The one hop `?` may take (02-language.md §7.4: "no chains, no
-/// implicit widening"): `target_ty` either matches `err_ty` directly
-/// (checked by the caller before this runs) or names a struct/enum
-/// declaring the conversion — a user-written associated `from(take
-/// source: E) -> Self`, or the `from` `deriving(From)` generates
-/// (05-library.md §8 / plans/M9.md item B3). Returns the conversion's
-/// return type plus the `<Target>.from`-shaped callee key
-/// (plans/M3.md item A). Both shapes are real TypedFns; there is no
-/// second structural path.
 fn try_from_conversion(
     err_ty: &Type,
     target_ty: &Type,
@@ -5359,8 +4431,6 @@ fn try_from_conversion(
     None
 }
 
-// --- closures (02-language.md §8.3) --------------------------------------
-
 fn check_closure(
     c: &ClosureExpr,
     expected: Option<&Type>,
@@ -5376,8 +4446,6 @@ fn check_closure(
     if c.params.len() != exp_params.len() {
         return Err(arity_error(exp_params.len(), c.params.len(), c.span));
     }
-    // plans/M9.md item F1 decision 344: closures are synchronous and
-    // non-escaping (02 §8.3) — they cannot suspend.
     if let Some(span) = scan_closure_await(&c.body) {
         return Err(type_error(
             "a closure cannot contain `await`".to_string(),
@@ -5447,8 +4515,6 @@ fn check_closure_body(
     Ok((typed_params, body))
 }
 
-// --- calls: fn/method/associated-fn/init/struct-literal/enum-variant ----
-
 fn call_fn_value(
     callee: TypedExpr,
     args: &[Arg],
@@ -5495,15 +4561,6 @@ fn check_call(
     }
 }
 
-/// Callee shaped `expr[targs](args)` — either a scalar conversion
-/// (`x.to[T]()`, `x.checked_to[T]()`, `x.truncate_to[T]()`) or a generic
-/// instantiation with explicit arguments (`Ring[Sector, 4](...)`,
-/// `hash_pair[Sector](...)`, item H): the latter resolves `targs` (raw
-/// `Expr`s — `generics::resolve_call_targs`), substitutes + enqueues the
-/// concrete instantiation, and checks the call against the substituted
-/// signature exactly like the non-generic path does. A generic *method*
-/// called this way (`x.method[Args](...)`) is item H's documented scope
-/// boundary and still fails closed.
 fn check_call_index(
     inner: &Expr,
     ispan: Span,
@@ -5513,31 +4570,14 @@ fn check_call_index(
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
 ) -> Result<TypedExpr, SemaError> {
-    // 03-hardware.md §1 (plans/M7.md item A): `DeviceCap[VirtioBlock](...)`
-    // is the construction spelling a source author reaches for first, and
-    // it must be rejected as forgery rather than as the "generic
-    // instantiation is not checked yet" this function's own fall-through
-    // would report — a diagnostic naming the wrong cause. Checked before
-    // anything else here, since no other arm can produce a capability.
     if let Expr::Name(_, name) = inner {
         capability_forgery_check(name, "constructed", call_span)?;
-        // plans/M17.md item E / freeze 1 (decision 1250): `entropy[N]()` —
-        // bare Name + one bracket length + zero call args. Same
-        // Index-then-Call shape as `img.pool[T](...)`. Checked before the
-        // generic-instantiation fallthrough.
         if name == "entropy" {
             return check_entropy_call(targs, args, ispan, call_span);
         }
     }
     if let Expr::Field(base, fspan, mname) = inner {
         if mname == "device" || mname == "pool" || mname == "dma_pool" {
-            // `img.device[D](...)`/`img.pool[T](...)`/`img.dma_pool[T](...)`
-            // (plans/M4.md item B, decision 5, 05-library.md §9): the
-            // builder surface's own bracketed intrinsics. Recognized only
-            // when the receiver's own (already-checked) type is the
-            // builder's opaque `Image` type — anything else falls
-            // through to the ordinary "generic instantiation" scope
-            // boundary below, unchanged.
             let base_t = check_expr(base, None, fctx, mctx)?;
             if base_t.ty == image_type() {
                 return check_image_bracket_intrinsic(mname, targs, args, *fspan, fctx, mctx);
@@ -5550,13 +4590,6 @@ fn check_call_index(
                     ispan,
                 ));
             }
-            // 03-hardware.md §1's "no address, import, or **cast** creates
-            // one" (plans/M7.md item A). `.to[T]` is this language's only
-            // conversion form (02-language.md §6.1: "no cast operator" —
-            // conversion is a method), so `0x1000.to[Mmio[VirtioIrqMmio]]()`
-            // is *the* address-to-capability cast the sentence names. It
-            // already fails ("`.to` target must be a scalar type"), which
-            // is true but describes the wrong rule; this says which rule.
             if let Some(name) = capability_name_in_type_expr(&targs[0]) {
                 capability_forgery_check(name, "cast to", ispan)?;
             }
@@ -5591,9 +4624,6 @@ fn check_call_index(
                 kind: TypedExprKind::ToScalar(Box::new(base_t)),
             });
         }
-        // `Type.assoc[Args](...)` first — `check_expr` on a type name is
-        // `error[type]: is a type, not a value`, so recognize it before
-        // synthesizing the base (plans/M13.md item Q).
         if let Expr::Name(_, bname) = base.as_ref() {
             if fctx.lookup_local(bname).is_none() {
                 if let Some(s) = mctx.structs.get(bname.as_str()) {
@@ -5638,7 +4668,6 @@ fn check_call_index(
                 }
             }
         }
-        // `x.method[Args](...)`: method-owned generics with explicit args.
         let base_t = check_expr(base, None, fctx, mctx)?;
         let base_ty = unwrap_own(base_t.ty.clone());
         if let Type::Named(sname, recv_targs) = &base_ty {
@@ -5736,9 +4765,6 @@ fn check_call_index(
     Err(unimplemented_at("generic instantiation is", call_span))
 }
 
-/// plans/M17.md item E / freeze 1: `entropy[N]() -> Bytes[N]` with
-/// comptime integer literal `N` in `1..=ENTROPY_LEN_MAX` (64). Zero call
-/// arguments inside `()`.
 fn check_entropy_call(
     targs: &[Expr],
     args: &[Arg],
@@ -5797,63 +4823,16 @@ fn check_entropy_call(
     })
 }
 
-// --- plans/M4.md item B: the `@image` builder surface (05-library.md §9) --
-//
-// Decision 5: "compiler-recognized ... prelude-style declarations, no
-// stdlib source needed ... recognized by callee key exactly like the
-// existing prelude/intrinsic machinery" — the whole surface is a
-// handful of fixed match arms right alongside `Some`/`Ok`/`Err`/`panic`
-// above, producing one dedicated typed node (`TypedExprKind::Intrinsic`,
-// `typed.rs`'s own module doc) instead of an ordinary `Call`: none of
-// these have a declared parameter list a positional/labeled-default
-// alignment could check against, so every argument keeps its own source
-// label. Legality (illegal anywhere but the one reachable `@image` fn)
-// is `eval::legal`'s job, not this pass's — every intrinsic type-checks
-// uniformly wherever it is written, exactly like `Some`/`Ok`/`Err` do.
-
-/// The builder's own opaque `Image` type (the same type an `@image` fn
-/// declares as its return type, `types::resolve_named`'s own new arm).
 pub(crate) fn image_type() -> Type {
     Type::Named("Image".to_string(), vec![])
 }
 
-/// The builder's own opaque declaration-handle type: every
-/// `img.device`/`img.driver`/`img.actor`/`img.pool`/`img.dma_pool` call,
-/// and `decl.handle()`, produces one (decision 5: "opaque builtin
-/// resource types ... declaration handles" — one shared type for every
-/// declaration kind, since nothing before item C's graph checks needs to
-/// tell them apart structurally). Never resolvable as a source type
-/// annotation (no `resolve_named` arm) — it only ever appears as an
-/// inferred local's type.
 pub(crate) fn image_decl_type() -> Type {
     Type::Named("ImageDecl".to_string(), vec![])
 }
 
-/// One evaluated (or, for `img.pool`/`img.dma_pool`'s own `name=`
-/// argument, pool-name-referenced) builder argument, still carrying its
-/// source label.
 type IntrinsicArgs = Vec<(String, TypedExpr)>;
 
-/// Checks/types one builder intrinsic's whole argument list (plans/M4.md
-/// item B): every argument must carry a label (`img.check_layout(f)`'s
-/// single positional argument is handled by its own dedicated call site,
-/// not this shared helper) — a label bound more than once, or an
-/// unlabeled argument, is a `type` diagnostic. Each argument is checked
-/// with no expected type: the builder's own arguments have no declared
-/// parameter list to check against (item C's own job is validating them
-/// against the real target, e.g. an actor's `init`), so item B only
-/// needs every argument to type-check as *some* ordinary comptime-legal
-/// expression. One narrow exception, applied uniformly rather than only
-/// for `img.pool`/`img.dma_pool` (harmless everywhere else: `Image`'s own
-/// `name=` argument is always a string literal, never a bare identifier,
-/// so the pool-name interpretation below never actually matches there):
-/// an argument labeled `name` whose value is a bare identifier naming an
-/// already-declared module-scope `pool` (02-language.md §4) is the one
-/// builder argument that is not an ordinary value expression (a pool
-/// name is otherwise only ever spelled inside an `own[P] T` annotation,
-/// never referenced as a value) — recorded as a `PoolName` leaf instead
-/// of falling through to `synth_name`'s ordinary lookup, which would
-/// (correctly, for anything else) reject it.
 pub(crate) fn check_intrinsic_args(
     args: &[Arg],
     fctx: &mut FnCtx,
@@ -5896,20 +4875,6 @@ pub(crate) fn check_intrinsic_args(
     Ok(out)
 }
 
-/// Resolves a builder intrinsic's own leading bare type-name argument —
-/// `img.driver(A, ...)`/`img.actor(A, ...)`'s unlabeled first positional
-/// argument, or `img.device[D]`/`img.pool[T]`/`img.dma_pool[T]`'s
-/// bracketed one — through the ordinary type resolver
-/// (`ModuleCtx::resolve_type`), so every shape that resolver already
-/// accepts (a scalar, a plain user struct/enum, `Bytes`, ...) is
-/// accepted here too. Only a *bare name* is supported (item B's own
-/// documented scope boundary): a further `[...]` on the name itself
-/// (`BlkDriver[DriverMode.Irq]`, 02-language.md §12.1's own worked
-/// example) is a generic struct instantiation used as a comptime type
-/// argument rather than a value, which is a different, larger feature
-/// item B does not add — it fails closed with the same
-/// `unimplemented_at("generic instantiation is", ...)` every other
-/// generic-instantiation scope boundary in this file already uses.
 fn resolve_intrinsic_type_arg(e: &Expr, fctx: &FnCtx, mctx: &ModuleCtx) -> Result<Type, SemaError> {
     match e {
         Expr::Name(span, name) => {
@@ -5924,22 +4889,6 @@ fn resolve_intrinsic_type_arg(e: &Expr, fctx: &FnCtx, mctx: &ModuleCtx) -> Resul
     }
 }
 
-/// `img.driver(A, ...)`/`img.actor(A, ...)`'s own leading type argument —
-/// deliberately *not* `resolve_intrinsic_type_arg` above: only a struct
-/// (never a scalar/`Bytes`/enum) can be `@actor`/`@driver`-attributed, so
-/// this looks `name` up directly in `mctx.structs` instead of through the
-/// ordinary type-annotation resolver. This is the one difference that
-/// matters for a multi-module build (plans/M4.md item A's own disclosed
-/// scope line): `mctx.structs` *is* spliced from an imported module's
-/// own checked output (`sema::check_program`'s own splice step), while
-/// `mctx.shapes` (the type-annotation arity table `resolve_type` reads)
-/// is module-local only — so an imported actor/driver struct resolves
-/// here, in call/callee position, exactly like constructing it would,
-/// even though it could not yet resolve as an explicit type annotation.
-///
-/// plans/M7.md item G, decision 18: also accepts `BlkDriver[DriverMode.Irq]`
-/// (an `Expr::Index` whose base is the struct name) and enqueues the
-/// instantiation so the mode-specialized members exist.
 pub(crate) fn resolve_intrinsic_struct_type_arg(
     e: &Expr,
     mctx: &ModuleCtx,
@@ -5965,9 +4914,6 @@ pub(crate) fn resolve_intrinsic_struct_type_arg(
                 return Err(type_error(format!("`{name}` is not generic"), *span));
             }
             let targs = generics::resolve_call_targs(args, mctx)?;
-            // Force the instantiation (and its deferred comptime-if
-            // expansion) to exist before image checks / layout run.
-            // `instantiate_struct` arity-checks and expands MODE branches.
             let _ = generics::instantiate_struct(mctx, name, &targs, *span)?;
             Ok(Type::Named(name.clone(), targs))
         }
@@ -5975,13 +4921,6 @@ pub(crate) fn resolve_intrinsic_struct_type_arg(
     }
 }
 
-/// `img.device[D](...)`, `img.pool[T](...)`, `img.dma_pool[T](...)` —
-/// the bracketed third of the builder surface (05-library.md §9);
-/// `check_call_index`'s own new arm dispatches here once the receiver's
-/// type is confirmed to be `Image`. All three share the identical shape
-/// (one bracketed type argument, otherwise arbitrary labeled arguments),
-/// so one function covers them; `mname` only decides the intrinsic's own
-/// key spelling.
 fn check_image_bracket_intrinsic(
     mname: &str,
     targs: &[Expr],
@@ -6050,10 +4989,6 @@ fn check_call_by_name(
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
 ) -> Result<TypedExpr, SemaError> {
-    // plans/M7.md item H2a: `Untrusted[T]` is sealed — no source-visible
-    // constructor (03-hardware.md §8: the wrapper gates use until an
-    // explicit typed transition; the transitions are the narrowings OUT,
-    // and the producers are device control values, not a call form).
     if name == "Untrusted" {
         return Err(type_error(
             "`Untrusted[T]` is a sealed marked-value wrapper (03-hardware.md §8); it has no \
@@ -6081,12 +5016,6 @@ fn check_call_by_name(
     }
     if let Some(f) = mctx.fns.get(name) {
         if !f.decl.generics.is_empty() {
-            // `name(args)`, no explicit `[Args]` — item H/item 2's
-            // inference: a type parameter used directly as a parameter's
-            // own type is inferred from that argument's synthesized
-            // type; anything else (a const parameter, an uninferable or
-            // mismatched type parameter) reports `error[generic]` naming
-            // the parameter, per item 2.
             let type_args = generics::infer_fn_targs(f, args, fctx, mctx, call_span)?;
             let fi = generics::instantiate_fn(mctx, name, &type_args, call_span)?;
             let typed_args =
@@ -6117,9 +5046,6 @@ fn check_call_by_name(
     }
     if let Some(s) = mctx.structs.get(name) {
         if !s.decl.generics.is_empty() {
-            // Struct construction has no inference (only `fn` calls do,
-            // 02-language.md §6.3/§7.3) — explicit `Name[Args](...)` is
-            // always required.
             return Err(SemaError::at(
                 "generic",
                 format!("`{name}` requires explicit `[Args]`"),
@@ -6158,8 +5084,6 @@ fn check_call_by_name(
             }
             let (t_expected, e_ty) = match expected {
                 Some(Type::Result(t, e)) if types::is_inferred_error_set(e) => {
-                    // plans/M13.md item K: Ok does not contribute an error;
-                    // use `never` so return-gate recording skips it.
                     (Some((**t).clone()), Some(Type::Never))
                 }
                 Some(Type::Result(t, e)) => (Some((**t).clone()), Some((**e).clone())),
@@ -6192,7 +5116,6 @@ fn check_call_by_name(
             }
             let (t_ty_opt, e_expected) = match expected {
                 Some(Type::Result(t, e)) if types::is_inferred_error_set(e) => {
-                    // Open error side — any constructed error joins the set.
                     (Some((**t).clone()), None)
                 }
                 Some(Type::Result(t, e)) => (Some((**t).clone()), Some((**e).clone())),
@@ -6236,10 +5159,6 @@ fn check_call_by_name(
                 kind: TypedExprKind::Panic(Box::new(mt)),
             })
         }
-        // plans/M4.md item B, decision 5 (05-library.md §9): `Image`
-        // is the one builder intrinsic called by bare name (every other
-        // one is a method call on the value it returns, dispatched from
-        // `check_call_by_field`/`check_call_index` below).
         "Image" => {
             let iargs = check_intrinsic_args(args, fctx, mctx)?;
             Ok(TypedExpr {
@@ -6254,17 +5173,6 @@ fn check_call_by_name(
                 },
             })
         }
-        // plans/M9.md item E: `seconds` / `ms` deleted as intrinsic arms —
-        // ordinary wrela in `stdlib/core/time.wr`, prelude-visible via
-        // IMAGE_BUILDER / ACTOR_SURFACE. `now` stays sealed below.
-        // Plans/M6.md item A, decision 11 (02-language.md §9.5's own
-        // vocabulary): `now()` is runtime-only — the one new
-        // `eval::legal` illegal-reason arm decision 11 asks for (mirrors
-        // the intrinsic-outside-`@image` precedent: recognized by bare
-        // callee spelling, restricted by a dedicated `eval::legal` check
-        // rather than by failing here — `now`'s own *type* is legal
-        // everywhere the language type-checks; only *evaluating* it at
-        // build time is illegal).
         "now" => {
             if !args.is_empty() {
                 return Err(type_error(
@@ -6284,33 +5192,15 @@ fn check_call_by_name(
                 },
             })
         }
-        // plans/M7.md item G, decision 17: `InterruptCell(0)` — the one
-        // source-visible constructor 03 §6's worked example spells
-        // (`self.pending = InterruptCell(0)`). Not a capability: the
-        // forgery arm below must not catch it.
         "InterruptCell" => check_interrupt_cell_new(args, expected, call_span, fctx, mctx),
-        // plans/M7.md item G: `wake(Driver.method)` — 03 §6's statically
-        // bound bottom-half wake. Prelude-style bare name (no import).
         "wake" => check_wake_call(args, call_span, fctx, mctx),
         _ => {
-            // 03-hardware.md §1 (plans/M7.md item A): a bare
-            // `DeviceCap(...)` reaches here (the name resolves — it is a
-            // prelude name — but nothing declares it, so no fn/struct arm
-            // above matched). "`DeviceCap` is not callable" is true and
-            // says nothing; this names the rule instead.
             capability_forgery_check(name, "called", call_span)?;
             Err(type_error(format!("`{name}` is not callable"), call_span))
         }
     }
 }
 
-/// 03-hardware.md §1's unforgeability sentence, in one place (plans/M7.md
-/// item A): "Their constructors are not source-visible: no address,
-/// import, or cast creates one." `attempt` is the verb of whatever the
-/// source just tried — `constructed`, `called`, `cast to` — so each
-/// rejection names the construct the author actually wrote rather than
-/// the generic shape it happens to share with something else. A no-op for
-/// every non-capability name, so a call site can ask unconditionally.
 fn capability_forgery_check(name: &str, attempt: &str, span: Span) -> Result<(), SemaError> {
     if !crate::sema::classes::name_holds_authority(name) {
         return Ok(());
@@ -6330,11 +5220,6 @@ fn capability_forgery_check(name: &str, attempt: &str, span: Span) -> Result<(),
     ))
 }
 
-/// The capability name a *type-shaped* expression names at its head, if
-/// any: `Mmio` in both `Mmio` and `Mmio[VirtioIrqMmio]`. The grammar
-/// hands `.to[T]`'s own target back as an `Expr` (types and values share
-/// one production there), so this reads the same two shapes
-/// `scalar_type_by_name_expr` does, asking a different question.
 fn capability_name_in_type_expr(e: &Expr) -> Option<&str> {
     let name = match e {
         Expr::Name(_, n) => n.as_str(),
@@ -6347,12 +5232,6 @@ fn capability_name_in_type_expr(e: &Expr) -> Option<&str> {
     crate::sema::classes::name_holds_authority(name).then_some(name)
 }
 
-/// Call a method/associated fn that declares its own type parameters
-/// (plans/M13.md item Q): infer or resolve `[Args]`, substitute + enqueue,
-/// check args against the concrete signature. `receiver_ty` is the
-/// concrete `Type::Named` the call goes through; `call_receiver` is the
-/// typed receiver expression (`None` for an associated-fn call spelled
-/// `Type.method(...)`).
 fn check_method_generic_call(
     receiver_ty: &Type,
     method: &str,
@@ -6399,10 +5278,6 @@ fn check_call_by_field(
 ) -> Result<TypedExpr, SemaError> {
     if let Expr::Name(_, bname) = base {
         if fctx.lookup_local(bname).is_none() {
-            // plans/M7.md item E1: `VirtQueue.configure(...)` — the sealed
-            // queue constructor, spelled on the builtin type name. Checked
-            // *before* the struct/enum arms so a prelude name that is not
-            // a user declaration still reaches it.
             if bname == "VirtQueue" && name == "configure" {
                 return check_virtqueue_configure(args, fspan, call_span, fctx, mctx);
             }
@@ -6430,14 +5305,6 @@ fn check_call_by_field(
                         },
                     });
                 }
-                // plans/M7.md item H1, 03-hardware.md §9's bring-up chain:
-                // `VirtioBlock.claim(cap=take cap)` — the sealed
-                // transport's own entry point, spelled on the *device
-                // type* exactly as `docs/language/examples/virtio-storage.wr`
-                // spells it. Intercepted only when the struct declares no
-                // `claim` of its own, so an ordinary declaration under
-                // that name still wins and no existing program changes
-                // meaning.
                 if name == "claim" {
                     return check_device_claim(bname, args, fspan, call_span, fctx, mctx);
                 }
@@ -6447,11 +5314,7 @@ fn check_call_by_field(
                 ));
             }
             if let Some(e) = mctx.enums.get(bname.as_str()) {
-                // plans/M9.md item B2: associated fn before variant — a
-                // call `Color.from(...)` is a method, not "no variant".
                 if let Some((af, d)) = e.assoc_fn(name) {
-                    // Generic-enum assoc fns stay deferred; method-owned
-                    // type params on a non-generic enum instantiate (Q).
                     if !e.generics.is_empty() {
                         return Err(unimplemented_at("generic instantiation is", call_span));
                     }
@@ -6475,9 +5338,6 @@ fn check_call_by_field(
                     });
                 }
                 if e.variants.iter().any(|v| v.name == name) {
-                    // plans/M9.md item J2c: `Lookup.Found(x)` under expected
-                    // `Lookup[u32]` — instantiate, then check payload args
-                    // against the substituted variant.
                     let (targs, decl) =
                         resolve_enum_for_variant_construction(bname, e, expected, call_span, mctx)?;
                     let dv = decl
@@ -6488,8 +5348,6 @@ fn check_call_by_field(
                     let payload_types = decl_variant_payload_types(dv);
                     let typed_args =
                         check_variant_args(&payload_types, args, call_span, fctx, mctx)?;
-                    // plans/M9.md item DD / decision 9: local key, not
-                    // `e.name` — see the fieldless arm in `check_field_expr`.
                     return Ok(TypedExpr {
                         span: call_span,
                         ty: Type::Named(bname.clone(), targs),
@@ -6507,18 +5365,6 @@ fn check_call_by_field(
             }
         }
     }
-    // plans/M7.md item C (03-hardware.md §2): typed MMIO access. The whole
-    // legal shape is `<mmio>.<register>.read()` / `.write(v)`, which
-    // arrives here as a call whose *receiver* is a field expression over
-    // an `Mmio[L]` — 03 §2's own worked example
-    // (`self.irq_regs.interrupt_status.read()`), and the docs' own
-    // aspirational driver (`docs/language/examples/virtio-storage.wr`,
-    // lines 145/149) spelled identically. Intercepted before the receiver
-    // is typed as an ordinary value, because a register selection has no
-    // value form at all (`check_field_expr`'s own `Mmio` arm above says
-    // so). A base whose inner expression is not an `Mmio[L]` — or does not
-    // type at all — falls straight through to the ordinary path below,
-    // which re-checks it and reports whatever it would have reported.
     if let Expr::Field(inner, _, register) = base {
         if let Ok(mmio) = check_expr(inner, None, fctx, mctx) {
             if let Type::Named(cap, targs) = &unwrap_own(mmio.ty.clone()) {
@@ -6540,9 +5386,6 @@ fn check_call_by_field(
     }
     let base_t = check_expr(base, None, fctx, mctx)?;
     let base_ty = unwrap_own(base_t.ty.clone());
-    // plans/M7.md item H1: a bring-up state's own operations
-    // (03-hardware.md §9). `map_partition` is live; every other transition
-    // in the chain is a named rejection rather than a silent "no method".
     if let Type::Named(state, targs) = &base_ty {
         if crate::eval::image_checks::is_protocol_state_type_name(state) {
             return check_device_state_call(
@@ -6558,11 +5401,6 @@ fn check_call_by_field(
             );
         }
     }
-    // plans/M7.md item H2a, 03-hardware.md §8: `Untrusted[T]`'s only
-    // source-visible transition is a checked narrowing. Intercepted
-    // before the generic "no method" path so an unimplemented
-    // `checked_*` name fails closed by name rather than looking like a
-    // missing user method.
     if let Type::Named(marker, targs) = &base_ty {
         if marker == "Untrusted" {
             return check_untrusted_narrowing(
@@ -6570,9 +5408,6 @@ fn check_call_by_field(
             );
         }
     }
-    // plans/M7.md item E2, 03-hardware.md §4: queue operations on a
-    // `VirtQueue[..N]` value. Intercepted before the generic "no method"
-    // path (VirtQueue is a sealed builtin, never a DeclStruct).
     if let Type::Named(q, _) = &base_ty {
         if q == "VirtQueue" {
             return check_virtqueue_method(
@@ -6580,12 +5415,6 @@ fn check_call_by_field(
             );
         }
     }
-    // plans/M7.md item C: an `Mmio[L]` itself has no methods — the only
-    // operations 03 §2 gives it go through a *declared register*, which
-    // the arm above already took. Named here rather than falling into the
-    // generic "type `Mmio` has no method" (which would then try to
-    // instantiate `Mmio` as a generic struct and report something else
-    // entirely).
     if let Type::Named(cap, targs) = &base_ty {
         if cap == "Mmio" {
             return Err(type_error(
@@ -6600,31 +5429,16 @@ fn check_call_by_field(
             ));
         }
     }
-    // plans/M7.md item G (03-hardware.md §6): `IrqCap[V]`'s two
-    // operations — `bind(handler)` and `unmask()`. Binding (not a keyword)
-    // is what makes the handler an ISR; the sealed graph pass
-    // (`eval::image_checks::check_vector_bindings`) is what enforces
-    // "exactly one handler per vector" and "source cannot bind an unowned
-    // vector".
     if let Type::Named(cap, _) = &base_ty {
         if cap == "IrqCap" {
             return check_irq_cap_call(base_t, name, args, fspan, call_span, fctx, mctx);
         }
     }
-    // plans/M7.md item G, decision 17: `InterruptCell[T]`'s acquire/release
-    // ops (03-hardware.md §6).
     if let Type::Named(cell, _) = &base_ty {
         if cell == "InterruptCell" {
             return check_interrupt_cell_call(base_t, name, args, fspan, call_span, fctx, mctx);
         }
     }
-    // Plans/M6.md item A (02-language.md §9.4/§9.5): a bare (non-`await`/
-    // `send`) call through an `Actor[T]` handle names a message method —
-    // the language gives that no synchronous meaning, so it is rejected
-    // here, named, rather than falling through to "no method" below.
-    // `g.start(...)` is the one `Group` method callable bare (it does not
-    // suspend — it only registers a child); `g.join_all()` bare falls to
-    // the same "must be awaited" rejection as an actor call.
     if let Type::Named(outer, _) = &base_ty {
         if outer == "Actor" {
             return Err(type_error(
@@ -6655,8 +5469,6 @@ fn check_call_by_field(
     if base_ty == image_decl_type() {
         return check_image_decl_method_intrinsic(base_t, name, args, fspan, call_span, fctx, mctx);
     }
-    // plans/M9.md item F3 decision 347: sealed `[T; N].map_take` /
-    // `try_map_take` (05-library.md §7).
     if let Type::Array(elem, len) = &base_ty {
         if name == "map_take" || name == "try_map_take" {
             return check_array_map_take(
@@ -6676,9 +5488,6 @@ fn check_call_by_field(
     }
     match &base_ty {
         Type::Named(sname, targs) => {
-            // A method call through a generic instantiation (item H):
-            // substitute + enqueue it, then check the call against the
-            // substituted method's (now concrete) signature.
             if let Some(s) = if targs.is_empty() {
                 mctx.structs
                     .get(sname.as_str())
@@ -6732,8 +5541,6 @@ fn check_call_by_field(
                     },
                 });
             }
-            // plans/M9.md item B2: the same `Type::Named` method path for
-            // enums — static name-keyed lookup, no dispatch.
             if targs.is_empty() {
                 if let Some(e) = mctx.enums.get(sname.as_str()) {
                     let Some((mf, d)) = e.method(name) else {
@@ -6781,8 +5588,6 @@ fn check_call_by_field(
             ))
         }
         other => {
-            // plans/M9.md item C2: core scalars have standard Format
-            // (archive §10) — `.format() -> String[..K]` with fixed K.
             if name == "format" {
                 if !args.is_empty() {
                     return Err(type_error(
@@ -6816,77 +5621,6 @@ fn check_call_by_field(
     }
 }
 
-// --- plans/M7.md item C: typed MMIO access (03-hardware.md §2) ------------
-//
-// "Raw integer-address MMIO does not exist in the safe language." The only
-// two operations that exist are a *declared* register's read and write:
-//
-//     status = self.irq_regs.interrupt_status.read()
-//     self.irq_regs.interrupt_ack.write(handled)
-//
-// Everything about the access comes from the declaration and nothing from
-// the call site:
-//
-// - **Direction** is the register's own `ReadOnly[T]`/`WriteOnly[T]`
-//   wrapper. Reading a `WriteOnly` and writing a `ReadOnly` are two
-//   distinct named rejections; a register declared with no wrapper at all
-//   has no direction and neither operation exists on it (a third named
-//   rejection, not a permissive default).
-// - **Width** is `T` — `read()`'s result type and `write(v)`'s argument
-//   type *are* the declared register type, so a `u32` register cannot be
-//   read into a `u64` or written from a `u16` without the ordinary
-//   `.to[T]()` conversion the language already requires. The compiler
-//   never widens or truncates a register access silently.
-// - **Offset/alignment/bounds** are `check_layouts`' already-checked table
-//   (`hardware.layout.exact-bytes`): a register access can only ever name
-//   an entry of that table, so there is no second bounds rule here.
-// - **Endianness** is the layout's declared `endian=`, checked against the
-//   target ABI (03 §2: "The compiler and target ABI check ... and
-//   endianness"). This machine is little-endian A76 (06-machine.md §2), so
-//   a `@layout(mmio, endian=big)` access needs a byte swap this compiler
-//   does not emit, and fails closed rather than reading the wrong bytes.
-//
-// ## The node, and why it is an `Intrinsic`
-//
-// `TypedExprKind::Intrinsic { key: "Mmio.read" | "Mmio.write" }`, the same
-// vehicle `now`/`ms`/`Group.start`/the whole `@image` builder surface
-// already use for an operation with no declared parameter list to align
-// against. `receiver` is the `Mmio[L]` expression, `type_arg` is the
-// register's declared scalar `T`, and `args` carries the register's own
-// name (a `Str` leaf — it names a declared entry, not a value) plus, for a
-// write, the value. `eval::legal` gains an arm for both keys in *both* of
-// its scans: a hardware touch for provenance (03 §1) and a comptime-
-// illegal operation for legality (02-language.md §12: "free of I/O ... and
-// hardware effects").
-//
-// ## What does not exist yet, and exactly why
-//
-// **Nothing lowers.** `lower.rs` fails closed on both keys, by name, and
-// that is the honest state rather than a shortcut: **no `Mmio[L]` value
-// can exist at runtime today**, so any code emitted for one of these would
-// read or write a fixed offset from whatever a zero-initialized field
-// happens to hold. Two independent blockers, both outside this item's
-// files, both verified by running the compiler rather than by reading it:
-//
-//   1. `eval::image_checks::check_capability_substitution` rejects an
-//      `Mmio[L]` `init` parameter outright ("nothing mints a `Mmio` yet").
-//      That is the mint, and it is the one arm that has to change.
-//   2. Even with it changed, `layout::build_boot_init_calls` walks
-//      `graph.actors` only — a `@driver`'s `init` is never called at boot
-//      at all — and it fails closed on *every* capability parameter
-//      besides. So no capability of any kind has bytes at boot today,
-//      `DeviceCap[D]` included.
-//
-// Emitting a load/store against a provably-zero base is the exact shape of
-// wrong answer plans/M7.md item W was written to close (an image that
-// booted, asserted, and reported success against a field that was never
-// materialized). So the access type-checks in full and the backend says
-// so; when the mint lands, the fail-closed arm is what has to be replaced.
-
-/// The register-name hint appended to an `Mmio[L]` diagnostic: what this
-/// layout actually declares. Empty when the layout cannot be found at all
-/// (which `validate_capability_args` has already made impossible for a
-/// type that reached body checking — belt and braces, never a panic).
 fn mmio_register_hint(targs: &[types::TypeArg], mctx: &ModuleCtx) -> String {
     let Some(layout) = mmio_layout_of(targs, mctx) else {
         return String::new();
@@ -6906,7 +5640,6 @@ fn mmio_register_hint(targs: &[types::TypeArg], mctx: &ModuleCtx) -> String {
     )
 }
 
-/// The `@layout(mmio)` table entry an `Mmio[L]`'s own type arguments name.
 fn mmio_layout_of<'a>(
     targs: &[types::TypeArg],
     mctx: &'a ModuleCtx,
@@ -6917,11 +5650,6 @@ fn mmio_layout_of<'a>(
     }
 }
 
-/// `check_field_expr`'s own `Mmio[L]` rejection: a bare register selection
-/// (`m.status` with no `.read()`/`.write(v)` after it), or a name that is
-/// not a declared register at all. Two different mistakes, two different
-/// messages — a reader who mistyped a register name should not be told
-/// their register is not a value.
 fn mmio_bare_selection_error(
     targs: &[types::TypeArg],
     name: &str,
@@ -6952,7 +5680,6 @@ fn mmio_bare_selection_error(
     )
 }
 
-/// One `<mmio>.<register>.read()` / `.write(v)` (03-hardware.md §2).
 #[allow(clippy::too_many_arguments)]
 fn check_mmio_access(
     mmio: TypedExpr,
@@ -6966,9 +5693,6 @@ fn check_mmio_access(
     mctx: &ModuleCtx,
 ) -> Result<TypedExpr, SemaError> {
     let Some(layout) = mmio_layout_of(targs, mctx) else {
-        // Unreachable through a checked program: `Mmio[L]` does not
-        // resolve at all unless `L` is an `@layout(mmio)` struct of this
-        // module (`types::validate_capability_args`). Named, not panicked.
         return Err(type_error(
             format!(
                 "`{}`'s layout is not a declared `@layout(mmio)` type (03-hardware.md §2)",
@@ -6998,7 +5722,6 @@ fn check_mmio_access(
         ));
     }
 
-    // Direction, from the declaration alone.
     let declared = format!("{}.{register}: {}", layout.name, register_type_text(&reg));
     match (reg.direction, op) {
         (Some(types::MmioDirection::ReadOnly), "read")
@@ -7033,8 +5756,6 @@ fn check_mmio_access(
         }
     }
 
-    // Endianness, against the target ABI (03 §2: "The compiler and target
-    // ABI check width, alignment, non-overlap, bounds, and endianness").
     if layout.endian != types::LayoutEndian::Little {
         return Err(unimplemented_at(
             &format!(
@@ -7047,7 +5768,6 @@ fn check_mmio_access(
         ));
     }
 
-    // Width: the register's declared scalar *is* the operation's type.
     let Some(scalar) = scalar_type_by_name(&reg.scalar) else {
         return Err(type_error(
             format!("register `{declared}` has no scalar register type (03-hardware.md §2)"),
@@ -7096,17 +5816,6 @@ fn check_mmio_access(
                     arg.span,
                 ));
             }
-            // The register's declared width governs the write, by the one
-            // mechanism every declared parameter position in this compiler
-            // already uses: the scalar is handed to `check_expr` as the
-            // *expected* type. An integer literal therefore takes the
-            // register's own width (`ack: WriteOnly[u16]` accepts
-            // `.write(7)` as a `u16`), and anything else gets the ordinary
-            // `expected `u32`, found `u64`` rejection from inside
-            // `check_expr` — including a `never` (`panic(...)`). A second,
-            // post-hoc `types_eq` guard was written here first and then
-            // deleted: no expression reaches it, because `check_expr` with
-            // an expected type has already rejected every mismatch.
             let value = check_expr(&arg.value, Some(&scalar), fctx, mctx)?;
             intrinsic_args.push(("value".to_string(), value));
             Type::Unit
@@ -7126,9 +5835,6 @@ fn check_mmio_access(
     })
 }
 
-/// A register's declared type as source wrote it (`ReadOnly[u32]`, or a
-/// bare `u32` for a field with no direction) — the diagnostics quote the
-/// declaration, never a reconstruction of it.
 fn register_type_text(reg: &types::MmioRegister) -> String {
     match reg.direction {
         Some(d) => format!("{}[{}]", d.wrapper(), reg.scalar),
@@ -7136,41 +5842,14 @@ fn register_type_text(reg: &types::MmioRegister) -> String {
     }
 }
 
-/// Is `key` one of plans/M7.md item C's two MMIO access intrinsics? One
-/// list, read by `eval::legal` (twice: provenance and comptime legality)
-/// and by `lower.rs`'s own fail-closed arm — three consumers that must
-/// agree on exactly which keys are a hardware effect.
 pub fn is_mmio_access_intrinsic(key: &str) -> bool {
     matches!(key, "Mmio.read" | "Mmio.write")
 }
 
-// --- plans/M7.md item H2a / plans/M9.md item G1: `Untrusted[T]` --------
-//
-// One marked-value mechanism, three policies (03-hardware.md §8 /
-// 05-library.md §6). `Untrusted[T]` is live; `Secret` is refuse-by-name;
-// `Validated` is demoted to the `resource(manual)` idiom (plans/M13.md item P). Legacy note: `Validated` / `Secret` are
-// refused by name at resolve time (`types::resolve_named`) — M9 G2/G3
-// deferrals (decisions 353–355), not unknown-type misses. The wrapper is
-// sealed: no source-visible constructor, no ordinary use as an index /
-// length / allocation size / bound / arithmetic operand / comparison,
-// and exactly one implemented narrowing — `checked_le(bound)` — which
-// yields `Result[T, unit]`, lowers to a real compare + branch, and
-// evaluates as a pure compare at comptime (decision 352).
-//
-// ## Where a marked value comes from
-//
-// `IoCompletion[P].written_len` is the live producer (plans/M7.md item E4 /
-// decision 22) — `golden/boot-blk-roundtrip` exercises both `checked_le`
-// outcomes on a real used-ring length. A source-visible `Untrusted.mark`
-// constructor stays rejected.
-
-/// Is `ty` the marked wrapper `Untrusted[_]`?
 pub(crate) fn is_untrusted_type(ty: &Type) -> bool {
     matches!(ty, Type::Named(name, _) if name == "Untrusted")
 }
 
-/// 03-hardware.md §8's rejection for an ordinary use of a marked value:
-/// names the use and the one transition that would clear it.
 pub(crate) fn untrusted_use_error(use_kind: &str, span: Span) -> SemaError {
     type_error(
         format!(
@@ -7181,15 +5860,10 @@ pub(crate) fn untrusted_use_error(use_kind: &str, span: Span) -> SemaError {
     )
 }
 
-/// When an expected type is unmarked and the found type is `Untrusted[_]`,
-/// prefer the mechanism's wording over a bare expected/found mismatch.
 fn untrusted_coercion_message(expected: &Type, found: &Type) -> Option<String> {
     if !is_untrusted_type(found) {
         return None;
     }
-    // Coercing *into* Untrusted from a plain value is also refused — the
-    // wrapper is sealed — but that case is `expected` being Untrusted,
-    // handled by the ordinary mismatch (or by the constructor arm).
     if is_untrusted_type(expected) {
         return None;
     }
@@ -7202,12 +5876,10 @@ fn untrusted_coercion_message(expected: &Type, found: &Type) -> Option<String> {
     ))
 }
 
-/// Is `key` the one checked-narrowing intrinsic H2a emits?
 pub fn is_untrusted_narrowing_intrinsic(key: &str) -> bool {
     key == "Untrusted.checked_le"
 }
 
-/// One `reported.checked_le(bound)` (03-hardware.md §8's own spelling).
 #[allow(clippy::too_many_arguments)]
 fn check_untrusted_narrowing(
     receiver: TypedExpr,
@@ -7235,8 +5907,6 @@ fn check_untrusted_narrowing(
             fspan,
         ));
     }
-    // Only `checked_le` is implemented. Every other `checked_*` the docs
-    // could be read to imply fails closed by name rather than half-built.
     if name != "checked_le" {
         if name.starts_with("checked_") {
             return Err(unimplemented_at(
@@ -7292,29 +5962,12 @@ fn check_untrusted_narrowing(
     })
 }
 
-// --- sealed transport: see `sema::transport` ----------------------------
 use super::transport::*;
 pub use super::transport::{
     is_device_transport_intrinsic, is_interrupt_cell_intrinsic, is_interrupt_cell_type,
     is_irq_cap_intrinsic, is_queue_op_deferred, is_queue_op_intrinsic, is_wake_intrinsic,
 };
 
-// --- plans/M7.md item G: IrqCap.bind / IrqCap.unmask (03-hardware.md §6) ---
-//
-// "An interrupt handler is a plain `fn` bound to a vector at image/driver
-// wiring (`irq.bind(self.on_queue_irq)`). The binding — not a keyword —
-// makes the compiler restrict the function's transitive effects to the
-// ISR set". The *effect* half is a later commit of this item; this is
-// the binding surface itself.
-//
-// `self.on_queue_irq` is deliberately *not* an ordinary method value —
-// `check_field_expr` rejects "cannot reference method without calling
-// it" — so `bind`'s argument is intercepted as a Field of `self` (or a
-// bare `Type.method` assoc spelling) and recorded as a `FnRef`. The
-// sealed-graph pass then sees every bind site as an `IrqCap.bind`
-// intrinsic whose handler arg is that `FnRef`.
-
-/// One `irq.bind(handler)` / `irq.unmask()` (03-hardware.md §6).
 fn check_irq_cap_call(
     irq: TypedExpr,
     method: &str,
@@ -7409,10 +6062,6 @@ fn check_irq_bind(
     })
 }
 
-/// 03 §6's `self.on_queue_irq` / `BlkDriver.on_queue_irq` spelling: a
-/// Field naming a method of the enclosing `@driver` (or of the named
-/// type), recorded as a `FnRef` so the sealed-graph pass can see the
-/// handler key without ever making method references values in general.
 fn resolve_irq_bind_handler(
     expr: &Expr,
     span: Span,
@@ -7427,7 +6076,6 @@ fn resolve_irq_bind_handler(
             span,
         ));
     };
-    // `self.on_queue_irq`
     if let Expr::Name(_, name) = base.as_ref() {
         if name == "self" {
             let Some(self_ty) = fctx.lookup_local("self") else {
@@ -7449,9 +6097,6 @@ fn resolve_irq_bind_handler(
             };
             return irq_handler_fnref(&sname, &targs, method, span, mctx);
         }
-        // `BlkDriver.on_queue_irq` — only works for associated fns today;
-        // an instance method under a type name is the same rejection
-        // `check_field_expr` already gives, restated for this site.
         if let Some(s) = mctx.structs.get(name.as_str()) {
             if s.method(method).is_some() {
                 return irq_handler_fnref(name, &[], method, span, mctx);
@@ -7480,9 +6125,6 @@ fn irq_handler_fnref(
     span: Span,
     mctx: &ModuleCtx,
 ) -> Result<TypedExpr, SemaError> {
-    // plans/M7.md item G, decision 18: a mode-generic `@driver`'s ISR
-    // lives only on the expanded instantiation (`BlkDriver[DriverMode.Irq]`),
-    // never on the unsubstituted template in `mctx.structs`.
     let owned;
     let s: &StructInfo = if targs.is_empty() {
         let Some(s) = mctx.structs.get(struct_name) else {
@@ -7511,9 +6153,6 @@ fn irq_handler_fnref(
             span,
         ));
     };
-    // An ISR is a plain `fn` returning unit with only `self` (03 §6's
-    // worked example). Anything else would need a calling convention the
-    // checkpoint dispatch does not have.
     if !d.params.is_empty() {
         return Err(type_error(
             format!(
@@ -7556,13 +6195,6 @@ fn irq_handler_fnref(
         kind: TypedExprKind::FnRef(key),
     })
 }
-
-// --- plans/M7.md item G, decision 17: InterruptCell[T] (03-hardware.md §6) ---
-//
-// Sole ISR/ordinary-code channel. Constructor `InterruptCell(v)`; methods
-// `load_acquire` / `store_release` / `swap_acquire` / `fetch_or_release`.
-// Revision 0.1 admits only `T = u32` (the worked example's cell); every
-// other `T` fails closed by name rather than inventing a width.
 
 fn interrupt_cell_elem_ty(cell_ty: &Type, span: Span) -> Result<&Type, SemaError> {
     match cell_ty {
@@ -7747,8 +6379,6 @@ fn check_interrupt_cell_call(
     }
 }
 
-// --- plans/M9.md item F3: `[T; N].map_take` / `try_map_take` (05 §7) --------
-
 fn check_array_map_take(
     base_t: TypedExpr,
     name: &str,
@@ -7776,9 +6406,6 @@ fn check_array_map_take(
             a.span,
         ));
     }
-    // Closures need a full expected `fn(...) -> R`; return inference for
-    // a mapper is out of this item — named functions match the virtio
-    // example (`blocks.map_take(CacheLine.invalid)`).
     if matches!(a.value, Expr::Closure(_)) {
         return Err(type_error(
             format!(
@@ -7831,8 +6458,6 @@ fn check_array_map_take(
                     a.span,
                 ));
             };
-            // Both element classes must be auto-reclaimable (data); a
-            // resource T or U refuses by name (05 §7).
             if is_resource_type(elem, mctx) || is_resource_type(ok, mctx) {
                 return Err(type_error(
                     "`try_map_take` requires auto-reclaimable (data) element types; \
@@ -7859,13 +6484,6 @@ fn check_array_map_take(
         _ => unreachable!(),
     }
 }
-
-// --- plans/M7.md item G: wake(Driver.method) (03-hardware.md §6) ------------
-//
-// "wake(...) a statically bound task." The argument is the same method-
-// reference shape `IrqCap.bind` already accepts; the target must carry
-// `@task`. Site legality (ISR or bottom half only) is
-// `eval::legal::check_wake_sites`.
 
 fn check_wake_call(
     args: &[Arg],
@@ -7918,9 +6536,7 @@ fn resolve_wake_target(
     fctx: &FnCtx,
     mctx: &ModuleCtx,
 ) -> Result<TypedExpr, SemaError> {
-    // Reuse bind's method-reference resolution, then require `@task`.
     let handler = resolve_irq_bind_handler(expr, span, fctx, mctx).map_err(|e| {
-        // Retarget the diagnostic wording from bind to wake.
         if e.message.contains("IrqCap.bind") {
             SemaError {
                 message: e
@@ -7942,9 +6558,6 @@ fn resolve_wake_target(
     let (sname, method): (String, String) = match key {
         CalleeKey::Method(s, m) => (s.clone(), m.clone()),
         CalleeKey::MethodInstance(ikey, m) => {
-            // `struct:Name[Args]` — wake needs the bare struct name for
-            // the `@task` lookup on the unspecialized DeclFn (attrs live
-            // on the declaration, not the instantiation).
             let bare = ikey
                 .strip_prefix("struct:")
                 .unwrap_or(ikey.as_str())
@@ -7984,22 +6597,8 @@ fn resolve_wake_target(
     Ok(handler)
 }
 
-// --- actor/async surface: see `sema::actor` ----------------------------
-// Nothing in `actor` is more public than `pub(crate)`, so this is a
-// crate-internal re-export, not a `pub` one.
 pub(crate) use super::actor::*;
 
-/// `img.driver(A, ...)` / `img.actor(A, ...)` / `img.on_failure(...)` /
-/// `img.check_layout(f)` / `img.seal()` — every builder method called
-/// directly on the `Image` builder value itself (05-library.md §9);
-/// `check_call_by_field`'s own new dispatch reaches here once the
-/// receiver's type is confirmed to be `Image`. `img.device`/`img.pool`/
-/// `img.dma_pool` are *not* handled here — 05 §9 spells all three with a
-/// bracketed type argument (`check_image_bracket_intrinsic`, above), so
-/// calling one of them without brackets falls through to the ordinary
-/// "no method" diagnostic below, which is exactly right (the shape 05
-/// §9 gives is the only one item B accepts, decision 5's "accept the
-/// shape the worked examples use and fail closed on anything else").
 pub(crate) fn check_image_method_intrinsic(
     name: &str,
     args: &[Arg],
@@ -8063,10 +6662,6 @@ pub(crate) fn check_image_method_intrinsic(
                 ));
             }
             let f = check_expr(&args[0].value, None, fctx, mctx)?;
-            // plans/M9.md item H: the argument must be a `@layout_assert`
-            // fn reference — validated against the resolved declaration
-            // so a plain `fn` cannot be registered and then fail only at
-            // report time.
             match &f.kind {
                 TypedExprKind::FnRef(key) => {
                     let name = key.spelling();
@@ -8084,10 +6679,6 @@ pub(crate) fn check_image_method_intrinsic(
                             call_span,
                         ));
                     }
-                    // Signature already checked at the fn's own declaration
-                    // (`check_layout_assert_fn`); re-check here so an
-                    // imported assert whose shape was somehow skipped still
-                    // fails closed at the registration site.
                     check_layout_assert_fn(&info.ast, &info.decl, mctx)?;
                 }
                 _ => {
@@ -8135,14 +6726,6 @@ pub(crate) fn check_image_method_intrinsic(
     }
 }
 
-/// `decl.handle()` — the one method on a builder declaration handle
-/// (05-library.md §9); `check_call_by_field`'s own new dispatch reaches
-/// here once the receiver's type is confirmed to be `ImageDecl`. Unlike
-/// every `Image`-rooted intrinsic above (which mutate the evaluator's
-/// one active builder instead of reading a runtime value, decision 6),
-/// `handle()` genuinely needs its own receiver's *value* — which
-/// declaration it names — so it is the one case `receiver` on
-/// `TypedExprKind::Intrinsic` is ever actually read.
 pub(crate) fn check_image_decl_method_intrinsic(
     receiver: TypedExpr,
     name: &str,
@@ -8164,7 +6747,7 @@ pub(crate) fn check_image_decl_method_intrinsic(
             call_span,
         ));
     }
-    let _ = (fctx, mctx); // no further checking needed: the receiver is already typed.
+    let _ = (fctx, mctx);
     Ok(TypedExpr {
         span: call_span,
         ty: image_decl_type(),
@@ -8187,23 +6770,6 @@ pub(crate) fn check_struct_construction(
     fctx: &mut FnCtx,
     mctx: &ModuleCtx,
 ) -> Result<TypedExpr, SemaError> {
-    // Bug 1(b) fix: a construction's synthesized type must carry the
-    // instantiation's own args (`Slot[u64, 2](...)` synthesizes
-    // `Type::Named("Slot", [u64, 2])`, not a bare `Type::Named("Slot",
-    // [])`) — `s`'s own members are already substituted (`s.decl` here is
-    // always the already-instantiated `StructInfo` when `targs` is
-    // non-empty, per every caller below), so construction-argument
-    // checking below (`s.init()`/`check_struct_literal`, which read field/
-    // init-param types straight off `s.decl`) was already correct; only
-    // the *result* type dropped the args.
-    //
-    // plans/M9.md item DD / decision 9: the name on `Type::Named` (and on
-    // the `StructLiteral` / `init` callee key) is the *local* spelling the
-    // author wrote — the key `mctx.structs` was looked up under — not
-    // `s.decl.name`, which is the exporter's spelling and stays that way
-    // across an `import ... as` alias. Method lookup keys on
-    // `Type::Named`; using `decl.name` made `Duo(...).sum()` look for
-    // `Pair` in a table that only held `Duo`.
     let self_ty = Type::Named(local_name.to_string(), targs.to_vec());
     if let Some((ia, id)) = s.init() {
         let typed_args = check_call_args(&ia.params, &id.params, args, call_span, fctx, mctx)?;
@@ -8227,12 +6793,6 @@ pub(crate) fn check_struct_construction(
                 ));
             }
         };
-        // `init` has no receiver expression at the *call* site (there is
-        // no existing value to read `self` from yet — construction is
-        // what produces it), so the receiver slot stays empty; the
-        // callee key alone (`...".init"`) is what the evaluator (item B)
-        // will recognize as "allocate `Self`, then run this with the
-        // fresh value as `self`".
         return Ok(TypedExpr {
             span: call_span,
             ty: ret_ty,
@@ -8254,10 +6814,6 @@ pub(crate) fn check_struct_construction(
     })
 }
 
-/// Re-attach an AST arg access mode onto a struct-literal field value.
-/// `TypedExprKind::StructLiteral` has no mode slot (unlike `TypedCallArg`),
-/// so `take` must become `TypedExprKind::Take` here or flow treats the
-/// place as an implicit copy.
 fn wrap_struct_field_mode(mode: AccessMode, value: TypedExpr, span: Span) -> TypedExpr {
     match mode {
         AccessMode::Take => TypedExpr {
@@ -8269,12 +6825,6 @@ fn wrap_struct_field_mode(mode: AccessMode, value: TypedExpr, span: Span) -> Typ
     }
 }
 
-/// A struct without `init` builds from its named-field literal
-/// (02-language.md §7.1): every field exactly once unless defaulted,
-/// positional only for a one-field struct. Returns only the explicitly
-/// supplied fields, declaration order (plans/M3.md item A) — an omitted,
-/// defaulted field is elided; its default lives once on
-/// `typed::TypedStruct::field_defaults`.
 pub(crate) fn check_struct_literal(
     local_name: &str,
     s: &StructInfo,
@@ -8295,9 +6845,6 @@ pub(crate) fn check_struct_literal(
     if fields.len() == 1 && args.len() == 1 && args[0].label.is_none() {
         check_field_privacy(local_name, &fields[0].0, s, args[0].span, mctx)?;
         let vt = check_expr(&args[0].value, Some(&fields[0].1), fctx, mctx)?;
-        // Arg.mode carries `take` (AST marker); StructLiteral has no
-        // per-field mode slot, so re-wrap for flow/access (same as
-        // transport::with_arg_mode / TypedCallArg.mode on Call).
         let vt = wrap_struct_field_mode(args[0].mode, vt, args[0].span);
         return Ok(vec![(fields[0].0.clone(), vt)]);
     }
@@ -8339,17 +6886,6 @@ pub(crate) fn check_struct_literal(
     Ok(out)
 }
 
-/// Arity + label checking shared by fn/method/init calls
-/// (02-language.md §5.1): each argument binds to a parameter either by
-/// label (looked up by name) or positionally (the next not-yet-bound
-/// parameter, left to right); every parameter must end up bound exactly
-/// once, unless it has a default. Access-mode markers on `args` are
-/// parsed but not validated here (item D's job). Returns one slot per
-/// declared parameter, in declaration order (plans/M3.md item A): `None`
-/// for a parameter this call left to its own stored default
-/// (`typed::TypedParam::default`, typed once on the callee's own
-/// declaration — never re-typed per call site, since a default may
-/// reference the callee's own `self`).
 pub(crate) fn check_call_args(
     ast_params: &[ast::Param],
     decl_params: &[DeclParam],
@@ -8398,11 +6934,6 @@ pub(crate) fn check_call_args(
         bound[idx] = true;
         let pty = decl_params[idx].ty.clone();
         let pname = decl_params[idx].name.as_str();
-        // plans/M7.md item H2a: a length / allocation-size parameter is
-        // exactly the kind of use 03-hardware.md §8 forbids of an
-        // unmarked-yet `Untrusted[T]`. Named by the parameter's own
-        // spelling so the diagnostic can say which use it was, rather
-        // than a generic expected/found mismatch.
         let use_kind = match pname {
             "length" | "len" => Some("a length"),
             "capacity" | "size" => Some("an allocation size"),
@@ -8431,10 +6962,6 @@ pub(crate) fn check_call_args(
     Ok(slots)
 }
 
-/// Positional-only arg checking against a raw `fn(...)`-typed value
-/// (a closure/named-function reference): unlike a real call, there are
-/// no parameter names to label against, and a raw `fn` type carries no
-/// defaults — every slot is always explicit.
 pub(crate) fn check_positional_args(
     params: &[(AccessMode, Type)],
     args: &[Arg],
@@ -8461,16 +6988,6 @@ pub(crate) fn check_positional_args(
     Ok(out)
 }
 
-/// Resolves the concrete declaration used when constructing
-/// `Enum.Variant` / `Enum.Variant(...)` (plans/M9.md item J2c).
-///
-/// Non-generic enums keep their declared shape (`targs` empty). Generic
-/// enums take type arguments from `expected` (`return Lookup.Absent`
-/// under `Lookup[u32]`) and run them through `generics::instantiate_enum`
-/// — the same mechanism pattern typing already used. Missing or
-/// mismatched expected type is a precise `error[type]`; associated
-/// functions / method-owned type params on a generic enum still refuse
-/// elsewhere with the existing `unimplemented` boundary.
 pub(crate) fn resolve_enum_for_variant_construction<'a>(
     enum_name: &str,
     info: &'a EnumInfo,
@@ -8500,11 +7017,6 @@ pub(crate) fn resolve_enum_for_variant_construction<'a>(
     }
 }
 
-/// Enum variant construction (`Enum.Variant(...)`, leading-dot
-/// `.Variant(...)`): positional only, mirroring the ast's own note that
-/// pattern payloads "bind positionally regardless of whether the variant
-/// was declared with named fields" (02-language.md §7.2). A variant's
-/// payload never has defaults, so every slot is always explicit.
 pub(crate) fn check_variant_args(
     payload: &[Type],
     args: &[Arg],
@@ -8525,14 +7037,6 @@ pub(crate) fn check_variant_args(
     Ok(out)
 }
 
-// --- the fail-closed set: defer's own `await`/`?` scan --------------------
-
-/// `defer`'s body cannot `await` and cannot use `?` (02-language.md §10:
-/// "a deferred action cannot await and cannot fail recoverably") — a
-/// structural pre-scan over the raw ast, so this rejects with
-/// `error[type]` before generic statement-checking ever reaches either
-/// construct in the defer body (where `await` would otherwise be
-/// `error[unimplemented]` and `?` would be checked normally).
 fn scan_defer_forbidden(body: &DeferBody) -> Option<(&'static str, Span)> {
     match body {
         DeferBody::Expr(e) => scan_expr_forbidden(e),
@@ -8614,7 +7118,6 @@ fn scan_expr_forbidden(e: &Expr) -> Option<(&'static str, Span)> {
     }
 }
 
-/// plans/M9.md item F1 decision 344: scan a closure body for `await`.
 fn scan_closure_await(body: &ClosureBody) -> Option<Span> {
     match body {
         ClosureBody::Expr(e) => scan_expr_await(e),
@@ -8706,18 +7209,10 @@ fn scan_expr_await(e: &Expr) -> Option<Span> {
     }
 }
 
-// --- shared error helpers --------------------------------------------------
-
 pub(crate) fn type_error(message: String, span: Span) -> SemaError {
     SemaError::at("type", message, span)
 }
 
-/// The `type` diagnostic for a missing method/operator method, tagged with
-/// structured `(type_name, method_name)` metadata (`SemaError::missing_method`)
-/// so `generics.rs`'s requirement-chain diagnostic (item H, decision 2) can
-/// recognize this exact shape without parsing `message` back apart. The
-/// rendered `message`/category/span are unaffected — the field is metadata
-/// only, never printed.
 pub(crate) fn missing_method_error(
     message: String,
     type_name: &str,
@@ -8736,18 +7231,6 @@ pub(crate) fn arity_error(expected: usize, found: usize, span: Span) -> SemaErro
     )
 }
 
-// --- tests --------------------------------------------------------------
-//
-// 02-language.md §1.1: "Type comes from context; an unconstrained literal
-// defaults to `i64` (or `u64` when only that fits). Float literals
-// require a fractional part or exponent and default to `f64`." These
-// pin `check_int_range`'s per-scalar boundaries and `synth_int_literal`'s
-// defaulting directly (the narrowest callable units), rather than via a
-// full `check()` run. `types_eq`'s span-insensitivity is pinned
-// separately: a real M2 bug was two structurally identical types (same
-// array length, different source spans) comparing unequal under derived
-// `PartialEq`, which is exactly why this pass carries its own `types_eq`
-// instead (see the doc comment above it).
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -8755,7 +7238,6 @@ mod tests {
     #[test]
     fn check_int_range_boundaries() {
         let span = Span::default();
-        // (type, value, expect_ok)
         let cases: Vec<(&str, Type, i128, bool)> = vec![
             ("u8 min", Type::U8, 0, true),
             ("u8 max", Type::U8, 255, true),
@@ -8792,10 +7274,6 @@ mod tests {
         }
     }
 
-    /// An unconstrained integer literal (02-language.md §1.1: "an
-    /// unconstrained literal defaults to `i64` (or `u64` when only that
-    /// fits)"), exercised through `synth_int_literal` (the function that
-    /// actually implements the defaulting) with `expected: None`.
     #[test]
     fn synth_int_literal_unconstrained_defaulting() {
         let span = Span::default();
@@ -8821,9 +7299,6 @@ mod tests {
         );
     }
 
-    /// `synth_int_literal` against an explicit expected integer type
-    /// round-trips `check_int_range`'s verdict; against a non-integer
-    /// expected type it is always rejected regardless of value.
     #[test]
     fn synth_int_literal_expected_type_cases() {
         let span = Span::default();
@@ -8835,11 +7310,6 @@ mod tests {
         );
     }
 
-    /// Float literals accept either float scalar and default to `f64`
-    /// when unconstrained (02-language.md §1.1); no range check exists
-    /// for floats (unlike integers) since `synth_float_literal` never
-    /// calls anything like `check_int_range` — only the scalar kind is
-    /// checked.
     #[test]
     fn synth_float_literal_cases() {
         let span = Span::default();
@@ -8873,11 +7343,6 @@ mod tests {
         ));
     }
 
-    /// The real M2 bug `types_eq`'s own doc comment describes: two
-    /// structurally identical types differing only in an embedded span
-    /// (here, `[u8; 3]` written at two different source locations) must
-    /// still compare equal — derived `PartialEq` on `Type`/`Expr` would
-    /// not, since `Expr::Int`'s span is part of its derived equality.
     #[test]
     fn types_eq_is_span_insensitive() {
         let len_a = Expr::Int(Span { line: 1, col: 1 }, "3".to_string());
@@ -8888,14 +7353,11 @@ mod tests {
             types_eq(&a, &b),
             "[u8; 3] at two different spans must compare equal under types_eq"
         );
-        // Sanity: derived (span-sensitive) equality does NOT consider
-        // these equal, which is exactly why types_eq exists.
         assert_ne!(
             len_a, len_b,
             "the two length exprs differ by span under derived PartialEq"
         );
 
-        // A different length is genuinely a different type.
         let len_c = Expr::Int(Span { line: 1, col: 1 }, "4".to_string());
         let c = Type::Array(Box::new(Type::U8), Box::new(len_c));
         assert!(
@@ -8903,8 +7365,6 @@ mod tests {
             "[u8; 3] and [u8; 4] must not compare equal"
         );
 
-        // The same span-insensitivity applies to a Named type's generic
-        // const argument.
         let named_a = Type::Named("Ring".to_string(), vec![types::TypeArg::Const(len_a)]);
         let named_b = Type::Named("Ring".to_string(), vec![types::TypeArg::Const(len_b)]);
         assert!(
@@ -8912,8 +7372,6 @@ mod tests {
             "Ring[3] at two different spans must compare equal under types_eq"
         );
 
-        // TypeArg::Pool (item D) must compare by name — without this,
-        // Option[DmaShared[P, L]] = None fails with identical renderings.
         let shared_a = Type::Named(
             "DmaShared".to_string(),
             vec![
@@ -8945,8 +7403,6 @@ mod tests {
         );
     }
 
-    /// plans/M17.md item E / freeze 1: `entropy[N]()` types as `Bytes[N]`
-    /// with `const_arg = Some(n)` for literal `N` in `1..=64`.
     #[test]
     fn entropy_intrinsic_types_bytes_n_with_const_arg() {
         let src = "module examples.entropy_sema

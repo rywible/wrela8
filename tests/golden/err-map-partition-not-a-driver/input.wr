@@ -1,8 +1,5 @@
 module examples.err_map_partition_not_a_driver
 
-# plans/M7.md item H1 self-audit — `map_partition` from a plain struct's method
-#
-# What this case would catch: a partition whose enclosing `self` is not a `@driver` — only a driver's declared fields are its partition.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

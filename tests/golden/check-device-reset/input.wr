@@ -1,9 +1,5 @@
 module examples.check_device_reset
 
-# plans/M7.md item H2b / decision 23: `RunningDevice.reset(queue=mut q)` is
-# the sealed full-reset transition. Dump oracle for the type and the MWIR
-# `DeviceReset` inst. The HVF proof that the bumped epoch invalidates a
-# prior receipt is `golden/err-boot-epoch-stale`.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:
@@ -51,7 +47,6 @@ pub struct BlkDriver:
         )?
         self.capacity_sectors = 16
         self.device = negotiated.start()
-        # Full reset: consumes Running, bumps the queue epoch, yields Running.
         self.device = self.device.reset(queue=mut self.queue)
         return Ok(unit)
 

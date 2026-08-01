@@ -2,9 +2,6 @@ module app.main
 
 from lib.wrap import Wrap, Src
 
-# plans/M9.md item B3: generated `from` reached through a plain import.
-# DIRECT = Wrap.from(Src(n=4)).inner.n + 400 → 404. Identity or miss
-# cannot forge 404 from n=4.
 
 fn direct() -> u32:
     s = Src(n=4)

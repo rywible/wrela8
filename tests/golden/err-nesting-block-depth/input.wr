@@ -1,8 +1,5 @@
 module examples.err_nesting_block_depth
 
-# plans/M9.md item RR: 101 nested suites, one past MAX_BLOCK_DEPTH.
-# Before the guard this aborted the process with a native stack
-# overflow (SIGABRT, no diagnostic) somewhere past 800 levels.
 
 fn f() -> u64:
     if true:

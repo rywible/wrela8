@@ -1,1 +1,1 @@
-error[type]: field `Request.sector: u32` follows the previous field at offset 0x1 and would need 3 byte(s) of implicit padding to be 4-byte aligned; a `@layout` type never pads implicitly — give `sector` an explicit `@offset(...)` (03-hardware.md §3) at 12:5
+error[type]: field `Request.sector: u32` follows the previous field at offset 0x1 and would need 3 byte(s) of implicit padding to be 4-byte aligned; a `@layout` type never pads implicitly — give `sector` an explicit `@offset(...)` (03-hardware.md §3) at 7:5

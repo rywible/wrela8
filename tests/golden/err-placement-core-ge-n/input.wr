@@ -1,6 +1,5 @@
 module examples.err_placement_core_ge_n
 
-# plans/M15.md item C: cores=2 + core=2 (core ≥ N) fails closed.
 
 @actor
 pub struct Store:

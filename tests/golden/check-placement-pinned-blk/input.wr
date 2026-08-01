@@ -1,8 +1,5 @@
 module examples.check_placement_pinned_blk
 
-# plans/M8.md item B: a VirtioBlock-bound driver with no `core=` is
-# pinned to core 0 (`source=pinned-virtio-blk`). Vacuity: add `core=1`
-# and the build fails (`err-placement-virtio-blk-core`).
 
 struct VirtioBlock:
     id: u32

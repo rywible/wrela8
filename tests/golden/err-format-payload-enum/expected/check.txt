@@ -1,1 +1,1 @@
-error[type]: deriving(Format) requires unit variants; `Msg.Data` has a payload at 6:1
+error[type]: deriving(Format) requires unit variants; `Msg.Data` has a payload at 4:1

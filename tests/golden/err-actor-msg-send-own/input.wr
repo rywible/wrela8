@@ -1,6 +1,5 @@
 module examples.err_actor_msg_send_own
 
-# Same §9.3 hole on `send`: resource by read must be refused.
 
 pool Packets
 

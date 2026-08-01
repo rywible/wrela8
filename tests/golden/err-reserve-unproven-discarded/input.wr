@@ -1,8 +1,5 @@
 module examples.err_reserve_unproven_discarded
 
-# plans/M13.md item M + L: three static sites exceed floor(8/3)=2 so the
-# proof fails; sites keep `Result[QueuePermit, CapacityError]`; silent
-# Err discard is error[sema].
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

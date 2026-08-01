@@ -1,33 +1,5 @@
 module examples.check_dma_shared
 
-# plans/M7.md item D, 03-hardware.md §1 + §3: the two hardware types whose
-# first generic argument is a bound **pool name** rather than a type.
-#
-# `DmaPool[P, N]` (§1) is a driver's authority over a bounded,
-# device-reachable pool — 03 §1's own worked constructor is
-# `init(mut self, take cap: DeviceCap[VirtioBlock], take pool:
-# DmaPool[BlockControl, 256.KiB])`, and `BlockControl` there is the same
-# `pool Name` declaration `own[BlockControl] T` names elsewhere in that
-# example. Item A left this capability failing closed ("nothing mints a
-# `DmaPool` yet — that is plans/M7.md item D"); this is the mint. Three
-# facts are checked, each with its own rejection golden: the pool is one
-# this image binds with `img.dma_pool` (`err-dma-pool-mint-bound`,
-# `err-dma-pool-mint-not-dma`), it is reachable from *this* binding's own
-# device (`err-dma-pool-mint-wrong-device`), and `N` covers the backing it
-# actually reserves.
-#
-# `DmaShared[P, L]` (§3) is shared control memory — descriptor tables and
-# rings, "permanently shared, exposing only field-wise typed operations
-# that carry the target's volatile/cache/ordering semantics. It cannot be
-# read as bytes or lent as a plain value." Both of those are named
-# rejections: `err-dma-shared-bytes` and `err-dma-shared-lend`. Here it
-# only has to *resolve* — `L` must be an `@layout(dma)` struct, and the
-# handle moves with `take`.
-#
-# Nothing mints a `DmaShared` at the image binding, and nothing operates
-# on one: 03 §3's own example builds it with
-# `VirtQueue.configure(pool=take control_pool, ...)`, which is plans/M7.md
-# item E, and `err-dma-shared-unminted` is the fail-closed witness.
 
 @layout(dma, endian=little)
 struct BlkReqHeader:
@@ -49,24 +21,12 @@ pool BlockControl
 pub struct BlkDriver:
     sectors: u64
 
-    # `DmaPool` is §3.1 bullet one's pool-handle reclaim — dropping
-    # `control` in `init` is fine. `DmaShared` is permanently shared
-    # (03 §3) with no terminal sink yet, so it is not in the
-    # protocol-consumption predicate; this method still proves `take`
-    # moves (err-dma-shared-lend is the loan rejection).
     init(mut self, take control: DmaPool[BlockControl, 4096], sectors: u64):
         self.sectors = sectors
 
     pub fn capacity(read self) -> u64:
         return self.sectors
 
-    # `DmaShared[P, L]` resolves and moves. The handle is a resource, so
-    # it is spelled `take` at every boundary — a `read`/`mut` loan is
-    # `err-dma-shared-lend`. It lives on the driver because 03 §1's
-    # provenance rule is live: a fn that touches DMA state must be
-    # reachable through the owning driver's authority, and a free fn
-    # taking one is rejected by `hardware.capabilities.provenance` before
-    # this file ever reaches the image checks.
     fn install_ring(mut self, take ring: DmaShared[BlockControl, RingControl]) -> unit:
         return unit
 

@@ -1,9 +1,5 @@
 module examples.err_irq_two_vectors_one_handler
 
-# plans/M7.md item G: two instances of the same `@driver`, each with its
-# own vector, both binding `BlkDriver.on_irq` — one handler key, two
-# vectors. 03-hardware.md §6's "exactly one handler per vector" read in
-# the plan's own stricter direction: one handler may not serve two.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

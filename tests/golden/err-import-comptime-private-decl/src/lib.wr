@@ -1,7 +1,5 @@
 module lib
 
-# Neither of these is `pub`, so `main` cannot import them and cannot name
-# them. `measure`'s own body reaches both.
 struct Priv:
     v: u32
 

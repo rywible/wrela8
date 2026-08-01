@@ -1,51 +1,33 @@
-//! Per-core attribution of proxy-cycle mass (v0) and turn-entry max (v1).
-//!
-//! Report-only: does not write `PlacementEntry.work` or change packing.
-//! Differential proxy only — no call-graph turn paths.
-
 use std::collections::BTreeMap;
 
 use crate::placement::PlacementTable;
 
 use super::score::CostReport;
 
-/// Whole-image core attribution over a scored program + placement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoreCostReport {
-    /// One bucket per core index in `0..placement.cores`, sorted by `n`.
     pub cores: Vec<CoreBucket>,
-    /// Mass that is not attributable to a single placed type/core.
     pub shared_proxy_cycles: u64,
-    /// One row per placement entry, stable declaration order.
     pub placeables: Vec<PlaceableTurn>,
 }
 
-/// Attributed mass and worst turn-entry on one core.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoreBucket {
     pub n: usize,
-    /// Attributed code mass (v0), after enqueue dedup.
     pub proxy_cycles: u64,
-    /// Max turn among placeables on this core (v1).
     pub max_turn_proxy: u64,
     pub max_turn_method: Option<String>,
 }
 
-/// Per-placeable turn-entry score (max leaf method schedule).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlaceableTurn {
-    /// `actor#0` / `driver#0` from `PlacementEntry.id.render()`.
     pub id: String,
     pub type_name: String,
     pub core: usize,
     pub turn_proxy: u64,
-    /// Winning method key (`Type.method` / `struct:Type[…].method`).
     pub method: Option<String>,
 }
 
-/// Attribute scored fns onto cores via placement type ownership.
-///
-/// Does not mutate `placement` (report-only).
 pub fn attribute_cores(
     report: &CostReport,
     placement: &PlacementTable,
@@ -54,7 +36,6 @@ pub fn attribute_cores(
 
     let mut core_mass = vec![0u64; placement.cores];
     let mut shared_proxy_cycles = 0u64;
-    // type_name → (max proxy, winning method key)
     let mut turn_by_type: BTreeMap<String, (u64, String)> = BTreeMap::new();
 
     for f in &report.fns {
@@ -124,13 +105,6 @@ pub fn attribute_cores(
     })
 }
 
-/// Where a scored fn key's mass belongs.
-///
-/// `pub(crate)` because three models now read the same mapping and a fn key
-/// must resolve to a core through sealed placement in exactly one place: the
-/// proxy-cycle attribution here, the per-core footprint model
-/// ([`super::footprint`], plans/M20.md item F), and the local-vs-remote
-/// classification ([`super::crosscore`], item G). One classifier, not three.
 pub(crate) enum AttrTarget {
     Core(usize),
     Shared,
@@ -165,8 +139,6 @@ fn core_or_shared(type_name: &str, placement: &PlacementTable) -> Result<AttrTar
     }
 }
 
-/// Like `PlacementTable::core_of_actor_type`, but distinguishes "absent"
-/// (`Ok(None)`) from "split across cores" (`Err`).
 fn core_of_type(placement: &PlacementTable, type_name: &str) -> Result<Option<usize>, String> {
     let mut found: Option<usize> = None;
     for e in placement
@@ -193,14 +165,12 @@ fn parse_secondary_core(key: &str) -> Option<usize> {
     if let Some(rest) = key.strip_prefix("rt_secondary_core_entry ") {
         return rest.parse().ok();
     }
-    // Pre-republish trampoline spelling (layout harness).
     if let Some(rest) = key.strip_prefix("__wrela_secondary_entry_") {
         return rest.parse().ok();
     }
     None
 }
 
-/// Owner type + method member for `Type.method` / `struct:Type[…].method`.
 fn parse_owner_method(key: &str) -> Option<(String, String)> {
     if key.contains(' ') || key.starts_with("__") {
         return None;
@@ -212,7 +182,6 @@ fn parse_owner_method(key: &str) -> Option<(String, String)> {
         }
         return Some((ty.to_string(), method.to_string()));
     }
-    // Free generic / method-instance spellings are not type owners here.
     if key.starts_with("fn:") || key.starts_with("method:") {
         return None;
     }
@@ -305,9 +274,9 @@ mod tests {
         let out = attribute_cores(&report, &placement).expect("attr");
         assert_eq!(out.cores.len(), 2);
         assert_eq!(out.cores[0].n, 0);
-        assert_eq!(out.cores[0].proxy_cycles, 50); // Drv.on_irq
+        assert_eq!(out.cores[0].proxy_cycles, 50);
         assert_eq!(out.cores[1].n, 1);
-        assert_eq!(out.cores[1].proxy_cycles, 130); // Foo.hot + cold + enqueue
+        assert_eq!(out.cores[1].proxy_cycles, 130);
         assert_eq!(out.shared_proxy_cycles, 7 + 3 + 9);
         assert_eq!(out.placeables.len(), 2);
         assert_eq!(out.placeables[0].id, "actor#0");
@@ -325,7 +294,7 @@ mod tests {
         let placement = placement(1, vec![entry(ImageDeclRef::Actor(0), "Foo", 0)]);
         let report = report(vec![
             fn_cost("rt_enqueue Foo", 40),
-            fn_cost("__enqueue_0", 40), // same body clone — skip
+            fn_cost("__enqueue_0", 40),
             fn_cost("Foo.turn", 5),
         ]);
         let out = attribute_cores(&report, &placement).expect("attr");
@@ -336,8 +305,6 @@ mod tests {
     #[test]
     fn keeps_enqueue_clones_when_no_rt_enqueue_keys() {
         let placement = placement(1, vec![entry(ImageDeclRef::Actor(0), "Foo", 0)]);
-        // No rt_enqueue prefix in report → __enqueue_* is not skipped.
-        // Unowned trampoline name → Shared.
         let report = report(vec![fn_cost("__enqueue_0", 40), fn_cost("Foo.turn", 5)]);
         let out = attribute_cores(&report, &placement).expect("attr");
         assert_eq!(out.cores[0].proxy_cycles, 5);
@@ -350,7 +317,7 @@ mod tests {
         let report = report(vec![
             fn_cost("rt_secondary_core_entry 2", 33),
             fn_cost("__wrela_secondary_entry_1", 11),
-            fn_cost("__wrela_rt_secondary_entry", 99), // generic body → Shared
+            fn_cost("__wrela_rt_secondary_entry", 99),
         ]);
         let out = attribute_cores(&report, &placement).expect("attr");
         assert_eq!(out.cores[0].proxy_cycles, 0);
@@ -397,7 +364,6 @@ mod tests {
         let drv = out.placeables.iter().find(|p| p.id == "driver#0").unwrap();
         assert_eq!(drv.turn_proxy, 44);
         assert_eq!(drv.method.as_deref(), Some("Blk.on_queue_irq"));
-        // Mass still includes init.
         assert_eq!(out.cores[0].proxy_cycles, 1000 + 12 + 30 + 44 + 900);
         assert_eq!(out.cores[0].max_turn_proxy, 44);
     }

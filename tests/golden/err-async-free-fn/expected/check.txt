@@ -1,1 +1,1 @@
-error[unimplemented]: an `async fn` with no receiver (associated fn) is not checked yet at 13:5
+error[unimplemented]: an `async fn` with no receiver (associated fn) is not checked yet at 7:5

@@ -1,6 +1,5 @@
 module examples.err_wake_not_task
 
-# plans/M7.md item G: `wake` requires a statically bound `@task`.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

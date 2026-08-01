@@ -1,1 +1,1 @@
-error[type]: field `BlkRequest.header: BlkReqHeader` nests a `@layout` type; a nested `@layout` field is not implemented (plans/M7.md item E owns the composite queue/DMA layouts that need it) at 19:5
+error[type]: field `BlkRequest.header: BlkReqHeader` nests a `@layout` type; a nested `@layout` field is not implemented (plans/M7.md item E owns the composite queue/DMA layouts that need it) at 13:5

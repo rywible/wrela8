@@ -1,7 +1,5 @@
 module examples.err_placement_cores1_pin1
 
-# plans/M15.md item C: default cores=1 + core=1 fails closed (no silent
-# jump to a wider packing domain).
 
 @actor
 pub struct Store:

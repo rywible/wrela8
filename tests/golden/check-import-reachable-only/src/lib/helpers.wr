@@ -1,6 +1,5 @@
 module lib.helpers
 
-# plans/M9.md item H3: only call-graph-reachable imports emit.
 pub fn used(x: u32) -> u32:
     return x + 1
 

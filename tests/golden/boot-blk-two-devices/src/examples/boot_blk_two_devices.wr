@@ -1,31 +1,5 @@
 module examples.boot_blk_two_devices
 
-# plans/M8.md item P: the accepted two-device shape, **booted**.
-#
-# `golden/check-pool-two-devices` pins the report; this pins the runtime
-# half. Two declared devices, each with its own `@driver` and its own DMA
-# pool; the blk driver on device#0 runs the full write/read round trip of
-# `golden/boot-blk-roundtrip` using only device#0's pools, while device#1's
-# `Aux` pool sits in the same `pooldata` section, is published to the VMM
-# as `BlkPool name=Aux device=device#1`, and is never reachable from the
-# blk model.
-#
-# The vacuity twin is `golden/err-boot-blk-cross-device-pool`: the same
-# image with the driver's payload pool moved to device#1, where the VMM
-# refuses the first descriptor by name. Read together they are the whole
-# claim — the window is present, placed and mapped for its own device, and
-# device#0 still cannot touch a byte of it.
-#
-# What is *not* proven here, stated rather than implied: the symmetric
-# half. 06-machine.md §6's device set is closed and machine v1 models
-# exactly one device (`blk`), so no access by device#1 exists to refuse.
-# That direction is a unit test —
-# `devices::tests::a_window_bound_to_another_device_is_refused_by_name`
-# builds both views over the same window list — and cannot be a boot until
-# a second device model exists — which no rung of the ladder schedules.
-#
-# M16 Wave D: BlkDriver + shared layouts/consts from `drivers.blk`;
-# pool brands redeclared locally (not importable).
 
 from drivers.blk import (
     BlkDriver,
@@ -52,9 +26,6 @@ pool BlockControl
 pool BlockPayloads
 pool AuxBuffers
 
-# device#1's own driver, so this image is two devices each with a driver
-# and a pool. It touches nothing: its only job is to make device#1 a real
-# bound device rather than a declaration.
 @driver
 pub struct AuxDriver:
     tag: u32
@@ -78,8 +49,6 @@ pub struct Ledger:
 
 @test(runtime)
 async fn blk_write_read_roundtrip(led: Actor[Ledger]):
-    # Two checkpoints: write IRQ+drain then read IRQ+drain. Surviving
-    # with marks 42 means every assert in both drain phases held.
     a = await led.mark(n=4)
     @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match a:

@@ -1,18 +1,5 @@
 module examples.layout_mmio
 
-# plans/M7.md item B: 03-hardware.md §2's own worked example, verbatim —
-# the driver-visible interrupt partition of the virtio transport's
-# register map. Two registers at their real virtio-MMIO offsets, one
-# read-only and one write-only, with the 0x60 bytes below them declared
-# padding (they belong to the sealed transport's own partition, not to
-# this layout) rather than silently absorbed.
-#
-# What this case pins: the type checks (`check.txt`), the compiler
-# reports its exact size/offsets/padding/endianness
-# (`layout-types.txt`), and an image carrying it reports the same facts
-# in its own exact-bytes section (`report.txt`). *Access* — volatile
-# reads/writes and claim partitioning — is plans/M7.md item C and does
-# not exist yet; nothing here reads or writes a register.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

@@ -1,8 +1,5 @@
 module examples.err_test_image_driver_irq_no_image
 
-# plans/M8.md item H soak (fuzz lower seed 8103): a `@driver` that binds
-# an IRQ, plus `@test(runtime)`, and no `@image`. Layout has nowhere to
-# read the vector from — named `error[build]`, never `internal error:`.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

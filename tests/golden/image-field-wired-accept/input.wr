@@ -1,25 +1,5 @@
 module examples.image_field_wired_accept
 
-# `image.graph.init-args-match`, the literal-constructor half: 05-library.md
-# §9 says an actor declaration's arguments "must match `A.init` **(or its
-# literal constructor)** after generated capabilities and handles are
-# substituted". A struct that declares no `init` is constructed by its
-# literal constructor — its own declared fields — so a wiring argument may
-# name a *field*, not only an `init` parameter.
-#
-# `Worker` declares no `init` at all and is wired `led=led`, matching its
-# own `led: Actor[Ledger]` field. Until 2026-07-24 the graph check handed
-# a no-`init` struct an empty parameter list and rejected every such
-# argument by name, so an image of exactly this shape could not reach
-# `--stage=image`, `--stage=report` or `wrela build` — which is why this
-# case pins the *report*, not just the raw graph dump.
-#
-# `Worker.pending` (and `Ledger.marks`) are deliberately left unwired: a
-# declared field is not a missing `init` argument. The boot sequence
-# zero-initializes every actor's whole state slot before any turn runs
-# (`layout::build_boot_init`), so an unsupplied field already has a
-# defined value, and 05 §9's own "a resource `init` argument without one
-# recovery source is a build error" names `init` arguments.
 
 @actor
 pub struct Ledger:

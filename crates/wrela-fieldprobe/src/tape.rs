@@ -1,19 +1,7 @@
-//! The field as a flat SSA tape, plus a builder for authoring scenes.
-//!
-//! plans/graphics.md §2.2 (tape pruning, after Keeter 2020) deletes losing
-//! `min`/`max` branches *and everything feeding them*, which is a liveness
-//! walk over a flat tape rather than a tree rewrite. So the tape, not a
-//! tree, is the probe's representation: op counts here are the numbers §16.3
-//! asks for.
-//!
-//! Every slot's operands have strictly smaller indices, so evaluation is one
-//! forward pass and liveness is one backward pass.
-
 use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Op {
-    /// The evaluation point's components.
     X,
     Y,
     Z,
@@ -22,44 +10,23 @@ pub enum Op {
     Add(u32, u32),
     Sub(u32, u32),
     Mul(u32, u32),
-    /// `x*x` — kept distinct from `Mul(a,a)` because the affine enclosure of
-    /// a square is materially tighter (see `aff::Aff::square`).
     Square(u32),
     Sqrt(u32),
     Abs(u32),
     Min(u32, u32),
     Max(u32, u32),
-    /// Fused polynomial smooth-min with blend width `k`.
-    ///
-    /// Fused rather than lowered for two reasons: the enclosure of the fused
-    /// form is tighter than the enclosure of its decomposition, and §16.3's
-    /// "ray-length fraction inside blend bands" is only measurable if the
-    /// blend nodes still exist as nodes at march time.
     SMin(u32, u32, f32),
     SMax(u32, u32, f32),
     Clamp01(u32),
     Sin(u32),
     AddC(u32, f32),
     MulC(u32, f32),
-    /// Domain repetition, `x - p*round(x/p)`.
     Rep(u32, f32),
-    /// Fused `sqrt(a² + b²)`.
     Len2(u32, u32),
-    /// Fused `sqrt(a² + b² + c²)`.
-    ///
-    /// Fused rather than lowered because the *derivative* of a length is
-    /// where the naive chain falls apart. `d/dt sqrt(g)` is `g'/(2√g)`, and
-    /// every box SDF evaluates `length(max(q,0))`, which is identically zero
-    /// inside the box — so `√g → 0` and the enclosure of the derivative
-    /// explodes, even though the true derivative is bounded (a distance
-    /// field is 1-Lipschitz). Cauchy-Schwarz gives the bound directly:
-    /// `|d|v|/dt| = |v·v'| / |v| ≤ |v'|`, with no reference to `|v|` at all.
-    /// See `eval::eval_daff`.
     Len3(u32, u32, u32),
 }
 
 impl Op {
-    /// Operand slots, for the liveness walk.
     pub fn inputs(&self) -> ([u32; 3], usize) {
         match *self {
             Op::X | Op::Y | Op::Z | Op::Const(_) => ([0, 0, 0], 0),
@@ -84,13 +51,6 @@ impl Op {
         }
     }
 
-    /// Rough FLOP-equivalent weight on an A76 NEON pipe.
-    ///
-    /// Deliberately a *count* model, not a cycle model. §16.1 is explicit
-    /// that counts port off the M4 proxy and timings do not, and that the
-    /// counts→time conversion is the job of the pinned `bench/a76-pi5.toml`
-    /// table. The probe stops at counts on purpose; wiring these into the
-    /// cost table is a later, separately-reviewed step.
     pub fn weight(&self) -> u32 {
         match self {
             Op::X | Op::Y | Op::Z | Op::Const(_) => 0,
@@ -114,25 +74,9 @@ impl Op {
         }
     }
 
-    /// V-pipe micro-ops this op costs **per packet**, for the port model.
-    ///
-    /// `bench/a76-pi5.toml` pins two FP/ASIMD pipes (`port_v0` = SOG
-    /// pipeline 7, `port_v1` = pipeline 8, both T1) at `thru 1/1`, so the
-    /// packet interpreter retires **2 V-uops per cycle** when it is
-    /// register-resident and V-limited. That replaces §1's "assume ~30% of
-    /// peak until measured" with a computed bound for this specific loop.
-    ///
-    /// The table's `[latency.neon]` is one coarse row for all FP/ASIMD
-    /// ("kept as one coarse row per dimension inventory row 35 — no live
-    /// emit site; do not expand"). It cannot distinguish `FMLA` from
-    /// `FSQRT`, whose throughputs differ by an order of magnitude. So the
-    /// ops that need a group the coarse row cannot express take a **sweep
-    /// bracket** rather than a pinned value, per the over-cost rule: the
-    /// pessimistic end is charged and the bracket is reported.
     pub fn v_uops(&self, sw: &UopSweep) -> f32 {
         match self {
             Op::X | Op::Y | Op::Z | Op::Const(_) => 0.0,
-            // One data-processing uop each; the coarse T1 row covers these.
             Op::Neg(_)
             | Op::Add(..)
             | Op::Sub(..)
@@ -143,10 +87,7 @@ impl Op {
             | Op::Max(..)
             | Op::AddC(..)
             | Op::MulC(..) => 1.0,
-            // FMIN + FMAX against two constants.
             Op::Clamp01(_) => 2.0,
-            // Fused polynomial smin, all of it certain ops:
-            // sub, mul_c, add_c, clamp(2), sub, mul, sub, mul, mul_c.
             Op::SMin(..) | Op::SMax(..) => 10.0,
             Op::Sqrt(_) => sw.sqrt,
             Op::Len2(..) => 2.0 + sw.sqrt,
@@ -188,26 +129,14 @@ impl Op {
     }
 }
 
-/// The ASIMD groups `bench/a76-pi5.toml` does not yet resolve.
-///
-/// Each is a bracket, not a value. `opts-ladder.md` 9c records that M20
-/// inventory **row 35's trigger condition has fired** — wrela now emits
-/// FP/ASIMD, so the freeze that declined per-group rows "is satisfied by
-/// adding them, not violated". Until those rows exist, these are the
-/// dimensions the pixels work needs, stated as sweep brackets so the
-/// uncertainty is data rather than a guess baked into a total.
 #[derive(Clone, Copy, Debug)]
 pub struct UopSweep {
-    /// `FSQRT` (poorly pipelined) versus `FRSQRTE` + 2 Newton refinements.
     pub sqrt: f32,
-    /// Range reduction plus a minimax polynomial.
     pub sin: f32,
-    /// Reciprocal multiply, `FRINTN`, `FMLS`.
     pub rep: f32,
 }
 
 impl UopSweep {
-    /// The pessimistic end of every bracket (over-cost rule, decision 1609).
     pub fn pessimistic() -> UopSweep {
         UopSweep {
             sqrt: 12.0,
@@ -215,7 +144,6 @@ impl UopSweep {
             rep: 8.0,
         }
     }
-    /// The optimistic end: rsqrt-chain `length`, a short minimax sine.
     pub fn optimistic() -> UopSweep {
         UopSweep {
             sqrt: 6.0,
@@ -236,14 +164,10 @@ impl Tape {
         self.ops.len()
     }
 
-    /// Total weight of every op, whether or not it is live. The unpruned
-    /// baseline that §16.3's "pruned tape length by depth" is measured
-    /// against.
     pub fn weight(&self) -> u32 {
         self.ops.iter().map(|o| o.weight()).sum()
     }
 
-    /// Total V-uops for one full evaluation of this tape, per packet.
     pub fn v_uops(&self, sw: &UopSweep) -> f32 {
         self.ops.iter().map(|o| o.v_uops(sw)).sum()
     }
@@ -253,13 +177,6 @@ impl Tape {
     }
 }
 
-/// Tape builder with common-subexpression elimination.
-///
-/// CSE is not an optimisation here, it is realism: a hand-written scene
-/// without it would carry duplicate `length(p)` chains that pruning would
-/// then get credit for deleting, and the tape-length numbers would flatter
-/// §2.2. `BTreeMap` rather than `HashMap` per CLAUDE.md — this is an
-/// output-touching path.
 pub struct Builder {
     ops: Vec<Op>,
     cse: BTreeMap<(u8, u32, u32, u32), u32>,
@@ -292,16 +209,12 @@ impl Builder {
         }
     }
 
-    // --- leaves -----------------------------------------------------------
-
     pub fn point(&mut self) -> [u32; 3] {
         [self.push(Op::X), self.push(Op::Y), self.push(Op::Z)]
     }
     pub fn konst(&mut self, v: f32) -> u32 {
         self.push(Op::Const(v))
     }
-
-    // --- scalar arithmetic ------------------------------------------------
 
     pub fn add(&mut self, a: u32, b: u32) -> u32 {
         self.push(Op::Add(a, b))
@@ -371,8 +284,6 @@ impl Builder {
         self.min(t, h)
     }
 
-    // --- vector helpers ---------------------------------------------------
-
     pub fn translate(&mut self, p: [u32; 3], t: [f32; 3]) -> [u32; 3] {
         [
             self.addc(p[0], -t[0]),
@@ -381,10 +292,6 @@ impl Builder {
         ]
     }
 
-    /// Rotation about Y by a comptime-known angle. §6.3's line — topology is
-    /// comptime, parameters are runtime — means a scene's rotations are
-    /// constants in the tape, exactly as they would be after FieldWir
-    /// specialisation.
     pub fn rot_y(&mut self, p: [u32; 3], ang: f32) -> [u32; 3] {
         let (s, c) = ang.sin_cos();
         let xc = self.mulc(p[0], c);
@@ -414,8 +321,6 @@ impl Builder {
     pub fn len2(&mut self, a: u32, b: u32) -> u32 {
         self.push(Op::Len2(a, b))
     }
-
-    // --- primitives (IQ's standard exact SDFs) ---------------------------
 
     pub fn sphere(&mut self, p: [u32; 3], r: f32) -> u32 {
         let l = self.len3(p);
@@ -448,7 +353,6 @@ impl Builder {
         self.addc(d, -r)
     }
 
-    /// Capsule along Y, half-length `hl`, radius `r`.
     pub fn capsule_y(&mut self, p: [u32; 3], hl: f32, r: f32) -> u32 {
         let cy = self.clampc(p[1], -hl, hl);
         let qy = self.sub(p[1], cy);
@@ -456,7 +360,6 @@ impl Builder {
         self.addc(l, -r)
     }
 
-    /// Cylinder along Y, radius `r`, half-height `hh`.
     pub fn cylinder_y(&mut self, p: [u32; 3], r: f32, hh: f32) -> u32 {
         let lxz = self.len2(p[0], p[2]);
         let dx = self.addc(lxz, -r);
@@ -470,15 +373,12 @@ impl Builder {
         self.add(outside, inside)
     }
 
-    /// Torus in the XZ plane: major radius `rr`, minor `r`.
     pub fn torus(&mut self, p: [u32; 3], rr: f32, r: f32) -> u32 {
         let lxz = self.len2(p[0], p[2]);
         let q = self.addc(lxz, -rr);
         let l = self.len2(q, p[1]);
         self.addc(l, -r)
     }
-
-    // --- combinators ------------------------------------------------------
 
     pub fn union(&mut self, a: u32, b: u32) -> u32 {
         self.min(a, b)
@@ -495,12 +395,6 @@ impl Builder {
         self.smax(a, nb, k)
     }
 
-    /// Band-limited displacement: a sum of `oct` sinusoidal octaves.
-    ///
-    /// A deliberate stand-in for §6.1's `fbm`, and an optimistic one — real
-    /// hashed-gradient noise is piecewise and would enclose far worse under
-    /// affine arithmetic. The report says so out loud, because a probe that
-    /// quietly picks the friendly noise is measuring its own choice.
     pub fn displace_sin(
         &mut self,
         d: u32,

@@ -1,7 +1,5 @@
 module app.main
 
-# plans/M9.md item HH: using a value of a reachable non-pub type is
-# allowed; *spelling*/importing it is still refused (err-import-type-not-pub).
 from lib.g import Maker
 
 fn drive() -> u32:
@@ -16,8 +14,6 @@ pub fn t():
     assert D == 305, "value of non-pub reachable type"
 
 
-# Guest-reachable path (plans/M9.md item KK): H3 dropped drive() from asm;
-# `@test(runtime)` seeds the import-reachability claim.
 @test(runtime)
 pub fn guest_reachable():
     assert drive() == 305, "reachable private at guest"

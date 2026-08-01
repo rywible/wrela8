@@ -1,26 +1,5 @@
 module examples.boot_cross_core_mailbox_depth
 
-# plans/M8.md item H Target C — mailbox depth under three cores, and the
-# back-pressure decision 29 named: a full mailbox holds the ring message
-# rather than dropping it.
-#
-# `Sink` is declared `mailbox=1` on core 1. Two producers — `Near` on core 0
-# and `Far` on core 2 — each publish one cross-core message into it.
-#
-# **plans/M15.md item I retarget.** Under the baton both messages sat in
-# their request rings before core 1 drained; the drain walked `src=0` then
-# `src=2`, admitted Near's into the one mailbox slot, and **held** Far's in
-# its ring when `__rt_enqueue_Sink` rejected (mailbox full). Under
-# overlapping `hv_vcpu_run`, Sink may admit Far first (Near then sees `11`)
-# — the "Near returns 1" baton assumption is gone. What still falsifies
-# missing back-pressure: after both have run, `Sink.total` is `11` (Far's
-# `+10` was not dropped). Invert the drain's rejection test (pop on reject)
-# and total stays `1`.
-#
-# Far uses a bare `send` (decision 31 refuses an await/checkpoint on a
-# secondary core). Ring capacity equals mailbox capacity (decision 29), so
-# a forged "mailbox shallower than its feeding ring" cannot be built from
-# source — that shape is a report-forgery concern, not a boot golden.
 
 @actor
 pub struct Sink:
@@ -80,7 +59,6 @@ async fn mailbox_depth_backpressures_under_three_cores(
     @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match x:
         case .Ok(n):
-            # 1 = Near first (both pending, drain order); 11 = Far first (overlap).
             ok: u64 = 0
             if n == 1:
                 ok = 1
@@ -89,8 +67,6 @@ async fn mailbox_depth_backpressures_under_three_cores(
             assert ok == 1, "Near's +1 was admitted (alone or after Far's +10)"
         case .Err(_):
             assert false, "Near rejected"
-    # Far's +10 must have been admitted eventually — otherwise it was
-    # dropped and total stays 1 (or Near-only).
     t = await sink.total()
     @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match t:

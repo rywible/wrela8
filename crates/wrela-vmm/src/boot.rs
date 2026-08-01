@@ -1,6 +1,3 @@
-//! Image boot entry points (`boot_image` / `boot_image_core`) and the
-//! HVF setup path. The vCPU exit-loop helpers live in `exit_loop`.
-
 use std::path::Path;
 use std::time::Duration;
 
@@ -21,16 +18,9 @@ use crate::{
     validate_report_digests,
 };
 
-/// Array capacity for per-core sched state / vCPU handles: packing ceiling
-/// (`CORE_SLOTS`), not the sealed bring-up N. Live loops use
-/// `cores_declared` (plans/M15.md item F / decision 1060).
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 const CORE_SLOTS: usize = wrela_machine::CORE_SLOTS;
 
-/// plans/M15.md item F / decision 1064: SP top for each sealed core from
-/// report `CoreStack` lines (`base + size`). Legacy fixtures that omit
-/// the lines fall back to the high-DRAM formula — never the retired low
-/// `STACKS_BASE` map.
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub(crate) fn core_sp_tops_from_report(parsed: &ParsedReport) -> [u64; CORE_SLOTS] {
     use wrela_machine::layout as machine_layout;
@@ -50,9 +40,6 @@ pub(crate) fn core_sp_tops_from_report(parsed: &ParsedReport) -> [u64; CORE_SLOT
     tops
 }
 
-/// Named mapping for a failed `hv_vcpu_create` on a sealed-N bring-up
-/// (plans/M15.md item F / decision 1062). Kept as a free function so the
-/// unit test can pin the variant without needing a short host.
 pub(crate) fn host_cores_refuse(requested: usize, failed_at: usize, code: i32) -> VmmError {
     VmmError::HostCoresRefuse {
         requested,
@@ -61,8 +48,6 @@ pub(crate) fn host_cores_refuse(requested: usize, failed_at: usize, code: i32) -
     }
 }
 
-/// `cfg(test)` inject: force `hv_vcpu_create` for core `n` to fail with
-/// `HV_NO_RESOURCES`, so host-refuse is pinned without a 32-core host.
 #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
 pub(crate) mod create_inject {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -89,13 +74,9 @@ pub(crate) mod create_inject {
     }
 }
 
-/// Raise report-declared executable sections to RX (page-granular). The
-/// DRAM reservation was mapped RW-only; this is the only place execute
-/// permission is granted.
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn apply_wx_exec_protections(exec_sections: &[ReportSection]) -> Result<(), VmmError> {
     use hv::{HV_MEMORY_EXEC, HV_MEMORY_READ, HV_SUCCESS, hv_vm_protect};
-    // Apple Silicon HVF page size matches the host DRAM allocation align.
     const PAGE: u64 = 16 * 1024;
     for s in exec_sections {
         let start = s.base & !(PAGE - 1);
@@ -125,43 +106,11 @@ fn apply_wx_exec_protections(exec_sections: &[ReportSection]) -> Result<(), VmmE
     Ok(())
 }
 
-/// Boots `img_path` (a flat blob, loaded at `wrela_machine::layout::
-/// IMAGE_BASE`, exactly as `layout::layout_test_image`/`layout_program`
-/// emit it) under `report_path`'s own declared configuration, on
-/// Hypervisor.framework — the VMM's whole public entry point (plans/M5.md
-/// item E).
-///
-/// **Every one of guest DRAM's `DRAM_SIZE` (1 GiB) bytes is zeroed before
-/// the vCPU ever runs** (`std::alloc::alloc_zeroed`) — 06 §3's own "zeroes
-/// the declared reservations" boot step, and not merely a tidiness
-/// convention: chasing an unrelated test bug during this item's own
-/// development (`wrela-compiler/src/layout.rs`'s `harness_jit` module doc)
-/// found that a write from freshly-JIT'd/executed code to a never-before-
-/// touched anonymous page was not reliably observable without the page
-/// having been faulted in first — pre-zeroing the whole reservation here
-/// removes any question of whether that same class of issue could ever
-/// affect a real guest write to a freshly mapped page.
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub fn boot_image(report_path: &Path, img_path: &Path) -> Result<BootOutcome, VmmError> {
     boot_image_core(report_path, img_path, None).map(|(outcome, _divergences)| outcome)
 }
 
-/// The shared boot core (plans/M5.md item F, grown by plans/M6.md item E
-/// into the choice-sequence shape): identical to `boot_image` above in
-/// every respect but two extra parameters.
-///
-/// `replay_choices`: `None` (live/record mode) or `Some(log)` (replay
-/// mode) — every nondeterministic decision this boot's exit loop makes
-/// (a clock read, a deadline park's own wake) flows through exactly one
-/// `record::Chooser::choose_next` call (decision 9's own single-point-of-
-/// choice mandate), which either produces a fresh live value (recording
-/// it) or consumes the next tagged entry from `log` (replaying it,
-/// diverging loudly — via the second return value — on a tag mismatch or
-/// underrun, never a panic and never a silently wrong value). `boot_image`
-/// itself is simply this function called with `replay_choices: None`.
-///
-/// Production boot core. The `cfg(test)`-only delayed vector-raise seam
-/// lives on [`boot_image_core_with_delayed_raise`].
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub(crate) fn boot_image_core(
     report_path: &Path,
@@ -171,8 +120,6 @@ pub(crate) fn boot_image_core(
     boot_image_core_inner(report_path, img_path, replay_choices, None)
 }
 
-/// `cfg(test)`-only wrapper for the delayed vector-raise conformance seam
-/// (plans/M6.md item E). Production callers use [`boot_image_core`].
 #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
 pub(crate) fn boot_image_core_with_delayed_raise(
     report_path: &Path,
@@ -213,25 +160,6 @@ fn boot_image_core_inner(
         )));
     }
 
-    // --- host DRAM allocation (zeroed, 16 KiB aligned — Apple Silicon's own
-    // page size, plenty for hv_vm_map's own alignment requirement) -----------
-    //
-    // Allocated — and its RAII guard declared — **before** `hv_vm_create`
-    // below, and that order is load-bearing rather than incidental. Rust
-    // drops in reverse declaration order, so the teardown this produces is
-    // the exact inverse of the setup: `_raise_guard` joins its thread, then
-    // `_vm_guard` runs `hv_vm_destroy` (tearing down the stage-2 mapping
-    // `hv_vm_map` installs just below), and only then does `_ram_guard`
-    // return these pages to the allocator. Declaring the VM guard first —
-    // as this fn used to — inverted that: `dealloc` handed a 1 GiB span
-    // back (in practice `munmap`ing it to the kernel) while
-    // Hypervisor.framework still had it mapped and wired, leaving the
-    // process with a live hypervisor mapping of memory the allocator was
-    // free to hand to someone else. No vCPU can run at that point (the
-    // scope below joins every core thread, each destroying its own vCPU),
-    // which is why it never crashed — but it is exactly the
-    // pointer-outlives-allocation window the `RaiseGuard` comment further
-    // down already reasons about, one guard over (adversarial audit).
     const PAGE_ALIGN: usize = 16 * 1024;
     let dram_size = machine_layout::DRAM_SIZE as usize;
     let layout = Layout::from_size_align(dram_size, PAGE_ALIGN)
@@ -258,7 +186,6 @@ fn boot_image_core_inner(
         layout,
     };
 
-    // --- hv_vm_create --------------------------------------------------------
     let r = unsafe { hv_vm_create(std::ptr::null_mut()) };
     if r != HV_SUCCESS {
         return Err(VmmError::Hvf {
@@ -266,10 +193,6 @@ fn boot_image_core_inner(
             code: r,
         });
     }
-    // From here on, every early-return must still run `hv_vm_destroy` — a
-    // small RAII guard makes that automatic instead of repeated at every
-    // `return Err`. Declared *after* `_ram_guard` so it drops *before* it
-    // (see that guard's own comment above).
     struct VmGuard;
     impl Drop for VmGuard {
         fn drop(&mut self) {
@@ -280,10 +203,6 @@ fn boot_image_core_inner(
     }
     let _vm_guard = VmGuard;
 
-    // W^X: map the whole reservation RW (never RWX). Executable sections
-    // from the report are raised to RX via `hv_vm_protect` after the
-    // image bytes are copied in — a guest that later stores into those
-    // pages faults rather than executing its own write.
     let r = unsafe {
         hv_vm_map(
             host_ram as *mut c_void,
@@ -299,7 +218,6 @@ fn boot_image_core_inner(
         });
     }
 
-    // --- load the image + machine-info page ----------------------------------
     unsafe {
         std::ptr::copy_nonoverlapping(img.as_ptr(), host_ram.add(image_off as usize), img.len());
     }
@@ -312,8 +230,6 @@ fn boot_image_core_inner(
             host_ram.add(info_off + machine_info::OFF_REVISION as usize),
             rev_bytes.len(),
         );
-        // Wall-clock seed: 0, deterministic at M5 (plans/M5.md item E's
-        // own boot-path note — recorded here, not merely implied).
         std::ptr::write_bytes(
             host_ram.add(info_off + machine_info::OFF_WALL_SEED as usize),
             0,
@@ -321,17 +237,8 @@ fn boot_image_core_inner(
         );
     }
 
-    // --- device model + boot-time injections, before any vCPU runs --------
-    // Establish the monotonic epoch before the guest's first instruction,
-    // so `now()` measures from the machine coming up rather than from
-    // whichever guest read happened to be first (`monotonic_ns`'s own doc).
     let _ = monotonic_ns();
-    // Capture stack tops before `parsed.blk` is moved into the device model.
     let sp_tops = core_sp_tops_from_report(&parsed);
-    // plans/M7.md item F: the declared `blk` device model, preconfigured
-    // from the report (06 §3) before the vCPU ever runs. `None` unless the
-    // report declares one, which nothing the compiler emits does yet — so
-    // every existing image boots down exactly the path it did before.
     let blk: Option<BlkState> = match parsed.blk {
         None => None,
         Some(cfg) => {
@@ -339,15 +246,8 @@ fn boot_image_core_inner(
             let vector = cfg.vector;
             let device_index = cfg.device;
             let device = devices::BlkDevice::new(cfg).map_err(VmmError::BadImage)?;
-            // plans/M8.md item P: the view is *this device's*. Every
-            // declared window goes in; only the ones bound to
-            // `device_index` are reachable through it.
             let mem = unsafe { devices::GuestMem::new(host_ram, pools, device_index) }
                 .map_err(VmmError::BadImage)?;
-            // Completion-time `interrupt_status` writer: same GPA the
-            // boot-time `IrqHostInject` names, when this device owns a
-            // vector. Plans/M7.md item E4: the ISR masks bit 0 after a
-            // real used-ring completion, not only the one-shot boot inject.
             let irq_status_gpa = vector.and_then(|v| {
                 parsed
                     .irq_injects
@@ -361,11 +261,6 @@ fn boot_image_core_inner(
             })
         }
     };
-    // plans/M7.md item G: write `interrupt_status` then raise the vector
-    // before the guest's first instruction. The status value is the
-    // compiler's `IRQ_HOST_STATUS_MAGIC` — a word the zeroed reservation
-    // cannot produce — so an ISR that asserts equality has proved the
-    // host write, not a vacuous zero read.
     for inj in &parsed.irq_injects {
         let guest = inj.base.checked_add(inj.offset).ok_or_else(|| {
             VmmError::BadImage(format!(
@@ -381,21 +276,8 @@ fn boot_image_core_inner(
         raise_vector(host_ram, inj.vector)?;
     }
 
-    // --- plans/M6.md item E's own conformance-only seam: a delayed,
-    // host-side raise (module doc above) — absent (`None`) on every
-    // production path. `host_ram` is a raw pointer into this fn's own
-    // `alloc_zeroed` reservation, alive for the whole fn body (`_ram_guard`
-    // frees it only on return) — a plain byte store into it from another
-    // host thread is exactly as safe as the main thread's own later
-    // `drain_console`/park-handling reads of the identical region, wrapped
-    // only so `std::thread::spawn` accepts the raw pointer at all.
     struct SendPtr(*mut u8);
     unsafe impl Send for SendPtr {}
-    /// Joins the raiser thread on drop — guarantees it is finished (and
-    /// therefore never touches `host_ram` again) before `_ram_guard`
-    /// (declared earlier, dropped later — Rust drops in reverse
-    /// declaration order) deallocates the reservation this thread writes
-    /// into.
     struct RaiseGuard(Option<std::thread::JoinHandle<()>>);
     impl Drop for RaiseGuard {
         fn drop(&mut self) {
@@ -409,12 +291,6 @@ fn boot_image_core_inner(
         let raise_pending_off =
             (wrela_machine::pending::core_word_addr(0) - machine_layout::DRAM_BASE) as usize;
         std::thread::spawn(move || {
-            // `let ptr = ptr;` forces the closure to capture the whole
-            // `SendPtr` value (Rust 2021's disjoint-field capture would
-            // otherwise capture only the inner `*mut u8` field directly,
-            // which is not `Send` on its own — `SendPtr`'s own `unsafe
-            // impl Send` only helps if the wrapper itself is what gets
-            // captured).
             let ptr = ptr;
             std::thread::sleep(delay);
             let SendPtr(base) = ptr;
@@ -428,56 +304,17 @@ fn boot_image_core_inner(
         })
     }));
 
-    // --- N vCPUs, overlapping hv_vcpu_run (plans/M15.md item I) ------------
-    //
-    // 06-machine.md §1: sealed image `Cores count=N`; the VMM creates
-    // exactly those N vCPUs. §3 makes core 0's entry "release the other
-    // vCPUs". Hypervisor.framework binds a vCPU to the thread that created
-    // it, so there are N host threads. plans/M15.md item I deleted the
-    // baton: every released Runnable core may enter `hv_vcpu_run`
-    // concurrently under record **and** replay. Host `Shared` bookkeeping
-    // stays behind one mutex (dumb); park/release/watchdog stay.
-    // Yield-`Progress` forces the choice-log cursor (`sched.current`) at
-    // park/release (decision 7) — that is the serial hand-off. Enter itself
-    // is not gated on the cursor: enter-serializing replay of a concurrent-
-    // record Progress tape deadlocks cross-core awaits. Yield-flush recovers
-    // a stuck cursor (Progress target Parked with empty pending). Admission
-    // replay checks a multiset bag (decision 8); cap-1 under-count leftovers
-    // / extras are tolerated.
-    //
-    // Progress is appended at exactly the two guest actions that used to
-    // move the baton: the release doorbell and a park (Yield). Every other
-    // exit keeps the same core running. A single-core image — where
-    // secondaries are never released — never emits Progress and runs down
-    // exactly the path it ran before M8.
-    // Array capacity = packing ceiling (`CORE_SLOTS`); live bring-up is
-    // `cores_declared` from the report (item F creates exactly N vCPUs).
-
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
     enum CoreState {
-        /// Created and register-initialized, never released by the guest.
         Unreleased,
-        /// Eligible to enter `hv_vcpu_run` (concurrently under record).
         Runnable,
-        /// Parked at `mmio::PARK_MMIO_ADDR` with nothing of its own to run.
-        /// Runnable again only when its own pending word is nonzero — the
-        /// mask-arm-recheck discipline, read out of guest memory rather than
-        /// remembered host-side.
         Parked,
-        /// Its loop has ended (the boot finished, faulted, or timed out).
         Finished,
     }
 
     struct Sched {
-        /// Log-serializer cursor: whose buffered Admissions+Progress may
-        /// flush next. Progress at Yield forces this under record and
-        /// replay (decision 7). Enter does not wait on it — Runnable cores
-        /// overlap in `hv_vcpu_run` under both modes. Yield-flush recovers
-        /// the cursor when the holder is Parked with an empty pending word
-        /// (otherwise Progress can plant a stuck cursor under overlap).
         current: usize,
         state: [CoreState; CORE_SLOTS],
-        /// The boot is over (halt, fault, or timeout); every core returns.
         done: bool,
     }
 
@@ -487,34 +324,14 @@ fn boot_image_core_inner(
         blk: Option<BlkState>,
         exits: u64,
         exit_code: Option<u64>,
-        /// The first failure any core reported — a boot fails closed on the
-        /// first one, it never reports a partial transcript as success.
         error: Option<VmmError>,
-        /// Live vCPU handles, for the watchdog's own `hv_vcpus_exit`. A core
-        /// clears its own slot **under this lock, strictly before**
-        /// destroying its vCPU, so the watchdog can never force-exit a
-        /// handle that no longer exists.
         vcpus: [u64; CORE_SLOTS],
-        /// Did the guest ring the release doorbell? Recorded rather than
-        /// inferred from `sched.state`, which is `Finished` for every core
-        /// by the time the marks are checked and so cannot say whether a
-        /// core was ever released.
         released: bool,
-        /// plans/M8.md item C3: the cross-core admission witness (06 §8).
-        /// Empty `rings` for every single-core image, which is what makes
-        /// their choice sequences byte-identical to their pre-C3 ones.
         admission: AdmissionWitness,
-        /// plans/M15.md item I: Admissions buffered until Yield-`Progress`.
-        /// Choice-log flush waits on `sched.current`; enter does not.
         admission_buf: [Vec<(String, String)>; CORE_SLOTS],
     }
-    // Every field above is touched only under this mutex (dumb host
-    // bookkeeping — plans/M15.md item I). Guest rings stay SPSC + DMB.
     unsafe impl Send for Shared {}
 
-    /// Core `core`'s own pending-vector word, read straight out of guest
-    /// memory — the only thing that can make a parked core runnable again,
-    /// and guest-visible by construction (06 §4).
     fn pending_word(host_ram: *const u8, core: usize) -> u64 {
         let off =
             (wrela_machine::pending::core_word_addr(core) - machine_layout::DRAM_BASE) as usize;
@@ -523,12 +340,6 @@ fn boot_image_core_inner(
         u64::from_le_bytes(b)
     }
 
-    /// Guest-visible next-core pick: prefer a parked core whose pending
-    /// word is already set (a delivered wake — unblocks cross-core await
-    /// under Progress-serial replay), then an idle Runnable, wrapping in
-    /// ascending core order among the sealed N. Under record this feeds
-    /// the Progress log; under replay Progress forces the hand-off and a
-    /// mismatch is a named divergence.
     fn next_core(
         sched: &mut Sched,
         from: usize,
@@ -551,21 +362,12 @@ fn boot_image_core_inner(
         None
     }
 
-    /// What a handled exit asks of the scheduler.
     enum Step {
-        /// Ordinary exit — this core keeps running.
         Keep,
-        /// Release doorbell or park / deadline hand-off.
-        /// `release`: Progress stays on this core (bring-up continues).
-        /// `park`: mark `Parked` after Progress (deferred for next_core).
         Yield { release: bool, park: bool },
-        /// The guest's exit protocol: the image is done.
         Halt(u64),
     }
 
-    // plans/M15.md item D/F: bring-up count is the report's `Cores count=N`
-    // (parse defaults to `1 + core_entries.len()` when the line is absent).
-    // Decision 1061: refuse anything outside `1..=CORE_SLOTS`.
     let cores_declared = parsed.cores;
     if !(1..=CORE_SLOTS).contains(&cores_declared) {
         return Err(VmmError::MalformedReport(format!(
@@ -584,8 +386,6 @@ fn boot_image_core_inner(
         },
         released: false,
         chooser: match replay_choices {
-            // Live replay fails closed on the first divergence (06 §8);
-            // unit tests of the chooser itself leave `.strict()` off.
             Some(log) => record::Chooser::replayer(log).strict(),
             None => record::Chooser::recorder(),
         },
@@ -597,13 +397,8 @@ fn boot_image_core_inner(
         admission: AdmissionWitness::new(parsed.request_rings.clone()),
         admission_buf: std::array::from_fn(|_| Vec::new()),
     });
-    // Park-sleep / eligibility / replay-wait / watchdog wake — not a baton.
     let wake = std::sync::Condvar::new();
 
-    /// Sleep until `deadline_ns` (clamped to [`WALL_CAP`] past now), or
-    /// until the watchdog/`sched.done` wakes us — **never** while holding
-    /// `lock`. Uses `wake.wait_timeout` so the mutex is released for the
-    /// whole wait slice and the watchdog can still force-exit.
     fn sleep_until_park_deadline(
         lock: &std::sync::Mutex<Shared>,
         wake: &std::sync::Condvar,
@@ -629,9 +424,6 @@ fn boot_image_core_inner(
         }
     }
 
-    /// MMIO protocol words are 64-bit only. A sub-word LDRB/LDRH/STRH
-    /// against a doorbell or clock is a guest fault, never a silent
-    /// truncation/zero-extend (adversarial audit, 2026-07-27).
     fn require_mmword(da: &DataAbort, core: usize, what: &str) -> Result<(), VmmError> {
         if da.size_bytes != 8 {
             return Err(VmmError::GuestFault(format!(
@@ -642,11 +434,6 @@ fn boot_image_core_inner(
         Ok(())
     }
 
-    /// Decode a trapped MMIO access and enforce the whole guard every
-    /// protocol register shares: a decodable data abort, an 8-byte access,
-    /// and the expected direction. `require_mmword` above was this
-    /// extraction applied to one of the three checks; the other two were
-    /// written out at all six registers.
     fn mmio_access(
         esr: u64,
         core: usize,
@@ -673,8 +460,6 @@ fn boot_image_core_inner(
         Ok(da)
     }
 
-    /// The value the guest stored: `da.reg`'s contents, or zero when the
-    /// source register is `XZR` (SRT == 31, architecturally zero).
     fn mmio_src_value(vcpu: u64, da: &DataAbort) -> Result<u64, VmmError> {
         match da.reg {
             Some(reg) => {
@@ -716,10 +501,6 @@ fn boot_image_core_inner(
                     Ok(Step::Halt(value))
                 } else if ipa == mmio::CLOCK_MMIO_ADDR {
                     let da = mmio_access(esr, core, "CLOCK_MMIO_ADDR", "clock", false)?;
-                    // plans/M6.md item E, decision 9: the single point of
-                    // choice — record produces a fresh live read, replay
-                    // consumes the next logged one (never re-reading the
-                    // real clock).
                     let entry = {
                         let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
                         g.chooser
@@ -747,12 +528,6 @@ fn boot_image_core_inner(
                     advance_pc(vcpu)?;
                     Ok(Step::Keep)
                 } else if ipa == mmio::ENTROPY_MMIO_ADDR {
-                    // plans/M17.md item D / freeze 3+7+8: park-shaped
-                    // entropy fill. Guest staged dest/len at
-                    // machine_info::OFF_ENTROPY_DEST / OFF_ENTROPY_LEN
-                    // (ordinary stores), then this trapping store. VMM
-                    // fills [dest, dest+len) via host_ram — not GuestMem
-                    // (stack scratch is not a DMA pool window).
                     mmio_access(esr, core, "ENTROPY_MMIO_ADDR", "entropy", true)?;
                     let info_off =
                         (machine_layout::MACHINE_INFO_BASE - machine_layout::DRAM_BASE) as usize;
@@ -785,11 +560,6 @@ fn boot_image_core_inner(
                     advance_pc(vcpu)?;
                     Ok(Step::Keep)
                 } else if ipa == mmio::RELEASE_MMIO_ADDR {
-                    // plans/M8.md item C1 / 06 §3: "the entry ... releases
-                    // the other vCPUs". Everything about this store is
-                    // checked rather than assumed — a machine that starts
-                    // cores nobody asked it to start is exactly the
-                    // silent-wrong-answer this item exists to remove.
                     let da = mmio_access(esr, core, "RELEASE_MMIO_ADDR", "release", true)?;
                     if core != 0 {
                         return Err(VmmError::GuestFault(format!(
@@ -798,8 +568,6 @@ fn boot_image_core_inner(
                         )));
                     }
                     let value = mmio_src_value(vcpu, &da)?;
-                    // Decision 1061: release value must equal report
-                    // `Cores count` (already in `1..=CORE_SLOTS`).
                     if value != cores_declared as u64 {
                         return Err(VmmError::GuestFault(format!(
                             "core 0 released {value} core(s) but this image's report declares \
@@ -826,14 +594,6 @@ fn boot_image_core_inner(
                         park: false,
                     })
                 } else if ipa == mmio::QUIESCE_MMIO_ADDR {
-                    // plans/M8.md item F / decision 36, 03-hardware.md §9:
-                    // "per-queue reset (when negotiated) or full reset
-                    // establishes quiescence, and only then is memory
-                    // reclaimed". The device is this VMM, so quiescence is
-                    // a thing only this VMM can establish — the guest's
-                    // reset traps here first, and the count word it will
-                    // later gate a reclaim on is written *by the host*,
-                    // after the model has actually stopped using the ring.
                     let da = mmio_access(esr, core, "QUIESCE_MMIO_ADDR", "quiesce", true)?;
                     let named = mmio_src_value(vcpu, &da)?;
                     {
@@ -856,30 +616,9 @@ fn boot_image_core_inner(
                     advance_pc(vcpu)?;
                     Ok(Step::Keep)
                 } else if ipa == mmio::PARK_MMIO_ADDR {
-                    // plans/M6.md item E, decision 7/06 §5: the park
-                    // protocol's own doorbell (`mmio::PARK_MMIO_ADDR`'s
-                    // own module doc has the whole contract).
                     mmio_access(esr, core, "PARK_MMIO_ADDR", "park", true)?;
-                    // Advance PC now — the guest resumes right after its
-                    // own trapping store the moment this vCPU is next run,
-                    // whether or not this park ends up sleeping at all.
                     advance_pc(vcpu)?;
                     if core != 0 {
-                        // plans/M8.md item C1: a secondary core's park is a
-                        // plain "nothing of mine is ready". It never sleeps
-                        // on a deadline (`OFF_NEXT_DEADLINE` is the boot
-                        // core's own park word, and no turn can arm a
-                        // deadline on a core no message can reach yet) and
-                        // it never spins: this core stops being scheduled
-                        // until its own pending word is raised, which is
-                        // item C2's cross-core wake.
-                        //
-                        // plans/M15.md item I: under overlapping
-                        // `hv_vcpu_run` the producer may raise pending
-                        // between the guest's last look and this trap —
-                        // the same mask-arm-recheck core 0 already did.
-                        // Recheck before parking or a lost wake deadlocks
-                        // the machine.
                         if pending_word(host_ram, core) != 0 {
                             return Ok(Step::Keep);
                         }
@@ -897,52 +636,17 @@ fn boot_image_core_inner(
                         );
                         u64::from_le_bytes(b)
                     };
-                    // plans/M8.md item C2, decision 31: in a cross-core image,
-                    // core 0 parking with **no deadline armed** is exactly a
-                    // secondary core's park — "nothing of mine is ready" — and
-                    // is treated identically: this core stops being scheduled
-                    // until its own pending word is raised. There is nothing to
-                    // sleep until, so the deadline path below does not apply.
-                    //
-                    // **It is deliberately handled before the runnable-sibling
-                    // shortcut below**, and that ordering is the whole reason a
-                    // lost wake is catchable. Leaving core 0 `Runnable` because
-                    // some sibling happened to be runnable would mean core 0
-                    // gets to run again whether or not anything ever woke it,
-                    // so an omitted cross-core wake would still boot green — a
-                    // decorative mechanism, found by mutating `waker_tag` and
-                    // watching every golden pass. Marking it `Parked` puts its
-                    // resumption where the machine's own contract puts it: on
-                    // its pending word. Under concurrent record a sibling may
-                    // already be running; under Progress replay `next_core`
-                    // either finds a runnable sibling, finds this core's own
-                    // word already raised, or fails the boot closed with
-                    // `no core is runnable` — which is what replaces the
-                    // guest-side `DEADLOCK_MSG` for a cross-core image.
-                    //
-                    // Unreachable for a single-core image: its entry driver only
-                    // parks when a deadline is armed, so every M5-M7 boot takes
-                    // the untouched path below.
                     if cores_declared > 1 && deadline_ns == 0 {
                         let blk_completed = {
                             let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
                             let g = &mut *g;
                             service_blk(&mut g.blk, &mut g.chooser, host_ram)?
                         };
-                        // The mask-arm-recheck "recheck" half: a wake that
-                        // landed between the guest's last look and this trap
-                        // must not put the core to sleep.
                         return Ok(Step::Yield {
                             release: false,
                             park: !blk_completed && pending_word(host_ram, core) == 0,
                         });
                     }
-                    // Core 0, with a deadline armed. A sibling that can run is
-                    // already overlapping under concurrent record; under
-                    // Progress replay this Yield hands off before sleeping so
-                    // host timing does not decide the schedule (decision 7).
-                    // With no runnable sibling (every single-core image,
-                    // always) this is exactly the M6 park path, unchanged.
                     {
                         let g = lock.lock().unwrap_or_else(|e| e.into_inner());
                         let sibling = (1..cores_declared).any(|c| {
@@ -952,41 +656,19 @@ fn boot_image_core_inner(
                         });
                         if sibling {
                             drop(g);
-                            // Deadline armed + runnable sibling: hand off
-                            // without parking (core 0 stays Runnable).
                             return Ok(Step::Yield {
                                 release: false,
                                 park: false,
                             });
                         }
                     }
-                    // plans/M7.md item F: the second doorbell poll site
-                    // (06 §5). A completion serviced *here* — after the
-                    // guest published and rang, before this VMM decides to
-                    // sleep — is exactly the wake the mask-arm-recheck
-                    // discipline exists to keep: a doorbell rung between
-                    // the driver's last check and its park must never
-                    // sleep the core that is waiting for it.
                     let blk_completed = {
                         let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
                         let g = &mut *g;
                         service_blk(&mut g.blk, &mut g.chooser, host_ram)?
                     };
-                    // The mask-arm-recheck discipline's own "recheck"
-                    // half (`mmio::PARK_MMIO_ADDR`'s own doc): a vector
-                    // already pending at the moment of this trap means a
-                    // wake already happened (or was never needed) — do
-                    // not sleep at all, so it is never lost.
                     let already_pending = pending_word(host_ram, core) != 0;
                     if !already_pending && !blk_completed {
-                        // Sleep OUTSIDE the scheduler mutex. Holding the
-                        // lock across `thread::sleep(deadline - now)` let a
-                        // guest-written `u64::MAX` deadline defeat the
-                        // WALL_CAP watchdog (mutex never releasable) —
-                        // adversarial audit, 2026-07-27. Replay still skips
-                        // the sleep (decision 9): only record mode calls
-                        // `live`, and we sleep before recording so the
-                        // choice log stays sleep-free under replay.
                         let should_sleep = {
                             let g = lock.lock().unwrap_or_else(|e| e.into_inner());
                             g.chooser.is_recording()
@@ -997,14 +679,6 @@ fn boot_image_core_inner(
                         {
                             let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
                             if g.sched.done {
-                                // Watchdog fired during the park sleep.
-                                // This core is not inside `hv_vcpu_run`
-                                // (it is servicing the park trap), so
-                                // `hv_vcpus_exit` cannot deliver
-                                // `HV_EXIT_REASON_CANCELED` here — name
-                                // the timeout ourselves rather than
-                                // falling through to "no core reported
-                                // the guest exit protocol".
                                 if g.error.is_none() && g.exit_code.is_none() {
                                     let transcript_so_far = drain_console(host_ram);
                                     return Err(VmmError::Timeout {
@@ -1023,11 +697,6 @@ fn boot_image_core_inner(
                                 || record::ChoiceEntry::VectorRaise { vector: 0 },
                             )?;
                         }
-                        // The raise itself (06 §4: "a store-release plus
-                        // a wake"): a plain host-side write into this
-                        // core's own pending word. No separate wake is
-                        // needed — resuming this already-exited vCPU on
-                        // the next loop iteration below *is* the wake.
                         raise_vector(host_ram, 0)?;
                     }
                     Ok(Step::Keep)
@@ -1047,10 +716,6 @@ fn boot_image_core_inner(
                 }
             }
             HV_EXIT_REASON_CANCELED => {
-                // The watchdog force-exited every vCPU; whichever one was
-                // inside `hv_vcpu_run` reports the hang, and names itself —
-                // "which core hung" is the first thing a three-core hang
-                // needs to say.
                 let transcript_so_far = drain_console(host_ram);
                 Err(VmmError::Timeout {
                     core,
@@ -1063,10 +728,6 @@ fn boot_image_core_inner(
         }
     }
 
-    /// One core's whole life: create nothing (its vCPU is already made on
-    /// this thread). plans/M15.md item I: overlapping `hv_vcpu_run` for
-    /// every Runnable core; Yield-`Progress` serializes the choice-log
-    /// cursor only (`next_core` forced from the log under replay).
     fn run_core(
         core: usize,
         vcpu: u64,
@@ -1088,16 +749,6 @@ fn boot_image_core_inner(
                     {
                         g.sched.state[core] = CoreState::Runnable;
                     }
-                    // Decision 7: every Runnable core may enter `hv_vcpu_run`
-                    // without waiting on `sched.current` (record and replay).
-                    // Enter-serializing replay of a concurrent-record Progress
-                    // tape deadlocks cross-core awaits; Progress forces the
-                    // Yield choice-log cursor only. Admission replay is a
-                    // multiset bag (decision 8). Cap-1 rings may under-count
-                    // under overlap — leftover / extra Admissions at finish
-                    // are tolerated like leftover Progress (park count is
-                    // host-schedule-dependent). Yield-flush recovers a stuck
-                    // cursor (Parked holder, empty pending).
                     match g.sched.state[core] {
                         CoreState::Runnable => break,
                         CoreState::Unreleased | CoreState::Parked => {
@@ -1156,17 +807,6 @@ fn boot_image_core_inner(
                 }
                 Ok(Step::Yield { release, park }) => {
                     let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
-                    // Decision 7: Progress is a single global tape. Yield
-                    // holds the log cursor before Admissions+Progress flush
-                    // (record and replay). Enter does not wait on it.
-                    //
-                    // Cursor recovery (mailbox-depth hang under overlap):
-                    // Progress may force `current` onto a Parked core whose
-                    // pending word is still clear. Enter stays concurrent, so
-                    // a sibling that could raise that wake may itself need to
-                    // Yield-flush — and would deadlock waiting on that stuck
-                    // cursor until WALL_CAP (no EXIT_MMIO_ADDR). If the holder
-                    // cannot reach a Yield, take the cursor.
                     loop {
                         if guard.sched.done {
                             guard.sched.state[core] = CoreState::Finished;
@@ -1201,9 +841,6 @@ fn boot_image_core_inner(
                     }
                     let index = g.chooser.resolved_count();
                     let live_next = next_core(&mut g.sched, core, host_ram, cores_declared);
-                    // Release: Progress stays on the releasing core so replay
-                    // keeps publishing; secondaries overlap under record and
-                    // take the cursor on a later park Progress.
                     let progress_core = if release {
                         core as u32
                     } else {
@@ -1260,12 +897,6 @@ fn boot_image_core_inner(
                             Some(next) => {
                                 let use_core = if g.chooser.is_replaying() {
                                     let forced_usize = forced as usize;
-                                    // Do not plant a stuck cursor: a Progress
-                                    // target that is Parked with an empty
-                                    // pending word cannot Yield-flush, and
-                                    // under concurrent enter that deadlocks
-                                    // siblings waiting on the log cursor
-                                    // (boot-cross-core-mailbox-depth).
                                     if forced_usize < cores_declared
                                         && (g.sched.state[forced_usize] != CoreState::Parked
                                             || pending_word(host_ram, forced_usize) != 0)
@@ -1384,8 +1015,6 @@ fn boot_image_core_inner(
         }
     }
 
-    // Core `n`'s own entry address: the report's `Entry base=` for core 0,
-    // its own `CoreEntry core=n base=` line for the rest.
     let mut core_entry = [0u64; CORE_SLOTS];
     core_entry[0] = parsed.entry;
     for CoreEntry { core, base } in &parsed.core_entries {
@@ -1405,8 +1034,6 @@ fn boot_image_core_inner(
             threads.push(scope.spawn(move || {
                 let ram = ram;
                 let SendPtr(host_ram) = ram;
-                // HVF binds a vCPU to its creating thread: create, register,
-                // run and destroy all happen right here.
                 let mut vcpu: u64 = 0;
                 let mut exit_ptr: *mut HvVcpuExit = std::ptr::null_mut();
                 #[cfg(test)]
@@ -1419,7 +1046,6 @@ fn boot_image_core_inner(
                 let create_code =
                     unsafe { hv_vcpu_create(&mut vcpu, &mut exit_ptr, std::ptr::null_mut()) };
                 if create_code != HV_SUCCESS {
-                    // Decision 1062: named host-refuse, not a bare Hvf.
                     let mut g = shared.lock().unwrap_or_else(|e| e.into_inner());
                     g.error
                         .get_or_insert(host_cores_refuse(cores_declared, core, create_code));
@@ -1436,12 +1062,6 @@ fn boot_image_core_inner(
                 }
                 let _ = tx.send(core);
 
-                // 06 §3: "points `x0` at the machine-info page ... and starts
-                // vCPU 0 at the image entry." Every core gets the identical
-                // boot register state at its own entry — there is no
-                // per-core discovery register and no MPIDR read: a core
-                // knows which core it is because the image gave it its own
-                // entry block (06 §3: "no discovery").
                 let set = |reg: u32, value: u64| -> Result<(), VmmError> {
                     let r = unsafe { hv_vcpu_set_reg(vcpu, reg, value) };
                     if r == HV_SUCCESS {
@@ -1456,13 +1076,7 @@ fn boot_image_core_inner(
                 let init = (|| -> Result<(), VmmError> {
                     set(hv_reg_xn(0), machine_layout::MACHINE_INFO_BASE)?;
                     set(HV_REG_PC, entry)?;
-                    // EL1h (`SPSel = 1`), every exception masked
-                    // (`DAIF = 1111`) — the standard bare-metal AArch64 boot
-                    // value, plans/M5.md decision text's own "0x3c5".
                     set(HV_REG_CPSR, 0x3c5)?;
-                    // Decision 1064: SP from report `CoreStack` (top =
-                    // base+size). Guest entry also installs SP; the report
-                    // is still the VMM's whole config.
                     let r = unsafe { hv_vcpu_set_sys_reg(vcpu, HV_SYS_REG_SP_EL1, sp_top) };
                     if r != HV_SUCCESS {
                         return Err(VmmError::Hvf {
@@ -1492,9 +1106,6 @@ fn boot_image_core_inner(
                         wake.notify_all();
                     }
                 }
-                // Clear this core's handle *under the lock* before
-                // destroying it, so the watchdog's own `hv_vcpus_exit` can
-                // never name a destroyed vCPU.
                 {
                     let mut g = shared.lock().unwrap_or_else(|e| e.into_inner());
                     g.vcpus[core] = 0;
@@ -1504,17 +1115,10 @@ fn boot_image_core_inner(
                 }
             }));
         }
-        // Every core has registered its handle before the watchdog can name
-        // any of them.
         for _ in 0..cores_declared {
             let _ = handles_rx.recv();
         }
 
-        // --- watchdog thread (decision 15's own host-side wall cap) --------
-        // With three cores, a hang on *any* of them must still terminate the
-        // boot: force-exit every live vCPU, and let whichever core was
-        // actually inside `hv_vcpu_run` report the timeout under its own
-        // number.
         let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
         let watchdog_shared = &shared;
         let watchdog_wake = &wake;
@@ -1529,9 +1133,6 @@ fn boot_image_core_inner(
                 }
                 g.sched.done = true;
                 drop(g);
-                // Wake any core parked in `sleep_until_park_deadline`'s
-                // Condvar wait — without this, a force-exit alone leaves
-                // the sleeper waiting out its current slice.
                 watchdog_wake.notify_all();
             }
         });
@@ -1541,8 +1142,6 @@ fn boot_image_core_inner(
         let _ = done_tx.send(());
         let _ = watchdog.join();
     });
-    // Nothing else can hold the lock now (every core thread and the watchdog
-    // were joined inside the scope above).
     let shared = shared.into_inner().unwrap_or_else(|e| e.into_inner());
     if let Some(e) = shared.error {
         return Err(e);
@@ -1554,9 +1153,6 @@ fn boot_image_core_inner(
                 .to_string(),
         )
     })?;
-    // plans/M10.md item B1 / decision 591: the abort re-entrancy latch must
-    // be clear on every green boot. A nonzero value after exit 0 means an
-    // abort path ran (or left the latch set) on a boot that claimed success.
     if exit_code == 0 {
         let latch_off = (machine_layout::MACHINE_INFO_BASE - machine_layout::DRAM_BASE
             + machine_info::OFF_ABORT_LATCH) as usize;
@@ -1568,42 +1164,14 @@ fn boot_image_core_inner(
             )));
         }
     }
-    // plans/M8.md item C1: every core this image released must have
-    // executed its own entry block. The mark is guest-written (each core's
-    // entry stores `machine_info::core_mark_running(n)` into its own slot),
-    // so a core that never ran leaves a zero the zeroed reservation put
-    // there — a released-but-dead core is a machine that silently ran an
-    // image on fewer cores than it claims, which is the exact failure this
-    // item exists to make impossible.
-    //
-    // Keyed on the release the guest actually rang, not on the report's
-    // declared count. A `wrela build` image is the case that forced this:
-    // `layout_program`'s entry stub halts with `EXIT_CODE_NO_RUNTIME` and
-    // never calls `build_entry_driver`, so its release block — the same one
-    // that writes core 0's own mark — is never emitted at all. Such an
-    // image still carries `CoreEntry` lines in its report, because it still
-    // *contains* the secondary entry blocks; checking the declared count
-    // there reported "core 0 was released but never ran its own entry
-    // block" about a core that was never released, and turned a clean
-    // "no runtime yet" exit (1) into a bad-image fault (2). The marks are
-    // evidence of the release, so the release is what decides whether to
-    // demand them.
     if shared.released {
         check_core_marks(host_ram, cores_declared)?;
     }
 
-    // decision 12: the transcript is read from the ring pages only after the
-    // guest halts.
     let transcript = drain_console(host_ram);
-    // Decision 1065: evidence length is the sealed N, not CORE_SLOTS.
-    // Marks pack 0x68..0x168; line buf lives at 0x218 — no overlap.
-    // Length N (not CORE_SLOTS) is the sealed bring-up count.
     let core_marks = (0..cores_declared)
         .map(|c| read_core_mark(host_ram, c))
         .collect::<Vec<u64>>();
-    // Integrity Phase 2 Item N: Lane 3 host snapshot of the placed LANE2
-    // page — compared to the guest `lane2 hits=` dump by the agreement
-    // oracle (`lane3::agree_lane2_vs_host`).
     let lane2_hits = crate::lane3::read_lane2_hits(host_ram);
     let (choices, divergences) = record::finish_chooser(shared.chooser)?;
     Ok((
@@ -1626,10 +1194,6 @@ pub fn boot_image(_report_path: &Path, _img_path: &Path) -> Result<BootOutcome, 
     ))
 }
 
-/// Non-HVF-host stub for `boot_image_core` (`record::replay`'s own
-/// dependency) — fails closed exactly like `boot_image` above, so
-/// `record::replay` is callable (and fails the same honest way) on every
-/// host, not only the one this milestone actually boots on.
 #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
 pub(crate) fn boot_image_core(
     _report_path: &Path,

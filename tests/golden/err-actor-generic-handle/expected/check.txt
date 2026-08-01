@@ -1,1 +1,1 @@
-error[actor]: `Actor[Box[u64]]` names a generic instantiation; an actor handle to a generic struct is not implemented (M6 scope) at 28:5
+error[actor]: `Actor[Box[u64]]` names a generic instantiation; an actor handle to a generic struct is not implemented (M6 scope) at 14:5

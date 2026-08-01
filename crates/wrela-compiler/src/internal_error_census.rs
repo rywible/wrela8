@@ -1,17 +1,9 @@
-//! **Census of `internal error:` producer sites** (plans/M9.md item II;
-//! the pinned rule).
-//!
-//! Allowlist lives in `tests/census.toml` (`[internal_error]`); this
-//! module owns the source-tree scan that locks against it.
-
 use crate::census;
 
-/// Per-file counts from [`census::data`].
 pub fn sites_by_file() -> &'static std::collections::BTreeMap<String, usize> {
     &census::data().internal_error.sites_by_file
 }
 
-/// Total sites across [`sites_by_file`].
 pub fn site_count() -> usize {
     census::data().internal_error.total
 }
@@ -22,8 +14,6 @@ mod tests {
     use std::collections::BTreeMap;
     use std::path::PathBuf;
 
-    /// The producer-bug prefix, assembled so this file's own source does
-    /// not contain the contiguous substring the scan looks for.
     fn producer_bug_prefix() -> String {
         format!("{}{}", "internal", " error:")
     }
@@ -55,7 +45,6 @@ mod tests {
                 .expect("file under src/")
                 .to_string_lossy()
                 .replace('\\', "/");
-            // Census modules document the prefix; they are not producers.
             if rel == "internal_error_census.rs" || rel == "census.rs" {
                 continue;
             }
@@ -96,31 +85,7 @@ mod tests {
         );
         assert_eq!(
             site_count(),
-            // 206 -> 207: plans/M20.md item C adds one producer-bug guard in
-            // `cost/bridge.rs` (score.rs must yield one schedule length per
-            // basic-block range).
-            // 207 -> 210: plans/codegen-pareto.md item B1 adds three
-            // `Reloc::RodataAdr`-with-empty-rodata guards, one per reloc
-            // resolution loop (`layout.rs`, and both of `layout/harness.rs`'s)
-            // — the exact twins of the `Reloc::Rodata` guards beside them,
-            // unreachable for the identical reason (interning a literal is
-            // what fills the pool).
-            // 210 -> 211: plans/codegen-pareto.md item F5 makes
-            // `layout::patch_bl` refuse a relocation word that is not
-            // already a `B`/`BL`. A tail call is patched as the `B` the
-            // emitter encoded, so the patcher reads the word's own opcode
-            // instead of overwriting it — and a word that is neither form
-            // means the reloc names a site the emitter did not put a
-            // branch at, which is a producer bug and now says so.
-            // 211 -> 213: plans/codegen-pareto.md item F, decision 1793.
-            // `codegen::verify_conventions` checks every published clobber
-            // set against the emitted code and refuses the build if one is
-            // not a superset — two producer-bug sites, one for a
-            // convention with no code behind it and one for the check
-            // itself. Both are unreachable from any source program and are
-            // meant to stay that way; the boot transcripts are what proved
-            // the check was missing.
-            213,
+            197,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }

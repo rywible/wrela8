@@ -1,8 +1,5 @@
 module examples.err_cap_drop_option
 
-# plans/M7.md item I: protocol-consumption must reach through Option.
-# Wrapping a taken DeviceCap in Some(...) and dropping the Option used to
-# compile — the predicate only matched a root Named leaf.
 
 struct BlockHw:
     id: u32

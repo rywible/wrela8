@@ -1,8 +1,3 @@
-# plans/M9.md item E: 05-library.md §5 time surface as ordinary wrela.
-# Constructors are phase-neutral checked functions; Instant is opaque
-# (fields private to this module — only this module and the `now()`
-# intrinsic mint it). `now()` itself stays a sealed compiler intrinsic
-# (recorded/replayed through ClockRead).
 module time
 
 pub struct Duration:

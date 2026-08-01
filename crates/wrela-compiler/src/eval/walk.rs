@@ -1,24 +1,12 @@
-//! Shared typed-tree walk skeleton for effect / observes / legality scans.
-//!
-//! One recursion over `TypedStmt` / `TypedExpr` / `TypedPattern`; visitors
-//! decide what to collect. Keeps `legal.rs` and `observes.rs` from each
-//! owning a near-identical match.
-
 use crate::sema::typed::{
     TypedClosureBody, TypedDeferBody, TypedExpr, TypedExprKind, TypedForIter, TypedPattern,
     TypedPatternKind, TypedStmt, TypedStmtKind,
 };
 
-/// Callbacks during a typed-tree walk.
 pub trait Visitor {
-    /// Called before descending into a statement's children.
     fn pre_stmt(&mut self, _stmt: &TypedStmt) {}
-    /// Called before descending into an expression's children.
     fn pre_expr(&mut self, _expr: &TypedExpr) {}
-    /// A direct callee edge (`Call` / `FnRef` / `OpCall` / `GroupChild` / `Try` conv).
     fn on_callee(&mut self, _key: String) {}
-    /// Whether match / `is` patterns should be walked (legality collects
-    /// callees from pattern literals; observes does not need them).
     fn walk_patterns(&self) -> bool {
         false
     }

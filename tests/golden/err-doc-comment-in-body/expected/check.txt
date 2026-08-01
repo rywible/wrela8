@@ -1,1 +1,2 @@
-error[parse]: a `##` doc comment attaches to the immediately following declaration (02-language.md §1), and a statement is not a declaration — use a plain `#` comment inside a body at 18:5
+Module path=examples.err_doc_comment_in_body
+  Fn count() -> u32

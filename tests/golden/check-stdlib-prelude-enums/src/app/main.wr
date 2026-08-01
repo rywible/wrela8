@@ -1,7 +1,5 @@
 module app.main
 
-# plans/M9.md item I: the five formerly-prelude enums are real stdlib
-# source. Explicit import compiles them through the ordinary pipeline.
 from core.target import Target
 from core.failure import Failure
 from core.boot_error import BootError

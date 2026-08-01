@@ -1,36 +1,3 @@
-//! The baked atlas: an octree of certified analytic solves.
-//!
-//! plans/graphics.md §13 rejects bakes on three grounds — staleness,
-//! dynamism, redundancy — and the first is the real one: "a second
-//! representation that can drift from the truth". This module is what a bake
-//! looks like when that objection is answered rather than dodged.
-//!
-//! Every cell stores a degree-2 polynomial proxy for the field *plus a
-//! certified error bound* `ε`, derived at bake time from the same affine
-//! machinery §2.1 runs. At trace time the proxy gives a closed-form root; the
-//! true pruned tape then verifies it. A proxy that lies cannot produce a
-//! wrong pixel — it can only produce a wasted verification and a fallback to
-//! marching. So the bake is an *accelerator with a proof*, not a second
-//! source of truth, and `run_atlas`'s soundness gate compares every pixel
-//! against an independent march to keep it honest.
-//!
-//! Staleness dies for a structural reason as well: the image is recompiled
-//! whole on every update ([01 §1](../../../docs/language/01-model.md)), so a
-//! baked cell cannot outlive the expression it was baked from.
-//!
-//! What the atlas precomputes, in the order it matters:
-//!
-//! 1. **The pruning.** §2.2's tape reduction is a function of *region*, not
-//!    of camera. The probe re-derives it every frame (10.8% of the measured
-//!    frame); for static structure the answer never changes.
-//! 2. **Empty space, aggregated.** A large node proved empty is skipped in
-//!    one ray-box test, where sphere tracing pays a step per unbounding
-//!    sphere. This is the answer to §2.5's "linear asymptotic crawl".
-//! 3. **The solve.** §2.3 says "solve, do not march" but only for subtrees
-//!    that are polynomial by construction. A certified quadratic proxy makes
-//!    *every* cell polynomial, including inside `smin` blend bands — which is
-//!    exactly where §16.2's worst-case scene spends its time.
-
 use crate::aff::{Aff, Iv};
 use crate::eval::{eval, eval_aff};
 use crate::probe::{Scratch, march};
@@ -78,7 +45,6 @@ impl Aabb {
         }
         Aabb { lo, hi }
     }
-    /// Slab test. Returns the entry/exit parameters clipped to `[t0, t1]`.
     #[inline]
     pub fn hit(&self, o: [f32; 3], inv: [f32; 3], t0: f32, t1: f32) -> Option<(f32, f32)> {
         let mut a = t0;
@@ -97,11 +63,8 @@ impl Aabb {
     }
 }
 
-/// A degree-2 trivariate proxy in cell-local coordinates normalised to
-/// `[-1,1]³`, with a certified sup-norm error bound.
 #[derive(Clone)]
 pub struct Proxy {
-    /// `1, x, y, z, x², y², z², xy, xz, yz`
     pub c: [f32; 10],
     pub eps: f32,
     pub tape: u16,
@@ -109,18 +72,10 @@ pub struct Proxy {
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Kind {
-    /// Provably contains no surface.
     Empty,
-    /// Provably interior to a solid. Carries a tape so a ray that reaches it
-    /// can refine back onto the surface instead of reporting the cell face:
-    /// terminating at `t0` quantises the hit to the cell size, which showed
-    /// up as 7,513 disagreements against ground truth.
     Full(u16),
-    /// Certified quadratic proxy.
     Proxy(u32),
-    /// Proxy did not certify at the depth cap: march the pruned tape here.
     Live(u16),
-    /// First of eight children.
     Branch(u32),
 }
 
@@ -129,14 +84,12 @@ pub struct Atlas {
     pub nodes: Vec<Kind>,
     pub proxies: Vec<Proxy>,
     pub tapes: Vec<Tape>,
-    // --- bake statistics -------------------------------------------------
     pub n_empty: u64,
     pub n_full: u64,
     pub n_proxy: u64,
     pub n_live: u64,
     pub n_branch: u64,
     pub deepest: u32,
-    /// Field evaluations spent baking, so the bake's own cost is on record.
     pub bake_evals: u64,
 }
 
@@ -148,7 +101,6 @@ impl Atlas {
     }
 }
 
-/// Least squares over the normal equations, `N`×`N`, partial pivoting.
 fn solve_n(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Option<Vec<f64>> {
     let n = b.len();
     for c in 0..n {
@@ -202,27 +154,6 @@ pub fn eval_proxy(c: &[f32; 10], p: [f32; 3]) -> f32 {
         + c[9] * y * z
 }
 
-/// Fit a quadratic to the field over `bb` and bound its residual.
-///
-/// **Where the certificate actually lives.** The first version of this tried
-/// to certify the proxy itself with a Lipschitz argument — sample the
-/// residual on a grid of spacing `h`, inflate by `(L_f + L_p)·h√3/2`. That is
-/// rigorous and it is useless: driving the inflation under ε needs sample
-/// spacing ~ε/L, so an ε of 0.004 wants ~80 samples per axis *per cell*. It
-/// certified zero cells out of 66,538.
-///
-/// The fix is to notice the certificate was in the wrong place. Correctness
-/// never depended on the proxy: `Empty` and `Full` come from affine
-/// arithmetic and are rigorous, and every proxy root is **verified against
-/// the true pruned tape** before it is believed, with marching as the
-/// fallback. So the proxy is a *seed*, and its residual bound is a quality
-/// heuristic that decides whether seeding is worth it — not a soundness
-/// property. What is certified is the thing that actually skips work: empty
-/// space.
-///
-/// The residual is still Lipschitz-inflated, so `eps` remains an upper
-/// bound; it is simply compared against a fraction of the cell diagonal
-/// rather than an absolute tolerance.
 fn fit_proxy(
     tape: &Tape,
     bb: &Aabb,
@@ -267,7 +198,6 @@ fn fit_proxy(
         }
     }
 
-    // Residual sup-norm on a denser grid, then the Lipschitz inflation.
     let mut worst = 0.0f32;
     let cstep = 2.0 / (chk_n - 1) as f32;
     for i in 0..chk_n {
@@ -285,27 +215,11 @@ fn fit_proxy(
             }
         }
     }
-    // The sampled residual, with no Lipschitz inflation.
-    //
-    // Inflating was correct when `eps` was load-bearing for correctness. It
-    // is not any more — verification against the true tape is — and the
-    // inflation term `(L_f + L_p)·h√3/2` is ~0.058 on a depth-8 cell whose
-    // whole diagonal is 0.128, so it swamped the quantity it was inflating
-    // and rejected 100% of proxies. An estimate is the right tool for a
-    // seeding decision; a bound was the right tool for a claim nothing
-    // downstream makes any more.
     Some((coef, worst))
 }
 
 pub struct BakeCfg {
     pub max_depth: u32,
-    /// Accept a proxy when its residual is under this fraction of the cell
-    /// diagonal **and** under `eps_abs`. Both are needed: a fraction alone
-    /// let the *root* node accept a quadratic over the whole 38-unit scene
-    /// box (residual 3 against a threshold of 4.9), which is scale-relative
-    /// nonsense. The absolute cap is what ties acceptance to the thing that
-    /// actually matters — whether the proxy root lands inside a Newton basin
-    /// of the true surface.
     pub eps_frac: f32,
     pub eps_abs: f32,
     pub fit_n: usize,
@@ -345,8 +259,6 @@ pub fn bake(tape: &Tape, bounds: Aabb, cfg: &BakeCfg, s: &mut Scratch) -> Atlas 
 }
 
 fn palette(at: &mut Atlas, t: &Tape) -> u16 {
-    // Tape palettes are small because topology is comptime (§6.3): a scene
-    // has finitely many distinct pruned tapes, and cells share them.
     for (i, e) in at.tapes.iter().enumerate() {
         if e.root == t.root && e.ops == t.ops {
             return i as u16;
@@ -401,7 +313,6 @@ fn bake_node(
                 return Kind::Proxy((at.proxies.len() - 1) as u32);
             }
         }
-        // Not certified at this size: subdivide.
         let base = at.nodes.len() as u32;
         for _ in 0..8 {
             at.nodes.push(Kind::Empty);
@@ -418,32 +329,18 @@ fn bake_node(
     Kind::Live(palette(at, &pr.tape))
 }
 
-// ---------------------------------------------------------------------------
-// Trace
-// ---------------------------------------------------------------------------
-
 #[derive(Default, Clone, Copy)]
 pub struct TraceCost {
-    /// Ray-box tests plus child ordering.
     pub node_visits: u64,
-    /// Closed-form quadratic solves.
     pub solves: u64,
-    /// True-tape evaluations spent verifying a proxy root.
     pub verify_ops: u64,
-    /// Marching inside cells the proxy could not certify.
     pub march_ops: u64,
-    /// Proxy roots the true field disagreed with.
     pub verify_fail: u64,
-    /// Rays that left the atlas and fell back to live marching.
     pub escaped: u64,
-    /// Rays that reached a provably-interior cell. A primary ray should
-    /// cross a boundary cell first, so this counts upstream misses.
     pub full_entries: u64,
 }
 
-/// FLOP charged per node visit: a 3-axis slab test plus child ordering.
 pub const NODE_FLOP: f64 = 18.0;
-/// FLOP charged for building and rooting the univariate quadratic.
 pub const SOLVE_FLOP: f64 = 34.0;
 
 impl TraceCost {
@@ -455,19 +352,6 @@ impl TraceCost {
     }
 }
 
-/// March inside one cell with that cell's pruned tape.
-///
-/// Not [`crate::probe::march`], because the shared marcher accepts any
-/// `dist < HIT_EPS·t` — including a large *negative* distance. Sampled
-/// exactly on a cell boundary a pruned tape can return a large negative
-/// (pruning is only valid strictly inside its cell), and the shared marcher
-/// reads that as "hit, here", quantising the intersection to the cell face.
-/// That single behaviour produced every one of the 4,086 depth disagreements
-/// against ground truth, and it shrank with cell size (worst 1.41 world units
-/// at depth 9, 0.22 at depth 11) exactly as a quantisation artefact should.
-///
-/// So: reject a start that is implausibly inside, refine it back onto the
-/// surface, and require `|f|` small — not `f` small — to call it a hit.
 fn march_cell(
     tape: &Tape,
     o: [f32; 3],
@@ -486,7 +370,6 @@ fn march_cell(
             return (Some(t), steps);
         }
         if f < 0.0 {
-            // Overshot (or entered already inside): Newton back onto it.
             t += f;
             if t < t0 - 1e-3 {
                 return (None, steps);
@@ -498,7 +381,6 @@ fn march_cell(
     (None, steps)
 }
 
-/// Smallest root of `A t² + B t + C` in `[t0, t1]`, or `None`.
 #[inline]
 fn quad_root(a: f32, b: f32, c: f32, t0: f32, t1: f32) -> Option<f32> {
     if a.abs() < 1e-9 {
@@ -513,7 +395,6 @@ fn quad_root(a: f32, b: f32, c: f32, t0: f32, t1: f32) -> Option<f32> {
         return None;
     }
     let sq = disc.sqrt();
-    // Numerically stable pair.
     let q = -0.5 * (b + b.signum() * sq);
     let (r0, r1) = (
         q / a,
@@ -549,9 +430,6 @@ fn trace_node(
     cost.node_visits += 1;
     match node {
         Kind::Empty => None,
-        // Inside a solid. The surface is behind the entry point, so refine
-        // back onto it with the true tape rather than returning the cell
-        // face — the face is only accurate to one cell width.
         Kind::Full(ti) => {
             cost.full_entries += 1;
             let tape = &at.tapes[ti as usize];
@@ -571,7 +449,6 @@ fn trace_node(
             let px = &at.proxies[i as usize];
             let c = bb.centre();
             let h = bb.half();
-            // Ray in cell-local normalised coordinates.
             let lo = [
                 (o[0] - c[0]) / h[0],
                 (o[1] - c[1]) / h[1],
@@ -597,23 +474,13 @@ fn trace_node(
             let cc = eval_proxy(k, lo);
             cost.solves += 1;
 
-            // The true surface lies where the proxy is within ε of zero, so
-            // bracket on ±ε rather than on the bare root.
             let tape = &at.tapes[px.tape as usize];
             let root = quad_root(a, b, cc - 0.0, t0, t1)
                 .or_else(|| quad_root(a, b, cc - px.eps, t0, t1))
                 .or_else(|| quad_root(a, b, cc + px.eps, t0, t1));
             if let Some(tr) = root {
-                // Verify against the expression: two Newton steps on the
-                // true pruned tape. The proxy is an accelerator, never an
-                // authority.
                 let mut t = tr;
                 for _ in 0..3 {
-                    // A pruned tape is only valid inside its own cell, so a
-                    // Newton step that leaves the cell invalidates the very
-                    // evaluation used to test convergence. Range-check first,
-                    // then converge — the other order accepts roots found
-                    // with a tape that does not describe the field there.
                     if t < t0 - 1e-4 || t > t1 + 1e-4 {
                         break;
                     }
@@ -627,9 +494,6 @@ fn trace_node(
                 }
                 cost.verify_fail += 1;
             }
-            // Certificate held but the root was not in this cell, or the
-            // verification wandered: fall back to marching, which is always
-            // correct and is what the ε bound guarantees we can do.
             let (hit, steps) = march_cell(tape, o, d, t0, t1, s);
             cost.march_ops += steps as u64 * tape.weight() as u64;
             hit
@@ -641,7 +505,6 @@ fn trace_node(
             hit
         }
         Kind::Branch(base) => {
-            // Visit children in ray order; the first hit wins.
             let mut order: [(f32, usize); 8] = [(f32::INFINITY, 0); 8];
             let mut n = 0;
             for i in 0..8 {
@@ -677,7 +540,6 @@ fn trace_node(
     }
 }
 
-/// Trace a ray through the atlas. Falls back to the live tape outside it.
 pub fn trace(
     at: &Atlas,
     full: &Tape,
@@ -709,10 +571,6 @@ pub fn trace(
         if let Some(t) = trace_node(at, at.nodes[0], at.bounds, o, d, inv, a, b, cost, s) {
             return Some(t);
         }
-        // Cleared the atlas without hitting: geometry may still lie beyond it
-        // (the ground plane runs to the horizon), so the live tape finishes
-        // the ray. Counted, because an atlas that only covers the near field
-        // is an atlas that flatters itself.
         if b < t_far {
             cost.escaped += 1;
             let (hit, steps) = march(full, o, d, b, t_far, s);

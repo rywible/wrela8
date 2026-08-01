@@ -1,26 +1,3 @@
-//! Proxy A/B harness (plans/M18.md items H+J, decisions 1370–1374 /
-//! 1385–1389; plans/M19.md item D / 1440–1449; integrity Item E).
-//!
-//! Rank two emissions by scoreboard total only — no wall time, no host
-//! calibration.
-//!
-//! The three `BoundsElide` A/B oracles that used to live here — the
-//! capstone smoke, its mode-named twin, and the per-fn corpus
-//! monotonicity run — left with the opt's `RELEASE_OPTS` membership
-//! (plans/codegen-pareto-2.md item L, decision 1970) and did **not**
-//! come back when item N parked the opt (decision 1912). Two of them
-//! asked `Release < Dev` on a fixture, which is simply false for an opt
-//! the product does not ship, and the third re-scored the whole cost
-//! corpus twice to assert a monotonicity that the transform's own shape
-//! guarantees. What replaced them is one artifact-level oracle over the
-//! opt *named explicitly* —
-//! `opts::win::tests::parked_bounds_elide_still_transforms_and_is_still_flat_on_the_appliance`
-//! — plus `diff-eval --with-opt BoundsElide`. Ranking two *opt lists* is
-//! `opts::win::compare_opt_lists_over_box`'s job and always was.
-//!
-//! Cost tags / scoreboard stay always-on in both modes (freeze 1408);
-//! modes flip emission, not instrumentation.
-
 use std::cmp::Ordering;
 
 use crate::codegen::CodegenProgram;
@@ -30,29 +7,19 @@ use crate::placement::PlacementTable;
 use super::score::{CostReport, score_program};
 use super::table::CostTable;
 
-/// Options that label which emission was scored (mirrors
-/// `opts::apply_mode` / `CompileMode`). Scoring itself ignores this —
-/// cost instrumentation is always-on (freeze 1408); callers use it to
-/// name which program they passed in.
 #[derive(Debug, Clone, Copy)]
 pub struct CostOpts {
-    /// Mode used to produce the emission (`Release` ⇒ `RELEASE_OPTS`;
-    /// `Dev` ⇒ every opt off).
     pub mode: CompileMode,
 }
 
 impl Default for CostOpts {
     fn default() -> Self {
-        // Product default path = release (plans/M19.md item D).
         Self {
             mode: CompileMode::Release,
         }
     }
 }
 
-/// Score a program under opts. Scoring ignores opts except that
-/// callers use opts to choose which program/emission to score;
-/// instrumentation remains always-on (freeze 1408).
 pub fn score_with_opts(
     program: &CodegenProgram,
     table: &CostTable,
@@ -62,7 +29,6 @@ pub fn score_with_opts(
     score_program(program, table, placement)
 }
 
-/// Compare two emissions: returns Ordering of a.total vs b.total (proxy rank).
 pub fn rank_cmp(a: &CostReport, b: &CostReport) -> Ordering {
     a.total_proxy_cycles.cmp(&b.total_proxy_cycles)
 }
@@ -77,8 +43,6 @@ mod tests {
     use crate::cost::table::load_default;
     use crate::opts::CompileMode;
 
-    /// plans/M20.md item D: score against the committed profile, not an
-    /// inline v2 fixture.
     fn table() -> CostTable {
         load_default().expect("bench/a76-pi5.toml")
     }
@@ -127,7 +91,6 @@ mod tests {
     #[test]
     fn dependent_chain_ranks_higher_than_independent_alus() {
         let table = table();
-        // Program A: independent alus (same issue window).
         let a_prog = prog(
             "a",
             vec![
@@ -135,7 +98,6 @@ mod tests {
                 word(CostRule::Alu, Some(2), &[3, 3]),
             ],
         );
-        // Program B: dependent chain, same word count — longer schedule.
         let b_prog = prog(
             "b",
             vec![

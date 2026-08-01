@@ -1,7 +1,5 @@
 module examples.check_list_backend
 
-# plans/M9.md item MM: List[T, N] mutating methods lower in guest code
-# (nested `self.data[i] = ...` place assign). Pins mwir/asm of push/len.
 
 from core.list import List, ListFull
 

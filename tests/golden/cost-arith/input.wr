@@ -1,7 +1,5 @@
 module examples.cost_arith
 
-# Cost-stage golden (plans/M18.md item F) — same shapes as asm-arith
-# (checked add/div, wrapping add, mixed).
 
 pub fn checked_add(a: u32, b: u32) -> u32:
     return a + b

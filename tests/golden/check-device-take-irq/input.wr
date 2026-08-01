@@ -1,11 +1,5 @@
 module examples.check_device_take_irq
 
-# plans/M7.md item H1 self-audit — `claimed.take_irq()` — opened by item G
-#
-# What this case caught: the H1 fail-closed that named item G. `take_irq`
-# now type-checks and returns `IrqCap[u32]`; whether the device owns a
-# vector is checked over the sealed graph (`golden/err-irq-unowned-vector`).
-# Store the cap so protocol-consumption (E3) does not mask that surface.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

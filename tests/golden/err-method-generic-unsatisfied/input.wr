@@ -1,8 +1,5 @@
 module examples.err_method_generic_unsatisfied
 
-# plans/M13.md item Q: method-owned generic whose requirement set is
-# unsatisfied — why-chain names the method, the required signature, and
-# the instantiation site (same shape as err-generic-missing-method).
 
 struct Sector:
     id: u64

@@ -1,9 +1,5 @@
 module app.main
 
-# plans/M9.md item GG: two peer aliases in one importer, simultaneous
-# substitution, asymmetric settle. P = 3+400 = 403; R = 11+700 = 711;
-# SETTLED = 403*1000 + 711 = 403711. Swapping the additives or the
-# inputs cannot forge 403711 from a transposed map.
 
 from lib.pk import Src as In
 from lib.pk import Hand as Grip
@@ -37,8 +33,6 @@ pub fn t_settled():
     assert SETTLED == 403711, "asymmetric settle"
 
 
-# Guest-reachable path (plans/M9.md item KK): H3 dropped dual-alias helpers
-# from asm; `@test(runtime)` seeds param + return paths.
 @test(runtime)
 pub fn guest_sig_dual():
     assert param_path() == 403, "param path at guest"

@@ -1,22 +1,5 @@
 module examples.err_test_async_bare_illegal
 
-# 02-language.md §12.2: "A test whose closure is comptime-legal runs in
-# the build evaluator; `@test(runtime)` or an illegal closure makes it a
-# generated image test." A bare `@test` (no `(runtime)`) is declared
-# `TestKind::Comptime`; an `async fn`'s own color is itself an async
-# operation (plans/M6.md item A: `eval::legal` marks every `async fn`
-# illegal for comptime unconditionally, regardless of body content) —
-# `eval::check_test_legality` (already wired since plans/M4.md item B:
-# "every comptime-run `@test` ... must itself be comptime-legal, checked
-# here ... rather than only lazily inside `wrela test`'s own report")
-# rejects the whole build the moment a *declared*-`Comptime` test turns
-# out illegal, exactly like an `@test` fn that directly called a
-# restricted `@image` intrinsic already did — this is not a new rule
-# this item adds, only the first case that actually exercises it: a bare
-# `@test` on an `async fn` needs `(runtime)` to become the doc's own
-# "generated image test" path (M6+); without it, the mismatch between
-# the declared tier and the closure's own actual legality is a build
-# error, not a silent promotion.
 @test
 async fn test_needs_runtime_marker():
     pass

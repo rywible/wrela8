@@ -2,8 +2,6 @@ module app.main
 
 from core.time import Instant
 
-# plans/M13.md item G3 / 05 §5: Instant is opaque — forging via
-# Instant(nanos=...) from a foreign module is error[sema].
 fn forge() -> Instant:
     return Instant(nanos=999999)
 

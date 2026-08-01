@@ -1,9 +1,5 @@
 module examples.ast_generic_arg_paren_expr
 
-# plans/M7.md item I soak find (fuzz sema seed=8802): the pretty-printer
-# wraps non-atomic Binary operands in parens inside type args
-# (`DmaPool[P, (40 + z) + 96]`). That spelling must reparse as the same
-# const expression generic arg — not fall into parse_type's tuple arm.
 
 pool Payloads
 

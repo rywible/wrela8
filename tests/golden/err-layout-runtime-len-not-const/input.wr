@@ -1,20 +1,5 @@
 module examples.err_layout_runtime_len_not_const
 
-# plans/M10.md item A2b: an array length is an integer literal or the name of a
-# module-level `const`. `Other` is a name that resolves perfectly well — it is
-# a struct — and is still not a length, so the completion pass refuses it by
-# name instead of evaluating whatever it can find under that spelling.
-#
-# The two neighbouring cases deliberately land elsewhere, and both are the
-# right answer:
-#
-# - a length naming *nothing* (`[u32; NOPE]`) is `error[name]: unknown name
-#   NOPE`, from the real name resolver, before this pass ever runs;
-# - a length naming a `const` that a `comptime if` removed is the same
-#   `error[name]`, because `specialize` deleted the declaration — which is
-#   exactly why the completion pass reads the one real const table instead of
-#   scanning the module for `const` items itself (decision 580's rejected
-#   alternative (ii)).
 
 struct Other:
     n: u32

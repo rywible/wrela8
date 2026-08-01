@@ -1,8 +1,5 @@
 module examples.err_slotmap_stale_key
 
-# plans/M9.md item F: stale keys miss (05 §7). Dynamic property — pinned
-# as a test oracle (expected/test.txt). Named `err-*` in the plan because
-# aliasing would be the safety bug; the assert fires if a stale key hits.
 
 from core.slotmap import SlotMap, Key
 

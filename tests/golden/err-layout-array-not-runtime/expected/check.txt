@@ -1,1 +1,1 @@
-error[type]: field `Header.words: [u32; 4]` is an array, but `Header` is a `@layout(wire)` type; a fixed-length array field is the `runtime` kind's own allowance, which "the other three kinds do not have" (03-hardware.md §3.1) at 18:5
+error[type]: field `Header.words: [u32; 4]` is an array, but `Header` is a `@layout(wire)` type; a fixed-length array field is the `runtime` kind's own allowance, which "the other three kinds do not have" (03-hardware.md §3.1) at 7:5

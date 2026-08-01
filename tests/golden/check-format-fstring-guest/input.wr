@@ -1,12 +1,5 @@
 module examples.check_format_fstring_guest
 
-# plans/M9.md item D3: guest-reachable Format + f-string lowering.
-# H3's reachability walk dropped every comptime-only Format/f-string fn
-# from check-format-bound / check-fstring-bounds mwir dumps, so those
-# goldens no longer pin the backend. A `pub` method on an `@actor` is a
-# real guest root (method-index dispatch); this fixture pins mwir
-# (FormatScalar / StringConcat / Call Pt.format), asm (frames), and a
-# boot value through that method.
 
 pub struct Pt deriving(Format):
     x: u32

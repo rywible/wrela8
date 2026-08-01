@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/check_irq_bind.wr sha256=e30aea7888340e4531ef60b653d48a73858e295aaea5025d79059ff8f1296a82
+  Input path=examples/check_irq_bind.wr sha256=94c65ea677343c34648ea8df368ae96b832863a02d82948737e101cd00308090
   Input path=<generated> sha256=e21b7763766369f9d6971791b16b08bbe666eedc578ff755d876bbc98876f0bd
   Name value=check-irq-bind
   Target value=Target.wrela_machine_v1

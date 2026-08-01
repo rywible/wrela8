@@ -1,7 +1,5 @@
 module examples.err_wake_outside_isr
 
-# plans/M7.md item G: `wake` outside an ISR and outside a `@task` is
-# refused — ordinary code has no delivery contract for the sticky bit.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

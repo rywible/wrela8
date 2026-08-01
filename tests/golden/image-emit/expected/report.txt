@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=image_emit.wr sha256=40116e0617a88bafe844f383a9895e395d40fd1ec1a395b79e2389c4d45b43dc
+  Input path=image_emit.wr sha256=42e9404501f7c3b450e0afa4a5d1160f26a41c2bb6c81e565cb4f4141d089d3d
   Name value=emit-demo
   Target value=Target.wrela_machine_v1
   OnFailure index=0 policy=Failure.Halt

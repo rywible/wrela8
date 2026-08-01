@@ -1,1 +1,1 @@
-error[type]: `Mmio[Record]` requires `Record` to be an `@layout(mmio)` struct (03-hardware.md §2: a typed register layout) at 19:5
+error[type]: `Mmio[Record]` requires `Record` to be an `@layout(mmio)` struct (03-hardware.md §2: a typed register layout) at 11:5

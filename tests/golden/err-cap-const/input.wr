@@ -1,11 +1,5 @@
 module examples.err_cap_const
 
-# plans/M7.md item A, 03-hardware.md §1. A module `const` is a
-# comptime-evaluated value (02-language.md §12) and no comptime evaluation
-# produces a capability — a `const` typed as one is a constructor claim
-# with nothing behind it. Rejected at the declaration rather than at
-# whatever initializer would have had to satisfy it, so the diagnostic
-# names the rule instead of the type mismatch.
 
 struct VirtioBlock:
     id: u32

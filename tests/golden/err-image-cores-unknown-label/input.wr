@@ -1,7 +1,5 @@
 module examples.err_image_cores_unknown_label
 
-# plans/M15.md item B / image.cores.authoring: unknown Image(...) labels
-# are a build/comptime error (close the silent-drop hole).
 
 @image
 pub fn build() -> Image:

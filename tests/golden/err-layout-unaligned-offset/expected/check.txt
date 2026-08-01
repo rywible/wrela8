@@ -1,1 +1,1 @@
-error[type]: field `VirtioIrqMmio.interrupt_status: ReadOnly[u32]` at `@offset(0x62)` is not 4-byte aligned (03-hardware.md §2) at 10:20
+error[type]: field `VirtioIrqMmio.interrupt_status: ReadOnly[u32]` at `@offset(0x62)` is not 4-byte aligned (03-hardware.md §2) at 6:20

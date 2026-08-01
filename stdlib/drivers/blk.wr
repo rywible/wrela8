@@ -1,15 +1,3 @@
-# plans/M16.md item C / decisions 1130–1136: virtio-blk driver + shared
-# layouts, relocated from tests/golden/boot-blk-roundtrip (move, don't
-# redesign). Temporary duplication until Wave D migrates boot goldens.
-#
-# Frozen pub export set: VirtioIrqMmio, BlkReqHeader, BlkReqStatus,
-# DmaBlock, VirtioBlock, Feature, BlkDriver, plus the consts method
-# bodies name (QDEPTH / SECTOR / BLK_T_* / MAGIC / PHASE_*) — importers
-# must import those consts so A1b's splice makes them evaluable under
-# the importer's TypedProgram (guest lower of spliced `@driver` methods).
-# Pool brands BlockControl / BlockPayloads are declared here (grammar
-# forbids `pub pool`; they are not importable names — Wave D redeclares
-# or binds by string identity).
 module blk
 
 @layout(mmio, endian=little)
@@ -43,7 +31,6 @@ pub const SECTOR: usize = 512
 pub const BLK_T_IN: u32 = 0
 pub const BLK_T_OUT: u32 = 1
 pub const MAGIC: u64 = 0xC0FFEE00BEEF42A1
-# phase: 1 = write in flight; 2 = read in flight; 3 = done
 pub const PHASE_WRITE: u32 = 1
 pub const PHASE_READ: u32 = 2
 pub const PHASE_DONE: u32 = 3
@@ -91,8 +78,6 @@ pub struct BlkDriver:
         irq.unmask()
         self.irq = take irq
         self.device = negotiated.start()
-        # Stamp MAGIC and publish the write before returning so the first
-        # checkpoint delivers a real used-ring IRQ (boot-irq-isr shape).
         b = take buffer
         b.word = MAGIC
         permit = self.queue.reserve(descriptors=3)
@@ -122,9 +107,6 @@ pub struct BlkDriver:
         status = self.pending.swap_acquire(0)
         if status == 0:
             return unit
-        # Take first: a quiet wake after the round trip (extra completion
-        # or inject bit) must not park inside `queue.drain` with nothing
-        # to claim. `await receipt` is not used here — see decision 22.
         slot = take self.inflight
         match slot:
             case .None:
@@ -139,7 +121,6 @@ pub struct BlkDriver:
                             pass
                         case .Err(_):
                             assert false, "write completion status Ok"
-                    # Write buffer-facing length is 0.
                     n = c.written_len
                     match n.checked_le(SECTOR):
                         case .Ok(v):
@@ -158,8 +139,6 @@ pub struct BlkDriver:
                         idempotent=true,
                     )
                     receipt = self.queue.publish(operation=take op)
-                    # Restore taken field in one step (Option[Receipt] is a
-                    # resource — no None-then-Some overwrite).
                     self.inflight = Some(take receipt)
                     self.phase = PHASE_READ
                 else:
@@ -183,8 +162,6 @@ pub struct BlkDriver:
                         b = take c.payload
                         w = b.word
                         assert w == 0xC0FFEE00BEEF42A1, "read-back sees the hand-computed sector word"
-                        # Take the empty Option before restoring (Option[own]
-                        # is a resource — cannot overwrite a live None).
                         empty = take self.buffer
                         match empty:
                             case .None:

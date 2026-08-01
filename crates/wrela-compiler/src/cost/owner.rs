@@ -1,11 +1,4 @@
-//! Owner buckets for proxy-cycle ranking (plans/M18.md item G, freeze 1365).
-
-/// Classify a fn key into `app` / `runtime` / `driver`.
 pub fn classify_owner(key: &str) -> &'static str {
-    // `core.runtime` stays local to this bucket on purpose: it is a real
-    // source module, not glue, and folding it into the shared rule would
-    // move `layout.rs`'s cross-core redirect decision (and the cost
-    // goldens with it).
     if crate::codegen::is_compiler_glue_symbol(key) || key.contains("core.runtime") {
         return "runtime";
     }

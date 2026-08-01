@@ -1,8 +1,5 @@
 module examples.cost_mem_locality
 
-# Cost-stage golden (cost-model hard-cut item E) — stack-local reuse vs
-# colder/scattered accesses so MemRef Stack hits and/or working-set
-# surcharge show up in totals/terms under the live v2 cost dump.
 
 pub fn reuse_stack(x: u64, y: u64) -> u64:
     a: u64 = x

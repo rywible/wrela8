@@ -1,9 +1,5 @@
 module driver
 
-# The block-storage driver: an ordinary `@driver` actor with a real
-# `init` signature (a single plain arg, alongside `img.driver`'s own
-# reserved `device=`) and one synchronous method — no `await`/`send`,
-# per plans/M4.md's own non-goal (actor body typing is M6).
 @driver
 pub struct StorageDriver:
     id: u32

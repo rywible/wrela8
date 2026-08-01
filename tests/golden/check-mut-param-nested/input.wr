@@ -1,11 +1,5 @@
 module examples.check_mut_param_nested
 
-# plans/M9.md item CC2. 02-language.md §5.1: non-receiver `mut` is
-# mirrored at the call site. CC1 fixed the evaluator; this case carries
-# `@test` fns so `cargo xtask diff-eval` compares both tiers on the same
-# shapes. Every pinned value is chosen so a missing write-back cannot
-# land on the success number (`settle` adds the written-back place to the
-# callee's return).
 
 struct Inner:
     x: u32
@@ -18,8 +12,6 @@ fn bump(mut c: Counter):
     c.n = 7
 
 fn bump_nested(mut c: Counter):
-    # One-level places only (lower refuses multi-level field chains);
-    # still mutates through the nested field of the mut param.
     n = c.nested
     n.x = 9
     c.nested = n
@@ -64,12 +56,9 @@ pub fn test_mixed():
     a: u32 = 1
     b: u32 = 2
     c: u32 = 3
-    # mixed returns (1+2)+3 = 6 and writes a back as 3; without write-back
-    # the sum below is 6+1 = 7, not 9.
     settled = mixed(mut a, b, take c) + a
     assert settled == 9, "mut alongside read and take; settle distinguishes"
 
-# Image args pin the same numbers so mere acceptance cannot pass.
 fn drive_agg() -> u32:
     c = Counter(n=0, nested=Inner(x=0))
     bump(mut c)

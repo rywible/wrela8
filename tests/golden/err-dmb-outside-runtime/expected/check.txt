@@ -1,1 +1,1 @@
-error[intrinsic]: `@dmb` is legal only inside `stdlib/core/runtime.wr` (plans/M15.md item H) at 5:5
+error[intrinsic]: `@dmb` is legal only inside `stdlib/core/runtime.wr` (plans/M15.md item H) at 4:5

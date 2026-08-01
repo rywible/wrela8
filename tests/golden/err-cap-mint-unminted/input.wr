@@ -1,10 +1,5 @@
 module examples.err_cap_mint_unminted
 
-# plans/M7.md: an `Mmio[L]` init parameter is not minted at the image
-# binding — the sealed transport hands one out from an already-claimed
-# device (`claimed.map_partition(L)`, 03-hardware.md §2/§9). `DeviceCap`
-# and `DmaPool` *are* minted at the binding; `IrqCap` is minted from a
-# declared `vector=` / `take_irq`. This golden pins the `Mmio` refusal.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

@@ -1,56 +1,6 @@
 module examples.cost_align
 
-# Cost-stage golden (plans/M20.md item M) — SOG §4.5's two alignment
-# boundaries (inventory rows 29/30): a load crossing a 64 B cache line
-# and a store crossing a 16 B boundary.
-#
-# WHAT THIS PINS, PREDICTED FROM THE DOCS BEFORE THE CODE WAS RUN — AND
-# WHY THE PREDICTION IS **ZERO**.
-#
-# The plan's item M asks for "a 64 B line-crossing load, a 16 B store
-# crossing". Item I already measured that no such access exists, and
-# that it is a theorem about the ABI rather than an accident:
-#
-#   * `encode::scaled_offset` asserts every immediate offset is a
-#     multiple of its own transfer width, so an access of width w sits
-#     at an offset ≡ 0 (mod w);
-#   * no emitted access exceeds `codegen::FRAME_SLOT_BYTES` (8), so
-#     w ∈ {1, 2, 4, 8};
-#   * the ABI keeps `sp ≡ 0 (mod FRAME_SP_ALIGN_BYTES = 16)`.
-#
-# A width-w access at an offset that is a multiple of w, off a base that
-# is a multiple of 16, is naturally aligned, and a naturally aligned
-# access of at most 8 bytes can straddle neither a 64 B line nor a 16 B
-# boundary. Item I measured 1319 stack accesses decided over the whole
-# `cost-*` corpus and **0 straddling**.
-#
-# So this case does **not** invent a crossing. It witnesses the term's
-# **absence with its reason**: it is the widest mix of access widths the
-# frame permits — u8, u16, u32, u64, in scalars, arrays and a packed
-# struct — driven through loads and stores of every one of those widths,
-# and every single one of them is decided (not skipped) by
-# `score::alignment_penalty` and charged **0**.
-#
-# That is a real oracle, not a tautology: the term is live, and the
-# decision path is `Some(mem)` + `access_bytes != 0` +
-# `MemClass::Stack`, i.e. the *decidable* branch. Measured by ablation
-# against these very fns: moving `[align] load_line_bytes` from 64 to 4
-# — a boundary this frame *does* cross — moves the case 331 -> 376, and
-# moving `store_boundary_bytes` from 16 to 4 moves it 331 -> 336. So the
-# accesses really are being decided; they simply do not straddle the
-# boundaries SOG §4.5 names. Widening a frame slot, emitting an unscaled
-# offset, or dropping `sp`'s 16 B congruence would move these numbers.
-# What the case cannot show is a nonzero crossing penalty at the real
-# boundaries, because wrela's fixed frame cannot emit one — recorded
-# here rather than manufactured with a synthetic word codegen does not
-# emit.
-#
-# The corpus-wide count lives with the term:
-# `unit:stack_accesses_never_straddle_either_boundary_on_the_corpus`
-# reports **33676** Stack accesses decided and **0** straddling across
-# the whole `cost-*` corpus (1319 before item M's cases).
 
-# Every scalar width the frame carries, stored and reloaded.
 pub fn widths(a: u8, b: u16, c: u32, d: u64) -> u64:
     w0: u8 = a +% a
     w1: u16 = b +% b
@@ -61,8 +11,6 @@ pub fn widths(a: u8, b: u16, c: u32, d: u64) -> u64:
     x2: u64 = w2.to[u64]()
     return x0 +% x1 +% x2 +% w3
 
-# Byte-granular array traffic: the 1-byte accesses are the ones with the
-# most residues available to straddle with, and none of them does.
 pub fn byte_lane(v: [u8; 16]) -> u64:
     s0: u8 = v[0] +% v[1]
     s1: u8 = v[2] +% v[3]
@@ -76,8 +24,6 @@ pub fn byte_lane(v: [u8; 16]) -> u64:
     t1: u8 = s4 +% s5 +% s6 +% s7
     return (t0 +% t1).to[u64]()
 
-# Mixed widths adjacent in one struct — the shape that would straddle a
-# 16 B store boundary if the frame ever packed a field across one.
 struct Packed:
     a: u8
     b: u16

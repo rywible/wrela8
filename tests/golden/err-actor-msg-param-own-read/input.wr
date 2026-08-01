@@ -1,6 +1,5 @@
 module examples.err_actor_msg_param_own_read
 
-# Decl-time: a pub message parameter that is a resource must be `take`.
 
 pool Packets
 

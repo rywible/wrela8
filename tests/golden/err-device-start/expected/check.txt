@@ -1,1 +1,1 @@
-error[type]: `DriverClaimedDevice[VirtioBlock].start()` consumes a `QueuesConfiguredDevice[VirtioBlock]` (03-hardware.md §9's final `-> Running` transition); found `DriverClaimedDevice[VirtioBlock]`. Call `VirtQueue.configure(...)` first at 20:21
+error[type]: `DriverClaimedDevice[VirtioBlock].start()` consumes a `QueuesConfiguredDevice[VirtioBlock]` (03-hardware.md §9's final `-> Running` transition); found `DriverClaimedDevice[VirtioBlock]`. Call `VirtQueue.configure(...)` first at 17:21

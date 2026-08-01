@@ -2,18 +2,6 @@ module app.main
 
 from lib.color import Color as Hue
 
-# plans/M9.md item DD: regression lock for the already-working aliased
-# pattern half of A1b finding 2. Two shapes, both must stay green:
-#
-# 1. Annotated scrutinee (`c: Hue` then `case Hue.Red:`) — worked once
-#    A1's decision 9 made type annotations resolve to the local name.
-# 2. Construction-as-scrutinee (`match Hue.Red: case Hue.Red:`) — needed
-#    DD's construction spelling fix; before DD it reported
-#    `expected a `Color` pattern, found `Hue``.
-#
-# Exhaustiveness is analysed for real: dropping Blue would report
-# `match is not exhaustive: missing .Blue`. The settle pins that both
-# arms are reachable and correctly distinguished.
 
 fn pick_annotated(c: Hue) -> u32:
     match c:
@@ -31,7 +19,6 @@ fn pick_constructed() -> u32:
 
 const A: u32 = pick_annotated(Hue.Blue)
 const C: u32 = pick_constructed()
-# settle = A*100 + C = 2*100 + 10 = 210
 const SETTLED: u32 = A * 100 + C
 
 @test
@@ -47,8 +34,6 @@ pub fn t_settled():
     assert SETTLED == 210, "both pattern shapes under one settle"
 
 
-# Guest-reachable path (plans/M9.md item KK): H3 dropped pattern helpers from
-# asm; `@test(runtime)` seeds both match shapes.
 @test(runtime)
 pub fn guest_alias_pattern():
     assert pick_annotated(Hue.Blue) == 2, "annotated at guest"

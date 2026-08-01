@@ -1,13 +1,5 @@
 module examples.err_cap_mmio_layout
 
-# plans/M7.md item A, 03-hardware.md §1/§2: "`Mmio[L]` — a typed register
-# layout derived from that device", whose §2 worked example is
-# `Mmio[VirtioIrqMmio]` over an `@layout(mmio)` struct. `L` must name one.
-#
-# A `@layout(wire)` type is the sharpest way to fail it: it has exact
-# bytes (item B checks them) and it is emphatically not a register map —
-# 03 §3 defines `wire` as "persistent/network bytes ... independent of any
-# target", which is the opposite of a device's registers.
 
 @layout(wire, endian=big)
 struct Record:

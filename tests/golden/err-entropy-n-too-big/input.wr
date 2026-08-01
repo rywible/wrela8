@@ -1,6 +1,5 @@
 module examples.err_entropy_n_too_big
 
-# plans/M17.md item F / freeze 1: entropy[N] requires N in 1..=64.
 
 pub fn sample() -> Bytes[65]:
     return entropy[65]()

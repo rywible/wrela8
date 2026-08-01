@@ -1,12 +1,5 @@
 module examples.check_reserve
 
-# plans/M7.md item E2, 03-hardware.md §4: `reserve` + `prepare_block`.
-#
-# Dump oracle (H2a's shape): the operations type-check and lower, and the
-# whole-image proof admits one at-most-once site against a depth-8 queue
-# (occupancy_bound = floor(8/3) = 2). Nothing here publishes (E3) and no
-# boot transcript claims a descriptor hit the ring (decision 15: prepare
-# packages; publish writes).
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:
@@ -66,9 +59,6 @@ pub struct BlkDriver:
         self.device = negotiated.start()
         return Ok(unit)
 
-    # Synchronous prepare path — dump-covered. Payload arrives as a
-    # parameter (nothing constructs an `own[P] T` yet; same honest state
-    # as H2a's `Untrusted[T]` parameter).
     fn prepare_read(mut self, take buffer: own[BlockPayloads] DmaBlock,
                     lba: u64) -> QueueOp[own[BlockPayloads] DmaBlock, true]:
         permit = self.queue.reserve(descriptors=3)

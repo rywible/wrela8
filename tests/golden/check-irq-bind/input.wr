@@ -1,9 +1,5 @@
 module examples.check_irq_bind
 
-# plans/M7.md item G: a well-formed IRQ bind — device declares `vector=1`,
-# `take_irq` mints the `IrqCap`, `bind` registers the one handler. Dump
-# oracle for the surface; the HVF boot transcript is a later commit of
-# this item.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

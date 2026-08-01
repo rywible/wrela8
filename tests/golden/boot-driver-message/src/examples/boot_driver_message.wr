@@ -1,42 +1,6 @@
 module examples.boot_driver_message
 
-# plans/M8.md item D's flagship-shaped boot: a `@driver` that holds every
-# authority 03-hardware.md §1 names — `DeviceCap`, `Mmio`, `IrqCap`,
-# `DmaPool`, a sealed `VirtQueue`, a `RunningDevice` — *and* a mailbox, is
-# sent to, and its reply is observed. This is what lifting
-# `err-image-driver-message` had to be worth.
-#
-# Two send paths, both real turns on the driver's own mailbox:
-#
-#   1. `Storage` (an ordinary `@actor`, holding `disk: Actor[BlkDriver]` —
-#      02-language.md §9.1's own worked example) parks awaiting
-#      `disk.capacity()` and resumes with the reply. Actor -> driver.
-#   2. The `@test(runtime)` root awaits `disk.sector_bytes()` directly
-#      through its own `Actor[BlkDriver]` parameter. Root -> driver.
-#   3. The driver's own `pub async fn scaled_capacity` awaits an `@actor`
-#      and resumes — a driver turn that **parks in the driver's own turn
-#      area** and is re-dispatched to its saved state, which is the half of
-#      "an ordinary root" a sync-only driver method would never exercise.
-#
-# Both go through the identical `rt_enqueue_*` / `rt_select_and_run_*` pair
-# every `@actor` uses; nothing in the runtime can tell the two roots apart,
-# which is decision 19's whole claim.
-#
-# **What stays inside the driver, and is the point:** the ISR
-# (`on_queue_irq`) and the `@task` bottom half (`drain`) are private. They
-# are not admissible from the mailbox, they still run in 03 §6's own
-# effect set, and the capabilities they touch never appear in a message —
-# `err-driver-message-capability`, `err-driver-message-task-pub` and
-# `err-driver-message-isr-pub` each break one of those and pin the refusal.
-#
-# The declared capacity is 16 sectors (the image constant `boot-device-bringup`
-# already pins), so the hand-computed expectations are 16 and 512.
 
-# M16 Wave D3: project-shape conversion. Layout/`@driver` bodies stay
-# local — any `from drivers.blk import …` is refused by A1b while this
-# module also declares `BlkDriver` / shared layout names that `drivers.blk`
-# exports (plans/M9.md item A1b). Full layout import also needs same-module
-# `Mmio[L]` + pub layout fields. Specialized local `@driver` kept.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:
@@ -99,13 +63,9 @@ pub struct BlkDriver:
         irq.unmask()
         self.irq = take irq
         self.device = negotiated.start()
-        # Last statement of 03 §9's `Reset -> ... -> Running` chain. A
-        # message that could be *selected* before bring-up finished would
-        # observe 0 here (`root_never_reenters_bring_up`).
         self.bringup_done = 1
         return Ok(unit)
 
-    # 03 §6's ISR: private, restricted effect set, never admissible.
     fn on_queue_irq(self):
         status = self.irq_regs.interrupt_status.read()
         handled = status & 1
@@ -114,7 +74,6 @@ pub struct BlkDriver:
             self.irq_regs.interrupt_ack.write(handled)
             wake(BlkDriver.drain)
 
-    # 03 §6's bottom half: private, woken not admitted.
     @task
     fn drain(mut self):
         status = self.pending.swap_acquire(0)
@@ -123,8 +82,6 @@ pub struct BlkDriver:
         self.drains = self.drains + 1
         return unit
 
-    # The exported surface: plain data in, plain data out. No capability,
-    # no sealed queue value, no receipt crosses this boundary.
     pub fn capacity(read self) -> u64:
         return self.capacity_sectors
 
@@ -134,8 +91,6 @@ pub struct BlkDriver:
     pub fn ready(read self) -> u64:
         return self.bringup_done
 
-    # A driver turn that parks: `await` inside a `@driver`'s own `pub async
-    # fn`, resolved into the driver's own turn area (not a free turn).
     pub async fn scaled_capacity(read self) -> u64:
         v = await self.scale.times(n=self.capacity_sectors)
         @discard(reason="migrated: deliberate Err discard (M13 item L)")
@@ -159,10 +114,6 @@ pub struct Scale:
 pub struct Storage:
     disk: Actor[BlkDriver]
 
-    # plans/M8.md item H attack 6: a field-wired `disk=disk` without `init`
-    # only agreed with zero-fill while `driver#0`'s handle word was 0 (the
-    # kind-local collision). The shared actor/driver index space makes that
-    # word `n_actors`, so the handle must be materialised through `init`.
     init(mut self, disk: Actor[BlkDriver]):
         self.disk = disk
 
@@ -207,11 +158,6 @@ async fn a_driver_turn_parks_and_resumes(disk: Actor[BlkDriver]):
 
 @test(runtime)
 async fn root_never_reenters_bring_up(disk: Actor[BlkDriver]):
-    # 03-hardware.md §9: publication requires `Running`, and every state
-    # transition consumes its input. A driver mailbox must not become a way
-    # to re-enter a driver mid-chain — boot calls every `init` to completion
-    # before the scheduler runs a single turn, so the first admissible
-    # message already sees `Running`. Asserted, not assumed.
     v = await disk.ready()
     @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match v:

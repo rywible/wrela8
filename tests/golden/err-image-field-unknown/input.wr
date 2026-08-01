@@ -1,21 +1,5 @@
 module examples.err_image_field_unknown
 
-# `image.graph.init-args-match`, the closed side of the literal-constructor
-# half (05-library.md §9: arguments "must match `A.init` **(or its literal
-# constructor)**"). `image-field-wired-accept` pins what the rule now
-# accepts; this pins that it was widened to exactly what the doc allows and
-# no further — `Store` declares no `init` *and* has no field named
-# `queue_depth`, so the argument matches nothing at all and is rejected.
-#
-# Two expectations, on purpose. `image.txt` pins the diagnostic on the dump
-# path, exactly like the sibling `err-image-init-extra-arg`. `test.txt` pins
-# the same diagnostic from `wrela test`, which never ran
-# `eval::image_checks::check_sealed` at all until 2026-07-24: the graph
-# checks guarded `--stage=image`/`--stage=report`/`wrela build` while the
-# one path that actually lays out and boots an image accepted this program
-# and ran its `@test(runtime)` fn to a green report. That is the same
-# placement mistake `sema::send_proof`'s own module doc records for a
-# sibling pass, and this case is the oracle that it stays fixed.
 
 @actor
 pub struct Store:

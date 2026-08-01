@@ -1,1 +1,1 @@
-error[name]: `DmaPool` is a capability type (03-hardware.md §1) and cannot be declared: its constructor is not source-visible, and a declaration under its name would be one at 11:1
+error[name]: `DmaPool` is a capability type (03-hardware.md §1) and cannot be declared: its constructor is not source-visible, and a declaration under its name would be one at 4:1

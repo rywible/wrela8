@@ -1,7 +1,5 @@
 module examples.err_test_exhaustive_param
 
-# u64's domain is finite but not enumerable within any build budget —
-# @test(exhaustive) parameters are bool, u8, i8, or a fieldless enum.
 @test(exhaustive)
 fn bad_domain(x: u64):
     assert x == x, "trivial"

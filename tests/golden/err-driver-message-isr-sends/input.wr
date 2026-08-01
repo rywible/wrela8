@@ -1,34 +1,5 @@
 module examples.err_driver_message_isr_sends
 
-# plans/M8.md item D, arm 4 of the security surface: making drivers
-# messageable must not put a mailbox inside 03-hardware.md §6's ISR effect
-# set.
-#
-# §6 is explicit about what an interrupt handler cannot do: "It cannot
-# allocate, await, block, **call another actor**, touch device-owned DMA
-# payloads, drain unbounded work, use floating point, or format." Before
-# item D a `send` at a `@driver` was refused twice over — once for the
-# site and once because no driver had a mailbox at all. Item D removes the
-# second refusal; this golden pins that the first still does the whole job
-# against a genuinely messageable target.
-#
-# `Bell` really is messageable and `Bell.ring` really is admissible —
-# `boot-driver-message` sends to exactly this shape and observes the
-# reply. What is refused is the **site**, and three independent rules
-# refuse it, in the order the compiler reaches them:
-#
-#   1. `send`/`await` require an `async fn` context, and 03 §6 requires an
-#      ISR to be "a plain `fn`" (`sema::bodies`' own ISR-shape check, and
-#      `err-task-async` for the bottom half). That is the diagnostic this
-#      golden pins, because it is the one that fires first.
-#   2. `eval::legal::check_isr_effects` refuses an `await`/`send` anywhere
-#      in an ISR's transitive callee closure.
-#   3. `check_bottom_half` refuses the same in a `@task`.
-#
-# Recorded as a layered floor rather than collapsed into one: rule 1 is a
-# *shape* rule and rules 2/3 are *effect* rules, and only the effect rules
-# survive if a future milestone ever gives an ISR-adjacent helper an async
-# color.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

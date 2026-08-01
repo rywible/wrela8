@@ -1,40 +1,34 @@
 Module @1:1 path=examples.check_doc_comment_positions
-  Struct @20:1 name=First
-    Doc @18:1 text="Documented, and the first declaration in the file — the one position\nthat always worked. Two `##` lines in a row are one doc comment."
-    Field @21:5 name=x
-      TypeName @21:8 name=u32
-  Struct @27:1 name=Counter pub=true
-    Doc @23:1 text="Documented, and preceded by a block-bodied declaration. This is the\nshape the fuzzer found: the DEDENT closing `First` used to be emitted\nafter this token, so `First`'s own member loop swallowed it."
-    Attr @26:1 name=actor
-    Field @30:5 name=n
-      Doc @28:5 text="First line of a block. The INDENT opening the body used to be\nemitted after this token, so the parser never saw the block start."
-      TypeName @30:8 name=u32
-    Init @33:5
-      Doc @32:5 text="A doc comment on `init`, mid-block, after a field."
-      Receiver @33:10 mode=mut
+  Struct @4:1 name=First
+    Field @5:5 name=x
+      TypeName @5:8 name=u32
+  Struct @8:1 name=Counter pub=true
+    Attr @7:1 name=actor
+    Field @9:5 name=n
+      TypeName @9:8 name=u32
+    Init @11:5
+      Receiver @11:10 mode=mut
       Body
-        Assign @34:9 op==
-          Field @34:14 name=n
-            Name @34:9 name=self
-          Int @34:18 text=0
-    Fn @38:5 name=get pub=true
-      Doc @36:5 text="A doc comment on a method, after another block-bodied member — the\nnested version of the same DEDENT bug."
-      Receiver @38:16 mode=read
-      TypeName @38:30 name=u32
+        Assign @12:9 op==
+          Field @12:14 name=n
+            Name @12:9 name=self
+          Int @12:18 text=0
+    Fn @14:5 name=get pub=true
+      Receiver @14:16 mode=read
+      TypeName @14:30 name=u32
       Body
-        Return @39:9
-          Field @39:21 name=n
-            Name @39:16 name=self
-  Const @43:1 name=LIMIT
-    Doc @41:1 text="A doc comment sitting between an attribute-carrying declaration and the\nnext one, at the outer level again after two nested blocks closed."
-    TypeName @43:14 name=u32
-    Int @43:20 text=7
-  Fn @46:1 name=positions_hold
-    Attr @45:1 name=test
+        Return @15:9
+          Field @15:21 name=n
+            Name @15:16 name=self
+  Const @17:1 name=LIMIT
+    TypeName @17:14 name=u32
+    Int @17:20 text=7
+  Fn @20:1 name=positions_hold
+    Attr @19:1 name=test
     Body
-      Assert @47:5
-        Binary @47:18 op===
-          Name @47:12 name=LIMIT
-          Int @47:21 text=7
+      Assert @21:5
+        Binary @21:18 op===
+          Name @21:12 name=LIMIT
+          Int @21:21 text=7
         Message
-          Str @47:24 text="the documented const is the one that got compiled"
+          Str @21:24 text="the documented const is the one that got compiled"

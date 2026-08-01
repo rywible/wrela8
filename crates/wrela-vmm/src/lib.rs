@@ -1,41 +1,10 @@
-//! The wrela VMM: the product implementation of the wrela machine
-//! (docs/language/06-machine.md). Firecracker-class, userspace, two host
-//! backends behind one internal seam:
-//!
-//!   - `kvm` (Linux): the Raspberry Pi 5 flagship host (unimplemented until
-//!     the Pi milestone).
-//!   - `hv`/`boot_image` (macOS / Hypervisor.framework): development and
-//!     Mac hosts — **live** as of plans/M5.md item E.
-//!
-//! The VMM consumes the compiler's own emitted image + report as its
-//! entire configuration (06 §3): `boot_image` reads both, validates the
-//! machine revision and the report's own structural shape, loads the
-//! image at the fixed base, zeroes the declared reservations (the whole
-//! guest DRAM allocation is zeroed up front — see `boot_image`'s own doc
-//! comment for why this is load-bearing, not merely tidy), points `x0` at
-//! the machine-info page, and starts vCPU 0 at the image's own entry.
-//! Devices at M5 are exactly two: the console tx ring (decision 12,
-//! drained once, after halt) and the clock MMIO trap (decision 13, logged
-//! every read). Everything else fails closed.
-
 use std::time::Duration;
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub mod hv;
 
-/// Host-side wall-clock cap per boot (plans/M5.md decision 15): a guest
-/// stuck with no exits at all (an infinite loop between checkpoints) is
-/// force-exited via `hv_vcpus_exit` from a watchdog thread — a hang is
-/// reported as `VmmError::Timeout`, transcript-so-far included, never a
-/// silent stall. The same cap bounds a park deadline sleep: a guest-
-/// writable `OFF_NEXT_DEADLINE` of `u64::MAX` must not sleep the host
-/// for centuries with the scheduler mutex held (adversarial audit,
-/// 2026-07-27).
 pub const WALL_CAP: Duration = Duration::from_secs(30);
 
-/// Absolute nanosecond deadline the host will wait until for a park:
-/// `min(deadline_ns, now_ns + WALL_CAP)`. Over-long guest deadlines are
-/// not protocol facts worth honouring past the wall cap.
 pub(crate) fn capped_park_deadline_ns(now_ns: u64, deadline_ns: u64) -> u64 {
     let wall_cap_ns = WALL_CAP.as_nanos() as u64;
     deadline_ns.min(now_ns.saturating_add(wall_cap_ns))
@@ -43,61 +12,24 @@ pub(crate) fn capped_park_deadline_ns(now_ns: u64, deadline_ns: u64) -> u64 {
 
 #[derive(Debug)]
 pub enum VmmError {
-    /// The requested capability is not implemented yet (a non-macOS/
-    /// non-aarch64 host at M5 — the flagship KVM backend is a later
-    /// milestone). Fail closed, never a silent skip.
     Unsupported(&'static str),
-    /// The report's own `Machine revision=` line does not name this
-    /// build's `wrela_machine::MACHINE_REVISION_STR` (06 §10: "the VMM
-    /// refuses an image built for another revision").
-    MachineRevisionMismatch { report: String, vmm: &'static str },
-    /// The report text is missing a structural fact this VMM's whole
-    /// configuration depends on (no `Machine revision=` line at all, no
-    /// `Input path=` digest line, no `Section name=`/`Entry base=` line) —
-    /// 06 §3's "the VMM reads the sealed image and its report, validates
-    /// digests" half, at the presence-check granularity this milestone's
-    /// report format actually carries (the VMM has no access to the
-    /// original source files to re-hash against; only the compiler does).
+    MachineRevisionMismatch {
+        report: String,
+        vmm: &'static str,
+    },
     MalformedReport(String),
-    /// A file (`report_path`/`img_path`) could not be read.
     Io(String),
-    /// A raw Hypervisor.framework call returned a non-`HV_SUCCESS` code.
-    Hvf { call: &'static str, code: i32 },
-    /// The image does not fit the declared DRAM reservation, or a section
-    /// address the report claims is inconsistent with the machine's own
-    /// fixed layout contract — an internal-consistency failure, never an
-    /// ordinary boot outcome.
+    Hvf {
+        call: &'static str,
+        code: i32,
+    },
     BadImage(String),
-    /// The guest trapped in a way this VMM has no handler for: an
-    /// unexpected MMIO address, a non-load/store instruction shape at an
-    /// MMIO address (`ISV == 0`), a bare `BRK`, or any other exception
-    /// class/exit reason — reported with the guest's own PC and the raw
-    /// `ESR` for a post-mortem.
     GuestFault(String),
-    /// `--replay` found a determinism disagreement mid-boot (strict
-    /// chooser abort: choice-log underrun/overrun/tag mismatch, etc.).
-    /// Distinct from [`VmmError::GuestFault`]: the process exit contract
-    /// maps this to `EXIT_REPLAY_DIVERGENCE` (3), never `EXIT_VMM_FAILURE`
-    /// (2) — a caller checking `$?` alone must never confuse a
-    /// determinism finding with a boot that never produced an answer.
     ReplayDivergence(String),
-    /// The host-side wall-clock cap (`WALL_CAP`) elapsed with the guest
-    /// still running; `transcript_so_far` is whatever the console ring
-    /// held at the moment of the forced exit (decision 15: "the
-    /// transcript-so-far shown", never silently discarded). `core` is the
-    /// vCPU that was actually inside `hv_vcpu_run` when the watchdog
-    /// force-exited every core (plans/M8.md item C1: with three cores, a
-    /// hang that does not say *which* core hung is a bug report missing
-    /// its first fact).
     Timeout {
         core: usize,
         transcript_so_far: Vec<u8>,
     },
-    /// The host could not create the sealed `Cores count=N` vCPUs
-    /// (06-machine.md §1 / plans/M15.md item F, decision 1062): short
-    /// host is a VMM error, never a guest probe. `requested` is the
-    /// report's N; `failed_at` is the first core index whose
-    /// `hv_vcpu_create` failed; `code` is the raw `hv_return_t`.
     HostCoresRefuse {
         requested: usize,
         failed_at: usize,
@@ -167,53 +99,21 @@ impl std::fmt::Display for VmmError {
 
 impl std::error::Error for VmmError {}
 
-/// The whole result of one boot (plans/M5.md item E's own public API,
-/// `boot_image`'s return value): the captured console transcript, the
-/// guest's own reported exit code (`0`/`1`, `machine_info::OFF_EXIT_CODE`'s
-/// own convention, mirrored via the trapping `EXIT_MMIO_ADDR` store), the
-/// ordered log of every clock read's returned value (06 §8's own
-/// record-boundary subset; empty at M5 since nothing in the generated
-/// runtime issues one yet — see layout.rs's own module doc), and the total
-/// vCPU exit count (a `bench guest`/`profile` fact, item F).
 #[derive(Debug, Clone, Default)]
 pub struct BootOutcome {
     pub transcript: Vec<u8>,
     pub exit_code: u64,
-    /// plans/M6.md item E: the whole ordered choice sequence this boot
-    /// resolved (decision 9) — clock reads, deadline wakes, and vector
-    /// raises alike, in the order `Chooser::choose_next` (`record.rs`)
-    /// saw them. M5's own `clock_log: Vec<u64>` is exactly the
-    /// `ChoiceEntry::ClockRead` subsequence of this, now generalized.
     pub choices: Vec<record::ChoiceEntry>,
     pub exits: u64,
-    /// plans/M8.md item C1 / M15 item F: each sealed core's own
-    /// guest-written bring-up mark (`machine_info::OFF_CORE_MARK`), length
-    /// = report `Cores count=N` — `core_mark_running(n)` for a core that
-    /// reached its own event loop, `0` for one that never ran. A
-    /// single-core image yields `[0]` (it releases nothing and writes no
-    /// mark); `check_core_marks` has already refused any boot where a
-    /// *released* core is missing its own mark, so this field is evidence
-    /// for a test to read, never a condition a caller has to remember to
-    /// check.
     pub core_marks: Vec<u64>,
-    /// Integrity Phase 2 Item N — Lane 3 host hit map: non-zero
-    /// `(block_id, count)` pairs read from the placed `LANE2` page in
-    /// guest DRAM after halt (`lane3::read_lane2_hits`). Empty when Lane 2
-    /// emission was off (`enabled == 0`). Compared against the guest's
-    /// `lane2 hits=` transcript line by `lane3::agree_lane2_vs_host`.
     pub lane2_hits: Vec<(u32, u64)>,
 }
 
-/// Re-exports of the shared image-report schema (`wrela_machine::report`).
-/// Parse logic lives in the machine crate; this module keeps VMM-specific
-/// digest checks, W^X, and boot wiring.
 pub use wrela_machine::report::{
     BlkConfig, BlkQueueConfig, CoreEntry, CoreStack, EMPTY_SHA256, IrqHostInject, ParsedReport,
     PoolWindow, ReportSection, RequestRing,
 };
 
-/// Parse the VMM-facing report text, mapping machine `String` errors into
-/// `VmmError` (including the distinct machine-revision mismatch variant).
 pub(crate) fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
     match wrela_machine::report::parse_report(text) {
         Ok(parsed) => Ok(parsed),
@@ -230,10 +130,6 @@ pub(crate) fn parse_report(text: &str) -> Result<ParsedReport, VmmError> {
     }
 }
 
-/// 06 §3: re-check the sealed image blob and every readable `Input` file
-/// against the digests the report declares. An unreadably-named input
-/// (unit-test placeholders like `<conformance>`) is skipped — presence of
-/// a well-formed digest is still required at parse time.
 pub(crate) fn validate_report_digests(parsed: &ParsedReport, img: &[u8]) -> Result<(), VmmError> {
     let got = wrela_machine::sha256::sha256_hex(img);
     if got != parsed.image_sha256 {
@@ -259,10 +155,6 @@ pub(crate) fn validate_report_digests(parsed: &ParsedReport, img: &[u8]) -> Resu
     Ok(())
 }
 
-/// Host offset into the DRAM reservation for a guest-physical range, or a
-/// `BadImage`/`MalformedReport` when the range is not wholly inside
-/// `[DRAM_BASE, DRAM_BASE + DRAM_SIZE)`. Callers that only have a point
-/// use `nbytes = 1` (or the access width).
 pub(crate) fn guest_dram_offset(guest: u64, nbytes: u64, what: &str) -> Result<usize, VmmError> {
     use wrela_machine::layout as machine_layout;
     let end = guest.checked_add(nbytes).ok_or_else(|| {
@@ -301,10 +193,7 @@ pub(crate) use exit_loop::check_core_marks;
 pub(crate) use exit_loop::{AdmissionWitness, check_vector_in_range, drain_console};
 
 #[cfg(target_os = "linux")]
-pub mod kvm {
-    //! Unimplemented until the Raspberry Pi flagship host milestone.
-    //! Hardcoded KVM backend when it lands — no rust-vmm dependency.
-}
+pub mod kvm {}
 
 pub mod devices;
 
@@ -335,9 +224,6 @@ mod tests {
         );
     }
 
-    /// VMM-facing report identity lines for unit fixtures. `Image sha256=`
-    /// hashes `img` when provided; parse-only fixtures pass `&[]` and get
-    /// the empty digest.
     fn report_identity(input_path: &str, img: &[u8]) -> String {
         format!(
             "Machine revision={}\nInput path={input_path} sha256={}\nImage sha256={}\n",
@@ -486,22 +372,6 @@ mod tests {
         assert!(check_vector_in_range(63).is_ok());
     }
 
-    /// The M5-G adversarial-sweep find/fix, at `drain_console`'s own
-    /// level: `wrela-compiler/src/layout.rs`'s module doc has the whole
-    /// story, but the bug's *observable* shape was always here — a
-    /// transcript silently truncated once `console::QUEUE_SIZE`
-    /// descriptors were spent. `drain_console`'s own `count =
-    /// avail_idx.min(console::QUEUE_SIZE)` line never itself hard-coded
-    /// the old `16`, so no code here needed to change for the fix — but
-    /// nothing golden-covered ever exercised more than a handful of
-    /// descriptors either, so this proves the parser genuinely reads
-    /// past the *old* bound (20 > 16) now that `QUEUE_SIZE` is 256: a
-    /// synthetic guest-RAM buffer (a plain heap `Vec<u8>`, not a real
-    /// mmap — `drain_console` only ever does pointer-offset reads, no
-    /// page-fault-timing subtlety like `layout.rs`'s own JIT self-tests
-    /// need) with 20 one-byte descriptors published directly (no VMM,
-    /// no HVF, no guest code at all — purely `drain_console`'s own
-    /// parsing).
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
     fn drain_console_reads_more_than_the_old_16_descriptor_limit() {
@@ -514,7 +384,7 @@ mod tests {
         let ring_off = (console::RING_BASE - machine_layout::DRAM_BASE) as usize;
         let data_off = (console::DATA_BASE - machine_layout::DRAM_BASE) as usize;
 
-        let n: usize = 20; // > the old QUEUE_SIZE == 16
+        let n: usize = 20;
         assert!(n > 16, "this test's whole point is exceeding the old bound");
         for i in 0..n {
             let desc_off = ring_off
@@ -534,38 +404,6 @@ mod tests {
         assert_eq!(got.len(), 20);
     }
 
-    /// plans/M5.md item F: "a hand-built image in wrela-vmm's tests that
-    /// DOES read CLOCK_MMIO twice" — this milestone's only exerciser of
-    /// the clock trap and the whole `record`/`replay` machinery, since no
-    /// real `@test(runtime)` program can issue a clock read yet
-    /// (`machine.clock.trap-logged`'s own gap note). A ~12-word
-    /// hand-assembled guest program, reusing `wrela-compiler::encode`'s
-    /// own pinned A76 encodings (this crate's one test-only dependency —
-    /// see `Cargo.toml`'s own comment) rather than re-deriving the same
-    /// bit patterns a second time by hand:
-    ///
-    /// ```text
-    /// movz x9,  #lo16(CLOCK_MMIO_ADDR)
-    /// movk x9,  #bits[16:31](CLOCK_MMIO_ADDR), lsl #16
-    /// movk x9,  #0, lsl #32
-    /// movk x9,  #0, lsl #48
-    /// ldr  x0,  [x9]                 ; clock read #1 (discarded)
-    /// ldr  x1,  [x9]                 ; clock read #2 (discarded)
-    /// movz x2,  #0                   ; exit code = 0
-    /// movz x10, #lo16(EXIT_MMIO_ADDR)
-    /// movk x10, #bits[16:31](EXIT_MMIO_ADDR), lsl #16
-    /// movk x10, #0, lsl #32
-    /// movk x10, #0, lsl #48
-    /// str  x2,  [x10]                ; trapping store: guest is done
-    /// ```
-    ///
-    /// One `#[test]` fn, not several: every real boot below happens
-    /// sequentially within it (record once, then five replays reusing the
-    /// same recording/image), so no two calls into Hypervisor.framework's
-    /// one process-wide VM context are ever concurrent — the same reason
-    /// `boot_image`'s own `VmGuard`/`VcpuGuard` tear down fully on every
-    /// return path, `Drop`-ordered, before the next call in this fn can
-    /// begin.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
     fn record_replay_roundtrips_and_detects_every_divergence_shape() {
@@ -611,7 +449,6 @@ mod tests {
         std::fs::write(&img_path, &img_bytes).expect("write image");
         std::fs::write(&report_path, &report_text).expect("write report");
 
-        // --- record: one live boot -------------------------------------
         let recorded = record::record(&report_path, &img_path).expect("live boot");
         assert_eq!(
             recorded.choices.len(),
@@ -627,14 +464,12 @@ mod tests {
         );
         assert_eq!(recorded.exit_code, 0);
 
-        // --- replay with the real recording: no divergence --------------
         let divergences = record::replay(&report_path, &img_path, &recorded).expect("replay boot");
         assert!(
             divergences.is_empty(),
             "expected no divergence, got {divergences:?}"
         );
 
-        // --- tampered transcript digest: caught --------------------------
         let mut bad_digest = recorded.clone();
         bad_digest.transcript_digest = "not-the-real-digest".to_string();
         let divergences =
@@ -644,7 +479,6 @@ mod tests {
             [record::Divergence::TranscriptDigestMismatch { .. }]
         ));
 
-        // --- tampered exit code: caught -----------------------------------
         let mut bad_exit = recorded.clone();
         bad_exit.exit_code = 99;
         let divergences = record::replay(&report_path, &img_path, &bad_exit).expect("replay boot");
@@ -653,13 +487,11 @@ mod tests {
             actual: 0,
         }));
 
-        // --- truncated choice log: an underrun aborts (strict replay) ------
         let mut short_log = recorded.clone();
         short_log.choices.truncate(1);
         let err = record::replay(&report_path, &img_path, &short_log).expect_err("strict underrun");
         assert!(err.to_string().contains("replay divergence"), "got {err}");
 
-        // --- padded choice log: an overrun aborts (strict replay) ----------
         let mut long_log = recorded.clone();
         long_log
             .choices
@@ -669,12 +501,6 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
-
-    // =======================================================================
-    // plans/M6.md item C: the guest runtime core, conformance-tested the
-    // M5-E way — real HVF boots of hand-assembled guest programs. M11 J
-    // deleted the enqueue/select hand-built HVF oracles with the
-    // ImageStatic emitters; boot transcripts own that surface now.
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn boot_hand_built_image(img_bytes: &[u8], tag: &str) -> BootOutcome {
@@ -697,11 +523,6 @@ mod tests {
         outcome
     }
 
-    /// Writes `img_bytes` to disk under `tag` and returns the
-    /// `(report_path, img_path)` pair, without booting — shared by every
-    /// test below that needs to call `boot_image_core`/`record::record`/
-    /// `record::replay` directly (rather than through the plain
-    /// `boot_image` wrapper `boot_hand_built_image` above uses).
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn write_hand_built_image(
         img_bytes: &[u8],
@@ -724,7 +545,6 @@ mod tests {
         (report_path, img_path)
     }
 
-    /// Rounds `n` up to the next multiple of 8 — every `ActorAddrs` field
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn load_imm_words(reg: u8, value: u64) -> Vec<u32> {
         use wrela_compiler::encode;
@@ -740,9 +560,6 @@ mod tests {
         ]
     }
 
-    /// Pre-M11-I empty irq/wake checkpoint block (vector0 observed++ /
-    /// pending whole-word clear), frozen for the HVF conformance guest.
-    /// Production images use the floor trampoline + wrela body instead.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn hand_built_simple_checkpoint() -> (Vec<u32>, usize) {
         use wrela_compiler::encode;
@@ -750,47 +567,33 @@ mod tests {
         let mut w = Vec::new();
         let observed = machine_layout::MACHINE_INFO_BASE + machine_info::OFF_VECTOR0_OBSERVED;
         let pending_addr = pending::core_word_addr(0);
-        // vector0 @ 0
         w.extend(load_imm_words(9, observed));
         w.push(encode::enc_ldr_x_imm(10, 9, 0));
         w.push(encode::enc_add_imm(10, 10, 1, true));
         w.push(encode::enc_str_x_imm(10, 9, 0));
         w.push(encode::enc_ret(30));
         let service = w.len();
-        // floor cat2 save
         w.push(encode::enc_sub_imm(31, 31, 16, true));
         w.push(encode::enc_str_x_imm(30, 31, 0));
         let loop_top = w.len();
         w.extend(load_imm_words(9, pending_addr));
         w.push(encode::enc_ldr_x_imm(10, 9, 0));
         let cbz_at = w.len();
-        w.push(0); // cbz placeholder
+        w.push(0);
         let bl_at = w.len();
-        w.push(encode::enc_bl(((0isize - bl_at as isize) * 4) as i32)); // → vector0
+        w.push(encode::enc_bl(((0isize - bl_at as isize) * 4) as i32));
         w.extend(load_imm_words(9, pending_addr));
-        w.push(encode::enc_str_x_imm(31, 9, 0)); // str xzr — x31 encodes zr in ldr/str
-        // Actually str xzr uses rt=31; enc_str_x_imm(31, ...) is xz. Good.
+        w.push(encode::enc_str_x_imm(31, 9, 0));
         let b_at = w.len();
         w.push(encode::enc_b(((loop_top as i64 - b_at as i64) * 4) as i32));
         let done = w.len();
         w[cbz_at] = encode::enc_cbz(10, ((done as i64 - cbz_at as i64) * 4) as i32, true);
-        // floor cat2 restore
         w.push(encode::enc_ldr_x_imm(30, 31, 0));
         w.push(encode::enc_add_imm(31, 31, 16, true));
         w.push(encode::enc_ret(30));
         (w, service)
     }
 
-    /// `x_reg` already holds an actual value; compares against `expect`,
-    /// sets `scratch` to `1` if they differ, shifts it into `bit` (a power
-    /// of two, `1 << shift`), and ORs it into `acc` — a branch-free
-    /// "assert" this test's own entry sequence composes one call per
-    /// checked fact, entirely so the boot's own single observable exit
-    /// code (`BootOutcome::exit_code`) can carry every check's own
-    /// pass/fail bit at once, since this hand-built harness has no
-    /// console/report machinery of its own to print through (unlike a
-    /// real compiled program's `@test(runtime)` — this fn's own module
-    /// doc explains why no compiled program can reach this code yet).
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn check_eq_into(acc: u8, scratch: u8, x_reg: u8, expect: u16, shift: u8) -> Vec<u32> {
         use wrela_compiler::encode;
@@ -817,28 +620,6 @@ mod tests {
         w.push(encode::enc_brk(0));
     }
 
-    // M11 J: hand-built HVF enqueue/select oracles deleted with
-    // `build_rt_enqueue` / `build_rt_select_and_run` (emitters gone).
-    // Boot transcripts (`boot-*/expected/test.txt`) are the oracle
-    // (decision 705 / 837).
-
-    // =======================================================================
-    // Park-and-resume conformance (the M6 turn-suspension mandate): real
-    // `.wr` sources compiled through the identical pipeline
-    // `bin/wrela.rs::test_cmd` runs (sema -> image graph -> mwir + FlowWir
-    // -> codegen -> `layout_test_image`), booted for real on
-    // Hypervisor.framework, transcript asserted. These are the semantic
-    // witnesses 04-compiler.md §2 demands structurally: awaiting lets ALL
-    // ready actors run; one turn owns an actor until completion; FIFO per
-    // mailbox; replies land in the awaiting turn's own reply slot; the
-    // root test turn parks/resumes through the same machinery; and
-    // nothing-ready + root-incomplete aborts with the named deadlock
-    // diagnostic.
-
-    /// Compiles `src` exactly the way `test_cmd` does and returns the
-    /// laid-out image + the report text `boot_image` needs. `patch_rtdata`
-    /// lets the deadlock test corrupt the (normally all-zero) rtdata
-    /// bytes before boot — a hand-built table state, disclosed as such.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn compile_test_image(src: &str) -> (wrela_compiler::layout::ImageLayout, String) {
         use std::collections::{BTreeMap, BTreeSet};
@@ -848,9 +629,6 @@ mod tests {
 
         let tokens = wrela_compiler::syntax::lexer::lex(src).expect("conformance source must lex");
         let module = wrela_compiler::syntax::parser::parse(tokens).expect("must parse");
-        // M10 B2 / B3 / A2d: mirror `bin/wrela.rs::test_cmd` — auto-load
-        // `core.runtime` and force-root its helpers so harness
-        // `bl_call_key("__wrela_line_*")` / `__wrela_fmt_dec` resolve.
         let (runtime_key, runtime_loaded) = match loader::load_runtime_module() {
             Ok(v) => v,
             Err(_) => panic!("stdlib/core/runtime.wr must load"),
@@ -877,8 +655,6 @@ mod tests {
             gen_key,
             wrela_compiler::rtconfig::GENERATED_INPUT_PATH.to_string(),
         );
-        // Mirror `bin/wrela.rs::load_runtime_bearing_singleton`: time prelude
-        // for `seconds(...)` etc., then drop `core.time` from the maps.
         let time_key: Option<Vec<String>> = if loader::module_mentions_time(&module) {
             let (time_key, time_loaded) = match loader::load_time_module() {
                 Ok(v) => v,
@@ -904,7 +680,6 @@ mod tests {
             .into_iter()
             .map(|(k, m)| (k.join("."), m))
             .collect();
-        // Prefer the user root's TypedProgram for test discovery / image fn.
         let program = programs
             .get(&root_key.join("."))
             .expect("root program present");
@@ -932,9 +707,6 @@ mod tests {
             .filter(|name| program.fns.get(*name).is_some_and(|f| f.is_async))
             .cloned()
             .collect();
-        // The unique-instance resolution `bin/wrela.rs::resolve_runtime_test_args`
-        // performs, at the subset these conformance sources need (every
-        // param is `Actor[T]` with exactly one declared `T` instance).
         let mut test_args: BTreeMap<String, Vec<u64>> = BTreeMap::new();
         for name in &runtime_tests {
             let f = &program.fns[name];
@@ -992,22 +764,12 @@ mod tests {
             ));
         }
         report.push_str(&format!("Entry base={:#x}\n", image.entry));
-        // plans/M8.md item C1: the same `CoreEntry` lines `bin/wrela.rs`
-        // writes for `wrela test`, so a conformance image built here boots
-        // the identical way a real one does (absent for a single-core
-        // image, which is every conformance image before this item).
         for (core, base) in &image.core_entries {
             report.push_str(&format!("CoreEntry core={core} base={base:#x}\n"));
         }
         (image, report)
     }
 
-    /// The `wrela build` flavor of `compile_test_image`: the same pipeline
-    /// up to layout, then `layout_program` instead of `layout_test_image`.
-    /// Deliberately a separate fn rather than a flag on the other one —
-    /// it needs no runtime tests, no async-test set and no test args, and
-    /// threading three unused parameters through would obscure the one
-    /// difference that matters (which layout fn runs).
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn compile_program_image(src: &str) -> (wrela_compiler::layout::ImageLayout, String) {
         use std::collections::{BTreeMap, BTreeSet};
@@ -1064,8 +826,6 @@ mod tests {
         (image, report)
     }
 
-    /// Rewrite `Image sha256=` to match `img` — tests that patch a blob
-    /// after `compile_test_image` still present a self-consistent report.
     fn stamp_image_digest(report: &str, img: &[u8]) -> String {
         let dig = wrela_machine::sha256::sha256_hex(img);
         let mut out = String::new();
@@ -1100,9 +860,6 @@ mod tests {
         boot_blob(&image.blob, &report, tag)
     }
 
-    /// Guest `@test(runtime)` transcripts always end with the Lane 1 dump
-    /// (`lane1 turns=…` / `lane1 hits=…`). Oracles pin the semantic
-    /// summary and the trailer shape, not the counter values.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn assert_guest_transcript(transcript: &[u8], summary: &str) {
         let t = String::from_utf8_lossy(transcript);
@@ -1131,11 +888,6 @@ mod tests {
         assert!(t.ends_with('\n'), "transcript must end with newline: {t:?}");
     }
 
-    /// (a) The two-hop await chain: root -> Outer -> Inner. The root
-    /// turn parks awaiting `Outer.relay`; Outer's turn parks awaiting
-    /// `Inner.get` (a nested suspension — Outer's own waker chain is
-    /// root's area, Inner's message carries Outer's); Inner's sync turn
-    /// completes; Outer resumes and completes; root resumes and asserts.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
     fn park_and_resume_two_hop_await_chain_over_hvf() {
@@ -1187,14 +939,6 @@ pub fn build() -> Image:
         assert_eq!(outcome.exit_code, 0);
     }
 
-    /// (b) FIFO + non-reentrancy under suspension (decision 4's flip
-    /// witness shape — item F pins the golden; this proves it now): two
-    /// one-way messages queue to Worker while its first turn is
-    /// busy-SUSPENDED awaiting Stamper; the second turn starts only
-    /// after the first fully completes. The log encodings prove
-    /// completion order: Worker's own log writes happen *after* each
-    /// turn's await resumes, so `job(1)`'s write preceding `job(2)`'s —
-    /// and Stamper's log seeing 1 before 2 — pins turn-at-a-time FIFO.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
     fn park_and_resume_fifo_second_message_waits_for_the_suspended_turn_over_hvf() {
@@ -1262,14 +1006,6 @@ pub fn build() -> Image:
         assert_eq!(outcome.exit_code, 0);
     }
 
-    /// (c) Interleaving — the property the deleted nested-drain
-    /// placeholder faked: while ChainActor's turn is parked awaiting the
-    /// Log, a `send`-queued turn on Third RUNS (scheduler-mediated,
-    /// 04 §2's "awaiting a dependency lets other actors run"), proven by
-    /// its stamp (99) landing in the Log BETWEEN the chain's own two
-    /// stamps (10, then 20): final log = ((10)*100+99)*100+20 = 109920.
-    /// Under the old synchronous drain, Third's turn could never run
-    /// during the chain's suspension, and the 99 could not interleave.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
     fn park_and_resume_interleaves_a_third_actor_while_suspended_over_hvf() {
@@ -1360,19 +1096,6 @@ pub fn build() -> Image:
         assert_eq!(outcome.exit_code, 0);
     }
 
-    /// (d) The deadlock diagnostic. NOT constructible from source at
-    /// M6's surface (the report records why: `@image` wiring is the only
-    /// way to hand out `Actor[T]` handles, its arguments are evaluated
-    /// in declaration order with no post-hoc rebinding, so the handle
-    /// graph is acyclic and every await chain bottoms out; messages
-    /// cannot carry handles; groups fail closed until item F) — so the
-    /// diagnostic is pinned via a hand-built table state, exactly as the
-    /// mandate's fallback prescribes: a REAL compiled image (root awaits
-    /// Stuck.nudge) whose rtdata is patched pre-boot to mark Stuck's
-    /// turn record busy+suspended with no reply ever coming. The root's
-    /// message queues behind the phantom parked turn; nothing is ever
-    /// ready; the driver prints the named line and the image exits
-    /// nonzero.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
     fn deadlock_diagnostic_prints_the_named_line_and_exits_nonzero_over_hvf() {
@@ -1420,10 +1143,6 @@ pub fn build() -> Image:
             let off = (addr - machine_layout::IMAGE_BASE) as usize;
             blob[off..off + 8].copy_from_slice(&v.to_le_bytes());
         };
-        // The hand-built state: Stuck's one turn is parked forever (busy
-        // + suspended, resume_ready never set — as if awaiting a reply
-        // that cannot come). boot_init only zero-fills actor STATE
-        // slots, so the patched record survives boot untouched.
         patch(&mut blob, stuck.turn + OFF_TURN_BUSY, 1);
         patch(&mut blob, stuck.turn + OFF_TURN_SUSPENDED, 1);
 
@@ -1435,66 +1154,37 @@ pub fn build() -> Image:
         assert_eq!(outcome.exit_code, 1, "fail closed: the image exits nonzero");
     }
 
-    // =======================================================================
-    // plans/M6.md item E: pending words, deadline wakes, and the choice-
-    // sequence recorder — conformance tests over real HVF, hand-assembled
-    // guests exactly like this file's own item-C/clock-test precedent
-    // (module docs above): no `.wr` source can exercise a real deadline
-    // yet (groups are item F's own job), so these hand-build the minimal
-    // guest each mechanism needs, reusing `wrela_compiler::layout::
-    // build_checkpoint_and_vector_stub`/`encode` — the exact production
-    // routine, never a re-derivation of it.
-
-    /// (b) Park + deadline wake: a hand-assembled guest reads the real
-    /// clock once, writes `now + 3ms` to `OFF_NEXT_DEADLINE`, and parks
-    /// (the trapping store to `PARK_MMIO_ADDR`). The VMM must sleep real
-    /// wall time until (approximately) that deadline, raise vector 0 (a
-    /// plain host-side write into this core's own pending word), and
-    /// resume the vCPU with PC advanced past the trapping store — the
-    /// guest then reads its own pending word back and asserts it reads
-    /// `1` (the VMM's own raise, left uncleared since this hand-built
-    /// guest never calls `__wrela_checkpoint_service`), proving "guest
-    /// resumes and completes" (the task's own conformance wording) rather
-    /// than hanging past `WALL_CAP`.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
     fn park_conformance_wakes_at_the_deadline_and_resumes_over_hvf() {
         use wrela_compiler::encode;
         use wrela_machine::{layout as machine_layout, machine_info, mmio, pending};
 
-        const DELTA_NS: u64 = 3_000_000; // 3ms — short, but a real, observable sleep.
+        const DELTA_NS: u64 = 3_000_000;
         let sp_top = machine_layout::core_stack_base_n(0, 1) + machine_layout::CORE_STACK_SIZE;
 
         let mut w = Vec::new();
         w.extend(load_imm_words(9, sp_top));
-        w.push(encode::enc_add_imm(31, 9, 0, true)); // mov sp, x9
+        w.push(encode::enc_add_imm(31, 9, 0, true));
 
-        // x1 = now_ns (a real clock read — CLOCK_MMIO_ADDR trap #1).
         w.extend(load_imm_words(9, mmio::CLOCK_MMIO_ADDR));
         w.push(encode::enc_ldr_x_imm(1, 9, 0));
 
-        // x1 = deadline = now_ns + DELTA_NS
         w.extend(load_imm_words(2, DELTA_NS));
         w.push(encode::enc_add_reg(1, 1, 2, true));
 
-        // OFF_NEXT_DEADLINE = deadline (an ordinary, non-trapping store —
-        // mmio::PARK_MMIO_ADDR's own module doc: "the guest writes its
-        // own next deadline ... and only then performs the trapping
-        // store").
         w.extend(load_imm_words(
             9,
             machine_layout::MACHINE_INFO_BASE + machine_info::OFF_NEXT_DEADLINE,
         ));
         w.push(encode::enc_str_x_imm(1, 9, 0));
 
-        // Park: the trapping store to PARK_MMIO_ADDR.
         w.extend(load_imm_words(9, mmio::PARK_MMIO_ADDR));
         w.push(encode::enc_str_x_imm(1, 9, 0));
 
-        // Resumed: the pending word must now read 1.
         w.extend(load_imm_words(9, pending::core_word_addr(0)));
         w.push(encode::enc_ldr_x_imm(10, 9, 0));
-        w.push(encode::enc_movz(11, 0, 0, true)); // fail accumulator
+        w.push(encode::enc_movz(11, 0, 0, true));
         w.extend(check_eq_into(11, 12, 10, 1, 0));
 
         w.extend(load_imm_words(12, mmio::EXIT_MMIO_ADDR));
@@ -1509,9 +1199,6 @@ pub fn build() -> Image:
         );
     }
 
-    /// Sub-word MMIO (LDRB against CLOCK) is a named guest fault — never a
-    /// silent zero-extend of the full 64-bit clock word into the
-    /// destination register (adversarial audit, 2026-07-27).
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
     fn subword_mmio_access_is_a_named_guest_fault_over_hvf() {
@@ -1520,7 +1207,7 @@ pub fn build() -> Image:
 
         let mut w = Vec::new();
         w.extend(load_imm_words(9, mmio::CLOCK_MMIO_ADDR));
-        w.push(encode::enc_ldrb_imm(1, 9, 0)); // LDRB — 1-byte, not 8
+        w.push(encode::enc_ldrb_imm(1, 9, 0));
         w.push(encode::enc_brk(0));
 
         let img_bytes: Vec<u8> = w.iter().flat_map(|word| word.to_le_bytes()).collect();
@@ -1539,28 +1226,6 @@ pub fn build() -> Image:
         );
     }
 
-    /// (a) Vector raise observed at a checkpoint: a hand-assembled,
-    /// bounded spinning loop (never parks) calls a self-contained
-    /// checkpoint fixture (`hand_built_simple_checkpoint` — the pre-I
-    /// empty irq/wake shape) at every back-edge, exactly like a compiled
-    /// loop's own checkpoint (`codegen::FnCtx::checkpoint`). A background
-    /// host thread (this crate's own `test_delayed_raise` conformance seam
-    /// — module doc on `boot_image_core`) raises vector 0 mid-run, entirely
-    /// independently of the park protocol (the guest is actively running,
-    /// never parked) — modeling "the VMM raises a vector while the guest is
-    /// somewhere in a bounded loop" (06 §4) honestly, since M6-E's only
-    /// *real* producer of a mid-run raise (an expired group's deadline)
-    /// is item F's own job. The loop's own bound is large enough that the
-    /// raise's own short delay reliably lands inside it (not after), so
-    /// the checkpoint service dispatches the vector-0 routine, which
-    /// increments the observation counter — asserted `== 1` after the
-    /// loop completes (never lost, never double-counted), alongside the
-    /// loop's own counter reaching exactly zero (the raise never
-    /// corrupts ordinary control flow). Deliberately not claimed as
-    /// replay-exact (the raise's own timing is real wall-clock, not part
-    /// of the choice sequence — disclosed in `boot_image_core`'s own doc,
-    /// not silently narrowed): replay-stability is (c)'s own job, over
-    /// the deadline-wake path (b), which *is* choice-sequence-covered.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
     fn vector_raise_observed_at_a_checkpoint_over_hvf() {
@@ -1569,24 +1234,19 @@ pub fn build() -> Image:
 
         const LOOP_BOUND: u64 = 200_000_000;
         let sp_top = machine_layout::core_stack_base_n(0, 1) + machine_layout::CORE_STACK_SIZE;
-        // M11 I: production checkpoint section is a floor trampoline + wrela
-        // body in `code`. This conformance guest is hand-built, so embed a
-        // self-contained simple-path clone (observed++ / pending clear) —
-        // the pre-I empty irq/wake shape, frozen here as a VMM fixture.
         let (cp_words, cp_entry_offset) = hand_built_simple_checkpoint();
 
         let mut w = Vec::new();
         w.extend(load_imm_words(9, sp_top));
-        w.push(encode::enc_add_imm(31, 9, 0, true)); // mov sp, x9
-        w.extend(load_imm_words(19, LOOP_BOUND)); // x19 = loop counter
+        w.push(encode::enc_add_imm(31, 9, 0, true));
+        w.extend(load_imm_words(19, LOOP_BOUND));
 
         let loop_top = w.len();
-        // checkpoint: load pending word, skip the BL if zero.
         w.extend(load_imm_words(9, pending::core_word_addr(0)));
         w.push(encode::enc_ldr_x_imm(10, 9, 0));
-        w.push(encode::enc_cbz(10, 8, true)); // cbz x10, +2 words (skip the bl)
+        w.push(encode::enc_cbz(10, 8, true));
         let bl_word = w.len();
-        w.push(0); // placeholder, patched below once cp_words' own base is known
+        w.push(0);
         w.push(encode::enc_subs_imm(19, 19, 1, true));
         {
             let this = w.len() as i64;
@@ -1594,14 +1254,8 @@ pub fn build() -> Image:
             w.push(encode::enc_cbnz(19, delta as i32, true));
         }
 
-        // The loop's own `cbnz` above falls straight through to here once
-        // `x19` hits zero — an unconditional `B` over `cp_words` is
-        // required so that fall-through never executes the checkpoint
-        // routine itself as if it were this test's own post-loop code
-        // (its own trailing `ret` would then return through whatever
-        // garbage `x30` happens to hold, not a `BL`'s own fresh value).
         let skip_cp_word = w.len();
-        w.push(0); // placeholder `B`, patched once `cp_words`' own end is known
+        w.push(0);
 
         let cp_base = w.len();
         {
@@ -1616,13 +1270,12 @@ pub fn build() -> Image:
             w[skip_cp_word] = encode::enc_b(((after_cp - this) * 4) as i32);
         }
 
-        // Post-loop checks: observed count == 1, loop counter == 0.
         w.extend(load_imm_words(
             9,
             machine_layout::MACHINE_INFO_BASE + machine_info::OFF_VECTOR0_OBSERVED,
         ));
         w.push(encode::enc_ldr_x_imm(10, 9, 0));
-        w.push(encode::enc_movz(11, 0, 0, true)); // fail accumulator
+        w.push(encode::enc_movz(11, 0, 0, true));
         w.extend(check_eq_into(11, 12, 10, 1, 0));
         w.extend(check_eq_into(11, 12, 19, 0, 1));
 
@@ -1647,40 +1300,18 @@ pub fn build() -> Image:
         );
     }
 
-    /// (c) Record -> replay of the park/deadline-wake scenario (b),
-    /// byte-stable, with divergence detection on tamper — the choice-
-    /// sequence recorder's own conformance evidence (decision 9): a real
-    /// recorded boot of the identical park-wake guest, replayed, must
-    /// reproduce the exact same transcript digest/exit code (replay's own
-    /// sleep-skipped, virtual-time-fed wake, per `Chooser::choose_next`'s
-    /// own doc), and a tampered choice log must be caught, named, by
-    /// `record::Divergence`.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    /// plans/M6.md item F: the EL1-exception note (`el1_exception_note`'s
-    /// own doc comment has the whole mechanism). A four-instruction
-    /// hand-built guest performs one unaligned 64-bit load — the MMU is
-    /// off, so every access is Device-nGnRnE and naturally
-    /// alignment-checked — which the CPU takes as an EL1 synchronous
-    /// exception, vectoring to `VBAR_EL1 + 0x200` with `VBAR_EL1` never
-    /// installed (06-machine.md §4: this machine has no vector table at
-    /// all). The bare fault the VMM sees is therefore an instruction
-    /// abort at `0x200`, which says nothing; this test pins that the
-    /// diagnostic *also* names the mechanism and reports the original
-    /// `ESR_EL1` (EC `0x25` — data abort, same EL) and the real faulting
-    /// address in `FAR_EL1`. Exactly the diagnostic that would have named
-    /// `golden/boot-group-join`'s own first-boot failure outright.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
     fn an_el1_fault_into_the_absent_vector_table_names_the_original_esr_over_hvf() {
         use wrela_compiler::encode;
         use wrela_machine::layout as machine_layout;
 
-        // A deliberately 4-aligned (never 8-aligned) DRAM address.
         let bad = machine_layout::DRAM_BASE + 0x8004;
         let mut w = Vec::new();
         w.extend(load_imm_words(9, bad));
-        w.push(encode::enc_ldr_x_imm(10, 9, 0)); // 64-bit load at a 4-aligned address
-        w.push(encode::enc_brk(0)); // never reached
+        w.push(encode::enc_ldr_x_imm(10, 9, 0));
+        w.push(encode::enc_brk(0));
 
         let img_bytes: Vec<u8> = w.iter().flat_map(|word| word.to_le_bytes()).collect();
         let report_text = format!(
@@ -1726,7 +1357,7 @@ pub fn build() -> Image:
         use wrela_compiler::encode;
         use wrela_machine::{layout as machine_layout, machine_info, mmio, pending};
 
-        const DELTA_NS: u64 = 2_000_000; // 2ms
+        const DELTA_NS: u64 = 2_000_000;
         let sp_top = machine_layout::core_stack_base_n(0, 1) + machine_layout::CORE_STACK_SIZE;
 
         let mut w = Vec::new();
@@ -1756,11 +1387,6 @@ pub fn build() -> Image:
 
         let recorded = record::record(&report_path, &img_path).expect("live boot");
         assert_eq!(recorded.exit_code, 0);
-        // Exactly one ClockRead, then a DeadlineWake, then the vector-0
-        // raise — the park-wake scenario's own choice sequence, pinned
-        // structurally (values are real wall-clock/monotonic-ns, never
-        // compared here — only the tag shape, per the format's own house
-        // rule).
         assert_eq!(recorded.choices.len(), 3);
         assert!(matches!(
             recorded.choices[0],
@@ -1775,21 +1401,18 @@ pub fn build() -> Image:
             record::ChoiceEntry::VectorRaise { vector: 0 }
         );
 
-        // --- replay with the real recording: byte-stable, no divergence ---
         let divergences = record::replay(&report_path, &img_path, &recorded).expect("replay boot");
         assert!(
             divergences.is_empty(),
             "expected no divergence, got {divergences:?}"
         );
 
-        // --- tampered choice tag: aborts (strict replay) -------------------
         let mut bad_tag = recorded.clone();
         bad_tag.choices[1] = record::ChoiceEntry::ClockRead { value: 0 };
         let err =
             record::replay(&report_path, &img_path, &bad_tag).expect_err("strict tag mismatch");
         assert!(err.to_string().contains("replay divergence"), "got {err}");
 
-        // --- tampered exit code: caught -------------------------------------
         let mut bad_exit = recorded.clone();
         bad_exit.exit_code = 7;
         let divergences = record::replay(&report_path, &img_path, &bad_exit).expect("replay boot");
@@ -1801,36 +1424,13 @@ pub fn build() -> Image:
         let _ = std::fs::remove_dir_all(report_path.parent().unwrap());
     }
 
-    /// plans/M6.md item E, verification's own fail-closed finding: the
-    /// process-level exit-code contract `main.rs`'s own module doc names
-    /// — `record::replay`'s own returned `Vec<Divergence>` (already
-    /// exercised directly, above) is only half the contract; the other
-    /// half is `main.rs`'s own mapping from that list to *this process's*
-    /// exit code, which had no test coverage of its own before this item.
-    /// Builds + codesigns the real `wrela-vmm` *binary* itself (this
-    /// crate's every other test exercises the library directly; this one
-    /// specifically needs the compiled binary's own `main` to run) and
-    /// spawns it as a real subprocess for every documented outcome:
-    /// - a clean replay of a guest that reported a **nonzero** exit code
-    ///   must itself exit `1` (guest-authored, mirroring a plain boot) —
-    ///   not unconditionally `0`, the real bug this test was written to
-    ///   catch (a clean replay previously always returned
-    ///   `ExitCode::SUCCESS` regardless of the guest's own outcome, fixed
-    ///   in the same commit as this test);
-    /// - a replay whose recorded `exit_code=` line is tampered must exit
-    ///   `EXIT_REPLAY_DIVERGENCE` (`3`), **never** `0` — the exact
-    ///   fail-closed violation the coordinator's own verification probe
-    ///   named;
-    /// - `--replay` against an unparseable record file, and `--record` to
-    ///   an unwritable destination, must each exit `EXIT_VMM_FAILURE`
-    ///   (`2`).
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
     fn replay_divergence_and_record_failures_exit_nonzero_through_the_real_binary() {
         use std::process::Command;
 
         use wrela_machine::vmm_process::{EXIT_REPLAY_DIVERGENCE, EXIT_VMM_FAILURE};
-        const GUEST_EXIT_CODE: u64 = 5; // nonzero — must collapse to process exit `1`, never `0`.
+        const GUEST_EXIT_CODE: u64 = 5;
 
         let build = Command::new("cargo")
             .args(["build", "--quiet", "-p", "wrela-vmm", "--bin", "wrela-vmm"])
@@ -1855,9 +1455,6 @@ pub fn build() -> Image:
             .expect("run codesign");
         assert!(codesign.success(), "codesign wrela-vmm failed");
 
-        // A minimal hand-assembled guest (this file's own clock-test
-        // precedent): halts immediately with `GUEST_EXIT_CODE` — no sp
-        // setup needed, `push_halt` alone is a complete, valid program.
         let mut words = Vec::new();
         push_halt(&mut words, 9, 10, GUEST_EXIT_CODE);
         let img_bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
@@ -1879,7 +1476,6 @@ pub fn build() -> Image:
         std::fs::write(&img_path, &img_bytes).expect("write image");
         std::fs::write(&report_path, &report_text).expect("write report");
 
-        // --- record: a plain boot's own guest-authored exit code --------
         let record_out = Command::new(&bin)
             .arg(&report_path)
             .arg(&img_path)
@@ -1893,7 +1489,6 @@ pub fn build() -> Image:
             "a nonzero guest exit code must collapse to process exit 1 on a plain --record boot"
         );
 
-        // --- clean replay: must ALSO exit 1, never unconditionally 0 ----
         let clean_replay = Command::new(&bin)
             .arg(&report_path)
             .arg(&img_path)
@@ -1908,7 +1503,6 @@ pub fn build() -> Image:
              plain boot, never unconditionally ExitCode::SUCCESS"
         );
 
-        // --- tampered exit_code=: must exit EXIT_REPLAY_DIVERGENCE, never 0
         let record_text = std::fs::read_to_string(&record_path).expect("read record");
         let tampered_text: String = record_text
             .lines()
@@ -1943,7 +1537,6 @@ pub fn build() -> Image:
             "the tampered replay's own stderr must name the exit-code mismatch"
         );
 
-        // --- malformed record file on --replay: must exit EXIT_VMM_FAILURE
         let malformed_path = tmp_dir.join("malformed.record.txt");
         std::fs::write(&malformed_path, b"not a choice log at all\n").expect("write malformed");
         let malformed_replay = Command::new(&bin)
@@ -1959,7 +1552,6 @@ pub fn build() -> Image:
             "a malformed --replay record file must exit EXIT_VMM_FAILURE"
         );
 
-        // --- --record to an unwritable path: must exit EXIT_VMM_FAILURE -
         let unwritable_path = tmp_dir.join("no-such-subdir").join("rec.txt");
         let unwritable_record = Command::new(&bin)
             .arg(&report_path)
@@ -1977,55 +1569,17 @@ pub fn build() -> Image:
         let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 
-    // =======================================================================
-    // plans/M7.md item F: the virtio-blk device model, its doorbell, and its
-    // completions in the recorded choice sequence.
-    //
-    // `devices.rs`'s own `#[cfg(test)]` module drives the *model* directly
-    // (ring shapes, request format, `Flush`, and every malformed-ring
-    // rejection by name) with no VMM and no HVF involved at all. What
-    // follows is the other half — a **real boot** of a hand-assembled guest
-    // that plays the driver's role, exactly the way M5/M6 both established
-    // is the only oracle that catches register-level and protocol-level
-    // bugs a dump review misses (plans/M7.md's own A–H note: "a real HVF
-    // boot as the behavioral oracle wherever the item produces
-    // guest-visible behavior"). No compiled `.wr` source can reach a device
-    // yet — capabilities, layouts, DMA pools, queues, and receipts are
-    // items A/B/C/D/E — so the driver here is hand-assembled, exactly like
-    // this file's own clock/park/actor-runtime conformance guests.
-
-    /// Everything one blk conformance boot needs: the image blob (code +
-    /// a prefilled ring and buffers), the report declaring the device, and
-    /// the expected payload words the guest checks against.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     struct BlkImage {
         img_bytes: Vec<u8>,
         report_text: String,
     }
 
-    /// Builds the hand-assembled blk driver + its ring.
-    ///
-    /// The ring, the two request headers, the source payload, and the
-    /// destination buffer all live in the image's own trailing data region
-    /// — plain image bytes, loaded into DRAM by the ordinary boot path —
-    /// and one declared pool window covers exactly that region and nothing
-    /// else. The descriptor chains are prefilled by this builder (the
-    /// harness playing the driver's build-time role); the guest program
-    /// itself does the two runtime acts a real driver does: publish an
-    /// available entry, and ring the doorbell.
-    ///
-    /// Two operations, in order:
-    /// 1. `T_OUT` sector 0, 512 bytes from `SRC` (chain 0 -> 1 -> 2);
-    /// 2. `T_IN` sector 0, 512 bytes into `DST` (chain 3 -> 4 -> 5).
-    ///
-    /// The read-back therefore proves the write actually reached the
-    /// model's own disk, without the guest ever seeing the disk.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn build_blk_conformance_image() -> BlkImage {
         use wrela_machine::layout as machine_layout;
 
         const QUEUE_SIZE: u64 = 8;
-        // Offsets within the data region.
         const OFF_DESC: u64 = 0x000;
         const OFF_AVAIL: u64 = 0x080;
         const OFF_USED: u64 = 0x0C0;
@@ -2037,11 +1591,6 @@ pub fn build() -> Image:
         const OFF_SRC: u64 = 0x200;
         const OFF_DST: u64 = 0x400;
         const DATA_REGION_SIZE: u64 = 0x600;
-        /// The vector bit a completion raises (06 §4). Deliberately not
-        /// bit 0: that is M6's deadline vector, and this test asserts the
-        /// pending word ends up holding *only* the blk bit — which is what
-        /// proves the completion suppressed the park's own sleep rather
-        /// than merely racing it.
         const BLK_VECTOR: u64 = 1;
 
         let payload: Vec<u8> = (0..512u32).map(|i| ((i * 7 + 3) % 256) as u8).collect();
@@ -2050,11 +1599,6 @@ pub fn build() -> Image:
 
         let sp_top = machine_layout::core_stack_base_n(0, 1) + machine_layout::CORE_STACK_SIZE;
 
-        // Pass 1 with placeholder addresses purely to measure the entry
-        // sequence's own word count — its length is addr-value-independent
-        // (every embedded constant is a fixed-width `load_imm_words`), the
-        // identical two-pass technique this file's own actor-runtime test
-        // uses.
         fn build_entry(
             sp_top: u64,
             data_base: u64,
@@ -2070,32 +1614,20 @@ pub fn build() -> Image:
 
             let mut w = Vec::new();
             w.extend(load_imm_words(9, sp_top));
-            w.push(encode::enc_add_imm(31, 9, 0, true)); // mov sp, x9
+            w.push(encode::enc_add_imm(31, 9, 0, true));
 
-            // One aligned 64-bit store publishes the whole avail header:
-            // `flags: u16 = 0, idx: u16, ring[0]: u16, ring[1]: u16`. No
-            // 16-bit store encoding is needed, and the guest's own view of
-            // the ring stays exactly the little-endian layout the model
-            // reads.
             let publish = |w: &mut Vec<u32>, idx: u64| {
                 w.extend(load_imm_words(9, avail));
                 w.extend(load_imm_words(10, (idx << 16) | (0 << 32) | (3 << 48)));
                 w.push(encode::enc_str_x_imm(10, 9, 0));
-                // 06 §5's doorbell: an ordinary store to ordinary DRAM.
-                // No trap, no exit — the VMM polls this word.
                 w.extend(load_imm_words(9, doorbell));
                 w.push(encode::enc_movz(10, 1, 0, true));
                 w.push(encode::enc_str_x_imm(10, 9, 0));
             };
-            // A park is what gives the VMM a chance to poll at all (this
-            // guest has no checkpoint loop of its own). The deadline is
-            // deliberately real and short: if the doorbell path were
-            // broken, this boot would still finish and fail its checks
-            // loudly rather than hanging to `WALL_CAP`.
             let park = |w: &mut Vec<u32>| {
                 w.extend(load_imm_words(9, mmio::CLOCK_MMIO_ADDR));
                 w.push(encode::enc_ldr_x_imm(11, 9, 0));
-                w.extend(load_imm_words(12, 20_000_000)); // 20ms
+                w.extend(load_imm_words(12, 20_000_000));
                 w.push(encode::enc_add_reg(11, 11, 12, true));
                 w.extend(load_imm_words(
                     9,
@@ -2106,15 +1638,11 @@ pub fn build() -> Image:
                 w.push(encode::enc_str_x_imm(11, 9, 0));
             };
 
-            publish(&mut w, 1); // chain 0: the write
+            publish(&mut w, 1);
             park(&mut w);
-            publish(&mut w, 2); // chain 3: the read-back
+            publish(&mut w, 2);
             park(&mut w);
 
-            // --- checks -------------------------------------------------
-            // used[0..8]  = flags(0) | idx(2)<<16 | ring[0].id(0)<<32
-            // used[8..16] = ring[0].len(1) | ring[1].id(3)<<32
-            // used[16..24]= ring[1].len(513) | ring[2].id(0)<<32
             w.extend(load_imm_words(9, used));
             w.push(encode::enc_ldr_x_imm(19, 9, 0));
             w.push(encode::enc_ldr_x_imm(20, 9, 8));
@@ -2129,7 +1657,7 @@ pub fn build() -> Image:
             w.extend(load_imm_words(9, pending::core_word_addr(0)));
             w.push(encode::enc_ldr_x_imm(26, 9, 0));
 
-            w.push(encode::enc_movz(1, 0, 0, true)); // x1 = fail accumulator
+            w.push(encode::enc_movz(1, 0, 0, true));
             let check = |w: &mut Vec<u32>, actual: u8, expect: u64, bit: u8| {
                 w.extend(load_imm_words(13, expect));
                 w.push(encode::enc_cmp_reg(actual, 13, true));
@@ -2146,11 +1674,6 @@ pub fn build() -> Image:
             check(&mut w, 23, 0, 4);
             check(&mut w, 24, expect_first, 5);
             check(&mut w, 25, expect_last, 6);
-            // Only the blk vector, never the deadline's own bit 0: a park
-            // that slept and woke on its deadline would leave bit 0 set
-            // too, so this pins that the completion itself suppressed the
-            // sleep (06 §4's "a wake between test and park cannot be
-            // lost", applied to completions).
             check(&mut w, 26, 1u64 << BLK_VECTOR, 7);
 
             w.extend(load_imm_words(15, mmio::EXIT_MMIO_ADDR));
@@ -2161,10 +1684,6 @@ pub fn build() -> Image:
 
         let entry_len = build_entry(sp_top, 0, 0, 0).len();
         let code_bytes = (entry_len as u64) * 4;
-        // Data must sit outside the page-granular RX window applied to
-        // `Section name=entry` (16 KiB HVF pages). Padding code up to a
-        // page and starting the ring/doorbell there keeps doorbell stores
-        // on RW DRAM.
         const PAGE: u64 = 16 * 1024;
         let code_span = code_bytes.div_ceil(PAGE) * PAGE;
         let data_base = machine_layout::IMAGE_BASE + code_span;
@@ -2190,7 +1709,6 @@ pub fn build() -> Image:
             put(img, at + 14, &next.to_le_bytes());
         };
 
-        // Chain 0: write 512 bytes of SRC to sector 0.
         put(&mut img, OFF_HDR1, &devices::T_OUT.to_le_bytes());
         put(&mut img, OFF_HDR1 + 8, &0u64.to_le_bytes());
         desc(
@@ -2217,7 +1735,6 @@ pub fn build() -> Image:
             devices::DESC_F_WRITE,
             0,
         );
-        // Chain 3: read sector 0 back into DST.
         put(&mut img, OFF_HDR2, &devices::T_IN.to_le_bytes());
         put(&mut img, OFF_HDR2 + 8, &0u64.to_le_bytes());
         desc(
@@ -2244,10 +1761,6 @@ pub fn build() -> Image:
             devices::DESC_F_WRITE,
             0,
         );
-        // A status byte that is never written would read as the 0 the
-        // whole image is padded with, which is also `STATUS_OK` — so
-        // pre-poison both, and the checks above only pass if the model
-        // genuinely wrote them.
         put(&mut img, OFF_STATUS1, &[0xEE]);
         put(&mut img, OFF_STATUS2, &[0xEE]);
         put(&mut img, OFF_SRC, &payload);
@@ -2289,17 +1802,6 @@ pub fn build() -> Image:
         (report_path, img_path)
     }
 
-    /// The doorbell path end to end, over real HVF: a hand-assembled
-    /// driver publishes a `T_OUT` chain, rings the shared-memory doorbell
-    /// (an ordinary store — **no trap**, 06 §5), parks, and the VMM's own
-    /// park-path poll services the ring, writes the disk, publishes the
-    /// used entry and raises the completion vector *without ever
-    /// sleeping*; then the same guest reads the sector back through a
-    /// second chain and checks every byte of it.
-    ///
-    /// Eight independent checks fold into the exit code (bit N names which
-    /// one failed), so a regression says what broke rather than merely
-    /// that something did.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
     fn blk_doorbell_write_then_read_completes_over_hvf() {
@@ -2312,8 +1814,6 @@ pub fn build() -> Image:
              3 = write status byte, 4 = read status byte, 5 = first payload word, \
              6 = last payload word, 7 = pending word (only the blk vector, no deadline wake)"
         );
-        // The two completions and their two vector raises, in order — and
-        // nothing else from the park path, since neither park slept.
         let completions: Vec<_> = outcome
             .choices
             .iter()
@@ -2338,7 +1838,7 @@ pub fn build() -> Image:
                 digest,
             } => {
                 assert_eq!((device.as_str(), *queue, *head), ("blk", 0, 0));
-                assert_eq!((*status, *len), (0, 1)); // a write writes only the status byte
+                assert_eq!((*status, *len), (0, 1));
                 assert!(!digest.is_empty());
             }
             other => panic!("expected a device completion, got {other:?}"),
@@ -2351,10 +1851,6 @@ pub fn build() -> Image:
         }
     }
 
-    /// plans/M7.md decision 7 + 06 §8: device completions join the
-    /// recorded choice sequence, and a replay reproduces the boot exactly.
-    /// Record -> replay clean -> tamper each field of a completion ->
-    /// named divergence, all over the identical real blk boot above.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
     fn blk_completions_record_and_replay_and_every_tamper_diverges() {
@@ -2370,7 +1866,6 @@ pub fn build() -> Image:
             .map(|(i, _)| i)
             .collect();
         assert_eq!(completion_indices.len(), 2);
-        // The record file's own text round-trips with the new tag in it.
         let text = recorded.to_text();
         assert!(text.contains("DeviceCompletion device=blk queue=0 head=0 status=0 len=1 digest="));
         assert_eq!(
@@ -2379,14 +1874,12 @@ pub fn build() -> Image:
             "the completion tag must survive the record file's own text format"
         );
 
-        // --- replay with the real recording: no divergence --------------
         let divergences = record::replay(&report_path, &img_path, &recorded).expect("replay boot");
         assert!(
             divergences.is_empty(),
             "expected a clean replay, got {divergences:?}"
         );
 
-        // --- tamper each field of the first completion ------------------
         let idx = completion_indices[0];
         let record::ChoiceEntry::DeviceCompletion {
             device,
@@ -2456,19 +1949,11 @@ pub fn build() -> Image:
         let _ = std::fs::remove_dir_all(report_path.parent().unwrap());
     }
 
-    /// A malformed ring is a *diagnosable VMM-side error*, over a real
-    /// boot — not a panic, not an out-of-bounds read, and not a silently
-    /// skipped operation (03 §4). The identical conformance image, with
-    /// one descriptor's `addr` repointed at the machine-info page, which
-    /// no declared pool covers (plans/M7.md decision 5).
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
     fn a_descriptor_outside_every_declared_pool_fails_the_boot_closed_over_hvf() {
         use wrela_machine::layout as machine_layout;
         let built = build_blk_conformance_image();
-        // Find descriptor 1's own `addr` word (chain 0's data descriptor)
-        // by re-deriving the data region's base from the report itself —
-        // no second copy of the layout constants.
         let data_base = built
             .report_text
             .lines()
@@ -2477,11 +1962,8 @@ pub fn build() -> Image:
             .and_then(|hex| u64::from_str_radix(hex.trim_start_matches("0x"), 16).ok())
             .expect("the report declares the pool this image uses");
         let mut img = built.img_bytes.clone();
-        let desc1 = (data_base - machine_layout::IMAGE_BASE) as usize + devices::DESC_SIZE as usize; // descriptor index 1
+        let desc1 = (data_base - machine_layout::IMAGE_BASE) as usize + devices::DESC_SIZE as usize;
         img[desc1..desc1 + 8].copy_from_slice(&machine_layout::DRAM_BASE.to_le_bytes());
-        // Digest is checked before the device model runs — rewrite the
-        // report's Image sha256 so the deliberate descriptor forgery is
-        // what fails closed, not the digest gate.
         let new_digest = wrela_machine::sha256::sha256_hex(&img);
         let report_text = built
             .report_text
@@ -2515,8 +1997,6 @@ pub fn build() -> Image:
         );
     }
 
-    // --- report parsing for the declared device ---------------------------
-
     #[test]
     fn parse_report_accepts_a_declared_blk_device() {
         let text = format!(
@@ -2535,9 +2015,6 @@ pub fn build() -> Image:
         assert_eq!(blk.queue.size, 128);
         assert_eq!(blk.queue.desc, 0x4060_0000);
         assert_eq!(blk.device, 0);
-        // plans/M8.md item P: **every** declared window is carried, each
-        // with the device it is bound to — the foreign one is what
-        // `GuestMem` refuses rather than never hears about.
         assert_eq!(blk.pools.len(), 2);
         assert_eq!(blk.pools[0].name, "BlockControl");
         assert_eq!(blk.pools[0].device, 0);
@@ -2545,9 +2022,6 @@ pub fn build() -> Image:
         assert_eq!(blk.pools[1].device, 1);
     }
 
-    /// Every half-declared, misspelled, or contradictory device
-    /// declaration fails the whole report closed — a device this VMM only
-    /// half-understands is exactly the configuration it must never boot.
     #[test]
     fn parse_report_rejects_every_malformed_blk_declaration() {
         let head = format!(
@@ -2598,8 +2072,6 @@ pub fn build() -> Image:
                     "BlkDevice device=device#0 capacity_sectors=lots features=0x1\n{queue}{pool}"
                 ),
             ),
-            // plans/M8.md item P: the device field is required on both
-            // line kinds, and only in the `device#<n>` spelling.
             (
                 "a device line with no `device=`",
                 format!("BlkDevice capacity_sectors=16 features=0x1\n{queue}{pool}"),
@@ -2633,13 +2105,6 @@ pub fn build() -> Image:
         }
     }
 
-    // --- plans/M8.md item C1: three vCPUs actually execute ----------------
-
-    /// The cross-core conformance source both C1 boot tests below use: one
-    /// actor on core 0 (messaged by the root turn), one on core 1 (reachable
-    /// by nothing until item C2's rings), and core 2 with nothing placed on
-    /// it at all — the "a core with no placed actor must still come up, find
-    /// nothing, and park" arm.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     const CROSS_CORE_SRC: &str = r#"module conformance.cross_core
 
@@ -2682,7 +2147,6 @@ pub fn build() -> Image:
     return img.seal()
 "#;
 
-    /// Focused N=2 bring-up under the baton (plans/M15.md item F).
     const TWO_CORE_SRC: &str = r#"module conformance.two_core
 
 @actor
@@ -2724,8 +2188,6 @@ pub fn build() -> Image:
     return img.seal()
 "#;
 
-    /// Minimal single-core image for the host-refuse inject (create fails
-    /// before any guest instruction runs).
     const SINGLE_CORE_REFUSE_SRC: &str = r#"module conformance.host_refuse
 
 @actor
@@ -2756,30 +2218,14 @@ pub fn build() -> Image:
     return img.seal()
 "#;
 
-    /// plans/M8.md item C1's own acceptance test, stated as the plan states
-    /// it: **three cores run**, and the evidence is guest-written.
-    ///
-    /// Every core's mark is written by that core's own entry block
-    /// (`machine_info::core_mark_addr`), so a boot where cores 1 and 2 never
-    /// executed leaves the zeroed reservation's own zeros there. The
-    /// single-core half of the assertion matters just as much: an image that
-    /// brings up one core writes **no** mark at all and releases nothing,
-    /// which is the mechanical reason every M5-M7 transcript is unchanged.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
     fn three_cores_come_up_on_a_cross_core_image_over_hvf() {
         let outcome = boot_source(CROSS_CORE_SRC, "c1-three-cores");
         assert_guest_transcript(&outcome.transcript, "test boots: ok\n1 passed, 0 failed\n");
         assert_eq!(outcome.exit_code, 0);
-        // Core 0 by the entry driver, cores 1 and 2 by their own entry
-        // blocks — each its own value, so a core running another core's
-        // block cannot pass this. Length is sealed N (item F).
         assert_eq!(outcome.core_marks, vec![1, 2, 3]);
 
-        // The single-core control: same shape, no `core=` anywhere, so
-        // nothing is released and no core marks itself. Drop `cores=3`
-        // too — otherwise a pin-less cores=3 image still brings up
-        // secondaries that write marks.
         let single = boot_source(
             &CROSS_CORE_SRC
                 .replace(", cores=3", "")
@@ -2791,8 +2237,6 @@ pub fn build() -> Image:
         assert_eq!(single.core_marks, vec![0]);
     }
 
-    /// plans/M15.md item F focused boot: create-N path for N=2 (marks
-    /// exactly `[1, 2]`).
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
     fn two_cores_come_up_under_baton_over_hvf() {
@@ -2802,8 +2246,6 @@ pub fn build() -> Image:
         assert_eq!(outcome.core_marks, vec![1, 2]);
     }
 
-    /// plans/M15.md item I: overlapping `hv_vcpu_run` — peak depth > 1 on a
-    /// concurrent cross-core boot; quiescent depth is 0 afterwards.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
     fn concurrent_boot_observes_hv_vcpu_run_overlap_depth() {
@@ -2824,7 +2266,6 @@ pub fn build() -> Image:
         );
     }
 
-    /// Named `HostCoresRefuse` mapping (decision 1062) — pure, no HVF.
     #[test]
     fn host_cores_refuse_names_sealed_n() {
         let err = host_cores_refuse(3, 2, 0xfae9_4005u32 as i32);
@@ -2845,8 +2286,6 @@ pub fn build() -> Image:
         );
     }
 
-    /// Inject create failure on core 0 of a cores=1 image — proves the
-    /// boot path returns `HostCoresRefuse` without needing a 32-core host.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
     fn host_refuses_when_vcpu_create_fails_over_hvf() {
@@ -2878,8 +2317,6 @@ pub fn build() -> Image:
         }
     }
 
-    /// Report `Cores`/`CoreStack` parse surfaces through the VMM wrapper
-    /// (item F cheap: report parse of Cores/CoreStack).
     #[test]
     fn parse_report_accepts_cores_and_high_core_stacks() {
         let n = 2usize;
@@ -2915,41 +2352,25 @@ pub fn build() -> Image:
         }
     }
 
-    /// Retargeted mark helper: scopes to declared N, not a fixed 3
-    /// (decision 1065).
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
     fn check_core_marks_scopes_to_declared_n() {
         use wrela_machine::layout as machine_layout;
         use wrela_machine::machine_info;
-        // Marks live in the machine-info page at DRAM_BASE — a 4 KiB
-        // stand-in is enough; do not allocate the whole 1 GiB reservation.
         let mut ram = vec![0u8; machine_layout::MACHINE_INFO_SIZE as usize];
         for core in 0..2 {
             let off = (machine_info::core_mark_addr(core) - machine_layout::DRAM_BASE) as usize;
             ram[off..off + 8].copy_from_slice(&machine_info::core_mark_running(core).to_le_bytes());
         }
-        // cores=2 green even though slot 2 is still zero.
         check_core_marks(ram.as_ptr(), 2).expect("N=2 marks present");
-        // cores=3 demands core 2's mark — still zero → refuse naming core 2.
         let err = check_core_marks(ram.as_ptr(), 3).expect_err("N=3 missing mark");
         let msg = err.to_string();
         assert!(msg.contains("core 2 was released but never ran"), "{msg}");
     }
 
-    /// The mark is `core + 1`, never a bare `1`, for one reason: a
-    /// mis-wired `CoreEntry` address would otherwise look exactly like a
-    /// correct boot. Here core 2's declared entry is pointed at core 1's
-    /// entry block — every core still runs, every core still parks, the
-    /// transcript would still have said `ok` — and the boot fails closed
-    /// naming core 2, because core 2's own mark was never written.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
     fn a_miswired_core_entry_fails_the_boot_closed_over_hvf() {
-        // Two cores sharing an entry address is refused at parse
-        // (`validate_report_invariants`); that is the durable close for this
-        // forgery. The pre-set-level shape (boot, then "never ran its mark")
-        // is no longer reachable.
         let (image, report) = compile_test_image(CROSS_CORE_SRC);
         let core1 = image
             .core_entries
@@ -2976,25 +2397,6 @@ pub fn build() -> Image:
         );
     }
 
-    /// A `wrela build` (production) image of a **cross-core** program halts
-    /// with `EXIT_CODE_NO_RUNTIME`, exactly like its single-core twin —
-    /// it does not fail with a bring-up fault about cores it never
-    /// released.
-    ///
-    /// The sibling above pins the mark check; this one pins its *scope*.
-    /// `layout_program`'s entry stub halts before any release, so
-    /// `build_entry_driver`'s release block — the same code that writes
-    /// core 0's own mark — is never emitted at all. But such an image
-    /// still carries `CoreEntry` lines, because it still *contains* the
-    /// secondary entry blocks, and the check used to key off that declared
-    /// count: the boot then died with "core 0 was released but never ran
-    /// its own entry block", naming a release that never happened and
-    /// turning a clean exit 1 into a bad-image exit 2. Found by probing a
-    /// `wrela build` of the cross-core golden by hand.
-    ///
-    /// `sched.state` cannot answer this question — every core is
-    /// `Finished` by the time the marks are checked — which is why
-    /// `Shared::released` records the doorbell instead of inferring it.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
     fn a_production_cross_core_image_halts_with_no_runtime_not_a_bring_up_fault() {
@@ -3012,16 +2414,6 @@ pub fn build() -> Image:
         );
     }
 
-    /// A guest fault on a **secondary** core names that core and fails the
-    /// boot closed — never a silent hang, never a partial transcript
-    /// reported as success.
-    ///
-    /// Same-address and unaligned forgeries are refused by
-    /// `validate_report_invariants` (pinned in
-    /// `parse_report_refuses_placement_forgeries`). This oracle retargets
-    /// core 1 to the start of the `entry` section — still executable,
-    /// 4-byte aligned, distinct — so the vCPU runs, then fails closed
-    /// naming core 1.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
     fn a_fault_on_a_secondary_core_names_that_core_over_hvf() {
@@ -3064,9 +2456,6 @@ pub fn build() -> Image:
         );
     }
 
-    /// The report is the whole configuration (06 §3), so a `CoreEntry` line
-    /// this VMM cannot honor is refused before any vCPU is created — never
-    /// defaulted, never guessed at.
     #[test]
     fn parse_report_rejects_malformed_core_entries() {
         let head = format!(
@@ -3101,7 +2490,6 @@ pub fn build() -> Image:
                 "{why} must be refused"
             );
         }
-        // The well-formed pair parses, ascending and contiguous.
         let ok =
             format!("{head}CoreEntry core=2 base=0x40500200\nCoreEntry core=1 base=0x40500100\n");
         let parsed = parse_report(&ok).expect("parses");
@@ -3120,10 +2508,6 @@ pub fn build() -> Image:
         );
     }
 
-    /// plans/M8.md item C3: the `Ring` lines the admission recorder reads.
-    /// Parsed strictly for the same reason every device line is — a ring
-    /// this VMM half-understands is one whose admissions it would silently
-    /// under-record, and 06 §8 makes it the recorder of exactly those.
     #[test]
     fn parse_report_reads_request_rings_and_refuses_malformed_ones() {
         let head = format!(
@@ -3179,9 +2563,6 @@ pub fn build() -> Image:
                 );
             }
         }
-        // A ring naming a core the image never brings up: the `CoreEntry`
-        // set is the machine, and an admission nothing can ever perform is
-        // a report this VMM refuses rather than carries.
         let single_core = format!(
             "Machine revision={}\nInput path=x sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nImage sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n\
              Section name=entry base=0x40500000 size=64\n\
@@ -3194,9 +2575,6 @@ pub fn build() -> Image:
             Err(VmmError::MalformedReport(_))
         ));
 
-        // The well-formed set: request rings kept in report order, reply
-        // rings shape-checked and dropped (a reply is delivered to a turn
-        // record, never admitted to a mailbox).
         let ok = format!(
             "{head}\
              Ring kind=request src=0 dst=1 target=Sink cap=8 slot=24 bytes=216 base=0x40502cb8\n\
@@ -3212,17 +2590,12 @@ pub fn build() -> Image:
         assert_eq!(
             got,
             vec![
-                // count = base + cap * slot + 16 (slots, head, tail, count)
                 (0, 1, "Sink", 0x40502cb8 + 8 * 24 + 16),
                 (2, 1, "Sink", 0x40502de8 + 8 * 24 + 16),
             ]
         );
     }
 
-    /// plans/M8.md item H Target A — placement / report forgery. Every row
-    /// was a semantic gap `parse_report` previously accepted; each is now
-    /// refused by name. The report is this VMM's whole configuration
-    /// (AGENTS.md / 06 §3), so a forged line must never boot.
     #[test]
     fn parse_report_refuses_placement_forgeries() {
         let head = format!(
@@ -3236,7 +2609,6 @@ pub fn build() -> Image:
         );
         let cores = "CoreEntry core=1 base=0x40500100\nCoreEntry core=2 base=0x40500200\n";
 
-        // (1) CoreEntry base inside a non-executable section (rtdata).
         {
             let text = format!(
                 "{head}CoreEntry core=1 base=0x40501040\nCoreEntry core=2 base=0x40500200\n"
@@ -3248,7 +2620,6 @@ pub fn build() -> Image:
                 "{msg}"
             );
         }
-        // (2) CoreEntry base outside every section.
         {
             let text =
                 format!("{head}CoreEntry core=1 base=0x1000\nCoreEntry core=2 base=0x40500200\n");
@@ -3259,10 +2630,6 @@ pub fn build() -> Image:
                 "{msg}"
             );
         }
-        // (3) CoreEntry whose only owning section is data (no executable
-        // section contains the address) — the production-image shape of
-        // "not code", distinct from a test image's `entry`/`code` harness.
-        // Core 0's `Entry` still needs a real exec section (DRAM + code).
         {
             let text = format!(
                 "Machine revision={}\nInput path=x sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nImage sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n\
@@ -3279,7 +2646,6 @@ pub fn build() -> Image:
                 "{err}"
             );
         }
-        // (4) Ring base overlapping another ring.
         {
             let text = format!(
                 "{head}{cores}\
@@ -3289,9 +2655,7 @@ pub fn build() -> Image:
             let err = parse_report(&text).expect_err("overlapping rings");
             assert!(err.to_string().contains("overlaps"), "{err}");
         }
-        // (5) Ring base overlapping a per-core stack.
         {
-            // head declares CoreEntry 1+2 ⇒ default Cores count=3.
             let stack = wrela_machine::layout::core_stack_base_n(1, 3);
             let text = format!(
                 "{head}{cores}\
@@ -3304,10 +2668,6 @@ pub fn build() -> Image:
                 "{msg}"
             );
         }
-        // (6) Placement core outside this image's sealed N.
-        // With inferred `Cores count` (= 1 + CoreEntry lines), every core in
-        // `0..N` is brought up, so out-of-range is the remaining refuse path
-        // (plans/M15.md decision 2–3).
         {
             let text = format!(
                 "{head}\
@@ -3325,7 +2685,6 @@ pub fn build() -> Image:
                 "{msg}"
             );
         }
-        // (7) Placement naming an actor the Actor lines do not declare.
         {
             let text = format!(
                 "{head}{cores}\
@@ -3340,7 +2699,6 @@ pub fn build() -> Image:
                 "{msg}"
             );
         }
-        // (8) Unaligned CoreEntry base.
         {
             let text = format!(
                 "{head}CoreEntry core=1 base=0x40500101\nCoreEntry core=2 base=0x40500200\n"
@@ -3348,7 +2706,6 @@ pub fn build() -> Image:
             let err = parse_report(&text).expect_err("unaligned CoreEntry");
             assert!(err.to_string().contains("is not 4-byte aligned"), "{err}");
         }
-        // (9) Two cores entering at the same address.
         {
             let text = format!(
                 "{head}CoreEntry core=1 base=0x40500100\nCoreEntry core=2 base=0x40500100\n"
@@ -3360,7 +2717,6 @@ pub fn build() -> Image:
                 "{err}"
             );
         }
-        // (10) Overlapping Sections (forged size swallows a neighbour).
         {
             let text = format!(
                 "Machine revision={}\nInput path=x sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\nImage sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n\
@@ -3373,7 +2729,6 @@ pub fn build() -> Image:
             let err = parse_report(&text).expect_err("overlapping sections");
             assert!(err.to_string().contains("overlaps `Section name="), "{err}");
         }
-        // (11) Duplicate Placement id (same actor on two cores).
         {
             let text = format!(
                 "{head}{cores}\
@@ -3390,7 +2745,6 @@ pub fn build() -> Image:
                 "{err}"
             );
         }
-        // (12) Placement type disagrees with Actor type.
         {
             let text = format!(
                 "{head}{cores}\
@@ -3404,7 +2758,6 @@ pub fn build() -> Image:
                 "{err}"
             );
         }
-        // (13) Declared Actor with no Placement.
         {
             let text = format!(
                 "{head}{cores}\
@@ -3416,7 +2769,6 @@ pub fn build() -> Image:
             let err = parse_report(&text).expect_err("missing Placement");
             assert!(err.to_string().contains("has no `Placement` line"), "{err}");
         }
-        // Well-formed control: Placement agrees with Actor + CoreEntry.
         {
             let text = format!(
                 "{head}{cores}\
@@ -3430,10 +2782,6 @@ pub fn build() -> Image:
             );
             parse_report(&text).expect("well-formed Placement set must parse");
         }
-        // (14) A request ring whose `target=` names no declared root.
-        // Found by orchestrator spot-probe after (8)–(13) landed: the
-        // set-level pass validated the Placement set but left the ring's
-        // own delivery target unaccounted for, one field over.
         {
             let text = format!(
                 "{head}{cores}\
@@ -3450,8 +2798,6 @@ pub fn build() -> Image:
                 "{msg}"
             );
         }
-        // (15) A reply ring carries `target=-` and must stay exempt —
-        // it delivers back to its caller, not into a named mailbox.
         {
             let text = format!(
                 "{head}{cores}\
@@ -3465,9 +2811,6 @@ pub fn build() -> Image:
         }
     }
 
-    /// plans/M8.md item C3, decision 42: the whole counting rule of the
-    /// admission witness, exercised directly — the guest-memory read
-    /// around it is three lines, this is the part that can be wrong.
     #[test]
     fn admission_witness_counts_only_the_running_core_s_own_drain() {
         let ring = |src: usize, dst: usize, target: &str, capacity: u64| RequestRing {
@@ -3483,18 +2826,14 @@ pub fn build() -> Image:
             ring(0, 2, "Far", 4),
             ring(2, 1, "Sink", 8),
         ]);
-        // Core 0 published two messages into ring 0 and one into ring 1.
-        // It is the *producer* of both, so nothing was admitted.
         assert_eq!(
             w.observe(&[2, 1, 0], &[0, 0, 0], 0).expect("ok"),
             Vec::new()
         );
-        // Core 2 drains Far (head 0→1) and publishes into ring 2.
         assert_eq!(
             w.observe(&[2, 0, 1], &[0, 1, 0], 2).expect("ok"),
             vec![("Far".to_string(), "core0".to_string())]
         );
-        // Core 1 drains both inbound lanes — head advances match count.
         assert_eq!(
             w.observe(&[0, 0, 0], &[2, 1, 1], 1).expect("ok"),
             vec![
@@ -3509,12 +2848,6 @@ pub fn build() -> Image:
         );
     }
 
-    /// Adversarial-audit regression (2026-07-29). `heads` is read straight
-    /// out of guest DRAM, so a guest can put anything at all in it. The
-    /// delta used to be `(now_h + cap - was_h) % cap`, which overflows a
-    /// u64 outright for `now_h = u64::MAX` — a debug-build panic that
-    /// aborted the VMM on guest data, and a silent wrap in release that
-    /// corrupted the choice log the whole replay oracle rests on.
     #[test]
     fn admission_witness_survives_a_hostile_ring_head() {
         let mut w = AdmissionWitness::new(vec![RequestRing {
@@ -3525,25 +2858,17 @@ pub fn build() -> Image:
             count_addr: 0,
             capacity: 8,
         }]);
-        // The exact word that used to panic. It must be absorbed, and it
-        // must never yield more admissions than the ring has slots.
         let admitted = w.observe(&[1], &[u64::MAX], 1).expect("must not panic");
         assert!(
             admitted.len() <= 8,
             "a ring of 8 slots cannot admit {} messages",
             admitted.len()
         );
-        // Still functional afterwards: an ordinary single-slot advance
-        // from that same hostile head is still counted as exactly one.
         let next = u64::MAX.wrapping_add(1);
         let admitted = w.observe(&[1], &[next], 1).expect("must not panic");
         assert_eq!(admitted.len(), 1, "one head step is one admission");
     }
 
-    /// The second leg: a cap-1 ring counts admissions from the *count*
-    /// words, which are guest-written too, so `was_c - now_c` was an
-    /// unbounded trip count for the push loop below it (one vCPU exit
-    /// allocating ~2^64 strings). Clamped to the ring's own capacity.
     #[test]
     fn admission_witness_clamps_a_hostile_count_shrink() {
         let mut w = AdmissionWitness::new(vec![RequestRing {
@@ -3554,8 +2879,6 @@ pub fn build() -> Image:
             count_addr: 0,
             capacity: 1,
         }]);
-        // Seed a huge occupancy, then drop it to zero: the shrink is
-        // u64::MAX, which must not become a trip count.
         let _ = w.observe(&[u64::MAX], &[0], 1).expect("must not panic");
         let admitted = w.observe(&[0], &[0], 1).expect("must not panic");
         assert!(
@@ -3565,9 +2888,6 @@ pub fn build() -> Image:
         );
     }
 
-    /// The length guards were `debug_assert`s sitting directly above raw
-    /// `counts[i]`/`heads[i]` indexing — i.e. they vanished in exactly the
-    /// build where the indexing would panic. Now a real error.
     #[test]
     fn admission_witness_rejects_a_short_observation() {
         let mut w = AdmissionWitness::new(vec![RequestRing {
@@ -3584,9 +2904,6 @@ pub fn build() -> Image:
         assert!(err.contains("ring(s) declared"), "got {err}");
     }
 
-    /// plans/M15.md item I: under concurrent record a consumed ring may
-    /// grow (producer overlapped). Head deltas still count shrinks; growth
-    /// alone emits nothing.
     #[test]
     fn admission_witness_absorbs_growth_on_a_consumed_ring() {
         let mut w = AdmissionWitness::new(vec![RequestRing {
@@ -3607,9 +2924,6 @@ pub fn build() -> Image:
         );
     }
 
-    /// A report with no `Blk*` lines at all constructs no device model —
-    /// the state every image built today is in, and the reason this item
-    /// moves no existing golden.
     #[test]
     fn parse_report_without_blk_lines_declares_no_device() {
         let text = format!(
@@ -3619,10 +2933,6 @@ pub fn build() -> Image:
         assert!(parse_report(&text).expect("parses").blk.is_none());
     }
 
-    /// Integrity Phase 2 Item N: on control case `boot-actors` under
-    /// `--block-count`, the guest `lane2 hits=` transcript line must equal
-    /// the VMM's host DRAM snapshot of the placed `LANE2` page (Lane 3).
-    /// Fail closed — empty vectors are not agreement.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     #[test]
     fn block_count_lane2_agrees_with_host_dram_on_boot_actors() {
@@ -3655,11 +2965,6 @@ pub fn build() -> Image:
             "Lane 3 hit map must be non-empty on boot-actors"
         );
 
-        // plans/M20.md item C / decision 1610: `boot-actors` has more
-        // non-zero hit blocks than the transcript can carry, so this is a
-        // **truncating** case and the truncation must be loud — the marker
-        // present and naming a nonzero count that the host tail confirms.
-        // A pass here is therefore not "the line matched itself".
         let line = transcript
             .lines()
             .find(|l| l.starts_with("lane2 hits="))

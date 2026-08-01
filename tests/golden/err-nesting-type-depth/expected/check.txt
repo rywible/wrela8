@@ -1,1 +1,1 @@
-error[parse]: type nesting depth exceeded 100 at 7:709
+error[parse]: type nesting depth exceeded 100 at 4:709

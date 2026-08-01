@@ -1,5 +1,3 @@
-# M16 item E / decisions 1150–1155: comptime suite for Duration only.
-# Constructors + Duration methods — no Instant, no now(), no drivers.
 module time_test
 
 @test

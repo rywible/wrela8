@@ -1,1 +1,1 @@
-error[parse]: an enum may not declare a `pool` at 7:5
+error[parse]: an enum may not declare a `pool` at 6:5

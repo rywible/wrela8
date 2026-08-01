@@ -1,6 +1,5 @@
 module examples.check_map_take_backend
 
-# plans/M9.md item MM: Array.map_take / try_map_take lower in guest code.
 
 fn double(take x: u64) -> u64:
     return x * 2

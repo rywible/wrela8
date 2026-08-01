@@ -1,39 +1,6 @@
 module examples.cost_forwarding
 
-# Cost-stage golden (plans/M20.md item M) — store-to-load forwarding
-# (inventory row 13) against the ordinary L1 path and against a
-# compulsory first touch.
-#
-# WHAT THIS PINS, PREDICTED FROM THE DOCS BEFORE THE CODE WAS RUN
-# (`cost::mem`; `[sweep.store_to_load_forwarding]`; `[geometry]`):
-#
-#   * A store is latency 1 **to the store buffer** (SOG §3.10), and a
-#     load of a line a recent store wrote is answered by the buffer
-#     before L1D is consulted: `MemLevel::Forwarded`, priced
-#     `[sweep.store_to_load_forwarding]`.
-#   * The store buffer is `cap_l_each x port_l` = **4** line entries
-#     deep, floor-not-fact. A load of a line pushed out of the buffer
-#     but still resident falls to `lat_l1d_hit = 4`.
-#   * `MemState` is built **per scored block**, so a block's first touch
-#     of a line is compulsory and a `Stack` line is charged at its home
-#     level `lat_l2 = 11`. A basic block boundary therefore turns a
-#     forwarded read into an 11-cycle one with no change to the words.
-#
-# **Predicted, and it is a null result at the pinned point:** the
-# profile pins `store_to_load_forwarding = 4` because its bracket's
-# upper bound *is* `lat_l1d_hit` ("forwarding cannot be assumed to beat
-# the L1 path", `[sweep.store_to_load_forwarding].source`). So at the
-# canonical point `Forwarded` and `L1dHit` cost the **same 4 cycles**,
-# and a single-valued golden (decision 1605) cannot separate them. What
-# it can separate — and what the three fns below pin — is either of them
-# against the **compulsory** path at 11.
-#
-#   forwarded    every read is answered out of the buffer   (4)
-#   l1_path      reads pushed past the 4-entry buffer       (4, via L1D)
-#   cross_block  the same read after a branch, fresh state  (11)
 
-# Immediate reuse: each value is stored and read back before four more
-# stores can push its line out of the buffer.
 pub fn forwarded(a: u64, b: u64) -> u64:
     x: u64 = a +% b
     y: u64 = x +% x
@@ -41,10 +8,6 @@ pub fn forwarded(a: u64, b: u64) -> u64:
     w: u64 = z +% z
     return w
 
-# Forty-eight slots — six 64 B frame lines — copied in first, and only
-# the first eight read back. By the time those reads happen the 4-entry
-# store buffer holds only the last lines written, so the line they want
-# is long gone from it and they take the L1D path instead.
 pub fn l1_path(v: [u64; 48]) -> u64:
     s0: u64 = v[0]
     s1: u64 = v[1]
@@ -56,8 +19,6 @@ pub fn l1_path(v: [u64; 48]) -> u64:
     s7: u64 = v[7]
     return s0 +% s1 +% s2 +% s3 +% s4 +% s5 +% s6 +% s7
 
-# The same reuse, split across a basic block boundary: `MemState` is per
-# block, so the reads on the far side of the branch are compulsory.
 pub fn cross_block(a: u64, b: u64, take_it: bool) -> u64:
     x: u64 = a +% b
     y: u64 = x +% x

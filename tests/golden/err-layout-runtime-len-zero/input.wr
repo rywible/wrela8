@@ -1,15 +1,5 @@
 module examples.err_layout_runtime_len_zero
 
-# plans/M10.md item A2b: a `const` length of zero is **illegal**, the same
-# answer a literal `0` length already got (`a `@layout` field covers at least
-# one byte`) — decided rather than discovered, because a zero-length array is a
-# zero-byte field and a zero-byte `@layout` is the fail-open 03 §3 exists to
-# prevent. A negative `const` is illegal for the same rule and shares this
-# diagnostic; both are unit-tested beside it.
-#
-# The value is reported in the message: with a `const` length the number is no
-# longer visible at the field, so a diagnostic that only said "length 0" would
-# send the reader to the wrong line.
 
 const N_TURNS: u32 = 0
 

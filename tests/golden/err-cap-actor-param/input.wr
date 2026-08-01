@@ -1,14 +1,5 @@
 module examples.err_cap_actor_param
 
-# plans/M7.md item A, 03-hardware.md §1: "`@actor` structs cannot hold
-# capabilities in ... parameters".
-#
-# A *private* method, deliberately. The `Actor[T]` rule exempts private
-# methods (they are not message shapes — plans/M6.md item A), and the
-# capability rule does not: §1's sentence is about what an actor may hold
-# at all, not only about what it may be sent. Inert today (no actor body
-# can name a capability value to pass) and rejected at declaration anyway,
-# which is the fail-closed floor this repo keeps.
 
 struct VirtioBlock:
     id: u32

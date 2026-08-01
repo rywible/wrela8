@@ -1,8 +1,5 @@
 module examples.mwir_take
 
-# take-heavy copies: a scalar take, a struct take, and `for take x in
-# take arr` (plans/M5.md item B's own required golden family — decision
-# 2's "a take is a copy in mwir").
 
 pub struct Box:
     item: u64

@@ -1,10 +1,5 @@
 module examples.err_layout_offset_outside
 
-# plans/M7.md item B, 02-language.md §13: "`@offset(n)` — field offset
-# inside a `@layout` declaration." On an ordinary struct there is no byte
-# layout for it to name, so it is rejected rather than ignored — an
-# ignored `@offset` is a author's belief about the bytes that the compiler
-# never checked.
 
 struct Header:
     @offset(0x004) sector: u64

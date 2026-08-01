@@ -1,5 +1,3 @@
-//! `rtdata` placement: `place_runtime_tables`.
-
 use std::collections::BTreeMap;
 
 use super::{
@@ -8,16 +6,6 @@ use super::{
 };
 
 pub fn place_runtime_tables(base: u64, tables: &RuntimeTables) -> RuntimePlacement {
-    // plans/M10.md item 0b (decision 554): the turn array comes first and
-    // whole, so `turns_base == base` and element `i` sits at a plain
-    // stride multiple. Each area is *reserved* at the image-wide uniform
-    // stride (item 0a), not at its owner's raw area — the owner's own
-    // `frame_size` still says how much of it is live.
-    //
-    // Deliberately **not** aligned up to the stride: `add`-based indexing
-    // does not need it, and `verify_section_sizes`' 8-byte inter-section
-    // gap rule reports a larger gap as a producer bug (the prefix every
-    // fuzz lane treats as a failure), not as an outcome.
     let turns_base = base;
     let turn_addr = |index: usize| turns_base + (index as u64) * tables.turn_stride;
     let mut cursor = base + tables.n_turns * tables.turn_stride;
@@ -39,22 +27,16 @@ pub fn place_runtime_tables(base: u64, tables: &RuntimeTables) -> RuntimePlaceme
             head,
             tail,
             count,
-            // The first `tables.actors.len()` turn-array elements are the
-            // actors', in this order.
             turn: turn_addr(i),
         });
     }
     let mut drivers = Vec::with_capacity(tables.drivers.len());
     let mut driver_mailboxes = BTreeMap::new();
-    // The turn array continues with the messageable drivers, in
-    // `tables.drivers` order (`mailbox_root_names`' own order).
     let mut next_turn = tables.actors.len();
     for (i, d) in tables.drivers.iter().enumerate() {
         let state = cursor;
         drivers.push(state);
         cursor += d.state_size;
-        // plans/M8.md item D: same four regions, same order, same
-        // arithmetic as the actor loop above.
         if let Some(mb) = &d.mailbox {
             let ring = cursor;
             cursor += mb.capacity * mb.slot_size;
@@ -79,7 +61,6 @@ pub fn place_runtime_tables(base: u64, tables: &RuntimeTables) -> RuntimePlaceme
             );
         }
     }
-    // ...and ends with the free turns, in `tables.free_turns` order.
     let mut free_turns = BTreeMap::new();
     let mut turn_ids = BTreeMap::new();
     for (k, (key, _area)) in tables.free_turns.iter().enumerate() {
@@ -92,10 +73,6 @@ pub fn place_runtime_tables(base: u64, tables: &RuntimeTables) -> RuntimePlaceme
         tables.n_turns as usize,
         "`compute_runtime_tables` and `place_runtime_tables` disagree about how many turns exist"
     );
-    // plans/M8.md item C1: one ready-queue table + one round-robin cursor
-    // per live core, uniformly strided (each core's pair sits at
-    // `base + core * (ready_queue_capacity * 8 + RR_CURSOR_SIZE)`). With
-    // `cores == 1` this is byte-for-byte the pre-C1 single reservation.
     let sched_base = cursor;
     let per_core = tables.ready_queue_capacity * 8 + RR_CURSOR_SIZE;
     let mut rr_cursors = Vec::with_capacity(tables.cores);
@@ -110,15 +87,10 @@ pub fn place_runtime_tables(base: u64, tables: &RuntimeTables) -> RuntimePlaceme
             .max(crate::codegen::GROUP_MAX_CHILDREN_FLOOR),
     );
     cursor += tables.group_arena_capacity * group_slot;
-    // plans/M8.md item C2 / M12 item C (decision 875): cross-core rings
-    // last — all CTL records contiguously, then uniformly-strided DATA.
-    // Every address above this point is unchanged for an image with none.
     let n_rings = tables.rings.len() as u64;
     let stride = if tables.rings.is_empty() {
         0
     } else {
-        // Prefer the value `add_cross_core_rings` recorded; recompute if a
-        // unit test built tables by hand without that path.
         let s = tables.ring_stride;
         if s == 0 {
             ring_data_stride_bytes(&tables.rings)
@@ -140,8 +112,6 @@ pub fn place_runtime_tables(base: u64, tables: &RuntimeTables) -> RuntimePlaceme
         });
     }
     let rings_end = data_base + n_rings * stride;
-    // M12 item D: contiguous WAKE.wake_pending after rings. Length comes
-    // from `wake_pending_addrs` (filled to the drain count before place).
     let n_wake = tables.wake_pending_addrs.len() as u64;
     let wake_base = rings_end;
     let _wake_end = wake_base + n_wake * 8;

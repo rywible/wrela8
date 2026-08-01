@@ -1,8 +1,5 @@
 module examples.err_map_partition_arity
 
-# plans/M7.md item H1 self-audit — `map_partition()` with zero arguments
-#
-# What this case would catch: a partition call whose arity is wrong — the `@layout(mmio)` type is the one required argument.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

@@ -1,1 +1,1 @@
-error[type]: `DriverClaimedDevice[VirtioBlock].map_partition(L)` takes exactly one argument, the `@layout(mmio)` type to map; found 0 at 20:42
+error[type]: `DriverClaimedDevice[VirtioBlock].map_partition(L)` takes exactly one argument, the `@layout(mmio)` type to map; found 0 at 17:42

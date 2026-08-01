@@ -1,1 +1,1 @@
-error[type]: `map_partition(VirtioIrqMmio)` partitions a `@driver`'s own claim, and `NotDriver` is not a `@driver` (03-hardware.md §2) at 18:42
+error[type]: `map_partition(VirtioIrqMmio)` partitions a `@driver`'s own claim, and `NotDriver` is not a `@driver` (03-hardware.md §2) at 15:42

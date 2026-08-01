@@ -1,8 +1,3 @@
-# Layout island: a closure suite embedded inside an enclosing call's
-# argument list resumes real NEWLINE/INDENT/DEDENT tracking for its own
-# body (syntax.lexer.layout-islands), while a further bracket opened
-# inside that body — here `compute(...)`'s own multi-line argument list —
-# suppresses layout again until it closes.
 module examples.layout_island
 
 fn compute(a: u64, b: u64) -> u64:

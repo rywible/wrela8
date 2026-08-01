@@ -1,10 +1,5 @@
 module examples.err_reclaim_pool_if_leak
 
-# plans/M8.md item H attack 1 follow-up: `recover` inside `if`, `reclaim`
-# outside. The first brand check restored `quarantined_by_queue` only across
-# `match` arms, so the brand leaked past the `if` and a `reclaim` was admitted
-# on a path where no `recover` executed. One `if` away from `boot-dma-reclaim`
-# — refused by name once the map is restored by `scoped()`.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:
@@ -36,7 +31,6 @@ const QDEPTH: usize = 8
 const BLK_T_OUT: u32 = 1
 const MAGIC: u64 = 0xC0FFEE00BEEF42A1
 const REUSED: u64 = 0x5EC05EC05EC05EC0
-# phase: 1 = first write in flight; 2 = the reclaimed block in flight; 3 = done
 const PHASE_FIRST: u32 = 1
 const PHASE_SECOND: u32 = 2
 const PHASE_DONE: u32 = 3
@@ -127,11 +121,7 @@ pub struct BlkDriver:
                             case .Unknown:
                                 assert false, "no reset happened before the first recover"
                     self.inflight = None
-                    # Establish quiescence with the *device*: this traps to
-                    # the VMM, which finishes and stops its model and only
-                    # then increments the count `reclaim` gates on.
                     self.device = self.device.reset(queue=mut self.queue)
-                    # 03-hardware.md §9: "and only then is memory reclaimed".
                     b = self.queue.reclaim(pool=BlockPayloads, payload=DmaBlock)
                     self.reclaimed_word = b.word
                     b.word = REUSED
@@ -145,8 +135,6 @@ pub struct BlkDriver:
                         idempotent=true,
                     )
                     receipt = self.queue.publish(operation=take op)
-                    # Take the empty Option before restoring (a live `None`
-                    # cannot be overwritten — `Option[Receipt]` is a resource).
                     empty = take self.inflight
                     match empty:
                         case .None:
@@ -171,8 +159,6 @@ pub struct BlkDriver:
                         self.inflight = None
                         self.phase = PHASE_DONE
             else:
-                # A quiet wake after both phases is expected and must not
-                # abort — the same event `boot-blk-roundtrip` absorbs.
                 return unit
         return unit
 
@@ -189,8 +175,6 @@ pub struct Ledger:
 
 @test(runtime)
 async fn a_quarantined_block_comes_back_after_quiescence(led: Actor[Ledger]):
-    # Two checkpoints: the phase-1 IRQ+drain (recover, quiesce, reclaim,
-    # republish) and the phase-2 IRQ+drain (claim).
     a = await led.mark(n=7)
     match a:
         case .Ok(_):

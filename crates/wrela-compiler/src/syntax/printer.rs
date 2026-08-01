@@ -1,35 +1,3 @@
-//! Dumb pretty-printer: `AST -> wrela source text` (plans/M1.md item E,
-//! `wrela dump --stage=pretty`). This is the parser's `diff-eval`: a second,
-//! independent implementation that a parsed tree must survive being pushed
-//! back through — `xtask roundtrip` parses, prints, reparses, and diffs the
-//! two (span-stripped) AST dumps.
-//!
-//! Two rules, applied uniformly instead of computing real operator
-//! precedence: (1) every statement/declaration is printed at its own
-//! logical indentation depth, 4 spaces per level, exactly mirroring what
-//! the lexer's INDENT/DEDENT rule expects; (2) every expression that is a
-//! child of another expression is wrapped in parens unless it is one of a
-//! fixed set of self-delimiting ("atomic") forms — literals, names, and
-//! anything already bounded by its own brackets/keywords (`.field`,
-//! `[index]`, `(call)`, tuples, lists, `.Variant`). This over-parenthesizes
-//! relative to what's strictly necessary (plans/M1.md item E explicitly
-//! allows this: "canonical output need not match input text, only reparse
-//! to the same AST"), but it is always correct, because it needs no
-//! precedence table at all: a real AST from this parser can only nest a
-//! *looser* node inside a *tighter* position via an explicit source-level
-//! grouping (parens are transparent — dropped at parse time, ast.rs), and
-//! wrapping every non-atomic child in its own parens exactly reconstructs
-//! that grouping regardless of why it was there.
-//!
-//! `Expr::Closure` is deliberately excluded from the "atomic" set even
-//! though it is self-delimiting on its own (`|params| ...`): its
-//! short-form body is parsed via the same greedy `parse_or` used
-//! everywhere else, so a closure written as a non-final operand of an
-//! enclosing operator chain (only reachable via an explicit source
-//! grouping, e.g. `(|x| x) + 1`) would otherwise swallow whatever follows
-//! it on reparse. Always parenthesizing it when nested is the safe,
-//! dumb answer.
-
 use super::ast::*;
 use super::parser::FragmentEntry;
 
@@ -39,33 +7,14 @@ pub fn pretty(module: &Module) -> String {
     print_module(module)
 }
 
-/// Bare textual rendering of one expression, reusing the pretty-printer's
-/// own (dumb, always-safe-to-over-parenthesize) expression logic. sema's
-/// resolved `Type` (types.rs) embeds unevaluated `Expr`s for array
-/// lengths, `Bytes[N]`, and generic const arguments (plans/M2.md item B
-/// decision 4: const arguments stay unevaluated until item H); this is
-/// its one rendering primitive, so the check dump's spelling of those
-/// stays byte-identical to the pretty-printer's rather than duplicating
-/// the expression-printing rules.
 pub(crate) fn print_expr_bare(e: &Expr) -> String {
     print_expr(e, 0)
 }
 
-/// Bare textual rendering of one *unresolved* (ast) type, the sibling of
-/// `print_expr_bare` above (plans/M7.md item B). `sema::types`' own
-/// `render_type` renders a *resolved* `Type`, which is exactly what the
-/// `@layout` pass cannot use: it runs before name resolution (a
-/// capability type 03-hardware.md §3 forbids inside a `wire` layout does
-/// not resolve to anything at all until plans/M7.md item A mints one, and
-/// "unknown name" is the wrong diagnostic for it), so its dumps and
-/// diagnostics spell a field's declared type straight off the ast with
-/// the pretty-printer's own rules.
 pub(crate) fn print_type_bare(ty: &Type) -> String {
     print_type(ty, 0)
 }
 
-/// Pretty-prints a bare fragment (`parse_fragment`'s result): each
-/// top-level item or statement in source order, blank-line separated.
 pub fn pretty_fragment(entries: &[FragmentEntry]) -> String {
     let mut out = String::new();
     for (i, entry) in entries.iter().enumerate() {
@@ -84,21 +33,12 @@ fn indent_str(n: usize) -> String {
     INDENT_UNIT.repeat(n)
 }
 
-/// Appends one logical line: `indent` levels of 4-space indent, `line`,
-/// then a newline. The workhorse of every statement/declaration printer
-/// below.
 fn push_line(out: &mut String, indent: usize, line: &str) {
     out.push_str(&indent_str(indent));
     out.push_str(line);
     out.push('\n');
 }
 
-/// `(elems...)`, with the one-element case forced to a trailing comma
-/// (`(x,)`) — without it, `parse_type`/`parse_primary`/`parse_pattern`'s
-/// shared "`(` ... `)`" grouping logic returns the single inner node
-/// unwrapped rather than building a real `Tuple`/`TupleType`/tuple
-/// `Pattern`, per their own "pure grouping" fallback (ast.rs, `is_place_expr`
-/// doc comment; parser.rs `parse_type`/`parse_primary`/`parse_pattern_primary`).
 fn tuple_like<T>(elems: &[T], f: impl Fn(&T) -> String) -> String {
     match elems.len() {
         0 => "()".to_string(),
@@ -106,8 +46,6 @@ fn tuple_like<T>(elems: &[T], f: impl Fn(&T) -> String) -> String {
         _ => format!("({})", elems.iter().map(f).collect::<Vec<_>>().join(", ")),
     }
 }
-
-// --- module / doc / attrs / imports ----------------------------------------
 
 fn print_module(m: &Module) -> String {
     let mut out = String::new();
@@ -126,11 +64,6 @@ fn print_module(m: &Module) -> String {
     out
 }
 
-/// `## text` per line — `Doc.text` joins consecutive `##` lines with `\n`
-/// (ast.rs); each line here always gets exactly one space after `##` so
-/// the parser's `strip_doc_leading_space` (which removes exactly one
-/// leading space, if present) reconstructs the original line byte-for-byte
-/// even when it was empty.
 fn print_doc(doc: &Option<Doc>, indent: usize, out: &mut String) {
     if let Some(doc) = doc {
         for line in doc.text.split('\n') {
@@ -206,8 +139,6 @@ fn print_generics_suffix(generics: &[GenericParam], indent: usize, line: &mut St
     line.push_str(&parts.join(", "));
     line.push(']');
 }
-
-// --- items / members --------------------------------------------------
 
 fn print_item(item: &Item, indent: usize, out: &mut String) {
     match item {
@@ -440,10 +371,6 @@ fn print_variant(v: &Variant, indent: usize, out: &mut String) {
     push_line(out, indent, &line);
 }
 
-/// Shared by `fn`/`init` items and members: `[pub] [async] KEYWORD_NAME
-/// [generics](params) [-> Ret]:` header, then either a printed suite body
-/// or (the rare bodyless signature shorthand, ast.rs `FnItem` doc comment)
-/// nothing but the header line.
 #[allow(clippy::too_many_arguments)]
 fn print_fn_header_and_body(
     keyword_name: &str,
@@ -500,8 +427,6 @@ fn print_fn_header_and_body(
     }
 }
 
-// --- types (02-language.md §6) ------------------------------------------
-
 fn print_type(ty: &Type, indent: usize) -> String {
     match ty {
         Type::Named(t) => {
@@ -549,18 +474,9 @@ fn print_generic_arg(arg: &GenericArg, indent: usize) -> String {
     }
 }
 
-// --- patterns (02-language.md §7.2) -------------------------------------
-//
-// No `is_atomic`/operand distinction needed here: patterns have no
-// operator-precedence chain (their only "loose" construct, `Or`, is only
-// ever built by the outer `parse_pattern`, never nested inside a tighter
-// pattern position), so every sub-pattern prints bare.
-
 fn print_pattern(p: &Pattern) -> String {
     match p {
         Pattern::Wildcard(_) => "_".to_string(),
-        // Always a plain literal or a `Unary(Neg, literal)` (parser.rs
-        // `parse_pattern_primary`) — never a closure, so no indent needed.
         Pattern::Literal(_, e) => print_expr(e, 0),
         Pattern::Binding(_, name) => name.clone(),
         Pattern::Take(_, inner) => format!("take {}", print_pattern(inner)),
@@ -604,12 +520,6 @@ fn print_pattern(p: &Pattern) -> String {
     }
 }
 
-// --- expressions (02-language.md §8.2) -----------------------------------
-
-/// True for expression forms that never need surrounding parens no matter
-/// what encloses them — either true leaves, or forms already bounded by
-/// their own brackets/keywords. `Closure` is deliberately excluded (module
-/// doc comment above).
 fn is_atomic(e: &Expr) -> bool {
     matches!(
         e,
@@ -632,8 +542,6 @@ fn is_atomic(e: &Expr) -> bool {
     )
 }
 
-/// Prints `e` as a sub-expression (an operand of some enclosing operator,
-/// or the base of a postfix chain): wraps in parens unless `e` is atomic.
 fn print_operand(e: &Expr, indent: usize) -> String {
     if is_atomic(e) {
         print_expr(e, indent)
@@ -642,11 +550,6 @@ fn print_operand(e: &Expr, indent: usize) -> String {
     }
 }
 
-/// Prints `e` bare — for genuine top-level positions (a statement's whole
-/// expression, a call/index/list/tuple element, a default value, ...)
-/// where the surrounding grammar already bounds the expression with a
-/// hard delimiter (newline, comma, closing bracket) that no operator-chain
-/// function recognizes as a continuation, so no ambiguity is possible.
 fn print_expr(e: &Expr, indent: usize) -> String {
     match e {
         Expr::Int(_, text)
@@ -714,9 +617,6 @@ fn print_expr(e: &Expr, indent: usize) -> String {
             }
         }
         Expr::Closure(c) => print_closure(c, indent),
-        // `send`'s operand is always a `Call` (atomic) — parser.rs
-        // `parse_unary` rejects anything else — so bare `print_expr` and
-        // `print_operand` agree here; bare reads more naturally.
         Expr::Send(_, inner) => format!("send {}", print_expr(inner, indent)),
         Expr::Tuple(_, elems) => tuple_like(elems, |elem| print_expr(elem, indent)),
         Expr::List(_, elems) => format!(
@@ -735,12 +635,6 @@ fn print_expr(e: &Expr, indent: usize) -> String {
     }
 }
 
-/// `f"..."` reassembly (02-language.md §1.1): a `Literal` part is raw
-/// source text with `{`/`}` already un-escaped by the parser's
-/// `split_fstring` (ast.rs `FStringPart` doc comment), so re-escaping them
-/// back to `{{`/`}}` here exactly inverts that step; an `Interp` part's
-/// text is raw and unparsed (M1 does not recurse into it), so it is
-/// wrapped in braces and echoed verbatim.
 fn print_fstring(f: &FStringLit) -> String {
     let mut body = String::new();
     for part in &f.parts {
@@ -776,13 +670,6 @@ fn print_arg(arg: &Arg, indent: usize) -> String {
     s
 }
 
-/// `|params| expr` or `|params|: suite` (02-language.md §8.3). A suite
-/// body is printed as a normal indented block one level deeper than the
-/// closure's own enclosing line, exactly like any other suite — see the
-/// module doc comment on why this reparses correctly even when the
-/// closure sits inside an enclosing `()[]{}` that suppresses layout
-/// tokens (lexer.rs's layout-island doc comment; parser.rs's own module
-/// doc comment on embedded suites).
 fn print_closure(c: &ClosureExpr, indent: usize) -> String {
     let params = c
         .params
@@ -800,27 +687,12 @@ fn print_closure(c: &ClosureExpr, indent: usize) -> String {
     match &c.body {
         ClosureBody::Expr(e) => format!("|{params}| {}", print_expr(e, indent)),
         ClosureBody::Suite(stmts) => {
-            // Keep `print_stmts`'s own trailing newline (pinned rule, sema-roundtrip fuzz finding): a
-            // suite-form closure can be a non-final call argument
-            // (`f(x, |p|:\n    a\n    b, y)`), and whatever the caller
-            // glues on after this string — a `, next_arg`, a bare `)` —
-            // must start on its own fresh line so the last statement gets
-            // a real terminator instead of that following text landing on
-            // its line with nothing but a comma between them (exactly the
-            // single-statement-per-line ambiguity `parse_inline_stmt_seq`
-            // now rejects, reintroduced from the printer's side). A closure
-            // that is itself a whole statement's RHS costs one blank line
-            // from `push_line`'s own trailing newline landing after this
-            // one; harmless (blank lines are layout-transparent) and no
-            // existing golden pins exact `pretty`-stage text.
             let mut out = format!("|{params}|:\n");
             print_stmts(stmts, indent + 1, &mut out);
             out
         }
     }
 }
-
-// --- statements (02-language.md §8.1, §9.4, §10) -------------------------
 
 fn print_stmts(stmts: &[Stmt], indent: usize, out: &mut String) {
     for s in stmts {

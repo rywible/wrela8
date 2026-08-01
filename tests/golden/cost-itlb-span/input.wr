@@ -1,57 +1,5 @@
 module examples.cost_itlb_span
 
-# Cost-stage golden (plans/M20.md item M) — the **per-core I-TLB page
-# span** (04 §5/§6, inventory row 16, `cost::footprint`).
-#
-# WHAT THIS PINS, PREDICTED FROM THE DOCS BEFORE THE CODE WAS RUN.
-#
-# `cost::footprint` computes a core's text span at the 4 KiB granule
-# (`PAGE_BYTES`, the smallest the A76 TLBs support and therefore the one
-# that spans the most pages — the over-cost direction) and charges one
-# swept `tlb_walk_cost` per page beyond `[geometry] itlb_l1_entries =
-# 48`, plus a second per page beyond `tlb_l2_entries = 1280`.
-#
-# The claim the term makes is that the denominator is **per core**
-# (decision 1603): `PlacementTable::core_of` seals every actor to a
-# core, a core's own methods count only for it, and only `Shared` text
-# (runtime helpers, abort paths, free fns) counts for every core. This
-# case is built to show exactly that asymmetry on one program:
-#
-#   * `Big` is sealed to **core 0** and carries its bulk as its own
-#     methods, so that text lands on core 0 alone.
-#   * `Small` is sealed to **core 1** and is tiny, so core 1's span is
-#     essentially the shared runtime text.
-#
-# Predicted: two `Budget` lines on one program whose `text_pages` differ
-# by an order of magnitude, core 0 over the 48-entry I-TLB with
-# `over_itlb_pages = text_pages - 48` and a charge of one swept
-# `tlb_walk_cost = 58` per page over, and `over_tlb_l2_pages = 0` (1280
-# entries is 5 MiB away). No image-wide aggregate can state the first,
-# which is decision 1603's whole point.
-#
-# The I-TLB budget breaks at 48 x 4096 = 196608 bytes of hot text on one
-# core — three times the L1I cliff — which is why this case is bigger
-# than `cost-icache-cliff` and why the two are separate cases.
-#
-# WHAT SHIPPING THIS CASE COSTS, RECORDED RATHER THAN AVOIDED
-# (plans/M20.md decision 1635-M). `opts::win::itlb_absolute_breaches` /
-# `VetoReason::ITlbBudgetExceeded` is an **absolute** veto, not a delta:
-# a corpus case whose baseline is over the I-TLB refuses *every*
-# candidate at *every* point of the residual box, the identity included.
-# Measured: with this case at full size,
-# `release_wins_at_every_point_of_the_residual_box` fails with
-# `itlb_exceeded:cost-itlb-span:core0:57/48@…` at every point. That is
-# exactly the failure decision 1619 describes for an absolute rule
-# ("refuses a candidate for a property of the **baseline**"), and 1619
-# kept the absolute I-side assertion only because item F had measured
-# the span "inside budget on *both* surfaces". This case falsifies that
-# premise. Retiring the absolute veto in favour of the delta rule that
-# already covers `over_itlb_pages`, or excluding a deliberately-
-# breaching case from `discover_cost_corpus`, is item J's surface — so
-# the case ships and the refusal is left visible rather than a gate
-# being weakened from a goldens item. On today's tree the refusal is not
-# even reached: cases sweep in path order and `cost-crosscore` trips
-# `MAX_SWEPT_DIMS` first (decision 1634-M).
 
 @actor
 pub struct Big:

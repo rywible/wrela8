@@ -1,18 +1,3 @@
-//! Dev/release semantic-correctness oracle (plans/M19.md item G /
-//! decisions 1470–1473).
-//!
-//! Decision 1470: a dedicated dual-mode unit on a representative
-//! `@test` slice — not doubling full `xtask diff-eval`. `diff-eval`
-//! is meant to exercise the product-default backend (`release`); xtask
-//! must call `opts::apply_mode(Release)` for that (TLS does not default
-//! NarrowImm on). This lane is the explicit `dev` ↔ `release`
-//! agreement check on the same semantic oracle (`eval::run_tests`) for
-//! that slice, and proves both modes still lower+codegen the `@test`
-//! bodies (`emit_comptime_tests`).
-//!
-//! Fail closed if the modes disagree, or if either drifts from the
-//! pinned `expected/test.txt`.
-
 use std::path::PathBuf;
 
 use crate::codegen::codegen_program;
@@ -24,16 +9,12 @@ use crate::syntax::{lexer, parser};
 
 use super::{CompileMode, apply_mode};
 
-/// Representative comptime `@test` goldens (same arithmetic-heavy cases
-/// `diff-eval` smoke already names for the evaluator↔backend agree
-/// path — decision 1470's cheap slice, not the full corpus).
 const DEV_CORRECT_SLICE: &[&str] = &["check-tests-arith", "check-tests-program"];
 
 fn golden_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/golden")
 }
 
-/// Load + typecheck one golden `input.wr`.
 fn load_typed(case: &str) -> (sema::typed::TypedProgram, mwir::LayoutCtx) {
     let dir = golden_root().join(case);
     let input = dir.join("input.wr");
@@ -55,9 +36,6 @@ fn expected_test_report(case: &str) -> String {
     })
 }
 
-/// Run the semantic `@test` oracle under `mode`, then lower+codegen the
-/// same program with comptime tests emitted so named opts are live on
-/// the backend path.
 fn oracle_under_mode(
     typed: &sema::typed::TypedProgram,
     layout: &mwir::LayoutCtx,
@@ -78,10 +56,6 @@ fn oracle_under_mode(
     report
 }
 
-/// Decision 1470–1472: every slice case's `eval::run_tests` report must
-/// match under `dev` and `release`, and match the pinned golden
-/// `expected/test.txt`. Both modes must lower+codegen the `@test`
-/// bodies. Restores `CompileMode::Release` afterward.
 pub fn assert_dev_release_agree_on_test_slice() {
     assert!(
         !DEV_CORRECT_SLICE.is_empty(),
@@ -116,8 +90,6 @@ pub fn assert_dev_release_agree_on_test_slice() {
 mod tests {
     use super::*;
 
-    /// plans/M19.md item G / decisions 1470–1472: dual-mode semantic
-    /// oracle on the representative `@test` slice. The pinned rule    ///  cites this name at flip (item L).
     #[test]
     fn dev_and_release_agree_on_semantic_test_slice() {
         assert_dev_release_agree_on_test_slice();

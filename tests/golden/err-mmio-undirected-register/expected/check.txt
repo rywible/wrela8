@@ -1,1 +1,1 @@
-error[type]: register `VirtioIrqMmio.interrupt_status: u32` declares no direction, so it has neither a `read()` nor a `write(v)`; a register map's fields are `ReadOnly[T]` or `WriteOnly[T]` (03-hardware.md §2) at 20:51
+error[type]: register `VirtioIrqMmio.interrupt_status: u32` declares no direction, so it has neither a `read()` nor a `write(v)`; a register map's fields are `ReadOnly[T]` or `WriteOnly[T]` (03-hardware.md §2) at 13:51

@@ -1,7 +1,5 @@
 module examples.check_inferred_error_set
 
-# plans/M13.md item K / 02-language.md §5: private `-> Result[T]` infers
-# the error set from Err construction and ?-propagation; typed dump prints it.
 
 enum LoadError:
     Bad

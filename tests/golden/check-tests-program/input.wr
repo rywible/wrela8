@@ -1,8 +1,5 @@
 module examples.check_tests_program
 
-# A richer @test acceptance program (plans/M3.md item E): loops, a
-# struct method, `match` over a payload-carrying enum, and a generic fn,
-# each computing something with a hand-computed expected result.
 
 pub struct Counter:
     value: u64

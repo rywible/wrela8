@@ -1,6 +1,3 @@
-//! Stable text dump for `--stage=cost` (plans/M18.md items D+E;
-//! integrity Item J multi-W rows).
-
 use std::path::Path;
 
 use crate::codegen::CodegenProgram;
@@ -13,7 +10,6 @@ use super::score::{CostReport, score_program};
 use super::table::CostTable;
 use super::workload::FLAT_NAME;
 
-/// Score `program`, attach multi-W rows from `attach`, then format.
 pub fn dump(
     program: &CodegenProgram,
     table: &CostTable,
@@ -21,18 +17,11 @@ pub fn dump(
     ghz: f64,
     attach: &WorkloadAttach,
 ) -> Result<String, String> {
-    // Item E threaded `placement` into scoring (items F and G read it for
-    // the per-core footprint and the local/remote verdict); item C made
-    // `attach_workloads` fallible (the bridge fails closed) and gave
-    // `format_report` the attach so it can print the block-grain coverage
-    // row. Both are needed.
     let mut report = score_program(program, table, placement)?;
     attach_workloads(&mut report, attach)?;
     format_report(&report, placement, ghz, Some(attach))
 }
 
-/// Convenience: load default workloads (+ sibling `lane1-freq.txt` when
-/// `source` is set) then dump.
 pub fn dump_for_source(
     program: &CodegenProgram,
     table: &CostTable,
@@ -51,12 +40,6 @@ fn format_report(
     attach: Option<&WorkloadAttach>,
 ) -> Result<String, String> {
     let mut out = String::new();
-    // plans/M20.md item D: the v2 `ports.* / max_issue_per_cycle /
-    // branch_penalty / mem_reuse_window / mem_working_set_cap` fields are
-    // gone — they were v2 concepts, and their replacements land in items
-    // E / F / H. What replaces them is the profile's identity: the pipeline
-    // set, the dispatch constraints, the bounded reorder window, and the
-    // **provenance digest** over the tier mix (freeze 1629).
     let mut header = format!(
         "Cost version={} profile={} pipelines={} dispatch_mops={} dispatch_uops={} reorder_window={} digest={} provenance={} ghz={}",
         report.version,
@@ -73,9 +56,6 @@ fn format_report(
         header.push_str(&format!(" workloads_digest={wd}"));
     }
     push_line(&mut out, 0, &header);
-    // The digest alone is opaque; the tier mix is the thing a reviewer
-    // actually reads to see whether the model rests on vendor-normative
-    // rows or on brackets, so it gets its own indented line.
     push_line(
         &mut out,
         1,
@@ -84,11 +64,6 @@ fn format_report(
     push_line(
         &mut out,
         1,
-        // plans/M20.md item F appends `pseudo_lru=modelled_as_lru` without
-        // reordering item A's fields: A76's L1I/L1D replacement policy is
-        // pseudo-LRU (Core TRM) and `cost::mem`'s levels are true LRU, so
-        // the approximation is named where a reader of a pinned dump sees
-        // it rather than only in a module comment.
         "Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method valid_for=static_shape_opts workload=flat pseudo_lru=modelled_as_lru",
     );
     push_line(&mut out, 1, "Composition sum_of_fn_schedules=1");
@@ -123,11 +98,6 @@ fn format_report(
     Ok(out)
 }
 
-/// Emit `Workload name=…` rows. Flat first; other names sorted.
-/// Measured W get a nested `coverage=matched/total grain=<method|block>`
-/// line. The grain is on the review surface because a case may commit both
-/// sidecars and `attach_workloads` resolves that in favour of block grain —
-/// which must never be a silent choice (plans/M20.md item C).
 pub(crate) fn append_workload_rows(
     out: &mut String,
     depth: usize,
@@ -172,25 +142,6 @@ pub(crate) fn append_workload_rows(
     }
 }
 
-/// Append Core / Budget / Shared / optional Placeable lines after owners.
-///
-/// Each `Core n=…` line is followed by that core's **per-core text and
-/// translation budget** line (04 §6, plans/M20.md item F): its hot text
-/// against its 64 KiB L1I, and its page span against the 48-entry I-TLB and
-/// the 1280-entry L2 TLB. 04 §5 makes that budget the hard constraint code
-/// growth is argued against, which is why it is per core and why it prints
-/// beside the core it belongs to rather than as a program-wide aggregate.
-///
-/// A case that commits a block-grain `lane2-freq.txt` additionally gets a
-/// `MeasuredBudget workload=<name> …` line per core per measured workload
-/// (plans/M20.md items C+F): the same budget with hot text restricted to
-/// blocks whose measured `f` is non-zero. Both lines print, because the two
-/// answer different questions — the flat one is the static-footprint row
-/// 04 §5's veto is argued against, the measured one says how much of that
-/// text the measurement actually reached (decision 1617).
-///
-/// Legacy single-file dumps with no image (`cores == 0` and no entries)
-/// omit this block entirely.
 pub(crate) fn append_core_block(
     out: &mut String,
     depth: usize,
@@ -346,10 +297,6 @@ mod tests {
         assert!(!text.contains("Workload name=boot-actors"), "got:\n{text}");
         assert!(!text.contains("issue_width"), "got:\n{text}");
         assert!(text.contains("ghz=2.4"), "got:\n{text}");
-        // plans/M20.md item A: the Assumptions line is the clearest single
-        // signal of what the model claims, so the whole prefix is pinned
-        // here and not only its tail — `target=a76_pi5` with the cache and
-        // mispredict terms live is the reversal this milestone lands.
         assert!(text.contains(
             "Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method valid_for=static_shape_opts workload=flat"
         ));

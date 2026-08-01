@@ -1,1 +1,1 @@
-error[type]: deriving(From) requires exactly one variant at 6:1
+error[type]: deriving(From) requires exactly one variant at 4:1

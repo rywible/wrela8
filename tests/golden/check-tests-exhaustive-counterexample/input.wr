@@ -1,8 +1,5 @@
 module examples.check_tests_exhaustive_counterexample
 
-# A failing exhaustive test reports the first counterexample in the
-# fixed enumeration order (rightmost parameter fastest); a domain over
-# the build cap fails the test rather than sampling (02 §12.2).
 @test(exhaustive)
 fn planted_failure(x: u8):
     assert x != 42, "planted: fails exactly at 42"

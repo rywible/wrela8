@@ -1,9 +1,5 @@
 module examples.err_validated_out_of_scope
 
-# plans/M13.md item P: Validated is no longer a prelude marked-value
-# policy. A bare `Validated[...]` with no declaration is an unknown name
-# (the sealed idiom lives in the declaring module — see
-# golden/check-validated-idiom).
 
 fn bad(v: Validated[u32, u32]) -> u32:
     return 0

@@ -1,7 +1,5 @@
 module examples.err_reserve_capacity
 
-# plans/M7.md item E2: depth 8 admits floor(8/3)=2 concurrent 3-descriptor
-# operations; three at-most-once `reserve` sites exceed that bound.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

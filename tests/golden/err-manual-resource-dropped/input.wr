@@ -1,8 +1,5 @@
 module examples.err_manual_resource_dropped
 
-# plans/M13.md item O / 02-language.md §3.1: `resource(manual) struct`
-# declines the derived reclaim action, so every path must consume,
-# return, or transfer it — dropping one is error[move].
 
 resource(manual) struct Token:
     bits: u64

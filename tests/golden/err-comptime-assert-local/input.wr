@@ -1,6 +1,5 @@
 module examples.err_comptime_assert_local
 
-# plans/M9.md item NN: a runtime local is not comptime-visible.
 fn compute() -> i64:
     t = 21
     comptime assert t * 2 == 42, "doubling"

@@ -1,370 +1,3 @@
-//! Codegen (plans/M5.md item C): `mwir::MwirProgram` -> per-fn A76 machine
-//! code, with a stable `--stage=asm` dump. Consumes `mwir.rs`'s instruction
-//! set and `encode.rs`'s pure `typed-args -> u32` encoder; never modifies
-//! either (CLAUDE.md's "consume, don't touch" rule for this item).
-//!
-//! ## Two-pass emission (decision: the plan's own "size everything, then
-//! encode with resolved offsets" option, not backpatching)
-//!
-//! Per fn: pass 1 computes the frame (every temp's byte offset,
-//! `build_frame`) and then re-uses the *identical* per-instruction
-//! emission function once with an all-zero jump-target table purely to
-//! *count* how many machine words each `mwir::Inst` expands to (branch
-//! word-count never depends on the *value* of a jump target — only a
-//! genuinely out-of-range branch distance could, and this milestone's
-//! functions are far too small for that to ever bite, so no dependency
-//! exists between the two passes' word counts). That count list is
-//! prefix-summed into `word_offsets[mwir_idx] -> starting word index`,
-//! including one sentinel entry one past the last instruction (the
-//! shared epilogue's own start word, the target every `Return`
-//! branches to). Pass 2 re-runs the same emission function with the now-
-//! known table, so every local `Jump`/`JumpIfFalse` resolves to a real
-//! PC-relative `B`/`CBZ` immediate. Rodata interning happens in both
-//! passes but is idempotent (content-addressed `BTreeMap`, plans/M5.md
-//! item C's own "BTreeMap dedup" requirement) so re-running it twice is
-//! harmless, not double-counted.
-//!
-//! Every compile-time integer constant (bounds, tag values, shift
-//! widths, array lengths, element strides, ...) is materialized via
-//! `FnCtx::load_imm`. With NarrowImm off (`dev` / default TLS): always
-//! `MOVZ` + three unconditional `MOVK`s, exactly four words — the locked
-//! naive form (`compiler.codegen.naive-locked`). With NarrowImm on
-//! (`opts::apply_mode(Release)`): `MOVZ` at the first non-zero halfword's
-//! shift, then `MOVK` only for remaining non-zero halfwords; value `0`
-//! is a single `movz #0` (plans/M19.md item I / decision 1486). A
-//! per-instruction word count that depends on the constant's bit pattern
-//! is still sound under two-pass emit (constants are identical in both
-//! passes). Reloc trampoline helpers keep the fixed four-word form
-//! (decision 1485) and do not consult the TLS.
-//!
-//! Two things are *not* resolved at this stage, staying symbolic
-//! (plans/M5.md item C, "Text/rodata" — the dump shows `rodata+0xNN`):
-//! a `Call`'s own target function, and every rodata reference (`ADRP`+
-//! `ADD` pair). Both are emitted with a placeholder `#0` immediate plus
-//! a `Reloc` entry recording what item D's layout pass must patch in
-//! once the whole program is laid out into one flat blob (each
-//! function's own code doesn't yet know where any *other* function, or
-//! the rodata section, ends up). `Reloc::Call{word,key}` names the word
-//! index of the `BL` and the callee's own `MwirProgram::fns` key;
-//! `Reloc::Rodata{word_adrp,byte_offset}` names the `ADRP`'s own word
-//! index (the paired `ADD` always immediately follows, `word_adrp+1`)
-//! and the byte offset the referenced entry starts at *within the
-//! rodata section* (already computable now: rodata entries are
-//! sequential and their own sizes are already fixed, only the
-//! section's absolute base address is still unknown). `Reloc::Abort*`
-//! similarly name a `BL`'s own word index for the two abort symbols
-//! below. Local control flow (`Jump`/`JumpIfFalse`, and the call site's
-//! own post-call bookkeeping) never needs a reloc: it resolves inside
-//! this same pass.
-//!
-//! ## Frame layout (decision 4: spill-everything, fixed frame)
-//!
-//! **Amended by plans/codegen-pareto.md item E.** Decision 4's frame is
-//! still the whole story under `dev`, byte for byte, and it is still the
-//! correctness reference every equivalence oracle is stated against (M19
-//! freeze 1407). Under `release` with `OptId::RegAlloc`, a temp that is
-//! read more than once, never has its address taken, and is not live
-//! across a returning call is **resident**: it lives in one of
-//! `x19..=x27` for its whole live range and contributes **no bytes** to
-//! the map below, which is where the frame-size win comes from. Every
-//! other temp spills exactly as described. `regalloc.rs` owns the
-//! decision; `build_frame` gives a resident temp a virtual offset (see
-//! `VIRT_SLOT_BASE`) so the emission sites below are unchanged, and
-//! `load_slot`/`store_slot` turn its accesses into register moves.
-//!
-//! What decision 4's clause locked *besides* the frame — **emit every
-//! check** — is untouched on both paths. No abort branch, bounds check
-//! or overflow check moved.
-//!
-//! ```text
-//! [sp+0                 .. temps_end)   one region per **spilled** mwir
-//!                                       Temp (item E: a resident temp
-//!                                       has no region at all), in
-//!                                       temp-number order; temp `t`
-//!                                       occupies [offset(t), offset(t)
-//!                                       + mwir::size_of(temp_types[t])),
-//!                                       every size already a multiple
-//!                                       of 8 (mwir's own "no packing,
-//!                                       always an 8-byte-slot-multiple"
-//!                                       rule) so no alignment padding
-//!                                       is ever needed between temps.
-//! [temps_end            .. +8)          self_ptr_save -- present iff
-//!                                       this fn has a receiver: the
-//!                                       incoming aggregate pointer for
-//!                                       `self`, saved once at entry so
-//!                                       the epilogue can still find it
-//!                                       after arbitrary intervening
-//!                                       calls have clobbered x0..x8.
-//! [..                   .. +8)          ret_ptr_save -- present iff
-//!                                       this fn's own return type is
-//!                                       an aggregate: the incoming x8
-//!                                       result pointer, saved for the
-//!                                       same reason.
-//! [frame_size-8         .. frame_size)  saved x30 (lr) -- the only
-//!                                       register this ABI preserves
-//!                                       across a call (see below).
-//! ```
-//! `frame_size` is `temps_end + (8 if receiver) + (8 if aggregate ret)
-//! + 8`, rounded up to 16 (SP stays 16-byte aligned, AAPCS64's own
-//! requirement, harmless to keep even though nothing here calls out to
-//! real AAPCS64 code). Every offset is SP-relative and always
-//! *unsigned* (`encode.rs`'s `LDR`/`STR` immediate forms are unsigned-
-//! offset-only) — the frame is built low-to-high specifically so no
-//! offset is ever negative. Frames whose rounded size would exceed 4095
-//! bytes fail closed (`CodegenError::unimplemented`, "large frames"
-//! below): every fn in the required golden corpus fits in a few hundred
-//! bytes at most, and staying within one `ADD`/`SUB`-immediate's own
-//! `imm12` range means the prologue/epilogue never need a second
-//! adjustment instruction — one more place dumbness is free here.
-//!
-//! **x29 (fp) is never touched by this ABI.** This is an internal-only
-//! convention (CLAUDE.md, "no FFI exists") with no unwinder and no
-//! debugger to satisfy; the only register that must survive a `BL`
-//! (which clobbers `x30`) is the return address itself, so only `x30`
-//! is saved/restored. Scratch computation always uses `x9`-`x14`
-//! (never overlapping the `x0`-`x8` call-argument/result registers,
-//! and never `x29`/`x30`/`sp`).
-//!
-//! Item E adds `x19`-`x27` as the register-residency pool and changes
-//! nothing about that sentence: because *nothing* survives a `BL` here,
-//! a temp is simply never left resident across one. There is still no
-//! callee-saved discipline, and item F is where that stops being a
-//! restriction (it computes what each callee actually clobbers).
-//!
-//! ## Calling convention (decision 4, AAPCS64-*shaped*, not AAPCS64)
-//!
-//! Scalar arguments/results travel in registers by *value*: `x0..x7`
-//! for up to 8 arguments (receiver first, when present, exactly
-//! mirroring `mwir::Inst::Call::args`'s own "receiver first" order —
-//! more than 8 total arguments fails closed, named
-//! `CodegenError::unimplemented`, "more than 8 call arguments"; nothing
-//! in the required golden corpus needs stack args, so none are
-//! implemented), a scalar result in `x0`.
-//!
-//! **Every aggregate argument or result travels as a bare pointer to
-//! the *caller's own* temp slot — never a defensive scratch copy.**
-//! This is safe with no extra bookkeeping because of one invariant this
-//! module maintains everywhere: a callee, at its own entry, always
-//! copies an incoming aggregate's bytes *into its own local frame slot*
-//! for that receiver/parameter (word-by-word, `size_of`-many words,
-//! fully unrolled) and thereafter only ever reads/writes that local
-//! copy — so aliasing the caller's own memory is harmless (the callee
-//! never mutates through the incoming pointer *except* at its own
-//! epilogue, and only for a `mut`/`init` receiver, see below). A
-//! scalar result in an aggregate-returning fn works the mirror way: the
-//! caller passes `x8 = &(dst temp's own slot)` *before* the call, and
-//! the callee writes its result directly into that memory at every
-//! `Return` — no post-call copy-back exists because there was never a
-//! copy to begin with.
-//!
-//! **`write_backs` / `mut self` / non-receiver `mut`, worked out from first
-//! principles (mwir's own doc names the requirement, this module supplies
-//! the mechanism):** a `Mut` receiver is *always* an aggregate (every
-//! struct/enum `self` has a `Type::Named`), so it is *always* passed by
-//! the same bare-pointer rule above — this holds regardless of
-//! `Inst::Call::write_backs`. A non-receiver `mut` parameter
-//! (02-language.md §5.1 / plans/M9.md item CC) is passed by pointer
-//! too, even when it is a scalar: the call site puts every
-//! `write_backs` args-index in the pointer set alongside aggregates.
-//! The callee's own prologue always copies an incoming pointer
-//! argument's bytes into its own local temp slot; the callee's own
-//! *epilogue* additionally copies that local slot's *current* bytes
-//! back out through the *original* incoming pointer (saved at entry) —
-//! for a `Mut` receiver (`self_ptr_save`) and for every `Mut` parameter
-//! (`param_ptr_offs`). Since the pointer the caller passed *is* the
-//! address of its own place temp, this write-back lands exactly where
-//! `write_backs`'s own entries promise, with the call site itself doing
-//! nothing special after the `BL`. (A `Read`/`Take` argument is never
-//! in `write_backs` and never gets an epilogue write.)
-//!
-//! ## The abort contract (item E's exact obligation)
-//!
-//! Every checked operation that can fail branches to one of two
-//! `noreturn` stub symbols, called via `BL` with a placeholder target
-//! (`Reloc::AbortFixed`/`Reloc::AbortVal`) exactly like an ordinary
-//! call — never inlined, never returned from.
-//!
-//! - **`__wrela_abort(x0: *Bytes) -> noreturn`** — every abort whose
-//!   *entire* message is fixed at compile time (every ordinary/wrapping-
-//!   overflow, div/rem-by-zero, div `MIN/-1`, negation-overflow,
-//!   `.to[T]()` out-of-range, `<<` lost-bits, and `assert`/`panic`/
-//!   match-fallthrough message). Callers carve a 16-byte `(base, len)`
-//!   slot on the stack (`base` = rodata `ADRP`+`ADD`, `len` = byte
-//!   length), pass its address in `x0`, and `BL` (noreturn).
-//! - **`__wrela_abort_val(x0: *Bytes prefix, x1: value, x2: value_signed,
-//!   x3: *Bytes suffix) -> noreturn`** — the two messages whose own
-//!   wording embeds a *runtime* value (`eval::value::eval_shift`'s
-//!   `"shift count {c} is out of range for a {bits}-bit type"`,
-//!   `eval::interp`'s `"index {i} out of bounds (length {len})"`).
-//!   `prefix`/`suffix` are stack `Bytes` slots (same shape as abort);
-//!   `value` is the operand's own live register value, already in this
-//!   module's canonical 64-bit sign/zero-extended form (see below);
-//!   `value_signed` (`0`/`1`) tells the runtime whether to render it as
-//!   a signed or unsigned decimal (only the shift-count case can ever be
-//!   negative — an index is always `usize`). Item E is expected to
-//!   print `prefix`, then `value` as a decimal (per `value_signed`),
-//!   then `suffix`, then abandon the running test — the exact same
-//!   text `eval::value`/`eval::interp` would have produced for the
-//!   identical failure.
-//!
-//! `BL` (not a bare `B`) is used for both, uniformly with every ordinary
-//! call, even though neither ever returns — one call-emission shape,
-//! no special case for "this call happens to be a noreturn one".
-//!
-//! ## The canonical-slot invariant (what makes every op this simple)
-//!
-//! Every scalar temp's 8-byte slot always holds its value's *signed*
-//! 64-bit representation: an unsigned type's value zero-extended, a
-//! signed type's value sign-extended. This one invariant is why:
-//! `Compare` can always use a *signed* 64-bit `CMP`/`CSET` regardless of
-//! the operand's own declared signedness (an unsigned value's zero-
-//! extended form is always non-negative as a signed i64, so signed and
-//! unsigned orderings coincide exactly on it); bitwise `& | ^`/`~` never
-//! need extra truncation (two's-complement sign-extension commutes with
-//! bitwise ops bit-for-bit); narrow (`<64`-bit) checked `+ - *` can
-//! compute at full 64-bit width and simply *bounds-check the raw
-//! result* against the target type's own `[min,max]` (64 bits is always
-//! wide enough that the true, unwrapped sum/difference/product of two
-//! sign/zero-extended-from-`<64`-bit operands never itself overflows 64
-//! bits — this is the exact same trick `eval::value` plays with `i128`,
-//! one register width narrower); and narrow checked `/` needs no bounds
-//! check at all beyond the explicit signed `MIN/-1` pre-check (see
-//! below). `narrow_to_width` (this module) is the one helper that
-//! *restores* the invariant after an op whose raw 64-bit result is
-//! *not* automatically canonical: `ArithWrapping` (truncate-and-
-//! optionally-resign to the type's own width — the modulo-2^width
-//! reduction `eval_wrapping` performs), `BitNot` (flipping a sign/zero-
-//! extended register's *extension* bits too, which must be cleared/
-//! re-signed afterward), `Shift`'s `Shl` result, and a successful
-//! `Convert`. It is `LSL #(64-bits)` then `LSR #(64-bits)` (unsigned) or
-//! `ASR #(64-bits)` (signed) — a no-op when `bits == 64`.
-//!
-//! ## Overflow detection per op class (decision 4's own required list)
-//!
-//! - **`+ - *`, width `< 64`**: compute at 64-bit width (safe, per the
-//!   invariant above), then `CMP` the raw result against the target
-//!   type's own `[min,max]` (both materialized via `load_imm`, compared
-//!   signed) and branch to `__wrela_abort` on either bound failing.
-//! - **`+ -`, width `== 64`**: `ADDS`/`SUBS` and read the flags —
-//!   `Cond::Vs` (signed overflow, both ops) for `I64`/`Isize`;
-//!   `Cond::Cs` (unsigned carry, `ADD`) / `Cond::Cc` (unsigned borrow,
-//!   `SUB`) for `U64`/`Usize`.
-//! - **`*`, width `== 64`**: `MUL` (low 64 bits) plus `SMULH`/`UMULH`
-//!   (high 64 bits — decision 4's own "smulh compare", the reason
-//!   `encode.rs` gains these two functions, see the module-level note
-//!   below). Unsigned: overflow iff the high word is nonzero. Signed:
-//!   overflow iff the high word isn't the low word's own sign-extension
-//!   (`ASR #63` of the low word) — the standard two-register-product
-//!   overflow test.
-//! - **`/ %`, division by zero**: `CMP` the divisor against `XZR`,
-//!   `B.EQ` to `__wrela_abort` (`abort_zero`), every width, every
-//!   signedness, both ops.
-//! - **`/`, signed `MIN/-1`**: an *explicit* pre-check, uniform across
-//!   every signed width (`8`/`16`/`32`/`64`) — `lhs == type::MIN &&
-//!   rhs == -1`, both compares, both branches to `__wrela_abort`
-//!   (`abort_overflow`) — *not* a post-divide bounds check. This is
-//!   deliberate, not merely uniform-for-uniformity's sake: at 64-bit
-//!   width, ARM's `SDIV` never traps and instead silently *wraps*
-//!   `i64::MIN / -1` back to `i64::MIN` itself — a value that is
-//!   trivially back in-range, defeating any bounds check computed
-//!   *after* dividing. The explicit pre-check is the only form that is
-//!   correct at every width uniformly, so it is used at every width
-//!   uniformly, even though width `< 64` would also be catchable by a
-//!   post-divide bounds check (64-bit `SDIV` on a narrow, sign-extended
-//!   operand cannot itself wrap — the true 64-bit quotient of two
-//!   values within a narrower range is always exactly representable in
-//!   64 bits). Never checked for `%` — `interp.rs`'s own
-//!   `eval_div_rem` never reaches this case for `Rem` (mirrored exactly
-//!   in `mwir::Inst::DivRem`'s own doc), and it is also arithmetically
-//!   moot: `lhs - (lhs/rhs)*rhs` for `rhs == -1` always reduces to `0`
-//!   even when the *quotient* itself wrapped in hardware (`MSUB`'s own
-//!   64-bit wraparound cancels exactly, `2*i64::MIN mod 2^64 == 0`).
-//!   `%` is computed via `SDIV`/`UDIV` then `MSUB` (`ARM` has no direct
-//!   remainder instruction): `rem = lhs - (lhs/rhs)*rhs`.
-//! - **Shifts**: the range check `count < 0 || count >= bits`
-//!   (`eval_shift`'s own wording) is done as *one* `CMP`/`B.HS` using an
-//!   **unsigned** comparison of the (possibly-signed, canonically sign-
-//!   extended) count register against `bits` — a negative signed count,
-//!   reinterpreted as unsigned, is always astronomically larger than
-//!   any `bits <= 64`, so the single unsigned test rejects both "too
-//!   negative" and "too large" at once; this is a correctness
-//!   technique (the same one range checks are conventionally compiled
-//!   to), not a profiled optimization, so it needs no cleverness
-//!   budget entry. `Shl`'s own additional "lost nonzero high bits"
-//!   check first guards `count == 0` with a `CBZ` (skipping straight to
-//!   the real shift — `count == 0` is the one case that would otherwise
-//!   falsely trip the check at `bits == 64`, since `LSRV` by a shift
-//!   amount that is itself a multiple of 64 is architecturally a no-op,
-//!   not a full clear), then computes `shift_amt = bits - count`
-//!   (register-register `SUB`) and checks `(cleared_lhs LSRV shift_amt)
-//!   != 0` — `cleared_lhs` is `lhs` already truncated to exactly `bits`
-//!   width via `narrow_to_width(..., signed=false)` regardless of the
-//!   type's own signedness (the "lost bits" test is defined on the
-//!   *unsigned* bit pattern, `eval_shift`'s own `bit_pattern = (a as
-//!   u128) & mask`, independent of `signed`). The shift itself is a
-//!   register-controlled `LSLV`/`LSRV`/`ASRV` by the live `count`;
-//!   `Shl`'s result gets `narrow_to_width` (with the type's *real*
-//!   signedness this time, to re-sign appropriately); `Shr`'s does not
-//!   (an `ASR`/`LSR` of an already-canonical operand by `count < bits`
-//!   is automatically canonical — it can only clear or sign-fill bits
-//!   above the result's own top, never introduce a bit that needs
-//!   truncating).
-//! - **`.to[T]()` (`Convert`)**: bounds-check the source's own
-//!   (canonical, signed-64) value against the *target* type's
-//!   `[min,max]`, materialized as signed 64-bit constants — this is
-//!   exact for every target narrower than 64 bits. A 64-bit unsigned
-//!   target only ever needs a lower-bound check (`>= 0`; the upper
-//!   bound is the register's own full range, nothing to compare
-//!   against). A 64-bit signed target only ever needs a check when the
-//!   *source* is 64-bit unsigned (`>= 0`, rejecting a source magnitude
-//!   past `i64::MAX`); every other 64-bit-target combination always
-//!   succeeds (the source's own range is provably a subset). On
-//!   success, `narrow_to_width` re-canonicalizes to the target's own
-//!   width/signedness (a no-op when the target is 64-bit). Floating
-//!   source/target types fail closed (see below) — nothing in the
-//!   required golden corpus exercises `Convert` at all, so this is a
-//!   reasoned, documented best-effort rather than a golden-proven path.
-//!
-//! ## `encode.rs` extension: `SMULH`/`UMULH`
-//!
-//! The one instruction class item A's subset omitted that this item
-//! genuinely needs: a 64-bit-by-64-bit widening multiply's *high* word,
-//! the only way to detect `U64`/`I64`/`Usize`/`Isize` multiplication
-//! overflow without a 128-bit register. Added to `encode.rs` as
-//! `enc_smulh`/`enc_umulh`, same "Data-processing (3 source)" ARM ARM
-//! class `MUL`/`MSUB` already use (`op31 = 0b010`, `Ra` fixed to `31`,
-//! `op54` `0b00`/`0b10` picking signed/unsigned) — two new pure
-//! functions plus their own hand-verified unit tests, the existing
-//! `encoding_table_golden` test left untouched (an existing golden must
-//! not move, CLAUDE.md).
-//!
-//! ## Codegen-level fail-closed list (deliberately tiny — mwir already
-//! gated the large stuff)
-//!
-//! - **Any floating-point value or operation** (`ConstFloat`, and every
-//!   other instruction whose `ty` is `F32`/`F64`). `encode.rs`'s A76
-//!   subset (item A) never gained an FP/SIMD encoder — nothing in the
-//!   required golden corpus uses a float (verified directly: none of
-//!   the seven reused `mwir-*` inputs declare an `f32`/`f64` value) —
-//!   so this is an honest, disclosed gap, not a silently approximated
-//!   one.
-//! - **`ConstText`** (and, transitively, any `Static[Str]`/
-//!   `Static[Bytes[N]]`-typed value). `mwir::size_of` itself already
-//!   fails closed on a bare `Type::Str` (its own module doc's "known
-//!   gap" note) — `Static[Str]`'s *layout* was never solved upstream,
-//!   so this module cannot lay out a slot for one either; inherits the
-//!   gap rather than inventing a new layout convention mwir itself does
-//!   not have.
-//! - **More than 8 call arguments** (the calling convention's own
-//!   documented scope; stack args are unimplemented).
-//! - **A frame whose rounded size exceeds 4095 bytes** (the `ADD`/`SUB`
-//!   immediate's own `imm12` range; a second adjustment instruction for
-//!   larger frames is unimplemented).
-//! - **Sizing a temp `mwir::size_of` itself cannot size** (an
-//!   instantiated generic struct/enum, a non-literal array/`Bytes`
-//!   length, ...) — passed straight through as `mwir::size_of`'s own
-//!   `Err`, not re-worded.
-
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -375,16 +8,10 @@ use crate::regalloc;
 use crate::sema::types::Type;
 use crate::syntax::ast::{AccessMode, BinOp};
 
-// plans/M15.md item K / decision 1098: test-only front-door. When set,
-// `Inst::Dmb` emits nothing — the barrier-deletion golden's mutated arm
-// builds the same guest with publish/acquire DMBs stripped. Only the
-// CLI (`wrela … --omit-dmb`) and the xtask golden runner set this; it is
-// never a production knob. Cleared at the start of every CLI command.
 thread_local! {
     static OMIT_DMB: Cell<bool> = const { Cell::new(false) };
 }
 
-/// plans/M15.md item K: enable/disable DMB omission for the current thread.
 pub fn set_omit_dmb(omit: bool) {
     OMIT_DMB.with(|c| c.set(omit));
 }
@@ -393,11 +20,6 @@ fn omit_dmb() -> bool {
     OMIT_DMB.with(|c| c.get())
 }
 
-// Integrity Phase 2 Item M — Lane 2 in-guest block counters. Test-only
-// emission mode (omit-dmb precedent): when set, codegen injects a
-// `__wrela_block_hit(id)` call at every basic-block leader; the guest
-// dumps the hit vector at exit. Never a production knob. Cleared at the
-// start of every CLI command; `NEXT_BLOCK_ID` resets with the flag.
 thread_local! {
     static BLOCK_COUNT: Cell<bool> = const { Cell::new(false) };
     static NEXT_BLOCK_ID: Cell<u32> = const { Cell::new(0) };
@@ -405,7 +27,6 @@ thread_local! {
     static BLOCK_SPANS: RefCell<Vec<BlockSpan>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Integrity Phase 2 Item M: enable/disable Lane 2 block-counter emission.
 pub fn set_block_count(enabled: bool) {
     BLOCK_COUNT.with(|c| c.set(enabled));
     NEXT_BLOCK_ID.with(|c| c.set(0));
@@ -415,24 +36,6 @@ fn block_count() -> bool {
     BLOCK_COUNT.with(|c| c.get())
 }
 
-/// One Lane 2 block's identity **and** its emitted-word span — the bridge
-/// decision 1608 requires be proved rather than assumed.
-///
-/// `block_index` is the leader's ordinal **within its own fn** (0, 1, 2, …
-/// in MWIR / flattened-FlowWir order), not the global `id`. That is what
-/// makes `<fn_key>#<block_index>` survive across the two disjoint Lane 2
-/// id spaces plans/M20.md item C measured: `boot-actors` assigns 184 ids in
-/// the cost-stage closure `wrela dump --stage=cost` scores and 2527 in the
-/// `@test(runtime)` image the guest boots, so a global id indexes one
-/// program and not the other. `id` is recorded too, for the *offline*
-/// generator's id → key translation on the test-image closure only.
-///
-/// `word_start .. word_end` are half-open indices into the fn's own
-/// `CodegenFn::code`. Block 0's span starts at word 0 (it absorbs the
-/// prologue, which executes exactly as often as the first block) and the
-/// last block's span ends at `code.len()` (it absorbs the epilogue and any
-/// cancellation tail), so the spans **tile** the fn — the property
-/// `cost::bridge` checks and fails closed on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockSpan {
     pub fn_key: String,
@@ -442,23 +45,6 @@ pub struct BlockSpan {
     pub word_end: usize,
 }
 
-/// plans/M20.md item C / decision 1608: **bridge mode.** Assigns the same
-/// Lane 2 block ids `--block-count` assigns and records each block's
-/// emitted-word span, while emitting **not one extra word**.
-///
-/// Separate from `--block-count` on purpose. `--block-count` inserts a
-/// 5-word `__wrela_block_hit` call at every leader, which changes the very
-/// word stream `cost::score` prices — so a bridge built from an
-/// instrumented build would describe a program the cost model is not
-/// scoring. `unit:block_bridge_mode_leaves_the_word_stream_byte_identical`
-/// is the proof that bridge mode does not.
-/// Enabling clears the recorded spans and resets the id counter; **disabling
-/// does not**, so a caller can turn bridge mode off and still read
-/// [`block_spans`] for the build it just made — which is exactly what the
-/// cost stage does (codegen, then score, then compose). Stale spans from a
-/// different program cannot be mistaken for fresh ones: `cost::bridge`
-/// checks that every span names a fn of the program it is bridging and that
-/// the spans tile that fn's word range, and fails closed otherwise.
 pub fn set_block_bridge(enabled: bool) {
     BLOCK_BRIDGE.with(|c| c.set(enabled));
     if enabled {
@@ -471,9 +57,6 @@ fn block_bridge() -> bool {
     BLOCK_BRIDGE.with(|c| c.get())
 }
 
-/// The spans the most recent bridge-mode `codegen_program*` recorded, in
-/// `(fn, block_index)` order. Read-only snapshot; the TLS buffer is cleared
-/// by the next `set_block_bridge`.
 pub fn block_spans() -> Vec<BlockSpan> {
     BLOCK_SPANS.with(|s| s.borrow().clone())
 }
@@ -490,26 +73,10 @@ fn record_block_span(fn_key: &str, block_index: u32, id: u32, word_start: usize,
     });
 }
 
-/// Whether Lane 2 block **ids** are assigned this build — either because
-/// the guest counters are being emitted (`--block-count`) or because the
-/// cost stage is building the bridge. Emission itself is still gated on
-/// `block_count()` alone.
 fn block_ids_active() -> bool {
     block_count() || block_bridge()
 }
 
-/// Turn one fn's `(leader → id)` vector plus its two-pass `word_offsets`
-/// prefix sum into tiling `BlockSpan`s (decision 1608's bridge, literally:
-/// `word_offsets[mwir_idx] → starting word index` is the only thing that
-/// relates the MWIR partition Lane 2 ids are assigned over to the
-/// emitted-word partition `s(b)` is computed over).
-///
-/// `block_ids[i]` is `Some` exactly at a leader. The span of leader `i`
-/// runs to the next leader's own word offset, so the non-leader
-/// instructions between them belong to the block they fall inside — which
-/// is what makes the spans tile. Two boundary rules, both because the
-/// prologue/epilogue are emitted words no MWIR index owns: block 0 starts
-/// at word 0 and the final block ends at `code_len`.
 fn record_spans(fn_key: &str, block_ids: &[Option<u32>], word_offsets: &[usize], code_len: usize) {
     let leaders: Vec<(usize, u32)> = block_ids
         .iter()
@@ -526,99 +93,50 @@ fn record_spans(fn_key: &str, block_ids: &[Option<u32>], word_offsets: &[usize],
     }
 }
 
-/// Whether Lane 2 block-counter emission is enabled (layout transcript bound).
 pub fn block_count_enabled() -> bool {
     block_count()
 }
 
-/// The Lane 2 counter helper's own fn key. It is the one fn instrumentation
-/// must never enter: every leader in it would emit `bl <__wrela_block_hit>`
-/// into `__wrela_block_hit` itself, which is unbounded self-recursion on the
-/// very first hit (measured, plans/M20.md item B: a widened build faults with
-/// `unhandled exception` in the guest before the first test line). The
-/// pre-M20 `app`-only gate excluded it incidentally — `core.runtime` was
-/// never instrumented at all — so decision 1607's widening has to exclude it
-/// by name, not by owner.
 const BLOCK_HIT_KEY: &str = "__wrela_block_hit";
 
-/// Whether `key` is instrumented under `--block-count`. plans/M20.md item B /
-/// decision 1607: **every** owner (`app`, `runtime`, `driver`) is
-/// instrumented — the only exclusion is the counter helper itself.
 fn block_count_instruments(key: &str) -> bool {
     block_ids_active() && key != BLOCK_HIT_KEY
 }
 
-/// plans/M20.md item B: how many Lane 2 block ids the most recent
-/// `codegen_program*` call allocated. Both entry points reset
-/// `NEXT_BLOCK_ID`, so after a build this is that build's id count — the
-/// number decision 1607's widening has to keep under
-/// [`crate::rtconfig::BLOCK_POOL_COUNT`]. Read-only; never a knob.
 pub fn block_ids_assigned() -> u32 {
     NEXT_BLOCK_ID.with(|c| c.get())
 }
 
-// plans/M19.md item B / decision 1421 + item I / 1485–1486: TLS knob for
-// narrow-immediate materialization. Default **off**; `opts::apply_mode
-// (Release)` turns it on when `OptId::NarrowImm` is in `RELEASE_OPTS`.
-// `FnCtx::load_imm` consults this; trampoline/reloc 4-word helpers do not.
 thread_local! {
     static NARROW_IMM: Cell<bool> = const { Cell::new(false) };
 }
 
-/// plans/M19.md item B/I: enable/disable narrow-imm for the current thread.
 pub fn set_narrow_imm(enabled: bool) {
     NARROW_IMM.with(|c| c.set(enabled));
 }
 
-/// Whether narrow-imm materialization is enabled (default false).
 pub(crate) fn narrow_imm() -> bool {
     NARROW_IMM.with(|c| c.get())
 }
 
-// plans/codegen-pareto.md item B1/B2 (decisions 1730–1733, freeze 1713): TLS
-// knob for one-word `ADR` addressing. Default **off** — `dev` keeps the
-// `ADRP`+`ADD` pair as the reference form. `opts::apply_mode(Release)` turns
-// it on when `OptId::AdrAddressing` is in `RELEASE_OPTS`.
-//
-// The knob is read at *emission* time because it decides a word count, and
-// the range proof it depends on is a *layout*-time fact. That split is
-// deliberate and is what decision 1731 is about: codegen commits to one
-// word, layout proves the commitment was legal, and an out-of-range site is
-// a hard build error rather than a silent widening (which layout cannot do
-// anyway without re-running every address it just fixed).
 thread_local! {
     static ADR_ADDRESSING: Cell<bool> = const { Cell::new(false) };
 }
 
-/// plans/codegen-pareto.md item B: enable/disable `ADR` addressing for the
-/// current thread.
 pub fn set_adr_addressing(enabled: bool) {
     ADR_ADDRESSING.with(|c| c.set(enabled));
 }
 
-/// Whether one-word `ADR` addressing is enabled (default false).
 pub(crate) fn adr_addressing() -> bool {
     ADR_ADDRESSING.with(|c| c.get())
 }
 
-// plans/codegen-pareto.md item C, decisions 1742–1744: three more TLS knobs,
-// one per separable arithmetic substitution, all default **off** and all
-// turned on only by an `OptId` in `RELEASE_OPTS` (freeze 1402). They are
-// deliberately three knobs and not one `arith_opts` bitset: the ∀ gate ranks
-// one `OptId` at a time, and a knob that switches two substitutions at once
-// cannot be attributed when it is refused.
-//
-// Item C1 (W-form width selection) has **no** knob here: the ∀ gate scores
-// it at zero, so freeze 1714 keeps it out of `RELEASE_OPTS`, and it lands
-// unconditionally as a reported form change instead (decision 1746).
 thread_local! {
     static BFX_NARROW: Cell<bool> = const { Cell::new(false) };
     static MASK_CHECK: Cell<bool> = const { Cell::new(false) };
     static WIDE_IMM_FORMS: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Item C3: `narrow_to_width` emits one `UBFX`/`SBFX` instead of the
-/// `LSL`+`LSR`/`ASR` pair.
 pub fn set_bfx_narrow(enabled: bool) {
     BFX_NARROW.with(|c| c.set(enabled));
 }
@@ -627,9 +145,6 @@ pub(crate) fn bfx_narrow() -> bool {
     BFX_NARROW.with(|c| c.get())
 }
 
-/// Item C2: the narrow checked-arithmetic range test becomes one masked
-/// test against one abort, instead of two constant materializations, two
-/// compares and two aborts.
 pub fn set_mask_check(enabled: bool) {
     MASK_CHECK.with(|c| c.set(enabled));
 }
@@ -638,8 +153,6 @@ pub(crate) fn mask_check() -> bool {
     MASK_CHECK.with(|c| c.get())
 }
 
-/// Item C5: `load_imm` may use `MOVN` or the bitmask-immediate `MOV`
-/// when either materializes the value in one word.
 pub fn set_wide_imm_forms(enabled: bool) {
     WIDE_IMM_FORMS.with(|c| c.set(enabled));
 }
@@ -648,27 +161,11 @@ pub(crate) fn wide_imm_forms() -> bool {
     WIDE_IMM_FORMS.with(|c| c.get())
 }
 
-// plans/codegen-pareto.md item F3, decision 1772: one more knob, default
-// **off**, so `dev` keeps every frame the reference model has.
-//
-// F5 (tail calls) had **no knob** under decision 1779, on the evidence
-// that the gate corpus never fired one: the ∀ gate scored it at exactly
-// zero on both tiers, which freeze 1714 says disqualifies an `OptId`.
-//
-// **That evidence expired (decision 1909).** Item L's `BranchCleanup` and
-// item I's coalescing between them made tail position reachable, and item
-// M's compute workload joined the corpus; a `tail_calls_are_not_rankable`
-// oracle then failed *by design*, reporting 14 fired sites across
-// `cost-crosscore` (3), `cost-product-appliance` (3), `cost-product-blk`
-// (4) and `cost-product-receipt` (4), with the instruction to re-rank. So
-// F5 gets its knob and its `OptId` after all, and `dev` keeps `BL`+`RET`
-// as the reference form like every other opt.
 thread_local! {
     static FRAMELESS_FNS: Cell<bool> = const { Cell::new(false) };
     static TAIL_CALLS: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Item F5: a call in tail position is a `B`, not `BL`+`RET`.
 pub fn set_tail_calls(enabled: bool) {
     TAIL_CALLS.with(|c| c.set(enabled));
 }
@@ -677,8 +174,6 @@ pub(crate) fn tail_calls() -> bool {
     TAIL_CALLS.with(|c| c.get())
 }
 
-/// Item F3: a function with no frame bytes left and no returning call
-/// gets no prologue, no epilogue teardown and no `sub sp`.
 pub fn set_frameless_fns(enabled: bool) {
     FRAMELESS_FNS.with(|c| c.set(enabled));
 }
@@ -687,30 +182,10 @@ pub(crate) fn frameless_fns() -> bool {
     FRAMELESS_FNS.with(|c| c.get())
 }
 
-// **B4 — branch-to-fallthrough cleanup** (plans/codegen-pareto-B.md B4,
-// landed by plans/codegen-pareto-2.md item L, decisions 1973–1975).
-//
-// An unconditional branch whose target is the very next emitted word is
-// a word that does nothing. Item B built the general form — chase a
-// branch-to-branch through, elide a branch-to-fallthrough — measured it
-// winning on all fifteen cost cases, and reverted it, because eliding a
-// branch **merges two emitted-word blocks** while the Lane 2 MWIR
-// partition stays exactly as fine as it was, which is the disagreement
-// M20 decision 1608's bridge fails closed on.
-//
-// What lands here is the *boundary-preserving* rule item B's findings
-// name, and it is boundary-preserving **unconditionally** — the leader
-// set is computed from the body in every mode, never from `block_ids`
-// (which are `None` unless Lane 2 is active), so `dev`, `release`,
-// `--block-count` and bridge mode all emit the identical word stream and
-// `unit:block_bridge_mode_leaves_the_word_stream_byte_identical` still
-// holds with the opt on. The chase is dropped entirely (decision 1974).
 thread_local! {
     static BRANCH_CLEANUP: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Item B's B4: delete an unconditional branch to the next word, where
-/// deleting it cannot merge two Lane 2 blocks.
 pub fn set_branch_cleanup(enabled: bool) {
     BRANCH_CLEANUP.with(|c| c.set(enabled));
 }
@@ -719,29 +194,6 @@ pub(crate) fn branch_cleanup() -> bool {
     BRANCH_CLEANUP.with(|c| c.get())
 }
 
-/// The elision plan for one body, decided **before** either codegen pass
-/// out of information both passes have — body indices (decision 1734).
-///
-/// `target_of(i)` is the body index the unconditional branch at `i`
-/// declares, or `None` if `i` emits no unconditional branch at all;
-/// `n` is the epilogue sentinel index every `Return` branches to.
-///
-/// Two conditions, both necessary:
-///
-/// 1. **`t == i + 1`** — the branch's target is the next body index, so
-///    its word target is the word immediately after it. `word_offsets` is
-///    a prefix sum, so this is decidable without it.
-/// 2. **`i + 1` is not a Lane 2 block leader.** A Lane 2 span starting at
-///    `i + 1` needs `word_offsets[i + 1]` to be an emitted-word block
-///    leader, and the only reason it is one is the branch about to be
-///    deleted. This is the condition that makes decision 1608's rule 4
-///    survive the transform rather than be relaxed for it.
-///
-/// Every `Jump`, `JumpIfFalse` and `Return` marks `i + 1` a leader, so in
-/// practice condition 2 admits exactly the **final** body instruction,
-/// whose `i + 1 == n` lies past the leader vector. That is not a
-/// weakening: item B measured 357 of 791 unconditional `b` words to be
-/// branch-to-fallthrough and all of them the trailing `Return` of a fn.
 fn plan_branch_elision(
     n: usize,
     leaders: &[bool],
@@ -764,7 +216,6 @@ fn plan_branch_elision(
     elide
 }
 
-/// [`plan_branch_elision`] over a sync MWIR body.
 fn sync_branch_elision(body: &[Inst]) -> Vec<bool> {
     let n = body.len();
     let leaders = mwir_block_leaders(body);
@@ -775,42 +226,16 @@ fn sync_branch_elision(body: &[Inst]) -> Vec<bool> {
     })
 }
 
-// plans/M6.md decision 6 / plans/M11.md decision 740: a *backward*
-// unconditional `Jump` (`target <= idx`) is a loop's own back-edge —
-// the exact shape `lower.rs` / `flowwir_lower.rs` emit for a `while`/
-// `for` trailing repeat. A forward `Jump` (an `if`/`match` arm's
-// end-of-block skip) is never a back-edge. Sync `emit_fn` does **not**
-// splice a checkpoint onto that back-edge: trip counters (decision 732)
-// are the sole sync discharge. Checkpoints on sync back-edges made
-// console helpers illegal in multi-core images (M10 decision 597 /
-// layout's `Reloc::CheckpointService` ownership check). Async
-// `Transition::Jump` still checkpoints via the same position test.
-
-// --- scratch register numbering (fixed, never reused for anything else) ---
-
 const X_LR: u8 = 30;
 const X_SP: u8 = 31;
-const X_ZR: u8 = 31; // same encoding, different meaning outside load/store.
+const X_ZR: u8 = 31;
 
-/// General-purpose scratch registers this module uses for every
-/// computation. Never overlaps `x0..x8` (call args/results) or
-/// `x9..x14` used simultaneously in ways that would clobber a still-
-/// live value — every emission function below documents which of these
-/// it holds live across which step.
 const X_A: u8 = 9;
 const X_B: u8 = 10;
 const X_C: u8 = 11;
 const X_D: u8 = 12;
 const X_E: u8 = 13;
 const X_F: u8 = 14;
-/// The persistent-turn-frame base register (async state machines only,
-/// `Reloc::TurnFrameAddr`'s own doc comment): loaded fresh at every
-/// entry — fresh dispatch or resume — from the fn's own baked-in area
-/// address, never live across a turn boundary. Chosen well clear of the
-/// argument registers (`x0..x8`), this module's own scratch set
-/// (`x9..x14`), and every register the hand-assembled runtime routines
-/// in `layout.rs` use (`x9..x17`) — so an `rt_enqueue`/checkpoint call
-/// from inside an async body can never clobber it mid-turn.
 const X_FRAME: u8 = 28;
 
 fn reg_name(r: u8) -> String {
@@ -820,8 +245,6 @@ fn reg_name(r: u8) -> String {
         _ => format!("x{r}"),
     }
 }
-
-// --- errors ----------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodegenError {
@@ -842,24 +265,6 @@ impl CodegenError {
     }
 }
 
-/// Message prefix marking a codegen error as a **fail-closed resource
-/// violation** rather than "this shape did not lower".
-///
-/// The distinction is load-bearing: `layout::try_layout_with_codegen`
-/// deliberately treats an ordinary codegen `Err` as *soft* (report without
-/// an `.img`), because a cross-core or partially-lowering shape legitimately
-/// produces a report and no image — the `err-cross-core-*` report goldens
-/// pin exactly that. A pool overflow is not that. It is a bound the build
-/// blew through, and swallowing it hands the caller a silent image-less
-/// report and exit code 0 — the fail-open plans/M20.md item B measured on
-/// `wrela build --block-count` once `BLOCK_POOL_COUNT` was exhausted.
-///
-/// A prefix rather than a new error field, for the same reason the
-/// producer-bug prefix (`internal_error_census`) is one:
-/// `lower_and_codegen_image` already flattens every codegen error to a
-/// `String` before layout sees it, so a field would have to be threaded
-/// through a conversion that exists to discard structure. One producer, one
-/// consumer, both named here.
 pub const FAIL_CLOSED_PREFIX: &str = "fail-closed: ";
 
 fn alloc_block_id() -> Result<u32, CodegenError> {
@@ -868,11 +273,6 @@ fn alloc_block_id() -> Result<u32, CodegenError> {
         c.set(id.saturating_add(1));
         id
     });
-    // The pool bounds the **guest's** `LANE2.hits` array, so it binds only
-    // when the guest is actually counting. Bridge mode (plans/M20.md item C)
-    // assigns the identical ids for an offline map with no guest array
-    // behind it, and must not turn an ordinary `wrela build` of a large
-    // program into a refusal.
     if block_count() && id as usize >= crate::rtconfig::BLOCK_POOL_COUNT {
         return Err(CodegenError {
             message: format!(
@@ -884,160 +284,80 @@ fn alloc_block_id() -> Result<u32, CodegenError> {
     Ok(id)
 }
 
-// --- output shape ------------------------------------------------------------
-
-/// A fixup item D's layout pass must resolve once the whole program is
-/// laid out into one flat blob (module doc's own "Two things are not
-/// resolved" section).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reloc {
-    /// The `BL` at `word` targets `key` (a `MwirProgram::fns` key).
-    Call { word: usize, key: String },
-    /// The `ADRP`+`ADD` pair starting at `word_adrp` (the `ADD` is
-    /// always `word_adrp + 1`) targets rodata byte offset `byte_offset`
-    /// within the eventual rodata section.
+    Call {
+        word: usize,
+        key: String,
+    },
     Rodata {
         word_adrp: usize,
         byte_offset: usize,
     },
-    /// plans/codegen-pareto.md item B1 (decision 1730): the **single**
-    /// `ADR` at `word` targets rodata byte offset `byte_offset`. The
-    /// `OptId::AdrAddressing` form of `Reloc::Rodata` above — one word
-    /// instead of two, byte-granular instead of page-plus-offset, and no
-    /// paired `ADD` to keep in step.
-    ///
-    /// A separate variant rather than a `form:` field on `Rodata` because
-    /// the two carry genuinely different contracts: `Rodata`'s
-    /// `word_adrp + 1` must exist and must be the paired `ADD`, and
-    /// `RodataAdr`'s must not be assumed to be anything at all. One
-    /// variant with a discriminant field would make every reader re-derive
-    /// which contract it is holding; two variants let the type say it.
-    RodataAdr { word: usize, byte_offset: usize },
-    /// The `BL` at `word` targets `__wrela_abort`.
-    AbortFixed { word: usize },
-    /// The `BL` at `word` targets `__wrela_abort_val`.
-    AbortVal { word: usize },
-    /// The `BL` at `word` targets `__wrela_checkpoint_service` (plans/
-    /// M6.md decision 6/item D task 2): every loop back-edge's own
-    /// checkpoint sequence ends in one of these, called only when the
-    /// pending word (loaded and tested just before it, `FnCtx::checkpoint`)
-    /// is nonzero. At D the target stub is a bare `ret` in every image
-    /// flavor (vectors are unraisable until item E) — resolved the same
-    /// way `AbortFixed`/`AbortVal` are, one shared symbol per image.
-    CheckpointService { word: usize },
-    /// The four-word `load_imm` starting at `word` materializes the
-    /// absolute address of this async fn's own persistent turn area
-    /// (turn record + statically reserved frame slots, `layout.rs`'s
-    /// `rtdata` section) — the real turn-suspension mechanism (plans/
-    /// M6.md item D verification follow-up, 04-compiler.md §2's "state
-    /// machines in statically reserved frame slots" made literal): an
-    /// async fn's own locals must survive its own `ret`-to-scheduler
-    /// suspension, so they live in this per-turn area (addressed via a
-    /// dedicated base register, `X_FRAME`) instead of an SP-relative
-    /// stack frame that dies with the call. `key` is the fn's own
-    /// `program.fns` key; `layout.rs` resolves it to the owning actor's
-    /// turn area (a `Struct.method` key whose struct is a declared
-    /// actor) or the fn's own dedicated free-turn area (every other
-    /// async fn — `@test(runtime)` roots foremost).
-    TurnFrameAddr { word: usize, key: String },
-    /// plans/M10.md item 0c1 (decisions 557/567): the four-word `load_imm`
-    /// starting at `word` materializes the **`TurnId`** of the turn area
-    /// `key` owns — the 1-based index of its element in the one contiguous
-    /// `RT.turns` array, not its address. Identical shape and resolution to
-    /// `TurnFrameAddr` above (same `key`, same `RuntimePlacement`
-    /// owner-resolution rule, via `turn_id_for` rather than
-    /// `turn_area_for`), and deliberately a fixed 4-word `load_imm` like
-    /// every other relocated constant even though the value fits in one
-    /// `movz`: the two-pass sizing this module and `layout.rs` both run
-    /// depends on a reloc's width being independent of its value.
-    ///
-    /// plans/M10.md item 0c3 found the one exception to that rule: a
-    /// virtqueue **drain** reads back the `TurnId` a `SLOT_META_WAITER` /
-    /// `SLOT_META_REPLY_STAGE` carries and must address the turn it names,
-    /// so `TurnsBase`/`TurnStride` below exist for exactly that site.
-    /// Everywhere else codegen only *stores* or *compares* a `TurnId`.
-    TurnIdImm { word: usize, key: String },
-    /// plans/M10.md item 0c3: the four-word `load_imm` starting at `word`
-    /// materializes `RuntimePlacement::turns_base` — the base of the one
-    /// contiguous `RT.turns` array, and so of `rtdata` itself. One
-    /// whole-program constant, exactly like `GroupArenaBase` below (no
-    /// `key`: there is one array).
-    ///
-    /// Needed only because the drain's two slot-meta readers
-    /// (`emit_queue_drain`) live in `codegen.rs` while the stride is a
-    /// layout-pass fact — `layout.rs`'s own hand-assembled derefs get both
-    /// numbers as plain build-time parameters and need no reloc at all.
-    TurnsBase { word: usize },
-    /// plans/M10.md item 0c3: the four-word `load_imm` starting at `word`
-    /// materializes `RuntimeTables::turn_stride`, the uniform power-of-two
-    /// element size of the `RT.turns` array. Paired with `TurnsBase` above
-    /// to make `turn_addr(id) = turns_base + (id - 1) * turn_stride` out
-    /// of instructions — a `mul` by a relocated stride rather than an
-    /// `lsl` by a relocated shift, so both halves reuse
-    /// `patch_load_imm_words` and neither needs a new patch kind. This is
-    /// the same index→address shape `GroupCreate`'s own arena scan already
-    /// emits against `GROUP_SLOT_SIZE`.
-    TurnStride { word: usize },
-    /// The four-word `load_imm` starting at `word` materializes the
-    /// absolute base address of the whole-image group arena (plans/M6.md
-    /// item F, `layout::RuntimeTables::group_arena_capacity`-many
-    /// `GROUP_SLOT_SIZE`-byte slots) — one whole-program constant,
-    /// unlike `TurnFrameAddr` (no `key`: there is exactly one arena).
-    /// Emitted by `GroupCreate`'s own arena scan and by the group-child
-    /// poll routines `layout.rs` hand-assembles.
-    GroupArenaBase { word: usize },
-    /// plans/M7.md item G, decision 12: the four-word `load_imm` starting
-    /// at `word` materializes the vector bit index the image bound to
-    /// `@driver` `driver` — an `IrqCap[V]`'s one runtime word. Layout
-    /// resolves it from the sealed graph's `vector=` on that driver's
-    /// device.
-    IrqVector { word: usize, driver: String },
-    /// plans/M7.md item G: the four-word `load_imm` starting at `word`
-    /// materializes the absolute address of `@driver` `driver`'s sticky
-    /// wake-pending word (trailing word of its state).
-    WakePending { word: usize, driver: String },
-    /// plans/M10.md item D (decisions 613–614) / item F (decision 631): the
-    /// four-word `load_imm` starting at `word` materializes one absolute
-    /// address of mailbox root `actor`'s placed region — ring bookkeeping
-    /// (`ring` / `head` / `tail` / `count`), `state`, or `turn`. Full RT
-    /// `@placed` for mailbox `rtdata` is not ready; this is the same
-    /// `patch_load_imm_words` shape as `TurnFrameAddr`, not a pointer type.
+    RodataAdr {
+        word: usize,
+        byte_offset: usize,
+    },
+    AbortFixed {
+        word: usize,
+    },
+    AbortVal {
+        word: usize,
+    },
+    CheckpointService {
+        word: usize,
+    },
+    TurnFrameAddr {
+        word: usize,
+        key: String,
+    },
+    TurnIdImm {
+        word: usize,
+        key: String,
+    },
+    TurnsBase {
+        word: usize,
+    },
+    TurnStride {
+        word: usize,
+    },
+    GroupArenaBase {
+        word: usize,
+    },
+    IrqVector {
+        word: usize,
+        driver: String,
+    },
+    WakePending {
+        word: usize,
+        driver: String,
+    },
     MailboxAddr {
         word: usize,
         actor: String,
         field: MailboxField,
     },
-    /// plans/M10.md item E3 (decision 621): the four-word `load_imm`
-    /// starting at `word` materializes core `core`'s round-robin cursor
-    /// address (`RuntimePlacement::rr_cursors[core]`). Same shape as
-    /// `MailboxAddr` — full RT `@placed` for the scheduler stripe is not
-    /// ready, and the specialized `rt_run_one <core>` body needs the
-    /// address without inventing a pointer type.
-    RrCursor { word: usize, core: usize },
-    /// plans/M10.md item F2 (decision 634): the four-word `load_imm`
-    /// starting at `word` materializes one absolute address of cross-core
-    /// ring `ring_index` (into `RuntimeTables::rings` /
-    /// `RuntimePlacement::rings`) — `ring` / `head` / `tail` / `count`.
-    /// Same `patch_load_imm_words` shape as `MailboxAddr`; no pointer type.
+    RrCursor {
+        word: usize,
+        core: usize,
+    },
     RingAddr {
         word: usize,
         ring_index: usize,
         field: RingField,
     },
-    /// plans/M10.md item H (decision 682): the four-word `load_imm`
-    /// starting at `word` materializes `@driver` `driver`'s placed state
-    /// base (`RuntimePlacement::drivers`). Mirrors `WakePending`'s name
-    /// resolution; drivers without mailboxes are not mailbox roots, so
-    /// `MailboxAddr::State` cannot name them.
-    DriverState { word: usize, driver: String },
-    /// plans/M10.md item H (decision 683): four-word `load_imm` of
-    /// `device#device`'s placed register-window base (`DeviceRegs`).
-    DeviceRegsBase { word: usize, device: usize },
-    /// plans/M10.md item H (decision 683): four-word `load_imm` of pool
-    /// `pool`'s placed backing base (`PoolPlacement`).
-    PoolBase { word: usize, pool: String },
-    /// plans/M10.md item H (decision 683): four-word `load_imm` of
-    /// `pool_base + index * slot_bytes` — one `own[P] T` slot address.
+    DriverState {
+        word: usize,
+        driver: String,
+    },
+    DeviceRegsBase {
+        word: usize,
+        device: usize,
+    },
+    PoolBase {
+        word: usize,
+        pool: String,
+    },
     PoolSlot {
         word: usize,
         pool: String,
@@ -1046,9 +366,6 @@ pub enum Reloc {
     },
 }
 
-/// Which word of a mailbox root's placed region a `Reloc::MailboxAddr`
-/// materializes (plans/M10.md item D / decision 614; item F / decision
-/// 627 extends with `Head` / `State` / `Turn` for `rt_select_and_run`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MailboxField {
     Ring,
@@ -1059,8 +376,6 @@ pub enum MailboxField {
     Turn,
 }
 
-/// Which word of a cross-core ring's placed region a `Reloc::RingAddr`
-/// materializes (plans/M10.md item F2 / decision 634).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RingField {
     Ring,
@@ -1072,9 +387,6 @@ pub enum RingField {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CodegenFn {
     pub frame_size: usize,
-    /// One entry per emitted machine word: encoded `u32`, mnemonic-ish
-    /// text (never re-decoded), plus emit-time `CostRule` + dest/src regs
-    /// (plans/M18.md freeze 1303). Asm dump prints only word + text.
     pub code: Vec<EmittedWord>,
     pub relocs: Vec<Reloc>,
 }
@@ -1083,14 +395,8 @@ pub struct CodegenFn {
 pub struct CodegenProgram {
     pub fns: BTreeMap<String, CodegenFn>,
     pub rodata: Vec<Vec<u8>>,
-    /// plans/codegen-pareto.md item F: the convention this build chose
-    /// for each sync fn, carried alongside the code so `report.rs` can
-    /// publish it. Empty under `dev` and under item E's per-function
-    /// allocator, both of which have one convention for everybody.
     pub conventions: BTreeMap<String, regalloc::Convention>,
 }
-
-// --- rodata pool (BTreeMap dedup, CLAUDE.md) --------------------------------
 
 struct RodataPool {
     entries: Vec<Vec<u8>>,
@@ -1105,18 +411,12 @@ impl RodataPool {
         }
     }
 
-    /// Seeds the pool from `MwirProgram::rodata` (already deduped by
-    /// `lower.rs`), preserving every existing index 1:1 so
-    /// `Inst::ConstText::data` stays a valid index into this pool too.
     fn seed(&mut self, initial: &[Vec<u8>]) {
         for bytes in initial {
             self.intern(bytes.clone());
         }
     }
 
-    /// Content-addressed dedup: interning the same bytes twice (e.g.
-    /// once in codegen's own sizing pass, once in its real emission
-    /// pass) returns the same index both times.
     fn intern(&mut self, bytes: Vec<u8>) -> usize {
         if let Some(&i) = self.index.get(&bytes) {
             return i;
@@ -1132,22 +432,13 @@ impl RodataPool {
     }
 }
 
-// --- type helpers ------------------------------------------------------------
-
 fn strip_wrappers(ty: &Type) -> &Type {
     match ty {
-        // plans/M7.md item E4 / decision 19: do **not** strip `Own` here.
-        // `own[P] T` is one word (a pool-slot address); treating it as `T`
-        // for aggregate classification would pass the address-of-the-word
-        // instead of the word, and field offset math would look past an
-        // 8-byte slot as if it held `T` inline. Callers that need the
-        // payload type use `sema::bodies::unwrap_own` explicitly.
         Type::Static(inner) => strip_wrappers(inner),
         other => other,
     }
 }
 
-/// Payload type inside an `own[P] T`, or `ty` unchanged.
 fn unwrap_own_ref(ty: &Type) -> &Type {
     match ty {
         Type::Own(_, inner) => inner,
@@ -1157,30 +448,8 @@ fn unwrap_own_ref(ty: &Type) -> &Type {
 
 pub(crate) fn is_aggregate(ty: &Type) -> bool {
     match strip_wrappers(ty) {
-        // plans/M7.md item E4 / decision 19: `own[P] T` is one opaque word
-        // (a guest pool-slot address), passed by value like a capability.
         Type::Own(..) => false,
-        // Unbounded `Bytes` is a 16-byte (base, len) slot passed by
-        // pointer like every other non-scalar — one ABI rule.
         Type::Bytes(None) => true,
-        // plans/M6.md item D (verification fix, decision 11b's own boot
-        // exercised this for the first time): the M6 builtin-pseudo-type
-        // vehicle (`mwir::size_of`'s own doc comment has the full list) is
-        // always one opaque 8-byte scalar slot, never a real aggregate —
-        // `Actor[T]` in particular is passed by *value* in a register
-        // (the handle itself, a build-time-constant index) everywhere a
-        // scalar param/return already is, never by pointer. Before this
-        // fix, `Type::Named(..)`'s own blanket aggregate classification
-        // silently mis-treated it as a by-pointer aggregate — invisible
-        // until item D's first real boot of an `Actor[T]`-typed
-        // `@test(runtime)` parameter, which faulted dereferencing the
-        // handle's own small integer value as if it were an address.
-        // plans/M7.md item H1, decision 11: a capability and a bring-up
-        // state are each one opaque word (a guest base address), so they
-        // are passed by *value* in a register everywhere a scalar is —
-        // `mwir::size_of`'s own arm is the other half of this fact, and
-        // the two must agree or `init` would receive an address it then
-        // dereferenced as a pointer (M6-D's own `Actor[T]` incident).
         Type::Named(name, _)
             if matches!(
                 name.as_str(),
@@ -1190,23 +459,14 @@ pub(crate) fn is_aggregate(ty: &Type) -> bool {
                     | "Duration"
                     | "Admission"
                     | "Peer"
-                    // plans/M7.md item G, decision 17: one word, passed by
-                    // value like every other builtin pseudo-type.
                     | "InterruptCell"
-                    // plans/M10.md item D / decision 616 (completing 611):
-                    // by-value at the ABI boundary — not a by-pointer
-                    // `struct` / `Option` niche packing.
                     | "TurnId"
                     | "CoreId"
-                    // plans/M10.md item E2 / decision 669: same list.
                     | "GroupId"
             ) || crate::sema::classes::name_holds_authority(name) =>
         {
             false
         }
-        // plans/M10.md item E2 / decision 669: niche-packed `Option[GroupId]`
-        // is one bare word passed by value — not the general by-pointer
-        // `Option` aggregate (decision 611).
         Type::Option(inner)
             if matches!(
                 strip_wrappers(inner),
@@ -1218,19 +478,12 @@ pub(crate) fn is_aggregate(ty: &Type) -> bool {
         Type::Named(..) | Type::Tuple(_) | Type::Array(..) | Type::Option(_) | Type::Result(..) => {
             true
         }
-        // plans/M9.md item C1: length word + N byte slots — by-pointer
-        // aggregate like every other multi-slot value.
         Type::String(_) => true,
-        // Exact `Bytes[N]` stays the slot-per-byte aggregate (decision 596
-        // flags this as the anomaly vs packed unbounded handles).
         Type::Bytes(Some(_)) => true,
         _ => false,
     }
 }
 
-/// plans/M10.md item E2 / decision 669: `Option[GroupId]` is niche-packed
-/// into one word (`None` = 0). Detected here so MakeEnum / EnumTag /
-/// EnumPayload emit the niche form rather than tag+payload.
 fn is_option_group_id(ty: &Type) -> bool {
     match strip_wrappers(ty) {
         Type::Option(inner) => {
@@ -1240,10 +493,6 @@ fn is_option_group_id(ty: &Type) -> bool {
     }
 }
 
-/// `(bit width, signed)` for the ten integer scalar types — a small,
-/// deliberate duplicate of `eval::value::int_shape` (private to that
-/// module), the same "recompute the dumb fact, don't thread state"
-/// pattern `mwir.rs`'s own module doc already uses for `eval_array_len`.
 fn int_shape(ty: &Type) -> Option<(u32, bool)> {
     match strip_wrappers(ty) {
         Type::U8 => Some((8, false)),
@@ -1258,10 +507,6 @@ fn int_shape(ty: &Type) -> Option<(u32, bool)> {
     }
 }
 
-/// `[min,max]` as signed 64-bit host constants — exact for every width
-/// `<= 64` except `U64`/`Usize`'s own upper bound (`u64::MAX` does not
-/// fit an `i64`); callers needing that width use the flag-based path
-/// instead and never call this for it.
 fn int_bounds_i64(ty: &Type) -> Option<(i64, i64)> {
     match strip_wrappers(ty) {
         Type::U8 => Some((0, u8::MAX as i64)),
@@ -1276,10 +521,6 @@ fn int_bounds_i64(ty: &Type) -> Option<(i64, i64)> {
     }
 }
 
-/// `[min,max]` for a declared integer width/signedness, as
-/// [`int_bounds_i64`] would give it for the type that has that shape.
-/// The one caller ([`FnCtx::check_int_range_or_abort`]) only reaches this
-/// for `bits < 64`, where every bound fits an `i64` exactly.
 fn int_bounds_for(bits: u32, signed: bool) -> (i64, i64) {
     debug_assert!(bits < 64, "int_bounds_for is exact only below 64 bits");
     if signed {
@@ -1293,114 +534,26 @@ fn is_float(ty: &Type) -> bool {
     matches!(strip_wrappers(ty), Type::F32 | Type::F64)
 }
 
-// --- frame layout ------------------------------------------------------------
-
 struct Frame {
     temp_offset: Vec<usize>,
     temp_size: Vec<usize>,
     self_ptr_off: Option<usize>,
-    /// Frame offset of the saved incoming pointer for each `Mut`
-    /// non-receiver parameter, in declaration order (plans/M9.md item
-    /// CC). Empty when the fn has no `mut` params. Parallel to the
-    /// subset of `MwirFn::params` whose mode is `Mut`.
     mut_param_ptr_offs: Vec<(Temp, usize)>,
     ret_ptr_off: Option<usize>,
-    /// plans/M7.md item Z1 (decision 9b): this async fn's own **reply
-    /// staging slot** — where a callee writes the aggregate reply of an
-    /// actor `await` this fn performs. `None` for a sync fn and for any
-    /// async fn none of whose own `await` sites has an aggregate declared
-    /// reply, which is what keeps every M6 frame byte-for-byte identical
-    /// (decision 9c).
-    ///
-    /// One slot per *fn*, not per await site, sized to the widest declared
-    /// reply over that fn's own `Await{ActorCall}` sites: a turn has at
-    /// most one outstanding await, so one slot can never be aliased by
-    /// two live replies. A sibling of `ret_ptr_off` in both senses — same
-    /// register (`x8`), same "who owns the destination memory" answer —
-    /// except that this one is the address a *callee* is handed, while
-    /// `ret_ptr_off` is where this fn spills the address its own caller
-    /// handed it.
     reply_stage_off: Option<usize>,
-    /// plans/M17.md item E / freeze 5: packed scratch for `entropy[N]()` —
-    /// contiguous `n` bytes the VMM fills, then expanded into the
-    /// slot-per-byte `Bytes[N]` destination. `None` when the fn never
-    /// emits `FlowInst::Entropy` / `Inst::Entropy`.
     entropy_scratch_off: Option<usize>,
-    /// Reserved packed size at `entropy_scratch_off` (max `n` over Entropy
-    /// ops in this fn).
     entropy_scratch_size: usize,
     lr_off: usize,
-    /// plans/codegen-pareto.md item F3 (decision 1772): whether this
-    /// function saves `x30` at all. It has to only if some `BL` in its
-    /// body **returns** — an abort `BL` is `noreturn` (03's abort
-    /// contract), and a tail call's `B` does not touch `x30`, so a leaf
-    /// in that sense reaches its own `ret` with the caller's return
-    /// address still in the register it arrived in. When this is false
-    /// `lr_off` is not a frame offset and is never consulted.
-    ///
-    /// This is F2 read from the callee's side: the save exists to
-    /// protect a value against a clobber, and where the compiler can see
-    /// that no clobber happens the save is not shortened, it is absent.
     lr_saved: bool,
     size: usize,
-    /// plans/codegen-pareto.md item F3 (decision 1772): this function
-    /// has **no frame at all**. Every temp is resident, nothing needs a
-    /// saved pointer, and no `BL` in the body ever returns — so nothing
-    /// has to survive anything and `x30` still holds the caller's return
-    /// address at the `ret`. `sub sp`, `str x30`, `ldr x30` and `add sp`
-    /// are not emitted; `size` is 0 and `lr_off` is never consulted.
-    ///
-    /// The three conditions are checked, not assumed: the first two are
-    /// `build_frame`'s own byte count reaching zero, and the third comes
-    /// from the probe's measured `has_returning_call`. An abort `BL` is
-    /// not a returning call (03's abort contract is `noreturn`), which is
-    /// what lets a leaf that can abort still be frameless.
     frameless: bool,
-    /// plans/codegen-pareto.md item E: virtual slot offset -> the
-    /// physical register that **resident** temp lives in. Empty in `dev`
-    /// and on the async path, which is exactly what makes the frame
-    /// byte-for-byte the naive one there.
     virt_to_reg: BTreeMap<usize, u8>,
 }
 
-/// The first byte offset [`build_frame`] hands out for a **resident**
-/// temp (plans/codegen-pareto.md item E).
-///
-/// A resident temp has no frame bytes at all, but `Frame::off` still has
-/// to answer for it, because ~220 emission sites in this file ask for a
-/// temp's offset and then hand it to `load_slot`/`store_slot`. Rather
-/// than rewrite every one of them — the exact "layers for their own
-/// sake" the doctrine refuses — a resident temp gets a **virtual**
-/// offset far above any legal frame, and the three slot helpers
-/// (`load_slot`, `store_slot`, `addr_of_slot`) translate it. Two
-/// consequences make this fail closed rather than merely convenient:
-///
-/// - Any virtual offset that reaches a slot helper *without* a register
-///   behind it — an interior word of a resident temp, say — is not a
-///   legal frame offset and never can be, so it is caught and reported
-///   as a producer bug instead of silently truncating into an `imm12`.
-/// - `addr_of_slot` on a resident temp is refused outright. It cannot
-///   happen (the probe marks any address-taken temp `Touch::Escape`, and
-///   an escaped temp is never resident), which is exactly why reaching
-///   it means the probe and the emitter have diverged.
 const VIRT_SLOT_BASE: usize = 1 << 20;
 
-/// The alignment this ABI keeps `sp` at: `Frame::size` is rounded up to
-/// 16 (AAPCS64's own requirement, kept even though nothing here calls out
-/// to real AAPCS64 code — see the module doc's frame-layout block), and
-/// every prologue/epilogue adjustment is by a whole frame size.
-///
-/// Exported because the proxy-cycle model's SOG §4.5 alignment term
-/// (plans/M20.md item I) needs the one fact it can know about a Stack
-/// access's *absolute* address: `sp` is unknown, but it is congruent to 0
-/// modulo this. Reading it from here rather than restating 16 in
-/// `cost/score.rs` keeps the frame rule in one place.
 pub const FRAME_SP_ALIGN_BYTES: u64 = 16;
 
-/// Every temp slot is a multiple of this, and every slot offset is too
-/// (mwir's "no packing, always an 8-byte-slot-multiple" rule — the module
-/// doc's frame-layout block). The §4.5 alignment term quotes this as the
-/// reason no frame access can straddle a 16 B or 64 B boundary.
 pub const FRAME_SLOT_BYTES: u64 = 8;
 
 fn round_up_16(n: usize) -> usize {
@@ -1408,21 +561,6 @@ fn round_up_16(n: usize) -> usize {
     (n + a - 1) & !(a - 1)
 }
 
-/// `reply_stage_size` is 0 for every sync fn and for any async fn with no
-/// aggregate-reply `await` site (`build_frame_flow` derives the real
-/// number); a nonzero value reserves `Frame::reply_stage_off`.
-///
-/// `slot_bias` is the same number `FnCtx::slot_bias` will carry — 0 for a
-/// sync fn (slots start at `sp`) and `TURN_RECORD_SIZE` for an async one
-/// (slots start past the turn record). It is a *parameter* rather than
-/// something this fn assumes, because the imm12 ceiling below is a bound
-/// on what `addr_of_slot` finally encodes, and that is `off + slot_bias`,
-/// not `off`.
-/// `assign` is item E's residency decision. Every temp it names gets a
-/// **virtual** offset (see [`VIRT_SLOT_BASE`]) and contributes zero
-/// bytes to the frame — which is where the frame-size win comes from.
-/// `Assignment::none(..)` reproduces the naive spill-everything frame
-/// byte for byte, and is what `dev` and the async path pass.
 fn build_frame(
     f: &MwirFn,
     layout: &LayoutCtx,
@@ -1430,9 +568,6 @@ fn build_frame(
     entropy_scratch_size: usize,
     slot_bias: usize,
     assign: &regalloc::Assignment,
-    // Item F3: `false` only when the `Frameless` opt is on **and** the
-    // probe measured no returning call in this function. `true`
-    // reproduces every pre-item-F frame byte for byte.
     save_lr: bool,
 ) -> Result<Frame, CodegenError> {
     let mut offset = 0usize;
@@ -1484,8 +619,6 @@ fn build_frame(
     } else {
         None
     };
-    // Packed entropy scratch (plans/M17.md freeze 5): round the end up to
-    // an 8-byte boundary so the following lr slot stays slot-aligned.
     let (entropy_scratch_off, entropy_scratch_size) = if entropy_scratch_size > 0 {
         let o = offset;
         offset += (entropy_scratch_size + 7) & !7;
@@ -1493,33 +626,6 @@ fn build_frame(
     } else {
         (None, 0)
     };
-    // Item F3, in two steps, because they are two different savings and
-    // the second is much rarer than the first.
-    //
-    // 1. **The link register.** A function no `BL` ever returns into does
-    //    not save `x30`: the slot goes, and with it a `str` in the
-    //    prologue and an `ldr` in the epilogue. This is independent of
-    //    residency, so every leaf gets it — including the ones whose
-    //    temps are still spilled.
-    // 2. **The frame itself.** If dropping the `x30` slot leaves *no*
-    //    bytes at all, there is nothing to point `sp` at and the
-    //    `sub sp`/`add sp` pair goes too.
-    // **Item F3, narrowed by round 2 (decision 1908).** Eliding the `x30`
-    // save is two fewer instructions, and the slot sits *after* every temp,
-    // so dropping it never moves a temp's offset. But when it changes
-    // `round_up_16`, the whole frame shrinks 16 bytes and every slot's
-    // *absolute* address moves with `sp` — and item K's density term
-    // charges for exactly that. The ∀ gate caught it on item M's compute
-    // workload: `cost-product-compositor` rose 7526 -> 7544 at every
-    // `store_to_load_forwarding=1` corner, which vetoed `Frameless` and
-    // with it the whole release list.
-    //
-    // So the elision is taken **only when the frame size does not move**.
-    // That keeps the instruction win, which is the part F3 was actually
-    // about, and gives up the frame-size win, which is the part that was
-    // buying an address shuffle the model prices. A leaf with no frame at
-    // all is unaffected: `offset == 0` on both sides of the `round_up_16`,
-    // so the whole `sub sp`/`add sp` pair still goes.
     let elide_changes_size = round_up_16(offset) != round_up_16(offset + 8);
     let lr_saved = (save_lr || slot_bias != 0) || (elide_changes_size && offset != 0);
     let lr_off = offset;
@@ -1528,16 +634,6 @@ fn build_frame(
     }
     let frameless = offset == 0;
     let size = round_up_16(offset);
-    // The imm12 ceiling is on the immediate that actually gets encoded,
-    // and for an async fn every slot reference is biased past the turn
-    // record: `addr_of_slot` hands `off + slot_bias` straight to
-    // `enc_add_imm`, whose field holds 0..4095. Bounding `size` alone let
-    // an async frame of, say, 4064 bytes through while its highest
-    // aggregate slot encoded as 4064+56 — past the field, where the
-    // surplus bits land in `shift`/`S`/`op` and quietly assemble a
-    // different instruction (`encode.rs`'s module doc). `size` rather
-    // than `size - 1` keeps the bound obviously safe rather than exactly
-    // tight: no offset this frame hands out can reach `size`.
     if size + slot_bias > 4095 {
         return Err(CodegenError::unimplemented(&format!(
             "frames larger than {} bytes (the ADD/SUB-immediate imm12 range, less this fn's \
@@ -1571,8 +667,6 @@ impl Frame {
         self.temp_size[t.0]
     }
 
-    /// The register behind a virtual slot offset, or `None` for a real
-    /// frame offset. See [`VIRT_SLOT_BASE`].
     fn reg_at(&self, off: usize) -> Option<u8> {
         if off < VIRT_SLOT_BASE {
             None
@@ -1581,21 +675,6 @@ impl Frame {
         }
     }
 
-    /// One bit per register that is some resident temp's home and that
-    /// this function's own emission provably never names
-    /// (plans/codegen-pareto-2.md item I, decision 1900). Empty in `dev`
-    /// and on the async path, where nothing is resident.
-    ///
-    /// **`x0..=x8` are deliberately excluded.** Those are the only
-    /// registers item I's argument/return hinting (decision 1902) ever
-    /// hands out, and a hinted home is one the emitter *does* name, on
-    /// purpose, at the very accesses being coalesced — so a per-function
-    /// "nothing may write this" rule cannot express the invariant there
-    /// and `hint_admissible`'s per-word check is the proof instead.
-    /// Everything above `x8` reaches a temp only through `free_pool`,
-    /// which subtracted every register the emission was measured naming,
-    /// so a write to one of those can only be a borrowed operand being
-    /// clobbered — which is exactly what this mask exists to catch.
     fn home_mask(&self) -> u32 {
         let mut m = 0u32;
         for &r in self.virt_to_reg.values() {
@@ -1606,17 +685,10 @@ impl Frame {
         m
     }
 
-    /// True for an offset that is virtual but has no register behind it
-    /// — an interior word of a resident temp, which cannot happen and is
-    /// reported as a producer bug if it does.
     fn is_stray_virtual(&self, off: usize) -> bool {
         off >= VIRT_SLOT_BASE && !self.virt_to_reg.contains_key(&off)
     }
 
-    /// Which temp owns byte offset `off` in the **baseline** (all-spilled)
-    /// frame, if any. Used only by the probe pass, where every temp has a
-    /// real slot: a hit at exactly `temp_offset[t]` is a base access, a
-    /// hit inside the slot is an interior one.
     fn temp_at_offset(&self, off: usize) -> Option<(usize, bool)> {
         for (t, (&base, &size)) in self
             .temp_offset
@@ -1635,10 +707,6 @@ impl Frame {
     }
 }
 
-// --- field/payload offset helpers -------------------------------------------
-
-/// The byte offset and size of logical field/element `index` within an
-/// Thin wrapper: offset authority lives in `mwir::field_offset`.
 fn field_offset_size(
     base_ty: &Type,
     index: usize,
@@ -1653,7 +721,6 @@ fn field_offset_size(
     })
 }
 
-/// Thin wrapper: offset authority lives in `mwir::enum_payload_offset`.
 fn enum_payload_offset(
     base_ty: &Type,
     index: usize,
@@ -1668,85 +735,23 @@ fn enum_payload_offset(
     })
 }
 
-// --- per-fn emission context -------------------------------------------------
-
 struct FnCtx<'a> {
     frame: &'a Frame,
     layout: &'a LayoutCtx,
     rodata: &'a mut RodataPool,
-    /// `word_offsets[i]` is the starting word index of `body[i]`'s own
-    /// emitted code; `word_offsets[body.len()]` is the shared
-    /// epilogue's own start (the sentinel every `Return` branches to).
     word_offsets: &'a [usize],
     words: Vec<EmittedWord>,
     relocs: Vec<Reloc>,
-    /// The base register every frame-slot access goes through: `X_SP`
-    /// for a sync fn's ordinary stack frame; `X_FRAME` (x28, holding the
-    /// fn's own persistent turn area address) for an async state
-    /// machine, whose locals must survive a suspension's `ret` to the
-    /// scheduler (`Reloc::TurnFrameAddr`'s own doc comment).
     slot_base: u8,
-    /// A fixed byte bias added to every slot offset: `0` for sync fns;
-    /// `TURN_RECORD_SIZE` for async fns (the frame slots sit immediately
-    /// past the turn record within the turn area).
     slot_bias: usize,
-    /// Sequence for Cold-unique MemRefs when a Load/Store address is not
-    /// a proven `[base, #imm]` (cost hard-cut item B).
     cold_seq: u64,
-    /// plans/codegen-pareto.md item E: every frame-slot access this
-    /// context performed, as `(byte offset, how)`. Read only by the
-    /// probe pass (`probe_fn_facts`), which turns it into the live
-    /// ranges and the escape set `regalloc::allocate` consumes. Always
-    /// recorded — a `Vec` push per slot access — rather than gated on a
-    /// flag, so the probe can never observe a different emitter than the
-    /// one that runs.
     slot_accesses: Vec<(usize, regalloc::Touch, usize, u8)>,
-    /// Set when a virtual slot offset reached a helper that cannot
-    /// serve it (see [`VIRT_SLOT_BASE`]). `emit_fn` turns it into a
-    /// producer-bug error rather than emitting a wrong instruction.
     resident_misuse: Option<String>,
-    /// plans/codegen-pareto-2.md item I (decision 1900): one bit per
-    /// register that is some resident temp's home, i.e. the registers
-    /// whose contents belong to the *allocator* rather than to whichever
-    /// emission site happens to be running.
-    ///
-    /// It exists to make item I's one new hazard fail closed. Coalescing
-    /// hands an emission site a home register in place of a scratch one
-    /// ([`use_slot`](FnCtx::use_slot)); a site that then *writes* that
-    /// register would destroy a live value, silently, in a way no unit
-    /// test of the allocator could see. So every `push` checks it, and
-    /// the only writes allowed are the temp's own definition.
     home_mask: u32,
-    /// The one home register the current site is authorized to define,
-    /// set by [`def_reg`](FnCtx::def_reg) and cleared by the matching
-    /// `store_slot`. Everything else that writes a home is a producer
-    /// bug.
     home_def_ok: Option<u8>,
-    /// **B4 (plans/codegen-pareto-2.md item L, decision 1973).** Set by
-    /// the caller for exactly the body index whose unconditional branch
-    /// the elision plan deleted; the `Inst::Jump` and `Inst::Return` arms
-    /// of `emit_one` read it and emit no branch word. It is a *plan*, not
-    /// a peephole (decision 1734): both the sizing pass and the emitting
-    /// pass are handed the same vector, so `word_offsets` and the words
-    /// agree by construction.
     elide_branch: bool,
 }
 
-/// Integrity item D: structural emit-tag shape checked at `FnCtx::push` /
-/// `push_mem` (and `push_flags`). Fail closed — never silently under-tag.
-///
-/// - `Call` ⇒ `dst == Some(0)` (x0 return / clobber)
-/// - a load with a known (non-unique) address MemRef ⇒ ≥1 src
-/// - a store with non-unique MemRef ⇒ that MemRef's base ∈ srcs
-/// - a store ⇒ `dst == None`: a store produces no register, and its data
-///   register is a **source**. Tagging the data register as `dst` both
-///   drops the store-data RAW edge (the store could issue before its data
-///   is produced) and invents a producer edge on that register.
-/// - Unique-cold MemRefs stay exempt (pessimistic address unknown)
-///
-/// The ordered forms (`LDAR` / `STLR`) take the same checks as their plain
-/// twins — `is_load` / `is_store` is the predicate, not the variant — so an
-/// under-tagged ordered access fails closed rather than being skipped.
 fn check_push_shape(rule: CostRule, dst: Option<u8>, srcs: &[u8], mem: Option<&MemRef>) {
     if rule == CostRule::Call {
         assert_eq!(
@@ -1785,25 +790,17 @@ fn memref_is_unique_cold(m: &MemRef) -> bool {
     m.class == MemClass::Cold && (m.key & (1u64 << 63)) != 0
 }
 
-/// Base register for Stack / cold_stable MemRefs; `None` for unique cold.
 fn memref_nonunique_base(m: &MemRef) -> Option<u8> {
     if memref_is_unique_cold(m) {
         None
     } else if m.class == MemClass::Stack {
         Some(MEM_SP_REG)
     } else {
-        // cold_stable: base in bits [48..56)
         Some(((m.key >> 48) & 0xFF) as u8)
     }
 }
 
 impl<'a> FnCtx<'a> {
-    // Best-effort dest/src regs at emit time; `dst=None` / empty `srcs` OK when unknown
-    // (scoreboard treats missing operands as no register deps). Never parse mnemonics.
-    // Any load/store without a proven address gets a unique Cold MemRef —
-    // the ordered forms included, so an `LDAR`/`STLR` is never invisible to
-    // the memory and D-TLB terms; Adrp stays untagged.
-    // Integrity item D: structural asserts on Call/load/store tag shape at push time.
     fn push(&mut self, word: u32, text: String, rule: CostRule, dst: Option<u8>, srcs: &[u8]) {
         let mem = if rule.is_load() || rule.is_store() {
             Some(self.alloc_unique_cold())
@@ -1813,10 +810,6 @@ impl<'a> FnCtx<'a> {
         self.push_mem(word, text, rule, dst, srcs, mem);
     }
 
-    // The three-register ALU shape (`<op> d, a, b`, dst `d`, srcs `a`/`b`),
-    // written out ~58 times before these existed. Same encoded word, same
-    // asm text, same `CostRule` — these are this file's own vocabulary for
-    // one instruction, not a layer over `push`.
     fn add_reg(&mut self, d: u8, a: u8, b: u8) {
         self.push(
             encode::enc_add_reg(d, a, b, true),
@@ -1857,9 +850,6 @@ impl<'a> FnCtx<'a> {
         );
     }
 
-    /// `cmp a, b` — the two-register compare that sets NZCV, written out
-    /// 21 times before this existed. The remaining `enc_cmp_reg` sites keep
-    /// their own `push_flags` call: they differ in `dst` or `FlagEffect`.
     fn cmp_reg(&mut self, a: u8, b: u8) {
         self.push_flags(
             encode::enc_cmp_reg(a, b, true),
@@ -1871,7 +861,6 @@ impl<'a> FnCtx<'a> {
         );
     }
 
-    /// Like `push`, plus emit-time NZCV effect (integrity item B).
     fn push_flags(
         &mut self,
         word: u32,
@@ -1881,7 +870,6 @@ impl<'a> FnCtx<'a> {
         srcs: &[u8],
         flags: FlagEffect,
     ) {
-        // Flag-setting Alu/Branch paths — not Load/Store/Call; still shape-check.
         check_push_shape(rule, dst, srcs, None);
         self.check_home_write(dst, &text);
         let mut ew = EmittedWord::new(word, text, rule, dst, srcs);
@@ -1889,14 +877,6 @@ impl<'a> FnCtx<'a> {
         self.words.push(ew);
     }
 
-    /// Item I (decision 1900): a write to a resident temp's home register
-    /// from anywhere but that temp's own definition means the emitter and
-    /// the allocator have diverged — either a coalesced operand
-    /// ([`use_slot`](Self::use_slot)) was clobbered by the site that
-    /// borrowed it, or the allocator handed out a register the emission
-    /// uses for something else. Both are producer bugs, and both destroy
-    /// a live value silently. Recorded here and turned into a build
-    /// failure by `emit_fn`, never emitted around.
     fn check_home_write(&mut self, dst: Option<u8>, text: &str) {
         let Some(d) = dst else { return };
         if self.home_mask & (1u32 << (d & 31)) == 0 || self.home_def_ok == Some(d) {
@@ -1917,8 +897,6 @@ impl<'a> FnCtx<'a> {
         srcs: &[u8],
         mem: Option<MemRef>,
     ) {
-        // Untagged load/store → unique cold (pessimistic); proven tags keep
-        // their MemRef. `is_load`/`is_store` so `LDAR`/`STLR` are covered.
         let mem = match mem {
             None if rule.is_load() || rule.is_store() => Some(self.alloc_unique_cold()),
             m => m,
@@ -1940,12 +918,6 @@ impl<'a> FnCtx<'a> {
         self.words.len()
     }
 
-    // --- loads/stores between a frame slot and a scratch register -----
-
-    /// plans/codegen-pareto.md item E: `dst = src`, the whole substitute
-    /// for a spill/reload pair once a temp is resident. Deleting the
-    /// `str`/`ldr` deletes the store's V-pipe data uop and both
-    /// accesses' AGU uops with them; what is left is one I-pipe move.
     fn mov_reg(&mut self, dst: u8, src: u8) {
         if dst == src {
             return;
@@ -1959,49 +931,18 @@ impl<'a> FnCtx<'a> {
         );
     }
 
-    /// A virtual slot offset reached a helper that cannot serve it: the
-    /// probe and the emitter disagree about how a temp is addressed.
-    /// Recorded rather than emitted-around (`emit_fn` fails the build).
     fn note_resident_misuse(&mut self, what: &str, off: usize) {
         self.note_alloc_divergence(&format!(
             "register-allocated temp reached through {what} at virtual slot offset {off}"
         ));
     }
 
-    /// The one recorder for "the allocation and the emission disagree".
-    /// First message wins; `emit_fn` turns it into a build failure.
     fn note_alloc_divergence(&mut self, msg: &str) {
         if self.resident_misuse.is_none() {
             self.resident_misuse = Some(msg.to_string());
         }
     }
 
-    /// **Coalesced read** (plans/codegen-pareto-2.md item I, decision
-    /// 1900): the register that holds the value of the temp whose slot is
-    /// `off`, and **no instruction at all** when that temp is resident.
-    ///
-    /// [`load_slot`](Self::load_slot) answers the question "put this
-    /// temp's value in *that* register", which for a resident temp is a
-    /// `mov` — a copy whose destination is a scratch register live for
-    /// exactly one instruction and whose source is the temp's home. Those
-    /// two never interfere, so they are one register: this method answers
-    /// the *other* question — "which register may I read this temp from" —
-    /// and the copy stops existing rather than being relocated. That is
-    /// the whole of item I's temp-to-temp coalescing; there is no separate
-    /// pass, because the emitter is the only thing that knows which
-    /// operand field it is about to write the register number into.
-    ///
-    /// **The returned register is read-only.** A site that clobbers its
-    /// operand must keep using `load_slot`. Writing it is caught rather
-    /// than trusted: `push` refuses any `dst` that is a resident temp's
-    /// home outside that temp's own definition window (see
-    /// [`home_def_ok`](FnCtx::home_def_ok)), and `emit_fn` turns the
-    /// refusal into a build failure.
-    ///
-    /// Under `dev`, on the async path and inside the probe emission
-    /// nothing is resident, so this is `load_slot` word for word — which
-    /// is what keeps the probe measuring the program that is finally
-    /// built.
     fn use_slot(&mut self, scratch: u8, off: usize) -> u8 {
         if let Some(home) = self.frame.reg_at(off) {
             self.slot_accesses
@@ -2012,23 +953,6 @@ impl<'a> FnCtx<'a> {
         scratch
     }
 
-    /// **Coalesced write** (item I, decision 1900): the register a
-    /// definition of the temp whose slot is `off` should be computed
-    /// *into*, so that the defining instruction lands the value in its
-    /// home and the store-side `mov` never exists either.
-    ///
-    /// Pair it with the ordinary `store_slot(d, off)`: for a resident
-    /// temp that is `mov home, home`, which [`mov_reg`](Self::mov_reg)
-    /// already elides, and for a spilled one it is the `str` it always
-    /// was. So the touch bookkeeping, the probe's view and the spilled
-    /// path are all unchanged, and only the register number moves.
-    ///
-    /// The caller must not read any other temp between this call and the
-    /// store: the returned register is the home, and while a home can
-    /// never collide with a *live* temp's home (two temps touched at one
-    /// program point have intersecting intervals, so the scan gives them
-    /// different registers) it is a definition, and a definition is only
-    /// safe once its own sources have been read.
     fn def_reg(&mut self, scratch: u8, off: usize) -> u8 {
         match self.frame.reg_at(off) {
             Some(home) => {
@@ -2067,10 +991,6 @@ impl<'a> FnCtx<'a> {
         self.slot_accesses
             .push((off, regalloc::Touch::Write, self.words.len(), reg));
         if let Some(home) = self.frame.reg_at(off) {
-            // The one authorized write to a home register that is not a
-            // `def_reg` definition: the temp's own store. `mov_reg`
-            // elides it outright when the value was already computed
-            // into the home (item I's write-side coalescing).
             self.home_def_ok = Some(home);
             self.mov_reg(home, reg);
             self.home_def_ok = None;
@@ -2094,10 +1014,6 @@ impl<'a> FnCtx<'a> {
         );
     }
 
-    /// Loads an 8-byte word from `[base_reg, #byte_off]` (`base_reg`
-    /// holds a runtime-computed address, e.g. an index-scaled array
-    /// element pointer — unlike `load_slot`, `base_reg` need not be
-    /// `sp`).
     fn load_ptr(&mut self, reg: u8, base_reg: u8, byte_off: usize) {
         let byte_off = byte_off as u16;
         let mem = MemRef::for_base_imm(base_reg, byte_off as u64);
@@ -2132,12 +1048,6 @@ impl<'a> FnCtx<'a> {
         );
     }
 
-    /// Unsigned byte load `ldrb Wt, [Xn, #imm]`. Shared by
-    /// `Inst::BytesIndexGet` and `emit_entropy`'s packed-scratch expand
-    /// (plans/M17.md item E / freeze 5) so both reuse one LDRB encoder
-    /// call site — an FnCtx method, not a free fn, so the A64
-    /// closed-emitter scan (plans/M10.md item F0) does not grow a new
-    /// top-level emitter row.
     fn load_byte_imm(&mut self, rt: u8, rn: u8, byte_off: u16) {
         let mem = MemRef::for_base_imm(rn, byte_off as u64);
         self.push_mem(
@@ -2150,16 +1060,10 @@ impl<'a> FnCtx<'a> {
         );
     }
 
-    /// `reg = <slot base> + #off` — the address of a frame slot, for a
-    /// call's own aggregate-by-pointer argument/result, or an array's own
-    /// base address before index-scaling (`slot_base`/`slot_bias`: sp for
-    /// sync fns, the persistent turn area for async fns).
     fn addr_of_slot(&mut self, reg: u8, off: usize) {
         self.slot_accesses
             .push((off, regalloc::Touch::Escape, self.words.len(), reg));
         if off >= VIRT_SLOT_BASE {
-            // Cannot happen: the probe marks every address-taken temp
-            // `Touch::Escape`, and an escaped temp is never resident.
             self.note_resident_misuse("addr_of_slot", off);
             return;
         }
@@ -2174,9 +1078,6 @@ impl<'a> FnCtx<'a> {
         );
     }
 
-    /// Always `MOVZ` + three `MOVK`s (four words). Reloc sites that
-    /// layout patches via `patch_load_imm_words` must use this — NarrowImm
-    /// must not shrink them (plans/M19.md decision 1485 / item F).
     fn load_imm_naive(&mut self, reg: u8, value: i64) {
         let bits = value as u64;
         let halves: [(u16, u8); 4] = [
@@ -2204,17 +1105,8 @@ impl<'a> FnCtx<'a> {
         }
     }
 
-    /// Item C5's one-word materializations. Returns `false` when neither
-    /// applies and the caller must fall through to the `MOVZ`/`MOVK`
-    /// chain. Never emits more than one word, so a `true` here is always
-    /// at least as short as the chain — `MOVZ #0` already covers the one
-    /// value (`0`) the chain also does in one word, and it is tried first
-    /// so this never displaces it.
     fn try_load_imm_one_word(&mut self, reg: u8, value: i64) -> bool {
         let bits = value as u64;
-        // `MOVZ` already handles anything that is one non-zero halfword;
-        // leave those to the chain so the emitted form does not change for
-        // values NarrowImm alone already did in one word.
         let halves = [
             (bits & 0xFFFF) as u16,
             ((bits >> 16) & 0xFFFF) as u16,
@@ -2224,8 +1116,6 @@ impl<'a> FnCtx<'a> {
         if halves.iter().filter(|h| **h != 0).count() <= 1 {
             return false;
         }
-        // `MOVN Xd, #h, lsl #s` = `NOT(h << s)`: one word iff the inverse
-        // has exactly one non-zero halfword.
         let inv = !bits;
         let inv_halves = [
             (inv & 0xFFFF) as u16,
@@ -2263,37 +1153,11 @@ impl<'a> FnCtx<'a> {
         false
     }
 
-    /// Materializes a 64-bit constant into `reg`.
-    ///
-    /// NarrowImm off (`dev`): always `MOVZ` + three `MOVK`s (four words).
-    /// NarrowImm on: `MOVZ` at the first non-zero halfword's shift, then
-    /// `MOVK` only for remaining non-zero halfwords; `0` → one `movz #0`
-    /// (plans/M19.md item I / decision 1486). Reloc placeholders use
-    /// [`Self::load_imm_naive`] instead (decision 1485).
     fn load_imm(&mut self, reg: u8, value: i64) {
         if !narrow_imm() {
             self.load_imm_naive(reg, value);
             return;
         }
-        // plans/codegen-pareto.md item C5 (decision 1744) — the NarrowImm
-        // sequel. NarrowImm skips *zero* halfwords, which is why a small
-        // **negative** still costs four words: `-1` is `0xFFFF` in all four
-        // halves and none of them is zero. Two one-word forms cover most of
-        // what is left:
-        //
-        //   * `MOVN Xd, #h, lsl #s` writes `NOT(h << s)`, so any value
-        //     whose *inverse* is a single non-zero halfword is one word —
-        //     every small negative, which is what the signed narrow bounds
-        //     check and the `MIN`/`-1` divide guard materialize.
-        //   * `MOV Xd, #imm` (the `ORR Xd, XZR, #imm` bitmask alias) covers
-        //     every value that is a rotated repeating run of ones — the
-        //     `0xFFFF_FFFF_0000_0000`-shaped masks, and 5334 values in all.
-        //
-        // Both are checked *before* the `MOVZ`/`MOVK` chain and only taken
-        // when they are strictly shorter, so this can never lengthen a
-        // materialization. `MOVN` is the same `[latency.mov_wide]` row as
-        // `MOVZ`/`MOVK` (SOG §3.5 names all three); the bitmask `ORR` is
-        // "logical, basic", the same 1-cycle/thru-3/port-I `alu` row.
         if wide_imm_forms() && self.try_load_imm_one_word(reg, value) {
             return;
         }
@@ -2304,8 +1168,6 @@ impl<'a> FnCtx<'a> {
             (((bits >> 32) & 0xFFFF) as u16, 32),
             (((bits >> 48) & 0xFFFF) as u16, 48),
         ];
-        // Narrow path: value 0 → single movz #0; otherwise movz at the
-        // first non-zero half, movk for each later non-zero half.
         if bits == 0 {
             self.push(
                 encode::enc_movz(reg, 0, 0, true),
@@ -2352,30 +1214,15 @@ impl<'a> FnCtx<'a> {
         }
     }
 
-    /// Copies `size` bytes (always a multiple of 8) from `[sp,
-    /// #src_off]` to `[sp, #dst_off]`, fully unrolled through scratch
-    /// register `X_A` (`MakeAggregate`/`Project`/`SetField`/`MakeEnum`'s
-    /// shared "both sides are known compile-time frame offsets" copy
-    /// shape).
-    ///
-    /// Item I: each word goes `use_slot` → `store_slot`, so a copy
-    /// between two resident scalars is one `mov` (or, when the allocator
-    /// gave both ends the same register, nothing at all) instead of two.
     fn copy_slot_to_slot(&mut self, dst_off: usize, src_off: usize, size: usize) {
         let mut w = 0;
         while w < size {
             match self.frame.reg_at(dst_off + w) {
-                // The destination is resident: read the source *straight
-                // into its home*, so a spilled source is one `ldr` and a
-                // resident one is one `mov` — and nothing at all when the
-                // allocator gave both ends the same register.
                 Some(_) => {
                     let d = self.def_reg(X_A, dst_off + w);
                     self.load_slot(d, src_off + w);
                     self.store_slot(d, dst_off + w);
                 }
-                // The destination is spilled: store straight out of
-                // wherever the source already lives.
                 None => {
                     let s = self.use_slot(X_A, src_off + w);
                     self.store_slot(s, dst_off + w);
@@ -2385,20 +1232,10 @@ impl<'a> FnCtx<'a> {
         }
     }
 
-    /// Re-canonicalizes `reg` (already holding a 64-bit value) to
-    /// exactly `bits` width, module doc's own "canonical-slot
-    /// invariant" section — a no-op at `bits == 64`.
     fn narrow_to_width(&mut self, reg: u8, bits: u32, signed: bool) {
         if bits >= 64 {
             return;
         }
-        // plans/codegen-pareto.md item C3 (decision 1743). `LSL #s` then
-        // `LSR #s` is `UBFM` twice where one `UBFM` says the same thing:
-        // the pair extracts the low `64-s = bits` bits and zero- (or, with
-        // `ASR`, sign-) extends them, which is the definition of
-        // `UBFX`/`SBFX` at lsb 0. Same SOG group ("bitfield move, basic",
-        // 1 cycle, thru 3, port I), one word instead of two, and one link
-        // of dependence chain instead of two.
         if bfx_narrow() {
             let w = bits as u8;
             let (enc, mnem) = if signed {
@@ -2442,8 +1279,6 @@ impl<'a> FnCtx<'a> {
         }
     }
 
-    // --- local control flow --------------------------------------------
-
     fn branch_target_delta(&self, target_mwir_idx: usize, this_word: usize) -> i32 {
         let target_word = self.word_offsets[target_mwir_idx];
         (target_word as i64 - this_word as i64) as i32 * 4
@@ -2473,10 +1308,6 @@ impl<'a> FnCtx<'a> {
         );
     }
 
-    // --- rodata + abort calls -------------------------------------------
-
-    /// `reg = &rodata_bytes` — symbolic `ADRP`+`ADD` (`Reloc::Rodata`), or
-    /// one `ADR` (`Reloc::RodataAdr`) under `OptId::AdrAddressing`.
     fn load_rodata_addr(&mut self, reg: u8, data_index: usize) {
         let byte_offset = self.rodata.byte_offset(data_index);
         let word_adrp = self.cur_word();
@@ -2518,8 +1349,6 @@ impl<'a> FnCtx<'a> {
         });
     }
 
-    /// `bl <key>` — declare x0 clobber (`dst=Some(0)`) and known arg regs as
-    /// srcs so the scoreboard waits on the call (integrity item B).
     fn bl_symbolic_call(&mut self, key: &str, arg_srcs: &[u8]) {
         let word = self.cur_word();
         self.push(
@@ -2535,21 +1364,15 @@ impl<'a> FnCtx<'a> {
         });
     }
 
-    /// Integrity Phase 2 Item M: fixed-width `movz/movk` of `id` into x0
-    /// then `bl <__wrela_block_hit>`. Fixed 5 words so two-pass sizing
-    /// stays identical under NarrowImm.
     fn emit_block_hit(&mut self, id: u32) {
         self.load_imm_naive(0, id as i64);
         self.bl_symbolic_call("__wrela_block_hit", &[0]);
     }
 
-    /// `__wrela_abort(x0=*Bytes)` — interns `message`, builds a stack
-    /// `(base, len)` slot, passes its address (noreturn; no SP restore).
     fn abort_fixed(&mut self, message: &str) {
         let bytes = message.as_bytes().to_vec();
         let len = bytes.len();
         let idx = self.rodata.intern(bytes);
-        // Noreturn path: carve a 16-byte Bytes slot below the live frame.
         self.push(
             encode::enc_sub_imm(31, 31, 16, true),
             "sub sp, sp, #16  ; abort Bytes slot".to_string(),
@@ -2593,18 +1416,6 @@ impl<'a> FnCtx<'a> {
         self.relocs.push(Reloc::AbortFixed { word });
     }
 
-    /// plans/M6.md decision 6: "a checkpoint is a short fixed sequence
-    /// (load pending word, test, branch to the scheduler's service path)".
-    /// Always exactly 7 words, regardless of anything about the call site
-    /// (module doc's own "deliberately not optimized" spirit, one level
-    /// up): `load_imm` (4) + `ldr` (1) + `cbz` (1, a fixed 2-instruction
-    /// skip over the `bl`) + `bl` (1). Scratch-only (`X_A`/`X_B`), safe to
-    /// splice in front of any instruction without disturbing a live value
-    /// — every checked op's own live operands sit in frame slots, never in
-    /// `X_A`/`X_B` across an instruction boundary. The address is core 0's
-    /// own pending word (`wrela_machine::pending::core_word_addr`) — M6 is
-    /// core-0-only (plans/M6.md's own scope line), so this is never
-    /// parameterized by a runtime core id.
     fn checkpoint(&mut self) {
         let addr = wrela_machine::pending::core_word_addr(0);
         self.load_imm(X_A, addr as i64);
@@ -2634,11 +1445,7 @@ impl<'a> FnCtx<'a> {
         self.relocs.push(Reloc::CheckpointService { word });
     }
 
-    /// `__wrela_abort_val(x0=*prefix, x1=value, x2=signed, x3=*suffix)`.
-    /// `value_reg` must not be clobbered before the stash (call sites use
-    /// `X_A`/`X_B`/... outside x0..x3).
     fn abort_val(&mut self, prefix: &str, value_reg: u8, signed: bool, suffix: &str) {
-        // Stash value before carving stack / building Bytes slots.
         self.push(
             encode::enc_mov_reg(X_B, value_reg, true),
             format!("mov {}, {}", reg_name(X_B), reg_name(value_reg)),
@@ -2767,25 +1574,10 @@ fn compare_cond(op: BinOp) -> Result<Cond, CodegenError> {
     })
 }
 
-/// The condition that fires exactly when `c` does not — a small,
-/// deliberate duplicate of `encode::Cond`'s own private `invert` (this
-/// module needs it to turn a "this is the failure condition" fact into
-/// "skip the abort call when this passes" branch, `encode.rs` never
-/// exposes its own copy publicly).
-/// A placeholder forward branch emitted now, patched once the real
-/// target position (a few words later, in the *same* instruction's own
-/// emission — never a cross-instruction mwir jump, which
-/// `b_unconditional`/`cbz` already resolve directly from
-/// `word_offsets`) is known. Every checked-arithmetic/bounds abort call
-/// is reached by *falling through*; the common case (no overflow) skips
-/// over it with one of these.
 #[derive(Debug, Clone, Copy)]
 enum SkipKind {
     Cond(Cond),
     Cbz(u8),
-    /// The async entry's own fresh-vs-resume fork (the one consumer):
-    /// skip forward over the fresh prologue when the suspended
-    /// discriminant is nonzero.
     Cbnz(u8),
 }
 
@@ -2802,7 +1594,6 @@ impl FnCtx<'_> {
         let delta = (target as i64 - word as i64) as i32 * 4;
         let (enc, text, srcs, flags) = match kind {
             SkipKind::Cond(c) => {
-                // AL/NV ignore NZCV; other conds read flags (integrity item B).
                 let flags = match c {
                     Cond::Al | Cond::Nv => FlagEffect::None,
                     _ => FlagEffect::Read,
@@ -2831,47 +1622,7 @@ impl FnCtx<'_> {
             EmittedWord::new(enc, text, CostRule::Branch, None, &srcs).with_flags(flags);
     }
 
-    /// `value_reg` must lie outside `[min,max]` (both signed 64-bit
-    /// constants) to abort — narrow-width checked `+ - *`'s own scheme
-    /// (module doc). Clobbers `X_D`.
-    /// `value_reg` must be a canonical `bits`-wide integer of the given
-    /// signedness to survive — the check every narrow checked `+ - *` and
-    /// every narrowing `.to[T]()` emits.
-    ///
-    /// **plans/codegen-pareto.md item C2 (decision 1742).** With
-    /// `MASK_CHECK` off this is exactly the two-constant, two-compare,
-    /// two-abort form [`Self::check_bounds_i64_or_abort`] has always
-    /// emitted, and `bits == 64` always is. With it on:
-    ///
-    /// - **Unsigned.** In range iff no bit outside the low `bits` is set:
-    ///   `v & !(2^bits − 1) == 0`. That covers both failure directions at
-    ///   once — a value above `2^bits − 1` sets a bit inside the mask, and
-    ///   a *negative* value (which `SUB` can produce from two canonical
-    ///   unsigned operands) sets bit 63, which is also inside the mask
-    ///   because `bits < 64`. Every such mask is an encodable AArch64
-    ///   bitmask immediate, so the whole test is one `TST`.
-    /// - **Signed.** In range iff `v` is its own sign-extension from
-    ///   `bits`, which is the definition of the range and is computed by
-    ///   one `SBFX`; the check is that `SBFX` against `v`.
-    ///
-    /// Both forms reach **one** abort site where the old form had two,
-    /// which is where most of the words go.
-    ///
-    /// The `TST` encoding is fail-closed at the encoder (see
-    /// `encode::encode_bitmask_imm`): if the mask were somehow not
-    /// encodable this falls back to the two-compare form rather than
-    /// emitting a word that tests a different mask.
     fn check_int_range_or_abort(&mut self, value_reg: u8, bits: u32, signed: bool, message: &str) {
-        // **Narrow widths only, and that is a precondition rather than a
-        // case to handle.** Both callers reach here only below 64 bits —
-        // `emit_arith_checked` after its own `bits < 64` test, and
-        // `emit_convert` in the arm both 64-bit target branches fall past.
-        // At 64 bits there is nothing for either form to do: `u64` has no
-        // representable upper bound to compare against (`int_bounds_i64`
-        // says so in its own doc) and the flag-based `ADDS`/`SUBS` scheme
-        // is what handles that width. Writing a `bits >= 64` fallback here
-        // would route into `int_bounds_for`, which is exact only below 64
-        // — a branch that reads as handled and is not.
         assert!(
             bits < 64,
             "check_int_range_or_abort is the narrow-width check; {bits}-bit \
@@ -2932,9 +1683,6 @@ impl FnCtx<'_> {
         self.patch_skip(skip2, SkipKind::Cond(Cond::Le));
     }
 
-    /// `fail_cond` just fired means abort (64-bit-width checked `+ - *`'s
-    /// own flag-based scheme, module doc) — branches past the abort
-    /// call on the inverted (pass) condition.
     fn check_flags_or_abort(&mut self, fail_cond: Cond, message: &str) {
         let pass = fail_cond.invert();
         let skip = self.emit_skip(SkipKind::Cond(pass));
@@ -2942,8 +1690,6 @@ impl FnCtx<'_> {
         self.patch_skip(skip, SkipKind::Cond(pass));
     }
 }
-
-// --- the big per-instruction dispatcher --------------------------------------
 
 fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError> {
     match inst {
@@ -2997,14 +1743,12 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
                 cur += sz;
             }
         }
-        // plans/M9.md item C2: core-scalar Format into `String[..capacity]`.
         Inst::FormatScalar {
             dst,
             src,
             src_ty,
             capacity,
         } => emit_format_scalar(ctx, *dst, *src, src_ty, *capacity)?,
-        // plans/M9.md item C2: `String[..N] + String[..M]`.
         Inst::StringConcat {
             dst,
             lhs,
@@ -3014,9 +1758,6 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
         } => emit_string_concat(ctx, *dst, *lhs, *rhs, *lhs_cap, *rhs_cap),
         Inst::Project { dst, base, index } => {
             let base_ty = f.temp_types[base.0].clone();
-            // plans/M7.md item E4 / decision 19: an `own[P] T` base holds a
-            // pool-slot address; project the field from guest memory at
-            // that address, not from the 8-byte handle word itself.
             if matches!(base_ty, Type::Own(..)) {
                 let payload_ty = unwrap_own_ref(&base_ty);
                 let (off, size) = field_offset_size(payload_ty, *index, ctx.layout)?;
@@ -3105,10 +1846,6 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
                 w += 8;
             }
         }
-        // plans/M10.md item B1: dense-layout index through a placed
-        // `@layout(runtime)` array field. Bounds-check shape matches
-        // `IndexGet` (cmp + `bl __wrela_abort_val`); address is
-        // `base + field_offset + index * elem_stride`.
         Inst::PlacedIndexGet {
             dst,
             base,
@@ -3189,8 +1926,6 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
                 &[v, X_C],
             );
         }
-        // plans/M10.md item B4 / decisions 595–596: packed byte load
-        // through an unbounded `Bytes` (base, len) handle.
         Inst::BytesIndexGet { dst, base, index } => {
             emit_bytes_index_addr(ctx, ctx.frame.off(*base), ctx.frame.off(*index), X_C)?;
             let dst_off = ctx.frame.off(*dst);
@@ -3202,8 +1937,6 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             let dst_off = ctx.frame.off(*dst);
             let dst_ty = f.temp_types[dst.0].clone();
             if is_option_group_id(&dst_ty) {
-                // Niche: None = 0; Some(id) = the GroupId word itself
-                // (1-based, never zero — decision 567 / 669).
                 if *tag == 0 {
                     let d = ctx.def_reg(X_A, dst_off);
                     ctx.load_imm(d, 0);
@@ -3230,7 +1963,6 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
         Inst::EnumTag { dst, src } => {
             let src_ty = f.temp_types[src.0].clone();
             if is_option_group_id(&src_ty) {
-                // tag = (word != 0) ? 1 : 0 — Some vs None.
                 let s = ctx.use_slot(X_A, ctx.frame.off(*src));
                 ctx.push_flags(
                     encode::enc_cmp_imm(s, 0, true),
@@ -3443,8 +2175,6 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             ctx.and_reg(d, a, b);
             ctx.store_slot(d, dst_off);
         }
-        // B4 (decision 1973): the plan already decided this branch
-        // targets the next word and deleting it merges no Lane 2 block.
         Inst::Jump { target } => {
             if !ctx.elide_branch {
                 ctx.b_unconditional(*target)
@@ -3470,7 +2200,6 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
                     by_ptr.insert(i);
                 }
             }
-            // One ABI rule: scalar → xN; non-scalar → pointer to caller slot.
             for (i, arg) in args.iter().enumerate() {
                 if i > 8 {
                     return Err(CodegenError::unimplemented("more than 8 call arguments"));
@@ -3518,15 +2247,6 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             }
         }
         Inst::AssertFail { message } => {
-            // Item E's own exact obligation (module doc, "The abort
-            // contract"): this text must match `interp::exec_stmt`'s own
-            // `TypedStmtKind::Assert` wording byte-for-byte
-            // (`format!("assertion failed{msg}")` where `msg` is `""` or
-            // `": {message}"`) — the comptime and runtime tiers report the
-            // identical failure identically. `lower.rs`'s own
-            // `assert_message_text` already strips the message down to its
-            // raw literal text (no "assertion failed" prefix baked in
-            // there), so this is the one place that prefix belongs.
             let msg = match message {
                 Some(m) => format!("assertion failed: {m}"),
                 None => "assertion failed".to_string(),
@@ -3534,29 +2254,6 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             ctx.abort_fixed(&msg);
         }
 
-        // --- typed MMIO (plans/M7.md item C's surface, item H1's emission)
-        //
-        // The first — and at M7 the only — memory access this backend
-        // emits at an address that is neither a frame slot nor a
-        // build-time-constant runtime table: the base comes out of a
-        // temp holding an `Mmio[L]` (decision 11's one word), and the
-        // offset is the register's own declared `@offset`.
-        //
-        // **Width is the declaration's, exactly.** A `ReadOnly[u32]` is a
-        // 32-bit load and a `WriteOnly[u16]` a 16-bit store — not a
-        // uniform 64-bit slot access, which is what every *other* value in
-        // this backend gets (`mwir::size_of`'s own "every scalar occupies
-        // one 8-byte slot"). A register is not a slot: a wider access
-        // would read or clobber the neighbouring bytes of the claim, which
-        // is precisely what 03 §2's non-overlap rule exists to prevent, so
-        // a width this encoder cannot emit fails closed rather than
-        // widening.
-        //
-        // The loaded value is then spilled into `dst`'s own 8-byte slot;
-        // `LDRB`/`LDRH`/`LDR Wt` all zero-extend into the 64-bit register,
-        // which is the same representation every other unsigned scalar has
-        // here. A *signed* register type would need a sign-extending load
-        // this encoder does not have, and says so.
         Inst::MmioRead {
             dst,
             base,
@@ -3588,10 +2285,6 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             );
             ctx.store_slot(d, dst_off);
         }
-        // plans/M7.md item G, decision 12: load the driver's vector bit
-        // index into an `IrqCap` word. The immediate is patched by layout
-        // once the sealed graph's `vector=` is known — identical shape to
-        // `Reloc::TurnFrameAddr`/`GroupArenaBase`.
         Inst::LoadIrqVector { dst, driver } => {
             let word = ctx.words.len();
             let dst_off = ctx.frame.off(*dst);
@@ -3606,7 +2299,6 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             });
             ctx.store_slot(d, dst_off);
         }
-        // plans/M7.md item G, decision 17: live-cell ops through self_ptr.
         Inst::InterruptCellLoadAcquire {
             dst,
             field_off,
@@ -3642,8 +2334,6 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
                 }
             }
             ctx.store_slot(X_B, ctx.frame.off(*dst));
-            // (`X_B` is the acquire load's own destination register; the
-            // ordered-load encoders are not parameterised over it here.)
         }
         Inst::InterruptCellStoreRelease {
             field_off,
@@ -3690,7 +2380,7 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             let value_off = ctx.frame.off(*value);
             let dst_off = ctx.frame.off(*dst);
             emit_interrupt_cell_rmw(ctx, *field_off, *width, value_off, InterruptCellRmw::Swap)?;
-            ctx.store_slot(X_C, dst_off); // old value left in X_C
+            ctx.store_slot(X_C, dst_off);
         }
         Inst::InterruptCellFetchOrRelease {
             dst,
@@ -3709,9 +2399,6 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             )?;
             ctx.store_slot(X_C, dst_off);
         }
-        // plans/M15.md item H: one DMB word, no BL.
-        // plans/M15.md item K / decision 1098: `--omit-dmb` drops the word
-        // (mutation arm of boot-cross-core-publish-acquire).
         Inst::Dmb { option } => {
             if omit_dmb() {
                 return Ok(());
@@ -3727,11 +2414,6 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             };
             ctx.push(enc, mnem.to_string(), CostRule::Barrier, None, &[]);
         }
-        // plans/M7.md item G: sticky store of 1 into the driver's
-        // wake-pending word. Level-triggered: a wake before/during/after
-        // the bottom half's cell observation remains set until the
-        // scheduler clears it after a run that finds the bit still clear
-        // on recheck (HVF commit wires that loop).
         Inst::Wake { driver } => {
             let word = ctx.words.len();
             ctx.load_imm_naive(X_A, 0);
@@ -3751,7 +2433,6 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
                 &[X_B, X_A],
             );
         }
-        // plans/M17.md item Es / freeze 4: shared emitters with FlowWir.
         Inst::Now { dst } => {
             emit_now(*dst, ctx);
         }
@@ -3828,8 +2509,6 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
     Ok(())
 }
 
-/// `Option[TurnId]` → absolute turn-area address via layout relocs.
-/// The `- 1` lives here and in `TurnId::index` and nowhere else.
 fn push_turn_addr_from_id(ctx: &mut FnCtx, id_reg: u8, scratch: u8) {
     ctx.push(
         encode::enc_sub_imm(id_reg, id_reg, 1, true),
@@ -3854,8 +2533,6 @@ fn push_turn_addr_from_id(ctx: &mut FnCtx, id_reg: u8, scratch: u8) {
     ctx.add_reg(id_reg, scratch, id_reg);
 }
 
-/// Leaves the address in the register it returns: item I lets a
-/// zero-offset access read the base straight out of its home.
 fn emit_mem_addr(ctx: &mut FnCtx, base: Temp, offset: u64) -> u8 {
     if offset == 0 {
         return ctx.use_slot(X_A, ctx.frame.off(base));
@@ -3979,14 +2656,6 @@ fn array_elem_type(base_ty: &Type) -> Result<Type, CodegenError> {
     }
 }
 
-/// Bounds-checks `index_off`'s own value against `len`, aborting with
-/// the evaluator's own out-of-bounds wording on failure, then leaves
-/// `out_reg = &base[index]` (`base_off + index*elem_size`). Shared by
-/// `IndexGet`/`IndexSet`. Clobbers `X_A`, `X_B`, `X_D`, `X_E` and
-/// `out_reg`.
-/// plans/M9.md item C2: write a formatted scalar into a `String[..capacity]`
-/// frame slot (length word + `capacity` byte slots). Occupied length is the
-/// real digit/bool/char width; unused slots stay zero.
 fn emit_format_scalar(
     ctx: &mut FnCtx,
     dst: Temp,
@@ -3996,7 +2665,6 @@ fn emit_format_scalar(
 ) -> Result<(), CodegenError> {
     let dst_off = ctx.frame.off(dst);
     let src_off = ctx.frame.off(src);
-    // Zero-fill the whole aggregate.
     for i in 0..=capacity {
         ctx.load_imm(X_A, 0);
         ctx.store_slot(X_A, dst_off + 8 * i);
@@ -4005,7 +2673,6 @@ fn emit_format_scalar(
         Type::Bool => {
             ctx.load_slot(X_A, src_off);
             let to_false = ctx.emit_skip(SkipKind::Cbz(X_A));
-            // "true"
             ctx.load_imm(X_A, 4);
             ctx.store_slot(X_A, dst_off);
             for (i, b) in b"true".iter().enumerate() {
@@ -4014,7 +2681,6 @@ fn emit_format_scalar(
             }
             let done = ctx.emit_skip(SkipKind::Cond(Cond::Al));
             ctx.patch_skip(to_false, SkipKind::Cbz(X_A));
-            // "false"
             ctx.load_imm(X_A, 5);
             ctx.store_slot(X_A, dst_off);
             for (i, b) in b"false".iter().enumerate() {
@@ -4025,9 +2691,7 @@ fn emit_format_scalar(
             Ok(())
         }
         Type::Char => {
-            // UTF-8 encode one scalar value held as a codepoint in the slot.
-            ctx.load_slot(X_A, src_off); // codepoint
-            // 1-byte ASCII fast path.
+            ctx.load_slot(X_A, src_off);
             ctx.load_imm(X_B, 0x80);
             ctx.cmp_reg(X_A, X_B);
             let not_ascii = ctx.emit_skip(SkipKind::Cond(Cond::Cs));
@@ -4036,11 +2700,9 @@ fn emit_format_scalar(
             ctx.store_slot(X_A, dst_off + 8);
             let done = ctx.emit_skip(SkipKind::Cond(Cond::Al));
             ctx.patch_skip(not_ascii, SkipKind::Cond(Cond::Cs));
-            // 2-byte: U+0080..U+07FF
             ctx.load_imm(X_B, 0x800);
             ctx.cmp_reg(X_A, X_B);
             let not_2 = ctx.emit_skip(SkipKind::Cond(Cond::Cs));
-            // b0 = 0xC0 | (cp >> 6); b1 = 0x80 | (cp & 0x3F)
             ctx.push(
                 encode::enc_lsr_imm(X_C, X_A, 6, true),
                 format!("lsr {}, {}, #6", reg_name(X_C), reg_name(X_A)),
@@ -4060,13 +2722,9 @@ fn emit_format_scalar(
             ctx.store_slot(X_E, dst_off + 16);
             let done2 = ctx.emit_skip(SkipKind::Cond(Cond::Al));
             ctx.patch_skip(not_2, SkipKind::Cond(Cond::Cs));
-            // 3-byte: U+0800..U+FFFF (enough for common Format uses; 4-byte
-            // scalars still fit the bound of 4 and use the same path with
-            // a wider check below).
             ctx.load_imm(X_B, 0x10000);
             ctx.cmp_reg(X_A, X_B);
             let not_3 = ctx.emit_skip(SkipKind::Cond(Cond::Cs));
-            // b0 = 0xE0 | (cp >> 12); b1 = 0x80 | ((cp >> 6) & 0x3F); b2 = 0x80 | (cp & 0x3F)
             ctx.push(
                 encode::enc_lsr_imm(X_C, X_A, 12, true),
                 format!("lsr {}, {}, #12", reg_name(X_C), reg_name(X_A)),
@@ -4098,7 +2756,6 @@ fn emit_format_scalar(
             ctx.store_slot(X_F, dst_off + 24);
             let done3 = ctx.emit_skip(SkipKind::Cond(Cond::Al));
             ctx.patch_skip(not_3, SkipKind::Cond(Cond::Cs));
-            // 4-byte
             ctx.push(
                 encode::enc_lsr_imm(X_C, X_A, 18, true),
                 format!("lsr {}, {}, #18", reg_name(X_C), reg_name(X_A)),
@@ -4130,7 +2787,6 @@ fn emit_format_scalar(
             ctx.and_reg(X_F, X_F, X_D);
             ctx.load_imm(X_D, 0x80);
             ctx.orr_reg(X_F, X_F, X_D);
-            // reuse X_B for last byte
             ctx.load_imm(X_D, 0x3F);
             ctx.and_reg(X_B, X_A, X_D);
             ctx.load_imm(X_D, 0x80);
@@ -4170,8 +2826,8 @@ fn emit_format_scalar(
                     "FormatScalar integer capacity is 0".to_string(),
                 ));
             }
-            ctx.load_slot(X_A, src_off); // value
-            ctx.load_imm(X_F, 0); // negative flag
+            ctx.load_slot(X_A, src_off);
+            ctx.load_imm(X_F, 0);
             if signed {
                 ctx.push_flags(
                     encode::enc_cmp_reg(X_A, X_ZR, true),
@@ -4192,13 +2848,10 @@ fn emit_format_scalar(
                 );
                 ctx.patch_skip(nonneg, SkipKind::Cond(Cond::Ge));
             }
-            // Zero → "0" (with optional leading '-').
             let nonzero = ctx.emit_skip(SkipKind::Cbnz(X_A));
-            // Write '0'
             ctx.load_imm(X_B, b'0' as i64);
             ctx.store_slot(X_B, dst_off + 8);
             ctx.load_imm(X_B, 1);
-            // if negative: write '-' at [0], '0' at [1], len=2
             ctx.push_flags(
                 encode::enc_cmp_reg(X_F, X_ZR, true),
                 format!("cmp {}, xzr", reg_name(X_F)),
@@ -4218,12 +2871,9 @@ fn emit_format_scalar(
             let done0 = ctx.emit_skip(SkipKind::Cond(Cond::Al));
             ctx.patch_skip(nonzero, SkipKind::Cbnz(X_A));
 
-            // Digit extraction into the high end of the data area.
-            // X_I = capacity (write index); X_N = digit count; X_A = abs value
             ctx.load_imm(X_I_REG, capacity as i64);
             ctx.load_imm(X_N_REG, 0);
             let loop_start = ctx.cur_word();
-            // dig = X_A % 10; X_A /= 10
             ctx.load_imm(X_B, 10);
             ctx.push(
                 encode::enc_udiv(X_C, X_A, X_B, true),
@@ -4248,8 +2898,6 @@ fn emit_format_scalar(
                 ),
                 CostRule::Mul,
                 Some(X_D),
-                // `msub Xd, Xn, Xm, Xa` = `Xa - Xn*Xm`: the accumulator
-                // `X_A` is a source (plans/M20.md item E).
                 &[X_C, X_B, X_A],
             );
             ctx.load_imm(X_B, b'0' as i64);
@@ -4261,7 +2909,6 @@ fn emit_format_scalar(
                 Some(X_I_REG),
                 &[X_I_REG],
             );
-            // store digit at data[X_I]: addr = dst_base + 8 + X_I*8
             ctx.addr_of_slot(X_E, dst_off + 8);
             ctx.load_imm(X_B, 8);
             ctx.mul_reg(X_B, X_I_REG, X_B);
@@ -4281,7 +2928,6 @@ fn emit_format_scalar(
                 Some(X_A),
                 &[X_C],
             );
-            // loop while X_A != 0
             let here = ctx.cur_word();
             let back = (loop_start as i64 - here as i64) as i32 * 4;
             ctx.push(
@@ -4292,7 +2938,6 @@ fn emit_format_scalar(
                 &[X_A],
             );
 
-            // Optional leading '-': decrement X_I, store '-', bump X_N
             ctx.push_flags(
                 encode::enc_cmp_reg(X_F, X_ZR, true),
                 format!("cmp {}, xzr", reg_name(X_F)),
@@ -4324,19 +2969,16 @@ fn emit_format_scalar(
             );
             ctx.patch_skip(no_sign, SkipKind::Cond(Cond::Eq));
 
-            // Shift data[X_I ..) down to data[0 .. X_N)
-            ctx.load_imm(X_A, 0); // j
+            ctx.load_imm(X_A, 0);
             let shift_start = ctx.cur_word();
             ctx.cmp_reg(X_A, X_N_REG);
             let shift_done = ctx.emit_skip(SkipKind::Cond(Cond::Cs));
-            // load data[X_I + j]
             ctx.add_reg(X_B, X_I_REG, X_A);
             ctx.addr_of_slot(X_E, dst_off + 8);
             ctx.load_imm(X_C, 8);
             ctx.mul_reg(X_D, X_B, X_C);
             ctx.add_reg(X_E, X_E, X_D);
             ctx.load_ptr(X_F, X_E, 0);
-            // store data[j]
             ctx.addr_of_slot(X_E, dst_off + 8);
             ctx.mul_reg(X_D, X_A, X_C);
             ctx.add_reg(X_E, X_E, X_D);
@@ -4359,11 +3001,10 @@ fn emit_format_scalar(
             );
             ctx.patch_skip(shift_done, SkipKind::Cond(Cond::Cs));
 
-            // Zero the remaining data slots beyond X_N (unrolled).
             for i in 0..capacity {
                 ctx.load_imm(X_A, i as i64);
                 ctx.cmp_reg(X_A, X_N_REG);
-                let keep = ctx.emit_skip(SkipKind::Cond(Cond::Cc)); // i < n → keep
+                let keep = ctx.emit_skip(SkipKind::Cond(Cond::Cc));
                 ctx.load_imm(X_B, 0);
                 ctx.store_slot(X_B, dst_off + 8 * (1 + i));
                 ctx.patch_skip(keep, SkipKind::Cond(Cond::Cc));
@@ -4379,12 +3020,9 @@ fn emit_format_scalar(
     }
 }
 
-/// Scratch aliases used only inside [`emit_format_scalar`]'s digit loop —
-/// kept clear of `X_A`..`X_F` where those are live mid-step.
 const X_I_REG: u8 = 15;
 const X_N_REG: u8 = 16;
 
-/// plans/M9.md item C2: concatenate two String aggregates.
 fn emit_string_concat(
     ctx: &mut FnCtx,
     dst: Temp,
@@ -4397,32 +3035,27 @@ fn emit_string_concat(
     let lhs_off = ctx.frame.off(lhs);
     let rhs_off = ctx.frame.off(rhs);
     let out_cap = lhs_cap + rhs_cap;
-    // Zero-fill.
     for i in 0..=out_cap {
         ctx.load_imm(X_A, 0);
         ctx.store_slot(X_A, dst_off + 8 * i);
     }
-    // out_len = lhs_len + rhs_len
-    ctx.load_slot(X_A, lhs_off); // lhs_len
-    ctx.load_slot(X_B, rhs_off); // rhs_len
+    ctx.load_slot(X_A, lhs_off);
+    ctx.load_slot(X_B, rhs_off);
     ctx.add_reg(X_C, X_A, X_B);
     ctx.store_slot(X_C, dst_off);
-    // Copy lhs occupied bytes (unrolled against capacity; gated by lhs_len).
     for i in 0..lhs_cap {
         ctx.load_imm(X_D, i as i64);
         ctx.cmp_reg(X_D, X_A);
-        let skip = ctx.emit_skip(SkipKind::Cond(Cond::Cs)); // i >= lhs_len
+        let skip = ctx.emit_skip(SkipKind::Cond(Cond::Cs));
         ctx.load_slot(X_E, lhs_off + 8 * (1 + i));
         ctx.store_slot(X_E, dst_off + 8 * (1 + i));
         ctx.patch_skip(skip, SkipKind::Cond(Cond::Cs));
     }
-    // Copy rhs occupied bytes to dst[lhs_len + j].
     for j in 0..rhs_cap {
         ctx.load_imm(X_D, j as i64);
         ctx.cmp_reg(X_D, X_B);
-        let skip = ctx.emit_skip(SkipKind::Cond(Cond::Cs)); // j >= rhs_len
+        let skip = ctx.emit_skip(SkipKind::Cond(Cond::Cs));
         ctx.load_slot(X_E, rhs_off + 8 * (1 + j));
-        // dest index = lhs_len + j → byte off = 8 + 8*(lhs_len+j)
         ctx.addr_of_slot(X_F, dst_off + 8);
         ctx.add_reg(X_C, X_A, X_D);
         ctx.load_imm(X_D, 8);
@@ -4458,38 +3091,23 @@ fn emit_index_addr(
     ctx.add_reg(out_reg, out_reg, X_E);
 }
 
-/// plans/M10.md item B4 / decisions 595–596: address of packed byte
-/// `handle.base[index]`, bounds-checked against the handle's own `len`
-/// word (runtime, not a compile-time N). Abort shape matches
-/// `emit_index_addr` (cmp + `bl __wrela_abort_val`).
 fn emit_bytes_index_addr(
     ctx: &mut FnCtx,
     handle_off: usize,
     index_off: usize,
     out_reg: u8,
 ) -> Result<(), CodegenError> {
-    // x_a = index; x_b = handle.len; compare; on fail abort with the
-    // live index (length rendered as the handle's own len word).
     let x_a = ctx.use_slot(X_A, index_off);
     let x_b = ctx.use_slot(X_B, handle_off + 8);
     ctx.cmp_reg(x_a, x_b);
     let skip = ctx.emit_skip(SkipKind::Cond(Cond::Cc));
-    // Suffix embeds the live length so the diagnostic matches IndexGet's
-    // `"index {i} out of bounds (length {len})"` shape; the length half
-    // is written through a small scratch because abort_val takes one
-    // value register. Re-use x_b (still the len) after stashing the index
-    // message's value register — abort_val's own contract takes x_a as
-    // the interpolated value when we pass it; here we pass x_a = index.
     ctx.abort_val("index ", x_a, false, " out of bounds (Bytes)");
     ctx.patch_skip(skip, SkipKind::Cond(Cond::Cc));
-    // out = handle.base + index (elem_stride = 1 packed byte).
     ctx.load_slot(out_reg, handle_off);
     ctx.add_reg(out_reg, out_reg, x_a);
     Ok(())
 }
 
-/// plans/M10.md item B1: address of `placed_base[field_offset + i*stride]`
-/// with the same bounds-check abort shape as `emit_index_addr`.
 fn emit_placed_index_addr(
     ctx: &mut FnCtx,
     base_off: usize,
@@ -4534,9 +3152,6 @@ fn emit_arith_checked(
     }
     let (bits, signed) = int_shape(ty)
         .ok_or_else(|| CodegenError::internal(format!("`ArithChecked` on non-integer {ty:?}")))?;
-    // Item I: the operands are read from wherever they live and the
-    // result is computed straight into its home, so a fully resident
-    // `a + b` is one `add` and nothing else.
     let x_a = ctx.use_slot(X_A, ctx.frame.off(lhs));
     let x_b = ctx.use_slot(X_B, ctx.frame.off(rhs));
     let dst_off = ctx.frame.off(dst);
@@ -4684,10 +3299,6 @@ fn emit_arith_wrapping(
     let x_b = ctx.use_slot(X_B, ctx.frame.off(rhs));
     let dst_off = ctx.frame.off(dst);
     let x_c = ctx.def_reg(X_C, dst_off);
-    // plans/M20.md item D: the wrapping `MUL` is the X-form
-    // multiply-accumulate group (SOG §3.6: lat 4, thru 1/3, port M, and it
-    // stalls pipe M 2 extra cycles), not the 1-cycle integer ALU group the
-    // shared push tagged all three arms as.
     let (enc, mnem, rule) = match op {
         BinOp::AddW => (
             encode::enc_add_reg(x_c, x_a, x_b, true),
@@ -4699,49 +3310,7 @@ fn emit_arith_wrapping(
             "sub",
             CostRule::Alu,
         ),
-        // plans/codegen-pareto.md item C1 (decisions 1704 / 1740 / 1746 /
-        // **1790**).
-        //
-        // **Not gated on an `OptId`, and not a claimed win** — still, but
-        // for a second and better reason than the first. Decision 1746
-        // kept C1 unconditional because the ∀ gate scored it at exactly
-        // zero everywhere and freeze 1714 forbids an unrankable named opt.
-        // Item E's allocator removed the frame slack that was hiding it,
-        // so that premise is gone: over `[RegAlloc]` this substitution is
-        // worth 3 cycles on `cost-arith-w`, and it is now perfectly
-        // rankable.
-        //
-        // Decision 1790 keeps it out anyway, because of *which* case
-        // falls. `cost-arith-w` is the only case in either tier that moves
-        // at all, and item C wrote it — no case in the corpus had a narrow
-        // wrapping multiply before this item added one. It is worth
-        // **exactly zero on all four programs the appliance ships**.
-        // Freeze 1717 says an opt may not gate on a case it authored
-        // alone, and that is the entire gate C1 would have. So it stays
-        // what decision 1740 prescribed in advance: a reported form change
-        // with no win claimed — instruction *selection* from a width the
-        // type system already proves, the same category as choosing
-        // `STRB` over `STR` for a `u8` field, emitted in `dev` and
-        // `release` alike.
-        //
-        // A **wrapping** multiply of a declared type of `bits <= 32` is
-        // defined modulo 2^bits, and `narrow_to_width` below re-canonicalizes
-        // to exactly `bits` in either case — so the high 32 bits of the
-        // X-form product are dead on arrival, and the W-form computes the
-        // low 32 exactly. Driven by the *declared* type, which the type
-        // system already proves (decision 1704): no range propagation.
-        //
-        // This is the only multiply that gets the substitution. The
-        // **checked** multiply (`emit_arith_checked`) keeps `sf = true`
-        // even at `bits < 64`, because its overflow test reads bits the
-        // W-form would have discarded: `u32 * u32` reaches 2^64 and the
-        // whole point of the following bounds check is to see it. Emitting
-        // W-form there would not be an optimization, it would silently
-        // delete overflow detection.
         BinOp::MulW if bits <= 32 => {
-            // The one W-form site, so it is the one that prints `w`
-            // registers: an asm dump that said `mul x2, x0, x1` over a
-            // `sf = 0` word would be a lie in a pinned golden.
             ctx.push(
                 encode::enc_mul(x_c, x_a, x_b, false),
                 format!("mul w{x_c}, w{x_a}, w{x_b}"),
@@ -4820,15 +3389,6 @@ fn emit_div_rem(
         ctx.patch_skip(skip_a, SkipKind::Cond(Cond::Ne));
         ctx.patch_skip(skip_b, SkipKind::Cond(Cond::Ne));
     }
-    // plans/M20.md item D: X-form (`sf = true`) divide, SOG §3.6 — 5-20
-    // cycles on pipe M, not the 1-cycle integer ALU group these two sites
-    // were tagged as before the A76 table distinguished them.
-    //
-    // plans/M20.md item E: this site used to push `dst = None, srcs = &[]`,
-    // so a 20-cycle divide declared **no dependence edge** and nothing
-    // downstream ever waited on its result — a genuine under-cost in the
-    // one direction 04 §5 forbids. The quotient lands in `x_c` and the
-    // operands are `x_a` (dividend) / `x_b` (divisor).
     let (enc, mnem, rule) = if signed {
         (
             encode::enc_sdiv(x_c, x_a, x_b, true),
@@ -4855,10 +3415,6 @@ fn emit_div_rem(
         &[x_a, x_b],
     );
     if op == BinOp::Rem {
-        // `msub Xd, Xn, Xm, Xa` computes `Xa - Xn*Xm`, so the accumulator
-        // `x_a` (the dividend) is a source too — it was missing here, and
-        // at the itoa site below, which under-declared the edge from the
-        // divide's own inputs (plans/M20.md item E).
         ctx.push(
             encode::enc_msub(x_c, x_c, x_b, x_a, true),
             format!(
@@ -4901,8 +3457,6 @@ fn emit_shift(
     let x_b = ctx.use_slot(X_B, ctx.frame.off(rhs));
     let dst_off = ctx.frame.off(dst);
     let x_f = ctx.def_reg(X_F, dst_off);
-    // Range check: one unsigned compare catches both "negative" and
-    // "too large" (module doc's own worked reasoning).
     ctx.load_imm(X_D, bits as i64);
     ctx.cmp_reg(x_b, X_D);
     let skip_range = ctx.emit_skip(SkipKind::Cond(Cond::Cc));
@@ -5057,9 +3611,6 @@ fn emit_convert(
             ctx.patch_skip(skip, SkipKind::Cond(Cond::Ge));
         }
     } else {
-        // Reached only when `tbits < 64` (both 64-bit target arms are
-        // handled above), which is exactly `check_int_range_or_abort`'s
-        // narrow domain.
         ctx.check_int_range_or_abort(x_a, tbits, tsigned, abort);
     }
     ctx.push(
@@ -5074,10 +3625,7 @@ fn emit_convert(
     Ok(())
 }
 
-// --- prologue/epilogue -------------------------------------------------------
-
 fn emit_prologue(f: &MwirFn, frame: &Frame, ctx: &mut FnCtx) -> Result<(), CodegenError> {
-    // Item F3, both steps.
     if !frame.frameless {
         ctx.push(
             encode::enc_sub_imm(X_SP, X_SP, frame.size as u16, true),
@@ -5093,15 +3641,11 @@ fn emit_prologue(f: &MwirFn, frame: &Frame, ctx: &mut FnCtx) -> Result<(), Codeg
     let mut next_reg = 0u8;
     if let Some((self_temp, mode)) = f.receiver {
         let self_ty = &f.temp_types[self_temp.0];
-        // One ABI rule: scalar → xN; non-scalar (or `mut`) → pointer.
         if is_aggregate(self_ty) || mode == AccessMode::Mut {
             let self_ptr_off = frame
                 .self_ptr_off
                 .ok_or_else(|| CodegenError::internal("receiver present but no self_ptr slot"))?;
             ctx.store_slot(next_reg, self_ptr_off);
-            // Never place `InterruptCell` words in the frame copy — ops
-            // address the live `self_ptr` cell; copying them in would only
-            // create a stale shadow the epilogue must then carefully skip.
             copy_self_fields_skipping_interrupt_cells(
                 f,
                 frame,
@@ -5120,9 +3664,6 @@ fn emit_prologue(f: &MwirFn, frame: &Frame, ctx: &mut FnCtx) -> Result<(), Codeg
             return Err(CodegenError::unimplemented("more than 8 call arguments"));
         }
         let ty = &f.temp_types[p.0];
-        // Aggregates and `mut` params (even scalars) arrive as pointers
-        // (plans/M9.md item CC): copy in, and for `mut` also save the
-        // pointer for the epilogue write-back.
         if is_aggregate(ty) || *mode == AccessMode::Mut {
             if *mode == AccessMode::Mut {
                 let (pt, ptr_off) = mut_ptr_iter.next().ok_or_else(|| {
@@ -5172,9 +3713,6 @@ fn emit_epilogue(f: &MwirFn, frame: &Frame, ctx: &mut FnCtx) -> Result<(), Codeg
             )?;
         }
     }
-    // Non-receiver `mut` params: copy the local slot back through the
-    // saved incoming pointer (02-language.md §5.1 / plans/M9.md item CC).
-    // No InterruptCell special-case — those cells live only on `self`.
     for (p, ptr_off) in &frame.mut_param_ptr_offs {
         let base = ctx.use_slot(X_A, *ptr_off);
         let size = frame.size_of_temp(*p);
@@ -5197,9 +3735,6 @@ fn emit_epilogue(f: &MwirFn, frame: &Frame, ctx: &mut FnCtx) -> Result<(), Codeg
     Ok(())
 }
 
-/// Restore `x30` and drop the frame — the two words that precede every
-/// `ret`, and that precede every framed tail call's own `B` (item F5).
-/// Emits nothing for a frameless function (item F3).
 fn emit_frame_teardown(frame: &Frame, ctx: &mut FnCtx) {
     if frame.lr_saved {
         ctx.load_slot(X_LR, frame.lr_off);
@@ -5216,31 +3751,15 @@ fn emit_frame_teardown(frame: &Frame, ctx: &mut FnCtx) {
     );
 }
 
-// --- plans/M7.md item G, decision 17: InterruptCell live-cell addressing ---
-
 enum InterruptCellRmw {
     Swap,
     FetchOr,
 }
 
-/// Address identity of an `InterruptCell` access, for the memory and D-TLB
-/// terms. Every one of these goes through `emit_interrupt_cell_addr`, which
-/// leaves `self_ptr + field_off` in `X_A` — so the access is a proven
-/// `[base, #imm]` with base `X_A` and displacement `field_off`.
-///
-/// Keying by `field_off` rather than by 0 is what keeps two *different*
-/// cells from aliasing onto one line: the displacement is folded into `X_A`
-/// by the time the access issues, so `(X_A, 0)` would make every cell the
-/// same address and manufacture reuse between unrelated fields.
-///
-/// Without a `MemRef` at all these accesses were invisible to the D-TLB
-/// page span and took the unresolved-address leaf in the hierarchy — the
-/// TLB side silently, which is the direction 04 §5 forbids.
 fn interrupt_cell_memref(field_off: usize) -> MemRef {
     MemRef::for_base_imm(X_A, field_off as u64)
 }
 
-/// `X_A = self_ptr + field_off`. Requires a receiver (self_ptr_save).
 fn emit_interrupt_cell_addr(ctx: &mut FnCtx, field_off: usize) -> Result<(), CodegenError> {
     let self_ptr_off = ctx.frame.self_ptr_off.ok_or_else(|| {
         CodegenError::internal("InterruptCell op needs a receiver (self_ptr slot)")
@@ -5263,19 +3782,6 @@ fn emit_interrupt_cell_addr(ctx: &mut FnCtx, field_off: usize) -> Result<(), Cod
     Ok(())
 }
 
-/// Interrupt-atomic RMW. Leaves the previous cell value in `X_C`.
-///
-/// Emits `LDAR` / compute / `STLR`, **not** `LDAXR`/`STLXR`. 06 §4
-/// delivers vectors only at compiler-emitted checkpoints; revision 0.1
-/// is single-core with no nesting (03 §6). No checkpoint is emitted
-/// inside this sequence, so no same-core observer can interleave with
-/// the RMW — acquire/release alone give the interrupt-atomicity the
-/// cell promises. An exclusive pair would be needed if a second core or
-/// a nested ISR could clear a monitor mid-RMW; neither exists here.
-///
-/// (HVF probe, plans/M7.md item G: `LDAXR` against guest DRAM took a
-/// data abort on the flagship host; the non-exclusive form is also the
-/// one the machine's own delivery rule makes sufficient.)
 fn emit_interrupt_cell_rmw(
     ctx: &mut FnCtx,
     field_off: usize,
@@ -5368,19 +3874,11 @@ fn emit_interrupt_cell_rmw(
     Ok(())
 }
 
-/// Direction of a `mut self` field walk that never touches `InterruptCell`
-/// words — those live only at `self_ptr + field_off` (decision 17).
 enum SelfFieldCopy {
-    /// Prologue: live aggregate → frame slots (skip InterruptCell holes).
     LiveToFrame,
-    /// Epilogue: frame slots → live aggregate (same skip — never stomp an
-    /// ISR update that landed mid-turn).
     FrameToLive,
 }
 
-/// Shared prologue/epilogue walk: copy every non-`InterruptCell` field
-/// word; leave InterruptCell frame holes alone so they are never a
-/// second source of truth.
 fn copy_self_fields_skipping_interrupt_cells(
     f: &MwirFn,
     frame: &Frame,
@@ -5391,29 +3889,17 @@ fn copy_self_fields_skipping_interrupt_cells(
     let self_ptr_off = frame
         .self_ptr_off
         .ok_or_else(|| CodegenError::internal("mut receiver but no self_ptr slot"))?;
-    // Live base in X_A for FrameToLive; for LiveToFrame the prologue just
-    // stored the incoming pointer at `self_ptr_off` and still holds it in
-    // the ABI register — reload from the save slot so both directions
-    // share one path.
     ctx.load_slot(X_A, self_ptr_off);
     let self_ty = &f.temp_types[self_temp.0];
     let Type::Named(name, targs) = strip_wrappers(self_ty) else {
         copy_self_aggregate_words(frame, self_temp, ctx, dir)?;
         return Ok(());
     };
-    // plans/M7.md item G, decision 18: instantiated drivers
-    // (`BlkDriver[DriverMode.Irq]`) are keyed in LayoutCtx by rendered
-    // type spelling — same lookup `mwir::size_of` uses.
     let layout_key = if targs.is_empty() {
         name.clone()
     } else {
         crate::sema::types::render_type(&Type::Named(name.clone(), targs.to_vec()))
     };
-    // plans/M9.md item B2: a `mut self` enum method write-back is the
-    // whole aggregate (tag + payload), not a field walk — enums live in
-    // `LayoutCtx::enums`, not `structs`. Looking only in `structs` was
-    // `internal error: unknown struct \`Cell\`` reachable from ordinary
-    // source (`Cell.fill`).
     if ctx.layout.enums.contains_key(name.as_str()) || ctx.layout.enums.contains_key(&layout_key) {
         copy_self_aggregate_words(frame, self_temp, ctx, dir)?;
         return Ok(());
@@ -5475,12 +3961,6 @@ fn copy_self_aggregate_words(
     Ok(())
 }
 
-// --- per-fn driver: two passes, prologue length measured up front ----------
-
-/// 05-library.md §7: mint a fresh non-wrapping `SlotMap` instance id into
-/// field 0 (`map_id`), overwriting the body's placeholder `0`. Mirrors
-/// `eval::interp::run_init`'s counter; the guest counter lives at
-/// `machine_info::OFF_SLOTMAP_NEXT_ID` (zero at boot → first id is 1).
 fn emit_slotmap_mint_id(map: Temp, ctx: &mut FnCtx<'_>) -> Result<(), CodegenError> {
     let addr =
         wrela_machine::layout::MACHINE_INFO_BASE + wrela_machine::machine_info::OFF_SLOTMAP_NEXT_ID;
@@ -5503,7 +3983,6 @@ fn emit_slotmap_mint_id(map: Temp, ctx: &mut FnCtx<'_>) -> Result<(), CodegenErr
         Some(X_C),
         &[X_B],
     );
-    // Non-wrapping: a zero after +1 means the u64 space wrapped.
     let skip = ctx.emit_skip(SkipKind::Cbnz(X_C));
     ctx.abort_fixed(
         "SlotMap instance id space exhausted (u64 non-wrapping mint, 05-library.md §7)",
@@ -5516,26 +3995,10 @@ fn emit_slotmap_mint_id(map: Temp, ctx: &mut FnCtx<'_>) -> Result<(), CodegenErr
         None,
         &[X_C, X_A],
     );
-    // `map_id` is field 0 — first 8 bytes of the aggregate.
     ctx.store_slot(X_C, ctx.frame.off(map));
     Ok(())
 }
 
-/// plans/codegen-pareto.md item E, decision 1761: run the real emitter
-/// once against the **baseline** (all-spilled) frame and report what it
-/// did, so `regalloc::allocate` decides from measurement rather than
-/// from a second, drifting model of `emit_one`'s operand shapes.
-///
-/// Program points are `0` = prologue, `1..=body.len()` = the body, and
-/// `body.len() + 1` = the epilogue, so parameter stores and `mut`
-/// write-backs are ordinary touches. The emitted words of each point
-/// supply the two remaining facts: whether it contains a returning call
-/// (`CostRule::Call`; `Abort`/`AbortVal` are noreturn and are not
-/// barriers) and which registers it already names.
-///
-/// This pass costs one extra emission per function under `release`, and
-/// nothing at all under `dev` — the caller does not run it when the opt
-/// is off. It is thrown away: nothing it emits reaches the image.
 fn probe_fn_facts(
     f: &MwirFn,
     layout: &LayoutCtx,
@@ -5543,18 +4006,7 @@ fn probe_fn_facts(
     frame: &Frame,
     block_ids: &[Option<u32>],
 ) -> Result<regalloc::FnFacts, CodegenError> {
-    // **The probe never substitutes a tail call** (decision 1776). It
-    // emits the ordinary `bl`, records the barrier, and records the call
-    // edge — so whatever the allocator decides is sound whether or not
-    // the jump is finally emitted. That is what breaks the circle: F5's
-    // substitution is conditional on F3's frameless answer, F3's answer
-    // is conditional on the allocation, and the allocation would
-    // otherwise be conditional on F5.
     let plan = &TailPlan::none(f.body.len());
-    // **And it never elides a branch either**, for the same reason: an
-    // elided `b` has no dst and no srcs, so it cannot move a register
-    // fact, and the probe measuring the conservative program keeps the
-    // allocator's answer sound whichever way the plan goes.
     let no_elision = vec![false; f.body.len()];
     let dummy_targets = vec![0usize; f.body.len() + 1];
     let mut points: Vec<regalloc::PointFacts> = Vec::with_capacity(f.body.len() + 2);
@@ -5572,12 +4024,6 @@ fn probe_fn_facts(
                 touches.push((temp, how, word, reg));
             }
         }
-        // Item F: the callee's *identity*, taken from the reloc the
-        // emitter itself pushed, never from a second walk of the MWIR
-        // body. A `CostRule::Call` word with no `Reloc::Call` beside it
-        // is a call to something this compiler does not name — the
-        // checkpoint service, a runtime helper — and `None` is exactly
-        // the fail-closed answer for it.
         let mut call_words = Vec::new();
         let mut regs = BTreeSet::new();
         let mut word_regs = Vec::new();
@@ -5606,7 +4052,6 @@ fn probe_fn_facts(
         }
     };
 
-    // Point 0: the prologue.
     {
         let mut ctx = FnCtx {
             frame,
@@ -5628,7 +4073,6 @@ fn probe_fn_facts(
         points.push(finish(ctx));
     }
 
-    // Points 1..=body.len(): one per instruction.
     for i in 0..f.body.len() {
         let mut ctx = FnCtx {
             frame,
@@ -5650,7 +4094,6 @@ fn probe_fn_facts(
         points.push(finish(ctx));
     }
 
-    // Point body.len()+1: the epilogue.
     {
         let mut ctx = FnCtx {
             frame,
@@ -5672,8 +4115,6 @@ fn probe_fn_facts(
         points.push(finish(ctx));
     }
 
-    // Back edges: a branch whose target index is at or before its own.
-    // `Return` targets the epilogue sentinel and is always forward.
     let mut back_edges = Vec::new();
     for (i, inst) in f.body.iter().enumerate() {
         let target = match inst {
@@ -5688,11 +4129,6 @@ fn probe_fn_facts(
         }
     }
 
-    // The call graph, and whether this function made a returning call the
-    // emitter did not name. Both are read off the same probe emission the
-    // points came from — the tail-call `B` is in `calls` (it clobbers on
-    // this function's behalf) and not in any point's `call_words` (it
-    // ends the function, so nothing of this function's spans it).
     let mut calls: BTreeSet<String> = BTreeSet::new();
     let mut has_returning_call = false;
     for p in &points {
@@ -5720,19 +4156,9 @@ fn probe_fn_facts(
     })
 }
 
-// --- item F5: tail calls (decision 1773) -------------------------------------
-
-/// Which `Call` instructions in one body are in tail position, decided
-/// from **MWIR shape alone** so the probe pass and both emission passes
-/// reach the same answer without consulting the frame (which the probe
-/// does not yet have in its final form).
 #[derive(Clone, Debug, Default)]
 struct TailPlan {
-    /// `at[i] = Some(key)`: `body[i]` is a `Call` that jumps instead of
-    /// linking.
     at: Vec<Option<String>>,
-    /// `suppressed[i]`: `body[i]` emits nothing, because the tail call
-    /// at `i - 1` already left the function.
     suppressed: Vec<bool>,
 }
 
@@ -5745,37 +4171,12 @@ impl TailPlan {
     }
 }
 
-/// Decide item F5's substitution for one function.
-///
-/// Every condition here is a *reason the jump is legal*, and each is
-/// checked rather than assumed:
-///
-/// - **Nothing of this frame may outlive the jump.** An aggregate
-///   argument and a `mut` write-back are both bare pointers into this
-///   function's own slots (the module doc's calling convention), and the
-///   callee's own `sub sp` would sit straight on top of them once this
-///   frame is dropped. Both are refused; only by-value scalar arguments
-///   and a scalar result are tail-callable.
-/// - **The epilogue must have nothing to do.** A `mut` receiver or a
-///   `mut` parameter makes the epilogue copy bytes back out through a
-///   saved pointer, which is work that has to happen *after* the callee
-///   returns and therefore cannot be jumped over.
-/// - **Nothing may branch to the `Return` this swallows**, and that
-///   `Return` may not begin a counted block — otherwise the deleted
-///   instruction is either a live branch target or a Lane 2 measurement
-///   that silently stops being taken.
-/// - **The callee must be a key layout will not redirect.** A
-///   `rt_enqueue` target can be re-pointed at a cross-core trampoline
-///   after codegen has run; a jump is the wrong shape to hand that.
 fn plan_tail_calls(f: &MwirFn, block_ids: &[Option<u32>]) -> TailPlan {
     let n = f.body.len();
     let mut plan = TailPlan::none(n);
-    // Decision 1909: `dev` keeps `BL`+`RET` as the reference form.
     if !tail_calls() {
         return plan;
     }
-    // The epilogue must be a bare teardown: no receiver write-back, no
-    // `mut` parameter write-back.
     if let Some((_, mode)) = f.receiver {
         if mode == AccessMode::Mut {
             return plan;
@@ -5841,13 +4242,6 @@ fn plan_tail_calls(f: &MwirFn, block_ids: &[Option<u32>]) -> TailPlan {
     plan
 }
 
-/// Emit one tail call: the arguments, this frame's teardown, and a `B`.
-///
-/// The `Reloc::Call` is deliberately the *same* reloc an ordinary call
-/// pushes, so every downstream consumer — the reachability walk, the
-/// cross-core resolver, `validate` — keeps seeing a call edge, which is
-/// what it is. `layout::patch_bl` preserves the `BL`/`B` bit the emitter
-/// already encoded rather than overwriting it.
 fn emit_tail_call(key: &str, args: &[Temp], ctx: &mut FnCtx) -> Result<(), CodegenError> {
     if args.len() > 8 {
         return Err(CodegenError::unimplemented("more than 8 call arguments"));
@@ -5872,9 +4266,6 @@ fn emit_tail_call(key: &str, args: &[Temp], ctx: &mut FnCtx) -> Result<(), Codeg
     Ok(())
 }
 
-/// One body instruction, with item F5's substitution and the Lane 2
-/// block counter applied — the single place all three emission passes
-/// (probe, sizing, real) go through, so they cannot drift.
 fn emit_body_inst(
     i: usize,
     f: &MwirFn,
@@ -5886,7 +4277,6 @@ fn emit_body_inst(
     if plan.suppressed[i] {
         return Ok(());
     }
-    // plans/M11.md decision 740: no checkpoint on sync loop back-edges.
     if let Some(id) = block_ids[i] {
         if block_count() {
             ctx.emit_block_hit(id);
@@ -5906,53 +4296,23 @@ fn emit_body_inst(
     r
 }
 
-/// Everything about one sync fn that is decided **before** any function
-/// in the program is emitted (plans/codegen-pareto-F.md, decision 1771).
-///
-/// Item E decided residency inside `emit_fn`, one function at a time,
-/// which is all a per-function allocator can do. Item F's convention is
-/// a fact about the whole call graph, so the probe pass is hoisted out
-/// of emission: every function is prepared first, the conventions are
-/// computed once over the resulting map, and only then is anything
-/// emitted. Under `dev` and under `RegAlloc`-without-`InterprocRegs`
-/// this changes nothing observable — `facts` is `None` in the first case
-/// and the per-function answer is already final in the second.
 struct PreparedFn {
     block_ids: Vec<Option<u32>>,
     plan: TailPlan,
-    /// Item E's per-function answer, or `Assignment::none` under `dev`.
-    /// Overridden by the whole-program convention when there is one.
     assign: regalloc::Assignment,
-    /// Present exactly when the whole-program pass will run.
     input: Option<regalloc::FnInput>,
-    /// Whether the probe measured a returning call — item F3's last
-    /// condition. `None` when nothing probed, which refuses frameless.
     has_returning_call: Option<bool>,
 }
 
-/// Phase 1: block ids, the tail-call plan, and (under `release`) the
-/// probe emission. Called for every sync fn, in key order, before any
-/// of them is emitted — the block-id counter and the rodata pool are
-/// both order-sensitive and both see the identical sequence they saw
-/// when this work lived inside `emit_fn`.
 fn prepare_fn(
     key: &str,
     f: &MwirFn,
     layout: &LayoutCtx,
     rodata: &mut RodataPool,
 ) -> Result<PreparedFn, CodegenError> {
-    // A sync fn never awaits, so it never stages a reply (0). Entropy
-    // scratch is reserved when the body emits `Inst::Entropy` (item Es).
     let naive = regalloc::Assignment::none(f.temp_types.len());
     let frame = build_frame(f, layout, 0, mwir_entropy_scratch_size(f), 0, &naive, true)?;
 
-    // plans/M20.md item B / decision 1607: Lane 2 instruments **every**
-    // owner, not just `app`. `cost-runtime` is the largest corpus case
-    // (2717 of release SUM 4518), so an app-only `f` vector would explain
-    // almost none of the scored program — and item C makes `f`
-    // load-bearing at block grain. Freeze 1627: the coverage denominator
-    // is still the whole scored set, not the instrumented subset. The one
-    // exclusion is the counter helper itself (`block_count_instruments`).
     let block_ids = if block_count_instruments(key) {
         assign_mwir_block_ids(&f.body)?
     } else {
@@ -5970,49 +4330,26 @@ fn prepare_fn(
         });
     }
 
-    // plans/codegen-pareto.md item E: decide residency from a real
-    // emission against the naive frame. `dev` never runs this step and
-    // keeps the spill-everything reference (M19 freeze 1407).
     let facts = probe_fn_facts(f, layout, rodata, &frame, &block_ids)?;
     let scalar_slot: Vec<bool> = frame
         .temp_size
         .iter()
         .map(|&s| s == FRAME_SLOT_BYTES as usize)
         .collect();
-    // **The returning calls that would still be there after F5** — the
-    // one question F3 has to answer, and it cannot be `facts`' own
-    // number, because the probe deliberately did not substitute
-    // (decision 1776). A planned tail site's `BL` becomes a `B` if the
-    // frame turns out to be gone, so it does not count against the frame
-    // being gone; every other returning call does, including a `BL` the
-    // emitter never named.
     let has_returning_call = facts.opaque_calls
         || facts.points.iter().enumerate().any(|(p, pf)| {
             !pf.call_words.is_empty()
                 && match p.checked_sub(1) {
                     Some(i) if i < plan.at.len() => plan.at[i].is_none(),
-                    // The prologue and the epilogue: never a tail site.
                     _ => true,
                 }
         });
     let (assign, input) = if regalloc::interproc_regs() {
-        // The whole-program pass owns the answer; this per-function one
-        // is not computed at all, so the two can never disagree.
         (
             regalloc::Assignment::none(f.temp_types.len()),
             Some(regalloc::FnInput {
                 facts,
                 scalar_slot,
-                // Decision 1793: a synthesized key is a key some later
-                // stage may own the body of. `layout.rs` replaces
-                // `__wrela_abort_tail` and every `__test_call_*` /
-                // `__test_prefix_*` outright, aliases `rt_boot_init` and
-                // `__enqueue_*`, and re-points `rt_enqueue` targets at
-                // cross-core trampolines. Rather than enumerate that list
-                // here — a second source of truth that would drift the
-                // moment layout grows another substitution, which is the
-                // defect class itself — the rule is the dumb one: any key
-                // that is not a plain source symbol publishes `ALL_REGS`.
                 opaque_body: is_compiler_glue_symbol(key) || key.starts_with("__"),
             }),
         )
@@ -6028,13 +4365,6 @@ fn prepare_fn(
     })
 }
 
-/// Phase 1 + phase 2 for a whole program: prepare every sync fn, then
-/// compute the conventions if the whole-program pass is on.
-///
-/// The last published record of each function's convention comes out of
-/// here too — `report.rs` renders it, because a compiler that decides
-/// the calling convention of every function in the image and then does
-/// not say what it decided has hidden its most consequential output.
 fn prepare_sync_fns(
     mwir: &MwirProgram,
     layout: &LayoutCtx,
@@ -6062,7 +4392,6 @@ fn prepare_sync_fns(
     Ok((prepared, conventions))
 }
 
-/// Phase 3: emit one sync fn against a decided convention.
 fn emit_fn(
     key: &str,
     f: &MwirFn,
@@ -6076,8 +4405,6 @@ fn emit_fn(
         Some(c) => &c.assignment,
         None => &prepared.assign,
     };
-    // Item F3's condition: a function that can return from a `BL` must
-    // keep `x30` somewhere, and the frame is the only somewhere.
     let save_lr = !frameless_fns() || prepared.has_returning_call != Some(false);
     let frame = build_frame(
         f,
@@ -6089,16 +4416,6 @@ fn emit_fn(
         save_lr,
     )?;
 
-    // **F5 fires only where the jump deletes words** (decision 1776).
-    // A tail call in a function that saves `x30` has to *reload* it
-    // before it can jump, which puts a `Load` where a `Call` and a
-    // `Store` were and is measurably worse on the ruler: +29 proxy cycles
-    // across the runtime closure, four sites (plans/codegen-pareto-F.md).
-    // Where `x30` was never saved — item F3's condition, and the same
-    // condition — the teardown is at most one `add sp`, so the jump
-    // replaces three or four words with one or two and deletes a returning
-    // call outright. So the substitution rides on `lr_saved`, and every
-    // other tail site keeps the ordinary call it had.
     let no_tails = TailPlan::none(f.body.len());
     let plan: &TailPlan = if frame.lr_saved {
         &no_tails
@@ -6106,9 +4423,6 @@ fn emit_fn(
         &prepared.plan
     };
 
-    // B4's plan, decided once from the body and handed to **both** passes
-    // (decision 1734: a word deleted after emission would invalidate every
-    // reloc index, branch displacement and Lane 2 span).
     let elide = sync_branch_elision(&f.body);
 
     let empty: [usize; 0] = [];
@@ -6180,19 +4494,11 @@ fn emit_fn(
     emit_prologue(f, &frame, &mut ctx)?;
     debug_assert_eq!(ctx.words.len(), prologue_len);
     for i in 0..f.body.len() {
-        // plans/M11.md decision 740: sync loop back-edges carry trip
-        // counters only — no `FnCtx::checkpoint` (M10 decision 597
-        // dissolved for console helpers; multi-core layout ownership
-        // of `Reloc::CheckpointService` stays async-only).
         emit_body_inst(i, f, &mut ctx, plan, block_ids, &elide)?;
     }
     debug_assert_eq!(ctx.words.len(), word_offsets[f.body.len()]);
     emit_epilogue(f, &frame, &mut ctx)?;
 
-    // plans/codegen-pareto.md item E: fail closed. A virtual slot offset
-    // that reached a helper which cannot serve it means the probe and
-    // the emitter disagree about how a temp is addressed, which would
-    // otherwise be a wrong instruction rather than a refusal.
     if let Some(what) = ctx.resident_misuse.take() {
         return Err(CodegenError::internal(what));
     }
@@ -6208,16 +4514,6 @@ fn emit_fn(
     })
 }
 
-/// Integrity Phase 2 Item M: dumb leader set for a flat MWIR body —
-/// index 0, every branch target, and the fallthrough after a branch /
-/// return. Same shape Item L uses for block-split `s(b)`.
-///
-/// plans/codegen-pareto.md item D / decision 1753: `crate::blocklayout`
-/// reorders exactly this partition, so it calls **this** function rather
-/// than growing a second definition of "what a block is". The Lane 2 block
-/// ids a sidecar is keyed by are ordinals over this leader set
-/// (`assign_mwir_block_ids` just below), which is what makes a class looked
-/// up at index `k` describe the run item D is about to move.
 pub(crate) fn mwir_block_leaders(body: &[Inst]) -> Vec<bool> {
     let n = body.len();
     let mut leaders = vec![false; n];
@@ -6267,146 +4563,20 @@ fn assign_mwir_block_ids(body: &[Inst]) -> Result<Vec<Option<u32>>, CodegenError
     Ok(ids)
 }
 
-// ============================================================================
-// plans/M6.md item D: FlowWir -> machine code (async fn state machines,
-// decision 6's checkpoints, the item-C-deferred async dispatch entry).
-//
-// ## Dispatch header + state bodies + transition tails (item D task 1)
-//
-// Every async fn/method compiles to ONE ordinary machine-code fn — called
-// through the *exact same* ABI a sync fn/method already uses (self ptr in
-// x0, up to 2 scalar args in x1/x2, a scalar result in x0, an ordinary
-// `ret`) — built from three parts, all sharing the identical `Frame`/
-// `FnCtx` machinery this file already has:
-//
-//   1. A dispatch header: load a dedicated frame slot ("which state am I
-//      resuming at", initialized to 0 in the prologue — decision's own
-//      "load current state index from the turn frame"), then a
-//      compare-and-branch chain, one arm per `FlowWirFn::states` entry, in
-//      state order (the dumbest shape the task text itself names: "dumbest
-//      — a compare-and-branch chain in state order").
-//   2. Each state's own straight-line `ops`, flattened into ONE contiguous
-//      instruction stream across every state (`flatten`, below) so the
-//      *entire* per-instruction emission this file already has for a sync
-//      fn (`emit_one`, reused verbatim for every embedded `FlowInst::Mwir`
-//      op — never forked) drives an async fn's straight-line code too. A
-//      local `Jump`/`JumpIfFalse` inside one state's own ops is remapped
-//      from that state's own 0-based local index to its real position in
-//      the flattened stream at flatten time (`remap_local_jumps`) — after
-//      that one rewrite, every downstream mechanism (the two-pass
-//      word-count sizing, `FnCtx::b_unconditional`/`cbz`) is completely
-//      unaware it is looking at a flattened multi-state program rather
-//      than an ordinary mwir body. Async `Transition::Jump` back-edges
-//      still get decision 6's checkpoint via `target_flat <= flat_idx`
-//      (`lower_while_split`'s state-cycle shape); sync `emit_fn` no
-//      longer splices checkpoints onto mwir back-edges (plans/M11.md
-//      decision 740 — trip counters only).
-//   3. Each state's own `Transition`, compiled as one more "flat position"
-//      immediately after that state's own ops (so a local jump to
-//      "one past this state's last op" — legal, `flowwir_lower.rs`'s own
-//      `b.here()` convention — lands exactly on the transition's own
-//      compiled code, never needing a special case).
-//
-// ## Await: genuine park-and-resume (the M6 mandate; replaces item D's
-// disclosed nested-drain placeholder, which is deleted, not kept as a
-// second mechanism)
-//
-// `Transition::Await{ActorCall}` now compiles to a real suspension, so
-// 04-compiler.md §2's semantics hold structurally rather than by
-// simulation:
-//
-//   1. **Suspend** (the transition's own flat position): save
-//      `resume_state` into the persistent state slot; marshal the args;
-//      call the target actor's own `rt_enqueue` with a fourth argument —
-//      the awaiting turn's own **waker** (`x3 = X_FRAME`, this turn's
-//      area address; `OFF_TURN_*` above); mark `suspended = 1`; then
-//      **return to the caller** (`x0 = TURN_STATUS_SUSPENDED`) — the
-//      caller is always the scheduler (`rt_select_and_run`'s dispatch
-//      arm for an actor turn; the entry driver's own loop for the root
-//      test turn), which is exactly what lets EVERY ready actor run
-//      while this turn is parked, not just the awaited target.
-//   2. **Deliver** (in `layout.rs`'s `rt_select_and_run`): when the
-//      awaited turn completes, the scheduler writes its reply into
-//      `[waker + OFF_TURN_REPLY]` and sets `[waker + OFF_TURN_RESUME_READY]`.
-//   3. **Resume** (a dedicated second flat position per await, the
-//      dispatch target for `resume_state`): the scheduler re-enters this
-//      same compiled fn; the entry's fresh-vs-resume discriminant
-//      (`suspended != 0`) routes to the resume dispatch chain, which
-//      lands on this await's own resume stub — compose `Ok(reply)` into
-//      `result_temp` from `[X_FRAME + OFF_TURN_REPLY]`, run decision 6's
-//      checkpoint ("await resume points are checkpoints by
-//      construction"), and jump to `resume_state`'s own flat position.
-//
-// The whole reason this works across a native `ret`: an async fn's frame
-// slots are NOT SP-relative — every temp lives in the fn's own persistent
-// turn area (`Reloc::TurnFrameAddr`, `FnCtx::slot_base = X_FRAME`), so
-// item B's all-temps-in-frame rule is precisely what makes suspension
-// need to save nothing but the state index. The fn's own custom entry/
-// exit (no `sub sp` at all): load `X_FRAME`, save `x30` into the frame's
-// own lr slot, fork on the discriminant; every exit (suspend or
-// complete) reloads `x30` from that slot and `ret`s. A completing return
-// reports `x0 = TURN_STATUS_COMPLETED` with the scalar value in `x1`
-// (the shared async epilogue below), and the mut-receiver writeback runs
-// there — only at completion, never at a suspension (nothing can observe
-// actor state mid-turn: the actor is busy for the whole span).
-//
-// `with group`/`g.start`/`g.join_all` genuinely are item F's own runtime
-// pieces (no group arena consumer exists anywhere yet, `layout.rs`'s own
-// `RuntimeTables::group_arena_capacity` doc comment) — those four ops
-// fail closed, named, below; nothing here half-implements cancellation.
-
 use crate::flowwir::{AwaitKind, FlowInst, FlowWirFn, FlowWirProgram, Transition};
 
-/// The per-actor admission symbol `layout.rs` hand-assembles
-/// (`build_rt_enqueue`'s own routine) and registers into the very same
-/// call-target table `Reloc::Call` already resolves against — from
-/// codegen's own point of view, a compiled `Send`/`Await{ActorCall}`
-/// op's enqueue is just a symbolic call to this fixed name. (The old
-/// `__await_actor_*` glue symbol died with the nested-drain placeholder
-/// it belonged to.)
 pub fn rt_enqueue_symbol(actor: &str) -> String {
     format!("{RT_ENQUEUE_PREFIX}{actor}")
 }
 
-/// The inverse: which actor a symbolic call target names, or `None` for an
-/// ordinary compiled-fn key. `layout.rs` needs it to tell a real,
-/// diagnosable source condition (this image messages an actor it never
-/// declares, so no `rt_enqueue` routine for it exists) apart from a genuine
-/// internal inconsistency, instead of reporting both as the latter.
-///
-/// The shadowing hazard an earlier spelling of this prefix carried is
-/// closed by construction rather than by a naming rule: `layout.rs`
-/// resolves a `Reloc::Call` against compiled source fns *before* glue
-/// symbols, so any synthesized symbol a source fn could also be named
-/// would silently shadow the real routine and emit a wrong image. The
-/// prefix therefore contains a space — legal in a `BTreeMap` key, and
-/// never in a wrela identifier (`syntax::lexer`), so no source fn's own
-/// `CalleeKey::spelling()` can collide with one of these no matter what
-/// it is called. This needs no reserved-prefix rule in `docs/language/`
-/// and cannot be defeated by a cleverly named fn; `symbol_is_synthetic`
-/// below states the invariant one place for every future glue symbol.
 pub fn rt_enqueue_actor(key: &str) -> Option<&str> {
     key.strip_prefix(RT_ENQUEUE_PREFIX)
 }
 
-/// Whether `key` uses the *space-bearing* synthesized spelling: a
-/// synthesized symbol contains a character no wrela identifier may
-/// contain, so those two namespaces cannot overlap. This is the narrow
-/// property, pinned by this file's own tests.
-///
-/// It is **not** the same question as "is this compiler glue" — M11 G
-/// added `__wrela_rt_drain` / `__wrela_try_enqueue` and friends, which are
-/// perfectly legal identifiers and therefore invisible to this rule. Ask
-/// `is_compiler_glue_symbol` for that; every caller that means "not a
-/// source fn" wants it, and both used to spell the prefix list out
-/// themselves (and disagreed about it).
 pub fn symbol_is_synthetic(key: &str) -> bool {
     key.contains(' ')
 }
 
-/// Whether `key` names compiler-generated glue rather than a source fn:
-/// the space-bearing symbols above plus the generic `__wrela_*` /
-/// `__enqueue_*` / `__method_*` / `__resume_*` families.
 pub fn is_compiler_glue_symbol(key: &str) -> bool {
     symbol_is_synthetic(key)
         || key.starts_with("__wrela_")
@@ -6415,68 +4585,42 @@ pub fn is_compiler_glue_symbol(key: &str) -> bool {
         || key.starts_with("__resume_")
 }
 
-/// The one place the symbol's own spelling lives, so `rt_enqueue_symbol`
-/// and `rt_enqueue_actor` can never drift apart. The trailing space is
-/// load-bearing (see `rt_enqueue_actor` above), not cosmetic.
 const RT_ENQUEUE_PREFIX: &str = "rt_enqueue ";
 
-/// plans/M10.md item E3 (decision 620): specialized per-core scheduler
-/// tick. Space keeps it unrepresentable as a source key (same discipline
-/// as `rt_enqueue `).
 pub fn rt_run_one_symbol(core: usize) -> String {
     format!("rt_run_one {core}")
 }
 
-/// Hand-asm `rt_select_and_run` for mailbox root `actor`, registered in
-/// glue so specialized `rt_run_one` can `Reloc::Call` it (item E3).
-/// Item F promotes the body itself to a specialized `CodegenFn` under
-/// the same key (decision 630).
 pub fn rt_select_and_run_symbol(actor: &str) -> String {
     format!("rt_select_and_run {actor}")
 }
 
-/// Cross-core reply-ring push for Reply ring `src -> dst`
-/// (`emit_rt_xreply`, plans/M10.md item F2 / decision 633). Space-bearing
-/// synthetic key so specialized `rt_select_and_run` can `Reloc::Call` it.
-/// M11 G remaps these onto `__wrela_xreply_<edge>` trampolines (decision 804).
 pub fn rt_xreply_symbol(src_core: usize, dst_core: usize) -> String {
     format!("rt_xreply {src_core}->{dst_core}")
 }
 
-/// Parse `rt_xreply src->dst` into `(src, dst)`. Used by layout's G remap.
 pub fn rt_xreply_cores(key: &str) -> Option<(usize, usize)> {
     let rest = key.strip_prefix("rt_xreply ")?;
     let (src, dst) = rest.split_once("->")?;
     Some((src.parse().ok()?, dst.parse().ok()?))
 }
 
-/// Specialized (E4) group-child poll for free-turn key `callee`.
-/// Space-bearing synthetic key — same spelling E3 registered in glue.
 pub fn rt_child_poll_symbol(callee: &str) -> String {
     format!("rt_child_poll {callee}")
 }
 
-/// Inbound-ring drain for `core` (`emit_rt_drain`, item F2 / decision 633).
 pub fn rt_drain_symbol(core: usize) -> String {
     format!("rt_drain {core}")
 }
 
-/// Cross-core send for edge `(src_core, actor)` (`emit_rt_xsend`, item F2 /
-/// decision 633). Replaces the former `__rt_xsend_*` glue spelling;
-/// `resolve_cross_core_edge` returns this key.
 pub fn rt_xsend_symbol(src_core: usize, actor: &str) -> String {
     format!("rt_xsend {src_core} {actor}")
 }
 
-/// Secondary core `core`'s entry loop (`emit_secondary_core_entry`, item
-/// F2 / decision 633). VMM `core_entries` resolve against `fn_word_base`.
 pub fn rt_secondary_core_entry_symbol(core: usize) -> String {
     format!("rt_secondary_core_entry {core}")
 }
 
-/// Whether `key` is a glue / specialized-synthetic target
-/// `rt_run_one` may Call. Select / drain / child_poll are specialized in
-/// `code` (items F / F2 / E4).
 fn rt_run_one_glue_target(key: &str) -> bool {
     key.strip_prefix("rt_select_and_run ")
         .is_some_and(|a| !a.is_empty())
@@ -6488,8 +4632,6 @@ fn rt_run_one_glue_target(key: &str) -> bool {
             .is_some_and(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()))
 }
 
-/// Whether `key` is a glue target specialized `rt_select_and_run` may
-/// Call — specialized `rt_xreply` (item F2) or M11 G trampolines.
 fn rt_select_and_run_glue_target(key: &str) -> bool {
     key.strip_prefix("rt_xreply ")
         .is_some_and(|rest| !rest.is_empty())
@@ -6498,41 +4640,26 @@ fn rt_select_and_run_glue_target(key: &str) -> bool {
             .is_some_and(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()))
 }
 
-// M11 F: RtRunOneSpec / RtChildPollSpec deleted with their emitters.
-// M11 J: RtSelectMethod / RtSelectAndRunSpec deleted with emit_rt_select_and_run.
-// M11 G: RtXsendSpec / RtXreplySpec / RtDrainSpec deleted with emitters.
-
-/// plans/M10.md item H (decision 680): specialized `rt_boot_init` symbol.
-/// Space-bearing (` 0`) — unrepresentable as a source key; one body per
-/// image (the trailing `0` is not a core index).
 pub fn rt_boot_init_symbol() -> String {
     "rt_boot_init 0".to_string()
 }
 
-/// One state region `emit_boot_init` zero-fills, then (when `init` is
-/// `Some`) calls as receiver (plans/M10.md item H / decision 680).
 #[derive(Debug, Clone)]
 pub struct BootInitSlotSpec {
-    /// Actor mailbox-root name (`Reloc::MailboxAddr::State`) or driver
-    /// name (`Reloc::DriverState`).
     pub name: String,
     pub is_driver: bool,
     pub state_size: u64,
     pub init: Option<BootInitCallSpec>,
 }
 
-/// One boot `init` call (plans/M10.md item H).
 #[derive(Debug, Clone)]
 pub struct BootInitCallSpec {
     pub key: String,
     pub args: Vec<BootInitArgSpec>,
     pub fallible: bool,
-    /// `(rodata_byte_offset, len)` when `fallible`; set after
-    /// `intern_fallible_init_abort_messages`.
     pub err_msg: Option<(usize, usize)>,
 }
 
-/// One materialized `init` argument for specialized boot (decision 683).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BootInitArgSpec {
     Word(u64),
@@ -6550,121 +4677,6 @@ pub enum BootInitArgSpec {
     },
 }
 
-// --- the turn record (the real park-and-resume contract) --------------------
-//
-// Every turn-capable entity — each declared actor, and each free async fn
-// (a `@test(runtime)` root foremost) — owns one fixed **turn area** in the
-// image's `rtdata` section: a fixed-shape `TURN_RECORD_SIZE`-byte record
-// (56 bytes as of plans/M7.md item Z1; offsets below)
-// followed by that entity's own statically reserved frame slots (the
-// widest of its async fns' `Frame`s — one area per entity, never one per
-// queued message, because non-reentrancy caps in-flight activations at
-// one). These constants are the shared vocabulary between three parties
-// that must never disagree: the compiled async fn (this module — reads/
-// writes its own record through `X_FRAME`), the hand-assembled
-// `rt_enqueue`/`rt_select_and_run`/`rt_run_one` routines (`layout.rs` —
-// dispatch, reply delivery, readiness), and the entry driver (`layout.rs`
-// — the root turn's own scheduler loop). They live here (not in
-// `wrela-machine`) deliberately: the record is `rtdata`-interior compiler
-// bookkeeping the VMM never reads — not machine contract.
-//
-// Record layout (all `u64` words):
-//   +0  busy          1 while a turn owns this entity (active OR parked) —
-//                     decision 4's structural non-reentrancy flag.
-//   +8  suspended     1 while the current activation is parked on an
-//                     `await` (set by the fn's own suspend tail; cleared
-//                     by its own resume path). Doubles as the
-//                     fresh-vs-resume entry discriminant: the compiled
-//                     fn's entry reads it and either runs the fresh
-//                     prologue (spill args, state=0) or the resume
-//                     dispatch (re-enter at the saved state index).
-//   +16 resume_ready  1 once the awaited reply has been delivered — the
-//                     scheduler re-enters the fn only when
-//                     busy && suspended && resume_ready.
-//   +24 reply         the delivered scalar reply value (read by the fn's
-//                     own per-await resume stub, composed into
-//                     `Ok(reply)` there).
-//   +32 waker_turn    `Option[TurnId]` (a `u32`): which turn awaits THIS
-//                     turn's completion, as its 1-based index into the one
-//                     contiguous `RT.turns` array — 0 = none (a `send`, or
-//                     the root). plans/M10.md item 0c1, decisions 557/567:
-//                     this used to be the waker's turn-area *address*, with
-//                     `(src_core + 1) << 61` OR'd into its top three bits,
-//                     untagged with a `load_imm`+`bic` pair at every read.
-//                     The index needs no runtime table — `turns_base` and
-//                     the pow2 `turn_stride` are both whole-image build-time
-//                     constants (`RuntimePlacement::turn_addr`), which is
-//                     what item 0a/0b bought.
-//   +36 waker_core    `Option[CoreId]` (a `u32`): 0 = local (every
-//                     same-core send, every single-core image), else the
-//                     originating core + 1. The former top-bit tag, in its
-//                     own field. These two `u32`s are the two halves of the
-//                     ONE 64-bit word the tagged address occupied — never a
-//                     second word, which would have cost 8 bytes on every
-//                     mailbox slot and every cross-core request-ring slot
-//                     image-wide, because the pair rides the whole
-//                     `xsend -> ring -> mailbox -> turn record` chain.
-//                     Accessed with `ldr w`/`str w` throughout: an `x`
-//                     access on either would fold the other in as high bits
-//                     and reinvent the bit-twiddling this deleted.
-//   +40 cur_method    the in-flight method's dispatch index (actors
-//                     only) — saved at fresh selection so the resume
-//                     path can re-enter the same compiled method.
-//   +48 reply_slot    plans/M7.md item Z1 (decision 9a): THIS turn's own
-//   +52               reply staging slot while it is parked on an actor
-//                     `await` whose declared reply is an aggregate —
-//                     plans/M10.md item 0c1, decision 565: two adjacent
-//                     `u32`s, `(TurnId at +48, byte offset within that turn
-//                     area at +52)`, in the one word an absolute
-//                     frame-interior address used to occupy. It is NOT a
-//                     bare `TurnId` and cannot be: the offset is
-//                     `Frame::reply_stage_off + slot_bias`, assigned per fn
-//                     in `build_frame`, and the reader is the callee's
-//                     dispatch arm — a different fn, which can know nothing
-//                     of its caller's frame layout. An index plus a named
-//                     intra-area offset is what indexing a *field of* an
-//                     array element is; no bit packing anywhere.
-//
-//                     The pair is what the callee's dispatch resolves back
-//                     into `x8`, this machine's aggregate-return-pointer
-//                     register, so the callee writes its declared reply
-//                     straight into the awaiting frame and nothing is
-//                     copied at delivery.
-//                     `reply` (+24) still carries every scalar reply,
-//                     unchanged and byte-for-byte identically.
-//
-//                     The invariant, exactly (decision 9a): **written
-//                     only by its own suspend path, read only by its
-//                     callee's dispatch while it is parked.** That holds
-//                     because a parked turn cannot begin a second await
-//                     — the fn has genuinely `ret`urned to the scheduler
-//                     at its one suspension point, and non-reentrancy
-//                     (`busy`) admits no second activation — so between
-//                     the store and the callee's load there is exactly
-//                     one writer and one reader of this word.
-//
-//                     Why a stale value is never read (the one subtlety;
-//                     nothing ever clears this word back to 0, and
-//                     nothing needs to): the dispatch arm loads it *only*
-//                     in an arm whose method's own declared reply is an
-//                     aggregate. That is a build-time property of the
-//                     CALLEE, and every caller that can reach that arm is
-//                     a turn awaiting exactly that method — so its
-//                     suspend path stored this word immediately before
-//                     `rt_enqueue`, on the same activation. A scalar-
-//                     reply arm never reads it at all, so whatever an
-//                     older aggregate-reply await left behind is dead,
-//                     not dangerous. (The `rtdata` section starts zeroed,
-//                     so the word is 0 until the first aggregate-reply
-//                     suspend writes it; the record's own boot state is
-//                     still fully deterministic.)
-//   +56 reply_tag     plans/M10.md item J (decision 559): the reply
-//                     channel's own tag — `0` = Ok (payload in `reply`),
-//                     else a `CallError` variant index (`Cancelled` = 1,
-//                     `NotAdmitted` = 3) with any payload in `reply`.
-//                     The group arena's `(tag, payload)` shape, on the
-//                     turn record; retires `BRK_ACTOR_TURN_CANCELLED`.
-//
 pub const OFF_TURN_BUSY: u64 = 0;
 pub const OFF_TURN_SUSPENDED: u64 = 8;
 pub const OFF_TURN_RESUME_READY: u64 = 16;
@@ -6672,92 +4684,13 @@ pub const OFF_TURN_REPLY: u64 = 24;
 pub const OFF_TURN_WAKER: u64 = 32;
 pub const OFF_TURN_CUR_METHOD: u64 = 40;
 pub const OFF_TURN_REPLY_SLOT: u64 = 48;
-/// plans/M10.md item J (decision 559): the reply channel's own tag word —
-/// `(tag, reply)` like the group arena's `(tag, payload)` pairs. `0` =
-/// `Ok` (payload in `OFF_TURN_REPLY`); a nonzero value is a `CallError`
-/// variant index (`Cancelled` = 1, `NotAdmitted` = 3) with any payload in
-/// `OFF_TURN_REPLY` (`Admission` for `NotAdmitted`). Written by
-/// `.deliver` / `rt_drain` / `rt_xreply` and by a rejected `await`
-/// enqueue; read by `emit_await_resume`.
 pub const OFF_TURN_REPLY_TAG: u64 = 56;
 pub const TURN_RECORD_SIZE: u64 = 64;
 
-// A compiled async fn's own return-status ABI (distinct from a sync fn's,
-// which returns its value in x0 with no status — the dispatch arms in
-// `rt_select_and_run` know each method's color at build time and read
-// accordingly): x0 = status (0 completed / 1 suspended); when completed,
-// x1 = the scalar return value.
 pub const TURN_STATUS_COMPLETED: u64 = 0;
 pub const TURN_STATUS_SUSPENDED: u64 = 1;
-/// plans/M6.md item F (decision 8, 04-compiler.md §4): a checkpoint that
-/// observes its own turn's ambient group cancelled terminates the
-/// activation early — "the cancelled frame never resumes." Reported the
-/// same way `TURN_STATUS_COMPLETED`/`_SUSPENDED` are (`x0`), never x1
-/// (there is no real reply to report — whoever reads this status composes
-/// `CallError::Cancelled`/an array slot showing it, never a scalar
-/// value). Only ever produced by the shared cancellation tail
-/// (`emit_async_cancelled_tail`) this item adds; every pre-existing
-/// consumer of this ABI (`rt_select_and_run`'s actor dispatch arms) is
-/// untouched and still only ever sees 0/1 — no required M6 golden runs an
-/// actor method inside a cancelled group's own domain, a disclosed gap
-/// recorded in this item's own note, not silently widened here.
 pub const TURN_STATUS_CANCELLED: u64 = 2;
 
-// --- the group arena record (plans/M6.md item F, 02-language.md §9.5) ------
-//
-// One `GROUP_SLOT_SIZE`-byte record per statically-sized arena slot
-// (`layout::RuntimeTables::group_arena_capacity` — a real count of
-// `with group(...)` sites, item C's own sizing pass), all `u64` words:
-//
-//   +0  in_use          1 while this slot backs a currently-open `with
-//                       group` scope (`GroupCreate`..`GroupClose`).
-//   +8  capacity        the declared `capacity=` (0 = no children).
-//   +16 active_children how many admitted `g.start` children have not yet
-//                       completed/been harvested.
-//   +24 deadline_ns     the narrowed effective deadline (0 = none) —
-//                       `min(ambient, own)`, decision 8's own inheritance
-//                       rule, computed once at `GroupCreate`.
-//   +32 cancelled       1 once the vector-0 deadline scan (or a parent
-//                       group's own cancellation propagation) marks this
-//                       group cancelled.
-//   +40 parent_group    the enclosing group's own arena index, or
-//                       `GROUP_NO_PARENT` (`u64::MAX`) — a distinct
-//                       sentinel from the lineage-slot encoding below
-//                       (this field is arena-internal bookkeeping only,
-//                       never read as a frame lineage value).
-//   +48 join_waiter     the parent turn's own turn-area address, once
-//                       `g.join_all()` parks waiting on this group's
-//                       children (0 = not yet awaiting / no parent turn
-//                       registered).
-//   +56 owner_turn      the turn area of the frame that executed this
-//                       group's own `GroupCreate` — the group's *parent*
-//                       in 02-language.md §9.5's own sense. Written once
-//                       at creation, read by every cancellation
-//                       observation site to answer the one question that
-//                       decides what a cancelled group does to a running
-//                       activation: is this turn the group's owner, or a
-//                       child started into it? A child's frame is
-//                       terminated ("the cancelled frame never resumes",
-//                       04-compiler.md §4); the owner's frame is not —
-//                       02-language.md §9.5's own "source sees only
-//                       `CallError` and its own `defer`s running" requires
-//                       the `with`-block's own body to survive long enough
-//                       to observe the `CallError` and run its cleanup.
-//                       plans/M6.md item F records this reading in full.
-//   +64.. child result slots: `GROUP_MAX_CHILDREN` pairs of (tag,
-//                       payload), one per static `g.start` call site
-//                       ordinal within this group (`GroupCtx::child_index`,
-//                       below) — tag 0 = Ok, 1 = the composed
-//                       `CallError::Cancelled` (the only non-`Op` variant
-//                       M6's own dumbest floor ever produces; a real
-//                       `CallError::Op(e)`/other variant composition is
-//                       out of this item's own required surface, exactly
-//                       like `emit_await_resume`'s own existing scalar-reply
-//                       floor).
-//
-// Lives here, not `wrela-machine`, for the identical reason the turn
-// record does (`TURN_RECORD_SIZE`'s own doc comment above): rtdata-interior
-// compiler bookkeeping the VMM never reads.
 pub const OFF_GROUP_IN_USE: u64 = 0;
 pub const OFF_GROUP_CAPACITY: u64 = 8;
 pub const OFF_GROUP_ACTIVE_CHILDREN: u64 = 16;
@@ -6767,42 +4700,17 @@ pub const OFF_GROUP_PARENT: u64 = 40;
 pub const OFF_GROUP_JOIN_WAITER: u64 = 48;
 pub const OFF_GROUP_OWNER_TURN: u64 = 56;
 pub const OFF_GROUP_CHILDREN_BASE: u64 = 64;
-/// Floor for empty-arena images (plans/M12.md item F / decisions 886–889):
-/// `GROUP_MAX_CHILDREN` is an image fact — `max(FLOOR, max g.start children
-/// over the image's group sites)` — not a hard Rust cap. Kept as the
-/// empty-arena / stub default so placeholder overlays stay 96 bytes.
 pub const GROUP_MAX_CHILDREN_FLOOR: usize = 2;
-/// Floor slot size (`64 + FLOOR * 16` = 96). Prefer
-/// [`group_slot_size`] with the image's `max_children`.
 pub const GROUP_SLOT_SIZE: u64 = OFF_GROUP_CHILDREN_BASE + (GROUP_MAX_CHILDREN_FLOOR as u64) * 16;
 
-/// `GROUP_SLOT_SIZE` for an image whose widest group has `max_children`
-/// `g.start` sites: `64 + max_children * 16` (2→96, 4→128).
 pub fn group_slot_size(max_children: usize) -> u64 {
     OFF_GROUP_CHILDREN_BASE + (max_children as u64) * 16
 }
-/// `parent_group`'s own "no parent" sentinel — distinct from the
-/// lineage-slot encoding (`Temp(0)`'s own "0 = no ambient group, else
-/// arena-index+1" scheme) since this field is never read as a lineage
-/// value, only ever compared against by the deadline-scan/cancellation
-/// routines this item adds.
 pub const GROUP_NO_PARENT: u64 = u64::MAX;
 
-/// `CallError[E]`'s own `Cancelled` variant tag — 02-language.md §9.4
-/// declares the variant order (`Op`, `Cancelled`, `DeadlineExceeded`,
-/// `NotAdmitted`, `PeerFailed`) and `sema::matches::shape_of`'s own
-/// `CallError` arm builds exactly that order, which is what every
-/// `EnumTag` comparison a `match` lowers to is numbered against.
 pub const CALL_ERROR_TAG_CANCELLED: u64 = 1;
-/// `CallError[E]`'s own `NotAdmitted` variant tag — same order as
-/// `CALL_ERROR_TAG_CANCELLED`. Also the nonzero `OFF_TURN_REPLY_TAG`
-/// value that delivers "never ran: mailbox full" (plans/M10.md item J).
 pub const CALL_ERROR_TAG_NOT_ADMITTED: u64 = 3;
-/// `Admission`'s opaque reason code for mailbox-full (05-library.md §2's
-/// `Full | Restarting | StaleRequest | DeadlineUnmeetable` — first
-/// variant, plans/M10.md decision 666). One `u64`; no fields yet.
 pub const ADMISSION_FULL: u64 = 0;
-/// `OFF_TURN_REPLY_TAG` = Ok (group-arena shape: tag 0 = Ok).
 pub const REPLY_TAG_OK: u64 = 0;
 
 pub fn group_child_tag_off(child_index: usize) -> u64 {
@@ -6819,25 +4727,10 @@ fn method_name_of_key(key: &str) -> &str {
     key.split('.').nth(1).unwrap_or(key)
 }
 
-/// `(actor name) -> (method name) -> its own 0-based dispatch index`,
-/// exactly the order `layout.rs`'s own `merge_actor_pub_methods` (and
-/// therefore `build_rt_select_and_run`'s own `dispatch` table) already
-/// uses — threaded in from there (`layout::actor_method_index_tables`) so
-/// the two can never number a method differently.
 pub type ActorMethodIndex = BTreeMap<String, BTreeMap<String, usize>>;
 
-// --- group runtime context (plans/M6.md item F) -----------------------------
-
-/// The whole-build facts `GroupCreate`/`GroupStart`/the group-child poll
-/// routines (`layout.rs`) need, threaded alongside `ActorMethodIndex`
-/// everywhere that already threads it: the static arena's own slot count
-/// (`arena_capacity`, `layout::RuntimeTables::group_arena_capacity`), the
-/// image-wide `max_children` fact (plans/M12.md item F), and each
-/// `g.start`-able callee's own fixed child-slot ordinal
-/// (`compute_group_child_indices`, below).
 pub struct GroupCtx {
     pub arena_capacity: u64,
-    /// Image fact: `max(FLOOR, max g.start children over group sites)`.
     pub max_children: usize,
     pub child_index: BTreeMap<String, usize>,
 }
@@ -6848,15 +4741,6 @@ impl GroupCtx {
     }
 }
 
-/// `callee_key -> its own fixed child-slot ordinal` (0-based, within
-/// whichever group starts it) — computed once, whole-program, by counting
-/// each `FlowInst::GroupStart` in program order per `(owner fn,
-/// group_temp)` pair. Returns the map plus the image
-/// `GROUP_MAX_CHILDREN` fact (`max(FLOOR, max per-site count)`).
-///
-/// Duplicate-callee floor still enforced here (M6's one-free-turn-area-
-/// per-fn rule). Per-site child counts are no longer hard-capped at 2 —
-/// the arena slot grows with the image fact (plans/M12.md item F).
 pub fn compute_group_child_indices(
     flow: &FlowWirProgram,
 ) -> Result<(BTreeMap<String, usize>, usize), CodegenError> {
@@ -6894,9 +4778,6 @@ pub fn compute_group_child_indices(
     Ok((out, max_children))
 }
 
-/// Image `GROUP_MAX_CHILDREN` from an already-computed child-index map
-/// (`max(FLOOR, max ordinal + 1)`). Same value
-/// [`compute_group_child_indices`] returns as its second element.
 pub fn group_max_children_of(child_index: &BTreeMap<String, usize>) -> usize {
     child_index
         .values()
@@ -6907,19 +4788,9 @@ pub fn group_max_children_of(child_index: &BTreeMap<String, usize>) -> usize {
         .max(GROUP_MAX_CHILDREN_FLOOR)
 }
 
-/// One flattened position: a state's own straight-line op (`FlowInst`,
-/// jump targets already remapped to flat indices), a state's own
-/// `Transition` (compiled last within its state), or an await's own
-/// dedicated **resume stub** — its own flat position immediately after
-/// the await transition itself, so the resume dispatch chain has a real,
-/// word-offset-addressable landing site per await (module doc's own
-/// "Resume" step).
 enum FlatEntry {
     Op(FlowInst),
     Trans(Transition),
-    /// The park-and-resume re-entry point for the await whose
-    /// `resume_state`/`result_temp` these are: compose `Ok(reply)` from
-    /// the turn record, checkpoint, jump to `resume_state`'s flat base.
     AwaitResume {
         resume_state: usize,
         result_temp: Temp,
@@ -6927,9 +4798,6 @@ enum FlatEntry {
     },
 }
 
-/// Remaps a *local* (this-state-relative) `Jump`/`JumpIfFalse` target to
-/// its real position in the flattened stream — every other `FlowInst`
-/// passes through unchanged (module doc's own "after that one rewrite").
 fn remap_local_jumps(op: &FlowInst, state_base: usize) -> FlowInst {
     match op {
         FlowInst::Mwir(Inst::Jump { target }) => FlowInst::Mwir(Inst::Jump {
@@ -6943,23 +4811,11 @@ fn remap_local_jumps(op: &FlowInst, state_base: usize) -> FlowInst {
     }
 }
 
-/// `state_flat_base[i]` is state `i`'s own first flat position (its first
-/// op, or its own `Transition` when `ops` is empty) — every inter-state
-/// transition (`Jump`/`Branch`) targets exactly this position for its own
-/// target state(s). `resume_target[i]` is where the **resume dispatch
-/// chain** re-enters for state `i`: for an await's own `resume_state`,
-/// its dedicated `AwaitResume` stub (which composes the reply before
-/// falling on to the state proper); for every other state, the state's
-/// own flat base — a resume can only ever legitimately target an await's
-/// resume state, but keeping every arm real keeps the chain's shape dumb
-/// and uniform.
 fn flatten(f: &FlowWirFn) -> (Vec<usize>, Vec<usize>, Vec<FlatEntry>) {
     let mut state_flat_base = Vec::with_capacity(f.states.len());
     let mut cursor = 0usize;
     for s in &f.states {
         state_flat_base.push(cursor);
-        // +1 for this state's own Transition; an Await transition owns a
-        // second flat position (its resume stub) immediately after.
         cursor += s.ops.len() + 1;
         if matches!(s.transition, Transition::Await { .. }) {
             cursor += 1;
@@ -6989,20 +4845,6 @@ fn flatten(f: &FlowWirFn) -> (Vec<usize>, Vec<usize>, Vec<FlatEntry>) {
     (state_flat_base, resume_target, flat)
 }
 
-/// Builds the `Frame` for a FlowWir fn: `f.frame.temp_types` plus the one
-/// dedicated extra `u64` slot this file's own codegen needs beyond what
-/// `flowwir_lower.rs` allocated — `state_temp`, the dispatch header's own
-/// "which state" slot (module doc above). Reuses `build_frame` verbatim
-/// (never forked) via a synthetic `MwirFn` shape carrying exactly that
-/// temp.
-///
-/// plans/M10.md item D0 (decision 610/612) deleted the 2-word
-/// `arg_scratch` pair that used to sit next to it: `rt_enqueue`'s ABI
-/// took a *pointer* to a contiguous args blob, so an async fn's own
-/// independently-allocated `arg_temps` had to be copied into an owned,
-/// always-contiguous marshaling area first. The ABI now carries the
-/// arguments **by value** in `x1`/`x2`, so there is nothing to make
-/// contiguous, and every async frame is 16 bytes smaller.
 fn build_frame_flow(f: &FlowWirFn, layout: &LayoutCtx) -> Result<(Frame, Temp), CodegenError> {
     let mut temp_types = f.frame.temp_types.clone();
     let state_temp = Temp(temp_types.len());
@@ -7020,22 +4862,12 @@ fn build_frame_flow(f: &FlowWirFn, layout: &LayoutCtx) -> Result<(Frame, Temp), 
         flow_reply_stage_size(f, layout)?,
         flow_entropy_scratch_size(f),
         TURN_RECORD_SIZE as usize,
-        // plans/codegen-pareto.md item E / decision 1762: the async path
-        // never allocates. An async fn's locals must survive its own
-        // `ret`-to-scheduler suspension, and a physical register does
-        // not — that is the whole reason `X_FRAME` and the persistent
-        // turn area exist. Spill-everything is not a limitation here, it
-        // is the contract.
         &regalloc::Assignment::none(synthetic.temp_types.len()),
-        // Item F3 for the same reason: a turn body's `x30` is the
-        // scheduler's, and every suspension is a `ret` back to it.
         true,
     )?;
     Ok((frame, state_temp))
 }
 
-/// plans/M17.md item E / freeze 5: max packed scratch bytes across every
-/// `FlowInst::Entropy` in this fn (shared region; ops run one at a time).
 fn flow_entropy_scratch_size(f: &FlowWirFn) -> usize {
     f.states
         .iter()
@@ -7048,9 +4880,6 @@ fn flow_entropy_scratch_size(f: &FlowWirFn) -> usize {
         .unwrap_or(0)
 }
 
-/// plans/M17.md item Es / freeze 5: max packed scratch bytes across every
-/// sync MWIR `Inst::Entropy` in this fn (shared region; ops run one at a
-/// time). Parallel to `flow_entropy_scratch_size`.
 fn mwir_entropy_scratch_size(f: &MwirFn) -> usize {
     f.body
         .iter()
@@ -7062,20 +4891,6 @@ fn mwir_entropy_scratch_size(f: &MwirFn) -> usize {
         .unwrap_or(0)
 }
 
-/// plans/M7.md item Z1 (decision 9b): how many bytes this fn's own reply
-/// staging slot needs — the widest *declared* reply over its own
-/// `Await{ActorCall}` sites that is an aggregate, or 0 if it has none (by
-/// far the common case, and the one that keeps every M6 frame identical).
-///
-/// The declared type is recovered by inverting the composition sema
-/// already applied (`sema::bodies::decompose_call_error`), never by a
-/// second lowering-time channel: `result_temp`'s own frame type is
-/// `Result[T, CallError[E]]`, and `T`/`Result[T, E]` is exactly what the
-/// callee will write. An await whose composed type is not that shape
-/// contributes nothing here — `emit_await_suspend`/`emit_await_resume`
-/// read the identical predicate, so the three can never disagree about
-/// whether a given site uses the wide transport, and `emit_await_resume`
-/// still fails closed loudly on the malformed shape.
 fn flow_reply_stage_size(f: &FlowWirFn, layout: &LayoutCtx) -> Result<usize, CodegenError> {
     let mut widest = 0usize;
     for s in &f.states {
@@ -7100,7 +4915,6 @@ fn flow_reply_stage_size(f: &FlowWirFn, layout: &LayoutCtx) -> Result<usize, Cod
                 widest = widest.max(sz);
             }
             AwaitKind::Receipt { .. } => {
-                // `IoCompletion[P]` is the await result — always an aggregate.
                 let ty = &f.frame.temp_types[result_temp.0];
                 let sz = mwir::size_of(ty, layout).map_err(|e| CodegenError::unimplemented(&e))?;
                 widest = widest.max(sz);
@@ -7111,19 +4925,8 @@ fn flow_reply_stage_size(f: &FlowWirFn, layout: &LayoutCtx) -> Result<usize, Cod
     Ok(widest)
 }
 
-/// The resume dispatch chain's own trailing guard: a should-be-
-/// unreachable producer-bug `BRK` — a resume can only ever be scheduled
-/// with a state index this same fn's own suspend path stored.
 const BRK_ASYNC_DISPATCH_NO_STATE_MATCHED: u16 = 0xACD4;
 
-/// The whole async entry sequence (module doc's "Await: genuine
-/// park-and-resume"): persistent-frame base load, lr save, the
-/// fresh-vs-resume discriminant fork, the fresh prologue (arg/self spill
-/// into the persistent frame, state = 0, jump to state 0), and the
-/// resume dispatch chain (clear the discriminant + ready flag, re-enter
-/// at the saved state's own resume target). Replaces both
-/// `emit_prologue` and the old always-run dispatch header for async fns
-/// — a sync fn's prologue/epilogue are untouched.
 fn emit_async_entry(
     f: &MwirFn,
     fn_key: &str,
@@ -7131,11 +4934,8 @@ fn emit_async_entry(
     state_temp: Temp,
     resume_target: &[usize],
 ) -> Result<(), CodegenError> {
-    // X_FRAME = &turn area (4 words, patched by layout via TurnFrameAddr).
     let word = ctx.cur_word();
     ctx.load_imm_naive(X_FRAME, 0);
-    // Overwrite the rendered text so the dump names the symbolic target
-    // (the raw words stay the placeholder zeros layout patches).
     for (i, w) in ctx.words[word..word + 4].iter_mut().enumerate() {
         w.text = format!("turn-frame[{i}] {} <{fn_key}>", reg_name(X_FRAME));
     }
@@ -7143,10 +4943,7 @@ fn emit_async_entry(
         word,
         key: fn_key.to_string(),
     });
-    // Save the caller's return address into the frame's own lr slot —
-    // every exit (suspend or complete) reloads it from there.
     ctx.store_slot(X_LR, ctx.frame.lr_off);
-    // Fresh-vs-resume fork on the suspended discriminant.
     ctx.push(
         encode::enc_ldr_x_imm(X_A, X_FRAME, OFF_TURN_SUSPENDED as u16),
         format!(
@@ -7160,11 +4957,9 @@ fn emit_async_entry(
     );
     let fork = ctx.emit_skip(SkipKind::Cbnz(X_A));
 
-    // --- fresh path: spill self/params into the persistent frame -------
     let mut next_reg = 0u8;
     if let Some((self_temp, mode)) = f.receiver {
         let self_ty = &f.temp_types[self_temp.0];
-        // Same ABI rule as `emit_prologue` (InterruptCell skip-walk shared).
         if is_aggregate(self_ty) || mode == AccessMode::Mut {
             let self_ptr_off = ctx
                 .frame
@@ -7219,28 +5014,13 @@ fn emit_async_entry(
             "frame.mut_param_ptr_offs has more entries than Mut params",
         ));
     }
-    // plans/M7.md item Z1: an aggregate-returning async method is handed
-    // its caller's destination address in `x8` (this machine's shared
-    // aggregate-return ABI, `is_aggregate`/`emit_prologue`), and
-    // `Inst::Return` writes the value through it. Spill it into the
-    // persistent frame exactly like the sync prologue does — but only on
-    // the FRESH path: on a resume there is no `x8` to spill (the
-    // scheduler re-enters through `rt_select_and_run`'s own dispatch,
-    // which reloads the pointer from the parked caller's record but at a
-    // point this fn cannot depend on), and none is needed — the
-    // persistent frame still holds the address the fresh entry spilled,
-    // and the caller cannot have changed it while parked (it is parked;
-    // decision 9a's own invariant).
     if let Some(ret_ptr_off) = ctx.frame.ret_ptr_off {
         ctx.store_slot(8, ret_ptr_off);
     }
-    // state = 0 (hygiene: a completed prior activation leaves its last
-    // state index behind; a fresh turn's own record is deterministic).
     ctx.load_imm(X_A, 0);
     ctx.store_slot(X_A, ctx.frame.off(state_temp));
-    ctx.b_unconditional(0); // state 0's own flat base is always flat index 0.
+    ctx.b_unconditional(0);
 
-    // --- resume path: consume the discriminant, dispatch --------------
     ctx.patch_skip(fork, SkipKind::Cbnz(X_A));
     for off in [OFF_TURN_SUSPENDED, OFF_TURN_RESUME_READY] {
         ctx.push(
@@ -7273,23 +5053,8 @@ fn emit_async_entry(
     Ok(())
 }
 
-/// The shared async completion epilogue, at `word_offsets[total]` — the
-/// sentinel every embedded `Inst::Return`/`Transition::Return` already
-/// branches to via `emit_one`'s ordinary path (which leaves the scalar
-/// return value in `x0`): move the value to `x1`, run the mut-receiver
-/// writeback (completion is the one moment actor state becomes
-/// observable again — the turn is over), report
-/// `x0 = TURN_STATUS_COMPLETED`, reload the caller's `x30` from the
-/// frame's lr slot, `ret`.
 fn emit_async_epilogue(f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError> {
     if is_aggregate(&f.ret) {
-        // plans/M7.md item Z1: an aggregate reply never travels in `x1`.
-        // `Inst::Return` has already written the whole value through this
-        // fn's spilled `x8` (the awaiting caller's own staging slot), so
-        // `x0` holds nothing meaningful here — report a deterministic 0
-        // in the scalar reply word rather than whatever register state
-        // the body happened to leave behind, since the dispatch arm
-        // stores that word into an image-visible turn record.
         ctx.push(
             encode::enc_mov_reg(1, X_ZR, true),
             "mov x1, xzr".to_string(),
@@ -7306,9 +5071,6 @@ fn emit_async_epilogue(f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError> 
             &[0],
         );
     }
-    // M11 F (decision 793): park the completing scalar in OFF_TURN_REPLY so
-    // generic `__wrela_child_poll` can read it after the resume Call (the
-    // specialized emitter captured x1; wrela Calls only bind x0).
     ctx.push(
         encode::enc_str_x_imm(1, X_FRAME, OFF_TURN_REPLY as u16),
         format!(
@@ -7322,8 +5084,6 @@ fn emit_async_epilogue(f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError> 
     );
     if let Some((self_temp, mode)) = f.receiver {
         if mode == AccessMode::Mut {
-            // plans/M7.md item G, decision 17: same InterruptCell skip as
-            // the sync epilogue — live cells are not frame-owned.
             copy_self_fields_skipping_interrupt_cells(
                 f,
                 ctx.frame,
@@ -7357,8 +5117,6 @@ fn emit_async_epilogue(f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError> 
 }
 
 impl FnCtx<'_> {
-    /// `B.<cond>` to a flattened target position — `b_unconditional`/`cbz`'s
-    /// own sibling for the dispatch header's own compare-and-branch chain.
     fn b_cond_to(&mut self, cond: Cond, target_flat_idx: usize) {
         let this_word = self.cur_word();
         let delta = self.branch_target_delta(target_flat_idx, this_word);
@@ -7377,34 +5135,11 @@ impl FnCtx<'_> {
     }
 }
 
-/// Loads `arg_temps` (at most 2 — the by-value ABI below carries exactly
-/// two argument registers) into `x1`/`x2` and calls `symbol` —
-/// `rt_enqueue_<Actor>`'s own real ABI
-/// (`x0=method_idx, x1=arg0, x2=arg1, x3=waker_turn, x4=waker_core`),
-/// shared verbatim by `Send` (waker = 0: one-way, nobody to resume, the
-/// sender never suspends) and `Await{ActorCall}` (waker = this turn's own
-/// `TurnId`, a relocated immediate — plans/M10.md item 0c1, decision 557).
-///
-/// plans/M10.md item D0, decision 610: the arguments used to travel as
-/// `x1 = args_ptr` (the address of an owned 2-word frame scratch pair)
-/// plus `x2 = nargs_words`, and `build_ring_enqueue` copied `x2` words
-/// out of that pointer. They now travel **by value**, which makes this
-/// half of the ABI match the consumer half — dispatch has always loaded
-/// `x1`/`x2` straight out of the mailbox slot (`layout.rs`'s
-/// `build_rt_select_and_run`). Absent arguments are written as an
-/// explicit zero rather than left undefined: the callee stores whatever
-/// these registers hold into the slot, and a deterministic zero is
-/// strictly better than the stale bytes of the slot's previous occupant.
 fn emit_marshal_and_call(
     method_idx: usize,
     arg_temps: &[Temp],
     ctx: &mut FnCtx,
     symbol: &str,
-    // `Some(this fn's own key)` for an `Await{ActorCall}` — the waker is
-    // this turn, named by its `TurnId`; `None` for a `send`, which has no
-    // waker at all. plans/M10.md item 0c1: this used to be a plain `bool`
-    // and the waker used to be `X_FRAME` itself (the turn area's address),
-    // which is exactly the raw reference item 0 exists to delete.
     waker_self_key: Option<&str>,
 ) -> Result<(), CodegenError> {
     if arg_temps.len() > 2 {
@@ -7415,7 +5150,6 @@ fn emit_marshal_and_call(
     for reg in [1u8, 2u8] {
         match arg_temps.get(reg as usize - 1) {
             Some(t) => ctx.load_slot(reg, ctx.frame.off(*t)),
-            // `mov xN, xzr` — 1 word, no `load_imm` 4-word movz/movk run.
             None => ctx.push(
                 encode::enc_mov_reg(reg, X_ZR, true),
                 format!("mov x{reg}, xzr"),
@@ -7437,18 +5171,10 @@ fn emit_marshal_and_call(
                 key: fn_key.to_string(),
             });
         }
-        // A `send` has no waker: `x3 = 0` is the `Option[TurnId]` niche,
-        // the same zero test every reader already performs.
         None => ctx.load_imm(3, 0),
     }
-    // plans/M10.md item 0c1: `x4 = Option[CoreId]`, always 0 here. A
-    // same-core admission is local by definition, and a cross-core one goes
-    // through `__rt_xsend_*`, which overwrites `x4` with its own source
-    // core. Set unconditionally rather than left to the callee: a stale
-    // `x4` would deliver this turn's reply to the wrong core.
     ctx.load_imm(4, 0);
     ctx.load_imm(0, method_idx as i64);
-    // ABI: x0..x4 live into the call; EmittedWord holds at most 4 srcs.
     ctx.bl_symbolic_call(symbol, &[0, 1, 2, 3]);
     Ok(())
 }
@@ -7471,12 +5197,6 @@ fn lookup_method_idx(
     Ok((actor, idx))
 }
 
-/// `send target.method(args...)` (02-language.md §9.4): a one-way
-/// `rt_enqueue` call, never a suspension. `dst` is
-/// `Result[unit, CallError[never]]` (plans/M13.md item J / decision 5):
-/// admitted (`x0 == 0`) → `Ok(unit)`; rejected → the same local
-/// `Err(CallError.NotAdmitted(Admission.Full, (take_args...)))`
-/// construction as an awaited call's enqueue-fail arm (item H).
 fn emit_send(
     dst: Temp,
     method_key: &str,
@@ -7486,18 +5206,10 @@ fn emit_send(
     method_index: &ActorMethodIndex,
 ) -> Result<(), CodegenError> {
     let (actor, idx) = lookup_method_idx(method_key, method_index)?;
-    emit_marshal_and_call(
-        idx,
-        arg_temps,
-        ctx,
-        &rt_enqueue_symbol(&actor),
-        None, // one-way: no reply slot, no waker — the sender never suspends.
-    )?;
+    emit_marshal_and_call(idx, arg_temps, ctx, &rt_enqueue_symbol(&actor), None)?;
     let dst_off = ctx.frame.off(dst);
     let dst_size = ctx.frame.size_of_temp(dst);
-    // Rejected (x0 != 0) skips the Ok arm.
     let skip_ok = ctx.emit_skip(SkipKind::Cbnz(0));
-    // Ok(unit): zero-fill, tag = 0.
     let mut w = 0usize;
     while w < dst_size {
         ctx.store_slot(X_ZR, dst_off + w);
@@ -7510,13 +5222,6 @@ fn emit_send(
     Ok(())
 }
 
-/// `self.field. ... .leaf` (02-language.md §9.2), re-derived fresh from
-/// the fn's own stable `self` temp — never a cached value (`flowwir.rs`'s
-/// own "Self-rooted paths across await" section). Walks the same
-/// `field_offset_size` this file already uses for `Project`, one field at
-/// a time, resolving each name against `LayoutCtx::struct_field_names`
-/// (item D's own small addition to `mwir::LayoutCtx`, `dst`'s own doc
-/// comment there).
 fn emit_self_path(
     dst: Temp,
     path: &[String],
@@ -7562,30 +5267,12 @@ fn emit_self_path(
     Ok(())
 }
 
-/// `now()` (plans/M6.md decision 11): a trapping MMIO load —
-/// `wrela_machine::mmio::CLOCK_MMIO_ADDR`, the exact address 06-machine.md
-/// §5/decision 13's own clock-read protocol already names; the VMM's own
-/// exit handler (item E) is what actually returns monotonic ns and logs
-/// the read (`machine.clock.trap-logged`), this fn only issues the load.
-///
-/// Shared by FlowWir (`FlowInst::Now`) and sync MWIR (`Inst::Now` via
-/// `emit_one`, plans/M17.md item Es). Do not duplicate the load sequence
-/// at either call site.
 fn emit_now(dst: Temp, ctx: &mut FnCtx) {
     ctx.load_imm(X_A, wrela_machine::mmio::CLOCK_MMIO_ADDR as i64);
     ctx.load_ptr(X_B, X_A, 0);
     ctx.store_slot(X_B, ctx.frame.off(dst));
 }
 
-/// `entropy[N]()` (plans/M17.md item E / freeze 5): park-shaped fill.
-/// 1. Packed scratch of `n` bytes (reserved on the frame).
-/// 2. Store scratch GPA → `OFF_ENTROPY_DEST`; store `n` → `OFF_ENTROPY_LEN`.
-/// 3. Trapping store to `ENTROPY_MMIO_ADDR`.
-/// 4. Expand scratch bytes into `Bytes[N]` slot-per-byte `dst`.
-///
-/// Shared by FlowWir (`FlowInst::Entropy`) and sync MWIR (`Inst::Entropy`
-/// via `emit_one`, item Es). Do not duplicate this sequence at either
-/// call site.
 fn emit_entropy(dst: Temp, n: u64, ctx: &mut FnCtx) -> Result<(), CodegenError> {
     let scratch_off = ctx.frame.entropy_scratch_off.ok_or_else(|| {
         CodegenError::internal("entropy scratch not reserved in frame (codegen bug)")
@@ -7603,7 +5290,6 @@ fn emit_entropy(dst: Temp, n: u64, ctx: &mut FnCtx) -> Result<(), CodegenError> 
         )));
     }
 
-    // Scratch GPA → OFF_ENTROPY_DEST.
     ctx.addr_of_slot(X_A, scratch_off);
     ctx.load_imm(
         X_B,
@@ -7612,7 +5298,6 @@ fn emit_entropy(dst: Temp, n: u64, ctx: &mut FnCtx) -> Result<(), CodegenError> 
     );
     ctx.store_ptr(X_A, X_B, 0);
 
-    // n → OFF_ENTROPY_LEN.
     ctx.load_imm(X_A, n as i64);
     ctx.load_imm(
         X_B,
@@ -7621,13 +5306,9 @@ fn emit_entropy(dst: Temp, n: u64, ctx: &mut FnCtx) -> Result<(), CodegenError> 
     );
     ctx.store_ptr(X_A, X_B, 0);
 
-    // Trapping store (any value) to ENTROPY_MMIO_ADDR.
-    // Rt=31 encodes as XZR in STR (store_ptr's dump text says `sp` because
-    // `reg_name(31)` is shared with SP — same as other X_ZR store_ptr sites).
     ctx.load_imm(X_A, wrela_machine::mmio::ENTROPY_MMIO_ADDR as i64);
     ctx.store_ptr(X_ZR, X_A, 0);
 
-    // Expand packed scratch → Bytes[N] slot-per-byte dst.
     let dst_off = ctx.frame.off(dst);
     ctx.addr_of_slot(X_C, scratch_off);
     for i in 0..n as usize {
@@ -7637,38 +5318,9 @@ fn emit_entropy(dst: Temp, n: u64, ctx: &mut FnCtx) -> Result<(), CodegenError> 
     Ok(())
 }
 
-/// The two dedicated lineage frame slots every `FlowWirFn` reserves
-/// (`flowwir::FrameLayout`'s own doc: "always `Temp(0)`/`Temp(1)`,
-/// allocated first, before `self`/params/every other temp") — a fixed
-/// convention, not a value threaded from anywhere, so every group op below
-/// just names them directly.
 const LINEAGE_GROUP_SLOT: Temp = Temp(0);
 const LINEAGE_DEADLINE_SLOT: Temp = Temp(1);
 
-/// `with group(...)`'s own opening bracket (02-language.md §9.5,
-/// plans/M6.md item F #1): a real, dumbest-correct linear scan of the
-/// whole-image group arena (`GroupCtx::arena_capacity` slots, fully
-/// unrolled — the count is a small, build-time constant, `CLAUDE.md`'s
-/// "linear scans over the static arena" made literal, never a runtime
-/// loop) for the first `in_use == 0` slot; a build with every slot
-/// occupied aborts, named (an M6 image never nests/loops deeply enough to
-/// exhaust an arena sized from its own static with-site count *unless*
-/// the same static site's own group is somehow still open when re-entered
-/// recursively — M6 has no recursion, so this is a should-never-fire
-/// defensive floor, not a real capacity limit any required golden nears).
-/// Once a slot is claimed: `capacity`/`active_children`/`cancelled`/
-/// `join_waiter`/every child result slot are (re-)initialized (a slot may
-/// be reused by a later loop iteration of the identical `with`-site, so
-/// hygiene zeroing is real, not optional); the deadline narrows
-/// (`min(ambient, own)`, 0 meaning "none" throughout, decision 8's own
-/// inheritance rule) via branch-free `CSEL`s (module doc below); the
-/// *previous* ambient lineage becomes this group's own `parent_group`
-/// (`GROUP_NO_PARENT` if there was none); and the frame's own
-/// `LINEAGE_GROUP_SLOT`/`LINEAGE_DEADLINE_SLOT` (plus `group_temp`
-/// itself, the `as g` binding if any) become this new group's own
-/// `arena_index + 1`/effective deadline — every `Send`/`Await`/nested
-/// `with group`/checkpoint compiled *after* this op, until the matching
-/// `GroupClose`, reads the new ambient values.
 #[allow(clippy::too_many_arguments)]
 fn emit_group_create(
     group_temp: Temp,
@@ -7676,9 +5328,6 @@ fn emit_group_create(
     deadline: Option<Temp>,
     ctx: &mut FnCtx,
     gctx: &GroupCtx,
-    // plans/M10.md item 0c2: this fn's own `program.fns` key — the
-    // `Reloc::TurnIdImm` key for "this turn", which is the value
-    // `OFF_GROUP_OWNER_TURN` now carries in place of `X_FRAME`.
     fn_key: &str,
 ) -> Result<(), CodegenError> {
     const X_ARENA: u8 = 15;
@@ -7692,19 +5341,15 @@ fn emit_group_create(
     }
     ctx.relocs.push(Reloc::GroupArenaBase { word });
 
-    // Capture the *old* ambient lineage before anything overwrites it —
-    // this group's own `parent_group`/deadline-narrowing inputs.
-    ctx.load_slot(X_A, ctx.frame.off(LINEAGE_GROUP_SLOT)); // old ambient group, encoded (0 = none)
-    ctx.load_slot(X_B, ctx.frame.off(LINEAGE_DEADLINE_SLOT)); // old ambient deadline (0 = none)
+    ctx.load_slot(X_A, ctx.frame.off(LINEAGE_GROUP_SLOT));
+    ctx.load_slot(X_B, ctx.frame.off(LINEAGE_DEADLINE_SLOT));
     match deadline {
         Some(t) => ctx.load_slot(X_C, ctx.frame.off(t)),
         None => ctx.load_imm(X_C, 0),
     }
     let own_capacity_off = capacity.map(|t| ctx.frame.off(t));
 
-    // Branch-free narrowing (module doc): 0 means "no deadline" throughout,
-    // so it is remapped to a MAX sentinel for the `min`, then remapped back.
-    ctx.load_imm(X_D, u64::MAX as i64); // sentinel
+    ctx.load_imm(X_D, u64::MAX as i64);
     ctx.push_flags(
         encode::enc_cmp_imm(X_B, 0, true),
         format!("cmp {}, #0", reg_name(X_B)),
@@ -7748,16 +5393,6 @@ fn emit_group_create(
         FlagEffect::Read,
     );
     ctx.cmp_reg(X_E, X_F);
-    // `Ls`, not `Le` — **a real bug the first deadline-bearing boot
-    // caught** (recorded, not silently fixed): a deadline is a raw
-    // `u64` nanosecond count and the "no deadline" sentinel above is
-    // `u64::MAX`, which as a *signed* value is `-1`. With `Le` the
-    // sentinel therefore compared as smaller than every real deadline,
-    // so `min(none, own)` picked the sentinel and the remap below turned
-    // it straight back into `0` — every group with a declared deadline
-    // and no ambient one (i.e. every top-level `with group(deadline=..)`
-    // there is at M6) stored "no deadline" and could never expire.
-    // Invisible until a golden actually armed a deadline.
     ctx.push_flags(
         encode::enc_csel(X_TAG, X_E, X_F, Cond::Ls, true),
         format!(
@@ -7785,10 +5420,6 @@ fn emit_group_create(
         &[X_ZR, X_TAG],
         FlagEffect::Read,
     );
-    // X_TAG now holds the effective (narrowed) deadline. Stash the old
-    // ambient group (X_A) as the new group's parent before we clobber the
-    // lineage slot — `parent_group = (old_ambient == 0) ? GROUP_NO_PARENT
-    // : old_ambient - 1`.
     ctx.push(
         encode::enc_sub_imm(X_B, X_A, 1, true),
         format!("sub {}, {}, #1", reg_name(X_B), reg_name(X_A)),
@@ -7818,7 +5449,6 @@ fn emit_group_create(
         &[X_D, X_B],
         FlagEffect::Read,
     );
-    // X_B now holds parent_group.
 
     let mut to_after: Vec<usize> = Vec::new();
     for i in 0..gctx.arena_capacity {
@@ -7845,9 +5475,8 @@ fn emit_group_create(
             Some(X_D),
             &[X_CAND],
         );
-        let skip_try_next = ctx.emit_skip(SkipKind::Cbnz(X_D)); // in_use != 0 -> try next candidate
+        let skip_try_next = ctx.emit_skip(SkipKind::Cbnz(X_D));
 
-        // Found: initialize this slot.
         ctx.load_imm(X_D, 1);
         ctx.push(
             encode::enc_str_x_imm(X_D, X_CAND, OFF_GROUP_IN_USE as u16),
@@ -7886,12 +5515,6 @@ fn emit_group_create(
                 &[X_ZR, X_CAND],
             );
         }
-        // plans/M10.md item 0c2: `join_waiter` is now an
-        // `Option[TurnId]` — a `u32`, so the hygiene zeroing clears the
-        // four bytes the field actually occupies and not the four bytes of
-        // unused padding above it. `wzr` rather than `xzr` is the honest
-        // width; the niche (decision 567) makes `0` still mean "nobody
-        // waiting", so this zero test keeps its meaning exactly.
         ctx.push(
             encode::enc_str_w_imm(X_ZR, X_CAND, OFF_GROUP_JOIN_WAITER as u16),
             format!("str wzr, [{}, #{OFF_GROUP_JOIN_WAITER}]", reg_name(X_CAND)),
@@ -7932,18 +5555,6 @@ fn emit_group_create(
             None,
             &[X_B, X_CAND],
         );
-        // The owning turn (02-language.md §9.5's own "parent"): this fn's
-        // own turn, which used to be written as `X_FRAME` — the raw
-        // address of that turn's persistent area. plans/M10.md item 0c2
-        // makes it the turn's **`TurnId`**, a `u32` at +56, because both
-        // readers only ever compare it for equality and neither needs an
-        // address: `emit_group_cancelled_flags` below compares against
-        // this fn's own id, and `emit_deadline_scan_and_delivery`
-        // against the build-time id of the turn its unrolled arm is about.
-        // Every cancellation observation site still decides the same
-        // thing — whether a cancelled group terminates the observing
-        // activation (a child started into the group) or merely hands it a
-        // `CallError` (the `with`-block's own body).
         let word = ctx.cur_word();
         ctx.load_imm_naive(X_D, 0);
         for (i, w) in ctx.words[word..word + 4].iter_mut().enumerate() {
@@ -7963,20 +5574,11 @@ fn emit_group_create(
             None,
             &[X_D, X_CAND],
         );
-        // new ambient lineage = i + 1, threaded into the lineage slots +
-        // the `g` binding's own `group_temp`.
         ctx.load_imm(X_D, (i + 1) as i64);
         ctx.store_slot(X_D, ctx.frame.off(LINEAGE_GROUP_SLOT));
         ctx.store_slot(X_TAG, ctx.frame.off(LINEAGE_DEADLINE_SLOT));
         ctx.store_slot(X_D, ctx.frame.off(group_temp));
 
-        // A successful init (this candidate's own `in_use == 0` case)
-        // must always skip past the overflow abort that follows the last
-        // candidate — including on the *last* candidate itself (a
-        // disclosed off-by-one this golden's own first real boot caught:
-        // an earlier draft only pushed this jump when a further candidate
-        // remained, so the loop's own final successful init fell straight
-        // through into the abort it had just escaped).
         let j = ctx.words.len();
         ctx.words
             .push(EmittedWord::new(0, String::new(), CostRule::Alu, None, &[]));
@@ -8002,22 +5604,6 @@ fn emit_group_create(
     Ok(())
 }
 
-/// `g.start(callee, args...)` (02-language.md §9.5, item F #2): admits a
-/// child directly — no mailbox, no `rt_enqueue` (a free async fn has no
-/// mailbox at all, only its own dedicated free-turn area, item C/D's own
-/// sizing) — by writing the *current* ambient lineage into the callee's
-/// own persistent frame (so the child's own awaits/nested groups see this
-/// group as their parent) and calling its compiled entry directly, exactly
-/// as if this were its first-ever activation. `emit_marshal_and_call`'s own
-/// two-scalar-arg floor applies identically (item C's hand-assembled-
-/// dispatch floor, unchanged). The call's own return status is handled
-/// inline, synchronously, right here — never deferred to a poll for a
-/// child that never suspends: `TURN_STATUS_COMPLETED`/`_CANCELLED` harvest
-/// immediately (result written into this group's own child-result slot,
-/// `active_children` decremented, the join waiter woken if this was the
-/// last one still outstanding); `TURN_STATUS_SUSPENDED` leaves the child
-/// parked in its own turn area, for `layout.rs`'s own per-site poll routine
-/// to keep driving on later scheduler ticks (`rt_run_one`'s own extension).
 #[allow(clippy::too_many_arguments)]
 fn emit_group_start(
     group_temp: Temp,
@@ -8039,17 +5625,6 @@ fn emit_group_start(
         ));
     }
 
-    // 04-compiler.md §4's own step one, "atomically closes admission":
-    // a `g.start` into an already-cancelled group never runs its child at
-    // all — the child's own result slot resolves straight to
-    // `CallError::Cancelled` and `active_children` is never incremented,
-    // so a `join_all` already parked on this group is not made to wait for
-    // a child that will never run. **Disclosed floor, not a silent
-    // narrowing**: 04 §4 says a closed-admission attempt gets
-    // `NotAdmitted` with its payloads returned; M6's own composition floor
-    // has exactly one non-`Ok` variant (`emit_compose_group_join_result`'s
-    // own doc), so it resolves `Cancelled` here, and `g.start`'s arguments
-    // are plain scalars with nothing to hand back.
     emit_group_addr_from_temp(ctx, group_temp, X_B, X_A, gctx);
     ctx.push(
         encode::enc_ldr_x_imm(X_C, X_B, OFF_GROUP_CANCELLED as u16),
@@ -8063,7 +5638,7 @@ fn emit_group_start(
         &[X_B],
     );
     let skip_admit = ctx.emit_skip(SkipKind::Cbz(X_C));
-    ctx.load_imm(X_A, 1); // tag = Err(CallError::Cancelled)
+    ctx.load_imm(X_A, 1);
     ctx.push(
         encode::enc_str_x_imm(X_A, X_B, group_child_tag_off(child_index) as u16),
         format!(
@@ -8092,9 +5667,6 @@ fn emit_group_start(
         .push(EmittedWord::new(0, String::new(), CostRule::Alu, None, &[]));
     ctx.patch_skip(skip_admit, SkipKind::Cbz(X_C));
 
-    // Write the ambient lineage into the child's own persistent frame
-    // (Temp(0)/Temp(1) — always the first two slots past the child's own
-    // turn record header) before ever calling it.
     let word = ctx.cur_word();
     ctx.load_imm_naive(X_C, 0);
     for w in ctx.words[word..word + 4].iter_mut() {
@@ -8129,8 +5701,6 @@ fn emit_group_start(
         None,
         &[X_D, X_C],
     );
-    // Mark it busy/fresh (suspended=0, resume_ready=0 — a truly fresh
-    // activation, its own entry's fresh-vs-resume fork reads this).
     ctx.load_imm(X_D, 1);
     ctx.push(
         encode::enc_str_x_imm(X_D, X_C, OFF_TURN_BUSY as u16),
@@ -8153,16 +5723,8 @@ fn emit_group_start(
         );
     }
 
-    // Group address (computed once, before the call, so admission can
-    // increment `active_children` *before* this child ever runs — the
-    // real bookkeeping `g.join_all()`'s own "how many children remain
-    // outstanding" reads; item F's own first real boot caught this
-    // exact ordering bug: an earlier draft only ever touched
-    // `active_children` *after* the call returned, and in the wrong
-    // direction, so a synchronously-completing child left it permanently
-    // wrong and `join_all` could never see zero).
     let group_addr_reg = X_D;
-    ctx.load_slot(X_E, ctx.frame.off(group_temp)); // encoded group id (i+1)
+    ctx.load_slot(X_E, ctx.frame.off(group_temp));
     ctx.push(
         encode::enc_sub_imm(X_E, X_E, 1, true),
         format!("sub {}, {}, #1", reg_name(X_E), reg_name(X_E)),
@@ -8179,7 +5741,6 @@ fn emit_group_start(
     }
     ctx.relocs.push(Reloc::GroupArenaBase { word });
     ctx.add_reg(group_addr_reg, group_addr_reg, X_E);
-    // active_children += 1 (admission).
     ctx.push(
         encode::enc_ldr_x_imm(X_A, group_addr_reg, OFF_GROUP_ACTIVE_CHILDREN as u16),
         format!(
@@ -8210,30 +5771,11 @@ fn emit_group_start(
         &[X_A, group_addr_reg],
     );
 
-    // Marshal args (at most 2 scalars) directly into x0/x1 (a fresh call's
-    // own receiver-less ABI: a free async fn's entry takes no receiver, so
-    // `x0`/`x1` are its first two ordinary params, mirroring
-    // `emit_async_entry`'s own fresh-path arg spill exactly one level up —
-    // no `rt_enqueue`-style args-pointer marshaling needed here at all,
-    // since this is a direct call, not an admission). `group_addr_reg`
-    // (`X_D`) and `X_E`/`X_F` are dead by now — safe to clobber with the
-    // marshaled args/the call itself.
     for (i, t) in arg_temps.iter().enumerate() {
         ctx.load_slot(i as u8, ctx.frame.off(*t));
     }
     let arg_srcs: Vec<u8> = (0..arg_temps.len()).map(|i| i as u8).collect();
     ctx.bl_symbolic_call(callee_key, &arg_srcs);
-    // `X_FRAME` (x28) is *not* preserved by this call the way a hand-
-    // assembled runtime routine's own contract preserves it (`rt_enqueue`/
-    // `__wrela_checkpoint_service`'s own documented "must preserve x28")
-    // — `callee_key`'s own compiled entry is an ordinary async fn, which
-    // loads *its own* persistent-frame address into `X_FRAME` as the very
-    // first thing it does (`emit_async_entry`'s own doc). This item's
-    // first real HVF boot caught exactly this: every `ctx.store_slot`/
-    // `load_slot` call below this line silently addressed the *callee's*
-    // own frame instead of this fn's own, once the child had run — must
-    // reload this fn's own frame address fresh before touching any slot
-    // again, exactly like `emit_async_entry`'s own initial load.
     let word = ctx.cur_word();
     ctx.load_imm_naive(X_FRAME, 0);
     for w in ctx.words[word..word + 4].iter_mut() {
@@ -8243,9 +5785,6 @@ fn emit_group_start(
         word,
         key: fn_key.to_string(),
     });
-    // x0 = status; x1 = value when COMPLETED. Recompute the group address
-    // fresh (the callee's own compiled body may have clobbered any of
-    // x0..x17 — nothing survives a `BL` here by convention).
     ctx.load_slot(X_E, ctx.frame.off(group_temp));
     ctx.push(
         encode::enc_sub_imm(X_E, X_E, 1, true),
@@ -8272,11 +5811,8 @@ fn emit_group_start(
         &[0],
         FlagEffect::Write,
     );
-    let skip_still_running = ctx.emit_skip(SkipKind::Cond(Cond::Eq)); // suspended: leave parked, nothing to harvest yet.
+    let skip_still_running = ctx.emit_skip(SkipKind::Cond(Cond::Eq));
 
-    // Completed or cancelled: tag = 0 (Ok) unless status ==
-    // TURN_STATUS_CANCELLED, in which case tag = 1 (the composed
-    // `CallError::Cancelled`, this item's own floor — module doc above).
     ctx.push_flags(
         encode::enc_cmp_imm(0, TURN_STATUS_CANCELLED as u16, true),
         format!("cmp x0, #{TURN_STATUS_CANCELLED}"),
@@ -8320,12 +5856,6 @@ fn emit_group_start(
         None,
         &[1, group_addr_reg],
     );
-    // Completed/cancelled (never suspended): decrement active_children —
-    // this admission's own count is now settled — and clear this child's
-    // own `busy` (harvested inline; available for a later loop iteration
-    // of this same `g.start` site to reuse). A suspended child leaves both
-    // untouched: still `busy`, still counted `active`, for
-    // `codegen::emit_rt_child_poll` to harvest later.
     ctx.push(
         encode::enc_ldr_x_imm(X_A, group_addr_reg, OFF_GROUP_ACTIVE_CHILDREN as u16),
         format!(
@@ -8385,17 +5915,6 @@ fn emit_group_start(
     Ok(())
 }
 
-/// The group's own closing bracket (item F #1/#4): free the arena slot
-/// and restore the *parent's* ambient lineage into the frame's lineage
-/// slots — the cleanup chain itself (`GroupClose::cleanup_states`) is
-/// never this op's own job: `flowwir_lower.rs`'s own `lower_with_group`
-/// already wires the flat state graph so the natural fall-through from
-/// this op's own flat position jumps into the (possibly empty) cleanup
-/// chain and back out, in reverse registration order, entirely via
-/// ordinary `Transition::Jump` edges — this op runs exactly once, at the
-/// group's own natural close, regardless of whether any child/await inside
-/// it ever observed cancellation (02-language.md §10: a `defer` runs on
-/// every exit).
 fn emit_group_close(
     group_temp: Temp,
     ctx: &mut FnCtx,
@@ -8407,7 +5926,7 @@ fn emit_group_close(
         w.text = "group-arena-base (GroupClose)".to_string();
     }
     ctx.relocs.push(Reloc::GroupArenaBase { word });
-    ctx.load_slot(X_B, ctx.frame.off(group_temp)); // encoded group id (i+1)
+    ctx.load_slot(X_B, ctx.frame.off(group_temp));
     ctx.push(
         encode::enc_sub_imm(X_B, X_B, 1, true),
         format!("sub {}, {}, #1", reg_name(X_B), reg_name(X_B)),
@@ -8418,7 +5937,6 @@ fn emit_group_close(
     ctx.load_imm(X_C, gctx.slot_size() as i64);
     ctx.mul_reg(X_B, X_B, X_C);
     ctx.add_reg(X_A, X_A, X_B);
-    // Restore ambient lineage from this group's own `parent_group`.
     ctx.push(
         encode::enc_ldr_x_imm(X_B, X_A, OFF_GROUP_PARENT as u16),
         format!(
@@ -8432,10 +5950,8 @@ fn emit_group_close(
     );
     ctx.load_imm(X_C, GROUP_NO_PARENT as i64);
     ctx.cmp_reg(X_B, X_C);
-    let skip_no_parent = ctx.emit_skip(SkipKind::Cond(Cond::Eq)); // == GROUP_NO_PARENT -> no-parent arm
+    let skip_no_parent = ctx.emit_skip(SkipKind::Cond(Cond::Eq));
 
-    // Had a parent: new ambient group = parent_index + 1; new ambient
-    // deadline = the parent slot's own (already-narrowed) deadline.
     ctx.push(
         encode::enc_add_imm(X_B, X_B, 1, true),
         format!("add {}, {}, #1", reg_name(X_B), reg_name(X_B)),
@@ -8477,11 +5993,9 @@ fn emit_group_close(
         .push(EmittedWord::new(0, String::new(), CostRule::Alu, None, &[]));
 
     ctx.patch_skip(skip_no_parent, SkipKind::Cond(Cond::Eq));
-    // No parent: ambient becomes "none" (0/0).
     ctx.store_slot(X_ZR, ctx.frame.off(LINEAGE_GROUP_SLOT));
     ctx.store_slot(X_ZR, ctx.frame.off(LINEAGE_DEADLINE_SLOT));
 
-    // Both arms converge here: free the slot.
     let free = ctx.cur_word();
     let delta = (free as i64 - to_free as i64) as i32 * 4;
     ctx.words[to_free] = EmittedWord::new(
@@ -8519,17 +6033,6 @@ fn emit_flow_op(
         }
         FlowInst::Entropy { dst, n } => emit_entropy(*dst, *n, ctx),
         FlowInst::Duration { dst, n } => {
-            // `ms(n)` -> nanoseconds. plans/M6.md item F: item B/D left
-            // this an opaque passthrough ("a real tick-scale conversion
-            // has no required golden to derive one from"); item F's own
-            // deadline goldens are that golden. The scale is the one the
-            // whole machine already agrees on: `now()` reads
-            // `CLOCK_MMIO_ADDR`, which 06-machine.md §5/decision 13 define
-            // as monotonic **nanoseconds**, and the comptime evaluator has
-            // scaled `ms(n)` to `n * 1_000_000` since item A
-            // (`eval::interp::eval_intrinsic`'s own `"ms"` arm) — this arm
-            // was the tier that disagreed, and 02-language.md §9.5's own
-            // `now() + ms(50)` example is only meaningful once it does not.
             const NS_PER_MS: i64 = 1_000_000;
             ctx.load_slot(X_A, ctx.frame.off(*n));
             ctx.load_imm(X_B, NS_PER_MS);
@@ -8565,34 +6068,6 @@ fn emit_flow_op(
     }
 }
 
-/// The shared cancellation-observation test (plans/M6.md item F #3/#4,
-/// decision 6/7's own flip witness): reads the currently-executing turn's
-/// own ambient group (`LINEAGE_GROUP_SLOT` — 0 means "no ambient group,"
-/// nothing to test) and, if it names a real group, its own `cancelled`
-/// flag; when cancelled, this activation terminates immediately via the
-/// shared cancellation tail (`total + 1`'s own sentinel position, module
-/// doc on `emit_async_cancelled_tail`) — "the cancelled frame never
-/// resumes" (04-compiler.md §4). Called from exactly two places, both
-/// already checkpoints by construction: a loop back-edge
-/// (`emit_transition`'s `Jump` arm) and an await's own resume stub
-/// (`emit_await_resume`'s `ActorCall` arm) — never from a sync fn's own
-/// `checkpoint()` call sites (a sync fn has no persistent frame/ambient
-/// lineage at all, decision 4's own reading of "sync turn mid-execution").
-/// The one shared read of "what is my ambient group's cancellation state?"
-/// (plans/M6.md item F #2). Leaves, branch-free at the use site:
-///
-/// - `X_C = 1` iff this turn has an ambient group AND that group's own
-///   `cancelled` word is set, else `0`;
-/// - `X_D = 1` iff that same group's `owner_turn` is this turn — since
-///   plans/M10.md item 0c2 a `TurnId` compared against this fn's own
-///   relocated id, not an address compared against `X_FRAME` — else `0`:
-///   the child-vs-owner distinction `OFF_GROUP_OWNER_TURN`'s own doc
-///   comment explains.
-///
-/// Clobbers `X_A`/`X_B`/`X_E`. A no-op producing `X_C = X_D = 0` when the
-/// whole build has no group arena at all, which is what keeps every
-/// pre-item-F async golden byte-identical (`emit_checkpoint_cancellation_test`
-/// below has the full reasoning); callers must not emit it in that case.
 fn emit_group_cancelled_flags(ctx: &mut FnCtx, fn_key: &str, gctx: &GroupCtx) {
     ctx.push(
         encode::enc_movz(X_C, 0, 0, true),
@@ -8653,12 +6128,6 @@ fn emit_group_cancelled_flags(ctx: &mut FnCtx, fn_key: &str, gctx: &GroupCtx) {
         &[],
         FlagEffect::Read,
     );
-    // plans/M10.md item 0c2: `owner_turn` is a `TurnId` (a `u32` at +56),
-    // so this is a 32-bit load compared against this fn's own relocated
-    // `TurnId` immediate instead of a 64-bit load compared against
-    // `X_FRAME`. Equality only — no index→address step is needed or
-    // wanted here. `ldr w`/`cmp w`: an `x` load would fold the adjacent
-    // word in as high bits.
     ctx.push(
         encode::enc_ldr_w_imm(X_A, X_B, OFF_GROUP_OWNER_TURN as u16),
         format!("ldr w{X_A}, [{}, #{OFF_GROUP_OWNER_TURN}]", reg_name(X_B)),
@@ -8696,32 +6165,10 @@ fn emit_group_cancelled_flags(ctx: &mut FnCtx, fn_key: &str, gctx: &GroupCtx) {
 
 fn emit_checkpoint_cancellation_test(ctx: &mut FnCtx, gctx: &GroupCtx, fn_key: &str) {
     if gctx.arena_capacity == 0 {
-        // No `with group(...)` exists anywhere in this build — a whole-
-        // program fact (`layout::RuntimeTables::group_arena_capacity`),
-        // not a per-fn one. Emitting nothing at all here (rather than a
-        // "no ambient group" runtime check that would always pass) is
-        // what keeps every pre-item-F async golden's own ASM byte-
-        // identical: this fn becomes a true no-op, never touching
-        // `ctx.words`, whenever the build has no group arena to address
-        // in the first place (there would be no `Reloc::GroupArenaBase`
-        // target to resolve against either).
         return;
     }
-    // `word_offsets` has `total + 2` entries: `[total]` is the shared
-    // completion epilogue and `[total + 1]` is the cancellation tail —
-    // so the tail is `len() - 1`. **A real off-by-one the first
-    // cancellation-bearing boot caught**: `len() - 2` named the
-    // *completion* epilogue instead, so a cancelled child returned
-    // `TURN_STATUS_COMPLETED` with a garbage reply and its group's own
-    // child slot harvested as `Ok`, exactly as if it had finished.
     let cancelled_tail = ctx.word_offsets.len() - 1;
     emit_group_cancelled_flags(ctx, fn_key, gctx);
-    // Terminate this activation iff the ambient group is cancelled AND
-    // this turn is not that group's own owner (`OFF_GROUP_OWNER_TURN`'s
-    // own doc comment): a `g.start`ed child's frame never resumes
-    // (04-compiler.md §4), while the `with`-block's own body keeps
-    // running so it can observe the `CallError` and reach its cleanup
-    // chain (02-language.md §9.5).
     let skip_not_cancelled = ctx.emit_skip(SkipKind::Cbz(X_C));
     let skip_is_owner = ctx.emit_skip(SkipKind::Cbnz(X_D));
     ctx.b_unconditional(cancelled_tail);
@@ -8729,12 +6176,7 @@ fn emit_checkpoint_cancellation_test(ctx: &mut FnCtx, gctx: &GroupCtx, fn_key: &
     ctx.patch_skip(skip_not_cancelled, SkipKind::Cbz(X_C));
 }
 
-/// `word_offsets[total + 1]` — module doc on `emit_checkpoint_cancellation_test`.
-/// Reports `TURN_STATUS_CANCELLED`; no mut-receiver writeback (04 §4: "the
-/// cancelled frame never resumes" — its own last-observed state is
-/// discarded, never published to `self`).
 fn emit_async_cancelled_tail(ctx: &mut FnCtx) {
-    // M11 F (decision 793): deterministic zero payload for cancelled harvest.
     ctx.push(
         encode::enc_str_x_imm(X_ZR, X_FRAME, OFF_TURN_REPLY as u16),
         format!(
@@ -8756,41 +6198,6 @@ fn emit_async_cancelled_tail(ctx: &mut FnCtx) {
     );
 }
 
-/// `g.join_all()`'s own result composition (item F #2, shared by both the
-/// "already resolved" immediate path and the real resume path, below):
-/// copies each of `child_count` children's own (tag, payload) pair
-/// straight from the group arena's own child-result slots into
-/// `result_temp`'s frame area — `Array[CallError-composed child type;
-/// child_count]`, one 16-byte `Result` element per child, in declared
-/// order (`GroupCtx::child_index`'s own ordinal numbering). `group_reg`
-/// must already hold the group's own arena address, and must stay live
-/// across the whole loop — it is the base of every load below.
-///
-/// **A real bug the first real HVF boot of `golden/boot-group-join`
-/// caught** (recorded, per house rule, not silently fixed away): an
-/// earlier draft loaded each child's tag/payload into `X_A`/`X_B` while
-/// both call sites passed `X_B` as `group_reg` — so child 0's own
-/// *payload* load overwrote the arena address itself, and child 1's tag
-/// load addressed `payload_of_child_0 + 72`. With `fetch_a`'s own reply
-/// (20) in that slot, that is a 64-bit access to `0x5c`: 4-aligned, not
-/// 8-aligned, and this machine runs with the MMU off (every access is
-/// Device-nGnRnE, naturally-alignment-checked), so it is an EL1
-/// **alignment** fault — taken to `VBAR_EL1 + 0x200` with `VBAR_EL1`
-/// never set, i.e. the reported `esr=0x82000006, ipa=0x200, pc=0x200` was
-/// the *second* fault (an instruction abort on the unmapped vector page),
-/// never a wild branch. Invisible for any single-child group (the clobber
-/// lands on the last use) and invisible to dump review. The value
-/// registers are now `X_C`/`X_D`, and their disjointness from
-/// `group_reg` is checked here rather than trusted.
-/// **A second real bug the same boot caught, one layer down** (recorded,
-/// not silently fixed): an earlier draft wrote each element at a hardcoded
-/// 16-byte stride with the payload as a bare scalar. The composed element
-/// type is `Result[T, CallError[E]]`, whose real size is
-/// `8 (tag) + max(size_of(T), size_of(CallError[E]))` — for this item's own
-/// `Result[u64, CallError[never]]` that is `8 + max(8, 16) = 24`, not 16.
-/// The stride is now derived from the array temp's own real size, and the
-/// `Err` arm composes a real `CallError::Cancelled` value rather than a
-/// raw scalar.
 fn emit_compose_group_join_result(
     ctx: &mut FnCtx,
     group_reg: u8,
@@ -8818,10 +6225,6 @@ fn emit_compose_group_join_result(
         )));
     }
     let elem_size = total / child_count;
-    // Every sum this backend lays out is `tag` (one 8-byte slot) followed
-    // by its payload area (`enum_payload_offset`'s own `TAG` constant —
-    // the one fixed rule, shared with `EnumPayload`'s own emission), so a
-    // composed element is `[+0] = Result tag`, `[+8..elem_size] = payload`.
     const PAYLOAD_OFF: usize = 8;
     if elem_size < PAYLOAD_OFF + 8 {
         return Err(CodegenError::internal(format!(
@@ -8856,16 +6259,6 @@ fn emit_compose_group_join_result(
             Some(VAL_PAYLOAD),
             &[group_reg],
         );
-        // The arena's own child tag is already the `Result` tag by
-        // construction (0 = `Ok`, 1 = `Err`); its payload word is the
-        // child's scalar reply, which is only meaningful on the `Ok` side.
-        // On the `Err` side the payload area holds a whole
-        // `CallError[E]` value, whose own first word is its variant tag —
-        // `Cancelled` (02-language.md §9.4's declared variant order:
-        // `Op`, `Cancelled`, `DeadlineExceeded`, `NotAdmitted`,
-        // `PeerFailed`), the only non-`Ok` outcome this item's own runtime
-        // can produce. Branch-free, mirroring `emit_group_create`'s own
-        // deadline narrowing.
         ctx.load_imm(VAL_CONST, CALL_ERROR_TAG_CANCELLED as i64);
         ctx.push_flags(
             encode::enc_cmp_imm(VAL_TAG, 0, true),
@@ -8890,9 +6283,6 @@ fn emit_compose_group_join_result(
         );
         ctx.store_slot(VAL_TAG, elem_off);
         ctx.store_slot(VAL_PAYLOAD, elem_off + PAYLOAD_OFF);
-        // Zero the rest of the payload area: dead union padding on the
-        // `Ok` side, and `CallError::Cancelled`'s own (empty) payload on
-        // the `Err` side — deterministic either way, never stale bytes.
         let mut w = PAYLOAD_OFF + 8;
         while w < elem_size {
             ctx.store_slot(X_ZR, elem_off + w);
@@ -8902,9 +6292,6 @@ fn emit_compose_group_join_result(
     Ok(())
 }
 
-/// Computes this group's own arena address (`group_temp`'s own encoded
-/// `arena_index + 1` value) into `dst_reg` — the shared address-from-
-/// group-temp shape `GroupJoin`'s suspend/resume/immediate paths all need.
 fn emit_group_addr_from_temp(
     ctx: &mut FnCtx,
     group_temp: Temp,
@@ -8930,33 +6317,11 @@ fn emit_group_addr_from_temp(
         Some(scratch_reg),
         &[scratch_reg],
     );
-    // arena index -> byte offset (a real bug this golden's first real boot
-    // caught: an earlier draft added the raw index to the arena base
-    // instead of `index * slot_size`, invisible for arena index 0
-    // alone since `0 * anything == 0`, wrong for any other slot).
     ctx.load_imm(X_D, gctx.slot_size() as i64);
     ctx.mul_reg(scratch_reg, scratch_reg, X_D);
     ctx.add_reg(dst_reg, dst_reg, scratch_reg);
 }
 
-/// plans/M7.md item Z1: the declared reply type of one `Await{ActorCall}`
-/// site, but only when it is an aggregate — i.e. exactly when that site
-/// uses the wide reply transport (a staging slot + `x8`) instead of the
-/// turn record's own scalar reply word. `None` means "scalar reply,"
-/// which is every M6 await site and the case that must keep emitting the
-/// identical instruction sequence (decision 9c).
-///
-/// The single predicate `flow_reply_stage_size` (which reserves the slot),
-/// `emit_await_suspend` (which publishes its address) and
-/// `emit_await_resume` (which reads the staged value back) all share, so
-/// no two of them can disagree about one site.
-/// 03-hardware.md §5: is this `Await{ActorCall}` site's own result the
-/// bare `Receipt[P]` of the handoff calling convention rather than 02
-/// §9.4's composed `Result`? One predicate, read by `emit_await_resume`
-/// (which reads the reply back) and by `flow_reply_stage_size` /
-/// `aggregate_reply_of_await` (which must *not* reserve a staging slot
-/// for it — a receipt is one opaque word, `is_aggregate`'s own sealed-
-/// authority arm).
 fn is_handoff_receipt_reply(ty: &Type) -> bool {
     matches!(ty, Type::Named(n, _) if n == "Receipt")
 }
@@ -8966,15 +6331,6 @@ fn aggregate_reply_of_await(f: &MwirFn, result_temp: Temp) -> Option<Type> {
     is_aggregate(&declared).then_some(declared)
 }
 
-/// The suspend half of an `Await{ActorCall}`/`Await{GroupJoin}` (module doc's
-/// own "park-and-resume" step 1): save `resume_state`, then either enqueue
-/// a message with this turn's own waker (`ActorCall`) or, for
-/// `GroupJoin`, either resolve immediately (every child already harvested
-/// — `active_children == 0` — this item's own disclosed floor: a group
-/// whose children all completed *synchronously* inside their own
-/// `g.start` never gets a wake event to park on, so this path composes the
-/// result right here and continues without ever leaving the fn) or
-/// register as this group's own `join_waiter` and park for real.
 #[allow(clippy::too_many_arguments)]
 fn emit_await_suspend(
     what: &AwaitKind,
@@ -8984,9 +6340,6 @@ fn emit_await_suspend(
     ctx: &mut FnCtx,
     method_index: &ActorMethodIndex,
     gctx: &GroupCtx,
-    // plans/M10.md item 0c1: this fn's own `program.fns` key — the
-    // `Reloc::TurnIdImm` key for "this turn", which is both the waker of
-    // every message it awaits and the owner of its own reply staging slot.
     fn_key: &str,
     state_temp: Temp,
     state_flat_base: &[usize],
@@ -9001,13 +6354,6 @@ fn emit_await_suspend(
             let (actor, idx) = lookup_method_idx(method_key, method_index)?;
             ctx.load_imm(X_A, resume_state as i64);
             ctx.store_slot(X_A, ctx.frame.off(state_temp));
-            // plans/M7.md item Z1 (decision 9a/9c): publish this turn's own
-            // staging-slot address for the callee's dispatch to pick up —
-            // ONLY when the declared reply is an aggregate. A scalar reply
-            // emits nothing at all here, so every M6 await site keeps its
-            // instruction sequence byte-for-byte. It must land before the
-            // `bl rt_enqueue` below, because a same-core callee can be
-            // dispatched the moment this turn returns to the scheduler.
             if aggregate_reply_of_await(f, result_temp).is_some() {
                 let stage_off = ctx.frame.reply_stage_off.ok_or_else(|| {
                     CodegenError::internal(
@@ -9015,16 +6361,6 @@ fn emit_await_suspend(
                          (`build_frame_flow`/`flow_reply_stage_size` disagree with this site)",
                     )
                 })?;
-                // plans/M10.md item 0c1 (decision 565): this is the one
-                // reference that does NOT reduce to a bare `TurnId`. The
-                // value is *frame-interior* — `turn_base + slot_bias +
-                // stage_off` — and `stage_off` is `Frame::reply_stage_off`,
-                // assigned per fn in `build_frame`, while the reader is the
-                // callee's dispatch arm, a different fn entirely. So it is
-                // stored as two adjacent `u32`s in the one word it always
-                // occupied: this turn's `TurnId` at `OFF_TURN_REPLY_SLOT`,
-                // and the byte offset *within that turn area* at +4.
-                // `TURN_RECORD_SIZE` and every frame offset are unchanged.
                 let word = ctx.cur_word();
                 ctx.load_imm_naive(X_A, 0);
                 for (i, w) in ctx.words[word..word + 4].iter_mut().enumerate() {
@@ -9069,13 +6405,8 @@ fn emit_await_suspend(
                 arg_temps,
                 ctx,
                 &rt_enqueue_symbol(&actor),
-                Some(fn_key), // waker = this turn, by `TurnId`.
+                Some(fn_key),
             )?;
-            // plans/M13.md item H: enqueue-fail — caller still owns the
-            // argument words; build
-            // `Err(CallError.NotAdmitted(Admission.Full, (take_args...)))`
-            // locally (reply_tag semantics still reserve tag 3 for the
-            // resume path). Handoff receipts have no CallError channel.
             let composed_ty = &f.temp_types[result_temp.0];
             if is_handoff_receipt_reply(composed_ty) {
                 let skip = ctx.emit_skip(SkipKind::Cbz(0));
@@ -9085,8 +6416,6 @@ fn emit_await_suspend(
                 ));
                 ctx.patch_skip(skip, SkipKind::Cbz(0));
             } else {
-                // Admitted (x0 == 0) skips the reject arm and parks;
-                // rejected falls through, composes NotAdmitted, resumes.
                 let skip_admitted = ctx.emit_skip(SkipKind::Cbz(0));
                 let result_off = ctx.frame.off(result_temp);
                 let result_size = ctx.frame.size_of_temp(result_temp);
@@ -9096,9 +6425,6 @@ fn emit_await_suspend(
                 ctx.b_unconditional(state_flat_base[resume_state]);
                 ctx.patch_skip(skip_admitted, SkipKind::Cbz(0));
             }
-            // Park: suspended = 1, status = suspended, return to the
-            // scheduler (the real park — control genuinely leaves this
-            // fn; every other ready actor can now run).
             emit_park_and_return(ctx);
             Ok(())
         }
@@ -9126,20 +6452,11 @@ fn emit_await_suspend(
                 &[X_B],
             );
             let skip_park = ctx.emit_skip(SkipKind::Cbnz(X_C));
-            // Immediate: every child already harvested — compose now and
-            // fall straight through to the resume state, no scheduler
-            // round-trip at all.
             emit_compose_group_join_result(ctx, X_B, result_temp, *child_count)?;
             ctx.checkpoint();
             emit_checkpoint_cancellation_test(ctx, gctx, fn_key);
             ctx.b_unconditional(state_flat_base[resume_state]);
             ctx.patch_skip(skip_park, SkipKind::Cbnz(X_C));
-            // Park for real: register as this group's own join waiter.
-            // plans/M10.md item 0c2: by `TurnId` (a `u32` at +48), not by
-            // the raw `X_FRAME` address it used to store — the one reader
-            // (`codegen::emit_rt_child_poll`) derefs it, and does so
-            // through `TurnsBase`/`TurnStride`, the single index→address
-            // rule.
             let word = ctx.cur_word();
             ctx.load_imm_naive(X_A, 0);
             for (i, w) in ctx.words[word..word + 4].iter_mut().enumerate() {
@@ -9162,7 +6479,6 @@ fn emit_await_suspend(
             Ok(())
         }
         AwaitKind::Receipt { receipt_temp } => {
-            // Decision 22: receipt word = meta absolute address.
             ctx.load_imm(X_A, resume_state as i64);
             ctx.store_slot(X_A, ctx.frame.off(state_temp));
             let stage_off = ctx.frame.reply_stage_off.ok_or_else(|| {
@@ -9173,20 +6489,7 @@ fn emit_await_suspend(
             })?;
             let result_size = mwir::size_of(&f.temp_types[result_temp.0], ctx.layout)
                 .map_err(|e| CodegenError::unimplemented(&e))?;
-            // Publish stage, then waiter, then observe RESOLVED
-            // (mask–arm–recheck against a drain that already finished).
-            //
-            // plans/M10.md item 0c3: both are indices now. The waiter is
-            // this turn's own `TurnId` (a `u32` at `SLOT_META_WAITER`,
-            // whose upper half is unused padding); the reply stage is the
-            // `(TurnId, byte offset within that turn area)` pair decision
-            // 565 gives a frame-interior reference — `stage_off` is
-            // `Frame::reply_stage_off`, assigned per fn in `build_frame`,
-            // and the reader is `emit_queue_drain`, so an index alone
-            // could not recover it. Both fields keep the offsets and the
-            // publish order they always had, and `SLOT_META_BYTES` stays
-            // 64, so nothing in the DMA pool moves.
-            ctx.load_slot(X_D, ctx.frame.off(*receipt_temp)); // meta
+            ctx.load_slot(X_D, ctx.frame.off(*receipt_temp));
             let word = ctx.cur_word();
             ctx.load_imm_naive(X_A, 0);
             for (i, w) in ctx.words[word..word + 4].iter_mut().enumerate() {
@@ -9241,12 +6544,6 @@ fn emit_await_suspend(
             ctx.load_imm(X_B, crate::virtqueue::SLOT_FLAG_RESOLVED as i64);
             ctx.and_reg(X_A, X_A, X_B);
             let need_park = ctx.emit_skip(SkipKind::Cbz(X_A));
-            // Already resolved: copy completion stash → result_temp and
-            // continue into the resume state without leaving the fn.
-            // Stash sits at meta - META + (header+status pad) = meta + 64+16+8
-            // = meta + 88; equivalently pool-relative completion_offset, but
-            // we only have meta here: completion = meta + SLOT_META_BYTES +
-            // REQ_HEADER_SIZE + 8.
             let stash_delta =
                 crate::virtqueue::SLOT_META_BYTES + crate::virtqueue::REQ_HEADER_SIZE + 8;
             ctx.load_imm(X_A, stash_delta as i64);
@@ -9262,16 +6559,12 @@ fn emit_await_suspend(
             emit_checkpoint_cancellation_test(ctx, gctx, fn_key);
             ctx.b_unconditional(state_flat_base[resume_state]);
             ctx.patch_skip(need_park, SkipKind::Cbz(X_A));
-            // Park until drain sets resume_ready.
             emit_park_and_return(ctx);
             Ok(())
         }
     }
 }
 
-/// Mark this turn suspended and return `TURN_STATUS_SUSPENDED` to the
-/// scheduler — the real park, emitted identically by every `AwaitKind` arm
-/// that genuinely leaves the fn.
 fn emit_park_and_return(ctx: &mut FnCtx) {
     ctx.load_imm(X_A, 1);
     ctx.push(
@@ -9296,26 +6589,6 @@ fn emit_park_and_return(ctx: &mut FnCtx) {
     );
 }
 
-/// plans/M7.md item Z1: the `Ok` half of an aggregate reply's own resume
-/// composition — copy the callee-written staging slot into `result_temp`'s
-/// payload area (past the 8-byte tag), then zero whatever payload bytes
-/// the composed `Result`'s *error* arm makes wider than the declared reply
-/// itself, so the whole temp is deterministic no matter which arm is live.
-/// The tag is written by the caller (both call sites want `Ok`, but they
-/// reach it differently).
-///
-/// The copy is bounds-checked against the destination rather than trusted.
-/// At Z1 it cannot overflow: the declared reply is a non-`Result` `T`, the
-/// composed temp is `Result[T, CallError[never]]`, so the payload area is
-/// `max(size(T), size(CallError[never]))` — never narrower than `T`. That
-/// stops being true the moment item Z2 stages a declared `Result[T, E]`,
-/// whose staged size is `8 + max(size(T), size(E))` against a payload area
-/// of only `max(size(T), 8 + size(E))` — for a wide `T` and a narrow `E`
-/// (say `T` = 24 bytes, `E` = 8) the staged value is genuinely *wider*
-/// than the destination, and an unchecked copy here would scribble past
-/// the temp onto the next frame slot. Z2 must recompose rather than copy;
-/// this check is what makes that a loud build failure instead of silent
-/// memory corruption, so it stays even though today nothing can trip it.
 fn emit_copy_staged_reply(
     ctx: &mut FnCtx,
     stage_off: usize,
@@ -9337,10 +6610,6 @@ fn emit_copy_staged_reply(
         ctx.store_slot(X_A, result_off + 8 + w);
         w += 8;
     }
-    // The payload area is `result_size - 8` bytes wide (the tag is the
-    // first word), so the last writable word starts at `w == result_size
-    // - 16` — hence `+ 16`, not `+ 8`: an off-by-one here would scribble
-    // one word past the temp, onto whatever frame slot follows it.
     while w + 16 <= result_size {
         ctx.store_slot(X_ZR, result_off + 8 + w);
         w += 8;
@@ -9348,50 +6617,6 @@ fn emit_copy_staged_reply(
     Ok(())
 }
 
-/// plans/M7.md item Z2: the composition for a declared reply that is
-/// itself a `Result[T, E]` — the one shape M6-H1 got *wrong* (both arms
-/// arrived as `.Ok`, an `Err` observed as a success carrying a guest
-/// address).
-///
-/// 02-language.md §9.4 maps `declared Result[T, E]` to
-/// `Result[T, CallError[E]]`, and that is a **re-tagging, not a copy**:
-///
-/// ```text
-///   staged Ok(v)   ->  composed Ok(v)
-///   staged Err(e)  ->  composed Err(CallError.Op(e))
-/// ```
-///
-/// The two values genuinely have different shapes — the staged declared
-/// value is `8 + max(size(T), size(E))` bytes and the composed temp's own
-/// payload area is only `max(size(T), 8 + max(size(E), 8))`, so for a wide
-/// `T` and a narrow `E` the staged value is *wider than its destination*
-/// (`T` = 24, `E` = 16: 32 staged bytes into a 24-byte payload area, which
-/// `golden/boot-actor-reply-result`'s own `Triple` method is exactly).
-/// Routing this through `emit_copy_staged_reply` would therefore be both
-/// wrong (the staged tag word would land where the payload belongs) and,
-/// for that shape, a buffer overrun — which is what that fn's own bounds
-/// check exists to turn into a loud build failure. Nothing here copies the
-/// staged value whole; every arm is recomposed field-wise.
-///
-/// **Every offset comes from the offset authority**, never from a hand-
-/// assumed `+8`: `enum_payload_offset` places the staged `Result`'s own
-/// payload slot, the composed `Result`'s payload slot, and `Op`'s payload
-/// slot inside the `CallError[E]` that occupies it; `mwir::size_of` sizes
-/// `T` and `E`.
-///
-/// The emitted shape is the same one `emit_await_resume`'s own
-/// group-cancelled arm uses, and for the same reason: an `Ok` payload of several words and an `Err`
-/// payload of a tag plus `E` cannot share one `csel`, so the `Err` answer
-/// is composed *unconditionally* and the `Ok` overwrite is skipped when
-/// the staged tag says `Err` — one forward branch, and both outcomes leave
-/// every word of the composed temp deterministic rather than half-written.
-/// Composed inside the cancelled path's own skip, so cancellation still
-/// wins over whatever the callee staged (02 §9.5).
-///
-/// Clobbers `X_A` (the copy shuttle) and `X_B` (the staged tag). `X_C`,
-/// the group-cancelled flag, is already consumed by the branch that guards
-/// this call, and `emit_checkpoint_cancellation_test` recomputes both flags
-/// for itself afterwards.
 fn emit_recompose_staged_result(
     ctx: &mut FnCtx,
     stage_off: usize,
@@ -9417,12 +6642,6 @@ fn emit_recompose_staged_result(
     let err_size =
         mwir::size_of(err_ty, ctx.layout).map_err(|e| CodegenError::unimplemented(&e))?;
     let result_end = result_off + result_size;
-    // Both hold by construction — `size_of(Result[T, CallError[E]])` is
-    // `8 + max(size(T), 8 + max(size(E), 8))`, so the payload area is never
-    // narrower than `T` nor than `8 + size(E)`. Checked anyway, in the same
-    // spirit as `emit_copy_staged_reply`'s own bound: a layout change that
-    // broke either one would otherwise scribble past this temp onto the
-    // next frame slot, silently.
     if ok_payload_off + ok_size > result_end || op_payload_off + err_size > result_end {
         return Err(CodegenError::internal(format!(
             "a recomposed `Result` reply does not fit its composed temp: ok {ok_size} byte(s) at \
@@ -9432,9 +6651,6 @@ fn emit_recompose_staged_result(
             op_payload_off - result_off
         )));
     }
-    // --- staged `Err(e)` -> composed `Err(CallError.Op(e))`, unconditional.
-    // `Op` is `CallError[E]`'s own variant 0 (02 §9.4's declared order,
-    // the same numbering `CALL_ERROR_TAG_CANCELLED = 1` belongs to).
     ctx.store_slot(X_ZR, ok_payload_off);
     let mut w = 0;
     while w < err_size {
@@ -9446,10 +6662,9 @@ fn emit_recompose_staged_result(
         ctx.store_slot(X_ZR, op_payload_off + w);
         w += 8;
     }
-    ctx.load_imm(X_A, 1); // tag = Err (`value::RESULT_ERR`)
+    ctx.load_imm(X_A, 1);
     ctx.store_slot(X_A, result_off);
-    // --- staged `Ok(v)` -> composed `Ok(v)`, overwriting the above.
-    ctx.load_slot(X_B, stage_off); // the staged declared `Result`'s own tag
+    ctx.load_slot(X_B, stage_off);
     let skip_ok = ctx.emit_skip(SkipKind::Cbnz(X_B));
     let mut w = 0;
     while w < ok_size {
@@ -9461,24 +6676,11 @@ fn emit_recompose_staged_result(
         ctx.store_slot(X_ZR, ok_payload_off + w);
         w += 8;
     }
-    ctx.store_slot(X_ZR, result_off); // tag = Ok (`value::RESULT_OK`)
+    ctx.store_slot(X_ZR, result_off);
     ctx.patch_skip(skip_ok, SkipKind::Cbnz(X_B));
     Ok(())
 }
 
-/// plans/M7.md items Z1/Z2: the one place a *staged* declared reply
-/// becomes the caller's composed `Result[T, CallError[E]]`. Two shapes,
-/// one predicate (`decompose_call_error`'s own output):
-///
-/// - a non-`Result` declared reply `T` (item Z1) is a straight copy into
-///   the composed `Ok` payload — the delivered value and the composed
-///   payload have the same shape;
-/// - a declared `Result[T, E]` (item Z2) is a re-tagging, and is
-///   recomposed field-wise (`emit_recompose_staged_result`).
-///
-/// Both `emit_await_resume` call sites — the no-group one and the one
-/// inside the group-cancelled skip — go through here, so the two can never
-/// disagree about which shape a given await site has.
 fn emit_compose_staged_reply(
     ctx: &mut FnCtx,
     stage_off: usize,
@@ -9500,18 +6702,10 @@ fn emit_compose_staged_reply(
     let staged_size =
         mwir::size_of(declared, ctx.layout).map_err(|e| CodegenError::unimplemented(&e))?;
     emit_copy_staged_reply(ctx, stage_off, staged_size, result_off, result_size)?;
-    ctx.store_slot(X_ZR, result_off); // tag = Ok
+    ctx.store_slot(X_ZR, result_off);
     Ok(())
 }
 
-/// plans/M13.md item H: build
-/// `Err(CallError.NotAdmitted(Admission.Full, (take_args...)))` into the
-/// composed result slot from temps the caller still owns (enqueue did not
-/// commit). Layout: `Result.tag=Err` at +0, `CallError.tag=NotAdmitted` at
-/// +8, `Admission.Full` at +16, take-arg words at +24… (each scalar one
-/// slot; aggregates on this arm fail closed — known risk in plans/M13.md).
-///
-/// Clobbers `X_A`/`X_B`.
 fn emit_not_admitted_local(
     ctx: &mut FnCtx,
     result_off: usize,
@@ -9527,13 +6721,12 @@ fn emit_not_admitted_local(
             ));
         }
     }
-    // Zero-fill the whole temp so unused payload words stay deterministic.
     let mut w = 0usize;
     while w < result_size {
         ctx.store_slot(X_ZR, result_off + w);
         w += 8;
     }
-    ctx.load_imm(X_A, 1); // Result.Err
+    ctx.load_imm(X_A, 1);
     ctx.store_slot(X_A, result_off);
     ctx.load_imm(X_B, CALL_ERROR_TAG_NOT_ADMITTED as i64);
     ctx.store_slot(X_B, result_off + 8);
@@ -9554,18 +6747,7 @@ fn emit_not_admitted_local(
     Ok(())
 }
 
-/// plans/M10.md item J: compose `result_temp` from the turn record's
-/// `(OFF_TURN_REPLY_TAG, OFF_TURN_REPLY)` pair. `tag == 0` → `Ok(reply)`;
-/// nonzero → `Err(CallError)` whose variant index is the tag and whose
-/// payload (when any) is the reply word (`Admission` for `NotAdmitted`
-/// with an empty take-args tuple — local enqueue-fail with take args uses
-/// [`emit_not_admitted_local`] instead). Same shape the group arena
-/// already uses for `(tag, payload)`.
-///
-/// `X_A` enters holding the reply word; `X_B` holding the tag. Clobbers
-/// `X_A`/`X_B`.
 fn emit_compose_from_reply_tag(ctx: &mut FnCtx, result_off: usize, result_size: usize) {
-    // `cbnz tag` skips the Ok arm when the tag is a CallError variant.
     let skip_err = ctx.emit_skip(SkipKind::Cbnz(X_B));
     ctx.store_slot(X_A, result_off + 8);
     let mut w = 16;
@@ -9576,7 +6758,6 @@ fn emit_compose_from_reply_tag(ctx: &mut FnCtx, result_off: usize, result_size: 
     ctx.store_slot(X_ZR, result_off);
     let skip_done = ctx.emit_skip(SkipKind::Cond(Cond::Al));
     ctx.patch_skip(skip_err, SkipKind::Cbnz(X_B));
-    // Err: +8 = CallError.tag, +16 = payload (Admission / zero).
     ctx.store_slot(X_B, result_off + 8);
     if result_size >= 24 {
         ctx.store_slot(X_A, result_off + 16);
@@ -9586,25 +6767,11 @@ fn emit_compose_from_reply_tag(ctx: &mut FnCtx, result_off: usize, result_size: 
         ctx.store_slot(X_ZR, result_off + w);
         w += 8;
     }
-    ctx.load_imm(X_A, 1); // Result.Err
+    ctx.load_imm(X_A, 1);
     ctx.store_slot(X_A, result_off);
     ctx.patch_skip(skip_done, SkipKind::Cond(Cond::Al));
 }
 
-/// The resume half (module doc's step 3) — the dispatch chain's landing
-/// site for `resume_state`: for `ActorCall`, compose from the turn
-/// record's `(reply_tag, reply)` pair; for `GroupJoin`
-/// (parked, now woken — either a real child completion or the join
-/// waiter's own group getting cancelled and forcibly resumed, item F #3's
-/// "make cancelled suspended turns ready-to-resume"), recompose from the
-/// group arena directly (the same shared helper the immediate path uses —
-/// results may have kept changing after the wake, but every write is
-/// idempotent by the time this runs). Either way: decision 6's checkpoint
-/// ("await resume points are checkpoints by construction"), this item's
-/// own cancellation test (module doc on `emit_checkpoint_cancellation_test`
-/// — an `ActorCall` resume whose own ambient group is now cancelled never
-/// gets to use its stale composed `Ok(reply)`; it terminates instead, "the
-/// cancelled frame never resumes"), then jump on to the resumed state.
 #[allow(clippy::too_many_arguments)]
 fn emit_await_resume(
     resume_state: usize,
@@ -9613,36 +6780,14 @@ fn emit_await_resume(
     f: &MwirFn,
     ctx: &mut FnCtx,
     gctx: &GroupCtx,
-    // plans/M10.md item 0c2: the `Reloc::TurnIdImm` key
-    // `emit_group_cancelled_flags` below needs — this fn's own turn is
-    // what a group's `owner_turn` is now compared against.
     fn_key: &str,
     state_flat_base: &[usize],
 ) -> Result<(), CodegenError> {
     match what {
         AwaitKind::ActorCall { .. } => {
-            // `result_temp`'s own type is always the composed
-            // `Result[T, CallError[E]]` (02 §9.4's composition table,
-            // `sema::bodies::compose_call_error`) — never the bare
-            // declared reply.
             let composed_ty = &f.temp_types[result_temp.0];
-            // 03-hardware.md §5's handoff calling convention (plans/M8.md
-            // item E, decision 32): the one `Actor[T]` await whose result
-            // is *not* 02 §9.4's composed `Result` — its result is
-            // `Receipt[P]` by name, the caller-owned endpoint the driver's
-            // `return queue.publish(...)` transitioned. One scalar word,
-            // delivered in the caller's own turn record exactly like every
-            // other scalar reply; the failure vocabulary that matters to it
-            // is the receipt's own state machine, reached by `await`ing it.
             if is_handoff_receipt_reply(composed_ty) {
                 if gctx.arena_capacity != 0 {
-                    // 02 §9.5: "Cancellation becomes observable at
-                    // `await`". A composed reply carries `Cancelled` in its
-                    // error slot; a bare `Receipt[P]` has no error slot, and
-                    // inventing one would mean handing back a forged receipt
-                    // word. Fail closed by name rather than resolve a lie —
-                    // the honest repair is 03 §9's recovery turn, which is
-                    // plans/M8.md item F.
                     return Err(CodegenError::unimplemented(
                         "a handoff `await` (03-hardware.md §5) inside an image that declares a \
                          `with group` — a cancelled handoff receipt has no `CallError` channel \
@@ -9675,12 +6820,6 @@ fn emit_await_resume(
             }
             let result_off = ctx.frame.off(result_temp);
             let result_size = ctx.frame.size_of_temp(result_temp);
-            // plans/M7.md item Z1: where the declared reply actually is.
-            // Scalar (`None`) — the turn record's own reply word, exactly
-            // as M6 left it. Aggregate (`Some`) — this fn's own staging
-            // slot, which the callee wrote through `x8` before it ever
-            // completed, so the record's scalar reply word carries a
-            // deliberate 0 for such a method and is not read here at all.
             let staged = match aggregate_reply_of_await(f, result_temp) {
                 None => None,
                 Some(declared) => {
@@ -9704,28 +6843,6 @@ fn emit_await_resume(
                         result_size,
                     )?;
                 } else {
-                    // Same rule the scalar path below applies (02 §9.5:
-                    // "Cancellation becomes observable at `await`"), but
-                    // an aggregate cannot ride a `csel`: the `Ok` payload
-                    // is several words and the `Err` payload is one tag
-                    // word, so the two compositions are written whole,
-                    // one branch apart. Compose the *cancelled* answer
-                    // unconditionally first, then skip the `Ok` overwrite
-                    // when the flag is set — one forward branch, and both
-                    // outcomes leave every payload word deterministic
-                    // rather than half-overwritten.
-                    //
-                    // plans/M7.md item Z2: cancellation wins over whatever
-                    // the callee staged, including a staged declared `Err`
-                    // — the whole composition sits inside this skip, so a
-                    // cancelled await resolves `Err(CallError.Cancelled)`
-                    // and never `Err(CallError.Op(e))`.
-                    //
-                    // Both offsets below come from the offset authority
-                    // rather than a hand-assumed `+8`/`+16`: the composed
-                    // `Result`'s own payload slot holds the whole
-                    // `CallError[E]` (whose tag is its first word), and
-                    // `Op`'s payload slot follows that tag.
                     let Type::Result(_, composed_err_ty) = strip_wrappers(composed_ty) else {
                         return Err(CodegenError::internal(format!(
                             "an actor await's composed result is not a `Result`: {composed_ty:?}"
@@ -9743,7 +6860,7 @@ fn emit_await_resume(
                         ctx.store_slot(X_ZR, w);
                         w += 8;
                     }
-                    ctx.load_imm(X_A, 1); // tag = Err (`value::RESULT_ERR`)
+                    ctx.load_imm(X_A, 1);
                     ctx.store_slot(X_A, result_off);
                     let skip_ok = ctx.emit_skip(SkipKind::Cbnz(X_C));
                     emit_compose_staged_reply(
@@ -9757,9 +6874,6 @@ fn emit_await_resume(
                     ctx.patch_skip(skip_ok, SkipKind::Cbnz(X_C));
                 }
             } else {
-                // plans/M10.md item J: compose from `(reply_tag, reply)`.
-                // Ambient group cancel still wins over a delivered `Ok`
-                // (02 §9.5 — the owner's only observation of cancel).
                 if gctx.arena_capacity != 0 {
                     emit_group_cancelled_flags(ctx, fn_key, gctx);
                 }
@@ -9786,8 +6900,6 @@ fn emit_await_resume(
                     &[X_FRAME],
                 );
                 if gctx.arena_capacity != 0 {
-                    // If cancelled and the delivered tag is Ok, force
-                    // Cancelled. A delivered Cancelled/NotAdmitted stands.
                     let skip_force = ctx.emit_skip(SkipKind::Cbz(X_C));
                     ctx.push_flags(
                         encode::enc_cmp_imm(X_B, 0, true),
@@ -9861,16 +6973,6 @@ fn emit_transition(
         Transition::Return(value) => emit_one(&Inst::Return { value: *value }, f, ctx),
         Transition::Jump(target_state) => {
             let target_flat = state_flat_base[*target_state];
-            // decision 6: every *async* loop back-edge gets a checkpoint —
-            // a `Transition::Jump` is only ever backward for a loop's own
-            // state-cycle repeat (`flowwir_lower.rs`'s own
-            // `lower_while_split`); the position test `target_flat <=
-            // flat_idx` is the same classification sync mwir once used
-            // (plans/M11.md decision 740 retires the sync half — trip
-            // counters only). plans/M6.md item F: this back-edge is
-            // also where a spinning turn's own cancellation is observed
-            // (decision 7's flip witness — a deterministic iteration
-            // count, never mid-instruction).
             if target_flat <= flat_idx {
                 ctx.checkpoint();
                 emit_checkpoint_cancellation_test(ctx, gctx, fn_key);
@@ -9954,13 +7056,6 @@ fn emit_flat_entry(
     }
 }
 
-/// The whole driver for one async fn/method: the custom park-and-resume
-/// entry (`emit_async_entry`) + flattened state bodies/transitions/
-/// await-resume stubs + the shared async completion epilogue, two-pass
-/// sized exactly like `emit_fn`'s own sync-fn driver (module doc above;
-/// never a forked copy of the per-instruction emission itself). Every
-/// frame slot is addressed through `X_FRAME` (the fn's own persistent
-/// turn area) — an SP frame would die at the suspension's own `ret`.
 fn emit_flowwir_fn(
     fn_key: &str,
     f: &FlowWirFn,
@@ -9970,16 +7065,6 @@ fn emit_flowwir_fn(
     gctx: &GroupCtx,
 ) -> Result<CodegenFn, CodegenError> {
     if is_aggregate(&f.ret) && f.receiver.is_none() {
-        // plans/M7.md item Z1 (decision 9d) narrowed this from "any async
-        // fn" to "a *free* async fn". An aggregate-returning async
-        // **method** now works: its caller parks with a staging slot whose
-        // address the callee's own dispatch arm hands it in `x8`
-        // (`OFF_TURN_REPLY_SLOT`). A free async fn has no such caller —
-        // it is a `@test(runtime)` root, driven by the entry driver, or a
-        // `g.start` child, harvested into the group arena's own child
-        // result slots, and both of those destinations are exactly one
-        // word wide with no staging slot to offer. Fail closed, never a
-        // silent truncation; widening THAT is separate, real work.
         return Err(CodegenError::unimplemented(
             "a free (non-method) async fn returning an aggregate — a `@test(runtime)` root's own \
              driver has no reply staging slot to hand it, and a `g.start` child's result slot in \
@@ -9990,9 +7075,6 @@ fn emit_flowwir_fn(
     let (frame, state_temp) = build_frame_flow(f, layout)?;
     let (state_flat_base, resume_target, flat) = flatten(f);
     let total = flat.len();
-    // plans/M20.md item B / decision 1607: same widening as `emit_fn` —
-    // `runtime` and `driver` async bodies are instrumented too, with the
-    // same single exclusion for the counter helper.
     let block_ids = if block_count_instruments(fn_key) {
         assign_flat_block_ids(&flat, &state_flat_base)?
     } else {
@@ -10013,12 +7095,6 @@ fn emit_flowwir_fn(
         body: vec![Inst::AssertFail { message: None }; total],
     };
 
-    // The entry probe needs real-length dummy targets (unlike a sync
-    // prologue, the async entry emits branches — the fresh path's jump to
-    // state 0 and the resume chain's arms — whose widths are fixed but
-    // whose emission indexes `word_offsets`). plans/M6.md item F: one
-    // extra sentinel past the epilogue (`total + 1`) for the shared
-    // cancellation tail (`emit_async_cancelled_tail`'s own doc comment).
     let dummy_targets = vec![0usize; total + 2];
     let mut probe_pro = FnCtx {
         frame: &frame,
@@ -10044,7 +7120,6 @@ fn emit_flowwir_fn(
         &resume_target,
     )?;
     let prologue_len = probe_pro.words.len();
-    // B4's plan for the flat stream (decision 1973), handed to both passes.
     let elide = flat_branch_elision(&flat, &state_flat_base);
     let mut counts = Vec::with_capacity(total);
     for (i, entry) in flat.iter().enumerate() {
@@ -10090,14 +7165,6 @@ fn emit_flowwir_fn(
     }
     word_offsets[total] = acc;
 
-    // plans/M6.md item F: the shared cancellation tail (`total + 1`'s own
-    // sentinel) exists only when this *whole build* has a group arena at
-    // all (`GroupCtx::arena_capacity > 0`) — `emit_checkpoint_cancellation_test`
-    // is the only possible producer of a jump to it, and that fn is
-    // itself a no-op whenever `arena_capacity == 0` (its own doc comment).
-    // Skipping the tail's own bytes entirely in that case is what keeps
-    // every pre-item-F async golden's own ASM/frame-size byte-identical —
-    // not merely unreached, genuinely absent.
     let mut probe_epi = FnCtx {
         frame: &frame,
         layout,
@@ -10173,9 +7240,6 @@ fn emit_flowwir_fn(
     })
 }
 
-/// [`plan_branch_elision`] over a flattened async stream. Same two
-/// conditions, same unconditional leader set — `flat_block_leaders` is a
-/// pure function of the stream, so bridge mode and release agree.
 fn flat_branch_elision(flat: &[FlatEntry], state_flat_base: &[usize]) -> Vec<bool> {
     let n = flat.len();
     let leaders = flat_block_leaders(flat, state_flat_base);
@@ -10187,7 +7251,6 @@ fn flat_branch_elision(flat: &[FlatEntry], state_flat_base: &[usize]) -> Vec<boo
     })
 }
 
-/// Integrity Phase 2 Item M: leaders on a flattened FlowWir stream.
 fn flat_block_leaders(flat: &[FlatEntry], state_flat_base: &[usize]) -> Vec<bool> {
     let n = flat.len();
     let mut leaders = vec![false; n];
@@ -10295,12 +7358,6 @@ fn assign_flat_block_ids(
     Ok(ids)
 }
 
-/// Every async fn's own persistent frame byte count (its `Frame::size` —
-/// the statically reserved slots its activation lives in, past the
-/// 64-byte turn record), keyed exactly like `FlowWirProgram::fns` — the
-/// one fact `layout::compute_runtime_tables` needs from this module to
-/// size each turn area, computed by the identical `build_frame_flow` the
-/// real emission uses so the two can never disagree.
 pub fn async_frame_sizes(
     flow: &FlowWirProgram,
     layout: &LayoutCtx,
@@ -10313,23 +7370,6 @@ pub fn async_frame_sizes(
     Ok(out)
 }
 
-// M11 item F: `emit_rt_run_one` / `emit_rt_child_poll` deleted —
-// `__wrela_rt_run_one` / `__wrela_child_poll` in `stdlib/core/runtime.wr`
-// (decisions 790–794). Spec structs kept only if still referenced…
-// (RtRunOneSpec / RtChildPollSpec removed with the emitters.)
-
-// M11 G (decisions 800–805): emit_rt_xsend / emit_rt_xreply / emit_rt_drain
-// deleted — generic `__wrela_rt_xsend` / `__wrela_rt_xreply` /
-// `__wrela_rt_drain` in stdlib/core/runtime.wr over ring facts + trampolines.
-// M11 J (decisions 830–835): emit_rt_enqueue / emit_rt_select_and_run
-// deleted — generic `__wrela_rt_enqueue` / `__wrela_rt_select` in
-// stdlib/core/runtime.wr over mailbox facts + `__method_*` dispatch stubs.
-// (BRK_REPLY_SLOT_NO_WAKER went with emit_rt_select_and_run.)
-
-/// M11 H / decision 811: floor-cat1 SP install for a secondary core (5 words).
-/// Prepended at inject onto `__wrela_secondary_entry_<core>` before the key is
-/// republished as `rt_secondary_core_entry <core>` (decision 636 extraction).
-/// `n_cores` is the sealed report N (plans/M15.md item D high-DRAM stacks).
 pub fn emit_secondary_sp_install(core: usize, n_cores: usize) -> Vec<EmittedWord> {
     let mut words: Vec<EmittedWord> = Vec::new();
     let push = |words: &mut Vec<EmittedWord>,
@@ -10393,13 +7433,6 @@ pub fn emit_secondary_sp_install(core: usize, n_cores: usize) -> Vec<EmittedWord
     words
 }
 
-// --- stub emitters: shared word-list helpers ------------------------
-//
-// The `emit_*` stub builders below assemble a plain `Vec<EmittedWord>`
-// rather than driving an `FnCtx` (they are hand-shaped fragments, not
-// lowered from mwir), so they need a free `push`/`load_imm` pair.
-// One copy, at module scope, instead of one nested copy per builder.
-
 fn push(
     words: &mut Vec<EmittedWord>,
     w: u32,
@@ -10411,16 +7444,6 @@ fn push(
     words.push(EmittedWord::new(w, text, rule, dst, srcs));
 }
 
-/// Materialize a rodata address inside a **hand-assembled** stub (the ones
-/// that build a `Vec<EmittedWord>` directly rather than through `FnCtx`):
-/// one `ADR` + `Reloc::RodataAdr` under `OptId::AdrAddressing`, else the
-/// `ADRP`+`ADD` pair + `Reloc::Rodata`.
-///
-/// `off_text` is how the *call site* spells the offset in its dump text.
-/// The two callers predate each other and spell it differently (one decimal,
-/// one `{:#x}`); threading the already-formatted string keeps both `dev`
-/// dumps byte-identical to what they were before this fn existed, which is
-/// the only reason it is a parameter rather than a `{byte_offset:#x}` here.
 fn push_rodata_addr(
     words: &mut Vec<EmittedWord>,
     relocs: &mut Vec<Reloc>,
@@ -10506,9 +7529,6 @@ fn load_imm(words: &mut Vec<EmittedWord>, reg: u8, value: u64, label: &str) {
     );
 }
 
-/// M11 H / decision 812: one boot `init` call stub (specialized A64 with
-/// Relocs). Zero-fill lives in `__wrela_rt_boot_init`; inject overwrites
-/// `__boot_call_<i>` with this body. Saves `x30`; no mid-tick checkpoint.
 pub fn emit_boot_init_call(slot: &BootInitSlotSpec) -> CodegenFn {
     fn load_state(
         words: &mut Vec<EmittedWord>,
@@ -10673,7 +7693,6 @@ pub fn emit_boot_init_call(slot: &BootInitSlotSpec) -> CodegenFn {
         panic!("emit_boot_init_call: slot `{}` has no init", slot.name);
     };
 
-    // x30 save — second hang regression (layout::build_boot_init doc).
     push(
         &mut words,
         encode::enc_sub_imm(31, 31, 16, true),
@@ -10748,7 +7767,6 @@ pub fn emit_boot_init_call(slot: &BootInitSlotSpec) -> CodegenFn {
             None,
             &[],
         );
-        // `__wrela_abort(x0=*Bytes)` — stack slot, then BL (noreturn).
         push(
             &mut words,
             encode::enc_sub_imm(31, 31, 16, true),
@@ -10853,16 +7871,6 @@ pub fn emit_boot_init_call(slot: &BootInitSlotSpec) -> CodegenFn {
     }
 }
 
-// --- plans/M11.md item I: checkpoint section floor trampoline -------------
-//
-// M10 G specialized the full checkpoint/vector body into this section
-// (decision 670). M11 I migrates the algorithm to force-rooted wrela
-// (`__wrela_vector0` / `__wrela_rt_checkpoint`); the section keeps only
-// floor-cat2 LR save/restore around `BL __wrela_rt_checkpoint` (decision
-// 821 / 673 extraction — same honesty as H's SP install). IRQ/wake Call
-// stubs are inject-only NON_INVENTORY (decision 823), like boot_init_call.
-
-/// One sealed `IrqCap.bind` site (inject overwrites `__irq_call_*`).
 #[derive(Debug, Clone)]
 pub struct CheckpointIrqSpec {
     pub vector: u64,
@@ -10870,7 +7878,6 @@ pub struct CheckpointIrqSpec {
     pub driver_state: u64,
 }
 
-/// One `@driver` sticky wake-pending → `@task` drain site.
 #[derive(Debug, Clone)]
 pub struct CheckpointWakeSpec {
     pub driver_state: u64,
@@ -10878,20 +7885,14 @@ pub struct CheckpointWakeSpec {
     pub task_key: String,
 }
 
-/// Result of the checkpoint-section trampoline builder.
 pub struct CheckpointEmitResult {
     pub words: Vec<u32>,
     pub checkpoint_service_word: usize,
-    /// Always `None` after M11 item E: poll lives in `code`.
     pub deadline_poll_word: Option<usize>,
-    /// Entry driver should `bl_call_key("__wrela_deadline_poll")`.
     pub has_deadline_poll: bool,
     pub relocs: Vec<Reloc>,
 }
 
-/// M11 I / decision 821: floor-cat2 LR save/restore (5 words).
-/// Contiguous halves used by [`emit_checkpoint_service_trampoline`]:
-/// `sub`/`str` then (after the BL) `ldr`/`add`/`ret`.
 pub fn emit_checkpoint_lr_frame() -> Vec<EmittedWord> {
     vec![
         EmittedWord::new(
@@ -10932,12 +7933,6 @@ pub fn emit_checkpoint_lr_frame() -> Vec<EmittedWord> {
     ]
 }
 
-/// M11 I: checkpoint section = floor LR frame around `BL __wrela_rt_checkpoint`.
-/// Service entry is at word 0 (vector0 body lives in `code` as `__wrela_vector0`).
-/// When `link_body` is false, emit a bare `ret` (no runtime wiring).
-///
-/// M13 item N: `__wrela_rt_checkpoint` takes `core`; the async/IRQ trampoline
-/// is core-0 only, so it materializes `x0 = 0` before the BL.
 pub fn emit_checkpoint_service_trampoline(
     has_deadline_poll: bool,
     link_body: bool,
@@ -10955,10 +7950,8 @@ pub fn emit_checkpoint_service_trampoline(
     debug_assert_eq!(frame.len(), 5);
     let mut words = Vec::new();
     let mut relocs = Vec::new();
-    // save (2)
     words.push(frame[0].word);
     words.push(frame[1].word);
-    // core argument (async checkpoints always service core 0)
     words.push(encode::enc_movz(0, 0, 0, true));
     let bl_word = words.len();
     words.push(encode::enc_bl(0));
@@ -10966,7 +7959,6 @@ pub fn emit_checkpoint_service_trampoline(
         word: bl_word,
         key: "__wrela_rt_checkpoint".into(),
     });
-    // restore (3)
     words.push(frame[2].word);
     words.push(frame[3].word);
     words.push(frame[4].word);
@@ -10979,12 +7971,10 @@ pub fn emit_checkpoint_service_trampoline(
     }
 }
 
-/// M11 I / decision 823: specialized IRQ handler stub (`x0 = driver_state`).
 pub fn emit_checkpoint_irq_call(spec: &CheckpointIrqSpec) -> CodegenFn {
     emit_driver_state_call(&spec.handler_key, spec.driver_state)
 }
 
-/// M11 I / decision 823: specialized `@task` wake stub (`x0 = driver_state`).
 pub fn emit_checkpoint_wake_call(spec: &CheckpointWakeSpec) -> CodegenFn {
     emit_driver_state_call(&spec.task_key, spec.driver_state)
 }
@@ -11053,10 +8043,6 @@ fn emit_driver_state_call(key: &str, driver_state: u64) -> CodegenFn {
     }
 }
 
-/// M11 J / decision 831: specialized method-dispatch stub.
-/// ABI: `x0=arg0, x1=arg1, x2=stage` → sets `x8=stage`, `x0=state`, then
-/// `bl <method_key>`. Aggregate returns write through `x8`; non-aggregate
-/// methods ignore it. Inject overwrites `__method_R_M` placeholders.
 pub fn emit_method_call_stub(method_key: &str, state: u64) -> CodegenFn {
     let mut words: Vec<EmittedWord> = Vec::new();
     let mut relocs: Vec<Reloc> = Vec::new();
@@ -11076,7 +8062,6 @@ pub fn emit_method_call_stub(method_key: &str, state: u64) -> CodegenFn {
         None,
         &[30, 31],
     );
-    // x8 = stage (x2); shift args; x0 = state.
     push(
         &mut words,
         encode::enc_mov_reg(8, 2, true),
@@ -11146,9 +8131,6 @@ pub fn emit_method_call_stub(method_key: &str, state: u64) -> CodegenFn {
     }
 }
 
-/// M11 K / decision 851: specialized `@test(runtime)` call stub.
-/// Loads resolved handle args into `x0..`, sets `x8` to `OFF_TEST_LINE_BUF`,
-/// `bl <test_key>`, returns status in `x0`. Inject overwrites `__test_call_i`.
 pub fn emit_test_call_stub(test_key: &str, args: &[u64]) -> CodegenFn {
     let mut words: Vec<EmittedWord> = Vec::new();
     let mut relocs: Vec<Reloc> = Vec::new();
@@ -11223,14 +8205,9 @@ pub fn emit_test_call_stub(test_key: &str, args: &[u64]) -> CodegenFn {
     }
 }
 
-/// M11 K / decision 851: append interned `test <name>: ` prefix via
-/// `__wrela_console_append_bytes`. Inject overwrites `__test_prefix_i`.
-/// Bytes is by-pointer: stack slot `(base, capacity)`, `x0 = &*slot`,
-/// `x1 = copy_len`.
 pub fn emit_test_prefix_stub(rodata_off: usize, len: u64) -> CodegenFn {
     let mut words: Vec<EmittedWord> = Vec::new();
     let mut relocs: Vec<Reloc> = Vec::new();
-    // 16-byte Bytes slot at [sp], LR at [sp,#16].
     push(
         &mut words,
         encode::enc_sub_imm(31, 31, 32, true),
@@ -11324,38 +8301,14 @@ pub fn emit_test_prefix_stub(rodata_off: usize, len: u64) -> CodegenFn {
     }
 }
 
-/// The whole-program entry point: every sync fn (`mwir::MwirProgram`, via
-/// the existing `emit_fn`) plus every async fn/method (`flowwir::FlowWirProgram`,
-/// via `emit_flowwir_fn` above), merged into one `CodegenProgram` sharing
-/// one rodata pool — so a sync call and an async dispatch-table entry
-/// resolve against the exact same `fn_word_base` map one stage later
-/// (`layout.rs`), with no special-casing by color.
 pub fn codegen_program_with_async(
     mwir: &MwirProgram,
     flow: &FlowWirProgram,
     layout: &LayoutCtx,
     method_index: &ActorMethodIndex,
-    // plans/M6.md item F: `layout::RuntimeTables::group_arena_capacity` —
-    // the whole-build static arena size `GroupCreate`'s own scan (and the
-    // group-child poll routines `layout.rs` builds alongside it) needs;
-    // `0` for a build with no `with group(...)` sites at all (every
-    // pre-item-F caller, byte-identical: `GroupCtx` is only ever consulted
-    // by a `FlowInst::GroupCreate`/`GroupStart`, neither of which any
-    // pre-F program ever lowers).
     group_arena_capacity: u64,
-    // plans/M10.md item D / decision 613: per-mailbox-root specialized
-    // enqueue bodies (`name`, `capacity`, `slot_size`). Empty when the
-    // image has no mailbox roots (dump without an `@image`, sync-only).
     _enqueue_specs: &[(String, u64, u64)],
 ) -> Result<CodegenProgram, CodegenError> {
-    // plans/codegen-pareto-2.md item J, decision 1920: the three MWIR
-    // passes run here, at the one choke point every path shares, so the
-    // program the ∀ gate scores is byte-for-byte the program that ships.
-    // Item P, decision 1982: the FlowWir program is handed in as a
-    // *reference source* — a state machine references a sync fn every bit
-    // as much as another MWIR body does, and the inliner's rule (i)
-    // deletes a callee whose one reference it consumed. FlowWir itself is
-    // never rewritten (decision 1927).
     let optimized = crate::mwir_opt::optimize(mwir, Some(flow), layout);
     let mwir = optimized.as_ref().unwrap_or(mwir);
     if block_ids_active() {
@@ -11393,7 +8346,6 @@ pub fn codegen_program_with_async(
             emit_flowwir_fn(key, f, layout, &mut rodata, method_index, &gctx)?,
         );
     }
-    // M11 J: rt_enqueue bodies are generic wrela; layout aliases keys.
     let out = CodegenProgram {
         fns,
         rodata: rodata.entries,
@@ -11403,15 +8355,10 @@ pub fn codegen_program_with_async(
     Ok(out)
 }
 
-// --- top-level entry ----------------------------------------------------------
-
 pub fn codegen_program(
     mwir: &MwirProgram,
     layout: &LayoutCtx,
 ) -> Result<CodegenProgram, CodegenError> {
-    // Item J, decision 1920 — same hook as `codegen_program_with_async`.
-    // `None` for the flow program is exact rather than approximate here:
-    // this is the sync-only entry, and no FlowWir exists on it.
     let optimized = crate::mwir_opt::optimize(mwir, None, layout);
     let mwir = optimized.as_ref().unwrap_or(mwir);
     if block_ids_active() {
@@ -11443,8 +8390,6 @@ pub fn codegen_program(
     verify_conventions(&out).map_err(CodegenError::internal)?;
     Ok(out)
 }
-
-// --- the `--stage=asm` dump --------------------------------------------------
 
 pub fn dump(program: &CodegenProgram) -> String {
     let mut out = String::new();
@@ -11484,9 +8429,6 @@ fn push_line(out: &mut String, depth: usize, line: &str) {
     out.push('\n');
 }
 
-/// The identical lossy-UTF-8, `\`/newline-escaping rendering
-/// `mwir::dump`'s own `render_bytes` uses — a small, deliberate
-/// duplicate (that helper is private to `mwir.rs`).
 fn render_bytes(bytes: &[u8]) -> String {
     let s = String::from_utf8_lossy(bytes);
     let mut out = String::with_capacity(s.len());
@@ -11500,81 +8442,6 @@ fn render_bytes(bytes: &[u8]) -> String {
     out
 }
 
-// --- structural validation (plans/M5.md item G) -----------------------------
-
-/// A small, pure, cheap structural sanity check over an already-produced
-/// `CodegenProgram` — `cargo xtask fuzz lower`'s own invariant (d). Rejected
-/// as too weak to matter (task note, recorded here rather than silently
-/// dropped): re-decoding every emitted `u32` back into a mnemonic
-/// (`encode::looks_like_valid_a76`-style) would only ever prove this
-/// module's own encoder round-trips against itself, never that the bits are
-/// *correct* — decision 5 (plans/M5.md) already settled that HVF execution
-/// is the one real behavioral oracle for emitted bytes, and the boot golden
-/// (item E's own bug #3, a wrong-bit-field `enc_umulh`) is the concrete
-/// proof a self-consistent decode/encode round-trip would have missed
-/// anyway. What *is* cheap and real: the handful of structural facts a
-/// codegen bug could actually violate without any of the existing per-
-/// instruction unit tests or `--stage=asm` goldens ever seeing it, because
-/// every one of them is a cross-cutting property over the *whole* program
-/// rather than one instruction in isolation:
-///
-/// - every fn's own `code` is non-empty — every `emit_fn` call always
-///   emits at least its own fixed-shape prologue and epilogue, regardless
-///   of how short the mwir body it wraps is, so an empty `code` vector can
-///   only mean a producer bug, never a legitimately tiny fn;
-/// - every `Reloc::Call`'s own `word` index is in range for its own fn's
-///   `code`, and its `key` resolves — either to another fn this same
-///   `CodegenProgram` contains, or (since M6-D, and corrected here by
-///   plans/M7.md item Y) to one of the `rt_enqueue <Actor>` glue symbols
-///   `layout.rs` hand-assembles, which a compiled `await`/`send` through
-///   an `Actor[T]` handle legitimately calls — layout.rs's own `Reloc`
-///   resolution (`layout_program`/
-///   `layout_test_image`) would otherwise hit its own `"internal error: call
-///   target ... was never codegen'd"` guard one stage later, a strictly
-///   worse place to first notice this than right here, immediately after
-///   the fn that emitted the dangling reloc finishes;
-/// - every `Reloc::Rodata`'s own `word_adrp`/`word_adrp + 1` pair (the
-///   `ADRP`+`ADD` `codegen.rs` always emits back-to-back, never
-///   independently) is in range, and its `byte_offset` names a real
-///   position inside the concatenation of every `program.rodata` entry;
-/// - every `Reloc::AbortFixed`/`AbortVal`'s own `word` index is in range
-///   (their own *target* — `__wrela_abort`/`__wrela_abort_val` — is a
-///   layout-time fact this stage has no way to check yet; only the
-///   *source* word index is this stage's own responsibility).
-///
-/// `Err` names the first violation found (fn-key iteration order, then
-/// reloc order within that fn) — never a panic, since this exists
-/// specifically so the fuzzer can call it on arbitrary fuzzed-and-codegen'd
-/// programs and report a clean diagnostic rather than an out-of-bounds
-/// index panic reaching all the way out to `catch_unwind`.
-/// **plans/codegen-pareto.md item F, decision 1793: the convention is
-/// checked against the emitted code, not trusted.**
-///
-/// `regalloc::allocate_program` decides, before anything is emitted,
-/// which registers each function destroys — and every caller's residency
-/// decision rides on that answer being an over-approximation of what the
-/// callee's *final* code actually does. Item E's whole discipline was
-/// that the allocator is handed facts a real emission measured; this is
-/// the other end of the same argument, and it is the half item F was
-/// missing. The probe measures a function against the **naive** frame,
-/// before allocation and before every opt that reads the allocation; if
-/// the final emission names one register the probe did not, or reaches
-/// one callee the probe did not, a caller has already been told a value
-/// survives a call that destroys it — and nothing downstream would
-/// notice until a guest transcript did.
-///
-/// So this runs over the finished program and refuses it if any
-/// function's published clobber set is not a superset of
-///
-/// > every register its own emitted words name, unioned with every
-/// > callee's published clobber set, over every `Reloc::Call` the
-/// > emission actually pushed
-///
-/// with a callee that has no published convention — an async turn body,
-/// a hand-assembled glue routine, a key layout re-points — contributing
-/// [`regalloc::ALL_REGS`]. It is O(words) on the whole program, it runs
-/// on every `release` build, and it fails the build rather than
-/// approximating (CLAUDE.md: fail closed).
 pub fn verify_conventions(program: &CodegenProgram) -> Result<(), String> {
     if program.conventions.is_empty() {
         return Ok(());
@@ -11640,26 +8507,6 @@ pub fn validate(program: &CodegenProgram) -> Result<(), String> {
                             f.code.len()
                         ));
                     }
-                    // plans/M7.md item Y's own find: this arm predates the
-                    // async pipeline and used to demand that every call
-                    // target be a compiled fn in this same program. That
-                    // has been false since M6-D — a compiled `await`/`send`
-                    // through an `Actor[X]` handle emits a symbolic
-                    // `bl <rt_enqueue X>`, and that routine is hand-
-                    // assembled by `layout.rs` into the harness section,
-                    // never codegen'd here. `layout_test_image` already
-                    // resolves both naming schemes deliberately
-                    // (`fn_word_base` -> glue symbols), so the shape is
-                    // legitimate, not a dangling reloc. It went unnoticed
-                    // because `validate` has no production caller at all —
-                    // only the fuzz lanes reach it, and until item Y there
-                    // was no lane that drove the async pipeline.
-                    //
-                    // A synthesized symbol is checked for being a *real*
-                    // glue target rather than waved through on being
-                    // synthetic-shaped: `rt_enqueue_actor` must name an
-                    // actor, so a garbled `rt_enqueue ` key is still a
-                    // finding here, one stage before layout's own guard.
                     let resolvable = program.fns.contains_key(target)
                         || rt_enqueue_actor(target).is_some_and(|a| !a.is_empty())
                         || rt_run_one_glue_target(target)
@@ -11730,9 +8577,6 @@ pub fn validate(program: &CodegenProgram) -> Result<(), String> {
                     }
                 }
                 Reloc::TurnFrameAddr { word, .. } => {
-                    // A four-word `load_imm`: the last patched word sits
-                    // at `word + 3` (its *target* — a turn area address —
-                    // is a layout-time fact this stage cannot check).
                     if word + 3 >= f.code.len() {
                         return Err(format!(
                             "fn `{key}`: Reloc::TurnFrameAddr word {word} (a 4-word load_imm) is \
@@ -11742,9 +8586,6 @@ pub fn validate(program: &CodegenProgram) -> Result<(), String> {
                     }
                 }
                 Reloc::TurnsBase { word } | Reloc::TurnStride { word } => {
-                    // plans/M10.md item 0c3: the two halves of the drain's
-                    // own index→address step, each a four-word `load_imm`
-                    // of a layout-time constant.
                     if word + 3 >= f.code.len() {
                         return Err(format!(
                             "fn `{key}`: Reloc::TurnsBase/TurnStride word {word} (a 4-word                              load_imm) is out of range (code has {} word(s))",
@@ -11753,8 +8594,6 @@ pub fn validate(program: &CodegenProgram) -> Result<(), String> {
                     }
                 }
                 Reloc::MailboxAddr { word, .. } => {
-                    // plans/M10.md item D: four-word load_imm of a mailbox
-                    // ring/tail/count address.
                     if word + 3 >= f.code.len() {
                         return Err(format!(
                             "fn `{key}`: Reloc::MailboxAddr word {word} (a 4-word load_imm) is \
@@ -11764,8 +8603,6 @@ pub fn validate(program: &CodegenProgram) -> Result<(), String> {
                     }
                 }
                 Reloc::RrCursor { word, .. } => {
-                    // plans/M10.md item E3 / decision 621: four-word
-                    // load_imm of one core's RR cursor address.
                     if word + 3 >= f.code.len() {
                         return Err(format!(
                             "fn `{key}`: Reloc::RrCursor word {word} (a 4-word load_imm) is \
@@ -11775,9 +8612,6 @@ pub fn validate(program: &CodegenProgram) -> Result<(), String> {
                     }
                 }
                 Reloc::TurnIdImm { word, .. } => {
-                    // A four-word `load_imm` — identical shape/reasoning to
-                    // `Reloc::TurnFrameAddr` above; its target (a `TurnId`)
-                    // is likewise a layout-time fact.
                     if word + 3 >= f.code.len() {
                         return Err(format!(
                             "fn `{key}`: Reloc::TurnIdImm word {word} (a 4-word load_imm) is \
@@ -11787,10 +8621,6 @@ pub fn validate(program: &CodegenProgram) -> Result<(), String> {
                     }
                 }
                 Reloc::GroupArenaBase { word } => {
-                    // A four-word `load_imm` — identical shape/reasoning
-                    // to `Reloc::TurnFrameAddr` (its own target, the
-                    // whole-image group arena's base address, is a
-                    // layout-time fact this stage cannot check).
                     if word + 3 >= f.code.len() {
                         return Err(format!(
                             "fn `{key}`: Reloc::GroupArenaBase word {word} (a 4-word load_imm) is \
@@ -11844,24 +8674,15 @@ pub fn validate(program: &CodegenProgram) -> Result<(), String> {
     Ok(())
 }
 
-/// plans/M10.md item F0: live word counts for image-static specialization
-/// emitters (decisions 613 / 620) under the census reference configuration.
 #[cfg(test)]
 pub(crate) fn emitted_a64_census_specialization_live_counts()
 -> std::collections::BTreeMap<&'static str, usize> {
     use std::collections::BTreeMap;
     let mut out = BTreeMap::new();
-    // M11 J: emit_rt_enqueue / emit_rt_select_and_run deleted (force-rooted wrela).
-    // emit_rt_run_one / emit_rt_child_poll deleted in M11 F.
-    // M11 G: emit_rt_xsend / xreply / drain deleted (force-rooted wrela).
-    // M11 H: secondary algorithm → wrela; floor SP install measured here.
     out.insert(
         "emit_secondary_sp_install",
         emit_secondary_sp_install(1, 2).len(),
     );
-    // emit_boot_init deleted (force-rooted __wrela_rt_boot_init); call
-    // stubs are inject-only (decision 812) — not a census REF row.
-    // M11 I: checkpoint algorithm → wrela; floor-cat2 LR frame measured here.
     out.insert("emit_checkpoint_lr_frame", emit_checkpoint_lr_frame().len());
     out
 }
@@ -11882,19 +8703,12 @@ mod tests {
         (mwir_program, layout)
     }
 
-    /// A blown Lane 2 pool must fail **closed**, not degrade into a report
-    /// with no `.img` and exit code 0 (plans/M20.md item B measured that
-    /// fail-open on `wrela build --block-count`). Drives the real allocator
-    /// to its real bound rather than asserting on a hand-written string.
     #[test]
     fn block_id_pool_exhaustion_is_a_fail_closed_error() {
         set_block_count(true);
-        // One below the bound still allocates.
         NEXT_BLOCK_ID.with(|c| c.set((crate::rtconfig::BLOCK_POOL_COUNT - 1) as u32));
         let last = alloc_block_id().expect("the final id in the pool must allocate");
         assert_eq!(last as usize, crate::rtconfig::BLOCK_POOL_COUNT - 1);
-        // The next one is over it, and the message must carry the marker
-        // `layout::try_layout_with_codegen` routes on.
         let err = alloc_block_id().expect_err("one past the pool must fail");
         assert!(
             err.message.starts_with(FAIL_CLOSED_PREFIX),
@@ -11909,10 +8723,6 @@ mod tests {
         set_block_count(false);
     }
 
-    /// Bridge mode assigns ids for an **offline** map with no guest counter
-    /// array behind it, so `BLOCK_POOL_COUNT` — which sizes exactly that
-    /// array — must not bind there. Otherwise turning the bridge on for the
-    /// cost stage would turn an ordinary large build into a refusal.
     #[test]
     fn bridge_mode_alone_does_not_fail_closed_past_the_guest_pool() {
         set_block_count(false);
@@ -11922,16 +8732,12 @@ mod tests {
         assert_eq!(id as usize, crate::rtconfig::BLOCK_POOL_COUNT);
         set_block_bridge(false);
 
-        // Control: with emission on, the same allocation is refused.
         set_block_count(true);
         NEXT_BLOCK_ID.with(|c| c.set(crate::rtconfig::BLOCK_POOL_COUNT as u32));
         assert!(alloc_block_id().is_err(), "emission must still fail closed");
         set_block_count(false);
     }
 
-    /// The other half of the same oracle: an ordinary "did not lower"
-    /// codegen error must stay **soft**, or every `err-cross-core-*` report
-    /// golden (report, no `.img`) would start failing the build.
     #[test]
     fn an_ordinary_codegen_error_is_not_marked_fail_closed() {
         let soft = CodegenError::unimplemented("some shape");
@@ -11948,8 +8754,6 @@ mod tests {
         );
     }
 
-    // --- frame-slot assignment (task note 5's own first requirement) ---
-
     #[test]
     fn frame_slots_are_assigned_in_temp_order_with_no_packing() {
         let f = MwirFn {
@@ -11962,13 +8766,8 @@ mod tests {
         let layout = LayoutCtx::default();
         let frame = build_frame(&f, &layout, 0, 0, 0, &regalloc::Assignment::none(64), true)
             .expect("build_frame");
-        // Every scalar is one 8-byte slot regardless of its own declared
-        // width (mwir's own "no packing, ever" rule) — offsets are a
-        // plain running sum, never sub-word-aligned.
         assert_eq!(frame.temp_offset, vec![0, 8, 16]);
         assert_eq!(frame.temp_size, vec![8, 8, 8]);
-        // No receiver, scalar ret -> no self_ptr/ret_ptr slots; `lr` sits
-        // right after the temps; frame size rounds up to 16.
         assert_eq!(frame.self_ptr_off, None);
         assert_eq!(frame.ret_ptr_off, None);
         assert_eq!(frame.lr_off, 24);
@@ -11990,10 +8789,6 @@ mod tests {
             .insert("Point".to_string(), vec![Type::U64, Type::U64]);
         let frame = build_frame(&f, &layout, 0, 0, 0, &regalloc::Assignment::none(64), true)
             .expect("build_frame");
-        // temps: t0 (Point, 16 bytes) at [0,16); self_ptr at 16; ret_ptr
-        // at 24 (the receiver's own aggregate type is also the return
-        // type here, but the two slots are still distinct — self_write_
-        // back and an aggregate result are independent facts); lr at 32.
         assert_eq!(frame.temp_offset, vec![0]);
         assert_eq!(frame.temp_size, vec![16]);
         assert_eq!(frame.self_ptr_off, Some(16));
@@ -12002,11 +8797,6 @@ mod tests {
         assert_eq!(frame.size, 48);
     }
 
-    /// plans/M7.md item Z1: the reply staging slot is a sibling of
-    /// `ret_ptr_off` — reserved only when asked for, sized exactly as
-    /// asked, and pushing `lr` (and so the frame size) out by that much.
-    /// The `0` case is the one every M6 frame takes, and it must leave
-    /// the frame byte-for-byte as it was (decision 9c).
     #[test]
     fn frame_reserves_the_reply_staging_slot_only_when_sized() {
         let f = MwirFn {
@@ -12045,20 +8835,8 @@ mod tests {
         assert!(build_frame(&f, &layout, 0, 0, 0, &regalloc::Assignment::none(64), true).is_err());
     }
 
-    /// plans/M9.md item RR: the imm12 ceiling is on `off + slot_bias`, the
-    /// number `addr_of_slot` actually encodes — not on `size` alone.
-    ///
-    /// A frame of exactly 4040 bytes is legal for a sync fn (bias 0, and
-    /// `4040 <= 4095`) and must be *refused* for an async one, whose every
-    /// slot reference is biased past the `TURN_RECORD_SIZE`-byte turn
-    /// record: `4040 + 64 = 4104` is past the field, where the surplus
-    /// bit lands in `enc_add_imm`'s `shift` and quietly assembles a
-    /// different instruction. Checking `size` alone let exactly this
-    /// through.
     #[test]
     fn an_async_frame_is_bounded_by_imm12_less_the_slot_bias() {
-        // 503 * 8 = 4024 bytes of temp, + 8 for `lr` = 4032, rounded to
-        // 4032; one more 8-byte temp puts it at 4040.
         let f = MwirFn {
             receiver: None,
             params: vec![],
@@ -12097,8 +8875,6 @@ mod tests {
             err.message
         );
 
-        // And the largest frame that still fits with the bias applied is
-        // accepted, so the bound is not merely conservative-by-accident.
         let smaller = MwirFn {
             temp_types: vec![Type::Array(
                 Box::new(Type::U64),
@@ -12119,8 +8895,6 @@ mod tests {
         assert!(ok.size + bias <= 4095);
     }
 
-    /// plans/M19.md item I / decision 1486: small imm under NarrowImm is
-    /// one `movz` word (naive path stays four).
     #[test]
     fn narrow_imm_small_constant_emits_one_word() {
         let mwir = const_return_mwir(42);
@@ -12152,10 +8926,8 @@ mod tests {
         );
     }
 
-    /// Sparse high halfword: NarrowImm skips the zero movks.
     #[test]
     fn narrow_imm_sparse_skips_zero_movks() {
-        // bit 48 set only → movz at lsl #48; no movk for the zero halves.
         let value: u64 = 1u64 << 48;
         let mwir = const_return_mwir(value as i64);
         let layout = LayoutCtx::default();
@@ -12172,7 +8944,6 @@ mod tests {
         );
         assert_eq!(materialize_mov_wide(&narrow_mov), value);
 
-        // Two non-zero halves with a zero gap: movz + one movk, not four.
         let value2: u64 = (0xAAu64 << 32) | 0x11;
         let mwir2 = const_return_mwir(value2 as i64);
         set_narrow_imm(true);
@@ -12190,7 +8961,6 @@ mod tests {
         assert_eq!(materialize_mov_wide(&mov2), value2);
     }
 
-    /// Narrow and naive materializations yield identical register bits.
     #[test]
     fn narrow_imm_bits_match_naive() {
         let layout = LayoutCtx::default();
@@ -12255,7 +9025,6 @@ mod tests {
             .collect()
     }
 
-    /// Reconstruct the 64-bit value a MOVZ/MOVK sequence leaves in the Rd.
     fn materialize_mov_wide(words: &[u32]) -> u64 {
         let mut val = 0u64;
         for &w in words {
@@ -12265,11 +9034,9 @@ mod tests {
             let opc = (w >> 29) & 0b11;
             match opc {
                 0b10 => {
-                    // MOVZ: set selected half, zero the rest.
                     val = imm16 << shift;
                 }
                 0b11 => {
-                    // MOVK: set selected half, leave others.
                     let mask = !(0xFFFFu64 << shift);
                     val = (val & mask) | (imm16 << shift);
                 }
@@ -12279,14 +9046,6 @@ mod tests {
         val
     }
 
-    /// plans/M20.md item E: the emitted divide declares its **result and
-    /// its operands**, so a consumer of the quotient waits on it.
-    ///
-    /// Before this item `emit_div_rem` pushed `dst = None, srcs = &[]`,
-    /// which meant a 20-cycle divide created no dependence edge at all and
-    /// nothing downstream ever waited — a genuine under-cost in the one
-    /// direction 04 §5 forbids. A source scan would not catch it (the
-    /// `CostRule` tag was already right); only the tags themselves say it.
     #[test]
     fn emitted_divide_declares_result_and_operands() {
         const SRC: &str = r#"
@@ -12324,8 +9083,6 @@ pub fn r(a: u64, b: u64) -> u64:
                         );
                     }
                     CostRule::Mul => {
-                        // The `%` lowering's `msub Xd, Xn, Xm, Xa` reads
-                        // the accumulator `Xa` too.
                         msubs += 1;
                         assert!(
                             ew.src_slice().contains(&X_A),
@@ -12340,9 +9097,6 @@ pub fn r(a: u64, b: u64) -> u64:
         assert_eq!(divides, 2, "one divide per fn");
         assert_eq!(msubs, 1, "only the `%` lowering emits the msub");
 
-        // And the edge is live in the scoreboard: the store of the
-        // quotient reads X_C, so it cannot issue before the divide
-        // retires. Score the `q` fn alone against the committed profile.
         let table = crate::cost::table::load_default().expect("bench/a76-pi5.toml");
         let place = crate::placement::PlacementTable::default();
         let scored = crate::cost::score_program(&prog, &table, &place).expect("score");
@@ -12360,8 +9114,6 @@ pub fn r(a: u64, b: u64) -> u64:
         );
     }
 
-    /// plans/M19.md item I Cheap: cost-calls proxy rank drops with NarrowImm
-    /// on vs off (many small immediates).
     #[test]
     fn narrow_imm_lowers_cost_calls_proxy_rank() {
         use crate::cost::score::score_program;
@@ -12417,9 +9169,6 @@ pub fn r(a: u64, b: u64) -> u64:
         );
     }
 
-    /// plans/M15.md item K / decision 1098: `--omit-dmb` strips every
-    /// `Inst::Dmb` word from the asm dump (cheap oracle for the mutation
-    /// front-door; the focused boot proves the guest-visible half).
     #[test]
     fn omit_dmb_strips_barrier_words_from_asm() {
         let mwir = MwirProgram {
@@ -12481,8 +9230,6 @@ pub fn r(a: u64, b: u64) -> u64:
         );
     }
 
-    /// Integrity Phase 2 Item M: `--block-count` injects
-    /// `bl <__wrela_block_hit>` at every MWIR leader; off leaves asm alone.
     #[test]
     fn block_count_emits_hit_calls_at_leaders() {
         let mwir = MwirProgram {
@@ -12534,7 +9281,6 @@ pub fn r(a: u64, b: u64) -> u64:
             "block-count emission must be deterministic across two runs"
         );
         let hits = on_dump.matches("bl <__wrela_block_hit>").count();
-        // leaders: 0, 2 (after JumpIfFalse), 3 (target), 4 (after Jump / Return)
         assert_eq!(hits, 4, "expected one hit call per leader:\n{on_dump}");
         assert!(
             on_a.fns["branchy"].code.len() > off.fns["branchy"].code.len(),
@@ -12542,15 +9288,6 @@ pub fn r(a: u64, b: u64) -> u64:
         );
     }
 
-    /// plans/M20.md item B / decision 1607: Lane 2 instruments **every**
-    /// owner. One two-block fn per owner bucket, all four in one program:
-    /// `app`, `runtime` (a `core.runtime.*` key), `driver` (a `.on_*` key)
-    /// — and the counter helper itself, which must stay uninstrumented or
-    /// its first hit self-recurses forever (measured: the guest faults).
-    ///
-    /// This is the oracle for the gate drop: restoring
-    /// `classify_owner(key) == "app"` at either site makes it fail, because
-    /// the runtime and driver bodies would emit no hit call.
     #[test]
     fn block_count_instruments_runtime_and_driver_owners() {
         fn two_block_fn() -> MwirFn {
@@ -12629,21 +9366,9 @@ pub fn r(a: u64, b: u64) -> u64:
             self_hits, 0,
             "the counter helper must never be instrumented — that is unbounded self-recursion"
         );
-        // 3 instrumented fns × 3 leaders (0, the JumpIfFalse fallthrough,
-        // and the shared target); the helper allocates none.
         assert_eq!(ids, 9, "one id per instrumented leader, helper excluded");
     }
 
-    /// plans/M20.md item B: the widened Lane 2 id count on the cost-stage
-    /// closure of the `boot-actors` control case, pinned so the number
-    /// stays checked rather than living in a commit message. Measured
-    /// 2026-07-29: 184 ids widened (123 under the pre-M20 `app`-only gate).
-    ///
-    /// **Scope of this bound.** This is the closure `wrela dump
-    /// --stage=asm|cost` builds — the surface the cost model scores. It is
-    /// *not* the `@test(runtime)` boot image, whose widened count is far
-    /// larger (2522 for `boot-actors`, 2786 max across `boot-*`) and does
-    /// **not** fit `BLOCK_POOL_COUNT`; see this item's report.
     #[test]
     fn block_count_id_count_on_boot_actors_cost_stage_is_pinned() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -12705,12 +9430,8 @@ pub fn r(a: u64, b: u64) -> u64:
         );
     }
 
-    // --- end-to-end: exact word sequences for tiny fns ------------------
-
     #[test]
     fn add_emission_records_alu_rule_and_regs() {
-        // plans/M18.md item C: emit-time CostRule + dest/src regs; never
-        // parse mnemonics. Wide checked add uses `adds` with X_C←X_A,X_B.
         let (mwir_program, layout) = compile(
             "module examples.codegen_cost_add\n\npub fn add(a: i64, b: i64) -> i64:\n    return a + b\n",
         );
@@ -12728,7 +9449,6 @@ pub fn r(a: u64, b: u64) -> u64:
 
     #[test]
     fn sync_frame_load_store_tagged_stack() {
-        // cost hard-cut item B: proven SP-relative slot traffic → Stack.
         let (mwir_program, layout) = compile(
             "module examples.codegen_memref_stack\n\npub fn answer() -> u64:\n    return 42\n",
         );
@@ -12754,8 +9474,6 @@ pub fn r(a: u64, b: u64) -> u64:
 
     #[test]
     fn adrp_has_no_memref() {
-        // cost hard-cut item B: Adrp never carries a MemRef.
-        // Narrow checked add emits inline abort stubs that ADRP rodata messages.
         let (mwir_program, layout) = compile(
             "module examples.codegen_memref_adrp\n\npub fn add(a: u8, b: u8) -> u8:\n    return a + b\n",
         );
@@ -12772,11 +9490,6 @@ pub fn r(a: u64, b: u64) -> u64:
         }
     }
 
-    /// plans/codegen-pareto.md item B1 (decision 1730): the substitution
-    /// itself. Every rodata reference is one `ADR` + one `Reloc::RodataAdr`
-    /// under the opt, and the `ADRP`+`ADD` pair with its `Reloc::Rodata`
-    /// without it — so the fn is strictly one word shorter per site, which
-    /// is the whole claimed win.
     #[test]
     fn adr_addressing_replaces_every_adrp_add_pair_with_one_adr() {
         let (mwir_program, layout) = compile(
@@ -12811,8 +9524,6 @@ pub fn r(a: u64, b: u64) -> u64:
             "no ADRP+ADD reloc may survive the substitution"
         );
 
-        // One word saved per site, and the surviving word is a real `ADR`
-        // (bit 31 clear) rather than the `ADRP` it replaced (bit 31 set).
         assert_eq!(
             pf.code.len() - af.code.len(),
             sites,
@@ -12839,16 +9550,6 @@ pub fn r(a: u64, b: u64) -> u64:
         }
     }
 
-    // --- plans/codegen-pareto.md item C: one form oracle per sub-item ---
-    //
-    // Each of these asserts the two halves freeze 1714 asks for: the
-    // **emitted form changed** (the new word is there and the words it
-    // replaced are gone), and the **semantics did not** (the same abort
-    // messages are still reachable, the same value is still narrowed to
-    // the same width). The equivalence argument each rests on is written
-    // at the transform, not here.
-
-    /// Compile `src` under an explicit opt list and return one fn's words.
     fn words_under(src: &str, key: &str, opts: &[crate::opts::OptId]) -> Vec<EmittedWord> {
         crate::opts::apply_opts(opts);
         let (mwir_program, layout) = compile(src);
@@ -12862,8 +9563,6 @@ pub fn r(a: u64, b: u64) -> u64:
         words.iter().map(|w| w.text.clone()).collect()
     }
 
-    /// **Item C3.** `narrow_to_width` emits one `UBFX`/`SBFX` where it
-    /// emitted an `LSL`+`LSR`/`ASR` pair, and nothing else moves.
     #[test]
     fn item_c3_narrow_to_width_becomes_one_bitfield_extract() {
         use crate::opts::OptId;
@@ -12891,8 +9590,6 @@ pub fn r(a: u64, b: u64) -> u64:
                     && !on.iter().any(|t| t.starts_with("lsl x11, x11, #")),
                 "{key}: the shift pair must be gone, got {on:?}"
             );
-            // Semantics: exactly one word fewer, and it is the pair's
-            // second half that went.
             assert_eq!(
                 on.len() + 1,
                 off.len(),
@@ -12901,8 +9598,6 @@ pub fn r(a: u64, b: u64) -> u64:
         }
     }
 
-    /// The opt is **off** by default and off in `dev`, so the reference
-    /// form stays the reference form (freeze 1407's shape).
     #[test]
     fn adr_addressing_is_off_under_dev() {
         crate::opts::apply_mode(crate::opts::CompileMode::Dev);
@@ -12912,8 +9607,6 @@ pub fn r(a: u64, b: u64) -> u64:
         crate::opts::apply_mode(crate::opts::CompileMode::Release);
     }
 
-    /// **Item C2.** The narrow range check becomes one masked test against
-    /// **one** abort, and both failure directions still abort.
     #[test]
     fn item_c2_narrow_range_check_becomes_one_masked_test() {
         use crate::opts::OptId;
@@ -12921,7 +9614,6 @@ pub fn r(a: u64, b: u64) -> u64:
              pub fn add_u32(a: u32, b: u32) -> u32:\n    return a + b\n\n\
              pub fn add_i16(a: i16, b: i16) -> i16:\n    return a + b\n";
 
-        // Unsigned: one `TST` against the high mask.
         let off = words_under(SRC, "add_u32", &[]);
         let on = words_under(SRC, "add_u32", &[OptId::MaskCheck]);
         let on_t = texts(&on);
@@ -12933,38 +9625,26 @@ pub fn r(a: u64, b: u64) -> u64:
             !on_t.iter().any(|t| t.starts_with("cmp x11, x12")),
             "the two constant compares must be gone, got {on_t:?}"
         );
-        // The mask really is the complement of the type's value range.
         assert_eq!(!((1u64 << 32) - 1), 0xFFFF_FFFF_0000_0000);
 
-        // Signed: `SBFX` re-derives the canonical value and one compare
-        // asks whether it changed.
         let on_s = texts(&words_under(SRC, "add_i16", &[OptId::MaskCheck]));
         assert!(
             on_s.iter().any(|t| t == "sbfx x12, x11, #0, #16"),
             "expected the SBFX range test, got {on_s:?}"
         );
 
-        // Semantics: one abort call where there were two, and it is the
-        // *same* abort — same message, still reachable by falling through.
         let aborts = |w: &[EmittedWord]| w.iter().filter(|e| e.rule == CostRule::Abort).count();
         assert_eq!(aborts(&off), 2, "the baseline had one abort per direction");
         assert_eq!(aborts(&on), 1, "the masked form needs only one");
-        // And the abort is still there at all — a check that aborted
-        // *never* would also pass every assertion above.
         assert!(
             on_t.iter().any(|t| t.contains("__wrela_abort")),
             "the overflow abort must survive, got {on_t:?}"
         );
     }
 
-    /// **Item C5.** A small negative goes from four `MOVZ`/`MOVK` words to
-    /// one `MOVN`, and a high mask to one bitmask-immediate `MOV`.
     #[test]
     fn item_c5_one_word_immediates() {
         use crate::opts::OptId;
-        // `-1` is `0xFFFF` in all four halfwords, so `NarrowImm` alone
-        // cannot shorten it: this is exactly the gap C5 fills. The
-        // `MIN`/`-1` guard of a signed divide materializes it.
         const SRC: &str = "module examples.item_c5\n\n\
              pub fn div(a: i32, b: i32) -> i32:\n    return a / b\n";
 
@@ -12995,11 +9675,6 @@ pub fn r(a: u64, b: u64) -> u64:
             !c5.iter().any(|t| t.starts_with("movk x13,")),
             "the -1 MOVK chain must be gone, got {c5:?}"
         );
-        // The other constant this fn materializes is `i32::MIN`
-        // (`0xffffffff80000000`), which is *not* a `MOVN` — its inverse
-        // has two non-zero halfwords — but **is** a bitmask immediate: 33
-        // contiguous ones. So it takes C5's other one-word form, and the
-        // two together remove five words from this one function.
         assert!(
             c5.iter().any(|t| t == "mov x12, #0xffffffff80000000"),
             "expected the bitmask-immediate MOV for i32::MIN, got {c5:?}"
@@ -13011,13 +9686,6 @@ pub fn r(a: u64, b: u64) -> u64:
         );
     }
 
-    /// **Item C1.** A wrapping multiply of a declared type of 32 bits or
-    /// fewer emits the W-form; 64-bit and *checked* multiplies do not.
-    ///
-    /// Unconditional (decision 1746), so there is no opt to toggle — the
-    /// oracle is the width discrimination itself, which is the whole
-    /// claim: driven by the declared type (decision 1704), never by a
-    /// range.
     #[test]
     fn item_c1_only_narrow_wrapping_multiplies_take_the_w_form() {
         const SRC: &str = "module examples.item_c1\n\n\
@@ -13040,7 +9708,6 @@ pub fn r(a: u64, b: u64) -> u64:
                 "{key}: a wrapping multiply at <= 32 bits must be W-form, got `{}`",
                 muls[0].text
             );
-            // sf = 0 is the claim; read it off the word, not the text.
             assert_eq!(muls[0].word >> 31, 0, "{key}: sf bit must be 0");
             assert!(
                 muls[0].text.starts_with("mul w"),
@@ -13076,7 +9743,6 @@ pub fn r(a: u64, b: u64) -> u64:
 
     #[test]
     fn memref_for_base_imm_non_sp_is_cold_in_codegen_helpers() {
-        // Proven [x28, #imm] (async slot base) classifies as Cold, not Stack.
         assert_eq!(
             MemRef::for_base_imm(X_FRAME, 64).class,
             crate::cost::MemClass::Cold
@@ -13086,22 +9752,15 @@ pub fn r(a: u64, b: u64) -> u64:
 
     #[test]
     fn unknown_load_via_push_gets_unique_cold() {
-        // Raw FnCtx::push of Load/Store (no proven base+imm) → unique Cold.
-        // Checked add overflow path emits `bl <__wrela_abort>`; the
-        // register-indirect device/pending forms use push → unique. Here
-        // we lock the allocator shape that push uses.
         let u0 = MemRef::cold_unique(0);
         let u1 = MemRef::cold_unique(1);
         assert_eq!(u0.class, crate::cost::MemClass::Cold);
         assert_ne!(u0.key, u1.key);
         assert_ne!(u0.key & (1u64 << 63), 0);
-        // Contrast: proven non-SP base+imm is stable (no high bit).
         let stable = MemRef::for_base_imm(X_A, 0);
         assert_eq!(stable.class, crate::cost::MemClass::Cold);
         assert_eq!(stable.key & (1u64 << 63), 0);
     }
-
-    // --- integrity item D: push / push_mem structural asserts ------------
 
     #[test]
     fn push_shape_call_requires_x0_dst() {
@@ -13145,7 +9804,6 @@ pub fn r(a: u64, b: u64) -> u64:
 
     #[test]
     fn push_shape_load_unique_cold_empty_srcs_ok() {
-        // Unique-cold path still ok when tagged (address unknown / pessimistic).
         check_push_shape(CostRule::Load, Some(0), &[], Some(&MemRef::cold_unique(0)));
     }
 
@@ -13168,7 +9826,6 @@ pub fn r(a: u64, b: u64) -> u64:
     #[test]
     #[should_panic(expected = "base reg")]
     fn push_shape_store_nonunique_missing_base_fails() {
-        // Stack MemRef base is SP (31); srcs only carry the stored value.
         check_push_shape(CostRule::Store, None, &[0], Some(&MemRef::stack(8)));
     }
 
@@ -13179,8 +9836,6 @@ pub fn r(a: u64, b: u64) -> u64:
 
     #[test]
     fn push_shape_untagged_load_store_helpers_unique() {
-        // Document the coerce: missing MemRef on Load/Store is treated as
-        // unique cold by push_mem; shape check then exempts empty-src Loads.
         assert!(memref_is_unique_cold(&MemRef::cold_unique(0)));
         assert!(!memref_is_unique_cold(&MemRef::stack(0)));
         assert!(!memref_is_unique_cold(&MemRef::for_base_imm(X_A, 0)));
@@ -13219,7 +9874,6 @@ pub fn r(a: u64, b: u64) -> u64:
                 encode::enc_ret(X_LR),
             ]
         );
-        // No abort/call/rodata reloc is ever needed for a fn this small.
         assert!(f.relocs.is_empty());
     }
 
@@ -13249,9 +9903,6 @@ pub fn r(a: u64, b: u64) -> u64:
         }
     }
 
-    // --- overflow-check branch shapes per op (task note 5's own third
-    // requirement) ---
-
     #[test]
     fn narrow_checked_add_bounds_checks_against_the_target_type() {
         let (mwir_program, layout) = compile(
@@ -13261,8 +9912,6 @@ pub fn r(a: u64, b: u64) -> u64:
         let f = &program.fns["add"];
         let mnems: Vec<&str> = f.code.iter().map(|ew| ew.text.as_str()).collect();
         assert!(mnems.iter().any(|m| m.starts_with("add x")));
-        // Two range compares (min then max), each followed by a
-        // `b.ge`/`b.le` skip over an inline `bl <__wrela_abort>`.
         assert_eq!(mnems.iter().filter(|m| m.starts_with("cmp")).count(), 2);
         assert!(mnems.iter().any(|m| m.starts_with("b.ge")));
         assert!(mnems.iter().any(|m| m.starts_with("b.le")));
@@ -13320,7 +9969,6 @@ pub fn r(a: u64, b: u64) -> u64:
         let f = &program.fns["div"];
         let mnems: Vec<&str> = f.code.iter().map(|ew| ew.text.as_str()).collect();
         assert!(mnems.iter().any(|m| m.starts_with("sdiv")));
-        // Two aborts reachable: division-by-zero and MIN/-1 overflow.
         assert_eq!(
             mnems.iter().filter(|m| **m == "bl <__wrela_abort>").count(),
             2
@@ -13336,7 +9984,6 @@ pub fn r(a: u64, b: u64) -> u64:
         let f = &program.fns["div"];
         let mnems: Vec<&str> = f.code.iter().map(|ew| ew.text.as_str()).collect();
         assert!(mnems.iter().any(|m| m.starts_with("udiv")));
-        // Only the divisor-zero abort is reachable.
         assert_eq!(
             mnems.iter().filter(|m| **m == "bl <__wrela_abort>").count(),
             1
@@ -13356,8 +10003,6 @@ pub fn r(a: u64, b: u64) -> u64:
         assert!(mnems.iter().any(|m| m.starts_with("lsl x")));
     }
 
-    // --- rodata dedup determinism (task note 5's own fourth requirement) --
-
     #[test]
     fn rodata_pool_dedups_identical_bytes_by_content() {
         let mut pool = RodataPool::new();
@@ -13373,11 +10018,6 @@ pub fn r(a: u64, b: u64) -> u64:
 
     #[test]
     fn identical_abort_messages_across_fns_share_one_rodata_entry() {
-        // `checked_add`/`double` (mwir-calls-shaped) each abort with
-        // `"arithmetic overflow in `+`"`/`` "arithmetic overflow in
-        // `*`"`` — two *different* messages; two fns that both add
-        // `u32`s, though, should share the identical `"arithmetic
-        // overflow in `+`"` entry rather than duplicating it.
         let (mwir_program, layout) = compile(
             "module examples.codegen_rodata_dedup\n\npub fn add1(a: u32, b: u32) -> u32:\n    return a + b\n\npub fn add2(a: u32, b: u32) -> u32:\n    return a + b\n",
         );
@@ -13395,8 +10035,6 @@ pub fn r(a: u64, b: u64) -> u64:
         let p2 = codegen_program(&mwir_program, &layout).expect("codegen_program");
         assert_eq!(p1, p2);
     }
-
-    // --- fail-closed list ------------------------------------------------
 
     #[test]
     fn a_float_typed_constant_fails_closed() {
@@ -13416,18 +10054,12 @@ pub fn r(a: u64, b: u64) -> u64:
         assert!(err.message.contains("8 call arguments"));
     }
 
-    // --- structural validation (plans/M5.md item G, `validate`) -----------
-
     #[test]
     fn validate_accepts_a_real_multi_fn_program() {
         let (mwir_program, layout) = compile(
             "module examples.codegen_validate_ok\n\npub fn add_one(x: u64) -> u64:\n    return x + 1\n\npub fn use_it(x: u64) -> u64:\n    return add_one(x)\n",
         );
         let program = codegen_program(&mwir_program, &layout).expect("codegen_program");
-        // A real program with an actual `Reloc::Call` between two fns and,
-        // via `checked_add`'s own literal abort message, a real
-        // `Reloc::Rodata` too — both `validate`'s own live paths, not just
-        // its empty-program fast path.
         assert!(program.fns.values().any(|f| !f.relocs.is_empty()));
         validate(&program).expect("a real codegen'd program must validate");
     }
@@ -13526,12 +10158,6 @@ pub fn r(a: u64, b: u64) -> u64:
         );
     }
 
-    /// plans/M7.md item H1 self-audit: `mmio_access_width`'s three fail-
-    /// closed arms, called directly. The signed-register and out-of-reach
-    /// arms are also source-reachable (`golden/err-mmio-signed-register`,
-    /// `golden/err-mmio-offset-out-of-reach`); the alignment arm is not —
-    /// `types::check_layouts` already refuses a misaligned `@offset`, so
-    /// it stays an `internal` rather than a panic, pinned here.
     #[test]
     fn mmio_access_width_fail_closed_arms() {
         let signed = mmio_access_width(&Type::I32, 0).expect_err("signed");
@@ -13559,16 +10185,10 @@ pub fn r(a: u64, b: u64) -> u64:
     }
 }
 
-// M11 F: rt_child_poll_tests deleted with emit_rt_child_poll.
-// M11 J: rt_select_and_run_tests deleted with emit_rt_select_and_run / emit_rt_enqueue.
-
 #[cfg(test)]
 mod synthetic_symbol_tests {
     use super::*;
 
-    /// The shadowing hazard, stated as a test: a source fn cannot be
-    /// named anything whose `CalleeKey::spelling()` equals a synthesized
-    /// glue symbol, because identifiers cannot contain a space.
     #[test]
     fn synthesized_symbols_are_unrepresentable_as_source_keys() {
         let sym = rt_enqueue_symbol("Doubler");
@@ -13586,8 +10206,6 @@ mod synthetic_symbol_tests {
             );
             assert_ne!(plausible, sym);
         }
-        // M10 E3: the same space discipline for the scheduler tick and
-        // the glue targets it Calls.
         assert!(symbol_is_synthetic(&rt_run_one_symbol(0)));
         assert!(symbol_is_synthetic(&rt_select_and_run_symbol("Store")));
         assert!(symbol_is_synthetic(&rt_child_poll_symbol("child")));
@@ -13609,14 +10227,10 @@ mod rt_cross_core_tests {
         assert_eq!(rt_xreply_cores("rt_enqueue Actor"), None);
 
         let sp = emit_secondary_sp_install(1, 2);
-        assert_eq!(sp.len(), 5); // floor-cat1 SP (decision 811)
+        assert_eq!(sp.len(), 5);
     }
 }
 
-/// **Item E oracles** (plans/codegen-pareto.md, freeze 1714: a green unit
-/// that never exercises the new path is not an oracle). Every test here
-/// drives the real pipeline — lex, parse, check, lower, codegen — and
-/// asserts on emitted words, never on the allocator's internal state.
 #[cfg(test)]
 mod regalloc_tests {
     use super::*;
@@ -13624,8 +10238,6 @@ mod regalloc_tests {
     use crate::sema;
     use crate::syntax::{lexer, parser};
 
-    /// Everything before `RegAlloc` in the release order, so a comparison
-    /// isolates this item instead of measuring the whole mode.
     const WITHOUT: &[OptId] = &[OptId::NarrowImm];
     const WITH: &[OptId] = &[OptId::NarrowImm, OptId::RegAlloc];
 
@@ -13641,7 +10253,6 @@ mod regalloc_tests {
         prog
     }
 
-    /// Count emitted words of one `CostRule` in a named fn.
     pub(super) fn rule_count(prog: &CodegenProgram, key: &str, rule: CostRule) -> usize {
         prog.fns
             .get(key)
@@ -13664,11 +10275,6 @@ pub fn used_twice(a: u64) -> u64:
     return x +% x
 "#;
 
-    /// **A value used twice in a row loads once — in fact zero times.**
-    /// The item asked for one load; residency removes the frame slot
-    /// entirely, so the two uses are register reads. What memory traffic
-    /// is left belongs to `lr` and to the single-read temps decision 1765
-    /// declines to promote — never to `x`, the twice-read value.
     #[test]
     fn a_value_used_twice_stops_round_tripping_through_the_frame() {
         let before = emit(TWICE, WITHOUT);
@@ -13690,25 +10296,12 @@ pub fn used_twice(a: u64) -> u64:
             la < lb && sa < sb,
             "residency must delete memory traffic: {lb} -> {la} loads, {sb} -> {sa} stores"
         );
-        // The twice-read value itself is gone from the frame entirely:
-        // two of the baseline's loads were its reloads.
         assert!(
             lb - la >= 2,
             "both reloads of the twice-read value must go: {lb} -> {la}"
         );
     }
 
-    /// **The frame shrinks on a named case: `asm-loop`'s `sum_array`.**
-    /// 160 bytes of spill-everything frame down to 128, because its loop
-    /// counter, accumulator and bound are each read more than once and go
-    /// resident.
-    ///
-    /// The case is `asm-loop` and not `asm-arith` deliberately.
-    /// `asm-arith`'s `checked_add` reads every one of its temps exactly
-    /// once, so decision 1765 refuses all of them and its frame is
-    /// **unchanged** at 32 — which this test also pins, because "the
-    /// allocator declines where a register would not pay" is as much a
-    /// property to hold as the shrink itself.
     #[test]
     fn the_frame_shrinks_on_asm_loop_sum_array() {
         let read = |case: &str| {
@@ -13720,8 +10313,6 @@ pub fn used_twice(a: u64) -> u64:
         };
         let loop_src = read("asm-loop");
         assert_eq!(frame_of(&emit(&loop_src, WITHOUT), "sum_array"), 160);
-        // 160 -> 128 at item E, -> **80** once item I's coalescing and
-        // argument/return hinting made a copy free (decision 1904).
         assert_eq!(frame_of(&emit(&loop_src, WITH), "sum_array"), 80);
 
         let arith_src = read("asm-arith");
@@ -13735,13 +10326,6 @@ pub fn used_twice(a: u64) -> u64:
         );
     }
 
-    /// **A program with more live values than registers still spills
-    /// correctly.** Every value is live at once, so the pool cannot cover
-    /// them; the surplus keeps its frame slot, the frame stays large
-    /// enough to hold them, and the build succeeds rather than
-    /// approximating. (`diff-eval` is the oracle for what the code
-    /// *computes*; this one pins that the allocator degrades instead of
-    /// failing.)
     #[test]
     fn more_live_values_than_registers_still_spills_correctly() {
         let mut src =
@@ -13773,9 +10357,6 @@ pub fn used_twice(a: u64) -> u64:
         );
     }
 
-    /// **`dev` keeps the spill-everything reference, byte for byte**
-    /// (M19 freeze 1407). The allocator is a named opt, so turning it off
-    /// must reproduce the naive frame exactly — not approximately.
     #[test]
     fn dev_is_byte_for_byte_the_naive_frame() {
         let with_opt_off = emit(TWICE, WITHOUT);
@@ -13803,10 +10384,6 @@ pub fn used_twice(a: u64) -> u64:
         );
     }
 
-    /// A resident temp never occupies a register the emitter itself uses,
-    /// and never one outside the pool. Checked on the *emitted words*, so
-    /// it fails if the substitution in `load_slot`/`store_slot` ever
-    /// widens beyond what `regalloc::POOL` allows.
     #[test]
     fn no_emitted_word_names_a_pool_register_outside_the_pool() {
         let prog = emit(TWICE, WITH);
@@ -13827,9 +10404,6 @@ pub fn used_twice(a: u64) -> u64:
         }
     }
 
-    /// The naive assignment really does produce the naive frame: no temp
-    /// is resident and nothing virtual is handed out, which is what makes
-    /// `dev` byte-for-byte the old model.
     #[test]
     fn a_naive_assignment_leaves_no_temp_resident() {
         let naive = regalloc::Assignment::none(3);
@@ -13857,19 +10431,12 @@ pub fn used_twice(a: u64) -> u64:
     }
 }
 
-/// plans/codegen-pareto.md **item F** — the no-ABI oracles.
-///
-/// Each of these fails if its own claim stops being true of the *emitted
-/// words*, never of an internal data structure (freeze 1714: a green unit
-/// that never exercises the new path is not an oracle).
 #[cfg(test)]
 mod item_f_tests {
     use super::regalloc_tests::{emit, frame_of, rule_count};
     use super::*;
     use crate::opts::{OptId, RELEASE_OPTS};
 
-    /// Everything before item F, so each claim is measured against the
-    /// state of the world it changes rather than against `dev`.
     #[rustfmt::skip]
     const E: &[OptId] = &[
         OptId::NarrowImm,
@@ -13880,22 +10447,6 @@ mod item_f_tests {
         OptId::RegAlloc,
     ];
 
-    /// `RELEASE_OPTS` without plans/codegen-pareto-2.md item J's three
-    /// MWIR passes.
-    ///
-    /// Three of the claims below are about **a call** — that a tail call
-    /// becomes a `B`, that a non-tail call stays a `BL`, that a value
-    /// survives one in a register — and each of these test sources is a
-    /// two-line callee whose result item J's constant propagation and
-    /// DCE simply fold away, leaving no call site to assert about. Item
-    /// F's transform is unchanged; its subject is what moved, so these
-    /// ask over the list that still has one (decision 1933).
-    ///
-    /// **Plus `Frameless`, which is parked** (decision 1918): item M's
-    /// compute workload vetoed it and narrowing did not fix it, so it is
-    /// out of `RELEASE_OPTS`. The three F3/F5 claims below are about the
-    /// transform, not about whether it ships, and a parked opt stays
-    /// switchable precisely so its own oracles keep running.
     fn release_without_item_j() -> Vec<OptId> {
         let mut v: Vec<OptId> = RELEASE_OPTS
             .iter()
@@ -13924,14 +10475,6 @@ pub fn blend(a: u64, b: u64) -> u64:
     return (x +% x) +% (x *% 2)
 "#;
 
-    /// **F3, the half that fires everywhere: a leaf does not save `x30`.**
-    ///
-    /// This is F2 read from the callee's side. The save exists to protect
-    /// the return address against a `BL` that returns; a function that
-    /// has none reaches its own `ret` with the caller's address still in
-    /// the register it arrived in, so the `str`, the `ldr` and the slot
-    /// all go. It is independent of residency, which is why it reaches
-    /// every leaf rather than the handful whose temps all happen to fit.
     #[test]
     fn a_leaf_does_not_save_the_link_register() {
         let before = emit(LEAF, E);
@@ -13955,10 +10498,6 @@ pub fn blend(a: u64, b: u64) -> u64:
         );
     }
 
-    /// **F3, the half that needs everything to fit: a function whose
-    /// values all live in registers gets no frame at all.** With `x30`
-    /// no longer taking a slot, a body with nothing left to spill has
-    /// nothing to point `sp` at, so `sub sp` and `add sp` go too.
     #[test]
     fn a_function_whose_values_all_fit_gets_no_frame() {
         const SRC: &str = r#"
@@ -13994,7 +10533,6 @@ pub fn use_it(x: u64) -> u64:
     return add_one(x)
 "#;
 
-    /// **F5: a tail call emits `B`, not `BL` + `RET`.**
     #[test]
     fn a_tail_call_emits_b_not_bl_and_ret() {
         let before = emit(TAIL, E);
@@ -14020,8 +10558,6 @@ pub fn use_it(x: u64) -> u64:
             0,
             "a tail call is a branch, not a call"
         );
-        // The jump is the last thing the reachable path does, and the
-        // `Reloc::Call` is still there so layout still sees a call edge.
         assert!(
             after.fns["use_it"]
                 .relocs
@@ -14029,7 +10565,6 @@ pub fn use_it(x: u64) -> u64:
                 .any(|r| matches!(r, Reloc::Call { key, .. } if key == "add_one")),
             "the call edge must survive for layout and reachability"
         );
-        // Word-for-word: this one is strictly shorter.
         assert!(
             after.fns["use_it"].code.len() < before.fns["use_it"].code.len(),
             "the tail call must not cost words: {} -> {}",
@@ -14038,9 +10573,6 @@ pub fn use_it(x: u64) -> u64:
         );
     }
 
-    /// A call that is **not** in tail position is left alone: the result
-    /// is used afterwards, so the function has work to do after the
-    /// callee returns and cannot jump away.
     #[test]
     fn a_non_tail_call_is_still_a_linking_call() {
         const SRC: &str = r#"
@@ -14061,11 +10593,6 @@ pub fn twice(x: u64) -> u64:
         );
     }
 
-    /// **F1/F2: a caller does not save a register the callee provably
-    /// never touches** — stated the way this backend can state it, since
-    /// it never saved anything in the first place: a value that spans a
-    /// call now *stays in a register*, and the reload item E was forced
-    /// to keep disappears.
     #[test]
     fn a_value_survives_a_call_in_a_register_the_callee_does_not_clobber() {
         const SRC: &str = r#"
@@ -14094,7 +10621,6 @@ pub fn spans(a: u64) -> u64:
             frame_of(&before, "spans"),
             frame_of(&after, "spans")
         );
-        // The convention is a published fact, not an internal one.
         let conv = after
             .conventions
             .get("spans")
@@ -14108,17 +10634,9 @@ pub fn spans(a: u64) -> u64:
             !small.opaque,
             "a leaf's clobber set must be measured, not the fail-closed answer"
         );
-        // Every register the caller left live across the call is one the
-        // callee was measured not to touch. That is the whole claim.
         assert_ne!(small.clobbers, regalloc::ALL_REGS);
     }
 
-    /// **The fail-closed half.** A callee this compiler does not hold the
-    /// body of clobbers everything, so nothing is left live across it.
-    /// `__wrela_abort` is not such a callee — it never returns — so this
-    /// uses a real opaque one: a checkpoint-bearing async dispatch is not
-    /// reachable from a sync unit, so the property is asserted on the
-    /// analysis' own answer for an absent key.
     #[test]
     fn an_unheld_callee_clobbers_everything() {
         use std::collections::BTreeMap;
@@ -14147,11 +10665,6 @@ pub fn spans(a: u64) -> u64:
         assert!(out["f"].opaque);
     }
 
-    /// **F4, as far as it goes: the pool reaches past nine registers.**
-    /// Item E could hand a temp one of `x19..=x27` and nothing else. The
-    /// convention subtracts what *this* function's own emission was
-    /// measured naming from the whole caller-usable file instead, so a
-    /// function that does not use the scratch set gets the scratch set.
     #[test]
     fn the_pool_reaches_past_item_es_nine_registers() {
         let after = emit(LEAF, &release_without_item_j());
@@ -14174,17 +10687,8 @@ pub fn spans(a: u64) -> u64:
         }
     }
 
-    /// **Decision 1793, the rule.** Every key some later stage may own
-    /// the body of publishes `ALL_REGS`, and the predicate that decides
-    /// it is checked against the *symbol constructors themselves* rather
-    /// than against hand-written spellings — the whole defect was a
-    /// second source of truth about which keys layout owns.
     #[test]
     fn every_key_a_later_stage_may_own_is_opaque_to_the_allocator() {
-        // Every key `layout.rs` is known to replace or alias:
-        // `install_abort_tail_floor`, `inject_test_runner_fns`,
-        // `inject_rt_enqueue_and_dispatch_fns`, `inject_rt_cross_core_fns`,
-        // `inject_boot_init_fn`, `apply_resume_remaps`.
         let owned_by_layout: Vec<String> = vec![
             "__wrela_abort_tail".to_string(),
             "__test_call_0".to_string(),
@@ -14206,8 +10710,6 @@ pub fn spans(a: u64) -> u64:
                  be compiled against a body that is not the one that runs"
             );
         }
-        // ...and a plain source symbol is *not* opaque, or the rule would
-        // be "everything is opaque" and item F would have landed nothing.
         for key in [
             "chain",
             "Outer.relay",
@@ -14222,11 +10724,6 @@ pub fn spans(a: u64) -> u64:
         }
     }
 
-    /// **Decision 1793, the oracle — and the negative half of it.** A
-    /// check that cannot fail is not a check, so this hands
-    /// `verify_conventions` a program whose published clobber set
-    /// understates what its code does, and requires a refusal that names
-    /// the function and the registers.
     #[test]
     fn verify_conventions_refuses_a_clobber_set_the_code_exceeds() {
         let mut program = CodegenProgram::default();
@@ -14243,7 +10740,6 @@ pub fn spans(a: u64) -> u64:
             &[9],
         ));
         program.fns.insert("victim".to_string(), f);
-        // Published as touching nothing, while its one word names x4/x9.
         program
             .conventions
             .insert("victim".to_string(), regalloc::Convention::default());
@@ -14251,18 +10747,12 @@ pub fn spans(a: u64) -> u64:
         assert!(err.contains("victim"), "{err}");
         assert!(err.contains("x4") && err.contains("x9"), "{err}");
 
-        // Honest is accepted.
         let mut ok = program.clone();
         ok.conventions.get_mut("victim").expect("present").clobbers =
             regalloc::reg_bit(4) | regalloc::reg_bit(9);
         verify_conventions(&ok).expect("an honest clobber set must pass");
     }
 
-    /// ...and the transitive half: a callee's clobber set is part of its
-    /// caller's, so understating it through a call is refused too. This
-    /// is the exact shape of the real defect — `__boot_call_0` published
-    /// `x30-x31` while reaching `x0,x9-x10` through a call layout had
-    /// filled in after codegen ran.
     #[test]
     fn verify_conventions_refuses_a_clobber_set_a_callee_exceeds() {
         let mut program = CodegenProgram::default();
@@ -14311,9 +10801,6 @@ pub fn spans(a: u64) -> u64:
         assert!(err.contains("x19"), "{err}");
     }
 
-    /// A callee with **no** published convention — an async turn body, a
-    /// hand-assembled glue routine, a key layout re-points — contributes
-    /// `ALL_REGS`, so its caller must have been published opaque.
     #[test]
     fn an_unconventioned_callee_forces_its_caller_to_be_opaque() {
         let mut program = CodegenProgram::default();
@@ -14354,9 +10841,6 @@ pub fn spans(a: u64) -> u64:
         verify_conventions(&program).expect("ALL_REGS covers anything");
     }
 
-    /// Determinism through dumbness: the whole-program pass is a pure
-    /// function of the program, and the order it visits functions in is a
-    /// function of their keys.
     #[test]
     fn the_whole_program_convention_is_deterministic() {
         let a = emit(LEAF, RELEASE_OPTS);
@@ -14367,20 +10851,12 @@ pub fn spans(a: u64) -> u64:
     }
 }
 
-/// plans/codegen-pareto-2.md **item I** — the coalescing oracles.
-///
-/// Item E's allocator deleted 134 memory operations from the appliance
-/// image and added **161 register moves** doing it, a net *rise* in word
-/// count: it relocated the data movement instead of deleting it. These
-/// oracles are stated against the emitted words of that same shape — a
-/// copy, a call, and a pair of values that genuinely overlap.
 #[cfg(test)]
 mod item_i_tests {
     use super::regalloc_tests::emit;
     use super::*;
     use crate::opts::{OptId, RELEASE_OPTS};
 
-    /// Every `mov Xd, Xn` in a function, as `(dst, src)` pairs.
     fn movs(prog: &CodegenProgram, key: &str) -> Vec<(u8, u8)> {
         prog.fns
             .get(key)
@@ -14396,7 +10872,6 @@ mod item_i_tests {
         prog.fns.get(key).expect("fn present").code.len()
     }
 
-    /// The registers a function's emission names at all.
     fn named_regs(prog: &CodegenProgram, key: &str) -> BTreeSet<u8> {
         let mut out = BTreeSet::new();
         for w in &prog.fns[key].code {
@@ -14410,10 +10885,6 @@ mod item_i_tests {
         out
     }
 
-    /// A straight-line chain of copies between values that are never
-    /// simultaneously live. The dev form is a `str`/`ldr` per link; item
-    /// E's form was a `mov` per link; item I's is **neither** — the whole
-    /// chain collapses onto one register.
     const CHAIN: &str = r#"
 module examples.coalesce_chain
 
@@ -14424,12 +10895,6 @@ pub fn chain(a: u64) -> u64:
     return z +% z
 "#;
 
-    /// **A copy whose operands do not interfere emits no instruction.**
-    /// `y = x` and `z = y` are copies between values whose live ranges
-    /// meet at a point and are otherwise disjoint; the allocator can and
-    /// does put them in one register, and item I is what makes the
-    /// emitter say so by naming that register in the *reader's* operand
-    /// field instead of moving the value into a scratch one.
     #[test]
     fn a_copy_between_non_interfering_values_emits_nothing() {
         let after = emit(CHAIN, RELEASE_OPTS);
@@ -14446,9 +10911,6 @@ pub fn chain(a: u64) -> u64:
         );
     }
 
-    /// ...and the same program is strictly smaller than it was without
-    /// coalescing, measured rather than asserted: `RELEASE_OPTS` minus
-    /// `RegAlloc` is the baseline the allocator itself is ranked against.
     #[test]
     fn coalescing_makes_the_allocated_form_smaller_than_the_spilled_one() {
         let without: Vec<OptId> = RELEASE_OPTS
@@ -14466,10 +10928,6 @@ pub fn chain(a: u64) -> u64:
         );
     }
 
-    /// **Two values that genuinely interfere are not coalesced.** `p` and
-    /// `q` are both live across the `+`, so they cannot share a register
-    /// and the emitter must not pretend they do: whatever registers they
-    /// end up in, the two operand fields of the add are different.
     const OVERLAP: &str = r#"
 module examples.coalesce_overlap
 
@@ -14483,10 +10941,6 @@ pub fn overlap(a: u64, b: u64) -> u64:
     #[test]
     fn two_interfering_values_are_not_coalesced() {
         let after = emit(OVERLAP, RELEASE_OPTS);
-        // Read the operand fields off the asm text rather than off
-        // `srcs`: `emit_arith_wrapping` deliberately pushes this word
-        // untagged, and an oracle that read the tag would be testing the
-        // tag instead of the instruction.
         let mut checked = 0usize;
         for w in &after.fns["overlap"].code {
             let Some(rest) = w.text.strip_prefix("add ") else {
@@ -14507,7 +10961,6 @@ pub fn overlap(a: u64, b: u64) -> u64:
         assert!(checked >= 2, "the program must still add ({checked} found)");
     }
 
-    /// A value computed, then handed straight to a call.
     const CALLARG: &str = r#"
 module examples.coalesce_callarg
 
@@ -14519,10 +10972,6 @@ pub fn forward(a: u64) -> u64:
     return sink(n)
 "#;
 
-    /// The whole point, on the shape the plan measured: with `RegAlloc`
-    /// on, coalescing must not leave *more* words than it deleted memory
-    /// operations. Stated as a comparison against the same program built
-    /// without the allocator, over the emitted words.
     #[test]
     fn residency_no_longer_costs_more_words_than_it_saves() {
         let without: Vec<OptId> = RELEASE_OPTS
@@ -14544,33 +10993,14 @@ pub fn forward(a: u64) -> u64:
     }
 }
 
-/// **B4 — branch-to-fallthrough cleanup** (plans/codegen-pareto-B.md B4,
-/// landed by plans/codegen-pareto-2.md item L).
-///
-/// Item B reverted this transform because it broke M20 decision 1608's
-/// bridge contract. These are the oracles that say the landed form does
-/// not — the refusal rule, the word it deletes, and the Lane 2 identity it
-/// preserves. The bridge half lives in `cost::bridge`'s
-/// `unit:an_elided_branch_chain_still_resolves_its_lane_2_block_identity`,
-/// because that is where the partition check it must survive lives.
 #[cfg(test)]
 mod b4_tests {
     use super::regalloc_tests::emit;
     use super::*;
     use crate::opts::{CompileMode, OptId, RELEASE_OPTS, apply_mode, apply_opts};
 
-    /// The plan, asked directly. **The refusal is the whole design**: the
-    /// transform declines every elision that would leave a Lane 2 span
-    /// boundary sitting inside an emitted-word block, which is the
-    /// disagreement decision 1608 fails closed on.
     #[test]
     fn b4_refuses_every_elision_that_would_merge_a_lane_2_block() {
-        // 0: Jump 1        — target is the next index, but 1 is a leader
-        //                    *because of this jump*, so it must be refused.
-        // 1: Jump 3        — not a fallthrough at all.
-        // 2: Return        — 3 is a leader (index 1's jump target), refused.
-        // 3: Return        — the final index: `i + 1 == n`, no Lane 2 span
-        //                    can start there, so this one is elided.
         let body = vec![
             Inst::Jump { target: 1 },
             Inst::Jump { target: 3 },
@@ -14601,8 +11031,6 @@ mod b4_tests {
         apply_mode(CompileMode::Release);
     }
 
-    /// A body whose final instruction is not a branch at all elides
-    /// nothing — the plan never deletes a word it did not put there.
     #[test]
     fn b4_elides_nothing_when_the_body_does_not_end_in_a_branch() {
         apply_opts(&[OptId::BranchCleanup]);
@@ -14626,11 +11054,6 @@ pub fn two(x: u64) -> u64:
     return x +% 2
 "#;
 
-    /// The emitted words, which is where freeze 1714 says the claim has to
-    /// be visible. Every fn loses exactly one word, that word is the `b`
-    /// to the epilogue one word ahead, and **nothing else moves** — if the
-    /// two codegen passes had disagreed about the plan (decision 1734),
-    /// every later word and every branch displacement would have shifted.
     #[test]
     fn b4_deletes_the_trailing_branch_word_and_moves_nothing_else() {
         let without: Vec<OptId> = RELEASE_OPTS
@@ -14653,10 +11076,6 @@ pub fn two(x: u64) -> u64:
                 f_off.code.len(),
                 "fn `{key}` must be exactly one word shorter under B4"
             );
-            // Compare **mnemonic** sequences: the one thing B4 may change
-            // besides deleting the branch is the displacement of a branch
-            // that jumped over the deleted word, which is a re-derived
-            // field of the same instruction, not a moved instruction.
             fn mn(f: &CodegenFn) -> Vec<&str> {
                 f.code
                     .iter()

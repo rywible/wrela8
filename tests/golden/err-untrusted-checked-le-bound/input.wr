@@ -1,7 +1,5 @@
 module examples.err_untrusted_checked_le_bound
 
-# plans/M9.md item G1 / decision 356: the narrowing's own `bound` must
-# itself be unmarked — two tainted values do not clear each other.
 
 fn bad(reported: Untrusted[usize], other: Untrusted[usize]) -> Result[usize, unit]:
     return reported.checked_le(other)

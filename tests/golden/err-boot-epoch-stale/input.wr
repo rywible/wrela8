@@ -1,18 +1,5 @@
 module examples.err_boot_epoch_stale
 
-# plans/M7.md item H2b flagship: a completion that was legitimate before a
-# full reset arrives after it and is rejected as `CompletionFault::StaleId`
-# — distinct from UnknownId / DuplicateId / BadLength (E4's other three).
-#
-# Sequence: init publishes a write (meta stamped with epoch 0); the device
-# completes into the used ring; the IRQ wakes `@task`; the task calls
-# `RunningDevice.reset` (epoch 0 → 1) *then* `drain`. Drain compares the
-# stamped slot epoch to the live epoch and aborts with StaleId's own
-# message.
-#
-# Vacuity: `golden/boot-blk-roundtrip` is the same publish/IRQ/drain shape
-# *without* the reset, and its drain succeeds. Mutation: omit the reset
-# call and this image would pass a round-trip assert instead of aborting.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:
@@ -115,13 +102,8 @@ pub struct BlkDriver:
                 self.inflight = None
                 return unit
             case .Some(r):
-                # Epoch 0 → 1 while the used-ring entry still names the
-                # pre-reset publish. Drain must abort StaleId — not
-                # UnknownId / DuplicateId / BadLength.
                 self.device = self.device.reset(queue=mut self.queue)
                 self.queue.drain(max=QDEPTH)
-                # Unreachable when the epoch check holds; restore so
-                # protocol-consumption is satisfied on the fallthrough.
                 self.inflight = Some(take r)
                 assert false, "drain after reset must abort as StaleId"
         return unit
@@ -136,8 +118,6 @@ pub struct Ledger:
 
 @test(runtime)
 async fn epoch_stale_aborts(led: Actor[Ledger]):
-    # One checkpoint delivers the write IRQ; the drain task must abort
-    # before this mark can complete a second time.
     a = await led.mark(n=1)
     @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match a:

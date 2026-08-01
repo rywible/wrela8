@@ -1,50 +1,5 @@
 module examples.boot_init_args
 
-# plans/M7.md item W's own flagship: boot calls each declared actor's
-# `init` **with its declared arguments**.
-#
-# This case replaces `golden/err-image-init-arg-unmaterialized`, the
-# fail-closed guard that stood here while materialization did not exist.
-# That guard was itself a real find rather than a formality: before it,
-# `eval::image_checks` accepted `depth=7` (it really does name a real
-# `init` parameter), `layout::build_boot_init` could only call a
-# *zero-argument* `init` so it never called that one, the actor booted
-# with `depth == 0`, and every assertion over it read 0 while all three
-# tiers reported success. The floor is gone; this is the oracle that it
-# stays gone.
-#
-# Every value below is hand-computed and distinct, across four scalar
-# widths plus a bool and two handle spellings, so that a swapped, dropped
-# or truncated argument fails a *named* assertion rather than passing by
-# coincidence:
-#
-#   Meter   scale  u8  = 200                    (a swap with `offset`
-#           offset u16 = 40000                   reads 40000 here)
-#           span   u64 = 1234567890123456789    (truncating to 32 bits
-#                                                reads 2965944177)
-#           bias   i32 = -3                     (sign extension: a
-#                                                zero-extended -3 is not
-#                                                -3 in 64 bits)
-#   Relay   meter  Actor[Meter]                 (the honest handle
-#                                                spelling, messaged for
-#                                                real by `relay_span`)
-#           window u16 = 4096
-#           tag    u8  = 9
-#   Gauge   peer   u32 = relay.handle()         (the `u32` handle
-#                                                spelling `golden/appliance`
-#                                                already wires — and
-#                                                `Relay` is actor#1, so
-#                                                the materialized value is
-#                                                1, which a zero-
-#                                                initialized field cannot
-#                                                fake)
-#           limit  u16 = 30000
-#           armed  bool = true
-#
-# `Meter` is declared first precisely so the handle arguments below it
-# name a *nonzero* index: an actor's handle is its own construction-order
-# index, so a handle to actor#0 is the one value plain zero-initialization
-# would have produced anyway. `Gauge.peer` reads back 1.
 
 @actor
 pub struct Meter:
@@ -68,14 +23,6 @@ pub struct Meter:
     pub fn read_span(read self) -> u64:
         return self.span
 
-    # `-3` is spelled in this *sync* body rather than in the async test
-    # below on purpose: neither a unary negation nor a module const
-    # lowers inside an async body yet — a real, unrelated floor that
-    # fails closed with `error[unimplemented]`, never a silent zero. The
-    # fact pinned is the same either way, and stronger for being read
-    # back as a distinct sentinel: a `bias` that was dropped (0), or
-    # zero-extended instead of sign-extended (4294967293 in 64 bits), is
-    # not -3 and reads 0 here.
     pub fn bias_is_wired(read self) -> u64:
         if self.bias == -3:
             return 4242
@@ -98,7 +45,6 @@ pub struct Relay:
     pub fn read_tag(read self) -> u8:
         return self.tag
 
-    # The `Actor[Meter]` init argument, used for what a handle is for.
     pub async fn relay_span(read self) -> u64:
         s = await self.meter.read_span()
         @discard(reason="migrated: deliberate Err discard (M13 item L)")

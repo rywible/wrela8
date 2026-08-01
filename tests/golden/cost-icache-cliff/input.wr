@@ -1,36 +1,5 @@
 module examples.cost_icache_cliff
 
-# Cost-stage golden (plans/M20.md item M) — the **per-core L1I capacity
-# term** (04 §5/§6, inventory row 15, `cost::footprint`).
-#
-# WHAT THIS PINS, PREDICTED FROM THE DOCS BEFORE THE CODE WAS RUN.
-#
-# 04 §5 makes the per-core hot-text budget the hard constraint that
-# replaces the retired word veto, and 04 §6 prints it per core. The
-# denominator is `[geometry] l1i_bytes = 65536` over 64 B lines, 4 ways
-# — 256 sets — and `cost::footprint` charges `Σ` per-set lines beyond
-# four ways at `lat_l2 - lat_l1d_hit = 11 - 4 = 7` cycles each.
-#
-# For one core's *contiguous* text the two verdicts coincide: L lines
-# spread evenly over 256 sets, so the per-set overflow is `L - 1024`
-# once L passes 1024 lines, i.e. once hot text passes exactly 64 KiB.
-# That is why this case has to be **genuinely large**: item J measured
-# every existing `cost-*` case at 320-10432 B of hot text with
-# `charge = 0`, and nothing short of a program that really does not fit
-# a 64 KiB L1I can make the term fire.
-#
-# So this is a real program of the size the term is about: five
-# functions of dense checked arithmetic, each statement emitting the
-# `MADD` + `UMULH` overflow pair and its abort branch, on one core.
-# Predicted: `over_l1i_lines > 0`, `charge = 7 x over_l1i_lines`,
-# `over_l2_lines = 0` (512 KiB is far away) and `over_itlb_pages = 0`
-# (the I-TLB holds 48 pages = 192 KiB, which this program does not
-# reach — that budget is `cost-itlb-span`'s subject).
-#
-# The `@image` is what gives the dump a per-core denominator at all:
-# `cost::footprint::compute` returns nothing when `placement.cores` is
-# 0, so a case with no image prints no `Budget` line (which is why the
-# other `cost-*` cases do not have one).
 
 
 pub fn bulk0(a: u64, b: u64) -> u64:

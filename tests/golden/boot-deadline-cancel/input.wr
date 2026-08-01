@@ -1,26 +1,5 @@
 module examples.boot_deadline_cancel
 
-# plans/M6.md item F flagship, decision 7's own flip witness for
-# `machine.interrupts.checkpoint-injection` (06-machine.md §4: "the guest
-# observes vectors only at checkpoints and parks"; 02-language.md §9.5:
-# "Cancellation becomes observable at `await` and checkpoints, never
-# between arbitrary instructions").
-#
-# The group's deadline is `now() + ms(0)` — a zero-budget bounded
-# operation, already expired the moment it is armed. `worker` is a group
-# child with a bounded 8-iteration loop; each iteration awaits `Counter`,
-# so the scheduler regains control between iterations and the deadline
-# service (`__wrela_deadline_poll`) runs. The service raises vector 0 into
-# this core's pending word; the *next checkpoint any turn executes* — here
-# `worker`'s own await-resume checkpoint — services it, the scan marks the
-# group cancelled, and the cancellation test that is part of that same
-# checkpoint terminates the child's activation.
-#
-# `Counter.n` is the deterministic iteration counter: exactly one `bump`
-# turn completed before the cancellation landed, and the loop's own bound
-# of 8 was never reached. Both halves are asserted, and both are
-# load-bearing (asserting 2 instead of 1 fails; the child completing at
-# all fails).
 
 @actor
 pub struct Counter:

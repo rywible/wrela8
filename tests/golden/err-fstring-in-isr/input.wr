@@ -1,7 +1,5 @@
 module examples.err_fstring_in_isr
 
-# plans/M9.md item D / 02 §1.1 / 03 §6: interpolation (formatting) in
-# ISR-bound code is rejected.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

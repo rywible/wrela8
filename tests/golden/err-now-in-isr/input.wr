@@ -1,6 +1,5 @@
 module examples.err_now_in_isr
 
-# plans/M9.md item E / 05-library.md §5: now() is forbidden in ISR context.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

@@ -1,1 +1,1 @@
-error[type]: `prepare_block` consumes the permit: write `permit=take ...` (03-hardware.md §4) at 62:13
+error[type]: `prepare_block` consumes the permit: write `permit=take ...` (03-hardware.md §4) at 60:13

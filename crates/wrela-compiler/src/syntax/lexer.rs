@@ -1,46 +1,3 @@
-//! Tokenizer for wrela source (02-language.md §1).
-//!
-//! Implements: ASCII identifiers and keywords; `#` comments and `##` doc
-//! comments; four-space significant indentation with tabs rejected; newline
-//! suppression inside `()[]{}`; integer and float literals (decimal/hex/
-//! octal/binary with underscores; floats require digits on both sides of
-//! `.` or a required exponent); text, f-string, and byte-string literals
-//! with escapes validated at lex time (contents kept raw — token text is
-//! never decoded); f-string brace-balance scanning (interior expressions are
-//! not lexed); and the operator set of 02 §8.2. Anything unsupported is a
-//! lex error, never a guess.
-//!
-//! ## Layout islands
-//!
-//! `()[]{}` suppress NEWLINE/INDENT/DEDENT — except a `:` immediately
-//! followed by a newline while bracket depth > 0 is unambiguously a suite
-//! header (a closure body embedded in an enclosing call's argument list,
-//! `docs/language/examples/virtio-storage.wr`'s `BlockCache.edit`/`peek`
-//! call sites), so layout tracking *resumes* for exactly that suite: a
-//! fresh indentation sub-stack opens ("a layout island"), seeded from
-//! whatever the innermost enclosing context's current indent level already
-//! was (`innermost_indent`), and stays active — real NEWLINE/INDENT/DEDENT
-//! tokens flow — until the island closes. Two independent events close it:
-//! (a) a later line's indentation falls back to (or below) the island's own
-//! base level (`apply_island_indent`'s dedent branch), or (b) a closing
-//! bracket brings the bracket depth below the level the island opened at,
-//! before the island's own indentation ever dedented on its own line (the
-//! `))`-on-one-line shape in `BlockCache.edit`/`peek`; handled in
-//! `lex_operator` via `close_layout_islands_before_bracket_close`, which
-//! force-emits the balancing DEDENTs *before* the closing bracket's own
-//! token). A bracket opened *inside* an active island suppresses layout
-//! again immediately (no bookkeeping needed: `layout_active` simply stops
-//! matching once `depth` moves past the island's `open_depth`), and a
-//! further `:`-newline found while suppressed there opens a nested island
-//! the same way, so islands stack arbitrarily deep. A `:`-newline seen
-//! while already inside an *active* island's own body (e.g. a nested `if`
-//! in a closure suite) is not a new island at all — it's just an ordinary
-//! deeper level on that island's existing indent stack, exactly like a
-//! nested block at the top level. This closes the roundtrip ambiguity
-//! recorded in `plans/pre-M3-findings.md` (finding 3): the parser no
-//! longer has to guess statement boundaries inside an embedded suite with
-//! more than one statement, because the lexer now hands it real separators.
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenKind {
     Ident,
@@ -74,16 +31,12 @@ pub struct LexError {
     pub col: u32,
 }
 
-/// Which escape set applies to the literal currently being scanned
-/// (02-language.md §1.1): `\xNN` is byte-string-only, `\u{...}` is
-/// text/char-only. F-strings share the text literal's escapes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EscapeContext {
     Text,
     Byte,
 }
 
-/// Keywords of the trimmed language. `02-language.md` is authoritative.
 pub const KEYWORDS: &[&str] = &[
     "and", "assert", "async", "await", "break", "case", "comptime", "const", "continue", "defer",
     "deriving", "elif", "else", "enum", "false", "fn", "for", "from", "if", "import", "in", "init",
@@ -91,13 +44,11 @@ pub const KEYWORDS: &[&str] = &[
     "return", "self", "send", "static", "struct", "take", "true", "unit", "while", "with",
 ];
 
-/// Multi-character operators, longest first so maximal munch is by order.
 const MULTI_OPS: &[&str] = &[
     "<<=", ">>=", "..=", "+%", "-%", "*%", "->", "..", "<<", ">>", "<=", ">=", "==", "!=", "+=",
     "-=", "*=", "/=", "%=", "&=", "|=", "^=",
 ];
 
-// `;` appears only inside the fixed-array type `[T; N]` (02 §6.2).
 const SINGLE_OPS: &[char] = &[
     '+', '-', '*', '/', '%', '&', '|', '^', '~', '<', '>', '=', '(', ')', '[', ']', '{', '}', ',',
     ':', '.', '?', '@', ';',
@@ -107,15 +58,6 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
     Lexer::new(source).run()
 }
 
-/// One open layout island (module doc comment): a suite whose layout
-/// tracking was resumed inside brackets. `open_depth` is the bracket
-/// `depth` at the moment its `:`-newline was seen — layout is active for
-/// this island exactly while `depth == open_depth`, and it closes for
-/// good once a line dedents to (or below) `indents[0]` (`apply_island_indent`)
-/// or a closing bracket drives `depth` below `open_depth`
-/// (`close_layout_islands_before_bracket_close`). `indents` is a sub-stack
-/// exactly like the top-level `Lexer::indents`, seeded with the island's
-/// base level as its permanent floor (`indents[0]`) instead of `0`.
 struct Island {
     open_depth: usize,
     indents: Vec<u32>,
@@ -126,7 +68,7 @@ struct Lexer<'s> {
     pos: usize,
     line: u32,
     col: u32,
-    depth: usize, // () [] {} nesting: newlines are suppressed inside
+    depth: usize,
     indents: Vec<u32>,
     islands: Vec<Island>,
     tokens: Vec<Token>,
@@ -146,11 +88,6 @@ impl<'s> Lexer<'s> {
         }
     }
 
-    /// True when NEWLINE/INDENT/DEDENT tracking is active right now: either
-    /// true top level (`depth == 0`, no island ever needed there) or inside
-    /// the topmost open island, exactly at the bracket depth it opened at.
-    /// A bracket opened deeper than that (inside an island or not) makes
-    /// this false again until its own `:`-newline opens a nested island.
     fn layout_active(&self) -> bool {
         match self.islands.last() {
             Some(island) => self.depth == island.open_depth,
@@ -158,14 +95,6 @@ impl<'s> Lexer<'s> {
         }
     }
 
-    /// The current indentation width of whichever layout context is
-    /// innermost right now — an open island's own indent stack if one
-    /// exists, else the top-level stack — regardless of whether that
-    /// context is presently *active* (suppressed contexts still have a
-    /// frozen "current level" from before suppression began). Used only to
-    /// seed a newly opened island's base (`open_layout_island`): the common
-    /// case is a closure suite one bracket deep with no enclosing island at
-    /// all, where this is simply the top-level stack's frozen top.
     fn innermost_indent(&self) -> u32 {
         match self.islands.last() {
             Some(island) => *island
@@ -176,20 +105,10 @@ impl<'s> Lexer<'s> {
         }
     }
 
-    /// True exactly when the last token pushed so far is a bare `:` — the
-    /// trigger check for opening a layout island. Comments push no token,
-    /// so `:  # trailing comment` before the newline still counts: no real
-    /// code follows the colon on that line either way (module doc comment:
-    /// "a `:` followed by same-line content does not [open an island]").
     fn last_token_is_colon(&self) -> bool {
         matches!(self.tokens.last(), Some(t) if t.kind == TokenKind::Op && t.text == ":")
     }
 
-    /// Opens a new layout island. Only called when `!layout_active()`: a
-    /// `:`-newline seen while already active (a nested suite inside an
-    /// open island's own body, or an ordinary top-level suite) is not a new
-    /// island, just the next line's width being read against the context
-    /// that's already tracking it.
     fn open_layout_island(&mut self) {
         let base = self.innermost_indent();
         self.islands.push(Island {
@@ -246,11 +165,6 @@ impl<'s> Lexer<'s> {
             match self.peek() {
                 None => break,
                 Some(b'\n') => {
-                    // A `:` immediately followed by this newline while
-                    // suppressed (bracket depth > 0, no already-active
-                    // island at this depth) is a suite header: open a
-                    // layout island before deciding whether to emit the
-                    // Newline itself (module doc comment).
                     if !self.layout_active() && self.last_token_is_colon() {
                         self.open_layout_island();
                     }
@@ -284,7 +198,6 @@ impl<'s> Lexer<'s> {
                 Some(b'\'') => self.lex_char()?,
                 Some(c) if c.is_ascii_digit() => self.lex_number()?,
                 Some(c) if c.is_ascii_alphabetic() || c == b'_' => {
-                    // f"..." and b"..." literal prefixes.
                     if (c == b'f' || c == b'b') && self.peek2() == Some(b'"') {
                         let kind = if c == b'f' {
                             TokenKind::FStr
@@ -298,12 +211,6 @@ impl<'s> Lexer<'s> {
                         self.lex_word();
                     }
                 }
-                // A non-ASCII byte can start a valid string/char literal
-                // (checked above) or appear inside one/inside a comment
-                // (handled by those scanners without reaching here); at any
-                // other token-start position it is a named diagnostic, not
-                // the generic "unexpected character" (02-language.md §1:
-                // identifiers and source structure are ASCII in rev 0.1).
                 Some(c) if c >= 0x80 => {
                     return Err(self.error(
                         "non-ASCII byte in source; identifiers and source structure are ASCII in revision 0.1",
@@ -312,7 +219,6 @@ impl<'s> Lexer<'s> {
                 Some(_) => self.lex_operator()?,
             }
         }
-        // End of file acts as a newline, then closes open suites (02 §1).
         if self.depth != 0 {
             return Err(self.error("unclosed delimiter at end of file"));
         }
@@ -332,10 +238,6 @@ impl<'s> Lexer<'s> {
     }
 
     fn last_is_content(&self) -> bool {
-        // DocComment is layout-transparent: a doc-comment-only line behaves
-        // exactly like a plain comment-only line for indentation/newline
-        // purposes (it never shares a logical line with real tokens — see
-        // `handle_indentation`, the only place that emits DocComment).
         !matches!(
             self.tokens.last().map(|t| &t.kind),
             None | Some(TokenKind::Newline)
@@ -345,13 +247,7 @@ impl<'s> Lexer<'s> {
         )
     }
 
-    /// At the start of a physical line (outside delimiters): measure leading
-    /// spaces, skip blank/comment-only lines, and emit INDENT/DEDENT per the
-    /// exactly-four-spaces rule.
     fn handle_indentation(&mut self) -> Result<(), LexError> {
-        // Blank lines used to recurse per `\n`; a ~10⁵-blank-line file
-        // could overflow the native stack outside the parser's depth
-        // guards. Loop instead (adversarial audit, 2026-07-27).
         loop {
             let mut width: u32 = 0;
             loop {
@@ -365,32 +261,11 @@ impl<'s> Lexer<'s> {
                 }
             }
             match self.peek() {
-                // Blank and comment-only lines emit no layout tokens.
                 None => return Ok(()),
                 Some(b'\n') => {
                     self.bump();
                     continue;
                 }
-                // `##` at line start is a doc comment: it emits a DocComment
-                // token carrying the raw text after `##` (trailing newline
-                // excluded), and its line **participates in layout exactly
-                // like a code line** — the INDENT/DEDENTs its own indentation
-                // implies are emitted first, before the token. 02-language.md
-                // §1: "`##` begins a documentation comment attached to the
-                // immediately following declaration", so a doc comment sits
-                // where its declaration sits. It used to be layout-transparent
-                // like a plain comment, which put it on the wrong side of every
-                // block boundary and made both natural shapes unparseable: as
-                // a block's first line the DocComment preceded the INDENT
-                // (`expected an indented block`), and at the outer level after
-                // a block it preceded the DEDENT, so the enclosing suite's own
-                // member loop swallowed it (`expected a member after doc
-                // comment/attribute`). Found by `xtask fuzz sema` (seed 9101).
-                //
-                // A doc comment still emits no NEWLINE of its own (see
-                // `last_is_content`), and attaching it to a declaration remains
-                // the parser's job. Plain `#` attaches to nothing and stays
-                // silently skipped, layout-transparent as before.
                 Some(b'#') => {
                     let (line, col) = (self.line, self.col);
                     if self.peek2() == Some(b'#') {
@@ -425,13 +300,6 @@ impl<'s> Lexer<'s> {
         }
     }
 
-    /// Dispatch to whichever indent stack is active at this depth: the
-    /// topmost open island if one exactly matches, else the top-level
-    /// stack. `run()` only calls `handle_indentation` when
-    /// `layout_active()` held at line start, so exactly one of these
-    /// applies (module doc comment on layout islands). Its own function so
-    /// a doc-comment line can run the identical dispatch before emitting
-    /// its token — a doc comment is a line, not a hole in the layout.
     fn dispatch_indent(&mut self, width: u32) -> Result<(), LexError> {
         let in_island = matches!(self.islands.last(), Some(i) if i.open_depth == self.depth);
         if in_island {
@@ -441,9 +309,6 @@ impl<'s> Lexer<'s> {
         }
     }
 
-    /// The original (pre-island) top-level indent-stack logic, unchanged:
-    /// `width` against `self.indents`, whose floor (`indents[0] == 0`) is
-    /// permanent for the whole file.
     fn apply_top_level_indent(&mut self, width: u32) -> Result<(), LexError> {
         let current = *self.indents.last().expect("indent stack is never empty");
         if width == current {
@@ -472,11 +337,6 @@ impl<'s> Lexer<'s> {
         Ok(())
     }
 
-    /// Same shape as `apply_top_level_indent`, but against the topmost
-    /// island's own indent sub-stack, whose floor (`indents[0]`) is the
-    /// island's base rather than a permanent `0`: reaching it (or falling
-    /// below it) closes the island for good instead of erroring (module
-    /// doc comment, closing case (a)).
     fn apply_island_indent(&mut self, width: u32) -> Result<(), LexError> {
         let current = *self
             .islands
@@ -503,9 +363,6 @@ impl<'s> Lexer<'s> {
             self.push(TokenKind::Indent, "", l, c);
             return Ok(());
         }
-        // width < current: dedent, one level at a time, same as the
-        // top-level loop — but never popping the island's own floor
-        // (indents[0], its base level) off the stack.
         loop {
             let island = self.islands.last_mut().expect("checked by caller");
             if island.indents.len() > 1 && width < *island.indents.last().expect("non-empty") {
@@ -519,8 +376,6 @@ impl<'s> Lexer<'s> {
         }
         let island = self.islands.last().expect("checked by caller");
         if island.indents.len() == 1 && width <= island.indents[0] {
-            // Back at (or below) the island's own base: the suite this
-            // island tracked is over — close it and resume suppression.
             self.islands.pop();
             return Ok(());
         }
@@ -551,9 +406,6 @@ impl<'s> Lexer<'s> {
         self.push(kind, text, line, col);
     }
 
-    /// Consumes a run of bytes from `allowed` (a digit set plus `_`),
-    /// enforcing that `_` sits only between two digits — never leading,
-    /// trailing, or repeated (02-language.md §1.1).
     fn lex_digit_run(&mut self, allowed: &[u8]) -> Result<(), LexError> {
         let mut prev = 0u8;
         let mut saw_digit = false;
@@ -577,14 +429,6 @@ impl<'s> Lexer<'s> {
         Ok(())
     }
 
-    /// Integer and float literals (02-language.md §1.1). A float is either
-    /// `digits.digits` with an optional `e`/`E` exponent, or bare digits
-    /// with a required exponent. Digits are required on both sides of `.`;
-    /// a `.` lacking a following digit is left for the operator lexer
-    /// (member access) or the `..`/`..=` range operators, so `1..4` and
-    /// `256.KiB` keep lexing exactly as before. Once an exponent marker is
-    /// seen, it is committed-to: a malformed exponent is a lex error, never
-    /// a fallback to plain digits.
     fn lex_number(&mut self) -> Result<(), LexError> {
         let (line, col) = (self.line, self.col);
         let start = self.pos;
@@ -594,9 +438,6 @@ impl<'s> Lexer<'s> {
             let radix = self.peek2().expect("checked above");
             self.bump();
             self.bump();
-            // Digits are radix-specific (02 §1.1). Sharing the hex set
-            // used to accept `0b102` / `0o9` as Int tokens and only fail
-            // two passes later in sema (adversarial audit, 2026-07-27).
             let digits: &[u8] = match radix {
                 b'x' => b"0123456789abcdefABCDEF_",
                 b'o' => b"01234567_",
@@ -610,9 +451,6 @@ impl<'s> Lexer<'s> {
                     self.error("integer literal needs at least one digit after the radix prefix")
                 );
             }
-            // A digit/letter that is not in this radix's set but still
-            // looks like a literal continuation is a lex error, not a
-            // second token glued on (`0o9` must not become `0o` + `9`).
             if self
                 .peek()
                 .is_some_and(|b| b.is_ascii_alphanumeric() || b == b'_')
@@ -627,9 +465,6 @@ impl<'s> Lexer<'s> {
         }
         self.lex_digit_run(DECIMAL)?;
         let mut is_float = false;
-        // `.` followed by a digit is a fractional part; `..`/`..=` (range)
-        // and `.` followed by anything else (member access, `256.KiB`) are
-        // left untouched for the operator/word lexers.
         if self.peek() == Some(b'.') && self.peek2().is_some_and(|d| d.is_ascii_digit()) {
             is_float = true;
             self.bump();
@@ -658,15 +493,10 @@ impl<'s> Lexer<'s> {
         Ok(())
     }
 
-    /// Lexes a quoted literal starting at `"`. Contents are kept raw (the
-    /// token text is the exact source spelling, never decoded); escapes are
-    /// validated per 02-language.md §1.1 as they are scanned, and `"""` is
-    /// rejected by name (reserved, not "unterminated"). `prefix` is the
-    /// already-consumed `f`/`b` marker, included in the token text.
     fn lex_string(&mut self, kind: TokenKind, prefix: &str) -> Result<(), LexError> {
         let (line, col) = (self.line, self.col.saturating_sub(prefix.len() as u32));
         let start = self.pos;
-        self.bump(); // opening quote
+        self.bump();
         if self.peek() == Some(b'"') && self.peek2() == Some(b'"') {
             return Err(self.error("triple-quoted string literals are reserved"));
         }
@@ -675,11 +505,6 @@ impl<'s> Lexer<'s> {
         } else {
             EscapeContext::Text
         };
-        // f-string brace scanning (02-language.md §1.1): `{{`/`}}` are
-        // literal braces; a lone `{` opens an interpolation extent that
-        // must balance before the closing quote. The interior expression
-        // is never lexed — only the brace count is tracked — so the
-        // closing `"` only ends the token while no interpolation is open.
         let mut brace_depth: u32 = 0;
         loop {
             match self.peek() {
@@ -726,7 +551,7 @@ impl<'s> Lexer<'s> {
     fn lex_char(&mut self) -> Result<(), LexError> {
         let (line, col) = (self.line, self.col);
         let start = self.pos;
-        self.bump(); // opening quote
+        self.bump();
         loop {
             match self.peek() {
                 None => return Err(self.error("unterminated character literal")),
@@ -747,14 +572,8 @@ impl<'s> Lexer<'s> {
         Ok(())
     }
 
-    /// Validates one escape sequence starting at the `\` (which this
-    /// consumes along with the rest of the sequence). Token text is never
-    /// decoded — this only checks shape and consumes the right number of
-    /// raw bytes. Per 02-language.md §1.1: `\\ \" \' \n \r \t \0` are legal
-    /// everywhere; `\xNN` (exactly two hex digits) only in byte strings;
-    /// `\u{H...}` (one to six hex digits) only in text and char literals.
     fn lex_escape(&mut self, ctx: EscapeContext) -> Result<(), LexError> {
-        self.bump(); // '\\'
+        self.bump();
         match self.peek() {
             None => Err(self.error("unterminated escape sequence")),
             Some(b'\\' | b'"' | b'\'' | b'n' | b'r' | b't' | b'0') => {
@@ -797,8 +616,6 @@ impl<'s> Lexer<'s> {
                                     self.error("`\\u{...}` escape allows at most six hex digits")
                                 );
                             }
-                            // At most six hex digits, so this tops out at
-                            // 0xFF_FFFF and cannot overflow `u32`.
                             value = value * 16 + (b as char).to_digit(16).expect("hex digit");
                             self.bump();
                         }
@@ -815,18 +632,6 @@ impl<'s> Lexer<'s> {
                 if digits == 0 {
                     return Err(self.error("`\\u{...}` escape requires at least one hex digit"));
                 }
-                // 02-language.md §1.1: "A character literal holds one
-                // Unicode scalar." Six hex digits reach 0xFF_FFFF, well
-                // past the 0x10_FFFF maximum, and the surrogate range
-                // D800..=DFFF is not a scalar value either — so shape and
-                // digit count alone do not make an escape legal. Without
-                // this check both `\u{110000}` and `\u{D800}` reached
-                // `eval::value::decode_escapes`, whose `char::from_u32`
-                // fallback silently substituted U+FFFD: two distinct
-                // source literals compiled to the same character, and an
-                // `assert '\u{110000}' == '\u{FFFD}'` passed. Fail closed
-                // here instead, at the one place the escape's shape is
-                // already being validated.
                 if char::from_u32(value).is_none() {
                     let what = if (0xD800..=0xDFFF).contains(&value) {
                         "a surrogate"
@@ -837,7 +642,7 @@ impl<'s> Lexer<'s> {
                         "`\\u{{{value:X}}}` is not a Unicode scalar value ({what})"
                     )));
                 }
-                self.bump(); // closing `}`
+                self.bump();
                 Ok(())
             }
             Some(c) => Err(self.error(format!("unknown escape sequence `\\{}`", c as char))),
@@ -865,12 +670,6 @@ impl<'s> Lexer<'s> {
                 if self.depth == 0 {
                     return Err(self.error(format!("unmatched closing `{c}`")));
                 }
-                // A closing bracket that drops `depth` below an open
-                // island's `open_depth` closes that island right now (module
-                // doc comment, closing case (b)): the balancing DEDENTs are
-                // force-emitted before this bracket's own token, since the
-                // island's line-based dedent check (`apply_island_indent`)
-                // never gets a further line of its own to trigger on.
                 self.close_layout_islands_before_bracket_close(line, col);
                 self.depth -= 1;
             }
@@ -881,12 +680,6 @@ impl<'s> Lexer<'s> {
         Err(self.error(format!("unexpected character `{c}`")))
     }
 
-    /// Closes every open island whose `open_depth` equals `self.depth` (the
-    /// depth this closing-bracket token is about to leave) — at most one,
-    /// since island `open_depth`s are strictly increasing bottom-to-top on
-    /// the stack (each new island only opens deeper than whatever enclosed
-    /// it) — emitting its remaining DEDENT/NEWLINE pairs at the bracket's
-    /// own position first.
     fn close_layout_islands_before_bracket_close(&mut self, line: u32, col: u32) {
         while let Some(island) = self.islands.last() {
             if island.open_depth != self.depth {
@@ -913,8 +706,6 @@ impl<'s> Lexer<'s> {
     }
 }
 
-/// Stable text dump, one token per line: `line:col KIND text`. This format
-/// is pinned by the golden suite; changing it is a golden-reviewed change.
 pub fn dump(tokens: &[Token]) -> String {
     let mut out = String::new();
     for t in tokens {
@@ -928,16 +719,6 @@ pub fn dump(tokens: &[Token]) -> String {
     out
 }
 
-// --- tests --------------------------------------------------------------
-//
-// 02-language.md §1: "Blocks use a trailing `:` and significant
-// indentation, exactly four spaces per level; tabs in leading whitespace
-// are errors." These pin the indentation-stack unit behavior directly
-// (INDENT/DEDENT balance, the exact-four-spaces rule, tab rejection, and
-// blank/comment-only lines being layout-transparent) — the corpus/fuzz
-// lanes only check "lexes without panic" and golden dumps pin one fixed
-// snippet's exact rendering, neither of which independently confirms
-// these structural invariants across arbitrary nesting.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -965,9 +746,6 @@ mod tests {
         );
     }
 
-    /// A nested snippet's INDENT/DEDENT tokens balance: every INDENT is
-    /// matched by exactly one DEDENT by EOF, and the running nesting depth
-    /// (INDENT +1, DEDENT -1) never goes negative.
     #[test]
     fn nested_indent_dedent_counts_balance() {
         let toks = kinds("a\n    b\n        c\n    d\ne\n");
@@ -1022,10 +800,6 @@ mod tests {
         );
     }
 
-    /// Blank lines and comment-only lines are layout-transparent: they
-    /// emit no INDENT/DEDENT/NEWLINE of their own and do not perturb the
-    /// indentation stack, even when their own leading whitespace would
-    /// otherwise mismatch the current level.
     #[test]
     fn blank_and_comment_only_lines_emit_no_layout_tokens() {
         let toks = kinds("a\n    b\n\n    # comment\n    c\nd\n");
@@ -1045,12 +819,6 @@ mod tests {
         );
     }
 
-    // --- layout islands (syntax.lexer.layout-islands) ---------------------
-
-    /// A `:` followed by a newline while bracket depth > 0 opens a layout
-    /// island: a multi-statement suite embedded in a call's argument list
-    /// gets real NEWLINE/INDENT/DEDENT tokens, closing (case (a)) once a
-    /// later line's own indentation returns to the island's base.
     #[test]
     fn island_opens_for_bracketed_multi_statement_suite() {
         let toks = lex("f(||:\n    a\n    b\n)\n").expect("should lex");
@@ -1065,10 +833,6 @@ mod tests {
             1,
             "one balancing DEDENT closing the island: {kinds:?}"
         );
-        // Each body statement (`a`, `b`) is a real, separately lexed
-        // token immediately followed by its own Newline — a real
-        // separator, not the parser guessing where one statement ends
-        // and the next begins.
         for name in ["a", "b"] {
             let i = toks
                 .iter()
@@ -1082,10 +846,6 @@ mod tests {
         }
     }
 
-    /// A bracket opened inside an active island suppresses layout again
-    /// immediately, with no bookkeeping beyond bracket depth: a multi-line
-    /// call nested inside the suite body must not itself contribute any
-    /// layout tokens.
     #[test]
     fn bracket_inside_island_suppresses_layout_again() {
         let toks = kinds("f(||:\n    a(\n        1,\n        2,\n    )\n    b\n)\n");
@@ -1102,10 +862,6 @@ mod tests {
         );
     }
 
-    /// Closing case (b): a closing bracket that drives depth below the
-    /// island's own opening depth force-emits the balancing DEDENT (and its
-    /// paired Newline) *before* the bracket's own token, since the island
-    /// never gets a further line of its own to dedent on.
     #[test]
     fn island_closes_before_bracket_when_never_dedents_on_own_line() {
         let toks = lex("f(||:\n    a\n    b)\n").expect("should lex");
@@ -1122,9 +878,6 @@ mod tests {
         );
     }
 
-    /// A `:` followed by content on the same physical line never opens an
-    /// island, bracketed or not — the inline single-statement suite stays
-    /// exactly as layout-free as before.
     #[test]
     fn colon_same_line_content_does_not_open_island() {
         let toks = kinds("f(||: a)\n");
@@ -1133,8 +886,6 @@ mod tests {
             "no layout tokens for a same-line inline suite: {toks:?}"
         );
     }
-
-    // --- radix / underscore digit rules (02 §1.1) ---------------------------
 
     #[test]
     fn radix_literals_reject_digits_outside_their_set() {
@@ -1149,8 +900,6 @@ mod tests {
 
     #[test]
     fn radix_prefix_with_no_digits_is_a_lex_error() {
-        // Lex only recognizes lowercase prefixes (`0x`/`0o`/`0b`); uppercase
-        // `0X` is historically `0` + Ident(`X`) and stays that way.
         for src in ["0x", "0o", "0b"] {
             let err = lex(src).expect_err(&format!("{src} must be a lex error"));
             assert!(err.message.contains("at least one digit"), "{src}: {err:?}");
@@ -1167,8 +916,6 @@ mod tests {
 
     #[test]
     fn many_blank_lines_lex_without_stack_overflow() {
-        // ~100k blank lines: the pre-fix recursive skip overflowed the
-        // native stack on deep blank runs.
         let src = "\n".repeat(100_000) + "x\n";
         let toks = lex(&src).expect("blank-line loop must not overflow");
         assert!(

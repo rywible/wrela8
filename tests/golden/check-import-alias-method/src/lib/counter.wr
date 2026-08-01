@@ -1,8 +1,5 @@
 module lib.counter
 
-# plans/M9.md item DD fixture: an ordinary data struct with a read-self
-# method, an associated fn, a mut-self method, and a take-self method.
-# Nothing here is special — the point is entirely on the importer's alias.
 
 pub struct Counter:
     pub n: u32

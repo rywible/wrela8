@@ -1,1 +1,1 @@
-error[type]: deriving(From) requires exactly one field at 6:1
+error[type]: deriving(From) requires exactly one field at 4:1

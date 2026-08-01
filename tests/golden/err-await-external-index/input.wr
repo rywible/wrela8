@@ -1,6 +1,5 @@
 module examples.err_await_external_index
 
-# Twin of err-await-external-path: Index must not span await either (§9.2).
 
 @actor
 pub struct Upstream:

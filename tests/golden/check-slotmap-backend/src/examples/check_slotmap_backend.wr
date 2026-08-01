@@ -1,9 +1,5 @@
 module examples.check_slotmap_backend
 
-# plans/M9.md item MM (was F2 reachability-only): SlotMap mutating methods
-# lower in guest code after nested place assignment. Pins check/image plus
-# mwir/asm of insert/contains. Comptime key discipline remains
-# check-slotmap-key-discipline.
 
 from core.slotmap import SlotMap, Key, SlotMapFull
 

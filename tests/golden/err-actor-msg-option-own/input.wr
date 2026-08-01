@@ -1,6 +1,5 @@
 module examples.err_actor_msg_option_own
 
-# Decl-time: Option[own[P] T] is still a resource carrier and needs `take`.
 
 pool Packets
 

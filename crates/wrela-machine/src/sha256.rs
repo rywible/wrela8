@@ -1,11 +1,3 @@
-//! In-tree SHA-256 (FIPS 180-4): one hardcoded hash, no dependency.
-//! Shared by the compiler's report digests and the VMM's image / choice-log
-//! digests (06-machine.md §3 / §8).
-
-// --- the digest (06-machine.md §3/§8): one hardcoded,
-// hand-rolled SHA-256, plain u32 ops, no new dependency. Standard public
-// test vectors (empty string, "abc") below. ---------------------------------
-
 const SHA256_K: [u32; 64] = [
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
     0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
@@ -21,10 +13,6 @@ const SHA256_H0: [u32; 8] = [
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
 ];
 
-/// Plain, textbook SHA-256 (FIPS 180-4) over `data`, hex-lowercase output.
-/// No streaming API — a pure function of a byte slice. Used for report
-/// input digests, the sealed image digest the VMM re-checks, and choice-
-/// log / transcript digests (06 §3 / §8).
 pub fn sha256_hex(data: &[u8]) -> String {
     let mut h = SHA256_H0;
 
@@ -93,7 +81,6 @@ pub fn sha256_hex(data: &[u8]) -> String {
     h.iter().map(|word| format!("{word:08x}")).collect()
 }
 
-/// True when `s` is exactly 64 lowercase-or-uppercase hex digits.
 pub fn is_sha256_hex(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }

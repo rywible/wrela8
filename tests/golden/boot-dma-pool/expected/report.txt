@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/boot_dma_pool.wr sha256=2c435acdb06d5b753a1a29d83661bfafb45a33f25baef10701bf5b912826c778
+  Input path=examples/boot_dma_pool.wr sha256=5eccda87af79c2c178b026f7dcb4c3a57357aa1f660af85ae3f636f7022aa651
   Input path=<generated> sha256=4a86d704b1f5738b73351ce438804d0b0eb14af027f8cf69b156582e0b78893b
   Name value=boot-dma-pool
   Target value=Target.wrela_machine_v1

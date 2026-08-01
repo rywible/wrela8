@@ -1,8 +1,5 @@
 module examples.err_each_suspends
 
-# plans/M9.md item F1 decision 344 / 05 §7: lent iteration closures cannot
-# suspend. `each`'s body is a non-escaping closure — `await` inside is
-# `error[type]: a closure cannot contain await`.
 
 from core.list import List
 

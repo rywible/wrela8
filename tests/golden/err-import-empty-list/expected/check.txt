@@ -1,1 +1,1 @@
-error[parse]: an import list cannot be empty (`from <path> import <Name>` needs at least one name — 02-language.md §2) at 16:15
+error[parse]: an import list cannot be empty (`from <path> import <Name>` needs at least one name — 02-language.md §2) at 4:15

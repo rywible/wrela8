@@ -1,19 +1,5 @@
 module examples.err_group_start_in_loop
 
-# plans/M6.md item H2 — found by the orchestrator while reproducing the
-# sweep's capacity find, and the reason capacity can be enforced
-# statically at all.
-#
-# A `g.start` inside a loop is ONE static site that runs N times. Every
-# consumer downstream counts static sites: `join_all`'s own array length,
-# the group's admission accounting, and (since H2) the declared capacity
-# check. So this compiled clean, started two children, and then
-# deadlocked in `join_all` waiting on a count of one — a program whose
-# only possible outcome was the runtime deadlock diagnostic.
-#
-# Rejected by name instead, which is the same discipline decision 5
-# already applies to a bare `send`: outside any loop, so each site
-# executes at most once per root turn.
 
 @actor
 pub struct C:

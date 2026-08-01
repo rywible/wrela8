@@ -1,8 +1,5 @@
 module examples.mwir_arith
 
-# A checked/wrapping arithmetic mix (plans/M5.md item B's own required
-# golden family) — mirrors check-tests-arith's own hand-computed identity
-# style, but as plain fns (mwir dumps every fn regardless of `@test`).
 
 pub fn checked_add(a: u32, b: u32) -> u32:
     return a + b

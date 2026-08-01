@@ -1,1 +1,1 @@
-error[name]: unknown name `label` at 16:12
+error[name]: unknown name `label` at 10:12

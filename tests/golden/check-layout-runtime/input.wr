@@ -1,30 +1,5 @@
 module examples.layout_runtime
 
-# plans/M10.md item A2, 03-hardware.md §3.1: the fourth layout kind, laid
-# out for real. It was declared-and-refused by item A (decision 561) until
-# the field types it is *defined* in terms of existed; this case is the
-# shape §3.1's own example spells, with the one difference item A2 could
-# not close — the array length is a literal, not the `const N_TURNS` the
-# doc writes (decision 580). Item A2b closed it, and
-# `golden/check-layout-runtime-const-len` is §3.1's own spelling compiling;
-# this case stays as the literal-length pin, which is the shape that must
-# keep working with no `const` and no second pass involved at all.
-#
-# What the reported bytes show, and why each number is the only correct one:
-#
-# - `TurnArea` is 8 bytes, padding 0: two naturally-aligned `u32`s, exactly
-#   the bytes its fields cover.
-# - `turns: [TurnArea; 4]` is 32 bytes — `4 * 8`, elements back to back,
-#   with no stride rounding and no trailing padding.
-# - `turns` sits at 0x8, immediately after `rr_cursor`, because an array's
-#   alignment is its *element's* (4), not its own size (32). A rule that
-#   aligned a 32-byte field to 32 bytes would have invented 24 bytes of
-#   padding here, which a `@layout` never does.
-# - `rr_cursor` is `u64` and not `usize` (decision 563): a `@layout` type's
-#   bytes are exact on every target, so no kind — including this one — gets
-#   a target-dependent field. `err-layout-target-dependent` still pins that.
-# - `GroupSlot` nests `TurnArea` *and* an array of it, so the recursive
-#   size computation is visible in a second shape: 8 + 32 = 40 bytes.
 
 @layout(runtime, endian=little)
 struct TurnArea:

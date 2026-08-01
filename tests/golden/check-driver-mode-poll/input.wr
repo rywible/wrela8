@@ -1,9 +1,5 @@
 module examples.check_driver_mode_poll
 
-# plans/M7.md item G, decision 18: `BlkDriver[DriverMode.Poll]` eliminates
-# the ISR and vector (03-hardware.md §7). Same `@task drain` as the IRQ
-# twin — callers are identical; the emitted graph is not (no `vector=`,
-# no `IrqHostInject`, no `on_queue_irq` in mwir, smaller checkpoint).
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

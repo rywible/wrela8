@@ -1,8 +1,5 @@
 module examples.err_secret_out_of_scope
 
-# plans/M9.md item G3 / decision 354: one marked-value mechanism, three
-# policies. `Secret[T]` is refused by name until secret-preserving
-# transforms + 02 §12 non-serialization land.
 
 fn bad(v: Secret[u64]) -> u64:
     return 0

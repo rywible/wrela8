@@ -1,1 +1,1 @@
-error[type]: `reclaim`'s `payload=` must be a `@layout(dma)` struct; `WireBlock` is not (03-hardware.md §3: a transfer payload is `own[P] T` where `T` is `@layout(dma)`) at 162:72
+error[type]: `reclaim`'s `payload=` must be a `@layout(dma)` struct; `WireBlock` is not (03-hardware.md §3: a transfer payload is `own[P] T` where `T` is `@layout(dma)`) at 128:72

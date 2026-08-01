@@ -1,7 +1,5 @@
 module examples.err_driver_mode_irq_no_vector
 
-# plans/M7.md item G, decision 18: Irq without vector= is a sealed-graph
-# contradiction (03-hardware.md §7: an IRQ build needs a vector to bind).
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

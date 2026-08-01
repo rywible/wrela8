@@ -1,16 +1,5 @@
 module examples.boot_many_tests
 
-# plans/M5.md item G / item E, decision 15: the M5-G adversarial sweep's own
-# exact reproducer — a mere 7-8 trivial `@test(runtime)` fns already
-# exhausted the pre-fix console ring's descriptor budget mid-summary (each
-# printed line spent one descriptor per __wrela_ring_write *call*, not per
-# line: prefix + verdict + newline, 2-3 calls per test). This golden pins
-# 12 tests, all passing, well past that old failure point, proving the fix
-# (one descriptor per LINE, plus the static bound check at build time) with
-# a plain, non-adversarial program: nothing here is a stress test of the
-# static bound itself (`err-test-output-bound` pins that separately) — just
-# an ordinary program a user might actually write, boxed well inside the
-# machine's console bound, that used to fail anyway.
 
 @test(runtime)
 pub fn test_01():

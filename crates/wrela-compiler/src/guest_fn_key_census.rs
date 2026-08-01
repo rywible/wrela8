@@ -1,9 +1,3 @@
-//! **Census of required `Fn key=` spellings in backend golden dumps**
-//! (plans/M9.md item KK; closes decision 324's coverage-loss audit).
-//!
-//! Allowlists live in `tests/census.toml` (`[guest_fn_key]`); this module
-//! owns the golden-dump scan that locks against them.
-
 use crate::census;
 
 pub fn zero_fn_dumps() -> &'static [(String, String)] {

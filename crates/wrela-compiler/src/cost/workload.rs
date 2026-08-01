@@ -1,34 +1,22 @@
-//! Pinned workload set (`bench/workloads.toml`).
-//!
-//! Named workloads with integer weights for multi-W proxy ranking. `[flat]`
-//! is required (`f≡1` policy row). Parse + digest here; score compose is
-//! `cost::compose` (integrity Item J).
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use super::{Fnv64, repo_root};
 
-/// Only key allowed inside a workload table.
 const WEIGHT_KEY: &str = "weight";
 
-/// Required workload name: static ruler, `f≡1`.
 pub const FLAT_NAME: &str = "flat";
 
-/// Parsed pinned workload set (name → weight).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkloadSet {
-    /// Sorted by name; always contains `flat`.
     weights: BTreeMap<String, u64>,
 }
 
 impl WorkloadSet {
-    /// Weight for `name`, if present.
     pub fn weight(&self, name: &str) -> Option<u64> {
         self.weights.get(name).copied()
     }
 
-    /// Weight of the required `flat` row.
     pub fn flat_weight(&self) -> u64 {
         *self
             .weights
@@ -36,23 +24,18 @@ impl WorkloadSet {
             .expect("WorkloadSet always contains flat after parse")
     }
 
-    /// All workload names in sorted order.
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.weights.keys().map(|s| s.as_str())
     }
 
-    /// Number of named workloads (including `flat`).
     pub fn len(&self) -> usize {
         self.weights.len()
     }
 
-    /// True when no workloads (unreachable after a successful parse).
     pub fn is_empty(&self) -> bool {
         self.weights.is_empty()
     }
 
-    /// Stable hex digest of canonical content (sorted `name=weight` lines).
-    /// FNV-1a 64-bit; not cryptographic. Same discipline as `CostTable::table_digest`.
     pub fn digest(&self) -> String {
         let mut h = Fnv64::new();
         for (i, (name, weight)) in self.weights.iter().enumerate() {
@@ -65,8 +48,6 @@ impl WorkloadSet {
     }
 }
 
-/// Workspace-relative path to the committed set, or `WRELA_WORKLOADS`
-/// when set. Resolves repo root from `CARGO_MANIFEST_DIR`.
 pub fn default_workloads_path() -> PathBuf {
     if let Ok(p) = std::env::var("WRELA_WORKLOADS") {
         return PathBuf::from(p);
@@ -74,12 +55,10 @@ pub fn default_workloads_path() -> PathBuf {
     repo_root().join("bench/workloads.toml")
 }
 
-/// Load and parse the default workloads path. Fail closed if missing/malformed.
 pub fn load_default() -> Result<WorkloadSet, String> {
     load_from_path(&default_workloads_path())
 }
 
-/// Load and parse a workloads file from `path`.
 pub fn load_from_path(path: &Path) -> Result<WorkloadSet, String> {
     let text = std::fs::read_to_string(path).map_err(|e| {
         format!(
@@ -91,10 +70,6 @@ pub fn load_from_path(path: &Path) -> Result<WorkloadSet, String> {
     parse(&text).map_err(|e| format!("workloads {}: {e}", path.display()))
 }
 
-/// Parse workloads TOML text.
-///
-/// Fail closed: missing `[flat]`, missing/invalid `weight`, unknown keys
-/// inside a workload table, or non-table top-level keys.
 pub fn parse(text: &str) -> Result<WorkloadSet, String> {
     let value: toml::Value = text.parse().map_err(|e| format!("parse failed: {e}"))?;
     let root = value
@@ -151,7 +126,6 @@ weight = 10
         assert_eq!(a.digest(), b.digest());
         assert_eq!(a.digest().len(), 16);
         assert!(a.digest().chars().all(|c| c.is_ascii_hexdigit()));
-        // Canonical order is name-sorted: boot-actors before flat.
         let names: Vec<_> = a.names().collect();
         assert_eq!(names, vec!["boot-actors", "flat"]);
     }

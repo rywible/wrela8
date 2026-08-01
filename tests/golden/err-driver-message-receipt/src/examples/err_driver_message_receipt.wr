@@ -2,28 +2,6 @@ module examples.err_driver_message_receipt
 
 from core.io_error import IoError
 
-# **Retargeted by plans/M8.md item E (decision 33).** Item D pinned this
-# name on a build-time refusal of `Receipt[P]` in *either* direction
-# across a driver mailbox, and its diagnostic named this item as the lift.
-# Item E landed: a `Receipt[P]` **reply** from 03-hardware.md §5's handoff
-# signature is the blessed convention and now boots
-# (`golden/boot-receipt-handoff`), so that arm of
-# `layout::check_driver_message_surface` is gone.
-#
-# What this case pins now is the direction that survives — a receipt as a
-# message **parameter** (05-library.md §2) — and, deliberately, *where* it
-# is refused. Item D expected the mailbox check to catch it; working item
-# E found that `sema::types::validate_fn_capability_types` already refuses
-# it one pass earlier, for every `pub` method of every `@actor`/`@driver`,
-# messageable or not. The `Receipt` whitelist there was only ever for the
-# **reply** position. So the layout-tier parameter arm is unreachable for
-# a receipt, and this golden pins the diagnostic that really fires.
-#
-# The two shapes sit in one file, one method apart: `submit_read` is the
-# accepted handoff (one `take p: P`, result `Receipt[P]`) on a driver
-# declared `mailbox=4`, and `abandon` posts a receipt back *into* the
-# driver. 03 §5 gives a receipt one owner and one resolution — the caller
-# holds and `await`s it, the driver's own bottom half resolves it.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:
@@ -41,9 +19,6 @@ struct BlkReqStatus:
 
 @layout(dma, endian=little)
 struct DmaBlock:
-    # 512-byte sector payload (virtio-blk SECTOR_SIZE). Frame ABI stays
-    # two u64 slots; the @layout size is what prepare publishes as the
-    # descriptor length (plans/M7.md item E4).
     @offset(0) word: u64
     @offset(504) pad_end: u64
 
@@ -81,14 +56,10 @@ pub struct BlkDriver:
             index=0,
             depth=QDEPTH,
         )?
-        # Literal capacity — avoids `read_capacity_sectors` so `--stage=mwir`
-        # can lower this driver without an image-eval capacity fill (E1's
-        # ConstInt path). The handoff/publish surface is what this golden pins.
         self.capacity_sectors = 16
         self.device = negotiated.start()
         return Ok(unit)
 
-    # Signature-determined handoff (03 §5): one take P, result Receipt[P].
     pub fn submit_read(mut self, lba: u64,
                        take buffer: own[BlockPayloads] DmaBlock)
         -> Receipt[own[BlockPayloads] DmaBlock]:
@@ -104,16 +75,10 @@ pub struct BlkDriver:
             payload=take buffer,
             device_writes_payload=true,
             status=BlkReqStatus(status=0xff),
-            # Item G (decision 18) made `idempotent=` required. A block
-            # *read* of a fixed sector is idempotent by inspection — this
-            # case is about the `Receipt` reply, not the retry rule, and
-            # `true` is the honest answer for a read rather than the one
-            # that dodges a second diagnostic.
             idempotent=true,
         )
         return self.queue.publish(operation=take operation)
 
-    # The refused direction: a receipt as an admitted message parameter.
     pub fn abandon(mut self, take receipt: Receipt[own[BlockPayloads] DmaBlock]) -> u64:
         outcome = self.queue.recover(receipt=take receipt)
         match outcome:

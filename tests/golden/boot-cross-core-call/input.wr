@@ -1,55 +1,5 @@
 module examples.boot_cross_core_call
 
-# plans/M8.md item C2: THE cross-core golden — a call that crosses a core
-# boundary and a reply that crosses back, on a real boot over
-# Hypervisor.framework.
-#
-# **This file replaces `tests/golden/err-placement-cross-core-send`**, which
-# pinned the C1-era build error for this exact program ("a cross-core edge
-# lowers to a bounded SPSC ring (04-compiler.md §3), and this image builds
-# none — plans/M8.md item C2 is where cross-core rings land"). Item C2 is
-# that item, so the guard is retired rather than moved: the thing it refused
-# now lowers, and the same source that used to be an `error[build]` in two
-# tiers is now a passing boot in both. What genuinely still must be refused
-# was re-homed to two goldens of its own, named for what they actually
-# refuse — `err-cross-core-aggregate-reply` and `err-cross-core-checkpoint`.
-#
-# What the boot exercises, end to end (04-compiler.md §3: "cross-core actor
-# edges keep identical message semantics, lowered to compiler-generated
-# bounded SPSC rings in guest memory"):
-#
-#   - the root turn on core 0 `await`s `Off`, which is placed on core 1. The
-#     compiled call site is the same one a same-core await emits; layout
-#     redirects its symbol to `__rt_xsend_0_Off`, whose ABI and rejection
-#     contract are `__rt_enqueue_Off`'s exactly;
-#   - the request rides the `request src=0 dst=1 target=Off` ring the report
-#     publishes, and core 1's own pending word is raised after it is
-#     published, never before;
-#   - core 1 — parked since boot with nothing of its own (item C1's floor) —
-#     is handed the baton, clears its pending word, drains the ring into
-#     `Off`'s real mailbox through `__rt_enqueue_Off`, and selects the turn
-#     in its own `rt_run_one_1`;
-#   - `Off.get`'s reply does **not** get stored into core 0's turn record.
-#     The waker carries core 0's tag (decision 30), so the completing turn
-#     pushes `(turn area, reply)` onto the `reply src=1 dst=0` ring and
-#     raises core 0's pending word — the reply is an edge in the other
-#     direction and travels the same way the request did;
-#   - core 0 wakes, drains the reply ring, writes `resume_ready`, and the
-#     root turn resumes with `77`.
-#
-# **What makes it falsifiable rather than decorative.** The asserted value
-# `77` is written by `Off.init` and read by `Off.get`, and `Off` exists only
-# on core 1: no code on core 0 can produce it. So `ok` is evidence that a
-# message crossed to core 1, ran there, and its reply crossed back. Break
-# any link and the boot fails closed rather than printing a wrong `ok` —
-# delete the wake in `build_rt_xsend` and core 1 is never scheduled again,
-# so the VMM reports `core 0 parked and no core is runnable`; drop the
-# reply-ring push and the root never resumes, same line.
-#
-# Vacuity control: change `core=1` to `core=0` and this becomes an ordinary
-# same-core await with no ring in the report at all (that shape is
-# `boot-cross-core`'s own `Store`), which is what the `Ring` lines in
-# expected/report.txt pin.
 
 @actor
 pub struct Off:

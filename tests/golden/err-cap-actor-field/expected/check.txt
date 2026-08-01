@@ -1,1 +1,1 @@
-error[type]: `@actor` struct `Cache` cannot hold a capability in a field (`Mmio[VirtioIrqMmio]` — 03-hardware.md §1); only a `@driver` may at 22:5
+error[type]: `@actor` struct `Cache` cannot hold a capability in a field (`Mmio[VirtioIrqMmio]` — 03-hardware.md §1); only a `@driver` may at 14:5

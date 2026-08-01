@@ -1,1 +1,1 @@
-error[type]: `Untrusted[T]` cannot be used as an arithmetic operand until checked-narrowed — write `.checked_le(bound)` (03-hardware.md §8) at 7:21
+error[type]: `Untrusted[T]` cannot be used as an arithmetic operand until checked-narrowed — write `.checked_le(bound)` (03-hardware.md §8) at 5:21

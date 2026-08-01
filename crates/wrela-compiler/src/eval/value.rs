@@ -1,40 +1,11 @@
-//! Comptime evaluator values (plans/M3.md item B, decision 5): one plain
-//! enum. Scalars are stored at target width (a distinct Rust integer
-//! type per wrela scalar type, rather than one wide host integer plus a
-//! tag — decision 4's "dumb, no seams for their own sake" applied to
-//! values the same way it already applies to `sema::types::Type`);
-//! `bool`/`char`/`unit`; tuples/arrays as `Vec<Value>`; structs as
-//! field-ordered `Vec<Value>` (`typed::TypedStruct::fields`, plans/M3.md
-//! item B's own addition to the typed tree, gives the name<->index
-//! mapping — see that field's doc comment); enums as `(variant index,
-//! payload values)`; `Static[Str]`/`Static[Bytes[N]]` as owned bytes;
-//! named functions as callee keys. `Clone`s freely (CLAUDE.md) — no
-//! interning, no arena, no `Rc`.
-//!
-//! Arithmetic is exact per docs/language/02-language.md §6.1: ordinary
-//! `+ - *` (and negation, and `MIN / -1`) abandon on overflow in every
-//! profile; `+% -% *%` wrap modulo `2^width`; division truncates toward
-//! zero and abandons on division by zero; shifts abandon on an
-//! out-of-range count or (for `<<`) lost bits. Every "abandon" path here
-//! returns `Err(String)` — a bare description of the operation that
-//! overflowed/abandoned (no call-stack, no formatting) — `interp.rs`
-//! wraps it into an `EvalError` with the live comptime call stack
-//! attached (decision 5's "carrying the comptime call stack").
-
 use std::collections::BTreeMap;
 
 use crate::sema::typed::{CalleeKey, TypedClosureBody, TypedClosureParam};
 use crate::sema::types::Type;
 use crate::syntax::ast::BinOp;
 
-/// `Option`'s two variants, indexed in declaration order (`None` first,
-/// `Some` second) — 02-language.md §2's fixed vocabulary; there is no
-/// `DeclEnum` for it to read an order from (`prelude.rs`), so the order
-/// is pinned here instead.
 pub const OPTION_NONE: usize = 0;
 pub const OPTION_SOME: usize = 1;
-/// `Result`'s two variants, indexed in declaration order (`Ok` first,
-/// `Err` second) — same reasoning as `OPTION_NONE`/`OPTION_SOME`.
 pub const RESULT_OK: usize = 0;
 pub const RESULT_ERR: usize = 1;
 
@@ -57,54 +28,22 @@ pub enum Value {
     Bool(bool),
     Char(char),
     Unit,
-    /// `Static[Str]` — owned, already-decoded UTF-8 bytes.
     Str(Vec<u8>),
-    /// `Static[Bytes[N]]` and peers — owned bytes.
     Bytes(Vec<u8>),
     Tuple(Vec<Value>),
-    /// A fixed-array value.
     Array(Vec<Value>),
-    /// Field-ordered (decision 5): index `i` holds the value of
-    /// `typed::TypedStruct::fields[i]`.
     Struct(Vec<Value>),
-    /// `(variant index, payload)` — `OPTION_NONE`/`OPTION_SOME`/
-    /// `RESULT_OK`/`RESULT_ERR` above for the two builtin sums; a user
-    /// enum's variant index is its position in `sema::types::DeclEnum::variants`
-    /// (declaration order), threaded through by `interp.rs` at
-    /// construction/match time (the typed tree names variants, not
-    /// indices — `interp::variant_index` looks the position up).
     Enum(usize, Vec<Value>),
-    /// A bare fn/method value (`TypedExprKind::FnRef`) — never called
-    /// through this variant directly; `CallValue` resolves it back to a
-    /// callee key and dispatches through the ordinary call path.
     Fn(CalleeKey),
-    /// A closure literal's value: params/body cloned straight off the
-    /// typed node, plus a snapshot of the defining environment at
-    /// creation time (plans/M3.md item B, "closures (non-escaping,
-    /// direct application)" — a snapshot clone is correct and simplest;
-    /// no true capture-by-reference, no `Rc`).
     Closure {
         params: Vec<TypedClosureParam>,
         body: TypedClosureBody,
         env: Env,
     },
-    /// One `@image` builder declaration handle (plans/M4.md item B,
-    /// decision 5): the result of `img.device`/`img.driver`/`img.actor`/
-    /// `img.pool`/`img.dma_pool`, and `decl.handle()`'s own passthrough of
-    /// one of these — `eval::image::ImageDeclRef` names *which*
-    /// declaration, in construction order (devices/drivers/actors) or by
-    /// its own bound pool name (pools/dma pools), mirroring
-    /// `ImageGraph`'s own two recording disciplines exactly (that
-    /// module's own doc comment).
     ImageDecl(crate::eval::image::ImageDeclRef),
 }
 
 impl Value {
-    /// The number of `Value`/byte elements this value owns, one level
-    /// deep plus its own children — `quota.rs`'s memory counter charges
-    /// this at every construction site so a large literal/collection
-    /// costs quota proportionally to its own size (decision 6: "a simple
-    /// running counter is fine").
     pub fn weight(&self) -> u64 {
         match self {
             Value::Str(b) | Value::Bytes(b) => b.len() as u64,
@@ -117,10 +56,6 @@ impl Value {
     }
 }
 
-// --- integer scalar helpers ------------------------------------------------
-
-/// `(bit width, signed)` for the ten integer scalar types; `None` for
-/// anything else (float/bool/char/...).
 fn int_shape(ty: &Type) -> Option<(u32, bool)> {
     match ty {
         Type::U8 => Some((8, false)),
@@ -135,9 +70,6 @@ fn int_shape(ty: &Type) -> Option<(u32, bool)> {
     }
 }
 
-/// Inclusive `(min, max)` for an integer scalar type; `None` for anything
-/// else. `sema::bodies` and `eval::image_checks` both decode ranges
-/// through this one table.
 pub(crate) fn int_bounds(ty: &Type) -> Option<(i128, i128)> {
     match ty {
         Type::U8 => Some((0, u8::MAX as i128)),
@@ -152,8 +84,6 @@ pub(crate) fn int_bounds(ty: &Type) -> Option<(i128, i128)> {
     }
 }
 
-/// Reads any integer-scalar `Value` out as a host `i128` (always lossless:
-/// the widest wrela integer is 64-bit). `None` for a non-integer value.
 pub fn as_i128(v: &Value) -> Option<i128> {
     Some(match *v {
         Value::U8(x) => x as i128,
@@ -170,9 +100,6 @@ pub fn as_i128(v: &Value) -> Option<i128> {
     })
 }
 
-/// plans/M9.md item C2: decimal / bool / char Format for core scalars.
-/// Occupied UTF-8 bytes of the formatted form (never padded to the type's
-/// `max_formatted_len` bound — that bound is a capacity ceiling).
 pub fn format_scalar(v: &Value) -> Value {
     let s = match v {
         Value::Bool(true) => "true".to_string(),
@@ -193,10 +120,6 @@ pub fn format_scalar(v: &Value) -> Value {
     Value::Str(s.into_bytes())
 }
 
-/// Builds an integer-scalar `Value` of type `ty` from a host `i128`,
-/// truncating to the type's own bit pattern (`as`'s own two's-complement
-/// truncation) — callers only ever pass an already-range-checked (or
-/// intentionally wrapped/masked) value, never a raw unchecked one.
 pub fn make_int(ty: &Type, v: i128) -> Value {
     match ty {
         Type::U8 => Value::U8(v as u8),
@@ -213,11 +136,6 @@ pub fn make_int(ty: &Type, v: i128) -> Value {
     }
 }
 
-/// Parses an integer literal's raw source text (`0x`/`0o`/`0b`/decimal,
-/// `_` separators). `sema::bodies` re-exports this one, so every
-/// `bodies::parse_int_literal` caller decodes through the same code.
-/// (the literal is already range-checked by sema; this only decodes the
-/// digits).
 pub fn parse_int_literal(text: &str) -> Option<i128> {
     let cleaned: String = text.chars().filter(|c| *c != '_').collect();
     let (radix, digits): (u32, &str) = if let Some(d) = cleaned
@@ -250,9 +168,6 @@ fn checked_op(op: BinOp, a: i128, b: i128) -> Option<i128> {
     }
 }
 
-/// Ordinary `+ - *` (02-language.md §6.1): abandon on overflow in every
-/// profile — checked in `i128` (always wide enough: the widest wrela
-/// integer is 64-bit) against the target type's own bounds.
 pub fn eval_ordinary(op: BinOp, ty: &Type, l: &Value, r: &Value) -> Result<Value, String> {
     let a = as_i128(l).ok_or_else(|| "eval: left operand is not an integer scalar".to_string())?;
     let b = as_i128(r).ok_or_else(|| "eval: right operand is not an integer scalar".to_string())?;
@@ -265,8 +180,6 @@ pub fn eval_ordinary(op: BinOp, ty: &Type, l: &Value, r: &Value) -> Result<Value
     }
 }
 
-/// Wrapping `+% -% *%` (02-language.md §6.1): reduce modulo `2^width`,
-/// never abandons on overflow — but still soft-errors on a typed-IR hole.
 pub fn eval_wrapping(op: BinOp, ty: &Type, l: &Value, r: &Value) -> Result<Value, String> {
     let (bits, signed) =
         int_shape(ty).ok_or_else(|| "eval: result type is not an integer scalar".to_string())?;
@@ -286,10 +199,6 @@ pub fn eval_wrapping(op: BinOp, ty: &Type, l: &Value, r: &Value) -> Result<Value
     Ok(make_int(ty, mask_to_width(raw, bits, signed)))
 }
 
-/// Reduces a host `i128` to the two's-complement bit pattern of `bits`
-/// width, then reinterprets it back as signed/unsigned per `signed` —
-/// the shared "wrap to width" step both `eval_wrapping` and the shift
-/// operators use.
 fn mask_to_width(v: i128, bits: u32, signed: bool) -> i128 {
     let mask: u128 = if bits >= 128 {
         u128::MAX
@@ -298,23 +207,12 @@ fn mask_to_width(v: i128, bits: u32, signed: bool) -> i128 {
     };
     let bits_pattern = (v as u128) & mask;
     if signed && bits < 128 && (bits_pattern & (1u128 << (bits - 1))) != 0 {
-        // Sign-extend: the top bit of this width is set, so the value is
-        // negative in `bits`-wide two's complement.
         (bits_pattern as i128) - (1i128 << bits)
     } else {
         bits_pattern as i128
     }
 }
 
-/// Division/remainder (02-language.md §6.1): truncates toward zero
-/// (`i128`'s own `/`/`%` already do this); abandons on division by
-/// zero, and on the signed `MIN / -1` overflow case. `checked_div`/
-/// `checked_rem` alone are not enough to detect that second case here:
-/// they only return `None` on the *native* width's own `MIN / -1`
-/// (e.g. `i32::MIN`), but this runs the division in `i128` — wide
-/// enough that `i32::MIN / -1` never overflows `i128` itself — so the
-/// result is bounds-checked against the *target* type afterward,
-/// exactly like `eval_ordinary`.
 pub fn eval_div_rem(op: BinOp, ty: &Type, l: &Value, r: &Value) -> Result<Value, String> {
     let a = as_i128(l).ok_or_else(|| "eval: left operand is not an integer scalar".to_string())?;
     let b = as_i128(r).ok_or_else(|| "eval: right operand is not an integer scalar".to_string())?;
@@ -344,11 +242,6 @@ pub fn eval_div_rem(op: BinOp, ty: &Type, l: &Value, r: &Value) -> Result<Value,
     }
 }
 
-/// Shifts (02-language.md §6.1): abandon on an out-of-range count (`>=
-/// width`); `<<` additionally abandons if any bit shifted out (discarded)
-/// was set ("lost bits") — checked on the value's own bit pattern,
-/// signedness aside. `count` shares `l`'s own type (`check_binary`
-/// requires same-type operands for every builtin op, shifts included).
 pub fn eval_shift(op: BinOp, ty: &Type, l: &Value, count: &Value) -> Result<Value, String> {
     let (bits, signed) =
         int_shape(ty).ok_or_else(|| "eval: result type is not an integer scalar".to_string())?;
@@ -379,9 +272,6 @@ pub fn eval_shift(op: BinOp, ty: &Type, l: &Value, count: &Value) -> Result<Valu
             Ok(make_int(ty, mask_to_width(raw as i128, bits, signed)))
         }
         BinOp::Shr => {
-            // Arithmetic shift for signed types (sign-fills), logical for
-            // unsigned — matches Rust's own `>>` per host integer type,
-            // reproduced here on the bit pattern directly.
             let raw = if signed {
                 a >> c
             } else {
@@ -393,8 +283,6 @@ pub fn eval_shift(op: BinOp, ty: &Type, l: &Value, count: &Value) -> Result<Valu
     }
 }
 
-/// Bitwise `& | ^` — never abandons on a well-typed value; soft-errors on
-/// a typed-IR hole instead of panicking the CLI.
 pub fn eval_bitwise(op: BinOp, ty: &Type, l: &Value, r: &Value) -> Result<Value, String> {
     let (bits, signed) =
         int_shape(ty).ok_or_else(|| "eval: result type is not an integer scalar".to_string())?;
@@ -411,8 +299,6 @@ pub fn eval_bitwise(op: BinOp, ty: &Type, l: &Value, r: &Value) -> Result<Value,
     Ok(make_int(ty, mask_to_width(raw, bits, signed)))
 }
 
-/// Ordering (`< <= > >=`) — numeric scalars and `char` only
-/// (`build_binop_expr`'s own scope).
 pub fn eval_compare(op: BinOp, l: &Value, r: &Value) -> bool {
     use std::cmp::Ordering;
     let ord = match (l, r) {
@@ -421,9 +307,6 @@ pub fn eval_compare(op: BinOp, l: &Value, r: &Value) -> bool {
         (Value::Char(a), Value::Char(b)) => Some(a.cmp(b)),
         _ => as_i128(l).and_then(|a| as_i128(r).map(|b| a.cmp(&b))),
     };
-    // A `partial_cmp` of `None` (a NaN operand) makes every ordering
-    // comparison false, matching IEEE 754 (02-language.md §6.1: "strict
-    // IEEE 754 with canonical NaN").
     let Some(ord) = ord else { return false };
     match op {
         BinOp::Lt => ord == Ordering::Less,
@@ -434,8 +317,6 @@ pub fn eval_compare(op: BinOp, l: &Value, r: &Value) -> bool {
     }
 }
 
-/// Unary negation (02-language.md §6.1): abandons on overflow (the one
-/// signed case, `MIN.neg()`); floats never abandon.
 pub fn eval_neg(v: &Value) -> Result<Value, String> {
     let checked = match v {
         Value::F32(x) => return Ok(Value::F32(-x)),
@@ -450,8 +331,6 @@ pub fn eval_neg(v: &Value) -> Result<Value, String> {
     checked.ok_or_else(|| "arithmetic overflow in unary `-`".to_string())
 }
 
-/// Bitwise NOT (`~`) — never abandons on a well-typed value; soft-errors
-/// on a typed-IR hole instead of panicking the CLI.
 pub fn eval_bitnot(ty: &Type, v: &Value) -> Result<Value, String> {
     let (bits, signed) =
         int_shape(ty).ok_or_else(|| "eval: result type is not an integer scalar".to_string())?;
@@ -465,8 +344,6 @@ pub fn eval_bitnot(ty: &Type, v: &Value) -> Result<Value, String> {
     Ok(make_int(ty, mask_to_width(raw as i128, bits, signed)))
 }
 
-/// `x.to[T]()` (02-language.md §6.1): checked scalar-to-scalar
-/// conversion — build error (abandon) when the value does not fit `T`.
 pub fn eval_to_scalar(target: &Type, v: &Value) -> Result<Value, String> {
     if let Some((_, _)) = int_shape(target) {
         let (min, max) = int_bounds(target)
@@ -518,11 +395,6 @@ pub fn eval_to_scalar(target: &Type, v: &Value) -> Result<Value, String> {
     }
 }
 
-// --- literal text decoding (str/bstr/char) --------------------------------
-
-/// Decodes a plain string literal's raw token text (`"..."` quotes
-/// included). F-string literal pieces are re-encoded into this form by
-/// `sema::fstring::desugar_fstring` before they reach a typed `Str` node.
 pub fn decode_str(text: &str) -> Vec<u8> {
     let inner = &text[1..text.len() - 1];
     decode_escapes(inner, false)
@@ -531,14 +403,11 @@ pub fn decode_str(text: &str) -> Vec<u8> {
         .into_bytes()
 }
 
-/// Decodes a byte-string literal's raw token text (`b"..."`) into its
-/// raw bytes (`\xNN` allowed, `\u{...}` is not — lexer-enforced already).
 pub fn decode_bstr(text: &str) -> Vec<u8> {
     let inner = &text[2..text.len() - 1];
     decode_byte_escapes(inner)
 }
 
-/// Decodes a char literal's raw token text (`'x'`) into its codepoint.
 pub fn decode_char(text: &str) -> char {
     let inner = &text[1..text.len() - 1];
     let decoded = decode_escapes(inner, true);
@@ -548,8 +417,6 @@ pub fn decode_char(text: &str) -> char {
         .expect("lexer guarantees exactly one char literal codepoint")
 }
 
-/// Shared text-escape decoder (str/char contexts: `\\ \" \' \n \r \t \0`
-/// plus `\u{H..H}`) — returns the decoded codepoints in source order.
 fn decode_escapes(s: &str, _char_ctx: bool) -> Vec<char> {
     let mut out = Vec::new();
     let mut chars = s.chars().peekable();
@@ -567,15 +434,7 @@ fn decode_escapes(s: &str, _char_ctx: bool) -> Vec<char> {
             Some('t') => out.push('\t'),
             Some('0') => out.push('\0'),
             Some('u') => {
-                // `\u{H..H}` — the lexer already validated shape, digit
-                // count *and* that the value is a Unicode scalar
-                // (`lex_escape`); this just decodes it. Both steps below
-                // are infallible for any escape that got past the lexer,
-                // and they say so rather than substituting: the previous
-                // `unwrap_or(0)`/`unwrap_or('\u{FFFD}')` pair turned an
-                // out-of-range or surrogate escape into a *different*
-                // character with no diagnostic anywhere in the pipeline.
-                chars.next(); // '{'
+                chars.next();
                 let mut hex = String::new();
                 for h in chars.by_ref() {
                     if h == '}' {
@@ -596,10 +455,6 @@ fn decode_escapes(s: &str, _char_ctx: bool) -> Vec<char> {
     out
 }
 
-/// Byte-string escape decoder (`\xNN` in addition to the shared set) —
-/// non-escaped source bytes are re-encoded as their own UTF-8 (the
-/// source is UTF-8; a byte string's un-escaped bytes are whatever UTF-8
-/// bytes the source itself spelled).
 fn decode_byte_escapes(s: &str) -> Vec<u8> {
     let mut out = Vec::new();
     let mut chars = s.chars().peekable();
@@ -633,16 +488,6 @@ fn decode_byte_escapes(s: &str) -> Vec<u8> {
     out
 }
 
-// --- scalar arithmetic table (docs/language/02-language.md §6.1) --------
-//
-// Hand-computed cases, one per row of the doc's own rule table: ordinary
-// `+ - *`/negation abandon on overflow at each width's boundary; `+%`
-// wraps modulo `2^width`; division/remainder truncate toward zero and
-// abandon on division by zero and the signed `MIN / -1` case; shifts
-// abandon on an out-of-range count or (for `<<`) lost bits, `>>` is
-// arithmetic (sign-filling) for signed types and logical for unsigned;
-// `.to[T]()` is a checked conversion. plans/M3.md item B's own required
-// "at least a dozen" table.
 #[cfg(test)]
 mod scalar_arithmetic_tests {
     use super::*;
@@ -703,7 +548,6 @@ mod scalar_arithmetic_tests {
 
     #[test]
     fn wrapping_add_wraps_at_u8_max() {
-        // 250 +% 10 == 260 mod 256 == 4.
         assert_eq!(
             eval_wrapping(BinOp::AddW, &Type::U8, &Value::U8(250), &Value::U8(10)),
             Ok(Value::U8(4))
@@ -720,7 +564,6 @@ mod scalar_arithmetic_tests {
 
     #[test]
     fn division_truncates_toward_zero_for_negative_operands() {
-        // -7 / 2 == -3 (truncating, not -4 as floor division would give).
         assert_eq!(
             eval_div_rem(BinOp::Div, &Type::I32, &Value::I32(-7), &Value::I32(2)),
             Ok(Value::I32(-3))
@@ -729,7 +572,6 @@ mod scalar_arithmetic_tests {
 
     #[test]
     fn remainder_matches_truncating_division_sign() {
-        // -7 % 2 == -1 (sign follows the dividend under truncation).
         assert_eq!(
             eval_div_rem(BinOp::Rem, &Type::I32, &Value::I32(-7), &Value::I32(2)),
             Ok(Value::I32(-1))
@@ -759,8 +601,6 @@ mod scalar_arithmetic_tests {
 
     #[test]
     fn shift_left_ok_when_no_bits_are_lost() {
-        // 1u8 << 7 == 128 (the vacated low bits are all zero already, the
-        // shifted-out high bits are all zero too).
         assert_eq!(
             eval_shift(BinOp::Shl, &Type::U8, &Value::U8(1), &Value::U8(7)),
             Ok(Value::U8(128))
@@ -769,7 +609,6 @@ mod scalar_arithmetic_tests {
 
     #[test]
     fn shift_left_abandons_on_lost_bits() {
-        // 0xFF << 1 discards a set high bit.
         assert_eq!(
             eval_shift(BinOp::Shl, &Type::U8, &Value::U8(0xFF), &Value::U8(1)),
             Err("`<<` lost nonzero high bits".to_string())
@@ -778,7 +617,6 @@ mod scalar_arithmetic_tests {
 
     #[test]
     fn shift_abandons_on_out_of_range_count() {
-        // A u8 shift count must be < 8.
         assert_eq!(
             eval_shift(BinOp::Shl, &Type::U8, &Value::U8(1), &Value::U8(8)),
             Err("shift count 8 is out of range for a 8-bit type".to_string())
@@ -795,7 +633,6 @@ mod scalar_arithmetic_tests {
 
     #[test]
     fn shift_right_is_arithmetic_for_signed() {
-        // -1i8 (0xFF) >> 1 sign-extends to -1, not 0x7F.
         assert_eq!(
             eval_shift(BinOp::Shr, &Type::I8, &Value::I8(-1), &Value::I8(1)),
             Ok(Value::I8(-1))

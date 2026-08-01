@@ -1,1 +1,1 @@
-error[type]: register `VirtioIrqMmio.interrupt_status: ReadOnly[u32]` is read-only and cannot be written (03-hardware.md §2: a register's declared direction governs its access) at 19:45
+error[type]: register `VirtioIrqMmio.interrupt_status: ReadOnly[u32]` is read-only and cannot be written (03-hardware.md §2: a register's declared direction governs its access) at 14:45

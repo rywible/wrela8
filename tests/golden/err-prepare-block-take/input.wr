@@ -1,7 +1,5 @@
 module examples.err_prepare_block_take
 
-# plans/M7.md item E2: `prepare_block` consumes the permit — `take` is
-# load-bearing (03-hardware.md §4).
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

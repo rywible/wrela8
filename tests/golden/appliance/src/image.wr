@@ -1,20 +1,5 @@
 module image
 
-# The M4 example appliance (plans/M4.md item D's own flagship golden): a
-# small, real block-storage system — one device, one driver, a cache
-# actor, and a stats actor — built from the shipping builder intrinsics
-# alone (05-library.md §9), with cross-module imports for the driver and
-# both actors (item A's own disclosed scope: an imported struct is fully
-# usable in value/callee position, exercised here exactly as
-# `image-project`/`image-helper-accept` already do). `BlockHw`/`Feature`
-# stay declared in this module rather than imported: `img.device[D]`'s
-# own bracketed type argument resolves through the ordinary type-
-# annotation resolver (`sema::bodies::resolve_intrinsic_type_arg`), which
-# is module-local only (unlike `img.driver`/`img.actor`'s own leading
-# type argument, resolved through `mctx.structs` instead — item A's one
-# deliberate divergence) — so a cross-module device type does not resolve
-# here yet, and this fixture stays honest about that rather than papering
-# over it.
 
 from driver import StorageDriver
 from cache import CacheActor
@@ -38,20 +23,12 @@ pub fn build() -> Image:
         required_features=[Feature.Flush],
     )
 
-    # A plain arg (`sector_count`) plus the reserved `device=` wiring arg
-    # — `img.driver`'s own init-argument matching skips `device`/`core`
-    # entirely (decision 7) and matches `sector_count` by name against
-    # `StorageDriver.init`.
     disk = img.driver(StorageDriver, device=block_device, sector_count=131072)
 
     buffers = img.pool[u32](name=CacheBuffers, slots=8, max_payload=4096)
 
-    # A handle edge (`disk=disk.handle()`) plus a plain arg (`capacity`)
-    # plus the reserved `mailbox=` wiring arg — the three shapes item C's
-    # init-argument matching distinguishes, all in one call.
     cache = img.actor(CacheActor, disk=disk.handle(), capacity=64, mailbox=8)
 
-    # A second handle edge, one hop further down the wiring chain.
     stats = img.actor(StatsActor, cache=cache.handle(), window=16, mailbox=4)
 
     img.on_failure(policy=Failure.Halt)

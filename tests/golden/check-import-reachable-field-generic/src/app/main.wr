@@ -1,7 +1,5 @@
 module app.main
 
-# plans/M9.md item HH: reachable type as exporter field (Holder.cell: Cell)
-# and as generic argument (Box[Cell]), with only Maker imported.
 from lib.g import Maker
 
 fn drive() -> u32:
@@ -17,10 +15,6 @@ pub fn t():
     assert D == 12013, "reachable as field (12) and generic arg (13)"
 
 
-# Guest-reachable path (plans/M9.md item KK): `@test(runtime)` cannot
-# boot here — layout refuses sizing the reachable generic instantiation
-# (`Box[...]`) in the test-image context. An actor `pub` method seeds
-# the same call graph for mwir/asm without the runtime-test layout path.
 @actor
 pub struct Store:
     settled: u32

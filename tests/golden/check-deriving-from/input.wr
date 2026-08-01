@@ -1,14 +1,5 @@
 module examples.check_deriving_from
 
-# plans/M9.md item B / B3. 02-language.md §7.4 / §7.5 and 05-library.md §8:
-# `deriving(From)` on a one-variant/one-field shape generates the `from`
-# that `?` consumes — a real associated fn, callable directly. `settle`
-# maps a converted `Err` into a range `Ok` cannot reach, so a wrong
-# conversion (or a missing one that somehow type-checked) cannot produce
-# the pinned image values.
-#
-# Retired `err-try-from-underived` (BB decision 61): that case stops being
-# an `err-` case when B lands — this is that signal. B3 adds DIRECT.
 
 pub enum LoadError deriving(From):
     Bad(u32)
@@ -36,12 +27,9 @@ fn settle(r: Result[u32, WrapError]) -> u32:
                         case .Bad(n):
                             return n + 1000
 
-# Err(LoadError.Bad(0)) converted through WrapError.from -> 1000.
-# An unconverted payload of 0, or an Ok of 0, cannot produce 1000.
 const CONVERTED: u32 = settle(convert_wrapped(0))
 const OK: u32 = settle(convert_wrapped(7))
 
-# Direct call of the generated from (item B3): Bad(5) -> 2505.
 fn direct_call() -> u32:
     e = LoadError.Bad(5)
     w = WrapError.from(take e)
@@ -66,8 +54,6 @@ pub fn test_generated_from_callable():
     assert DIRECT == 2505, "generated enum from must be callable directly"
 
 
-# Guest-reachable path (plans/M9.md item KK): H3 dropped from/settling helpers
-# from mwir; `@test(runtime)` seeds generated from + `?`.
 @test(runtime)
 pub fn guest_from():
     assert settle(convert_wrapped(0)) == 1000, "`?` from at guest"

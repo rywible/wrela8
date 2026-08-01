@@ -1,88 +1,6 @@
-//! Device models for the closed machine v1 set (06-machine.md §6).
-//!
-//! At M5 there were exactly two "device models", both living directly in
-//! `boot_image_core`'s own exit loop: the console tx-ring drain
-//! (`crate::drain_console`) and the clock MMIO trap. This module is
-//! plans/M7.md item F — the first device model big enough to be its own
-//! file: **virtio-blk**, the split ring, the request format, `Flush`, and
-//! feature negotiation, per 06 §6's own table row (`blk` — "virtio-blk,
-//! split ring, `Flush`, per-queue reset") and 03-hardware.md §4's own
-//! queue rules. Still one file, not a directory and not a `trait Device`:
-//! there is one model here (CLAUDE.md's "no traits with one
-//! implementation"); a second device model splits this into a directory,
-//! and not before.
-//!
-//! ## What this machine deletes, and what is therefore *not* here
-//!
-//! plans/M7.md decision 2 is explicit that most of virtio is already gone
-//! from this machine, and this model implements exactly the remainder:
-//!
-//! - **No MMIO transport, no discovery** (06 §3: "the VMM ... preconfigures
-//!   every device, queue, and shared-memory window the report declares —
-//!   device topology is a *build output*, not a probed fact"). There is no
-//!   `MagicValue`/`DeviceID`/`QueueSel`/`QueueReady` register file here at
-//!   all: `BlkConfig` *is* the transport configuration, parsed out of the
-//!   image report by `crate::parse_report`. A driver never probes.
-//! - **No trapping notification** (06 §5: "guest→host notification is a
-//!   shared-memory doorbell word per queue plus one host-visible wake").
-//!   `BlkQueueConfig::doorbell` is an ordinary guest-writable DRAM word;
-//!   the guest's store to it does not exit. `crate::boot_image_core`
-//!   polls it (see `service`) at every vCPU exit and, crucially, on the
-//!   park path *before* the sleep decision — the mask–arm–recheck
-//!   discipline 06 §4 already requires for vectors, applied to
-//!   completions, so a doorbell rung immediately before a park can never
-//!   be lost.
-//! - **No interrupt controller** (06 §4). A completion optionally raises a
-//!   vector by setting one bit in this core's own pending word
-//!   (`BlkConfig::vector`); the guest observes it at its next checkpoint
-//!   or park. A device declared with no vector is 03 §7's poll build: the
-//!   used ring alone is the completion signal.
-//!
-//! What remains — and is here in full — is the split ring (descriptor
-//! table, available ring, used ring), the virtio-blk request format
-//! (type/sector header, data descriptors, status byte), `Flush`, and
-//! feature negotiation.
-//!
-//! ## Validation is the device's job (03 §4, plans/M7.md decision 5)
-//!
-//! 03 §4: "stale, duplicate, or unknown IDs are driver faults, never
-//! unchecked indexes." That rule binds this model at least as hard as it
-//! binds the driver, because this side of the ring is the one holding a
-//! raw pointer into guest DRAM. Two mechanisms, both structural:
-//!
-//! 1. **`GuestMem` is the only way to touch guest memory in this file**,
-//!    and every one of its accessors takes the same `window_offset` path,
-//!    which admits an address only if `[addr, addr+len)` lies entirely
-//!    inside one *declared pool window*. Decision 5 ("the VMM maps exactly
-//!    the declared pools and nothing else ... it is a *security* property
-//!    on the flagship") is therefore enforced by construction rather than
-//!    by review: there is no unchecked indexing operation in this module
-//!    to audit, so a descriptor whose `addr` names the image's own code,
-//!    another actor's state, or an address off the end of DRAM entirely
-//!    fails as `BlkFault::OutsidePool` — a diagnosable VMM-side error,
-//!    never a panic and never an out-of-bounds read.
-//! 2. **Every ring-shaped input is range-checked before it is used as an
-//!    index**: `BlkFault` below enumerates each rejection by name.
-//!
-//! A `BlkFault` is a *driver* fault, so it fails the boot closed with a
-//! named diagnostic (`crate::VmmError::GuestFault`); it is never silently
-//! skipped and never approximated. It is deliberately distinct from an
-//! in-protocol *device error*, which is a real completion carrying
-//! `STATUS_IOERR`/`STATUS_UNSUPP` — an out-of-range sector or an unknown
-//! request type is something the protocol itself has an answer for, and
-//! answering it is not approximating.
-
 use crate::record::digest_hex;
 use wrela_machine::layout as machine_layout;
 use wrela_machine::virtio::quiesce_count_addr as virtio_quiesce_count_addr;
-
-// --- virtio-blk protocol constants (OASIS VIRTIO 1.2, as profiled by 06) ---
-//
-// Ring geometry, feature bits, descriptor flags, and `REQ_HEADER_SIZE` are
-// `wrela_machine::virtio` (plans/M8.md item H attack 7) — re-exported here
-// so every existing `devices::DESC_SIZE` site keeps working. What remains
-// below is VMM-only: request types, status bytes, sector size, the
-// never-offered INDIRECT flag, and this VMM's own disk ceiling.
 
 pub use wrela_machine::report::{BlkConfig, BlkQueueConfig, PoolWindow};
 pub use wrela_machine::virtio::{
@@ -90,86 +8,29 @@ pub use wrela_machine::virtio::{
     REQ_HEADER_SIZE,
 };
 
-/// `VIRTQ_DESC_F_INDIRECT` — an indirect descriptor table. The
-/// corresponding feature is never offered by this device (see
-/// `DEVICE_FEATURES`), so a descriptor carrying this flag is a driver
-/// fault, not a chain to follow. VMM-only: the compiler never emits one.
 pub const DESC_F_INDIRECT: u16 = 4;
 
-/// `VIRTIO_BLK_T_IN` — read from the device into guest memory.
 pub const T_IN: u32 = 0;
-/// `VIRTIO_BLK_T_OUT` — write guest memory to the device.
 pub const T_OUT: u32 = 1;
-/// `VIRTIO_BLK_T_FLUSH`.
 pub const T_FLUSH: u32 = 4;
 
 pub const STATUS_OK: u8 = 0;
 pub const STATUS_IOERR: u8 = 1;
 pub const STATUS_UNSUPP: u8 = 2;
 
-/// The one sector size this machine's `blk` device speaks.
 pub const SECTOR_SIZE: u64 = 512;
 
-/// The largest in-memory disk this VMM will allocate for a declared `blk`
-/// device. The flagship guest profile is 1 GiB of DRAM (06 §2) and the
-/// disk is a plain host-side `Vec<u8>` this VMM owns, so a report
-/// declaring `capacity_sectors=2^40` must fail closed rather than attempt
-/// a 512 TiB allocation. 64 MiB is far past anything M7 needs and small
-/// enough that the failure is unmistakable.
 pub const MAX_DISK_BYTES: u64 = 64 << 20;
 
-/// Largest virtio-blk queue depth this VMM will instantiate. VIRTIO allows
-/// up to 32768, but one doorbell ring walks every available chain and each
-/// chain may copy up to [`MAX_DISK_BYTES`] — a forged `size=32768` is
-/// ~2 TiB of host memcpy while the scheduler mutex is held. 1024 matches
-/// anything the compiler emits and keeps one poll bounded
-/// (adversarial audit, 2026-07-27).
 pub const MAX_BLK_QUEUE_SIZE: u16 = 1024;
 
-// --- declared pool windows and checked guest memory -------------------------
-
-/// Guest DRAM as **one device** may reach it: every declared pool window
-/// in the image, plus the identity of the device doing the reaching.
-///
-/// Holds a raw pointer into `boot_image_core`'s own `alloc_zeroed` DRAM
-/// reservation (exactly like `crate::drain_console`, and for the same
-/// reason: this VMM never forms a `&mut [u8]` over the whole guest
-/// reservation, so it never has to reason about aliasing it with the
-/// vCPU's own view). Every accessor below goes through `window_offset`,
-/// which is the single enforcement point for decision 5.
-///
-/// **Why `windows` is every window and not just this device's**
-/// (plans/M8.md item P, decision 26). Filtering the list at construction
-/// would make the same accesses succeed and fail, but it would make the
-/// device check *vacuous* — there would be nothing in the list to refuse,
-/// and no mutation of this file could be caught by a boot. Carrying the
-/// whole declared set and refusing on `w.device != self.device` is what
-/// makes `golden/err-boot-blk-cross-device-pool` a real negative: the
-/// window it names is present, placed, and mapped for its own device, and
-/// this device still cannot touch a byte of it.
 pub struct GuestMem {
     base: *mut u8,
     windows: Vec<PoolWindow>,
-    /// The device whose view this is; `window_offset` admits only windows
-    /// bound to it.
     device: u64,
 }
 
 impl GuestMem {
-    /// `base` must point at a `machine_layout::DRAM_SIZE`-byte host
-    /// allocation mapped at `machine_layout::DRAM_BASE`. Every window is
-    /// validated here, once: non-empty, wholly inside guest DRAM, and
-    /// disjoint from every other window (a duplicated or overlapping pool
-    /// declaration is a configuration bug, and a silent overlap would
-    /// quietly widen exactly the boundary this type exists to keep
-    /// narrow). Disjointness is checked across *all* windows regardless of
-    /// device: two pools are two placed regions of one image, and two
-    /// devices sharing bytes is the shape this whole item exists to make
-    /// impossible.
-    ///
-    /// # Safety
-    /// `base` must be valid for reads and writes of `DRAM_SIZE` bytes for
-    /// as long as this `GuestMem` lives.
     pub unsafe fn new(
         base: *mut u8,
         windows: Vec<PoolWindow>,
@@ -211,16 +72,6 @@ impl GuestMem {
         })
     }
 
-    /// THE enforcement point (module doc above): the host-side byte offset
-    /// of `[addr, addr+len)`, or a fault if that range is not wholly
-    /// inside one pool window **bound to this device**. Nothing in this
-    /// file converts a guest address to a host offset any other way.
-    ///
-    /// The two refusals are named apart on purpose (plans/M8.md item P): a
-    /// range in no window at all is an ordinary out-of-bounds descriptor,
-    /// while a range inside *another device's* window is 03-hardware.md
-    /// §3's own rule being enforced, and a post-mortem that cannot tell
-    /// them apart cannot tell a broken driver from a broken image.
     fn window_offset(&self, addr: u64, len: u64) -> Result<usize, BlkFault> {
         let end = addr.checked_add(len).ok_or(BlkFault::OutsidePool {
             addr,
@@ -295,14 +146,6 @@ impl GuestMem {
     }
 }
 
-/// `true` if `[addr, addr+len)` lies wholly inside one of `windows` that
-/// is bound to `device` — the same containment rule
-/// `GuestMem::window_offset` enforces at access time, reused by
-/// `BlkDevice::new` to reject a *configuration* whose ring or doorbell
-/// does not live in one of this device's own declared pools before any
-/// boot happens (plans/M8.md item P: the device half is not optional here
-/// either — a ring in another device's pool is a config this model must
-/// refuse, not one it would fault on later).
 fn window_contains(windows: &[PoolWindow], device: u64, addr: u64, len: u64) -> bool {
     match addr.checked_add(len) {
         None => false,
@@ -312,102 +155,67 @@ fn window_contains(windows: &[PoolWindow], device: u64, addr: u64, len: u64) -> 
     }
 }
 
-// --- faults -----------------------------------------------------------------
-
-/// Every way this model refuses a ring (03 §4: "stale, duplicate, or
-/// unknown IDs are driver faults, never unchecked indexes"). Each is named
-/// exactly rather than collapsed into one opaque "bad ring" string, so a
-/// post-mortem says which rule the driver broke. None of these is ever a
-/// panic, an approximation, or an out-of-bounds access.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlkFault {
-    /// A guest address (a descriptor's `addr`, a ring word, the doorbell)
-    /// whose range is not wholly inside a declared pool window — decision
-    /// 5's security boundary, refused.
     OutsidePool {
         addr: u64,
         len: u64,
         why: &'static str,
     },
-    /// A guest range that *is* inside a declared pool window — just not
-    /// one bound to the device making the access (plans/M8.md item P).
-    /// 03-hardware.md §3: "all memory a device can reach originates from
-    /// *its* bound pools". Named apart from `OutsidePool` because it is a
-    /// different finding: the bytes are real, placed, device-reachable
-    /// memory, and this device still has no authority over them.
     ForeignPool {
-        /// Where the range starts *within* the pool that contains it, not
-        /// the absolute guest address (plans/M10.md decision 700). The
-        /// absolute address says nothing the image report does not
-        /// already say, and quoting it in a transcript makes that
-        /// transcript a hostage to every layout change that moves a
-        /// section ahead of `pooldata`; the pool-relative offset is both
-        /// stable and the fact that localizes the bug.
         offset: u64,
         len: u64,
-        /// The pool that does contain the range.
         pool: String,
-        /// The device that pool is bound to.
         owner: u64,
-        /// The device attempting the access.
         device: u64,
     },
-    /// `avail.idx` advanced by more than the queue is deep: the driver
-    /// published more entries than can exist, or the index is stale/
-    /// garbage.
     AvailIndexJump {
         last: u16,
         now: u16,
         queue_size: u16,
     },
-    /// An `avail.ring[]` entry, or a chain's `next`, naming a descriptor
-    /// slot that does not exist — 03 §4's "unknown ID", refused before it
-    /// is ever used as an index.
-    DescriptorIndexOutOfRange { index: u16, queue_size: u16 },
-    /// A chain that revisits a descriptor it already used — 03 §4's
-    /// "duplicate", and the shape a malicious ring would take to make a
-    /// naive walker loop forever.
-    DescriptorChainLoop { index: u16 },
-    /// A chain longer than the queue is deep (the same loop, caught by
-    /// length even where the visited set would not).
-    DescriptorChainTooLong { queue_size: u16 },
-    /// `VIRTQ_DESC_F_INDIRECT` on a device that never offered
-    /// `VIRTIO_F_INDIRECT_DESC`.
-    IndirectNotNegotiated { index: u16 },
-    /// Fewer than the two descriptors (header + status) every virtio-blk
-    /// request needs.
-    ChainTooShort { len: usize },
-    /// The head descriptor is not a `REQ_HEADER_SIZE`-byte device-readable
-    /// buffer.
-    BadRequestHeader { len: u32, device_writable: bool },
-    /// The last descriptor is not a device-writable status byte.
-    BadStatusDescriptor { len: u32, device_writable: bool },
-    /// A data descriptor pointing the wrong way for its request type (a
-    /// read into a device-readable buffer, or a write out of a
-    /// device-writable one).
+    DescriptorIndexOutOfRange {
+        index: u16,
+        queue_size: u16,
+    },
+    DescriptorChainLoop {
+        index: u16,
+    },
+    DescriptorChainTooLong {
+        queue_size: u16,
+    },
+    IndirectNotNegotiated {
+        index: u16,
+    },
+    ChainTooShort {
+        len: usize,
+    },
+    BadRequestHeader {
+        len: u32,
+        device_writable: bool,
+    },
+    BadStatusDescriptor {
+        len: u32,
+        device_writable: bool,
+    },
     DataDirectionMismatch {
         request_type: u32,
         device_writable: bool,
     },
-    /// Data length that is not a whole number of sectors.
-    UnalignedDataLength { len: u64 },
-    /// A `Flush` carrying data descriptors (`struct virtio_blk_req` has
-    /// none for `T_FLUSH`).
-    FlushWithData { len: u64 },
-    /// A quiesce (`mmio::QUIESCE_MMIO_ADDR`) naming an address that is not
-    /// this queue's own quiesce-count word (plans/M8.md item F). The count
-    /// is the only evidence a driver has that the device stopped, so a
-    /// guest gating a reclaim on some *other* word is refused rather than
-    /// served — an ungated reclaim must never be reachable by naming the
-    /// wrong address.
+    UnalignedDataLength {
+        len: u64,
+    },
+    FlushWithData {
+        len: u64,
+    },
     QuiesceWrongWord {
         named: u64,
         expected: u64,
         device: u64,
     },
-    /// A data descriptor whose `len` would force an unbounded host heap
-    /// allocation (larger than this VMM's own in-memory disk ceiling).
-    DescTooLarge { len: u64 },
+    DescTooLarge {
+        len: u64,
+    },
 }
 
 impl std::fmt::Display for BlkFault {
@@ -521,16 +329,6 @@ impl std::fmt::Display for BlkFault {
     }
 }
 
-// --- configuration ----------------------------------------------------------
-// `BlkConfig` / `BlkQueueConfig` / `PoolWindow` live in
-// `wrela_machine::report` (shared with the report parser) and are
-// re-exported at the top of this module.
-
-/// 03 §9's negotiation, device side: the driver's requested set against
-/// what this model offers. Returns the accepted set, or names exactly
-/// which bits were refused and why — never a silent intersection (a
-/// driver that believes it has `Flush` and does not is precisely the bug
-/// this refusal exists to prevent).
 pub fn negotiate(requested: u64) -> Result<u64, String> {
     let unknown = requested & !DEVICE_FEATURES;
     if unknown != 0 {
@@ -546,55 +344,23 @@ pub fn negotiate(requested: u64) -> Result<u64, String> {
     Ok(requested)
 }
 
-// --- the model --------------------------------------------------------------
-
-/// One completed operation, as the device reports it (and as the recorder
-/// logs it — plans/M7.md decision 7: "device completions join the choice
-/// sequence").
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Completion {
-    /// The chain's own head descriptor index — virtio's operation ID, and
-    /// the `id` the used ring reports.
     pub head: u16,
-    /// The virtio-blk status byte written into the guest's status
-    /// descriptor.
     pub status: u8,
-    /// The used ring's own `len`: bytes this operation wrote into
-    /// device-writable guest buffers (payload for a read, plus the status
-    /// byte always).
     pub len: u32,
-    /// A digest (`record::digest_hex`, FNV-1a) over **every byte this
-    /// operation wrote**, in write order: guest-memory writes first (read
-    /// payload, then the status byte), then disk writes (a write
-    /// request's own payload). 06 §8 asks the recorder for "every device
-    /// completion and DMA-written byte range" plus "digests of every
-    /// output (block writes, ...)"; one digest per completion covers both
-    /// halves without putting payload bytes in the log.
     pub digest: String,
 }
 
-/// The virtio-blk device model. Owns its disk (an in-memory `Vec<u8>` —
-/// there is no host file behind it, so 06 §8's "replay ... suppresses real
-/// outputs" is satisfied by construction: a block write has no output to
-/// suppress) and the ring's own device-side state.
 pub struct BlkDevice {
     pub config: BlkConfig,
-    /// Accepted feature bits (`negotiate`'s own result).
     pub negotiated: u64,
     disk: Vec<u8>,
-    /// The `avail.idx` value this model has already consumed up to
-    /// (virtio's `last_avail_idx`), wrapping like the guest's own.
     last_avail_idx: u16,
-    /// This model's own `used.idx`.
     used_idx: u16,
 }
 
 impl BlkDevice {
-    /// Validates the whole declared configuration up front (06 §3's
-    /// "preconfigures" step) and allocates the disk. Every failure here is
-    /// a build/report bug, reported as a plain string the caller turns
-    /// into `VmmError::BadImage`; none of them is reachable from guest
-    /// code.
     pub fn new(config: BlkConfig) -> Result<BlkDevice, String> {
         let negotiated = negotiate(config.features)?;
         let q = &config.queue;
@@ -651,9 +417,6 @@ impl BlkDevice {
         })
     }
 
-    /// Test/inspection seam: replaces the zero-filled disk with known
-    /// content. Never used on a boot path (a declared device's disk starts
-    /// zeroed; there is no report syntax for preloading one at M7).
     pub fn set_disk(&mut self, bytes: Vec<u8>) {
         self.disk = bytes;
     }
@@ -662,21 +425,6 @@ impl BlkDevice {
         &self.disk
     }
 
-    /// 06 §5's doorbell poll. Reads the doorbell word; if it is zero,
-    /// nothing was published and this returns an empty list without
-    /// touching the ring at all. Otherwise the doorbell is cleared and
-    /// every newly available chain is executed, in `avail.ring` order.
-    ///
-    /// **What this does and does not do**: it performs the operation's own
-    /// DMA (read payload into guest memory, status byte, disk writes) —
-    /// the deterministic half, a pure function of the ring contents and
-    /// the disk — and returns the resulting `Completion`s *without*
-    /// publishing them in the used ring. Publication is `commit_used`,
-    /// called separately by `boot_image_core` once each completion has
-    /// been through the recorder's own `Chooser` (plans/M7.md decision 7:
-    /// under replay the *used ring* is fed from the log, not from this
-    /// model, and any disagreement between the two is a named divergence
-    /// rather than a silently different answer).
     pub fn service(&mut self, mem: &mut GuestMem) -> Result<Vec<Completion>, BlkFault> {
         let q = self.config.queue.clone();
         if mem.read_u64(q.doorbell)? == 0 {
@@ -686,9 +434,6 @@ impl BlkDevice {
         self.execute_available(mem)
     }
 
-    /// Everything `avail.idx` has made available and this model has not
-    /// consumed yet, executed in `avail.ring` order. `service` is this plus
-    /// the doorbell gate; `quiesce` is this plus the stop.
     fn execute_available(&mut self, mem: &mut GuestMem) -> Result<Vec<Completion>, BlkFault> {
         let q = self.config.queue.clone();
         let avail_idx = mem.read_u16(q.avail + 2)?;
@@ -718,47 +463,6 @@ impl BlkDevice {
         Ok(out)
     }
 
-    /// 03-hardware.md §9's quiescence, device side (plans/M8.md item F /
-    /// **decision 36**). Called only from `mmio::QUIESCE_MMIO_ADDR`'s
-    /// handler, which is the trapping store `RunningDevice.reset` performs
-    /// *before* it bumps the guest-side epoch.
-    ///
-    /// Quiescence is **finish, then stop**, and both halves matter:
-    ///
-    /// - *finish* — every chain the guest has made available is executed
-    ///   here, synchronously, while the vCPU sits in the trap. Note this
-    ///   ignores the doorbell: the driver is entitled to a definite answer
-    ///   about work it published, and "the doorbell had already been
-    ///   consumed" is not one. The completions come back for the caller to
-    ///   put through the recorder and the used ring exactly like an
-    ///   ordinary poll's, so a straggler still surfaces to the driver — and
-    ///   still meets the epoch check as `CompletionFault::StaleId`, which
-    ///   is what 03-hardware.md §9's "invalidates all prior receipts" is
-    ///   for (`golden/err-boot-epoch-stale`).
-    /// - *stop* — `last_avail_idx` now equals `avail.idx` and the doorbell
-    ///   is clear, so there is no descriptor this model will ever walk that
-    ///   was published before this call returned. Every write it was ever
-    ///   going to make to a pre-quiesce payload has already happened.
-    ///
-    /// **Rejected: drop the outstanding chains unexecuted**, which is what
-    /// a hardware reset does. It is a defensible reading of the same
-    /// sentence and it makes quiescence cheaper to argue, but it deletes
-    /// the only way a stale completion can reach a driver on this machine
-    /// — which is a case 03 §9 spends a clause on and M7 pinned a boot
-    /// golden for. Finishing is also strictly *stronger* for the property
-    /// this exists to establish: the device is provably done with the
-    /// buffer, rather than provably never going to start.
-    ///
-    /// Only after both halves is the monotone quiesce count incremented in
-    /// guest memory — the one word a driver may gate a reclaim on.
-    ///
-    /// The count word's address is **derived here, not taken from the
-    /// guest**: the caller passes the address the guest named and this
-    /// refuses any other, so a guest gating a reclaim on some other word
-    /// is a named fault rather than a silently ungated reclaim.
-    ///
-    /// `used_idx` is deliberately *not* reset: 03 §9's reset "does not
-    /// clear the used ring" (`codegen::emit_device_reset`'s own comment).
     pub fn quiesce(&mut self, mem: &mut GuestMem, named: u64) -> Result<Vec<Completion>, BlkFault> {
         let expected = self.quiesce_count_addr();
         if named != expected {
@@ -775,21 +479,10 @@ impl BlkDevice {
         Ok(completions)
     }
 
-    /// Guest address of this queue's host-written quiesce count.
-    ///
-    /// One formula with the compiler (`wrela_machine::virtio::quiesce_count_addr`):
-    /// the book's third `u64` after the doorbell word. Changing
-    /// `SLOT_BOOK_QUIESCED` in `wrela_machine::virtio` moves both the
-    /// guest's reclaim gate and this VMM's refusal check together —
-    /// plans/M8.md item H attack 7 closed the prior hand-mirrored `+ 8 + 16`.
     pub fn quiesce_count_addr(&self) -> u64 {
         virtio_quiesce_count_addr(self.config.queue.doorbell)
     }
 
-    /// Publishes one completion in the used ring and bumps `used.idx`
-    /// (release-ordered by construction: the entry's own bytes are written
-    /// before the index that makes them visible — 03 §3's "payload writes
-    /// before publication").
     pub fn commit_used(&mut self, mem: &mut GuestMem, head: u16, len: u32) -> Result<(), BlkFault> {
         let q = self.config.queue.clone();
         if head >= q.size {
@@ -807,7 +500,6 @@ impl BlkDevice {
         Ok(())
     }
 
-    /// One descriptor, already read and range-checked.
     fn read_desc(&self, mem: &GuestMem, index: u16) -> Result<Descriptor, BlkFault> {
         let q = &self.config.queue;
         if index >= q.size {
@@ -824,10 +516,6 @@ impl BlkDevice {
         if flags & DESC_F_INDIRECT != 0 {
             return Err(BlkFault::IndirectNotNegotiated { index });
         }
-        // The buffer itself must be device-reachable *before* anything
-        // reads or writes a byte of it — the check is here, at the one
-        // place a descriptor becomes usable, as well as inside every
-        // `GuestMem` accessor.
         mem.window_offset(addr, len as u64)?;
         Ok(Descriptor {
             addr,
@@ -837,9 +525,6 @@ impl BlkDevice {
         })
     }
 
-    /// Walks a chain from `head`, bounded by the queue depth and checked
-    /// for revisits — 03 §4's stale/duplicate/unknown trio, all three
-    /// refused before any byte is touched.
     fn walk_chain(&self, mem: &GuestMem, head: u16) -> Result<Vec<Descriptor>, BlkFault> {
         let q = &self.config.queue;
         let mut chain = Vec::new();
@@ -864,7 +549,6 @@ impl BlkDevice {
         }
     }
 
-    /// Executes one already-validated chain as a virtio-blk request.
     fn execute(
         &mut self,
         mem: &mut GuestMem,
@@ -915,9 +599,6 @@ impl BlkDevice {
             return Err(BlkFault::UnalignedDataLength { len: data_len });
         }
 
-        // `written` accumulates exactly the bytes this operation writes,
-        // in write order, for `Completion::digest` (its own doc has the
-        // rule).
         let mut written: Vec<u8> = Vec::new();
         let mut payload_written: u32 = 0;
         let status = match request_type {
@@ -945,26 +626,13 @@ impl BlkDevice {
                         }
                         STATUS_OK
                     }
-                    // In range for the protocol, out of range for the
-                    // disk: a real device error with a real answer, not a
-                    // driver fault (module doc's own distinction).
                     _ => STATUS_IOERR,
                 }
             }
-            // `Flush` (06 §6's own device row). The disk is an in-memory
-            // `Vec<u8>` this VMM owns, so every prior write is already
-            // durable to exactly the extent anything here is durable:
-            // flush is an ordered no-op that completes OK, never a
-            // silently ignored request.
             T_FLUSH if self.negotiated & F_BLK_FLUSH != 0 => STATUS_OK,
-            // The driver sent `Flush` without the feature negotiated, or
-            // a request type this device does not implement. The protocol
-            // has its own answer for both.
             _ => STATUS_UNSUPP,
         };
         if request_type == T_OUT && status == STATUS_OK {
-            // The disk write is this operation's own *output* (06 §8:
-            // "digests of every output (block writes, ...)").
             let mut cursor = sector * SECTOR_SIZE;
             for d in data {
                 let lo = cursor as usize;
@@ -983,10 +651,6 @@ impl BlkDevice {
     }
 }
 
-/// Hand-written rather than derived: a derived `Debug` would print the
-/// whole disk (up to `MAX_DISK_BYTES`) into any diagnostic that formats a
-/// device, which is exactly the kind of unreadable output that gets a
-/// diagnostic ignored.
 impl std::fmt::Debug for BlkDevice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BlkDevice")
@@ -999,9 +663,6 @@ impl std::fmt::Debug for BlkDevice {
     }
 }
 
-/// Likewise hand-written: the raw DRAM pointer is host bookkeeping nobody
-/// reading a diagnostic can act on; the declared windows are the fact that
-/// matters.
 impl std::fmt::Debug for GuestMem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GuestMem")
@@ -1010,7 +671,6 @@ impl std::fmt::Debug for GuestMem {
     }
 }
 
-/// One descriptor-table entry, already range-checked by `read_desc`.
 #[derive(Debug, Clone, Copy)]
 struct Descriptor {
     addr: u64,
@@ -1029,25 +689,14 @@ impl Descriptor {
 mod tests {
     use super::*;
 
-    /// A guest-memory stand-in: a plain heap buffer the size of the whole
-    /// DRAM reservation's *used* prefix, addressed exactly as guest DRAM
-    /// is (`crate::tests::drain_console_reads_more_than_the_old_16_
-    /// descriptor_limit`'s own established technique — `GuestMem` only
-    /// ever does pointer-offset reads/writes, so no real mapping is
-    /// needed, and none of these tests needs HVF at all).
     struct Harness {
         ram: Vec<u8>,
         cfg: BlkConfig,
     }
 
-    /// Everything this harness places sits in one declared pool window
-    /// starting at `POOL_BASE`; addresses outside it are exactly what the
-    /// out-of-pool tests use.
     const POOL_BASE: u64 = machine_layout::DRAM_BASE + 0x10_0000;
     const POOL_SIZE: u64 = 0x10_0000;
     const QUEUE_SIZE: u16 = 8;
-    /// The declared device index every window and every model in this
-    /// harness belongs to (plans/M8.md item P).
     const HARNESS_DEVICE: u64 = 0;
 
     const DESC_ADDR: u64 = POOL_BASE;
@@ -1122,7 +771,6 @@ mod tests {
             self.put(at + 14, &next.to_le_bytes());
         }
 
-        /// Publishes descriptor chain head `head` and rings the doorbell.
         fn publish(&mut self, head: u16, avail_idx: u16) {
             self.put(
                 AVAIL_ADDR + 4 + 2 * ((avail_idx - 1) % QUEUE_SIZE) as u64,
@@ -1132,8 +780,6 @@ mod tests {
             self.put(DOORBELL_ADDR, &1u64.to_le_bytes());
         }
 
-        /// The standard three-descriptor request: header (0), data (1),
-        /// status (2).
         fn build_request(&mut self, request_type: u32, sector: u64, data_len: u32, write: bool) {
             self.put(HEADER_ADDR, &request_type.to_le_bytes());
             self.put(HEADER_ADDR + 4, &0u32.to_le_bytes());
@@ -1165,8 +811,6 @@ mod tests {
             )
         }
 
-        /// `service` + `commit_used` for every completion — what
-        /// `boot_image_core` does on a live (recording) boot.
         fn run(&mut self, dev: &mut BlkDevice) -> Result<Vec<Completion>, BlkFault> {
             let mut mem = self.mem();
             let completions = dev.service(&mut mem)?;
@@ -1176,8 +820,6 @@ mod tests {
             Ok(completions)
         }
     }
-
-    // --- feature negotiation (03 §9, decision 2's "what remains") --------
 
     #[test]
     fn negotiation_accepts_the_offered_set_and_refuses_anything_else() {
@@ -1197,8 +839,6 @@ mod tests {
         assert!(err.contains("0x1000"), "{err}");
     }
 
-    // --- configuration validation ----------------------------------------
-
     #[test]
     fn a_queue_size_that_is_not_a_power_of_two_is_refused() {
         let mut h = Harness::new();
@@ -1215,8 +855,6 @@ mod tests {
     #[test]
     fn a_queue_size_above_the_vmm_ceiling_is_refused() {
         let mut h = Harness::new();
-        // Power of two and VIRTIO-legal, but past MAX_BLK_QUEUE_SIZE — the
-        // availability cap, not the geometry rule.
         h.cfg.queue.size = 32768;
         let err = BlkDevice::new(h.cfg.clone()).expect_err("32768 exceeds the VMM ceiling");
         assert!(
@@ -1225,11 +863,6 @@ mod tests {
         );
     }
 
-    /// The last case is plans/M8.md item P's own: a ring placed inside a
-    /// window that *is* declared and *is* device-reachable, just by
-    /// another device. Before the `device=` field existed that
-    /// configuration was accepted, because containment alone was the whole
-    /// rule.
     #[test]
     fn a_ring_outside_every_declared_pool_is_refused_before_any_boot() {
         for mangle in [
@@ -1255,10 +888,6 @@ mod tests {
         }
     }
 
-    /// plans/M8.md item P's enforcement point, at unit granularity: two
-    /// declared windows, one per device, one `GuestMem` per device — each
-    /// admits its own and refuses the other **by name**, and the refusal is
-    /// distinguishable from an address in no window at all.
     #[test]
     fn a_window_bound_to_another_device_is_refused_by_name() {
         let mut h = Harness::new();
@@ -1289,16 +918,10 @@ mod tests {
                 ..
             })
         ));
-        // The reported position is *pool-relative*, never the absolute
-        // guest address (decision 700): eight bytes into the foreign
-        // window reads back as offset 8, whatever `FOREIGN_BASE` is.
         assert!(matches!(
             mine.window_offset(FOREIGN_BASE + 8, 8),
             Err(BlkFault::ForeignPool { offset: 8, .. })
         ));
-        // The symmetric half, which no boot can reach today because this
-        // machine models exactly one device: device#1's own view admits
-        // device#1's window and refuses device#0's.
         let theirs = unsafe {
             GuestMem::new(h.ram.as_mut_ptr(), windows, HARNESS_DEVICE + 1).expect("windows")
         };
@@ -1311,7 +934,6 @@ mod tests {
                 ..
             })
         ));
-        // An address in no window at all stays the *other* finding.
         assert!(matches!(
             mine.window_offset(machine_layout::DRAM_BASE, 8),
             Err(BlkFault::OutsidePool { .. })
@@ -1340,10 +962,6 @@ mod tests {
         let mut h = Harness::new();
         h.cfg.pools.push(PoolWindow {
             name: "Second".to_string(),
-            // Deliberately a *different* device: disjointness is a fact
-            // about placed bytes, not about reachability, so two devices
-            // sharing a byte is refused exactly like one device would be
-            // (plans/M8.md item P).
             device: HARNESS_DEVICE + 1,
             base: POOL_BASE + 0x1000,
             size: 0x1000,
@@ -1369,8 +987,6 @@ mod tests {
         assert!(err.contains("not inside guest DRAM"), "{err}");
     }
 
-    // --- the happy paths --------------------------------------------------
-
     #[test]
     fn a_write_then_a_read_round_trips_through_the_disk() {
         let mut h = Harness::new();
@@ -1383,20 +999,18 @@ mod tests {
         assert_eq!(completions.len(), 1);
         assert_eq!(completions[0].head, 0);
         assert_eq!(completions[0].status, STATUS_OK);
-        // A write writes only the status byte into guest memory.
         assert_eq!(completions[0].len, 1);
         assert_eq!(h.get(STATUS_ADDR, 1), vec![STATUS_OK]);
         assert_eq!(h.used_idx(), 1);
         assert_eq!(h.used_entry(0), (0, 1));
         assert_eq!(&dev.disk()[3 * 512..4 * 512], &payload[..]);
 
-        // Read it back into a different buffer.
         h.put(DATA_ADDR, &vec![0u8; 512]);
         h.build_request(T_IN, 3, 512, true);
         h.publish(0, 2);
         let completions = h.run(&mut dev).expect("a well-formed read");
         assert_eq!(completions[0].status, STATUS_OK);
-        assert_eq!(completions[0].len, 513); // 512 payload + the status byte
+        assert_eq!(completions[0].len, 513);
         assert_eq!(h.get(DATA_ADDR, 512), payload);
         assert_eq!(h.used_idx(), 2);
         assert_eq!(h.used_entry(1), (0, 513));
@@ -1412,7 +1026,6 @@ mod tests {
         }
         dev.set_disk(disk.clone());
 
-        // header(0) -> data(1, 512B) -> data(3, 512B) -> status(2)
         h.put(HEADER_ADDR, &T_IN.to_le_bytes());
         h.put(HEADER_ADDR + 8, &1u64.to_le_bytes());
         h.desc(0, HEADER_ADDR, 16, DESC_F_NEXT, 1);
@@ -1430,8 +1043,6 @@ mod tests {
     fn two_chains_published_under_one_doorbell_both_complete_in_order() {
         let mut h = Harness::new();
         let mut dev = h.device();
-        // chain A: header(0) data(1) status(2); chain B: header(3) status(4)
-        // (a Flush, which needs no data).
         h.put(HEADER_ADDR, &T_OUT.to_le_bytes());
         h.put(HEADER_ADDR + 8, &0u64.to_le_bytes());
         h.desc(0, HEADER_ADDR, 16, DESC_F_NEXT, 1);
@@ -1455,7 +1066,6 @@ mod tests {
         assert_eq!(h.used_idx(), 2);
         assert_eq!(h.used_entry(0).0, 0);
         assert_eq!(h.used_entry(1).0, 3);
-        // The doorbell is cleared by the service that consumed it.
         assert_eq!(h.get(DOORBELL_ADDR, 8), vec![0u8; 8]);
     }
 
@@ -1464,22 +1074,17 @@ mod tests {
         let mut h = Harness::new();
         let mut dev = h.device();
         h.build_request(T_IN, 0, 512, true);
-        // Publish without ringing.
         h.put(AVAIL_ADDR + 4, &0u16.to_le_bytes());
         h.put(AVAIL_ADDR + 2, &1u16.to_le_bytes());
         assert_eq!(h.run(&mut dev).expect("no doorbell"), Vec::new());
         assert_eq!(h.used_idx(), 0);
     }
 
-    // --- 03 §9's quiescence (plans/M8.md item F, decision 36) -----------
-
     #[test]
     fn a_quiesce_finishes_outstanding_work_and_bumps_the_host_written_count() {
         let mut h = Harness::new();
         let mut dev = h.device();
         dev.set_disk(vec![0xAB; 16 * SECTOR_SIZE as usize]);
-        // A device-writable read, published but never polled: the model
-        // still holds it when the driver resets.
         h.build_request(T_IN, 0, 512, true);
         h.publish(0, 1);
         let count_addr = dev.quiesce_count_addr();
@@ -1509,9 +1114,6 @@ mod tests {
 
     #[test]
     fn no_chain_published_before_a_quiesce_is_ever_executed_after_it() {
-        // The half that makes "reclaim after quiescence" sound: once the
-        // count has moved, nothing this model does later can write a
-        // buffer described by a descriptor published before it.
         let mut h = Harness::new();
         let mut dev = h.device();
         dev.set_disk(vec![0xAB; 16 * SECTOR_SIZE as usize]);
@@ -1522,9 +1124,6 @@ mod tests {
             let mut mem = h.mem();
             dev.quiesce(&mut mem, count_addr).expect("quiesce");
         }
-        // Wipe the payload the driver is about to reclaim, then give the
-        // model every chance to touch it again: the ring still names the
-        // same chain, and the doorbell is rung.
         h.put(DATA_ADDR, &[0u8; 512]);
         h.put(DOORBELL_ADDR, &1u64.to_le_bytes());
         assert_eq!(
@@ -1545,15 +1144,12 @@ mod tests {
         let mut dev = h.device();
         let count_addr = dev.quiesce_count_addr();
         let mut mem = h.mem();
-        // One word off: still inside the declared window, still guest
-        // memory, and still not the word a reclaim may be gated on.
         let err = dev
             .quiesce(&mut mem, count_addr + 8)
             .expect_err("a foreign word is refused");
         assert!(matches!(err, BlkFault::QuiesceWrongWord { .. }), "{err:?}");
         let text = err.to_string();
         assert!(text.contains("quiesce-count word"), "{text}");
-        // And the count itself did not move.
         drop(mem);
         assert_eq!(
             u64::from_le_bytes(h.get(count_addr, 8).try_into().unwrap()),
@@ -1561,11 +1157,6 @@ mod tests {
         );
     }
 
-    /// plans/M8.md item H Target D / item F's thin claim: "a second
-    /// quiesce inside one turn is legal and simply bumps the count twice
-    /// — nothing needs it; nothing refuses it." Verified here rather than
-    /// assumed: two calls move the host-written count 0 → 1 → 2, and the
-    /// second finds nothing left to finish.
     #[test]
     fn a_second_quiesce_bumps_the_count_twice_and_is_not_refused() {
         let mut h = Harness::new();
@@ -1599,10 +1190,6 @@ mod tests {
         );
     }
 
-    /// Double-quiesce before quarantine cannot open a reclaim that should
-    /// still refuse: `recover` stamps the *live* count, so after two
-    /// quiesces the stamp equals 2 and `reclaim_gate` still says
-    /// `NotQuiesced` until a *later* quiesce moves the count past the stamp.
     #[test]
     fn double_quiesce_before_quarantine_cannot_satisfy_a_reclaim_that_should_refuse() {
         use wrela_compiler::virtqueue::{ReclaimGate, SLOT_FLAG_QUARANTINED, reclaim_gate};
@@ -1616,13 +1203,11 @@ mod tests {
         }
         let quiesced = u64::from_le_bytes(h.get(count_addr, 8).try_into().unwrap());
         assert_eq!(quiesced, 2);
-        // Quarantine stamps the live count (decision 38) — equal → refuse.
         assert_eq!(
             reclaim_gate(SLOT_FLAG_QUARANTINED, quiesced, quiesced),
             ReclaimGate::NotQuiesced,
             "stamp==count after double-quiesce-then-quarantine must refuse reclaim"
         );
-        // One more quiesce after the stamp opens the gate.
         {
             let mut mem = h.mem();
             dev.quiesce(&mut mem, count_addr).expect("q3");
@@ -1635,14 +1220,10 @@ mod tests {
         );
     }
 
-    /// Two outstanding chains: quiesce finishes both (decision 37), bumps
-    /// once, and a straggler is not left for a later doorbell poll.
     #[test]
     fn a_quiesce_finishes_every_outstanding_chain_before_bumping() {
         let mut h = Harness::new();
         let mut dev = h.device();
-        // Same two-chain shape as `two_chains_published_under_one_doorbell_*`,
-        // but never polled — quiesce must finish both.
         h.put(HEADER_ADDR, &T_OUT.to_le_bytes());
         h.put(HEADER_ADDR + 8, &0u64.to_le_bytes());
         h.desc(0, HEADER_ADDR, 16, DESC_F_NEXT, 1);
@@ -1655,7 +1236,6 @@ mod tests {
         h.put(AVAIL_ADDR + 4, &0u16.to_le_bytes());
         h.put(AVAIL_ADDR + 6, &3u16.to_le_bytes());
         h.put(AVAIL_ADDR + 2, &2u16.to_le_bytes());
-        // Doorbell deliberately clear: quiesce ignores it when finishing.
         h.put(DOORBELL_ADDR, &0u64.to_le_bytes());
 
         let count_addr = dev.quiesce_count_addr();
@@ -1675,11 +1255,6 @@ mod tests {
         );
     }
 
-    /// plans/M8.md item H attack 7: the VMM's quiesce-count address is the
-    /// machine contract's formula, not a hand-copied `doorbell + 8 + 16`.
-    /// Mutating `wrela_machine::virtio::SLOT_BOOK_QUIESCED` (or
-    /// `DOORBELL_BYTES`) moves this assertion and the guest's reclaim gate
-    /// together; a local literal here would silently drift again.
     #[test]
     fn quiesce_count_addr_is_the_shared_machine_formula() {
         let h = Harness::new();
@@ -1694,8 +1269,6 @@ mod tests {
                 + wrela_machine::virtio::DOORBELL_BYTES
                 + wrela_machine::virtio::SLOT_BOOK_QUIESCED
         );
-        // Ring byte helpers the VMM uses at construction are the shared
-        // functions, not local twins of the compiler's formulas.
         assert_eq!(
             wrela_machine::virtio::avail_bytes(h.cfg.queue.size),
             4 + 2 * h.cfg.queue.size as u64
@@ -1719,7 +1292,7 @@ mod tests {
         assert_eq!(h.run(&mut dev).expect("flush")[0].status, STATUS_OK);
 
         let mut h = Harness::new();
-        h.cfg.features = F_VERSION_1; // no VIRTIO_BLK_F_FLUSH
+        h.cfg.features = F_VERSION_1;
         let mut dev = h.device();
         h.build_request(T_FLUSH, 0, 0, false);
         h.publish(0, 1);
@@ -1741,7 +1314,7 @@ mod tests {
     fn a_sector_past_the_end_of_the_disk_is_an_io_error_not_a_fault() {
         let mut h = Harness::new();
         let mut dev = h.device();
-        h.build_request(T_IN, 15, 1024, true); // 16-sector disk, 2 sectors from 15
+        h.build_request(T_IN, 15, 1024, true);
         h.publish(0, 1);
         let c = h.run(&mut dev).expect("an in-protocol answer");
         assert_eq!(c[0].status, STATUS_IOERR);
@@ -1749,7 +1322,7 @@ mod tests {
 
         let mut h = Harness::new();
         let mut dev = h.device();
-        h.build_request(T_IN, u64::MAX, 512, true); // sector * 512 overflows
+        h.build_request(T_IN, u64::MAX, 512, true);
         h.publish(0, 1);
         assert_eq!(h.run(&mut dev).expect("no panic")[0].status, STATUS_IOERR);
     }
@@ -1775,15 +1348,8 @@ mod tests {
         assert_ne!(a, b, "one differing disk byte must change the digest");
     }
 
-    // --- malformed rings: every rejection, by name ------------------------
-
-    /// The heart of item F's own security claim: a malformed ring is a
-    /// named, diagnosable VMM-side error — never a panic, never an
-    /// out-of-bounds read, never a silently truncated operation.
     #[test]
     fn every_malformed_ring_shape_is_rejected_by_name() {
-        // (a) An avail.ring entry naming a descriptor slot that does not
-        //     exist — 03 §4's "unknown ID".
         let mut h = Harness::new();
         let mut dev = h.device();
         h.build_request(T_IN, 0, 512, true);
@@ -1796,7 +1362,6 @@ mod tests {
             })
         );
 
-        // (b) A `next` naming a slot that does not exist.
         let mut h = Harness::new();
         let mut dev = h.device();
         h.build_request(T_IN, 0, 512, true);
@@ -1810,7 +1375,6 @@ mod tests {
             })
         );
 
-        // (c) A chain that loops back on itself — 03 §4's "duplicate".
         let mut h = Harness::new();
         let mut dev = h.device();
         h.build_request(T_IN, 0, 512, true);
@@ -1821,18 +1385,10 @@ mod tests {
             Err(BlkFault::DescriptorChainLoop { index: 0 })
         );
 
-        // (d) A chain longer than the queue is deep (every slot distinct,
-        //     so the visited set alone would not catch it).
         let mut h = Harness::new();
         let mut dev = h.device();
         for i in 0..QUEUE_SIZE {
-            h.desc(
-                i,
-                DATA_ADDR,
-                16,
-                DESC_F_NEXT,
-                (i + 1) % QUEUE_SIZE, // slot 7 -> slot 0, all distinct until then
-            );
+            h.desc(i, DATA_ADDR, 16, DESC_F_NEXT, (i + 1) % QUEUE_SIZE);
         }
         h.publish(0, 1);
         let got = h.run(&mut dev);
@@ -1845,15 +1401,12 @@ mod tests {
             "a chain that never terminates must be refused, got {got:?}"
         );
 
-        // (e) A descriptor pointing outside every declared pool — decision
-        //     5's boundary, and the one rejection that is a *security*
-        //     property rather than a protocol one.
         for bad_addr in [
-            machine_layout::DRAM_BASE, // the machine-info page
-            POOL_BASE - 1,             // one byte before the pool
-            POOL_BASE + POOL_SIZE - 8, // straddling the end
-            machine_layout::DRAM_BASE + machine_layout::DRAM_SIZE, // past DRAM entirely
-            u64::MAX - 4,              // overflowing addr + len
+            machine_layout::DRAM_BASE,
+            POOL_BASE - 1,
+            POOL_BASE + POOL_SIZE - 8,
+            machine_layout::DRAM_BASE + machine_layout::DRAM_SIZE,
+            u64::MAX - 4,
         ] {
             let mut h = Harness::new();
             let mut dev = h.device();
@@ -1867,7 +1420,6 @@ mod tests {
             );
         }
 
-        // (f) VIRTQ_DESC_F_INDIRECT, never offered.
         let mut h = Harness::new();
         let mut dev = h.device();
         h.build_request(T_IN, 0, 512, true);
@@ -1878,14 +1430,12 @@ mod tests {
             Err(BlkFault::IndirectNotNegotiated { index: 1 })
         );
 
-        // (g) A one-descriptor chain — no room for a header and a status.
         let mut h = Harness::new();
         let mut dev = h.device();
         h.desc(0, HEADER_ADDR, 16, 0, 0);
         h.publish(0, 1);
         assert_eq!(h.run(&mut dev), Err(BlkFault::ChainTooShort { len: 1 }));
 
-        // (h) A header of the wrong size, and a device-writable header.
         let mut h = Harness::new();
         let mut dev = h.device();
         h.build_request(T_IN, 0, 512, true);
@@ -1911,7 +1461,6 @@ mod tests {
             })
         );
 
-        // (i) A status descriptor that is device-readable, or empty.
         let mut h = Harness::new();
         let mut dev = h.device();
         h.build_request(T_IN, 0, 512, true);
@@ -1937,8 +1486,6 @@ mod tests {
             })
         );
 
-        // (j) A read into a device-readable buffer (the device would have
-        //     to write where the driver said "read only").
         let mut h = Harness::new();
         let mut dev = h.device();
         h.build_request(T_IN, 0, 512, false);
@@ -1951,7 +1498,6 @@ mod tests {
             })
         );
 
-        // (k) A write out of a device-writable buffer.
         let mut h = Harness::new();
         let mut dev = h.device();
         h.build_request(T_OUT, 0, 512, true);
@@ -1964,7 +1510,6 @@ mod tests {
             })
         );
 
-        // (l) A partial-sector transfer.
         let mut h = Harness::new();
         let mut dev = h.device();
         h.build_request(T_IN, 0, 500, true);
@@ -1974,15 +1519,12 @@ mod tests {
             Err(BlkFault::UnalignedDataLength { len: 500 })
         );
 
-        // (m) A Flush carrying data.
         let mut h = Harness::new();
         let mut dev = h.device();
         h.build_request(T_FLUSH, 0, 512, false);
         h.publish(0, 1);
         assert_eq!(h.run(&mut dev), Err(BlkFault::FlushWithData { len: 512 }));
 
-        // (n) An avail.idx that jumps further than the queue is deep —
-        //     03 §4's "stale".
         let mut h = Harness::new();
         let mut dev = h.device();
         h.build_request(T_IN, 0, 512, true);
@@ -1998,18 +1540,10 @@ mod tests {
         );
     }
 
-    /// The ring itself is guest-writable memory, so a *ring word* — not
-    /// just a descriptor's `addr` — can name anything at all. This is the
-    /// proof that even the ring's own bookkeeping reads go through the
-    /// window check: a device whose declared pool is deliberately too
-    /// small to hold its own used ring is refused at construction, so no
-    /// path exists that reads or writes ring bytes outside a window.
     #[test]
     fn no_ring_access_can_escape_the_declared_windows() {
         let h = Harness::new();
         let mut cfg = h.cfg.clone();
-        // A pool that covers the descriptor table but stops before the
-        // used ring.
         cfg.pools = vec![PoolWindow {
             name: "TooSmall".to_string(),
             device: HARNESS_DEVICE,
@@ -2020,8 +1554,6 @@ mod tests {
         assert!(err.contains("used ring"), "{err}");
     }
 
-    /// Every `BlkFault` renders a distinct, non-empty diagnostic (a fault
-    /// nobody can read is a fault nobody can act on).
     #[test]
     fn every_fault_renders_a_distinct_diagnostic() {
         let faults = vec![

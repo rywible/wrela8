@@ -1,5 +1,3 @@
-//! `corpus` subcommand and helpers (extracted from main.rs).
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -14,14 +12,6 @@ use crate::corpus_sema_census;
 use crate::corpus_sema_context;
 use crate::root;
 
-// --- corpus ---------------------------------------------------------------
-//
-// The docs are test inputs: every ```wrela fenced block in docs/language/
-// must lex cleanly (from M1 on, also parse — fragments containing `...`
-// stay lex-only). Blocks are materialized under target/corpus/ for
-// debugging; the check itself runs in-process.
-
-/// One ```wrela fenced block extracted from a docs/language/*.md file.
 pub(crate) struct DocBlock {
     pub(crate) doc: PathBuf,
     pub(crate) start_line: usize,
@@ -29,10 +19,6 @@ pub(crate) struct DocBlock {
     pub(crate) body: String,
 }
 
-/// Walks every docs/language/*.md file and pulls out its ```wrela blocks,
-/// in deterministic (sorted-by-filename, source-order-within-file) order.
-/// Shared by `corpus` (which lexes every block) and `fuzz` (which mutates
-/// them) — the walk exists exactly once.
 pub(crate) fn extract_doc_blocks() -> Result<(Vec<DocBlock>, Vec<String>), String> {
     let docs_dir = root().join("docs/language");
     let mut doc_files: Vec<_> = std::fs::read_dir(&docs_dir)
@@ -59,7 +45,7 @@ pub(crate) fn extract_doc_blocks() -> Result<(Vec<DocBlock>, Vec<String>), Strin
             if !in_block {
                 if line.trim_end() == "```wrela" {
                     in_block = true;
-                    start_line = i + 2; // first line of the block body
+                    start_line = i + 2;
                     body.clear();
                 }
             } else if line.trim_end() == "```" {
@@ -83,9 +69,6 @@ pub(crate) fn extract_doc_blocks() -> Result<(Vec<DocBlock>, Vec<String>), Strin
     Ok((blocks, failures))
 }
 
-/// Every `.wr` file under docs/language/examples/, whole-file, in
-/// deterministic (sorted) order — additional corpus entries alongside the
-/// ```wrela doc blocks (plans/M1.md item D, step 5).
 pub(crate) fn extract_example_files() -> Result<Vec<DocBlock>, String> {
     let dir = root().join("docs/language/examples");
     let mut files: Vec<_> = std::fs::read_dir(&dir)
@@ -114,16 +97,6 @@ pub(crate) fn extract_example_files() -> Result<Vec<DocBlock>, String> {
     Ok(entries)
 }
 
-/// Every ```wrela doc block and every docs/language/examples/*.wr file must
-/// lex; from M1 item D on, every one of them must also *parse* — except a
-/// block whose body contains the literal substring `...`, which is a doc
-/// fragment (an illustrative snippet, not a complete construct) and stays
-/// lex-only. `docs.examples.wrela-blocks-parse` is the the pinned rule
-/// the parse half; `docs.examples.wrela-blocks-lex` already covered lexing.
-///
-/// Always then sema-classifies the parseable non-aspirational set against
-/// the pinned census (plans/M9.md item J3). `--sema` only prints the
-/// verbose per-block report; the gate is identical with or without it.
 pub(crate) fn corpus(args: &[String]) -> Result<(), String> {
     let mut verbose_sema = false;
     for a in args {
@@ -169,10 +142,6 @@ pub(crate) fn corpus(args: &[String]) -> Result<(), String> {
         match wrela_compiler::syntax::parser::parse_any(tokens) {
             Ok(parsed_ast) => {
                 parsed += 1;
-                // Aspirational whole-file examples (header marks ASPIRATIONAL)
-                // stay lex/parse-only: they import modules the stdlib does
-                // not ship. Sema would only restate the missing-module fact
-                // (plans/M9.md item J2a / decision 516).
                 if !example_is_aspirational(&b) {
                     sema_rows.push(corpus_sema_one(&b, parsed_ast)?);
                 }
@@ -197,10 +166,6 @@ pub(crate) fn corpus(args: &[String]) -> Result<(), String> {
     if verbose_sema {
         print_corpus_sema_report(&sema_rows);
     }
-    // Keys first: a duplicate/malformed key makes the other two ambiguous.
-    // The stub and census checks then both run, because one edited block
-    // fails both and a human wants to see both rows to repin, not to
-    // rediscover the second failure after fixing the first.
     verify_corpus_sema_keys(&sema_rows)?;
     let mut errs = Vec::new();
     if let Err(e) = verify_corpus_sema_contexts(&sema_rows) {
@@ -215,17 +180,11 @@ pub(crate) fn corpus(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// Whole-file `docs/language/examples/*.wr` whose header marks
-/// `ASPIRATIONAL` — lex/parse corpus only until the imported modules ship
-/// (plans/M9.md decision 516). Markdown ```wrela fences are never
-/// aspirational under this predicate.
 pub(crate) fn example_is_aspirational(b: &DocBlock) -> bool {
     let rel = display_repo_path(&b.doc);
     if !rel.starts_with("docs/language/examples/") || !rel.ends_with(".wr") {
         return false;
     }
-    // Only the file header (comments before `module`) — not a later
-    // occurrence inside the body.
     for line in b.body.lines() {
         let t = line.trim();
         if t.is_empty() {
@@ -241,14 +200,9 @@ pub(crate) fn example_is_aspirational(b: &DocBlock) -> bool {
     false
 }
 
-/// One `--sema` outcome (plans/M9.md item J1b). `kind` is ok or
-/// disagreement — the J1 "noise" keyhole is retired by per-block context.
 #[derive(Debug)]
 pub(crate) struct CorpusSemaRow {
-    /// Content key of the block body — the identity used by both pinned
-    /// tables (plans/M10.md item A3, decision 710).
     key: String,
-    /// Live `path:line`, for humans and diagnostics only.
     loc: String,
     section: String,
     kind: CorpusSemaKind,
@@ -258,9 +212,6 @@ pub(crate) struct CorpusSemaRow {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CorpusSemaKind {
     Ok,
-    /// Genuine doc/compiler disagreement (or residual incomplete context
-    /// that could not be given honestly — counted as disagreement so the
-    /// keyhole cannot hide it).
     Disagreement,
 }
 
@@ -273,14 +224,6 @@ impl CorpusSemaKind {
     }
 }
 
-/// Sema-check one parseable corpus block. Fragments are wrapped so
-/// declarations stay at module scope (or nest into a preamble type —
-/// decision J1c) and statements sit inside a synthetic
-/// `fn _corpus_snippet()` (decision 501), with an optional per-block
-/// preamble from `corpus_sema_context` (decision J1b). Import-bearing
-/// modules — and import-bearing fragment wraps — load through
-/// `loader::load_closure` so path-agreement and missing-module errors
-/// surface honestly (decision 503).
 pub(crate) fn corpus_sema_one(b: &DocBlock, parsed_ast: Parsed) -> Result<CorpusSemaRow, String> {
     let loc = format!("{}:{}", display_repo_path(&b.doc), b.start_line);
     let section = nearest_doc_section(&b.doc, b.start_line);
@@ -296,9 +239,6 @@ pub(crate) fn corpus_sema_one(b: &DocBlock, parsed_ast: Parsed) -> Result<Corpus
             }
         }
         Parsed::Fragment(entries) => {
-            // Wrap / preservation / re-lex / re-parse failures are harness
-            // bugs (propagate via `?`). Only the subsequent sema/loader
-            // diagnostic becomes a disagreement row.
             let wrapped = wrap_corpus_fragment(&entries, ctx)
                 .map_err(|e| format!("{}:{}: {e}", b.doc.display(), b.start_line))?;
             assert_fragment_items_preserved(&entries, &wrapped, &loc)?;
@@ -325,8 +265,6 @@ pub(crate) fn corpus_sema_one(b: &DocBlock, parsed_ast: Parsed) -> Result<Corpus
 }
 
 pub(crate) fn corpus_sema_load_file(path: &Path) -> Result<(), String> {
-    // Prefer a repo-relative path so the loader's path-agreement
-    // diagnostic names the tree path a human greps, not `/private/tmp/...`.
     let rel = path.strip_prefix(root()).unwrap_or(path);
     let loaded = loader::load_closure(rel).map_err(|e| match e {
         loader::LoadError::Lex(e) => format!("[lex] {}", e.message),
@@ -342,14 +280,6 @@ pub(crate) fn corpus_sema_load_file(path: &Path) -> Result<(), String> {
     sema::check_program(&modules, &paths).map_err(|e| format!("[{}] {}", e.category, e.message))
 }
 
-/// Wrap a ```wrela fragment into a checkable module: optional preamble,
-/// item declarations at module scope or nested into a preamble type
-/// (`nest_items_into`), optional postamble, statement entries inside
-/// `fn _corpus_snippet()` (shape configurable via context).
-///
-/// Fence items are never discarded. Nesting is the only alternative to
-/// module scope; a context that cannot nest honestly must not ship a
-/// hand-copy (plans/M9.md item J1c).
 pub(crate) fn wrap_corpus_fragment(
     entries: &[parser::FragmentEntry],
     ctx: Option<&corpus_sema_context::CorpusSemaContext>,
@@ -393,8 +323,6 @@ pub(crate) fn wrap_corpus_fragment(
         if nest_into.is_empty() {
             out.push_str(&pretty);
         } else {
-            // Indent every line one level so the fence items continue the
-            // open type body left by the preamble.
             for line in pretty.lines() {
                 if line.is_empty() {
                     out.push('\n');
@@ -463,10 +391,6 @@ pub(crate) fn wrap_corpus_fragment(
     Ok(out)
 }
 
-/// Standing guard (J1c): every fence `Item` must appear in the wrap.
-/// Trim-equal line match so nesting indent does not count as a rewrite.
-/// Failure is a harness error (fails `check`), not a disagreement row —
-/// silent decoupling is exactly what the corpus exists to catch.
 pub(crate) fn assert_fragment_items_preserved(
     entries: &[parser::FragmentEntry],
     wrapped: &str,
@@ -495,9 +419,6 @@ pub(crate) fn assert_fragment_items_preserved(
     Ok(())
 }
 
-/// Lex/parse a wrapped fragment, then sema-check it. Outer `Err` = harness
-/// failure (re-lex / re-parse / temp I/O). Inner `Err` = disagreement
-/// diagnostic from sema or the loader.
 pub(crate) fn corpus_sema_check_wrapped_sema(wrapped: &str) -> Result<Result<(), String>, String> {
     let tokens =
         lexer::lex(wrapped).map_err(|e| format!("--sema wrap re-lex failed: {}", e.message))?;
@@ -547,11 +468,6 @@ pub(crate) fn display_repo_path(path: &Path) -> String {
         .to_string()
 }
 
-/// Nearest ATX heading above `start_line` (1-based body line), for the
-/// disagreement enumeration. Falls back to the file stem when the block
-/// is a whole `.wr` example with no markdown headings. Headings inside
-/// fenced code blocks are ignored (a `# comment` in a ```text diagram
-/// is not a section title).
 pub(crate) fn nearest_doc_section(doc: &Path, start_line: usize) -> String {
     let Ok(text) = std::fs::read_to_string(doc) else {
         return doc
@@ -586,8 +502,6 @@ pub(crate) fn nearest_doc_section(doc: &Path, start_line: usize) -> String {
             let hashes = trimmed.chars().take_while(|c| *c == '#').count();
             if (1..=6).contains(&hashes) {
                 let title = trimmed[hashes..].trim();
-                // Require the markdown space after the hashes so a
-                // mid-prose `#comment` is not treated as a heading.
                 if !title.is_empty() && trimmed.as_bytes().get(hashes).is_some_and(|b| *b == b' ') {
                     section = title.to_string();
                 }
@@ -607,10 +521,6 @@ pub(crate) fn print_corpus_sema_report(rows: &[CorpusSemaRow]) {
         "corpus sema: checked {}, ok {ok}, disagreements {disagreements}",
         rows.len()
     );
-    // Every row, with its content key: the pinned tables are keyed by that
-    // key and humans hand-write them, so the report has to print it — a
-    // key you cannot read off the report is a key you cannot pin
-    // (plans/M10.md item A3, decision 712).
     println!("corpus sema blocks (key = content hash; pin tables match on this, not on the line):");
     for r in rows {
         println!(
@@ -633,11 +543,6 @@ pub(crate) fn print_corpus_sema_report(rows: &[CorpusSemaRow]) {
     }
 }
 
-/// Content keys must be unique and well-formed, in the live set and in both
-/// pinned tables (plans/M10.md item A3). Uniqueness is what makes a 12-hex
-/// content key safe to use as an identity: a collision, or two doc fences
-/// with byte-identical bodies, would make a pin ambiguous — so it fails
-/// closed here instead of picking one.
 pub(crate) fn verify_corpus_sema_keys(rows: &[CorpusSemaRow]) -> Result<(), String> {
     use std::collections::BTreeMap;
     let mut problems = Vec::new();
@@ -685,11 +590,6 @@ pub(crate) fn verify_corpus_sema_keys(rows: &[CorpusSemaRow]) -> Result<(), Stri
     Ok(())
 }
 
-/// Every per-block declaration stub must attach to a live block
-/// (plans/M10.md item A3). Before the content-key change a stub whose line
-/// number had shifted simply stopped matching and the block was checked
-/// bare — the silent detach that produced three phantom disagreements in
-/// item A. Now a stub that matches nothing is a loud failure.
 pub(crate) fn verify_corpus_sema_contexts(rows: &[CorpusSemaRow]) -> Result<(), String> {
     let mut problems = Vec::new();
     for c in corpus_sema_context::CORPUS_SEMA_CONTEXTS {
@@ -718,21 +618,6 @@ pub(crate) fn verify_corpus_sema_contexts(rows: &[CorpusSemaRow]) -> Result<(), 
     Ok(())
 }
 
-/// Compare live corpus-sema rows against the pinned census (plans/M9.md
-/// item J3). Fails in both directions: an `ok` block that starts
-/// disagreeing (`ok-decay`), and an accepted disagreement that starts
-/// typechecking (`accepted-disagreement-cleared`). Also fails if a pin's
-/// shape is wrong or a block is unpinned / missing.
-///
-/// An accepted disagreement must carry a non-empty `why` — the reason the
-/// doc block does not typecheck, written where the pin is. That is what
-/// keeps acceptance from being silent.
-///
-/// Matching is on the block's **content key**, never on `path:line`
-/// (plans/M10.md item A3, decision 710) — an insertion above a fence must
-/// not disturb its pin. The flip side is that editing a fence's body loses
-/// its pin; that is reported as a re-review requirement, not as decay
-/// (decision 711).
 pub(crate) fn verify_corpus_sema_census(rows: &[CorpusSemaRow]) -> Result<(), String> {
     use std::collections::BTreeMap;
     let live: BTreeMap<&str, &CorpusSemaRow> = rows.iter().map(|r| (r.key.as_str(), r)).collect();
@@ -745,7 +630,6 @@ pub(crate) fn verify_corpus_sema_census(rows: &[CorpusSemaRow]) -> Result<(), St
     for (key, pin) in &pinned {
         let loc = pin.loc.as_str();
         let kind = pin.kind.as_str();
-        // Structural: ok rows carry no reason; disagreements must give one.
         match (kind, pin.why.as_deref().map(str::trim)) {
             ("ok", None) => {}
             ("disagreement", Some(w)) if !w.is_empty() => {}

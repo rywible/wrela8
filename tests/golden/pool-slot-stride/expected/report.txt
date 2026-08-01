@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/pool_slot_stride.wr sha256=5bb9055e62233631966c39244fef737224b58960b52934feae4cd6031c91f266
+  Input path=examples/pool_slot_stride.wr sha256=f4f83129514e19ee66c03ac46b83f107f10f3721bd9568597f77d0e9b21033e5
   Input path=<generated> sha256=db35607231f8595e5ae546eb9108465aa5b23e7982d4836660a8a1246481dc24
   Name value=pool-slot-stride
   Target value=Target.wrela_machine_v1

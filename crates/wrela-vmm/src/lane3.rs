@@ -1,38 +1,11 @@
-//! Integrity Phase 2 Item N — Lane 3 agreement oracle.
-//!
-//! Lane 2 dumps an in-guest `lane2 hits=` transcript line from the
-//! placed `LANE2` counter page. Lane 3 is the host-side cross-check:
-//! after halt the VMM reads that same page out of guest DRAM and
-//! compares the non-zero hit vector to the transcript line (diff-eval
-//! shape: two independent observations of the same run must agree).
-//!
-//! Fail closed: missing line, missing truncation marker, empty vectors,
-//! or any id/count mismatch is disagreement. Empty==empty is **not**
-//! agreement — the named control case must exercise counters.
-//!
-//! plans/M20.md item C / decision 1610: the transcript line is a bounded
-//! diagnostic (at most `BLOCK_BOUND_PRINT_PAIRS` pairs plus
-//! ` truncated=<N>`) while the host snapshot is unbounded and is Lane 2's
-//! normative sink. Agreement is therefore over **the pairs the transcript
-//! actually carries**, with `N` cross-checked against the host tail so a
-//! truncated line cannot pass by being compared to itself.
-
 use wrela_machine::layout::DRAM_BASE;
 
-/// Must match `stdlib/core/runtime.wr` `@placed(0x40008800)` `LANE2`.
 pub const LANE2_BASE: u64 = 0x4000_8800;
 
-/// Must match `wrela_compiler::rtconfig::BLOCK_POOL_COUNT` / runtime import.
 pub const LANE2_POOL_COUNT: usize = 3072;
 
-/// Compact hit vector: non-zero `(id, count)` pairs in ascending id order.
 pub type HitVec = Vec<(u32, u64)>;
 
-/// Read Lane 2 counters from host-mapped guest DRAM after halt.
-///
-/// Layout (`Lane2Counters`): `enabled: u64` at offset 0, then
-/// `hits: [u64; LANE2_POOL_COUNT]`. Returns only non-zero hits when
-/// `enabled != 0`; otherwise empty (Lane 2 emission was off).
 pub fn read_lane2_hits(host_ram: *const u8) -> HitVec {
     let base_off = (LANE2_BASE - DRAM_BASE) as usize;
     let enabled = unsafe { read_u64(host_ram, base_off) };
@@ -53,21 +26,14 @@ unsafe fn read_u64(host_ram: *const u8, off: usize) -> u64 {
     unsafe { std::ptr::read_unaligned(host_ram.add(off) as *const u64) }
 }
 
-/// The truncation marker the guest dump appends (decision 1610).
 pub const TRUNCATED_MARKER: &str = " truncated=";
 
-/// A parsed `lane2 hits=` line: the pairs it carries plus how many non-zero
-/// blocks it says it dropped.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Lane2Line {
     pub hits: HitVec,
-    /// `truncated=<N>` from the marker. `None` for a line with no marker at
-    /// all — a pre-decision-1610 transcript, which is a fail-closed
-    /// condition in `agree_lane2_vs_host` rather than a silent "0".
     pub truncated: Option<u64>,
 }
 
-/// Parse a guest `lane2 hits=<id>:<count>,… truncated=<N>` line.
 pub fn parse_lane2_line(line: &str) -> Result<Lane2Line, String> {
     let rest = line
         .strip_prefix("lane2 hits=")
@@ -89,7 +55,6 @@ pub fn parse_lane2_line(line: &str) -> Result<Lane2Line, String> {
     })
 }
 
-/// Parse the pair list of a `lane2 hits=<id>:<count>,…` line (no marker).
 pub fn parse_lane2_hits_line(line: &str) -> Result<HitVec, String> {
     let rest = line
         .strip_prefix("lane2 hits=")
@@ -125,7 +90,6 @@ pub fn parse_lane2_hits_line(line: &str) -> Result<HitVec, String> {
     Ok(out)
 }
 
-/// Format a hit vector as the guest dump body (`id:count,id:count,…`).
 pub fn format_hits(hits: &[(u32, u64)]) -> String {
     hits.iter()
         .map(|(id, c)| format!("{id}:{c}"))
@@ -133,20 +97,6 @@ pub fn format_hits(hits: &[(u32, u64)]) -> String {
         .join(",")
 }
 
-/// Lane 2 (guest transcript dump) vs Lane 3 (host DRAM snapshot).
-///
-/// Fail closed on a missing line, a missing truncation marker, an empty
-/// vector on either side, or any mismatch.
-///
-/// **Truncation (decision 1610).** The transcript line carries at most
-/// `BLOCK_BOUND_PRINT_PAIRS` pairs and then ` truncated=<N>`; the host
-/// snapshot has no such bound. Agreement therefore compares the snapshot
-/// against **the pairs the transcript actually carries** — the guest's
-/// pairs must be an exact prefix of the host's, and `N` must be exactly the
-/// number of host pairs the transcript did not carry. That last clause is
-/// what keeps this oracle meaningful: a truncated line cannot pass by being
-/// compared to itself, because the host side must independently account for
-/// every dropped pair.
 pub fn agree_lane2_vs_host(transcript: &str, host_hits: &[(u32, u64)]) -> Result<(), String> {
     let lane2_line = transcript
         .lines()
@@ -243,8 +193,6 @@ mod tests {
         assert!(err.contains("missing"), "{err}");
     }
 
-    /// A pre-decision-1610 line (no marker) cannot be told apart from a
-    /// complete one, so it is refused rather than assumed complete.
     #[test]
     fn agree_fails_closed_when_the_truncation_marker_is_absent() {
         let err = agree_lane2_vs_host("lane2 hits=0:1\n", &[(0, 1)]).expect_err("no marker");
@@ -284,8 +232,6 @@ mod tests {
         .expect("agree");
     }
 
-    /// A **truncating** line agrees when its pairs are an exact prefix of
-    /// the host snapshot and the marker accounts for every dropped pair.
     #[test]
     fn agree_accepts_a_truncated_line_whose_marker_accounts_for_the_tail() {
         let host = vec![(0, 3), (2, 1), (168, 17), (300, 4)];
@@ -297,8 +243,6 @@ mod tests {
         .expect("agree over the pairs the transcript carries");
     }
 
-    /// The clause that stops a truncated line passing by being compared to
-    /// itself: the host must independently carry the dropped pairs.
     #[test]
     fn agree_fails_closed_when_the_truncation_count_does_not_match_the_host_tail() {
         let host = vec![(0, 3), (2, 1), (168, 17), (300, 4)];

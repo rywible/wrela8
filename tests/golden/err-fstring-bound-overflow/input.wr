@@ -1,15 +1,5 @@
 module examples.err_fstring_bound_overflow
 
-# plans/M9.md item K1: an f-string's summed Format bound must not
-# overflow a layout-representable `String[..N]` capacity. Each operand's
-# bound fits alone; the sum does not. Pre-fix accepted the sum in i128
-# and later panicked at lowering (`capacity overflow`).
-#
-# Re-based 2026-07-26 (fuzz lower, seed 101): the bound used to be 2^60,
-# which the declaration-site build limit now rejects on `format`'s own
-# return type — so this case had stopped testing the f-string SUM. The
-# bound is now individually legal (40000) and only the two-operand sum
-# (80000) exceeds the 65536 limit.
 
 pub struct Big:
     n: u8

@@ -1,10 +1,5 @@
 module examples.check_untrusted_narrowing
 
-# plans/M7.md item H2a, 03-hardware.md §8's own spelling: a checked
-# narrowing yields `Result[T, unit]` whose `Ok` payload is the unmarked
-# `T`. This dump oracle pins the Compare/branch lowering; the live
-# producer is `IoCompletion[P].written_len` (item E4 /
-# `golden/boot-blk-roundtrip`).
 
 fn narrow(reported: Untrusted[usize], bound: usize) -> Result[usize, unit]:
     return reported.checked_le(bound)

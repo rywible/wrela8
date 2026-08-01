@@ -1,14 +1,5 @@
 module examples.err_string_concat_overflow
 
-# plans/M9.md item K1: `String[..N] + String[..M]` must refuse when
-# N+M is not layout-representable. Pre-fix accepted the i128 sum and
-# reported only a return-type mismatch against `String[..2^64]`.
-#
-# Re-based 2026-07-26 (fuzz lower, seed 101): the operands used to be
-# 2^60 each, which the declaration-site build limit now rejects on the
-# *parameter* — so this case had silently stopped testing concatenation
-# at all. Both operands are now individually legal and only their SUM
-# (80000) exceeds the 65536 limit, which is this golden's actual subject.
 
 fn add(a: String[..40000], b: String[..40000]) -> String[..1]:
     return a + b

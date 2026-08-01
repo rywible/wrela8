@@ -1,18 +1,5 @@
 module examples.boot_actor_smoke
 
-# plans/M6.md item D's own down payment (decision 11b, 02-language.md
-# §12.2): a minimal real image — one actor with a sync `pub` method — and
-# an async `@test(runtime)` root turn that declares an `Actor[Store]`
-# parameter, `await`s a real message through it, and asserts the reply.
-# THE milestone moment: boots for real, on the wrela VMM (Hypervisor.
-# framework on this machine), the whole pipeline exercised end to end —
-# sema's handle-param rule, the image graph's unique-instance resolution,
-# the boot sequence (actor init, zero-arg `init` call), the async fn's own
-# compiled state machine (entry discriminant, checkpoints), and `Await`'s
-# real park-and-resume suspension (the root turn genuinely parks on its
-# own turn record and is re-entered by the driver's scheduler loop —
-# `actors.codegen.state-machines` carries the full mechanism; the original
-# nested-drain placeholder this golden first booted with is deleted).
 
 @actor
 pub struct Store:

@@ -1,18 +1,5 @@
 module examples.check_mut_param_writeback
 
-# plans/M9.md item CC1. 02-language.md §5.1: "Non-receiver `mut` and
-# `take` are **mirrored at the call site**, and the operand must be an
-# explicit place." Before this item the comptime evaluator returned only
-# the final `self` from `run_call`, so `bump(mut c)` left the caller's
-# `c` untouched — a silent wrong value at build time. The backend is
-# still wrong the same way (CC2); this case has no `@test` so it stays
-# out of `diff-eval`'s scope until both tiers agree.
-#
-# Every const below is chosen so a missing write-back cannot land on the
-# same number: success values are nonzero, and `MIX`'s settle adds the
-# written-back `a` to the callee's return so "mutated inside but not
-# mirrored" (return 6, `a` still 1 → 7) differs from "mirrored"
-# (return 6, `a` is 3 → 9).
 
 struct Inner:
     x: u32

@@ -1,1 +1,1 @@
-error[type]: `DriverClaimedDevice[VirtioBlock].reset(...)` consumes a `RunningDevice[VirtioBlock]` (03-hardware.md §9: reset consumes `Running`, producing a new epoch); found `DriverClaimedDevice[VirtioBlock]` at 24:21
+error[type]: `DriverClaimedDevice[VirtioBlock].reset(...)` consumes a `RunningDevice[VirtioBlock]` (03-hardware.md §9: reset consumes `Running`, producing a new epoch); found `DriverClaimedDevice[VirtioBlock]` at 17:21

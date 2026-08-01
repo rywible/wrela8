@@ -1,7 +1,5 @@
 module examples.check_image_cores_default
 
-# plans/M15.md item B / image.cores.authoring: omitting `cores=` seals N=1
-# (05-library.md §9 default).
 
 @actor
 pub struct Store:

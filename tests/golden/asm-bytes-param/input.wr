@@ -1,9 +1,5 @@
 module examples.asm_bytes_param
 
-# plans/M10.md item B4 / decisions 595–596: unbounded `Bytes` parameter
-# as a two-word (base, len) packed-byte handle. Pins the prologue shape
-# (store x0/x1 into consecutive frame slots) and the BytesIndexGet path
-# (cmp against handle.len + ldrb).
 
 fn first_byte(data: Bytes) -> u8:
     return data[0]

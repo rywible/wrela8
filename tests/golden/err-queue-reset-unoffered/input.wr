@@ -1,9 +1,5 @@
 module examples.err_queue_reset_unoffered
 
-# plans/M7.md item H2b / decision 23: per-queue reset requires `RingReset`,
-# which this device model does not offer (`golden/err-device-required-unoffered`
-# already pins the feature bit). `VirtQueue.reset` fails closed by name
-# rather than pretending.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

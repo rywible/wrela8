@@ -1,18 +1,3 @@
-//! One per-body CFG: definite initialization, moves, and exclusivity
-//! (plans/M2.md items E/F, one CFG/one pass file per decision 3).
-//! Definite init tracks initialization state per storage path (paths.rs)
-//! on every control-flow edge (02-language.md §3.2); moves track `take`
-//! deinitialization and use-after-take (§3, §3.1); exclusivity forbids
-//! overlapping `mut`/read while a `mut` is active (§3, §8.2). Flips
-//! `values.data.copies-implicitly`, `values.resource.move-spells-take`,
-//! `values.exclusivity.no-overlap`.
-//!
-//! Shape: this pass runs after `access` (mirroring/read-loans/receiver
-//! mutability already proven) and before `matches` (exhaustiveness not
-//! yet proven). It walks the **typed** tree (`walk_typed_*`); the
-//! historical AST walkers were deleted once `check` only ever saw
-//! `TypedProgram`.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::sema::SemaError;
@@ -27,19 +12,8 @@ use crate::sema::typed::{
 use crate::sema::types::{self, Type};
 use crate::syntax::ast::{AccessMode, Span};
 
-/// Dumb, fixed cap on loop fixed-point iteration (mirrors
-/// `MAX_GENERIC_DEPTH`'s sibling: dumb, fixed, no measurement).
 const LOOP_FIXED_POINT_CAP: usize = 4;
 
-// --- per-path initialization/move state ------------------------------------
-
-/// One storage path's state (deliverable 2): `Uninit` (never assigned —
-/// an ordinary local before its first assignment, or one of `init`'s own
-/// fields, 02-language.md §7.1), `Init` (holds a valid value), `Moved`
-/// (taken from and not since restored). Only resources and (per decision
-/// 9) data-after-`take` ever become `Moved`; only an ordinary local
-/// before its first write, or an `init`'s own not-yet-assigned field, is
-/// ever `Uninit`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PathState {
     Uninit,
@@ -47,12 +21,6 @@ enum PathState {
     Moved,
 }
 
-/// The state map a walk threads through one function/method/init body:
-/// sparse — a path absent from the map inherits its closest recorded
-/// ancestor's state (`state_of`), or `Uninit` if no ancestor was ever
-/// recorded (ordinary locals start absent; every parameter/`self` root
-/// is seeded explicitly at entry, so this default only ever applies to
-/// genuinely new bindings).
 type StateMap = BTreeMap<StoragePath, PathState>;
 
 fn state_of(path: &StoragePath, state: &StateMap) -> PathState {
@@ -65,11 +33,6 @@ fn state_of(path: &StoragePath, state: &StateMap) -> PathState {
     PathState::Uninit
 }
 
-/// The first (deterministic — `BTreeMap`'s own sorted order) tracked
-/// entry at or under `prefix` that isn't `Init` — the "is this whole
-/// value fully restored" query the field-take-and-restore obligation and
-/// the "self/param used whole" checks both need (02-language.md §3.2,
-/// §7.1).
 fn first_bad_under(prefix: &StoragePath, state: &StateMap) -> Option<(StoragePath, PathState)> {
     state
         .iter()
@@ -77,13 +40,6 @@ fn first_bad_under(prefix: &StoragePath, state: &StateMap) -> Option<(StoragePat
         .map(|(p, s)| (p.clone(), *s))
 }
 
-/// The lattice meet used to combine two control-flow edges' states for
-/// the same path (deliverable 2's "a name is initialized after a join
-/// only if initialized on every inbound edge"): agreement wins outright;
-/// disagreement always resolves to the *not safely usable* state — `Init`
-/// only survives meeting itself, `Uninit` beats `Init` (never assigned on
-/// some edge), and any other disagreement (either edge `Moved`) becomes
-/// `Moved` (taken on some edge).
 fn meet(a: PathState, b: PathState) -> PathState {
     if a == b {
         return a;
@@ -140,23 +96,6 @@ fn set_state(path: &StoragePath, state: &mut StateMap, new_state: PathState) {
     state.insert(path.clone(), new_state);
 }
 
-/// The field-take-and-restore / definite-init-of-`init`'s-own-fields
-/// obligation (02-language.md §3.2, §7.1): at every function-level exit,
-/// every **borrowed** (`mut`-mode) parameter/`self` root must either be
-/// wholly `Moved` (unreachable for a `mut`-mode root — nothing can take
-/// it whole, `check_takeable` already forbids that) or have no not-`Init`
-/// path anywhere under it (every taken field restored). This is
-/// deliberately scoped to `mut`-mode roots only: a `take`-mode parameter
-/// or an ordinary local is *owned* by this function, so leaving one of
-/// its fields moved at exit is fine (decision 5: no consume-on-every-path
-/// obligation exists for any M2-expressible type; the auto-reclaim
-/// machinery tears down whatever remains, piecewise) — only a `mut`
-/// root's caller-visible coherence is actually at stake here.
-///
-/// plans/M7.md item E3 / 02-language.md §3.1's second bullet: protocol
-/// resources (capabilities, permits, receipts — and E2's sealed queue
-/// values) must be consumed, returned, or transferred on every path.
-/// A live `Init` root of such a type at exit is `error[move]`.
 fn check_exit_obligations(
     state: &StateMap,
     fctx: &FnCtx,
@@ -182,21 +121,7 @@ fn check_exit_obligations(
     check_protocol_consumption(state, fctx, wctx, span)
 }
 
-/// The protocol resource `ty` carries at any nesting, rendered — or
-/// `None`. Sibling of `sema::types::type_contains_capability`: Option /
-/// array / tuple / `Result` / `own` / `fn`, and a named type's declared
-/// components (struct fields and enum payloads), with an `Actor[T]` cut
-/// so a handle to a driver is not the driver's own `DeviceCap`.
-///
-/// plans/M7.md item I: `is_protocol_consuming_type` answered only the
-/// root `Named` leaf, so `Option[DeviceCap[D]]`, `[DeviceCap[D]; 1]`, and
-/// a plain `struct CapBundle { cap: DeviceCap[D] }` were droppable without
-/// claim — the same one-wrapper-deep hole `DmaShared`'s lend rejection
-/// had. The diagnostic names the *carried* type so a wrapper's spelling
-/// still says why (`golden/err-cap-drop-option`, `err-cap-drop-wrapped`).
 fn protocol_resource_carried(ty: &Type, mctx: &ModuleCtx) -> Option<String> {
-    // plans/M13.md item O: re-derive from `must_consume` (`resource(manual)`
-    // is must_consume by fiat).
     fn walk(ty: &Type, mctx: &ModuleCtx, seen: &mut BTreeSet<String>) -> Option<String> {
         use crate::sema::types::TypeArg;
         match ty {
@@ -218,7 +143,6 @@ fn protocol_resource_carried(ty: &Type, mctx: &ModuleCtx) -> Option<String> {
                 if !seen.insert(name.clone()) {
                     return None;
                 }
-                // `resource(manual)` fiat: the named type itself must_consume.
                 if mctx
                     .structs
                     .get(name.as_str())
@@ -257,12 +181,6 @@ fn protocol_resource_carried(ty: &Type, mctx: &ModuleCtx) -> Option<String> {
     walk(ty, mctx, &mut BTreeSet::new())
 }
 
-/// 02-language.md §3.1: "If its only consumers are protocol operations
-/// (capabilities, permits, receipts), every control-flow path must
-/// explicitly consume, return, or transfer it". A still-`Init` owned
-/// root that *carries* a protocol-consuming type is a drop — illegal in
-/// every state for a receipt, and the honesty hole E2 left open for a
-/// dropped permit. Wrappers count (item I): see `protocol_resource_carried`.
 fn check_protocol_consumption(
     state: &StateMap,
     fctx: &FnCtx,
@@ -278,8 +196,6 @@ fn check_protocol_consumption(
         if !checked.insert(name.clone()) {
             continue;
         }
-        // Borrowed roots (`read` / `mut`) stay with the caller — only an
-        // owned `take` parameter or an ordinary local can be dropped here.
         match wctx.modes.get(name) {
             Some(AccessMode::Read) | Some(AccessMode::Mut) => continue,
             Some(AccessMode::Take) | None => {}
@@ -343,16 +259,10 @@ fn join_outcomes(arms: Vec<Outcome>) -> Outcome {
     }
 }
 
-// --- module-wide checking context + entry points ---------------------------
-
-/// Every parameter's (and, where applicable, `self`'s) declared access
-/// mode, root-keyed — the only extra bookkeeping flow needs beyond
-/// `bodies::ModuleCtx`/`FnCtx`.
 struct WCtx<'a> {
     mctx: &'a ModuleCtx,
     effects: &'a EffectMap,
     modes: BTreeMap<String, AccessMode>,
-    /// Whether this body is a struct's `init` (02-language.md §7.1).
     is_init: bool,
 }
 
@@ -518,8 +428,6 @@ fn check_body_exit(
     check_exit_obligations(final_state, fctx, wctx, span)
 }
 
-/// The flow pass (plans/M2.md items E/F): walks the typed tree. Uses
-/// `TypedProgram::effects` for effective receiver modes.
 pub(crate) fn check(program: &TypedProgram, mctx: &ModuleCtx) -> Result<(), SemaError> {
     let effects = &program.effects;
     for f in program.fns.values() {
@@ -593,7 +501,6 @@ pub(crate) fn check_typed_struct(
         if let Some((mode, ty)) = &f.receiver {
             fctx.insert_local("self".to_string(), ty.clone());
             modes.insert("self".to_string(), *mode);
-            // init: fields start Uninit (02-language.md §7.1).
             for field in &s.fields {
                 state.insert(
                     StoragePath::root("self").field(field.clone()),
@@ -622,7 +529,6 @@ pub(crate) fn check_typed_struct(
 
 type TypedDStack<'a> = Vec<&'a TypedDeferBody>;
 
-/// Re-validates every currently active `defer` at one real exit.
 fn check_active_defers<'a>(
     active: &[&'a TypedDeferBody],
     exit_desc: &str,
@@ -689,8 +595,6 @@ fn is_typed_method_reference(expr: &TypedExpr, fctx: &FnCtx, wctx: &WCtx<'_>) ->
     };
     let _ = fctx;
     if !targs.is_empty() {
-        // Instantiated generic: treat as method if no field of that name
-        // is known on the unspecialized decl (conservative).
         if let Some(s) = wctx.mctx.structs.get(sname.as_str()) {
             return s.field_ty(name).is_none()
                 && (s.method(name).is_some() || s.assoc_fn(name).is_some());
@@ -800,9 +704,6 @@ fn receiver_mode_for_callee(callee: &CalleeKey, wctx: &WCtx<'_>) -> Option<Acces
         }
         _ => return None,
     };
-    // 03 §9 bring-up states are builtins with no DeclStruct. Their
-    // consuming transitions must still Take the receiver for
-    // protocol-consumption (same table as Intrinsic keys below).
     if crate::eval::image_checks::is_protocol_state_type_name(owner) {
         return Some(protocol_state_method_mode(owner, method));
     }
@@ -819,13 +720,6 @@ fn receiver_mode_for_callee(callee: &CalleeKey, wctx: &WCtx<'_>) -> Option<Acces
     None
 }
 
-/// Effective receiver mode for a 03 §9 bring-up state transition
-/// (historical AST `receiver_of` table). `take_irq` is Take only on the
-/// claimed-only mint (no negotiate/start). After `negotiate` — and after
-/// `VirtQueue.configure` rebinds the local to `QueuesConfiguredDevice` —
-/// it must be Read so `start` can still consume the state. (AST flow
-/// never saw the configure rebind, so its table only named
-/// `FeaturesAccepted*`; typed flow must also keep `QueuesConfigured*`.)
 fn protocol_state_method_mode(state: &str, method: &str) -> AccessMode {
     match method {
         "negotiate" | "start" | "reset" => AccessMode::Take,
@@ -840,8 +734,6 @@ fn protocol_state_method_mode(state: &str, method: &str) -> AccessMode {
     }
 }
 
-/// Receiver mode for a sealed-transport `Intrinsic`, keyed by the
-/// intrinsic spelling plus the receiver's protocol-state type name.
 fn intrinsic_receiver_mode(key: &str, receiver: &TypedExpr) -> AccessMode {
     let place = match &receiver.kind {
         TypedExprKind::Take(inner) => inner.as_ref(),
@@ -914,13 +806,6 @@ fn pattern_has_take(p: &TypedPattern) -> bool {
     }
 }
 
-/// Applies a pattern's move effect to the scrutinee place (plans/M7.md
-/// item I). Same two reasons as the former AST `apply_pattern_move`:
-/// 1. `take` appears anywhere in the pattern.
-/// 2. The scrutinee *carries* a protocol resource but is not itself one
-///    by name (`Option[Receipt]`, …) — destructuring is how the inner
-///    value becomes reachable; leaving the wrapper `Init` would launder
-///    the drop check.
 fn apply_typed_pattern_move(
     scrutinee: &TypedExpr,
     pattern: &TypedPattern,
@@ -1191,8 +1076,6 @@ fn walk_typed_stmt<'a>(
         TypedStmtKind::Defer(_) => Ok(fallthrough(state.clone())),
         TypedStmtKind::ExprStmt(e) | TypedStmtKind::BareSend { expr: e, .. } => {
             walk_typed_expr(e, state, fctx, wctx, dstack, loop_marker)?;
-            // 02-language.md §11: `panic` abandons — `never`-typed
-            // statements have no fallthrough (same as `return`).
             if matches!(e.ty, Type::Never) {
                 return Ok(Outcome {
                     fallthrough: None,
@@ -1370,13 +1253,10 @@ fn walk_typed_expr(
     loop_marker: usize,
 ) -> Result<(), SemaError> {
     if let Some(path) = typed_as_path(expr, fctx, wctx) {
-        // Bare place use: must be readable (unless this is a field/index
-        // chain walked only for path construction — those recurse below).
         if matches!(
             &expr.kind,
             TypedExprKind::Local(_) | TypedExprKind::Field(_, _) | TypedExprKind::Index(_, _)
         ) {
-            // Field/index: check the path itself when used as a value.
             check_readable(&path, state, wctx, expr.span)?;
             return walk_typed_place_subexprs(expr, state, fctx, wctx, dstack, loop_marker);
         }
@@ -1428,13 +1308,9 @@ fn walk_typed_expr(
         }
         TypedExprKind::Try(inner, _) => {
             walk_typed_expr(inner, state, fctx, wctx, dstack, loop_marker)?;
-            // `?` is a potential early exit: active defers must be valid.
             check_active_defers(dstack, "a `?` exit", state, fctx, wctx)
         }
         TypedExprKind::Await(inner) => {
-            // plans/M7.md item E4 / 03-hardware.md §5: `await receipt`
-            // consumes the `Receipt[P]`. Actor-call awaits are not
-            // places — fall through.
             if let Some(path) = typed_as_path(inner, fctx, wctx) {
                 if matches!(
                     &inner.ty,
@@ -1540,11 +1416,6 @@ fn walk_typed_expr(
             args,
             ..
         } => {
-            // Same operand discipline as `walk_typed_call`: take-mode
-            // receivers (03 §9 `take_irq` / negotiate / start / reset)
-            // and take-wrapped args (`with_arg_mode` → `TypedExprKind::Take`)
-            // must mark roots Moved, or protocol-consumption falsely
-            // reports a live `claimed` after the terminal mint.
             let mut activated: Vec<StoragePath> = Vec::new();
             if let Some(r) = receiver {
                 let mode = intrinsic_receiver_mode(key, r);
@@ -1561,8 +1432,6 @@ fn walk_typed_expr(
                 )?;
             }
             for (_, a) in args {
-                // Intrinsic args have no mode slot; take-mode sites wrap
-                // the value in `TypedExprKind::Take` at construction.
                 walk_typed_expr(a, state, fctx, wctx, dstack, loop_marker)?;
             }
             Ok(())

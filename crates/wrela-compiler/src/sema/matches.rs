@@ -1,14 +1,3 @@
-//! Match exhaustiveness (plans/M2.md item G): compositional usefulness
-//! over closed sums, `bool`, tuples, and fixed arrays; integers and
-//! everything unbounded require a wildcard; a wildcard (or any arm) that
-//! covers nothing is an error; guarded arms never contribute; `|`
-//! alternatives bind the same names at the same types (02-language.md
-//! §7.2).
-//!
-//! Walks the typed tree produced by `bodies` — scrutinee types and
-//! patterns come from `TypedExpr`/`TypedPattern`; no `FnCtx` rebuild and
-//! no `bodies::check_expr` re-invocation.
-
 use std::collections::BTreeMap;
 
 use crate::sema::SemaError;
@@ -24,7 +13,6 @@ fn match_error(message: String, span: Span) -> SemaError {
     SemaError::at("match", message, span)
 }
 
-/// Exhaustiveness over a finished `TypedProgram`.
 pub(crate) fn check(program: &TypedProgram, mctx: &ModuleCtx) -> Result<(), SemaError> {
     for c in program.consts.values() {
         walk_expr(&c.value, mctx)?;
@@ -43,7 +31,6 @@ pub(crate) fn check(program: &TypedProgram, mctx: &ModuleCtx) -> Result<(), Sema
     Ok(())
 }
 
-/// Instantiation path: check one typed fn body.
 pub(crate) fn check_fn(f: &TypedFn, mctx: &ModuleCtx) -> Result<(), SemaError> {
     for p in &f.params {
         if let Some(d) = &p.default {
@@ -237,7 +224,7 @@ fn check_match(
         }
         walk_stmts(&arm.body, mctx)?;
         if arm.guard.is_some() {
-            continue; // guarded arms never contribute
+            continue;
         }
         for (span, row) in arm_rows(&arm.pattern, sty, mctx) {
             if !row_useful(sty, &row, &covered, mctx) {
@@ -276,16 +263,6 @@ fn check_is(scrutinee: &TypedExpr, pat: &TypedPattern, mctx: &ModuleCtx) -> Resu
     Ok(())
 }
 
-/// One flattened pattern row: `Ctor(i, sub)` covers a value under the
-/// `i`-th constructor of the column's type (a closed enum's `i`-th
-/// variant in declaration order; the sole constructor of `bool`'s `true`
-/// (0)/`false` (1), `unit` (0), a tuple, or a fixed array) together with
-/// its sub-pattern rows for that constructor's fields; `Wild` covers
-/// every value of the column's type; `Opaque` is one otherwise-unmodeled
-/// point (an integer/`char`/string/etc. literal) — plans/M2.md item G:
-/// "integers, chars, strings, and anything unbounded require a wildcard
-/// or binding arm", so `Opaque` never contributes to full coverage on its
-/// own, only `Wild` does.
 #[derive(Clone, Debug)]
 enum RPat {
     Wild,
@@ -293,23 +270,12 @@ enum RPat {
     Opaque,
 }
 
-/// The column type's shape for the exhaustiveness matrix (plans/M2.md
-/// item G, decision 4: dumb, no unification) — every M2 scrutinee type
-/// reduces to one of these five buckets.
 enum TyShape {
     Bool,
     Unit,
-    /// A closed sum's variants in declaration order: name (unused by the
-    /// matrix itself, only by witness rendering) + payload types.
     Sum(Vec<(String, Vec<Type>)>),
     Tuple(Vec<Type>),
-    /// A fixed array with a literal length, expanded to that many copies
-    /// of the element type (component-wise, plans/M2.md item G).
     Array(Vec<Type>),
-    /// Integers, `char`, `Str`/`Static`/`Bytes`, non-literal-length
-    /// arrays, `fn` values, `own`/generic types, and anything else this
-    /// pass does not enumerate constructors for — requires an explicit
-    /// wildcard/binding arm, exactly like an unbounded scalar.
     Opaque,
 }
 
@@ -322,13 +288,6 @@ fn shape_of(ty: &Type, mctx: &ModuleCtx) -> TyShape {
             Some(n) if n >= 0 => TyShape::Array(vec![(**elem).clone(); n as usize]),
             _ => TyShape::Opaque,
         },
-        // Closed sums (Option/Result/CallError/AUTO_VISIBLE/user enums,
-        // including generic instantiate) share one table — `sum_ctors`.
-        // plans/M9.md item QQ: `shape_of` returns `TyShape`, not `Result`;
-        // `stdlib_enums::prepare` runs at every check entry before
-        // `matches::check`, so a corrupt stdlib already diagnosed there —
-        // auto-visible expects Ok after prepare; other Err → Opaque
-        // (bodies already accepted the scrutinee).
         other => {
             let auto_visible = matches!(
                 other,
@@ -350,8 +309,6 @@ fn shape_of(ty: &Type, mctx: &ModuleCtx) -> TyShape {
     }
 }
 
-/// This shape's constructors: `(index, sub-field types)` in declaration
-/// order. Empty for `TyShape::Opaque` (no enumerable constructors).
 fn ctor_infos(shape: &TyShape) -> Vec<(usize, Vec<Type>)> {
     match shape {
         TyShape::Bool => vec![(0, vec![]), (1, vec![])],
@@ -371,10 +328,6 @@ fn all_wild(n: usize) -> Vec<RPat> {
     vec![RPat::Wild; n]
 }
 
-/// Flattens one pattern (already validated by `bodies::check_pattern`
-/// against `ty`) into every alternative row `|` produces — a plain
-/// pattern always yields exactly one row; nesting fans out by cross
-/// product (a `Some(.A | .B)` yields two rows, one per alternative).
 fn flatten_pattern(p: &TypedPattern, ty: &Type, mctx: &ModuleCtx) -> Vec<RPat> {
     match &p.kind {
         TypedPatternKind::Wildcard | TypedPatternKind::Binding(_) => vec![RPat::Wild],
@@ -393,10 +346,10 @@ fn flatten_pattern(p: &TypedPattern, ty: &Type, mctx: &ModuleCtx) -> Vec<RPat> {
             variant, payload, ..
         } => {
             let TyShape::Sum(variants) = shape_of(ty, mctx) else {
-                return vec![RPat::Opaque]; // unreachable: already type-checked.
+                return vec![RPat::Opaque];
             };
             let Some(idx) = variants.iter().position(|(n, _)| n == variant) else {
-                return vec![RPat::Opaque]; // unreachable: already type-checked.
+                return vec![RPat::Opaque];
             };
             let payload_tys = variants[idx].1.clone();
             flatten_children(payload, &payload_tys, mctx)
@@ -406,7 +359,7 @@ fn flatten_pattern(p: &TypedPattern, ty: &Type, mctx: &ModuleCtx) -> Vec<RPat> {
         }
         TypedPatternKind::Tuple(items) => {
             let Type::Tuple(elem_tys) = ty else {
-                return vec![RPat::Opaque]; // unreachable: already type-checked.
+                return vec![RPat::Opaque];
             };
             flatten_children(items, elem_tys, mctx)
                 .into_iter()
@@ -415,7 +368,7 @@ fn flatten_pattern(p: &TypedPattern, ty: &Type, mctx: &ModuleCtx) -> Vec<RPat> {
         }
         TypedPatternKind::Array(items) => {
             let Type::Array(elem, len_expr) = ty else {
-                return vec![RPat::Opaque]; // unreachable: already type-checked.
+                return vec![RPat::Opaque];
             };
             match bodies::literal_array_len(len_expr) {
                 Some(n) if n >= 0 => {
@@ -433,8 +386,6 @@ fn flatten_pattern(p: &TypedPattern, ty: &Type, mctx: &ModuleCtx) -> Vec<RPat> {
     }
 }
 
-/// Cross product of each child pattern's own alternatives, one child per
-/// `tys` entry (component-wise, plans/M2.md item G).
 fn flatten_children(items: &[TypedPattern], tys: &[Type], mctx: &ModuleCtx) -> Vec<Vec<RPat>> {
     let mut combos: Vec<Vec<RPat>> = vec![vec![]];
     for (item, ty) in items.iter().zip(tys.iter()) {
@@ -452,10 +403,6 @@ fn flatten_children(items: &[TypedPattern], tys: &[Type], mctx: &ModuleCtx) -> V
     combos
 }
 
-/// One arm's rows, each tagged with the span to report if that row turns
-/// out useless: the arm pattern's own span in the common case, or —
-/// since flattening loses which top-level `|` alternative produced a row
-/// — each alternative's own span when the arm pattern is itself an `Or`.
 fn arm_rows(pattern: &TypedPattern, ty: &Type, mctx: &ModuleCtx) -> Vec<(Span, RPat)> {
     match &pattern.kind {
         TypedPatternKind::Or(alts) => alts
@@ -478,10 +425,6 @@ fn arm_rows(pattern: &TypedPattern, ty: &Type, mctx: &ModuleCtx) -> Vec<(Span, R
     }
 }
 
-/// Specializes `matrix`'s first column on constructor `idx` of arity
-/// `arity`: a matching `Ctor` row contributes its sub-rows; a `Wild` row
-/// contributes `arity` wildcards (it covers every constructor); anything
-/// else (a different constructor, or `Opaque`) contributes nothing.
 fn specialize(matrix: &[Vec<RPat>], idx: usize, arity: usize) -> Vec<Vec<RPat>> {
     matrix
         .iter()
@@ -501,14 +444,6 @@ fn specialize(matrix: &[Vec<RPat>], idx: usize, arity: usize) -> Vec<Vec<RPat>> 
         .collect()
 }
 
-/// Is `row` (over `tys`, left to right) useful against `matrix` — is
-/// there a value `row` matches that no row of `matrix` already matches?
-/// Returns a concrete witness row when it is (plain recursive usefulness
-/// checking over a pattern matrix, plans/M2.md item G: "no optimization
-/// beyond what correctness needs" — this is the textbook Maranget
-/// algorithm, generalized only enough to also carry a witness, with
-/// `TyShape::Opaque` standing in for the unbounded types it says never
-/// get literal-value reasoning).
 fn usefulness(
     tys: &[Type],
     row: &[RPat],
@@ -575,11 +510,6 @@ fn usefulness(
     }
 }
 
-/// The `TyShape::Opaque` half of `usefulness`: only a `Wild` row can ever
-/// fully cover this column (plans/M2.md item G — no literal-value
-/// tracking for integers/`char`/strings/etc.), so a bare literal/`Opaque`
-/// row at this column is always useful unless the matrix already carries
-/// a `Wild` here.
 fn usefulness_opaque(
     row: &[RPat],
     rest_tys: &[Type],
@@ -615,10 +545,6 @@ fn row_useful(ty: &Type, row: &RPat, covered: &[RPat], mctx: &ModuleCtx) -> bool
     .is_some()
 }
 
-/// One concrete uncovered pattern for `ty` given `covered`, first in
-/// declaration order (plans/M2.md item G: "deterministic witness choice
-/// — first uncovered in declaration order"), or `None` if `covered` is
-/// already exhaustive.
 fn first_uncovered(ty: &Type, covered: &[RPat], mctx: &ModuleCtx) -> Option<RPat> {
     let matrix: Vec<Vec<RPat>> = covered.iter().map(|r| vec![r.clone()]).collect();
     usefulness(std::slice::from_ref(ty), &[RPat::Wild], &matrix, mctx)
@@ -664,8 +590,6 @@ fn render_witness(w: &RPat, ty: &Type, mctx: &ModuleCtx) -> String {
         },
     }
 }
-
-// --- `|` alternative binding consistency (02-language.md §7.2) -----------
 
 fn pattern_bindings(p: &TypedPattern, ty: &Type, mctx: &ModuleCtx) -> BTreeMap<String, Type> {
     let mut out = BTreeMap::new();
@@ -724,10 +648,6 @@ fn bindings_eq(a: &BTreeMap<String, Type>, b: &BTreeMap<String, Type>) -> bool {
             .all(|(k, v)| b.get(k).is_some_and(|v2| bodies::types_eq(v, v2)))
 }
 
-/// Walks the whole pattern tree (mirroring `collect_bindings`'s shape)
-/// checking every `Or` node it finds — at any nesting depth — for
-/// consistent bindings across its alternatives (02-language.md §7.2:
-/// "same bindings, same types").
 fn check_or_consistency(p: &TypedPattern, ty: &Type, mctx: &ModuleCtx) -> Result<(), SemaError> {
     match &p.kind {
         TypedPatternKind::Wildcard

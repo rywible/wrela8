@@ -1,8 +1,3 @@
-//! Actor/async call surface (plans/M6.md item A): `await`/`send`/
-//! `with group`, message args, CallError composition, and the
-//! cross-await path rule (02-language.md §9.2/§9.4/§9.5).
-//! Extracted from `bodies.rs` along the artifact boundary.
-
 use std::collections::BTreeSet;
 
 use crate::sema::bodies::{
@@ -19,38 +14,10 @@ use crate::syntax::ast::{
     self, AccessMode, Arg, BinOp, ClosureBody, DeferBody, Expr, Span, Stmt, WithStmt,
 };
 
-// --- plans/M6.md item A: the actor/async surface --------------------------
-//
-// `Actor[T]` calls (`await`/`send`), `with group(...)`/`g.start`/
-// `g.join_all`, and the cross-await path rule (02-language.md §9.2/§9.4/
-// §9.5). Every construct outside this exact shape stays fail-closed,
-// named, exactly like the rest of decision 7's set.
-
 pub(crate) fn actor_error(message: String, span: Span) -> SemaError {
     SemaError::at("actor", message, span)
 }
 
-/// The CallError composition table, verbatim (02-language.md §9.4):
-/// `declared R -> Result[R, CallError[never]]`; `declared Result[T, E] ->
-/// Result[T, CallError[E]]`. `CallError` is carried as a plain
-/// `Type::Named("CallError", [TypeArg::Type(E)])` — the `Option`/`Result`
-/// precedent stops at two fixed builtin sums; `CallError`'s own five
-/// variants (`Op`/`Cancelled`/`DeadlineExceeded`/`NotAdmitted`/
-/// `PeerFailed`) are instead recognized directly wherever a scrutinee's
-/// type says `CallError` by name (`variant_payload_types_for`/
-/// `matches::shape_of`), the same "builtin_enum_variants precedent" the
-/// plan names — a fixed, compiler-known variant/payload table, just with
-/// non-empty payloads unlike `Target`/`Failure`'s fieldless ones.
-/// Variant erasure (decision 8) ships nothing at M6: no whole-image
-/// analysis proves any variant unreachable yet, so every composition
-/// keeps the full five-variant `CallError[E]` — recorded, not silently
-/// approximated (the plan's own "record what you shipped").
-///
-/// plans/M13.md item H / decision 4: when the call has `take` arguments,
-/// `CallError` grows a second type argument — the take-args tuple — so
-/// `NotAdmitted`'s pattern payload is `(Admission, args)` monomorphized
-/// per signature. Calls with no `take` args keep the one-argument form
-/// (second payload types as `()`).
 pub(crate) fn compose_call_error(raw: &Type, take_arg_tys: &[Type]) -> Type {
     let e_ty = match raw {
         Type::Result(_, e) => (**e).clone(),
@@ -66,7 +33,6 @@ pub(crate) fn compose_call_error(raw: &Type, take_arg_tys: &[Type]) -> Type {
     )
 }
 
-/// `CallError[E]` or `CallError[E, Args]` (item H) for a composed await.
 pub(crate) fn call_error_type(e_ty: Type, take_arg_tys: &[Type]) -> Type {
     let mut targs = vec![TypeArg::Type(e_ty)];
     if !take_arg_tys.is_empty() {
@@ -75,8 +41,6 @@ pub(crate) fn call_error_type(e_ty: Type, take_arg_tys: &[Type]) -> Type {
     Type::Named("CallError".to_string(), targs)
 }
 
-/// `NotAdmitted`'s take-args tuple type from a `CallError`'s type arguments
-/// (absent / empty → `()`).
 pub(crate) fn not_admitted_args_type(targs: &[TypeArg]) -> Type {
     match targs.get(1) {
         Some(TypeArg::Type(t)) => t.clone(),
@@ -84,9 +48,6 @@ pub(crate) fn not_admitted_args_type(targs: &[TypeArg]) -> Type {
     }
 }
 
-/// `CallError` equality for `?` / `from`: same `E`, Args may differ.
-/// A `from(take e: CallError[E])` must accept a site-monomorphized
-/// `CallError[E, (T,)]` (item H + item I).
 pub(crate) fn call_error_e_compatible(a: &Type, b: &Type) -> bool {
     match (a, b) {
         (Type::Named(n1, a1), Type::Named(n2, a2)) if n1 == "CallError" && n2 == "CallError" => {
@@ -99,41 +60,6 @@ pub(crate) fn call_error_e_compatible(a: &Type, b: &Type) -> bool {
     }
 }
 
-/// `compose_call_error`'s exact inverse — the declared reply type behind
-/// an already-composed `await` result: `Result[T, CallError[never]]` ->
-/// `T`; `Result[T, CallError[E]]` (E != `never`) -> `Result[T, E]`.
-/// `None` for anything that is not a composed actor-call result at all.
-///
-/// plans/M7.md item Z1 (decision 9b) needs this to size an async fn's own
-/// reply staging slot (`codegen::Frame::reply_stage_off`) and to decide,
-/// per `await` site, whether the wide transport is needed at all: the
-/// composed type is already in the FlowWir frame, so inverting it is
-/// strictly cheaper than threading the declared type through
-/// `flowwir_lower` as a second, drift-prone copy of the same fact.
-///
-/// It lives here, immediately under the composition it inverts, for the
-/// same "one shared definition" reason `sema::types::validate_message_shape`
-/// calls `codegen::is_aggregate` directly rather than copying it: the day
-/// the table above changes, both halves are on the same screen and cannot
-/// silently disagree.
-///
-/// **The pair is NOT total, and the exception is load-bearing** (found by
-/// plans/M7.md item I's sweep; this comment used to claim
-/// `decompose_call_error(&compose_call_error(t)) == Some(t)` for every
-/// `t`, which is false). `compose_call_error` is not injective: `t = T`
-/// and `t = Result[T, never]` both compose to `Result[T, CallError[never]]`,
-/// because §9.4's two rows genuinely collide when `E` is `never`. This
-/// answers `T` for that composed type, so a `Result[T, never]` reply
-/// round-tripped to the *wrong* declared type — and item Z1's transport
-/// then read the two ends of one `await` through two different
-/// predicates (this one caller-side, `codegen::is_aggregate(&f.ret)`
-/// callee-side), which turned the ambiguity into a shifted payload for an
-/// aggregate `T` and a write through a null `x8` for a scalar one. The
-/// collision is refused at the declaration now
-/// (`sema::types::validate_message_shape`, `golden/err-actor-reply-never-error`),
-/// which is what restores totality over every reply shape that can reach
-/// here — a `never` nested any deeper (`Result[T, Option[never]]`)
-/// composes and decomposes correctly and is untouched.
 pub(crate) fn decompose_call_error(composed: &Type) -> Option<Type> {
     let Type::Result(t, e) = composed else {
         return None;
@@ -154,23 +80,6 @@ pub(crate) fn decompose_call_error(composed: &Type) -> Option<Type> {
     }
 }
 
-/// `CallError[E]`'s own variant *numbering* — 02-language.md §9.4 declares
-/// the order (`Op`, `Cancelled`, `DeadlineExceeded`, `NotAdmitted`,
-/// `PeerFailed`) and `variant_payload_types_for`/`matches::shape_of` above
-/// build exactly that order when they type an arm's payload; this is the
-/// same table read as an index, which is what a lowered `match`'s own tag
-/// comparison needs. `None` for a name that is not a `CallError` variant
-/// at all (sema has already rejected those, so a lowering caller treats it
-/// as a producer bug).
-///
-/// It lives here, beside the composition, because `CallError` is the one
-/// enum this compiler knows *without* a declaration: it is carried as an
-/// instantiated `Type::Named("CallError", [E])` and therefore appears in
-/// no `TypedProgram::enums` map, so every consumer that would otherwise
-/// look the numbering up has to be told it. Consumers, all cross-checked
-/// against this order: `codegen::CALL_ERROR_TAG_CANCELLED` (= 1),
-/// `codegen::enum_payload_offset`'s own `CallError` arm, and
-/// `flowwir_lower::variant_index`.
 pub(crate) fn call_error_variant_index(variant: &str) -> Option<usize> {
     match variant {
         "Op" => Some(0),
@@ -181,16 +90,6 @@ pub(crate) fn call_error_variant_index(variant: &str) -> Option<usize> {
     }
 }
 
-/// Message-value restrictions (02-language.md §9.3): a `mut` loan or a
-/// lent closure is rejected, named; `take` of a resource is M7 (fail
-/// closed, named, distinct from the flat rejection — the plan's own
-/// "distinct message from the flat rejection"); `take` of plain data (not
-/// a resource) and a bare `Static[T]`/plain-data argument are both fine,
-/// same as an ordinary call. Otherwise identical to `check_call_args`
-/// (label/positional binding, defaults) — duplicated rather than
-/// threaded through it because `check_call_args` does not return which
-/// source `Arg` (and so which `AccessMode`) filled which slot, and this
-/// needs exactly that to apply the restriction per argument.
 pub(crate) fn check_message_args(
     ast_params: &[ast::Param],
     decl_params: &[DeclParam],
@@ -263,9 +162,6 @@ pub(crate) fn check_message_args(
                 a.span,
             ));
         }
-        // 02-language.md §9.3: resources move into messages only with
-        // `take`. Unmarked/`read` used to typecheck and leave the sender
-        // initialized while the mailbox held a copy — double ownership.
         if is_resource_type(&vt.ty, mctx) {
             if a.mode != AccessMode::Take {
                 return Err(actor_error(
@@ -277,9 +173,6 @@ pub(crate) fn check_message_args(
                     a.span,
                 ));
             }
-            // plans/M7.md item E4 / 03-hardware.md §5: a handoff may
-            // `take` an `own[P] T` transfer payload into an awaitable
-            // driver call. Other resource takes in messages stay closed.
             if !matches!(&vt.ty, Type::Own(..)) {
                 return Err(unimplemented_at(
                     "`take` of a non-`own` resource in a message is",
@@ -303,9 +196,6 @@ pub(crate) fn check_message_args(
     Ok(slots)
 }
 
-/// `await expr` (02-language.md §9.4/§9.5 + 03-hardware.md §3/§5): an
-/// actor-handle method call, a group's `join_all()`, or a `Receipt[P]`
-/// value (plans/M7.md item E4: `completion = await receipt`).
 pub(crate) fn check_await(
     inner: &Expr,
     await_span: Span,
@@ -320,7 +210,6 @@ pub(crate) fn check_await(
             await_span,
         ));
     }
-    // plans/M7.md item E4: `await receipt` — not a call.
     if !matches!(inner, Expr::Call(..)) {
         let inner_t = check_expr(inner, None, fctx, mctx)?;
         if let Type::Named(n, targs) = &inner_t.ty {
@@ -421,16 +310,9 @@ pub(crate) fn check_await_actor_call(
         ));
     }
     if !d.generics.is_empty() {
-        // Method-owned generics on an actor-message target: ordinary
-        // (non-message) method calls instantiate (item Q); the message
-        // path still needs take/handoff composition against the
-        // substituted signature — fail closed until that lands.
         return Err(unimplemented_at("generic instantiation is", call_span));
     }
     let typed_args = check_message_args(&mf.params, &d.params, args, call_span, fctx, mctx)?;
-    // plans/M13.md item H / decision 4: `NotAdmitted` hands back the
-    // call's `take` arguments as an owned tuple — collect their types in
-    // declaration order for CallError's optional second type argument.
     let take_arg_tys: Vec<Type> = d
         .params
         .iter()
@@ -447,16 +329,6 @@ pub(crate) fn check_await_actor_call(
             args: typed_args,
         },
     };
-    // 03-hardware.md §5, the handoff calling convention (plans/M8.md item
-    // E, decision 32). "Any public synchronous `@driver` method with
-    // exactly one `take p: P` parameter and result `Receipt[P]` receives
-    // the handoff calling convention" — a *different* convention from
-    // 02 §9.4's composed awaitable, and §5 states its result by name:
-    // `Receipt[P]`, not `Result[Receipt[P], CallError[never]]`. The
-    // receipt is the caller's endpoint on work the device has not done
-    // yet; the failure vocabulary that matters to it is the receipt's own
-    // state machine (`Resolved` / `Recovery`), reached by `await`ing it,
-    // not `CallError`.
     let composed = if s.decl.is_driver && crate::sema::handoff::is_handoff_signature(d) {
         d.ret.clone()
     } else {
@@ -517,10 +389,6 @@ pub(crate) fn check_await_group_join(
     })
 }
 
-/// `send actor.method(...)` (02-language.md §9.4), reached both from the
-/// expression form (`Expr::Send`) and, for diagnostics only, from the
-/// always-rejected bare statement form (`check_send_stmt`). `inner` is
-/// always a call (the ast's own comment on both `Expr::Send`/`Stmt::Send`).
 pub(crate) fn check_send(
     inner: &Expr,
     send_span: Span,
@@ -612,11 +480,6 @@ pub(crate) fn check_send_call(
         return Err(unimplemented_at("generic instantiation is", call_span));
     }
     let typed_args = check_message_args(&mf.params, &d.params, args, call_span, fctx, mctx)?;
-    // plans/M13.md item J / decision 5: `send` is `Result[unit, CallError[never]]`
-    // (with take-args as CallError's optional second type argument, same
-    // shape as an awaited unit-returning call). Whole-image erasure leaves
-    // `NotAdmitted` as the one reachable variant; the bare `Rejected` type
-    // is deleted.
     let take_arg_tys: Vec<Type> = d
         .params
         .iter()
@@ -644,20 +507,6 @@ pub(crate) fn check_send_call(
     })
 }
 
-/// A bare `send` statement (02-language.md §9.4's proof-conditioned
-/// form). The call itself is fully typed here, exactly like the
-/// expression form; whether the *bare statement* is legal is the
-/// whole-image question `sema::send_proof` answers once every module is
-/// typed (plans/M6.md item G) — a mailbox capacity lives in the `@image`
-/// fn, which no body-checking pass can see. The `send` keyword's own
-/// span rides along on the node so that late rejection still reports a
-/// real `at L:C` (`TypedStmtKind::BareSend`'s own doc comment).
-///
-/// Item A's floor — reject every bare `send` here, unconditionally —
-/// is what this replaces; a genuine mistake in the call itself (unknown
-/// method, bad message argument, a non-`unit` reply, `send` outside an
-/// `async fn`) still reports its own error from `check_send` first,
-/// before the proof ever runs.
 pub(crate) fn check_send_stmt(
     span: Span,
     e: &Expr,
@@ -671,14 +520,6 @@ pub(crate) fn check_send_stmt(
     })
 }
 
-/// `g.start(callee, args...)`'s own callee argument (02-language.md
-/// §9.5) — the dumbest doc-consistent callee set (recorded, per the
-/// plan's own "decide the dumbest doc-consistent callee set"): a bare
-/// same-module top-level `async fn` name, or `self.method` naming an
-/// `async fn` method on the enclosing struct. Both are recognized
-/// directly (not through `synth_name`'s ordinary lookup — an async
-/// fn/method is never otherwise a callable value, see `TypedExprKind::GroupChild`'s
-/// own doc comment) so no bound-method-value machinery is needed.
 pub(crate) fn resolve_group_child_callee(
     callee_expr: &Expr,
     fctx: &FnCtx,
@@ -778,16 +619,6 @@ pub(crate) fn check_group_start(
             call_span,
         ));
     }
-    // The running child count/unified return type is *not* accumulated
-    // here (a mutation every pass that re-invokes `bodies::check_expr`
-    // on just this one call — `matches.rs`/`flow.rs`'s own re-derived
-    // `fctx`, neither of which replays the whole preceding body through
-    // `bodies::check_expr` — would have to reproduce identically): it is
-    // computed once, up front, by `compute_group_children` (a pure
-    // static scan over the raw `with`-body), and `check_with` seeds
-    // `fctx.group_children` with that *before* this body is ever walked.
-    // This call only needs its own callee's shape to build its own typed
-    // node.
     let (callee_key, ast_params, decl_params, ret) =
         resolve_group_child_callee(&callee_arg.value, fctx, mctx)?;
     let typed_args = check_call_args(&ast_params, &decl_params, rest, call_span, fctx, mctx)?;
@@ -819,19 +650,6 @@ pub(crate) fn check_group_start(
     })
 }
 
-/// One `with group(...) as g:` block's own children, computed once, up
-/// front, as a **pure** static scan over the raw `with`-body (no
-/// dependence on walk order or on `fctx`'s own mutable state, besides a
-/// read-only `self`-type lookup for a `self.method` callee) — see
-/// `check_group_start`'s own doc comment for why this must not be
-/// incremental: `matches.rs`/`flow.rs` both re-derive their own separate
-/// `fctx` and re-invoke `bodies::check_expr` on individual sub-
-/// expressions out of full sequence (a plain assignment's inferred
-/// type, a `match` scrutinee), never replaying the whole preceding body
-/// through it — a pure, order-independent scan is the one shape every
-/// pass can call identically and get the same answer. `Ok(None)` means
-/// no `g.start` call addressing `gname` was found in `body` at all
-/// (`join_all`'s own "no children started" error, not this function's).
 pub(crate) fn compute_group_children(
     body: &[Stmt],
     gname: &str,
@@ -895,31 +713,10 @@ pub(crate) fn scan_group_starts_stmts<'a>(
     }
 }
 
-/// plans/M6.md item H2: does a `g.start` for `gname` sit inside a loop?
-///
-/// Everything downstream treats the number of *static* `g.start` sites as
-/// the number of child activations — `join_all`'s own array length, the
-/// group arena's admission accounting, and (since H2) the declared
-/// `capacity` check. A `g.start` in a loop breaks that identity: it is one
-/// static site that runs N times, so the program compiled clean, started
-/// two children, and then deadlocked in `join_all` waiting on a count of
-/// one. Rejected by name instead, which is the same discipline decision 5
-/// already applies to a bare `send` ("outside any loop... so each executes
-/// at most once per root turn").
-///
-/// Written as its own walk that delegates to `scan_group_starts_stmts`
-/// once it is inside a loop body, rather than threading a depth counter
-/// through that scanner's fifteen arms: the question is only ever asked
-/// about whole loop bodies, and reusing the existing scanner keeps the two
-/// from disagreeing about what a `g.start` even is.
 pub(crate) fn group_starts_inside_loop(stmts: &[Stmt], gname: &str) -> Option<Span> {
     fn in_loop_body(body: &[Stmt], gname: &str) -> Option<Span> {
         let mut found = Vec::new();
         scan_group_starts_stmts(body, gname, &mut found);
-        // The offending `g.start`'s own first argument carries the only
-        // span this scanner ever sees (`Arg::span`); a zero-argument
-        // `g.start` is already a "needs a callee argument" error one
-        // layer up, so the fallback is unreachable in practice.
         found
             .first()
             .map(|args| args.first().map(|a| a.span).unwrap_or_default())
@@ -1095,23 +892,6 @@ pub(crate) fn scan_group_starts_expr<'a>(e: &'a Expr, gname: &str, out: &mut Vec
     }
 }
 
-/// `with group(capacity=.., deadline=..) [as g]:` (02-language.md §9.5,
-/// §10). The scoped `pool` form of `with` (02-language.md §10's other
-/// intrinsic scope) stays fail-closed — the M6 honest-scope line only
-/// lifts `group`.
-///
-/// plans/M8.md item R, decision 16: the two rejections below are told
-/// apart by name. `with pool` is the language's *other* intrinsic scope,
-/// unimplemented — `error[unimplemented]`, the fail-closed category, and
-/// the only reason 04-compiler.md §3's own group-vs-pool comparison
-/// cannot be written as one pair of same-shaped goldens today. Any other
-/// constructor is not a `with` form at all (02 §10: "There are no other
-/// `with` forms and no user-declared scope protocols") — a permanent
-/// `error[type]`, never a fail-closed one, so no reader is left waiting
-/// for a milestone that will never come. Before this split, every
-/// non-`group` constructor was blamed on `with pool` by name, which was a
-/// wrong answer for `with anything_else(...)`; `pool` itself never
-/// reached here at all (`intrinsics::is_bare_resolvable` / item I).
 pub(crate) fn check_with(
     w: &WithStmt,
     fctx: &mut FnCtx,
@@ -1195,32 +975,13 @@ pub(crate) fn check_with(
     })
 }
 
-/// plans/M6.md item H2: a group admits "up to `capacity` child
-/// activations (default zero)" — 02-language.md §9.5, verbatim.
-///
-/// Before this check the declared capacity was inert: it type-checked as
-/// a `Usize` and was stored into the group arena at `OFF_GROUP_CAPACITY`,
-/// which **nothing ever read**, so `capacity=0` (and an omitted capacity,
-/// the documented default) started and completed a child anyway. The
-/// adversarial sweep found it; `boot-group-join` could not, because it
-/// declares `capacity=2` with exactly two children, so enforced and
-/// ignored look identical there.
-///
-/// Enforced statically rather than at admission time, deliberately. The
-/// runtime alternative — refuse the activation and hand back
-/// `NotAdmitted` — needs a `CallError` composition that does not exist at
-/// M6 (item H3 is the same missing piece surfacing at a mailbox), so the
-/// only honest runtime option available today would be an abort. A build
-/// error is both dumber and strictly more useful, and it is exact:
-/// `compute_group_children` rejects a `g.start` in a loop, so the static
-/// site count IS the activation count.
 pub(crate) fn check_group_capacity(
     capacity: Option<&TypedExpr>,
     child_count: usize,
     span: Span,
 ) -> Result<(), SemaError> {
     if child_count == 0 {
-        return Ok(()); // a bare deadline scope: nothing to admit.
+        return Ok(());
     }
     let Some(cap_expr) = capacity else {
         return Err(actor_error(
@@ -1257,15 +1018,6 @@ pub(crate) fn check_group_capacity(
     Ok(())
 }
 
-/// A group's `deadline=` argument (02-language.md §9.5): `now()` alone,
-/// or `now() + ms(...)` — the only two shapes the docs' own examples use.
-/// Handled directly rather than through `check_binary`/`build_binop_expr`
-/// (which require both operands to share one type, decision 4's own
-/// same-type-operand rule — `Instant + Duration` is deliberately not a
-/// uniform-type op): the primitive `Binary` node is reused for the sum
-/// (mirrors its own doc comment's "builtin scalar op" precedent, extended
-/// here to the two other builtin primitive-shaped types this milestone
-/// adds), confined to this one call site.
 pub(crate) fn check_deadline_expr(
     e: &Expr,
     fctx: &mut FnCtx,
@@ -1311,67 +1063,9 @@ pub(crate) fn check_deadline_expr(
     }
 }
 
-/// Cross-await access rule (02-language.md §9.2): "a whole-value access
-/// rooted at the current actor (`self.fs.cache`) may live across `await`
-/// ... but an access rooted in an external argument may not." 04 §1:
-/// "whole-value accesses surviving `await` are rooted at the current
-/// actor turn." The operative verbs are *live across* / *surviving* —
-/// the rule is about a path that predates a suspension and is used after
-/// it, not about every field access that happens to sit lexically after
-/// an `await` in the same body (plans/M9.md item J2d / decision 525).
-///
-/// Approximation: a straight-line forward scan over an async body's
-/// already-typed statements, threading one `seen_await` flag
-/// (conservatively shared across sibling branches — an `await` in one
-/// `if` arm taints every statement lexically after the whole `if`, even
-/// along a sibling arm that itself had none; over-rejects a little,
-/// never under-rejects) plus the set of locals whose binding is observed
-/// *after* that flag is set (Let / match-arm / for / `with ... as` /
-/// post-await Assign-to-local). Any `Field`-chain (`x.a.b`) whose root
-/// is not `self` and is not in that post-await set, found once
-/// `seen_await` is set, is rejected — a bare local reference (no field)
-/// is unaffected, since only a *nested* access is the "whole-value
-/// access" §9.2 restricts. A value bound from the await itself
-/// (`completion = await receipt`; 03 §3) is in the post-await set and
-/// is allowed; an external argument / pre-await local that spans is not.
-///
-/// **Loop back edges** (plans/M9.md item RR): a forward scan alone is not
-/// conservative over a loop. In
-///
-/// ```text
-/// while i < n:
-///     total = total + input.value   # <- runs again after the await below
-///     r = await self.peer.get()
-/// ```
-///
-/// `input.value` sits lexically *before* the only `await`, so a pure
-/// forward scan never has `seen_await` set when it reaches the access —
-/// yet every iteration after the first reads `input` on the far side of
-/// the previous iteration's suspension, which is exactly what §9.2
-/// forbids (the unrolled two-iteration spelling of the same program is
-/// rejected). So a `while`/`for` whose body can suspend enters that body
-/// with `seen_await` already set and the post-await exemption cleared:
-/// the back edge is treated as a suspension the whole body follows.
-/// `loop_body_suspends` answers "can this body suspend" by replaying this
-/// same scan in `probe` mode, so there is exactly one walk to keep in
-/// step with the grammar rather than a second shadow traversal.
-///
-/// This keeps the over-reject/never-under-reject direction the rest of
-/// the approximation promises: a body that provably runs once still pays
-/// the loop rule, which is the safe side.
 pub(crate) struct CrossAwaitScan {
     seen_await: bool,
-    /// Locals bound after `seen_await` became true — they do not span
-    /// any suspension observed so far on this forward scan.
     after_await: BTreeSet<String>,
-    /// `loop_body_suspends`'s own mode: walk purely to discover whether a
-    /// suspension is reachable, reporting nothing. Two effects, both
-    /// required for the probe to be a *predicate* rather than a second
-    /// checker: the `Field` arm never raises (a probe must not decide the
-    /// diagnostic — the real scan that follows does, with the right
-    /// state), and the loop arms skip their own probe (the answer to "does
-    /// this body contain an await" does not depend on the back-edge rule,
-    /// and skipping keeps a nest of `d` loops linear instead of `2^d`).
     probe: bool,
 }
 
@@ -1384,9 +1078,6 @@ pub(crate) fn check_cross_await(body: &[TypedStmt]) -> Result<(), SemaError> {
     scan_await_cross_stmts(body, &mut state)
 }
 
-/// Can `body` reach a suspension? Replays the ordinary scan in `probe`
-/// mode, which cannot fail, so the `Err` arm is genuinely unreachable
-/// rather than swallowed.
 pub(crate) fn loop_body_suspends(body: &[TypedStmt]) -> bool {
     let mut probe = CrossAwaitScan {
         seen_await: false,
@@ -1398,8 +1089,6 @@ pub(crate) fn loop_body_suspends(body: &[TypedStmt]) -> bool {
     probe.seen_await
 }
 
-/// Shared by the `While` and `For` arms: model the loop's back edge
-/// before walking the body (this fn's own `CrossAwaitScan` doc comment).
 pub(crate) fn enter_loop_body(body: &[TypedStmt], state: &mut CrossAwaitScan) {
     if state.probe || !loop_body_suspends(body) {
         return;
@@ -1458,8 +1147,6 @@ pub(crate) fn scan_await_cross_stmt(
         TypedStmtKind::Assign { target, value } => {
             scan_await_cross_expr(target, state)?;
             scan_await_cross_expr(value, state)?;
-            // A post-await rebind replaces whatever spanned; subsequent
-            // field access is on the new value, which did not span.
             if state.seen_await {
                 if let TypedExprKind::Local(name) = &target.kind {
                     state.after_await.insert(name.clone());
@@ -1487,9 +1174,6 @@ pub(crate) fn scan_await_cross_stmt(
         TypedStmtKind::Match { scrutinee, arms } => {
             scan_await_cross_expr(scrutinee, state)?;
             for arm in arms {
-                // Pattern bindings introduced once an await is already
-                // in view (including `match await ...: case .Ok(x):`) do
-                // not span; bindings entered before any await still can.
                 if state.seen_await {
                     typed_pattern_bindings(&arm.pattern, &mut state.after_await);
                 }
@@ -1511,12 +1195,6 @@ pub(crate) fn scan_await_cross_stmt(
                 TypedForIter::Expr(e) => scan_await_cross_expr(e, state)?,
             }
             enter_loop_body(body, state);
-            // The loop variable is rebound by the header on every
-            // iteration, *before* the body runs — so it never spans the
-            // back edge, and it belongs in the exemption set even when
-            // `enter_loop_body` just cleared it. An `await` inside the
-            // body still clears it again, which is right: past that
-            // suspension this iteration's binding does span.
             if state.seen_await {
                 state.after_await.insert(name.clone());
             }
@@ -1546,15 +1224,8 @@ pub(crate) fn scan_await_cross_stmt(
             }
             Ok(())
         }
-        // A `defer` body runs at cleanup time, not inline in the forward
-        // sequence this scan tracks — 02-language.md §10 already forbids
-        // `await` inside one (`scan_defer_forbidden`), so it never itself
-        // straddles a suspension.
         TypedStmtKind::Defer(_) => Ok(()),
         TypedStmtKind::ExprStmt(e) => scan_await_cross_expr(e, state),
-        // plans/M6.md item G: a bare `send`'s message arguments are
-        // ordinary expressions and obey 02-language.md §9.2 exactly like
-        // any other call's.
         TypedStmtKind::BareSend { expr, .. } => scan_await_cross_expr(expr, state),
         TypedStmtKind::WithGroup {
             capacity,
@@ -1608,12 +1279,6 @@ pub(crate) fn scan_await_cross_expr(
             if state.seen_await && !state.probe {
                 if let Some(root) = root_local_name(e) {
                     if root != "self" && !state.after_await.contains(root) {
-                        // No real `L:C` is available here (decision 1:
-                        // the typed tree carries no spans at all) —
-                        // `omit_location` (`SemaError`'s own multi-line
-                        // exception field, `sema::mod`'s doc comment)
-                        // suppresses the misleading `at 0:0` a bare
-                        // `SemaError::at` would otherwise print.
                         return Err(SemaError::nowhere(
                             "actor",
                             format!(
@@ -1627,9 +1292,6 @@ pub(crate) fn scan_await_cross_expr(
             scan_await_cross_expr(base, state)
         }
         TypedExprKind::Index(base, idx) => {
-            // Same §9.2 rule as Field: an external-rooted nested access
-            // (including `input[0]`) must not span `await`. Field was
-            // checked; Index only recursed — a bypass.
             if state.seen_await && !state.probe {
                 if let Some(root) = root_local_name(e) {
                     if root != "self" && !state.after_await.contains(root) {
@@ -1683,7 +1345,7 @@ pub(crate) fn scan_await_cross_expr(
             }
             Ok(())
         }
-        TypedExprKind::Closure { .. } => Ok(()), // a lending call is synchronous (02 §9.2) — never itself spans an await.
+        TypedExprKind::Closure { .. } => Ok(()),
         TypedExprKind::Tuple(items) | TypedExprKind::List(items) => {
             for i in items {
                 scan_await_cross_expr(i, state)?;
@@ -1709,9 +1371,6 @@ pub(crate) fn scan_await_cross_expr(
         TypedExprKind::Await(inner) => {
             scan_await_cross_expr(inner, state)?;
             state.seen_await = true;
-            // A name bound from an earlier await does not span *that*
-            // await, but it does span this one, so the exemption is
-            // per-suspension and cannot accumulate.
             state.after_await.clear();
             Ok(())
         }
@@ -1724,16 +1383,10 @@ mod tests {
     use super::*;
     use crate::sema::types::{Type, TypeArg};
 
-    // --- plans/M6.md item A: the CallError composition table + path-
-    // rooting classification (pure logic, unit-tested directly per the
-    // item's own instruction) --------------------------------------------
-
     fn call_error_of(e: &Type) -> Type {
         Type::Named("CallError".to_string(), vec![TypeArg::Type(e.clone())])
     }
 
-    /// The table verbatim (02-language.md §9.4): "declared R -> Result[R,
-    /// CallError[never]]".
     #[test]
     fn compose_call_error_wraps_a_plain_declared_type() {
         let composed = compose_call_error(&Type::U64, &[]);
@@ -1743,7 +1396,6 @@ mod tests {
         );
     }
 
-    /// "declared Result[T, E] -> Result[T, CallError[E]]".
     #[test]
     fn compose_call_error_rewraps_a_declared_result() {
         let declared = Type::Result(
@@ -1760,9 +1412,6 @@ mod tests {
         );
     }
 
-    /// `Option`/`Static`/a bare user struct all fall through the same
-    /// "declared R" branch as any other non-`Result` type — the table has
-    /// only two cases, not one per shape.
     #[test]
     fn compose_call_error_treats_every_non_result_type_uniformly() {
         let cases = vec![
@@ -1787,9 +1436,6 @@ mod tests {
         }
     }
 
-    /// Applying the table twice must not collapse or double-wrap (a
-    /// sanity check that the function is a pure, idempotent-shaped
-    /// mapping over its input, not a stateful rewrite).
     #[test]
     fn compose_call_error_is_a_pure_function_of_its_input() {
         let a = compose_call_error(&Type::U64, &[]);
@@ -1797,8 +1443,6 @@ mod tests {
         assert_eq!(a, b);
     }
 
-    /// plans/M13.md item H: take-arg types become CallError's second
-    /// type argument so `NotAdmitted` patterns bind `(Admission, args)`.
     #[test]
     fn compose_call_error_carries_take_arg_tuple() {
         let composed = compose_call_error(&Type::U64, &[Type::U32, Type::U64]);
@@ -1816,11 +1460,6 @@ mod tests {
         );
     }
 
-    /// `root_local_name` (the cross-await path-rooting classifier,
-    /// 02-language.md §9.2): a bare local's own root is itself; a nested
-    /// field chain's root is whatever `Local` sits at the bottom,
-    /// regardless of chain depth; anything else (a literal, a call) has
-    /// no local root at all.
     #[test]
     fn root_local_name_finds_the_bottom_of_a_field_chain() {
         let self_local = TypedExpr {
@@ -1899,11 +1538,6 @@ mod tests {
         );
     }
 
-    /// `check_cross_await` (02-language.md §9.2): a self-rooted access on
-    /// both sides of an `await` is legal; an external-rooted path that
-    /// *spans* the await (bound before, field-used after) is rejected;
-    /// a local bound *from* the await's result and then field-accessed
-    /// is legal — it does not span (03 §3 / plans/M9.md item J2d).
     #[test]
     fn check_cross_await_accepts_self_and_rejects_external_paths() {
         fn field(base_name: &str, field_name: &str) -> TypedExpr {
@@ -1940,7 +1574,6 @@ mod tests {
             })),
         };
 
-        // self-rooted before and after the await: legal.
         let self_ok = vec![
             let_stmt("before", field("self", "cache")),
             let_stmt("suspend", await_node.clone()),
@@ -1951,8 +1584,6 @@ mod tests {
             "a self-rooted access spanning an await must be accepted"
         );
 
-        // external-rooted, only *after* the await, never bound after it:
-        // rejected (the name is an argument / pre-await local).
         let external_after = vec![
             let_stmt("suspend", await_node.clone()),
             let_stmt("bad", field("input", "value")),
@@ -1962,9 +1593,6 @@ mod tests {
             "an external-rooted access after an await must be rejected"
         );
 
-        // external-rooted, but entirely *before* the await: legal (the
-        // rule is about spanning the suspension, not about touching an
-        // external root at all).
         let external_before = vec![
             let_stmt("fine", field("input", "value")),
             let_stmt("suspend", await_node.clone()),
@@ -1974,8 +1602,6 @@ mod tests {
             "an external-rooted access entirely before an await must be accepted"
         );
 
-        // Bound from the await itself, then field-accessed: legal — the
-        // local does not span the suspension (03-hardware.md §3).
         let bound_from_await = vec![
             let_stmt("completion", await_node),
             let_stmt("status", field("completion", "status")),

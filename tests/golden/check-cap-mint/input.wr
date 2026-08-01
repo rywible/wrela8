@@ -1,39 +1,11 @@
 module examples.check_cap_mint
 
-# plans/M7.md item A, 03-hardware.md §1's minting sentence: capabilities
-# are "minted while the image binds a declared device to a `@driver` ...
-# The device itself is named once, at the image binding
-# (`img.driver(BlkDriver, device=blk_device)`), the single source of
-# truth."
-#
-# **Which half of the mint this is.** The *typed* half, and that is the
-# whole half item A ships: the image checker decides that
-# `BlkDriver.init`'s own `take cap: DeviceCap[BlockHw]` has a real
-# minting source — this declaration's `device=`, whose declared device
-# type is `BlockHw` and not something else. No runtime value is produced,
-# because there is nothing yet to produce one:
-# `layout::build_boot_init_calls` walks `graph.actors` only, so a driver's
-# `init` is never called at boot at all (M6-D's floor, unchanged here).
-# Items D and E are what give the parameter bytes.
-#
-# The report's own `Edge from=driver#0 to=device#0` line is the binding
-# this check reads, already emitted since M4 — the mint has evidence in
-# the artifact, not only in a diagnostic.
-#
-# Three siblings reject the three ways to get this wrong:
-# `golden/err-cap-mint-no-device` (no binding at all),
-# `golden/err-cap-mint-device-mismatch` (a binding naming a different
-# device), `golden/err-cap-mint-unminted` (a capability whose mint belongs
-# to a later item).
 
 struct BlockHw:
     id: u32
 
 @driver
 pub struct BlkDriver:
-    # Stored so the minted capability is not dropped (02-language.md §3.1
-    # protocol consumption). This golden pins minting/layout/report shape;
-    # claim/bring-up are check-device-claim / boot-device-bringup.
     held: DeviceCap[BlockHw]
     sectors: u64
 

@@ -1,10 +1,3 @@
-//! Closed-sum constructor tables (Option / Result / CallError / stdlib
-//! auto-visible enums / user enums, including generic instantiate).
-//!
-//! One helper for the three sites that used to each re-list the same
-//! arms: `bodies::variant_payload_types_for`, `matches::shape_of`, and
-//! `access::variant_payload_types`.
-
 use crate::sema::SemaError;
 use crate::sema::bodies::{self, ModuleCtx};
 use crate::sema::generics;
@@ -15,9 +8,6 @@ fn no_span() -> Span {
     Span { line: 0, col: 0 }
 }
 
-/// Full closed-sum constructor table for `ty`: `(variant name, payload
-/// types)` in declaration order. `Err` when `ty` is not a closed sum
-/// this compiler enumerates (a struct, scalar, open type, …).
 pub(crate) fn sum_ctors(
     ty: &Type,
     mctx: &ModuleCtx,
@@ -31,8 +21,6 @@ pub(crate) fn sum_ctors(
             ("Ok".to_string(), vec![(**ok).clone()]),
             ("Err".to_string(), vec![(**err).clone()]),
         ]),
-        // `CallError[E]` / `CallError[E, Args]` (02-language.md §9.4;
-        // plans/M13.md item H / decision 4; item I deletes `PeerFailed`).
         Type::Named(name, targs) if name == "CallError" => {
             let Some(TypeArg::Type(e_ty)) = targs.first() else {
                 return Err(SemaError::at(
@@ -54,8 +42,6 @@ pub(crate) fn sum_ctors(
                 ),
             ])
         }
-        // Auto-visible stdlib enums (`CompletionOutcome`, …) — fieldless;
-        // variants live in `stdlib_enums`, not necessarily `mctx.enums`.
         Type::Named(name, targs)
             if targs.is_empty() && crate::sema::stdlib_enums::is_auto_visible(name) =>
         {

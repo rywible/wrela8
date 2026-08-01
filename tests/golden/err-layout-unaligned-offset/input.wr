@@ -1,9 +1,5 @@
 module examples.err_layout_unaligned_offset
 
-# plans/M7.md item B, 03-hardware.md §2: "The compiler and target ABI check
-# width, alignment, non-overlap, bounds, and endianness." A 32-bit register
-# at an offset four does not divide is not a register the machine can
-# access as one, whatever the author wrote.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

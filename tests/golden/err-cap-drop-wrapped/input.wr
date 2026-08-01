@@ -1,9 +1,5 @@
 module examples.err_cap_drop_wrapped
 
-# plans/M7.md item I: protocol-consumption must reach through a plain
-# struct's fields — same shape as err-dma-shared-lend-wrapped. CapBundle
-# is a resource because it holds DeviceCap, but the drop check used to
-# ask only whether the root type *name* was a protocol type.
 
 struct BlockHw:
     id: u32

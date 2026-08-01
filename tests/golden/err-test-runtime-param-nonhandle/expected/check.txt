@@ -1,1 +1,1 @@
-error[type]: `@test(runtime)` fn `test_bad`'s parameter `x` must be an `Actor[T]` handle, found `u64` at 7:1
+error[type]: `@test(runtime)` fn `test_bad`'s parameter `x` must be an `Actor[T]` handle, found `u64` at 4:1

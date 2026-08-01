@@ -1,1 +1,1 @@
-error[type]: deriving(From) conflicts with an explicit `from` on `Wrap` at 9:1
+error[type]: deriving(From) conflicts with an explicit `from` on `Wrap` at 7:1

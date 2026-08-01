@@ -1,7 +1,5 @@
 module examples.err_deriving_from_two_fields
 
-# plans/M9.md item B. 05-library.md §8 / 02-language.md §7.5:
-# `deriving(From)` requires exactly one variant/field.
 
 pub struct Bad deriving(From):
     a: u32

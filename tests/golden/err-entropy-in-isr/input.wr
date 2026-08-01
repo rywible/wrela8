@@ -1,7 +1,5 @@
 module examples.err_entropy_in_isr
 
-# plans/M17.md item F / 05-library.md §5: entropy[N]() is forbidden in ISR
-# context (mirror err-now-in-isr).
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

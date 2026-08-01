@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/check_pool_driverless_device.wr sha256=e961948d89df7b823f65a07141997e7ad0bb7ff08ec9211c39a088ad1be577c9
+  Input path=examples/check_pool_driverless_device.wr sha256=755d761aa524a2261f48c04f61a3ff5fb7e2a799204f21425f1eedb7fd946c23
   Input path=<generated> sha256=e35db438d4fc25b8c9ea75750beaba0095be8122f1426cccad9abd53af29afc0
   Name value=pool-driverless
   Target value=Target.wrela_machine_v1

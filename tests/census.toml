@@ -3,30 +3,29 @@
 # Update deliberately in the same commit that changes a locked surface.
 
 [internal_error]
-total = 213
+total = 197
 
 [internal_error.sites_by_file]
-"layout.rs" = 60
-"layout/harness.rs" = 29
-"layout/boot_init.rs" = 11
+"layout.rs" = 58
+"layout/harness.rs" = 28
+"layout/boot_init.rs" = 9
 "layout/rtdata.rs" = 2
-"eval/interp.rs" = 85
-"lower.rs" = 5
-"codegen.rs" = 6
+"eval/interp.rs" = 83
+"lower.rs" = 2
+"codegen.rs" = 4
 "eval/mod.rs" = 2
 "placement.rs" = 3
-"sema/mod.rs" = 3
+"sema/mod.rs" = 1
 "sema/specialize.rs" = 2
-"sema/types.rs" = 2
+"sema/types.rs" = 1
 "flowwir_lower.rs" = 1
-"sema/typed.rs" = 1
 # plans/M20.md item C: `cost::bridge` asserts score.rs's own contract that
 # `block_schedule_lengths` yields one length per `basic_block_ranges` entry —
 # a violation is a producer bug in the scorer, not a bridge outcome.
 "cost/bridge.rs" = 1
 
 [emitted_a64]
-encode_enc_site_total = 358
+encode_enc_site_total = 357
 floor_sum_of_rows = 67
 floor_words = 52
 image_static_sum_of_rows = 0
@@ -39,7 +38,7 @@ wrapper_emitters = []
 
 [emitted_a64.encode_enc_sites_by_file]
 "codegen.rs" = 318
-"layout.rs" = 10
+"layout.rs" = 9
 "layout/harness.rs" = 30
 
 [[emitted_a64.entries]]

@@ -1,8 +1,3 @@
-//! **Census of hand-emitted A64 instruction words** (plans/M10.md item F0).
-//!
-//! Allowlist / inventory live in `tests/census.toml` (`[emitted_a64]`);
-//! this module owns the live measurement and source-site scan locks.
-
 use crate::census;
 
 pub use crate::census::EmittedCategory as Category;
@@ -79,16 +74,10 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src")
     }
 
-    /// The emission-site needle, assembled so this file's own docs that
-    /// spell it as two halves are not the only exclusion — we also skip
-    /// this file by name below (it still contains contiguous forms in
-    /// older comments and in `scan_enc_fns`).
     fn encode_enc_needle() -> String {
         format!("{}{}", "encode::", "enc_")
     }
 
-    /// Drop `#[cfg(test)]` / `#[cfg(all(test, …))]` module bodies so the
-    /// JIT harness and unit-test stand-ins do not own the lock.
     fn strip_cfg_test_modules(text: &str) -> String {
         let lines: Vec<&str> = text.lines().collect();
         let mut out: Vec<&str> = Vec::new();
@@ -162,7 +151,6 @@ mod tests {
                 .expect("file under src/")
                 .to_string_lossy()
                 .replace('\\', "/");
-            // This census file documents the needle; it is not a producer.
             if rel == "emitted_a64_census.rs" || rel == "census.rs" {
                 continue;
             }
@@ -203,54 +191,13 @@ mod tests {
             "encode_enc_site_total ({}) != sum of per-file counts ({total})",
             encode_enc_site_count()
         );
-        // 453 -> 347, deliberately downward, in three steps and with no
-        // change to a single emitted word (every golden dump verified
-        // byte-for-byte identical against the pre-change binary):
-        //   * the five nested `load_imm`/`push` copies in the stub emitters
-        //     were lifted to one module-level pair;
-        //   * the dead `patch_cond`/`patch_cbz`/`patch_cbnz_w`/`bl_to`/
-        //     `b_to`/`load_rodata_addr_at`/`bl_console_append_*` `Asm`
-        //     helpers were deleted;
-        //   * 58 three-register ALU sites and 21 `cmp` sites collapsed onto
-        //     `FnCtx::{add_reg,mul_reg,orr_reg,and_reg,cmp_reg}`, and the
-        //     three identical park-and-return tails onto
-        //     `emit_park_and_return`.
-        // 347 -> 356 across plans/codegen-pareto.md items B, C and E,
-        // deliberately upward and by exactly nine.
-        //
-        // Item B1 adds one site in `layout.rs` (`patch_adr`, the `ADR`
-        // twin of `patch_adrp_add`) while leaving `codegen.rs` alone: the
-        // two hand-assembled stubs' four sites (`enc_adrp` + `enc_add_imm`,
-        // twice) collapsed onto one `push_rodata_addr` with three, and
-        // `load_rodata_addr` gained the one `enc_adr`.
-        //
-        // Item C adds seven in `codegen.rs`, all alternative *forms* of a
-        // sequence that already existed rather than new emission:
-        // `UBFX`/`SBFX` for `narrow_to_width` (C3, 2), `SBFX` + `TST` for
-        // the narrow range check (C2, 2), `MOVN` + the bitmask-immediate
-        // `MOV` for one-word materialization (C5, 2), and the W-form `MUL`
-        // (C1, 1).
-        //
-        // Item E adds one: `FnCtx::mov_reg`, the single `enc_mov_reg` site
-        // that stands in for a spill/reload pair once a temp is
-        // register-resident.
-        //
-        // Every one is guarded by a knob or a declared width and falls back
-        // to the site it replaced, which is why the count rises while
-        // emitted words fall.
         assert_eq!(
             encode_enc_site_count(),
-            // 356 -> 358: item F adds `emit_tail_call`'s own `B` and
-            // `layout::patch_bl`'s `enc_b` (the form-preserving patch).
-            // `emit_frame_teardown` is a *move* of `emit_epilogue`'s two
-            // words, not a new site, so it adds none.
-            358,
+            357,
             "the written-down total is part of the ratchet; bump it deliberately"
         );
     }
 
-    /// Module-level (`^fn` / `^pub fn` / `^pub(crate) fn`) names whose body
-    /// contains `encode::enc_`, keyed as `file::name`.
     fn scan_enc_fns() -> BTreeMap<String, ()> {
         let mut out = BTreeMap::new();
         for file in ["layout.rs", "layout/harness.rs", "codegen.rs"] {
@@ -269,8 +216,6 @@ mod tests {
                 } else if let Some(rest) = line.strip_prefix("pub(crate) fn ") {
                     Some(rest.split('(').next().unwrap_or("").trim())
                 } else if let Some(rest) = line.strip_prefix("pub(super) fn ") {
-                    // plans/M10.md item K: harness submodule emits with
-                    // parent-only visibility.
                     Some(rest.split('(').next().unwrap_or("").trim())
                 } else {
                     None
@@ -314,17 +259,6 @@ mod tests {
         }
         out
     }
-
-    /// Ordinary codegen IR→A64 path — emits, but is not the hand-emitted
-    /// inventory this census locks.
-
-    /// Touches encoders but is not a hand-emitted runtime routine (patch
-    /// helpers, orchestration, thin wrappers whose bytes are counted on
-    /// another row, measure fns themselves).
-
-    /// Census rows that are real emitters (measured word count) but whose
-    /// body does not itself contain `encode::enc_` — thin wrappers that
-    /// forward to a counted sibling. Still locked by the live-count test.
 
     #[test]
     fn emitted_a64_census_matches_live_measurements() {
@@ -402,8 +336,6 @@ mod tests {
             52,
             "adjusted floor total is part of the ratchet"
         );
-        // Sanity: floor_words() == push_halt + SP prefix + abort tail + secondary SP
-        // + checkpoint LR + primary trampoline.
         assert_eq!(15 + 5 + 6 + 5 + 5 + 16, floor_words());
     }
 

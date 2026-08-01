@@ -1,8 +1,5 @@
 module app.main
 
-# plans/M9.md item H3: imports used / never_called_a / never_called_b;
-# only `used` is called from a guest root. asm pins `used` present and
-# the two uncalled names absent.
 from lib.helpers import used, never_called_a, never_called_b
 
 @actor

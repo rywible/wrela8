@@ -1,13 +1,5 @@
 module examples.err_layout_unknown_arg
 
-# plans/M7.md item B: `@layout` takes its kind plus `endian=` and nothing
-# else. `packed=`/`alignment=`/`version=` appear in the aspirational
-# `docs/language/examples/virtio-storage.wr` sketch (a parse-level corpus
-# entry, never sema-checked) but in no normative rule — and every `@layout`
-# argument that exists changes the reported bytes, so an unrecognized one
-# is rejected rather than silently ignored. `packed=true` is additionally
-# redundant here: a `@layout` type is packed by construction, since it
-# never pads implicitly.
 
 @layout(dma, endian=little, packed=true)
 struct BlkReqHeader:

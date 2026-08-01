@@ -1,186 +1,3 @@
-//! Local development harness. There is no CI: `cargo xtask check` IS the
-//! definition of "the tree is good", run locally before calling anything
-//! done. Subcommands:
-//!
-//!   check      fmt + tests + golden + corpus + fuzz(smoke) + repro (the gate)
-//!   golden     run golden tests; `--update` rewrites expectations
-//!   field-visibility-census  empty-census gate (plans/M13.md G3)
-//!   corpus     extract every ```wrela block from docs/ and lex it
-//!              (from M1, also parse). Always sema-checks every parseable
-//!              block (plans/M9.md item J3; per-block stubs / nest from
-//!              J1b/J1c) and ratchets the pinned census: ok-decay fails,
-//!              an accepted disagreement that starts passing fails (naming
-//!              a non-empty `why`. `--sema` only
-//!              prints the verbose per-block report for humans; the gate
-//!              itself is the same path `check` runs. A standing guard
-//!              refuses any wrap that discards fence item text.
-//!   fuzz       cargo xtask fuzz [lexer|parser|sema|eval|lower|async|imports|report]
-//!              [--iters N] [--seed S]; deterministic in-tree fuzzer
-//!              (plans/M1.md items B/E, plans/M2.md item I, plans/M3.md
-//!              item F, plans/M5.md item G, plans/M7.md item Y). All six
-//!              targets are live (bare `fuzz` runs `lexer` at the deep
-//!              default budget) and all six have a smoke budget wired into
-//!              `check`. `sema` runs lex -> parse -> `sema::check` over
-//!              corpus/golden-input
-//!              mutations and token-soup, same shape as `parser`, plus (on
-//!              every iteration whose input parses) two more invariants: sema
-//!              roundtrip stability (pretty-print, reparse, recheck — the
-//!              two sema outcomes must agree) and item-rotation acceptance
-//!              invariance (rotating the module's top-level items by one
-//!              must not flip Ok/Err either way). `eval` runs lex -> parse
-//!              -> `sema::check_typed` (which already evaluates every
-//!              const initializer and `comptime assert`) -> on success,
-//!              `eval::run_tests` over every comptime-legal `@test`, same
-//!              corpus/token-soup shape again; invariants: never panics,
-//!              deterministic across two runs, and every outcome is a
-//!              well-formed diagnostic or test report (pinned rule). `lower` runs lex -> parse ->
-//!              `sema::check_typed` -> on success, `lower::lower_program`
-//!              -> on success, `codegen::codegen_program`, over the same
-//!              corpus/token-soup shape again (the seed set's own
-//!              `tests/golden/{mwir,asm}-*/boot-hello` input files, already
-//!              collected by `corpus_seed_inputs`, are what actually give
-//!              this lane lowering/codegen-shaped mutation material);
-//!              invariants: never panics anywhere in `lower`/`codegen`,
-//!              deterministic across two runs (the mwir dump text, the
-//!              concatenated codegen'd words, and — whenever the program
-//!              declares an `@test(runtime)` fn — the laid-out test image
-//!              blob, all byte-compared), a lowering/codegen rejection is
-//!              always the fixed `unimplemented` diagnostic category, and
-//!              every successfully codegen'd program passes
-//!              `codegen::validate`'s own structural checks (pinned rule). `async` (plans/M7.md item Y) is
-//!              the same pipeline's *async* half, which `lower` has
-//!              disclosed since M6-D that it never reaches at all: lex ->
-//!              parse -> `sema::check_typed` -> `lower::lower_program` +
-//!              `flowwir_lower::lower_program` -> `eval_image` (whenever
-//!              the program declares an `@image`) ->
-//!              `codegen::codegen_program_with_async` (the `emit_flowwir_fn`
-//!              driver) -> `async_frame_sizes`/`compute_group_child_indices`
-//!              -> `layout::layout_test_image` with a real `BootCtx`,
-//!              i.e. `bin/wrela.rs::test_cmd`'s own runtime tier stage for
-//!              stage. Generation is biased at the surface it covers —
-//!              mutation bases are the fixed `ASYNC_SEED_CASES` list of
-//!              async/actor goldens, since no random byte stream ever
-//!              spells a valid actor image — and every run prints its own
-//!              measured reach (how many iterations type-checked, lowered
-//!              >=1 async fn, reached async codegen, laid out an async
-//!              image). Same invariants as `lower`: never panics,
-//!              deterministic across two runs (FlowWir dump, codegen'd
-//!              words, image bytes, and the reach itself), every rejection
-//!              in the fixed category set, and `"internal error: "`
-//!              anywhere is a bug.
-//!   roundtrip  pretty-print every parseable corpus entry and golden input,
-//!              reparse it, and compare the two AST dumps (spans stripped)
-//!              — the parser's `diff-eval` (plans/M1.md item E). Also runs
-//!              the same sema-roundtrip oracle as `fuzz sema` above,
-//!              whenever the entry parses as a whole `Module` (pinned rule). Wired into `check`,
-//!              after `corpus`.
-//!   report-determinism
-//!              plans/M4.md item D, decision 9, grown by plans/M5.md item D
-//!              (decision 10): for every golden case carrying an
-//!              `expected/report.txt`, produces `wrela dump --stage=report`'s
-//!              own output PLUS whatever `wrela build` would write as
-//!              `<name>.img` *twice*, in-process (fresh lex/parse/sema/
-//!              eval/lower/codegen/layout every call — no caching, no
-//!              shared state, `produce_report_and_image`), and byte-
-//!              compares both the report text and the image bytes (`Some`
-//!              only when the program's own reachable surface fully
-//!              lowers — `layout::try_layout_program`'s "all or nothing"
-//!              rule) — flips `compiler.repro.byte-identical` from gap to
-//!              test (the *unsigned* image + report; the signed triple is
-//!              M8+ territory, noted in the clause itself). Wired into
-//!              `check`, right after `golden` (the same cases `golden`
-//!              itself just proved match the pinned expectation — this
-//!              oracle instead proves two *fresh* runs agree with each
-//!              other, a distinct property golden alone does not).
-//!              (wired into `check` at plans/M8.md item C3's finding,
-//!              2026-07-25: the four tamper lanes are the strongest
-//!              oracles here and were opt-in while `check` was the gate.)
-//!   repro      plans/M5.md decision 10: the identical oracle as
-//!              `report-determinism` above, runnable standalone (no
-//!              separate "full corpus" form exists yet — every report-
-//!              bearing golden is already the whole population either
-//!              name covers at this milestone's scale).
-//!   gen-lane2-freq <case>
-//!              plans/M20.md item C: regenerate `tests/golden/<case>/
-//!              lane2-freq.txt`, the block-grain `f` sidecar. Builds the
-//!              `@test(runtime)` image under `--block-count`, boots it on
-//!              the codesigned `wrela-vmm` with `--dump-lane2` (the host
-//!              DRAM snapshot — Lane 2's normative sink under decision
-//!              1610, since the transcript line is capped), and translates
-//!              every snapshot id to `<fn_key>#<block_index>` through that
-//!              same build's own assignment map. An id with no key is a
-//!              fail-closed error, never a nearest-offset guess. Not part
-//!              of `check`: it *writes* a committed fixture, so it is run
-//!              deliberately and the diff is reviewed.
-//!   cost-inventory
-//!              every `CostRule` names an inventory row in plans/M20.md,
-//!              and every row it names exists (freeze 1632).
-//!   agnostic-sweep
-//!              plans/M20.md item A: fail closed if any of the cost
-//!              model's superseded board-independence claims survives in
-//!              the tracked tree — the port-map denials, the
-//!              no-real-geometry denials, the scope denials, and the two
-//!              pre-M20 spellings of the dump's Assumptions line. The
-//!              phrase list itself lives in `agnostic_sweep.rs` (which is
-//!              the one path excluded for that reason), along with
-//!              `docs/archive/` (read-only history) and `plans/` (which
-//!              record the superseded state on purpose). Also asserts
-//!              the replacement strings are present in the dump source. Wired
-//!              into `check`.
-//!   stdlib-test
-//!              plans/M16.md item F / decisions 1160–1166: discover every
-//!              `stdlib/tests/**/*.wr`, load+check in-process, count
-//!              comptime/`@test(exhaustive)` fns, run `eval::run_tests`.
-//!              Fail closed on a missing/empty suite root or zero
-//!              discovered comptime tests (`wrela test` alone can exit 0
-//!              on `0 passed, 0 failed`). Wired into `check` after
-//!              `roundtrip`, before `repro`.
-//!   diff-eval  evaluator-vs-backend differential      (fails closed today)
-//!   profile    replay a recorded workload under counters (fails closed today)
-//!   bench      cargo xtask bench compiler|build|guest; the compiler lane
-//!              is live (plans/M1.md, CLAUDE.md "cleverness budget"): lex +
-//!              parse, in-process, over every doc/example corpus entry
-//!              plus every tests/golden/*/input.wr (3 warmup + 15 timed
-//!              iterations), reporting min/median/max total wall time and
-//!              the median for the single largest entry, then comparing
-//!              the median against the locked threshold in
-//!              bench/thresholds.toml. plans/M2.md item I adds a second
-//!              lane in the same command: lex+parse+`sema::check` over
-//!              every tests/golden/*/input.wr that lexes and parses (both
-//!              sema-ok and sema-error outcomes count; lex/parse-error
-//!              inputs are excluded), same 3+15 shape, its own locked
-//!              per-entry median (`check_golden_per_entry_us`). plans/M3.md
-//!              item F adds
-//!              a third lane: lex+parse+`sema::check_typed`+
-//!              `eval::run_tests` over every test-bearing golden (the
-//!              `check-tests-*` cases with a pinned `test.txt`), same
-//!              3+15 shape, its own locked per-entry median
-//!              (`eval_tests_per_entry_us`). The three corpus-sized lanes lock
-//!              microseconds *per entry* (GOAL.md, 2026-07-25): a
-//!              whole-corpus absolute dilutes on every added golden, so a
-//!              per-entry regression could hide inside corpus growth.
-//!              plans/M4.md item E adds `bench build`, its own lane in its
-//!              own subcommand rather than a fourth `bench compiler` key:
-//!              the whole build pipeline (loader/single-file fork ->
-//!              sema -> `eval_image` -> graph checks -> report render, no
-//!              file writes — `produce_report_text`, reused from
-//!              `report-determinism`) over the M4 example appliance, same
-//!              3+15 shape, its own locked median (`build_appliance_median_us`
-//!              in `bench/thresholds.toml`'s own `[build]` table). Wired
-//!              into `check`, after roundtrip (`bench compiler` then
-//!              `bench build`). `bench guest` and bare `bench` still fail
-//!              closed — the guest lane needs the VMM and record/replay,
-//!              which land at M5.
-//!
-//! The cleverness budget (CLAUDE.md): optimizations land only with a
-//! profile, a before/after on the same recording, and a lock. `bench
-//! compiler` is that lock for the compiler's own speed; the guest lane
-//! (`bench guest`) and `profile` still refuse to fake results until M5
-//! gives them a machine to measure.
-//!
-//! Golden discipline: an expectation file changes only together with a
-//! the pinned rule justifies it. The golden diff is the review surface.
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -219,7 +36,6 @@ use lane2_freq::*;
 use stdlib_test::*;
 
 pub(crate) fn root() -> PathBuf {
-    // crates/xtask -> repo root
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
         .nth(2)
@@ -227,10 +43,6 @@ pub(crate) fn root() -> PathBuf {
         .to_path_buf()
 }
 
-/// Every subdirectory of `golden_dir` (one golden case apiece), in
-/// deterministic (sorted) order — the scan `corpus_seed_inputs`/`golden`/
-/// `roundtrip`/`bench_corpus_entries`/`bench_check_entries` all repeat
-/// verbatim before doing their own per-case work.
 pub(crate) fn golden_case_dirs(golden_dir: &Path) -> Result<Vec<PathBuf>, String> {
     let mut dirs: Vec<_> = std::fs::read_dir(golden_dir)
         .map_err(|e| format!("read {}: {e}", golden_dir.display()))?
@@ -253,34 +65,13 @@ fn main() -> ExitCode {
         Some("corpus") => corpus(&args[1..]),
         Some("roundtrip") => roundtrip(),
         Some("report-determinism") => report_determinism(),
-        // plans/M20.md item A: no superseded board-independence claim
-        // survives outside `docs/archive/` and `plans/`. Item A's own
-        // oracle — the failure mode of a two-dozen-site doc sweep is a
-        // *missed* site, which greps catch and diff reviews do not.
         Some("agnostic-sweep") => agnostic_sweep(),
         Some("cost-inventory") => cost_inventory(),
-        // plans/M16.md item F / decisions 1160–1166: comptime stdlib
-        // suite under `stdlib/tests/` — in-process load/check/`run_tests`,
-        // fail closed on zero discovered comptime/exhaustive `@test`s.
         Some("stdlib-test") => stdlib_test(),
-        // plans/M5.md decision 10, item D: `repro` is the same
-        // twice-fresh-build byte-compare `report_determinism` already runs
-        // in `check` (grown, item D, to cover image bytes as well as
-        // report text) — every golden case that emits a `report.txt` is
-        // the whole `@image`/`wrela build` population either form covers.
-        // Item F grows the *standalone* form one population further:
-        // `report_determinism` alone has no way to reach
-        // `tests/golden/boot-hello`'s own image at all (a runtime-test
-        // image has no `@image` fn, so it never goes through the
-        // `wrela build` pipeline `report_determinism` walks) — `repro`
-        // additionally proves that image's own byte-reproducibility,
-        // making bare `cargo xtask repro` a strict superset of `cargo
-        // xtask report-determinism` rather than a bare synonym for it.
         Some("repro") => repro(),
         Some("diff-eval") => diff_eval(&args[1..]),
         Some("diff-block-count") => diff_block_count(),
         Some("diff-blk") => diff_blk(),
-        // plans/M20.md item C: the Lane 2 block-grain sidecar generator.
         Some("gen-lane2-freq") => match args.get(1) {
             Some(case) => gen_lane2_freq(case),
             None => Err("usage: cargo xtask gen-lane2-freq <golden-case>".to_string()),
@@ -304,32 +95,6 @@ fn main() -> ExitCode {
     }
 }
 
-/// Every `#[ignore]`d test in the workspace — the deep lane those tests
-/// say `cargo xtask check` runs. Until this existed they said it and it
-/// did not: `cargo test` does not include ignored tests, and no other lane
-/// named them.
-///
-/// Not part of `--fast`, and not inside the unit-suite timing window: this
-/// is minutes by construction (the whole-corpus ∀ sweep enumerates 2^k
-/// corners per case per side), which is precisely why it is not in the
-/// default `cargo test` loop.
-///
-/// **Which tier runs where** (plans/codegen-pareto.md item H, decision
-/// 1787). The cost corpus has two tiers and they are split by *cost*, per
-/// CLAUDE.md, not by subject:
-///
-/// | lane | who runs it | what it sweeps |
-/// | --- | --- | --- |
-/// | smoke | default `cargo test` | one **micro** case, ∀ over its box |
-/// | deep | this function | **both tiers**, plus each `RELEASE_OPTS` member alone over the **product** tier |
-///
-/// Measured 2026-07-31: item H's product tier is 4 of 19 cases and 10 240
-/// of 36 352 points per side, taking the whole lane from 52 224 to 93 184
-/// ∀ points per side (**×1.78**). It did not get slower — this function's
-/// own invocation ran 309/362/397 s after against 411 s before, because
-/// the third `#[ignore]`d test fills a harness thread the two-sweep lane
-/// left idle. See `wrela_compiler::opts::win::MAX_SWEPT_DIMS` for the
-/// table and why the work, not the clock, is the number recorded.
 fn deep_lane() -> Result<(), String> {
     run(
         Command::new("cargo").args([
@@ -345,23 +110,6 @@ fn deep_lane() -> Result<(), String> {
     )
 }
 
-/// The default `cargo test` lane has a **locked wall-time budget**, in
-/// exactly the sense `bench/thresholds.toml` already means by "lock": not
-/// a performance target, a regression tripwire. It exists because the
-/// failure it catches is one this repo has now hit twice — a test whose
-/// subject belongs in the default lane but whose *cost* does not.
-///
-/// The precedent is on the record: the whole-corpus ∀ sweep scored the
-/// whole program once per corner and was `#[ignore]`d out of this lane
-/// (plans/M20.md decision 1637). What made that exile a hazard rather than
-/// a decision is that nothing then ran it — see [`deep_lane`], which does.
-/// That exile was found by a human noticing, not by an oracle. This is the
-/// oracle: a test's home is chosen by its cost, and the gate says so out
-/// loud when the cost moves.
-///
-/// Deliberately loose, the same way every other lock in that file is —
-/// generous multiples over the measured number, so it fires on a lane
-/// that has changed *kind* and never on a busy laptop.
 fn assert_unit_suite_within_budget(elapsed: std::time::Duration) -> Result<(), String> {
     let budget_us = bench_threshold_us("tests", "workspace_suite_max_us")?;
     let measured_us = elapsed.as_micros();
@@ -391,11 +139,6 @@ fn assert_unit_suite_within_budget(elapsed: std::time::Duration) -> Result<(), S
     Ok(())
 }
 
-/// `golden [--update] [--filter <substr>] [--only-boot|--no-boot]
-/// [--jobs N] [--boot-jobs N]`. Unknown flags are an error rather than a
-/// shrug: a mistyped `--fliter` that silently ran the whole corpus would
-/// waste three minutes and, worse, a mistyped one that silently ran
-/// *nothing* would print a green line.
 fn parse_golden_opts(args: &[String]) -> Result<GoldenOpts, String> {
     let mut opts = GoldenOpts::default();
     let mut i = 0;
@@ -437,16 +180,6 @@ fn parse_golden_opts(args: &[String]) -> Result<GoldenOpts, String> {
     Ok(opts)
 }
 
-/// Freeze 1632 (plans/M20.md item L): the cost dimension inventory is
-/// machine-checked, not a prose table. Every `CostRule` variant must name
-/// at least one inventory row, and every row it names must exist in
-/// `plans/M20.md`'s table — so a `CostRule` added without an inventory row
-/// (or a row deleted from under one) fails here.
-///
-/// A whole-tree consistency check between code and a plan document. It
-/// used to ride inside the `ledger` command because that was already doing
-/// a cross-check of that shape; when the spec ledger was removed this kept
-/// its own lane, since nothing about it was ever about spec coverage.
 fn cost_inventory() -> Result<(), String> {
     let plan = wrela_compiler::cost::plan_text()?;
     println!(
@@ -474,31 +207,11 @@ pub(crate) fn run(cmd: &mut Command, what: &str) -> Result<(), String> {
     }
 }
 
-/// `check` is the gate. `check --fast` is **not** — it is the per-item
-/// lane CLAUDE.md's verification table asks for, made into a command so
-/// nobody has to hand-roll a `dump | diff` pipeline and nobody reaches
-/// for the full gate between items because the cheap thing was awkward.
-///
-/// `--fast` drops exactly two families, and says so on the way out:
-///
-///  * **everything that boots a guest** — the golden `test.txt` cases,
-///    the signed `wrela-vmm` unit lane, `repro`, `bench guest`. These are
-///    the wall-clock-sensitive lanes, and an item that does not claim HVF
-///    has no business paying for them (the table's "focused boot" row is
-///    `golden --only-boot --filter <case>` instead).
-///  * **the measurement lanes** — `bench compiler`/`bench build`, plus
-///    `report-determinism` and `diff-eval`, whose oracles are re-derived
-///    at close over a corpus that has by then stopped moving.
-///
-/// The close item runs bare `check`. That is not optional and `--fast`
-/// does not shorten it.
 fn check(fast: bool) -> Result<(), String> {
     run(
         Command::new("cargo").args(["fmt", "--all", "--check"]),
         "cargo fmt --check",
     )?;
-    // Build first, untimed, so the lock below measures the suite's own
-    // execution rather than however stale this checkout's target/ was.
     run(
         Command::new("cargo").args([
             "test",
@@ -542,124 +255,31 @@ fn check(fast: bool) -> Result<(), String> {
         );
         return Ok(());
     }
-    // **The deep lane actually runs here.** `cargo test` above does not
-    // include `#[ignore]`d tests, so for as long as this call was missing,
-    // every test that named "run via `cargo xtask check`" — the whole-corpus
-    // ∀ sweep among them — was in the tree, described as gated, and run by
-    // nothing. A gate that is green while its central oracle never executes
-    // is exactly the "never fake a pass" failure the house rules forbid.
-    // Outside the timed window above on purpose: this lane is minutes by
-    // construction and the unit-suite budget must keep measuring the unit
-    // suite.
     deep_lane()?;
     test_wrela_vmm_signed()?;
     golden(&GoldenOpts::default())?;
-    // `report_determinism` is deliberately **not** called here: `repro`
-    // (below) runs it as its own first step, so calling it twice ran the
-    // same 92-case, two-fresh-compiles-each loop twice per gate — ~8s of
-    // duplicated work and no extra oracle. `cargo xtask report-determinism`
-    // remains a standalone command for the narrow case.
     diff_eval_smoke()?;
-    // plans/M9.md item J3: bare `corpus` always sema-classifies and
-    // verifies the pinned census (accepted disagreements carry a `why`).
-    // Same path as `corpus --sema`; the flag only adds the verbose
-    // report. No second collection path.
     corpus(&[])?;
     fuzz_lexer_smoke()?;
     fuzz_parser_smoke()?;
     fuzz_sema_smoke()?;
     fuzz_eval_smoke()?;
-    // Wired in at M5-G finalization: the sema branch-scoping fix landed
-    // (commit 5766861, sema.names.resolution), the lane runs clean at its
-    // deep budget on fresh seeds, and the smoke joins every other lane's.
     fuzz_lower_smoke()?;
-    // plans/M7.md item Y: the async half of that same pipeline, which the
-    // `lower` lane above has disclosed it never reaches since M6-D.
     fuzz_async_smoke()?;
-    // plans/M9.md item II: multi-module closures. Every other lane is
-    // single-file; four reachable `internal error:` finds this milestone
-    // all needed an import.
     fuzz_imports_smoke()?;
-    // The VMM's own trust boundary (adversarial audit): forged report
-    // text, which no compiler-side lane can ever generate.
     fuzz_report_smoke()?;
-    // (Historical note, kept for the record: this call was briefly and
-    // deliberately absent — the lane's first exercise reproduced a real,
-    // pinned `sema::bodies` finding, golden/err-mwir-if-else-scope-leak,
-    // within any 1000-iteration budget, and wiring it in before the fix
-    // exactly the kind of approximation CLAUDE.md's "never fake a pass"
-    // rules out, so this lane stays standalone-only
-    // (`cargo xtask fuzz lower`) until the sema fix lands, mirroring how
-    // `diff-eval`/`profile`/`bench guest` themselves stayed unwired before
-    // their own items landed.
     roundtrip()?;
-    // plans/M16.md item F / decisions 1160–1166: comptime `@test` suite
-    // under `stdlib/tests/` — after roundtrip (cheap parse/sema oracles),
-    // before repro (HVF record/replay). Fail closed on an empty suite.
     stdlib_test()?;
-    // plans/M8.md item C3's finding, acted on 2026-07-25. `report_determinism`
-    // above proves the *build* is byte-reproducible; `repro` is what proves
-    // the **replay** oracles still work — and it is where all four tamper
-    // lanes live (a tampered clock read, a tampered device completion, a
-    // tampered exit code, and now a tampered admission order, each of which
-    // must be *caught by name*). Those are the strongest oracles in this
-    // repo, and until now every one of them was opt-in while CLAUDE.md
-    // called `check` "the gate": a regression that let a tampered log
-    // replay clean would have passed every gate run anyone made.
-    //
-    // The cost argument that kept it out does not survive measurement:
-    // `cargo xtask repro` is ~1.8s wall, against a `check` that is minutes,
-    // and it introduces no new dependency class — `check` already runs
-    // `test_wrela_vmm_signed` and `bench_guest_lane`, both of which boot
-    // over Hypervisor.framework.
     repro()?;
     bench_compiler()?;
     bench_build_lane()?;
     bench_guest_lane()?;
-    // plans/M20.md item A: the docs are ground truth over the code
-    // (CLAUDE.md), so a claim anywhere in the tracked tree that the cost
-    // model is board-independent is a contradiction, not a stale
-    // comment. A whole-tree consistency check over text rather than
-    // behavior, and cheap.
     agnostic_sweep()?;
     cost_inventory()?;
     println!("xtask check: ok");
     Ok(())
 }
 
-// --- report determinism (plans/M4.md item D, decision 9) -------------------
-//
-// `04-compiler.md` §8: "identical declared inputs, compiler revision,
-// machine revision, and quotas produce a byte-for-byte identical ...
-// report." The full binary-image half of that claim
-// (`compiler.repro.byte-identical`) stays a gap until M5's linker exists,
-// but the *report* half is provable today, right now, on every project-
-// shaped golden case: produce it twice, from scratch, and demand the two
-// runs agree byte-for-byte. Dumb on purpose — no caching, no parallelism,
-// a plain sequential loop over every case with a pinned `report.txt`.
-
-/// Reproduces `wrela dump --stage=report <target>`'s own stdout PLUS
-/// (plans/M5.md item D) whatever `wrela build` would write as `<name>.img`
-/// alongside it, entirely in-process — no subprocess, no shared state
-/// between calls, so calling this twice back-to-back for the same `target`
-/// is exactly "fresh loader+sema+eval+lower+codegen+layout each time."
-/// Mirrors `bin/wrela.rs`'s own `--stage=report`/`build_report` driver
-/// structurally (the single-file/whole-closure fork, one-`@image`
-/// discovery, `eval_image`, `check_sealed`, `report::render`, then
-/// `layout::merge_layout_ctx`/`layout::try_layout_program`'s identical
-/// "all or nothing" attempt) rather than calling into it: that binary's
-/// own driver functions are not a library surface this crate can reach, so
-/// this is its own small, deliberately parallel copy (CLAUDE.md: "prefer
-/// long obvious files over deep indirection") — `golden`'s own pinned
-/// `report.txt`/written-image expectations are the tripwire that would
-/// catch the two ever silently drifting apart. Always returns `Ok` with
-/// the rendered text (a dump, even an error dump, *is* the stable output —
-/// the same house rule `bin/wrela.rs`'s own module doc states) plus
-/// `Some(image bytes)` exactly when layout succeeded; the outer `Err` path
-/// is reserved for this function's own plumbing failures (a file the
-/// closure needs cannot be read, or `layout_program`'s own genuine
-/// internal-consistency failure) — itself part of what determinism means
-/// to prove absent across two runs.
 pub(crate) fn produce_report_and_image(target: &Path) -> Result<(String, Option<Vec<u8>>), String> {
     fn render_sema_error(e: &sema::SemaError) -> String {
         let mut s = if e.omit_location {
@@ -782,10 +402,6 @@ pub(crate) fn produce_report_and_image(target: &Path) -> Result<(String, Option<
                     Ok(()) => {
                         let mut inputs = Vec::with_capacity(file_paths.len());
                         for (addr, path) in &file_paths {
-                            // plans/M11.md item E / decision 780: stub /
-                            // live `core.__image_runtime` is not on disk —
-                            // digest is inserted after layout (mirrors
-                            // `bin/wrela.rs::build_report`).
                             if path.to_string_lossy()
                                 == wrela_compiler::rtconfig::GENERATED_INPUT_PATH
                                 || addr.as_str() == wrela_compiler::rtconfig::MODULE_ADDR
@@ -818,25 +434,6 @@ pub(crate) fn produce_report_and_image(target: &Path) -> Result<(String, Option<
                             .collect();
                         match report::render(&inputs, &enum_variants, &graph, &placement) {
                             Ok(mut text) => {
-                                // plans/M7.md item B disclosed this hole in its
-                                // own clause note rather than leaving it to be
-                                // found: `bin/wrela.rs` appends the exact-bytes
-                                // section here (declaration facts before the
-                                // memory map), and this oracle did not — so
-                                // `repro`/`report_determinism` were comparing a
-                                // report text with the section missing, and a
-                                // nondeterminism *inside* it could not have been
-                                // caught by the lane whose whole job is catching
-                                // nondeterminism. Mirrors the production path
-                                // exactly; `check_layouts` already ran and passed
-                                // for each module inside the sema check that
-                                // produced `programs`, so neither call can fail
-                                // here, and both are still handled as real errors.
-                                // plans/M10.md item A2b: including the later
-                                // completion pass, for the same reason — an
-                                // oracle that skipped it would compare a
-                                // report whose `const`-length layouts are
-                                // missing their sizes.
                                 let mut layout_types = Vec::new();
                                 for (key, module) in &modules_by_addr {
                                     let specialized = sema::specialize::specialize(module)
@@ -880,8 +477,6 @@ pub(crate) fn produce_report_and_image(target: &Path) -> Result<(String, Option<
                                             );
                                         }
                                         layout::render_layout_section(&mut text, &image_layout);
-                                        // plans/M9.md item H: mirror
-                                        // `bin/wrela.rs::build_report`.
                                         if let Err(diag) =
                                             eval::layout_assert::run(program, &graph, &image_layout)
                                         {
@@ -908,21 +503,6 @@ pub(crate) fn produce_report_and_image(target: &Path) -> Result<(String, Option<
                                         }
                                         None
                                     }
-                                    // A layout error is a *rendered
-                                    // diagnostic* on the production path
-                                    // (`bin/wrela.rs`: `error[build]:
-                                    // layout: {e}`), not a harness
-                                    // malfunction — and this oracle exists
-                                    // to compare exactly what production
-                                    // produces. Returning `Err` here made
-                                    // the report-determinism lane abort
-                                    // instead of diffing the moment a
-                                    // golden first pinned a report whose
-                                    // layout legitimately fails
-                                    // (plans/M8.md item C1's own
-                                    // `err-placement-cross-core-send`) —
-                                    // found by that golden, fixed here to
-                                    // mirror `bin/wrela.rs` word for word.
                                     Err(e) => {
                                         return Ok((format!("error[build]: layout: {e}\n"), None));
                                     }
@@ -953,21 +533,6 @@ pub(crate) fn produce_report_and_image(target: &Path) -> Result<(String, Option<
     }
 }
 
-/// plans/M5.md decision 10 (`compiler.repro.byte-identical`): "identical
-/// declared inputs ... produce a byte-for-byte identical ... image and
-/// report." Grown from the M4-era report-only oracle (this fn's own former
-/// name) to cover both halves of that sentence: for every golden case
-/// carrying a pinned `expected/report.txt`, `produce_report_and_image` runs
-/// *twice*, fresh, in-process, and this compares the rendered report text
-/// AND the emitted image bytes (`Some`/`Some`-equal, or `None`/`None` —
-/// never one `Some` and one `None`, which would itself be a determinism
-/// failure) — the same population `golden` itself already pins, so `xtask
-/// check`'s own existing `report-determinism` step is, unchanged in name,
-/// this clause's own in-check wiring; `cargo xtask repro` (below) is the
-/// identical check run standalone. Coverage note (the clause's own
-/// "record what's covered now" instruction): the *unsigned* image + report
-/// only — the signed triple (M8+) is not implemented yet, named nowhere as
-/// covered here.
 fn report_determinism() -> Result<(), String> {
     let golden_dir = root().join("tests/golden");
     let targets: Vec<PathBuf> = golden_case_dirs(&golden_dir)?
@@ -975,19 +540,6 @@ fn report_determinism() -> Result<(), String> {
         .filter(|c| c.join("expected/report.txt").exists())
         .collect();
 
-    // Two fresh compiles per case, ~90 cases, and every one of them is
-    // independent of every other — the serial loop this replaced spent
-    // 72s on one core. Workers take whole cases; results carry their
-    // index and are sorted before use, so the failure list does not
-    // depend on scheduling.
-    //
-    // Worth being explicit about why threading here is not a doctrine
-    // violation: what this proves is that *one* compile of *one* case is
-    // reproducible, and each `produce_report_and_image` call is a fresh,
-    // self-contained loader+sema+eval+lower+codegen+layout with no state
-    // shared with any other call — that is the property the function's
-    // own doc comment already asserts and the reason it takes no context.
-    // The compiler stays single-threaded; this runs many of it.
     let cursor = std::sync::atomic::AtomicUsize::new(0);
     let collected: std::sync::Mutex<Vec<(usize, String, Vec<String>)>> =
         std::sync::Mutex::new(Vec::new());
@@ -1064,8 +616,6 @@ fn report_determinism() -> Result<(), String> {
     }
 }
 
-/// The byte-compare half of `report_determinism`, unchanged in meaning —
-/// lifted out only so the loop above can be a worker body.
 fn compare_two_runs(
     case: &Path,
     (first_text, first_img): (String, Option<Vec<u8>>),
@@ -1102,18 +652,6 @@ fn compare_two_runs(
     failures
 }
 
-/// plans/M5.md item F: grows `repro`'s own full-corpus form beyond
-/// `report_determinism`'s scope (below) to also prove
-/// `tests/golden/boot-hello`'s own `@test(runtime)` test image is
-/// byte-reproducible — two fresh, in-process `boot_hello_test_image`
-/// calls (itself `build_runtime_test_image` over that case's own
-/// runtime tests, `diff-eval`'s/`bench guest`'s shared helper), byte-
-/// compared, image bytes and report text alike. The identical "two
-/// fresh builds must agree" property `report_determinism` already
-/// proves for the `@image`/`wrela build` pipeline, proved here for the
-/// separate runtime-test-image pipeline decision 1 introduced (a
-/// runtime-test image has no `@image` fn at all, so it never goes
-/// through `report_determinism`'s own walk).
 fn repro_test_image() -> Result<(), String> {
     let (img_bytes, report_text) = boot_hello_test_image()?;
     let (img_bytes2, report_text2) = boot_hello_test_image()?;
@@ -1136,28 +674,6 @@ fn repro_test_image() -> Result<(), String> {
     Ok(())
 }
 
-/// plans/M6.md item E: the choice-sequence recorder's own citable
-/// conformance evidence (`machine.replay.clock-log`/`machine.replay.
-/// choice-sequence`'s own notes) — shells out to the freshly
-/// built-and-signed `wrela-vmm` *binary* exactly once more (never the
-/// `wrela-vmm` *crate*: this file's own established "xtask stays
-/// unsigned, only the one signed binary calls HVF" boundary, the same
-/// reason `run_vmm`/`bench_guest_lane` never link it either), recording
-/// `tests/golden/boot-hello`'s own real test image live via `--record`,
-/// then replaying that exact recording via `--replay` — a genuine
-/// end-to-end exercise of `record::Chooser::choose_next`'s own record and
-/// replay arms alike, over a real, already-citable golden's own compiled
-/// image, not a hand-built stand-in. `boot-hello` declares no actors, so
-/// this particular boot's own choice sequence is `ClockRead`-shaped only
-/// (no `DeadlineWake`/`VectorRaise`) — the fuller tag coverage lives in
-/// `wrela-vmm`'s own conformance suite (`park_conformance_wakes_at_the_
-/// deadline_and_resumes_over_hvf`, `vector_raise_observed_at_a_checkpoint_
-/// over_hvf`, `record_replay_of_the_park_wake_scenario_is_byte_stable_and_
-/// detects_tamper`), disclosed here rather than silently implied covered:
-/// those tests are real, but — like `machine.clock.trap-logged`'s own
-/// established precedent — `cargo test -p wrela-vmm` unit tests are not
-/// individually citable by `xtask check`'s own validator (no `tests/`
-/// path, no `xtask:<command>`).
 fn repro_choice_log_roundtrip(vmm: &Path) -> Result<(), String> {
     let (img_bytes, report_text) = boot_hello_test_image()?;
     let (tmp_dir, img_path, report_path, record_path) =
@@ -1196,11 +712,6 @@ fn repro_choice_log_roundtrip(vmm: &Path) -> Result<(), String> {
         "--replay",
     )?;
     let _ = std::fs::remove_dir_all(&tmp_dir);
-    // A clean (non-diverging) replay mirrors the guest's own exit code
-    // exactly like a plain boot (`boot-hello` deliberately fails one
-    // test, so `record_exit`/`replay_exit` are both `1` here — an
-    // ordinary, expected guest outcome, never `EXIT_VMM_FAILURE`/
-    // `EXIT_REPLAY_DIVERGENCE`) — never unconditionally `0`.
     if replay_exit != record_exit {
         return Err(format!(
             "repro: choice-log replay diverged from its own recording (exit {replay_exit}, \
@@ -1215,25 +726,6 @@ fn repro_choice_log_roundtrip(vmm: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// plans/M6.md item E, verification's own fail-closed finding: the
-/// process-level exit-code contract `wrela-vmm/src/main.rs`'s own module
-/// doc names must actually hold on the real, signed binary — a caller
-/// (`xtask`, CI, a script) trusts `$?` alone, never stdout/stderr, so
-/// every documented outcome is asserted here directly against
-/// `Output::status.code()`: a clean replay reflects the *same*
-/// guest-authored exit code (`0`/`1`) the original recording boot
-/// itself reported (`tests/golden/boot-hello` has a deliberately failing
-/// test, so this is `1` here — an ordinary, expected guest outcome, not
-/// a VMM failure, exactly the "guest-authored vs runner-authored"
-/// distinction `main.rs`'s own doc draws); a replay whose recorded
-/// `exit_code=` line is tampered must exit `EXIT_REPLAY_DIVERGENCE` (3)
-/// and name the mismatch on stderr — **never** `0` (the exact fail-closed
-/// violation this item's own verification pass caught); a `--replay`
-/// against an unparseable record file, and a `--record` to an unwritable
-/// destination, must each exit `EXIT_VMM_FAILURE` (2). Exit codes live in
-/// `wrela_machine::vmm_process` so xtask and `wrela-vmm` cannot drift
-/// (xtask still does not link the `wrela-vmm` crate — only the shared
-/// machine contract).
 fn repro_replay_exit_code_contract(vmm: &Path) -> Result<(), String> {
     use wrela_machine::vmm_process::{EXIT_REPLAY_DIVERGENCE, EXIT_VMM_FAILURE};
 
@@ -1249,7 +741,6 @@ fn repro_replay_exit_code_contract(vmm: &Path) -> Result<(), String> {
         Err(msg)
     };
 
-    // --- record: a plain boot's own guest-authored exit code -------------
     let (_, record_exit) = run_vmm_mode(
         vmm,
         &report_path,
@@ -1268,7 +759,6 @@ fn repro_replay_exit_code_contract(vmm: &Path) -> Result<(), String> {
         );
     }
 
-    // --- clean replay: reflects the identical guest-authored outcome ----
     let (_, clean_exit) = run_vmm_mode(
         vmm,
         &report_path,
@@ -1287,7 +777,6 @@ fn repro_replay_exit_code_contract(vmm: &Path) -> Result<(), String> {
         );
     }
 
-    // --- tampered exit_code=: must exit EXIT_REPLAY_DIVERGENCE, never 0 -
     let record_text =
         std::fs::read_to_string(&record_path).map_err(|e| format!("read record: {e}"))?;
     let tampered_text: String = record_text
@@ -1332,7 +821,6 @@ fn repro_replay_exit_code_contract(vmm: &Path) -> Result<(), String> {
         );
     }
 
-    // --- malformed record file on --replay: must exit EXIT_VMM_FAILURE --
     let malformed_path = tmp_dir.join("malformed.record.txt");
     std::fs::write(&malformed_path, b"not a choice log at all\n")
         .map_err(|e| format!("write malformed record: {e}"))?;
@@ -1354,7 +842,6 @@ fn repro_replay_exit_code_contract(vmm: &Path) -> Result<(), String> {
         );
     }
 
-    // --- --record to an unwritable path: must exit EXIT_VMM_FAILURE ------
     let unwritable_path = tmp_dir.join("no-such-subdir").join("rec.txt");
     let (_, unwritable_exit) = run_vmm_mode(
         vmm,
@@ -1380,31 +867,6 @@ fn repro_replay_exit_code_contract(vmm: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// plans/M6.md item F: `tests/golden/boot-deadline-cancel` is the first
-/// boot in this repo whose *behaviour* depends on the clock — the group's
-/// own deadline expires, the scheduler's deadline poll observes it through
-/// a real `CLOCK_MMIO_ADDR` read, and the child is cancelled at exactly one
-/// checkpoint as a result. That makes it the real test of decision 9's own
-/// claim that replay takes its time from the ChoiceLog rather than from the
-/// host clock, so this check proves three things end to end, on the real
-/// signed binary:
-///
-/// 1. the recording is genuinely clock-driven — its choice sequence
-///    carries several `ClockRead` entries and no `DeadlineWake` (this boot
-///    never parks: at M6 nothing can block a turn forever, so the
-///    scheduler always has ready work — recorded honestly rather than
-///    claiming a sleep was skipped that never existed);
-/// 2. replaying that recording is **clean** — zero divergence, and the
-///    same guest-authored exit code, so the whole cancellation schedule
-///    reproduces exactly; and
-/// 3. the replayed clock really is the logged one, proved the only way
-///    that cannot be faked: tampering the *first* logged `ClockRead` to a
-///    far-future value (so the armed deadline is never reached) changes
-///    the guest's own behaviour — the child runs its loop to completion
-///    and the test's assertion fails — and the replay must therefore
-///    report divergence and exit `EXIT_REPLAY_DIVERGENCE`, never `0`. If
-///    replay were quietly reading the host clock, the tamper would change
-///    nothing and this assertion would fail.
 fn repro_deadline_cancel_replay_is_clock_log_driven(vmm: &Path) -> Result<(), String> {
     use wrela_machine::vmm_process::EXIT_REPLAY_DIVERGENCE;
     let (img_bytes, report_text) = golden_test_image("boot-deadline-cancel")?;
@@ -1455,9 +917,6 @@ fn repro_deadline_cancel_replay_is_clock_log_driven(vmm: &Path) -> Result<(), St
         ));
     }
 
-    // (3) The tamper: rewrite the FIRST ClockRead to a far-future value, so
-    // a guest reading its clock from the log arms a deadline that never
-    // expires. Everything else in the log is left exactly as recorded.
     let mut tampered = String::new();
     let mut done = false;
     for line in record_text.lines() {
@@ -1503,14 +962,6 @@ fn repro_deadline_cancel_replay_is_clock_log_driven(vmm: &Path) -> Result<(), St
     Ok(())
 }
 
-/// plans/M17.md item H / decisions 1285–1291: entropy replay is choice-log
-/// driven. Peer of `repro_deadline_cancel_replay_is_clock_log_driven`:
-/// 1. `boot-entropy-hex` records ≥1 `EntropyRead` (sync MWIR fill);
-/// 2. clean `--replay` matches the recording's exit (0) — transcript
-///    digest agrees because the guest prints a byte-dependent encoding
-///    of the entropy fill;
-/// 3. tampering the *first* `EntropyRead` hex to a different equal-length
-///    value changes the guest transcript → `EXIT_REPLAY_DIVERGENCE`.
 fn repro_entropy_replay_is_choice_log_driven(vmm: &Path) -> Result<(), String> {
     use wrela_machine::vmm_process::EXIT_REPLAY_DIVERGENCE;
     let (img_bytes, report_text) = golden_test_image("boot-entropy-hex")?;
@@ -1560,8 +1011,6 @@ fn repro_entropy_replay_is_choice_log_driven(vmm: &Path) -> Result<(), String> {
         ));
     }
 
-    // Tamper the FIRST EntropyRead hex to a different equal-length value.
-    // Everything else in the log is left exactly as recorded.
     let mut tampered = String::new();
     let mut done = false;
     for line in record_text.lines() {
@@ -1579,8 +1028,6 @@ fn repro_entropy_replay_is_choice_log_driven(vmm: &Path) -> Result<(), String> {
                     "repro: EntropyRead hex field looks malformed: {old_hex:?}"
                 ));
             }
-            // Flip every nibble by XOR 0x1 so length is preserved and the
-            // value is guaranteed different (hex digits stay lowercase).
             let mut new_hex = String::with_capacity(old_hex.len());
             for c in old_hex.chars() {
                 let n = match c {
@@ -1645,13 +1092,6 @@ fn repro_entropy_replay_is_choice_log_driven(vmm: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// `cargo xtask repro` (plans/M5.md decision 10, item F; plans/M6.md item
-/// E): the standalone, full-corpus form — `report_determinism`'s own
-/// `@image`/`wrela build` population, `repro_test_image`'s runtime-test-
-/// image case, `repro_choice_log_roundtrip`'s own record/replay round
-/// trip, and `repro_replay_exit_code_contract`'s own process-level
-/// exit-code proof, so bare `repro` covers every image-emitting *and*
-/// determinism-recording path this milestone has.
 fn repro() -> Result<(), String> {
     report_determinism()?;
     repro_test_image()?;
@@ -1666,26 +1106,6 @@ fn repro() -> Result<(), String> {
     repro_replay_exit_code_contract(&vmm)
 }
 
-/// plans/lane1-per-core.md items B–D: the Lane 1 trailer reproduces across
-/// repeated boots of the same image.
-///
-/// The goldens boot each case **once**, so they cannot tell a pinned trailer
-/// from a trailer that happened to win a race — which is exactly how
-/// `boot-cross-core-ring-full` came to be pinned twice to two different draws
-/// (a2579154, then 82314ed6) before its `unpinned-lane1` stopgap. Item D's
-/// exit criterion is "run it 20× and require 20/20"; that measurement is only
-/// worth anything if something keeps re-taking it, so this lane is the
-/// standing form of it.
-///
-/// The two cases are the ones whose trailers were actually unstable: the
-/// ring-full rejection (it deliberately halts with one admitted-but-
-/// unprocessed message, so before item B's quiesce core 0 sampled the
-/// counters mid-flight) and the admission order (whose historical flake was
-/// `run_one`, 12 vs 13 — item C's field).
-///
-/// A `lane1 quiesce=timeout` line fails the lane too, rather than being
-/// tolerated: it means the bounded wait ran out on this host, so the totals
-/// below it are a sample again and any pin over them is luck.
 fn repro_lane1_trailer_repeats(vmm: &Path) -> Result<(), String> {
     const REPEATS: usize = 5;
     const CASES: [&str; 2] = [
@@ -1743,13 +1163,6 @@ fn repro_lane1_trailer_repeats(vmm: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// plans/M8.md item H Target C: the depth-1 mailbox under three cores
-/// records both eventual admissions (Near then Far). Back-pressure is
-/// not itself a choice entry — under Progress-serial replay it is still
-/// checked — but the choice sequence must still name both messages once
-/// they admit, or a drain that dropped the held message would look
-/// identical to one that held it until the transcript assert (`total == 11`)
-/// fired.
 fn repro_cross_core_mailbox_depth_admissions(vmm: &Path) -> Result<(), String> {
     const CASE: &str = "boot-cross-core-mailbox-depth";
     let (img_bytes, report_text) = golden_test_image(CASE)?;
@@ -1779,12 +1192,6 @@ fn repro_cross_core_mailbox_depth_admissions(vmm: &Path) -> Result<(), String> {
         .filter_map(|l| l.split_once("]=").map(|(_, rhs)| rhs))
         .filter(|rhs| rhs.starts_with("Admission "))
         .collect();
-    // Cap-1 rings under-count under overlap when produce+consume nets to
-    // zero between exits (`AdmissionWitness` / plans/M15.md item I). The
-    // guest transcript (`total == 11`, exit 0) is the back-pressure proof —
-    // Far's held +10 was admitted. The choice log may drop every Sink←*
-    // observe; require Far←core0 (cap>1 kick ring) so the recorder still
-    // saw the cross-core kick, then replay must halt exit 0.
     let has = |s: &str| admissions.iter().any(|a| *a == s);
     if !has("Admission mailbox=Far sender=core0") {
         let _ = std::fs::remove_dir_all(&tmp_dir);
@@ -1817,36 +1224,6 @@ fn repro_cross_core_mailbox_depth_admissions(vmm: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// plans/M8.md item C3, decision 42 (and the milestone's own exit
-/// criterion: "`ChoiceEntry::Admission` is no longer format-only: record →
-/// replay clean → tamper an admission choice → divergence, on a named
-/// workload"): the fourth sibling of this lane's three existing tamper
-/// oracles — a recorded clock read, a recorded device completion, and the
-/// process exit code.
-///
-/// The named workload is **`tests/golden/boot-cross-core-admission-order`**,
-/// written for this lane because no pre-existing image could falsify an
-/// *order*: `boot-cross-core-two-senders` carries two cross-core messages
-/// to one mailbox, but both are produced by core 0, so its two `Admission`
-/// entries are byte-identical and a swap of them is unobservable. In the
-/// named workload `Near` is on core 0, `Far` is on core 2, and both message
-/// `Sink` on core 1, so `Sink`'s admission sequence is `core0` then
-/// `core2` — two entries that differ, whose order the boot's own transcript
-/// independently states (`Near`'s await returns `1`, not `11`, because core
-/// 0's `+1` was admitted before the `+10` core 2 had already published).
-///
-/// **What this proves, in the words the item asks for: witness-only, not
-/// injection.** The admission is performed by guest code
-/// (`layout::build_rt_drain`) in guest memory, and the VMM neither writes
-/// a mailbox nor reorders a ring in either mode — under plans/M8.md
-/// decision 11's baton there is no alternative order to feed back, so
-/// "replay injects the recorded order" would be a claim with no mechanism
-/// behind it. What replay does is re-witness and compare, so the honest
-/// oracle is divergence detection: an admission entry whose mailbox or
-/// producing core has been altered must be **caught by name** during
-/// replay, exactly as the tampered blk completion is. That is what the
-/// third step below asserts, and the second step (`replay clean`) is what
-/// makes the third non-vacuous.
 fn repro_cross_core_admission_replay(vmm: &Path) -> Result<(), String> {
     use wrela_machine::vmm_process::EXIT_REPLAY_DIVERGENCE;
     const CASE: &str = "boot-cross-core-admission-order";
@@ -1873,10 +1250,6 @@ fn repro_cross_core_admission_replay(vmm: &Path) -> Result<(), String> {
     let record_text = std::fs::read_to_string(&record_path)
         .map_err(|e| format!("read {}: {e}", record_path.display()))?;
 
-    // (1) Witness multiset under overlap (plans/M15.md item I):
-    //   Far←core0 (root's await far.kick),
-    //   Sink←core2 (Far.bump), Sink←core0 (Near.add), Sink←core0 (sink.total).
-    // Order is not fixed; Progress still serializes replay.
     let admissions: Vec<&str> = record_text
         .lines()
         .filter_map(|l| l.split_once("]=").map(|(_, rhs)| rhs))
@@ -1909,7 +1282,6 @@ fn repro_cross_core_admission_replay(vmm: &Path) -> Result<(), String> {
         ));
     }
 
-    // (2) Replay is clean: zero divergence, same guest-authored exit code.
     let (replay_out, replay_exit) = run_vmm_mode(
         vmm,
         &report_path,
@@ -1926,20 +1298,13 @@ fn repro_cross_core_admission_replay(vmm: &Path) -> Result<(), String> {
         ));
     }
 
-    // (3) Tampers — every one must be caught **by name**, naming the field
-    // that diverged (plans/M8.md item H Target B). A tamper that replays
-    // clean is a hole in the recorder's own contract (06 §8).
     struct Tamper {
         name: &'static str,
-        /// Substring the stderr must contain (the named divergence).
         expect: &'static str,
         apply: fn(&str) -> String,
     }
     let tampers: &[Tamper] = &[
         Tamper {
-            // plans/M15.md item I / decision 8: under overlap, Admission
-            // replay is a multiset bag — order inversion is not a witness.
-            // A sender-identity flip still must be caught by name.
             name: "flip every Sink admission sender",
             expect: "admission mismatch (sender)",
             apply: |text| {
@@ -1964,8 +1329,6 @@ fn repro_cross_core_admission_replay(vmm: &Path) -> Result<(), String> {
             },
         },
         Tamper {
-            // plans/M15.md item I: Progress tamper → named divergence
-            // (ordinary repro, not an enumerator).
             name: "Progress core out of range",
             expect: "progress mismatch",
             apply: |text| {
@@ -2008,9 +1371,6 @@ fn repro_cross_core_admission_replay(vmm: &Path) -> Result<(), String> {
             },
         },
         Tamper {
-            // Cap-1 / overlap under-count (decision 8) tolerates pure count
-            // deltas. Drop a *unique* Far admission so replay's Far observe
-            // mismatches the remaining bag by mailbox identity.
             name: "drop unique Far admission",
             expect: "admission mismatch",
             apply: |text| {
@@ -2020,7 +1380,6 @@ fn repro_cross_core_admission_replay(vmm: &Path) -> Result<(), String> {
                     if line.starts_with("choice[") {
                         choice_lines.push(line.to_string());
                     } else if line.starts_with("ChoiceLog") || line.starts_with("choice_count=") {
-                        // rebuilt below
                     } else if !line.is_empty() {
                         trailer.push(line.to_string());
                     }
@@ -2044,8 +1403,6 @@ fn repro_cross_core_admission_replay(vmm: &Path) -> Result<(), String> {
             },
         },
         Tamper {
-            // Strip every real Admission and leave only Spurious←core0 so
-            // the first observe mismatches by mailbox (same-sender alt).
             name: "replace bag with spurious Admission",
             expect: "admission mismatch",
             apply: |text| {
@@ -2079,8 +1436,6 @@ fn repro_cross_core_admission_replay(vmm: &Path) -> Result<(), String> {
             },
         },
         Tamper {
-            // Multiset still distinguishes mailboxes: replace Far with a
-            // duplicate Sink so the bag loses Far and gains an extra Sink.
             name: "replace Far admission with extra Sink",
             expect: "admission mismatch",
             apply: |text| {
@@ -2142,29 +1497,6 @@ fn repro_cross_core_admission_replay(vmm: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// plans/M7.md item F, decision 7 (and the milestone's own exit criterion
-/// "`cargo xtask repro` covers a blk workload: record → replay clean →
-/// tamper a device-completion choice → divergence"): a real boot that
-/// publishes two virtio-blk requests through the split ring, rings the
-/// shared-memory doorbell (06 §5 — an ordinary store, no trap), records
-/// the resulting `DeviceCompletion` choices, replays them byte-stable, and
-/// then proves a tampered completion is *caught* rather than replayed.
-///
-/// **The guest here is hand-assembled, and that is the honest state of the
-/// milestone**: the compiled driver is items A–E/G/H (capabilities,
-/// `@layout`, typed MMIO, DMA pools, queues/receipts, ISRs, bring-up), so
-/// no `.wr` source can publish a descriptor yet. This lane plays the
-/// driver's role directly, exactly the way `wrela-vmm`'s own conformance
-/// tests do — and it is deliberately its own copy of that builder rather
-/// than a shared one: `xtask` does not link `wrela-vmm` (this file's own
-/// established "xtask stays unsigned, only the one signed binary calls
-/// HVF" boundary — the identical reason `report_determinism` carries its
-/// own copy of `bin/wrela.rs`'s report driver). The two copies are kept
-/// honest by both booting: a drift in either fails here or there.
-///
-/// Once the compiled driver exists, this lane's own image builder is what
-/// gets deleted in favour of a golden's real image — named here rather
-/// than left to be discovered.
 fn repro_blk_completion_replay(vmm: &Path) -> Result<(), String> {
     use wrela_machine::vmm_process::EXIT_REPLAY_DIVERGENCE;
     let (img_bytes, report_text) = blk_conformance_image();
@@ -2224,12 +1556,6 @@ fn repro_blk_completion_replay(vmm: &Path) -> Result<(), String> {
         ));
     }
 
-    // The tamper: flip the recorded status byte of the first completion
-    // from `0` (OK) to `1` (IOERR). Everything else is left exactly as
-    // recorded, so the *only* thing that can be caught is the completion
-    // itself — the model recomputes the operation deterministically and
-    // must report the disagreement rather than replaying the tampered
-    // answer.
     let mut tampered = String::new();
     let mut done = false;
     for line in record_text.lines() {
@@ -2278,34 +1604,13 @@ fn repro_blk_completion_replay(vmm: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// The hand-assembled virtio-blk driver `repro_blk_completion_replay`
-/// boots (its own doc comment has the whole rationale, including why this
-/// is deliberately a second copy of `wrela-vmm`'s own conformance
-/// builder). Returns `(image bytes, report text)`.
-///
-/// The ring, both request headers, the source payload and the destination
-/// buffer live in the image's own trailing data region, covered by exactly
-/// one declared pool window; the descriptor chains are prefilled here (a
-/// driver's build-time role), and the guest program does the two runtime
-/// acts a real driver does — publish an available entry, ring the doorbell
-/// — then parks so the VMM's own poll site runs, and finally checks every
-/// observable fact, folding one bit per failed check into its exit code.
 fn blk_conformance_image() -> (Vec<u8>, String) {
     use wrela_compiler::encode;
     use wrela_machine::{layout as machine_layout, machine_info, mmio, pending};
 
-    // The split ring's own shape and the virtio-blk request format, as
-    // `wrela-vmm`'s `devices` module implements them — shared verbatim
-    // with the QEMU side of the differential oracle (`blk_shape`,
-    // `fill_blk_ring`), so "both implementations were handed the same
-    // ring" is a fact about one function rather than a claim about two.
     use blk_shape::*;
-    const DEVICE_FEATURES: u64 = (1 << 32) | (1 << 9); // VERSION_1 | BLK_F_FLUSH
+    const DEVICE_FEATURES: u64 = (1 << 32) | (1 << 9);
     const BLK_VECTOR: u64 = 1;
-    /// 06 §5's shared-memory doorbell word. It has no QEMU counterpart at
-    /// all — QEMU's notification is a trapping `QueueNotify` MMIO write,
-    /// which is exactly the thing 06 §5 deletes — so it lives here rather
-    /// than in the shared shape.
     const OFF_DOORBELL: u64 = 0x140;
 
     fn load_imm(reg: u8, value: u64) -> Vec<u32> {
@@ -2329,11 +1634,8 @@ fn blk_conformance_image() -> (Vec<u8>, String) {
         let doorbell = data_base + OFF_DOORBELL;
         let mut w = Vec::new();
         w.extend(load_imm(9, sp_top));
-        w.push(encode::enc_add_imm(31, 9, 0, true)); // mov sp, x9
+        w.push(encode::enc_add_imm(31, 9, 0, true));
 
-        // One aligned 64-bit store publishes the whole avail header
-        // (`flags: u16 = 0, idx, ring[0] = 0, ring[1] = 3`), so no 16-bit
-        // store encoding is needed.
         let publish = |w: &mut Vec<u32>, idx: u64| {
             w.extend(load_imm(9, avail));
             w.extend(load_imm(10, (idx << 16) | (3 << 48)));
@@ -2345,7 +1647,7 @@ fn blk_conformance_image() -> (Vec<u8>, String) {
         let park = |w: &mut Vec<u32>| {
             w.extend(load_imm(9, mmio::CLOCK_MMIO_ADDR));
             w.push(encode::enc_ldr_x_imm(11, 9, 0));
-            w.extend(load_imm(12, 20_000_000)); // 20ms — a real, bounded fallback
+            w.extend(load_imm(12, 20_000_000));
             w.push(encode::enc_add_reg(11, 11, 12, true));
             w.extend(load_imm(
                 9,
@@ -2374,7 +1676,7 @@ fn blk_conformance_image() -> (Vec<u8>, String) {
         w.extend(load_imm(9, pending::core_word_addr(0)));
         w.push(encode::enc_ldr_x_imm(26, 9, 0));
 
-        w.push(encode::enc_movz(1, 0, 0, true)); // fail accumulator
+        w.push(encode::enc_movz(1, 0, 0, true));
         let check = |w: &mut Vec<u32>, actual: u8, expect: u64, bit: u8| {
             w.extend(load_imm(13, expect));
             w.push(encode::enc_cmp_reg(actual, 13, true));
@@ -2384,14 +1686,14 @@ fn blk_conformance_image() -> (Vec<u8>, String) {
             }
             w.push(encode::enc_orr_reg(1, 1, 14, true));
         };
-        check(&mut w, 19, 2u64 << 16, 0); // used.idx == 2, ring[0].id == 0
-        check(&mut w, 20, 1 | (3u64 << 32), 1); // ring[0].len == 1, ring[1].id == 3
-        check(&mut w, 21, 513, 2); // ring[1].len == 512 + status
-        check(&mut w, 22, 0, 3); // write status == OK
-        check(&mut w, 23, 0, 4); // read status == OK
-        check(&mut w, 24, expect_first, 5); // first payload word survived the round trip
-        check(&mut w, 25, expect_last, 6); // last payload word too
-        check(&mut w, 26, 1u64 << BLK_VECTOR, 7); // only the blk vector: neither park slept
+        check(&mut w, 19, 2u64 << 16, 0);
+        check(&mut w, 20, 1 | (3u64 << 32), 1);
+        check(&mut w, 21, 513, 2);
+        check(&mut w, 22, 0, 3);
+        check(&mut w, 23, 0, 4);
+        check(&mut w, 24, expect_first, 5);
+        check(&mut w, 25, expect_last, 6);
+        check(&mut w, 26, 1u64 << BLK_VECTOR, 7);
 
         w.extend(load_imm(15, mmio::EXIT_MMIO_ADDR));
         w.push(encode::enc_str_x_imm(1, 15, 0));
@@ -2399,11 +1701,6 @@ fn blk_conformance_image() -> (Vec<u8>, String) {
         w
     };
 
-    // The entry sequence's own length is independent of the addresses it
-    // embeds (every constant is a fixed-width `load_imm`), so one
-    // measuring pass fixes the data region's base. Data must sit outside
-    // the page-granular RX window applied to `Section name=entry` (16 KiB
-    // HVF pages) — same rule as `wrela-vmm`'s `build_blk_conformance_image`.
     let entry_len = build_entry(0).len();
     let code_bytes = (entry_len as u64) * 4;
     const PAGE: u64 = 16 * 1024;
@@ -2441,89 +1738,22 @@ fn blk_conformance_image() -> (Vec<u8>, String) {
     (img, report_text)
 }
 
-// --- diff-eval (plans/M5.md decision 9, item F) -----------------------------
-//
-// The evaluator-vs-backend differential oracle (flips `compiler.eval.
-// matches-backend`): for every golden case whose input typechecks and
-// declares at least one bare `@test` (`TestKind::Comptime` — decision 9's
-// own "the comptime tier's own set"; `@test(exhaustive)` is deliberately
-// excluded from the comparison itself and counted in its own skip
-// category instead, decision 2's sub-note), this compiles those same
-// test fns into one runtime-test image (reusing item E's own harness —
-// `layout::layout_test_image` — since a bare `@test` fn is exactly the
-// zero-arg shape the harness already runs; naming it `runtime_tests`
-// there is a harness-internal detail, not a claim about the test's own
-// declared kind), boots it once via the codesigned `wrela-vmm` binary,
-// and compares each guest-printed report line against `eval::run_tests`'
-// own line for the same fn, byte for byte. Every skip (a case with zero
-// comptime-legal tests, an exhaustive test, a program whose lowering
-// fails closed) is counted AND printed as it happens — never silent, per
-// the plan's own instruction — and any real disagreement fails the whole
-// command loudly with both lines and the case name.
-
-/// This oracle's own running tally, printed as the final summary line
-/// (`diff-eval: <N> test(s) agree across <C> case(s), <S1>
-/// lowering-skips, <S2> exhaustive-skips, <S3> quota-skips, <S4>
-/// import-skips`).
 #[derive(Default)]
 struct DiffEvalTally {
     agree: usize,
     cases_agreed: usize,
     lowering_skips: usize,
     exhaustive_skips: usize,
-    /// A third, plan-unanticipated skip category found while implementing
-    /// this oracle (recorded here, not silently folded into
-    /// `lowering_skips`, per the "never silent" house rule):
-    /// `comptime.eval.quotas`' own step/memory quota is a *comptime-tier*
-    /// resource bound (`eval::quota::MAX_STEPS`/`MAX_MEMORY`) with no
-    /// backend equivalent whatsoever — the naive A76 codegen has no step
-    /// counter, so a test the evaluator fails with "step/memory quota
-    /// exceeded" (`check-tests-mixed`'s own `test_quota_exceeded`, a bare
-    /// `while true: total = total + 1`) does not fail closed at lowering
-    /// (an unbounded loop is perfectly ordinary mwir) — it lowers and
-    /// codegens cleanly, then **spins forever** on real hardware, since
-    /// nothing in the compiled image ever enforces the evaluator's own
-    /// 20_000-step budget. Booting it would either hang for the VMM's own
-    /// `WALL_CAP` (30s) on every `diff-eval` run or, worse, be
-    /// indistinguishable from a genuine backend bug. Detected before ever
-    /// building an image: a comptime test whose own `eval::run_tests` line
-    /// contains the fixed substring `"quota exceeded"` is excluded from
-    /// the image entirely and counted here instead of compiled/booted.
     quota_skips: usize,
-    /// plans/M9.md item EE: a multi-module case that typechecks but whose
-    /// import closure this oracle genuinely cannot build into a guest
-    /// image (fail closed by name). Before EE every import-bearing case
-    /// was a *silent* `continue` with no tally entry — so the summary
-    /// line overstated the oracle's scope. Handled cases (the preferred
-    /// half of EE) never increment this; only a named residual does.
     import_skips: usize,
 }
 
-/// One typechecked program ready for the oracle — either a single-module
-/// file or the root of a loaded import closure. `modules` is the whole
-/// closure keyed by dotted path (one entry for the no-imports case), the
-/// same shape `bin/wrela.rs::check_closure` / `produce_report_and_image`
-/// already build; `layout::merge_layout_ctx` needs every module's AST so
-/// an imported struct's fields size correctly. `programs` is every
-/// module's typed tree (plans/M9.md item II): `enrich_layout_ctx_with_
-/// instantiations` needs imported instantiations under the importer's
-/// alias spelling, or a case like `Box[Item]` sizes as a lowering-skip
-/// even though `--stage=asm` (which does enrich) dumps clean.
 struct DiffEvalChecked {
     root_program: sema::typed::TypedProgram,
     modules: BTreeMap<String, Module>,
     programs: BTreeMap<String, sema::typed::TypedProgram>,
 }
 
-/// Lex+parse+typecheck for the oracle — mirrors `bin/wrela.rs::check_closure`
-/// (and `produce_report_and_image`'s own parallel copy of the same fork):
-/// no imports → `sema::check_typed`; any import → `loader::load_closure` +
-/// `sema::check_program_typed`. `None` only for a lex/parse/sema/load
-/// failure (an `err-*` golden — an expected rejection, never a bug this
-/// oracle should report on). plans/M9.md item EE: before this, imports
-/// returned `None` silently and the caller `continue`d with no tally —
-/// that was the defect; multi-module cases with comptime `@test`s now
-/// reach the comparison.
 pub(crate) fn typecheck_for_diff_eval(target: &Path) -> Option<DiffEvalChecked> {
     let source = std::fs::read_to_string(target).ok()?;
     let path_display = target.display().to_string();
@@ -2542,10 +1772,6 @@ pub(crate) fn typecheck_for_diff_eval(target: &Path) -> Option<DiffEvalChecked> 
             programs,
         });
     }
-    // Deliberately parallel to `produce_report_and_image` / `bin/wrela.rs::
-    // check_closure` — those driver internals are not a library surface
-    // this crate can call into (same disclosed convention those call
-    // sites already document).
     let loaded = loader::load_closure(target).ok()?;
     let paths: BTreeMap<Vec<String>, String> = loaded
         .modules
@@ -2575,22 +1801,6 @@ pub(crate) fn typecheck_for_diff_eval(target: &Path) -> Option<DiffEvalChecked> 
     })
 }
 
-/// Builds a runtime-test image out of `test_names` (in the order given —
-/// the guest's own transcript lines come out in this same order,
-/// `layout::layout_test_image`'s own doc) plus the report text
-/// `wrela-vmm` needs to boot it. Mirrors `bin/wrela.rs::test_cmd`'s own
-/// image+report construction exactly: those driver internals are not a
-/// library surface this crate can call into, so this is its own small,
-/// deliberately parallel copy — the identical "own small, deliberately
-/// parallel copy" reasoning `produce_report_and_image`'s own doc comment
-/// already gives for `report-determinism`, one call chain later.
-///
-/// `modules` is the whole build closure (plans/M9.md item EE): an
-/// imported struct's field layout lives in the *exporting* module's AST,
-/// so `layout::merge_layout_ctx` must see every module, not just the
-/// root. Lowering the root alone is enough for the code itself —
-/// `lower::lower_program` emits imported fns/methods under the local
-/// spelling (item EE decision 90).
 pub(crate) fn build_runtime_test_image(
     program: &sema::typed::TypedProgram,
     modules: &BTreeMap<String, Module>,
@@ -2600,12 +1810,7 @@ pub(crate) fn build_runtime_test_image(
     test_names: &[String],
 ) -> Result<(Vec<u8>, String), String> {
     let mut layout_ctx = layout::merge_layout_ctx(modules).map_err(|e| e.message)?;
-    // plans/M9.md item II: fold imported instantiations under the
-    // importer's alias spelling — same call `--stage=asm` already makes.
     layout::enrich_layout_ctx_with_instantiations(&mut layout_ctx, programs);
-    // plans/M6.md item F / scaffolding dissolution: same one-check →
-    // one-lower path as `bin/wrela.rs::test_cmd` — force-root the live
-    // runtime before layout so primary/enqueue/secondary trampolines exist.
     let graph = match &program.image_fn {
         Some(fn_name) => {
             wrela_compiler::eval::interp::eval_image(program, fn_name).map_err(|e| {
@@ -2631,10 +1836,6 @@ pub(crate) fn build_runtime_test_image(
         &graph,
         test_names,
         &async_tests,
-        // 02 §12.2 keeps a comptime-legal bare `@test` out of production
-        // images; this oracle boots those same bodies as guest code to
-        // compare tiers, so it opts back in. Without this every case
-        // fails closed with "runtime test `X` was never codegen'd".
         true,
     )?;
     let boot = layout::BootCtx {
@@ -2667,31 +1868,15 @@ pub(crate) fn build_runtime_test_image(
         ));
     }
     report_text.push_str(&format!("Entry base={:#x}\n", image_layout.entry));
-    // plans/M8.md item C3: the same VMM-facing lines `bin/wrela.rs`'s own
-    // runtime tier writes — `CoreEntry` (item C1), `Ring` (this item),
-    // `Blk*` and `IrqHostInject`. This copy carried none of them before,
-    // so every image the determinism lanes built was implicitly
-    // single-core and deviceless; a cross-core case failed its release
-    // doorbell rather than booting. One shared writer, no fourth copy.
     layout::append_vmm_runtime_lines(&mut report_text, &image_layout);
     Ok((image_layout.blob, report_text))
 }
 
-/// Shells out to the codesigned `wrela-vmm` binary exactly like `bin/
-/// wrela.rs::test_cmd`/`golden`'s own `test.txt` stage do — `xtask`
-/// itself stays unsigned throughout (plans/M5.md decision 11: the only
-/// binary that ever touches Hypervisor.framework is `wrela-vmm`).
-/// `exit_code_class` is the wrapper process's own exit code: `0`/`1`
-/// mirror the guest's own reported outcome (decision 9's normal pass/
-/// fail range), anything else names a genuine VMM-level failure.
 struct VmmBoot {
     transcript: String,
     exit_code_class: i32,
 }
 
-/// One repro lane's scratch directory, freshly created, with the image and
-/// report already written into it. Every lane staged these by hand — the
-/// only thing that ever differed was the directory name.
 fn stage_repro_dir(
     dir_name: &str,
     img_bytes: &[u8],
@@ -2711,10 +1896,6 @@ fn stage_repro_dir(
     Ok((tmp_dir, img_path, report_path, record_path))
 }
 
-/// Spawn the signed `wrela-vmm` on a staged image, with one trailing
-/// mode flag pair (`--record <path>` / `--replay <path>`), and return its
-/// output plus the exit code every caller computes anyway. `what` names the
-/// invocation in the spawn-failure message only.
 fn run_vmm_mode(
     vmm: &Path,
     report_path: &Path,
@@ -2746,21 +1927,6 @@ fn run_vmm(vmm: &Path, report_path: &Path, img_path: &Path) -> Result<VmmBoot, S
     })
 }
 
-/// One golden case's own recorded facts from `--record <path>` (`wrela-
-/// vmm`'s own hand-rolled `key=value` text format, `wrela-vmm/src/
-/// record.rs::RecordFile::to_text`) — `xtask` deliberately does not
-/// depend on the `wrela-vmm` *crate* to parse this (CLAUDE.md: a
-/// dependency is a liability, and plans/M5.md decision 11's own "keeps
-/// xtask itself unsigned and the signed surface one small binary" reads
-/// as a design boundary worth keeping crisp at the crate-graph level too,
-/// not only at the "who calls HVF" level) — a few `strip_prefix` calls
-/// over a handful of known keys is simpler than a real dependency for
-/// the three fields `bench guest`/`profile` actually need. plans/M6.md
-/// item E: `clock_log_len` -> `choice_count` (decision 9's own choice-
-/// sequence recorder grows the field this reads — bench guest's own
-/// "exact counts" assertion now covers the whole choice sequence, not
-/// only clock reads, per the item's own "bench guest's exact-count
-/// assertions extend to choice-count" instruction).
 pub(crate) struct GuestRecord {
     pub(crate) exit_code: u64,
     pub(crate) exits: u64,
@@ -2790,22 +1956,6 @@ pub(crate) fn parse_guest_record(text: &str) -> Result<GuestRecord, String> {
     })
 }
 
-/// The oracle itself, over whichever golden cases `filter` selects
-/// (`None` = the whole corpus, `cargo xtask diff-eval`'s own standalone
-/// form; `Some(names)` = the in-`check` smoke subset, below). Every case
-/// visited prints its own contribution as it happens; any real
-/// disagreement returns `Err` immediately (decision 9: "ANY disagreement
-/// ... fails"), never accumulated past the first one found.
-///
-/// Product-default `release` (plans/M19.md decision 1470 follow-up): TLS
-/// opt knobs default NarrowImm **off**; without `apply_mode` this lane
-/// would score a half-release backend. Call once before any lower/codegen.
-///
-/// `extra_opts` (plans/codegen-pareto-2.md item N, decision 1913) adds
-/// ids **on top of** `RELEASE_OPTS` rather than replacing it — the point
-/// of running this lane under a parked opt is to prove that opt correct
-/// in the configuration the product otherwise is, not in a
-/// half-configured backend nobody builds.
 fn diff_eval_over_cases(
     vmm: &Path,
     filter: Option<&[&str]>,
@@ -2838,11 +1988,6 @@ fn diff_eval_over_cases(
         if !target.exists() {
             continue;
         }
-        // plans/codegen-pareto.md item H, decision 1786: a **borrowed**
-        // case (`root` naming a program outside the case dir — the
-        // product-scale cost tier) owns no program of its own, so the case
-        // that *does* own it is already in this loop. Running it twice
-        // proves nothing twice and doubles the compile.
         if golden_case_is_borrowed(&case)? {
             println!(
                 "diff-eval: case {name}: borrows its program — covered by the case that owns it"
@@ -2853,11 +1998,11 @@ fn diff_eval_over_cases(
             .map_err(|e| format!("read {}: {e}", target.display()))?;
         let path_display = target.display().to_string();
         let Some(checked) = typecheck_for_diff_eval(&target) else {
-            continue; // out of scope: lex/parse/sema/load error (err-* goldens)
+            continue;
         };
         let program = &checked.root_program;
         if program.tests.is_empty() {
-            continue; // fully out of scope: no @test fn of any kind
+            continue;
         }
 
         let comptime_names: Vec<String> = program
@@ -2881,23 +2026,12 @@ fn diff_eval_over_cases(
             continue;
         }
 
-        // `eval::run_tests` first: every comptime test's own line is
-        // needed both to filter out quota-exhaustion outcomes (below)
-        // and, later, as the comparison oracle itself — one call covers
-        // both, exactly the shape `wrela test`'s own comptime tier
-        // already produces.
         let (eval_report, _) = eval::run_tests(program);
         let eval_line_for = |test_name: &str| -> Option<&str> {
             let prefix = format!("test {test_name}: ");
             eval_report.lines().find(|l| l.starts_with(&prefix))
         };
 
-        // `comptime.eval.quotas`' own step/memory quota is a comptime-tier
-        // resource bound with no backend equivalent (`DiffEvalTally::
-        // quota_skips`' own doc comment) — a test the evaluator only
-        // fails via quota exhaustion is excluded from the image entirely,
-        // never compiled/booted, since a real image would just spin
-        // forever rather than disagree meaningfully.
         let mut backend_names: Vec<String> = Vec::new();
         let mut quota_skipped: Vec<String> = Vec::new();
         for test_name in &comptime_names {
@@ -2918,7 +2052,7 @@ fn diff_eval_over_cases(
             );
         }
         if backend_names.is_empty() {
-            continue; // every comptime test in this case was quota-skipped
+            continue;
         }
 
         let (img_bytes, report_text) = match build_runtime_test_image(
@@ -2964,12 +2098,6 @@ fn diff_eval_over_cases(
         }
 
         let t_lines: Vec<&str> = boot.transcript.lines().collect();
-        // N test lines, then the summary, then the harness's own trailing
-        // counter dump (`__wrela_lane1_dump` / `__wrela_lane2_dump`, the
-        // `lane1 `/`lane2 ` lines every `boot-*` `test.txt` golden also
-        // pins). Only the test lines are this oracle's comparison surface;
-        // the tail is checked for shape so a *changed* tail is still a
-        // loud failure rather than a silently ignored suffix.
         let n = backend_names.len();
         let well_formed = t_lines.len() > n
             && t_lines[n].ends_with(" failed")
@@ -3014,30 +2142,8 @@ fn diff_eval_over_cases(
     Ok(tally)
 }
 
-/// `cargo xtask diff-eval`: the unrestricted, full-corpus form (decision
-/// 9's own "the full corpus on demand").
-/// Measured reach floor for the full corpus, in the same spirit as every
-/// fuzz lane's own printed reach: this oracle spent the whole M20 window
-/// reporting `0 test(s) agree across 0 case(s)` and **exiting 0**, because
-/// a signature change dropped `emit_comptime_tests` and every case fell
-/// into the `lowering failed closed` skip bucket. A skip is a legitimate
-/// outcome one case at a time and a collapse in aggregate, so the
-/// aggregate is what gets a floor. Raise it deliberately when the corpus
-/// grows; it is a floor, not a lock, so an added case never fails here.
 const DIFF_EVAL_MIN_AGREE: usize = 100;
 
-/// `cargo xtask diff-eval [--with-opt <Name>]`.
-///
-/// **`--with-opt` exists for the parked opts** (CLAUDE.md 2026-07-31,
-/// decision 1913). A `PARKED_OPTS` member is reachable from no
-/// `CompileMode`, so without a way to name it here the doctrine's "a
-/// parked opt must still pass `diff-eval`" would be unenforceable and the
-/// park would silently become a graveyard. The flag names ids by their
-/// `Debug` spelling and **fails closed on a name no id has**, in the
-/// spirit of `golden --filter`: a typo must not quietly run the plain
-/// release lane and report a pass about the wrong thing. It may name a
-/// shipped id too — that is a no-op, and saying so is cheaper than a
-/// special case.
 fn diff_eval(args: &[String]) -> Result<(), String> {
     let mut extra: Vec<opts::OptId> = Vec::new();
     let mut i = 0;
@@ -3086,26 +2192,8 @@ fn diff_eval(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// The in-`check` smoke subset (plans/M5.md item F: "the boot golden +
-/// one arithmetic-heavy case", item F's own text naming three specific
-/// cases to pick from): `boot-hello` (exercises the whole build+sign+
-/// boot chain end to end on every `check` run — it declares zero
-/// comptime-legal tests of its own, decision 1's own runtime-only scope,
-/// so it never contributes to the agree/skip counters, only to proving
-/// the pipeline itself still boots) plus the two arithmetic-heavy
-/// comptime suites `check-tests-arith`/`check-tests-program` (15
-/// comptime tests between them, exercising checked/wrapping arithmetic,
-/// structs, enums, `match`, loops, and a generic fn) — the closest
-/// existing cases to the plan's own naming, used verbatim rather than
-/// substituted.
 const DIFF_EVAL_SMOKE_CASES: [&str; 3] = ["boot-hello", "check-tests-arith", "check-tests-program"];
 
-/// The smoke set is three *named* cases, so its reach is an exact number,
-/// not a floor: 7 comptime tests in `check-tests-arith` + 7 in
-/// `check-tests-program`, across those same 2 cases (`boot-hello`
-/// contributes the build+sign+boot chain and no comptime tests). `check`
-/// running this lane green while comparing nothing is the failure this
-/// pins — see [`DIFF_EVAL_MIN_AGREE`].
 const DIFF_EVAL_SMOKE_AGREE: usize = 14;
 const DIFF_EVAL_SMOKE_CASES_AGREED: usize = 2;
 
@@ -3133,31 +2221,6 @@ fn diff_eval_smoke() -> Result<(), String> {
     }
     Ok(())
 }
-
-// --- roundtrip --------------------------------------------------------
-//
-// plans/M1.md item E's second oracle, the parser's `diff-eval`: for every
-// corpus entry that parses (same `...`-fragment skip rule as `corpus`)
-// and every golden's `input.wr`, parse -> pretty-print -> reparse ->
-// compare the two AST dumps with spans stripped (spans necessarily
-// differ: the pretty-printed text is laid out differently from the
-// original source, so only the tree shape is being compared). Any
-// mismatch prints both dumps' first divergence plus the pretty-printed
-// text that produced it, for direct debugging.
-//
-// the pinned rule adds a second oracle riding
-// the same parse -> pretty -> reparse cycle, on the same entries, whenever
-// the entry parses as a whole `Module` (sema has no fragment entry point):
-// A = sema outcome of the original module, B = sema outcome of the
-// reparsed one; `sema_roundtrip_check` (shared comparison machinery in
-// the "fuzz: sema roundtrip stability + item-rotation invariance" section
-// above) demands they agree. This is why the golden half of `roundtrip`
-// below no longer filters to `ast-*` only: `check-*`/`err-type-*`/etc.
-// golden inputs are exactly the sema-*meaningful* corpus (valid syntax,
-// sema accepts or rejects) the sema oracle needs, and the existing AST
-// oracle running on them too is a free, expected-to-pass bonus check
-// (any AST mismatch it turned up would itself be a printer bug worth
-// fixing, same as on `ast-*`).
 
 enum RoundtripResult {
     Checked,
@@ -3234,15 +2297,6 @@ fn roundtrip() -> Result<(), String> {
     }
 }
 
-/// One entry's parse -> pretty -> reparse -> compare cycle, plus (whenever
-/// the entry parses as a whole `Module`) the sema-roundtrip oracle over
-/// the same original/reparsed pair. Entries that don't lex/parse at all
-/// are `Skipped` (that's `corpus`'s job to catch, not roundtrip's) rather
-/// than treated as a failure here; the second return value is the
-/// sema-roundtrip oracle's own result — `None` when the entry isn't a
-/// `Module` (a fragment, or the AST cycle itself already failed before a
-/// reparsed module ever existed to check), `Some(Ok(()))` when it agreed,
-/// `Some(Err(reason))` on a genuine sema-roundtrip disagreement.
 fn roundtrip_one(name: &str, body: &str) -> (RoundtripResult, Option<Result<(), String>>) {
     let tokens = match lexer::lex(body) {
         Ok(t) => t,
@@ -3316,19 +2370,12 @@ fn roundtrip_one(name: &str, body: &str) -> (RoundtripResult, Option<Result<(), 
                     );
                 }
             };
-            // Sema has no fragment entry point (it operates on a whole
-            // `Module` — mod.rs's own doc comment); the sema-roundtrip
-            // oracle only applies to the `Parsed::Module` arm above.
             (compare_dumps(name, &dump1, &dump2, &pretty), None)
         }
         Err(_) => (RoundtripResult::Skipped, None),
     }
 }
 
-/// The sema-roundtrip oracle,
-/// applied to one entry's original and reparsed modules — the same
-/// `sema_outcome_summary`/`sema_outcomes_agree` machinery `fuzz sema`
-/// uses. `Ok(())` on agreement.
 fn sema_roundtrip_check(name: &str, original: &Module, reparsed: &Module) -> Result<(), String> {
     const PATH: &str = "<roundtrip>";
     let a = sema_outcome_summary(original, PATH);
@@ -3347,8 +2394,6 @@ fn compare_dumps(name: &str, dump1: &str, dump2: &str, pretty: &str) -> Roundtri
     ))
 }
 
-/// The first line at which two dumps differ, each labeled with its line
-/// number (1-based); `<end of output>` stands in when one dump is shorter.
 fn first_divergence(a: &str, b: &str) -> (String, String) {
     let a_lines: Vec<&str> = a.lines().collect();
     let b_lines: Vec<&str> = b.lines().collect();
@@ -3366,19 +2411,8 @@ fn first_divergence(a: &str, b: &str) -> (String, String) {
     ("<identical>".to_string(), "<identical>".to_string())
 }
 
-// --- diff-block-count (Integrity Phase 2 Item N) ----------------------------
-//
-// Lane 2 guest `lane2 hits=` transcript vs Lane 3 host DRAM snapshot of
-// the placed `LANE2` page, on control case `boot-actors` under
-// `--block-count`. Fail closed — never skip, never treat empty==empty as
-// agreement. Not wired into `check` (Phase 2 item Q owns the expensive
-// gate); Cheap for this item is `cargo xtask diff-block-count`.
-
-/// Exact libtest path for the HVF control-case agreement (must match
-/// `cargo test -p wrela-vmm --lib -- --list`).
 const DIFF_BLOCK_COUNT_TEST: &str = "tests::block_count_lane2_agrees_with_host_dram_on_boot_actors";
 
-/// Integrity Phase 2 Item N: Lane 2 / Lane 3 agreement on `boot-actors`.
 fn diff_block_count() -> Result<(), String> {
     if !(cfg!(target_os = "macos") && cfg!(target_arch = "aarch64")) {
         return fail_closed(
@@ -3387,7 +2421,6 @@ fn diff_block_count() -> Result<(), String> {
         );
     }
 
-    // Fail-closed parse/agree units (no HVF) — catch stub agreement early.
     run(
         Command::new("cargo").args([
             "test",
@@ -3402,9 +2435,6 @@ fn diff_block_count() -> Result<(), String> {
         "diff-block-count: lane3 parse/agree units",
     )?;
 
-    // HVF control-case agreement: codesign the libtest binary (same
-    // entitlement surface as `test_wrela_vmm_signed`), then run only the
-    // named oracle. `cargo test` without codesign cannot call HVF.
     let output = Command::new("cargo")
         .current_dir(root())
         .args(["test", "-p", "wrela-vmm", "--lib", "--no-run"])
@@ -3454,8 +2484,6 @@ fn diff_block_count() -> Result<(), String> {
         let stderr = String::from_utf8_lossy(&out.stderr);
         print!("{stdout}");
         eprint!("{stderr}");
-        // Fail closed: libtest prints `running N tests` — N must be 1.
-        // A filter miss (`running 0 tests` + exit 0) must never green.
         let ran_here = stdout
             .lines()
             .find_map(|l| {
@@ -3498,46 +2526,10 @@ fn diff_block_count() -> Result<(), String> {
     Ok(())
 }
 
-// --- diff-blk: the QEMU differential oracle (plans/M7.md decision 2a) -------
-
-/// Homebrew's own path on this development host. Fails closed (never
-/// skips) if absent — see `diff_blk`.
 const QEMU_AARCH64: &str = "/opt/homebrew/bin/qemu-system-aarch64";
 
-/// PL011 UART data register on QEMU's `virt` machine.
 const VIRT_UART: u64 = 0x0900_0000;
 
-/// `cargo xtask diff-blk`: the QEMU differential oracle (plans/M7.md
-/// decision 2a — "the QEMU bootstrap implementation (06 §1, scheduled for
-/// retirement) is used as a **differential oracle** for ring handling
-/// while it still exists — the one thing that gets permanently harder
-/// later, since a bespoke ring would have no second implementation to
-/// disagree with").
-///
-/// One ring, two devices. `fill_blk_ring` writes the *identical*
-/// descriptor chains, request headers, poisoned status bytes and payload
-/// into both guests' data regions; each guest then publishes those chains
-/// through its own transport — the wrela machine's shared-memory doorbell
-/// (06 §5) on one side, QEMU's trapping `QueueNotify` MMIO write on the
-/// other — and both devices' answers are compared field by field: the used
-/// ring's own index and every `(id, len)` entry, both status bytes, and an
-/// FNV-1a digest over the transferred payload plus its status byte,
-/// computed identically on both sides (`wrela_vmm::record::digest_hex` in
-/// Rust; the same loop hand-assembled in the QEMU guest).
-///
-/// **Deliberately not wired into `cargo xtask check`**: 06 §1 has QEMU
-/// "used until the wrela VMM boots images, then retired", so making the
-/// gate depend on a tool that is scheduled to go away would turn its
-/// eventual removal into a gate failure. It fails closed — never skips —
-/// when QEMU is absent, so an operator who runs it always learns whether
-/// it ran.
-///
-/// What it can and cannot compare, stated plainly: the *ring handling and
-/// request format* (which is exactly what decision 2a asks for), not the
-/// transport (this machine has none) and not the doorbell (QEMU's
-/// notification is a trap, which is the thing 06 §5 deletes).
-///
-/// Optional host conformance oracle outside `check`, not the VMM.
 fn diff_blk() -> Result<(), String> {
     if !Path::new(QEMU_AARCH64).exists() {
         return fail_closed(
@@ -3549,10 +2541,6 @@ fn diff_blk() -> Result<(), String> {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
 
-    // (0) Prove QEMU runs a hand-assembled guest of ours at all, before
-    // any comparison is attempted — an oracle that silently degrades into
-    // "QEMU printed nothing, so nothing disagreed" would be worse than
-    // none.
     let smoke_path = dir.join("smoke.bin");
     std::fs::write(&smoke_path, build_qemu_smoke_guest()).map_err(|e| format!("write: {e}"))?;
     let smoke = run_qemu(&smoke_path, None)?;
@@ -3563,7 +2551,6 @@ fn diff_blk() -> Result<(), String> {
         ));
     }
 
-    // (1) QEMU's virtio-blk.
     let guest_path = dir.join("guest.bin");
     std::fs::write(&guest_path, build_qemu_blk_guest()).map_err(|e| format!("write guest: {e}"))?;
     let disk_path = dir.join("disk.img");
@@ -3594,9 +2581,6 @@ fn diff_blk() -> Result<(), String> {
         digest1: format!("{:016x}", fields[6]),
     };
 
-    // (2) The wrela VMM's own model, over the identical ring — read back
-    // out of the recorded choice sequence (the completions themselves)
-    // plus the guest's own checks (its exit code).
     let vmm = build_and_sign_vmm()?;
     let (img_bytes, report_text) = blk_conformance_image();
     let img_path = dir.join("wrela.img");
@@ -3648,8 +2632,6 @@ fn diff_blk() -> Result<(), String> {
             .map_err(|e| format!("diff-blk: completion #{i} field `{k}`: {e}"))
     };
     let wrela = BlkAnswer {
-        // The wrela model publishes one used entry per completion, in
-        // order, so its own used index is simply how many it published.
         used_idx: completions.len() as u32,
         head0: num(0, "head")?,
         len0: num(0, "len")?,
@@ -3661,7 +2643,6 @@ fn diff_blk() -> Result<(), String> {
         digest1: field(1, "digest")?,
     };
 
-    // (3) The comparison itself.
     let facts: Vec<(&str, String, String)> = vec![
         (
             "used.idx",
@@ -3735,10 +2716,6 @@ fn diff_blk() -> Result<(), String> {
     Ok(())
 }
 
-/// What one implementation answered for the two-operation workload. Both
-/// sides fill this in from entirely different sources — the wrela side
-/// from its own recorded choice sequence, QEMU's from the used ring its
-/// guest read back — and it is the whole comparison surface.
 struct BlkAnswer {
     used_idx: u32,
     head0: u32,
@@ -3751,9 +2728,6 @@ struct BlkAnswer {
     digest1: String,
 }
 
-/// The QEMU build actually compared against, recorded in the oracle's own
-/// output line (a differential result means nothing without naming the
-/// other implementation).
 fn qemu_version() -> Result<String, String> {
     let out = Command::new(QEMU_AARCH64)
         .arg("--version")
@@ -3767,10 +2741,6 @@ fn qemu_version() -> Result<String, String> {
         .to_string())
 }
 
-/// Runs one hand-assembled bare-metal guest under QEMU's `virt` machine
-/// and returns everything it printed on the UART. Bounded by a wall clock
-/// (a guest that never reaches its own `SYSTEM_OFF` is killed and
-/// reported, never left to hang the harness).
 fn run_qemu(guest: &Path, disk: Option<&Path>) -> Result<String, String> {
     let mut cmd = Command::new(QEMU_AARCH64);
     cmd.args([
@@ -3782,12 +2752,6 @@ fn run_qemu(guest: &Path, disk: Option<&Path>) -> Result<String, String> {
         "256",
         "-nographic",
         "-no-reboot",
-        // QEMU's virtio-mmio transport still defaults to the **legacy**
-        // (v1) interface, whose ring layout and feature words are not the
-        // ones 03-hardware.md §1 names ("OASIS VIRTIO 1.2 split rings as
-        // profiled by the machine spec"). Without this the guest's own
-        // scan finds a `Version=1` transport and prints `NODEV` — found
-        // the honest way, by the oracle refusing to run, not by guessing.
         "-global",
         "virtio-mmio.force-legacy=false",
     ]);
@@ -3839,14 +2803,8 @@ fn qemu_load_imm(reg: u8, value: u64) -> Vec<u32> {
     ]
 }
 
-/// `hvc #0` — PSCI's own conduit on QEMU's `virt` machine without
-/// `virtualization=on`. Not in `wrela_compiler::encode` because this
-/// machine has no hypercall instruction at all (06 §5: the guest exits
-/// via a trapping store), so the one raw word is spelled here.
 const ENC_HVC0: u32 = 0xD400_0002;
 
-/// `x0 = PSCI SYSTEM_OFF; hvc #0` — how a QEMU guest ends. Nothing after
-/// it ever runs.
 fn qemu_system_off(w: &mut Vec<u32>) {
     w.extend(qemu_load_imm(0, 0x8400_0008));
     w.push(ENC_HVC0);
@@ -3863,15 +2821,6 @@ fn build_qemu_smoke_guest() -> Vec<u8> {
     qemu_system_off(&mut w);
     w.iter().flat_map(|x| x.to_le_bytes()).collect()
 }
-
-// --- the QEMU-side driver ---------------------------------------------------
-//
-// virtio-mmio v2 register file (OASIS VIRTIO 1.2 §4.2.2) — the transport
-// **this machine does not have** (06 §3/§5 delete discovery and trapping
-// notification alike), present here for exactly one reason: it is how a
-// guest reaches QEMU's virtio-blk, and QEMU's virtio-blk is the second
-// implementation decision 2a wants to disagree with. Nothing below is
-// modelled by `wrela-vmm`, and nothing below should ever be.
 
 const MMIO_MAGIC: u16 = 0x000;
 const MMIO_VERSION: u16 = 0x004;
@@ -3895,13 +2844,8 @@ const MMIO_QUEUE_DEVICE_HIGH: u16 = 0x0A4;
 const VIRT_MMIO_BASE: u64 = 0x0A00_0000;
 const VIRT_MMIO_STRIDE: u64 = 0x200;
 const VIRT_MMIO_SLOTS: u64 = 32;
-/// Where QEMU's generic loader puts this guest, and therefore where its
-/// own trailing data region (ring + buffers) lives.
 const QEMU_LOAD_ADDR: u64 = 0x4010_0000;
 
-/// The shared shape of both sides of the oracle: the identical ring
-/// geometry, descriptor chains, and payload `blk_conformance_image` gives
-/// the wrela VMM, expressed as offsets within one data region.
 mod blk_shape {
     pub const QUEUE_SIZE: u64 = 8;
     pub const DESC_SIZE: u64 = 16;
@@ -3920,18 +2864,11 @@ mod blk_shape {
     pub const OFF_DST: u64 = 0x400;
     pub const DATA_REGION_SIZE: u64 = 0x600;
 
-    /// The one payload both sides write and read back.
     pub fn payload() -> Vec<u8> {
         (0..512u32).map(|i| ((i * 7 + 3) % 256) as u8).collect()
     }
 }
 
-/// Writes the ring's own prefilled bytes (descriptor chains, both request
-/// headers, the poisoned status bytes, the source payload) into `img` at
-/// `data_off`, given the region's guest-physical `data_base`. **The one
-/// copy both sides of the oracle use**, so "the same ring" is a fact
-/// rather than a claim: `blk_conformance_image` (the wrela VMM's own
-/// image) and `build_qemu_blk_guest` (QEMU's) both call this.
 fn fill_blk_ring(img: &mut [u8], data_off: usize, data_base: u64) {
     use blk_shape::*;
     let put = |img: &mut [u8], off: u64, bytes: &[u8]| {
@@ -3962,32 +2899,16 @@ fn fill_blk_ring(img: &mut [u8], data_off: usize, data_base: u64) {
         5,
     );
     desc(img, 5, data_base + OFF_STATUS2, 1, DESC_F_WRITE, 0);
-    // `0` is `STATUS_OK` and the image is zero-padded, so an unwritten
-    // status byte would read as a pass. Poison both.
     put(img, OFF_STATUS1, &[0xEE]);
     put(img, OFF_STATUS2, &[0xEE]);
     put(img, OFF_SRC, &blk_shape::payload());
 }
 
-/// A bare-metal virtio-mmio blk driver, hand-assembled, for QEMU's `virt`
-/// machine. Scans the 32 virtio-mmio transports for a block device, brings
-/// it up (reset -> ACKNOWLEDGE -> DRIVER -> features -> FEATURES_OK ->
-/// queue -> DRIVER_OK), publishes the *same two chains* the wrela side
-/// publishes, polls the used ring, then prints one line the harness parses:
-///
-/// ```text
-/// R <used[0..8]> <used[8..16]> <used[16..24]> <fnv(SRC||status1)> <fnv(DST||status2)>
-/// ```
-///
-/// Every failure has its own printed marker instead of a hang (`NODEV`,
-/// `FEAT`, `TMO1`, `TMO2`), so a broken oracle says which step broke.
 fn build_qemu_blk_guest() -> Vec<u8> {
     use blk_shape::*;
     use wrela_compiler::encode;
     use wrela_compiler::encode::Cond;
 
-    // Registers: x20 = transport base, x21 = data base, x22 = UART,
-    // x9/x10/x11/x12/x13/x14/x15/x16 = scratch, x23..x27 = results.
     let build = |data_base: u64| -> Vec<u32> {
         let mut w: Vec<u32> = Vec::new();
         let li = |w: &mut Vec<u32>, reg: u8, v: u64| w.extend(qemu_load_imm(reg, v));
@@ -3995,7 +2916,6 @@ fn build_qemu_blk_guest() -> Vec<u8> {
         li(&mut w, 22, VIRT_UART);
         li(&mut w, 21, data_base);
 
-        // --- print one byte through the UART -------------------------
         let putc = |w: &mut Vec<u32>, b: u8| {
             w.push(encode::enc_movz(10, b as u16, 0, false));
             w.push(encode::enc_str_w_imm(10, 22, 0));
@@ -4006,23 +2926,22 @@ fn build_qemu_blk_guest() -> Vec<u8> {
             }
         };
 
-        // --- scan the 32 virtio-mmio transports for DeviceID 2 --------
         li(&mut w, 20, VIRT_MMIO_BASE);
         li(&mut w, 19, VIRT_MMIO_SLOTS);
         let scan_top = w.len();
         w.push(encode::enc_ldr_w_imm(9, 20, MMIO_MAGIC));
-        li(&mut w, 10, 0x7472_6976); // 'virt'
+        li(&mut w, 10, 0x7472_6976);
         w.push(encode::enc_cmp_reg(9, 10, false));
         let magic_ne = w.len();
-        w.push(0); // b.ne next
+        w.push(0);
         w.push(encode::enc_ldr_w_imm(9, 20, MMIO_VERSION));
         w.push(encode::enc_cmp_imm(9, 2, false));
         let version_ne = w.len();
-        w.push(0); // b.ne next
+        w.push(0);
         w.push(encode::enc_ldr_w_imm(9, 20, MMIO_DEVICE_ID));
-        w.push(encode::enc_cmp_imm(9, 2, false)); // VIRTIO_ID_BLOCK
+        w.push(encode::enc_cmp_imm(9, 2, false));
         let id_eq = w.len();
-        w.push(0); // b.eq found
+        w.push(0);
         let next_slot = w.len();
         li(&mut w, 10, VIRT_MMIO_STRIDE);
         w.push(encode::enc_add_reg(20, 20, 10, true));
@@ -4043,22 +2962,19 @@ fn build_qemu_blk_guest() -> Vec<u8> {
         }
         w[id_eq] = encode::enc_b_cond(Cond::Eq, ((found as i64 - id_eq as i64) * 4) as i32);
 
-        // --- bring-up (VIRTIO 1.2 §3.1) -------------------------------
         let status = |w: &mut Vec<u32>, bits: u16| {
             w.push(encode::enc_movz(10, bits, 0, false));
             w.push(encode::enc_str_w_imm(10, 20, MMIO_STATUS));
         };
-        status(&mut w, 0); // reset
-        status(&mut w, 1); // ACKNOWLEDGE
-        status(&mut w, 3); // ACKNOWLEDGE | DRIVER
+        status(&mut w, 0);
+        status(&mut w, 1);
+        status(&mut w, 3);
 
-        // Feature word 1 (bits 32..63): accept VIRTIO_F_VERSION_1 (bit 32).
         w.push(encode::enc_movz(10, 1, 0, false));
         w.push(encode::enc_str_w_imm(10, 20, MMIO_DEVICE_FEATURES_SEL));
         w.push(encode::enc_str_w_imm(10, 20, MMIO_DRIVER_FEATURES_SEL));
         w.push(encode::enc_movz(10, 1, 0, false));
         w.push(encode::enc_str_w_imm(10, 20, MMIO_DRIVER_FEATURES));
-        // Feature word 0: accept VIRTIO_BLK_F_FLUSH (bit 9) if offered.
         w.push(encode::enc_movz(10, 0, 0, false));
         w.push(encode::enc_str_w_imm(10, 20, MMIO_DEVICE_FEATURES_SEL));
         w.push(encode::enc_str_w_imm(10, 20, MMIO_DRIVER_FEATURES_SEL));
@@ -4067,12 +2983,12 @@ fn build_qemu_blk_guest() -> Vec<u8> {
         w.push(encode::enc_and_reg(10, 10, 9, false));
         w.push(encode::enc_str_w_imm(10, 20, MMIO_DRIVER_FEATURES));
 
-        status(&mut w, 3 | 8); // FEATURES_OK
+        status(&mut w, 3 | 8);
         w.push(encode::enc_ldr_w_imm(9, 20, MMIO_STATUS));
         w.push(encode::enc_movz(10, 8, 0, false));
         w.push(encode::enc_and_reg(9, 9, 10, false));
         let feat_ok = w.len();
-        w.push(0); // cbnz x9, ok
+        w.push(0);
         puts(&mut w, b"FEAT\n");
         qemu_system_off(&mut w);
         {
@@ -4080,7 +2996,6 @@ fn build_qemu_blk_guest() -> Vec<u8> {
             w[feat_ok] = encode::enc_cbnz(9, ((target as i64 - feat_ok as i64) * 4) as i32, true);
         }
 
-        // --- queue 0 --------------------------------------------------
         w.push(encode::enc_movz(10, 0, 0, false));
         w.push(encode::enc_str_w_imm(10, 20, MMIO_QUEUE_SEL));
         w.push(encode::enc_movz(10, QUEUE_SIZE as u16, 0, false));
@@ -4109,27 +3024,23 @@ fn build_qemu_blk_guest() -> Vec<u8> {
         }
         w.push(encode::enc_movz(10, 1, 0, false));
         w.push(encode::enc_str_w_imm(10, 20, MMIO_QUEUE_READY));
-        status(&mut w, 3 | 8 | 4); // DRIVER_OK
+        status(&mut w, 3 | 8 | 4);
 
-        // --- publish + notify + poll, twice ---------------------------
         let mut timeout_markers: Vec<(usize, &[u8])> = Vec::new();
         for (round, (avail_idx, want_used)) in [(1u64, 1u32), (2u64, 2u32)].iter().enumerate() {
-            // avail: one aligned 64-bit store of flags/idx/ring[0]/ring[1].
             li(&mut w, 9, data_base + OFF_AVAIL);
             li(&mut w, 10, (avail_idx << 16) | (3 << 48));
             w.push(encode::enc_str_x_imm(10, 9, 0));
-            // The doorbell QEMU actually has: a trapping MMIO write.
             w.push(encode::enc_movz(10, 0, 0, false));
             w.push(encode::enc_str_w_imm(10, 20, MMIO_QUEUE_NOTIFY));
-            // Poll used.idx, bounded.
             li(&mut w, 12, 200_000_000);
             li(&mut w, 9, data_base + OFF_USED);
             let poll_top = w.len();
-            w.push(encode::enc_ldr_w_imm(10, 9, 0)); // flags | idx<<16
+            w.push(encode::enc_ldr_w_imm(10, 9, 0));
             w.push(encode::enc_lsr_imm(10, 10, 16, false));
             w.push(encode::enc_cmp_imm(10, *want_used as u16, false));
             let done = w.len();
-            w.push(0); // b.eq done
+            w.push(0);
             w.push(encode::enc_subs_imm(12, 12, 1, true));
             {
                 let this = w.len();
@@ -4148,7 +3059,6 @@ fn build_qemu_blk_guest() -> Vec<u8> {
         }
         let _ = timeout_markers;
 
-        // --- read the three used-ring words and both status bytes -----
         li(&mut w, 9, data_base + OFF_USED);
         w.push(encode::enc_ldr_x_imm(23, 9, 0));
         w.push(encode::enc_ldr_x_imm(24, 9, 8));
@@ -4158,12 +3068,9 @@ fn build_qemu_blk_guest() -> Vec<u8> {
         li(&mut w, 9, data_base + OFF_STATUS2);
         w.push(encode::enc_ldrb_imm(28, 9, 0));
 
-        // --- FNV-1a over (buffer || status), twice --------------------
-        // Matches `wrela_vmm::record::digest_hex` exactly: h = OFFSET;
-        // for b: h ^= b; h *= PRIME.
         let fnv = |w: &mut Vec<u32>, start: u64, len: u64, status_at: u64, out: u8| {
-            li(w, 13, 0xcbf2_9ce4_8422_2325); // hash
-            li(w, 14, 0x0000_0100_0000_01b3); // prime
+            li(w, 13, 0xcbf2_9ce4_8422_2325);
+            li(w, 14, 0x0000_0100_0000_01b3);
             li(w, 11, start);
             li(w, 15, start + len);
             let top = w.len();
@@ -4200,19 +3107,15 @@ fn build_qemu_blk_guest() -> Vec<u8> {
             27,
         );
 
-        // --- print `R <5 hex words>\n` --------------------------------
         let print_hex = |w: &mut Vec<u32>, src: u8| {
-            // x11 = shift, counting 60, 56, ... 0.
             w.push(encode::enc_movz(11, 60, 0, true));
             let top = w.len();
             w.push(encode::enc_lsr_reg(12, src, 11, true));
             w.push(encode::enc_movz(13, 0xF, 0, true));
             w.push(encode::enc_and_reg(12, 12, 13, true));
             w.push(encode::enc_cmp_imm(12, 10, true));
-            // digit = nibble + ('0' or 'a' - 10), chosen branch-free.
             w.push(encode::enc_movz(13, b'0' as u16, 0, true));
             w.push(encode::enc_movz(14, (b'a' - 10) as u16, 0, true));
-            // `Cc` is `Lo`: unsigned lower, i.e. nibble < 10.
             w.push(encode::enc_csel(13, 13, 14, Cond::Cc, true));
             w.push(encode::enc_add_reg(12, 12, 13, true));
             w.push(encode::enc_str_w_imm(12, 22, 0));

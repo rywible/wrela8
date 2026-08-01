@@ -1,5 +1,3 @@
-# plans/M9.md item I: 05-library.md §9 / 02-language.md §12.1 builder
-# vocabulary. Declaration order is load-bearing for variant tags.
 module target
 
 pub enum Target:

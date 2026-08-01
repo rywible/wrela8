@@ -1,1 +1,1 @@
-error[type]: `entropy[...]()` takes no arguments at 6:22
+error[type]: `entropy[...]()` takes no arguments at 5:22

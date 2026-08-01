@@ -1,16 +1,8 @@
-//! The handoff calling convention (plans/M7.md item E3, 03-hardware.md §5).
-//!
-//! "Any public synchronous `@driver` method with exactly one `take p: P`
-//! parameter and result `Receipt[P]` receives the handoff calling
-//! convention" — no annotation; the signature is fully determining.
-//! Verified here; displayed by the check dump (`handoff fn ...`).
-
 use crate::sema::SemaError;
 use crate::sema::bodies::{self, ModuleCtx};
 use crate::sema::types::{self, DeclFn, DeclMember, DeclStruct, Type, TypeArg};
 use crate::syntax::ast::{AccessMode, Expr, Item, Member, Module, Span, Stmt};
 
-/// Is `f` the handoff signature on a `@driver` (03 §5)?
 pub(crate) fn is_handoff_signature(f: &DeclFn) -> bool {
     let Some(r) = &f.receiver else {
         return false;
@@ -38,9 +30,6 @@ pub(crate) fn is_handoff_signature(f: &DeclFn) -> bool {
     bodies::types_eq(p, &takes[0].ty)
 }
 
-/// A `@driver` method that returns `Receipt[_]` but is not handoff-shaped
-/// is a named rejection — the signature determines the convention, so a
-/// near-miss is not silently an ordinary method.
 fn receipt_return_payload(ty: &Type) -> Option<&Type> {
     match ty {
         Type::Named(n, args) if n == "Receipt" => match args.first() {
@@ -102,8 +91,6 @@ fn handoff_shape_summary(f: &DeclFn) -> String {
     }
 }
 
-/// `self.queue.publish(...)` / `self.queue.reject(...)` — the only legal
-/// producer transitions on a handoff path (03 §5).
 fn is_producer_transition(e: &Expr) -> bool {
     let Expr::Call(callee, _, _) = e else {
         return false;
@@ -160,9 +147,6 @@ fn check_returns_are_producer(stmts: &[Stmt]) -> Result<(), SemaError> {
     Ok(())
 }
 
-/// Module-wide handoff check: signature shape + producer-transition body.
-/// (Fallthrough/`missing return` is already `flow`'s job for a non-`unit`
-/// result — this pass only insists every `return` is `publish`/`reject`.)
 pub(crate) fn check(
     module: &Module,
     decl_items: &[types::DeclItem],
@@ -223,8 +207,6 @@ pub(crate) fn check(
     Ok(())
 }
 
-/// Check-dump marker: `handoff fn ...` for a driver method whose
-/// signature is fully determining (03 §5: "displayed by tooling").
 pub(crate) fn handoff_dump_prefix(owner: &DeclStruct, f: &DeclFn) -> &'static str {
     if owner.is_driver && is_handoff_signature(f) {
         "handoff "

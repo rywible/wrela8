@@ -1,37 +1,5 @@
 module examples.boot_cross_core_two_senders
 
-# plans/M8.md item C2, decision 28 — **SPSC means single producer, and the
-# producer is a core, not an actor.**
-#
-# Two actors placed on core 0 (`Alpha`, `Beta`) both message one actor on
-# core 1 (`Sink`). If a cross-core ring were keyed by the *sending actor*
-# there would be two rings here; if it were keyed by the sending core there
-# is one, shared, and the "single producer" half of SPSC still holds —
-# because 04-compiler.md §2 puts exactly one cooperative loop on each core
-# and plans/M8.md decision 11's baton means exactly one vCPU is inside
-# `hv_vcpu_run` at a time, so `Alpha` and `Beta` can never be mid-enqueue
-# simultaneously. The report is the oracle for which of the two shapes
-# shipped: `expected/report.txt` carries **exactly one**
-# `Ring kind=request src=0 dst=1 target=Sink` line, so a per-sender ring
-# would move this golden.
-#
-# The reply lane is the other half of the same fact: one
-# `Ring kind=reply src=1 dst=0` whose capacity is the number of turn areas
-# on core 0 (`Alpha`, `Beta`, and the root test turn = 3) — the bound that
-# makes a full reply ring unreachable rather than merely unlikely, since a
-# turn area holds at most one in-flight activation (04 §2's non-reentrancy)
-# and therefore at most one outstanding `await`.
-#
-# The transcript is falsifiable in the ordinary way: `Sink.bump` accumulates,
-# so `6` then `16` can only be produced by two distinct messages arriving in
-# admission order at one mailbox on the far core. A ring that dropped,
-# duplicated, or reordered either one produces a different number, and a
-# ring that never delivered produces `core 0 parked and no core is runnable`.
-#
-# Both senders carry `core=0` explicitly: item B decision 6 opens the full
-# three-core packing domain as soon as any declaration names `core=` >= 1,
-# and this image's assignment is the point of the test, not something to
-# leave to the packer.
 
 @actor
 pub struct Sink:

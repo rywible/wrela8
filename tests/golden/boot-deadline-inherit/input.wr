@@ -1,20 +1,5 @@
 module examples.boot_deadline_inherit
 
-# plans/M6.md item F flagship, 02-language.md §9.5's own "Deadlines are
-# inherited and can only narrow."
-#
-# The inner group declares a deadline five whole seconds out — vastly
-# longer than the outer's zero-budget one. Narrowing means the inner's
-# *effective* deadline is `min(ambient, own)`, i.e. the outer's, so the
-# inner expires at the outer's instant and its child is cancelled anyway.
-# Had the inner's own longer deadline won, `worker` would have finished
-# all eight iterations in microseconds and resolved `Ok`.
-#
-# This is also the reason the deadline service needs no separate
-# parent-to-child cancellation propagation pass at M6: narrowing already
-# guarantees every descendant of an expired group is itself expired at the
-# same instant, so one linear scan of the arena cancels the whole subtree
-# (recorded in `layout::emit_deadline_scan_and_delivery`'s own doc).
 
 @actor
 pub struct Counter:

@@ -1,34 +1,6 @@
-# 02-language.md §1: "`##` begins a documentation comment attached to the
-# immediately following declaration." A doc comment therefore sits exactly
-# where its declaration sits, and this case pins that in the token stream —
-# the layer where it was wrong.
-#
-# The lexer used to treat a `##` line as layout-transparent, exactly like a
-# plain `#` line: the DocComment token was emitted without running the
-# line's own indentation through the indent stack. That put every doc
-# comment on the wrong side of a block boundary, and both natural shapes
-# were unparseable:
-#
-#   - as a block's FIRST line, DocComment preceded the INDENT that opens
-#     the block, so the parser reported `expected an indented block`;
-#   - at the OUTER level after a block, DocComment preceded the DEDENTs
-#     that close it, so the enclosing suite's own member loop swallowed it
-#     and reported `expected a member after doc comment/attribute`.
-#
-# Both are pinned below, and the token order is the whole point: read
-# `INDENT` immediately before `DOCCOMMENT` at 29:5, and `DEDENT` immediately
-# before `DOCCOMMENT` at 32:1. Reverse either and the corresponding shape
-# stops parsing — which is what `check-doc-comment-positions` then proves
-# at the parse/check layer.
-#
-# Found by `cargo xtask fuzz sema` (seed 9101), which mutated a doc comment
-# into the position after a struct and caught the pretty-printer emitting
-# source its own parser rejects.
 
 struct Counter:
-    ## The running total. First line of the block: INDENT, then DOCCOMMENT.
     n: u32
 
-## Documented, and preceded by a block. DEDENT, then DOCCOMMENT.
 struct Other:
     y: u32

@@ -1,9 +1,5 @@
 module examples.err_layout_mmio_wrapper
 
-# plans/M7.md item B: `ReadOnly[T]`/`WriteOnly[T]` are 03-hardware.md §2's
-# *register* wrappers. Device-visible memory (`dma`) and persistent bytes
-# (`wire`) have no registers, so a wrapper there describes nothing — it is
-# rejected rather than quietly treated as the wrapped integer.
 
 @layout(dma, endian=little)
 struct Descriptor:

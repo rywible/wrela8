@@ -1,8 +1,5 @@
 module examples.check_slotmap_key_discipline
 
-# plans/M9.md item F2 / 05-library.md §7: foreign and stale keys miss
-# instead of aliasing — property over adversarial key shapes, not one
-# happy path. Comptime-only (@test); backend pin is check-slotmap-backend.
 
 from core.slotmap import SlotMap, Key, GenerationExhausted
 
@@ -41,7 +38,6 @@ fn stale_after_remove_misses():
             pass
         case .Some(_):
             assert false, "stale aliased"
-    # reuse slot — new key must not match the stale one
     y: u64 = 2
     match m.insert(take y):
         case .Ok(k2):

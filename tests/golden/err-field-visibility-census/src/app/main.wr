@@ -2,9 +2,6 @@ module app.main
 
 from lib.sealed import Sealed
 
-# plans/M13.md item G3: intentional sealed-demo residual from G1's census
-# shape. Construct of non-`pub` `hidden` across the module boundary is
-# error[sema]; `visible` stays `pub` (see check-field-pub-cross-module).
 
 fn probe() -> Sealed:
     return Sealed(hidden=1, visible=2)

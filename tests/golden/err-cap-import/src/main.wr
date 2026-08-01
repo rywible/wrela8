@@ -1,14 +1,5 @@
 module main
 
-# plans/M7.md item A, 03-hardware.md §1: "no address, **import**, or cast
-# creates one."
-#
-# The alias is the whole point. `symbols::collect` already refuses a local
-# *declaration* named `Mmio` (`golden/err-cap-declared`), so the exporting
-# module could never have declared one — but an alias binds an arbitrary
-# real declaration under a capability's name in the importing module, and
-# that module could then construct it. Checked on the local name, which is
-# what the alias controls.
 
 from regs import RawRegs as Mmio
 

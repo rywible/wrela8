@@ -1,19 +1,5 @@
 module examples.err_cap_actor_init
 
-# plans/M7.md item A, 03-hardware.md §1. The one arm of the `@actor`
-# containment rule that was *reachable* before this item, not merely
-# inert: `eval::image_checks`' own init-argument substitution rule
-# (plans/M4.md decision 7) accepts an unwired capability parameter for
-# `img.actor(...)` exactly as it does for `img.driver(...)` — recognized
-# by type name, with no actor/driver distinction. So an `@actor` could
-# declare `init(mut self, take cap: DeviceCap[D])` and the image checker
-# would call it satisfied "by the declaration's own device wiring", which
-# is precisely the capability an `@actor` may not hold.
-#
-# An `init`'s parameters are image wiring rather than a message, which is
-# what makes a *driver*'s `init` the one legitimate way a capability
-# enters a program at all (`golden/check-capabilities`). For an `@actor`
-# the same reasoning inverts.
 
 struct VirtioBlock:
     id: u32

@@ -1,1 +1,1 @@
-error[type]: `@test(runtime)` fn `test_bad`'s parameter `store` must be a plain (read) `Actor[T]` handle at 11:1
+error[type]: `@test(runtime)` fn `test_bad`'s parameter `store` must be a plain (read) `Actor[T]` handle at 8:1

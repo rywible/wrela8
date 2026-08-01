@@ -1,41 +1,5 @@
 module examples.boot_cross_core_ring_full
 
-# plans/M8.md item C2, decision 29 — **a full ring is a rejection carried
-# back to the sender, exactly as a full mailbox is.**
-#
-# `Tally` is declared `mailbox=1` on core 1, so the request ring feeding it
-# is one slot deep (the ring is sized from the mailbox it feeds — 04 §3's
-# sealed graph is where the capacity comes from, never a constant picked
-# here). The root turn on core 0 issues two one-way `send`s back to back.
-#
-# **plans/M15.md item I retarget.** The old claim was "nothing yields
-# between them — a turn runs to its next suspension point before any other
-# core can be handed the **baton**". The baton is gone; what still holds is
-# that both sends run inside one `hv_vcpu_run` with no guest Yield/MMIO
-# between them, so the far core cannot drain mid-pair and the second send
-# meets a full ring. Cross-core overlap is real after a Yield; it is not
-# mid-instruction-stream of a single producer turn.
-#
-# What it must do then is what a full *mailbox* already does at this ABI
-# granularity (02-language.md §9.4's `NotAdmitted` path,
-# `build_rt_enqueue`'s own doc): return the rejection, touching neither
-# `tail` nor `count`, leaving the sender's argument blob exactly where it
-# was. The sender sees `.Err(_)` on an ordinary `Result` and carries on.
-# There is **no silent truncation and no spin-until-space** — the two
-# failure modes a bounded queue invites — and the message that *was*
-# admitted is still intact in the ring.
-#
-# Non-vacuity is in the assertions, not in a comment: `admitted == 1` fails
-# if the ring silently accepted both, and `rejected == 1` fails if the
-# second send were dropped and reported as success. Widen `mailbox=1` to
-# `mailbox=2` and both asserts fire — the golden is measuring the bound,
-# not the mechanism's existence.
-#
-# The sibling for the *fatal* half is `boot-await-mailbox-full`: an `await`
-# whose admission is rejected still aborts (M6 does not compose
-# `CallError::NotAdmitted`), and item C2 deliberately did not change that —
-# a cross-core rejection travels the identical path a same-core one does,
-# including this limitation.
 
 @actor
 pub struct Tally:

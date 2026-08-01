@@ -1,1 +1,1 @@
-error[type]: `@test(exhaustive)` fn `bad_domain`'s parameter `x` has no enumerable domain (supported: `bool`, `u8`, `i8`, a fieldless enum), found `u64` at 6:1
+error[type]: `@test(exhaustive)` fn `bad_domain`'s parameter `x` has no enumerable domain (supported: `bool`, `u8`, `i8`, a fieldless enum), found `u64` at 4:1

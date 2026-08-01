@@ -1,1 +1,1 @@
-error[type]: `InterruptCell[u64]` is not supported yet — revision 0.1 admits only `InterruptCell[u32]` (03-hardware.md §6's worked example; plans/M7.md item G) at 11:35
+error[type]: `InterruptCell[u64]` is not supported yet — revision 0.1 admits only `InterruptCell[u32]` (03-hardware.md §6's worked example; plans/M7.md item G) at 9:35

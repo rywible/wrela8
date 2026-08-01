@@ -2,11 +2,6 @@ module app.main
 
 from lib.wrap import Wrap as Box, Src
 
-# plans/M9.md item B3: generated `from` through an alias — DD/EE/FF
-# machinery (sema, lower, layout/codegen). Box.from must lower under the
-# local spelling. DIRECT = 4 + 500 = 504; a wrong key cannot forge it.
-# Src keeps its exporter spelling so the generated from's parameter type
-# (still keyed Src in the spliced Decl until a broader re-key) resolves.
 
 fn direct() -> u32:
     s = Src(n=4)
@@ -20,8 +15,6 @@ pub fn t_alias_from():
     assert DIRECT == 504, "aliased generated from must be callable"
 
 
-# Guest-reachable path (plans/M9.md item KK): H3 dropped Box.from from asm;
-# `@test(runtime)` seeds the aliased generated from.
 @test(runtime)
 pub fn guest_alias_from():
     assert direct() == 504, "aliased from at guest"

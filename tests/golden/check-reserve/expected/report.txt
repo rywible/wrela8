@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/check_reserve.wr sha256=219ed821683be1590d2a34d26f856e5535816df917bd29bd0500d2e17b099086
+  Input path=examples/check_reserve.wr sha256=a6ae94475d87e4a78f0fe40f95c3dc1db60198e2fd7acecda47c92011be3fa2a
   Input path=<generated> sha256=ba2ea7588cdf70e3444d17fe7fa28eef4a4f66640aa17bcb4f6a1ec6ba284519
   Name value=check-reserve
   Target value=Target.wrela_machine_v1

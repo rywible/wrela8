@@ -1,13 +1,5 @@
 module examples.err_await_external_path_loop
 
-# plans/M9.md item RR: the loop-carried spelling of
-# `err-await-external-path`. `input.value` sits lexically BEFORE the only
-# `await`, so a purely forward scan never has a suspension in view when it
-# reaches the access — but the back edge means every iteration after the
-# first reads `input` on the far side of the previous iteration's
-# suspension, which is exactly what 02-language.md §9.2 forbids. The
-# unrolled two-iteration spelling of this same program is
-# `err-await-external-path`; both must be rejected identically.
 
 struct Payload:
     value: u64

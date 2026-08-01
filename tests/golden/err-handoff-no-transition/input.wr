@@ -1,7 +1,5 @@
 module examples.err_handoff_no_transition
 
-# plans/M7.md item E3 / 03-hardware.md §5: a handoff method's every path
-# must return queue.publish(...) or queue.reject(...).
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:
@@ -67,8 +65,6 @@ pub struct BlkDriver:
             status=BlkReqStatus(status=0xff),
             idempotent=true,
         )
-        # Storing the receipt and returning the local is not a producer
-        # transition — 03 §5 requires `return queue.publish(...)` directly.
         r = self.queue.publish(operation=take operation)
         return take r
 

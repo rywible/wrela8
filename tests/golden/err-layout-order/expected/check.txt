@@ -1,1 +1,1 @@
-error[type]: field `Regs.earlier` at offset 0x0 is declared after `Regs.later` (0x10..0x14) but lies before it; a `@layout` type's fields are declared in ascending offset order and never overlap (03-hardware.md §2) at 19:20
+error[type]: field `Regs.earlier` at offset 0x0 is declared after `Regs.later` (0x10..0x14) but lies before it; a `@layout` type's fields are declared in ascending offset order and never overlap (03-hardware.md §2) at 7:20

@@ -1,7 +1,5 @@
 module examples.err_isr_for
 
-# plans/M7.md item G self-audit: `for` shares the ISR "drain unbounded
-# work" arm with `while` (golden/err-isr-while). Both are loops.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

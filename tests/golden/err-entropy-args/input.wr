@@ -1,6 +1,5 @@
 module examples.err_entropy_args
 
-# plans/M17.md item F (optional): entropy[N]() takes no call arguments.
 
 pub fn sample() -> Bytes[8]:
     return entropy[8](1)

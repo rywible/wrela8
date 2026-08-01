@@ -1,39 +1,3 @@
-//! The `reserve` proof (plans/M7.md item E2, decision 6;
-//! plans/M13.md item M / decision 1; 03-hardware.md §4).
-//!
-//! ## Proof-conditioned collapse (M13 decision 1)
-//!
-//! `VirtQueue.reserve` is spelled once. Its declared type is
-//! `Result[QueuePermit, CapacityError]`. Where whole-image analysis
-//! proves every admitted handler a complete unit against the queue's
-//! descriptor capacity, use sites that expect `QueuePermit` may collapse
-//! to that success type. Where the proof fails, those collapsed use
-//! sites are refused with a why-chain (04-compiler.md §7 causality);
-//! sites that keep the `Result` stay legal (and item L refuses silent
-//! `Err` discard).
-//!
-//! ## Shape (decision 6)
-//!
-//! Same analysis shape as `sema::send_proof`: count static sites, require
-//! each to be at-most-once per root turn, require the count to fit the
-//! declared bound. The bound here is descriptor capacity —
-//! `floor(queue_depth / descriptors_per_site)` — not a mailbox size.
-//! Same fail-closed floor, same "if the proof is too weak to ever fire,
-//! say so" honesty.
-//!
-//! ## Where this runs, and why
-//!
-//! At the *end* of `sema::check_typed`/`check_program_typed`, beside
-//! `send_proof`, for the same reason: a queue's depth is a declared fact
-//! (`VirtQueue[..N]` / `VirtQueue.configure`'s `depth=`), and a program
-//! with no image-configured queue can still be judged from the
-//! receiver's own type (the Bound the checker resolved to a literal).
-//! Returns immediately unless the closure contains a
-//! `VirtQueue.reserve` intrinsic.
-//!
-//! Runtime backpressure (03 §4's generated proxy) is **not** this pass
-//! (plans/M7.md decision 6 / decision 15: item G).
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::sema::SemaError;
@@ -44,8 +8,6 @@ use crate::sema::typed::{
 use crate::sema::types::{self, TypeArg};
 use crate::syntax::ast::{Expr, Span};
 use crate::virtqueue;
-
-// --- collected facts -------------------------------------------------------
 
 #[derive(Debug, Clone)]
 struct ReserveSite {
@@ -70,17 +32,12 @@ struct Facts {
     group_children: BTreeSet<String>,
 }
 
-// --- public entry ----------------------------------------------------------
-
 pub(crate) fn check(programs: &BTreeMap<String, &TypedProgram>) -> Result<(), SemaError> {
     let facts = collect(programs);
     if facts.sites.is_empty() {
         return Ok(());
     }
 
-    // Same live-driver filter as `collect`: QueuePermit demands from an
-    // unused exporter `@driver` (loaded only because a layout was
-    // imported) must not force a collapse failure on Tier 2 images.
     let mut imported_driver_names: BTreeSet<String> = BTreeSet::new();
     for program in programs.values() {
         for (name, s) in &program.imported.structs {
@@ -101,10 +58,6 @@ pub(crate) fn check(programs: &BTreeMap<String, &TypedProgram>) -> Result<(), Se
         }
         demands.extend(program.reserve_permit_demands.iter().copied());
     }
-    // Ill-formed images (disagreeing descriptors / depths, wrong
-    // descriptor count) stay hard errors even when every site keeps the
-    // Result — they invent a second occupancy arithmetic, not a capacity
-    // failure mode.
     let descriptors = facts.sites[0].descriptors;
     for site in &facts.sites {
         if site.descriptors != descriptors {
@@ -218,8 +171,6 @@ pub(crate) fn check(programs: &BTreeMap<String, &TypedProgram>) -> Result<(), Se
     }
 
     if let Some((fact_span, reason)) = why {
-        // No QueuePermit collapse demanded → Result typing is fine;
-        // item L covers silent discard of CapacityError.
         if demands.is_empty() {
             return Ok(());
         }
@@ -247,8 +198,6 @@ fn hard_rejection(span: Span, reason: String) -> SemaError {
     e
 }
 
-/// Failed proof at a use site that demanded `QueuePermit` — why-chain
-/// per 04-compiler.md §7 (queue, depth, in-flight bound, image fact).
 fn collapse_rejection(
     demand_span: Span,
     fact_span: Span,
@@ -330,16 +279,7 @@ fn group_child_closure(facts: &Facts) -> BTreeSet<String> {
     seen
 }
 
-// --- scan (send_proof's own walk, collecting reserve sites) ----------------
-
 fn collect(programs: &BTreeMap<String, &TypedProgram>) -> Facts {
-    // plans/M16.md Wave D Tier 2: importing a *layout/type* from
-    // `drivers.blk` loads the whole exporter, including an unused
-    // `@driver BlkDriver`. Do not count that driver's `reserve` sites
-    // against an image that keeps its own specialized local driver of
-    // the same bare name. Count a `@driver` when:
-    //   - it is declared in a module that has `@image`, or
-    //   - some module imports it by name (Tier 1 `import BlkDriver`).
     let imported_driver_names: BTreeSet<String> = programs
         .values()
         .flat_map(|p| {
@@ -673,10 +613,6 @@ impl Cx<'_> {
     }
 }
 
-/// `bodies::check_virtqueue_reserve` stores the resolved depth in
-/// `type_arg` as `VirtQueue[..<literal>]` (always an `Int` Bound, even when
-/// the field's own annotation named a const), so the proof never has to
-/// re-resolve a const.
 fn reserve_site_of(
     type_arg: &Option<types::Type>,
     args: &[(String, TypedExpr)],

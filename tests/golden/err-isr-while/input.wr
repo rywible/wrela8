@@ -1,7 +1,5 @@
 module examples.err_isr_while
 
-# plans/M7.md item G: 03-hardware.md §6 — an ISR may not drain unbounded
-# work; a `while` in the ISR (or its transitive helpers) is that.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

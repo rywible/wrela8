@@ -1,1 +1,1 @@
-error[type]: `Untrusted[usize]` has no method `unwrap`; the only source-visible transition is `.checked_le(bound)` (03-hardware.md §8) at 7:21
+error[type]: `Untrusted[usize]` has no method `unwrap`; the only source-visible transition is `.checked_le(bound)` (03-hardware.md §8) at 5:21

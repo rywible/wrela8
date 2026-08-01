@@ -1,7 +1,5 @@
 module examples.check_budget_sync_loop
 
-# plans/M11.md item A / decision 721: a sync loop with `@budget(bound=N)`
-# is accepted; the trip counter is the discharge (fail-closed runtime bound).
 
 pub fn sum_to(n: u64) -> u64:
     total: u64 = 0

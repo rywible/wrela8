@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/check_cap_mint.wr sha256=ca9cb433e65c357a9066afca01004c98f05fabf97d2c3a191928a5589482aa70
+  Input path=examples/check_cap_mint.wr sha256=3fd94a4869962b32712a137353fa93ee231c94ae2abc62c170fc5dd5ab1c1175
   Input path=<generated> sha256=e35db438d4fc25b8c9ea75750beaba0095be8122f1426cccad9abd53af29afc0
   Name value=cap-mint
   Target value=Target.wrela_machine_v1

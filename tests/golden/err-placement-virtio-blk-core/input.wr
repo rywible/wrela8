@@ -1,8 +1,5 @@
 module examples.err_placement_virtio_blk_core
 
-# plans/M8.md item B / shape decision 2: the virtio-blk driver stays on
-# core 0; `core=` ≠ 0 on it fails closed until an item deliberately
-# moves it with an oracle.
 
 struct VirtioBlock:
     id: u32

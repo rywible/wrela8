@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/boot_cores_3.wr sha256=e05c827f1687877f75cea48963fd088b402f67c77744ce13bc641c5e36797ead
+  Input path=examples/boot_cores_3.wr sha256=dd6534f0fe0950ae8e40596cfcbe32e2b8d41488cc0ec514610769af8c461a58
   Input path=<generated> sha256=b12cbd7ca5719bab69ba218e0d76428c064f88a0639b573b7a5413c38f5a7606
   Name value=boot-cores-3
   Target value=Target.wrela_machine_v1

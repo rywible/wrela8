@@ -1,11 +1,5 @@
 module examples.check_pool_typearg_eq
 
-# Item D introduced `TypeArg::Pool` for `DmaShared[P, L]` / `DmaPool[P, N]`.
-# `types_eq`'s `type_args_eq` left Pool vs Pool as `false`, so assigning
-# `None` to `Option[DmaShared[P, L]]` failed with identical expected/found
-# renderings. This golden is the oracle that equality compares Pool by
-# name — found while earning E3's protocol-consumption flip; the gap
-# dates from item D, not a new E3 rule.
 
 @layout(dma, endian=little)
 struct RingControl:

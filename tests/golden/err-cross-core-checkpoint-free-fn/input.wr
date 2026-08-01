@@ -1,20 +1,5 @@
 module examples.err_cross_core_checkpoint_free_fn
 
-# plans/M10.md pre-migration finding, amended by plans/M11.md decision 740.
-#
-# Originally the sibling of `err-cross-core-checkpoint`: a loop hoisted into
-# a free fn passed the secondary-core guard (unattributed key fell back to
-# "core 0"), then hung at boot by clearing core 0's pending word from core 1.
-#
-# Decision 740 retires checkpoints on sync `@budget` loops (trip counters
-# only). A free sync fn with a bounded loop therefore carries no
-# `Reloc::CheckpointService`, cannot eat a cross-core wake, and is legal on
-# a secondary core. This golden is now the positive witness of that close:
-# `spin` stays a free sync helper; `Slow` on core 1 calls it; the boot is
-# green.
-#
-# The async half of the refusal remains `err-cross-core-checkpoint` (an
-# async method loop on core 1 still fails closed).
 
 pub fn spin(n: u64) -> u64:
     i: u64 = 0

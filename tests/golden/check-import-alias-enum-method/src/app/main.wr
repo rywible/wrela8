@@ -2,8 +2,6 @@ module app.main
 
 from lib.color import Color as Hue
 
-# plans/M9.md item B2: aliased imported enum methods resolve under the
-# local spelling — same machinery DD/EE/FF built for structs.
 
 const Z: u32 = Hue.red().code()
 const R: u32 = Hue.Blue.code()
@@ -20,7 +18,6 @@ fn take_path() -> u32:
 const M: u32 = mut_path()
 const T: u32 = take_path()
 
-# settle = Z*1000 + R*100 + M*10 + T = 1000 + 200 + 20 + 2 = 1222
 const SETTLED: u32 = Z * 1000 + R * 100 + M * 10 + T
 
 @test
@@ -44,8 +41,6 @@ pub fn t_settled():
     assert SETTLED == 1222, "all four under one settle"
 
 
-# Guest-reachable path (plans/M9.md item KK): H3 dropped aliased enum methods
-# from asm; `@test(runtime)` seeds all four shapes.
 @test(runtime)
 pub fn guest_alias_enum_method():
     assert Hue.red().code() == 1, "assoc at guest"

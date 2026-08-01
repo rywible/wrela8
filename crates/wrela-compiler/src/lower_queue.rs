@@ -1,16 +1,9 @@
-//! VirtQueue / device-reset expansion into ordinary MWIR Insts.
-//!
-//! Lower emits `MemLoad`/`MemStore`/`PtrOffset`/`Project`/arith/jumps
-//! (plus `TurnAddrFromId` / `Abort` for reloc and driver-fault paths).
-//! Codegen stays a thin Inst→A64 map — no `emit_queue_*` megainsts.
-
 use crate::mwir::Inst;
 use crate::mwir::Temp;
 use crate::sema::types::Type;
 use crate::syntax::ast::BinOp;
 use crate::virtqueue;
 
-/// Descriptor-table depth of a `VirtQueue[..N]` type.
 pub fn virtqueue_depth_of(ty: &Type) -> Result<u16, String> {
     let Type::Named(name, targs) = ty else {
         return Err(format!(
@@ -41,7 +34,6 @@ fn place(depth: u16) -> Result<virtqueue::RingPlacement, String> {
         .ok_or_else(|| format!("place_ring(0, {depth}) refused a proven depth"))
 }
 
-/// Local emitter surface for `lower` / `flowwir_lower` (not a backend trait).
 pub trait QueueSink {
     fn fresh(&mut self, ty: Type) -> Temp;
     fn emit(&mut self, inst: Inst) -> usize;
@@ -303,16 +295,14 @@ pub fn expand_publish(
     depth: u16,
     e: &mut dyn QueueSink,
 ) -> Result<(), String> {
-    let _ = virtqueue::PUBLISH_WRITE_ORDER; // normative order = emit order below
+    let _ = virtqueue::PUBLISH_WRITE_ORDER;
     let placed = place(depth)?;
 
-    // Desc 0: header
     let header_addr = load(e, operation, virtqueue::SLOT_META_HEADER, 8);
     let hlen = imm(e, virtqueue::REQ_HEADER_SIZE as i128);
     let hflags = imm(e, virtqueue::DESC_F_NEXT as i128);
     desc_entry(e, queue, placed.desc, 0, header_addr, hlen, hflags, 1);
 
-    // Desc 1: payload
     let payload_addr = load(e, operation, virtqueue::SLOT_META_PAYLOAD, 8);
     let plen = load(e, operation, virtqueue::SLOT_META_PAYLOAD_LEN, 8);
     let meta_flags = load(e, operation, virtqueue::SLOT_META_FLAGS, 8);
@@ -323,13 +313,11 @@ pub fn expand_publish(
     let data_flags = bit_or(e, dw_shifted, next_flag);
     desc_entry(e, queue, placed.desc, 1, payload_addr, plen, data_flags, 2);
 
-    // Desc 2: status
     let status_addr = load(e, operation, virtqueue::SLOT_META_STATUS, 8);
     let slen = imm(e, virtqueue::REQ_STATUS_SIZE as i128);
     let sflags = imm(e, virtqueue::DESC_F_WRITE as i128);
     desc_entry(e, queue, placed.desc, 2, status_addr, slen, sflags, 0);
 
-    // publish_available
     let avail = ptr_off(e, queue, placed.avail);
     let idx = load(e, avail, 2, 2);
     let mask = imm(e, (depth as u64 - 1) as i128);
@@ -344,7 +332,6 @@ pub fn expand_publish(
     let idx1 = wrap_add(e, idx, one);
     store(e, avail, 2, idx1, 2);
 
-    // notify_queue
     let doorbell = ptr_off(e, queue, placed.doorbell);
     store(e, doorbell, 0, one, 8);
 
@@ -404,7 +391,6 @@ pub fn expand_drain(
     let empty_join = e.here();
     e.patch(skip_empty, empty_join);
 
-    // Use last from first load path: re-load for the resolve path.
     let book3 = ptr_off(e, queue, book_off);
     let last3 = load(e, book3, 0, 8);
     let used3 = ptr_off(e, queue, placed.used);
@@ -468,7 +454,6 @@ pub fn expand_drain(
     let buffer_facing = wrap_sub(e, used_len, one);
     let is_write = cmp(e, BinOp::Ne, dw, zero);
     let to_in = jump_if(e, is_write);
-    // OUT path
     let out_ok = cmp(e, BinOp::Eq, buffer_facing, zero);
     abort_unless(
         e,
@@ -495,7 +480,6 @@ pub fn expand_drain(
     let after_len_pos = e.here();
     e.patch(after_len, after_len_pos);
 
-    // build IoCompletion stash
     let status_ptr = load(e, meta, virtqueue::SLOT_META_STATUS, 8);
     let status_b = load(e, status_ptr, 0, 1);
     let payload = load(e, meta, virtqueue::SLOT_META_PAYLOAD, 8);
@@ -504,7 +488,6 @@ pub fn expand_drain(
     let status_ok = cmp(e, BinOp::Eq, status_b, zero);
     let tag_ok = imm(e, 0);
     let tag_err = imm(e, 1);
-    // tag = status_ok ? 0 : 1
     let tag_sel_j = jump_if(e, status_ok);
     store(e, comp, 8, tag_err, 8);
     let tag_done = jump(e);
@@ -516,7 +499,6 @@ pub fn expand_drain(
     store(e, comp, 16, zero, 8);
     store(e, comp, 24, buffer_facing, 8);
 
-    // flags: clear INFLIGHT, set RESOLVED
     let flags2 = load(e, meta, virtqueue::SLOT_META_FLAGS, 8);
     let not_inf = bit_not(e, inflight_m);
     let flags3 = bit_and(e, flags2, not_inf);
@@ -524,7 +506,6 @@ pub fn expand_drain(
     let flags4 = bit_or(e, flags3, resolved_m);
     store(e, meta, virtqueue::SLOT_META_FLAGS, flags4, 8);
 
-    // reply_stage copy
     let stage_turn = load(e, meta, virtqueue::SLOT_META_REPLY_STAGE, 4);
     let stage_nz = cmp(e, BinOp::Ne, stage_turn, zero);
     let do_stage = jump_if(e, stage_nz);
@@ -545,7 +526,6 @@ pub fn expand_drain(
     let after_stage = e.here();
     e.patch(no_stage, after_stage);
 
-    // waiter wake
     let waiter = load(e, meta, virtqueue::SLOT_META_WAITER, 4);
     let waiter_nz = cmp(e, BinOp::Ne, waiter, zero);
     let do_waiter = jump_if(e, waiter_nz);
@@ -557,13 +537,11 @@ pub fn expand_drain(
         dst: waddr,
         id: waiter,
     });
-    // Same offset as `codegen::OFF_TURN_RESUME_READY` (turn-frame layout).
     store(e, waddr, 16, one, 8);
     store(e, meta, virtqueue::SLOT_META_WAITER, zero, 4);
     let after_waiter = e.here();
     e.patch(no_waiter, after_waiter);
 
-    // last_used++
     let book4 = ptr_off(e, queue, book_off);
     let last4 = load(e, book4, 0, 8);
     let last5 = wrap_add(e, last4, one);
@@ -671,7 +649,6 @@ pub fn expand_recover(
     e.patch(done_inf, join);
     e.patch(done_status, join);
 
-    // Retire + quarantine
     let flags2 = load(e, receipt, virtqueue::SLOT_META_FLAGS, 8);
     let clear_m = imm(
         e,

@@ -1,51 +1,5 @@
 module examples.check_mmio_access
 
-# plans/M7.md item C's accept case, 03-hardware.md §2 — typed MMIO access
-# and claim partitioning, both halves, on the docs' own worked driver.
-#
-# The ISR body below is `docs/language/examples/virtio-storage.wr`'s
-# `on_queue_irq` (lines 145-149), verbatim apart from the `InterruptCell`
-# store that item G owns: read `interrupt_status`, mask it against the
-# declared handled bits, write `interrupt_ack`. 03 §2's own two-register
-# example is the layout it reads through.
-#
-# What this pins:
-#
-#   - **The two operations exist and nothing else does.** `.read()` on a
-#     `ReadOnly[T]` yields `T`; `.write(v)` on a `WriteOnly[T]` takes `T`
-#     and yields `unit`. Every other spelling is a sibling rejection:
-#     `err-mmio-read-writeonly`, `err-mmio-write-readonly`,
-#     `err-mmio-unknown-register`, `err-mmio-register-not-a-value`,
-#     `err-mmio-undirected-register`, `err-mmio-endian-big`.
-#   - **Width comes from the declaration.** `status` is typed `u32`
-#     because `interrupt_status` is declared `ReadOnly[u32]` — the
-#     `--stage=typed` dump prints `Intrinsic key=Mmio.read type_arg=u32
-#     ty=u32`, so a compiler that widened a register read to `u64` (or
-#     silently truncated a write) moves this file. `ack_bits` is `u16`
-#     and `ack_low.write(...)` takes exactly `u16`: two different widths
-#     in one driver, so a rule that ignored the declared width and used
-#     one fixed size cannot pass both lines.
-#   - **The claim is partitioned, not shared.** `BlkDriver` mints two
-#     live layouts — `VirtioIrqMmio` (0x60..0x68) and `VirtioLowAckMmio`
-#     (0x100..0x102) — out of the one claim its `device=` binding names.
-#     They are accepted because their byte ranges are disjoint;
-#     `err-mmio-alias` is this same driver with them overlapping.
-#   - **Padding is not consumed.** `VirtioIrqMmio`'s own 0x60 bytes of
-#     declared hole belong to the sealed transport's partition (03 §2's
-#     next sentence), not to this layout, so `VirtioLowAckMmio` at 0x100
-#     and a hole covering 0x0..0x60 coexist without a word about each
-#     other. A rule that consumed a layout's whole extent instead of its
-#     declared registers would reject this file.
-#   - **A `read self` receiver is enough to write a register.** Writing
-#     changes the *device*, not the wrela value; 03 §6's own ISR is
-#     `fn on_queue_irq(self)`. `mut self` here is only for the
-#     `handled_bits` field.
-#
-# What this deliberately does NOT pin: any emitted instruction. No
-# `Mmio[L]` value exists at runtime yet — the image binding does not mint
-# one and boot never calls a `@driver`'s `init` — so an access fails
-# closed at lowering, by name. `err-mmio-not-lowered` is that boundary,
-# pinned as its own case rather than left to be discovered.
 
 const INT_VRING: u32 = 1
 const INT_CONFIG: u32 = 2
@@ -59,9 +13,6 @@ struct VirtioIrqMmio:
 struct VirtioLowAckMmio:
     @offset(0x100) ack_low: WriteOnly[u16]
 
-# The device type `DeviceCap[D]` names — 06-machine.md §6's closed device
-# set ships with the stdlib and does not exist yet, so this stands in for
-# it exactly as `golden/check-cap-mint`'s own `BlockHw` does.
 struct VirtioBlock:
     id: u32
 
@@ -71,8 +22,6 @@ pub struct BlkDriver:
     low_regs: Mmio[VirtioLowAckMmio]
     handled_bits: u32
 
-    # 03 §6's own ISR shape (item G binds it to a vector; here it is an
-    # ordinary private driver method, which is all item C needs).
     fn on_queue_irq(mut self):
         status = self.irq_regs.interrupt_status.read()
         handled = status & (INT_VRING | INT_CONFIG)
@@ -80,7 +29,6 @@ pub struct BlkDriver:
             self.handled_bits = handled
             self.irq_regs.interrupt_ack.write(handled)
 
-    # The second layout, at its own width, through a `read self` receiver.
     fn ack_low(read self, bits: u16):
         self.low_regs.ack_low.write(bits)
 

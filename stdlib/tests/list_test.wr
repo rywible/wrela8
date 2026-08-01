@@ -1,5 +1,3 @@
-# M16 item E / decisions 1150–1155: comptime suite for List[T, ..N].
-# Pure push/pop/bounds — no drivers, no runtime tier.
 module list_test
 
 from core.list import List, ListFull

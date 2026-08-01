@@ -1,15 +1,5 @@
 module examples.err_dma_shared_unminted
 
-# plans/M7.md item D, 03-hardware.md §3: shared control memory is not
-# minted at the image binding at all. In §3's own worked example a
-# `DmaShared` is what `VirtQueue.configure(pool=take control_pool, ...)`
-# makes *out of* a pool — so the pool is the image-bound thing, and the
-# shared control memory is the queue's, which is plans/M7.md item E.
-#
-# This is deliberately a different rejection from `Mmio`'s and `IrqCap`'s
-# (`golden/err-cap-mint-unminted`): those say "nothing mints one *yet*"
-# about a capability the image binding will eventually produce. This one
-# says the image binding is the wrong place to look.
 
 @layout(dma, endian=little)
 struct RingControl:

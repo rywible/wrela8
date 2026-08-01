@@ -1,75 +1,3 @@
-//! Lowering (plans/M6.md item B): `sema::typed::TypedProgram` ->
-//! `flowwir::FlowWirProgram`, for **async fns/methods only** (a sync fn
-//! never reaches this file at all — it stays on the exact M5 `lower.rs`
-//! path, decision 2's own hard constraint). `flowwir.rs`'s own module doc
-//! records every shape decision this file implements; read that first.
-//!
-//! ## Shape of the walk
-//!
-//! One `FlowBuilder` per fn (mirrors `lower.rs`'s `FnBuilder`, generalized
-//! from "one flat `Vec<Inst>`" to "several `State`s, each its own small
-//! `Vec<FlowInst>`, plus one shared, whole-fn `temp_types` table" — the
-//! frame rule, `flowwir.rs`'s own doc). `FlowBuilder::cur` names the
-//! state currently being appended to; `emit`/`here`/`patch` all operate
-//! on `states[cur]` implicitly, exactly mirroring `FnBuilder::emit`/
-//! `here`/`patch_jump`'s own flat-list conventions one level up. A
-//! genuinely new state is only ever created at a real suspension boundary
-//! (`new_state` + `finish_current` + `switch_to`) — see `flowwir.rs`'s
-//! own "Intra-state control flow" section for why an `if`/`while`/`match`/
-//! `for` containing no `await` anywhere inside never needs one at all,
-//! reusing `lower.rs`'s own local-jump/backpatch technique verbatim
-//! (`return`/`break`/`continue` embed as ordinary `Mwir(Inst::Return)`/
-//! `Mwir(Inst::Jump)` ops, never a `Transition` of their own, exactly like
-//! `mwir::Inst::Return`'s own mid-list legality).
-//!
-//! `Binding` (this file's own environment value, replacing `lower.rs`'s
-//! bare `Temp`) is either an ordinary computed `Temp` or a self-rooted
-//! field path (`flowwir.rs`'s own "Self-rooted paths across `await`"
-//! section) — `Local(name)` reads re-derive the latter fresh, via
-//! `FlowInst::SelfPath`, every single time (never once-computed-then-
-//! cached), which is what makes it safe regardless of which state the
-//! read actually lands in.
-//!
-//! ## The two suspending statement shapes
-//!
-//! Only a direct `let`/assignment/bare-statement operand may itself be
-//! `await ...` or `await ...?` (`lower_stmt_operand` below) — an `await`
-//! nested any deeper inside a larger expression fails closed, named
-//! (`flowwir.rs`'s own disclosed boundary). `?` on an *ordinary* (already
-//! synchronous) `Result` value, by contrast, needs no suspension at all —
-//! `lower_try_check` embeds its own Ok/Err branch-and-maybe-early-`Return`
-//! entirely as ops in the current state (an early return is just another
-//! embedded `Mwir(Inst::Return)`, per the module doc above), so it is
-//! reachable from `lower_expr_flat` directly, not only from the two
-//! statement-level suspending shapes.
-//!
-//! ## Fail-closed set (this file's own, beyond `flowwir.rs`'s headline
-//! list)
-//!
-//! - `CallValue`/`FnRef`/`OpCall` (a first-class fn value). Plain
-//!   `Call` to a top-level sync helper is live (plans/M7.md item E4:
-//!   field access after await is refused by the §9.2 scan, so the
-//!   flagship finishes through sync helpers).
-//! - `Option`-typed `?` (only `Result` is supported). A `?` needing a
-//!   `From` conversion is live (plans/M9.md item B) — same rules as
-//!   `lower.rs`.
-//! - A `match`/`for` containing an `await` anywhere inside (scrutinee,
-//!   guard, arm/body) — both stay intra-state-only.
-//! - An `elif` chain, or an `if`'s own condition, containing an `await`.
-//! - A `defer` body containing an `await`.
-//! - An `|` (or) pattern (mirrors `lower.rs`'s own identical gap).
-//! - Assigning an `InterruptCell` through a nested field/index chain
-//!   (mirrors `lower.rs`; ordinary nested field/index assignment and
-//!   nested `mut` places are live — plans/M9.md item MM).
-//! - Every generic instantiation (no async generic exists in the M6
-//!   surface — `lower_program` does not even walk
-//!   `TypedProgram::instantiations`).
-//! - `g.start`'s callee naming a `self`-method (only a bare top-level
-//!   `async fn` name is exercised by this item's own required goldens);
-//!   `resolve_callee_fn` resolves either shape, but nothing here threads
-//!   an implicit `self` into a `self`-method child's own call — a real
-//!   gap, disclosed, left for whichever item actually exercises it.
-
 use std::collections::BTreeMap;
 
 use crate::eval::value;
@@ -88,11 +16,6 @@ use crate::sema::typed::{
 use crate::sema::types::Type;
 use crate::syntax::ast::{AccessMode, BinOp};
 
-/// The one FlowWir lowering diagnostic — printed by `bin/wrela.rs` the
-/// same way `lower::LowerError` already is (`error[unimplemented]: ...`);
-/// mirrors that type's own two constructors and reasoning verbatim (the
-/// typed tree carries no spans, decision 1, so there is no `at L:C` to
-/// add here either).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FlowError {
     pub message: String,
@@ -105,9 +28,6 @@ impl FlowError {
         }
     }
 
-    /// Complete fail-closed message — same rule as `LowerError::named`
-    /// (plans/M9.md item D3): do not wrap an `unresolvable` note that
-    /// already ends in "is not supported yet".
     fn named(message: impl Into<String>) -> FlowError {
         FlowError {
             message: message.into(),
@@ -121,12 +41,6 @@ impl FlowError {
     }
 }
 
-// --- environment: an ordinary temp, or a self-rooted path -----------------
-
-/// `flowwir.rs`'s own "Self-rooted paths across `await`" section:
-/// `SelfPath` carries the field-name sequence (never a temp) so every
-/// read re-derives it fresh, in whichever state the read actually
-/// happens in.
 #[derive(Debug, Clone)]
 enum Binding {
     Temp(Temp),
@@ -150,11 +64,6 @@ fn env_insert(env: &mut FEnv, name: String, binding: Binding) {
         .insert(name, binding);
 }
 
-/// Recognizes a self-rooted whole-value path (02-language.md §9.2):
-/// `self` itself (`Some(vec![])`), or a `Field` chain rooted at it
-/// (`Some(["cache", "value"])` for `self.cache.value`) — `None` for
-/// anything else (an external-rooted path included; `sema::bodies::check_cross_await`
-/// already keeps one of those from ever mattering here).
 fn self_path_of(e: &TypedExpr) -> Option<Vec<String>> {
     match &e.kind {
         TypedExprKind::Local(n) if n == "self" => Some(Vec::new()),
@@ -166,8 +75,6 @@ fn self_path_of(e: &TypedExpr) -> Option<Vec<String>> {
         _ => None,
     }
 }
-
-// --- the state builder ------------------------------------------------------
 
 struct StateWip {
     ops: Vec<FlowInst>,
@@ -188,8 +95,6 @@ impl<'p> FlowBuilder<'p> {
         Temp(self.temp_types.len() - 1)
     }
 
-    /// Appends `op` to the *current* state's own `ops` (module doc: every
-    /// `emit`/`here`/`patch` triple implicitly operates on `states[cur]`).
     fn emit(&mut self, op: FlowInst) -> usize {
         self.states[self.cur].ops.push(op);
         self.states[self.cur].ops.len() - 1
@@ -199,10 +104,6 @@ impl<'p> FlowBuilder<'p> {
         self.emit(FlowInst::Mwir(inst))
     }
 
-    /// Appends `op` to an *already-finished* (no longer current) state —
-    /// only `lower_with_group`'s own cleanup-chain wiring needs this (the
-    /// group's own closing state is no longer `cur` by the time the
-    /// chain's real length is known).
     fn emit_at(&mut self, state: usize, op: FlowInst) {
         self.states[state].ops.push(op);
     }
@@ -211,11 +112,6 @@ impl<'p> FlowBuilder<'p> {
         self.states[self.cur].ops.len()
     }
 
-    /// Backpatches a local `Jump`/`JumpIfFalse` inside the *current*
-    /// state — every local fixup in this file is emitted and patched
-    /// without ever switching `cur` away in between (module doc: this is
-    /// exactly what keeps intra-state control flow as simple as
-    /// `lower.rs`'s own).
     fn patch(&mut self, idx: usize, target: usize) {
         match &mut self.states[self.cur].ops[idx] {
             FlowInst::Mwir(Inst::Jump { target: t }) => *t = target,
@@ -256,17 +152,6 @@ impl<'p> FlowBuilder<'p> {
         self.finish(c, t);
     }
 
-    /// Finishes `idx` with `t` only if nothing already did — needed
-    /// wherever a block "diverged" (its own bool return) via an
-    /// *embedded* op (`Mwir(Inst::Return)`, from a plain `return`, or
-    /// from an intra `if`/`match` whose every arm itself ended that way)
-    /// rather than via an explicit cross-state exit (`break`/`continue`
-    /// in `LoopCtx::Inter` mode, which already calls `finish_current`
-    /// itself): the ending state still needs *some* transition to satisfy
-    /// "every state ends in one," even though it is dead code after the
-    /// embedded op — mirrors `lower.rs`'s own harmless trailing
-    /// `Inst::Return {value: None}` for exactly the same reason, one
-    /// level up.
     fn finish_if_unset(&mut self, idx: usize, t: Transition) {
         if self.states[idx].transition.is_none() {
             self.states[idx].transition = Some(t);
@@ -291,13 +176,6 @@ impl QueueSink for FlowQueueSink<'_, '_> {
     }
 }
 
-/// One enclosing loop's own bookkeeping — `Intra` (no `await` anywhere in
-/// the loop, mirrors `lower.rs::LoopCtx` verbatim: local fixups patched
-/// once the loop's own end/cond position is known) or `Inter` (the loop
-/// contains an `await`, so `break`/`continue` end the *current* state
-/// with a real cross-state `Transition::Jump` instead of a local fixup —
-/// `flowwir_lower.rs`'s own module doc, "the two suspending statement
-/// shapes" section's sibling for loops).
 enum LoopCtx {
     Intra {
         break_fixups: Vec<usize>,
@@ -310,8 +188,6 @@ enum LoopCtx {
         defer_marker: usize,
     },
 }
-
-// --- `contains_await`: the intra/inter decision ----------------------------
 
 fn expr_contains_await(e: &TypedExpr) -> bool {
     match &e.kind {
@@ -386,9 +262,6 @@ fn stmt_contains_await(s: &TypedStmt) -> bool {
             TypedDeferBody::Suite(s) => block_contains_await(s),
         },
         TypedStmtKind::ExprStmt(e) => expr_contains_await(e),
-        // A `send` never suspends (`emit_send`: a one-way `rt_enqueue`
-        // call, never a park) — but its arguments are ordinary
-        // expressions that may themselves contain an `await`.
         TypedStmtKind::BareSend { expr, .. } => expr_contains_await(expr),
         TypedStmtKind::WithGroup {
             capacity,
@@ -404,11 +277,6 @@ fn stmt_contains_await(s: &TypedStmt) -> bool {
     }
 }
 
-// --- small lookup helpers (own copies — see module doc: not a reuse of
-// `lower.rs`'s private fns, just the same trivial logic written again) ----
-
-/// This module's own struct `name`, else the imported one (plans/M9.md
-/// item EE — mirrors `lower::struct_by_name` / `eval::interp`).
 fn struct_by_name<'p>(prog: &'p TypedProgram, name: &str) -> Option<&'p TypedStruct> {
     prog.structs
         .get(name)
@@ -454,7 +322,6 @@ fn missing_callee(prog: &TypedProgram, key: &CalleeKey) -> FlowError {
 }
 
 fn field_index(prog: &TypedProgram, base_ty: &Type, field_name: &str) -> Result<usize, FlowError> {
-    // plans/M9.md item C1: `String[..N].len` is slot 0.
     if matches!(base_ty, Type::String(_)) {
         return match field_name {
             "len" => Ok(0),
@@ -481,7 +348,6 @@ fn runtime_layout_field_offset_flow(
     lower_shared::runtime_layout_field_offset(prog, layout, field).map_err(FlowError::internal)
 }
 
-/// `STATIC.array_field[i]` place parts (plans/M10.md item B1).
 fn placed_array_field_index_flow(
     array_place: &TypedExpr,
     prog: &TypedProgram,
@@ -508,21 +374,9 @@ fn variant_index(prog: &TypedProgram, enum_name: &str, variant: &str) -> Result<
                 "unknown Result variant `{other}`"
             ))),
         },
-        // plans/M7.md item Z2: `CallError[E]` is compiler-known rather than
-        // declared — it is carried as an instantiated
-        // `Type::Named("CallError", [E])` and so appears in no
-        // `TypedProgram::enums` map, which means the generic-instantiation
-        // rejection below used to swallow the one `match` a caller needs to
-        // observe `Err(CallError.Op(e))` at all. sema already types such an
-        // arm (`bodies::variant_payload_types_for`); only the numbering was
-        // missing here. It is not restated: `bodies::call_error_variant_index`
-        // is the single table, beside the composition it belongs to.
         "CallError" => crate::sema::bodies::call_error_variant_index(variant)
             .ok_or_else(|| FlowError::internal(format!("unknown CallError variant `{variant}`"))),
         _ => {
-            // plans/M9.md item A1b / A2: mirror `eval::interp` /
-            // `lower::variant_index` — imported enums live in
-            // `prog.imported.enums`, not `prog.enums`.
             let en = prog
                 .enums
                 .get(enum_name)
@@ -581,13 +435,6 @@ fn resolve_callee_fn<'p>(
     }
 }
 
-/// The async lowerer's copy of the parked `BoundsElide` transform
-/// (plans/M18.md item I; parked by decision 1911) — proved literal index
-/// on `[T; N]` elides to `Project`/`SetField` when
-/// `crate::lower::bounds_elide()` is on. It is **off** on every product
-/// path, so this returns `Ok(None)` there; the two lowerers must agree
-/// under the opt as well as without it. Cost instrumentation is
-/// always-on (freeze 1408) — this gate flips emission only.
 fn literal_array_index_elide(idx_expr: &TypedExpr, len: usize) -> Result<Option<usize>, FlowError> {
     if !crate::lower::bounds_elide() {
         return Ok(None);
@@ -652,23 +499,14 @@ fn assert_message_text(e: &TypedExpr) -> Result<String, FlowError> {
     }
 }
 
-// --- entry point ------------------------------------------------------------
-
-/// Every async fn/method's own state machine, keyed exactly like
-/// `mwir::MwirProgram::fns` (`sema::typed::CalleeKey::spelling()`). A
-/// generic instantiation is never walked at all (module doc's own
-/// disclosed boundary — no async generic exists in the M6 surface).
-/// plans/M9.md item H3: only guest-reachable keys (same set as sync lower).
 pub fn lower_program(program: &TypedProgram) -> Result<FlowWirProgram, FlowError> {
     lower_program_with(program, &crate::lower::LowerOpts::default())
 }
 
-/// Like `lower_program`, sharing `LowerOpts` with sync lower (H2/H3).
 pub fn lower_program_with(
     program: &TypedProgram,
     opts: &crate::lower::LowerOpts,
 ) -> Result<FlowWirProgram, FlowError> {
-    // Every use below is a `.contains()` — borrow, don't deep-clone.
     let computed;
     let reachable: &std::collections::BTreeSet<String> = match &opts.only {
         Some(set) => set,
@@ -703,8 +541,6 @@ pub fn lower_program_with(
             }
         }
     }
-    // plans/M9.md item EE / decision 90: same imported emission
-    // `lower::lower_program` does, for async members only.
     for (name, f) in &program.imported.fns {
         if f.is_async && !fns.contains_key(name) && reachable.contains(name) {
             fns.insert(name.clone(), lower_fn(f, program)?);
@@ -741,8 +577,6 @@ fn lower_fn(f: &TypedFn, prog: &TypedProgram) -> Result<FlowWirFn, FlowError> {
         states: Vec::new(),
         cur: 0,
     };
-    // Lineage slots: always Temp(0)/Temp(1), allocated before anything
-    // else (flowwir.rs's own "Lineage/deadline plumbing" section).
     let lineage_group_slot = b.fresh(Type::U64);
     let lineage_deadline_slot = b.fresh(Type::U64);
 
@@ -769,14 +603,6 @@ fn lower_fn(f: &TypedFn, prog: &TypedProgram) -> Result<FlowWirFn, FlowError> {
     let mut defers: Vec<&TypedDeferBody> = Vec::new();
     let mut loops: Vec<LoopCtx> = Vec::new();
     let _diverged = lower_block(&f.body, &mut b, &mut env, &mut defers, &mut loops)?;
-    // Whether the body's own top-level flow fell off the end normally or
-    // already diverged via an embedded `Mwir(Inst::Return)` (a plain
-    // `return`, or an intra `if`/`match` every arm of which ended that
-    // way), the current state still needs *some* transition
-    // (`finish_if_unset`'s own doc comment) — `Return(None)` is the exact
-    // right one in the falls-off-the-end case, and a harmless, dead-code
-    // placeholder otherwise (mirrors `lower.rs::lower_fn`'s own trailing
-    // bare `Inst::Return`).
     let c = b.cur();
     b.finish_if_unset(c, Transition::Return(None));
 
@@ -811,14 +637,6 @@ fn lower_fn(f: &TypedFn, prog: &TypedProgram) -> Result<FlowWirFn, FlowError> {
     })
 }
 
-// --- statements --------------------------------------------------------
-
-/// Lowers a block, draining (inline — `drain_defers_inline`) whatever
-/// `defer`s it registered of its own once it reaches its own natural end
-/// (mirrors `lower.rs::lower_block` exactly). `lower_with_group` calls
-/// `lower_stmts_no_drain` directly instead, so it can drain its own
-/// group-scoped `defer`s as a referenceable cleanup chain rather than
-/// inline (`flowwir.rs`'s own "`with group`" section).
 fn lower_block<'a>(
     stmts: &'a [TypedStmt],
     b: &mut FlowBuilder,
@@ -851,11 +669,6 @@ fn lower_stmts_no_drain<'a>(
     Ok(false)
 }
 
-/// Inlines every defer body in `active`, in reverse (registration) order,
-/// as ordinary ops in the *current* state (mirrors `lower.rs::run_defers`
-/// exactly) — used for every `defer` outside a `with group`'s own body
-/// (module doc: not part of any cancellation domain at M6, so nothing
-/// needs to reference it independently).
 fn drain_defers_inline(
     active: &[&TypedDeferBody],
     b: &mut FlowBuilder,
@@ -886,13 +699,6 @@ fn drain_defers_inline(
     Ok(())
 }
 
-/// Builds a fresh, dedicated state per defer body in `active` (reverse
-/// order), each ending in a real `Transition::Jump` — the caller
-/// (`lower_with_group`) chains them together and into whatever comes
-/// next. Every state's own ops come from the identical straight-line
-/// lowering `drain_defers_inline` would use inline; the only difference
-/// is *where* they land (their own referenceable states, not the
-/// caller's current one) — `flowwir.rs`'s own "`with group`" section.
 fn build_cleanup_chain(
     active: &[&TypedDeferBody],
     b: &mut FlowBuilder,
@@ -1088,15 +894,6 @@ fn lower_stmt<'a>(
             lower_expr_stmt(e, b, env)?;
             Ok(false)
         }
-        // plans/M6.md item G: a proven bare `send` lowers exactly like the
-        // consumed expression form — `FlowInst::Send` still writes its
-        // `Result[unit, CallError[never]]` outcome into a fresh temp; the
-        // only difference is that nothing reads that temp. Deliberately
-        // NOT a second lowering path: a proven send and an unproven one
-        // must execute identically (the proof is a legality verdict,
-        // never a codegen switch), so the same instruction is emitted
-        // either way and `codegen::emit_send` never learns the proof
-        // exists.
         TypedStmtKind::BareSend { expr, .. } => {
             lower_expr_flat(expr, b, env)?;
             Ok(false)
@@ -1110,10 +907,6 @@ fn lower_stmt<'a>(
     }
 }
 
-/// A bare `ExprStmt`'s own three special shapes (`Group.start`, a bare
-/// `await`, a bare `await ...?`) plus the ordinary fallback — mirrors
-/// `lower_stmt_operand`'s own recognition, but discards the result
-/// (nothing binds it).
 fn lower_expr_stmt(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result<(), FlowError> {
     if let TypedExprKind::Intrinsic {
         key,
@@ -1130,11 +923,6 @@ fn lower_expr_stmt(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
     Ok(())
 }
 
-/// Lowers a `let`/assignment/bare-statement's own operand, recognizing
-/// the two suspending shapes a statement position may carry (module
-/// doc): `await ...` directly, or `await ...?` (a `Try` wrapping an
-/// `Await`) — anything else (including an *ordinary*, already-synchronous
-/// `?`) falls through to `lower_expr_flat`.
 fn lower_stmt_operand(
     value: &TypedExpr,
     b: &mut FlowBuilder,
@@ -1167,11 +955,6 @@ fn suspend_and_resume(what: AwaitKind, result_temp: Temp, b: &mut FlowBuilder) {
     b.switch_to(resume);
 }
 
-/// Builds the `AwaitKind` for `await_expr` (a `TypedExprKind::Await`
-/// node) — an actor-handle method call, or a group's own `join_all()`
-/// (`sema::bodies::check_await`'s own two recognized shapes, mirrored
-/// here one stage later). Returns the await's own composed result type
-/// alongside (`await_expr.ty`).
 fn build_await_kind(
     await_expr: &TypedExpr,
     b: &mut FlowBuilder,
@@ -1193,15 +976,11 @@ fn build_await_kind(
             let f = resolve_callee_fn(b.prog, callee)?;
             let mut nested_mut_writebacks = Vec::new();
             let arg_temps = lower_aligned_args(f, args, b, env, &mut nested_mut_writebacks)?;
-            // Actor-call / await args are message payloads — nested `mut`
-            // write-back has no frame to land in after the suspension.
             if !nested_mut_writebacks.is_empty() {
                 return Err(FlowError::unimplemented(
                     "passing a nested `mut` place as an awaited actor-call argument is",
                 ));
             }
-            // plans/M13.md item H: take-mode params only — handed back in
-            // `NotAdmitted`'s args tuple when enqueue refuses.
             let take_arg_temps: Vec<_> = f
                 .params
                 .iter()
@@ -1253,8 +1032,6 @@ fn build_await_kind(
                 await_expr.ty.clone(),
             ))
         }
-        // plans/M7.md item E4: `await receipt` — inner is already the
-        // Receipt value (not a call).
         _ => {
             let receipt_temp = lower_expr_flat(inner, b, env)?;
             if !matches!(&inner.ty, Type::Named(n, _) if n == "Receipt") {
@@ -1268,15 +1045,6 @@ fn build_await_kind(
     }
 }
 
-/// Aligns a `Call`'s own `args` (already 1:1 with the callee's declared
-/// parameters, `None` for a caller-elided default slot) against `f`'s own
-/// stored defaults — mirrors `lower.rs::bind_args`'s alignment, simplified:
-/// a default expression lowers in the *caller's* current environment
-/// here (not a separate callee-shaped one) — a real message-shaped call's
-/// own default, if any, is not expected to reference the remote actor's
-/// own `self`/earlier params the way an ordinary in-process call's might;
-/// no required golden exercises a defaulted message argument, so this is
-/// a disclosed simplification, not a proven equivalence.
 fn lower_aligned_args<'a>(
     f: &TypedFn,
     args: &'a [TypedCallArg],
@@ -1336,8 +1104,6 @@ fn flow_call_write_backs(
     write_backs
 }
 
-/// Mirrors `lower.rs::lower_call`'s receiver/write-back shape, using this
-/// file's `Binding::Temp` environment.
 fn lower_flow_call(
     callee: &CalleeKey,
     receiver: &Option<Box<TypedExpr>>,
@@ -1410,13 +1176,6 @@ fn lower_flow_call(
     }
 }
 
-/// `g.start(callee, args...)` (02-language.md §9.5) — `args` here is
-/// `Intrinsic::args` (label, value) *without* the leading `"callee"`
-/// slot (`sema::bodies::check_group_start`'s own doc comment: an
-/// omitted, defaulted argument is elided entirely from this list, unlike
-/// an ordinary `Call`'s aligned `args`), so each of the callee's own
-/// declared parameters is matched by name here, falling back to its own
-/// stored default when absent.
 fn lower_group_start(
     recv: &TypedExpr,
     args: &[(String, TypedExpr)],
@@ -1469,16 +1228,6 @@ fn lower_group_start(
     Ok(())
 }
 
-/// `with group(capacity=.., deadline=..) [as g]:` (02-language.md §9.5,
-/// `flowwir.rs`'s own "`with group`" section). The group's own body never
-/// drains its `defer`s inline (`lower_stmts_no_drain`, not `lower_block`)
-/// — this fn does that itself, via a referenceable cleanup chain
-/// (`build_cleanup_chain`) when the body registered any, or a bare,
-/// empty-cleanup `GroupClose` when it did not. An early exit (`return`)
-/// from inside the body is a disclosed, named gap (module doc's own
-/// "Fail-closed set" list is `flowwir.rs`'s, not repeated here): this fn
-/// only ever emits `GroupClose` on the body's own natural, non-diverging
-/// end.
 #[allow(clippy::too_many_arguments)]
 fn lower_with_group<'a>(
     capacity: &'a Option<TypedExpr>,
@@ -1538,12 +1287,6 @@ fn lower_with_group<'a>(
             b.switch_to(after);
         }
     } else {
-        // Module doc's own disclosed gap: an early exit from inside the
-        // body never runs this group's own `GroupClose`/cleanup chain at
-        // M6 (item F's job). The ending state may still be missing a
-        // transition (an embedded `Mwir(Inst::Return)`, not an explicit
-        // cross-state exit) — `finish_if_unset` keeps the IR well-formed
-        // either way, same reasoning as `lower_fn`'s own trailing step.
         let c = b.cur();
         b.finish_if_unset(c, Transition::Return(None));
     }
@@ -1551,8 +1294,6 @@ fn lower_with_group<'a>(
     env.pop();
     Ok(diverged)
 }
-
-// --- if/while (intra vs. inter) --------------------------------------------
 
 #[allow(clippy::too_many_arguments)]
 fn lower_if<'a>(
@@ -1689,9 +1430,6 @@ fn lower_if_split<'a>(
     let else_end = b.cur();
 
     if then_diverged {
-        // Already finished if it diverged via an explicit cross-state
-        // `break`/`continue`; not yet if via an embedded
-        // `Mwir(Inst::Return)` — `finish_if_unset` covers both.
         b.finish_if_unset(then_end, Transition::Return(None));
     }
     if else_diverged {
@@ -1774,12 +1512,6 @@ fn lower_while_intra<'a>(
     Ok(())
 }
 
-/// A loop's back-edge with an `await` inside it: a genuine state cycle
-/// (`flowwir.rs`'s own "loop back-edge with an await inside = state
-/// cycle") — `cond_state` re-checks the condition every iteration,
-/// `Branch`ing into either a fresh `body_state` or the loop's own
-/// `after_state`; the body's own natural (non-`break`/`continue`) end
-/// jumps straight back to `cond_state`.
 fn lower_while_split<'a>(
     body: &'a [TypedStmt],
     cond: &'a TypedExpr,
@@ -1812,19 +1544,12 @@ fn lower_while_split<'a>(
     if !diverged {
         b.finish_current(Transition::Jump(cond_state));
     } else {
-        // Diverged either via an explicit cross-state `break`/`continue`
-        // (which already finished its own state) or via an embedded
-        // `Mwir(Inst::Return)` (which did not) — `finish_if_unset` covers
-        // both uniformly, same reasoning as `lower_fn`'s own trailing
-        // step.
         let c = b.cur();
         b.finish_if_unset(c, Transition::Return(None));
     }
     b.switch_to(after_state);
     Ok(())
 }
-
-// --- for (intra only) -------------------------------------------------------
 
 #[allow(clippy::too_many_arguments)]
 fn lower_for<'a>(
@@ -1978,8 +1703,6 @@ fn finish_intra_loop_fixups(ctx: LoopCtx, end_pos: usize, incr_pos: usize, b: &m
         b.patch(idx, incr_pos);
     }
 }
-
-// --- match/pattern lowering (intra only; mirrors lower.rs's own logic) -----
 
 fn lower_match<'a>(
     scrutinee: &'a TypedExpr,
@@ -2177,11 +1900,6 @@ fn lower_pattern_test(
     }
 }
 
-// --- places (assignment targets) -------------------------------------------
-
-/// Materialize `place` into a temp for in-place mutation. Bare local →
-/// its own temp (`needs_writeback = false`); field/index chain → a copy
-/// that must be written back (plans/M9.md item MM; mirrors `lower.rs`).
 fn materialize_place_mut(
     place: &TypedExpr,
     b: &mut FlowBuilder,
@@ -2214,16 +1932,11 @@ fn lower_place_write(
                 Some(Binding::Temp(t)) => {
                     b.emit_mwir(Inst::Copy { dst: t, src: value });
                 }
-                // Reassigning a name that was (or never was) an ordinary
-                // temp — rebind fresh (no prior temp exists to write
-                // into). No required golden reassigns a self-path-bound
-                // local, so this is the dumbest sound fallback.
                 _ => env_insert(env, name.clone(), Binding::Temp(value)),
             }
             Ok(())
         }
         TypedExprKind::Field(base, fname) => {
-            // plans/M10.md item A2c: placed-static named field → MmioWrite.
             if let TypedExprKind::Static(sname) = &base.kind {
                 let layout_name = match bodies::unwrap_own(base.ty.clone()) {
                     Type::Named(n, _) => n,
@@ -2257,7 +1970,6 @@ fn lower_place_write(
             Ok(())
         }
         TypedExprKind::Index(base, idx_expr) => {
-            // plans/M10.md item B1: placed array field index write.
             if let Some((static_expr, field_offset, elem_stride, len)) =
                 placed_array_field_index_flow(base, b.prog)?
             {
@@ -2276,9 +1988,6 @@ fn lower_place_write(
             }
             let (base_temp, needs_writeback) = materialize_place_mut(base, b, env)?;
             let len = eval_array_len(&base.ty)?;
-            // Parked `BoundsElide` (decision 1911), mirroring sync
-            // `lower.rs`: off by default, so the store keeps `IndexSet`
-            // and its runtime bounds check.
             if let Some(i) = literal_array_index_elide(idx_expr, len)? {
                 b.emit_mwir(Inst::SetField {
                     base: base_temp,
@@ -2303,8 +2012,6 @@ fn lower_place_write(
     }
 }
 
-/// Nested `mut` place → scratch temp + write-back obligation after the
-/// call (plans/M9.md item MM; mirrors `lower.rs::lower_mut_arg_place`).
 fn lower_mut_arg_place<'a>(
     expr: &'a TypedExpr,
     b: &mut FlowBuilder,
@@ -2327,9 +2034,6 @@ fn lower_mut_arg_place<'a>(
     }
 }
 
-// --- expressions (await-free contexts only) ---------------------------------
-
-/// plans/M13.md item M: see `lower_shared::needs_collapse_reserve_permit`.
 fn collapse_reserve_permit_if_needed(
     expr_ty: &Type,
     src: Temp,
@@ -2345,9 +2049,6 @@ fn collapse_reserve_permit_if_needed(
     Ok(dst)
 }
 
-/// Lowers `e` in a context that can never itself suspend — the module
-/// doc's own headline fail-closed set names everything this deliberately
-/// does not cover.
 fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result<Temp, FlowError> {
     match &e.kind {
         TypedExprKind::Int(text) => {
@@ -2383,11 +2084,9 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
                     return Err(FlowError::internal(format!("unbound local `{name}`")));
                 }
             };
-            // plans/M13.md item M: see `lower::collapse_reserve_permit_if_needed`.
             collapse_reserve_permit_if_needed(&e.ty, t, b)
         }
         TypedExprKind::Field(base, name) => {
-            // plans/M10.md item A2c: placed-static named field → MmioRead.
             if let TypedExprKind::Static(sname) = &base.kind {
                 let layout_name = match bodies::unwrap_own(base.ty.clone()) {
                     Type::Named(n, _) => n,
@@ -2420,7 +2119,6 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
                     return Ok(dst);
                 }
             }
-            // plans/M10.md item B4: `Bytes.len` is handle word 1.
             let idx = field_index(b.prog, &base_ty, name)?;
             let dst = b.fresh(e.ty.clone());
             b.emit_mwir(Inst::Project {
@@ -2430,8 +2128,6 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
             });
             Ok(dst)
         }
-        // Move is a type-system fact; lowering just evaluates the place
-        // (mirrors `lower.rs`). plans/M13.md item M: coerce Result→permit.
         TypedExprKind::Take(inner) => {
             let t = lower_expr_flat(inner, b, env)?;
             collapse_reserve_permit_if_needed(&e.ty, t, b)
@@ -2468,7 +2164,6 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
                 return Err(FlowError::internal("struct literal type is not `Named`"));
             };
             debug_assert_eq!(name, sname);
-            // plans/M9.md item E: Duration/Instant scalar-newtype ABI.
             if matches!(sname.as_str(), "Duration" | "Instant") {
                 if fields.len() != 1 {
                     return Err(FlowError::internal(format!(
@@ -2537,8 +2232,6 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
                     "passing a nested `mut` place as a `send` argument is",
                 ));
             }
-            // plans/M13.md item J: take-mode params handed back in
-            // `NotAdmitted`'s args tuple when enqueue refuses (item H).
             let take_arg_temps: Vec<_> = f
                 .params
                 .iter()
@@ -2569,17 +2262,6 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
             b.emit(FlowInst::Entropy { dst, n });
             Ok(dst)
         }
-        // plans/M9.md item E: `ms` is an ordinary Call into
-        // `stdlib/core/time.wr` (no FlowInst::Duration). The Call arm
-        // above handles it.
-        // plans/M7.md item H1: the async half of `lower.rs`'s own MMIO
-        // arm. The *sync* half emits, and the sync half is the whole of
-        // what this item needs: a driver's `init` is a plain `fn`
-        // (03-hardware.md §1's own worked constructor), and the async
-        // surface that reads registers is 03 §6's ISR and §7's bottom-half
-        // task, both of which plans/M7.md item G owns. Failing closed here
-        // rather than in the `{other:?}` catch-all so a reader is told
-        // which item, not shown a typed node.
         TypedExprKind::Intrinsic { key, .. }
             if crate::sema::bodies::is_mmio_access_intrinsic(key)
                 || crate::sema::bodies::is_device_transport_intrinsic(key)
@@ -2593,9 +2275,6 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
                  surface lands for async, this is",
             ))
         }
-        // plans/M7.md item H2a: narrowing is emitted on the sync path; an
-        // async body that needs one can call a sync helper. Fail closed
-        // by name rather than half-emitting through FlowWir.
         TypedExprKind::Intrinsic { key, .. }
             if crate::sema::bodies::is_untrusted_narrowing_intrinsic(key) =>
         {
@@ -2604,10 +2283,6 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
                  (plans/M7.md item H2a); an async narrowing is",
             ))
         }
-        // plans/M7.md item E4: the flagship's own `async` roundtrip
-        // publishes on the same path as the sync handoff methods — emit
-        // the same MWIR ops `lower.rs` does (decision 20's package +
-        // ring write order).
         TypedExprKind::Intrinsic {
             key,
             receiver,
@@ -2629,7 +2304,6 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
              `let`/assignment/`return`/bare-statement operand is supported) is",
         )),
         TypedExprKind::Index(base, idx_expr) => {
-            // plans/M10.md item B1: placed array field index read.
             if let Some((static_expr, field_offset, elem_stride, len)) =
                 placed_array_field_index_flow(base, b.prog)?
             {
@@ -2649,7 +2323,6 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
             }
             let base_temp = lower_expr_flat(base, b, env)?;
             let base_ty = bodies::unwrap_own(base.ty.clone());
-            // plans/M10.md item B4: unbounded `Bytes` packed-byte index.
             if matches!(base_ty, Type::Bytes(None)) {
                 let idx_temp = lower_expr_flat(idx_expr, b, env)?;
                 let dst = b.fresh(e.ty.clone());
@@ -2660,8 +2333,6 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
                 });
                 return Ok(dst);
             }
-            // Exact `Bytes[N]` slot-per-byte (M17 layout fact / item G).
-            // Literal index → Project slot `i`, same as sync `lower.rs`.
             if let Type::Bytes(Some(n_expr)) = &base_ty {
                 let cap = bodies::literal_array_len(n_expr)
                     .ok_or_else(|| FlowError::unimplemented("a non-literal Bytes length is"))?;
@@ -2693,9 +2364,6 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
                 });
                 return Ok(dst);
             }
-            // Parked `BoundsElide` (decision 1911), mirroring sync
-            // `lower.rs`: off by default, so the read keeps `IndexGet`
-            // and its runtime bounds check.
             let len = eval_array_len(&base.ty)?;
             if let Some(i) = literal_array_index_elide(idx_expr, len)? {
                 let dst = b.fresh(e.ty.clone());
@@ -2764,9 +2432,6 @@ fn lower_flow_const_value(
     }
 }
 
-/// Sync-helper / in-process call from an async body (plans/M7.md item E4).
-/// Mirrors `lower.rs::lower_call`'s receiver/write-back shape, using this
-/// file's `Binding::Temp` environment.
 fn lower_flow_queue_op(
     key: &str,
     receiver: &Option<Box<TypedExpr>>,
@@ -2831,7 +2496,6 @@ fn lower_flow_queue_op(
             Ok(dst)
         }
         "VirtQueue.reserve" => {
-            // plans/M13.md item M: see `lower.rs` — Result sites wrap Ok.
             let _ = args
                 .iter()
                 .find(|(l, _)| l == "descriptors")
@@ -2946,12 +2610,6 @@ fn lower_flow_queue_op(
     }
 }
 
-/// `+ - *`/comparisons only (module doc: no required golden needs `/ %`,
-/// shifts, bitwise ops, or a float operand) — the one special case, an
-/// additive `Instant + Duration` (plans/M6.md decision 11's own
-/// vocabulary), is represented as an opaque `u64` tick-count add
-/// (`flowwir.rs`'s own module doc records the choice; the real unit
-/// conversion is item D's job).
 fn lower_binary_flat(
     op: BinOp,
     l: &TypedExpr,
@@ -2974,7 +2632,6 @@ fn lower_binary_flat(
         });
         return Ok(dst);
     }
-    // plans/M9.md item C2: `String[..N] + String[..M]`.
     if op == BinOp::Add {
         if let (Type::String(ln), Type::String(rn), Type::String(_)) = (&l.ty, &r.ty, &e.ty) {
             let lhs_cap = crate::sema::bodies::literal_array_len(ln)
@@ -3038,12 +2695,6 @@ fn lower_binary_flat(
     }
 }
 
-/// Postfix `?` (02-language.md §7.4) on an already-synchronous `Result`
-/// value: tests the tag, projects the `Ok` payload as this expression's
-/// own result on the true path, and on the false path builds this fn's
-/// own `Err`-wrapped return value and embeds an early `Mwir(Inst::Return)`
-/// — entirely as ops in the *current* state (module doc: an early return
-/// is just another embedded op, never a `Transition` of its own).
 fn lower_try_check(
     value_temp: Temp,
     value_ty: &Type,
@@ -3120,9 +2771,6 @@ fn lower_try_check(
     Ok(ok_payload)
 }
 
-/// Apply `?`'s one-hop `from` conversion inside an async body (same
-/// rules as `lower::lower_from_conversion` — Call only, no structural
-/// wrap; plans/M9.md item B3).
 fn lower_from_conversion_flow(
     err_payload: Temp,
     key: &CalleeKey,
@@ -3157,11 +2805,6 @@ mod integration_tests {
         sema::check_typed(&module, "<test>").expect("test source must check")
     }
 
-    /// State-count assertions for each of the seven required golden
-    /// shapes (the pinned rule) —
-    /// mirrors `tests/golden/<case>/input.wr` verbatim, so a drift here
-    /// would also show up as a golden diff; this test locks the *count*
-    /// specifically, independent of the dump's exact text.
     #[test]
     fn state_counts_match_every_required_golden_shape() {
         let basic = typed_program(
@@ -3407,10 +3050,6 @@ pub struct Store:
         )
     }
 
-    /// Frame-layout determinism (plans/M6.md item B's own required unit
-    /// test): lowering the identical program twice produces the exact
-    /// same `FrameLayout` — every temp's type, in order, plus the two
-    /// fixed lineage slots — never a run-to-run reordering.
     #[test]
     fn frame_layout_is_deterministic_across_two_lowerings() {
         let program = self_path_program();
@@ -3425,19 +3064,11 @@ pub struct Store:
         assert_eq!(f1.lineage_deadline_slot, Temp(1));
     }
 
-    /// Path-carrying across `await` (02-language.md §9.2, module doc's
-    /// own "Self-rooted paths across `await`" section): `before`'s own
-    /// read (in the resume state, after the `await`) and `after`'s own
-    /// read (later in the same state) are each their own independent
-    /// `FlowInst::SelfPath` — the path is recorded and re-derived twice,
-    /// never a single value carried across the suspension as a raw temp.
     #[test]
     fn self_rooted_path_survives_await_as_a_path_not_a_temp() {
         let program = self_path_program();
         let flow = lower_program(&program).expect("must lower cleanly");
         let f = &flow.fns["Store.refresh"];
-        // State 0 is the entry (up to the suspension); every `SelfPath`
-        // op lives in the resume state, state 1.
         let resume = &f.states[1];
         let self_paths: Vec<&Vec<String>> = resume
             .ops
@@ -3447,10 +3078,6 @@ pub struct Store:
                 _ => None,
             })
             .collect();
-        // Three independent re-derivations: `before`'s own use in the
-        // `.Ok` arm (`before + after + v`), `after`'s own use there, and
-        // `before`'s own second, separate use in the `.Err` arm (`return
-        // before`) — never a single cached value shared across all three.
         assert_eq!(
             self_paths.len(),
             3,
@@ -3459,11 +3086,6 @@ pub struct Store:
         for path in self_paths {
             assert_eq!(path, &vec!["cache".to_string(), "value".to_string()]);
         }
-        // Never a single cached `Copy` from a pre-await temp into a
-        // `before`-shaped local followed by reuse — every read is its own
-        // fresh `SelfPath`, so `f.states[0]` (before the suspension)
-        // carries no self-path materialization at all (only the receiver
-        // call's own `Project` chain to the *handle* field, not `cache`).
         assert!(
             f.states[0]
                 .ops

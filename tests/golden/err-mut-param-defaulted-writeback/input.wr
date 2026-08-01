@@ -1,10 +1,5 @@
 module examples.err_mut_param_defaulted_writeback
 
-# plans/M9.md item CC1, decision 69. A `mut` parameter with a default,
-# called with the argument elided, has no call-site place to mirror
-# into. Before this item the mutation was silently discarded; now the
-# evaluator fails closed by name rather than inventing a place or
-# dropping the write-back.
 
 fn bump(mut x: u32 = 0):
     x = 5

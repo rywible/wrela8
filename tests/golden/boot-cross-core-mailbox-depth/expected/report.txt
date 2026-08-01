@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/boot_cross_core_mailbox_depth.wr sha256=b7b2aa63bdb55dcc860be517914eb31298135a65244c81a506aa286112d3d796
+  Input path=examples/boot_cross_core_mailbox_depth.wr sha256=176cc6749399746778562ae997034be50a62a39ef87d5acf6ec0f54b8071d112
   Input path=<generated> sha256=2660bc3b00742b2a07a02929a0f41b1762f379bfa87cf609068127e45c57b709
   Name value=cross-core-mailbox-depth
   Target value=Target.wrela_machine_v1

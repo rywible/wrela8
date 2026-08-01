@@ -1,60 +1,3 @@
-//! Access-mode checking (plans/M2.md item D): call-site mirroring of
-//! `mut`/`take` markers against declared parameter modes (02-language.md
-//! §5.1), the place-expression requirement on a mirrored operand, `pub`
-//! methods spelling their receiver effect (private plain-`self` methods
-//! get the least effect inferred instead), `read`-parameter loans (a
-//! `read` binding — including `read self` — can never be assigned, have
-//! a field assigned, or be passed onward as `mut`/`take`), and the
-//! "calling through a receiver" rule: a `mut self` method needs a
-//! mutable place, a `take self` method needs an owned one.
-//!
-//! Shape (decision 3/10): this pass runs after `bodies.rs`, which has
-//! already proven the whole (non-generic) module type-checks — arity,
-//! labels, and every expression's type are already known-good. This pass
-//! does **not** re-derive full type inference; it re-walks the same
-//! bodies with a much smaller "which struct/method does this call
-//! resolve to" question, reusing `bodies::build_module_ctx`'s lookup
-//! tables wholesale (widened `pub(crate)` there, plans/M2.md item D's
-//! footprint rule — nothing in `bodies.rs`/`types.rs` is restructured).
-//! Tracking is scoped to what a call target actually needs: every
-//! tracked name (a parameter, `self`, or a closure parameter) keeps its
-//! declared type and mode; a plain local introduced by assignment/
-//! pattern/`for` keeps a best-effort type (propagated from its
-//! initializer through the same lookup — including 02 §1.1's
-//! unconstrained literal defaulting, plans/M9.md item D2) and no mode
-//! at all (an ordinary owned binding is never restricted). A method call
-//! whose receiver expression's type cannot be determined this way fails
-//! closed with a precise `error[type]` naming the method rather than
-//! silently skipping mirroring.
-//!
-//! Receiver-effect inference (item 3): the AST cannot distinguish a
-//! plain `self` from an explicitly spelled `read self` (types.rs's
-//! `DeclReceiver` doc comment) — so a private method's *inferred* effect
-//! is the only thing ever computed here, and the `pub`-must-spell rule is
-//! checked the only honest way available: a `pub` method with the
-//! ambiguous `Read` receiver mode is an error exactly when its body's
-//! inferred requirement exceeds `read` (it needed `mut`/`take` and didn't
-//! say so); a `pub` method that already spells `mut self`/`take self` is
-//! never second-guessed. Inference itself is a dumb fixpoint over every
-//! private plain-`self` method in the module at once (self-calls are
-//! always same-struct, so a whole-module round-robin is simplest and
-//! correct): start every candidate at `read`, escalate to `mut` (a field
-//! of `self` is assigned; `self` or a field of `self` is passed as a
-//! `mut` argument; a field of `self` is taken, which per 02 §3.2 must be
-//! restorable and so needs `mut` access, not full ownership; a `mut
-//! self`/`take self` method is called directly on `self`) or `take`
-//! (`self` itself, whole, is taken; a `take self` method is called
-//! directly on `self`), to a fixed point. A private method that needs
-//! more than a *direct* `self.method()`/`self.field = ...` pattern to
-//! reach its true requirement (e.g. a nested `self.field.mutate()` call
-//! escalating through a field's own type) is not chased further by
-//! inference — the honest fallback is that such a method must spell its
-//! receiver explicitly, exactly like a `pub` method would; the "calling
-//! through a receiver" check below (which *does* resolve nested field
-//! chains for the mutability question) still enforces it correctly
-//! either way, so this is a documented scope limit, not a soundness gap
-//! (see the session report for the worked-through reasoning).
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::sema::SemaError;
@@ -69,14 +12,8 @@ use crate::syntax::ast::{
     self as ast, AccessMode, ClosureBody, DeferBody, Expr, Member, Module, Span, Stmt, UnaryOp,
 };
 
-/// `(struct name, method name) -> inferred receiver effect`, for every
-/// private plain-`self` method in the module — the check dump's own
-/// lookup key (types.rs's `render_member`) and this pass's internal one.
 pub type EffectMap = crate::sema::typed::EffectMap;
 
-/// Computes the receiver-effect map alone, with no error checking — used
-/// by `check` below and, independently, by `mod.rs`'s `dump` (decision 8:
-/// private methods print their inferred effect once this pass lands).
 pub fn infer_effects(
     module: &Module,
     decl_items: &[DeclItem],
@@ -86,19 +23,10 @@ pub fn infer_effects(
     infer_private_effects(&mctx)
 }
 
-/// `pub(crate)` (item H, generics.rs): the same computation as
-/// `infer_effects` above, but from an already-built `ModuleCtx` — the
-/// shared one every pass now uses (see `check`'s own doc comment) — since
-/// `generics::check` only ever has that, never a fresh `module`+
-/// `decl_items` pair to rebuild one from.
 pub(crate) fn infer_effects_over(mctx: &ModuleCtx) -> EffectMap {
     infer_private_effects(mctx)
 }
 
-/// The access pass (plans/M2.md item D): walks the typed tree produced by
-/// `bodies`. Infers private plain-`self` effects from declaration bodies
-/// still held in `ModuleCtx`, stores them on `TypedProgram::effects`, and
-/// rewrites `TypedFn.receiver` to the effective mode.
 pub(crate) fn check(program: &mut TypedProgram, mctx: &ModuleCtx) -> Result<(), SemaError> {
     let effects = infer_private_effects(mctx);
     program.effects = effects.clone();
@@ -202,8 +130,6 @@ pub(crate) fn check_typed_struct(
         let mut actx = ACtx::new(mctx, effects, BTreeSet::new());
         check_typed_expr(d, &mut actx)?;
     }
-    // `pub`-must-spell runs here via `resolve_receiver_mode` before the
-    // body walk — same place the old AST pass called it.
     if let Some(info) = mctx.structs.get(&s.name) {
         for (mname, f) in s.methods.iter_mut() {
             if let Some((af, fd)) = info.method(mname) {
@@ -328,7 +254,6 @@ fn check_typed_stmt(stmt: &TypedStmt, actx: &mut ACtx<'_>) -> Result<(), SemaErr
                     check_typed_expr(e, actx)?;
                 }
             }
-            // 02-language.md §3.2: plain binding over a resource element is a read loan.
             let mode = if !*take_binding && bodies::is_resource_type(elem_ty, actx.mctx) {
                 Some(AccessMode::Read)
             } else {
@@ -449,7 +374,6 @@ fn is_typed_full_place(e: &TypedExpr) -> bool {
     }
 }
 
-/// Typed-tree expression access check. Uses `.ty` and stored call-site modes.
 fn check_typed_expr(expr: &TypedExpr, actx: &mut ACtx<'_>) -> Result<Type, SemaError> {
     match &expr.kind {
         TypedExprKind::Call {
@@ -662,7 +586,6 @@ fn mirror_message_positional(expected: AccessMode, found: AccessMode) -> String 
     }
 }
 
-/// Bare struct/enum name from a `MethodInstance` key (`struct:Name[Args]`).
 fn method_owner_base(key: &str) -> &str {
     let rest = key
         .strip_prefix("struct:")
@@ -671,8 +594,6 @@ fn method_owner_base(key: &str) -> &str {
     rest.split('[').next().unwrap_or(rest)
 }
 
-/// Declared parameter modes for a resolved callee — `TypedCallArg` slots
-/// already align 1:1 with these (bodies did the label/positional bind).
 fn decl_params_for_callee<'a>(callee: &CalleeKey, actx: &'a ACtx<'_>) -> Option<&'a [DeclParam]> {
     match callee {
         CalleeKey::Fn(name) => actx.mctx.fns.get(name).map(|f| f.decl.params.as_slice()),
@@ -715,7 +636,6 @@ fn check_mirroring_typed(
     args: &[TypedCallArg],
 ) -> Result<(), SemaError> {
     for (p, a) in decl_params.iter().zip(args.iter()) {
-        // Defaulted slot: no call-site marker to mirror.
         if a.value.is_none() {
             continue;
         }
@@ -781,10 +701,6 @@ fn check_typed_receiver_mutability(
     callee: &CalleeKey,
     actx: &mut ACtx<'_>,
 ) -> Result<(), SemaError> {
-    // `Actor[T]` / `Group` are opaque handles (02-language.md §9): a
-    // method's `mut self`/`take self` names the remote turn's receiver
-    // effect, not a mutation of the caller's handle place. The AST access
-    // path skipped this check for `Actor[...]` the same way.
     if let Type::Named(n, _) = bodies::unwrap_own(receiver.ty.clone()) {
         if n == "Actor" || n == "Group" {
             return Ok(());
@@ -857,8 +773,6 @@ fn check_typed_receiver_mutability(
     Ok(())
 }
 
-// --- receiver-effect inference (item 3) -----------------------------------
-
 fn rank(m: AccessMode) -> u8 {
     match m {
         AccessMode::Read => 0,
@@ -873,19 +787,6 @@ fn escalate(acc: &mut AccessMode, m: AccessMode) {
     }
 }
 
-/// Every private, plain-`self` (`Read`, not `pub`), non-generic method in
-/// a struct — generic or not. Receiver-effect inference is purely
-/// structural (self-calls always resolve within the same struct; nothing
-/// below reads a field's or parameter's *type*, only `self`/marker/call
-/// shapes), so a generic struct's own declared methods get exactly one
-/// inferred effect apiece, computed once here from the *declaration*
-/// (unsubstituted `T`s and all) and reused unchanged by every concrete
-/// instantiation item H later checks — recomputing it per instantiation
-/// would ask the exact same structural question of the exact same body
-/// every time. A method that is itself separately generic (its own
-/// `[...]`, beyond the struct's) is still skipped: item H's own scope
-/// boundary (a generic method is never instantiated, so it is never
-/// checked, so there is nothing to infer an effect *for*).
 fn private_candidates(mctx: &ModuleCtx) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for (sname, s) in &mctx.structs {
@@ -901,7 +802,6 @@ fn private_candidates(mctx: &ModuleCtx) -> Vec<(String, String)> {
             }
         }
     }
-    // plans/M9.md item B2: same private plain-`self` inference for enums.
     for (ename, e) in &mctx.enums {
         for (am, dm) in e.members() {
             if let (Member::Fn(f), DeclMember::Fn(d)) = (am, dm) {
@@ -953,11 +853,6 @@ fn infer_private_effects(mctx: &ModuleCtx) -> EffectMap {
     effects
 }
 
-/// What a `self.method()` call's own receiver mode contributes to the
-/// *caller's* required effect: explicit `mut`/`take` are used as-is; an
-/// explicit `pub read self` never escalates (it is exactly what it
-/// says); a private plain-`self` callee defers to its own (possibly
-/// still-being-computed) fixpoint entry.
 fn effective_declared(
     mode: Option<AccessMode>,
     is_pub: bool,
@@ -993,9 +888,6 @@ fn required_self_effect(
     acc
 }
 
-/// How an expression refers to `self`, for the escalation rules: exactly
-/// `self` (a whole-value use), a field/index chain rooted at `self` (a
-/// partial reference), or unrelated.
 enum SelfRef {
     None,
     Whole,
@@ -1219,11 +1111,6 @@ fn scan_expr_self(
     }
 }
 
-// --- shared place helpers --------------------------------------------------
-
-/// The name a place expression ultimately roots at — a bare local, or the
-/// base of a field/index chain — `None` for anything else (a call, a
-/// literal, a binary expression, ...).
 fn place_root_name(expr: &Expr) -> Option<&str> {
     match expr {
         Expr::Name(_, n) => Some(n.as_str()),
@@ -1237,19 +1124,8 @@ fn access_error(message: String, span: Span) -> SemaError {
     SemaError::at("access", message, span)
 }
 
-// --- the full check pass: mirroring, read loans, receiver mutability -----
-
-/// One tracked name's declared type (best effort — see the module doc
-/// comment) and access mode. `mode: None` marks an ordinary owned local
-/// (introduced by assignment/pattern/`for`): unrestricted, always a legal
-/// mutable/ownable place. `mode: Some(_)` marks a parameter or `self`:
-/// `Read` is a loan (item 4); `Mut`/`Take` carry no restriction of their
-/// own here (moving a borrowed value is item E/F's job) but do matter to
-/// the "calling through a receiver" origin check.
 #[derive(Clone)]
 struct LocalInfo {
-    /// Kept for parity with the old AST tracker (and future typed
-    /// receiver-resolution); mode is what this pass reads today.
     #[allow(dead_code)]
     ty: Option<Type>,
     mode: Option<AccessMode>,
@@ -1259,8 +1135,6 @@ struct ACtx<'a> {
     mctx: &'a ModuleCtx,
     effects: &'a EffectMap,
     locals: BTreeMap<String, LocalInfo>,
-    /// Retained so call sites match the old `ACtx::new` shape; typed
-    /// walkers no longer re-resolve annotations from AST.
     #[allow(dead_code)]
     local_pools: BTreeSet<String>,
 }
@@ -1276,13 +1150,6 @@ impl<'a> ACtx<'a> {
     }
 }
 
-/// `pub(crate)` (item H, generics.rs): re-run over a substituted,
-/// generics-cleared copy of a generic fn's own ast+decl
-/// (`generics::instantiate_fn`) — mirrors `bodies::check_top_fn`'s own
-/// widening exactly, same reasoning.
-
-/// Effective receiver mode for a method, used by flow's legacy path and
-/// typed receiver mutability checks.
 pub(crate) fn resolve_receiver_mode(
     f: &ast::FnItem,
     fd: &DeclFn,

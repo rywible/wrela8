@@ -1,14 +1,5 @@
 module examples.check_duration_field_image
 
-# plans/M9.md item PP: a `Duration` in *type position* on a struct field
-# has to survive the whole way to image layout, not just `check`. Before
-# PP taught `build_layout_ctx` item E's time-prelude inject, this program
-# passed check/typed/layout-types/mwir and then failed `wrela build` with
-# `error[type]: unknown type `Duration``: `check_typed` knew the injected
-# name and the layout declare did not. Found by `xtask fuzz async`
-# (seed=3, iteration 4441) as `merge_layout_ctx failed after check_typed
-# already accepted this program`; `check-time-prelude-types` could not
-# catch it because it pins only the check dump and a value test.
 
 struct Timing:
     delay: Duration

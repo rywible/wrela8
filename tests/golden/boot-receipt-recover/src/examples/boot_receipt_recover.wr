@@ -1,38 +1,6 @@
 module examples.boot_receipt_recover
 
-# plans/M8.md item G flagship (decision 17): 03-hardware.md §9's
-# `CompletionOutcome`, produced on a real path and matched by source.
-#
-# Two published operations on one queue, one outcome each, both observed
-# by a `match` whose three arms are exhaustively checked like any other
-# enum in this language:
-#
-#   phase 1  publish a write; the device completes it; the IRQ wakes the
-#            bottom half; `drain` resolves the receipt under the live
-#            epoch; `recover` reports **Completed**.
-#   phase 2  publish a second write; the device completes it; the bottom
-#            half calls `RunningDevice.reset` first (epoch 1 -> 2), so the
-#            in-flight receipt can no longer be attributed and `recover`
-#            reports **Unknown**.
-#
-# Phase 2 is the honest producer §9 describes: "After a reset, a write may
-# have happened." Nothing here retries — the `Unknown` arm quarantines and
-# stops, which is the rule this golden's `err-retry-after-unknown` sibling
-# proves the compiler now enforces.
-#
-# `recover` deliberately returns **no payload**: after a reset the buffer
-# is possibly device-owned and §9 forbids reclaiming it, so each phase
-# spends its own DMA block and the retired one is simply not reused.
-# Reclaim is quarantine's job (plans/M8.md item F) and stays a named gap.
-#
-# Vacuity twin: `err-boot-receipt-recover` swaps the two expected outcomes
-# and must abort instead of surviving.
 
-# M16 Wave D2: project-shape conversion. Layout/`@driver` bodies stay
-# local — any `from drivers.blk import …` is refused by A1b while this
-# module also declares `BlkDriver` / shared layout names that `drivers.blk`
-# exports (plans/M9.md item A1b). Full layout import also needs same-module
-# `Mmio[L]` + pub layout fields. Specialized local `@driver` kept.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:
@@ -64,7 +32,6 @@ const QDEPTH: usize = 8
 const BLK_T_OUT: u32 = 1
 const MAGIC: u64 = 0xC0FFEE00BEEF42A1
 const SPARE_MAGIC: u64 = 0x0102030405060708
-# phase: 1 = first write in flight; 2 = second write in flight; 3 = done
 const PHASE_FIRST: u32 = 1
 const PHASE_SECOND: u32 = 2
 const PHASE_DONE: u32 = 3
@@ -152,8 +119,6 @@ pub struct BlkDriver:
                     self.inflight = None
                     return unit
                 case .Some(r):
-                    # Live epoch, device returned the descriptor: the
-                    # outcome is known.
                     self.queue.drain(max=QDEPTH)
                     first = self.queue.recover(receipt=take r)
                     match first:
@@ -164,8 +129,6 @@ pub struct BlkDriver:
                         case .Unknown:
                             assert false, "no reset happened before the first recover"
                     self.inflight = None
-                    # Publish the second operation on its own DMA block —
-                    # the first is retired unreclaimed by design.
                     held = take self.spare
                     match held:
                         case .None:
@@ -181,9 +144,6 @@ pub struct BlkDriver:
                                 idempotent=false,
                             )
                             receipt = self.queue.publish(operation=take op)
-                            # Take the empty Option before restoring
-                            # (Option[Receipt] is a resource — a live
-                            # `None` cannot be overwritten).
                             empty = take self.second
                             match empty:
                                 case .None:
@@ -201,15 +161,6 @@ pub struct BlkDriver:
                         self.second = None
                         return unit
                     case .Some(r):
-                        # Drain **first**: the device returned this
-                        # descriptor and the bookkeeping records a resolved
-                        # slot with status OK, so without the reset below
-                        # this receipt would report `Completed` exactly like
-                        # phase 1's. 03-hardware.md §9: reset produces a new
-                        # epoch that invalidates all prior receipts, and the
-                        # epoch test outranks the resolved slot — after a
-                        # reset a write may have happened, and the driver can
-                        # no longer say which.
                         self.queue.drain(max=QDEPTH)
                         self.device = self.device.reset(queue=mut self.queue)
                         second = self.queue.recover(receipt=take r)
@@ -219,15 +170,10 @@ pub struct BlkDriver:
                             case .NotCompleted:
                                 assert false, "the reset invalidated this receipt's epoch"
                             case .Unknown:
-                                # No retry here: that is the whole rule.
                                 pass
                         self.second = None
                         self.phase = PHASE_DONE
             else:
-                # A quiet wake after both phases (an extra completion or an
-                # inject bit) is expected and must not abort — the same
-                # event `boot-blk-roundtrip` absorbs through its empty
-                # `Option` guard.
                 return unit
         return unit
 
@@ -244,8 +190,6 @@ pub struct Ledger:
 
 @test(runtime)
 async fn recover_reports_completed_then_unknown(led: Actor[Ledger]):
-    # Two checkpoints: the phase-1 IRQ+drain, then the phase-2 IRQ+drain.
-    # Surviving with marks 51 means every assert in both phases held.
     a = await led.mark(n=5)
     @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match a:

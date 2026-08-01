@@ -1,8 +1,5 @@
 module shapes
 
-# plans/M9.md item A1b's fixture: an ordinary data struct declared in a
-# module the `@image` module only *imports*. Nothing here is special —
-# the point is entirely on the other side of the import.
 pub struct Pair:
     pub a: u32
     pub b: u32

@@ -1,9 +1,5 @@
 module examples.check_from_explicit
 
-# plans/M9.md item B, Half A. 02-language.md §7.4 spells the conversion
-# as `TargetError.from(take e)`. `from` is a reserved word for imports;
-# after `fn` it is a legal associated-fn name (decision 105). The body
-# adds 100 so a missing or identity conversion cannot produce 107.
 
 pub enum LoadError deriving(From):
     Bad(u32)
@@ -39,8 +35,6 @@ pub fn test_explicit_from():
     assert CONVERTED == 107, "explicit from must transform Bad(7) into code=107"
 
 
-# Guest-reachable path (plans/M9.md item KK): H3 dropped explicit from helpers
-# from mwir; `@test(runtime)` seeds hand-written from + `?`.
 @test(runtime)
 pub fn guest_from():
     assert settle(convert_wrapped(0)) == 107, "explicit from at guest"

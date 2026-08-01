@@ -1,7 +1,5 @@
 module app.main
 
-# plans/M9.md item A2: `IoError` lives in stdlib/core/ and is imported.
-# The check dump must show Module path=core.io_error with the enum.
 from core.io_error import IoError
 
 pub fn sample() -> IoError:

@@ -1,56 +1,3 @@
-//! Graph checks (plans/M4.md item C, decisions 6/7): plain functions over
-//! an already-sealed `eval::image::ImageGraph` — no traits, no registry,
-//! `BTreeMap`/`Vec` throughout, fail-fast in one fixed documented order
-//! (`check_sealed`, below). This is a *post-evaluation pass*: it runs once
-//! (`bin/wrela.rs::run_image_stage`) after `eval::interp::eval_image`
-//! already produced a sealed graph, rather than interleaving checks into
-//! the intrinsics themselves (decision 5's own recorders already reject
-//! the one thing they can name honestly on their own — a pool bound twice
-//! by the same call chain — see `eval::image::ImageGraph::declare_pool`'s
-//! own doc comment; everything else here needs the *whole* finished graph
-//! at once, which only exists after the `@image` fn's body has fully run).
-//!
-//! Fixed check order (sub-note recorded at item C execution, 2026-07-23;
-//! extended once, at plans/M7.md item D, by inserting the pool-declaration
-//! check between pool binding and init-argument matching — a pool's own
-//! declaration must be *valid* before an init argument that names its
-//! handle can mean anything, which is the same reason binding already ran
-//! before init matching; extended again by the post-closure M7 sweep
-//! port, inserting device-bound-once before init-argument matching):
-//! construction DAG, then pools bound-at-seal, then pool declarations,
-//! then device-bound-once, then init-argument matching, then failure
-//! policy — first failure wins. Rationale: the DAG check is the most
-//! structural (it does not even need to know what a declaration *is*,
-//! only what it references) so it runs first; pool binding is the
-//! next-most-structural fact (whether a declared resource exists at all)
-//! and is a precondition for init-argument matching to mean anything (an
-//! init argument can reference a pool-backed handle); device-bound-once
-//! is the mint's per-device half of 03 §1's "named once" and must hold
-//! before any `DeviceCap` is substituted; init-argument matching is the
-//! deepest per-declaration check; the image failure policy is the most
-//! "external" fact (it says nothing about a declaration's own
-//! construction, only that the finished image named its abandonment
-//! response), so it runs last. `img.seal()`'s own "every declaration
-//! is fully bound" (05-library.md §9) is exactly the conjunction of every
-//! check below, not a separate mechanism — `check_sealed` *is* the seal
-//! check; `image.graph.seal-fully-bound`'s own the pinned rule the
-//! same evidence as the others.
-//!
-//! One-image (decision 6's own "zero or more than one is a named
-//! diagnostic listing every candidate") is deliberately *not* here: it is
-//! decided before any `@image` fn is ever evaluated (`bin/wrela.rs`'s own
-//! `run_image_stage`, growing item B's minimal slice), so there is no
-//! `ImageGraph` yet for a plain function over one to check.
-//!
-//! `image.graph.dma-pools` was an explicit gap (plans/M4.md decision 10)
-//! for exactly as long as `img.dma_pool` failed the whole build closed at
-//! evaluation time: `ImageGraph::dma_pools` was always empty by the time
-//! any check here ran. plans/M7.md item D closes it — `check_pool_decls`
-//! (below, third in the fixed order) is the DMA-specific case, and it is
-//! where 03-hardware.md §3's own declared facts (a `@layout(dma)` payload,
-//! a reachable device, an exact count, and therefore an exact size and
-//! alignment) are decided once, for both the report and the placement.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::eval::image::{DeclArg, ImageDeclRef, ImageGraph};
@@ -71,11 +18,6 @@ fn build_error(message: String) -> SemaError {
     }
 }
 
-/// 05-library.md §9 / plans/M15.md item B: sealed `Image(..., cores=N)`
-/// must satisfy `1 ≤ N ≤ CORE_SLOTS`. `CORE_SLOTS` is a soft page-packing
-/// ceiling (machine-info / pending arrays), not a published machine max —
-/// the diagnostic names the constant the same way layout names
-/// `RTDATA_SIZE_MAX`.
 fn check_cores(graph: &ImageGraph) -> Result<(), SemaError> {
     if graph.cores < 1 {
         return Err(build_error(format!(
@@ -106,91 +48,34 @@ fn build_error_with_lines(message: String, extra_lines: Vec<String>) -> SemaErro
     }
 }
 
-/// The whole post-seal pass (this module's own doc comment: the fixed
-/// order). `owner` is the module whose own `@image` fn produced `graph`
-/// (its `declared_pools` is what check 3/6 needs — a source-declared
-/// `pool` a module never binds leaves no trace in the graph itself);
-/// `programs` is every module the build closure checked (an actor/driver
-/// struct's own `init` may live in a different module than the `@image`
-/// fn that wires it, plans/M4.md item A's own splice — see
-/// `check_init_args`'s own doc comment).
 pub fn check_sealed(
     graph: &ImageGraph,
     owner: &TypedProgram,
     programs: &BTreeMap<String, TypedProgram>,
 ) -> Result<(), SemaError> {
-    // plans/M15.md item B / 05-library.md §9: cores ≥ 1 and ≤ CORE_SLOTS
-    // (soft page-packing ceiling — same spirit as RTDATA_SIZE_MAX).
     check_cores(graph)?;
     check_construction_dag(graph)?;
-    // plans/M7.md item D self-audit finding: this used to be handed the
-    // `@image` fn's *own module's* declared pools only, while
-    // `image.graph.pools-bound-once`'s own note already said the rule is
-    // "a `pool P` declared in source that is never bound by *any* call
-    // before `img.seal()`" and "only the declaring module's own
-    // `declared_pools` can supply" it — for every declaring module, not
-    // just one. A `pool Q` declared in another module of the closure, with
-    // `own[Q] T` signatures over it and no `img.dma_pool`/`img.pool`
-    // binding anywhere, sailed through. 02-language.md §4 is unambiguous:
-    // "An image pool is bound to a pool name — a module- or actor-scoped
-    // `pool Name` declaration that **the image binds** to exactly one pool
-    // node."
     let mut declared: BTreeSet<String> = owner.declared_pools.clone();
     for p in programs.values() {
         declared.extend(p.declared_pools.iter().cloned());
     }
     check_pools_bound(graph, &declared)?;
     check_pool_decls(graph, programs)?;
-    // Post-closure M7 sweep port: one device, one binding. Must run before
-    // `check_init_args` minting — a second binding would otherwise mint a
-    // second `DeviceCap` over a second register window for the same device.
     check_device_bound_once(graph)?;
     check_init_args(graph, programs)?;
     check_failure_policy(graph)?;
-    // plans/M7.md item E1, decision 14: required features vs DEVICE_FEATURES
-    // is a *build* error; capacity_sectors is the build constant
-    // `read_capacity_sectors` lowers to.
     check_blk_device_decls(graph, programs)?;
-    // plans/M8.md item P, decision 25: and that configuration belongs to
-    // the device whose pool hosts the ring, not to whichever device
-    // declared it first. Needs the resolved pool backings, which
-    // `check_pool_decls` above has already proved well-formed.
     check_blk_config_names_the_blk_device(
         graph,
         programs,
         &pool_backings(graph, &closure_layouts(programs)?)?,
     )?;
-    // DriverMode before vector-binding: an Irq build without `vector=`
-    // would also trip `take_irq` unowned (§6); name the §7 mode
-    // contradiction first when MODE is present.
     check_driver_mode(graph)?;
     check_vector_bindings(graph, programs)?;
-    // plans/M8.md item B / M15 item C: `core=` range is `0..N`
-    // (`graph.cores`) / virtio-blk pin — sizing and the inferred table
-    // themselves live in `placement::place` (report/build), which needs
-    // a LayoutCtx this pass does not have.
     crate::placement::check_annotations(graph).map_err(build_error)?;
     Ok(())
 }
 
-/// 03-hardware.md §1: "The device itself is named once, at the image
-/// binding (`img.driver(BlkDriver, device=blk_device)`), the single source
-/// of truth."
-///
-/// Item A's mint check enforces the *per-driver* half (at most one
-/// `DeviceCap` parameter per binding). The *per-device* half — at most one
-/// driver binding any given device — was only claimed, in
-/// `layout::DeviceRegs`'s own comment ("`eval::image_checks` already
-/// refuses a second binding of the same device, so this is not a list").
-/// It was not enforced. Two `img.driver(..., device=blk)` declarations
-/// therefore built two `DeviceRegs` windows for `device#0` at two
-/// different bases, and boot handed each driver a different "authority
-/// over one device instance". That is a wrong answer about which bytes a
-/// device is, not a missing feature.
-///
-/// Fail-fast in construction order: the second binding that names an
-/// already-bound device is the one that reports, naming both drivers and
-/// the device.
 pub fn check_device_bound_once(graph: &ImageGraph) -> Result<(), SemaError> {
     let mut first: BTreeMap<usize, usize> = BTreeMap::new();
     for (i, d) in graph.drivers.iter().enumerate() {
@@ -215,11 +100,6 @@ pub fn check_device_bound_once(graph: &ImageGraph) -> Result<(), SemaError> {
     Ok(())
 }
 
-// ===========================================================================
-// plans/M7.md item G, decision 18: 03-hardware.md §7 — DriverMode is a
-// const generic that changes the ISR/vector graph. Poll + vector, or Irq
-// without a vector, is a sealed-graph contradiction.
-// ===========================================================================
 fn check_driver_mode(graph: &ImageGraph) -> Result<(), SemaError> {
     for (di, decl) in graph.drivers.iter().enumerate() {
         let Type::Named(_, targs) = &decl.actor_type else {
@@ -262,9 +142,6 @@ fn check_driver_mode(graph: &ImageGraph) -> Result<(), SemaError> {
     Ok(())
 }
 
-/// Image-declared virtio-blk capacity, if any device carries
-/// `capacity_sectors=`. Used by the lowerer (via `TypedProgram`) and the
-/// report emitter.
 pub fn blk_capacity_sectors(graph: &ImageGraph) -> Option<u64> {
     for d in &graph.devices {
         if let Some(a) = d.args.iter().find(|a| a.label == "capacity_sectors") {
@@ -274,10 +151,6 @@ pub fn blk_capacity_sectors(graph: &ImageGraph) -> Option<u64> {
     None
 }
 
-/// Accepted feature mask for the image's declared `required_features`,
-/// already validated by `check_blk_device_decls`. Defaults to
-/// `F_VERSION_1` alone when no `required_features=` is declared (the
-/// mandatory bit is always present).
 pub fn blk_accepted_features(
     graph: &ImageGraph,
     programs: &BTreeMap<String, TypedProgram>,
@@ -302,15 +175,10 @@ pub fn blk_accepted_features(
     Ok(crate::virtqueue::F_VERSION_1)
 }
 
-/// plans/M7.md item E1 / decision 14: every `img.device`'s
-/// `required_features=` must be offerable by `virtqueue::DEVICE_FEATURES`,
-/// and `capacity_sectors=` (when present) must be a positive integer
-/// under the VMM's disk ceiling.
 fn check_blk_device_decls(
     graph: &ImageGraph,
     programs: &BTreeMap<String, TypedProgram>,
 ) -> Result<(), SemaError> {
-    // Variant names from every program's enums, for Feature/VirtioFeature.
     let mut enum_variants: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for p in programs.values() {
         for (name, vs) in &p.enums {
@@ -339,8 +207,6 @@ fn check_blk_device_decls(
                 ))
             })?;
             let bytes = sectors.saturating_mul(512);
-            // Match the VMM's own ceiling so a build that would fail at
-            // `BlkDevice::new` fails here instead, with the same number.
             const MAX_DISK_BYTES: u64 = 64 << 20;
             if bytes > MAX_DISK_BYTES {
                 return Err(build_error(format!(
@@ -360,37 +226,6 @@ fn check_blk_device_decls(
     Ok(())
 }
 
-/// plans/M8.md item P, decision 25 + item H attack 3: **blk configuration
-/// belongs to the blk device**, and an image may carry at most one device's
-/// worth of it.
-///
-/// Until item P an image could declare at most one pool-bearing device, so
-/// "the device that declares `capacity_sectors=`" and "the device whose
-/// pool hosts the ring" were the same device by construction, and
-/// `blk_capacity_sectors`/`blk_accepted_features` could scan the device
-/// list in declaration order. With two devices legal they are different
-/// questions — and the answer to the second is only reachable through the
-/// image's single `VirtQueue.configure` site, which the lowerer (reading
-/// `TypedProgram::blk_capacity_sectors`) does not have in scope.
-///
-/// Rather than grow a second, device-scoped derivation and let the two
-/// disagree, this refuses the only shape in which they could: blk
-/// configuration on a device that is not the blk device. 06-machine.md §6's
-/// device set is closed and machine v1 has exactly one `blk`, so the
-/// report's own `BlkDevice device=device#N` line can carry only that
-/// device's configuration.
-///
-/// When no configure site names the blk device, the "wrong device" arm
-/// cannot run — but two devices both declaring `capacity_sectors=` /
-/// `required_features=` is still an image carrying two devices' worth of
-/// blk configuration. The graph-wide scanners would pick the first in
-/// declaration order and silently drop the rest (`blk_capacity_sectors`
-/// returns on the first hit; `derive_blk_report` emits no `BlkDevice` line
-/// at all without a configure, so the ambiguity is invisible in the
-/// report). Item H attack 3 closes that: refuse by name regardless of
-/// whether anything configures a queue. One device declaring unused blk
-/// config with no configure remains legal — unambiguous, nothing
-/// consumes it.
 fn check_blk_config_names_the_blk_device(
     graph: &ImageGraph,
     programs: &BTreeMap<String, TypedProgram>,
@@ -400,23 +235,12 @@ fn check_blk_config_names_the_blk_device(
     for p in programs.values() {
         for (pool_name, _depth) in &p.virtqueue_configures {
             if configured.is_some() {
-                // `layout::find_virtqueue_configure` owns this rejection
-                // (machine v1 has exactly one queue); nothing to say here.
-                // Verified by building an image with two configure sites:
-                // layout refuses with its own wording
-                // ("more than one `VirtQueue.configure` call; machine v1's
-                // `blk` has exactly one queue").
                 return Ok(());
             }
             configured = Some(pool_name.as_str());
         }
     }
     let Some(pool_name) = configured else {
-        // No configure site: nothing names the blk device, so the arm
-        // below cannot run. But two devices both declaring blk config is
-        // still two devices' worth of configuration for a machine with
-        // exactly one `blk` — refuse by name (item H attack 3). A single
-        // device declaring unused capacity/features stays legal.
         let mut config_devices: Vec<usize> = Vec::new();
         for (di, d) in graph.devices.iter().enumerate() {
             if d.args
@@ -441,8 +265,6 @@ fn check_blk_config_names_the_blk_device(
         return Ok(());
     };
     let Some(blk_device) = backings.get(pool_name).and_then(|b| b.device) else {
-        // An unplaced or non-device-reachable configure pool is
-        // `derive_blk_report`'s own rejection, with its own wording.
         return Ok(());
     };
     for (di, d) in graph.devices.iter().enumerate() {
@@ -509,9 +331,6 @@ fn feature_names_from_arg(
     Ok(names)
 }
 
-// --- shared: finding every `ImageDecl` value nested inside an already-
-// evaluated argument value (an array of children, a single handle, ...) --
-
 fn decl_refs_in_value(v: &Value, out: &mut Vec<ImageDeclRef>) {
     match v {
         Value::ImageDecl(r) => out.push(r.clone()),
@@ -529,30 +348,6 @@ fn decl_refs_in_value(v: &Value, out: &mut Vec<ImageDeclRef>) {
     }
 }
 
-// --- check 2: construction DAG (02-language.md §12.1, image.graph.construction-dag) --
-//
-// "Construction edges (moves, initialization order) must form a DAG;
-// handle edges may be cyclic." Once evaluated, a `decl.handle()` call and
-// a bare decl-reference argument are the identical `Value::ImageDecl`
-// (`ImageDecl.handle`'s own eval arm is a pure passthrough of its
-// receiver, `eval/interp.rs`'s own doc comment) — there is no way to tell
-// which spelling a source argument used from the value alone. This check
-// therefore treats every decl-reference argument as a construction edge,
-// conservatively: since a local can only ever be assigned from an earlier
-// declaration's own return value (straight-line evaluation, program
-// order), every `ImageDeclRef` a later declaration's arguments can
-// possibly name already exists earlier in this same graph's own
-// construction order — so a real, source-evaluated `ImageGraph` can never
-// actually contain a cycle, "handle" or otherwise, no matter how this
-// check treats the two. The check is still implemented for real (dumb and
-// correct, not skipped) and is exercised by this module's own hand-built
-// `ImageGraph` unit tests below, which are free to wire a "later" index's
-// argument back to reference an "earlier" one out of order — the one way
-// to construct a cycle at all, and unrepresentable in today's language
-// surface (no forward references exist yet). `image.graph.construction-dag`'s
-// own the pinned rule this honestly: this check is real code, real
-// unit-tested, and has no source-level failing golden — by construction,
-// not because the check was skipped.
 fn identified_decls(graph: &ImageGraph) -> Vec<(ImageDeclRef, &[DeclArg])> {
     let mut out = Vec::new();
     for (i, d) in graph.devices.iter().enumerate() {
@@ -643,21 +438,6 @@ pub fn check_construction_dag(graph: &ImageGraph) -> Result<(), SemaError> {
     Ok(())
 }
 
-// --- check 3/6: every source-declared pool bound exactly once
-// (05-library.md §9, image.graph.pools-bound-once/seal-fully-bound) -------
-//
-// A pool bound *twice* is already rejected the instant the second
-// `img.pool`/`img.dma_pool` call runs (`ImageGraph::declare_pool`'s own
-// `Err` — the graph can never even be built with two entries under the
-// same key); binding a name with no `pool P` declaration at all is
-// already rejected earlier still, at typing (`sema::bodies::check_intrinsic_args`
-// only ever recognizes a *declared* pool name as a `PoolName` leaf — an
-// undeclared one falls through to the ordinary name resolver and fails
-// there, `error[type]: cannot determine the type of ...`). The one case
-// left for a post-seal check is a `pool P` declared in source that is
-// never bound by *any* call before `img.seal()` — the graph itself only
-// ever records bound pools, so this is the one pool fact only the
-// declaring module's own `declared_pools` can supply.
 pub fn check_pools_bound(
     graph: &ImageGraph,
     declared_pools: &BTreeSet<String>,
@@ -674,115 +454,20 @@ pub fn check_pools_bound(
     Ok(())
 }
 
-// --- check 3b: pool declarations (plans/M7.md item D, 05-library.md §9,
-// 03-hardware.md §3 — image.graph.dma-pools, hardware.dma.pool-declared) ---
-//
-// 05-library.md §9's two pool intrinsics, in full:
-//
-//   `img.pool[T](name=P, slots=N, max_payload=B)` and
-//   `img.dma_pool[T](name=P, device=d, count=N)` — bind the previously
-//   unbound pool name `P` exactly once, reserve exact backing, and create
-//   the initial handles; the DMA form requires a `@layout(dma)` `T` and
-//   device reachability.
-//
-// Binding is `ImageGraph::bind_pool_name`'s (one name space, both forms);
-// "create the initial handles" is the handle value each recorder already
-// returns. *This* check owns the other two halves — "reserve exact
-// backing" (which needs an exact size, which needs an exact per-slot size)
-// and "the DMA form requires a `@layout(dma)` `T` and device
-// reachability".
-//
-// It produces `PoolBacking`, and that one value is what the whole rest of
-// the compiler reads: `layout::layout_program` places the `pooldata`
-// section from it, and `layout::render_layout_section` reports it
-// (03 §3's "declared ... with size, purpose, device reachability,
-// alignment, and coherency policy"). One derivation, one place — a second
-// copy in the placer could disagree with the checked one, and disagreeing
-// about *which bytes a device can reach* is the exact failure mode
-// plans/M7.md decision 5 calls a security property.
-//
-// **Where 03 §3's five declared facts actually come from**, honestly, one
-// at a time — because 05 §9's own intrinsic surface spells only three
-// arguments and inventing the other two would be worse than deriving them:
-//
-// - **size**: derived, exactly. `count × sizeof(T)` for the DMA form,
-//   where `sizeof(T)` is item B's own exact-bytes layout — no padding, no
-//   round-up, no target-dependent field (`hardware.layout.exact-bytes`).
-//   `slots × max_payload` for the plain form, where both are declared.
-// - **purpose**: the form itself. `img.dma_pool` declares device-reachable
-//   transfer memory; `img.pool` declares CPU-side pool memory no device
-//   can reach. There is no third purpose in 05 §9's surface, so this is a
-//   two-valued fact and is reported as one (`kind=dma`/`kind=image`),
-//   never as a free-text field nothing supplies.
-// - **device reachability**: the DMA form's own `device=`. Two spellings
-//   are accepted, because the normative surface uses both — 05 §9 writes
-//   `device=d` naming a declared device, and 03 §3's own worked example
-//   (the `ast-virtio` corpus case) writes `device=disk` naming the
-//   *driver* bound to that device. A driver names exactly one device (its
-//   own `device=`, 03 §1's "single source of truth"), so following that
-//   one hop is a resolution, not a guess. Anything else is rejected by
-//   name: a pool that is "device-reachable" from something that is not a
-//   device is the one thing this check exists to prevent.
-// - **alignment**: derived from the payload's own layout — the widest
-//   scalar field it declares (`layout_alignment`, below), which is exactly
-//   the alignment item B already *enforces* on every explicit `@offset`.
-//   Deriving it from the same rule that enforces it means the two cannot
-//   disagree; declaring it separately in the image would let them.
-// - **coherency policy**: one value, `coherent`, and it is a *machine*
-//   fact rather than a per-pool one at M7: plans/M7.md decision 5 records
-//   that the flagship has no IOMMU and pools are host-mapped directly, so
-//   there is exactly one policy the machine implements and no source
-//   surface anywhere declares a second. Reported (it is a normative fact
-//   the report must carry) but not selectable (nothing can select it).
-//   The day a target offers a non-coherent pool, this is the field that
-//   grows an argument, and the report already has the slot for it.
-
-/// The largest total backing this compiler reserves for all of an image's
-/// pools together. Guest DRAM is 1 GiB (06-machine.md §2) and pool backing
-/// is *zeroed image bytes* like `rtdata`, so an image declaring
-/// `count=2^40` must fail closed by name rather than attempt the
-/// allocation — the identical reasoning (and the identical shape) as the
-/// VMM's own `devices::MAX_DISK_BYTES`. 16 MiB is far past anything M7
-/// needs and small enough that the failure is unmistakable.
 pub const MAX_POOL_BYTES: u64 = 16 << 20;
 
-/// One bound pool, fully resolved: everything 03-hardware.md §3 says a
-/// DMA pool is declared with, plus the placement inputs. Produced once by
-/// `pool_backings` and read by the checker, the placer and the report
-/// alike.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PoolBacking {
     pub name: String,
-    /// `true` for `img.dma_pool` (device-reachable transfer memory),
-    /// `false` for `img.pool` — 03 §3's "purpose", as the two-valued fact
-    /// 05 §9's surface actually offers.
     pub is_dma: bool,
-    /// The payload type as source spelled it (`types::render_type`).
     pub payload: String,
-    /// `count=` (DMA) or `slots=` (plain).
     pub slots: u64,
-    /// The exact bytes one slot occupies: item B's own `@layout(dma)`
-    /// size for the DMA form, the declared `max_payload=` for the plain
-    /// form.
     pub slot_bytes: u64,
-    /// `slots * slot_bytes`, checked.
     pub bytes: u64,
-    /// The payload's own natural alignment (`layout_alignment`), or 8 for
-    /// a plain pool whose payload has no `@layout` at all.
     pub align: u64,
-    /// The declared device this pool is reachable from — `None` for a
-    /// plain `img.pool`, which no device can reach.
     pub device: Option<usize>,
 }
 
-/// A `@layout` type's own natural alignment: the widest scalar field it
-/// declares, clamped to a power of two in `1..=8`. This is not a new rule
-/// — `types::check_one_layout` already *requires* every explicit
-/// `@offset(n)` to be `size`-byte aligned for its own field, so the
-/// widest field's size is exactly the alignment the whole type has to be
-/// placed at for every one of its fields to land aligned. A layout with
-/// no fields at all (unrepresentable: `check_one_layout` rejects a
-/// zero-size layout) would answer 1.
 pub fn layout_alignment(l: &types::LayoutType) -> u64 {
     let widest = l
         .entries
@@ -793,9 +478,6 @@ pub fn layout_alignment(l: &types::LayoutType) -> u64 {
         })
         .max()
         .unwrap_or(1);
-    // A `Bytes[N]` field is N bytes wide but needs no more than byte
-    // alignment; clamping at 8 keeps this the machine's own widest scalar
-    // alignment rather than an arbitrary array's length.
     match widest {
         0 | 1 => 1,
         2 => 2,
@@ -804,38 +486,6 @@ pub fn layout_alignment(l: &types::LayoutType) -> u64 {
     }
 }
 
-/// Every `@layout` type in the build closure, by name — the union of every
-/// module's own already-checked table (`TypedProgram::layouts`).
-///
-/// **A same-spelling collision across modules is refused** (plans/M7.md
-/// item I's sweep). This function used to resolve one last-module-wins in
-/// `BTreeMap` order, disclosed as "the identical, already-recorded
-/// simplification `layout::merge_layout_ctx` makes". That framing
-/// understated it, because *this* table is what
-/// `img.dma_pool[T](name=P, ...)` reads to answer how many bytes a device
-/// can reach. Verified by running: module `a.main` declaring
-/// `@layout(dma) struct Ctl: tiny: u8` and binding
-/// `img.dma_pool[Ctl](name=Control, count=4)` against its own `Ctl`, plus
-/// an imported module `z.other` declaring an unrelated 24-byte `Ctl`,
-/// silently reserved 4 x 24 bytes — and with `z.other`'s `Ctl` spelled
-/// `@layout(mmio)` the build was *rejected* for a kind `a.main`'s own
-/// `Ctl` does not have and cannot see. A wrong answer about device-
-/// reachable bytes in the first case and an unactionable diagnostic in
-/// the second, both from a type name the author never wrote.
-///
-/// A real fix is cross-module type identity, which this compiler does not
-/// have anywhere (`layout::merge_layout_ctx` merges every struct and enum
-/// name the same way, and no type name resolves across a module boundary
-/// at all today, so nothing can even *name* the other module's type).
-/// Until it does, two `@layout` types with one name in one closure is a
-/// build error rather than a coin flip.
-///
-/// `pub(crate)` so `layout::layout_program` can hand `pool_backings` the
-/// same table this pass does. It builds its own from the raw `ast::Module`
-/// closure instead (`types::check_layouts` is a pure function of one
-/// specialized module, so the two cannot disagree) — the identical
-/// arrangement `bin/wrela.rs` already uses to render the report's own
-/// exact-bytes section.
 pub(crate) fn closure_layouts(
     programs: &BTreeMap<String, TypedProgram>,
 ) -> Result<BTreeMap<String, types::LayoutType>, SemaError> {
@@ -843,11 +493,6 @@ pub(crate) fn closure_layouts(
     let mut from: BTreeMap<String, String> = BTreeMap::new();
     for (module, p) in programs {
         for l in &p.layouts {
-            // plans/M11.md item E / decision 785: importers may carry
-            // completed `@layout` tables spliced for imported `@placed`
-            // statics. Those are not declarations — skip them here so two
-            // modules naming the same layout type is still a real conflict
-            // when both *declare* it.
             if !p.structs.contains_key(&l.name) {
                 continue;
             }
@@ -873,7 +518,6 @@ fn pool_arg<'a>(args: &'a [DeclArg], label: &str) -> Option<&'a DeclArg> {
     args.iter().find(|a| a.label == label)
 }
 
-/// A pool argument that must be a positive count that fits a `u64`.
 fn pool_count(name: &str, spelling: &str, args: &[DeclArg], label: &str) -> Result<u64, SemaError> {
     let Some(a) = pool_arg(args, label) else {
         return Err(build_error(format!(
@@ -901,10 +545,6 @@ fn pool_count(name: &str, spelling: &str, args: &[DeclArg], label: &str) -> Resu
     })
 }
 
-/// Rejects any labeled argument the intrinsic does not define. 05 §9
-/// spells each pool form's arguments exactly; an unrecognized one is
-/// either a typo for a real one or a fact this compiler would silently
-/// drop, and both are build errors rather than accepted noise.
 fn pool_labels(
     name: &str,
     spelling: &str,
@@ -927,9 +567,6 @@ fn pool_labels(
     Ok(())
 }
 
-/// The DMA form's own `device=`, resolved to a declared device index.
-/// Both normative spellings are accepted (this section's own doc comment):
-/// a declared device directly, or the driver bound to it.
 fn pool_device(name: &str, args: &[DeclArg], graph: &ImageGraph) -> Result<usize, SemaError> {
     let Some(a) = pool_arg(args, "device") else {
         return Err(build_error(format!(
@@ -941,9 +578,6 @@ fn pool_device(name: &str, args: &[DeclArg], graph: &ImageGraph) -> Result<usize
     let idx = match &a.value {
         Value::ImageDecl(ImageDeclRef::Device(i)) => *i,
         Value::ImageDecl(ImageDeclRef::Driver(i)) => {
-            // 03 §1: the device is named once, at the image binding, so a
-            // driver names exactly one device. Following that one hop is
-            // a resolution, not a guess.
             let Some(d) = graph.drivers.get(*i) else {
                 return Err(build_error(format!(
                     "`img.dma_pool(name={name}, device=driver#{i})` names a driver this image \
@@ -986,9 +620,6 @@ fn pool_device(name: &str, args: &[DeclArg], graph: &ImageGraph) -> Result<usize
     Ok(idx)
 }
 
-/// Every bound pool, resolved and checked, keyed by name — one
-/// deterministic order (`BTreeMap`, so `image.report.deterministic` holds
-/// by construction) that does not depend on which *form* bound the name.
 pub fn pool_backings(
     graph: &ImageGraph,
     layouts: &BTreeMap<String, types::LayoutType>,
@@ -1007,7 +638,7 @@ pub fn pool_backings(
                 payload: types::render_type(&d.payload_type),
                 slots,
                 slot_bytes,
-                bytes: 0, // filled below, once
+                bytes: 0,
                 align: 8,
                 device: None,
             },
@@ -1024,8 +655,6 @@ pub fn pool_backings(
     for (name, d) in &graph.dma_pools {
         pool_labels(name, "img.dma_pool", &d.args, &["name", "device", "count"])?;
         let payload = types::render_type(&d.payload_type);
-        // 03-hardware.md §3: "**Transfer payloads** are `own[P] T` where
-        // `P` is a device-bound DMA pool and `T` is `@layout(dma)`."
         let Some(l) = layouts.get(&payload) else {
             return Err(build_error(format!(
                 "`img.dma_pool[{payload}](name={name}, ...)` — `{payload}` is not a `@layout(dma)` \
@@ -1046,14 +675,6 @@ pub fn pool_backings(
         }
         let device = pool_device(name, &d.args, graph)?;
         let slots = pool_count(name, "img.dma_pool", &d.args, "count")?;
-        // plans/M10.md item A2b: a layout whose sizing is still deferred has
-        // no byte count, and a pool's backing is exactly a byte count times a
-        // slot count — so this asks for the size by name and fails closed if
-        // there is none, rather than reading a 0 and reserving nothing. (A
-        // `dma` layout cannot defer today: only a `runtime` layout may have
-        // an array field at all, and this arm already refused every other
-        // kind above. The guard is here because "cannot" is a property of
-        // today's rules, not of this call site.)
         let slot_bytes = l.require_size(&format!("`img.dma_pool[{payload}]`'s backing"))?;
         let bytes = slots.checked_mul(slot_bytes).ok_or_else(|| {
             build_error(format!(
@@ -1076,33 +697,6 @@ pub fn pool_backings(
         );
     }
 
-    // **The two M7 post-closure guards that used to stand here are gone
-    // (plans/M8.md item P, decision 24).** They refused two pool-bearing
-    // devices, and a pool bound to a driverless device when some other
-    // device was driven — not because either shape is illegal, but
-    // because the `BlkPool name= base= size=` mapping line carried no
-    // device and `wrela-vmm`'s `parse_report` handed every window to its
-    // one device model. That was a fail-open in the *artifact*, held shut
-    // by refusing images the language allows.
-    //
-    // The line now carries `device=device#N` (`layout::render_layout_section`
-    // / `append_blk_vmm_lines`), `devices::GuestMem` carries the device
-    // whose view it is, and its `window_offset` — still the single
-    // guest→host conversion site — admits a range only if it lies inside a
-    // window bound to *that* device. 03-hardware.md §3's "all memory a
-    // device can reach originates from *its* bound pools" is therefore
-    // enforced where reaching happens, and the oracle is a boot:
-    // `golden/err-boot-blk-cross-device-pool` hands the blk driver a
-    // payload from another device's pool and the model refuses the
-    // descriptor by name.
-    //
-    // What 03 §1 still refuses, unchanged and one pass later, is the
-    // *capability*: `check_dma_pool_mint` rejects a driver bound to
-    // device#Y taking `DmaPool[P, N]` for a pool declared reachable from
-    // device#X (`golden/err-dma-pool-mint-wrong-device`). That is the
-    // mint-time rule, at the binding §1 puts it at; it is not a
-    // restatement of the reachability rule, and neither implies the other.
-
     let total: u64 = out.values().map(|b| b.bytes).fold(0, u64::saturating_add);
     if total > MAX_POOL_BYTES {
         return Err(build_error(format!(
@@ -1115,8 +709,6 @@ pub fn pool_backings(
     Ok(out)
 }
 
-/// Every `own[P] T` a type names, at any nesting, as `(pool name, payload
-/// type)` pairs.
 fn own_handles_in_type(ty: &Type, out: &mut Vec<(String, Type)>) {
     use crate::sema::types::TypeArg;
     match ty {
@@ -1174,17 +766,6 @@ fn own_handles_in_struct(s: &crate::sema::typed::TypedStruct, out: &mut Vec<(Str
     }
 }
 
-/// Every `own[P] T` spelled anywhere in the build closure's *declaration*
-/// surface: const types, fn signatures, struct fields, **enum** variant
-/// payloads and methods/assoc fns, and every `init`/method/assoc fn of a
-/// struct or a generic instantiation.
-///
-/// Deliberately not a body walk, and that is exact rather than a hedge:
-/// nothing in this language constructs an `own[P] T` — no literal, no
-/// cast, no intrinsic (`hardware.dma.ownership-transfer`'s own
-/// unforgeability half) — so every handle a body can hold arrived through
-/// one of the declarations walked here. A local's type is a consequence of
-/// this surface, never an independent source of one.
 fn own_handles_in_closure(programs: &BTreeMap<String, TypedProgram>) -> Vec<(String, Type)> {
     use crate::sema::typed::TypedInstantiation;
     let mut out = Vec::new();
@@ -1222,24 +803,14 @@ fn own_handles_in_closure(programs: &BTreeMap<String, TypedProgram>) -> Vec<(Str
     out
 }
 
-/// 05-library.md §9 + 03-hardware.md §3, checked (plans/M7.md item D).
-/// Resolves every bound pool (`pool_backings`, which is where every
-/// per-declaration rejection lives) and then enforces the one rule that
-/// spans the pool and the code that names it: an `own[P] T` handle's `T`
-/// is the payload type `P` was bound with.
 pub fn check_pool_decls(
     graph: &ImageGraph,
     programs: &BTreeMap<String, TypedProgram>,
 ) -> Result<(), SemaError> {
     let backings = pool_backings(graph, &closure_layouts(programs)?)?;
-    // 02-language.md §4: "`own[Name] T` is a movable, uniquely owned
-    // handle to a `T` allocated from that pool" — one pool node, one
-    // payload type. For a DMA pool that sentence is also 03 §3's
-    // `@layout(dma)` requirement, since `pool_backings` already proved the
-    // pool's own payload type is one.
     for (pool, payload) in own_handles_in_closure(programs) {
         let Some(b) = backings.get(&pool) else {
-            continue; // not bound by this image: `check_pools_bound` owns that.
+            continue;
         };
         let spelled = types::render_type(&payload);
         if spelled == b.payload {
@@ -1266,63 +837,6 @@ pub fn check_pool_decls(
     Ok(())
 }
 
-// --- check 4/7: init-argument matching with substitution
-// (05-library.md §9, image.graph.init-args-match) --------------------------
-//
-// 05-library.md §9, in full: an actor declaration's arguments "must match
-// `A.init` **(or its literal constructor)** after generated capabilities
-// and handles are substituted". Both halves of that parenthetical are
-// live (`find_constructor`, below): a struct that declares an `init` is
-// matched against its parameters; a struct that declares none is
-// constructed by its *literal* constructor and is matched against its own
-// declared fields, name and declared type alike. The field half was
-// missing until 2026-07-24 — `find_init`'s `None` arm handed the loop an
-// empty parameter slice, so *every* non-reserved wiring argument to a
-// no-`init` struct was rejected as naming nothing, and the three actor
-// boot goldens (`boot-actors`, `boot-actor-chain`,
-// `boot-actor-reply-struct`) could not reach `--stage=image`/`report`/
-// `wrela build` at all despite running correctly under `wrela test`.
-// The widening is exactly the doc sentence and no wider: an argument
-// naming neither an `init` parameter nor a declared field is still an
-// error, and a value that does not fit the field's declared type is
-// still an error naming that field.
-//
-// Decision-7 sub-note (recorded at item C execution, 2026-07-23 — the
-// plan's own "decide the dumb exact rule, record it" instruction): the
-// intrinsic's own *reserved* arguments belong to the image's wiring, not
-// to the actor/driver's `init` parameter list, and are skipped entirely
-// before any parameter matching runs — `device`/`core` for `img.driver`,
-// `mailbox`/`core` for `img.actor` (`reserved_args`, below). Every other
-// labeled argument must name a same-named `init` parameter (an argument
-// naming none is an error — `err-image-init-extra-arg`); an argument
-// whose evaluated value is itself a decl reference (`Value::ImageDecl`,
-// with or without its own `.handle()` — indistinguishable once evaluated,
-// this module's own construction-DAG doc comment) is accepted for that
-// parameter with no further type check (`ImageDecl` is opaque — this is
-// the most this milestone can verify of a "handle" substitution); any
-// other argument's evaluated value must numerically/structurally fit the
-// parameter's declared type (`value_fits_param_type`, below — the one
-// place this reaches past the argument's own *recorded* static type,
-// which a builder intrinsic's no-expected-type checking leaves at its
-// no-context default for a bare integer literal, `sema::bodies::check_intrinsic_args`'s
-// own doc comment — everything else keeps a plain type equality check).
-// Every `init` parameter not covered by an explicit argument above must
-// still be satisfiable by a *substitution* source to be legal: a
-// parameter whose declared type is named `DeviceCap`/`DmaPool`/`Mmio`/
-// `IrqCap` (recognized by name, decision 7) is satisfied by the
-// declaration's own device wiring; a parameter named `Actor` is satisfied
-// by an actor handle the same way — neither of these type names resolves
-// as a real type annotation anywhere in this compiler yet
-// (`sema::types::resolve_named`'s own fixed arm list has no case for any
-// of them), so this half of the rule is currently unrepresentable from
-// real source and is exercised only by this module's own hand-built unit
-// tests below, exactly like the construction-DAG cycle case. A parameter
-// satisfied by neither an explicit argument nor a recognized substitution
-// source is an error (`err-image-init-missing-arg`) — 05-library.md §9's
-// own "a resource `init` argument without one recovery source is a build
-// error" falls out of this exact same case (decision 7's own sub-note:
-// no separate mechanism exists or is needed, `image.graph.init-args-match`'s
-// own the pinned rule both).
 #[derive(Clone, Copy)]
 enum DeclKind {
     Driver,
@@ -1331,61 +845,15 @@ enum DeclKind {
 
 fn reserved_args(kind: DeclKind) -> &'static [&'static str] {
     match kind {
-        // plans/M8.md item D: `mailbox=` is image wiring on *both* forms.
-        // For `img.actor` it is required (M6 decision 3); for `img.driver`
-        // it is what makes the driver messageable at all (05-library.md
-        // §9), and its absence is the floor `err-image-driver-message`
-        // pins.
         DeclKind::Driver => &["device", "core", "mailbox"],
         DeclKind::Actor => &["mailbox", "core"],
     }
 }
 
-/// The labels an `img.actor(...)` call owns as image wiring rather than as
-/// constructor arguments — the decision-7 sub-note above, made available to
-/// the one other pass that has to agree with it.
-///
-/// plans/M7.md item W: `layout::build_boot_init_calls` materializes those
-/// same arguments into boot's own `init` call and must skip exactly the set
-/// this module skips when it accepts them. Sharing the predicate rather
-/// than restating the two labels is the whole point — a divergence would
-/// mean an argument accepted here and dropped there (or the reverse), which
-/// is the precise failure mode item W exists to close.
 pub(crate) fn is_reserved_actor_arg(label: &str) -> bool {
     reserved_args(DeclKind::Actor).contains(&label)
 }
 
-/// 03-hardware.md §1's own capability list, with each name's fixed
-/// generic arity: `DeviceCap[D]`, `Mmio[L]`, `IrqCap[V]`, `DmaPool[P, N]`.
-/// One list, in one place, deliberately (plans/M7.md item A): it is read
-/// by `layout::build_boot_init_calls` (which must fail closed on exactly
-/// the parameters this pass accepts by substitution), by
-/// `sema::symbols::is_resolvable_without_import` (so the names are in
-/// scope with no import), by `sema::types::resolve_named` (which mints
-/// the type), and by
-/// `sema::types::check_layouts` (03 §3 forbids a capability inside a
-/// layout). Several copies could disagree; one cannot.
-///
-/// 03 §1's fifth bullet — "target-specific narrow capabilities (queue
-/// notifiers, ...)" — is deliberately absent: no target-specific
-/// capability is named by any normative rule yet, and inventing one here
-/// would be a list entry with nothing behind it. The day one exists it is
-/// added here and every consumer above picks it up unchanged.
-///
-/// **`DmaShared[P, L]` is on this list and is not one of §1's four**
-/// (plans/M7.md item D). It is 03-hardware.md §3's *shared control
-/// memory* — "permanently shared, exposing only field-wise typed
-/// operations that carry the target's volatile/cache/ordering
-/// semantics. It cannot be read as bytes or lent as a plain value." It
-/// belongs here because every consumer of this list asks it the same
-/// question and gets the same right answer: it is unforgeable (no
-/// declaration, import, construction or cast makes one); a fn holding one
-/// touches DMA state, which is §1's own provenance sentence verbatim; an
-/// `@actor` may not hold one and a `@driver` may; it has no byte encoding
-/// and so cannot sit inside a `@layout`; and nothing mints one at image
-/// binding. The one place the distinction is load-bearing —
-/// `check_capability_substitution`'s diagnostic — names it separately, so
-/// the list never claims §1 says something §1 does not.
 const CAPABILITY_TYPES: &[(&str, usize)] = &[
     ("DeviceCap", 1),
     ("DmaPool", 2),
@@ -1394,20 +862,10 @@ const CAPABILITY_TYPES: &[(&str, usize)] = &[
     ("Mmio", 1),
 ];
 
-/// Shared with `layout::build_boot_init_calls` for the same reason
-/// `is_reserved_actor_arg` above is: this pass *accepts* a parameter of
-/// one of these types with no explicit argument (decision 7's own
-/// substitution rule), and boot has to recognize exactly the same set to
-/// fail closed on it by name. Two copies of this list could disagree; one
-/// cannot.
 pub(crate) fn is_capability_type_name(name: &str) -> bool {
     capability_generic_arity(name).is_some()
 }
 
-/// How many generic arguments `name` takes, if it is a capability type at
-/// all — the same single list, asked a second question. `sema::types`'
-/// own resolver needs the arity to reject `Mmio[A, B]` or a bare
-/// `DeviceCap` by name rather than by accident.
 pub(crate) fn capability_generic_arity(name: &str) -> Option<usize> {
     CAPABILITY_TYPES
         .iter()
@@ -1415,24 +873,6 @@ pub(crate) fn capability_generic_arity(name: &str) -> Option<usize> {
         .map(|(_, arity)| *arity)
 }
 
-/// 03-hardware.md §9's own bring-up chain, as types: "Device bring-up is
-/// a typed state chain (for virtio: `Reset -> Acknowledged ->
-/// DriverClaimed -> FeaturesNegotiated -> FeaturesAccepted ->
-/// QueuesConfigured -> Running`)". One name per state, in chain order,
-/// each taking the device type as its single argument — the spelling
-/// `docs/language/examples/virtio-storage.wr` already fixes for the last
-/// of them (`device: RunningDevice[VirtioBlock]`), applied uniformly to
-/// the other six rather than invented per state (plans/M7.md item H1).
-///
-/// These are **not** 03 §1 capabilities and the list is deliberately
-/// separate: a capability is authority over a device, a queue or a pool,
-/// minted at the image binding; a protocol state is the sealed transport's
-/// own position in the bring-up chain, produced only by a transition. The
-/// two lists are asked the same *structural* questions
-/// (`is_sealed_authority_type_name` below — unforgeable, a resource,
-/// no byte encoding, an `@actor` may not hold one) and different
-/// *diagnostic* ones, which is exactly why they are two lists read through
-/// one predicate rather than one list with a footnote.
 const PROTOCOL_STATE_TYPES: &[&str] = &[
     "ResetDevice",
     "AcknowledgedDevice",
@@ -1443,27 +883,10 @@ const PROTOCOL_STATE_TYPES: &[&str] = &[
     "RunningDevice",
 ];
 
-/// Is `name` one of 03 §9's seven bring-up states? Every one takes
-/// exactly one type argument (the device type), so there is no arity
-/// table here — the arity is the constant 1.
 pub(crate) fn is_protocol_state_type_name(name: &str) -> bool {
     PROTOCOL_STATE_TYPES.contains(&name)
 }
 
-/// The union of 03 §1's capabilities and 03 §9's protocol states — every
-/// type this language mints only inside the sealed transport, and never
-/// from source. This is the predicate every *structural* rule asks:
-/// the name cannot be declared, imported, constructed, called or cast to;
-/// the type is a resource by fiat; it has no byte encoding, so no
-/// `@layout` may hold one; an `@actor` may not hold one and a `@driver`
-/// may; and `mwir::size_of`/`codegen::is_aggregate` carry it as one
-/// opaque 8-byte word.
-
-/// The noun phrase (with its normative citation) a diagnostic uses for one
-/// of those names, so a rule shared by both lists still says which of the
-/// two the author actually wrote. Answers for a non-sealed name too — the
-/// callers all guard with `is_sealed_authority_type_name` first, and a
-/// default of "capability" would be a quiet lie if one ever did not.
 pub(crate) fn sealed_authority_kind(name: &str) -> &'static str {
     if is_protocol_state_type_name(name) {
         "a sealed protocol state (03-hardware.md §9)"
@@ -1477,11 +900,6 @@ pub(crate) fn sealed_authority_kind(name: &str) -> &'static str {
         "a capability type (03-hardware.md §1)"
     }
 }
-
-// plans/M13.md item O follow-up: the protocol-consumption name list is
-// deleted. Leaf answers live in `sema::classes::name_must_consume`
-// (independent leaf table + `resource(manual)` fiat); composites stay in
-// `sema::flow::protocol_resource_carried`.
 
 pub(crate) fn is_handle_type_name(name: &str) -> bool {
     name == "Actor"
@@ -1516,18 +934,6 @@ fn value_fits_param_type(arg: &DeclArg, param_ty: &Type) -> bool {
     }
 }
 
-/// The name/type slots an image wiring argument is matched against —
-/// 05-library.md §9's own "must match `A.init` **(or its literal
-/// constructor)**", made mechanical. A struct that declares an `init` is
-/// constructed by that `init`, so its parameters are the slots; a struct
-/// that declares none is constructed by its *literal* constructor — its
-/// own declared fields — so the fields are the slots, name and declared
-/// type alike, in declaration order.
-///
-/// The two are not interchangeable in the diagnostics (a message naming
-/// `X.init` for a struct that has no `init` would name something that
-/// does not exist) nor in the *missing*-slot direction — see
-/// `check_one_decl` below, which runs that direction only for `Init`.
 enum Constructor {
     Init(Vec<(String, Type)>),
     Fields(Vec<(String, Type)>),
@@ -1541,31 +947,10 @@ impl Constructor {
     }
 }
 
-/// `05-library.md` §9's own "`A.init` (or its literal constructor)",
-/// resolved over the whole build closure (an actor/driver struct's own
-/// declaration may live in a different module than the `@image` fn that
-/// wires it — `check_init_args`'s own doc comment).
-///
-/// The `init` search is exactly what it always was: the first module (in
-/// `programs`'s own BTree order) whose same-named struct declares one
-/// wins. Only when *no* module's copy declares an `init` at all does the
-/// literal-constructor arm run, over the first module declaring the
-/// struct.
-///
-/// A struct name no module in the closure declares at all falls back to
-/// `Constructor::Init(vec![])` — byte-identical to the pre-existing
-/// behavior (every ordinary argument rejected by name, no missing-slot
-/// error), and still the honest wording: today the only shape that can
-/// reach here unfound is a *generic* instantiation, whose checked body
-/// lives in `TypedProgram::instantiations` rather than `structs`, and
-/// whose `init` is therefore invisible to this pass. Fail closed, and
-/// leave it exactly as loud as it already was.
 fn find_constructor(programs: &BTreeMap<String, TypedProgram>, actor_type: &Type) -> Constructor {
     let Type::Named(struct_name, targs) = actor_type else {
         return Constructor::Init(Vec::new());
     };
-    // plans/M7.md item G, decision 18: mode-generic drivers' `init` lives
-    // on the instantiation, not the unsubstituted template.
     if !targs.is_empty() {
         let key = format!("struct:{}", crate::sema::types::render_type(actor_type));
         for p in programs.values() {
@@ -1614,34 +999,6 @@ fn find_constructor(programs: &BTreeMap<String, TypedProgram>, actor_type: &Type
     )
 }
 
-/// 03-hardware.md §1's minting sentence, made mechanical (plans/M7.md
-/// item A): "unforgeable resource values minted while the image binds a
-/// declared device to a `@driver` ... The device itself is named once, at
-/// the image binding (`img.driver(BlkDriver, device=blk_device)`), the
-/// single source of truth."
-///
-/// This is the *typed* half of the mint, and it is the whole half item A
-/// ships. It decides whether a declared capability `init` parameter has a
-/// real minting source in this image, and what that source is — but it
-/// produces no runtime value, because there is nothing yet to produce:
-/// `layout::build_boot_init_calls` walks `graph.actors` only, so a driver's
-/// `init` is never called at boot at all (M6-D's own floor, unchanged
-/// here). The parameter's *provenance* is checked; its *bytes* are items
-/// D and E.
-///
-/// `DeviceCap[D]` was the only mint item A shipped, exactly §1's sentence:
-/// the declaration's own `device=` argument, whose declared device type
-/// must be `D`. plans/M7.md item D adds the second, `DmaPool[P, N]`, now
-/// that a declared pool is real memory: `P` must be a DMA pool this image
-/// binds, reachable from the very device this binding names, and `N` must
-/// cover the backing that pool actually reserves. The remaining two name
-/// the item that mints them and fail closed, because each needs machinery
-/// that does not exist — `Mmio[L]` needs a claim to partition (item C),
-/// `IrqCap[V]` needs a vector bound from the image graph (item G) — and
-/// `DmaShared[P, L]` fails closed too, for a different reason worth
-/// keeping distinct: 03 §3's shared control memory is not minted at the
-/// image binding at all in the normative example, it is produced by
-/// configuring a queue out of a pool (item E).
 fn check_capability_substitution(
     decl_ref: &ImageDeclRef,
     struct_name: &str,
@@ -1655,13 +1012,6 @@ fn check_capability_substitution(
     device_caps_seen: &mut usize,
 ) -> Result<(), SemaError> {
     let rendered = types::render_type(param_ty);
-    // An `img.actor(...)` declaration has no `device=` at all (it is not
-    // one of its reserved labels — a `device=` there is rejected as an
-    // unknown argument), so no capability parameter of one can ever have a
-    // minting source. Sema already rejects an `@actor` *declaring* such a
-    // parameter (`hardware.capabilities.unforgeable`); this is the arm for
-    // the shape sema cannot see, an `img.actor(...)` naming a struct that
-    // is not an `@actor` at all.
     if matches!(kind, DeclKind::Actor) {
         return Err(build_error(format!(
             "`{}` wires `{struct_name}` as an actor, but `{struct_name}.init` takes `{param_name}: \
@@ -1674,17 +1024,6 @@ fn check_capability_substitution(
         return check_dma_pool_mint(decl_ref, struct_name, param_name, param_ty, args, backings);
     }
     if cap_name != "DeviceCap" {
-        // plans/M7.md item H1 rewrote the `Mmio` arm, and decision 10 says
-        // exactly why: this arm's old text said "nothing mints a `Mmio`
-        // yet — that is plans/M7.md item C", which was already wrong when
-        // it was written and is now false twice over. An `Mmio[L]` *is*
-        // mintable — but never *here*. 03-hardware.md §2's own sentence is
-        // "a driver **or sealed protocol** partitions its claim", and 03
-        // §9's transport is what does it: `claimed.map_partition(L)`, on a
-        // state the driver's own `init` obtained from `claim`. The image
-        // binding mints one capability and one only, the `DeviceCap[D]`
-        // the `device=` names. So this is a *permanent* rejection with a
-        // redirection, not a fail-closed floor waiting on an item.
         let owner = match cap_name {
             "Mmio" => {
                 "an `Mmio[L]` is not minted at the image binding at all: the sealed transport \
@@ -1694,12 +1033,6 @@ fn check_capability_substitution(
                  constructor puts it"
             }
             "IrqCap" => {
-                // plans/M7.md item G: an `IrqCap[V]` at the image binding
-                // is minted from the device's own `vector=` — decision
-                // 12's word is that bit index. Prefer
-                // `claimed.take_irq()` inside `init` (03 §6's own
-                // spelling); an `init` parameter is accepted when the
-                // device declared a vector, rejected when it did not.
                 return check_irq_cap_mint(
                     decl_ref,
                     struct_name,
@@ -1709,11 +1042,6 @@ fn check_capability_substitution(
                     graph,
                 );
             }
-            // 03-hardware.md §3's shared control memory. Not "no queue
-            // exists" — `VirtQueue.configure` (plans/M7.md item E1) mints
-            // one out of a pool — but "nothing at the image binding
-            // produces one": the image binds the pool; the queue makes
-            // the shared control memory.
             _ => {
                 "`VirtQueue.configure(pool=take ..., ...)` mints a `DmaShared[P, L]` out of a \
                  DMA pool (plans/M7.md item E1 / 03-hardware.md §3); the image binding does not \
@@ -1758,15 +1086,11 @@ fn check_capability_substitution(
             decl_ref.render()
         )));
     };
-    // `D` must be the bound device's own declared type: §1's "the single
-    // source of truth" is only true if the two agree, and a `DeviceCap[A]`
-    // minted from a device declared `img.device[B](...)` would be
-    // authority over a device this image never bound.
     let bound = types::render_type(&device.device_type);
     let declared = match param_ty {
         Type::Named(_, targs) => match targs.first() {
             Some(crate::sema::types::TypeArg::Type(t)) => types::render_type(t),
-            _ => bound.clone(), // arity is guaranteed by `sema::types`
+            _ => bound.clone(),
         },
         _ => bound.clone(),
     };
@@ -1782,36 +1106,6 @@ fn check_capability_substitution(
     Ok(())
 }
 
-/// 03-hardware.md §1's second mint (plans/M7.md item D):
-/// `take pool: DmaPool[BlockControl, 256.KiB]`, the other half of §1's own
-/// worked driver constructor.
-///
-/// Three facts, each checkable now that a pool is real, and each a
-/// separate rejection:
-///
-/// 1. `P` names a pool this image binds by `img.dma_pool` — not an
-///    unbound name, and not an `img.pool`, whose memory no device can
-///    reach (03 §3: "All memory a device can reach originates from its
-///    bound pools").
-/// 2. That pool is reachable from **this** binding's own device. A
-///    `DmaPool[P, N]` is authority over device-reachable memory, and §1's
-///    "the device is named once, at the image binding" is only a single
-///    source of truth if the pool and the driver agree about which device
-///    that is.
-/// 3. `N` covers the backing the pool actually reserves — §1 calls it "a
-///    **bounded** device-reachable pool", and a bound smaller than the
-///    memory it admits authority over is a false one.
-///
-/// `N` is checked only when it is an integer literal, which is the only
-/// spelling the language has today (`256.KiB` in §1's example is a stdlib
-/// method call this compiler's prelude does not ship). Anything else fails
-/// closed by name rather than being waved through — an unchecked bound is
-/// exactly the thing this rule exists to prevent.
-///
-/// Like `DeviceCap`'s, this is the *typed* half: no runtime value is
-/// produced, because `layout::build_boot_init_calls` never calls a
-/// driver's `init` at all yet, and it fails closed by name on a pool
-/// handle argument rather than passing one (M6-D's floor, unchanged).
 fn check_dma_pool_mint(
     decl_ref: &ImageDeclRef,
     struct_name: &str,
@@ -1826,9 +1120,6 @@ fn check_dma_pool_mint(
         _ => &[][..],
     };
     let Some(crate::sema::types::TypeArg::Pool(pool)) = targs.first() else {
-        // Unrepresentable from source: `sema::types::resolve_named`
-        // resolves `DmaPool`'s argument 0 against the declared pool names
-        // and rejects anything else before this pass ever runs.
         return Err(build_error(format!(
             "`{}` binds a device to `{struct_name}`, but `{struct_name}.init`'s own \
              `{param_name}: {rendered}` does not name a pool in its first argument \
@@ -1853,9 +1144,6 @@ fn check_dma_pool_mint(
             decl_ref.render()
         )));
     };
-    // 03 §1: "The device itself is named once, at the image binding ...
-    // the single source of truth" — which is only true if the pool and
-    // the driver name the same one.
     let bound_device = match args.iter().find(|a| a.label == "device").map(|a| &a.value) {
         Some(Value::ImageDecl(ImageDeclRef::Device(i))) => Some(*i),
         _ => None,
@@ -1881,7 +1169,6 @@ fn check_dma_pool_mint(
         }
         Some(_) => {}
     }
-    // "a **bounded** device-reachable pool" (03 §1).
     let Some(crate::sema::types::TypeArg::Const(bound_expr)) = targs.get(1) else {
         return Err(build_error(format!(
             "`{}` binds a device to `{struct_name}`, but `{struct_name}.init`'s own \
@@ -1933,7 +1220,7 @@ fn check_one_decl(
     backings: &BTreeMap<String, PoolBacking>,
 ) -> Result<(), SemaError> {
     let Type::Named(struct_name, _) = actor_type else {
-        return Ok(()); // defensive: only ever a bare struct name reaches here
+        return Ok(());
     };
     let ctor = find_constructor(programs, actor_type);
     let reserved = reserved_args(kind);
@@ -1986,19 +1273,6 @@ fn check_one_decl(
         }
         satisfied.insert(slot_name.clone());
     }
-    // The *missing*-slot direction, for a declared `init` only. A field
-    // this image leaves unwired is not missing anything: the boot
-    // sequence zero-initializes every actor's whole state slot before any
-    // turn runs and only then calls a declared zero-argument `init`
-    // (`layout::build_boot_init`'s own doc comment, whose disclosed floor
-    // says materializing `ActorDecl::args` against a real parameter list
-    // is deferred work) — so an unsupplied field has a defined value, and
-    // demanding an argument for it would reject every actor whose state
-    // is ordinary data (`tests/golden/boot-actors`'s own `Ledger.marks:
-    // u64`, wired with nothing but the reserved `mailbox=`). 05-library.md
-    // §9's own "a resource `init` argument without one recovery source is
-    // a build error" names `init` arguments, and that is exactly the
-    // scope kept here.
     let Constructor::Init(params) = &ctor else {
         return Ok(());
     };
@@ -2008,11 +1282,6 @@ fn check_one_decl(
             continue;
         }
         if let Type::Named(tn, _) = ty {
-            // plans/M7.md item A: what was a bare name-recognition
-            // "accepted, substituted by the declaration's own device
-            // wiring" is now a real check against the wiring it names —
-            // 03-hardware.md §1's mint, typed. `is_handle_type_name`
-            // keeps its old behavior unchanged (plans/M4.md decision 7).
             if is_capability_type_name(tn) {
                 check_capability_substitution(
                     decl_ref,
@@ -2048,12 +1317,6 @@ pub fn check_init_args(
     graph: &ImageGraph,
     programs: &BTreeMap<String, TypedProgram>,
 ) -> Result<(), SemaError> {
-    // plans/M7.md item D: `DmaPool[P, N]`'s mint reads the same resolved
-    // pool table `check_pool_decls` (which ran first, in `check_sealed`'s
-    // fixed order) already validated. Recomputed here rather than
-    // threaded, so this fn keeps the signature every caller and every unit
-    // test already uses; `pool_backings` is a pure function of the graph
-    // and the closure's layouts, so the two calls cannot disagree.
     let backings = pool_backings(graph, &closure_layouts(programs)?)?;
     for (i, d) in graph.drivers.iter().enumerate() {
         check_one_decl(
@@ -2080,28 +1343,8 @@ pub fn check_init_args(
     Ok(())
 }
 
-// --- plans/M7.md item G: vector binding (03-hardware.md §6) ----------------
-//
-// "The ownership unit is a **vector**: exactly one handler per vector,
-// possibly several vectors per driver ... The vector table is generated
-// from the image graph; source cannot bind an unowned vector."
-//
-// Decision 12: an `IrqCap[V]`'s runtime word is the vector bit index
-// (1..=63; bit 0 is M6's deadline/cancel vector). A device declares its
-// vector with optional `vector=N` on `img.device`; `take_irq` /
-// `IrqCap.bind` are rejected when that declaration is absent (unowned).
-//
-// Three named rejections, each a golden:
-//   - a vector bound twice (`golden/err-irq-vector-bound-twice`)
-//   - two vectors bound to one handler (`golden/err-irq-two-vectors-one-handler`)
-//   - binding / taking an unowned vector (`golden/err-irq-unowned-vector`)
-
-/// Bit 0 is reserved for M6's deadline/cancel vector
-/// (`__wrela_vector0_service`). A device-owned vector is any other bit.
 pub const DEADLINE_VECTOR: u64 = 0;
 
-/// The `vector=N` an `img.device[...](..., vector=N)` declaration names,
-/// if any. `None` is 03 §7's poll build: no vector exists for this device.
 pub(crate) fn device_vector(args: &[DeclArg]) -> Option<u64> {
     let a = args.iter().find(|a| a.label == "vector")?;
     match &a.value {
@@ -2119,8 +1362,6 @@ pub(crate) fn device_vector(args: &[DeclArg]) -> Option<u64> {
     }
 }
 
-/// An `IrqCap[V]` `init` parameter: minted from the bound device's
-/// `vector=` (decision 12). Prefer `claimed.take_irq()` inside `init`.
 fn check_irq_cap_mint(
     decl_ref: &ImageDeclRef,
     struct_name: &str,
@@ -2173,7 +1414,6 @@ fn check_irq_cap_mint(
     }
 }
 
-/// One static `IrqCap.bind(handler)` site found in a `@driver`'s body.
 struct IrqBindSite {
     driver: String,
     vector: u64,
@@ -2181,13 +1421,10 @@ struct IrqBindSite {
     site: String,
 }
 
-/// 03-hardware.md §6's vector-table rule, checked over the sealed graph.
 pub fn check_vector_bindings(
     graph: &ImageGraph,
     programs: &BTreeMap<String, TypedProgram>,
 ) -> Result<(), SemaError> {
-    // First: every device's `vector=` is well-formed and unique across
-    // the image (two devices may not share a pending-word bit).
     let mut claimed: BTreeMap<u64, usize> = BTreeMap::new();
     for (i, d) in graph.devices.iter().enumerate() {
         let Some(v) = device_vector(&d.args) else {
@@ -2213,9 +1450,6 @@ pub fn check_vector_bindings(
         }
     }
 
-    // Collect every bind / take_irq site from every declared driver's
-    // typed bodies. A free fn cannot hold an `IrqCap` (containment), so
-    // only driver members are walked.
     let mut binds: Vec<IrqBindSite> = Vec::new();
     let mut take_irq_sites: Vec<(String, Option<u64>, String)> = Vec::new();
     for (di, decl) in graph.drivers.iter().enumerate() {
@@ -2243,7 +1477,6 @@ pub fn check_vector_bindings(
                 &mut take_irq_sites,
             );
         };
-        // Plain (non-generic) driver: bodies live on `program.structs`.
         if targs.is_empty() {
             if let Some(s) = program.structs.get(driver) {
                 if let Some(f) = &s.init {
@@ -2257,8 +1490,6 @@ pub fn check_vector_bindings(
                 }
             }
         } else {
-            // plans/M7.md item G, decision 18: mode-generic driver bodies
-            // live on the instantiation (`struct:BlkDriver[DriverMode.Irq]`).
             let key = format!(
                 "struct:{}",
                 crate::sema::types::render_type(&decl.actor_type)
@@ -2280,7 +1511,6 @@ pub fn check_vector_bindings(
         let _ = di;
     }
 
-    // Unowned: take_irq or bind against a device with no vector=.
     for (driver, vector, site) in &take_irq_sites {
         if vector.is_none() {
             return Err(build_error(format!(
@@ -2301,7 +1531,6 @@ pub fn check_vector_bindings(
         }
     }
 
-    // A vector bound twice: two bind sites naming the same vector bit.
     let mut by_vector: BTreeMap<u64, &IrqBindSite> = BTreeMap::new();
     for b in &binds {
         if let Some(prev) = by_vector.insert(b.vector, b) {
@@ -2313,7 +1542,6 @@ pub fn check_vector_bindings(
         }
     }
 
-    // Two vectors bound to one handler.
     let mut by_handler: BTreeMap<&str, &IrqBindSite> = BTreeMap::new();
     for b in &binds {
         if let Some(prev) = by_handler.insert(b.handler.as_str(), b) {
@@ -2593,14 +1821,6 @@ fn collect_irq_ops_expr(
     }
 }
 
-// --- check 5: failure policy exactly once
-// (05-library.md §9, image.graph.failure-policy) ---------------------------
-//
-// Crash-only (plans/M13.md item F / decision 3): per-actor supervision is
-// gone. The image must declare `img.on_failure(policy=...)` exactly once —
-// required-explicit, no default. Zero and more-than-one are both build
-// errors; the policy value itself (`Failure.Reboot` | `Failure.Halt`) is
-// ordinary enum construction already accepted by sema.
 pub fn check_failure_policy(graph: &ImageGraph) -> Result<(), SemaError> {
     match graph.on_failures.len() {
         0 => Err(build_error(
@@ -2626,8 +1846,6 @@ mod tests {
             value,
         }
     }
-
-    // --- cores (plans/M15.md item B) --------------------------------------
 
     #[test]
     fn cores_default_passes_seal_bounds() {
@@ -2667,8 +1885,6 @@ mod tests {
         );
     }
 
-    // --- construction DAG -------------------------------------------------
-
     #[test]
     fn a_real_graph_with_only_backward_references_is_always_acyclic() {
         let mut g = ImageGraph::default();
@@ -2689,10 +1905,6 @@ mod tests {
 
     #[test]
     fn a_hand_built_cycle_is_rejected() {
-        // Unrepresentable from real source (this module's own doc
-        // comment): only a hand-built graph can wire an *earlier* index's
-        // own arguments to reference a *later* one, the one way to close
-        // a cycle at all.
         let mut g = ImageGraph::default();
         g.drivers.push(crate::eval::image::DriverDecl {
             actor_type: Type::Named("Blk".to_string(), vec![]),
@@ -2719,8 +1931,6 @@ mod tests {
         );
     }
 
-    // --- pools bound-once/at-seal ------------------------------------------
-
     #[test]
     fn an_unbound_declared_pool_is_rejected_at_seal() {
         let g = ImageGraph::default();
@@ -2746,19 +1956,6 @@ mod tests {
         declared.insert("Buffers".to_string());
         assert!(check_pools_bound(&g, &declared).is_ok());
     }
-
-    // --- pool declarations (plans/M7.md item D) ---------------------------
-    //
-    // Goldens cover the shapes an `@image` fn can spell:
-    // `err-dma-pool-payload-not-layout`, `err-dma-pool-payload-wrong-kind`,
-    // `err-dma-pool-no-device`, `err-dma-pool-device-not-a-device`,
-    // `err-pool-bound-twice-forms`, `err-dma-pool-own-mismatch`,
-    // `err-pool-backing-too-large`, and `check-dma-pool` for the accept.
-    // These unit tests cover the arms *no* source can currently reach —
-    // the same discipline the construction-DAG cycle and the second-
-    // `DeviceCap` arms above already follow — plus the two derivations
-    // (`layout_alignment`, the exact size) that every later consumer rests
-    // on.
 
     fn dma_layout(name: &str, fields: &[(&str, u64)]) -> types::LayoutType {
         let mut at = 0u64;
@@ -2789,8 +1986,6 @@ mod tests {
         ls.into_iter().map(|l| (l.name.clone(), l)).collect()
     }
 
-    /// A graph with one device, one driver bound to it (unless
-    /// `driver_bound` is false), and one DMA pool with `args`.
     fn dma_pool_graph(driver_bound: bool, payload: &str, args: Vec<DeclArg>) -> ImageGraph {
         let mut g = ImageGraph::default();
         g.devices.push(crate::eval::image::DeviceDecl {
@@ -2833,9 +2028,6 @@ mod tests {
         assert_eq!(layout_alignment(&dma_layout("B", &[("a", 1), ("b", 2)])), 2);
         assert_eq!(layout_alignment(&dma_layout("C", &[("a", 4)])), 4);
         assert_eq!(layout_alignment(&dma_layout("D", &[("a", 4), ("b", 8)])), 8);
-        // A `Bytes[N]` field is N bytes wide but needs no more than byte
-        // alignment, so the clamp is what keeps this the machine's own
-        // widest scalar alignment rather than an array's length.
         assert_eq!(layout_alignment(&dma_layout("E", &[("a", 512)])), 8);
     }
 
@@ -2862,9 +2054,6 @@ mod tests {
 
     #[test]
     fn a_dma_pool_may_name_its_device_through_the_driver_bound_to_it() {
-        // 03-hardware.md §3's own worked example spells `device=disk`,
-        // naming the *driver*; 05-library.md §9 spells `device=d`, naming
-        // the device. Both resolve to the same declared device.
         let layouts = layouts_of(vec![dma_layout("Hdr", &[("a", 4)])]);
         for r in [ImageDeclRef::Device(0), ImageDeclRef::Driver(0)] {
             let g = dma_pool_graph(
@@ -2882,12 +2071,6 @@ mod tests {
 
     #[test]
     fn a_dma_pool_named_through_a_driver_that_binds_no_device_is_rejected() {
-        // Unrepresentable from source: `check_init_args` rejects a driver
-        // whose `init` needs a `DeviceCap` with no `device=`, but a driver
-        // with no capability parameter at all may legally bind no device,
-        // and today nothing else stops it — so this is real code with a
-        // real oracle and no golden, exactly like the construction-DAG
-        // cycle case.
         let g = dma_pool_graph(
             false,
             "Hdr",
@@ -2920,13 +2103,6 @@ mod tests {
         assert!(err.message.contains("does not declare"), "{}", err.message);
     }
 
-    /// plans/M8.md item P, decision 24: the inverse of the M7 post-closure
-    /// guard this replaced. A pool bound to a driverless device, and a
-    /// second pool bound to a *different*, driven one, both resolve — each
-    /// carrying its own `device`, which is the fact the `BlkPool device=`
-    /// mapping line and `GuestMem`'s per-device `window_offset` are built
-    /// on. Neither shape is refused here any more; reachability is
-    /// enforced where reaching happens.
     #[test]
     fn pools_on_two_devices_one_of_them_driverless_each_keep_their_own_device() {
         let mut g = ImageGraph::default();
@@ -3023,9 +2199,6 @@ mod tests {
     #[test]
     fn the_whole_images_pool_backing_is_capped() {
         let mut g = ImageGraph::default();
-        // Two pools, each individually placeable, together past the
-        // ceiling: the check is on the total, because the total is what
-        // gets emitted as image bytes.
         for name in ["A", "B"] {
             g.pools.insert(
                 name.to_string(),
@@ -3042,17 +2215,10 @@ mod tests {
         assert!(err.message.contains("ceiling"), "{}", err.message);
     }
 
-    /// plans/M7.md item D self-audit: every arm below is reachable from
-    /// real source (each was written as a `.wr` file and run through the
-    /// real compiler during the audit) but has no golden of its own,
-    /// because each is a one-line variant of a case that does. Kept as
-    /// executable oracles rather than as a comment, which is the whole
-    /// point of the audit.
     #[test]
     fn the_reachable_pool_arms_no_golden_spells() {
         let layouts = layouts_of(vec![dma_layout("Hdr", &[("a", 4)])]);
 
-        // `device=1` — an ordinary value, not a declaration reference.
         let g = dma_pool_graph(
             true,
             "Hdr",
@@ -3068,7 +2234,6 @@ mod tests {
             err.message
         );
 
-        // `img.pool` with an argument belonging to the DMA form.
         let mut g2 = ImageGraph::default();
         g2.pools.insert(
             "B".to_string(),
@@ -3088,9 +2253,6 @@ mod tests {
             err.message
         );
 
-        // Backing whose product does not fit a `u64` at all — caught
-        // before the ceiling check, which is a comparison and would
-        // otherwise be handed a wrapped number.
         let mut g3 = ImageGraph::default();
         g3.pools.insert(
             "B".to_string(),
@@ -3127,9 +2289,6 @@ mod tests {
         assert!(err.message.contains("more than a `u64`"), "{}", err.message);
     }
 
-    /// The two `DmaPool[P, N]` bound-argument arms a source can spell but
-    /// no golden pins (audited the same way): a bound that is a *type*
-    /// rather than a const, and one this compiler cannot read as a `u64`.
     #[test]
     fn a_dma_pool_bound_must_be_a_readable_const() {
         let layouts = layouts_of(vec![dma_layout("Hdr", &[("a", 4)])]);
@@ -3185,10 +2344,6 @@ mod tests {
 
     #[test]
     fn own_handles_are_found_at_every_nesting_a_signature_can_reach() {
-        // The agreement check is only as good as this walk, and a
-        // signature can bury a handle arbitrarily deep
-        // (`Result[Option[own[P] T], Wrapper[own[Q] U]]` is ordinary
-        // wrela).
         let deep = Type::Result(
             Box::new(Type::Option(Box::new(Type::Own(
                 "P".to_string(),
@@ -3208,8 +2363,6 @@ mod tests {
         assert!(names.contains(&"P"), "{names:?}");
         assert!(names.contains(&"Q"), "{names:?}");
     }
-
-    // --- init-argument matching ---------------------------------------------
 
     fn program_with_init(struct_name: &str, params: Vec<TypedParam>) -> TypedProgram {
         let mut program = TypedProgram::default();
@@ -3281,10 +2434,6 @@ mod tests {
 
     #[test]
     fn an_int_literal_argument_fits_a_narrower_declared_param_type() {
-        // `sema::bodies::check_intrinsic_args` types a bare integer
-        // literal with no expected type (this module's own doc comment on
-        // `value_fits_param_type`) — recorded here as `i64`, same as the
-        // real evaluator would, against a `u32` init parameter.
         let program = program_with_init(
             "Blk",
             vec![TypedParam {
@@ -3327,24 +2476,6 @@ mod tests {
         assert!(check_init_args(&g, &programs).is_ok());
     }
 
-    // --- the mint (plans/M7.md item A, 03-hardware.md §1) ----------------
-    //
-    // What was, before item A, a bare name-recognition — "a parameter
-    // whose declared type is named `DeviceCap`/`DmaPool`/`Mmio`/`IrqCap`
-    // is satisfied by the declaration's own device wiring" (plans/M4.md
-    // decision 7), accepted with *no argument and no wiring at all* — is
-    // now a real check against the wiring it names. The old test asserted
-    // exactly that acceptance and is replaced, not deleted, by the table
-    // below: same shape, real rule.
-    //
-    // These stay unit tests rather than becoming goldens for the arms a
-    // golden cannot reach: `check_init_args` runs on a *sealed* graph, and
-    // the driver-shaped rejections that can be spelled in source are
-    // goldens (`golden/err-cap-mint-no-device`,
-    // `golden/err-cap-mint-device-mismatch`, `golden/err-cap-mint-unminted`),
-    // while the second-`DeviceCap` and non-device-`device=` arms need a
-    // graph shape no `@image` fn can currently produce.
-
     fn cap_param(name: &str, cap: &str, arg: &str) -> TypedParam {
         TypedParam {
             mode: AccessMode::Read,
@@ -3360,8 +2491,6 @@ mod tests {
         }
     }
 
-    /// One driver graph: a device of type `device_type` (if any), and a
-    /// driver wired with `device=` (if `wired`) plus `params` on its init.
     fn driver_graph(device_type: Option<&str>, wired: bool, params: Vec<TypedParam>) -> ImageGraph {
         let mut g = ImageGraph::default();
         if let Some(d) = device_type {
@@ -3450,9 +2579,6 @@ mod tests {
 
     #[test]
     fn one_device_is_bound_by_at_most_one_driver() {
-        // Post-closure M7 sweep port: the per-device half of §1's "named
-        // once". Two drivers on device#0 used to place two DeviceRegs
-        // windows at two bases.
         let mut g = ImageGraph::default();
         g.devices.push(crate::eval::image::DeviceDecl {
             device_type: Type::Named("BlockHw".to_string(), vec![]),
@@ -3479,20 +2605,6 @@ mod tests {
 
     #[test]
     fn every_still_unminted_capability_names_the_item_that_mints_it() {
-        // plans/M7.md item D minted `DmaPool[P, N]` and dropped it off
-        // this list; `DmaShared[P, L]` joined it, with a different reason
-        // (03-hardware.md §3's shared control memory is not minted at the
-        // image binding at all — a queue configures it out of a pool).
-        // `golden/err-cap-mint-unminted` and
-        // `golden/err-dma-shared-unminted` are the source-shaped witnesses.
-        //
-        // plans/M7.md item H1 changed the `Mmio` arm's *kind*, which is
-        // why it is checked against a mechanism rather than a plan item:
-        // decision 10 found the old text ("that is item C") stale, because
-        // an `Mmio[L]` is not waiting on an item at all — it is minted, by
-        // the sealed transport's `map_partition`, and never at the image
-        // binding. That rejection is permanent, so naming a future item in
-        // it would be wrong forever rather than merely out of date.
         for (cap, owner) in [
             ("Mmio", "map_partition"),
             ("DmaShared", "VirtQueue.configure"),
@@ -3504,7 +2616,6 @@ mod tests {
                 .expect_err("nothing mints an Mmio/DmaShared at the image binding");
             assert!(err.message.contains(owner), "{cap}: {}", err.message);
         }
-        // IrqCap is item G: mintable from vector=, refused without one.
         let programs = programs_map(program_with_init(
             "Blk",
             vec![cap_param("c", "IrqCap", "Thing")],
@@ -3516,10 +2627,6 @@ mod tests {
             "IrqCap: {}",
             err.message
         );
-        // plans/M7.md item G self-audit: an `IrqCap` init param with no
-        // `device=` on the driver binding — source-unreachable for a
-        // `@driver` that takes DeviceCap (sema demands the wiring), so
-        // named here rather than as a golden.
         let g_no_dev = driver_graph(Some("BlockHw"), false, vec![]);
         let err =
             check_init_args(&g_no_dev, &programs).expect_err("IrqCap init param needs device=");
@@ -3530,13 +2637,6 @@ mod tests {
         );
     }
 
-    /// The `DmaPool[P, N]` mint's own arms (plans/M7.md item D). The three
-    /// a source can spell are goldens (`err-dma-pool-mint-bound`,
-    /// `err-dma-pool-mint-not-dma`, `err-dma-pool-mint-wrong-device`);
-    /// these are the two it cannot — a driver binding with no `device=`
-    /// (sema rejects a `@driver` `init` reaching this shape earlier) and a
-    /// bound spelled as something other than an integer literal, which the
-    /// language has no way to write yet at all.
     #[test]
     fn a_dma_pool_mint_needs_a_device_binding_and_a_readable_bound() {
         let pool_param = |bound: crate::syntax::ast::Expr| TypedParam {
@@ -3558,7 +2658,6 @@ mod tests {
             decl_arg("count", Type::I64, Value::I64(2)),
         ];
 
-        // No `device=` on the driver binding at all.
         let mut g = dma_pool_graph(false, "Hdr", dma_args.clone());
         g.drivers[0].args.clear();
         let backings = pool_backings(&g, &layouts).expect("the pool itself is well-formed");
@@ -3585,7 +2684,6 @@ mod tests {
             err.message
         );
 
-        // A bound this compiler cannot read as an integer literal.
         let g2 = dma_pool_graph(true, "Hdr", dma_args);
         let backings2 = pool_backings(&g2, &layouts).expect("well-formed");
         let err2 = check_dma_pool_mint(
@@ -3602,11 +2700,6 @@ mod tests {
 
     #[test]
     fn a_device_argument_that_names_no_device_mints_nothing() {
-        // `device=` wired to another *driver*'s handle rather than a
-        // device. Unrepresentable from source today only because nothing
-        // else is ever passed as `device=`, exactly like the
-        // construction-DAG cycle case above — real code, real oracle, no
-        // golden.
         let programs = programs_map(program_with_init(
             "Blk",
             vec![cap_param("cap", "DeviceCap", "BlockHw")],
@@ -3634,11 +2727,6 @@ mod tests {
 
     #[test]
     fn a_device_argument_naming_an_undeclared_index_mints_nothing() {
-        // The structural floor beneath the arm above: a `Device(i)` whose
-        // `i` this graph has no entry for. `ImageGraph::declare_device` is
-        // the only producer of such a value and always pushes first, so
-        // this is unreachable by construction — kept and tested anyway,
-        // because "index out of range" must never be a silent success.
         let programs = programs_map(program_with_init(
             "Blk",
             vec![cap_param("cap", "DeviceCap", "BlockHw")],
@@ -3699,9 +2787,6 @@ mod tests {
         assert!(check_init_args(&g, &programs).is_ok());
     }
 
-    // --- the literal-constructor half (05-library.md §9: "or its literal
-    // constructor") — a struct that declares no `init` at all ----------------
-
     fn program_with_fields(struct_name: &str, fields: Vec<(&str, Type)>) -> TypedProgram {
         let mut program = TypedProgram::default();
         program.structs.insert(
@@ -3722,11 +2807,6 @@ mod tests {
 
     #[test]
     fn a_handle_argument_matches_a_declared_field_when_the_struct_has_no_init() {
-        // `tests/golden/image-field-wired-accept`'s own shape, in
-        // miniature: `Worker.led: Actor[Ledger]`, no `init`, wired
-        // `led=<actor#0>`. Before the literal-constructor half landed
-        // this was rejected outright — a no-`init` struct was handed an
-        // empty parameter list, so every wiring argument named nothing.
         let programs = programs_map(program_with_fields(
             "Worker",
             vec![("led", Type::Named("Actor".to_string(), vec![]))],
@@ -3745,11 +2825,6 @@ mod tests {
 
     #[test]
     fn an_unwired_field_is_never_a_missing_init_argument() {
-        // `tests/golden/boot-actors`'s own `Ledger.marks: u64`: a plain
-        // data field, no `init`, wired with nothing. The missing-slot
-        // direction runs for a declared `init` only (`check_one_decl`'s
-        // own comment) — the boot sequence zero-initializes the whole
-        // state slot, so there is nothing missing here.
         let programs = programs_map(program_with_fields("Ledger", vec![("marks", Type::U64)]));
         let mut g = ImageGraph::default();
         g.actors.push(crate::eval::image::ActorDecl {
@@ -3761,8 +2836,6 @@ mod tests {
 
     #[test]
     fn an_argument_naming_neither_an_init_param_nor_a_field_is_rejected() {
-        // `tests/golden/err-image-field-unknown`'s own shape: the
-        // widening is exactly 05 §9's sentence, never "anything goes".
         let programs = programs_map(program_with_fields("Store", vec![("value", Type::U64)]));
         let mut g = ImageGraph::default();
         g.actors.push(crate::eval::image::ActorDecl {
@@ -3780,10 +2853,6 @@ mod tests {
 
     #[test]
     fn a_literal_argument_is_range_checked_against_its_field_type() {
-        // The same `value_fits_param_type` accommodation the `init` half
-        // already needed (a builder intrinsic argument is typed with no
-        // expected type, so `seed=8` is recorded at its `i64` default),
-        // reaching a *field*'s declared type instead of a parameter's.
         let programs = programs_map(program_with_fields("Store", vec![("seed", Type::U32)]));
         let mut g = ImageGraph::default();
         g.actors.push(crate::eval::image::ActorDecl {
@@ -3803,15 +2872,11 @@ mod tests {
         });
         let err = check_init_args(&g, &programs).expect_err("4096 does not fit a u8 field");
         assert!(err.message.contains("own field `seed: u8`"));
-        // Never `Store.init` — `Store` declares no `init` at all.
         assert!(!err.message.contains(".init"));
     }
 
     #[test]
     fn a_declared_init_still_wins_over_the_fields_of_the_same_struct() {
-        // 05 §9's "or" is exclusive: a struct that declares an `init` is
-        // matched against that `init`, and a field it does not name is
-        // not a wiring slot.
         let mut program = program_with_init(
             "Blk",
             vec![TypedParam {
@@ -3842,8 +2907,6 @@ mod tests {
                 .contains("`Blk.init` has no parameter named `id`")
         );
     }
-
-    // --- failure policy ------------------------------------------------------
 
     #[test]
     fn a_missing_failure_policy_is_rejected() {

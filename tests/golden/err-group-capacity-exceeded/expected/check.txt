@@ -1,1 +1,1 @@
-error[actor]: this `with group` declares `capacity=1` but starts 2 child activation(s) (02-language.md §9.5: a group admits up to `capacity` children) — raise the capacity or start fewer children at 39:5
+error[actor]: this `with group` declares `capacity=1` but starts 2 child activation(s) (02-language.md §9.5: a group admits up to `capacity` children) — raise the capacity or start fewer children at 23:5

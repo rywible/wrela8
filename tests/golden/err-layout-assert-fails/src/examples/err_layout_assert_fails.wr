@@ -1,7 +1,5 @@
 module examples.err_layout_assert_fails
 
-# plans/M9.md item H: a `@layout_assert` that reads a real section size
-# and fails closed. The diagnostic must name the fn.
 from core.image_report import ImageReport
 
 @actor

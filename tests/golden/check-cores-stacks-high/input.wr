@@ -1,9 +1,5 @@
 module examples.check_cores_stacks_high
 
-# plans/M15.md item D / image.report.cores-and-stacks: report-only pin that
-# sealed cores publish high-DRAM CoreStack lines and omit the former low
-# `Section name=stacks base=0x40010000` fact. N=1 is enough for the stack
-# address oracle; multi-core bring-up boots land at item G.
 
 @actor
 pub struct Store:

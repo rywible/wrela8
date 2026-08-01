@@ -1,11 +1,5 @@
 module examples.err_retry_after_unknown_wildcard
 
-# plans/M8.md item G (decision 18): the rule fires on any arm that *can*
-# match `CompletionOutcome.Unknown`, not only on one spelled `.Unknown`.
-# 03-hardware.md §9's rule is about the value the arm may be looking at,
-# so a wildcard (or a plain binding) is covered — deliberately
-# over-approximate, because the fail-open reading of this rule is the one
-# that lets a write land twice.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:
@@ -68,9 +62,6 @@ pub struct BlkDriver:
         self.device = negotiated.start()
         return Ok(unit)
 
-    # The `prepare_block` sits **outside** the match; only the `publish`
-    # is inside the `Unknown` arm. The declaration rides on the operation's
-    # own type (`QueueOp[P, false]`), so hoisting it out changes nothing.
     fn reissue(mut self,
                take receipt: Receipt[own[BlockPayloads] DmaBlock],
                take spare: own[BlockPayloads] DmaBlock,
@@ -87,13 +78,10 @@ pub struct BlkDriver:
         outcome = self.queue.recover(receipt=take receipt)
         match outcome:
             case .Completed:
-                # Legal: the outcome is known, so this is a fresh issue.
                 issued = self.queue.publish(operation=take operation)
                 _resolved = self.queue.recover(receipt=take issued)
                 return self.outcomes
             case _:
-                # A wildcard covers `Unknown` just as surely as naming it,
-                # so it is rejected the same way.
                 issued = self.queue.publish(operation=take operation)
                 _resolved = self.queue.recover(receipt=take issued)
                 return self.outcomes

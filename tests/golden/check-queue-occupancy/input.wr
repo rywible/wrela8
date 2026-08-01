@@ -1,10 +1,5 @@
 module examples.check_queue_occupancy
 
-# plans/M7.md item E2: hand-computed occupancy bound pinned in the report.
-# 03-hardware.md §4: "three direct descriptors in a 128-deep queue means
-# at most 42 in flight" — floor(128/3) = 42. No reserve site here; the
-# number is a property of the configured queue geometry (E1 deferred it
-# to E2 by name).
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:
@@ -61,7 +56,6 @@ pub fn build() -> Image:
         capacity_sectors=16,
         required_features=[Feature.Flush],
     )
-    # Ring for depth 128 needs ~3.4 KiB; 256 * 16 = 4096 covers it.
     control = img.dma_pool[BlkReqHeader](name=BlockControl, device=blk, count=256)
     disk = img.driver(BlkDriver, device=blk)
     img.on_failure(policy=Failure.Halt)

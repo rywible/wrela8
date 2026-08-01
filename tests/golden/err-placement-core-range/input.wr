@@ -1,7 +1,5 @@
 module examples.err_placement_core_range
 
-# plans/M15.md item C: `core=N` outside 0..Image.cores fails closed by name
-# (default cores=1 ⇒ domain 0..1; core=3 is refused).
 
 @actor
 pub struct Store:

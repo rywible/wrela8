@@ -1,49 +1,8 @@
-//! The `@image` builder's own product (plans/M4.md item B, decision 5):
-//! evaluating the one reachable `@image` fn on the M3 evaluator
-//! (`eval::interp`) builds exactly one plain `ImageGraph` — BTreeMaps
-//! keyed by name (pools/dma pools, the one declaration kind 05-library.md
-//! §9 itself names by a bound `pool` identifier) plus construction-order
-//! `Vec`s (everything else: devices, drivers, actors, `on_failure`
-//! declarations, registered layout asserts) — declarations recorded in program
-//! order, every argument a fully evaluated `eval::value::Value` alongside
-//! its own static `sema::types::Type` (needed only so `dump` below can
-//! render an enum construction or a list by name instead of a bare
-//! variant index).
-//!
-//! This module owns the graph's shape and the one stable text dump
-//! (house rule: every stage gets a dump before features) — `Kind
-//! key=value` lines, two-space indent, the M1 dump style, deterministic
-//! order throughout. It does **not** check the graph (item C: DAG,
-//! failure policy, init-argument matching, ...) — recording
-//! faithfully is this item's whole job; item C reads this same struct.
-//!
-//! `img.dma_pool` used to be the one declaration kind that was recorded
-//! and then immediately failed the whole build (plans/M4.md decision 10,
-//! gap `image.graph.dma-pools`): `@layout(dma)` validation did not exist
-//! until the hardware milestone, and this compiler never asserts against
-//! nothing. plans/M7.md item B built that validation and item D consumes
-//! it, so the recorder now returns an ordinary bound-pool handle and the
-//! real checks (a `@layout(dma)` payload, a reachable device, an exact
-//! count) live in `eval::image_checks::check_pool_decls`, over the whole
-//! finished graph, like every other graph rule.
-//! `img.check_layout` registers a `@layout_assert` fn; the registered
-//! fns run after layout against a real stdlib `ImageReport`
-//! (`eval::layout_assert`, plans/M9.md item H). `LayoutAssertDecl` is
-//! the graph record this module keeps.
-
 use std::collections::BTreeMap;
 
 use crate::eval::value::Value;
 use crate::sema::types::{self, Type};
 
-/// A builder declaration's own identity, as referenced by a *later*
-/// intrinsic argument (`device=block_device`, `disk=disk.handle()`, a
-/// `children=[...]` list, ...) — devices/drivers/actors are named by
-/// their own construction-order index (nothing in 05 §9 gives them a
-/// source name of their own — only the local they happen to be bound to,
-/// which item B deliberately does not thread through, see `eval/mod.rs`'s
-/// module doc); pools/dma pools are named by their own bound `pool` name
-/// (02-language.md §4), which *is* source data.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ImageDeclRef {
     Device(usize),
@@ -54,8 +13,6 @@ pub enum ImageDeclRef {
 }
 
 impl ImageDeclRef {
-    /// The dump's own rendering of a declaration reference wherever it
-    /// appears as another declaration's argument value.
     pub fn render(&self) -> String {
         match self {
             ImageDeclRef::Device(i) => format!("device#{i}"),
@@ -67,19 +24,12 @@ impl ImageDeclRef {
     }
 }
 
-/// A value together with its static type — the type is only ever needed
-/// for rendering (an enum construction's own variant name, a list's own
-/// element-by-element rendering), never for checking (item C's job).
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypedValue {
     pub ty: Type,
     pub value: Value,
 }
 
-/// One builder argument, still carrying its own source label — no
-/// declared parameter list exists for a builder intrinsic to align
-/// positionally against (`sema::typed::TypedExprKind::Intrinsic`'s own
-/// doc comment), so every argument's label is kept.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DeclArg {
     pub label: String,
@@ -121,22 +71,10 @@ pub struct LayoutAssertDecl {
     pub fn_key: String,
 }
 
-/// One `@image` fn's whole evaluated product (plans/M4.md item B,
-/// decision 5). `name`/`target` come only from `Image(...)` itself
-/// (decision 5's own "the image's name and target come only from
-/// `Image(...)`, comptime-checked source, nowhere else"). `dma_pools` was
-/// always empty until plans/M7.md item D: an `img.dma_pool` call recorded
-/// its own entry and then failed the whole evaluation before `img.seal()`
-/// could ever run (decision 10). It is an ordinary declaration map now,
-/// keyed exactly like `pools` and disjoint from it — 05-library.md §9's
-/// "bind the previously unbound pool name `P` exactly once" is one rule
-/// over one name space, not two (`bind_pool_name`, below).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImageGraph {
     pub name: Option<TypedValue>,
     pub target: Option<TypedValue>,
-    /// Sealed image core count (`Image(..., cores=N?)`; default 1).
-    /// Always set — never an optional hole (plans/M15.md item B).
     pub cores: usize,
     pub devices: Vec<DeviceDecl>,
     pub drivers: Vec<DriverDecl>,
@@ -193,18 +131,6 @@ impl ImageGraph {
         Value::ImageDecl(ImageDeclRef::Actor(idx))
     }
 
-    /// 05-library.md §9's "bind the previously unbound pool name `P`
-    /// exactly once", as one predicate over **one** name space: a name
-    /// already bound by either form — `img.pool` or `img.dma_pool` — is
-    /// already bound, full stop. Before plans/M7.md item D each recorder
-    /// only ever consulted its own map, which was harmless exactly
-    /// because `declare_dma_pool` failed the whole build closed and
-    /// `dma_pools` could therefore never hold anything by the time a
-    /// second call ran. Making DMA pools real makes
-    /// `img.pool(name=P, ...)` followed by `img.dma_pool(name=P, ...)`
-    /// reachable, and it must be the same rejection as binding either
-    /// form twice — a pool name names one pool node
-    /// (02-language.md §4), not one per form.
     fn bind_pool_name(&self, pool_name: &str) -> Result<(), String> {
         if self.pools.contains_key(pool_name) || self.dma_pools.contains_key(pool_name) {
             return Err(format!("pool `{pool_name}` is already bound"));
@@ -212,14 +138,6 @@ impl ImageGraph {
         Ok(())
     }
 
-    /// Binds `pool_name` (05-library.md §9: "bind the previously unbound
-    /// pool name `P` exactly once ... binding a name twice ... is a build
-    /// error" — item C's own full check over the whole graph, once
-    /// nominal-vs-value-construction is checkable; this recorder rejects
-    /// only the one case it can name honestly on its own: this exact call
-    /// binding the same name a second time, which would otherwise
-    /// silently clobber the first declaration rather than recording
-    /// both).
     pub fn declare_pool(
         &mut self,
         pool_name: String,
@@ -232,17 +150,6 @@ impl ImageGraph {
         Ok(Value::ImageDecl(ImageDeclRef::Pool(pool_name)))
     }
 
-    /// The DMA form of the same binding (plans/M7.md item D). Until this
-    /// item it recorded the declaration and then failed the whole build
-    /// closed (plans/M4.md decision 10, gap `image.graph.dma-pools`),
-    /// because `@layout(dma)` validation did not exist and this compiler
-    /// never asserts against nothing. It exists now (item B), so the
-    /// recorder records and the real rules — a `@layout(dma)` payload
-    /// type, a device this image declares, an exact positive count —
-    /// are checked over the whole finished graph by
-    /// `eval::image_checks::check_pool_decls`, which is where every other
-    /// graph rule lives and where the payload type's own layout table is
-    /// reachable.
     pub fn declare_dma_pool(
         &mut self,
         pool_name: String,
@@ -264,32 +171,12 @@ impl ImageGraph {
     }
 }
 
-// --- the `--stage=image` dump (deliverable 3): `Kind key=value`, two-
-// space indent, the M1 dump style, deterministic order throughout
-// (program order for devices/drivers/actors/on_failures/layout
-// asserts, `BTreeMap` order for pools/dma pools). -------------------------
-
-/// `pub(crate)`, not private: `report.rs` (plans/M4.md item D) reuses this
-/// exact line-writer so the report's own `Kind key=value` lines are
-/// byte-identical in style to this stage's — one indentation mechanism,
-/// not two.
 pub(crate) fn push_line(out: &mut String, depth: usize, line: &str) {
     out.push_str(&"  ".repeat(depth));
     out.push_str(line);
     out.push('\n');
 }
 
-/// Renders one already-evaluated `Value` typed as `ty` — the one place
-/// this module needs the enum/list's own static type at all: a bare
-/// `Value::Enum` carries only its variant *index* (`sema::typed`'s own
-/// module doc: "the typed tree names variants, not indices"), and a
-/// `Value::Array`'s own element type is needed to render nested enums by
-/// name too (`required_features=[...]`, `children=[...]`).
-///
-/// `pub(crate)`: `report.rs` (plans/M4.md item D) reuses this verbatim so
-/// every `Arg`/`Name`/`Target` fact in the report renders identically to
-/// the raw `--stage=image` dump — the report is a superset of facts, not
-/// a second rendering mechanism.
 pub(crate) fn render_value(program: &TypedProgramEnums, ty: &Type, v: &Value) -> String {
     match (ty, v) {
         (Type::Named(name, _), Value::Enum(idx, payload)) => {
@@ -340,21 +227,10 @@ pub(crate) fn render_value(program: &TypedProgramEnums, ty: &Type, v: &Value) ->
     }
 }
 
-/// A minimal read-only view of `TypedProgram` this module needs for
-/// rendering (just the enum-name table) — avoids `eval::image` depending
-/// on `sema::typed::TypedProgram`'s full shape for a dump that only ever
-/// reads one field of it.
 pub struct TypedProgramEnums<'p> {
     pub enums: &'p BTreeMap<String, Vec<String>>,
 }
 
-/// Renders a `Value` with no type context (a scalar, a string, a decl
-/// reference, a nested tuple/struct with no further enum/list
-/// information to render by name) — the fallback every typed case above
-/// still recurses into for payloads/leaves.
-///
-/// `pub(crate)`: `report.rs` reuses this for the same reason
-/// `render_value`/`push_line` above are `pub(crate)` now.
 pub(crate) fn render_bare_value(v: &Value) -> String {
     match v {
         Value::U8(n) => n.to_string(),
@@ -416,10 +292,6 @@ fn dump_args(program: &TypedProgramEnums, args: &[DeclArg], depth: usize, out: &
     }
 }
 
-/// The `--stage=image` dump (deliverable 3): a versioned header line, one
-/// section per declaration kind, absent entirely when empty (no
-/// placeholders for facts that don't exist, mirroring 04-compiler.md
-/// §7's own report discipline one milestone early).
 pub fn dump(enums: &BTreeMap<String, Vec<String>>, graph: &ImageGraph) -> String {
     let program = TypedProgramEnums { enums };
     let mut out = String::new();
@@ -444,7 +316,6 @@ pub fn dump(enums: &BTreeMap<String, Vec<String>>, graph: &ImageGraph) -> String
             ),
         );
     }
-    // Always present: `ImageGraph.cores` defaults to 1 (05 §9 / M15 item B).
     push_line(&mut out, 1, &format!("Cores count={}", graph.cores));
     for (i, d) in graph.devices.iter().enumerate() {
         push_line(
@@ -570,8 +441,6 @@ mod tests {
 
     #[test]
     fn a_dma_pool_binds_its_name_like_any_other_pool() {
-        // plans/M7.md item D: this used to record the declaration and
-        // then fail the whole build closed (plans/M4.md decision 10).
         let mut g = ImageGraph::default();
         let v = g
             .declare_dma_pool("Payloads".to_string(), Type::U8, vec![])
@@ -585,10 +454,6 @@ mod tests {
 
     #[test]
     fn a_pool_name_is_one_name_space_across_both_forms() {
-        // 05-library.md §9: "bind the previously unbound pool name `P`
-        // exactly once". Unreachable before item D (the DMA form failed
-        // the build before a second call could run), reachable now, and
-        // the same rejection either way round.
         let mut g = ImageGraph::default();
         g.declare_pool("Shared".to_string(), Type::U32, vec![])
             .expect("first bind succeeds");
@@ -621,7 +486,7 @@ mod tests {
         g.declare_on_failure(vec![DeclArg {
             label: "policy".to_string(),
             ty: Type::Named("Failure".to_string(), vec![]),
-            value: Value::Enum(1, vec![]), // Failure.Halt
+            value: Value::Enum(1, vec![]),
         }]);
         assert_eq!(g.on_failures.len(), 1);
     }

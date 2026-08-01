@@ -1,11 +1,5 @@
 module examples.check_await_question_mark
 
-# plans/M13.md item I — 02 §9.4's `await actor.m(...)?` through a declared
-# `from(take e: CallError[E])`. CallError is prelude-nameable, so `?` can
-# convert the composed error into a user error type.
-#
-# `return Ok(v)` is not lowered inside an async body (flowwir_lower); the
-# Ok wrap is a sync helper — the same shape boot-actor-reply-result uses.
 
 pub enum AppErr:
     Busy

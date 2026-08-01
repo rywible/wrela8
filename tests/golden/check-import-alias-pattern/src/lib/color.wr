@@ -1,7 +1,5 @@
 module lib.color
 
-# plans/M9.md item DD regression lock for A1b finding 2's pattern half:
-# an ordinary two-variant enum the importer aliases.
 
 pub enum Color:
     Red

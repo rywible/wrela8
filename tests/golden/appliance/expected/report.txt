@@ -6,10 +6,10 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=cache.wr sha256=1a924c897defb3a7ba6ca57e4d38aaae95bba87c419486d9078ef3df0519e2a2
-  Input path=driver.wr sha256=30c55aa16de613fbb7166f3c955755c10ff2525bc1ff74c3f8a4377e6ca371eb
-  Input path=image.wr sha256=56e24549178a76a7f80966d536be2704e14fb1a0414f745596122f2e9c7775b4
-  Input path=stats.wr sha256=331b09394832cdd4194af3354870c8a0ce06f853c02692249c4be6618a4b4aee
+  Input path=cache.wr sha256=6fd40ba407234414519731eab053da01d9f9db93bb60d1a3ba2f5730b4fcb3da
+  Input path=driver.wr sha256=a33c3d2f34c4d9cb27c4886f2c284a28fa8696c692d74bbd474f0326f42f0a35
+  Input path=image.wr sha256=1a570a36e2b8d0e817e6b4fa4fce4a2b485103d5707da9466bc3878394d68291
+  Input path=stats.wr sha256=b7163abfd5d5665911144ace0275d616f78187f8bb4a02beee32dd93fa44094a
   Input path=<generated> sha256=515851d58aee15e0525ad3ad94aeca595ef443a8e71f5675151db71782a16f79
   Name value=storage-appliance
   Target value=Target.wrela_machine_v1

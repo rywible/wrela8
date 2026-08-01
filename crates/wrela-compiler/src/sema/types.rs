@@ -1,31 +1,3 @@
-//! Declaration typing + classification (plans/M2.md item B): the `Type`
-//! enum, resolving every signature/field/const type, and
-//! data-vs-resource classification (`resource struct` by fiat, `own[P]
-//! T`, and any composite containing a resource, transitively —
-//! 02-language.md §3, §6, §7.1), plus `deriving` list validation
-//! (§7.5). The check dump's full resolved-signature grammar (decision 8)
-//! is also owned here: `mod.rs` only prints the `Module path=...`
-//! header and delegates every declaration line to `render_items`.
-//!
-//! `Type` (decision 4) is one plain enum, structural equality via
-//! `derive(PartialEq, Eq, Clone, Debug)`, `Box`/`Vec`, no interning —
-//! which is why `syntax::ast` now derives `PartialEq, Eq` throughout
-//! (plans/M1.md's AST shape is otherwise unchanged): array lengths,
-//! `Bytes[N]`'s length, and generic const arguments all stay unevaluated
-//! `Expr`s embedded directly in `Type` (item H evaluates the literal
-//! subset later), so `Type`'s own derive needs `Expr` to already derive
-//! them.
-//!
-//! Generic instantiation arguments are resolved structurally but **not**
-//! checked/instantiated (that is item H): `Type::Named` carries whatever
-//! `TypeArg`s the use site wrote, arity-checked against the declared
-//! struct/enum's own generic parameter count (the one item-B-scoped
-//! generic validation the plan asks for), nothing more. A bare
-//! generic-const identifier (`Bytes[N]`, `Ring[T, N]`) parses as a
-//! type-shaped argument — the grammar cannot tell a value name from a
-//! type name — so it is specifically unwrapped back into the const
-//! expression it actually names rather than misread as a type.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::sema::{SemaError, unimplemented_at};
@@ -36,20 +8,8 @@ use crate::syntax::ast::{
 };
 use crate::syntax::printer;
 
-// `DeclStruct::layout_kind` and early capability validation need this
-// before the full layout_types re-export block below.
 pub use super::layout_types::LayoutKind;
 
-// --- the Type enum -----------------------------------------------------
-
-/// One resolved type (plans/M2.md item B, decision 4). Covers every form
-/// 02-language.md §6 lists for revision 0.1's prelude surface (decision
-/// 5): scalars, `[T; N]`, tuples, `Option`/`Result`, `own[P] T` (`P`
-/// resolved to a declared pool name), `Static[T]`, `Str`, `Bytes[N]`
-/// (and bare `Bytes` — bound-elision, parameter position only, §6.2),
-/// `fn(mode T, ...) -> R`, a bare generic type parameter, and a user
-/// struct/enum reference with its (structurally resolved, not
-/// instantiated) generic arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
     Bool,
@@ -69,56 +29,26 @@ pub enum Type {
     Unit,
     Never,
     Str,
-    /// `[T; N]` — `N` stays an unevaluated expression (item H evaluates
-    /// the literal subset).
     Array(Box<Type>, Box<Expr>),
-    /// `(A, B, ...)` / one-element `(T,)`.
     Tuple(Vec<Type>),
     Option(Box<Type>),
     Result(Box<Type>, Box<Type>),
-    /// `own[P] T` — `P` is the resolved pool name (02-language.md §4).
     Own(String, Box<Type>),
-    /// `Static[T]` — always data (02-language.md §6.2: "a copyable
-    /// read-only handle"), regardless of `T`.
     Static(Box<Type>),
-    /// `Bytes[N]`, or bare `Bytes` (`None`) — legal only in parameter
-    /// position (02-language.md §6.2 bound-elision).
     Bytes(Option<Box<Expr>>),
-    /// `String[..N]` — owned UTF-8 with compile-time capacity `N`
-    /// (02-language.md §6.2). Occupied length is a runtime fact ≤ `N`;
-    /// layout is one length word plus `N` byte slots (plans/M9.md item
-    /// C1). Bare `String` (bound-elided) is refused by name until a
-    /// later item grows it.
     String(Box<Expr>),
-    /// `fn(mode T, ...) -> R` (02-language.md §8.3).
     Fn(Vec<(AccessMode, Type)>, Box<Type>),
-    /// A bare reference to a type generic parameter currently in scope.
     Generic(String),
-    /// A user struct/enum by name, with its (possibly empty) generic
-    /// argument list resolved structurally.
     Named(String, Vec<TypeArg>),
 }
 
-/// One generic argument at a resolved use site, mirroring
-/// `ast::GenericArg`'s three shapes (a type, a bounded-occupancy marker,
-/// or a plain comptime expression) with the `Type` case recursively
-/// resolved; `Const`/`Bound` keep their expression unevaluated (item H).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeArg {
     Type(Type),
     Const(Expr),
     Bound(Expr),
-    /// A bound **pool name** (02-language.md §4's `pool Name`), which is
-    /// neither a type nor a const expression. Exactly two type
-    /// constructors take one, both hardware (plans/M7.md item D):
-    /// `DmaPool[P, N]` (03-hardware.md §1) and `DmaShared[P, L]`
-    /// (03-hardware.md §3), each in argument position 0 — the same
-    /// identifier `own[P] T` names, which the ast has its own syntax for
-    /// and these do not.
     Pool(String),
 }
-
-// --- the declared/resolved item shapes the check dump renders ----------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Classification {
@@ -145,11 +75,6 @@ pub struct DeclParam {
     pub ty: Type,
 }
 
-/// A method/init's receiver. `mode: None` is plain `self`; `Some(Read)`
-/// is an explicitly spelled `read self`. `mut`/`take` are always
-/// `Some(...)`. Private plain receivers get their effective mode from
-/// `TypedProgram::effects` (or a filled-in `Some` after access inference);
-/// `pub` methods must spell an effect (02-language.md §5.1).
 #[derive(Debug, Clone)]
 pub struct DeclReceiver {
     pub mode: Option<AccessMode>,
@@ -161,9 +86,6 @@ pub struct DeclReceiver {
 pub struct DeclFn {
     pub name: String,
     pub is_async: bool,
-    /// plans/M7.md item G: `@task(...)` on a `@driver` method — 03 §6's
-    /// bottom half. Not a top-level marker (`@test`/`@image`); only
-    /// meaningful on a driver member.
     pub is_task: bool,
     pub generics: Vec<DeclGenericParam>,
     pub receiver: Option<DeclReceiver>,
@@ -175,9 +97,6 @@ pub struct DeclFn {
 pub struct DeclField {
     pub name: String,
     pub ty: Type,
-    /// Source `pub` on the field (02-language.md §2 / plans/M13.md item G3).
-    /// Carried through declare + subst; bodies.rs refuses cross-module
-    /// construct/read/write/pattern-bind of `!is_pub` fields as `error[sema]`.
     pub is_pub: bool,
 }
 
@@ -196,50 +115,13 @@ pub struct DeclStruct {
     pub deriving: Vec<String>,
     pub classification: Classification,
     pub members: Vec<DeclMember>,
-    /// `resource struct`, or `@actor`/`@driver` (02-language.md §7.1) —
-    /// resource by fiat, independent of field composition. Classification
-    /// bookkeeping only; not rendered directly (`classification` is).
-    /// `pub(crate)` (item H, generics.rs): reclassifying a generic
-    /// struct's *instantiation* needs this fiat bit alongside its
-    /// substituted `component_types` — the same two inputs
-    /// `classify_named` below uses, just recomputed once per concrete
-    /// instantiation instead of once per declaration.
     pub(crate) is_resource_fiat: bool,
-    /// Plans/M6.md item A's own addition: `@actor`/`@driver` specifically
-    /// (not `resource struct` in general — `is_resource_fiat` conflates
-    /// the two) — the one fact `Actor[T]`'s own validation
-    /// (`validate_actor_handles`, below) and `sema::bodies`'s async-surface
-    /// checks need that `is_resource_fiat` alone cannot answer (a plain
-    /// `resource struct` is not an actor).
     pub(crate) is_actor: bool,
-    /// `@driver` specifically, where `is_actor` above conflates
-    /// `@actor` with it (plans/M7.md item A). 03-hardware.md §1 turns on
-    /// exactly this distinction and nothing else does: a `@driver` **may**
-    /// hold capabilities (§1's own worked example holds
-    /// `Mmio[VirtioIrqMmio]` in a field and takes `DeviceCap`/`DmaPool`
-    /// through its `init`), and an `@actor` may not, "in fields,
-    /// parameters, messages, or captures".
     pub(crate) is_driver: bool,
-    /// `@layout(<kind>, ...)`'s kind, for a struct carrying that
-    /// attribute (plans/M7.md items A/B). Read by
-    /// `validate_capability_types` for 03-hardware.md §1/§2's "`Mmio[L]`
-    /// — a typed register layout": `L` must name an `@layout(mmio)`
-    /// struct. `check_layouts` owns the attribute's *validation* (and has
-    /// already run by the time any `DeclStruct` exists); this is only the
-    /// already-validated fact, carried forward so the resolved-type passes
-    /// can ask it.
     pub(crate) layout_kind: Option<LayoutKind>,
-    /// Every field's resolved type + the field's own span, for the
-    /// classification/infinite-size pass below — methods/init/pool
-    /// members carry no data and do not contribute. `pub(crate)`: see
-    /// `is_resource_fiat`.
     pub(crate) component_types: Vec<(Type, Span)>,
     pub(crate) span: Span,
-    /// `resource(manual) struct` — withholds derived reclaim (02 §3.1 /
-    /// plans/M13.md item O). Implies `is_resource_fiat`.
     pub(crate) is_manual_resource: bool,
-    /// Computed type classes (plans/M13.md item O). Filled by
-    /// `classes::assign_classes` after data-vs-resource classification.
     pub(crate) classes: crate::sema::classes::TypeClasses,
     pub(crate) classes_assigned: bool,
 }
@@ -264,14 +146,9 @@ pub struct DeclEnum {
     pub deriving: Vec<String>,
     pub classification: Classification,
     pub variants: Vec<DeclVariant>,
-    /// Methods and associated fns (plans/M9.md item B2) — `DeclMember::Fn`
-    /// only. Parallel to `DeclStruct::members` for the fn subset so
-    /// `bodies`/`access` can zip against the AST the same way.
     pub members: Vec<DeclMember>,
-    /// `pub(crate)` (item H): see `DeclStruct::component_types`.
     pub(crate) component_types: Vec<(Type, Span)>,
     pub(crate) span: Span,
-    /// Computed type classes (plans/M13.md item O).
     pub(crate) classes: crate::sema::classes::TypeClasses,
     pub(crate) classes_assigned: bool,
 }
@@ -282,12 +159,10 @@ pub struct DeclConst {
     pub ty: Type,
 }
 
-/// A module-level `static` (03-hardware.md §3.1, plans/M10.md item A2c).
 #[derive(Debug, Clone)]
 pub struct DeclStatic {
     pub name: String,
     pub ty: Type,
-    /// The `@placed(ADDR)` address — required (decision 586).
     pub addr: u64,
 }
 
@@ -301,32 +176,13 @@ pub enum DeclItem {
     Pool(String),
 }
 
-// --- the declare pass ----------------------------------------------------
-
-/// A type generic parameter resolves a bare name to `Type::Generic`; a
-/// const generic parameter is never itself a type — used only to reject
-/// (in bare type position) or reinterpret (in generic-argument position,
-/// see `resolve_type_arg`/`resolve_bytes_arg`) the identifier the grammar
-/// hands back for it.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GenericKind {
     Type,
     Const,
 }
 
-/// Every struct/enum's own generic-parameter *count*, for arity-checking
-/// a `Name[Args]` use elsewhere in a signature (plans/M2.md item B: "the
-/// one generic validation this item does"). Built once, up front, over
-/// raw AST so forward references (a field naming a struct declared later
-/// in the file) resolve exactly like backward ones — `collect` (item A)
-/// already guarantees every module-scope name is unique.
 fn build_shapes(module: &Module, imported: &ImportedTypes) -> BTreeMap<String, usize> {
-    // plans/M9.md item A1, decision 8: the imported names go in *first*,
-    // so a local declaration always wins a spelling contest. It can never
-    // actually come to that — `imports::resolve_imports` already rejects
-    // an import that "collides with a local declaration" — but the table
-    // is the type namespace, and the type namespace does not get to have
-    // two answers for one name.
     let mut shapes: BTreeMap<String, usize> = imported.clone();
     for item in &module.items {
         match item {
@@ -353,43 +209,12 @@ fn module_pool_names(module: &Module) -> BTreeSet<String> {
         .collect()
 }
 
-/// Resolves every module-level signature into a `Vec<DeclItem>` (source
-/// order, `comptime if` items skipped — not expanded until item C,
-/// exactly like item A's `collect`/`resolve`), then classifies every
-/// struct/enum data-vs-resource. Fail-fast: the first error found in
-/// source order (arity/unknown-type/bound-elision during resolution;
-/// unknown-deriving/bad-From-shape checked right after each struct's/
-/// enum's own header, source order within the item) wins, before
-/// classification (which needs every item's fields already resolved,
-/// forward references included) even runs.
 pub fn declare(module: &Module) -> Result<Vec<DeclItem>, SemaError> {
     declare_with_imports(module, &ImportedTypes::new())
 }
 
-/// Local (possibly aliased) type name -> that declaration's own
-/// generic-parameter count, for every `struct`/`enum` a module imports
-/// (plans/M9.md item A1, decision 8). Built by
-/// `imports::imported_type_shapes` off raw AST, so it is available before
-/// any module's `declare` has run and import cycles stay free.
 pub type ImportedTypes = BTreeMap<String, usize>;
 
-/// `declare` for a module that is part of a build closure: identical in
-/// every respect except that `imported`'s names join the module's own
-/// type-name table, which is the whole of "an imported `struct`/`enum`
-/// name is legal wherever a type is legal" (plans/M9.md item A1) — fn
-/// parameter, fn return, struct field, `const` type, `let` annotation
-/// (through `bodies::ModuleCtx::resolve_type`, whose own table is built
-/// from this same input) and generic argument all resolve through the one
-/// `resolve_named` below, so there is exactly one place to teach.
-///
-/// What this deliberately does *not* do is give the imported name a
-/// classification: `classify_all` below is module-local and answers
-/// `Data` for any name it cannot see, so a local struct holding a field
-/// of an imported `resource`/`@actor` type would be misclassified here.
-/// `classify_closure` (decision 10) recomputes every module's
-/// classification over the whole closure afterwards, and
-/// `sema::check_program_typed` runs it before any consumer of a
-/// `DeclStruct`/`DeclEnum` exists.
 pub fn declare_with_imports(
     module: &Module,
     imported: &ImportedTypes,
@@ -417,34 +242,15 @@ pub fn declare_with_imports(
             }
             Item::Enum(e) => items.push(DeclItem::Enum(declare_enum(e, &shapes, &module_pools)?)),
             Item::Pool(p) => items.push(DeclItem::Pool(p.name.clone())),
-            Item::ComptimeIf(_) => {} // comptime evaluation is item C's job
+            Item::ComptimeIf(_) => {}
         }
     }
     classify_all(&mut items)?;
-    // plans/M13.md item O: per-type classes after data-vs-resource.
     crate::sema::classes::assign_classes(&mut items);
     validate_actor_handles(module, &items)?;
-    // plans/M7.md item A, decision 3: 03-hardware.md §1's capability rules
-    // are the same *shape* as `validate_actor_handles` above, over a
-    // different type set — the same post-declare position, the same
-    // ast-alongside-`DeclItem` zip, the same "at any nesting" recursion.
-    // A second pass rather than a second mechanism.
     validate_capability_types(module, &items)?;
     Ok(items)
 }
-
-// --- `Actor[T]` validation (plans/M6.md item A) ---------------------------
-//
-// `Actor[T]` resolves structurally for any `T` (`resolve_named`, above —
-// forward references must work, and no struct's own `is_actor` bit is even
-// computed until every item in the module has been declared); this pass
-// runs once, after every `DeclItem` exists, and rejects any `Actor[T]`
-// whose `T` does not name an `@actor`/`@driver` struct (02-language.md
-// §9.1: "Other actors hold generated `Actor[T]` handles"). Struct field
-// types are already flattened onto `component_types`; a fn/method/init's
-// own parameter/return types are not (they are not classification
-// components), so this walks the raw `ast::Module` alongside the resolved
-// `DeclItem`s (mirroring `bodies::build_module_ctx`'s own zip) for those.
 
 fn validate_actor_type(
     ty: &Type,
@@ -473,17 +279,6 @@ fn validate_actor_type(
                     span,
                 ));
             };
-            // A handle to a *generic instantiation* is outside the M6
-            // surface (`flowwir.rs`'s own module doc: "no async generic
-            // exists in the M6 surface"), and this is the one place that
-            // can say so: every later resolution drops these type
-            // arguments on the floor and looks the method up under the
-            // generic *base* struct's own name. Accepting the type here
-            // is what let `Actor[Box[u64]]` typecheck clean and then hit
-            // `flowwir_lower`'s own `internal error: unknown struct
-            // `Box`` producer-bug guard — an unimplemented path failing
-            // open, and reported as a compiler bug rather than as the
-            // scope limit it actually is. Rejected by name instead.
             if !actor_targs.is_empty() {
                 return Err(SemaError::at(
                     "actor",
@@ -551,69 +346,6 @@ fn validate_fn_actor_types(
     validate_actor_type(ret, span, structs)
 }
 
-// --- declaration-position message-shape validation (post-review fix) -----
-//
-// 02-language.md §9.1: "Handles cannot appear in messages, replies, or
-// runtime collections." A public method of an `@actor`/`@driver` struct's
-// own parameter list *is* the message shape, and its return type *is* the
-// reply shape (02 §9.4: calling a public method through `Actor[T]` yields
-// an awaitable composing that exact declared type) — a declaration
-// carrying `Actor[T]` there can never be legally called or replied to
-// (`bodies::check_await_actor_call`/`check_send_call` both already
-// require `mf.is_pub`, so the only way to *reach* such a method is
-// exactly the message path this clause forbids). Checking this only at
-// the call site (`bodies::check_message_args`'s own `Actor[T]`-arg
-// rejection) left the *declaration* itself silently acceptable — dead
-// surface that only ever errors lazily, the first time anyone dares call
-// it. Fail-closed doctrine says reject at declaration; this is that
-// fix, run in the same post-declare pass as `validate_actor_handles`
-// (`declare`'s own call site).
-//
-// `init` is exempt: an `init`'s own parameters are the image's wiring
-// arguments (`img.actor(A, disk=disk.handle(), ...)`), not a runtime
-// message — substituted at build time by `eval::image_checks`'s own
-// decl-reference mechanism, never admitted through a mailbox. A
-// *non*-`pub` method is exempt too: 02 §9.2's own "calls on self are
-// ordinary calls" — only a `pub` method is ever reachable through an
-// `Actor[T]` handle at all (`mf.is_pub`, the identical gate the call-site
-// checks already enforce), so a private method's parameter list is never
-// a message shape; it may freely take/return `Actor[T]` (a same-actor
-// helper handed a peer handle already held elsewhere — a field, or a
-// public method's own local — `golden/check-actor-private-handle-helper`).
-//
-// "At any nesting" (array/struct-of-handle counts): `type_contains_actor_handle`
-// recurses through every composite shape `validate_actor_type` does, plus
-// one more `validate_actor_type` never needed — a *named* type's own
-// declared components (`component_types`), so a plain data struct with an
-// `Actor[T]` field, passed by value as a message argument, is caught too
-// (a `BTreeSet` cycle guard, `seen`, makes this safe against a
-// self-referential struct shape — `classify_all`'s own infinite-size
-// check already rejects a genuinely infinite one before this ever runs,
-// but a merely self-*referential-through-`own`* one is legal data and
-// must not infinite-loop this walk).
-
-/// Every declared **struct's *and enum's*** own component types, by name —
-/// the one input each composite-containment walk in this file needs
-/// (`type_contains_actor_handle`, `type_contains_capability`,
-/// `collect_mmio_layouts`).
-///
-/// Deliberately a *second* map alongside the `BTreeMap<String,
-/// &DeclStruct>` those walks used to take. That map answers genuinely
-/// struct-shaped questions — `is_actor` for `validate_actor_type`,
-/// `layout_kind` for `validate_capability_args` — which an enum has no
-/// answer to. But it was silently answering a third, differently shaped
-/// question too: *"what does this named type hold?"*, for which an enum's
-/// variant payloads are exactly as load-bearing as a struct's fields, and
-/// for which `structs.get(name)` returned `None` on every enum.
-///
-/// plans/M7.md item I's sweep found all three walks failing open through
-/// that one word at once: a `DeviceCap[D]`, an `Mmio[L]` or an `Actor[T]`
-/// held inside an enum **variant payload** was invisible, so
-/// 03-hardware.md §1's `@actor` containment *and* its unforgeability
-/// floor, §2's no-alias rule, and 02-language.md §9.1's handle rules each
-/// silently admitted the enum-wrapped spelling of the shape they reject
-/// directly (`golden/err-cap-actor-enum-field`, `err-cap-enum-return`,
-/// `err-mmio-alias-enum`, `err-actor-handle-in-enum-message`).
 pub(crate) fn components_by_name(items: &[DeclItem]) -> BTreeMap<String, &[(Type, Span)]> {
     let mut out: BTreeMap<String, &[(Type, Span)]> = BTreeMap::new();
     for item in items {
@@ -656,7 +388,7 @@ fn type_contains_actor_handle(
         }
         Type::Named(name, targs) => {
             if !seen.insert(name.clone()) {
-                return false; // already visited on this path: cycle guard.
+                return false;
             }
             let via_fields = components.get(name.as_str()).is_some_and(|c| {
                 c.iter()
@@ -694,12 +426,6 @@ fn validate_message_shape(
                 span,
             ));
         }
-        // 02 §9.3: a resource in a message parameter must be `take`, or
-        // the decl itself is a double-ownership laundering channel
-        // (`p: own[P] T` defaulted to read). Capabilities / sealed authority
-        // are never legal in a message shape even under `take`
-        // (03-hardware.md §1); that rejection lives in the capability pass —
-        // emitting §9.3 here would mask `golden/err-cap-driver-message`.
         if message_param_ty_is_resource(&p.ty, structs)
             && p.mode != AccessMode::Take
             && contains_capability(&p.ty, components).is_none()
@@ -727,47 +453,6 @@ fn validate_message_shape(
             span,
         ));
     }
-    // plans/M7.md item I's sweep: `Result[T, never]` is the one declared
-    // reply 02-language.md §9.4's composition table cannot round-trip,
-    // and it produced a **wrong answer** at M7.
-    //
-    // The table's two rows collide there. `declared Result[T, E] ->
-    // Result[T, CallError[E]]` with `E = never` is character-for-character
-    // `declared R -> Result[R, CallError[never]]` with `R = T`, so the
-    // composed type carries no evidence of which row made it —
-    // `sema::bodies::compose_call_error` is not injective, and
-    // `decompose_call_error` (whose own doc claimed the pair was total
-    // "for every `t`, both arms") answers `T`.
-    //
-    // Item Z1's transport then reads the two ends of one `await` through
-    // two different predicates, which is exactly where the ambiguity
-    // becomes bytes: the *caller* sizes its staging slot from the
-    // decomposed declared reply (`codegen::flow_reply_stage_size`), while
-    // the *callee*'s dispatch arm decides whether to hand over a staging
-    // pointer at all from `codegen::is_aggregate(&f.ret)` on the real
-    // declared return (`layout.rs`'s own `reply_is_aggregate`). Verified
-    // by running, both ways:
-    //
-    //   - aggregate `T` — the caller reserves `sizeof(T)` and the callee
-    //     writes `sizeof(Result[T, never])`, one tag word more. Every
-    //     payload field arrives shifted by a word (a declared
-    //     `Ok(Triple(1001, 2002, 3003))` read back as `a=0` (the tag),
-    //     `b=1001`, `c=2002`) and the extra word lands past the slot, on
-    //     the frame's own `lr` save — masked today only because the
-    //     resume path re-saves `lr` on entry. A silent wrong answer.
-    //   - scalar `T` — the caller decides the reply is scalar and never
-    //     publishes a staging address at all, while the callee's dispatch
-    //     arm still loads `[waker + OFF_TURN_REPLY_SLOT]` (never written,
-    //     so zero) into `x8` and writes through it. Observed as a real
-    //     guest fault at `ipa=0x0`.
-    //
-    // The docs do not disambiguate the two rows, so this compiler does not
-    // get to pick one: 03/02 are normative and a guess here would be a
-    // silent language decision. Refused by name at the declaration
-    // instead, which is also where every other message/reply shape rule in
-    // this fn is enforced (`golden/err-actor-reply-never-error`). A
-    // `never` nested any deeper (`Result[T, Option[never]]`) is untouched
-    // and correct — only the error type *itself* collides.
     if let Type::Result(_, e) = ret {
         if matches!(**e, Type::Never) {
             return Err(SemaError::at(
@@ -789,35 +474,6 @@ fn validate_message_shape(
             ));
         }
     }
-    // No further reply-shape rule beyond the `Actor[T]` one above
-    // survives here, and the history is worth keeping because it was a
-    // *wrong answer*, not a missing feature.
-    //
-    // plans/M6.md item H1 rejected EVERY aggregate reply at this point:
-    // the turn record carried one scalar word, an aggregate return travels
-    // by pointer under this machine's calling convention, and the caller's
-    // `Await` composition re-labelled that returned *pointer* as
-    // `Ok(<guest address>)` — so a declared `Err` was observed as a
-    // success carrying an address.
-    //
-    // plans/M7.md item Z1 built the transport that rule was waiting on:
-    // the awaiting turn's own record carries the address of a caller-owned,
-    // statically sized staging slot (`codegen::OFF_TURN_REPLY_SLOT`), the
-    // callee's dispatch hands it to the method in `x8`, and the declared
-    // reply is written straight into the awaiting frame. Item Z2 then
-    // added the one thing transport alone could not give a declared
-    // `Result[T, E]`: 02-language.md §9.4 maps its `Err(e)` to
-    // `Err(CallError.Op(e))` — a re-*tagging*, not a copy, so the resume
-    // stub recomposes it field-wise (`codegen::emit_recompose_staged_result`)
-    // instead of copying the staged bytes over. `golden/boot-actor-reply-result`
-    // is the flip witness: M6-H1's own `Store.load -> Result[u64, FsError]`
-    // program, both arms asserted by value through a real boot, plus a
-    // `Result[Triple, FsError]` method whose declared `T` is *wider* than
-    // its whole composed payload area — the shape a bulk copy would have
-    // corrupted.
-    //
-    // So the reply rules that remain are exactly the pre-existing ones:
-    // no `Actor[T]` at any nesting, in a parameter or a reply.
     Ok(())
 }
 
@@ -854,12 +510,6 @@ fn validate_actor_handles(module: &Module, items: &[DeclItem]) -> Result<(), Sem
                                 continue;
                             };
                             validate_fn_actor_types(f.span, &fd.params, &fd.ret, &structs)?;
-                            // Post-review fix: a *public* method of an
-                            // `@actor`/`@driver` struct is a message
-                            // shape — see `validate_message_shape`'s own
-                            // doc comment for the full reasoning (init
-                            // exempt, non-`pub` methods exempt, checked
-                            // here rather than only at the call site).
                             if d.is_actor && f.is_pub && f.receiver.is_some() {
                                 validate_message_shape(
                                     &d.name,
@@ -892,67 +542,6 @@ fn validate_actor_handles(module: &Module, items: &[DeclItem]) -> Result<(), Sem
     Ok(())
 }
 
-// --- capability containment + unforgeability (plans/M7.md item A) ---------
-//
-// 03-hardware.md §1, the three sentences this pass implements:
-//
-//   "Their constructors are not source-visible: no address, import, or
-//    cast creates one."
-//   "`@actor` structs cannot hold capabilities in fields, parameters,
-//    messages, or captures; a driver may export safe actor APIs but never
-//    raw capabilities."
-//
-// plans/M7.md decision 3 fixes where: "Capabilities are checked where
-// `Actor[T]` already is ... Extend that pass; do not build a second
-// mechanism." So this runs in `declare`, immediately after
-// `validate_actor_handles`, walks the same ast-alongside-`DeclItem` zip,
-// and recurses through composites with the same cycle-guarded walk.
-//
-// **The asymmetry is the rule.** A `@driver` *may* hold capabilities —
-// §1's own worked example declares `irq_regs: Mmio[VirtioIrqMmio]` as a
-// field and takes `DeviceCap`/`DmaPool` through its `init`. An `@actor`
-// may not, anywhere. And neither may export one: a `pub` method of either
-// is a message shape (02-language.md §9.4 — its parameters are the
-// message and its return is the reply), which is exactly what "a driver
-// may export safe actor APIs but never raw capabilities" forbids.
-//
-// **`init` is not exempt here, unlike the `Actor[T]` rule.** An `init`'s
-// parameters are image wiring rather than a message
-// (`validate_message_shape`'s own note), which is precisely why a
-// *driver*'s `init` is the one place a capability legitimately enters a
-// program at all. For an `@actor` that same reasoning inverts: an
-// `init` capability parameter is the image handing an actor a capability,
-// which is the thing §1 forbids — and, left unchecked, it is *reachable*,
-// because `eval::image_checks`' own substitution rule accepts an unwired
-// capability parameter for `img.actor(...)` exactly as it does for
-// `img.driver(...)`.
-//
-// **What is NOT checked here, named rather than implied.** "Captures" —
-// a closure inside an `@actor` body capturing a capability. With fields
-// and parameters both closed there is no expression of capability type an
-// actor body can name at all (an actor cannot read one from `self`, cannot
-// receive one, and cannot construct one), so no capture can exist to
-// check; the arm would be dead code and is deliberately absent rather
-// than written and untested. The moment an actor can name a capability,
-// this is where the arm goes.
-
-/// The type `ty` carries at any nesting whose *name* satisfies `leaf`,
-/// rendered — or `None`. The same walk `type_contains_actor_handle`
-/// performs (including its `seen` cycle guard and its recursion through a
-/// named type's own declared components, so a plain data struct — or an
-/// enum variant payload, `components_by_name` — wrapping the sought type
-/// is caught wherever the wrapper appears).
-///
-/// **The leaf set is a parameter, and the walk is not** (plans/M8.md item
-/// D, decision 23). Two rules ask this question over two different sets:
-/// containment/unforgeability asks about 03 §1 capabilities plus the other
-/// sealed authorities (`contains_capability`), and the messageable-driver
-/// message shape asks about those *plus* `InterruptCell[T]`
-/// (`driver_message_forbidden_carried`). Sharing the traversal is the
-/// whole point — a second copy would be the one that forgets
-/// `Option[...]`, or a plain wrapper struct's fields, which is exactly the
-/// class of miss item I's sweep already found once
-/// (`golden/err-dma-shared-lend-wrapped`).
 fn type_carries_named(
     ty: &Type,
     components: &BTreeMap<String, &[(Type, Span)]>,
@@ -961,11 +550,6 @@ fn type_carries_named(
 ) -> Option<String> {
     match ty {
         Type::Named(name, _) if leaf(name) => Some(render_type(ty)),
-        // An `Actor[T]` handle is not `T`'s authority (02-language.md §9.1 /
-        // 03-hardware.md §1). Recursing into `T` would refuse every
-        // `@actor` that holds `Actor[SomeDriver]` — the flagship shape —
-        // because the driver's own `Mmio`/`IrqCap` fields would surface
-        // here. Same cut as `eval::legal::capability_in_type`.
         Type::Named(name, _) if name == "Actor" => None,
         Type::Array(elem, _) => type_carries_named(elem, components, seen, leaf),
         Type::Tuple(elems) => elems
@@ -982,7 +566,7 @@ fn type_carries_named(
             .or_else(|| type_carries_named(ret, components, seen, leaf)),
         Type::Named(name, targs) => {
             if !seen.insert(name.clone()) {
-                return None; // already visited on this path: cycle guard.
+                return None;
             }
             let via_fields = components.get(name.as_str()).and_then(|c| {
                 c.iter()
@@ -1001,16 +585,11 @@ fn type_carries_named(
     }
 }
 
-/// The capability type `ty` contains, at any nesting, rendered — or
-/// `None`. The containment/unforgeability leaf set: 03 §1's capabilities,
-/// §9's protocol states, §4's sealed queue values, §5's receipt.
 fn type_contains_capability(
     ty: &Type,
     components: &BTreeMap<String, &[(Type, Span)]>,
     seen: &mut BTreeSet<String>,
 ) -> Option<String> {
-    // plans/M13.md item O: re-derive from `holds_authority` (dual-run
-    // against the sealed-authority name list inside `name_holds_authority`).
     type_carries_named(ty, components, seen, &|n| {
         crate::sema::classes::name_holds_authority(n)
     })
@@ -1023,59 +602,16 @@ fn contains_capability(
     type_contains_capability(ty, components, &mut BTreeSet::new())
 }
 
-/// plans/M8.md item D: the sealed authority `ty` carries at any nesting
-/// (03 §1 capability, §4 sealed queue value, §9 protocol state, §5
-/// receipt), rendered — or `None`. Exactly `contains_capability` above,
-/// exported so the image-level messageable-`@driver` check
-/// (`layout::check_driver_message_surface`) asks the *identical* question
-/// with the identical wrapper/cycle-guarded reach, rather than growing a
-/// second walk that could disagree about `Option[DeviceCap]` or a plain
-/// struct with a capability field. `items` is the build closure's own
-/// `declare` output, which is where the component table comes from.
 pub fn sealed_authority_carried(ty: &Type, items: &[DeclItem]) -> Option<String> {
     contains_capability(ty, &components_by_name(items))
 }
 
-/// plans/M8.md item D, decision 23: what may not cross a **messageable
-/// `@driver`'s mailbox** in either direction — every `sealed_authority_carried`
-/// name, plus `InterruptCell[T]`.
-///
-/// `InterruptCell` is deliberately *not* on the sealed-authority list
-/// itself. M7 decision 17 settled that it is a builtin like `Actor[T]`, not
-/// a capability: its constructor `InterruptCell(v)` is source-visible, an
-/// `@actor` may hold one, and every structural rule that list drives
-/// (unforgeability, `@layout` exclusion, protocol consumption, actor
-/// containment) would give the wrong answer for it. What is true of it is
-/// narrower and belongs exactly here: 03-hardware.md §6 calls it "the
-/// **sole** ISR/ordinary-code channel", interrupt-atomic with respect to
-/// every vector that may touch the cell — a channel between one driver's
-/// ISR and that same driver's ordinary code. A mailbox is a different
-/// channel between different principals, and a cell that crosses it is a
-/// second, unordered one, carrying the interrupt-status word's value to a
-/// sender that owns none of §6's ordering.
 pub fn driver_message_forbidden_carried(ty: &Type, items: &[DeclItem]) -> Option<String> {
-    // plans/M13.md item O: re-derive from classes (`holds_authority` or
-    // `InterruptCell`'s `!crosses_actor`). Dual-run inside
-    // `name_forbidden_in_driver_message`.
     type_carries_named(ty, &components_by_name(items), &mut BTreeSet::new(), &|n| {
         crate::sema::classes::name_forbidden_in_driver_message(n)
     })
 }
 
-/// 03-hardware.md §1/§2: "`Mmio[L]` — a typed register layout derived from
-/// that device", whose §2 example is `Mmio[VirtioIrqMmio]` over an
-/// `@layout(mmio)` struct. `L` must therefore name one. Structured exactly
-/// like `validate_actor_type` — a whole-module question the per-annotation
-/// resolver cannot ask (forward references must work), asked once here.
-///
-/// The other three capabilities' arguments are deliberately unvalidated:
-/// `DeviceCap[D]`'s `D` is a device type, and the device set that names
-/// one is 06-machine.md §6's closed stdlib list, which does not exist
-/// yet — `img.device[D](...)` accepts any declared struct today, and this
-/// pass would have to invent a rule to say otherwise; `IrqCap[V]`'s vector
-/// is bound from the image graph by plans/M7.md item G; `DmaPool[P, N]`'s
-/// pool identity is item D. Each is left structural rather than given a
-/// made-up rule.
 fn validate_capability_args(
     ty: &Type,
     span: Span,
@@ -1115,14 +651,6 @@ fn validate_capability_args(
                 )),
             }
         }
-        // plans/M7.md item D, 03-hardware.md §3: "**Shared control memory**
-        // (descriptor tables, rings) is `DmaShared[P, L]`". `L` is the
-        // control structure's own layout, and a device reads it, so it is
-        // `@layout(dma)` for the same reason a transfer payload's `T` is —
-        // exact size, offsets, padding and endianness, reported before
-        // anything touches it. The `mmio` kind is a register map, not
-        // memory, and `wire` is deliberately target-independent; neither is
-        // what a descriptor table is.
         Type::Named(name, targs) if name == "DmaShared" => {
             let inner = match targs.get(1) {
                 Some(TypeArg::Type(t)) => t,
@@ -1192,48 +720,13 @@ fn validate_capability_args(
     }
 }
 
-/// Who a fn belongs to, for the capability rules that turn on it. The
-/// three cases 03-hardware.md §1 distinguishes and nothing more.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CapOwner {
-    /// A `@driver` struct's member: the one holder §1 permits.
     Driver,
-    /// An `@actor` struct's member: "cannot hold capabilities in fields,
-    /// parameters, messages, or captures".
     Actor,
-    /// A free fn, or a plain (non-actor, non-driver) struct's member.
-    /// May *hold* a capability in a parameter — that is how a driver
-    /// delegates to a helper — subject to provenance
-    /// (`eval::legal::check_provenance`), which is the rule that decides
-    /// whether such a fn is reachable through a driver's authority at all.
     Plain,
 }
 
-/// Every capability rule that applies to one fn/method/init signature.
-///
-/// `is_pub_method` is true only for a `pub` method with a receiver — the
-/// exact gate `validate_message_shape` uses for the `Actor[T]` rule, and
-/// for the same reason: only such a method is reachable through an
-/// `Actor[T]` handle, so only such a method's signature is a message
-/// shape (02-language.md §9.4).
-/// The `DmaShared[P, L]` a type names at any nesting, rendered — or
-/// `None`. A sibling of `type_contains_capability` asking one narrower
-/// question, because 03-hardware.md §3's rule is `DmaShared`'s alone and
-/// not every capability's (a `DeviceCap[D]` parameter lent `read` is
-/// ordinary driver code).
-/// plans/M7.md item I's sweep: this walk used to stop at a named type,
-/// looking only into its *type arguments* — so a `DmaShared[P, L]` held
-/// as a **field of a plain wrapper struct** was invisible, and
-/// `read bundle: RingBundle` lent exactly the ordinary borrow of shared
-/// control memory that `read ring: DmaShared[..]` is rejected for
-/// (`golden/err-dma-shared-lend-wrapped`). It recurses through the shared
-/// `components_by_name` table now, the same reach
-/// `type_contains_capability` has always had for the containment rules —
-/// which is where the discrepancy showed: `DmaShared` *is* a capability
-/// type, so an `@actor` field or a `pub` method parameter carrying one
-/// through a wrapper was already caught; only a `@driver`'s own private
-/// method, which containment deliberately permits, reached this rule and
-/// found it shallower.
 fn dma_shared_in_type(
     ty: &Type,
     components: &BTreeMap<String, &[(Type, Span)]>,
@@ -1256,7 +749,7 @@ fn dma_shared_in_type(
             .or_else(|| dma_shared_in_type(ret, components, seen)),
         Type::Named(name, targs) => {
             if !seen.insert(name.clone()) {
-                return None; // already visited on this path: cycle guard.
+                return None;
             }
             let via_fields = components.get(name.as_str()).and_then(|c| {
                 c.iter()
@@ -1292,24 +785,8 @@ fn validate_fn_capability_types(
     };
     for p in params {
         validate_capability_args(&p.ty, span, structs)?;
-        // 03-hardware.md §3, `DmaShared[P, L]`'s own second sentence:
-        // "It cannot be read as bytes or **lent as a plain value**."
-        // Shared control memory is permanently shared, and the only
-        // sanctioned way to touch it is a field-wise typed operation
-        // carrying the target's volatile/cache/ordering semantics — a
-        // `read`/`mut` loan hands out an ordinary borrow that carries
-        // none of that, which is exactly the thing the sentence forbids.
-        // `take` is untouched: moving the handle (into a driver's own
-        // field, or through a queue constructor) is how it gets anywhere
-        // at all. This never blocks the field-wise operations themselves
-        // — those are methods on the builtin type, which no source can
-        // declare.
         if p.mode != AccessMode::Take {
             if let Some(found) = dma_shared_in_type(&p.ty, components, &mut BTreeSet::new()) {
-                // The parameter's own declared type, plus what it carries
-                // when the two differ — a wrapper struct's name alone
-                // would not say why it is refused, and the capability's
-                // name alone would not match anything the reader wrote.
                 let declared = render_type(&p.ty);
                 let carries = if declared == found {
                     String::new()
@@ -1362,27 +839,6 @@ fn validate_fn_capability_types(
     let Some(found) = contains_capability(ret, components) else {
         return Ok(());
     };
-    // plans/M7.md item E3: `Receipt[P]` is minted only by `publish` /
-    // `reject` / the handoff admission commit — returning one is how a
-    // handoff method transfers the caller endpoint, and 03-hardware.md §5
-    // blesses that shape *by name* on a public driver method ("any public
-    // synchronous `@driver` method with exactly one `take p: P` parameter
-    // and result `Receipt[P]`"). So this arm must run before the
-    // pub-method rejection below, or every handoff signature is illegally
-    // rejected as "raw capabilities".
-    //
-    // plans/M8.md item D narrowed this list. `QueuePermit` / `QueueOp`
-    // (M7 item E2) are minted by `reserve` / `prepare_block` and
-    // must reach `prepare_block` / `publish` — which is a *private*
-    // driver-internal handoff, and `is_pub_method` is exactly the gate
-    // that distinguishes the two. Whitelisting them ahead of the
-    // pub-method arm let a `pub` driver method declare a sealed queue
-    // value as its reply; harmless while no driver could be messaged, and
-    // a laundering channel the moment one can be (item D). 03 §5 names no
-    // public convention for either name, so neither gets one here: they
-    // fall through to the ordinary rules below, which permit them on a
-    // private method (`CapOwner::Plain`/`Driver`, `is_pub_method` false)
-    // and on a free helper, and refuse them as an exported reply.
     if found.starts_with("Receipt[") || found == "Receipt" {
         return Ok(());
     }
@@ -1402,15 +858,6 @@ fn validate_fn_capability_types(
             span,
         ));
     }
-    // The general unforgeability arm. Nothing in the source language can
-    // *produce* a capability (03-hardware.md §1: "their constructors are
-    // not source-visible"), so a signature claiming to return one is
-    // either unimplementable or laundering a capability it received —
-    // and either way it is the source-visible constructor the sentence
-    // forbids. This is the floor, and it is deliberately wider than any
-    // rule §1 spells out: the day a real minting operation exists in the
-    // language (item C partitions an `Mmio[L]` out of a claim; item D
-    // sub-allocates a pool), it is this arm that has to learn about it.
     Err(SemaError::at(
         "type",
         format!(
@@ -1437,10 +884,6 @@ fn validate_capability_types(module: &Module, items: &[DeclItem]) -> Result<(), 
         .collect();
     for (ai, di) in ast_items.iter().zip(items.iter()) {
         match (ai, di) {
-            // A module `const`'s declared type. A `const` is a
-            // comptime-evaluated value (02-language.md §12), and no
-            // comptime evaluation can produce a capability — a `const`
-            // typed as one is a constructor claim with nothing behind it.
             (Item::Const(c), DeclItem::Const(d)) => {
                 validate_capability_args(&d.ty, c.span, &structs)?;
                 if let Some(found) = contains_capability(&d.ty, &components) {
@@ -1523,11 +966,6 @@ fn validate_capability_types(module: &Module, items: &[DeclItem]) -> Result<(), 
                             else {
                                 continue;
                             };
-                            // Never a `pub` method: an `init` has no
-                            // message shape at all (it is image wiring),
-                            // which is exactly what makes a *driver*'s
-                            // `init` the one legitimate entry point for a
-                            // capability into a program.
                             validate_fn_capability_types(
                                 Some(&d.name),
                                 "init",
@@ -1545,13 +983,6 @@ fn validate_capability_types(module: &Module, items: &[DeclItem]) -> Result<(), 
                 }
             }
             (Item::Enum(_), DeclItem::Enum(e)) => {
-                // An enum variant's payload is ordinary data composition:
-                // a capability inside one would be a capability held by
-                // whatever holds the enum, and constructing that variant
-                // would be constructing a capability container. The
-                // *field*-level rules above already catch it wherever the
-                // enum is held by an actor; this catches the declaration
-                // itself, which is where it is legible.
                 for (ty, span) in &e.component_types {
                     validate_capability_args(ty, *span, &structs)?;
                 }
@@ -1562,32 +993,9 @@ fn validate_capability_types(module: &Module, items: &[DeclItem]) -> Result<(), 
     Ok(())
 }
 
-/// Everything `eval::legal::check_provenance` needs from this pass, and
-/// nothing it could derive on its own (plans/M7.md item A, decision 3).
-///
-/// 03-hardware.md §1's provenance sentence — "a function that touches
-/// MMIO, DMA, or IRQ state must be reachable through the owning driver's
-/// authority" — is whole-graph reachability over the typed callee graph,
-/// which is `eval::legal`'s own shape. But three of its inputs are
-/// *declaration* facts the typed tree does not carry: which struct is a
-/// `@driver`, where each fn was declared (a typed node has no span at
-/// all — `typed.rs` decision 1 drops them), and which named types carry a
-/// capability at any nesting. All three are computed here, by the walk
-/// this file already maintains, and handed over as data.
 pub struct CapabilityAuthority {
-    /// Every `Struct.member` key belonging to a `@driver` — the roots of
-    /// "the owning driver's authority".
     pub roots: BTreeSet<String>,
-    /// Each classifiable key's own declaration span, for the diagnostic.
-    /// A key with no entry (a generic instantiation, which is synthesized
-    /// and has no source location of its own) gets a location-free
-    /// diagnostic rather than an invented `0:0`.
     pub spans: BTreeMap<String, Span>,
-    /// Every declared struct/enum name whose type carries a capability at
-    /// any nesting — the *flattened* answer, so the reachability walk can
-    /// ask "does this type touch hardware state" with a set lookup
-    /// instead of a second copy of `type_contains_capability`'s recursion
-    /// through struct fields. One walk, in the file that owns it.
     pub capability_bearing: BTreeSet<String>,
 }
 
@@ -1619,14 +1027,6 @@ pub fn capability_authority(module: &Module, items: &[DeclItem]) -> CapabilityAu
                 }
             }
             DeclItem::Enum(e) => {
-                // Item I's sweep: this arm was written but could never
-                // fire — `contains_capability` consulted a struct-only
-                // map, so `structs.get(<enum name>)` was always `None`
-                // and no enum ever entered `capability_bearing`. A fn
-                // taking a capability-bearing enum was therefore invisible
-                // to `eval::legal::check_provenance` — 03-hardware.md §1's
-                // provenance sentence failing open through the same hole
-                // `components_by_name`'s own doc comment describes.
                 if contains_capability(&Type::Named(e.name.clone(), Vec::new()), &components)
                     .is_some()
                 {
@@ -1636,9 +1036,6 @@ pub fn capability_authority(module: &Module, items: &[DeclItem]) -> CapabilityAu
             _ => {}
         }
     }
-    // Spans, from the raw ast alongside the same items — `DeclFn` carries
-    // no span of its own (only `DeclStruct`/`DeclEnum` do), so this is the
-    // one place a fn's declaration location is available at all.
     let mut spans = BTreeMap::new();
     for item in &module.items {
         match item {
@@ -1668,13 +1065,6 @@ pub fn capability_authority(module: &Module, items: &[DeclItem]) -> CapabilityAu
     }
 }
 
-// --- `@layout` / MMIO (plans/M7.md B/C): owned by `layout_types` ---------
-//
-// Types + check/complete/dump + MMIO claim helpers live in
-// `sema::layout_types`. Re-exported here so every existing
-// `sema::types::LayoutType` / `check_layouts` / `mmio_*` call site keeps
-// working without churn.
-
 pub use super::layout_types::{
     LayoutEndian, LayoutEntry, LayoutField, LayoutType, MmioDirection, MmioRegister, check_layouts,
     check_mmio_claims, complete_layouts, driver_mmio_mints, dump_layouts, mmio_consumed_end,
@@ -1682,8 +1072,6 @@ pub use super::layout_types::{
 };
 #[cfg(test)]
 pub(crate) use super::layout_types::{MAX_LAYOUT_NEST_DEPTH, MAX_LAYOUT_NEST_EXPANSIONS};
-
-// --- type resolution -----------------------------------------------------
 
 fn declare_const(
     c: &ConstItem,
@@ -1705,18 +1093,10 @@ fn declare_const(
                 ty,
             })
         }
-        // A const without a declared type needs its initializer's type
-        // (body typing, item C) to infer one — fail closed rather than
-        // guess (decision 7's spirit, applied to a form item B cannot
-        // resolve on its own).
         None => Err(unimplemented_at("a const's inferred type is", c.span)),
     }
 }
 
-/// `static NAME: Type` with required `@placed(ADDR)` (03-hardware.md §3.1,
-/// plans/M10.md item A2c / decision 586). Address is an integer literal,
-/// same shape as `@offset`. Runtime-layout and uniqueness checks run in
-/// [`validate_placed_statics`] once the layout table exists.
 fn declare_static(
     s: &crate::syntax::ast::StaticItem,
     shapes: &BTreeMap<String, usize>,
@@ -1738,7 +1118,6 @@ fn declare_static(
     })
 }
 
-/// Exactly one `@placed(ADDR)` on a `static`, ADDR an integer literal.
 fn parse_placed_attr_on_static(s: &crate::syntax::ast::StaticItem) -> Result<u64, SemaError> {
     let mut found: Option<&Attr> = None;
     for attr in &s.attrs {
@@ -1820,9 +1199,6 @@ fn declare_fn(
     }
     let ret = resolve_ret(&f.ret, shapes, module_pools, local_pools, &scope, f.is_pub)?;
     let is_task = f.attrs.iter().any(|a| a.name == "task");
-    // plans/M13.md item C cuts 6–7: `is_task` is still name-only, but
-    // `priority=` / `budget=` (and any other undeferred kwarg) must not be
-    // silently ignored. `trigger=` / `poll=` stay for the ISR gate.
     if let Some(attr) = f.attrs.iter().find(|a| a.name == "task") {
         check_task_attr_args(attr)?;
     }
@@ -1837,11 +1213,6 @@ fn declare_fn(
     })
 }
 
-/// `@task(...)` argument audit (plans/M13.md item C cuts 6–7).
-///
-/// Before this check, every kwarg was parsed and dropped — only the
-/// attribute name set `is_task`. Cut kwargs become `error[type]`;
-/// `trigger=` / `poll=` remain legal (deferred to the ISR gate).
 fn check_task_attr_args(attr: &Attr) -> Result<(), SemaError> {
     for a in &attr.args {
         match a.label.as_deref() {
@@ -1890,9 +1261,6 @@ fn check_task_attr_args(attr: &Attr) -> Result<(), SemaError> {
     Ok(())
 }
 
-/// `init` is never generic and never `pub` (02-language.md §7.1); its
-/// receiver always prints its mode explicitly (see `DeclReceiver`'s doc
-/// comment) rather than collapsing a `Read` mode to bare `self`.
 fn declare_init(
     i: &InitItem,
     shapes: &BTreeMap<String, usize>,
@@ -1939,14 +1307,8 @@ fn declare_init(
     })
 }
 
-/// Sentinel name for a private `-> Result[T]` whose error set is not yet
-/// inferred (plans/M13.md item K / decision 10). Not source-nameable —
-/// only `resolve_ret`'s one-argument `Result` arm constructs it.
 pub(crate) const INFERRED_ERROR_SET_NAME: &str = "__InferredErrorSet";
 
-/// Synthetic multi-member error-set carrier (same `Type::Named` shape
-/// `CallError` uses). Rendered as `A | B | …`; a single member collapses
-/// to that member, and an empty set is `never`.
 pub(crate) const ERROR_SET_NAME: &str = "__ErrorSet";
 
 pub(crate) fn inferred_error_set_marker() -> Type {
@@ -1961,9 +1323,6 @@ pub(crate) fn is_inferred_result(ty: &Type) -> bool {
     matches!(ty, Type::Result(_, e) if is_inferred_error_set(e))
 }
 
-/// Union the collected error sources into the type typed dumps print.
-/// Dedupes by rendered spelling (stable); empty → `never`; one → that
-/// type; several → `__ErrorSet[A, B, …]` rendered as `A | B | …`.
 pub(crate) fn finalize_error_set(mut members: Vec<Type>) -> Type {
     members.sort_by(|a, b| render_type(a).cmp(&render_type(b)));
     members.dedup_by(|a, b| render_type(a) == render_type(b));
@@ -1986,9 +1345,6 @@ fn resolve_ret(
     is_pub: bool,
 ) -> Result<Type, SemaError> {
     match ret {
-        // plans/M13.md item K / decision 10: private `-> Result[T]`
-        // (one-argument form). `pub` refuses here so the golden is a
-        // declare-time `error[type]`, not a later body surprise.
         Some(ast::Type::Named(n)) if n.name == "Result" && n.args.len() == 1 => {
             if is_pub {
                 return Err(SemaError::at(
@@ -2006,19 +1362,11 @@ fn resolve_ret(
                 Box::new(inferred_error_set_marker()),
             ))
         }
-        // Resolved types are spelled fully (decision 8): an omitted
-        // return type is `unit`, printed explicitly like every other
-        // type rather than leaving the arrow off.
         Some(t) => resolve_type(t, shapes, module_pools, local_pools, generics, false),
         None => Ok(Type::Unit),
     }
 }
 
-/// Resolves one `[generics]` list, threading each param into `scope` as
-/// it goes (so a later const param's bound type, or a sibling param, can
-/// never see an *earlier* param except itself — reflecting declaration
-/// order — while still allowing forward reference to the struct's own
-/// name via `shapes`, already fully built).
 fn resolve_generics(
     generics: &[GenericParam],
     shapes: &BTreeMap<String, usize>,
@@ -2060,14 +1408,6 @@ enum DerivingShape<'a> {
     Enum(&'a EnumItem),
 }
 
-/// `deriving(...)` validation (02-language.md §7.5, decision closed
-/// list): `Format` (plans/M9.md item C2) and `From` (exactly one
-/// variant with exactly one field/payload — a struct has no variants, so
-/// "one field total" is its version of the same rule); any other name is
-/// an error. Neither `Vec<String>` deriving list nor `StructItem`/
-/// `EnumItem` carries a span of its own for the `deriving(...)` clause,
-/// so errors point at the whole declaration's span — the most precise
-/// location available without widening the AST.
 fn validate_deriving(
     deriving: &[String],
     shape: &DerivingShape,
@@ -2089,12 +1429,6 @@ fn validate_deriving(
     Ok(())
 }
 
-/// plans/M9.md item C2: `deriving(Format)` generates
-/// `max_formatted_len() -> usize` and `format(read self) -> String[..N]`
-/// (empty-spec form; `{expr:spec}` is comptime syntax for f-strings /
-/// item D). Fieldless structs and unit enums format their names;
-/// fieldful structs sum scalar field bounds. Payload enums refuse by
-/// name. `Secret` has no Format (05 §6).
 fn validate_format_shape(shape: &DerivingShape, span: Span) -> Result<(), SemaError> {
     let type_name = match shape {
         DerivingShape::Struct(s) => s.name.as_str(),
@@ -2105,8 +1439,6 @@ fn validate_format_shape(shape: &DerivingShape, span: Span) -> Result<(), SemaEr
     }
     match shape {
         DerivingShape::Struct(s) => {
-            // Fieldful structs are validated for scalar Format-ability
-            // when Decl members are built (need resolved field types).
             let _ = s;
         }
         DerivingShape::Enum(e) => {
@@ -2134,11 +1466,9 @@ fn validate_format_shape(shape: &DerivingShape, span: Span) -> Result<(), SemaEr
     Ok(())
 }
 
-/// Decimal `Format` bound for a core scalar (archive §10). `None` when
-/// the type has no standard Format — deriving refuses that field.
 pub(crate) fn scalar_format_bound(ty: &Type) -> Option<u64> {
     match ty {
-        Type::Bool => Some(5), // "false"
+        Type::Bool => Some(5),
         Type::U8 => Some(3),
         Type::U16 => Some(5),
         Type::U32 => Some(10),
@@ -2152,10 +1482,6 @@ pub(crate) fn scalar_format_bound(ty: &Type) -> Option<u64> {
     }
 }
 
-/// 05-library.md §6: "`Secret` has no `Format`." Enforced by type name
-/// today — `Secret[T]` is still the marked-value refusal (item G); a
-/// user `struct`/`enum` spelled `Secret` that tries to declare or
-/// derive Format is refused here by the same rule.
 pub(crate) fn secret_has_no_format(span: Span) -> SemaError {
     SemaError::at(
         "type",
@@ -2164,7 +1490,6 @@ pub(crate) fn secret_has_no_format(span: Span) -> SemaError {
     )
 }
 
-/// `String[..N]` as an ast type annotation (Format writer return).
 fn string_bound_ast_ty(span: Span, n: u64) -> ast::Type {
     ast::Type::Named(NamedType {
         span,
@@ -2173,7 +1498,6 @@ fn string_bound_ast_ty(span: Span, n: u64) -> ast::Type {
     })
 }
 
-/// Resolved `String[..N]` for DeclFn return types.
 fn string_bound_ty(n: u64) -> Type {
     Type::String(Box::new(Expr::Int(Span::default(), n.to_string())))
 }
@@ -2210,15 +1534,6 @@ fn validate_from_shape(shape: &DerivingShape, span: Span) -> Result<(), SemaErro
     Ok(())
 }
 
-/// plans/M9.md item B3: `deriving(From)` generates a real associated
-/// `from(take source: Source) -> Self` (05 §8 / 02 §7.5), not a
-/// structural wrap on `?`'s error path (supersedes decision 106). The
-/// DeclFn is what call sites and `?` resolve; the FnItem body is the
-/// ordinary construction that body-checking turns into a TypedFn.
-///
-/// Conflict (decision 137): a type may not both `deriving(From)` and
-/// declare its own `from` — 02 §7.5's closed list is not a macro that
-/// merges with a hand-written peer; one construct, one mechanism.
 fn derived_from_conflict(type_name: &str, span: Span) -> SemaError {
     SemaError::at(
         "type",
@@ -2227,8 +1542,6 @@ fn derived_from_conflict(type_name: &str, span: Span) -> SemaError {
     )
 }
 
-/// The DeclFn half of a generated `from` (return type `Type::Named(name,
-/// [])`, one `take source` parameter).
 fn derived_from_decl(type_name: &str, source_ty: Type) -> DeclFn {
     DeclFn {
         name: "from".to_string(),
@@ -2245,10 +1558,6 @@ fn derived_from_decl(type_name: &str, source_ty: Type) -> DeclFn {
     }
 }
 
-/// The AST FnItem half: `pub fn from(take source: Source) -> Self` with
-/// body `return Self(<field>=source)` / `return Self.<Variant>(source)`.
-/// `pub` so an imported type's generated `from` is reachable the same
-/// way a hand-written one is (decision 123's import rule).
 pub(crate) fn derived_from_fn_item_struct(
     type_name: &str,
     field: &FieldItem,
@@ -2290,7 +1599,6 @@ pub(crate) fn derived_from_fn_item_struct(
     }
 }
 
-/// Enum form: body `return Type.Variant(source)`.
 pub(crate) fn derived_from_fn_item_enum(
     type_name: &str,
     variant: &str,
@@ -2336,14 +1644,6 @@ pub(crate) fn derived_from_fn_item_enum(
         body: Some(vec![Stmt::Return(span, Some(construct))]),
     }
 }
-
-// ===========================================================================
-// plans/M9.md item C2: `deriving(Format)` generates a real Format contract
-// (05 §6 / 02 §7.5) — associated `max_formatted_len() -> usize` and method
-// `format(read self) -> String[..N]`. Empty-spec only: `{expr:spec}` is
-// comptime syntax for f-strings (item D), not a runtime parameter.
-// Same DeclFn + FnItem shape as B3's `from`.
-// ===========================================================================
 
 fn derived_format_conflict(type_name: &str, span: Span) -> SemaError {
     SemaError::at(
@@ -2393,8 +1693,6 @@ fn int_lit(span: Span, value: u64) -> Expr {
     Expr::Int(span, value.to_string())
 }
 
-/// A text literal in the same spelling the lexer emits (`"..."` with
-/// escapes), so `eval::value::decode_str` can consume it.
 fn str_lit(span: Span, text: &str) -> Expr {
     let mut raw = String::from("\"");
     for c in text.chars() {
@@ -2412,7 +1710,6 @@ fn str_lit(span: Span, text: &str) -> Expr {
     Expr::Str(span, raw)
 }
 
-/// Associated `max_formatted_len() -> usize` with body `return N`.
 pub(crate) fn derived_max_formatted_len_fn_item(bound: u64, span: Span) -> FnItem {
     FnItem {
         span,
@@ -2429,7 +1726,6 @@ pub(crate) fn derived_max_formatted_len_fn_item(bound: u64, span: Span) -> FnIte
     }
 }
 
-/// Fieldless-struct `format(read self) -> String[..N]` returning the type name.
 pub(crate) fn derived_format_fn_item_struct(type_name: &str, span: Span) -> FnItem {
     let bound = type_name.len() as u64;
     FnItem {
@@ -2450,7 +1746,6 @@ pub(crate) fn derived_format_fn_item_struct(type_name: &str, span: Span) -> FnIt
     }
 }
 
-/// Fieldful-struct `format`: `"Name(f1=" + self.f1.format() + ", f2=" + ... + ")"`.
 pub(crate) fn derived_format_fn_item_struct_fields(
     type_name: &str,
     fields: &[(String, Type)],
@@ -2512,8 +1807,6 @@ pub(crate) fn derived_format_fn_item_struct_fields(
     }
 }
 
-/// Bound for `deriving(Format)` on a struct: fieldless → name length;
-/// fieldful → `Name(f1=<scalar>, f2=...)` with each scalar's Format bound.
 pub(crate) fn struct_format_bound(
     type_name: &str,
     fields: &[(String, Type)],
@@ -2522,12 +1815,12 @@ pub(crate) fn struct_format_bound(
     if fields.is_empty() {
         return Ok(type_name.len() as u64);
     }
-    let mut bound = type_name.len() as u64 + 1; // "Name("
+    let mut bound = type_name.len() as u64 + 1;
     for (i, (fname, fty)) in fields.iter().enumerate() {
         if i > 0 {
-            bound += 2; // ", "
+            bound += 2;
         }
-        bound += fname.len() as u64 + 1; // "f="
+        bound += fname.len() as u64 + 1;
         let Some(fb) = scalar_format_bound(fty) else {
             return Err(SemaError::at(
                 "type",
@@ -2540,10 +1833,9 @@ pub(crate) fn struct_format_bound(
         };
         bound += fb;
     }
-    Ok(bound + 1) // ")"
+    Ok(bound + 1)
 }
 
-/// Unit-enum `format(read self) -> String[..N]` matching each variant name.
 pub(crate) fn derived_format_fn_item_enum(variants: &[String], bound: u64, span: Span) -> FnItem {
     let arms = variants
         .iter()
@@ -2582,8 +1874,6 @@ pub(crate) fn derived_format_fn_item_enum(variants: &[String], bound: u64, span:
     }
 }
 
-/// True when a DeclFn is exactly the Format contract's associated bound
-/// member: `max_formatted_len() -> usize`, no receiver.
 pub(crate) fn is_format_max_formatted_len(d: &DeclFn) -> bool {
     d.name == "max_formatted_len"
         && d.receiver.is_none()
@@ -2592,8 +1882,6 @@ pub(crate) fn is_format_max_formatted_len(d: &DeclFn) -> bool {
         && !d.is_async
 }
 
-/// True when a DeclFn is exactly the Format contract's writer:
-/// `format(read self) -> String[..N]`.
 pub(crate) fn is_format_writer(d: &DeclFn) -> bool {
     d.name == "format"
         && matches!(
@@ -2655,10 +1943,9 @@ fn declare_struct(
                 &scope,
             )?)),
             Member::Pool(p) => members.push(DeclMember::Pool(p.name.clone())),
-            Member::ComptimeIf(_) => {} // comptime evaluation is item C's job
+            Member::ComptimeIf(_) => {}
         }
     }
-    // plans/M9.md item B3: generate DeclFn `from` for deriving(From).
     if s.deriving.iter().any(|d| d == "From") {
         if members
             .iter()
@@ -2675,7 +1962,6 @@ fn declare_struct(
             .expect("validate_from_shape already required exactly one field");
         members.push(DeclMember::Fn(derived_from_decl(&s.name, source_ty)));
     }
-    // plans/M9.md item C2: generate Format DeclFns for deriving(Format).
     if s.deriving.iter().any(|d| d == "Format") {
         if members.iter().any(|m| {
             matches!(
@@ -2696,8 +1982,6 @@ fn declare_struct(
         members.push(DeclMember::Fn(derived_max_formatted_len_decl()));
         members.push(DeclMember::Fn(derived_format_decl(bound)));
     }
-    // 05 §6: Secret has no Format — catch a hand-declared contract on a
-    // type spelled `Secret` (deriving already refused in validate_format_shape).
     if s.name == "Secret"
         && members.iter().any(|m| {
             matches!(
@@ -2712,7 +1996,7 @@ fn declare_struct(
         name: s.name.clone(),
         generics: decl_generics,
         deriving: s.deriving.clone(),
-        classification: Classification::Data, // placeholder; classify_all fills this in
+        classification: Classification::Data,
         members,
         is_resource_fiat: s.is_resource || has_actor_or_driver(&s.attrs),
         is_actor: has_actor_or_driver(&s.attrs),
@@ -2726,11 +2010,6 @@ fn declare_struct(
     })
 }
 
-// ===========================================================================
-// plans/M7.md item G, decision 18: re-declare a struct's members after
-// per-instantiation `comptime if` expansion (`specialize::expand_deferred_members`).
-// Generics on the result are cleared — the instantiation is concrete.
-// ===========================================================================
 pub(crate) fn declare_struct_members_for_instantiation(
     name: &str,
     expanded_members: &[Member],
@@ -2747,8 +2026,6 @@ pub(crate) fn declare_struct_members_for_instantiation(
             _ => None,
         })
         .collect();
-    // Instantiation is concrete: no generic scope (const args already
-    // expanded out of the AST; type args are substituted by the caller).
     let scope = BTreeMap::new();
     let mut members = Vec::new();
     let mut component_types = Vec::new();
@@ -2809,15 +2086,6 @@ pub(crate) fn declare_struct_members_for_instantiation(
     })
 }
 
-/// `@layout(<kind>, ...)`'s kind, for a struct that carries the attribute
-/// at all — `None` for every ordinary struct, and `None` too for a
-/// malformed `@layout` this cannot read (which `check_layouts` has
-/// already rejected before `declare` ever runs: `sema::mod`'s pipeline
-/// calls it first, deliberately, before name resolution). Deliberately
-/// tolerant rather than a second parser: the one consumer is
-/// `validate_capability_types`' own "`Mmio[L]` needs `L` to be an
-/// `@layout(mmio)` type" check, and a program that reaches it has a
-/// well-formed `@layout` on every struct that has one at all.
 pub(crate) fn declared_layout_kind(attrs: &[Attr]) -> Option<LayoutKind> {
     let attr = attrs.iter().find(|a| a.name == "layout")?;
     let arg = attr.args.iter().find(|a| a.label.is_none())?;
@@ -2828,10 +2096,6 @@ pub(crate) fn declared_layout_kind(attrs: &[Attr]) -> Option<LayoutKind> {
         "dma" => Some(LayoutKind::Dma),
         "mmio" => Some(LayoutKind::Mmio),
         "wire" => Some(LayoutKind::Wire),
-        // This table and `parse_layout_attr`'s are independent, and only
-        // that one is exhaustive-checked by the compiler; a kind added
-        // there and forgotten here silently yields `None`, i.e. "not a
-        // layout at all". Both move together, always.
         "runtime" => Some(LayoutKind::Runtime),
         _ => None,
     }
@@ -2941,7 +2205,6 @@ fn declare_enum(
             }
         }
     }
-    // plans/M9.md item B3: generate DeclFn `from` for deriving(From).
     if e.deriving.iter().any(|d| d == "From") {
         if !seen_names.insert("from".to_string()) {
             return Err(derived_from_conflict(&e.name, e.span));
@@ -2955,7 +2218,6 @@ fn declare_enum(
         };
         members.push(DeclMember::Fn(derived_from_decl(&e.name, source_ty)));
     }
-    // plans/M9.md item C2: generate Format DeclFns for deriving(Format).
     if e.deriving.iter().any(|d| d == "Format") {
         if !seen_names.insert("max_formatted_len".to_string())
             || !seen_names.insert("format".to_string())
@@ -2980,7 +2242,7 @@ fn declare_enum(
         name: e.name.clone(),
         generics: decl_generics,
         deriving: e.deriving.clone(),
-        classification: Classification::Data, // placeholder; classify_all fills this in
+        classification: Classification::Data,
         variants,
         members,
         component_types,
@@ -2990,13 +2252,6 @@ fn declare_enum(
     })
 }
 
-/// Resolves one `ast::Type` into `Type`. `param_position` is true only
-/// for a direct fn/method/init non-receiver parameter's own type — the
-/// one place 02-language.md §6.2 lets a bounded type (`Bytes`, in this
-/// prelude) omit its bound; every nested position (fields, consts,
-/// returns, array elements, tuple elements, generic arguments, `own`'s
-/// payload, a `fn(...)` type's own parameter types) resolves with it
-/// false, so elision cannot smuggle itself in one level down.
 pub(crate) fn resolve_type(
     ty: &ast::Type,
     shapes: &BTreeMap<String, usize>,
@@ -3016,10 +2271,6 @@ pub(crate) fn resolve_type(
         ),
         ast::Type::Array(a) => {
             let elem = resolve_type(&a.elem, shapes, module_pools, local_pools, generics, false)?;
-            // Same 65536-element build limit `[elem; N]` expressions and
-            // `String[..N]` already carry. Declared array types used to
-            // skip it, so `mwir::size_of` panicked on overflow multiply
-            // during placement (adversarial audit, 2026-07-27).
             if let Some(n) = crate::sema::bodies::literal_array_len(&a.len) {
                 if !crate::sema::bodies::array_len_fits(n) {
                     return Err(SemaError::at(
@@ -3050,9 +2301,6 @@ pub(crate) fn resolve_type(
         }
         ast::Type::Own(o) => {
             if o.pool.len() != 1 {
-                // An actor-scoped `Owner.Name` path needs actor scoping
-                // (M6+) that does not exist yet — fail closed rather
-                // than guess which pool it means (decision 7).
                 return Err(unimplemented_at("a dotted pool path is", o.span));
             }
             let pool_name = &o.pool[0];
@@ -3096,9 +2344,6 @@ fn expect_arity(n: &NamedType, expected: usize) -> Result<(), SemaError> {
     Ok(())
 }
 
-/// `expected` positional generic-arguments, each required to be a plain
-/// type (used only by `Option`/`Result`/`Static`, whose fixed prelude
-/// arity is never a const — decision 5).
 fn expect_type_args<'a>(
     n: &'a NamedType,
     expected: usize,
@@ -3120,8 +2365,6 @@ fn expect_type_args<'a>(
     Ok(out)
 }
 
-/// `Bytes[N]` / bare `Bytes` (02-language.md §6.2, plans/M2.md decision
-/// 5 — only the exact form ships in the M2 prelude, not `Bytes[..N]`).
 fn resolve_bytes(n: &NamedType, param_position: bool) -> Result<Type, SemaError> {
     if n.args.is_empty() {
         return if param_position {
@@ -3151,10 +2394,6 @@ fn resolve_bytes(n: &NamedType, param_position: bool) -> Result<Type, SemaError>
             }
             Ok(Type::Bytes(Some(Box::new(e.clone()))))
         }
-        // A bare identifier (a const generic parameter or a `const`
-        // item) parses as a type-shaped argument — the grammar cannot
-        // tell a value name from a type name — so it is unwrapped back
-        // into the length expression it actually names.
         GenericArg::Type(ast::Type::Named(inner)) if inner.args.is_empty() => Ok(Type::Bytes(
             Some(Box::new(Expr::Name(inner.span, inner.name.clone()))),
         )),
@@ -3167,10 +2406,6 @@ fn resolve_bytes(n: &NamedType, param_position: bool) -> Result<Type, SemaError>
     }
 }
 
-/// `String[..N]` (02-language.md §6.2 / plans/M9.md item C1). Exact
-/// `String[N]` and bare `String` are refused by name — the `..N`
-/// spelling is the bounded-occupancy form, and bound-elision is a
-/// separate surface this item does not grow.
 fn resolve_string(n: &NamedType) -> Result<Type, SemaError> {
     if n.args.is_empty() {
         return Err(unimplemented_at("`String` (bound-elided) is", n.span));
@@ -3178,8 +2413,6 @@ fn resolve_string(n: &NamedType) -> Result<Type, SemaError> {
     expect_arity(n, 1)?;
     match &n.args[0] {
         GenericArg::Bound(e) => {
-            // plans/M9.md item K1: refuse a literal capacity the layout
-            // fn cannot represent (same rule as concat / f-string sums).
             if let Some(cap) = crate::sema::bodies::literal_array_len(e) {
                 if !crate::sema::bodies::string_capacity_fits(cap) {
                     return Err(SemaError::at(
@@ -3194,8 +2427,6 @@ fn resolve_string(n: &NamedType) -> Result<Type, SemaError> {
             }
             Ok(Type::String(Box::new(e.clone())))
         }
-        // `String[CAP]` (no `..`) — exact form, refused by name.
-        // Bound form `String[..CAP]` is always `GenericArg::Bound`.
         GenericArg::Type(ast::Type::Named(_inner)) if _inner.args.is_empty() => Err(SemaError::at(
             "type",
             "`String[..N]` needs a bounded-occupancy argument (`..N`), not `String[N]`".to_string(),
@@ -3214,16 +2445,9 @@ fn resolve_string(n: &NamedType) -> Result<Type, SemaError> {
     }
 }
 
-/// Compiler-known type names that resolve with no import
-/// (plans/M9.md item I). These are the annotation-position half of what
-/// `sema/prelude.rs` used to list; each name already has its real
-/// definition in [`resolve_named`] (or in `eval::image_checks` for
-/// sealed-authority types). Value-only names (`Some`, `group`, …) are
-/// *not* here — see `symbols::is_resolvable_without_import`.
 pub fn is_builtin_type_name(name: &str) -> bool {
     matches!(
         name,
-        // 02 §6.1 scalars + `Str` (literal surface).
         "bool"
             | "u8"
             | "u16"
@@ -3241,19 +2465,14 @@ pub fn is_builtin_type_name(name: &str) -> bool {
             | "unit"
             | "never"
             | "Str"
-            // 02 §2 fixed prelude types.
             | "Option"
             | "Result"
-            // plans/M13.md item I: CallError[E] / Admission nameable.
             | "CallError"
             | "Admission"
-            // Literal / string surface (02 §1.1 / §6.2).
             | "Static"
             | "Bytes"
             | "String"
-            // Image builder opaque type (05 §9).
             | "Image"
-            // Actor / hardware / MMIO / marked-value / interrupt surface.
             | "Actor"
             | "BootError"
             | "VirtQueue"
@@ -3268,16 +2487,10 @@ pub fn is_builtin_type_name(name: &str) -> bool {
             | "ReadOnly"
             | "WriteOnly"
             | "Untrusted"
-            // plans/M13.md item P: `Validated` demoted — ordinary name for
-            // the `resource(manual)` idiom; not a prelude type.
             | "Secret"
             | "InterruptCell"
-            // Time types stay annotation-resolvable without an import
-            // (plans/M9.md item E decision 300 / item I decision 470).
             | "Duration"
             | "Instant"
-            // plans/M10.md item E2 / decision 669: 1-based group arena
-            // index; `Option[GroupId]` niche at 0.
             | "GroupId"
     ) || crate::sema::classes::name_holds_authority(name)
 }
@@ -3308,47 +2521,12 @@ fn resolve_named(
         "unit" => Some(Type::Unit),
         "never" => Some(Type::Never),
         "Str" => Some(Type::Str),
-        // The `@image` builder's own opaque resource type (plans/M4.md
-        // item B, decision 5: "opaque builtin resource types"), needed
-        // only so an `@image fn`'s declared `-> Image` return type
-        // resolves (02-language.md §12.1) — recognized here exactly like
-        // every other zero-argument prelude name above, not backed by a
-        // real declared struct. `img.driver`/`img.actor`/`img.device`/
-        // `img.pool`/`img.dma_pool`/`decl.handle()` all resolve to the
-        // builder surface's *other* opaque type, `ImageDecl` — recognized
-        // by `sema::bodies`'s own intrinsic dispatch directly (never
-        // written by source, so it never needs a annotation-position
-        // resolution here).
         "Image" => Some(Type::Named("Image".to_string(), vec![])),
-        // plans/M7.md item E1: 03-hardware.md §1/§9's `BootError` — a
-        // zero-argument prelude enum (variants in `builtin_enum_variants`).
         "BootError" => Some(Type::Named("BootError".to_string(), vec![])),
-        // plans/M7.md item E2: sealed permit (zero type arguments).
-        // `QueueOp` carries its payload brand as of E3 — see the match
-        // arm below.
         "QueuePermit" => Some(Type::Named(n.name.clone(), vec![])),
-        // plans/M7.md item E3: `IoError` lived here as a prelude enum; at
-        // plans/M9.md item A2 it moved to `stdlib/core/io_error.wr` and
-        // resolves through the ordinary imported-type path (A1).
-        // =================================================================
-        // plans/M7.md item G, decision 18: prelude enums as annotation
-        // types (`const MODE: DriverMode`). Same zero-arg Named shape as
-        // `Image`; variants live in `builtin_enum_variants`.
-        // =================================================================
         "DriverMode" | "Target" | "Failure" => Some(Type::Named(n.name.clone(), vec![])),
-        // plans/M8.md item G, decision 17: 03-hardware.md §9's
-        // `CompletionOutcome` — same zero-argument prelude-enum shape,
-        // minted only by `VirtQueue.recover` but nameable in an
-        // annotation (a helper that classifies one takes it by value).
         "CompletionOutcome" => Some(Type::Named("CompletionOutcome".to_string(), vec![])),
-        // plans/M13.md item I / decision 6: `Admission` is auto-visible
-        // (stdlib/core/admission.wr) and prelude-nameable — zero-arg Named,
-        // same shape as `Failure` / `Target`.
         "Admission" => Some(Type::Named("Admission".to_string(), vec![])),
-        // plans/M10.md item E2 / decision 669: opaque 1-based group arena
-        // index. Zero-argument Named, like `Image` — not a DeclStruct, so
-        // source cannot forge one by field init (decision 567's niche
-        // stays unconstructible from source until a minting site lands).
         "GroupId" => Some(Type::Named("GroupId".to_string(), vec![])),
         _ => None,
     };
@@ -3368,10 +2546,6 @@ fn resolve_named(
             let err = resolve_type(args[1], shapes, module_pools, local_pools, generics, false)?;
             return Ok(Type::Result(Box::new(ok), Box::new(err)));
         }
-        // plans/M13.md item I: `CallError[E]` is source-nameable (02 §2
-        // prelude / §9.4). One type argument — the callee error `E`.
-        // Take-arg tuples (item H) are site-monomorphized on composed
-        // awaits only; a written annotation is always the one-arg form.
         "CallError" => {
             let args = expect_type_args(n, 1)?;
             let e = resolve_type(args[0], shapes, module_pools, local_pools, generics, false)?;
@@ -3383,17 +2557,7 @@ fn resolve_named(
             return Ok(Type::Static(Box::new(inner)));
         }
         "Bytes" => return resolve_bytes(n, param_position),
-        // plans/M9.md item C1: `String[..N]` (02 §6.2).
         "String" => return resolve_string(n),
-        // plans/M7.md item E2/E3: `QueueOp[P]` — sealed prepared operation
-        // carrying the transfer-payload brand `P` so `publish` can yield
-        // `Receipt[P]`. `prepare_block` always produces the branded form.
-        // plans/M8.md item G, decision 18 grows it to
-        // `QueueOp[P, <idempotent>]`: 03-hardware.md §9's no-auto-retry
-        // rule needs the author's idempotence declaration to survive from
-        // the `prepare_block` that made the operation to the `publish` that
-        // issues it — including across a helper's signature — so it is part
-        // of the operation's type, not a fact about one call site.
         "QueueOp" => {
             expect_arity(n, 2)?;
             let GenericArg::Type(payload) = &n.args[0] else {
@@ -3426,10 +2590,6 @@ fn resolve_named(
                 ],
             ));
         }
-        // plans/M7.md item E3: `Receipt[P]` (03-hardware.md §5) — sealed
-        // resource state machine. `P` is the payload brand the receipt
-        // recovers; minted only by `publish` / `reject` / handoff
-        // admission.
         "Receipt" => {
             let args = expect_type_args(n, 1)?;
             let inner = resolve_type(args[0], shapes, module_pools, local_pools, generics, false)?;
@@ -3438,10 +2598,6 @@ fn resolve_named(
                 vec![TypeArg::Type(inner)],
             ));
         }
-        // plans/M7.md item E4: `IoCompletion[P]` (03-hardware.md §3/§8) —
-        // resolved receipt: payload ownership returns, `status` is the
-        // device/protocol outcome, `written_len` is the Untrusted
-        // producer for checked narrowing.
         "IoCompletion" => {
             let args = expect_type_args(n, 1)?;
             let inner = resolve_type(args[0], shapes, module_pools, local_pools, generics, false)?;
@@ -3450,27 +2606,11 @@ fn resolve_named(
                 vec![TypeArg::Type(inner)],
             ));
         }
-        // `Actor[T]` (plans/M6.md item A, 02-language.md §9.1): the
-        // generated handle type — `T` is structurally resolved here
-        // exactly like `Option`/`Static`'s own inner argument; *which*
-        // structs `T` may legally name (`@actor`/`@driver` only) is a
-        // whole-module question this per-annotation resolver cannot ask
-        // (a forward reference to a struct declared later in the file is
-        // legal, mirroring `shapes`'s own forward-reference story) — validated
-        // once, after every item is declared, by `validate_actor_handles`
-        // below (called from `declare`). Retires the M4-C placeholder
-        // comment in golden `image-basic` (`Store.disk`'s own `u32` stand-in).
         "Actor" => {
             let args = expect_type_args(n, 1)?;
             let inner = resolve_type(args[0], shapes, module_pools, local_pools, generics, false)?;
             return Ok(Type::Named("Actor".to_string(), vec![TypeArg::Type(inner)]));
         }
-        // plans/M7.md item E1: `VirtQueue[..N]` (03-hardware.md §4) —
-        // bounded occupancy, the same `..N` spelling 05-library.md §10
-        // reserves for "bounded-occupancy parameters". The depth is a
-        // const expression (a literal or a module `const`); it must be a
-        // nonzero power of two at the configure site / report emission,
-        // not here (this resolver has no const evaluator).
         "VirtQueue" => {
             expect_arity(n, 1)?;
             match &n.args[0] {
@@ -3487,8 +2627,6 @@ fn resolve_named(
                     ));
                 }
                 GenericArg::Type(ast::Type::Named(inner)) if inner.args.is_empty() => {
-                    // `VirtQueue[..QDEPTH]` where QDEPTH is a const name
-                    // parses as a type-shaped argument; unwrap it.
                     return Ok(Type::Named(
                         "VirtQueue".to_string(),
                         vec![TypeArg::Bound(Expr::Name(inner.span, inner.name.clone()))],
@@ -3505,22 +2643,11 @@ fn resolve_named(
                 }
             }
         }
-        // `ReadOnly[T]`/`WriteOnly[T]` (plans/M7.md item B, 03-hardware.md
-        // §2): the typed-MMIO register wrappers, resolved structurally
-        // exactly like `Actor[T]` above — *where* they are legal (only an
-        // `@layout(mmio)` field) is a whole-declaration question this
-        // per-annotation resolver cannot ask, and `check_layouts` (below)
-        // already asks it before this pass ever runs. Their access rules
-        // are item C; nothing here gives them one.
         "ReadOnly" | "WriteOnly" => {
             let args = expect_type_args(n, 1)?;
             let inner = resolve_type(args[0], shapes, module_pools, local_pools, generics, false)?;
             return Ok(Type::Named(n.name.clone(), vec![TypeArg::Type(inner)]));
         }
-        // plans/M7.md item H2a, 03-hardware.md §8: marked-value mechanism.
-        // `Untrusted[T]` is live; `Secret[T]` remains refuse-by-name.
-        // plans/M13.md item P: `Validated` is demoted — not recognized
-        // here; a module may declare `resource(manual) struct Validated`.
         "Untrusted" => {
             let args = expect_type_args(n, 1)?;
             let inner = resolve_type(args[0], shapes, module_pools, local_pools, generics, false)?;
@@ -3541,10 +2668,6 @@ fn resolve_named(
                 n.span,
             ));
         }
-        // plans/M7.md item G, decision 17: `InterruptCell[T]` — 03 §6's
-        // sole ISR/ordinary-code channel. `T` is structurally resolved
-        // here; which `T` is legal (`u32` today) is asked at the
-        // constructor / method site in `bodies`, not here.
         "InterruptCell" => {
             let args = expect_type_args(n, 1)?;
             let inner = resolve_type(args[0], shapes, module_pools, local_pools, generics, false)?;
@@ -3555,41 +2678,8 @@ fn resolve_named(
         }
         _ => {}
     }
-    // 03-hardware.md §1's four capability types (plans/M7.md item A):
-    // `DeviceCap[D]`, `Mmio[L]`, `IrqCap[V]`, `DmaPool[P, N]`. Arity comes
-    // from the one shared list (`eval::image_checks::CAPABILITY_TYPES`);
-    // each argument resolves through the *general* `resolve_type_arg`, not
-    // `expect_type_args`, so a type argument stays a type and a const
-    // argument (`DmaPool[BlockControl, 256.KiB]`'s own `N`) stays an
-    // unevaluated const expression — exactly what a user struct's own
-    // generic arguments already do. Nothing is invented about what the
-    // arguments *mean*: `Mmio[L]`'s "`L` is a `@layout(mmio)` type" is a
-    // whole-module question, asked once by `validate_capability_types`
-    // below (the same split `Actor[T]` already uses), and `IrqCap[V]`'s
-    // vector and `DmaPool`'s pool identity belong to plans/M7.md items G
-    // and D, which are where they first mean anything.
-    //
-    // Resolving here is the *whole* of "the type exists". Being spellable
-    // is not being constructible: 03 §1's "their constructors are not
-    // source-visible" is enforced separately and by name — a declaration
-    // or import taking one of these names (`symbols::collect`,
-    // `imports::resolve_imports`), a construction or cast attempt
-    // (`bodies`' own arms), a fn claiming to return one, an `@actor`
-    // holding one (`validate_capability_types`).
     if let Some(arity) = crate::eval::image_checks::capability_generic_arity(&n.name) {
         expect_arity(n, arity)?;
-        // plans/M7.md item D: `DmaPool[P, N]` and `DmaShared[P, L]` name a
-        // bound **pool** in argument position 0 — 03-hardware.md §1's own
-        // worked driver constructor is
-        // `take pool: DmaPool[BlockControl, 256.KiB]`, and `BlockControl`
-        // there is the same `pool Name` declaration `own[BlockControl] T`
-        // names elsewhere in that example. `own[P] T` has dedicated ast
-        // syntax for that identifier; these two do not, so position 0 is
-        // resolved against the declared pool names instead of the type
-        // table. Every other argument of every capability type resolves
-        // through the general `resolve_type_arg`, so a type argument stays
-        // a type and a const argument (`N`) stays an unevaluated const
-        // expression.
         let pool_first = matches!(n.name.as_str(), "DmaPool" | "DmaShared");
         let mut targs = Vec::with_capacity(n.args.len());
         for (i, a) in n.args.iter().enumerate() {
@@ -3612,13 +2702,6 @@ fn resolve_named(
         }
         return Ok(Type::Named(n.name.clone(), targs));
     }
-    // 03-hardware.md §9's bring-up chain, as types (plans/M7.md item H1):
-    // `ResetDevice[D]` .. `RunningDevice[D]`, one name per state, each
-    // taking the device type. Resolved exactly like a capability above
-    // (structurally, arity-checked, nothing invented about what `D`
-    // means); *which* of them a transition produces is
-    // `sema::bodies::check_device_transition`'s question, not this
-    // resolver's, and none of them is constructible from source.
     if crate::eval::image_checks::is_protocol_state_type_name(&n.name) {
         expect_arity(n, 1)?;
         let args = expect_type_args(n, 1)?;
@@ -3673,17 +2756,6 @@ fn resolve_named(
     ))
 }
 
-/// One generic argument at a user struct/enum's use site. Structural
-/// only (item H checks/instantiates): a real type resolves recursively;
-/// a bare identifier naming an in-scope const generic is unwrapped into
-/// its const expression exactly like `Bytes[N]` above, for the same
-/// grammar-ambiguity reason, rather than rejected as "not a type".
-/// `DmaPool[P, N]`/`DmaShared[P, L]`'s own argument position 0
-/// (plans/M7.md item D): a bare identifier that must name a `pool`
-/// declared in this module or this fn's own scope — the identical set
-/// `own[P] T` resolves its pool against, and the identical
-/// module-scoped-only limitation (a pool declared in another module does
-/// not resolve here yet, exactly as it does not there).
 fn resolve_pool_type_arg(
     ctor: &str,
     a: &GenericArg,
@@ -3757,47 +2829,14 @@ fn resolve_type_arg(
     }
 }
 
-// --- data-vs-resource classification --------------------------------------
-//
-// 02-language.md §3, §7.1: `resource struct`/`@actor`/`@driver` is a
-// resource by fiat; `own[P] T` is always a resource (a pool handle,
-// regardless of `T`); `Static[T]` is always data (a copyable handle,
-// regardless of `T`); everything else is a resource exactly when some
-// component is, transitively. `own`/`Static` are themselves the only
-// indirection M2's type system has, so recursing into their payload
-// is deliberately skipped below, both for classification (fixed either
-// way) and for the infinite-size check (a pool handle's fixed layout is
-// exactly what makes a self-referential `own[P] Self` field finite) —
-// every other composite (Named struct/enum, array, tuple, Option,
-// Result) recurses. A bare generic type parameter's real classification
-// depends on the concrete instantiation (item H); until then it is
-// conservatively treated as data.
-//
-// A cycle found while recursing through plain (non-`own`/`Static`)
-// composition is reported at the innermost field/variant whose
-// reference closed the loop — `error[type]: ... is infinitely sized`
-// (plans/M2.md item B): recursion through generic instantiation is not
-// caught here (that needs item H's monomorphization; its own depth cap
-// is where that class of cycle is meant to be rejected).
-
-/// One classifiable declaration, borrowed out of a `DeclItem` — the only
-/// three facts classification reads. Extracting them means the one
-/// classification algorithm below runs over a single module and over a
-/// whole build closure without being written twice (plans/M9.md item A1,
-/// decision 10).
 struct ClassifyNode<'a> {
     is_resource_fiat: bool,
     component_types: &'a [(Type, Span)],
     span: Span,
 }
 
-/// Module address -> that module's classifiable declarations, in source
-/// order. The single-module caller uses one entry under the empty key.
 type ClassifyTables<'a> = BTreeMap<Vec<String>, Vec<(String, ClassifyNode<'a>)>>;
 
-/// Module address -> local type name -> `(exporting module, exported
-/// name)`, for every `struct`/`enum` that module imports
-/// (`imports::imported_type_targets`). Empty for a single-module build.
 pub type ImportedTypeTargets = BTreeMap<Vec<String>, BTreeMap<String, (Vec<String>, String)>>;
 
 fn classify_nodes(items: &[DeclItem]) -> Vec<(String, ClassifyNode<'_>)> {
@@ -3815,8 +2854,6 @@ fn classify_nodes(items: &[DeclItem]) -> Vec<(String, ClassifyNode<'_>)> {
             DeclItem::Enum(e) => out.push((
                 e.name.clone(),
                 ClassifyNode {
-                    // An enum is never a resource by fiat (02-language.md
-                    // §3): only its payloads can make it one.
                     is_resource_fiat: false,
                     component_types: &e.component_types,
                     span: e.span,
@@ -3828,12 +2865,8 @@ fn classify_nodes(items: &[DeclItem]) -> Vec<(String, ClassifyNode<'_>)> {
     out
 }
 
-/// The whole answer, keyed `(module address, type name)`.
 type ClassifyMemo = BTreeMap<(Vec<String>, String), Classification>;
 
-/// Runs the classification over `tables`, visiting modules in BTree order
-/// and declarations in source order within each — the same fail-fast,
-/// deterministic discipline every other whole-program pass uses.
 fn classify_core(
     tables: &ClassifyTables<'_>,
     imports: &ImportedTypeTargets,
@@ -3880,21 +2913,6 @@ fn classify_all(items: &mut [DeclItem]) -> Result<(), SemaError> {
     Ok(())
 }
 
-/// Whole-closure data-vs-resource classification (plans/M9.md item A1,
-/// decision 10). `declare_with_imports` already classified each module on
-/// its own, where a field of an *imported* type is invisible and falls
-/// through to `Data`; this recomputes every module's answer with the whole
-/// closure in view, so a local struct holding a field of an imported
-/// `resource`/`@actor` type is the resource it actually is.
-///
-/// It does not weaken the cycle property `sema::check_program_typed`
-/// documents: every module's own `declare` still completes with nothing
-/// from any other module, and this pass — like the splice — runs
-/// afterwards, over output that already exists regardless of which module
-/// imports which. A value cycle that closes *across* modules gets the same
-/// `is infinitely sized (recursive by value)` diagnostic it already gets
-/// within one, because `in_progress` is keyed by `(module, name)` and the
-/// recursion follows imports.
 pub fn classify_closure(
     items: &mut BTreeMap<Vec<String>, Vec<DeclItem>>,
     imports: &ImportedTypeTargets,
@@ -3908,8 +2926,6 @@ pub fn classify_closure(
     };
     for (mkey, decls) in items.iter_mut() {
         write_back(decls, mkey, &memo);
-        // Recompute classes after closure classification may have flipped
-        // a local struct that holds an imported resource field.
         crate::sema::classes::assign_classes(decls);
     }
     Ok(())
@@ -3952,46 +2968,15 @@ fn classify_named(
         }
         resource = r;
     } else if let Some((tmod, tname)) = imports.get(mkey).and_then(|m| m.get(name)) {
-        // plans/M9.md item A1: the name is not declared here, it is
-        // imported. Follow it into the exporting module's own already-built
-        // declarations — the same read-only reuse of another module's
-        // finished output the splice performs, and the reason this pass
-        // cannot live inside `declare`.
         let c = classify_named(tmod, tname, call_span, tables, imports, memo, in_progress)?;
         in_progress.remove(&key);
         memo.insert(key, c);
         return Ok(c);
     } else if crate::sema::classes::name_holds_authority(name) {
-        // 03-hardware.md §1, its own first words: hardware operations
-        // require "unforgeable **resource** values". A capability is a
-        // resource by fiat, exactly like `@actor`/`@driver`/`resource
-        // struct` above — it is never copied, and a struct that holds one
-        // is a resource too (which is how `@actor`'s own containment rule
-        // and the provenance walk both see through a plain wrapper
-        // struct). Recorded here rather than left to the builtin
-        // fall-through below, whose whole premise ("every one of these is
-        // plain data") is exactly what stops being true for these names.
-        //
-        // plans/M7.md item H1: 03 §9's seven bring-up states join the same
-        // arm. A protocol state *is* the device's authority in a
-        // particular position of the chain — 03 §9's "each fallible
-        // transition **consumes** its input state" is precisely the
-        // resource rule, and the only reason a transition can consume one
-        // is that it is never implicitly copied.
         in_progress.remove(&key);
         memo.insert(key, Classification::Resource);
         return Ok(Classification::Resource);
     } else {
-        // Neither a declared struct nor enum: a builtin `Type::Named`
-        // this module resolves without a backing declaration (plans/
-        // M4.md item B, decision 5 — `Image`, and `sema::bodies`'s own
-        // `ImageDecl`/`Duration` intrinsic-surface
-        // pseudo-types, none registered here since nothing declares
-        // them). Every one of these is plain data (never a resource
-        // fiat, never composed from one), so this falls through to the
-        // same `Classification::Data` a genuinely field-less struct
-        // would get — not `unreachable!()`, since `resolve_named` (this
-        // file) now legitimately produces such a name.
         in_progress.remove(&key);
         memo.insert(key, Classification::Data);
         return Ok(Classification::Data);
@@ -4006,10 +2991,6 @@ fn classify_named(
     Ok(result)
 }
 
-/// Decl-time resource-ness for message-shape validation: `own[P] T`,
-/// sealed authorities, and structs/enums already marked resource-by-fiat
-/// (or classified Resource when available). Call-site checking uses the
-/// fuller `bodies::is_resource_type` after classification is final.
 fn message_param_ty_is_resource(ty: &Type, structs: &BTreeMap<String, &DeclStruct>) -> bool {
     resource_propagates(ty, &mut |name, _args| {
         if crate::sema::classes::name_holds_authority(name) {
@@ -4022,24 +3003,6 @@ fn message_param_ty_is_resource(ty: &Type, structs: &BTreeMap<String, &DeclStruc
     })
 }
 
-/// The one exhaustive (no wildcard) compound-propagation rule shared by
-/// `classify_type` below and `bodies::is_resource_type`: a resource
-/// propagates through `own[..]`, arrays, tuples, `Option`, and `Result`;
-/// every scalar/`Fn`/`Generic`/`Static` variant is always data. The only
-/// thing that differs between the two callers is how a *named* type's own
-/// resource-ness is determined, so that single question is the seam
-/// (`named_is_resource`) — `classify_type` answers it with a memoized,
-/// cycle-checked recursive classification (`classify_named`, which can
-/// fail on a genuinely infinite-by-value type); `is_resource_type` answers
-/// it with a plain lookup against already-classified structs/enums in
-/// `mctx` and can never fail. Being exhaustive here (not `_ => false`)
-/// means a newly added `Type` variant forces a decision at this one triage
-/// point instead of both callers silently (and possibly divergently)
-/// defaulting it to data. Every subtree is always visited, never
-/// short-circuited, so `classify_type`'s cycle detection/memoization (which
-/// needs every referenced type visited, not just enough to answer `bool`)
-/// gets it for free; `is_resource_type`'s `named_is_resource` has no side
-/// effects to lose by the same non-short-circuit traversal.
 pub(crate) fn resource_propagates(
     ty: &Type,
     named_is_resource: &mut dyn FnMut(&str, &[TypeArg]) -> bool,
@@ -4121,15 +3084,6 @@ fn classify_type(
     })
 }
 
-// --- the check dump (decision 8) ------------------------------------------
-
-/// `effects` is the access pass's (plans/M2.md item D) inferred receiver
-/// effect for every private plain-`self` method, keyed `(struct name,
-/// method name)` — threaded in as one extra parameter rather than
-/// restructuring this module around it (decision 10's minimal-footprint
-/// rule). Prefer `TypedProgram::effects` from a completed check; only
-/// re-infer via `access::infer_effects` on a pure dump path that has no
-/// typed program yet.
 pub fn render_items(
     items: &[DeclItem],
     effects: &BTreeMap<(String, String), AccessMode>,
@@ -4246,7 +3200,6 @@ pub fn render_type(ty: &Type) -> String {
         ),
         Type::Option(t) => format!("Option[{}]", render_type(t)),
         Type::Result(ok, err) => format!("Result[{}, {}]", render_type(ok), render_type(err)),
-        // plans/M13.md item K: multi-member inferred error set.
         Type::Named(name, args) if name == ERROR_SET_NAME => args
             .iter()
             .map(render_type_arg)
@@ -4278,11 +3231,6 @@ pub fn render_type(ty: &Type) -> String {
     }
 }
 
-/// `pub(crate)` (item H, generics.rs): the canonical-argument renderer
-/// generics.rs needs both for the check dump's own `Type::Named`
-/// rendering (via `render_type`, unchanged) and for its own instantiation
-/// keys/diagnostics — same span-insensitive text, reused rather than
-/// duplicated.
 pub(crate) fn render_type_arg(arg: &TypeArg) -> String {
     match arg {
         TypeArg::Type(t) => render_type(t),
@@ -4335,11 +3283,6 @@ fn render_item(
                     render_deriving(&s.deriving)
                 ),
             );
-            // plans/M13.md item O / 04 §7: per-type class line in the
-            // expanded view. Emitted only for `resource(manual)` so the
-            // 56 InterruptCell goldens stay byte-identical (item O's own
-            // regression oracle); tooling still has the classes on every
-            // DeclStruct via `s.classes`.
             if s.is_manual_resource {
                 push_line(out, depth + 1, &s.classes.render_line());
             }
@@ -4362,9 +3305,6 @@ fn render_item(
             for v in &e.variants {
                 render_variant(v, depth + 1, out);
             }
-            // plans/M9.md item B2: methods/associated fns, same dump
-            // surface structs already use (without `@driver` handoff —
-            // an enum is never a driver).
             for m in &e.members {
                 if let DeclMember::Fn(f) = m {
                     let prefix = if f.is_async { "async fn " } else { "fn " };
@@ -4405,11 +3345,6 @@ fn render_member(
         }
         DeclMember::Fn(f) => {
             let prefix = if f.is_async { "async fn " } else { "fn " };
-            // Only a private (`!is_pub`) plain-`self` (`Read`, not `init`)
-            // receiver is ambiguous enough to need the access pass's
-            // inferred effect (types.rs's own `render_receiver` doc
-            // comment); every other shape is already unambiguous in
-            // source and needs no lookup.
             let override_mode = f.receiver.as_ref().and_then(|r| {
                 if r.mode.is_none() && !r.is_pub && !r.is_init {
                     effects.get(&(owner.name.clone(), f.name.clone())).copied()
@@ -4417,8 +3352,6 @@ fn render_member(
                     None
                 }
             });
-            // plans/M7.md item E3: 03-hardware.md §5 — handoff is
-            // signature-determined and "displayed by tooling".
             let handoff = crate::sema::handoff::handoff_dump_prefix(owner, f);
             push_line(
                 out,
@@ -4452,20 +3385,6 @@ fn render_variant(v: &DeclVariant, depth: usize, out: &mut String) {
     push_line(out, depth, &line);
 }
 
-// --- plans/M9.md items DD / GG: re-key a spliced declaration ------------
-//
-// Decision 9: the local spelling is the one name. The ModuleCtx splice
-// installs under that key; this walk makes every `Type::Named` inside the
-// cloned declaration agree. DD re-keyed only the owning type; GG applies
-// one simultaneous substitution of *every* exporter spelling the
-// importer bound (parameter, return, field, generic argument, const
-// type) — keeping the exporter's spelling only where the importer has
-// no binding. Paired with `typed::rekey_struct_names` at the TypedProgram
-// splice. Rejected (DD 86 / FF 100 / GG): a fallback that tries local
-// then exporter — two sources of truth about the canonical spelling.
-
-/// Re-key a spliced `DeclStruct` under the importer's whole-signature
-/// substitution. No-op when `subs` is empty.
 pub(crate) fn rekey_decl_struct_names(s: &mut DeclStruct, subs: &BTreeMap<String, String>) {
     if subs.is_empty() {
         return;
@@ -4490,8 +3409,6 @@ pub(crate) fn rekey_decl_struct_names(s: &mut DeclStruct, subs: &BTreeMap<String
     }
 }
 
-/// plans/M9.md item B2 / GG: same whole-signature re-key for an imported
-/// enum's method signatures and variant payloads.
 pub(crate) fn rekey_decl_enum_names(e: &mut DeclEnum, subs: &BTreeMap<String, String>) {
     if subs.is_empty() {
         return;
@@ -4530,7 +3447,6 @@ pub(crate) fn rekey_decl_enum_names(e: &mut DeclEnum, subs: &BTreeMap<String, St
     }
 }
 
-/// Re-key a free / associated `DeclFn`'s signature under `subs`.
 pub(crate) fn rekey_decl_fn_names(f: &mut DeclFn, subs: &BTreeMap<String, String>) {
     if subs.is_empty() {
         return;
@@ -4546,8 +3462,6 @@ pub(crate) fn rekey_decl_fn_names(f: &mut DeclFn, subs: &BTreeMap<String, String
     }
 }
 
-/// Collect every `Type::Named` spelling reachable from `ty`, including
-/// nested generic type arguments (plans/M9.md item HH).
 pub(crate) fn collect_named_type_names(ty: &Type, out: &mut BTreeSet<String>) {
     match ty {
         Type::Array(elem, _) => collect_named_type_names(elem, out),
@@ -4599,9 +3513,6 @@ pub(crate) fn collect_named_type_names(ty: &Type, out: &mut BTreeSet<String>) {
     }
 }
 
-/// Every named type in a resolved fn signature (params, return,
-/// const-generic types). The receiver is always `Self` and is not
-/// carried as a `Type` on `DeclReceiver`.
 pub(crate) fn collect_named_types_from_decl_fn(f: &DeclFn, out: &mut BTreeSet<String>) {
     for p in &f.params {
         collect_named_type_names(&p.ty, out);
@@ -4614,8 +3525,6 @@ pub(crate) fn collect_named_types_from_decl_fn(f: &DeclFn, out: &mut BTreeSet<St
     }
 }
 
-/// Every named type in a resolved struct declaration (fields + method
-/// signatures). Method *bodies* are a separate AST walk at the splice.
 pub(crate) fn collect_named_types_from_decl_struct(s: &DeclStruct, out: &mut BTreeSet<String>) {
     for m in &s.members {
         match m {
@@ -4629,8 +3538,6 @@ pub(crate) fn collect_named_types_from_decl_struct(s: &DeclStruct, out: &mut BTr
     }
 }
 
-/// Every named type in a resolved enum declaration (variant payloads +
-/// method signatures).
 pub(crate) fn collect_named_types_from_decl_enum(e: &DeclEnum, out: &mut BTreeSet<String>) {
     for v in &e.variants {
         match &v.payload {
@@ -4658,9 +3565,6 @@ pub(crate) fn collect_named_types_from_decl_enum(e: &DeclEnum, out: &mut BTreeSe
     }
 }
 
-/// Re-key every `Type::Named` whose spelling is a key of `subs`, in one
-/// simultaneous pass. Shared by the DeclStruct splice (DD/GG) and
-/// `layout::merge_layout_ctx`'s aliased-import install (FF/GG).
 pub(crate) fn rekey_type_names(ty: &mut Type, subs: &BTreeMap<String, String>) {
     if subs.is_empty() {
         return;
@@ -4722,19 +3626,6 @@ fn rekey_decl_type(ty: &mut Type, subs: &BTreeMap<String, String>) {
     }
 }
 
-// --- tests --------------------------------------------------------------
-//
-// 02-language.md §7.1: "`struct` is a product value — data if every field
-// is data; `resource struct` makes it a resource by fiat"; §6.2: "own[P]
-// T — pool handle" and "Static[T] ... a copyable read-only handle ... it
-// exposes no address and no mutation" (always data, regardless of the
-// payload). `resource_propagates`'s own doc comment above states the rule
-// this pins: a resource propagates through `own[..]`, arrays, tuples,
-// `Option`, `Result`; every scalar/`Fn`/`Generic`/`Static` variant is
-// always data; a `Named` type's own resource-ness is answered by the
-// caller-supplied closure (memoized recursive classification in
-// `classify_type`, a plain lookup in `bodies::is_resource_type`) — neither
-// goldens nor the fuzzer check this per-variant table directly.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4748,9 +3639,6 @@ mod tests {
         let mut always_resource = |_: &str, _: &[TypeArg]| true;
         let mut never_resource = |_: &str, _: &[TypeArg]| false;
 
-        // Scalars, unit/never, Str, Bytes, Fn, Generic: always data, even
-        // when the named-type answer would say otherwise (it is never
-        // consulted for these variants).
         let always_data_cases: Vec<(&str, Type)> = vec![
             ("bool", Type::Bool),
             ("u8", Type::U8),
@@ -4785,8 +3673,6 @@ mod tests {
             );
         }
 
-        // own[P] T is always a resource, regardless of T (§6.2; the
-        // payload is never even visited).
         assert!(
             resource_propagates(
                 &Type::Own("P".to_string(), Box::new(Type::U8)),
@@ -4795,8 +3681,6 @@ mod tests {
             "own[P] T is always a resource regardless of T"
         );
 
-        // Static[T] is always data, regardless of T (§6.2's "regardless
-        // of T" applies even when T is itself a resource-shaped type).
         assert!(
             !resource_propagates(
                 &Type::Static(Box::new(Type::Own("P".to_string(), Box::new(Type::U8)))),
@@ -4805,9 +3689,6 @@ mod tests {
             "Static[T] is always data regardless of T"
         );
 
-        // Array/Tuple/Option/Result propagate: resource exactly when some
-        // component is (§7.1's rule, extended to every composite `Type`
-        // this pass resolves).
         let resource_elem = Type::Own("P".to_string(), Box::new(Type::U8));
         let data_elem = Type::U8;
 
@@ -4878,9 +3759,6 @@ mod tests {
             "Result[u8, u8] is data"
         );
 
-        // A bare Named type resolves through the closure argument — both
-        // answers are exercised (§7.1: "resource struct makes it a
-        // resource by fiat", decided by the caller, not by this function).
         let named = Type::Named("Foo".to_string(), vec![]);
         assert!(
             resource_propagates(&named, &mut always_resource),
@@ -4892,34 +3770,18 @@ mod tests {
         );
     }
 
-    // --- `@layout` (plans/M7.md item B) ------------------------------------
-    //
-    // Every rule with a *source-shaped* rejection is pinned as a golden
-    // (`tests/golden/err-layout-*`) — that is the review surface. These
-    // cover the declaration-shape guards whose own golden would say
-    // nothing a reader could not predict, plus the two properties a golden
-    // structurally cannot show: that `check_layouts` is a pure function
-    // (`image.report.deterministic`'s own precondition), and that the dump
-    // grammar is exactly what this module claims it is.
-
     fn layouts_of(src: &str) -> Result<Vec<LayoutType>, SemaError> {
         let tokens = crate::syntax::lexer::lex(src).expect("test source lexes");
         let module = crate::syntax::parser::parse(tokens).expect("test source parses");
         check_layouts(&module)
     }
 
-    /// The whole pipeline, so the *later* layout-completion pass runs
-    /// (plans/M10.md item A2b): `check_layouts` alone would only ever defer.
     fn completed_layouts_of(src: &str) -> Result<Vec<LayoutType>, SemaError> {
         let tokens = crate::syntax::lexer::lex(src).expect("test source lexes");
         let module = crate::syntax::parser::parse(tokens).expect("test source parses");
         crate::sema::check_typed(&module, "t.wr").map(|p| p.layouts)
     }
 
-    /// The early pass leaves a `const`-named length **deferred** — no size, no
-    /// entries — rather than rejecting it (as item A2 did) or guessing at it.
-    /// This is the property decision 581 turns on, and no golden can show it:
-    /// by the time any artifact is printed, the layout has been completed.
     #[test]
     fn a_const_length_defers_in_the_early_pass_and_completes_in_the_later_one() {
         let src = "module t\n\nconst N: u32 = 4\n\n\
@@ -4930,16 +3792,11 @@ mod tests {
         assert_eq!(early[0].size, None, "deferred, not zero");
         assert!(early[0].entries.is_empty(), "no offsets are known yet");
         assert_eq!(early[0].padding, 0);
-        // And the same declaration, completed: 8 + 4 * 4.
         let done = completed_layouts_of(src).expect("the later pass completes it");
         assert_eq!(done[0].size, Some(24));
         assert_eq!(done[0].entries.len(), 2);
     }
 
-    /// A length that depends on another `const` works, because resolution goes
-    /// through the one real evaluator rather than a second scanner that would
-    /// have to reimplement arithmetic (decision 580's rejected alternative
-    /// (ii)).
     #[test]
     fn a_const_length_may_depend_on_another_const() {
         let done = completed_layouts_of(
@@ -4950,32 +3807,19 @@ mod tests {
         assert_eq!(done[0].size, Some(24));
     }
 
-    /// The completion pass's own rejections, by the substring that makes each
-    /// message the right one. The two with a source-shaped story of their own
-    /// are goldens (`err-layout-runtime-len-not-const`,
-    /// `err-layout-runtime-len-zero`, `err-layout-runtime-len-too-big`); these
-    /// are the neighbours that would say nothing extra as a golden.
     #[test]
     fn const_length_guards() {
         let cases: &[(&str, &str)] = &[
-            // Negative: the same rule zero gets — a `@layout` field covers at
-            // least one byte — and worth its own case because a signed `const`
-            // reaches the pass as a perfectly valid `i32`.
             (
                 "module t\n\nconst N: i32 = -3\n\n@layout(runtime, endian=little)\n\
                  struct T:\n    turns: [u32; N]\n",
                 "whose value is -3",
             ),
-            // Not an integer at all: a length is a count of elements.
             (
                 "module t\n\nconst N: bool = true\n\n@layout(runtime, endian=little)\n\
                  struct T:\n    turns: [u32; N]\n",
                 "whose value is not an integer",
             ),
-            // A `const` the unselected `comptime if` branch declared does not
-            // exist after `specialize`, so the *real* name resolver refuses it
-            // first — which is exactly why this pass reads the real const
-            // table instead of scanning `module.items` for `const` itself.
             (
                 "module t\n\nconst DEBUG: bool = false\n\ncomptime if DEBUG:\n\
                  \x20   const N: u32 = 3\ncomptime else:\n    const M: u32 = 9\n\n\
@@ -4993,11 +3837,6 @@ mod tests {
         }
     }
 
-    /// Requirement 4 of plans/M10.md item A2b: an uncompleted layout that
-    /// reaches an artifact is a fail-closed rejection, never a `size=0` line.
-    /// Unreachable from source — every pipeline entry completes the table
-    /// first — so it is asserted directly on the renderers, which is the only
-    /// place the guard can be observed.
     #[test]
     fn an_uncompleted_layout_never_reports_a_size() {
         let deferred = LayoutType {
@@ -5021,8 +3860,6 @@ mod tests {
             "nothing is printed for a layout with no size"
         );
         assert!(dump_layouts(&[("t".to_string(), vec![deferred.clone()])]).is_err());
-        // And the same guard on the byte count itself, which is what
-        // `img.dma_pool`'s backing and every other consumer asks through.
         assert!(deferred.require_size("a test").is_err());
     }
 
@@ -5039,11 +3876,7 @@ mod tests {
         let l = &layouts[0];
         assert_eq!(l.kind, LayoutKind::Mmio);
         assert_eq!(l.endian, LayoutEndian::Little);
-        // 0x64 + 4: the layout is exactly the bytes its fields cover, with
-        // no trailing padding and no alignment round-up.
         assert_eq!(l.size, Some(0x68));
-        // The 0x60 bytes below the first field are a declared hole, not an
-        // invented one: the author wrote `@offset(0x060)`.
         assert_eq!(l.padding, 0x60);
         assert_eq!(
             l.entries,
@@ -5088,8 +3921,6 @@ mod tests {
         let a = layouts_of(MMIO_EXAMPLE).unwrap();
         let b = layouts_of(MMIO_EXAMPLE).unwrap();
         assert_eq!(a, b);
-        // A module with no `@layout` type contributes nothing at all
-        // (facts only — never an empty placeholder block).
         let none = layouts_of("module t\n\nstruct S:\n    n: u32\n").unwrap();
         assert!(none.is_empty());
         assert_eq!(
@@ -5098,10 +3929,6 @@ mod tests {
         );
     }
 
-    /// Every declaration-shape guard, by the substring that makes each
-    /// message the right one. Kept as a table because these are all one
-    /// sentence long and none of them needs a source file to be
-    /// understood.
     #[test]
     fn declaration_shape_guards() {
         let cases: &[(&str, &str)] = &[
@@ -5144,16 +3971,6 @@ mod tests {
                 "module t\n\n@layout(dma, endian=little)\nstruct S:\n    @packed n: u32\n",
                 "unknown attribute `@packed`",
             ),
-            // The three field arms whose *sibling* arm is the one a golden
-            // pins, kept honest here rather than left as an untested
-            // branch of a tested rule: `f32`/`f64` are target-dependent on
-            // 02-language.md §6.1's own "where the target enables them"
-            // (`golden/err-layout-target-dependent` pins `usize`); a
-            // capability in a `dma`/`mmio` layout is rejected for the more
-            // basic reason than 03 §3's `wire` sentence
-            // (`golden/err-layout-wire-capability` pins that one); and a
-            // register wrapper is only ever a wrapper *of a sized integer*
-            // (`golden/err-layout-mmio-wrapper` pins the wrong-kind arm).
             (
                 "module t\n\n@layout(wire, endian=big)\nstruct S:\n    ratio: f32\n",
                 "where the target enables them",
@@ -5170,20 +3987,6 @@ mod tests {
                 "module t\n\n@layout(mmio, endian=little)\nstruct S:\n    r: WriteOnly[u32, u32]\n",
                 "must wrap exactly one register type",
             ),
-            // plans/M10.md item A2, 03-hardware.md §3.1. The `runtime`
-            // kind's two new field shapes are pinned end to end by
-            // `golden/check-layout-runtime` and their headline rejections by
-            // five `golden/err-layout-*` cases; these are the *sibling*
-            // arms, each one sentence long and none needing a source file
-            // to be understood (the precedent this table already set
-            // above).
-            //
-            // §3.1's element set is closed — "another `@layout(runtime)`
-            // type, or a fixed-length array of one" — so everything that is
-            // neither a sized integer nor a nested `runtime` layout is one
-            // rejection. `[usize; 4]` among them: decision 563 adds **no**
-            // `usize` exemption for this kind, because one target-dependent
-            // layout class would break the property `@layout` exists for.
             (
                 "module t\n\n@layout(runtime, endian=little)\nstruct S:\n    a: [usize; 4]\n",
                 "which is not an array field's element type",
@@ -5192,18 +3995,10 @@ mod tests {
                 "module t\n\n@layout(runtime, endian=little)\nstruct S:\n    a: [bool; 4]\n",
                 "which is not an array field's element type",
             ),
-            // An array *of arrays* is not "a fixed-length array of one"
-            // nested layout; it is two levels of a shape §3.1 grants one
-            // level of.
             (
                 "module t\n\n@layout(runtime, endian=little)\nstruct S:\n    a: [[u32; 2]; 2]\n",
                 "which is not an array field's element type",
             ),
-            // A negative length is neither an integer literal (it parses as a
-            // unary expression) nor a bare `const` name, so plans/M10.md item
-            // A2b's widened rule still refuses it — and refuses it *early*,
-            // in the pass that evaluates nothing, rather than deferring an
-            // expression it would have to type-check to read.
             (
                 "module t\n\n@layout(runtime, endian=little)\nstruct S:\n    a: [u32; -1]\n",
                 "neither an integer literal nor the name of a module-level `const`",
@@ -5212,32 +4007,18 @@ mod tests {
                 "module t\n\n@layout(runtime, endian=little)\nstruct S:\n    a: [u32; 0]\n",
                 "has length 0",
             ),
-            // An element whose width is not a multiple of its own alignment
-            // (`E` is 5 bytes, 4-byte aligned) puts every element after the
-            // first at a misaligned offset, and the only fix is padding
-            // between elements — which a `@layout` never invents.
             (
                 "module t\n\n@layout(runtime, endian=little)\nstruct E:\n\
                  \x20   a: u32\n    b: u8\n\n\
                  @layout(runtime, endian=little)\nstruct S:\n    e: [E; 2]\n",
                 "would need implicit padding to be aligned",
             ),
-            // The nesting rule's other direction: `golden/err-layout-\
-            // runtime-nests-dma` pins a `runtime` layout reaching for a
-            // `dma` one; this is a `dma` layout reaching for a `runtime`
-            // one, which must *not* be confused with the M7 item E gap
-            // (`golden/err-layout-nested`, a `dma` layout nesting a `dma`
-            // one — a missing feature, not a rule).
             (
                 "module t\n\n@layout(runtime, endian=little)\nstruct R:\n\
                  \x20   a: u32\n\n\
                  @layout(dma, endian=little)\nstruct S:\n    r: R\n",
                 "nests a `@layout` type of a different kind",
             ),
-            // A nested layout's alignment is the widest among its fields
-            // (4 here), not its size, and it is what the following field's
-            // offset is checked against: `t` at offset 1 needs 3 invented
-            // bytes.
             (
                 "module t\n\n@layout(runtime, endian=little)\nstruct R:\n\
                  \x20   a: u32\n    b: u32\n\n\
@@ -5256,17 +4037,6 @@ mod tests {
         }
     }
 
-    /// A long chain of nested `@layout(runtime)` types — `L0` nests `L1`
-    /// nests ... nests `L199` — fails closed with a named diagnostic rather
-    /// than recursing 200 frames into this pass.
-    ///
-    /// Cycle detection already makes the recursion finite (no name repeats),
-    /// so "it terminates" was never the question; the question is whether it
-    /// terminates by *deciding* or by exhausting the process stack. 200 is
-    /// far past the two levels 03 §3.1's tables need and well past
-    /// `MAX_LAYOUT_NEST_DEPTH`, and a golden for it would be six hundred
-    /// generated lines saying nothing a reader could not predict, so the
-    /// input is generated here instead.
     #[test]
     fn a_deep_nesting_chain_fails_closed() {
         let mut src = String::from("module t\n\n");
@@ -5289,16 +4059,6 @@ mod tests {
         );
     }
 
-    /// A nesting graph that is *within* the depth cap but exponentially wide
-    /// — sixteen layouts, each naming the next one four times — fails closed
-    /// on the expansion budget.
-    ///
-    /// This is the failure the depth cap does not catch, and it is the more
-    /// dangerous one: `4^15` expansions from twenty lines of source is not a
-    /// wrong answer, it is a pass that never returns, and `check_layouts` is
-    /// on the `sema` fuzz lane's path on every iteration. The test's own
-    /// runtime is the assertion — if the budget stopped working this would
-    /// hang rather than fail.
     #[test]
     fn a_wide_nesting_graph_fails_closed() {
         let mut src = String::from("module t\n\n");
@@ -5325,12 +4085,6 @@ mod tests {
         );
     }
 
-    /// The two `runtime` field shapes, laid out (03-hardware.md §3.1).
-    /// `golden/check-layout-runtime` is the review surface; this asserts the
-    /// one fact a dump cannot show, because nothing prints it — that a
-    /// nested layout's *alignment* is the widest among its fields and an
-    /// array's is its element's, so neither field is over-aligned to its own
-    /// size.
     #[test]
     fn runtime_fields_align_to_their_element_not_their_size() {
         let src = "module t\n\n\
@@ -5342,10 +4096,6 @@ mod tests {
              \x20   rr_cursor: u64\n    turns: [TurnArea; 4]\n    one: TurnArea\n";
         let layouts = layouts_of(src).expect("03-hardware.md §3.1's own shape");
         let table = &layouts[1];
-        // 8 + 4*8 + 8, with no padding anywhere: a 32-byte array field
-        // aligned to 32 would have needed 24 invented bytes at offset 0x8,
-        // and a 40-byte struct field aligned to 40 would have needed more
-        // still.
         assert_eq!(table.size, Some(48));
         assert_eq!(table.padding, 0);
         assert_eq!(
@@ -5373,17 +4123,9 @@ mod tests {
         );
     }
 
-    /// A `@layout` struct with no fields at all. Its own case because the
-    /// parser has no empty-body form — the guard is reachable only through
-    /// a body that declares something else this pass already skipped, which
-    /// today means nothing does: it is the one rule below that is a
-    /// structural floor rather than a source-reachable rejection, and it
-    /// stays because "size zero" must never be a reportable answer.
     #[test]
     fn an_empty_layout_has_no_reportable_size() {
         let src = "module t\n\n@layout(dma, endian=little)\nstruct S:\n    pass\n";
-        // The parser rejects `pass` as a struct member outright, so this
-        // asserts only that nothing accepts it silently.
         assert!(
             crate::syntax::lexer::lex(src)
                 .ok()
@@ -5392,8 +4134,6 @@ mod tests {
                 .unwrap_or(true)
         );
     }
-
-    // --- capabilities (plans/M7.md item A, 03-hardware.md §1) ------------
 
     fn check_err(src: &str) -> SemaError {
         let tokens = crate::syntax::lexer::lex(src).expect("test source lexes");
@@ -5412,8 +4152,6 @@ mod tests {
         }
     }
 
-    /// One prefix every capability case below shares: an `@layout(mmio)`
-    /// type for `Mmio[L]` to name and a plain struct for `DeviceCap[D]`.
     const CAP_PRELUDE: &str = "module t\n\n\
          @layout(mmio, endian=little)\n\
          struct Regs:\n\
@@ -5425,17 +4163,9 @@ mod tests {
          \x20   id: u32\n\n\
          pool Slots\n\n";
 
-    /// Every capability *shape* guard with no source-shaped story of its
-    /// own — arity, and the argument-kind rules — kept here rather than
-    /// each getting a golden that would say nothing a reader could not
-    /// predict (`declaration_shape_guards` above set the precedent).
     #[test]
     fn capability_shape_guards() {
         let cases: &[(&str, &str)] = &[
-            // Arity comes from the one shared list
-            // (`eval::image_checks::CAPABILITY_TYPES`): each name's count
-            // is fixed, and a bare or over-applied spelling is a named
-            // rejection rather than a silently different type.
             (
                 "fn f(read c: DeviceCap) -> u32:\n    return 0\n",
                 "`DeviceCap` expects 1 generic argument(s), found 0",
@@ -5448,11 +4178,6 @@ mod tests {
                 "fn f(read c: DmaPool[Slots]) -> u32:\n    return 0\n",
                 "`DmaPool` expects 2 generic argument(s), found 1",
             ),
-            // plans/M7.md item D: `DmaPool[P, N]`/`DmaShared[P, L]` name a
-            // bound **pool** in argument position 0 (03-hardware.md §1's
-            // own `DmaPool[BlockControl, 256.KiB]`), resolved against the
-            // declared pool names rather than the type table. A type there
-            // is not a pool, and a pool name is not a type.
             (
                 "fn f(take c: DmaPool[Blk, 4096]) -> u32:\n    return 0\n",
                 "unknown pool `Blk`",
@@ -5473,10 +4198,6 @@ mod tests {
                 "fn f(take c: DmaShared[4, Ctl]) -> u32:\n    return 0\n",
                 "names the DMA pool it is authority over",
             ),
-            // plans/M7.md item D self-audit: two more reachable arms with
-            // no golden of their own — a pool argument carrying generic
-            // arguments (a `pool` declaration has none), and an `L` that
-            // is a scalar rather than a named struct.
             (
                 "fn f(take c: DmaPool[Option[u8], 4]) -> u32:\n    return 0\n",
                 "takes no generic arguments of its own",
@@ -5485,10 +4206,6 @@ mod tests {
                 "fn f(take c: DmaShared[Slots, u32]) -> u32:\n    return 0\n",
                 "must name an `@layout(dma)` struct",
             ),
-            // `Mmio[L]`'s own argument rule (03 §2), in the two shapes no
-            // golden covers: a scalar, and a struct with no `@layout` at
-            // all. `golden/err-cap-mmio-layout` pins the third — a
-            // `@layout` of the wrong *kind*, which is the interesting one.
             (
                 "fn f(read c: Mmio[u32]) -> u32:\n    return 0\n",
                 "must name an `@layout(mmio)` struct",
@@ -5497,17 +4214,10 @@ mod tests {
                 "fn f(read c: Mmio[Blk]) -> u32:\n    return 0\n",
                 "requires `Blk` to be an `@layout(mmio)` struct",
             ),
-            // A const argument where a layout type belongs — `Mmio[4]`
-            // resolves (a capability's arguments go through the general
-            // `resolve_type_arg`, so a const stays a const), and the
-            // argument rule is what rejects it.
             (
                 "fn f(read c: Mmio[4]) -> u32:\n    return 0\n",
                 "`Mmio` requires a type argument",
             ),
-            // The argument rule reaches through composites, not only a
-            // bare annotation — the recursion arms of
-            // `validate_capability_args`, which no golden exercises.
             (
                 "fn f(read c: Option[Mmio[Blk]]) -> u32:\n    return 0\n",
                 "requires `Blk` to be an `@layout(mmio)` struct",
@@ -5516,8 +4226,6 @@ mod tests {
                 "fn f(read c: [(u32, Mmio[Blk]); 2]) -> u32:\n    return 0\n",
                 "requires `Blk` to be an `@layout(mmio)` struct",
             ),
-            // ...and into an enum variant's own payload, the one item
-            // declaration kind with no fn signature of its own.
             (
                 "enum E:\n    Plain\n    Held(Mmio[Blk])\n",
                 "requires `Blk` to be an `@layout(mmio)` struct",
@@ -5535,35 +4243,9 @@ mod tests {
         }
     }
 
-    /// The unforgeability claim, made checkable rather than argued.
-    ///
-    /// 03-hardware.md §1: "Their constructors are not source-visible: no
-    /// address, import, or cast creates one." The claim this table backs
-    /// is stronger and more mechanical than that sentence: **the only
-    /// declaration positions from which a capability-typed value can
-    /// originate are a `@driver`'s own fields and a fn's own parameters**
-    /// — because every other position that could introduce one is
-    /// rejected by name below, and every *expression* that could produce
-    /// one out of nothing is rejected too.
-    ///
-    /// Why that is the whole list: a typed expression's type comes from
-    /// exactly one of (a) a literal — none of which is ever a named type,
-    /// (b) a declared annotation reached by reading it (a field, a
-    /// parameter, a local, a `const`), (c) a callee's declared return
-    /// type, (d) a builtin intrinsic's own fixed result type — none of
-    /// which is a capability, `sema::bodies`' intrinsic table, or (e) a
-    /// composition of those (tuple/array/field/index/`Option`/`Result`
-    /// unwrapping), which introduces no new named type. The cases below
-    /// close (b) for `const`s and (c) for every fn; locals are closed by
-    /// induction, since a local's type is its initializer's; and the
-    /// construction/call/cast/declare/import cases close the routes that
-    /// would have manufactured a value with no annotation at all. What
-    /// remains — a `@driver` field and a fn parameter — is exactly what
-    /// `check_provenance` and the image binding govern.
     #[test]
     fn no_source_construct_produces_a_capability() {
         let cases: &[(&str, &str, &str)] = &[
-            // (a) construction, by every spelling the grammar has.
             (
                 "a struct-literal construction",
                 "fn f() -> u32:\n    c = DeviceCap[Blk](id=1)\n    return 0\n",
@@ -5579,14 +4261,11 @@ mod tests {
                 "fn f(a: u64) -> u32:\n    c = a.to[DeviceCap[Blk]]()\n    return 0\n",
                 "cannot be cast to",
             ),
-            // (b) a declaration under the name, which would make every
-            // spelling above legal at once.
             (
                 "a module declaration under the name",
                 "struct Mmio:\n    base: u64\n",
                 "cannot be declared",
             ),
-            // (c) a signature claiming to return one, at any nesting.
             (
                 "a fn returning one",
                 "fn f() -> DeviceCap[Blk]:\n    panic(\"x\")\n",
@@ -5603,14 +4282,11 @@ mod tests {
                  \x20       panic(\"x\")\n",
                 "none may claim to return one",
             ),
-            // (b) a comptime value claiming to be one.
             (
                 "a const declared as one",
                 "const C: DmaPool[Slots, 4096] = 0\n",
                 "no comptime value is one",
             ),
-            // plans/M7.md item D: the same sentence for 03 §3's shared
-            // control memory, whose first argument is a pool name too.
             (
                 "a const declared as shared control memory",
                 "const C: DmaShared[Slots, Ctl] = 0\n",
@@ -5628,11 +4304,6 @@ mod tests {
         }
     }
 
-    /// The asymmetry 03-hardware.md §1 turns on, both directions, in one
-    /// test — a `@driver` may hold what an `@actor` may not. Without the
-    /// accepting half, the containment rule could be satisfied by
-    /// rejecting capabilities everywhere, which would be a different
-    /// (and wrong) rule.
     #[test]
     fn a_driver_may_hold_a_capability_and_an_actor_may_not() {
         check_ok(&format!(
@@ -5649,9 +4320,6 @@ mod tests {
         );
     }
 
-    /// plans/M7.md item E4: an `@actor` may hold `Actor[D]` even when `D`
-    /// is a `@driver` whose fields include capabilities. The handle is
-    /// not the driver's authority.
     #[test]
     fn an_actor_may_hold_an_actor_handle_to_a_driver() {
         check_ok(&format!(
@@ -5660,15 +4328,6 @@ mod tests {
              \x20   init(mut self, disk: Actor[D]):\n        self.disk = disk\n"
         ));
     }
-
-    // --- typed MMIO (plans/M7.md item C, 03-hardware.md §2) -------------
-    //
-    // Every source-shaped rejection is a golden (`tests/golden/err-mmio-*`)
-    // — that is the review surface, same discipline as `@layout` above.
-    // These cover the two things a golden structurally cannot: that the
-    // register table is read back out of `check_layouts`' own product
-    // rather than out of hand-written text, and the *accepting* half of
-    // the claim rule whose acceptance a golden shows only implicitly.
 
     #[test]
     fn mmio_registers_are_read_back_from_the_checked_layout() {
@@ -5691,9 +4350,6 @@ mod tests {
             vec!["interrupt_status".to_string(), "interrupt_ack".to_string()]
         );
 
-        // An `mmio` field with no wrapper has no direction — not a third
-        // direction, and not a default. `golden/err-mmio-undirected-register`
-        // is what a source author sees; this is the table entry behind it.
         let bare = layouts_of(
             "module t\n\n@layout(mmio, endian=little)\nstruct S:\n\
              \x20   @offset(0x000) plain: u16\n",
@@ -5704,12 +4360,6 @@ mod tests {
         assert_eq!(reg.scalar, "u16");
     }
 
-    /// The claim rule's accepting half, and the one shape 03-hardware.md
-    /// §1's own worked example needs: a driver whose `init` takes
-    /// `take regs: Mmio[L]` *and* whose field holds `Mmio[L]` mints that
-    /// layout exactly once. Reading the parameter as a second mint would
-    /// make §1's constructor self-aliasing, which is why a parameter is
-    /// deliberately not a mint (this section's own note).
     #[test]
     fn an_mmio_parameter_delivering_a_field_is_not_a_second_mint() {
         check_ok(&format!(
@@ -5724,8 +4374,6 @@ mod tests {
         ));
     }
 
-    /// One `@layout(mmio)` type and one driver holding it — the prefix
-    /// every access-shape guard below shares.
     const MMIO_PRELUDE: &str = "module t\n\n\
          @layout(mmio, endian=little)\n\
          struct Regs:\n\
@@ -5734,11 +4382,6 @@ mod tests {
          @driver\npub struct D:\n\
          \x20   regs: Mmio[Regs]\n\n";
 
-    /// Every MMIO access *shape* guard whose own golden would say nothing
-    /// a reader could not predict from the accepting case
-    /// (`declaration_shape_guards`/`capability_shape_guards` above set the
-    /// precedent). The rules with a story — direction, width, endianness,
-    /// unknown register, register-as-a-value — are goldens.
     #[test]
     fn mmio_access_shape_guards() {
         let cases: &[(&str, &str, &str)] = &[
@@ -5789,14 +4432,6 @@ mod tests {
         }
     }
 
-    /// The claim walk sees a layout wherever a driver field's type carries
-    /// one, because each of those is still a layout the driver holds live.
-    /// **Every** composite arm of `collect_mmio_layouts` is listed here,
-    /// and every one is source-reachable — this is the test that keeps
-    /// that claim honest rather than assumed. One test rather than eight
-    /// goldens: the rule is the same rule each time, and the composite
-    /// arms are `type_contains_capability`'s own shape reused (this
-    /// section's own note).
     #[test]
     fn the_claim_walk_reaches_a_layout_through_every_composite() {
         for nested in [
@@ -5829,11 +4464,6 @@ mod tests {
         }
     }
 
-    /// A struct that is not a `@driver` has no claim, so it partitions
-    /// nothing and this rule does not apply to it — provenance
-    /// (`hardware.capabilities.provenance`) is what governs who may touch
-    /// what it holds. Asserted directly because it is an *absence*: the
-    /// `!d.is_driver` skip is otherwise invisible.
     #[test]
     fn a_struct_with_no_claim_partitions_nothing() {
         check_ok(
@@ -5850,11 +4480,6 @@ mod tests {
         );
     }
 
-    /// A layout consumes its declared *registers*, never its declared
-    /// holes. Two layouts whose holes cover each other's registers are
-    /// disjoint partitions of one claim — which is exactly 03 §2's own
-    /// worked example (an ISR partition at 0x60 alongside the sealed
-    /// transport's partition below it).
     #[test]
     fn a_declared_hole_consumes_nothing_from_the_claim() {
         check_ok(

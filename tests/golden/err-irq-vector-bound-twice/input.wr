@@ -1,7 +1,5 @@
 module examples.err_irq_vector_bound_twice
 
-# plans/M7.md item G: 03-hardware.md §6 — "exactly one handler per vector".
-# Two `bind` calls on the same owned vector are a named rejection.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

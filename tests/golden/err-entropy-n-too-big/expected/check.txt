@@ -1,1 +1,1 @@
-error[type]: `entropy[N]` length must be in 1..=64 (plans/M17.md freeze 1), found 65 at 6:19
+error[type]: `entropy[N]` length must be in 1..=64 (plans/M17.md freeze 1), found 65 at 5:19

@@ -1,39 +1,3 @@
-//! Structural generic instantiation (plans/M2.md item H): typing a
-//! `Generic[Args]` use enqueues the concrete instantiation (keyed in a
-//! `BTreeMap` by a canonical `"<kind>:<name>[<args>]"` string — decision
-//! 1's "BTreeSet-keyed by name + resolved args", realized this way so
-//! `Type`/`Expr` never need an `Ord` impl of their own; see
-//! `bodies.rs`'s `InstKind`/`QueuedInstantiation`/`ModuleCtx::generics_queue`
-//! doc comments for the queue itself and the "instantiated at" chain
-//! mechanism). Each unique instantiation is checked exactly once: this
-//! file builds a substituted copy of the declaration (`Subst`,
-//! `subst_*` below — decision 4's "clone freely", applied to `Type`
-//! trees instead of source text) and feeds it back through the *same*
-//! per-declaration check functions `bodies.rs`/`access.rs`/`matches.rs`
-//! already run for a non-generic declaration (each widened `pub(crate)`
-//! for exactly this reuse — decision 10's minimal-footprint rule, no
-//! restructuring).
-//!
-//! A missing requirement discovered while checking an instantiation
-//! reports the multi-line chain diagnostic pinned verbatim in
-//! 02-language.md §7.3 (decision 2) — see `finalize_diagnostic` below for
-//! the exact, deliberately narrow shape this recognizes (documented
-//! there, and in the session report).
-//!
-//! Const arguments (02-language.md §6.3, decision 4) evaluate only as a
-//! literal, a `const` name (recursively, to another literal/`const`/
-//! variant path), or a fieldless-enum variant path — `eval_const_expr`
-//! below; anything else fails closed via the existing `unimplemented_at`
-//! helper.
-//!
-//! Method-owned generic parameters (plans/M13.md item Q / 02 §8.3): a
-//! method's (or associated fn's) own `[T, const N]` list instantiates
-//! under the same worklist, keyed `method:{ReceiverType}.{name}[{args}]`.
-//! Type args are inferred at the call site exactly as for free functions
-//! — including `R` from a `fn(...) -> R` argument when a closure or named
-//! fn is passed — then the substituted body is re-checked and the
-//! monomorphized `TypedFn` lands in `TypedProgram::instantiations`.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::sema::bodies::{self, FnInfo, InstKind, ModuleCtx, QueuedInstantiation, StructInfo};
@@ -46,13 +10,6 @@ use crate::sema::{SemaError, access, flow, matches, unimplemented_at};
 use crate::syntax::ast::{self, Arg, BinOp, ClosureBody, Expr, Member, Module, Span, Stmt};
 use crate::syntax::printer;
 
-// --- canonical keys ---------------------------------------------------
-
-/// `"<kind>:<name>[<args>]"`, span-insensitive (`types::render_type_arg`
-/// already ignores spans for the shapes M2 supports — same reasoning as
-/// `bodies::types_eq`'s own `same_len_expr`). This is both the
-/// `BTreeMap` key `bodies::enqueue_instantiation` uses and the display
-/// spelling the chain diagnostic cites (`` `hash_pair[Sector]` ``).
 pub(crate) fn canonical_key(kind: InstKind, name: &str, args: &[TypeArg]) -> String {
     debug_assert_ne!(
         kind,
@@ -62,8 +19,6 @@ pub(crate) fn canonical_key(kind: InstKind, name: &str, args: &[TypeArg]) -> Str
     format!("{}:{}", kind.tag(), display_name(name, args))
 }
 
-/// `method:{ReceiverType}.{method}[{args}]` — plans/M13.md item Q's
-/// `(receiver type, method, type-args)` key.
 pub(crate) fn canonical_method_key(receiver: &Type, method: &str, args: &[TypeArg]) -> String {
     format!(
         "method:{}.{}",
@@ -80,8 +35,6 @@ fn display_name(name: &str, args: &[TypeArg]) -> String {
     format!("{name}[{}]", rendered.join(", "))
 }
 
-/// Display spelling used by the requirement-chain diagnostic
-/// (`Table.entry[Sector]`, `hash_pair[Sector]`).
 fn display_inst_name(entry: &QueuedInstantiation) -> String {
     match (&entry.kind, &entry.receiver) {
         (InstKind::Method, Some(recv)) => {
@@ -94,8 +47,6 @@ fn display_inst_name(entry: &QueuedInstantiation) -> String {
         _ => display_name(&entry.name, &entry.args),
     }
 }
-
-// --- substitution: Type::Generic(name) -> concrete Type ----------------
 
 #[derive(Debug, Clone, Default)]
 struct Subst {
@@ -141,16 +92,10 @@ fn subst_type_arg(arg: &TypeArg, subst: &Subst) -> TypeArg {
         TypeArg::Type(t) => TypeArg::Type(subst_type(t, subst)),
         TypeArg::Const(e) => TypeArg::Const(subst_expr(e, subst)),
         TypeArg::Bound(e) => TypeArg::Bound(subst_expr(e, subst)),
-        // A pool name (plans/M7.md item D) is a `pool Name` declaration,
-        // never a generic parameter, so nothing substitutes into it.
         TypeArg::Pool(p) => TypeArg::Pool(p.clone()),
     }
 }
 
-/// Rewrite const-generic names to their concrete argument expressions.
-/// Length/type positions only need a bare-name rewrite; method bodies
-/// (plans/M9.md item F1 decision 342) need a deep walk so `return N` /
-/// `[None; N]` / `self.len >= N` see the concrete value.
 fn subst_expr(e: &Expr, subst: &Subst) -> Expr {
     match e {
         Expr::Name(_, name) => subst.consts.get(name).cloned().unwrap_or_else(|| e.clone()),
@@ -355,59 +300,12 @@ fn subst_member_ast(m: &Member, subst: &Subst) -> Member {
     }
 }
 
-// --- const argument evaluation (plans/M3.md item B) ---------------------
-//
-// M2-H's own literal/const-name/fieldless-variant-only subset (decision
-// 4 of that plan) is replaced here by the real evaluator: a const
-// generic argument may now be any comptime-evaluable expression
-// (arithmetic, a reference to another `const`, a fieldless-enum
-// variant) — `eval::interp::eval_standalone` is the same tree-walking
-// interpreter `eval::check_consts` runs a plain module-level `const`
-// through. It is *not* threaded the fully assembled `TypedProgram`
-// (`mod.rs::check_typed`'s own `program` local): half of this file's
-// callers (`bodies.rs`'s own call/construction checking) run *during*
-// that program's own assembly, before it exists — so a const-generic
-// argument's evaluation is scoped to what a bare `const`'s own
-// initializer can already see standalone: `mctx`'s plain top-level
-// `const`s, freshly type-checked here into a small ad-hoc consts-only
-// `TypedProgram` (`build_consts_program` below). A const argument
-// expression that calls a plain `fn` is therefore not yet supported
-// (documented scope limit, not silently approximated: the evaluator
-// itself fails closed, naming the missing callee, exactly like any
-// other unimplemented construct) — 02-language.md §6.3's own value
-// vocabulary (`bool`/`char`/an integer/a fieldless enum) never needed a
-// function call to produce one in the first place.
-
-/// A throwaway `TypedProgram` carrying only `mctx`'s plain top-level
-/// `const`s (freshly type-checked, independent of whatever point in the
-/// main `bodies::check` pass this file's own caller is running from —
-/// cheap and safe to rebuild per call, decision 4: dumb, no state
-/// threaded across calls). A const whose own initializer does not type-
-/// check here is simply omitted — unreachable in practice, since every
-/// `const` in a module that passed `mod.rs::check`'s earlier passes
-/// already type-checks; this function only ever runs *during* that same
-/// module's own checking.
 fn build_consts_program(mctx: &ModuleCtx) -> Result<crate::sema::typed::TypedProgram, SemaError> {
     let mut program = crate::sema::typed::TypedProgram::default();
     for (name, ty) in &mctx.consts {
         let Some(raw) = mctx.const_values.get(name) else {
             continue;
         };
-        // A const whose initializer contains a generic bracket is outside
-        // the vocabulary this throwaway program exists to supply
-        // (02-language.md §6.3: a const argument's value is a
-        // bool/char/integer/fieldless-enum — never something a generic
-        // instantiation had to be built to produce) — and type-checking
-        // it here would recurse: `bodies::check_expr` on a generic
-        // construction resolves its const arguments through
-        // `eval_const_expr`, whose evaluation program is built by this
-        // very function, re-checking this very const, forever (a native
-        // stack overflow, found by M3-G's adversarial sweep on
-        // `const A: Array[10] = Array[10](dummy=10)`). Omitting it is
-        // fail-closed, not lossy: a const-arg expression referencing an
-        // omitted const gets the evaluator's own "unknown const"
-        // diagnostic, while the const itself still checks and evaluates
-        // normally in the real pipeline, which owns the instantiations.
         if contains_generic_brackets(raw) {
             continue;
         }
@@ -422,12 +320,6 @@ fn build_consts_program(mctx: &ModuleCtx) -> Result<crate::sema::typed::TypedPro
             );
         }
     }
-    // A fieldless-enum-variant const argument needs its own enum's
-    // variant order (`interp::variant_index`) exactly like a plain
-    // module-level `const` does (`typed::TypedProgram::enums`'s own doc
-    // comment) — a generic enum's is never needed here (constructing a
-    // generic enum's variant already fails closed in `bodies.rs` before
-    // producing a typed node at all).
     for (name, en) in &mctx.enums {
         if en.generics.is_empty() {
             program.enums.insert(
@@ -436,10 +328,7 @@ fn build_consts_program(mctx: &ModuleCtx) -> Result<crate::sema::typed::TypedPro
             );
         }
     }
-    // plans/M7.md item G / plans/M9.md item I: stdlib enums for
-    // const-generic arguments (`DriverMode.Irq`).
     for name in ["Target", "Failure", "DriverMode"] {
-        // plans/M9.md item QQ: load failures are `error[build]`.
         if let Some(vs) = crate::sema::stdlib_enums::variant_strs(name)? {
             program.enums.entry(name.to_string()).or_insert_with(|| {
                 TypedEnum::from_variants(vs.iter().map(|v| v.to_string()).collect())
@@ -449,18 +338,6 @@ fn build_consts_program(mctx: &ModuleCtx) -> Result<crate::sema::typed::TypedPro
     Ok(program)
 }
 
-/// True when an expression contains any `Expr::Index` node anywhere —
-/// the bracket shape a generic construction (`Name[Args](...)`) or a
-/// plain array index both wear (the parser cannot tell them apart —
-/// `ast::Expr::Index`'s own doc comment), used by
-/// `build_consts_program` above to keep its consts-only vocabulary from
-/// re-entering generic-argument resolution. Deliberately conservative,
-/// same shape as `specialize::collect_names_in_expr`: a suite-bodied
-/// closure is treated as containing one (its statements are not
-/// scanned), and an innocent array index excludes its const too — being
-/// too generous here only ever omits a const from the throwaway
-/// program, which the evaluator reports as an unknown const (fail
-/// closed), never a wrong answer.
 fn contains_generic_brackets(e: &Expr) -> bool {
     match e {
         Expr::Index(..) => true,
@@ -499,12 +376,6 @@ fn contains_generic_brackets(e: &Expr) -> bool {
     }
 }
 
-/// Encodes a decoded char back into lexable char-literal token text
-/// (quotes included — `ConstVal`'s old doc comment's own "raw lexed char
-/// text" shape, unchanged by item B): the common printable-ASCII case
-/// spells itself; `'`/`\`/the fixed named escapes/anything else use the
-/// matching escape (`\u{...}` covers every remaining codepoint, always
-/// lexable).
 fn encode_char_literal(ch: char) -> String {
     match ch {
         '\'' => "'\\''".to_string(),
@@ -518,14 +389,6 @@ fn encode_char_literal(ch: char) -> String {
     }
 }
 
-/// The `Value` a const-generic argument's real evaluation produced,
-/// translated back into the `Expr` shape `subst.consts` still carries
-/// (decision 1's array-length/const-parameter substitution keeps
-/// substituted `const`s as `Expr`s — `subst_expr` rewrites a bare
-/// `Expr::Name` to one of these, unchanged by item B): 02-language.md
-/// §6.3 bounds the *value* a const argument may hold to `bool`/`char`/an
-/// integer/a fieldless enum, regardless of how comptime-rich the
-/// expression that computed it was.
 fn value_to_const_arg_expr(
     v: &crate::eval::Value,
     enum_name: Option<&str>,
@@ -552,9 +415,6 @@ fn value_to_const_arg_expr(
                     _ => return Err(unimplemented_at("this const generic argument is", span)),
                 },
                 _ => {
-                    // plans/M7.md item G / plans/M9.md item I: stdlib
-                    // enums (`DriverMode`) are not in `mctx.enums`.
-                    // plans/M9.md item QQ: load failures are `error[build]`.
                     if let Some(vs) = crate::sema::stdlib_enums::variant_strs(enum_name)? {
                         vs.get(*idx).map(|v| v.to_string()).ok_or_else(|| {
                             unimplemented_at("this const generic argument is", span)
@@ -597,19 +457,6 @@ fn eval_const_expr(e: &Expr, expected: Option<&Type>, mctx: &ModuleCtx) -> Resul
     value_to_const_arg_expr(&value, enum_name.as_deref(), mctx, span)
 }
 
-// --- resolving raw call-site brackets into `TypeArg`s -------------------
-
-/// `Name[Args](...)`'s `Args` are raw `Expr`s (the parser cannot tell
-/// indexing from a generic bracket — `ast::Expr::Index`'s own doc
-/// comment) — this is the call-site mirror of `types::resolve_type_arg`
-/// (which runs on `ast::GenericArg`, the *annotation*-position grammar).
-/// A bare name is a scalar/struct/enum type if it names one, else a
-/// const-shaped expression (evaluated later, lazily, by `eval_const_expr`
-/// — resolving it eagerly here would reject a legal `const` name before
-/// even trying, since a name alone can't be told apart from a type name
-/// syntactically past this point either). No nested generic arguments
-/// (`Ring[Foo[Bar], 4]`) — that call shape fails closed at its own
-/// `unimplemented_at` in `resolve_call_type_arg`'s fallthrough.
 pub(crate) fn resolve_call_targs(
     targs: &[Expr],
     mctx: &ModuleCtx,
@@ -629,10 +476,6 @@ fn resolve_call_type_arg(e: &Expr, mctx: &ModuleCtx) -> Result<TypeArg, SemaErro
             if mctx.structs.contains_key(name) || mctx.enums.contains_key(name) {
                 return Ok(TypeArg::Type(Type::Named(name.clone(), vec![])));
             }
-            // Not a known type name: a const-shaped argument (a `const`
-            // item's own name, most commonly) — left unevaluated here,
-            // `eval_const_expr` resolves it when the argument actually
-            // binds to a const parameter.
             Ok(TypeArg::Const(e.clone()))
         }
         Expr::Int(..) | Expr::Bool(..) | Expr::Char(..) | Expr::Field(..) => {
@@ -644,8 +487,6 @@ fn resolve_call_type_arg(e: &Expr, mctx: &ModuleCtx) -> Result<TypeArg, SemaErro
         )),
     }
 }
-
-// --- building a `Subst` from a declaration's generics + resolved args ---
 
 fn check_arity(
     generics: &[DeclGenericParam],
@@ -680,8 +521,6 @@ fn build_subst(
                 subst.types.insert(g.name.clone(), t.clone());
             }
             (DeclGenericKind::Const(cty), TypeArg::Const(e))
-            // plans/M9.md item F1 decision 341: `..N` is occupancy
-            // spelling of the same const argument.
             | (DeclGenericKind::Const(cty), TypeArg::Bound(e)) => {
                 let v = eval_const_expr(e, Some(cty), mctx)?;
                 subst.consts.insert(g.name.clone(), v);
@@ -705,8 +544,6 @@ fn build_subst(
     Ok(subst)
 }
 
-// --- substituting a declaration's members --------------------------------
-
 fn subst_decl_field(f: &DeclField, subst: &Subst) -> DeclField {
     DeclField {
         name: f.name.clone(),
@@ -723,11 +560,6 @@ fn subst_decl_param(p: &DeclParam, subst: &Subst) -> DeclParam {
     }
 }
 
-/// Substitutes a *member* fn/method/init's signature using the
-/// *enclosing struct's* substitution: its own generics (if it happens to
-/// have any, beyond the struct's — a "generic method", item H's own
-/// documented scope boundary) are left exactly as declared, since they
-/// are never themselves instantiated.
 fn subst_decl_fn_member(f: &DeclFn, subst: &Subst) -> DeclFn {
     DeclFn {
         name: f.name.clone(),
@@ -744,12 +576,6 @@ fn subst_decl_fn_member(f: &DeclFn, subst: &Subst) -> DeclFn {
     }
 }
 
-/// Substitutes a *directly instantiated* fn's own signature, clearing its
-/// generics list — this is the one place a `DeclFn` actually stops being
-/// generic (`bodies::check_top_fn`'s guard is `f.generics.is_empty()` on
-/// the *ast*, but every check function downstream reads types off `d`
-/// alone, so clearing this is what actually makes the substituted
-/// declaration behave like a real concrete one).
 fn subst_decl_fn_direct(f: &DeclFn, subst: &Subst) -> DeclFn {
     DeclFn {
         name: f.name.clone(),
@@ -775,13 +601,6 @@ fn subst_decl_member(m: &DeclMember, subst: &Subst) -> DeclMember {
     }
 }
 
-/// Reclassifies a substituted struct/enum (decision 4's "a struct
-/// generic over T containing a T is a resource iff the argument is"):
-/// `bodies::is_resource_type` mirrors `types::classify_type` exactly and
-/// already resolves a `Type::Named` component through `mctx`'s
-/// (unsubstituted, but structurally identical for this purpose — a
-/// *named* component's own classification never depends on the
-/// *outer* instantiation's args) struct/enum tables.
 fn reclassify(
     is_resource_fiat: bool,
     component_types: &[(Type, Span)],
@@ -876,15 +695,6 @@ fn subst_decl_enum(d: &DeclEnum, subst: &Subst, mctx: &ModuleCtx) -> DeclEnum {
     }
 }
 
-// --- instantiation entry points: build + enqueue -------------------------
-
-/// Resolves `name[args]` as a struct instantiation: looks up the
-/// *declared* shape, substitutes it, and enqueues it (item H: "typing a
-/// `Generic[Args]` use enqueues the concrete instantiation") — every
-/// caller (a construction call, a field/method/variant lookup through an
-/// already-typed `Type::Named` value, an annotation) routes through this
-/// one function, so every use registers exactly once per unique
-/// `(name, args)` (the queue's own dedup).
 pub(crate) fn instantiate_struct(
     mctx: &ModuleCtx,
     name: &str,
@@ -900,11 +710,6 @@ pub(crate) fn instantiate_struct(
     };
     check_arity(&orig.decl.generics, args, name, call_span)?;
     let subst = build_subst(&orig.decl.generics, args, mctx, call_span)?;
-    // =====================================================================
-    // plans/M7.md item G, decision 18: expand deferred `comptime if`
-    // members/stmts under this instantiation's const arguments, then
-    // re-declare so Irq-only methods (ISR) exist only on Irq builds.
-    // =====================================================================
     let const_subst: BTreeMap<String, Expr> = subst.consts.clone();
     let expanded = crate::sema::specialize::expand_deferred_members(
         &orig.ast_members,
@@ -912,9 +717,6 @@ pub(crate) fn instantiate_struct(
         &const_subst,
         mctx,
     )?;
-    // plans/M9.md item F1 decision 342: deep-substitute const names
-    // through method/init bodies so capacity checks and `[None; N]`
-    // see the concrete argument.
     let expanded: Vec<Member> = expanded
         .iter()
         .map(|m| subst_member_ast(m, &subst))
@@ -930,8 +732,6 @@ pub(crate) fn instantiate_struct(
         let mut decl = types::declare_struct_members_for_instantiation(
             name, &expanded, &orig.decl, mctx, call_span,
         )?;
-        // Still run type substitution on field/param types (a type
-        // generic on the same struct, if any).
         decl = subst_decl_struct(&decl, &subst, mctx);
         decl
     };
@@ -1018,7 +818,6 @@ pub(crate) fn instantiate_fn(
     let decl = subst_decl_fn_direct(&orig.decl, &subst);
     let mut ast = orig.ast.clone();
     ast.generics = Vec::new();
-    // plans/M9.md item F1 decision 342: const names in the body too.
     if let Some(body) = ast.body.as_mut() {
         *body = body.iter().map(|s| subst_stmt(s, &subst)).collect();
     }
@@ -1026,11 +825,6 @@ pub(crate) fn instantiate_fn(
     Ok(FnInfo { ast, decl })
 }
 
-/// Substitute + enqueue a method's (or associated fn's) own generic
-/// parameters (plans/M13.md item Q). `receiver` is the concrete
-/// `Type::Named` the call was made through (struct/enum args already
-/// resolved). Returns the substituted AST/decl pair ready for
-/// `check_call_args` / body checking.
 pub(crate) fn instantiate_method(
     mctx: &ModuleCtx,
     receiver: &Type,
@@ -1061,9 +855,6 @@ pub(crate) fn instantiate_method(
     Ok((ast, decl))
 }
 
-/// Resolve `(ast, decl)` for `method` on `type_name[type_args]`, applying
-/// struct/enum-level substitution first when the receiver is itself a
-/// generic instantiation.
 fn lookup_method_decl(
     mctx: &ModuleCtx,
     type_name: &str,
@@ -1106,17 +897,6 @@ fn lookup_method_decl(
     ))
 }
 
-// --- item 2: inferring a generic fn's type arguments ---------------------
-
-/// The dumbest honest inference (item 2): a type parameter used directly
-/// as a parameter's own type (`a: T`) is inferred from that argument's
-/// synthesized type. Plans/M13.md item Q adds one nested shape the §8.3
-/// idiom needs: a parameter typed `fn(...) -> R` with bare generic `R`
-/// (in return position only) is inferred from a closure body's result
-/// type or a named fn/method's declared return. Anything else nested
-/// still contributes nothing. A const generic parameter is never
-/// inferred. Mismatched or never-constrained type parameters are named
-/// in the error, exactly as item 2 asks.
 pub(crate) fn infer_fn_targs(
     fi: &FnInfo,
     args: &[Arg],
@@ -1135,8 +915,6 @@ pub(crate) fn infer_fn_targs(
     )
 }
 
-/// Same inference as [`infer_fn_targs`], for a method/associated-fn
-/// declaration (plans/M13.md item Q).
 pub(crate) fn infer_method_targs(
     method_name: &str,
     decl: &DeclFn,
@@ -1169,7 +947,7 @@ fn infer_generic_targs(
     let mut inferred: BTreeMap<String, Type> = BTreeMap::new();
     for (i, p) in params.iter().enumerate() {
         let Some(arg_expr) = bound[i] else {
-            continue; // a default-valued, unbound parameter: nothing to infer from.
+            continue;
         };
         match &p.ty {
             Type::Generic(gname) => {
@@ -1250,12 +1028,6 @@ fn record_inferred(
     Ok(())
 }
 
-/// Infer the return type of a `fn(...) -> R` argument for generic
-/// inference (plans/M13.md item Q): a closure body's synthesized
-/// result, or a named fn/method's declared return. Suite closures with
-/// no valued `return` (the §8.3 `item.count += 1` shape) are `unit`.
-/// `Ok(None)` means "contributes nothing" (caller must write `[Args]`
-/// unless another occurrence binds the parameter).
 fn infer_fn_arg_return(
     arg_expr: &Expr,
     fparams: &[(crate::syntax::ast::AccessMode, Type)],
@@ -1358,10 +1130,6 @@ fn infer_fn_arg_return(
     }
 }
 
-/// A suite used as a short-form closure body (assign-only §8.3 shape)
-/// returns `Some(unit)` when it never `return`s a value. A suite with a
-/// valued `return` contributes nothing to inference (`None`) — write
-/// explicit `[Args]`.
 fn suite_inferred_return(stmts: &[Stmt]) -> Option<Type> {
     fn has_valued_return(stmts: &[Stmt]) -> bool {
         stmts.iter().any(|s| match s {
@@ -1384,13 +1152,6 @@ fn suite_inferred_return(stmts: &[Stmt]) -> Option<Type> {
     }
 }
 
-/// Binds `args` to `decl_params` (label or positional cursor, mirroring
-/// `bodies::check_call_args`'s own binding order) far enough to hand
-/// `infer_fn_targs` each bound parameter's argument *expression* — arity/
-/// label validity itself is re-checked properly afterwards by the real
-/// `check_call_args` call `bodies.rs` makes once the instantiation is
-/// resolved, so this binder is deliberately permissive (out-of-range or
-/// duplicate binds are simply ignored here rather than reported twice).
 fn bind_args_positionally<'a>(decl_params: &[DeclParam], args: &'a [Arg]) -> Vec<Option<&'a Expr>> {
     let mut bound: Vec<Option<&'a Expr>> = vec![None; decl_params.len()];
     let mut cursor = 0usize;
@@ -1409,26 +1170,10 @@ fn bind_args_positionally<'a>(decl_params: &[DeclParam], args: &'a [Arg]) -> Vec
         if let Some(idx) = idx {
             bound[idx] = Some(&a.value);
         }
-        // An unresolvable label/arity mismatch is left for the real
-        // `check_call_args` to report properly; inference just skips it.
     }
     bound
 }
 
-// --- draining the queue: the actual per-instantiation checking ----------
-
-/// Item H's own pass, run last (`mod.rs::check`): drains
-/// `mctx.generics_queue` to a fixed point — checking one instantiation
-/// can enqueue more (a nested generic use inside its substituted body),
-/// so this loops until nothing new appears — running the *same* three
-/// passes (`bodies`/`access`/`matches`) `check` already ran, concretely,
-/// against each substituted declaration. `path` is cited verbatim in the
-/// chain diagnostic (decision 2; see `mod.rs::check`'s own doc comment).
-/// plans/M3.md item A: also returns every drained instantiation's typed
-/// body (`typed::TypedInstantiation`), keyed by this file's own
-/// canonical spelling — the identical string a `Call`/`OpCall` node's
-/// `CalleeKey::FnInstance`/`MethodInstance` carries for the same
-/// instantiation (`typed.rs`'s own doc comment).
 pub(crate) fn check(
     _module: &Module,
     _decl_items: &[types::DeclItem],
@@ -1437,13 +1182,6 @@ pub(crate) fn check(
 ) -> Result<BTreeMap<String, TypedInstantiation>, SemaError> {
     let mut processed: BTreeSet<String> = BTreeSet::new();
     let mut typed_instantiations: BTreeMap<String, TypedInstantiation> = BTreeMap::new();
-    // Private plain-`self` effect inference is a fixpoint over every
-    // private method body in the module, and its only input is `mctx`,
-    // whose `structs`/`enums` are plain fields — through a `&ModuleCtx`
-    // they cannot change while this loop runs. So it is computed once here
-    // rather than once per instantiation: `access.rs`'s own note above
-    // `private_candidates` makes exactly this argument for the
-    // declaration-side call.
     let effects = access::infer_effects_over(mctx);
     loop {
         let next = {
@@ -1478,10 +1216,6 @@ fn check_one_instantiation(
         .chain
         .last()
         .expect("a queued instantiation's chain always has at least its own triggering call");
-    // plans/M13.md item G3: when re-typing an exporter's generic body
-    // under an importer's ModuleCtx, field privacy must still see the
-    // exporter as the use-site module (same carve-out the G1 census
-    // applied by skipping Struct instantiation walks).
     let home = instantiation_visibility_home(mctx, entry);
     *mctx.visibility_home.borrow_mut() = Some(home);
     let result = check_one_instantiation_inner(mctx, entry, call_span, effects);
@@ -1566,18 +1300,12 @@ fn check_one_instantiation_inner(
             Ok(TypedInstantiation::Struct(ts))
         }
         InstKind::Enum => {
-            // Enums carry no bodies/methods (02-language.md §7.2):
-            // substitution + reclassification (already run by
-            // `instantiate_enum`) is the whole of "checking" one.
             instantiate_enum(mctx, &entry.name, &entry.args, call_span)?;
             Ok(TypedInstantiation::Enum)
         }
     }
 }
 
-/// One-method `StructInfo` so the existing struct-member check/access/
-/// flow/matches passes run over a method instantiation unchanged
-/// (plans/M13.md item Q — reuse, no parallel checker).
 fn method_instantiation_struct_info(
     mctx: &ModuleCtx,
     receiver: &Type,
@@ -1603,8 +1331,6 @@ fn method_instantiation_struct_info(
             instantiate_struct(mctx, type_name, type_args, call_span)?
         }
     } else if let Some(e) = mctx.enums.get(type_name.as_str()) {
-        // Enum methods: fabricate a struct-shaped shell carrying only the
-        // method — check_struct_members only reads name/members/pools.
         return Ok(StructInfo {
             decl: DeclStruct {
                 name: type_name.clone(),
@@ -1637,32 +1363,6 @@ fn method_instantiation_struct_info(
     base.deferred_comptime_members = Vec::new();
     Ok(base)
 }
-
-// --- the requirement-chain diagnostic (decision 2) -----------------------
-//
-// Pinned verbatim (02-language.md §7.3):
-//
-//   error[generic]: `hash_pair[Sector]` requires `Sector.hash(read self) -> u64`
-//     required by `a.hash()` at util/hash.wr:2
-//     instantiated at storage/extent.wr:41
-//
-// This is recognized, not derived through general inference (decision 4
-// rules out a constraint solver): a *directly substituted* instantiation
-// fn body that fails with exactly the "no method"/"no operator method"
-// shape `bodies.rs`'s own `check_call_by_field`/`resolve_operator_method`
-// already produce, on a parameter whose *un*substituted type was a bare
-// `T`, is recognized as a missing requirement. The required method's
-// return type comes from re-scanning the *original* (unsubstituted)
-// declaration's own body for the narrow shape 02 §7.3's own example is:
-// a `return` whose expression is directly `<param>.<method>()`, or a
-// builtin same-type-result binary operator (`+ - * / % & | ^ << >>`)
-// applied to two such calls — decision 4's expected-type propagation
-// applied by hand to exactly the return-position case the docs pin.
-// Anything else recognizably "missing" but outside this shape, or any
-// other kind of failure, keeps its ordinary one-line message and still
-// gets the `instantiated at` chain appended (item 3): only the "required
-// by" line and the location-free primary line are specific to this exact
-// shape.
 
 fn finalize_diagnostic(
     e: SemaError,
@@ -1708,11 +1408,6 @@ fn finalize_diagnostic(
     e
 }
 
-/// Recognizes a top-level generic `fn` (`InstKind::Fn`) or a method-owned
-/// generic (`InstKind::Method`, plans/M13.md item Q) — the pinned §7.3
-/// shape. A struct/enum instantiation's own missing-method failures fall
-/// back to the ordinary one-line-plus-chain case instead of trying to
-/// attribute the failure to one particular method among many.
 fn find_requirement<'a>(
     mctx: &'a ModuleCtx,
     entry: &QueuedInstantiation,
@@ -1737,14 +1432,8 @@ fn find_requirement<'a>(
             let Type::Named(recv_name, recv_args) = receiver else {
                 return None;
             };
-            // Requirement scan uses the *unsubstituted* method body from
-            // the declared (possibly struct-generic) type — same as free
-            // fns. Struct-level args do not change which bare type
-            // parameter of the *method* was the receiver of `.hash()`.
             let (ast, decl) = if let Some(s) = mctx.structs.get(recv_name.as_str()) {
                 if !recv_args.is_empty() {
-                    // Prefer the original declaration's method (pre
-                    // struct-subst) so param types still show Type::Generic.
                     let (f, d) = s.method(&entry.name).or_else(|| s.assoc_fn(&entry.name))?;
                     (f, d)
                 } else {
@@ -1857,10 +1546,6 @@ fn is_same_type_result_op(op: BinOp) -> bool {
     )
 }
 
-/// `<name>.<method>()` (zero arguments — the pinned example's own shape;
-/// a requirement with arguments is not attempted) where `name`'s
-/// *declared* (unsubstituted) type is exactly the bare generic parameter
-/// `g`.
 fn direct_method_call(
     expr: &Expr,
     g: &str,
@@ -1884,19 +1569,6 @@ fn direct_method_call(
     }
 }
 
-// --- tests --------------------------------------------------------------
-//
-// 02-language.md §6.3: "A const argument is `bool`, `char`, an integer, or
-// a fieldless enum, evaluated by the comptime engine." plans/M3.md item B
-// lifts M2-H's literal-only subset: `eval_const_expr` now runs the real
-// evaluator, so arithmetic and const-name chains both evaluate (rather
-// than failing closed) — these pin that directly, rather than only
-// through a full generic-instantiation golden.
-//
-// `eval_const_expr` takes a `&ModuleCtx` (for const-name/enum-variant
-// lookup), so the tests build one the same way `sema::mod::check` does —
-// lex -> parse -> `types::declare` -> `bodies::build_module_ctx` — real
-// production code, not a mock/fixture rig.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1945,9 +1617,6 @@ pub fn use_const() -> u64:
         );
     }
 
-    /// A bare `const` reference resolves by evaluating its own
-    /// initializer with the real evaluator (here, `LIMIT`'s own `4`
-    /// literal).
     #[test]
     fn eval_const_expr_resolves_a_const_name() {
         let mctx = build_mctx(SRC);
@@ -1960,8 +1629,6 @@ pub fn use_const() -> u64:
         assert_eq!(result.unwrap(), Expr::Int(span, "4".to_string()));
     }
 
-    /// A fieldless enum variant path (`Color.Red`) evaluates to its own
-    /// `Enum.Variant` shape unchanged.
     #[test]
     fn eval_const_expr_fieldless_enum_variant() {
         let mctx = build_mctx(SRC);
@@ -1983,7 +1650,6 @@ pub fn use_const() -> u64:
         );
     }
 
-    /// An unknown const name fails closed rather than guessing.
     #[test]
     fn eval_const_expr_unknown_const_name_fails_closed() {
         let mctx = build_mctx(SRC);
@@ -1998,11 +1664,6 @@ pub fn use_const() -> u64:
         );
     }
 
-    /// Arithmetic is no longer out of scope (plans/M3.md item B lifts
-    /// M2-H's own literal-only limit): `1 + 1` evaluates to `2`. Neither
-    /// literal has a concrete sibling, so both default to `i64`
-    /// (`check_same_type_operands`'s own rule) — the expected type here
-    /// matches that default rather than forcing a mismatch.
     #[test]
     fn eval_const_expr_evaluates_arithmetic() {
         let mctx = build_mctx(SRC);

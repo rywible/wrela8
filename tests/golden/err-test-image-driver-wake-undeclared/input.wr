@@ -1,8 +1,5 @@
 module examples.err_test_image_driver_wake_undeclared
 
-# Sibling of `err-test-image-driver-wake-no-image`: the module has an
-# `@image` (so runtime tables exist for an actor), but that image never
-# declares the `@driver` that `wake`s.
 
 @driver
 pub struct BlkDriver:

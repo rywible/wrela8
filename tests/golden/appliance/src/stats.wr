@@ -1,10 +1,5 @@
 module stats
 
-# The stats actor: wired to the cache actor by a `cache=cache.handle()`
-# argument in the image below — the appliance's second logical actor
-# edge, `Edge from=actor#1 to=actor#0` in the report. `cache`'s own
-# declared type is the same honest `u32` placeholder as `cache.wr`'s own
-# `disk` field, for the identical reason.
 @actor
 pub struct StatsActor:
     cache: u32

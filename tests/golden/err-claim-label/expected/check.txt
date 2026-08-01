@@ -1,1 +1,1 @@
-error[type]: `VirtioBlock.claim`'s own argument is labelled `cap=` (03-hardware.md §9's own spelling: `VirtioBlock.claim(cap=take cap)`) at 19:37
+error[type]: `VirtioBlock.claim`'s own argument is labelled `cap=` (03-hardware.md §9's own spelling: `VirtioBlock.claim(cap=take cap)`) at 16:37

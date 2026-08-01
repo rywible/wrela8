@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=actor.wr sha256=4b7a743e7f1ce408b38d01780e9c122cf81ead61b0922eac45cbbe9bef5ac1f5
+  Input path=actor.wr sha256=411c420e0308ede58a9961b0c0e5a973324ca16ae546d6b3f2a14993ad0d62cb
   Input path=image.wr sha256=73c30b52367f4cd3f94ee05adba51e7aede76ce2efca34a251829cb18306f23c
   Input path=<generated> sha256=0c6e42ac8e0102de1e2ce61a7c086c352353574598212203fdf67c90bfe52a93
   Name value=project-appliance

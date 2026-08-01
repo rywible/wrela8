@@ -1,7 +1,5 @@
 module examples.err_publish_take
 
-# plans/M7.md item E3: publish consumes the operation — `operation=take`
-# is load-bearing (mirrors err-prepare-block-take).
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

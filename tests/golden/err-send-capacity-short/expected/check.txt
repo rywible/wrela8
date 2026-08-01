@@ -1,3 +1,3 @@
-error[actor]: a bare `send` to `Logger.record` is not proven infallible — consume its `Result[unit, CallError[never]]` (bind it or `match` it) at 24:5
+error[actor]: a bare `send` to `Logger.record` is not proven infallible — consume its `Result[unit, CallError[never]]` (bind it or `match` it) at 17:5
   actor `Logger`'s declared mailbox capacity is 2, but this image has 3 static message site(s) targeting it (every `send`/`await` through an `Actor[Logger]` handle)
   02-language.md §9.4: `send` stands as a bare statement only where mailbox analysis proves admission cannot fail

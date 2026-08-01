@@ -1,1 +1,1 @@
-error[type]: register `VirtioIrqMmio.interrupt_ack: WriteOnly[u32]` is write-only and cannot be read (03-hardware.md §2: a register's declared direction governs its access) at 19:48
+error[type]: register `VirtioIrqMmio.interrupt_ack: WriteOnly[u32]` is write-only and cannot be read (03-hardware.md §2: a register's declared direction governs its access) at 14:48

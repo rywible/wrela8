@@ -1,5 +1,3 @@
-# plans/M9.md item I: 03-hardware.md §1/§9 init failure vocabulary.
-# Declaration order is load-bearing for variant tags.
 module boot_error
 
 pub enum BootError:

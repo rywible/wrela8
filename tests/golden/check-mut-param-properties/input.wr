@@ -1,18 +1,5 @@
 module examples.check_mut_param_properties
 
-# plans/M9.md item CC, orchestrator review. 02-language.md §5.1: "Non-
-# receiver `mut` and `take` are **mirrored at the call site**." Item CC
-# built that mirroring; this case pins the *properties* it must have,
-# rather than the cases it was built from — `check-mut-param-nested`
-# covers the mechanism, this covers the ways a write-back mechanism is
-# classically wrong: clobbering a param the callee never wrote, ignoring
-# control flow so an early return publishes a later write, losing a
-# `defer`'s contribution, crossing two `mut` params, and destroying a
-# sibling field that was not assigned.
-#
-# Every expected value is chosen so no other branch can produce it: a
-# missing write-back, an over-eager write-back, and a crossed write-back
-# each land on a different number than the correct one.
 
 struct Counter:
     n: u32
@@ -21,16 +8,14 @@ struct Pair:
     a: u32
     b: u32
 
-# --- 1. A callee that does NOT write its `mut` param must not clobber it.
 fn no_write(mut c: Counter):
     x: u32 = c.n + 1
 
 fn probe_no_write() -> u32:
     c = Counter(n=5)
     no_write(mut c)
-    return c.n              # must stay 5, not 0 and not 6
+    return c.n
 
-# --- 2. Early return before the write: the write must NOT be visible.
 fn early_return(mut c: Counter, bail: bool):
     if bail:
         return
@@ -39,14 +24,13 @@ fn early_return(mut c: Counter, bail: bool):
 fn probe_early_bail() -> u32:
     c = Counter(n=3)
     early_return(mut c, true)
-    return c.n              # must stay 3
+    return c.n
 
 fn probe_early_through() -> u32:
     c = Counter(n=3)
     early_return(mut c, false)
-    return c.n              # must be 77
+    return c.n
 
-# --- 3. Write, then early return AFTER the write: must be visible.
 fn write_then_return(mut c: Counter):
     c.n = 88
     return
@@ -54,9 +38,8 @@ fn write_then_return(mut c: Counter):
 fn probe_write_then_return() -> u32:
     c = Counter(n=0)
     write_then_return(mut c)
-    return c.n              # must be 88
+    return c.n
 
-# --- 4. Nested frames: a `mut` callee passes its own `mut` param onward.
 fn inner(mut c: Counter):
     c.n = c.n * 10
 
@@ -67,9 +50,8 @@ fn outer(mut c: Counter):
 fn probe_nested_frames() -> u32:
     c = Counter(n=2)
     outer(mut c)
-    return c.n              # 2 -> 20 -> 200
+    return c.n
 
-# --- 5. Two distinct `mut` params in one signature must not cross-write.
 fn two_muts(mut p: Counter, mut q: Counter):
     p.n = 1
     q.n = 2
@@ -78,9 +60,8 @@ fn probe_two_muts() -> u32:
     p = Counter(n=0)
     q = Counter(n=0)
     two_muts(mut p, mut q)
-    return p.n * 100 + q.n  # must be 102, not 101 or 202
+    return p.n * 100 + q.n
 
-# --- 6. `mut` alongside `read` and `take` in one signature.
 fn mixed(mut m: Counter, r: Counter, take t: Counter) -> u32:
     m.n = r.n + t.n
     return m.n * 2
@@ -90,9 +71,8 @@ fn probe_mixed() -> u32:
     r = Counter(n=4)
     t = Counter(n=6)
     ret = mixed(mut m, r, take t)
-    return ret * 1000 + m.n # 20 * 1000 + 10 = 20010
+    return ret * 1000 + m.n
 
-# --- 7. Write-back under an active `defer` that also touches the param.
 fn deferred(mut c: Counter):
     defer:
         c.n = c.n + 1
@@ -101,9 +81,8 @@ fn deferred(mut c: Counter):
 fn probe_defer() -> u32:
     c = Counter(n=0)
     deferred(mut c)
-    return c.n              # 30 then defer -> 31
+    return c.n
 
-# --- 8. `mut` param inside a loop in the CALLER, repeated calls.
 fn add_one(mut c: Counter):
     c.n = c.n + 1
 
@@ -114,16 +93,15 @@ fn probe_loop() -> u32:
     while i < 5:
         add_one(mut c)
         i = i + 1
-    return c.n              # must be 5
+    return c.n
 
-# --- 9. Aggregate with two fields: only one written, other preserved.
 fn touch_a(mut p: Pair):
     p.a = 9
 
 fn probe_partial() -> u32:
     p = Pair(a=0, b=6)
     touch_a(mut p)
-    return p.a * 10 + p.b   # must be 96, proving b survived
+    return p.a * 10 + p.b
 
 const P1: u32 = probe_no_write()
 const P2: u32 = probe_early_bail()

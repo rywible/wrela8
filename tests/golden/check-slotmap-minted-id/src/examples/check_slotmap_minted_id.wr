@@ -1,7 +1,5 @@
 module examples.check_slotmap_minted_id
 
-# plans/M9.md item K1 / 05-library.md §7: construction mints distinct
-# instance ids — two maps built without a caller map_id cannot share a key.
 
 from core.slotmap import SlotMap, Key
 

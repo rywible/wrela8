@@ -1,6 +1,3 @@
-//! Sealed-transport checkers (plans/M7.md item H1, 03-hardware.md §9).
-//! Extracted from `bodies.rs` along the artifact boundary.
-
 use crate::sema::bodies::{
     FnCtx, ModuleCtx, check_expr, parse_int_literal, type_error, unwrap_own,
 };
@@ -9,63 +6,6 @@ use crate::sema::types::{self, Type};
 use crate::sema::{SemaError, unimplemented_at};
 use crate::syntax::ast::{self, AccessMode, Arg, Expr, NamedType, Span};
 
-// --- plans/M7.md item H1: 03-hardware.md §9's sealed transport ------------
-//
-// The bring-up chain, and the two of its operations this item makes real.
-//
-// ## The chain, and what a state *is*
-//
-// `Reset -> Acknowledged -> DriverClaimed -> FeaturesNegotiated ->
-// FeaturesAccepted -> QueuesConfigured -> Running`, one builtin type per
-// state (`eval::image_checks::PROTOCOL_STATE_TYPES`), each carrying the
-// device type — `RunningDevice[VirtioBlock]` is the docs' own spelling and
-// the other six follow it. Every one is a resource, which is not a
-// decoration: §9's "each fallible transition **consumes** its input state"
-// *is* the resource rule, and the only reason a transition can consume one
-// is that it is never implicitly copied.
-//
-// ## `claim`, and why it emits nothing on this target
-//
-// `VirtioBlock.claim(cap=take cap)` consumes the `DeviceCap[D]` and yields
-// `DriverClaimedDevice[D]` — the docs' own comment on the line is "reset +
-// acknowledge", i.e. the three status writes a real virtio transport needs
-// to walk `Reset -> Acknowledged -> DriverClaimed`. **This machine has no
-// status register to write.** 06-machine.md §3: "no discovery ... the VMM
-// preconfigures every device, queue, and shared-memory window the report
-// declares — device topology is a *build output*, not a probed fact", and
-// "cold boot is a design property: there is nothing to negotiate". The VMM
-// has no `MagicValue`/`DeviceID`/`Status` register file at all
-// (`wrela-vmm::devices`' module doc). So on machine v1 `claim` is a pure
-// authority transition: it carries the device's base address forward and
-// emits no access. That is a target fact, recorded, not an omission — and
-// it is exactly why the *first* MMIO this compiler ever emits is the
-// driver's own ISR partition rather than a status write.
-//
-// ## `map_partition`, and how it feeds item C's rule instead of dodging it
-//
-// `claimed.map_partition(VirtioIrqMmio)` yields `Mmio[VirtioIrqMmio]`.
-// 03 §2: "a driver **or sealed protocol** partitions its claim into
-// declared, non-overlapping layouts ... minting a layout consumes those
-// byte ranges from the claim". Item C built the *rule* over a driver's
-// declared `Mmio[L]` **fields**; this is the *operation*, so the operation
-// is constrained to that same set: `map_partition(L)` is legal only inside
-// a `@driver` that declares `Mmio[L]` in a field. A partition the no-alias
-// rule never saw therefore cannot exist, and the `devregs` window that
-// backs the claim is sized from the identical set
-// (`layout::device_register_windows`).
-//
-// ## What is deliberately not here
-//
-// `negotiate`/`start`/`read_capacity_sectors`/`take_irq`/`VirtQueue.configure`
-// are each a named rejection carrying the state they would consume, the
-// state they would produce, and what is actually missing. `negotiate` in
-// particular is *not* merely unimplemented: on this machine the accepted
-// feature set is decided before the guest runs (item F's VMM-side
-// `negotiate`, against the image's declared `required_features`), and
-// nothing carries that result into the guest — there is no declared window
-// for it and no plan item has claimed one. Failing closed says so.
-
-/// The device type an `Mmio`/state type argument names, if it names one.
 pub(crate) fn device_type_arg(targs: &[types::TypeArg]) -> Option<&str> {
     match targs.first() {
         Some(types::TypeArg::Type(Type::Named(d, _))) => Some(d.as_str()),
@@ -73,12 +13,6 @@ pub(crate) fn device_type_arg(targs: &[types::TypeArg]) -> Option<&str> {
     }
 }
 
-/// Intrinsic args are `(label, TypedExpr)` with no mode slot. AST
-/// `take`/`mut` markers live on `Arg.mode`; wrap `take` so typed
-/// flow/access see `TypedExprKind::Take` and mark the place Moved
-/// (protocol-resource consumption). `mut` stays a bare place — overlap
-/// tracking for Intrinsic mut args is weaker than `TypedCallArg`, but
-/// no Intrinsic today needs that for correctness.
 fn with_arg_mode(mode: AccessMode, value: TypedExpr, span: Span) -> TypedExpr {
     match mode {
         AccessMode::Take => take_place(value, span),
@@ -86,8 +20,6 @@ fn with_arg_mode(mode: AccessMode, value: TypedExpr, span: Span) -> TypedExpr {
     }
 }
 
-/// Wrap a place the sealed transport consumes (03-hardware.md §9:
-/// each fallible transition consumes its input state).
 fn take_place(value: TypedExpr, span: Span) -> TypedExpr {
     TypedExpr {
         span,
@@ -96,7 +28,6 @@ fn take_place(value: TypedExpr, span: Span) -> TypedExpr {
     }
 }
 
-/// `<Device>.claim(cap=take cap)` (03-hardware.md §9).
 pub(crate) fn check_device_claim(
     device: &str,
     args: &[Arg],
@@ -185,7 +116,6 @@ pub(crate) fn check_device_claim(
     })
 }
 
-/// A method call on one of 03 §9's bring-up states.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn check_device_state_call(
     state_expr: TypedExpr,
@@ -204,15 +134,6 @@ pub(crate) fn check_device_state_call(
         "map_partition" => {
             check_map_partition(state_expr, &rendered, args, fspan, call_span, fctx, mctx)
         }
-        // plans/M7.md item E1, decision 14: `negotiate` is a **build-time**
-        // fact. Both sides (the image's `required_features`, and
-        // `virtqueue::DEVICE_FEATURES`) are build outputs; an unofferable
-        // required feature fails the *build*, and the guest's call is a
-        // pure authority transition that always yields
-        // `Ok(FeaturesAcceptedDevice[D])`. The call-site `required=`/
-        // `optional=` arrays are shape-checked here; the bits themselves
-        // are checked against the model when the image seals
-        // (`check_blk_device_features`).
         "negotiate" => check_device_negotiate(
             state_expr, state, &device, &rendered, args, fspan, call_span, fctx, mctx,
         ),
@@ -273,8 +194,6 @@ pub(crate) fn device_state_ty(state: &str, device: &str) -> Type {
     )
 }
 
-/// `claimed.negotiate(required=..., optional=...)` — DriverClaimed ->
-/// FeaturesAccepted (Result). plans/M7.md decision 14.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn check_device_negotiate(
     state_expr: TypedExpr,
@@ -376,9 +295,6 @@ pub(crate) fn check_device_negotiate(
             call_span,
         ));
     };
-    // Feature lists are arrays (or empty-looking literals). Their element
-    // type is a user enum of feature names; the *bits* are checked at
-    // image seal, not here — this is the shape half.
     for (label, expr) in [("required", &required), ("optional", &optional)] {
         match &expr.ty {
             Type::Array(_, _) => {}
@@ -411,8 +327,6 @@ pub(crate) fn check_device_negotiate(
     })
 }
 
-/// `negotiated.start()` — QueuesConfigured -> Running (infallible on
-/// this machine: the queue was already placed at configure).
 pub(crate) fn check_device_start(
     state_expr: TypedExpr,
     state: &str,
@@ -454,9 +368,6 @@ pub(crate) fn check_device_start(
     })
 }
 
-/// `running.reset(queue=mut q)` — Running -> Running with a new epoch
-/// (plans/M7.md item H2b / decision 23). Full device reset on machine v1;
-/// per-queue reset is a typed rejection on `VirtQueue.reset`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn check_device_reset(
     state_expr: TypedExpr,
@@ -539,10 +450,6 @@ pub(crate) fn check_device_reset(
     })
 }
 
-/// `negotiated.read_capacity_sectors()` — capacity is an image-declared,
-/// report-carried fact (`BlkDevice capacity_sectors=`). The guest call
-/// lowers to that build constant (decision recorded with decision 14);
-/// there is no config register to read on this machine.
 pub(crate) fn check_device_read_capacity(
     state_expr: TypedExpr,
     state: &str,
@@ -584,7 +491,6 @@ pub(crate) fn check_device_read_capacity(
     })
 }
 
-/// `<state>.map_partition(L)` (03-hardware.md §2/§9).
 pub(crate) fn check_map_partition(
     state_expr: TypedExpr,
     rendered: &str,
@@ -639,12 +545,6 @@ pub(crate) fn check_map_partition(
             ));
         }
     }
-    // 03 §2's partition rule, wired to item C's own check rather than
-    // restated: the layouts a `@driver` mints are exactly the ones its
-    // declared `Mmio[L]` fields name, `check_mmio_claims` proves *those*
-    // pairwise disjoint, and `layout::device_register_windows` sizes the
-    // claim's window from the same set. A `map_partition` of anything else
-    // would be a live layout no rule ever ranged over.
     let Some(Type::Named(owner, _)) = fctx.lookup_local("self").map(unwrap_own) else {
         return Err(type_error(
             format!(
@@ -659,10 +559,6 @@ pub(crate) fn check_map_partition(
         .iter()
         .map(|(n, s)| (n.clone(), &s.decl))
         .collect();
-    // The nesting table item I's sweep made this walk need: a layout
-    // reached through a wrapper struct *or* an enum variant payload, which
-    // is why enums are here beside structs (`types::components_by_name`'s
-    // own content, built from this pass's own already-declared tables).
     let components: std::collections::BTreeMap<String, &[(Type, Span)]> = mctx
         .structs
         .iter()
@@ -726,9 +622,6 @@ pub(crate) fn check_map_partition(
     })
 }
 
-/// Is `key` one of item H1's sealed-transport intrinsics, including item
-/// G's `take_irq`? Same three-consumer discipline as
-/// `is_mmio_access_intrinsic` above.
 pub fn is_device_transport_intrinsic(key: &str) -> bool {
     matches!(
         key,
@@ -743,9 +636,6 @@ pub fn is_device_transport_intrinsic(key: &str) -> bool {
     )
 }
 
-/// plans/M7.md item E2/E3/E4 / G fail-closed keys — used by lower and
-/// flowwir so an unimplemented queue/IRQ op names its owner rather than
-/// falling into a generic "intrinsic" rejection.
 pub fn is_queue_op_deferred(key: &str) -> Option<&'static str> {
     match key {
         "VirtQueue.poll_sources" | "VirtQueue.completions_pending" => {
@@ -755,7 +645,6 @@ pub fn is_queue_op_deferred(key: &str) -> Option<&'static str> {
     }
 }
 
-/// Is `key` one of item E2/E3/E4's live queue operations?
 pub fn is_queue_op_intrinsic(key: &str) -> bool {
     matches!(
         key,
@@ -771,7 +660,6 @@ pub fn is_queue_op_intrinsic(key: &str) -> bool {
     )
 }
 
-/// A method call on a `VirtQueue[..N]` value (03-hardware.md §4).
 pub(crate) fn check_virtqueue_method(
     queue: TypedExpr,
     name: &str,
@@ -819,10 +707,6 @@ pub(crate) fn check_virtqueue_method(
     }
 }
 
-/// `queue.reserve(descriptors=3)` — declared
-/// `Result[QueuePermit, CapacityError]`; when `expected` is `QueuePermit`,
-/// returns that type and records a permit demand for `sema::reserve_proof`
-/// (plans/M13.md item M).
 pub(crate) fn check_virtqueue_reserve(
     queue: TypedExpr,
     args: &[Arg],
@@ -900,15 +784,6 @@ pub(crate) fn check_virtqueue_reserve(
         ));
     }
     let _ = fspan;
-    // plans/M13.md item M / decision 1: `reserve`'s declared type is
-    // `Result[QueuePermit, CapacityError]`. When the use site expects
-    // `QueuePermit` (threaded from `check_call_by_field` → here), return
-    // that type and push the demand for `reserve_proof`. Locals bound
-    // from a Result-typed `reserve` still collapse in `check_expr` when
-    // later used as `QueuePermit`. Otherwise leave the Result and item L
-    // refuses silent `Err` discard.
-    // Encode the resolved depth as a literal Bound on `type_arg` so
-    // `sema::reserve_proof` never has to re-resolve a const name.
     let permit = Type::Named("QueuePermit".to_string(), vec![]);
     let ty = if matches!(
         expected,
@@ -941,11 +816,6 @@ pub(crate) fn check_virtqueue_reserve(
     })
 }
 
-/// plans/M8.md item G, decision 18: the one wording for 03-hardware.md §9's
-/// no-auto-retry rule, shared by the two sites that can commit the
-/// violation (`prepare_block` builds the operation; `publish` issues it).
-/// One message, two sites — a hoisted `prepare_block` and an inlined one
-/// are the same mistake and read the same way.
 pub(crate) fn no_auto_retry_message(site: &str) -> String {
     format!(
         "`{site}` re-issues an operation declared `idempotent=false` inside a \
@@ -958,9 +828,6 @@ pub(crate) fn no_auto_retry_message(site: &str) -> String {
     )
 }
 
-/// `queue.prepare_block(permit=take ..., header=..., payload=take ...,
-/// device_writes_payload=..., status=..., idempotent=...)` — yields a
-/// `QueueOp[P, <idempotent>]`.
 pub(crate) fn check_virtqueue_prepare_block(
     queue: TypedExpr,
     args: &[Arg],
@@ -1104,14 +971,6 @@ pub(crate) fn check_virtqueue_prepare_block(
                 require_layout_dma(&s.ty, "status", arg.span, mctx)?;
                 status = Some(s);
             }
-            // plans/M8.md item G, decision 18: 03-hardware.md §9's
-            // no-auto-retry rule needs to know whether re-running this
-            // operation is harmless, and **nothing in the compiler can
-            // work that out** — a write of fixed bytes to a fixed sector
-            // is idempotent, an append is not, and both spell the same
-            // `prepare_block`. So the author declares it, here, at the one
-            // place the operation is constructed. Required, not defaulted:
-            // a default in either direction is the compiler guessing.
             Some("idempotent") => {
                 if idempotent.is_some() {
                     return Err(type_error(
@@ -1188,11 +1047,6 @@ pub(crate) fn check_virtqueue_prepare_block(
             "QueueOp".to_string(),
             vec![
                 types::TypeArg::Type(payload_ty),
-                // The declaration rides on the operation's *type*, so a
-                // `publish` that never sees the `prepare_block` site (one
-                // hoisted out of the arm, say) still knows the answer.
-                // `Span::default()` keeps two identically-declared
-                // operations structurally equal.
                 types::TypeArg::Const(Expr::Bool(Span::default(), idempotent)),
             ],
         ),
@@ -1245,9 +1099,6 @@ pub(crate) fn require_layout_dma(
     }
 }
 
-/// `queue.publish(operation=take ...)` — 03-hardware.md §5 / decision 15:
-/// writes the ring in normative order and yields `Receipt[P]` for the
-/// packaged payload brand.
 pub(crate) fn check_virtqueue_publish(
     queue: TypedExpr,
     args: &[Arg],
@@ -1283,9 +1134,6 @@ pub(crate) fn check_virtqueue_publish(
         ));
     }
     let op = check_expr(&arg.value, None, fctx, mctx)?;
-    // plans/M8.md item G, decision 18: the operation's own type carries the
-    // author's idempotence declaration, so this catches a `prepare_block`
-    // hoisted out of the arm just as surely as one written inside it.
     if let Type::Named(n, targs) = &op.ty {
         if n == "QueueOp"
             && matches!(
@@ -1337,8 +1185,6 @@ pub(crate) fn check_virtqueue_publish(
     })
 }
 
-/// `queue.reject(payload=take p, error=...)` — 03-hardware.md §5:
-/// pre-commit failure returns `P` via a resolved receipt.
 pub(crate) fn check_virtqueue_reject(
     queue: TypedExpr,
     args: &[Arg],
@@ -1445,7 +1291,6 @@ pub(crate) fn check_virtqueue_reject(
     })
 }
 
-/// `queue.drain(max=N)` — bounded used-ring walk (03-hardware.md §4/§6).
 pub(crate) fn check_virtqueue_drain(
     queue: TypedExpr,
     args: &[Arg],
@@ -1519,9 +1364,6 @@ pub(crate) fn check_virtqueue_drain(
     })
 }
 
-/// `queue.claim(receipt=take r) -> IoCompletion[P]` — plans/M7.md item E4 /
-/// decision 22: sync claim of a drain-resolved receipt (bottom-half dual
-/// of `await receipt`).
 pub(crate) fn check_virtqueue_claim(
     queue: TypedExpr,
     args: &[Arg],
@@ -1598,21 +1440,6 @@ pub(crate) fn check_virtqueue_claim(
     })
 }
 
-/// `queue.recover(receipt=take r) -> CompletionOutcome` — plans/M8.md item
-/// G / decision 12: 03-hardware.md §5's `Recovery` transition, and the one
-/// producer of §9's `CompletionOutcome`.
-///
-/// **Why this is not a second `claim`.** `claim` is the *resolved* path: it
-/// consumes the receipt and returns the payload with the completion, which
-/// is only sound because the device provably returned the descriptor in the
-/// current epoch. `recover` is the *abandon* path §9 describes ("cancelling
-/// in-flight work is a driver protocol, not a dropped future"): it consumes
-/// the receipt — receipts resolve exactly once and dropping one is illegal
-/// in every state (§5) — reports what is known about the operation's effect,
-/// and deliberately returns **no payload**, because after a reset the buffer
-/// is possibly device-owned and §9 forbids reclaiming it. Reclaim is
-/// quarantine's job (plans/M8.md item F); until it lands the pool slot is
-/// simply retired, which is the fail-closed half of the same sentence.
 pub(crate) fn check_virtqueue_recover(
     queue: TypedExpr,
     args: &[Arg],
@@ -1661,9 +1488,6 @@ pub(crate) fn check_virtqueue_recover(
             ));
         }
     }
-    // plans/M8.md item H attack 1: remember the receipt's `own[P] T` brand
-    // on this queue place so a later `reclaim` cannot declare a different
-    // pool and mint a confused handle.
     if let Some(key) = virtqueue_place_key(&queue) {
         if let Some(brand) = receipt_own_brand(&receipt.ty) {
             fctx.quarantined_by_queue.insert(key, brand);
@@ -1683,32 +1507,6 @@ pub(crate) fn check_virtqueue_recover(
     })
 }
 
-/// `queue.reclaim(pool=P, payload=T) -> own[P] T` — plans/M8.md item F /
-/// **decision 37**: 03-hardware.md §9's "affected regions and DMA slots
-/// are quarantined, per-queue reset ... or full reset establishes
-/// quiescence, and **only then is memory reclaimed**".
-///
-/// **Why two declaring arguments and no receipt.** `recover` already
-/// consumed the receipt (§5: a receipt resolves exactly once, and dropping
-/// one is illegal in every state), and with it the only value that carried
-/// the payload's brand — so the handle's type has to be *declared* here,
-/// exactly as `img.dma_pool[T](name=P, ...)` declares the same pair when
-/// the pool is created. Both arguments are bare names with no value form:
-/// `pool=` is a bound pool name (02-language.md §4) and `payload=` names
-/// the `@layout(dma)` struct the slot holds. They are resolved through the
-/// ordinary `own[P] T` resolver, so an undeclared pool and a non-`dma`
-/// payload are the same two diagnostics they are in any annotation.
-///
-/// **What the declaration cannot lie about.** The address handed back is
-/// the quarantined slot's own payload word, so the *bytes* are always the
-/// abandoned buffer's; the declaration decides which pool the language
-/// believes the handle belongs to. plans/M8.md item H attack 1 closes the
-/// pool-brand half at build time: `pool=`/`payload=` must match the
-/// `own[P] T` brand of the `recover` that quarantined this queue's slot in
-/// the same function (same `match` arm). A wrong brand would otherwise
-/// survive any path that never reaches a later `publish`/`Receipt` store.
-/// Checking the handle against the queue's *device* stays the deliberate
-/// trade item P recorded as decision 27 — that is a different sentence.
 pub(crate) fn check_virtqueue_reclaim(
     queue: TypedExpr,
     args: &[Arg],
@@ -1719,8 +1517,6 @@ pub(crate) fn check_virtqueue_reclaim(
 ) -> Result<TypedExpr, SemaError> {
     let _ = fspan;
     let (pool, payload) = reclaim_declaration(args, call_span)?;
-    // Shape first: undeclared pool / non-dma payload keep the diagnostics
-    // they have in any `own[P] T` annotation (`golden/err-reclaim-payload-not-dma`).
     let ast_ty = ast::Type::Own(Box::new(ast::OwnType {
         span: call_span,
         pool: vec![pool.1.clone()],
@@ -1745,8 +1541,6 @@ pub(crate) fn check_virtqueue_reclaim(
             ));
         }
     }
-    // Brand second (plans/M8.md item H attack 1): the declaration must
-    // match the `own[P] T` `recover` quarantined on this queue place.
     let Some(key) = virtqueue_place_key(&queue) else {
         return Err(type_error(
             "`reclaim` needs a named `VirtQueue` place (a local or a field) so its \
@@ -1802,8 +1596,6 @@ pub(crate) fn check_virtqueue_reclaim(
     })
 }
 
-/// Place key for a `VirtQueue` receiver — a local name, or `root.field`
-/// for a field of a local (the `self.queue` spelling every flagship uses).
 pub(crate) fn virtqueue_place_key(queue: &TypedExpr) -> Option<String> {
     match &queue.kind {
         TypedExprKind::Local(n) => Some(n.clone()),
@@ -1815,9 +1607,6 @@ pub(crate) fn virtqueue_place_key(queue: &TypedExpr) -> Option<String> {
     }
 }
 
-/// `Receipt[own[P] T]` → `(P, T)` — the brand `recover` quarantines and
-/// `reclaim` must re-declare. Anything else yields `None` (a receipt that
-/// does not carry an `own` payload cannot justify a reclaim brand).
 pub(crate) fn receipt_own_brand(ty: &Type) -> Option<(String, String)> {
     let Type::Named(n, args) = ty else {
         return None;
@@ -1834,10 +1623,6 @@ pub(crate) fn receipt_own_brand(ty: &Type) -> Option<(String, String)> {
     }
 }
 
-/// The `pool=P, payload=T` pair `reclaim` declares, as two bare names.
-/// Shared by `bodies` (which resolves them) and `access` (which only needs
-/// the shape to keep a move tracked), so the two passes cannot disagree
-/// about what a well-formed `reclaim` looks like.
 pub(crate) fn reclaim_declaration(
     args: &[Arg],
     call_span: Span,
@@ -1897,7 +1682,6 @@ pub(crate) fn reclaim_declaration(
     }
 }
 
-/// `queue.suppress_interrupts()` — set `VIRTQ_AVAIL_F_NO_INTERRUPT` (poll builds).
 pub(crate) fn check_virtqueue_suppress_interrupts(
     queue: TypedExpr,
     args: &[Arg],
@@ -1929,9 +1713,6 @@ pub(crate) fn check_virtqueue_suppress_interrupts(
     })
 }
 
-/// Depth bound on a `VirtQueue[..N]` type, resolving a const name through
-/// `mctx.const_values` the same way `virtqueue_depth_value` does for a
-/// typed expression.
 pub(crate) fn virtqueue_type_depth(ty: &Type, mctx: &ModuleCtx) -> Option<u64> {
     let Type::Named(name, targs) = ty else {
         return None;
@@ -1955,9 +1736,6 @@ pub(crate) fn virtqueue_type_depth(ty: &Type, mctx: &ModuleCtx) -> Option<u64> {
     }
 }
 
-/// `VirtQueue.configure(pool=take control_pool, device=mut negotiated,
-/// index=0, depth=QDEPTH)?` — FeaturesAccepted -> QueuesConfigured, and
-/// the `DmaShared` mint item D left named (03-hardware.md §3/§4).
 pub(crate) fn check_virtqueue_configure(
     args: &[Arg],
     fspan: Span,
@@ -2090,7 +1868,6 @@ pub(crate) fn check_virtqueue_configure(
             call_span,
         ));
     };
-    // Pool must be a DmaPool[P, N].
     let pool_ty = unwrap_own(pool.ty.clone());
     let Type::Named(pool_name, pool_targs) = &pool_ty else {
         return Err(type_error(
@@ -2116,7 +1893,6 @@ pub(crate) fn check_virtqueue_configure(
             call_span,
         ));
     };
-    // Device must be FeaturesAcceptedDevice[D].
     let device_ty = unwrap_own(device_expr.ty.clone());
     let Type::Named(dev_state, dev_targs) = &device_ty else {
         return Err(type_error(
@@ -2138,9 +1914,6 @@ pub(crate) fn check_virtqueue_configure(
         ));
     }
     let device_name = device_type_arg(dev_targs).unwrap_or("?").to_string();
-    // Depth must be a comptime-known nonzero power of two. Prefer a
-    // literal; a module const name is accepted when its value is a
-    // literal int (the common `const QDEPTH: usize = 128` spelling).
     let depth_val = virtqueue_depth_value(&depth_expr, mctx).ok_or_else(|| {
         type_error(
             "`VirtQueue.configure`'s `depth=` must be a comptime-known nonzero power of two \
@@ -2160,7 +1933,6 @@ pub(crate) fn check_virtqueue_configure(
             call_span,
         ));
     }
-    // index must be 0 on machine v1 (one queue).
     if let TypedExprKind::Int(text) = &index.kind {
         if let Some(v) = parse_int_literal(text) {
             if v != 0 {
@@ -2174,7 +1946,6 @@ pub(crate) fn check_virtqueue_configure(
             }
         }
     }
-    // Flow-type the mut device local to QueuesConfiguredDevice[D].
     if let Some(local) = &device_local {
         let queued = device_state_ty("QueuesConfiguredDevice", &device_name);
         if !fctx.retype_local(local, queued) {
@@ -2194,7 +1965,6 @@ pub(crate) fn check_virtqueue_configure(
         ));
     }
     let _ = (fspan, pool_id);
-    // Record for layout/report: one derivation of (pool, depth).
     mctx.virtqueue_configures
         .borrow_mut()
         .push((pool_id.clone(), depth_val as u16));
@@ -2223,8 +1993,6 @@ pub(crate) fn check_virtqueue_configure(
     })
 }
 
-/// A comptime depth for `VirtQueue.configure`: a literal int, or a
-/// module `const` whose initializer is a literal int.
 pub(crate) fn virtqueue_depth_value(expr: &TypedExpr, mctx: &ModuleCtx) -> Option<u64> {
     match &expr.kind {
         TypedExprKind::Int(text) => parse_int_literal(text).and_then(|v| u64::try_from(v).ok()),
@@ -2239,13 +2007,10 @@ pub(crate) fn virtqueue_depth_value(expr: &TypedExpr, mctx: &ModuleCtx) -> Optio
     }
 }
 
-/// plans/M7.md item G: `IrqCap.bind` / `IrqCap.unmask` — the two
-/// operations 03-hardware.md §6's worked example names on an `IrqCap`.
 pub fn is_irq_cap_intrinsic(key: &str) -> bool {
     matches!(key, "IrqCap.bind" | "IrqCap.unmask")
 }
 
-/// plans/M7.md item G, decision 17: `InterruptCell[T]` ops + constructor.
 pub fn is_interrupt_cell_intrinsic(key: &str) -> bool {
     matches!(
         key,
@@ -2257,12 +2022,10 @@ pub fn is_interrupt_cell_intrinsic(key: &str) -> bool {
     )
 }
 
-/// plans/M7.md item G: `wake(Driver.method)`.
 pub fn is_wake_intrinsic(key: &str) -> bool {
     key == "wake"
 }
 
-/// Is `ty` an `InterruptCell[_]`?
 pub fn is_interrupt_cell_type(ty: &Type) -> bool {
     matches!(unwrap_own(ty.clone()), Type::Named(n, _) if n == "InterruptCell")
 }

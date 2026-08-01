@@ -1,12 +1,5 @@
 module examples.err_send_capacity_short
 
-# plans/M6.md item G, decision 5's first conjunct: "the target mailbox's
-# declared capacity >= the whole-image count of static send/call sites
-# targeting it". `Logger` is targeted by three static message sites (two
-# bare `send`s and one `await` — an awaited call occupies a mailbox slot
-# exactly like a one-way send does) but is declared `mailbox=2`, so the
-# third message could be rejected and the bare statements must consume
-# their `Result` (02-language.md §9.4).
 
 @actor
 pub struct Logger:

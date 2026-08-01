@@ -1,9 +1,5 @@
 module app.main
 
-# plans/M9.md item JJ: enum variant payload reachability. Import Res
-# under an alias and make, but not Payload. The closure must walk
-# Good(Payload) so comptime construction inside make and the match
-# binding both resolve (HH missed this edge; Option[Inner] already worked).
 from lib.g import Res as R
 from lib.g import make
 
@@ -21,8 +17,6 @@ pub fn t():
     assert D == 406, "aliased enum, unimported payload struct bound in pattern"
 
 
-# Guest-reachable path (plans/M9.md item KK): H3 dropped drive() from asm;
-# `@test(runtime)` seeds the import-reachability claim.
 @test(runtime)
 pub fn guest_reachable():
     assert drive() == 406, "reachable enum-payload at guest"

@@ -6,8 +6,8 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=core/io_error.wr sha256=c30f35780ff1d174d74787ddd4d3f51a3b8a0bd76c68e5036ec4bf76a511af81
-  Input path=examples/boot_receipt_handoff.wr sha256=7b4a721735047624f93871f4f4afdfacfadbb2ee29aeb27199e7e644ca055b40
+  Input path=core/io_error.wr sha256=d21b5bc54bed8aab31ea1d7bb07e04e0f17a9f33e02cafeecb624b7bad90a331
+  Input path=examples/boot_receipt_handoff.wr sha256=9765947ebfda6bc6b8aa34e469473297714e8e89db2d19eda486433f23475d61
   Input path=<generated> sha256=fdf8e2db6d3af8590ae3698d485b980f7f461e0e743cb177c173882b0a4710fa
   Name value=boot-receipt-handoff
   Target value=Target.wrela_machine_v1

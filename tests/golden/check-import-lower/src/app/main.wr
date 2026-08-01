@@ -3,15 +3,6 @@ module app.main
 from lib.pair import Pair
 from lib.helper import twice
 
-# plans/M9.md item EE: the three shapes that, before EE, passed
-# `wrela test` (evaluator saw the import closure) and failed at
-# `--stage=mwir`/`asm` (lower did not). Fields abandoned with
-# `internal error: struct \`Pair\` not found`; method and plain fn
-# blamed "an unresolved generic instantiation" — the wrong cause.
-#
-# SETTLED packs all three into one value success cannot forge by
-# accepting alone: fields=7, method=11, fn=42 → 7*10000 + 11*100 + 42
-# = 71142.
 
 fn field_sum(p: Pair) -> u32:
     return p.a + p.b
@@ -44,8 +35,6 @@ pub fn t_settled():
     assert SETTLED == 71142, "all three under one settle"
 
 
-# Guest-reachable path (plans/M9.md item KK): H3 dropped import-lower helpers
-# from mwir/asm; `@test(runtime)` seeds fields/method/fn.
 @test(runtime)
 pub fn guest_import_lower():
     assert drive() == 71142, "import-lower settle at guest"

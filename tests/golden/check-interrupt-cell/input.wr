@@ -1,10 +1,5 @@
 module examples.check_interrupt_cell
 
-# plans/M7.md item G, decision 17 + wake: `InterruptCell[u32]` as the
-# ISR/ordinary channel, and `wake` of a statically bound `@task`. The ISR
-# publishes then wakes (mask–arm–recheck ordering); the bottom half
-# swap-acquires and re-wakes if the level signal is still nonzero.
-# HVF transcript that raises a vector is a later commit of this item.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:
@@ -37,8 +32,6 @@ pub struct BlkDriver:
             self.regs.interrupt_ack.write(handled)
             wake(BlkDriver.drain)
 
-    # 03 §6's bottom half: drains the level signal; re-wakes if work remains
-    # (03 §6); never awaits (03 §7 — "never stays active while waiting").
     @task
     fn drain(mut self):
         status = self.pending.swap_acquire(0)

@@ -1,7 +1,5 @@
 module examples.err_receipt_drop
 
-# plans/M7.md item E3 / 02-language.md §3.1 / 03-hardware.md §5:
-# "A receipt resolves exactly once; dropping one is illegal in every state."
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

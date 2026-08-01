@@ -1,19 +1,5 @@
 module examples.err_boot_blk_roundtrip
 
-# plans/M7.md item E4's **vacuity control** for the flagship HVF oracle.
-#
-# `golden/boot-blk-roundtrip` is this same image. Its drain asserts the
-# hand-computed sector word after a write then read. That assertion alone
-# would also be skipped — and the test would still report `ok` — on a boot
-# that never completed a device transfer (no used-ring publish, no claim,
-# no payload bytes from the model). An all-zeros path that never touches
-# the device passes without proving the round trip; that is the class
-# `err-boot-irq-isr-runs` taught for the ISR edge.
-#
-# So this file inverts exactly one assertion — the read-back of MAGIC —
-# and pins the abort. A green `boot-blk-roundtrip` plus this file's own
-# `FAILED` line together say: the VMM really completed both ops, drain
-# really claimed live `written_len`, and the compared word is device data.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:
@@ -46,7 +32,6 @@ const SECTOR: usize = 512
 const BLK_T_IN: u32 = 0
 const BLK_T_OUT: u32 = 1
 const MAGIC: u64 = 0xC0FFEE00BEEF42A1
-# phase: 1 = write in flight; 2 = read in flight; 3 = done
 const PHASE_WRITE: u32 = 1
 const PHASE_READ: u32 = 2
 const PHASE_DONE: u32 = 3
@@ -94,8 +79,6 @@ pub struct BlkDriver:
         irq.unmask()
         self.irq = take irq
         self.device = negotiated.start()
-        # Stamp MAGIC and publish the write before returning so the first
-        # checkpoint delivers a real used-ring IRQ (boot-irq-isr shape).
         b = take buffer
         b.word = MAGIC
         permit = self.queue.reserve(descriptors=3)
@@ -125,9 +108,6 @@ pub struct BlkDriver:
         status = self.pending.swap_acquire(0)
         if status == 0:
             return unit
-        # Take first: a quiet wake after the round trip (extra completion
-        # or inject bit) must not park inside `queue.drain` with nothing
-        # to claim. `await receipt` is not used here — see decision 22.
         slot = take self.inflight
         match slot:
             case .None:
@@ -142,7 +122,6 @@ pub struct BlkDriver:
                             pass
                         case .Err(_):
                             assert false, "write completion status Ok"
-                    # Write buffer-facing length is 0.
                     n = c.written_len
                     match n.checked_le(SECTOR):
                         case .Ok(v):
@@ -161,8 +140,6 @@ pub struct BlkDriver:
                         idempotent=true,
                     )
                     receipt = self.queue.publish(operation=take op)
-                    # Restore taken field in one step (Option[Receipt] is a
-                    # resource — no None-then-Some overwrite).
                     self.inflight = Some(take receipt)
                     self.phase = PHASE_READ
                 else:
@@ -186,8 +163,6 @@ pub struct BlkDriver:
                         b = take c.payload
                         w = b.word
                         assert w == 0, "INVERTED ON PURPOSE: this is the vacuity control"
-                        # Take the empty Option before restoring (Option[own]
-                        # is a resource — cannot overwrite a live None).
                         empty = take self.buffer
                         match empty:
                             case .None:
@@ -216,8 +191,6 @@ pub struct Ledger:
 
 @test(runtime)
 async fn blk_write_read_roundtrip(led: Actor[Ledger]):
-    # Two checkpoints: write IRQ+drain then read IRQ+drain. Surviving
-    # with marks 42 means every assert in both drain phases held.
     a = await led.mark(n=4)
     @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match a:

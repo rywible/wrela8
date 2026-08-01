@@ -1,15 +1,5 @@
 module examples.err_boot_receipt_recover
 
-# Vacuity twin of `boot-receipt-recover` (plans/M8.md item G): the identical
-# image with phase 2's expected outcome inverted — the `Unknown` arm now
-# asserts false, and `Completed`/`NotCompleted` pass.
-#
-# It must **abort**. That is what makes the positive golden non-vacuous in
-# both halves at once: phase 2 is only entered after phase 1's `Completed`
-# arm has already been taken (the phase field is advanced there), so an
-# abort here proves that the boot reaches phase 2 *and* that `recover`
-# reports `Unknown` for a receipt a reset invalidated — 03-hardware.md §9's
-# "After a reset, a write may have happened".
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:
@@ -41,7 +31,6 @@ const QDEPTH: usize = 8
 const BLK_T_OUT: u32 = 1
 const MAGIC: u64 = 0xC0FFEE00BEEF42A1
 const SPARE_MAGIC: u64 = 0x0102030405060708
-# phase: 1 = first write in flight; 2 = second write in flight; 3 = done
 const PHASE_FIRST: u32 = 1
 const PHASE_SECOND: u32 = 2
 const PHASE_DONE: u32 = 3
@@ -129,8 +118,6 @@ pub struct BlkDriver:
                     self.inflight = None
                     return unit
                 case .Some(r):
-                    # Live epoch, device returned the descriptor: the
-                    # outcome is known.
                     self.queue.drain(max=QDEPTH)
                     first = self.queue.recover(receipt=take r)
                     match first:
@@ -141,8 +128,6 @@ pub struct BlkDriver:
                         case .Unknown:
                             assert false, "no reset happened before the first recover"
                     self.inflight = None
-                    # Publish the second operation on its own DMA block —
-                    # the first is retired unreclaimed by design.
                     held = take self.spare
                     match held:
                         case .None:
@@ -158,9 +143,6 @@ pub struct BlkDriver:
                                 idempotent=false,
                             )
                             receipt = self.queue.publish(operation=take op)
-                            # Take the empty Option before restoring
-                            # (Option[Receipt] is a resource — a live
-                            # `None` cannot be overwritten).
                             empty = take self.second
                             match empty:
                                 case .None:
@@ -178,9 +160,6 @@ pub struct BlkDriver:
                         self.second = None
                         return unit
                     case .Some(r):
-                        # 03-hardware.md §9: reset produces a new epoch that
-                        # invalidates all prior receipts, so whether this
-                        # write landed is no longer knowable.
                         self.device = self.device.reset(queue=mut self.queue)
                         second = self.queue.recover(receipt=take r)
                         match second:
@@ -209,8 +188,6 @@ pub struct Ledger:
 
 @test(runtime)
 async fn recover_reports_completed_then_unknown(led: Actor[Ledger]):
-    # Two checkpoints: the phase-1 IRQ+drain, then the phase-2 IRQ+drain.
-    # Surviving with marks 51 means every assert in both phases held.
     a = await led.mark(n=5)
     @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match a:

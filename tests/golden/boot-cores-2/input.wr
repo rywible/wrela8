@@ -1,11 +1,5 @@
 module examples.boot_cores_2
 
-# plans/M15.md item G / decision 1071: stage-1 N=2 under the baton.
-# Explicit `cores=2`, one actor pinned `core=1`, cross-core call returns
-# a known scalar (42) that only the off-core actor can produce. Report
-# pins exactly one `CoreEntry` (core=1); release value is 2; guest marks
-# cover both cores. Depth assert (`HV_VCPU_RUN_DEPTH`) still forbids
-# overlapping `hv_vcpu_run` — stage 1 only, baton remains.
 
 @actor
 pub struct Off:

@@ -1,7 +1,5 @@
 module examples.err_budget_sync_unbounded
 
-# plans/M11.md item A / decision 721: a sync while without `@budget` is
-# error[sema] — the context that previously slipped through (M2 gap).
 
 pub fn spin(n: u64) -> u64:
     total: u64 = 0

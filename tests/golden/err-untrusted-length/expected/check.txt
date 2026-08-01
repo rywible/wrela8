@@ -1,1 +1,1 @@
-error[type]: `Untrusted[T]` cannot be used as a length until checked-narrowed — write `.checked_le(bound)` (03-hardware.md §8) at 10:24
+error[type]: `Untrusted[T]` cannot be used as a length until checked-narrowed — write `.checked_le(bound)` (03-hardware.md §8) at 8:24

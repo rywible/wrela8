@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/check_pool_two_devices.wr sha256=36aca8d495c39ad80c8b859d9e24d16953b2c44b6ce7126878a7eaf6f576596b
+  Input path=examples/check_pool_two_devices.wr sha256=a8dac28b904cb6154e3e1b1f0ff6970c9ef04e330259030897c5df0f2e84682b
   Input path=<generated> sha256=b591444856e7b6d55fcd5a1a49e357aa3692346fd6e9bf205fc7f076c7ab50a3
   Name value=pool-two-devices
   Target value=Target.wrela_machine_v1

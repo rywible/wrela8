@@ -1,1 +1,1 @@
-error[type]: `publish` consumes the prepared operation: write `operation=take ...` (03-hardware.md §4/§5) at 70:35
+error[type]: `publish` consumes the prepared operation: write `operation=take ...` (03-hardware.md §4/§5) at 68:35

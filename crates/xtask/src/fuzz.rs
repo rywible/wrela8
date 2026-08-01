@@ -1,5 +1,3 @@
-//! `fuzz` subcommand and helpers (extracted from main.rs).
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -21,45 +19,11 @@ use wrela_compiler::syntax::printer;
 use crate::corpus::extract_doc_blocks;
 use crate::{golden_case_dirs, root};
 
-// --- fuzz -------------------------------------------------------------
-//
-// Deterministic in-tree fuzzing (plans/M1.md, shape decision 6): a seeded
-// splitmix64 generator drives two strategies — arbitrary byte strings
-// biased toward the bytes that actually drive the lexer's branches (ASCII
-// printables, newlines, quotes, braces, backslashes, digits, and 4-space
-// runs so indentation paths are not left to chance, plus occasional raw
-// non-ASCII bytes), and byte-level mutations of the same corpus `xtask
-// corpus` already lexes (every ```wrela doc block, plus every golden
-// `input.wr`). No external fuzzing engine (cargo-fuzz/libFuzzer): nightly
-// plus an external engine is a liability this project does not need while
-// the dumb fuzzer keeps finding bugs.
-//
-// Every candidate is sanitized with `String::from_utf8_lossy` before it
-// reaches the lexer (`lex` takes `&str`; a stray invalid byte becomes
-// U+FFFD, which is itself a non-ASCII byte sequence, so the "raw
-// non-ASCII byte" path still gets exercised deterministically without
-// ever handing the lexer a string it was never contracted to accept).
-//
-// Invariants checked every iteration: never panics; the result is
-// `Ok(tokens)` or one `LexError`; on `Ok`, the last token is `Eof` and no
-// earlier token is; INDENT count equals DEDENT count; token lines are
-// monotonically non-decreasing; and lexing the same input twice gives
-// identical output. A find writes the exact input to
-// `target/fuzz/crash-<n>.wr` and reports the seed + iteration so it
-// reproduces; every find must be minimized by hand into a
-// `tests/golden/lex-fuzz-*` case before the underlying bug is fixed.
-
 pub(crate) const FUZZ_LEXER_DEEP_ITERS: u64 = 200_000;
 pub(crate) const FUZZ_LEXER_DEEP_SEED: u64 = 1;
-// Wired into `check` (after corpus): two fixed seeds, 1_000
-// iterations each, so the gate stays well under a second and fully
-// deterministic — no seed ever comes from the clock or the environment.
 pub(crate) const FUZZ_LEXER_SMOKE_SEEDS: &[u64] = &[1, 2];
 pub(crate) const FUZZ_LEXER_SMOKE_ITERS_PER_SEED: u64 = 1_000;
 
-/// splitmix64: the entire PRNG. No external crate — a fuzzer this dumb
-/// does not need one, and determinism-by-construction (CLAUDE.md) means
-/// the generator itself must never change behavior across platforms.
 pub(crate) struct Rng(u64);
 
 impl Rng {
@@ -75,7 +39,6 @@ impl Rng {
         z ^ (z >> 31)
     }
 
-    /// Uniform in `[0, n)`. `n` must be nonzero.
     fn gen_range(&mut self, n: usize) -> usize {
         (self.next_u64() % n as u64) as usize
     }
@@ -167,16 +130,6 @@ pub(crate) fn parse_flag_u64(args: &[String], flag: &str) -> Result<Option<u64>,
     Ok(None)
 }
 
-/// plans/M4.md item E: the four project-shaped golden cases whose own
-/// module files are worth the extra fuzz-seed weight — `appliance`/
-/// `image-project` for the builder-intrinsic/`@image` shapes the
-/// single-file `image-basic`/`image-helper-accept` seeds (already walked
-/// via their own `input.wr`, in `corpus_seed_inputs` below) don't fully
-/// cover on their own, `multi-module-accept`/`import-cycle-accept` for the
-/// loader's own multi-module import machinery. A fixed, named list rather
-/// than a second blanket directory walk: most `tests/golden/*` project
-/// fixtures are `err-import-*`/`err-image-*` cases whose whole point is
-/// one specific rejection, not extra mutation-worthy surface.
 pub(crate) const PROJECT_SEED_CASES: &[&str] = &[
     "appliance",
     "image-project",
@@ -184,11 +137,6 @@ pub(crate) const PROJECT_SEED_CASES: &[&str] = &[
     "import-cycle-accept",
 ];
 
-/// Every `.wr` file under `dir`, walked recursively (`multi-module-accept`'s
-/// own `src/app/lib/constants.wr` needs this — the other three project
-/// seed cases happen to be flat, but the walk does not assume that),
-/// appended to `out` in whatever order `read_dir` gives — sorted by the
-/// caller, not here, so this stays a pure collector.
 pub(crate) fn collect_wr_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
     for entry in std::fs::read_dir(dir).map_err(|e| format!("read {}: {e}", dir.display()))? {
         let entry = entry.map_err(|e| format!("read {}: {e}", dir.display()))?;
@@ -202,18 +150,6 @@ pub(crate) fn collect_wr_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(),
     Ok(())
 }
 
-/// plans/M4.md item E: every `src/*.wr` file (recursively) belonging to
-/// `PROJECT_SEED_CASES`, in deterministic (sorted-by-path, then
-/// sorted-by-case-name) order — each fed to the fuzzer as its own
-/// standalone seed input, one *module* at a time, never assembled back
-/// into a whole closure (the plan's own "do not wire multi-module
-/// closures into the fuzzer itself — that is future work" line). A
-/// mutation of one of these files that carries a `from ... import ...`
-/// line fails closed at `sema::check_typed` exactly like any other
-/// unresolvable import would (an honest, already-covered `SemaErr`
-/// outcome, in the fixed `SEMA_CATEGORIES` set) — not a bug this lane
-/// needs to work around; the real mutation value here is each file's own
-/// `@image`/builder-intrinsic-bearing *shape*.
 pub(crate) fn project_seed_inputs() -> Result<Vec<String>, String> {
     let golden_dir = root().join("tests/golden");
     let mut inputs = Vec::new();
@@ -231,11 +167,6 @@ pub(crate) fn project_seed_inputs() -> Result<Vec<String>, String> {
     Ok(inputs)
 }
 
-/// Every input `xtask corpus` already lexes: doc blocks plus golden
-/// `input.wr` files, in deterministic (sorted) order — plus, plans/M4.md
-/// item E, every project-shaped seed module `project_seed_inputs` above
-/// collects. This is the corpus half of the fuzzer's mutation strategy
-/// and reuses `extract_doc_blocks` rather than re-walking the docs.
 pub(crate) fn corpus_seed_inputs() -> Result<Vec<String>, String> {
     let (blocks, failures) = extract_doc_blocks()?;
     if let Some(f) = failures.first() {
@@ -259,12 +190,6 @@ pub(crate) fn corpus_seed_inputs() -> Result<Vec<String>, String> {
     Ok(inputs)
 }
 
-/// One byte, weighted toward what actually drives the lexer's branches:
-/// ASCII identifier/digit characters, source punctuation and operators,
-/// newline, space, quotes, backslash, `#`, tab (the lexer's own reject
-/// path), and occasionally a raw non-ASCII byte (0x80..=0xFF) — invalid
-/// alone, but sanitized to a still-non-ASCII replacement char before it
-/// ever reaches `lex` (see the module doc above).
 pub(crate) fn random_byte(rng: &mut Rng) -> u8 {
     const WORD: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_";
     const PUNCT: &[u8] = b"+-*/%&|^~<>=(),.:?@!$;[]{}";
@@ -282,9 +207,6 @@ pub(crate) fn random_byte(rng: &mut Rng) -> u8 {
     }
 }
 
-/// Arbitrary byte string, strategy 1: mostly single bytes from
-/// `random_byte`, with a 15% chance per step of emitting a whole 4-space
-/// run instead, so INDENT/DEDENT paths are not left to chance.
 pub(crate) fn random_input(rng: &mut Rng) -> Vec<u8> {
     let target_len = rng.gen_range(400);
     let mut buf = Vec::with_capacity(target_len);
@@ -298,22 +220,10 @@ pub(crate) fn random_input(rng: &mut Rng) -> Vec<u8> {
     buf
 }
 
-/// Corpus mutation, strategy 2: 1-4 random edits (flip, insert, delete,
-/// truncate, splice-in-a-slice-from-another-seed) on a real doc/golden
-/// input, so the fuzzer spends most of its budget near inputs the lexer is
-/// supposed to accept rather than only in the wholly-random tail.
 pub(crate) fn mutate_seed_input(rng: &mut Rng, seed_inputs: &[String]) -> Vec<u8> {
     mutate_seed_input_from(rng, seed_inputs, seed_inputs)
 }
 
-/// `mutate_seed_input` with the *base* population and the *splice-donor*
-/// population named separately (plans/M7.md item Y): the async lane wants
-/// every base to be an async/actor-shaped golden while still occasionally
-/// splicing in a slice of the wider corpus, so a mutation can carry a
-/// generic fn, a `defer`, or a `for ... take` into an actor program. Every
-/// existing caller passes the same slice twice (`mutate_seed_input` above),
-/// which consumes the RNG in exactly the order it always did — no existing
-/// lane's seed changes meaning.
 pub(crate) fn mutate_seed_input_from(
     rng: &mut Rng,
     bases: &[String],
@@ -357,9 +267,6 @@ pub(crate) fn mutate_seed_input_from(
     bytes
 }
 
-/// How far one lexer-fuzz input got — every iteration reaches the lexer
-/// itself (that is this lane's whole surface); the split is Ok vs Err so
-/// a future collapse into "all Err, never a real token stream" is visible.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct LexerReach {
     lex_ok: bool,
@@ -381,10 +288,6 @@ impl LexerReachTotals {
     }
 }
 
-/// Every invariant the fuzzer checks, once per iteration, on one input.
-/// Lexes twice under `catch_unwind` (a panic is a finding, not a crash) so
-/// the determinism invariant and the no-panic invariant share one call
-/// shape. Returns measured reach on success (plans/M9.md item PP).
 pub(crate) fn check_lex_invariants(input: &str) -> Result<LexerReach, String> {
     let first = std::panic::catch_unwind(|| lexer::lex(input))
         .map_err(|p| format!("lexer panicked: {}", panic_message(&p)))?;
@@ -516,11 +419,6 @@ pub(crate) fn report_fuzz_failure(
     ))
 }
 
-/// Silences the default panic hook (which would otherwise print a full
-/// "thread panicked at ..." backtrace to stderr for every finding) for the
-/// duration of a fuzz run; a panic is still caught and reported explicitly
-/// by `check_lex_invariants`/`report_fuzz_failure`, just without the
-/// noise. Always restores the previous hook, even when the run fails.
 pub(crate) fn with_silenced_panic_hook<F: FnOnce() -> Result<(), String>>(
     f: F,
 ) -> Result<(), String> {
@@ -546,41 +444,12 @@ pub(crate) fn fuzz_lexer_smoke() -> Result<(), String> {
     })
 }
 
-// --- fuzz: parser -----------------------------------------------------
-//
-// plans/M1.md item E ("parser hardening"). Two strategies, mirroring the
-// lexer fuzzer's shape exactly (same `Rng`, same corpus seed inputs):
-//
-//  1. corpus mutation (`mutate_seed_input`, already shared with the lexer
-//     fuzzer) fed through the same lex-then-parse pipeline `xtask corpus`
-//     itself uses (`parser::parse_any`, which picks the fragment entry
-//     point when the input has no `module` header);
-//  2. token-soup (`token_soup` below): builds random-but-lexable *text* by
-//     sampling a vocabulary of keywords, identifiers, literals, operators,
-//     newlines, and 4-space indent units — never `Token` structs directly,
-//     so the real lexer stays in the loop.
-//
-// Invariants checked every iteration, on the whole lex-then-parse
-// pipeline: never panics; the result is a successful parse (module or
-// fragment) or exactly one error (from either stage); running the same
-// input through the pipeline twice gives an identical outcome (same AST
-// dump, or the same error stage/message/line/col). A find writes the input
-// to `target/fuzz/parse-crash-<n>.wr` and reports the seed + iteration so
-// it reproduces; every find is minimized by hand into a
-// `tests/golden/parse-fuzz-*` case before the underlying bug is fixed.
-
 pub(crate) const FUZZ_PARSER_DEEP_ITERS: u64 = 100_000;
 pub(crate) const FUZZ_PARSER_DEEP_SEED: u64 = 1;
 pub(crate) const FUZZ_PARSER_SMOKE_SEEDS: &[u64] = &[1, 2];
 pub(crate) const FUZZ_PARSER_SMOKE_ITERS_PER_SEED: u64 = 1_000;
 
-/// One full run of the pipeline the parser fuzzer exercises: lex, then (on
-/// success) parse via `parse_any`. Exactly one of these four shapes comes
-/// back — never a panic, per `check_parse_invariants`'s `catch_unwind`.
 pub(crate) enum PipelineOutcome {
-    /// A successful parse (module or fragment), reduced to its dump (with
-    /// spans — determinism means the *same* input reproduces byte-
-    /// identical spans too, not just the same tree shape).
     Ok(String),
     LexErr {
         message: String,
@@ -613,13 +482,9 @@ pub(crate) fn run_pipeline_once(input: &str) -> PipelineOutcome {
     }
 }
 
-/// Measured reach for the parser lane (plans/M9.md item PP): how many
-/// inputs got past lex into `parse_any`, and how many died at lex.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ParserReach {
-    /// `parser::parse_any` ran (lex succeeded).
     parsed: bool,
-    /// That parse accepted the input.
     parse_ok: bool,
 }
 
@@ -659,11 +524,6 @@ pub(crate) fn parser_reach_of(o: &PipelineOutcome) -> ParserReach {
     }
 }
 
-/// Every invariant the parser fuzzer checks, once per iteration, on one
-/// input. Runs the whole lex-then-parse pipeline twice under
-/// `catch_unwind` (a panic in either stage is a finding), mirroring
-/// `check_lex_invariants`'s shape. Returns measured reach on success
-/// (plans/M9.md item PP).
 pub(crate) fn check_parse_invariants(input: &str) -> Result<ParserReach, String> {
     let first = std::panic::catch_unwind(|| run_pipeline_once(input))
         .map_err(|p| format!("parser panicked: {}", panic_message(&p)))?;
@@ -724,13 +584,6 @@ pub(crate) fn check_parse_invariants(input: &str) -> Result<ParserReach, String>
     }
 }
 
-/// Token-soup, strategy 2: builds random-but-lexable *text* (never `Token`
-/// structs) by sampling a vocabulary of real wrela tokens. At the start of
-/// a line, occasionally emits 0-3 four-space indent units so INDENT/DEDENT
-/// paths are exercised; otherwise samples one token (keyword, identifier,
-/// int/float/string literal, or operator) and separates pieces with a
-/// single space so tokens never accidentally glue together (`1` next to
-/// `0` must stay two tokens unless the fuzzer means to test `10`).
 pub(crate) fn token_soup(rng: &mut Rng) -> String {
     const IDENTS: &[&str] = &[
         "x", "y", "foo", "bar", "self", "counter", "Widget", "T", "_",
@@ -818,79 +671,11 @@ pub(crate) fn fuzz_parser_smoke() -> Result<(), String> {
     })
 }
 
-// --- fuzz: sema ---------------------------------------------------------
-//
-// plans/M2.md item I ("hardening + measurement"). Exactly the parser
-// fuzzer's two strategies and the same corpus seed inputs
-// (`corpus_seed_inputs`, `mutate_seed_input`, `token_soup`) — that seed
-// set already includes every `tests/golden/*/input.wr`, which is what
-// makes it the interesting one here: it includes the sema-*valid*
-// `check-*` programs, not just syntax the lexer/parser alone would
-// generate. One more stage is added to the pipeline: lex, then (on
-// success) parse via `parser::parse` (sema operates on a whole `Module`;
-// there is no fragment entry point for it, unlike the parser fuzzer's
-// `parse_any`), then (on success) `sema::check`.
-//
-// Invariants checked every iteration, under `catch_unwind` (a panic in
-// any stage is a finding): sema never panics; the outcome is a successful
-// dump or exactly one `SemaError` whose `category` is one of the fixed
-// set plans/M2.md decision 1 names (`name`, `type`, `access`, `move`,
-// `init`, `overlap`, `match`, `generic`, `unimplemented`) — any other
-// category string is itself a bug; running the whole pipeline twice on
-// the same input gives an identical outcome (same dump, or the same
-// error stage/category/message/line/col); and on success, `sema::dump`
-// itself does not panic and is byte-identical across two separate calls
-// (checked in addition to, not instead of, the two full-pipeline runs
-// above, since `check`'s dumb re-run-declare-inside-dump shape means dump
-// has its own chance to misbehave independently of `check`). A find
-// writes to `target/fuzz/sema-crash-<n>.wr` and reports the seed +
-// iteration so it reproduces; every find is minimized by hand into a
-// `tests/golden/sema-fuzz-*` case before the underlying bug is fixed.
-//
-// Two more invariants (the pinned rule,
-// `check_sema_roundtrip_and_rotation`/`_guarded`, defined further down
-// this file next to the shared `sema_outcome_summary`/
-// `sema_outcomes_agree` comparison machinery `xtask roundtrip` also
-// uses), checked once more per iteration whenever the input lexes and
-// parses (regardless of whether sema then accepts or rejects it): sema
-// roundtrip stability (pretty-print the parsed module, reparse it, recheck
-// — the two sema outcomes must agree, per that machinery's comparison
-// rule) and item-rotation acceptance invariance (module-scope
-// declarations are order-independent by construction — collect-then-
-// resolve — so rotating the top-level items by one and rechecking must
-// not flip Ok to Err or vice versa, even though the dump/diagnostic
-// content is allowed to change). Findings from either reuse the same
-// `target/fuzz/sema-crash-<n>.wr` reporting path.
-
-// Measured on the authoring machine (debug build), before the roundtrip +
-// item-rotation invariants below existed: ~38-39us/iteration (500_000
-// iters in ~19.4s, 2_000_000 in ~78s) — sema's extra lex+parse+three-pass-
-// pipeline+dump work per iteration over the parser fuzzer's lex+parse is
-// real but not dramatic, since most mutated/soup inputs fail out at lex or
-// parse and never reach a pass.
-//
-// Re-measured after adding `check_sema_roundtrip_and_rotation_guarded`
-// (the pinned rule — a second lex+parse+check
-// pass to recover the parsed module, a pretty-print+reparse+recheck for
-// the roundtrip oracle, and a clone+recheck for the item-rotation oracle,
-// on every iteration whose input parses): ~61us/iteration (500_000 iters
-// in ~31.0s, 2_000_000 in ~125.3s) — roughly 1.6x the old per-iteration
-// cost, not the full 2x a naive doubling would predict, again because
-// most iterations never reach a parseable module at all. 2_000_000 still
-// lands a bare `cargo xtask fuzz sema` at a bit over two minutes, inside
-// the "roughly a minute or two"/1-3 minute band plans/M2.md item I and
-// this the pinned rule target, so the deep default is unchanged.
 pub(crate) const FUZZ_SEMA_DEEP_ITERS: u64 = 2_000_000;
 pub(crate) const FUZZ_SEMA_DEEP_SEED: u64 = 1;
 pub(crate) const FUZZ_SEMA_SMOKE_SEEDS: &[u64] = &[1, 2];
 pub(crate) const FUZZ_SEMA_SMOKE_ITERS_PER_SEED: u64 = 1_000;
 
-/// The fixed diagnostic-category set plans/M2.md decision 1 names, plus
-/// `comptime` (plans/M3.md item B: the evaluator's own abandonment/quota
-/// build errors, surfaced through `sema::check` since it now runs const
-/// initializers through the real evaluator). Any `SemaError` whose
-/// category is not in this list is itself an invariant violation, not a
-/// legitimate rejection.
 pub(crate) const SEMA_CATEGORIES: &[&str] = &[
     "name",
     "type",
@@ -902,33 +687,13 @@ pub(crate) const SEMA_CATEGORIES: &[&str] = &[
     "generic",
     "unimplemented",
     "comptime",
-    // plans/M4.md item A: the loader's own diagnostics (root-file/
-    // module-path disagreement, a missing file for an imported module
-    // path) — deliberately added, not discovered by the fuzzer (the
-    // fuzzer never drives the loader; it exercises `sema::check`
-    // directly on a single fuzzed file).
     "build",
-    // plans/M6.md item A: the actor surface's own diagnostics (message-
-    // value restrictions, the bare-`send`-statement floor, ...) —
-    // 02-language.md §9's own vocabulary, deliberately added like `build`
-    // above.
     "actor",
-    // plans/M11.md item A / decision 721: sync-loop `@budget(bound=N)`
-    // discharge — `error[sema]` when a synchronous for/while lacks the
-    // attribute (02-language.md §8.1).
     "sema",
-    // plans/M15.md item H: `@dmb` runtime-wr-only refuse —
-    // `error[intrinsic]` outside `stdlib/core/runtime.wr`.
     "intrinsic",
 ];
 
-/// One full run of the pipeline the sema fuzzer exercises: lex, then (on
-/// success) parse a whole module, then (on success) `sema::check`.
-/// Exactly one of these four shapes comes back — never a panic, per
-/// `check_sema_invariants`'s `catch_unwind`.
 pub(crate) enum SemaPipelineOutcome {
-    /// A successful `check`, reduced to its dump (determinism means the
-    /// *same* input reproduces a byte-identical dump too).
     Ok(String),
     LexErr {
         message: String,
@@ -945,10 +710,6 @@ pub(crate) enum SemaPipelineOutcome {
         message: String,
         line: u32,
         col: u32,
-        /// Item H's one multi-line exception (decision 2): empty/`false`
-        /// for every ordinary diagnostic, so this adds no new invariant
-        /// shape, only extends the existing determinism check to also
-        /// cover the generic-instantiation chain's extra lines.
         extra_lines: Vec<String>,
         omit_location: bool,
     },
@@ -967,10 +728,6 @@ pub(crate) fn run_sema_pipeline_once(input: &str) -> SemaPipelineOutcome {
                 line: e.line,
                 col: e.col,
             },
-            // "<fuzz>" is not a real file path: item H's chain diagnostic
-            // cites the path verbatim (decision 2), but the fuzzer's
-            // determinism check only compares two runs of the *same*
-            // input against each other, so any fixed placeholder works.
             Ok(module) => match sema::check_dump(&module, "<fuzz>") {
                 Ok(dump) => SemaPipelineOutcome::Ok(dump),
                 Err(e) => SemaPipelineOutcome::SemaErr {
@@ -986,13 +743,9 @@ pub(crate) fn run_sema_pipeline_once(input: &str) -> SemaPipelineOutcome {
     }
 }
 
-/// Measured reach for the sema lane (plans/M9.md item PP): how many
-/// inputs reached `sema::check_dump`, and where the rest died.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SemaReach {
-    /// `sema::check_dump` ran (lex+parse succeeded).
     checked: bool,
-    /// That check accepted the input.
     check_ok: bool,
     died_lex: bool,
     died_parse: bool,
@@ -1043,13 +796,6 @@ pub(crate) fn sema_reach_of(o: &SemaPipelineOutcome) -> SemaReach {
     }
 }
 
-/// Every invariant the sema fuzzer checks, once per iteration, on one
-/// input. Runs the whole lex-then-parse-then-check pipeline twice under
-/// `catch_unwind`, mirroring `check_parse_invariants`'s shape, plus a
-/// direct check that a successful `SemaError` category (when the outcome
-/// is instead an error) is one of the fixed set, and that `sema::dump` is
-/// itself panic-free and repeat-call-identical on a successful outcome.
-/// Returns measured reach on success (plans/M9.md item PP).
 pub(crate) fn check_sema_invariants(input: &str) -> Result<SemaReach, String> {
     let first = std::panic::catch_unwind(|| run_sema_pipeline_once(input))
         .map_err(|p| format!("sema panicked: {}", panic_message(&p)))?;
@@ -1065,10 +811,6 @@ pub(crate) fn check_sema_invariants(input: &str) -> Result<SemaReach, String> {
                 "sema produced an unknown diagnostic category `{category}` (not in the fixed set)"
             ));
         }
-        // plans/M9.md item NN / CLAUDE.md: an `internal error:` is a bug,
-        // not an outcome. Sema was the one live lane that only checked the
-        // category set and would have shrugged at the comptime-assert
-        // unbound-local find; close that hole here too.
         if message.starts_with("internal error: ") {
             return Err(format!("sema: check_dump reported {message}"));
         }
@@ -1151,61 +893,16 @@ pub(crate) fn check_sema_invariants(input: &str) -> Result<SemaReach, String> {
     Ok(sema_reach_of(&first))
 }
 
-// --- fuzz: sema roundtrip stability + item-rotation invariance ----------
-//
-// the pinned rule Two more invariants, checked
-// whenever an input parses (regardless of whether sema accepts or rejects
-// it) — shared by `fuzz sema` (below) and `xtask roundtrip`
-// (`sema_roundtrip_check`, further down this file), since both boil down
-// to the same question: do two sema outcomes on what should be an
-// equivalent module agree?
-//
-//  1. Sema roundtrip: A = sema outcome of the parsed module, B = sema
-//     outcome of parse(pretty(A's module)). A and B must agree.
-//  2. Item-rotation acceptance invariance: module-scope declarations are
-//     order-independent (collect-then-resolve). Rotating the module's
-//     top-level items by one (first item moved to the end; `imports` is a
-//     separate `Module` field and is left untouched) and re-checking must
-//     preserve *acceptance* (Ok stays Ok, Err stays Err) even though the
-//     dump/diagnostic content may differ.
-//
-// Comparison rule for "agree" (both here and in the roundtrip oracle): two
-// `Ok` outcomes must produce a byte-identical `sema::dump` (decision 8: the
-// check dump carries no spans, so this is exact, not approximate); two
-// `Err` outcomes must carry the same `category` and `message`. `line`/`col`
-// are deliberately never compared — the printer relayouts source
-// positions, so they are expected to move. `extra_lines` (item H's
-// `required by`/`instantiated at` chain) legitimately carries a position
-// too (`" at <path>:<line>"`); since both sides of every comparison here
-// are checked with the *same* fixed placeholder path, that suffix is
-// stripped before comparing (honestly position-independent: only the
-// trailing line number is dropped, everything else in the chain — the
-// requirement, the expression rendered, the file path itself — still has
-// to match). This is the stricter of the two options the plan allows
-// (strip-then-compare vs. drop `extra_lines` from the comparison
-// entirely).
 pub(crate) enum SemaOutcomeSummary {
-    /// A successful check, reduced to its dump.
     Ok(String),
     Err {
         category: &'static str,
         message: String,
-        /// `extra_lines` with each line's trailing `" at <path>:<line>"`
-        /// stripped (see the module comment above).
         extra_lines: Vec<String>,
         omit_location: bool,
     },
 }
 
-/// Runs `sema::check_typed`/`sema::dump_typed` on `module` and reduces the
-/// result to the fields `sema_outcomes_agree` compares. plans/M3.md
-/// decision 3: the typed-roundtrip oracle (`typed(x) == typed(pretty(parse(x)))`
-/// byte-for-byte) replaces the check-dump comparison this used to run —
-/// strictly stronger, same machinery (`check_typed` runs the identical
-/// pass pipeline `check` does, in the same order, so any `Err` it
-/// produces is byte-identical to what plain `check` would have; the `Ok`
-/// case now compares the full typed program instead of just the
-/// declaration-signature dump).
 pub(crate) fn sema_outcome_summary(module: &Module, path: &str) -> SemaOutcomeSummary {
     match sema::check_typed(module, path) {
         Ok(program) => SemaOutcomeSummary::Ok(sema::dump_typed(&program)),
@@ -1218,10 +915,6 @@ pub(crate) fn sema_outcome_summary(module: &Module, path: &str) -> SemaOutcomeSu
     }
 }
 
-/// Strips each line's trailing `" at <path>:<line>"` (item H's chain
-/// format, sema/generics.rs), leaving everything before it untouched. A
-/// line without that exact marker (any ordinary diagnostic — `extra_lines`
-/// is empty for those) is returned unchanged.
 pub(crate) fn strip_position_tails(lines: &[String], path: &str) -> Vec<String> {
     let marker = format!(" at {path}:");
     lines
@@ -1247,8 +940,6 @@ pub(crate) fn describe_sema_outcome(o: &SemaOutcomeSummary) -> String {
     }
 }
 
-/// The comparison rule described in the module comment above. `Ok(())` on
-/// agreement; `Err(reason)` describing the disagreement otherwise.
 pub(crate) fn sema_outcomes_agree(
     a: &SemaOutcomeSummary,
     b: &SemaOutcomeSummary,
@@ -1293,10 +984,6 @@ pub(crate) fn sema_outcomes_agree(
     }
 }
 
-/// Item 2 (item-rotation acceptance invariance): clones `module` and moves
-/// its first top-level item to the end (`imports` untouched). `None` when
-/// there are fewer than two items — rotation is a no-op, so there is
-/// nothing to check.
 pub(crate) fn rotate_first_item_to_end(module: &Module) -> Option<Module> {
     if module.items.len() < 2 {
         return None;
@@ -1306,15 +993,6 @@ pub(crate) fn rotate_first_item_to_end(module: &Module) -> Option<Module> {
     Some(rotated)
 }
 
-/// The two invariants above, run once per fuzz iteration on an input that
-/// lexed and parsed (a lex/parse failure means there is no module to
-/// re-check — `Ok(())`, nothing to do; `check_sema_invariants` already
-/// covers the lex/parse-error determinism invariants). Uses the same fixed
-/// placeholder path both `run_sema_pipeline_once` uses, for the same
-/// reason (see its own doc comment): the comparison is between two runs of
-/// this fuzzer's own pipeline, never against a golden file, so any fixed
-/// string works, and using the same one on every call is what makes
-/// `strip_position_tails` honest.
 pub(crate) fn check_sema_roundtrip_and_rotation(input: &str) -> Result<(), String> {
     const PATH: &str = "<fuzz>";
     let tokens = match lexer::lex(input) {
@@ -1326,7 +1004,6 @@ pub(crate) fn check_sema_roundtrip_and_rotation(input: &str) -> Result<(), Strin
         Err(_) => return Ok(()),
     };
 
-    // 1. Sema roundtrip.
     let original = sema_outcome_summary(&module, PATH);
     let pretty = printer::pretty(&module);
     let tokens2 = match lexer::lex(&pretty) {
@@ -1351,7 +1028,6 @@ pub(crate) fn check_sema_roundtrip_and_rotation(input: &str) -> Result<(), Strin
     sema_outcomes_agree(&original, &roundtripped)
         .map_err(|reason| format!("sema-roundtrip: {reason}"))?;
 
-    // 2. Item-rotation acceptance invariance.
     if let Some(rotated) = rotate_first_item_to_end(&module) {
         let orig_ok = matches!(original, SemaOutcomeSummary::Ok(_));
         let rotated_ok = sema::check(&rotated, PATH).is_ok();
@@ -1368,9 +1044,6 @@ pub(crate) fn check_sema_roundtrip_and_rotation(input: &str) -> Result<(), Strin
     Ok(())
 }
 
-/// `check_sema_roundtrip_and_rotation` under `catch_unwind`, mirroring
-/// every other fuzz invariant in this file: a panic here is a finding, not
-/// a crash.
 pub(crate) fn check_sema_roundtrip_and_rotation_guarded(input: &str) -> Result<(), String> {
     match std::panic::catch_unwind(|| check_sema_roundtrip_and_rotation(input)) {
         Ok(result) => result,
@@ -1419,109 +1092,12 @@ pub(crate) fn fuzz_sema_smoke() -> Result<(), String> {
     })
 }
 
-// --- fuzz: eval -----------------------------------------------------------
-//
-// plans/M3.md item F ("hardening + measurement"). Exactly the sema
-// fuzzer's two strategies and the same corpus seed inputs
-// (`corpus_seed_inputs`, `mutate_seed_input`, `token_soup`) — the seed set
-// already includes every `tests/golden/*/input.wr`, which is what makes
-// this lane interesting: the `check-tests-*` goldens are real `@test`-
-// bearing programs, so mutating them exercises the evaluator on inputs
-// that actually run, not only ones the lexer/parser/sema alone would
-// generate. One more stage is added on top of the sema pipeline: lex,
-// then (on success) parse a whole module (`parser::parse` — like `fuzz
-// sema`, there is no fragment entry point), then `sema::check_typed`
-// (which, per `sema::mod::check_typed`'s own doc comment, already runs
-// `eval::check_comptime` — every module-level `const` initializer and
-// every `comptime assert` — as its own final step; a mutated input that
-// merely typechecks has therefore already had its consts/asserts
-// evaluated by the time this lane ever sees it), then, on a successful
-// typecheck, `eval::run_tests` — every comptime-legal `@test` fn, each
-// under its own small fixed quota (`eval::quota::Quota::new()`,
-// `MAX_STEPS = 20_000` — already "small" by design, per
-// `comptime.eval.quotas`'s own note: kept deliberately far below the
-// plan's own "e.g. 1,000,000" suggestion so a single quota-exhausting
-// program stays cheap; reused as-is here rather than threading a second,
-// fuzz-only quota constant through `run_tests`/`eval_test`, since CLAUDE.md
-// rules out a knob nothing else needs).
-//
-// Invariants checked every iteration, under `catch_unwind` (a panic
-// anywhere in `check_typed` or `run_tests` is a finding — this is the
-// "never panics anywhere in eval" invariant (a), detected exactly the way
-// every other lane in this file detects a panic: `catch_unwind` around
-// the call, since the harness runs in-process and a real panic would
-// otherwise unwind straight out of `main`):
-//
-//  (a) never panics (`catch_unwind`, as above);
-//  (b) deterministic: the whole pipeline (lex-parse-check_typed, and, on
-//      Ok, run_tests) is run twice and the two outcomes are byte-compared
-//      — same shape as `check_sema_invariants`/`check_parse_invariants`;
-//  (c) always terminates within quota: this is not a separate runtime
-//      check (there is no wall clock anywhere in this file or in
-//      `eval::quota`, by doctrine) but a structural guarantee — every
-//      evaluator loop iteration and call ticks `Quota::tick_step`
-//      (`comptime.eval.quotas`), so a diverging comptime program always
-//      *returns* (`Ok` or an `EvalError`) once its step budget is spent,
-//      rather than looping forever; invariants (a)+(b) are what actually
-//      observe this on every iteration, since a hang would simply never
-//      report success or failure at all (the fuzz loop itself would
-//      stall) — there is nothing further to assert without a wall clock
-//      this project's determinism doctrine already rules out;
-//  (d) abandonment is always a well-formed diagnostic, never an internal
-//      panic message leaking through: on a `check_typed` `Err`, the
-//      `SemaError`'s `category` must be one of the fixed
-//      `SEMA_CATEGORIES` set (identical check to `fuzz sema`'s own,
-//      reused verbatim — `comptime` abandonment from `eval::check_comptime`
-//      is already one of that fixed set); on a successful typecheck,
-//      `run_tests`'s own report text must match its one pinned shape
-//      (`comptime.tests.build-tier`) line for line — `test <name>: ok` or
-//      `test <name>: FAILED <message>`, then one `<N> passed, <M> failed`
-//      summary line — checked by `report_is_well_formed` below.
-//
-// A find writes the input to `target/fuzz/eval-crash-<n>.wr` (same
-// `report_fuzz_failure` numbering convention every other lane uses — the
-// seed and iteration are already in the printed message, so the file name
-// itself does not need to embed them) and reports the seed + iteration so
-// it reproduces; every find is minimized by hand into a
-// `tests/golden/eval-fuzz-*` case before the underlying bug is fixed.
-
-// Measured on the authoring machine (debug build): ~59us/iteration
-// (100_000 iters in ~5.9s), essentially identical to `fuzz sema`'s own
-// per-iteration cost (~61us, see that lane's own measurement comment
-// above) — `check_typed` already pays for everything `sema::check` does
-// (it *is* what `sema::check` delegates to, plus it keeps the typed
-// program instead of discarding it), and `run_tests` only adds real cost
-// on the rare mutation that both fully typechecks *and* still carries a
-// `@test` fn, which a fixed, small quota (`comptime.eval.quotas`) bounds
-// tightly. 2_000_000 iterations therefore lands in the same "roughly a
-// minute or two" band `fuzz sema`'s own deep default targets (plans/M2.md
-// item I), so the deep default matches it exactly rather than picking a
-// new number for its own sake.
 pub(crate) const FUZZ_EVAL_DEEP_ITERS: u64 = 2_000_000;
 pub(crate) const FUZZ_EVAL_DEEP_SEED: u64 = 1;
 pub(crate) const FUZZ_EVAL_SMOKE_SEEDS: &[u64] = &[1, 2];
 pub(crate) const FUZZ_EVAL_SMOKE_ITERS_PER_SEED: u64 = 1_000;
 
-/// One full run of the pipeline the eval fuzzer exercises: lex, then (on
-/// success) parse a whole module, then `sema::check_typed`, then (on a
-/// successful typecheck) `eval::run_tests`, then — plans/M4.md item E —
-/// whenever the typechecked module declares exactly one reachable
-/// `@image` fn, the image pipeline too (`run_image_pipeline_once`, below).
-/// Exactly one of these four shapes comes back — never a panic, per
-/// `check_eval_invariants`'s `catch_unwind`.
 pub(crate) enum EvalPipelineOutcome {
-    /// A successful typecheck, reduced to `run_tests`'s own report text
-    /// (determinism means the *same* input reproduces a byte-identical
-    /// report too — including which comptime-legal `@test`s passed,
-    /// failed, or hit their quota), plus — plans/M4.md item E — the image
-    /// pipeline's own outcome text whenever the module has exactly one
-    /// reachable `@image` fn (`None` otherwise: zero or more than one
-    /// `@image` fn is not this extension's concern — decision 6's own
-    /// diagnostic for "more than one" already renders through the
-    /// ordinary `SemaErr`/well-formed-report machinery on a *real*
-    /// multi-`@image` build; a single fuzzed file simply never reaches
-    /// that shape without a second module, which this fuzzer never
-    /// drives).
     Ok(String, Option<String>),
     LexErr {
         message: String,
@@ -1543,39 +1119,6 @@ pub(crate) enum EvalPipelineOutcome {
     },
 }
 
-/// plans/M4.md item E: whenever `program` (the just-typechecked, single
-/// fuzzed module) declares exactly one reachable `@image` fn
-/// (`TypedProgram::image_fn`), runs the identical image pipeline `wrela
-/// build`/`wrela dump --stage=report` do — `eval::interp::eval_image` ->
-/// `eval::image_checks::check_sealed` -> `report::render` — and returns
-/// its outcome as one already fully rendered string: either the rendered
-/// report itself (`"ImageReport v0\n..."`) or a one-line diagnostic in the
-/// exact `error[cat]: message` house style every other stage in this file
-/// already prints (`image_outcome_is_well_formed`, below, checks exactly
-/// this shape). Returns `None` when the module has no `@image` fn at all
-/// — overwhelmingly the common case for both corpus-mutation and
-/// token-soup input, so this stays a rare-cost addition exactly like
-/// `run_tests` itself already is. Runs under the identical quota
-/// discipline every other comptime entry point here already gets
-/// (`eval_image` builds its own fresh `Quota::new()` internally, same as
-/// `run_call`/`eval_test`) and the identical `catch_unwind`/run-twice
-/// coverage `check_eval_invariants` already wraps the whole pipeline in —
-/// no second mechanism, this fn is just one more step inside
-/// `run_eval_pipeline_once`.
-///
-/// There is no real file backing a fuzzed input (`mutate_seed_input`/
-/// `token_soup` only ever produce in-memory bytes), so the one
-/// `report::BuildInput` a report render needs is built from `input`'s own
-/// raw bytes directly (`report::sha256_hex(input.as_bytes())`) rather than
-/// a real file read — a real hash of the real bytes being evaluated, just
-/// not read a second time off disk. `programs` (the map `check_sealed`
-/// needs for cross-module init-arg matching) is built with exactly one
-/// entry, `program` itself, under its own declared module address — this
-/// fuzzer only ever drives a single module, never a whole closure (the
-/// plan's own "do not wire multi-module closures into the fuzzer" line),
-/// so a real cross-module reference inside `program` simply cannot exist
-/// here; `program.clone()` is cheap relative to the rest of this rare
-/// path (`TypedProgram` already derives `Clone`).
 pub(crate) fn run_image_pipeline_once(
     program: &sema::typed::TypedProgram,
     module_addr: &str,
@@ -1612,13 +1155,6 @@ pub(crate) fn run_image_pipeline_once(
     Some(text)
 }
 
-/// Renders one `sema::SemaError` as an owned, already-`\n`-terminated
-/// string in the exact one-line `error[cat]: message [at L:C]` house
-/// style `bin/wrela.rs::print_sema_error` prints — this crate's own small
-/// duplicate of that renderer (`produce_report_text`'s own nested
-/// `render_sema_error` is the identical shape, kept local to that
-/// function; this top-level copy is shared by `run_image_pipeline_once`
-/// above, the only other place in this file that needs one).
 pub(crate) fn render_sema_error_diag(e: &sema::SemaError) -> String {
     let mut s = if e.omit_location {
         format!("error[{}]: {}\n", e.category, e.message)
@@ -1648,10 +1184,6 @@ pub(crate) fn run_eval_pipeline_once(input: &str) -> EvalPipelineOutcome {
                 line: e.line,
                 col: e.col,
             },
-            // "<fuzz-eval>" is not a real file path — same reasoning as
-            // `run_sema_pipeline_once`'s own placeholder: the determinism
-            // check only ever compares two runs of the *same* input
-            // against each other, so any fixed placeholder works.
             Ok(module) => match sema::check_typed(&module, "<fuzz-eval>") {
                 Ok(program) => {
                     let (report, _any_failed) = eval::run_tests(&program);
@@ -1672,12 +1204,6 @@ pub(crate) fn run_eval_pipeline_once(input: &str) -> EvalPipelineOutcome {
     }
 }
 
-/// Invariant (d)'s own check on a successful outcome: `run_tests`'s
-/// report (`comptime.tests.build-tier`'s pinned shape) is a sequence of
-/// `test <name>: ok` / `test <name>: FAILED <message>` lines followed by
-/// exactly one `<N> passed, <M> failed` summary line — never empty (a
-/// file with zero `@test` fns still prints `0 passed, 0 failed` alone)
-/// and never anything that looks like a leaked internal panic string.
 pub(crate) fn report_is_well_formed(report: &str) -> Result<(), String> {
     let lines: Vec<&str> = report.lines().collect();
     let Some((summary, test_lines)) = lines.split_last() else {
@@ -1698,8 +1224,6 @@ pub(crate) fn report_is_well_formed(report: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// `"<N> passed, <M> failed"` — both `N` and `M` plain decimal integers,
-/// nothing else on the line.
 pub(crate) fn summary_line_well_formed(line: &str) -> bool {
     let Some((n, rest)) = line.split_once(" passed, ") else {
         return false;
@@ -1710,11 +1234,6 @@ pub(crate) fn summary_line_well_formed(line: &str) -> bool {
     n.parse::<u64>().is_ok() && m.parse::<u64>().is_ok()
 }
 
-/// `"test <name>: ok"`, `"test <name>: ok (<N> cases)"` (an exhaustive
-/// test's own success line), or `"test <name>: FAILED <message>"` — the
-/// only shapes `run_tests` ever emits per test (`eval/mod.rs`'s own doc
-/// comment on `run_tests`; an exhaustive counterexample's
-/// `[param=value, ...]` prefix lives inside the FAILED message).
 pub(crate) fn test_line_well_formed(line: &str) -> bool {
     let Some(rest) = line.strip_prefix("test ") else {
         return false;
@@ -1737,19 +1256,6 @@ pub(crate) fn test_line_well_formed(line: &str) -> bool {
     }
 }
 
-/// plans/M4.md item E's own well-formedness half: `run_image_pipeline_once`'s
-/// returned text is well-formed exactly when it is the versioned report
-/// header (`report::render`'s own `"ImageReport v0"` first line — the rest
-/// is not re-validated line-by-line here, since `report.rs`'s own
-/// `push_line`/`render_value` are already what every report-bearing golden
-/// pins byte-for-byte; this fuzz lane's own job is "never a leaked panic
-/// string", not re-proving the renderer's own shape) or a single
-/// well-formed one-line diagnostic in the fixed `error[cat]: message` house
-/// style, `cat` one of the fixed `SEMA_CATEGORIES` (the identical category
-/// set every `SemaErr` outcome is already checked against above) — a
-/// multi-line diagnostic (the generic-instantiation chain's own
-/// `extra_lines`) is legal too, exactly like an ordinary `SemaErr`, so only
-/// the first line's own shape is checked.
 pub(crate) fn image_outcome_is_well_formed(text: &str) -> Result<(), String> {
     if text.starts_with("ImageReport v0") {
         return Ok(());
@@ -1776,21 +1282,6 @@ pub(crate) fn image_outcome_is_well_formed(text: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Invariant (e), plans/M9.md item BB (decision 62): an
-/// `"internal error: "`-prefixed message is a **bug**, never an outcome
-/// (CLAUDE.md's own wording for what every lane checks). The `lower` and
-/// `async` lanes have applied exactly this rule to every stage they touch
-/// since M7 — `async_sema_outcome`'s own doc comment even names
-/// `eval/interp.rs`'s ~50 such guards as the class it exists to falsify —
-/// but this lane, the one that actually *evaluates* comptime code, never
-/// applied it: a `check_typed` `Err` was accepted as long as its category
-/// was in the fixed set, and an `internal error:` inside a `@test`'s own
-/// `FAILED` verdict was accepted as long as the line was well-formed.
-/// Item BB is what made that visible (`?`'s missing `from` conversion
-/// abandoned with an `internal error:` from ordinary source, and this
-/// lane would have shrugged at it). Three surfaces, because a comptime
-/// abandonment can surface as any of them: a whole-program diagnostic, a
-/// per-`@test` verdict, or the image pipeline's own one-line diagnostic.
 pub(crate) fn eval_outcome_carries_no_internal_error(
     outcome: &EvalPipelineOutcome,
 ) -> Result<(), String> {
@@ -1809,9 +1300,6 @@ pub(crate) fn eval_outcome_carries_no_internal_error(
                     }
                 }
             }
-            // `error[<cat>]: internal error: ...` — the one-line
-            // diagnostic shape `image_outcome_is_well_formed` already
-            // parses, split at the same `]: ` boundary it uses.
             if let Some(first_line) = image_outcome.as_ref().and_then(|t| t.lines().next()) {
                 if let Some((_, rest)) = first_line.split_once("]: ") {
                     if rest.starts_with(PREFIX) {
@@ -1825,16 +1313,11 @@ pub(crate) fn eval_outcome_carries_no_internal_error(
     Ok(())
 }
 
-/// Measured reach for the eval lane (plans/M9.md item PP): the surface
-/// this lane exists for is `check_typed` then `run_tests` (and optionally
-/// the image pipeline). Inputs that die at lex/parse/sema never touch it.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct EvalReach {
-    /// `sema::check_typed` accepted — `run_tests` therefore ran.
     check_typed: bool,
     died_lex: bool,
     died_parse: bool,
-    /// Parsed but `check_typed` rejected.
     died_sema: bool,
 }
 
@@ -1881,15 +1364,6 @@ pub(crate) fn eval_reach_of(o: &EvalPipelineOutcome) -> EvalReach {
     }
 }
 
-/// Every invariant the eval fuzzer checks, once per iteration, on one
-/// input. Runs the whole lex-then-parse-then-check_typed-then-(run_tests,
-/// then — plans/M4.md item E — the image pipeline when exactly one
-/// `@image` fn is declared) pipeline twice under `catch_unwind`, mirroring
-/// `check_sema_invariants`'s shape, plus the well-formedness check
-/// (invariant (d)) on a successful outcome (both `run_tests`'s own report
-/// and, when present, the image pipeline's own outcome) and the
-/// fixed-category check (also (d)) on a `SemaErr` outcome. Returns
-/// measured reach on success (plans/M9.md item PP).
 pub(crate) fn check_eval_invariants(input: &str) -> Result<EvalReach, String> {
     let first = std::panic::catch_unwind(|| run_eval_pipeline_once(input))
         .map_err(|p| format!("eval panicked: {}", panic_message(&p)))?;
@@ -1998,17 +1472,6 @@ pub(crate) fn check_eval_invariants(input: &str) -> Result<EvalReach, String> {
     Ok(eval_reach_of(&first))
 }
 
-/// plans/M9.md item NN: fixed shapes that put `comptime assert` over a
-/// runtime-visible name (parameter, local, loop-accumulated local,
-/// for-loop variable, field of a parameter, `self`, `@test` local).
-/// Mutation and token soup never spelled this class, so the eval lane's
-/// `internal error:` check had nothing to catch — the fifth reachable
-/// producer-bug after II's multi-module four. Numerics vary from the
-/// seeded RNG; the shape set is fixed (same discipline as `fuzz imports`).
-///
-/// Indent is written as `\n    ` on one line — never a `\` line-
-/// continuation before indented text, which would eat the spaces
-/// (see `import_test_fn`'s own comment for the same trap).
 pub(crate) fn generate_comptime_assert_runtime_shape(rng: &mut Rng) -> String {
     let n = (rng.gen_range(40) as i64) + 1;
     let k = (rng.gen_range(40) as i64) + 1;
@@ -2038,10 +1501,6 @@ pub(crate) fn generate_comptime_assert_runtime_shape(rng: &mut Rng) -> String {
     }
 }
 
-/// Corpus mutation / token soup / comptime-assert-over-runtime-name
-/// shapes (plans/M9.md item NN). Every fourth iteration is a shape so
-/// the class cannot regress silently under the existing
-/// `internal error:` invariant.
 pub(crate) fn fuzz_input_with_comptime_assert_shapes(
     rng: &mut Rng,
     seed_inputs: &[String],
@@ -2092,131 +1551,15 @@ pub(crate) fn fuzz_eval_smoke() -> Result<(), String> {
     })
 }
 
-// --- fuzz: lower (plans/M5.md item G) ---------------------------------
-//
-// The lowering/codegen fuzz lane: exactly `fuzz eval`'s own two strategies
-// and the same corpus seed inputs (`corpus_seed_inputs`, `mutate_seed_input`,
-// `token_soup`) — that seed set already includes every `tests/golden/*/
-// input.wr`, which since item B/C/E now includes the `mwir-*`/`asm-*`/
-// `boot-hello` golden inputs too (ordinary golden case dirs,
-// `golden_case_dirs` walks them exactly like every other case — confirmed
-// directly, not assumed: `ls tests/golden | grep -E 'mwir-|asm-|boot-hello'`
-// lists all fifteen, each with its own `input.wr` `corpus_seed_inputs`
-// already reads). One more stage beyond `fuzz eval`'s own lex -> parse ->
-// `sema::check_typed`: on a successful typecheck, `lower::lower_program`,
-// then, on success, `codegen::codegen_program` — never `eval::run_tests`
-// or the image pipeline (this lane's whole point is the backend, not the
-// evaluator, which `fuzz eval` already covers).
-//
-// Invariants checked every iteration, under `catch_unwind` (a panic
-// anywhere in `lower`/`codegen` is a finding — this is invariant (a), "no
-// panics anywhere in lower/codegen", detected exactly the way every other
-// lane in this file detects a panic):
-//
-//  (a) never panics;
-//  (b) deterministic: the whole pipeline (lex-parse-check_typed, and, on
-//      Ok, lower+codegen, and, whenever the program declares an
-//      `@test(runtime)` fn, the test-image layout too) is run twice and the
-//      two outcomes are byte-compared — the mwir dump text
-//      (`mwir::dump`), the concatenated codegen'd words (every `CodegenFn`'s
-//      own `(u32, String)` pairs' `u32` half, in `BTreeMap` key order,
-//      *not* the `--stage=asm` dump text a second time — a deliberately
-//      separate, word-level compare so a hypothetical dump-rendering bug
-//      could never mask a real byte-level divergence), and, on a built test
-//      image, the laid-out blob/entry/sections (`layout::layout_test_image`'s
-//      own `ImageLayout`);
-//  (c) a lowering or codegen rejection is always the fixed `unimplemented`
-//      diagnostic category (`bin/wrela.rs`'s own house style prints every
-//      `lower::LowerError`/`codegen::CodegenError` as
-//      `error[unimplemented]: <message>` — neither error type carries a
-//      `category` field at all, unlike `sema::SemaError`, so this lane
-//      checks the one fixed literal is still a member of `SEMA_CATEGORIES`
-//      rather than re-deriving a category from the message text); **except**
-//      a message that starts with `"internal error: "` — both `LowerError`
-//      and `CodegenError` (and `LayoutError`) reserve that exact prefix for
-//      their own "should be unreachable for any `check_typed`-accepted
-//      program" producer-bug guards (`lower.rs`/`codegen.rs`'s own doc
-//      comments on their respective `internal(...)` constructors), so
-//      hitting one is itself an invariant violation, not a legitimate
-//      fail-closed outcome — folded into `LowerFuzzOutcome::Bug` below,
-//      exactly like an unknown `SemaError` category is for `fuzz eval`;
-//  (d) every successfully codegen'd program passes `codegen::validate`'s own
-//      structural checks (that module's own doc comment carries the full
-//      list — non-empty code per fn, every `Reloc` in range and, for
-//      `Reloc::Call`, targeting a fn this same program actually codegen'd);
-//  (e) whenever the typechecked program declares one or more
-//      `@test(runtime)` fns, `layout::layout_test_image` (the exact path
-//      `bin/wrela.rs::test_cmd`'s own runtime tier calls — reused directly,
-//      not reimplemented) is attempted; its own internal
-//      `verify_section_sizes` call already re-derives the section table
-//      from scratch and turns any mismatch into an `Err` before this lane
-//      ever sees a `Ok(ImageLayout)` back, so a successful `Built` outcome
-//      *is* the section-size-verified proof this invariant asks for — no
-//      second, redundant re-verification is needed here. A program with no
-//      `@test(runtime)` fn skips layout entirely (`LayoutOutcome::Skipped`,
-//      counted, never attempted) — booting is diff-eval's/the guest bench
-//      lane's own job, never this in-process loop's (a boot is ~50ms; this
-//      lane's own budget is ~100us/iteration).
-//
-// A find writes the input to `target/fuzz/lower-crash-<n>.wr` (the same
-// `report_fuzz_failure` numbering convention every other lane uses) and
-// reports the seed + iteration so it reproduces; every find is minimized by
-// hand into a `tests/golden/err-mwir-*` case before the underlying bug is
-// fixed, per house rule — fixed here only when the root cause is genuinely
-// in `lower.rs`/`codegen.rs`; a root cause in `sema`/`eval` is pinned and
-// reported instead (out of this lane's own scope).
-//
-// History, kept because the golden it produced is still the regression
-// lock: this lane's first real exercise found a `sema::bodies` over-
-// acceptance bug — an `if`/`else` whose two branches each declared their
-// own explicitly-typed local under the identical name leaked that name
-// past the end of the whole `if`/`else`. It was pinned at
-// `golden/err-mwir-if-else-scope-leak` before being fixed (commit
-// 5766861, `sema.names.resolution`); that golden now expects the
-// `error[name]: unknown name` the fix produces. The lane has been wired
-// into `check()` since M5-G finalization and runs clean at its deep
-// budget on fresh seeds.
-//
-// Per-iteration cost, measured anyway (aggregated across seeds 1-30's own
-// pre-crash prefixes, `target/fuzz/xtask` debug build, authoring machine —
-// no seed's own prefix is long enough alone to amortize process/corpus-load
-// startup, so this sums 31_126 total pre-crash iterations across 30 short
-// runs against their own combined 1.69s wall time, then subtracts each
-// invocation's own ~5ms fixed corpus-load/startup cost, measured directly
-// via the seed=7/iteration=0 case's own near-instant `real 0.00`s runs):
-// roughly 50-60us/iteration — close to, and consistent with, `fuzz eval`'s
-// own ~59us/iteration (this pipeline shares the identical lex/parse/
-// check_typed prefix `fuzz eval` already pays for; `lower`+`codegen`
-// replace `run_tests`'s own rare-cost tail with a cost of the same rough
-// order). `FUZZ_LOWER_DEEP_ITERS = 2_000_000` is picked to match `fuzz
-// sema`/`fuzz eval`'s own deep default exactly, landing in the identical
-// "roughly a minute or two" band those two lanes' own comments already
-// target, rather than picking a new number for its own sake — the number
-// this session would run at seeds 21/22/23 once the blocking finding above
-// is fixed.
 pub(crate) const FUZZ_LOWER_DEEP_ITERS: u64 = 2_000_000;
 pub(crate) const FUZZ_LOWER_DEEP_SEED: u64 = 1;
 pub(crate) const FUZZ_LOWER_SMOKE_SEEDS: &[u64] = &[1, 2];
 pub(crate) const FUZZ_LOWER_SMOKE_ITERS_PER_SEED: u64 = 1_000;
 
-/// What a successful `layout::layout_test_image` attempt contributes to
-/// `LowerFuzzOutcome::Ok`'s own determinism compare — `ImageLayout`'s own
-/// three fields, copied out field-by-field rather than storing `ImageLayout`
-/// itself (which derives no `PartialEq`/`Clone` this crate could reuse
-/// without adding one to `wrela-compiler` for a fuzz-only need).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum LayoutOutcome {
-    /// No `@test(runtime)` fn declared — invariant (e)'s own "skip layout
-    /// entirely, counted" rule; the overwhelmingly common case for both
-    /// corpus-mutation and token-soup input.
     Skipped,
-    /// `layout::layout_test_image` rejected this program with a legitimate
-    /// (non-`"internal error: "`) `LayoutError` — the only real example this
-    /// module has is "relocation out of range", structurally unreachable at
-    /// this fuzzer's own tiny image sizes but not disclaimed as impossible.
     Rejected(String),
-    /// `layout::layout_test_image` succeeded; `verify_section_sizes` already
-    /// ran internally (invariant (e)'s own note above).
     Built {
         blob: Vec<u8>,
         entry: u64,
@@ -2224,8 +1567,6 @@ pub(crate) enum LayoutOutcome {
     },
 }
 
-/// Exactly one of these shapes comes back from one pipeline run — never a
-/// panic, per `check_lower_invariants`'s `catch_unwind`.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum LowerFuzzOutcome {
     LexErr {
@@ -2246,39 +1587,20 @@ pub(crate) enum LowerFuzzOutcome {
         extra_lines: Vec<String>,
         omit_location: bool,
     },
-    /// `lower::lower_program` rejected this program with its own fixed
-    /// `error[unimplemented]` diagnostic (decision 2's fail-closed set) —
-    /// never an `"internal error: "`-prefixed message, which is folded into
-    /// `Bug` instead (see that variant).
-    LowerRejected { message: String },
-    /// `codegen::codegen_program` rejected this program the same way
-    /// (frame-size overflow, a floating-point value, more than 8 call
-    /// arguments, ...) — same `"internal error: "` carve-out as above.
-    CodegenRejected { message: String },
-    /// Lowered and codegen'd cleanly.
+    LowerRejected {
+        message: String,
+    },
+    CodegenRejected {
+        message: String,
+    },
     Ok {
         mwir_dump: String,
         code_words: Vec<u32>,
         layout: LayoutOutcome,
     },
-    /// A genuine bug this lane found — never a legitimate outcome,
-    /// `check_lower_invariants` always rejects this variant as a finding,
-    /// the same way `check_eval_invariants` rejects an unknown `SemaError`
-    /// category. Covers every "should be unreachable for a `check_typed`-
-    /// accepted program" shape this pipeline can hit: an
-    /// `"internal error: "`-prefixed `LowerError`/`CodegenError`/
-    /// `LayoutError`, a `mwir::build_layout_ctx` failure on a module that
-    /// already passed `check_typed` (the identical unreachable-in-theory
-    /// shape one layer up — `build_layout_ctx` only re-runs `specialize`/
-    /// `declare`, both strict subsets of what `check_typed` itself already
-    /// ran clean), or a `codegen::validate` structural-invariant failure.
     Bug(String),
 }
 
-/// `program.tests`' own `TestKind::Runtime` names, in declaration order
-/// (`program.tests` is a plain `Vec`, never reordered) — exactly the list
-/// `bin/wrela.rs::test_cmd`'s own runtime tier builds before calling
-/// `layout::layout_test_image`.
 pub(crate) fn runtime_test_names(program: &sema::typed::TypedProgram) -> Vec<String> {
     program
         .tests
@@ -2288,11 +1610,6 @@ pub(crate) fn runtime_test_names(program: &sema::typed::TypedProgram) -> Vec<Str
         .collect()
 }
 
-/// Every emitted `u32` word across every fn in `program`, `BTreeMap`-key
-/// order (deterministic) — invariant (b)'s own separate, word-level
-/// determinism population, kept apart from `codegen::dump`'s text so a
-/// hypothetical dump-rendering bug could never mask a real byte-level
-/// divergence between two runs.
 pub(crate) fn concat_code_words(program: &codegen::CodegenProgram) -> Vec<u32> {
     let mut words = Vec::new();
     for f in program.fns.values() {
@@ -2303,13 +1620,6 @@ pub(crate) fn concat_code_words(program: &codegen::CodegenProgram) -> Vec<u32> {
     words
 }
 
-/// Invariant (e): attempts `layout::layout_test_image` exactly the way
-/// `bin/wrela.rs::test_cmd`'s own runtime tier does, whenever `program`
-/// declares one or more `@test(runtime)` fns; `Err` here always means a
-/// genuine bug (folded into `LowerFuzzOutcome::Bug` by the caller), never a
-/// legitimate rejection path this fn itself decides — the one legitimate
-/// `LayoutError` shape (`"relocation out of range"`) is instead carried as
-/// `Ok(LayoutOutcome::Rejected(..))`.
 pub(crate) fn attempt_layout(
     program: &sema::typed::TypedProgram,
     codegen_program: &codegen::CodegenProgram,
@@ -2318,17 +1628,6 @@ pub(crate) fn attempt_layout(
     if runtime_tests.is_empty() {
         return Ok(LayoutOutcome::Skipped);
     }
-    // plans/M6.md item D: `codegen_program` (this fn's own parameter) is
-    // always built from the *sync-only* `lower::lower_program` path
-    // (`run_lower_pipeline_once`'s own doc comment) — this lane never
-    // calls `flowwir_lower::lower_program`/`codegen::codegen_program_with_async`
-    // at all yet, so a program declaring an *async* `@test(runtime)` fn
-    // has no compiled entry for `layout_test_image` to find (an honest
-    // `Skipped`, not the `"was never codegen'd"` internal-error guard
-    // firing for a real reason this fn's own doc already names as
-    // out of scope — surfaced for the first time by this item's own new
-    // async-test-bearing goldens joining the fuzz corpus). Extending this
-    // lane to the async pipeline is real, further work, named here.
     if program
         .tests
         .iter()
@@ -2336,11 +1635,6 @@ pub(crate) fn attempt_layout(
     {
         return Ok(LayoutOutcome::Skipped);
     }
-    // plans/M6.md item D: no `BootCtx` — this lane's own fuzzed corpus
-    // never synthesizes a well-formed actor image from scratch (a real
-    // `mailbox=` capacity, a matching `@image`, ...), so `None` is exactly
-    // as scoped as this lane already was pre-item-D; a real actor-bearing
-    // fuzz case is named, future work, not silently claimed here.
     match layout::layout_test_image(
         codegen_program,
         &runtime_tests,
@@ -2367,20 +1661,11 @@ pub(crate) fn attempt_layout(
     }
 }
 
-/// Measured reach for the lower lane (plans/M9.md item PP): the surface
-/// this lane exists for is `lower`/`codegen` after `check_typed`. The
-/// `time_layout_rejected` counter names NN's carry-out 2 explicitly — a
-/// `build_layout_ctx` failure on a time-mentioning module that already
-/// passed `check_typed` — so the before/after of teaching that inject is
-/// visible in the printed line rather than inferred.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct LowerReach {
     check_typed: bool,
     lower_ok: bool,
     lower_rejected: bool,
-    /// NN carry-out 2: `build_layout_ctx` failed after check_typed on a
-    /// time-mentioning module (classified as LowerRejected until PP fixes
-    /// the inject). Separate from ordinary lower rejections.
     time_layout_rejected: bool,
     codegen_ok: bool,
     codegen_rejected: bool,
@@ -2419,14 +1704,6 @@ impl LowerReachTotals {
     }
 }
 
-/// One full run of the pipeline the lower fuzzer exercises: lex, then (on
-/// success) parse a whole module, then `sema::check_typed`, then (on a
-/// successful typecheck) `lower::lower_program`, then (on success)
-/// `codegen::codegen_program`, then (invariant (e)) `attempt_layout`.
-/// "<fuzz-lower>" is not a real file path — same placeholder reasoning as
-/// `run_eval_pipeline_once`'s own `"<fuzz-eval>"`: the determinism check
-/// only ever compares two runs of the *same* input against each other, so
-/// any fixed placeholder works.
 pub(crate) fn run_lower_pipeline_once(input: &str) -> (LowerFuzzOutcome, LowerReach) {
     let mut reach = LowerReach::default();
     let module = match lexer::lex(input) {
@@ -2495,10 +1772,6 @@ pub(crate) fn run_lower_pipeline_once(input: &str) -> (LowerFuzzOutcome, LowerRe
     let mwir_dump = mwir::dump(&mwir_program);
     let layout_ctx = match mwir::build_layout_ctx(&module, &Default::default()) {
         Err(e) => {
-            // After item PP, `build_layout_ctx` injects the same
-            // Duration/Instant arity `check_typed` does, so a failure
-            // here on a `check_typed`-accepted program is a genuine bug
-            // again — including on time-mentioning modules.
             return (
                 LowerFuzzOutcome::Bug(format!(
                     "mwir::build_layout_ctx failed after check_typed already accepted this program: \
@@ -2551,15 +1824,6 @@ pub(crate) fn run_lower_pipeline_once(input: &str) -> (LowerFuzzOutcome, LowerRe
     )
 }
 
-/// Every invariant the lower fuzzer checks, once per iteration, on one
-/// input. Runs the whole pipeline twice under `catch_unwind`, mirroring
-/// `check_eval_invariants`'s shape exactly: invariant (c)'s category check
-/// on a `SemaErr`/`LowerRejected`/`CodegenRejected` outcome, invariant (a)'s
-/// "never a `Bug`" check, then invariant (b)'s determinism compare,
-/// matched per-shape (rather than one blanket `!=`) so a divergence names
-/// exactly which stage disagreed, mirroring every other lane's own
-/// diagnostic style in this file. Returns measured reach on success
-/// (plans/M9.md item PP).
 pub(crate) fn check_lower_invariants(input: &str) -> Result<LowerReach, String> {
     let (first, reach) = std::panic::catch_unwind(|| run_lower_pipeline_once(input))
         .map_err(|p| format!("lower/codegen panicked: {}", panic_message(&p)))?;
@@ -2704,10 +1968,6 @@ pub(crate) fn run_lower_fuzz(iters: u64, seed: u64, seed_inputs: &[String]) -> R
     let mut rng = Rng::new(seed);
     let mut totals = LowerReachTotals::default();
     for i in 0..iters {
-        // plans/M9.md item NN carry-out 3 / item PP: same
-        // comptime-assert-over-runtime-name shapes as `fuzz sema`/`eval`,
-        // now that `build_layout_ctx` injects the time prelude (carry-out
-        // 2) so wiring them no longer shifts the schedule onto that hole.
         let input = fuzz_input_with_comptime_assert_shapes(&mut rng, seed_inputs, i);
         match check_lower_invariants(&input) {
             Ok(reach) => totals.add(&reach),
@@ -2739,10 +1999,6 @@ pub(crate) fn fuzz_lower(iters: u64, seed: u64) -> Result<(), String> {
     with_silenced_panic_hook(|| run_lower_fuzz(iters, seed, &seed_inputs))
 }
 
-/// Same shape as every other lane's own `_smoke` fn (2 fixed seeds, 1_000
-/// iterations apiece), and — like every other lane's — called from
-/// `check()`. Also callable directly for verification: `cargo xtask fuzz
-/// lower --iters 1000 --seed 1`.
 pub(crate) fn fuzz_lower_smoke() -> Result<(), String> {
     let seed_inputs = corpus_seed_inputs()?;
     with_silenced_panic_hook(|| {
@@ -2753,100 +2009,19 @@ pub(crate) fn fuzz_lower_smoke() -> Result<(), String> {
     })
 }
 
-// --- fuzz: async --------------------------------------------------------
-//
-// plans/M7.md item Y. `attempt_layout`'s own doc comment has disclosed
-// since M6-D that the `lower` lane never calls `flowwir_lower::lower_program`
-// or `codegen::codegen_program_with_async` at all — an async `@test(runtime)`
-// fn is an honest `LayoutOutcome::Skipped` there — so the whole async
-// pipeline (FlowWir lowering, `emit_flowwir_fn`, async frame sizing, the
-// group child-index map, and `layout_test_image` with a real `BootCtx`)
-// had **no fuzz coverage whatsoever**. This lane is that coverage: the same
-// mechanism as every lane above it (seeded splitmix64, corpus mutation, no
-// external engine), pointed at the pipeline `bin/wrela.rs::test_cmd`'s own
-// runtime tier actually runs.
-//
-// Generation (the one thing this lane does differently, and it has to):
-// the async surface is not reachable by chance. A `token_soup` string will
-// never spell `@actor` + `pub fn` + `async fn` + `await` + `@image`, and a
-// mutation of an arbitrary corpus entry lands on an async program only as
-// often as async entries appear in the corpus. So the *base* population is
-// the fixed, named `ASYNC_SEED_CASES` list below — every accept-shaped
-// async/actor golden in the tree — while splice donors come from the same
-// list most of the time and from the whole corpus occasionally (an
-// `f`-string, a generic fn, a `defer`, a `for ... take` carried into an
-// actor program is exactly the cross-shape a hand-written golden never
-// covers). `token_soup` keeps one iteration in eight anyway, so the
-// arbitrary-garbage tail every other lane checks is not silently dropped
-// here. `run_async_fuzz` prints the measured reach every run (how many
-// iterations type-checked, how many actually lowered >=1 async fn, how many
-// reached async codegen, how many laid out a real async test image) — a
-// lane that never reaches the surface it claims to cover is worthless, and
-// the number is printed rather than assumed.
-//
-// Invariants, identical to the `lower` lane's: (a) nothing in the pipeline
-// ever panics; (b) two runs of the same input agree — the FlowWir dump, the
-// concatenated codegen'd words, and the laid-out image blob/entry/sections
-// all byte-compared, plus the measured reach itself; (c) every rejection is
-// a legitimate fail-closed diagnostic in the fixed category set
-// (`SEMA_CATEGORIES` — a `SemaError`'s own `category`, and for the stages
-// that carry no category of their own the fixed literal `bin/wrela.rs`
-// prints for that stage, recorded per stage in `AsyncFuzzOutcome::Rejected`);
-// (d) an `"internal error: "`-prefixed message anywhere, a
-// `codegen::validate` failure, or a `mwir`/`layout` context failure on a
-// program `check_typed` already accepted is a **bug**, reported as a
-// finding, never tolerated.
-//
-// A find writes the exact input to `target/fuzz/async-crash-<n>.wr` and
-// reports the seed + iteration so it reproduces exactly.
-
-// Measured on the authoring machine, the same way every other lane's
-// budget was (the `cargo xtask` alias' own debug build — `run -q -p xtask`,
-// never a release one): 20_000 iterations in 5.0s of user time, 60_000 in
-// 15.1s, i.e. ~250us/iteration. That is roughly 4-5x the `lower` lane's own
-// ~50-60us, for two named reasons rather than a mysterious one: this lane's
-// mutation bases are *all* real programs, so ~14% of its iterations reach
-// `check_typed` where the corpus-wide lanes reach it far more rarely; and
-// each of those then pays a full sync+async lowering, an async codegen and
-// (for ~4.6% of all iterations) a real `BootCtx` image layout, instead of
-// falling out at lex. 400_000 therefore lands a bare `cargo xtask fuzz
-// async` at roughly 100 seconds — inside the same "roughly a minute or
-// two" band `fuzz sema`/`fuzz eval`/`fuzz lower` already target. The band
-// is what is being matched here, not their iteration count.
 pub(crate) const FUZZ_ASYNC_DEEP_ITERS: u64 = 400_000;
 pub(crate) const FUZZ_ASYNC_DEEP_SEED: u64 = 1;
-// Wired into `check` alongside every other live lane's smoke: two fixed
-// seeds, 1_000 iterations each (~0.5s total at the cost measured above),
-// no seed ever from the clock or the environment.
 pub(crate) const FUZZ_ASYNC_SMOKE_SEEDS: &[u64] = &[1, 2];
 pub(crate) const FUZZ_ASYNC_SMOKE_ITERS_PER_SEED: u64 = 1_000;
 
-/// Every accept-shaped async/actor golden in the tree — this lane's own
-/// mutation bases. A fixed, named list rather than a directory scan with a
-/// `grep`-shaped heuristic, for the same reason `PROJECT_SEED_CASES` is one:
-/// which cases carry async surface is a decision, and a decision belongs in
-/// source where a reviewer can see it move. `async_seed_inputs` fails
-/// closed if any name here no longer exists, so a renamed golden breaks the
-/// lane loudly instead of silently shrinking its base population.
-///
-/// Deliberately excluded: the `err-actor-*`/`err-await-*`/`err-send-*`/
-/// `err-group-*` cases, whose whole point is a rejection sema reaches long
-/// before FlowWir does. They are still reachable *as splice donors* through
-/// `corpus_seed_inputs` (every golden `input.wr` is in there), which is the
-/// role they can actually play here.
 pub(crate) const ASYNC_SEED_CASES: &[&str] = &[
-    // The FlowWir stage's own goldens — await in a branch, in a loop, in a
-    // chain, under `defer`.
     "flowwir-basic",
     "flowwir-branch-await",
     "flowwir-chain",
     "flowwir-defer",
     "flowwir-loop-await",
-    // The async machine-code goldens.
     "asm-async-basic",
     "asm-async-loop-checkpoint",
-    // Every real actor/async boot image: the full BootCtx path (rtdata,
-    // boot sequence, dispatch tables, group arena, deadlines).
     "boot-actor-chain",
     "boot-actor-reply-struct",
     "boot-actor-smoke",
@@ -2859,9 +2034,6 @@ pub(crate) const ASYNC_SEED_CASES: &[&str] = &[
     "boot-group-join",
     "boot-group-four-children",
     "boot-send",
-    // Accept-shaped sema cases over the same surface — no runtime test, so
-    // they mutate toward "async fns that lower and codegen but never lay
-    // out an image", which is `asm-async-*`'s shape with more variety.
     "check-actor-methods",
     "check-actor-private-handle-helper",
     "check-actor-send",
@@ -2873,8 +2045,6 @@ pub(crate) const ASYNC_SEED_CASES: &[&str] = &[
     "check-send-proven",
 ];
 
-/// The `ASYNC_SEED_CASES` inputs, in the listed order. Fails closed on a
-/// missing case (see that constant's own doc comment).
 pub(crate) fn async_seed_inputs() -> Result<Vec<String>, String> {
     let golden_dir = root().join("tests/golden");
     let mut inputs = Vec::with_capacity(ASYNC_SEED_CASES.len());
@@ -2891,33 +2061,16 @@ pub(crate) fn async_seed_inputs() -> Result<Vec<String>, String> {
     Ok(inputs)
 }
 
-/// How far one fuzzed input actually got down the async pipeline — the
-/// measured hit rate this lane reports, and (since it is fully derived from
-/// the run) part of the determinism compare for free.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct AsyncReach {
-    /// `sema::check_typed` accepted it.
     typechecked: bool,
-    /// `flowwir_lower::lower_program` returned `Ok` — i.e. the async
-    /// lowering ran to completion (over zero or more async fns).
     flow_lowered: bool,
-    /// How many async fns/methods that FlowWir program actually contains.
-    /// Zero means "this input reached `flowwir_lower` but gave it nothing
-    /// to do" — counted separately, because counting it as coverage would
-    /// be the exact dishonesty this lane exists to end.
     async_fns: usize,
-    /// `codegen::codegen_program_with_async` returned `Ok` (and
-    /// `codegen::validate` passed).
     codegen_ok: bool,
-    /// `layout::layout_test_image` built an image with a real `BootCtx`.
     image_built: bool,
-    /// ...and at least one of that image's runtime tests was async, so the
-    /// entry driver's own scheduler loop, turn areas and dispatch tables
-    /// were laid out for real.
     async_image: bool,
 }
 
-/// Running totals across one `run_async_fuzz` invocation.
 #[derive(Default)]
 pub(crate) struct AsyncReachTotals {
     typechecked: u64,
@@ -2941,8 +2094,6 @@ impl AsyncReachTotals {
     }
 }
 
-/// Exactly one of these shapes comes back from one pipeline run — never a
-/// panic, per `check_async_invariants`'s `catch_unwind`.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum AsyncFuzzOutcome {
     LexErr {
@@ -2955,10 +2106,6 @@ pub(crate) enum AsyncFuzzOutcome {
         line: u32,
         col: u32,
     },
-    /// Anything that produces a real `SemaError`: `sema::check_typed`,
-    /// `layout::merge_layout_ctx`, and the image evaluator (via
-    /// `eval::to_sema_error`). Its own `category` is checked against
-    /// `SEMA_CATEGORIES`.
     SemaErr {
         category: &'static str,
         message: String,
@@ -2967,35 +2114,20 @@ pub(crate) enum AsyncFuzzOutcome {
         extra_lines: Vec<String>,
         omit_location: bool,
     },
-    /// A fail-closed rejection from a stage whose error type carries no
-    /// category of its own (`LowerError`, `FlowError`, `CodegenError`,
-    /// `LayoutError`, `resolve_runtime_test_args`' bare `String`).
-    /// `category` is the fixed literal `bin/wrela.rs::test_cmd` prints for
-    /// that exact stage, so invariant (c) checks the same set a user would
-    /// actually see; `stage` names the call site so a determinism
-    /// divergence or a category miss is diagnosable without a rerun.
     Rejected {
         stage: &'static str,
         category: &'static str,
         message: String,
     },
-    /// The whole async pipeline ran.
     Ok {
         flow_dump: String,
         code_words: Vec<u32>,
         layout: LayoutOutcome,
     },
-    /// A genuine bug this lane found — `check_async_invariants` always
-    /// rejects this variant as a finding. Same population as the `lower`
-    /// lane's own `Bug`: an `"internal error: "`-prefixed message from any
-    /// stage, or a structural failure on a program `check_typed` already
-    /// accepted.
     Bug(String),
 }
 
 impl AsyncFuzzOutcome {
-    /// Which stage this outcome came from — the determinism compare's own
-    /// first check, so "the two runs disagreed" always names where.
     fn stage(&self) -> &'static str {
         match self {
             AsyncFuzzOutcome::LexErr { .. } => "lex",
@@ -3008,21 +2140,6 @@ impl AsyncFuzzOutcome {
     }
 }
 
-/// Every `SemaError` this lane can see — `sema::check_typed`'s own, and
-/// the two later stages that report through the same type
-/// (`layout::merge_layout_ctx`, and the image evaluator via
-/// `eval::to_sema_error`). `stage` names which, for the determinism
-/// compare's own diagnostics.
-///
-/// The `"internal error: "` carve-out applies here exactly as it does to
-/// every other stage in this lane, and it is not decoration: `eval/interp.rs`
-/// alone carries ~50 of those guards (`await`/`send`/`with group` reaching
-/// the comptime evaluator, an unbound local in place position, a missing
-/// builder argument, ...), every one of them a "should be unreachable for a
-/// `check_typed`-accepted program" claim that this lane is in a position to
-/// falsify. Classifying them as ordinary `comptime` diagnostics would have
-/// silently swallowed exactly the class of find this item exists to make
-/// visible.
 pub(crate) fn async_sema_outcome(stage: &'static str, e: sema::SemaError) -> AsyncFuzzOutcome {
     if e.message.starts_with("internal error: ") {
         return AsyncFuzzOutcome::Bug(format!("{stage}: {}", e.message));
@@ -3037,10 +2154,6 @@ pub(crate) fn async_sema_outcome(stage: &'static str, e: sema::SemaError) -> Asy
     }
 }
 
-/// One stage's `Err`, split the one way that matters: an
-/// `"internal error: "` prefix is a bug (invariant (d)), anything else is a
-/// legitimate fail-closed rejection carrying the category that stage prints
-/// (invariant (c)).
 pub(crate) fn async_stage_err(
     stage: &'static str,
     category: &'static str,
@@ -3057,12 +2170,6 @@ pub(crate) fn async_stage_err(
     }
 }
 
-/// One full run of the async pipeline, mirroring `bin/wrela.rs::test_cmd`'s
-/// own runtime tier stage for stage (and `build_runtime_test_image`'s own
-/// "deliberately parallel copy" reasoning — those driver internals are not
-/// a library surface this crate can call into). "<fuzz-async>" is not a
-/// real path: the determinism check only ever compares two runs of the
-/// *same* input, so any fixed placeholder works.
 pub(crate) fn run_async_pipeline_once(input: &str) -> (AsyncFuzzOutcome, AsyncReach) {
     let mut reach = AsyncReach::default();
     let module = match lexer::lex(input) {
@@ -3098,11 +2205,6 @@ pub(crate) fn run_async_pipeline_once(input: &str) -> (AsyncFuzzOutcome, AsyncRe
 
     let mut modules: BTreeMap<String, Module> = BTreeMap::new();
     modules.insert(module.path.join("."), module.clone());
-    // A failure here is a **bug**, not a rejection — the identical judgement
-    // the `lower` lane already makes about `mwir::build_layout_ctx`, which
-    // is exactly what this fn calls for a single-module build: it re-runs
-    // `specialize`/`declare`, both strict subsets of what `check_typed`
-    // itself just ran clean on this same module.
     let layout_ctx = match layout::merge_layout_ctx(&modules) {
         Err(e) => {
             return (
@@ -3116,8 +2218,6 @@ pub(crate) fn run_async_pipeline_once(input: &str) -> (AsyncFuzzOutcome, AsyncRe
         }
         Ok(c) => c,
     };
-    // The sync half, exactly as `test_cmd` runs it: `codegen_program_with_async`
-    // needs both halves, and `flowwir_lower` never touches a sync fn.
     let mwir_program = match lower::lower_program(&program) {
         Err(e) => {
             return (
@@ -3127,7 +2227,6 @@ pub(crate) fn run_async_pipeline_once(input: &str) -> (AsyncFuzzOutcome, AsyncRe
         }
         Ok(p) => p,
     };
-    // THE stage this whole lane exists for.
     let flow_program = match flowwir_lower::lower_program(&program) {
         Err(e) => {
             return (
@@ -3215,13 +2314,6 @@ pub(crate) fn run_async_pipeline_once(input: &str) -> (AsyncFuzzOutcome, AsyncRe
     reach.codegen_ok = true;
     let code_words = concat_code_words(&codegen_program);
 
-    // `test_cmd`'s runtime tier only ever lays out an image when the file
-    // declares at least one `@test(runtime)` fn — mirrored exactly, so a
-    // `Skipped` here means "production would not have laid one out either",
-    // not "this lane looked away" (which is precisely what `attempt_layout`
-    // in the `lower` lane had to say about every async test).
-    // Image layout goes through `lower_and_codegen_image` (force-roots) —
-    // the stub-checked codegen above stays for FlowWir/reach measurement.
     let layout_outcome = if runtime_tests.is_empty() {
         LayoutOutcome::Skipped
     } else {
@@ -3233,8 +2325,6 @@ pub(crate) fn run_async_pipeline_once(input: &str) -> (AsyncFuzzOutcome, AsyncRe
         let is_async_image = !async_tests.is_empty();
         let mut programs: BTreeMap<String, sema::typed::TypedProgram> = BTreeMap::new();
         programs.insert(module.path.join("."), program.clone());
-        // Same one-check → one-lower path as `wrela test`: force-root the
-        // live runtime before layout so enqueue/secondary trampolines exist.
         let compiled = match layout::lower_and_codegen_image(
             &modules,
             &programs,
@@ -3309,13 +2399,6 @@ pub(crate) fn run_async_pipeline_once(input: &str) -> (AsyncFuzzOutcome, AsyncRe
     )
 }
 
-/// Every invariant the async fuzzer checks, once per iteration, on one
-/// input. Runs the whole pipeline twice under `catch_unwind` (invariant
-/// (a)), rejects a `Bug` (invariant (d)), category-checks a rejection
-/// (invariant (c)), then compares the two runs (invariant (b)) — stage
-/// first, so a divergence names where, then the full value, which for an
-/// `Ok` is the FlowWir dump, the codegen'd words and the image bytes.
-/// Returns the first run's reach so the caller can total it.
 pub(crate) fn check_async_invariants(input: &str) -> Result<AsyncReach, String> {
     let (first, reach) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         run_async_pipeline_once(input)
@@ -3377,10 +2460,6 @@ pub(crate) fn check_async_invariants(input: &str) -> Result<AsyncReach, String> 
     Ok(reach)
 }
 
-/// One iteration's input: mostly a mutated async/actor golden, sometimes
-/// one with a splice donor drawn from the whole corpus, occasionally plain
-/// token soup — see the section comment above for why the mix is weighted
-/// this way rather than the 50/50 the other lanes use.
 pub(crate) fn async_fuzz_input(
     rng: &mut Rng,
     async_seeds: &[String],
@@ -3448,43 +2527,21 @@ pub(crate) fn fuzz_async_smoke() -> Result<(), String> {
     })
 }
 
-// --- fuzz: imports (plans/M9.md item II) ---------------------------------
-//
-// Every other fuzz lane is single-file. Four reachable `internal error:`
-// finds this milestone (A1b, EE, HH, HH#1) all needed a multi-module
-// closure, so every lane's per-iteration `internal error:` check has
-// never once seen an import. This lane is the deferred multi-module
-// generator: a small fixed set of module shapes (exporter + importer,
-// aliasing importer, two-deep chain, aliased peer + reachable generic)
-// filled from the seeded RNG, run through `check_program_typed` +
-// `eval::run_tests` + `lower::lower_program`. An `"internal error: "`
-// anywhere is a bug.
-//
-// Not a general program generator. The shapes are the ones that would
-// have caught the four finds; numeric field values vary so "accepted"
-// and "correct" stay distinct under mutation of the constants.
-
 pub(crate) const FUZZ_IMPORTS_DEEP_ITERS: u64 = 200_000;
 pub(crate) const FUZZ_IMPORTS_DEEP_SEED: u64 = 1;
 pub(crate) const FUZZ_IMPORTS_SMOKE_SEEDS: &[u64] = &[1, 2];
 pub(crate) const FUZZ_IMPORTS_SMOKE_ITERS_PER_SEED: u64 = 1_000;
 
-/// One closed multi-module program: module address -> source text, plus
-/// the root module's address (the importer that runs `@test`s / lowers).
 pub(crate) struct ImportClosure {
     modules: Vec<(Vec<String>, String)>,
     root: Vec<String>,
 }
 
-/// `@test` body with a four-space indent. Built without `\` line
-/// continuation so Rust's "eat leading whitespace on the next line"
-/// rule cannot strip the indent.
 pub(crate) fn import_test_fn(expect: u32, msg: &str) -> String {
     format!("@test\npub fn t():\n    assert D == {expect}, \"{msg}\"\n")
 }
 
 pub(crate) fn import_shape_comptime_construct(n: u32, k: u32) -> ImportClosure {
-    // A1b: comptime construction of a struct declared in another module.
     let expect = n.wrapping_add(k);
     let app = format!(
         "module app.main\n\nfrom lib.g import Cell\n\nconst D: u32 = Cell(n={n}).n + {k}\n\n{}",
@@ -3503,7 +2560,6 @@ pub(crate) fn import_shape_comptime_construct(n: u32, k: u32) -> ImportClosure {
 }
 
 pub(crate) fn import_shape_fields_and_method(a: u32, b: u32) -> ImportClosure {
-    // EE: imported struct fields + method, exercised at comptime and lower.
     let expect = a.wrapping_add(b);
     let app = format!(
         "module app.main\n\nfrom lib.g import Pair\n\nfn drive() -> u32:\n    return Pair(a={a}, b={b}).sum()\n\nconst D: u32 = drive()\n\n{}",
@@ -3523,7 +2579,6 @@ pub(crate) fn import_shape_fields_and_method(a: u32, b: u32) -> ImportClosure {
 }
 
 pub(crate) fn import_shape_reachable_unimported(seed: u32, add: u32) -> ImportClosure {
-    // HH: import only Maker; field-access a reachable-but-unimported Box.
     let expect = seed.wrapping_add(1).wrapping_add(add);
     let app = format!(
         "module app.main\n\nfrom lib.g import Maker\n\nfn drive() -> u32:\n    m = Maker(seed={seed})\n    b = m.build()\n    return b.n + {add}\n\nconst D: u32 = drive()\n\n{}",
@@ -3543,8 +2598,6 @@ pub(crate) fn import_shape_reachable_unimported(seed: u32, add: u32) -> ImportCl
 }
 
 pub(crate) fn import_shape_alias_peer_generic(n: u32, add: u32) -> ImportClosure {
-    // HH#1: alias a peer type; import wrap/peel of a generic; do not
-    // import the generic itself. Instantiation keys must re-key.
     let expect = n.wrapping_add(add);
     let app = format!(
         "module app.main\n\nfrom lib.g import Src as Item\nfrom lib.g import wrap_box\nfrom lib.g import peel_box\n\nfn drive() -> u32:\n    s = Item(n={n})\n    b = wrap_box(take s)\n    i: Item = peel_box(take b)\n    return i.n + {add}\n\nconst D: u32 = drive()\n\n{}",
@@ -3564,7 +2617,6 @@ pub(crate) fn import_shape_alias_peer_generic(n: u32, add: u32) -> ImportClosure
 }
 
 pub(crate) fn import_shape_chain(seed: u32, add: u32) -> ImportClosure {
-    // HH chain: A→B→C, only A imported.
     let expect = seed.wrapping_add(1).wrapping_add(add);
     let app = format!(
         "module app.main\n\nfrom lib.a import A\n\nfn drive() -> u32:\n    a = A(seed={seed})\n    b = a.make()\n    c = b.get()\n    return c.n + {add}\n\nconst D: u32 = drive()\n\n{}",
@@ -3593,7 +2645,6 @@ pub(crate) fn import_shape_chain(seed: u32, add: u32) -> ImportClosure {
 }
 
 pub(crate) fn import_shape_alias_owner(seed: u32, add: u32) -> ImportClosure {
-    // HH alias-owner: `Maker as Builder`; reachable Box keeps exporter spelling.
     let expect = seed.wrapping_add(1).wrapping_add(add);
     let app = format!(
         "module app.main\n\nfrom lib.g import Maker as Builder\n\nfn drive() -> u32:\n    m = Builder(seed={seed})\n    b = m.build()\n    return b.n + {add}\n\nconst D: u32 = drive()\n\n{}",
@@ -3613,7 +2664,6 @@ pub(crate) fn import_shape_alias_owner(seed: u32, add: u32) -> ImportClosure {
 }
 
 pub(crate) fn import_shape_enum_payload(n: u32, add: u32) -> ImportClosure {
-    // JJ: aliased enum; payload struct never imported; match binds it.
     let expect = n.wrapping_add(add);
     let app = format!(
         "module app.main\n\nfrom lib.g import Res as R\nfrom lib.g import make\n\nfn drive() -> u32:\n    match make(n={n}):\n        case .Good(p):\n            return p.n + {add}\n        case .Bad:\n            return 0\n\nconst D: u32 = drive()\n\n{}",
@@ -3633,7 +2683,6 @@ pub(crate) fn import_shape_enum_payload(n: u32, add: u32) -> ImportClosure {
 }
 
 pub(crate) fn import_shape_enum_payload_generic(n: u32, add: u32) -> ImportClosure {
-    // JJ neighbour: variant payload is itself generic (`Good(Box[Payload])`).
     let expect = n.wrapping_add(add);
     let app = format!(
         "module app.main\n\nfrom lib.g import Res as R\nfrom lib.g import make\n\nfn drive() -> u32:\n    match make(n={n}):\n        case .Good(b):\n            return b.v.n + {add}\n        case .Bad:\n            return 0\n\nconst D: u32 = drive()\n\n{}",
@@ -3653,8 +2702,6 @@ pub(crate) fn import_shape_enum_payload_generic(n: u32, add: u32) -> ImportClosu
 }
 
 pub(crate) fn generate_import_closure(rng: &mut Rng) -> ImportClosure {
-    // Keep values in a small range so wrapping addition stays obvious and
-    // assert messages stay short.
     let n = (rng.gen_range(50) as u32) + 1;
     let k = (rng.gen_range(50) as u32) + 1;
     match rng.gen_range(8) {
@@ -3669,10 +2716,6 @@ pub(crate) fn generate_import_closure(rng: &mut Rng) -> ImportClosure {
     }
 }
 
-/// Measured reach for the imports lane (plans/M9.md item PP). Shapes are
-/// hand-built multi-module programs, so most iterations should reach
-/// `check_program_typed`; the printed line makes a silent generator
-/// collapse visible the same way the async lane's does.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ImportsReach {
     check_accepted: bool,
@@ -3713,10 +2756,6 @@ pub(crate) fn message_has_internal_error(msg: &str) -> bool {
     msg.contains("internal error: ")
 }
 
-/// One iteration of the imports lane: build a closed multi-module
-/// program, typecheck the whole closure, run comptime tests on the root,
-/// and lower the root. Any `"internal error: "` is a finding. Returns
-/// measured reach on success (plans/M9.md item PP).
 pub(crate) fn check_imports_invariants(closure: &ImportClosure) -> Result<ImportsReach, String> {
     let mut reach = ImportsReach::default();
     let mut modules: BTreeMap<Vec<String>, Module> = BTreeMap::new();
@@ -3737,8 +2776,6 @@ pub(crate) fn check_imports_invariants(closure: &ImportClosure) -> Result<Import
                     e.message
                 ));
             }
-            // Named rejection is fine — shapes are intentionally narrow
-            // and a future language change may refuse one of them by name.
             reach.check_rejected = true;
             return Ok(reach);
         }
@@ -3860,54 +2897,16 @@ pub(crate) fn fuzz_imports_smoke() -> Result<(), String> {
     })
 }
 
-// ===========================================================================
-// The `report` lane (adversarial audit, 2026-07-29).
-//
-// Every lane above this one targets the compiler's own front/middle end,
-// which means nothing in the fuzzer ever touched the VMM's actual trust
-// boundary: `wrela_machine::report::parse_report`, 1600+ lines of
-// deliberately adversarial parsing whose own comments name forged reports
-// as the threat model, had four unit tests and no fuzz coverage at all. A
-// random `.wr` source can never produce a malformed report, so no existing
-// lane can reach this code.
-//
-// The generator emits a *well-formed* VMM-facing report and then mutates
-// one field, so mutations land on real structure rather than on noise
-// (the same corpus-mutation principle the `async` lane uses, for the same
-// reason: no random byte stream ever spells a valid report). The oracle is
-// three-part, and deliberately stronger than "did not panic":
-//
-//   1. `parse_report` must never panic and never report an `internal
-//      error:` — either is a bug, not an outcome.
-//   2. An **accepted** report must independently re-satisfy the structural
-//      invariants the VMM then trusts. This is the half that matters: the
-//      `cap`/`slot` floor defect was an *accepted* report carrying
-//      `cap = u64::MAX`, which the VMM turned into a loop bound. A lane
-//      that only watched for panics would have sailed straight past it.
-//   3. Rejections must be plain `String` diagnostics (fail closed), which
-//      is automatic given (1).
-//
-// Measured reach (plans/M9.md item PP) is printed as accepted/rejected
-// counts, so a generator that degenerates into "clean about nothing" —
-// every mutation rejected at line 1 — is visible in the output instead of
-// reading as a green run.
-
 pub(crate) const FUZZ_REPORT_DEEP_ITERS: u64 = 200_000;
 pub(crate) const FUZZ_REPORT_DEEP_SEED: u64 = 1;
 pub(crate) const FUZZ_REPORT_SMOKE_SEEDS: &[u64] = &[1, 2];
 pub(crate) const FUZZ_REPORT_SMOKE_ITERS_PER_SEED: u64 = 1_000;
 
-/// A well-formed VMM-facing report: the identity preamble, one `rtdata`
-/// section wide enough to hold the rings, two cores with their entries and
-/// high-DRAM stacks, and one request/reply ring pair. Every address is
-/// derived from `wrela_machine::layout` rather than hardcoded, so a layout
-/// change moves the generator with it.
 fn report_fuzz_baseline() -> String {
     use wrela_machine::layout as ml;
     use wrela_machine::report::EMPTY_SHA256;
 
     let cores = 2usize;
-    // `rtdata` sits above IMAGE_BASE and below the high-DRAM stacks.
     let rtdata_base = ml::RTDATA_BASE;
     let rtdata_size = 0x1000u64;
     let entry = ml::IMAGE_BASE;
@@ -3936,7 +2935,6 @@ fn report_fuzz_baseline() -> String {
         ));
     }
     s.push_str("Actor name=Root\n");
-    // cap*slot + 24 == bytes, and both rings sit inside `rtdata`.
     let cap = 4u64;
     let slot = 16u64;
     let bytes = cap * slot + 24;
@@ -3952,12 +2950,6 @@ fn report_fuzz_baseline() -> String {
     s
 }
 
-/// Every invariant an *accepted* `ParsedReport` must independently satisfy
-/// before the VMM is allowed to trust it. Returns the violated rule's own
-/// name, or `None`.
-///
-/// These re-derive, rather than re-call, the parser's own checks — a check
-/// that simply asked the parser whether it was happy would be vacuous.
 fn report_accepted_invariants(p: &wrela_machine::report::ParsedReport) -> Option<String> {
     use wrela_machine::layout as ml;
     let dram_end = ml::dram_end();
@@ -3989,10 +2981,6 @@ fn report_accepted_invariants(p: &wrela_machine::report::ParsedReport) -> Option
                 r.src, r.dst, p.cores
             ));
         }
-        // The defect this lane exists to catch: `cap` is a loop bound and
-        // a modulus in `wrela_vmm::exit_loop::AdmissionWitness`, so an
-        // accepted capacity must be something guest DRAM could physically
-        // hold. `slot >= 1` makes `cap <= bytes <= DRAM_SIZE` structural.
         if r.capacity == 0 || r.capacity > ml::DRAM_SIZE {
             return Some(format!(
                 "accepted `Ring cap={}`: not a capacity guest DRAM can hold (this is the value \
@@ -4000,7 +2988,6 @@ fn report_accepted_invariants(p: &wrela_machine::report::ParsedReport) -> Option
                 r.capacity
             ));
         }
-        // `count_addr` is dereferenced host-side via `guest_dram_offset`.
         if r.count_addr < ml::DRAM_BASE || r.count_addr.saturating_add(8) > dram_end {
             return Some(format!(
                 "accepted ring `count_addr={:#x}` outside guest DRAM",
@@ -4020,9 +3007,6 @@ fn report_accepted_invariants(p: &wrela_machine::report::ParsedReport) -> Option
     None
 }
 
-/// One mutation of the baseline report text. Deliberately structure-aware:
-/// swap a field's value for an adversarial one, duplicate a whole line, or
-/// drop a line — the three shapes a forged report actually takes.
 fn mutate_report(rng: &mut Rng, base: &str) -> String {
     const NASTY: &[&str] = &[
         "0",
@@ -4043,18 +3027,15 @@ fn mutate_report(rng: &mut Rng, base: &str) -> String {
         return base.to_string();
     }
     match rng.gen_range(4) {
-        // Duplicate a line — the `Entry base=` last-wins defect's own shape.
         0 => {
             let i = rng.gen_range(lines.len());
             let dup = lines[i].clone();
             lines.insert(i, dup);
         }
-        // Drop a line.
         1 => {
             let i = rng.gen_range(lines.len());
             lines.remove(i);
         }
-        // Replace one `key=value`'s value with an adversarial token.
         2 => {
             let i = rng.gen_range(lines.len());
             let line = lines[i].clone();
@@ -4071,7 +3052,6 @@ fn mutate_report(rng: &mut Rng, base: &str) -> String {
                 lines[i] = format!("{}{}{}", &line[..=eq], nasty, &line[end..]);
             }
         }
-        // Append a whole extra line copied from elsewhere in the report.
         _ => {
             let i = rng.gen_range(lines.len());
             lines.push(lines[i].clone());
@@ -4084,9 +3064,6 @@ fn mutate_report(rng: &mut Rng, base: &str) -> String {
 
 fn run_report_fuzz(iters: u64, seed: u64) -> Result<(), String> {
     let base = report_fuzz_baseline();
-    // The unmutated baseline must parse — otherwise every "rejected" below
-    // is measuring the generator, not the parser (the `clean about
-    // nothing` failure mode plans/M9.md item PP names).
     let parsed_base = wrela_machine::report::parse_report(&base).map_err(|e| {
         format!("fuzz report: the baseline report must parse, but it was rejected: {e}")
     })?;
@@ -4142,9 +3119,6 @@ fn run_report_fuzz(iters: u64, seed: u64) -> Result<(), String> {
             }
         }
     }
-    // Measured reach (plans/M9.md item PP): if `accepted` collapses to 0
-    // the lane is proving nothing about the accept path, which is exactly
-    // where the `cap` defect lived.
     println!(
         "fuzz report: {iters} iteration(s), seed {seed}: no panic, no internal error, no \
          untrustworthy accept ({accepted} accepted, {rejected} rejected)"

@@ -1,7 +1,5 @@
 module lib.a
 
-# plans/M9.md item D3: body-only helper refusal at lower. `helper` is
-# not imported into the root; lowering `outer` reaches it and refuses.
 fn helper() -> u32:
     return 1
 

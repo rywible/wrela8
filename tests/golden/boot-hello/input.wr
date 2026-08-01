@@ -1,16 +1,5 @@
 module examples.boot_hello
 
-# plans/M5.md item E, decision 15: the flagship boot golden — a real
-# `@test(runtime)` image, boots on the wrela VMM (Hypervisor.framework on
-# this machine), prints each test's own pinned report line over the
-# console ring. Three tests, in declaration order: arithmetic (checked
-# `+`), a struct paired with an exhaustive `match` over an enum, and one
-# DELIBERATE failure (an `assert` carrying a message) so the landing-pad
-# path is exercised and pinned, not just the pass path. No comptime
-# `@test` fns here at all — decision 1's own comptime/runtime merge rule
-# has its own separate golden coverage (`check-tests-mixed`); this file
-# is the "prints over virtio-console on a Mac" ROADMAP sentence, nothing
-# more.
 
 pub enum Shape:
     Circle(u64)

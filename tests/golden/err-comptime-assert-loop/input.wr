@@ -1,6 +1,5 @@
 module examples.err_comptime_assert_loop
 
-# plans/M9.md item NN: a loop-accumulated local is not comptime-visible.
 fn f() -> i64:
     total = 0
     @budget(bound=1000000)

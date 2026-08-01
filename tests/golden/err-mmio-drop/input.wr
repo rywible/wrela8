@@ -1,8 +1,5 @@
 module examples.err_mmio_drop
 
-# 02-language.md §3.1 / values.resource.protocol-consumption: an Mmio[L]
-# minted by map_partition and left live is a drop — illegal. The path
-# is named.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:
@@ -22,7 +19,6 @@ pub struct BlkDriver:
         self.irq_regs = claimed.map_partition(VirtioIrqMmio)
         orphan = claimed.map_partition(VirtioIrqMmio)
         self.claimed = take claimed
-        # `orphan` dropped here — must be error[move] naming the path.
 
 @image
 pub fn build() -> Image:

@@ -4,8 +4,6 @@ from lib.boxy import Box
 from lib.boxy import Src as Item
 from lib.boxy import peel_box
 
-# plans/M9.md item GG: peer type aliased as a *generic argument*
-# (`Box[Src]` in an imported signature → `Box[Item]`). GEN = 6 + 400 = 406.
 
 fn drive() -> u32:
     b = Box[Item](v=Item(n=6))

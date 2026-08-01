@@ -1,12 +1,5 @@
 module examples.err_cap_construct
 
-# plans/M7.md item A, 03-hardware.md §1: "Their constructors are not
-# source-visible: no address, import, or cast creates one."
-#
-# The construction spelling a source author reaches for first. Before this
-# item it reported `error[unimplemented]: generic instantiation is not
-# checked yet` — a fail-closed rejection naming the wrong cause, since
-# `DeviceCap` is not a generic struct and never will be one.
 
 struct VirtioBlock:
     id: u32

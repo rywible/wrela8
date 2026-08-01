@@ -1,11 +1,5 @@
 module examples.err_async_free_fn
 
-# Free (module-level) `async fn`s ARE in scope at M6 (02-language.md §5's
-# own worked example; §9.5's `g.start(fetch_part, ...)` — a group child
-# is exactly a same-module top-level `async fn`). What is *not* a
-# documented shape: an `async fn` with no receiver *inside* a struct (an
-# associated fn, "free" of `self`) — neither an actor method (no `self`)
-# nor a group child (never spelled `Type.assoc_fn`).
 @actor
 pub struct Widget:
     value: u64

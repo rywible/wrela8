@@ -1,19 +1,5 @@
 module examples.err_dma_pool_own_in_enum
 
-# plans/M7.md item I (the adversarial sweep), 02-language.md §4 +
-# 03-hardware.md §3: an `own[P] T` handle's `T` is the payload type the
-# image bound `P` with.
-#
-# `golden/err-dma-pool-own-mismatch` is this exact mismatch —
-# `own[BlockControl] BlkReqStatus` against
-# `img.dma_pool[BlkReqHeader](name=BlockControl, ...)` — in a fn
-# signature, rejected with the byte counts spelled out. The same handle
-# in an **enum variant payload** used to escape that walk: historically
-# `TypedProgram::enums` was names-only and a declaration-site ban refused
-# the shape instead. Enums now carry `variant_payload_types`, so
-# `own_handles_in_closure` walks them and `check_pool_decls` rejects
-# this at report time with the same pool-binding diagnostic as the
-# sibling golden.
 
 @layout(dma, endian=little)
 struct BlkReqHeader:

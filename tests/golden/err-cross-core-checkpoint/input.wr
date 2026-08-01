@@ -1,30 +1,5 @@
 module examples.err_cross_core_checkpoint
 
-# plans/M8.md item C2, decision 31 — the second shape a cross-core image
-# still refuses, and the one that would have been a **lost wake** rather
-# than a compile error if it had shipped.
-#
-# `__wrela_checkpoint_service` names core 0's own pending word by a baked-in
-# constant (`pending::core_word_addr(0)`, twice), and so does every
-# checkpoint test `codegen::FnCtx::checkpoint` emits at an async loop
-# back-edge that is a genuine state cycle (`lower_while_split` — a `while`
-# whose body contains `await`). That was exactly right while core 0 was the
-# only core that ran turns. Item C2 makes a turn run on core 1 — and a turn
-# on core 1 reaching that back-edge would find core 0's word nonzero, call
-# the service, and have it **clear that whole word**: the wake a cross-core
-# reply ring just raised for core 0 would be consumed by a core it was not
-# addressed to, and core 0 would park forever.
-#
-# plans/M11.md decision 740: sync `@budget` loops no longer emit
-# checkpoints (trip counters only), so a sync `while` on core 1 is legal.
-# This oracle therefore uses an **async method loop with `await` inside** —
-# the remaining half that still splices `Reloc::CheckpointService` onto a
-# `Transition::Jump` back-edge.
-#
-# Vacuity control: change `core=1` to `core=0` and this image builds and
-# boots. Remove the `while` (or the `await` inside it, collapsing to an
-# intra-state mwir jump with no checkpoint reloc) and it builds on core 1
-# too.
 
 @actor
 pub struct Cell:

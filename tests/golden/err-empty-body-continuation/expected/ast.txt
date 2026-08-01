@@ -1,1 +1,1 @@
-error[parse]: expected a statement, found `DEDENT` at 8:1
+error[parse]: expected a statement, found `DEDENT` at 5:1

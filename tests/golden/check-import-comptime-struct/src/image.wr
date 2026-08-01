@@ -2,26 +2,10 @@ module image
 
 from shapes import Pair
 
-# plans/M9.md item A1b, the exact defect this case pins: a comptime-
-# reachable construction of a struct declared in *another* module. Before
-# A1b `mk()` abandoned with `error[comptime]: internal error: struct
-# `Pair` not found` — `bodies::check` fills `TypedProgram::structs` from
-# this module's own `module.items` only, and the evaluator is handed one
-# `TypedProgram` and nothing else, so the imported declaration was
-# invisible to it. An `internal error:` is a bug by house rule
-# (CLAUDE.md), and this one was reachable from ordinary source.
-#
-# The construction, a field read (inside `Pair.sum`) and a method call on
-# the imported struct are all here, because they are three separate
-# lookups in `eval::interp` (`StructLiteral`, `Field`, `Method`).
 fn mk() -> u32:
     p = Pair(a=6, b=10)
     return p.sum()
 
-# Evaluated at build time, and its evaluated value is pinned below:
-# `expected/image.txt`'s `Arg label=mailbox value=16` is this const's
-# value, so the case fails if the evaluation is merely *accepted* rather
-# than correct.
 const MAILBOX: u32 = mk()
 
 @actor

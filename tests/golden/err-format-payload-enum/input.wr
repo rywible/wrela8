@@ -1,7 +1,5 @@
 module examples.err_format_payload_enum
 
-# plans/M9.md item C2: deriving(Format) on a payload-bearing enum refuses
-# by name — unit variants only.
 
 pub enum Msg deriving(Format):
     Ping

@@ -1,6 +1,5 @@
 module app.main
 
-# plans/M9.md item HH: only A imported; A.make -> B; B.get -> C.
 from lib.a import A
 
 fn drive() -> u32:
@@ -16,8 +15,6 @@ pub fn t():
     assert D == 215, "chain A->B->C with only A imported"
 
 
-# Guest-reachable path (plans/M9.md item KK): H3 dropped drive() from asm;
-# `@test(runtime)` seeds the import-reachability claim.
 @test(runtime)
 pub fn guest_reachable():
     assert drive() == 215, "reachable chain at guest"

@@ -1,7 +1,5 @@
 module examples.err_image_cores_above_slots
 
-# plans/M15.md item B / image.cores.authoring: seal refuses N > CORE_SLOTS
-# (soft page-packing ceiling; not "the machine has 32 cores").
 
 @actor
 pub struct Store:

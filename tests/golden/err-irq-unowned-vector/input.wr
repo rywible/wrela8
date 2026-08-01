@@ -1,8 +1,5 @@
 module examples.err_irq_unowned_vector
 
-# plans/M7.md item G: 03-hardware.md §6 — "source cannot bind an unowned
-# vector". The device declares no `vector=`, so `take_irq` has nothing to
-# mint. Poll builds (03 §7) are the ones that omit the vector entirely.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

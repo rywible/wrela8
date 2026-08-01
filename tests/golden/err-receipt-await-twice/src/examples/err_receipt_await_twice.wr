@@ -2,15 +2,6 @@ module examples.err_receipt_await_twice
 
 from core.io_error import IoError
 
-# 03-hardware.md §5: "A receipt resolves exactly once; dropping one is
-# illegal in every state." plans/M8.md item E's caller-side half of that
-# sentence: `await receipt` **consumes** the receipt, so a second `await`
-# of the same one is not a race the runtime has to survive — it is
-# unrepresentable, caught by the ordinary move checker one pass before
-# anything is emitted.
-#
-# `golden/boot-receipt-handoff`'s own source, with one statement added.
-# The accepted sibling is the whole rest of this file.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:
@@ -82,8 +73,6 @@ pub struct BlkDriver:
         self.device = negotiated.start()
         return Ok(unit)
 
-    # 03 §6's ISR and bottom half: private, unchanged, and still the only
-    # thing that ever touches the used ring.
     fn on_queue_irq(self):
         status = self.irq_regs.interrupt_status.read()
         handled = status & 1
@@ -98,14 +87,9 @@ pub struct BlkDriver:
         if status == 0:
             return unit
         self.drains = self.drains + 1
-        # Resolves whatever receipt is in flight — and, this time, wakes a
-        # turn in a *different* actor (03 §5: "its bottom-half turn drains
-        # completions and resolves receipts without re-entering anyone").
         self.queue.drain(max=QDEPTH)
         return unit
 
-    # 03 §5's signature-determined handoff, twice. Nothing but the
-    # `device_writes_payload=`/`idempotent=`/`kind=` triple differs.
     pub fn submit_write(mut self, lba: u64,
                         take buffer: own[BlockPayloads] DmaBlock)
         -> Receipt[own[BlockPayloads] DmaBlock]:
@@ -147,10 +131,6 @@ pub struct BlkDriver:
     pub fn drain_count(read self) -> u64:
         return self.drains
 
-# A third actor whose only job is to be runnable. Every mark it records
-# happened in a turn of its own — so a mark observed *between* the two
-# halves of `Client.round_trip` is proof that `round_trip`'s turn really
-# left and re-entered, rather than running straight through.
 @actor
 pub struct Ledger:
     marks: u64
@@ -178,9 +158,6 @@ pub struct Client:
         self.seen = 0
         self.witness = 0
 
-    # 02-language.md §9.2: `self` must be whole at every suspension, so the
-    # payload leaves and re-enters `self` only inside these two synchronous
-    # helpers — the async body never holds `self` partially moved.
     fn take_block(mut self) -> own[BlockPayloads] DmaBlock:
         held = take self.block
         self.block = None
@@ -190,9 +167,6 @@ pub struct Client:
             case .None:
                 panic("client has no payload slot")
 
-    # The completion comes back with the payload (03 §3: "ownership returns
-    # with the completion"), which is put straight back into `self` and
-    # zeroed, so the read half cannot pass by reading its own leftovers.
     fn stash_and_clear(mut self,
                        take completion: IoCompletion[own[BlockPayloads] DmaBlock]) -> u64:
         empty = take self.block
@@ -230,19 +204,11 @@ pub struct Client:
     pub async fn round_trip(mut self) -> u64:
         buf = self.take_block()
         buf.word = MAGIC
-        # --- handoff 1: write MAGIC to sector 0 -------------------------
         r1 = await self.disk.submit_write(lba=0, buffer=take buf)
-        # The caller now owns a `Receipt[own[BlockPayloads] DmaBlock]` and
-        # parks on it. Nothing else in this image can resolve it.
         c1 = await r1
-        # The second resolution of one receipt.
         _again = await r1
         cleared = self.stash_and_clear(completion=take c1)
         assert cleared == MAGIC, "the write completion returns the payload the caller lent"
-        # --- a turn boundary that is not a receipt ----------------------
-        # An ordinary actor call between the two halves: its reply is the
-        # `Ledger`'s own running mark, which only a turn on a *different*
-        # actor can produce, so observing it proves this turn suspended.
         m = await self.led.mark(n=7)
         @discard(reason="migrated: deliberate Err discard (M13 item L)")
         match m:
@@ -250,7 +216,6 @@ pub struct Client:
                 self.witness = v
             case .Err(_):
                 assert false, "ledger mark rejected"
-        # --- handoff 2: read sector 0 back ------------------------------
         buf2 = self.take_block()
         r2 = await self.disk.submit_read(lba=0, buffer=take buf2)
         c2 = await r2

@@ -1,6 +1,5 @@
 module examples.check_image_cores_explicit
 
-# plans/M15.md item B / image.cores.authoring: explicit `cores=2` seals N=2.
 
 @actor
 pub struct Store:

@@ -1,1 +1,1 @@
-error[type]: deriving(Format) conflicts with an explicit Format member on `Tag` at 6:1
+error[type]: deriving(Format) conflicts with an explicit Format member on `Tag` at 4:1

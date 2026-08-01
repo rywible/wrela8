@@ -2,14 +2,6 @@ module a
 
 from b import Bee, bee_weight
 
-# plans/M9.md item A1b: a *type-bearing import cycle* whose comptime
-# evaluation crosses the cycle in both directions. `DEPTH` constructs
-# `Bee` (declared in `b`) and calls `bee_weight` (declared in `b`), whose
-# own body constructs `Ay` and calls `Ay.scaled` (declared here). If the
-# typed splice needed one module's evaluation to finish before the
-# other's could begin, this program could not be built at all — which is
-# exactly the property `sema/mod.rs`'s splice note and `loader.rs` both
-# require, and which A1 preserved before this item.
 pub struct Ay:
     pub n: u32
 
@@ -27,8 +19,6 @@ pub struct Store:
         self.depth = depth
         self.count = 0
 
-# `Arg label=depth value=6` in `expected/image.txt` is `DEPTH`'s evaluated
-# value: 3 (in `a`) -> `Bee.m` (in `b`) -> `Ay.n` (back in `a`) -> * 2.
 @image
 pub fn build() -> Image:
     img = Image(name="import-comptime-cycle", target=Target.wrela_machine_v1)

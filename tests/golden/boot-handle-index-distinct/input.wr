@@ -1,26 +1,5 @@
 module examples.boot_handle_index_distinct
 
-# plans/M8.md item H attack 6: `resolve_runtime_test_args` (and the twin
-# `boot_init_arg_word` path that materialises `decl.handle()` into an
-# init argument) used to give distinct image declarations the *same*
-# handle word — each kind's own construction-order index. Item D's
-# decision 22 recorded the actor/driver half as "harmless only while
-# nothing reads a handle word"; the guest *does* read them, through the
-# `u32` `decl.handle()` spelling `boot-init-args` already pins.
-# `check_image_decl_method_intrinsic` accepts `handle()` on any
-# `ImageDecl`, devices included.
-#
-# Witness: `Marker` is `actor#0`, `Stub` is `driver#0`, `Hw` is
-# `device#0`. `Tags` stores all three identities as `u32` via `.handle()`.
-# The shared space is actors, then drivers, then devices, so the words
-# are 0, 2, 3 (Tags itself is actor#1). A kind-local scheme for any one
-# of the three fails a concrete assert below. The first attack-6 fix
-# covered only actors and drivers; the device half was found by
-# orchestrator spot-probe (`device#0` colliding with `actor#0` at word 0).
-#
-# Dispatch itself is still static-by-type today (codegen never loads the
-# handle word to pick a mailbox), so this is an identity hole, not a
-# live mis-delivery — but identity is what a handle *is*.
 
 struct Hw:
     id: u32
@@ -70,12 +49,6 @@ pub struct Tags:
 
 @test(runtime)
 async fn handle_words_are_distinct(t: Actor[Tags]):
-    # Concrete layout for this image (2 actors, 1 driver, 1 device):
-    #   Marker actor#0 → 0
-    #   Tags   actor#1 → 1  (not stored; only used as the test receiver)
-    #   Stub   driver#0 → 2
-    #   Hw     device#0 → 3
-    # A wrong shift or a kind-local collision fails one of these by name.
     a = await t.actor_word()
     @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match a:

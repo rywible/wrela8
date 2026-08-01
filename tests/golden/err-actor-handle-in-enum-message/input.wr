@@ -1,19 +1,5 @@
 module examples.err_actor_handle_in_enum_message
 
-# plans/M7.md item I (the adversarial sweep), 02-language.md §9.1:
-# "Handles cannot appear in messages, replies, or runtime collections."
-#
-# This is an **M6** rule with the identical hole plans/M7.md item I found
-# in item A's and item C's: `type_contains_actor_handle` recursed through
-# a named type's components using a struct-only map, so an `Actor[T]`
-# inside an **enum variant payload** was invisible. A `pub` actor method
-# declaring `h: Holder` — whose parameter list *is* the message shape —
-# compiled clean, and the enum itself was even classified `data` rather
-# than `resource`.
-#
-# `golden/err-actor-handle-in-message` is the same rejection through a
-# bare `Actor[Inner]` parameter. `err-cap-actor-enum-field` carries the
-# whole finding.
 
 @actor
 pub struct Peer:

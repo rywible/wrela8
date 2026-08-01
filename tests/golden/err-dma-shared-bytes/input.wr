@@ -1,14 +1,5 @@
 module examples.err_dma_shared_bytes
 
-# plans/M7.md item D, 03-hardware.md §3, `DmaShared[P, L]`'s own second
-# sentence: "It **cannot be read as bytes** or lent as a plain value."
-#
-# A `@layout` field is exactly a byte view — declaring one as
-# `DmaShared[P, L]` asks the compiler to say which bytes shared control
-# memory *is*, which is the thing that sentence rules out. Permanent, not
-# a fail-closed floor: no later item makes shared control memory
-# describable as bytes. The fix is in the message — name the control
-# structure's own `@layout(dma)` type as `L`.
 
 @layout(dma, endian=little)
 struct RingControl:

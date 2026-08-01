@@ -1,15 +1,3 @@
-//! Run registered `@layout_assert` fns (plans/M9.md item H).
-//!
-//! After layout succeeds, each fn registered by `img.check_layout(f)` is
-//! evaluated once against a real `ImageReport` value synthesized from
-//! that layout (stdlib `core.image_report.ImageReport` — ordinary wrela
-//! source, not a compiler-side table). Failure is a build error naming
-//! the fn; success leaves the emitted image bytes untouched.
-//!
-//! 04-compiler.md §8: layout asserts are read-only — failure is a build
-//! error, never a second layout pass. This module never mutates
-//! `ImageLayout`.
-
 use std::collections::BTreeMap;
 
 use crate::eval::image::ImageGraph;
@@ -20,11 +8,6 @@ use crate::sema::typed::{TypedFn, TypedProgram, TypedStruct};
 use crate::sema::types::Type;
 use wrela_machine::{console, layout as machine_layout};
 
-/// Field names the stdlib `ImageReport` exposes today (decision 220).
-/// Synthesis fills values by matching these names against the struct's
-/// own declaration order — so a field reorder in the `.wr` file does not
-/// require a matching reorder here, only that every name still exists
-/// with the expected scalar type.
 const REPORT_FIELDS: &[(&str, ReportField)] = &[
     ("machine_revision", ReportField::MachineRevision),
     ("entry", ReportField::Entry),
@@ -48,10 +31,6 @@ enum ReportField {
     CodeSize,
 }
 
-/// Runs every registered `@layout_assert` against `layout`. `Ok(())` when
-/// the graph registered none, or when every registered fn returns without
-/// abandoning. `Err` is one already-rendered `error[build]: ...\n` line
-/// (and optional stack lines) ready for the report/build drivers.
 pub fn run(program: &TypedProgram, graph: &ImageGraph, layout: &ImageLayout) -> Result<(), String> {
     if graph.layout_asserts.is_empty() {
         return Ok(());
@@ -91,8 +70,6 @@ fn render_failure(fn_key: &str, e: EvalError) -> String {
     s
 }
 
-/// Builds one `ImageReport` value whose field order matches the stdlib
-/// struct declaration visible to `program` (local or imported).
 fn synthesize_report(program: &TypedProgram, layout: &ImageLayout) -> Result<Value, String> {
     let s = find_image_report_struct(program).ok_or_else(|| {
         "registered `@layout_assert` fn(s) need the stdlib `ImageReport` type \
@@ -173,10 +150,6 @@ fn check_field_ty(name: &str, ty: &Type, v: &Value) -> Result<(), String> {
     }
 }
 
-/// Locates the `ImageReport` struct the assert fn's module can name —
-/// either declared locally (unusual) or imported from
-/// `core.image_report`. Prefer the imported/local spelling that carries
-/// the expected field set.
 fn find_image_report_struct(program: &TypedProgram) -> Option<&TypedStruct> {
     for s in program
         .structs
@@ -204,8 +177,6 @@ fn pages_region() -> (u64, u64) {
     (base, end - base)
 }
 
-/// Contiguous high-DRAM stack slab for sealed N (`core_stack_base_n(0, N)`
-/// .. DRAM_END), plans/M15.md item D.
 fn stacks_region(n_cores: usize) -> (u64, u64) {
     let n = n_cores.max(1);
     (

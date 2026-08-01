@@ -1,18 +1,5 @@
 module examples.boot_send
 
-# plans/M6.md item G, decision 5's runtime half: a *proven* bare `send`
-# must really deliver its message, not merely type-check. `Logger` is
-# targeted by exactly four static message sites (two bare `send`s, one
-# consumed-`Result` `send`, one `await`), each in the `@test(runtime)`
-# root's own body, outside every loop and `g.start` child; the declared
-# `mailbox=8` is ≥ 4, so admission provably cannot fail and both bare
-# statements are legal (02-language.md §9.4).
-#
-# The transcript proves delivery rather than assuming it: `read_total` is
-# admitted last (FIFO per mailbox, 04-compiler.md §2), so its reply can
-# only be 1 + 2 + 4 = 7 if all three sends really ran their turns first.
-# Dropping any one of them changes the digit, so this assertion is a real
-# oracle for the send path, not a smoke test.
 
 @actor
 pub struct Logger:
@@ -29,8 +16,6 @@ pub struct Logger:
 async fn proven_send_delivers(lg: Actor[Logger]):
     send lg.record(code=1)
     send lg.record(code=2)
-    # The consumed form still works, in the same body, targeting the same
-    # mailbox — item A's `check-actor-send` shape, executed for real.
     @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match send lg.record(code=4):
         case .Ok(_):

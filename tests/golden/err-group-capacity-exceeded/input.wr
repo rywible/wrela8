@@ -1,21 +1,5 @@
 module examples.err_group_capacity_exceeded
 
-# plans/M6.md item H2 — the adversarial sweep's find, pinned before the
-# fix. 02-language.md §9.5: a group owns "up to `capacity` child
-# activations (default zero)".
-#
-# The declared capacity was completely inert: it type-checked as a
-# `Usize` and was stored into the group arena at `OFF_GROUP_CAPACITY`,
-# which nothing ever read (verified by grep — one definition, one store,
-# zero loads). `boot-group-join` could not catch this, because it
-# declares `capacity=2` with exactly two children, so an enforced
-# capacity and an ignored one look identical there.
-#
-# Enforced statically, not at admission time: refusing an activation at
-# runtime would need a `CallError::NotAdmitted` composition that does not
-# exist at M6 (item H3 is the same missing piece at a mailbox), so the
-# only runtime option available would be an abort. The static count is
-# exact because a `g.start` in a loop is itself rejected.
 
 @actor
 pub struct C:

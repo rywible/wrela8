@@ -1,23 +1,3 @@
-//! The comptime evaluator's one obvious recursive walk (plans/M3.md item
-//! B, decision 4): every entry point ends up here, walking the typed
-//! tree (`sema::typed`) only — no name resolution, no typing, no
-//! desugaring, nothing re-derived from the ast. A fact the walk needs
-//! but the tree lacks is a producer bug: this file's own two additions
-//! to the typed tree (`typed::TypedStruct::fields`, `typed::TypedProgram::enums`)
-//! are exactly that — documented at their own declaration site, not
-//! silently patched around here.
-//!
-//! Control flow (`return`/`break`/`continue`, and `?`'s own early
-//! return) is one `Unwind` error channel threaded through Rust's own
-//! `?`; comptime abandonment (overflow, failed assert, out-of-bounds,
-//! explicit `panic`, a blown quota) is `Unwind::Error` — a build error
-//! naming the operation, carrying the live comptime call stack (decision
-//! 5). `defer` runs at every real exit in reverse registration order,
-//! block-scoped exactly like `sema::flow`'s own `check_active_defers`
-//! (this file's own runtime mirror of that pass, not a re-derivation of
-//! anything the typed tree itself lacks — the tree already carries every
-//! `Defer` statement in its own block).
-
 use std::collections::BTreeMap;
 
 use crate::eval::quota::{MAX_CALL_DEPTH, Quota};
@@ -32,25 +12,12 @@ use crate::sema::typed::{
 use crate::sema::types::{Type, TypeArg};
 use crate::syntax::ast::{AccessMode, BinOp};
 
-/// One comptime build-error diagnostic (plans/M3.md decision 5):
-/// `message` names the operation/condition that abandoned; `stack` is
-/// the live comptime call stack at the point of failure, outermost
-/// (the const/context that kicked off evaluation) first, innermost
-/// (the deepest call) last — `eval/mod.rs` renders both into a
-/// `sema::SemaError` (`error[comptime]: ...`, decision "pick a stable
-/// diagnostic format consistent with the existing house style": typed
-/// nodes carry no spans, so the stack *is* the location story).
 #[derive(Debug, Clone, PartialEq)]
 pub struct EvalError {
     pub message: String,
     pub stack: Vec<String>,
 }
 
-/// Non-local control flow, threaded as the error side of every
-/// evaluation function's `Result` so Rust's own `?` implements
-/// short-circuiting propagation for free — `Return`/`Break`/`Continue`
-/// are ordinary, legal control flow (never rendered as a diagnostic);
-/// only `Error` ever reaches a caller outside this module.
 enum Unwind {
     Error(EvalError),
     Return(Value),
@@ -66,40 +33,8 @@ impl From<EvalError> for Unwind {
     }
 }
 
-/// The native stack `run_on_guarded_stack` gives every top-level comptime
-/// evaluation (plans/M3.md decision 6's own quota family, alongside
-/// `quota::MAX_CALL_DEPTH`) — found by `cargo xtask fuzz sema`, seed=11:
-/// this recursive-descent walk (`eval_expr`/`eval_block`/`eval_stmt`/
-/// `run_call`, several native frames per one guest-level call) costs
-/// enough native stack per level that a plain, legitimate ~100-deep
-/// recursive call already overflowed this process's own default thread
-/// stack (a few MiB) natively — nowhere near `MAX_CALL_DEPTH`'s budget of
-/// 1_000, and long before `Interp::enter`'s own depth check ever got a
-/// chance to reject it with `error[comptime]`. `quota.rs`'s own module
-/// doc already named the risk ("the step quota alone cannot promise"
-/// native-stack safety) and `MAX_CALL_DEPTH` was chosen "to stay well
-/// inside this process's own native stack" — a claim this fixes rather
-/// than one `MAX_CALL_DEPTH` alone could keep, since lowering that
-/// constant would also change every pinned `Quota max_call_depth=...`
-/// report line (golden/appliance, golden/image-project,
-/// golden/image-helper-accept) for no reason a real language quota
-/// demands. 256 MiB comfortably covers 1_000 levels at the
-/// empirically-observed cost (~8 MiB blew ~100 levels, so 1_000 needs on
-/// the order of 80-90 MiB; this doubles that with margin for a slower
-/// release-mode improvement never being required to hold) without
-/// depending on the calling thread's own stack size (`RUST_MIN_STACK`,
-/// the OS default, or whatever a future caller happens to run on).
 const EVAL_STACK_SIZE: usize = 256 * 1024 * 1024;
 
-/// Runs `f` — one top-level comptime evaluation — on a dedicated thread
-/// sized by `EVAL_STACK_SIZE`, joining before returning. `thread::scope`
-/// lets `f` borrow non-`'static` data (every entry point below borrows
-/// `&TypedProgram`/`&TypedExpr` from its caller); `Builder::spawn_scoped`
-/// is the one piece of that API that also accepts a custom stack size. A
-/// panic inside `f` (there should never be one — every real failure is an
-/// `Err`, not a panic) is re-raised on the calling thread via `resume_unwind`
-/// rather than swallowed, so `catch_unwind` callers (the fuzz harness'
-/// own guarded invariants) still see it exactly as if `f` had run inline.
 fn run_on_guarded_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
     std::thread::scope(|scope| {
         let handle = std::thread::Builder::new()
@@ -113,32 +48,12 @@ fn run_on_guarded_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
     })
 }
 
-/// The evaluator's shared, non-scope state: the typed program being
-/// walked, the running quota, and the live comptime call stack (callee
-/// spellings/const-context names, in call order) diagnostics read from.
 struct Interp<'p> {
     program: &'p TypedProgram,
     quota: Quota,
     stack: Vec<String>,
-    /// The one active `@image` builder (plans/M4.md item B, decision 6:
-    /// at most one `@image` fn is ever reachable, so at most one builder
-    /// is ever live) — `None` before `Image(...)` runs and after
-    /// `img.seal()` consumes it. Every `Image`-rooted intrinsic mutates
-    /// this directly rather than threading a builder value through
-    /// `env` (decision 5's own "opaque builtin resource type" is real
-    /// enough to type-check and bind to a local, but the evaluator needs
-    /// only one, so nothing is lost by keying off the interpreter's own
-    /// state instead of that local's actual `Value`).
     image: Option<crate::eval::image::ImageGraph>,
-    /// `img.seal()`'s own result, stashed here since evaluating a call
-    /// returns a bare `Value` (`Value::Unit`, decision 5) rather than the
-    /// full graph — `eval_image` (this module's own new top-level entry)
-    /// reads it back out once the whole `@image` fn body has run.
     sealed_image: Option<crate::eval::image::ImageGraph>,
-    /// Next `SlotMap` instance id (05-library.md §7). Starts at 1 so the
-    /// first mint matches the guest's `OFF_SLOTMAP_NEXT_ID` path (which
-    /// returns the pre-increment value after adding one to a zeroed
-    /// word). Non-wrapping: exhaustion is a comptime abandon.
     slotmap_next_id: u64,
 }
 
@@ -150,13 +65,6 @@ impl<'p> Interp<'p> {
         })
     }
 
-    /// plans/M9.md item A1b: a lookup that missed. If the name is one
-    /// `sema::mod::splice_imported_decls` recorded as out of this
-    /// module's reach, say so in those words — a cross-module resolution
-    /// boundary is a named, fail-closed outcome, never an `internal
-    /// error:` (a bug by house rule, CLAUDE.md). Otherwise the caller's
-    /// own message stands, and an `internal error:` there still means
-    /// exactly what it always did: a producer bug.
     fn abandon_missing(&self, name: &str, fallback: impl Into<String>) -> Unwind {
         match self.program.imported.unresolvable.get(name) {
             Some(note) => self.abandon(format!("`{name}` {note}")),
@@ -172,11 +80,6 @@ impl<'p> Interp<'p> {
         self.quota.charge_memory(n).map_err(|m| self.abandon(m))
     }
 
-    /// Enters one call/const-reference frame: ticks a step, pushes the
-    /// frame name, and depth-checks (`quota::MAX_CALL_DEPTH`) — every
-    /// call *and* every `const` cross-reference goes through this, so an
-    /// unbounded `const` cycle (nothing before this evaluator existed
-    /// to notice one) fails closed exactly like unbounded recursion.
     fn enter(&mut self, name: String) -> R<()> {
         self.tick_step()?;
         if self.stack.len() >= MAX_CALL_DEPTH {
@@ -193,11 +96,6 @@ impl<'p> Interp<'p> {
     }
 }
 
-// --- top-level entry points ------------------------------------------------
-
-/// Evaluates one module-level `const`'s own initializer (the integration
-/// surface, plans/M3.md item B: "const initializers evaluated with the
-/// real evaluator, replacing M2-H's literal-only subset").
 pub fn eval_const(program: &TypedProgram, name: &str) -> Result<Value, EvalError> {
     let Some(c) = program
         .consts
@@ -212,11 +110,6 @@ pub fn eval_const(program: &TypedProgram, name: &str) -> Result<Value, EvalError
     eval_top(program, &c.value, name.to_string())
 }
 
-/// Evaluates an arbitrary comptime expression outside any `const`'s own
-/// declaration (the other integration surface: a const-generic
-/// argument, `generics.rs`'s own `eval_const_expr` replacement) —
-/// `context` names the site for the call-stack diagnostic (e.g. the
-/// generic being instantiated).
 pub fn eval_standalone(
     program: &TypedProgram,
     expr: &TypedExpr,
@@ -225,14 +118,6 @@ pub fn eval_standalone(
     eval_top(program, expr, context)
 }
 
-/// Runs one `@test` fn's own body (plans/M3.md item E, decision 9): a
-/// fresh `Interp`/`Quota` per call ("each under its own fresh quota"),
-/// zero params/no receiver — `sema::bodies::test_attr_kind` already
-/// guarantees a `@test` fn takes no arguments before this can be
-/// reached, so `bind` is a no-op closure. Mirrors `eval_const`'s own
-/// entry point exactly except for the callee (a whole fn body via
-/// `run_call`, which pushes/pops its own stack frame, rather than a bare
-/// initializer expression `eval_top` enters by hand).
 pub fn eval_test(program: &TypedProgram, name: &str) -> Result<Value, EvalError> {
     let Some(f) = program.fns.get(name) else {
         return Err(EvalError {
@@ -256,11 +141,6 @@ pub fn eval_test(program: &TypedProgram, name: &str) -> Result<Value, EvalError>
     })
 }
 
-/// Runs one `@test(exhaustive)` fn's body for one enumerated case
-/// (02-language.md §12.2): identical to `eval_test` except the fn's
-/// parameters are bound to this case's values — a fresh `Interp`/`Quota`
-/// per case, so every case gets the same budget any standalone test
-/// gets, and one pathological case cannot starve the rest.
 pub fn eval_test_case(
     program: &TypedProgram,
     name: &str,
@@ -294,12 +174,6 @@ pub fn eval_test_case(
     })
 }
 
-/// Runs one `@layout_assert` fn with a synthesized `ImageReport` argument
-/// (plans/M9.md item H). Fresh `Interp`/`Quota` per call — the same
-/// discipline `eval_test_case` uses — so one assert cannot starve the
-/// next. `f` is the already-resolved typed fn (local or imported); the
-/// caller looked it up so a miss is a build error there, not a
-/// producer-bug diagnostic here.
 pub fn eval_layout_assert(
     program: &TypedProgram,
     name: &str,
@@ -331,14 +205,6 @@ pub fn eval_layout_assert(
     })
 }
 
-/// Evaluates the one reachable `@image` fn (plans/M4.md item B): a
-/// fresh `Interp`/`Quota` exactly like every other top-level entry point
-/// here, with one active (empty) builder slot the fn's own body fills in
-/// through the `TypedExprKind::Intrinsic` arm below. `Image(...)`'s
-/// build-error path aside, the only way this can fail *without* an
-/// `EvalError` naming a real abandonment is the fn returning without
-/// ever calling `img.seal()` — deliverable 5's own "unsealed at return"
-/// err golden.
 pub fn eval_image(
     program: &TypedProgram,
     fn_name: &str,
@@ -396,14 +262,6 @@ fn eval_top(program: &TypedProgram, expr: &TypedExpr, context: String) -> Result
 fn unwind_to_error(u: Unwind) -> EvalError {
     match u {
         Unwind::Error(e) => e,
-        // A bare comptime expression (a `const` initializer, a generic
-        // argument) has no enclosing function/loop for `return`/`break`/
-        // `continue` to escape from — `bodies::check_try` already
-        // rejects a bare `?` outside a `Result`/`Option`-returning
-        // function, so none of these three can legally reach here. Fail
-        // closed rather than let a producer bug panic the whole
-        // compiler process (the eval fuzz smoke's own "never panics"
-        // invariant, plans/M3.md item F).
         Unwind::Return(_) | Unwind::Break | Unwind::Continue => EvalError {
             message: "internal error: control flow escaped a top-level comptime expression"
                 .to_string(),
@@ -412,22 +270,6 @@ fn unwind_to_error(u: Unwind) -> EvalError {
     }
 }
 
-// --- callee/struct/enum resolution (typed-tree lookups only) -------------
-//
-// plans/M9.md item A1b: every lookup below is "this module's own
-// declarations, else the ones it imports" (`TypedProgram::imported`,
-// keyed by the importing module's local spelling — the same key the
-// typed tree itself uses, decision 9). Before A1b these five lookups
-// stopped at the module boundary, so a comptime-reachable construction
-// of an imported struct, a read of an imported `const`, a match on an
-// imported enum's variant, or a call to an imported fn abandoned —
-// three of them with `internal error:`, which is a bug by house rule
-// (CLAUDE.md), not an outcome. The declaration side is the *only*
-// thing the union covers; comptime *legality* of a cross-module callee
-// stays where `eval::mod::check_image_legality` put it (decision 15).
-
-/// This module's own struct `name`, else the imported one bound to that
-/// local name.
 fn struct_by_name<'p>(program: &'p TypedProgram, name: &str) -> Option<&'p TypedStruct> {
     program
         .structs
@@ -442,7 +284,6 @@ fn enum_by_name<'p>(program: &'p TypedProgram, name: &str) -> Option<&'p TypedEn
         .or_else(|| program.imported.enums.get(name))
 }
 
-/// This module's own instantiation `key`, else the exporting module's.
 fn instantiation_by_key<'p>(
     program: &'p TypedProgram,
     key: &str,
@@ -476,13 +317,6 @@ fn resolve_fn<'p>(program: &'p TypedProgram, key: &CalleeKey) -> Option<&'p Type
     }
 }
 
-/// The plain declaration name a callee key hangs off, for
-/// `Interp::abandon_missing`'s own `unresolvable` lookup: a fn's own
-/// name, or the struct name a method sits on. An instantiation key
-/// (`fn:Name[..]`/`struct:Name[..]`) is not a declaration name at all,
-/// so the bare name is dug out of the spelling — a miss there is
-/// reported by the caller's own fallback unless that bare name really is
-/// one of the recorded cross-module ones.
 pub(crate) fn callee_decl_name(key: &CalleeKey) -> String {
     let raw = match key {
         CalleeKey::Fn(name) => name.clone(),
@@ -494,7 +328,6 @@ pub(crate) fn callee_decl_name(key: &CalleeKey) -> String {
         .or_else(|| raw.strip_prefix("struct:"))
         .or_else(|| raw.strip_prefix("method:"))
         .unwrap_or(&raw);
-    // `method:Table.entry[u32]` → bare `Table` for unresolvable lookup.
     let before_args = no_prefix.split('[').next().unwrap_or(no_prefix);
     before_args
         .split('.')
@@ -515,12 +348,6 @@ fn resolve_enum_member<'p>(e: &'p TypedEnum, member: &str) -> Option<&'p TypedFn
     e.methods.get(member).or_else(|| e.assoc_fns.get(member))
 }
 
-/// The struct a `Method`/`MethodInstance` callee key's `init` allocates,
-/// or a `Field`/`Index`/`StructLiteral` node's own struct (from its
-/// `Type::Named(name, targs)`) — the one place `generics::canonical_key`
-/// is recomputed from scratch (a `Type::Named`'s args are the original,
-/// uninstantiated-key form; `CalleeKey::MethodInstance` already carries
-/// the canonical key spelling directly, so that case never needs this).
 fn resolve_struct_by_type<'p>(
     program: &'p TypedProgram,
     name: &str,
@@ -555,12 +382,6 @@ fn field_index(fields: &[String], name: &str, ctx: &Interp) -> R<usize> {
         .ok_or_else(|| ctx.abandon(format!("internal error: unknown field `{name}`")))
 }
 
-/// `Option`/`Result`'s own fixed variant vocabulary (`value.rs`'s
-/// `OPTION_NONE`/.../`RESULT_ERR`), else a user enum's own declared
-/// order (`typed::TypedProgram::enums`, this item's own producer-gap
-/// addition) — a generic enum instantiation never reaches this (sema
-/// already fails it closed before it can appear in the typed tree,
-/// `bodies::check_call_by_field`'s own generic-enum-construction guard).
 fn variant_index(program: &TypedProgram, enum_name: &str, variant: &str, ctx: &Interp) -> R<usize> {
     match enum_name {
         "Option" => Ok(match variant {
@@ -581,17 +402,12 @@ fn variant_index(program: &TypedProgram, enum_name: &str, variant: &str, ctx: &I
                 );
             }
         }),
-        // plans/M13.md item I: sync `from(take e: CallError[E])` match.
         "CallError" => crate::sema::bodies::call_error_variant_index(variant).ok_or_else(|| {
             ctx.abandon(format!(
                 "internal error: unknown CallError variant `{variant}`"
             ))
         }),
         _ => {
-            // plans/M9.md item A1b: this module's own enums, else the
-            // ones it imports. Before A1b an *imported* enum landed in
-            // the generic-instantiation arm below and was reported as a
-            // generic instantiation, which named the wrong cause.
             let Some(en) = program
                 .enums
                 .get(enum_name)
@@ -616,8 +432,6 @@ fn variant_index(program: &TypedProgram, enum_name: &str, variant: &str, ctx: &I
     }
 }
 
-// --- environment ------------------------------------------------------------
-
 fn env_lookup(env: &Env, name: &str) -> Option<Value> {
     for scope in env.iter().rev() {
         if let Some(v) = scope.get(name) {
@@ -631,22 +445,6 @@ fn env_insert(env: &mut Env, name: String, v: Value) {
     env.last_mut().expect("at least one scope").insert(name, v);
 }
 
-/// Runs `f` with a fresh innermost `env` scope pushed for one `if`/
-/// `elif`/`else` branch, `while`/`for` body, or `match` arm — always
-/// popped again, even on an early exit (`Unwind::Break`/`Continue`/
-/// `Return`/`Error` all still unwind through this normally, via `?`).
-/// Mirrors `sema::bodies::scoped`/`sema::flow`'s own per-branch scope
-/// push/pop exactly, for the same reason: only `check_typed`-accepted
-/// programs ever reach here, and `check_typed` (once this pass's own fix
-/// landed for err-mwir-if-else-scope-leak) never accepts a program that
-/// reads a branch-local past its own branch — so nothing an accepted
-/// program can express actually depends on stale env entries from an
-/// already-finished sibling branch or a prior loop iteration surviving
-/// here. This still pushes/pops a real scope (rather than relying on
-/// that observation) so the evaluator's own env model stays honest on
-/// its own terms, matching `lower.rs`'s per-block `LEnv` and every sema
-/// pass's `FnCtx`/`Scope` stack, instead of being the one place left
-/// silently relying on a flat map never mattering in practice.
 fn scoped_env<T>(env: &mut Env, f: impl FnOnce(&mut Env) -> R<T>) -> R<T> {
     env.push(BTreeMap::new());
     let result = f(env);
@@ -654,14 +452,8 @@ fn scoped_env<T>(env: &mut Env, f: impl FnOnce(&mut Env) -> R<T>) -> R<T> {
     result
 }
 
-// --- defer ------------------------------------------------------------------
-
 fn run_defers<'a, 'p>(defers: &[&'a TypedDeferBody], env: &mut Env, ctx: &mut Interp<'p>) -> R<()> {
     for d in defers.iter().rev() {
-        // A defer body cannot `await`/`?` (`bodies::scan_defer_forbidden`
-        // already rejects both), so only `Unwind::Error` can escape here
-        // — no loop/`?` context to thread, so an empty dstack/loop_marker
-        // is correct and unreachable in practice.
         let mut inner_dstack: Vec<&TypedDeferBody> = Vec::new();
         match d {
             TypedDeferBody::Expr(e) => {
@@ -675,17 +467,6 @@ fn run_defers<'a, 'p>(defers: &[&'a TypedDeferBody], env: &mut Env, ctx: &mut In
     Ok(())
 }
 
-// --- statements --------------------------------------------------------
-
-/// Walks one block's own statements (mirrors `sema::flow::walk_block`
-/// exactly): registers `Defer` statements onto the shared `dstack`,
-/// re-validates-turned-*executes* every currently active defer, in
-/// reverse registration order, at this block's own normal completion
-/// (truncating `dstack` back to what it was on entry) — an early exit
-/// reached mid-block (`return`/`break`/`continue`/a `?` that hits `Err`/
-/// `None`) already ran its own (differently sliced) defers at the
-/// statement that produced it, via `Unwind`'s own early return, so this
-/// loop never double-runs anything.
 fn exec_block<'a, 'p>(
     stmts: &'a [TypedStmt],
     env: &mut Env,
@@ -721,11 +502,6 @@ fn exec_stmt<'a, 'p>(
             *place = v;
             Ok(())
         }
-        // One `env` scope per branch (`scoped_env`) — a `Let` inside
-        // `then_branch` must not leave a binding an `elif`/`else` sibling
-        // or a later statement can see (err-mwir-if-else-scope-leak's
-        // runtime mirror; see `scoped_env`'s own doc comment for why this
-        // is defense-in-depth rather than fixing an observed crash).
         TypedStmtKind::If {
             cond,
             then_branch,
@@ -755,8 +531,6 @@ fn exec_stmt<'a, 'p>(
             let sv = eval_expr(scrutinee, env, dstack, loop_marker, ctx)?;
             for arm in arms {
                 if let Some(bindings) = match_pattern(&arm.pattern, &sv, ctx)? {
-                    // Pattern bindings, guard, and body all share one
-                    // pushed scope, same as `sema::bodies::check_match`.
                     let matched = scoped_env(env, |env| -> R<bool> {
                         for (n, v) in &bindings {
                             env_insert(env, n.clone(), v.clone());
@@ -842,15 +616,6 @@ fn exec_stmt<'a, 'p>(
                 Err(ctx.abandon(format!("assertion failed{msg}")))
             }
         }
-        // plans/M3.md item D, decision 8: a `comptime assert` is checked
-        // exactly once, unconditionally, by `eval::check_comptime_asserts`
-        // — independent of whether anything ever calls the fn/method it
-        // lives in (its own vocabulary, module consts/literals only, does
-        // not depend on a call's own locals/arguments anyway, so nothing
-        // would differ call to call). Re-running it here, per ordinary
-        // call execution, would at best be redundant and at worst wrong
-        // (this statement's own typed node carries no live `env` lookup
-        // path for locals — it is not meant to see any); a no-op.
         TypedStmtKind::ComptimeAssert { .. } => Ok(()),
         TypedStmtKind::Defer(body) => {
             dstack.push(body);
@@ -860,21 +625,10 @@ fn exec_stmt<'a, 'p>(
             eval_expr(e, env, dstack, loop_marker, ctx)?;
             Ok(())
         }
-        // Plans/M6.md item A: `with group(...)` is an actor/async
-        // construct — `eval::legal` marks every containing fn illegal
-        // for comptime unconditionally, so `require_legal` (`eval/mod.rs`)
-        // already refuses to run this fn before this arm is ever reached.
-        // The evaluator's own scope stays unchanged (no async execution,
-        // per this item's own rule) — an honest `Err`, not a panic, in
-        // case that invariant is ever broken.
         TypedStmtKind::WithGroup { .. } => Err(ctx.abandon(
             "internal error: `with group` reached the comptime evaluator (unreachable — \
              `eval::legal` marks every containing fn illegal for comptime)",
         )),
-        // plans/M6.md item G: identical reasoning to `with group` above —
-        // a `send` is an actor operation, so `eval::legal` already marks
-        // every containing fn illegal for comptime and `require_legal`
-        // refuses to run it. An honest `Err`, never a panic.
         TypedStmtKind::BareSend { .. } => Err(ctx.abandon(
             "internal error: a bare `send` statement reached the comptime evaluator \
              (unreachable — `eval::legal` marks every containing fn illegal for comptime)",
@@ -916,8 +670,6 @@ fn exec_for<'a, 'p>(
                     }
                 }
                 ctx.tick_step()?;
-                // The loop binding + body share one scope per iteration
-                // (`scoped_env`), same as `sema::bodies::check_for`.
                 let outcome = scoped_env(env, |env| {
                     env_insert(env, name.to_string(), value::make_int(&elem_ty, i));
                     exec_block(body, env, dstack, new_marker, ctx)
@@ -966,11 +718,6 @@ fn exec_for<'a, 'p>(
     }
 }
 
-/// `pub(crate)` (plans/M3.md item D): `eval/mod.rs::check_one_comptime_assert`
-/// reuses this exact helper rather than duplicating it — a `comptime
-/// assert` condition is typed as `bool` by `bodies::check_comptime_assert`
-/// exactly like a plain `assert`'s, so the same "sema already proved
-/// this" invariant holds.
 pub(crate) fn as_bool(v: &Value) -> bool {
     match v {
         Value::Bool(b) => *b,
@@ -996,18 +743,12 @@ fn scalar_ty_of(v: &Value) -> Type {
     }
 }
 
-/// `pub(crate)` (plans/M3.md item D): shared verbatim with
-/// `eval/mod.rs::check_one_comptime_assert`'s own message rendering — a
-/// `comptime assert` message is typed exactly like a plain `assert`'s
-/// (a text literal), so the identical rendering applies.
 pub(crate) fn render_message(v: &Value) -> String {
     match v {
         Value::Str(bytes) => String::from_utf8_lossy(bytes).into_owned(),
         other => format!("{other:?}"),
     }
 }
-
-// --- places (assignment targets; a mut-receiver's own self) --------------
 
 fn place_mut<'e, 'a, 'p>(
     expr: &'a TypedExpr,
@@ -1073,11 +814,6 @@ fn place_mut<'e, 'a, 'p>(
     }
 }
 
-// --- pattern matching --------------------------------------------------
-
-/// `Some(bindings)` when `pattern` matches `v` (the bindings it
-/// introduces, name-ordered by first occurrence — order does not matter,
-/// the caller inserts each independently); `None` on a non-match.
 fn match_pattern(
     pattern: &TypedPattern,
     v: &Value,
@@ -1088,11 +824,6 @@ fn match_pattern(
         TypedPatternKind::Binding(name) => Ok(Some(vec![(name.clone(), v.clone())])),
         TypedPatternKind::Take(inner) => match_pattern(inner, v, ctx),
         TypedPatternKind::Literal(lit) => {
-            // A pattern literal never needs a live `env`/`dstack` walk —
-            // it is always a bare scalar/enum-variant literal expression
-            // (sema's own pattern grammar), so a throwaway empty
-            // env/dstack is correct and unreachable in practice for
-            // anything that would need one.
             let mut scratch_env: Env = vec![BTreeMap::new()];
             let mut scratch_dstack: Vec<&TypedDeferBody> = Vec::new();
             let mut scratch = Interp {
@@ -1169,16 +900,6 @@ fn match_pattern(
     }
 }
 
-// --- calls --------------------------------------------------------------
-
-/// Evaluates a `Call` node's argument slots against the callee's own
-/// declared parameters: a supplied slot is evaluated in the *caller's*
-/// environment; an elided (defaulted) slot's stored default
-/// (`typed::TypedParam::default`) is evaluated in the *callee's own,
-/// so-far-assembled* frame (it may reference `self` and/or earlier
-/// parameters — `bodies::check_params_with_defaults` types defaults in
-/// exactly that incrementally-growing order, so binding proceeds the
-/// same way here).
 fn bind_params<'a, 'p>(
     f: &'p TypedFn,
     args: &'a [TypedCallArg],
@@ -1205,27 +926,12 @@ fn bind_params<'a, 'p>(
     Ok(())
 }
 
-/// Outcome of one resolved fn/method body: the call's own result, the
-/// final `self` when a receiver was supplied (for a `mut`-receiver's
-/// write-back), and the final value of every non-receiver `mut`
-/// parameter (02-language.md §5.1: non-receiver `mut` is mirrored at the
-/// call site — plans/M9.md item CC).
 struct CallOutcome {
     result: Value,
     final_self: Option<Value>,
-    /// `(param index, final value)`, declaration order. Only `mut`
-    /// parameters appear; `read`/`take` never write back.
     mut_params: Vec<(usize, Value)>,
 }
 
-/// Runs one already-resolved fn/method's body with `self_val` (if any)
-/// and positionally-bound `args` (already-evaluated `Value`s — used by
-/// `CallValue`, which has no defaults to resolve, decision 1's own
-/// "positional only" note). Returns the call's own result value plus,
-/// when `self_val` was supplied, the final value of `self` at the end
-/// of the callee's own frame (for a `mut`-receiver's write-back), plus
-/// the final value of every non-receiver `mut` parameter (for call-site
-/// write-back — 02-language.md §5.1 / plans/M9.md item CC).
 fn run_call<'p>(
     f: &'p TypedFn,
     self_val: Option<Value>,
@@ -1272,10 +978,6 @@ fn run_call<'p>(
     })
 }
 
-/// Writes each non-receiver `mut` parameter's final value back into the
-/// matching call-site place (02-language.md §5.1). A defaulted (`None`)
-/// slot has no place to mirror into — fail closed by name rather than
-/// silently drop the mutation (plans/M9.md item CC, decision 69).
 fn write_back_mut_params<'a, 'p>(
     f: &TypedFn,
     args: &'a [TypedCallArg],
@@ -1299,14 +1001,6 @@ fn write_back_mut_params<'a, 'p>(
     Ok(())
 }
 
-/// `init`'s own special-case (plans/M3.md item B, per the callee-key
-/// doc comment on `check_struct_construction`): allocate a fresh `Self`
-/// (every field placeholder-filled, since flow's definite-init pass
-/// already guarantees the body assigns every one before any real exit),
-/// run the body with that as `self`, then translate the body's own
-/// (declared, possibly `Result[Unit, E]`) return into the *call's* own
-/// synthesized return: implicit/`Ok(())` success wraps the finished
-/// `self`; an explicit `Err(e)` propagates `e` and discards `self`.
 fn run_init<'p>(
     s: &'p TypedStruct,
     f: &'p TypedFn,
@@ -1319,11 +1013,6 @@ fn run_init<'p>(
     let mut self_val = outcome
         .final_self
         .expect("run_call always returns `self` back when given one");
-    // `init`'s non-receiver params are never `mut` in practice (sema
-    // types construction args as ordinary inputs), but if one were, its
-    // write-back has nowhere to go from here — `run_init` is reached
-    // only through a construction expression, not a call site with
-    // places. Dropping them would be a silent wrong answer, so refuse.
     if !outcome.mut_params.is_empty() {
         let names: Vec<&str> = outcome
             .mut_params
@@ -1335,10 +1024,6 @@ fn run_init<'p>(
             names.join("`, `")
         )));
     }
-    // 05-library.md §7: overwrite the placeholder `map_id = 0` with a
-    // fresh non-wrapping instance id. Field 0 is `map_id` by declaration
-    // order in `stdlib/core/slotmap.wr`. Same recognition as lower's
-    // `Inst::SlotMapMint` (`mwir::is_slotmap_type_name`).
     if crate::mwir::is_slotmap_type_name(&s.name) {
         let id = ctx.slotmap_next_id;
         if id == 0 {
@@ -1378,10 +1063,6 @@ fn run_init<'p>(
     }
 }
 
-/// Dispatches one `Call` node's callee key: resolves the target fn/
-/// method/`init`, evaluates the receiver (per the target's own declared
-/// mode — read/mut/take, decision 4: the mode lives on the callee's
-/// declaration, never the call site), and runs it.
 fn eval_call<'a, 'p>(
     callee: &CalleeKey,
     receiver: &'a Option<Box<TypedExpr>>,
@@ -1391,7 +1072,6 @@ fn eval_call<'a, 'p>(
     loop_marker: usize,
     ctx: &mut Interp<'p>,
 ) -> R<Value> {
-    // plans/M9.md item C2: core-scalar `.format()` — no TypedFn exists.
     if let CalleeKey::Method(_, m) = callee {
         if m == "format" {
             if let Some(recv) = receiver {
@@ -1493,8 +1173,6 @@ fn eval_call<'a, 'p>(
     }
 }
 
-// --- expressions ----------------------------------------------------------
-
 fn eval_expr<'a, 'p>(
     expr: &'a TypedExpr,
     env: &mut Env,
@@ -1559,7 +1237,6 @@ fn eval_expr<'a, 'p>(
         TypedExprKind::Field(base, name) => {
             let bv = eval_expr(base, env, dstack, loop_marker, ctx)?;
             let base_ty = bodies::unwrap_own(base.ty.clone());
-            // plans/M9.md item C1: `String[..N].len` — occupied bytes.
             if matches!(&base_ty, Type::String(_)) {
                 if name != "len" {
                     return Err(ctx.abandon(format!(
@@ -1609,7 +1286,6 @@ fn eval_expr<'a, 'p>(
                         ctx.abandon(format!("index {i} out of bounds (length {len})"))
                     })
                 }
-                // plans/M9.md item C1: `String[..N][i]` against occupied length.
                 Value::Str(b) => {
                     let len = b.len();
                     b.get(i).map(|byte| Value::U8(*byte)).ok_or_else(|| {
@@ -1634,11 +1310,6 @@ fn eval_expr<'a, 'p>(
                     body,
                     env: mut closure_env,
                 } => {
-                    // Bind first, then run; for `mut` params keep the
-                    // call-site places so the final values can be written
-                    // back (02-language.md §5.1 / plans/M9.md item CC) —
-                    // pre-evaluating every arg into a `Value` would lose
-                    // the place and silently discard the mutation.
                     let mut arg_vals = Vec::with_capacity(args.len());
                     let mut mut_idxs = Vec::new();
                     for (i, (p, a)) in params.iter().zip(args.iter()).enumerate() {
@@ -1681,7 +1352,6 @@ fn eval_expr<'a, 'p>(
                         }
                     };
                     let result = result?;
-                    // Pull finals out of the closure frame before leave.
                     let mut mut_finals = Vec::new();
                     for i in mut_idxs {
                         let name = &params[i].name;
@@ -1714,9 +1384,6 @@ fn eval_expr<'a, 'p>(
                             format!("internal error: fn value `{}` not found", key.spelling()),
                         )
                     })?;
-                    // Same place-preserving bind as the closure arm: a
-                    // `mut` parameter's call-site operand must survive so
-                    // `write_back_mut_params` has somewhere to land.
                     let mut arg_vals = Vec::with_capacity(args.len());
                     for (p, a) in f.params.iter().zip(args.iter()) {
                         if p.mode == AccessMode::Mut {
@@ -1763,31 +1430,6 @@ fn eval_expr<'a, 'p>(
             value::eval_to_scalar(&expr.ty, &iv).map_err(|m| ctx.abandon(m))
         }
         TypedExprKind::Neg(inner) => {
-            // A negated integer literal (`-128`, `-9223372036854775808`,
-            // ...) is sema's own literal-negation shape
-            // (`bodies::check_unary_neg`'s `Expr::Int` arm): the
-            // literal's own text is always the *positive* magnitude,
-            // typed at the outer `Neg`'s own already-validated target
-            // type — sema range-checked the *negated* value against that
-            // type there, never the raw positive one, so the positive
-            // magnitude alone may not fit it (`i8::MIN`'s own magnitude,
-            // 128, does not fit `i8`; `i64::MIN`'s, 2^63, does not fit
-            // `i64`, ...). Evaluating the inner literal node as an
-            // ordinary standalone `Value` first (`value::make_int`
-            // truncating the *positive* magnitude to the target width)
-            // and negating *that* is wrong twice over for exactly these
-            // MIN literals: the truncation itself two's-complement-wraps
-            // the positive magnitude to MIN already, so negating it a
-            // second time abandons an operation sema already proved
-            // legal (M3-E's own `check-tests-arith` acceptance golden
-            // caught this live, evaluating `i64::MIN` for the first time
-            // any comptime program had). Fix: decode the literal's own
-            // signed value directly in `i128` (wide enough for every
-            // scalar width) and negate *before* ever truncating to the
-            // target width, sidestepping the double-truncation entirely
-            // — the ordinary (non-literal) `-x` path below is unaffected
-            // (`x`'s own `Value` was already built correctly by whatever
-            // produced it, so negating it directly is exactly right).
             if let TypedExprKind::Int(text) = &inner.kind {
                 let raw = value::parse_int_literal(text)
                     .ok_or_else(|| ctx.abandon("internal error: invalid integer literal text"))?;
@@ -1801,25 +1443,8 @@ fn eval_expr<'a, 'p>(
             let iv = eval_expr(inner, env, dstack, loop_marker, ctx)?;
             value::eval_bitnot(&expr.ty, &iv).map_err(|m| ctx.abandon(m))
         }
-        TypedExprKind::Take(inner) => {
-            // Values move by Rust move; flow already proved legality, so
-            // an ordinary (cloning) read is observably identical to a
-            // real move here — the source place is never read again
-            // (plans/M3.md item B: "you just move").
-            eval_expr(inner, env, dstack, loop_marker, ctx)
-        }
+        TypedExprKind::Take(inner) => eval_expr(inner, env, dstack, loop_marker, ctx),
         TypedExprKind::Try(inner, conv) => {
-            // Which sum this is comes from the *operand's own static
-            // type*, never from the variant index (plans/M9.md item BB,
-            // decision 60): `value.rs` numbers both builtin sums from
-            // zero, so index 0 is `None` in one and `Ok` in the other and
-            // index 1 is `Some` in one and `Err` in the other — an
-            // index-only test cannot tell success from failure at all.
-            // 02-language.md §8.2 is what makes reading the type legal
-            // here: "`?` applies to `Result` (and, in `Option`-returning
-            // functions, to `Option`)", and `bodies::check_try` has
-            // already proved the operand is exactly one of the two and
-            // that the enclosing fn returns the same sum.
             let iv = eval_expr(inner, env, dstack, loop_marker, ctx)?;
             let on_option = match &inner.ty {
                 Type::Option(_) => true,
@@ -1844,9 +1469,6 @@ fn eval_expr<'a, 'p>(
                     .pop()
                     .ok_or_else(|| ctx.abandon("internal error: `Some`/`Ok` with no payload"));
             }
-            // `None` or `Err(e)`: run every currently active defer (the
-            // whole stack — a `?` exit leaves the entire function, just
-            // like `return`) before propagating.
             run_defers(&dstack[..], env, ctx)?;
             if on_option {
                 return Err(Unwind::Return(Value::Enum(value::OPTION_NONE, vec![])));
@@ -1857,10 +1479,6 @@ fn eval_expr<'a, 'p>(
             let converted = match conv {
                 None => e,
                 Some(key) => {
-                    // Explicit or deriving-generated `from` (plans/M9.md
-                    // item B3): both are TypedFns; call the same one an
-                    // ordinary `Target.from(take e)` site reaches.
-                    // Structural wrap removed — there is one mechanism.
                     let f = resolve_fn(ctx.program, key).ok_or_else(|| {
                         ctx.abandon_missing(
                             &callee_decl_name(key),
@@ -1883,9 +1501,6 @@ fn eval_expr<'a, 'p>(
                         },
                         ctx,
                     )?;
-                    // `from(take source)` — never a `mut` param. A
-                    // non-empty write-back list here would mean the
-                    // conversion's signature disagreed with §7.4.
                     if !outcome.mut_params.is_empty() {
                         return Err(ctx.abandon(
                             "writing back a `mut` parameter from a `?` `from` conversion is not supported",
@@ -1924,10 +1539,6 @@ fn eval_expr<'a, 'p>(
                 },
                 ctx,
             )?;
-            // Operator methods are `read self` + one `read` operand
-            // (02-language.md §7.4). A `mut` non-receiver here has no
-            // call-site place in this node shape — refuse rather than
-            // drop.
             if !outcome.mut_params.is_empty() {
                 return Err(ctx.abandon(
                     "writing back a `mut` parameter from an operator method call is not supported",
@@ -2046,13 +1657,6 @@ fn eval_expr<'a, 'p>(
             ..
         } => eval_intrinsic(key, receiver, type_arg, args, env, dstack, loop_marker, ctx),
         TypedExprKind::PoolName(name) => Ok(Value::Str(name.clone().into_bytes())),
-        // Plans/M6.md item A: `await`/`send`/a group-child reference are
-        // all actor/async constructs — `eval::legal` marks every
-        // containing fn illegal for comptime unconditionally (decision
-        // 7), so `require_legal` already refuses to run this fn before
-        // any of these three is ever reached. The evaluator's own scope
-        // stays unchanged (no async execution) — an honest `Err`, not a
-        // panic, in case that invariant is ever broken.
         TypedExprKind::Await(_) => Err(ctx.abandon(
             "internal error: `await` reached the comptime evaluator (unreachable — \
              `eval::legal` marks every containing fn illegal for comptime)",
@@ -2068,15 +1672,6 @@ fn eval_expr<'a, 'p>(
     }
 }
 
-/// The `@image` builder surface's own evaluation (plans/M4.md item B,
-/// decision 5): dispatches on the fixed intrinsic key spelling, exactly
-/// like `eval_call` dispatches on a `CalleeKey` — plain match arms, no
-/// registry. Every `Image`-rooted intrinsic mutates `ctx.image` (the one
-/// active builder, decision 6); `ImageDecl.handle` is the one case that
-/// reads its own `receiver` instead. `eval::legal` is what actually keeps
-/// this reachable only from the one `@image` fn (`sema::check_typed`
-/// rejects everything else before evaluation ever starts) — this
-/// function does not re-check that itself.
 #[allow(clippy::too_many_arguments)]
 fn eval_intrinsic<'a, 'p>(
     key: &str,
@@ -2092,11 +1687,6 @@ fn eval_intrinsic<'a, 'p>(
 
     ctx.tick_step()?;
 
-    /// Evaluates every remaining labeled argument into a `DeclArg`,
-    /// pulling `img.pool`/`img.dma_pool`'s own bare `name=` `PoolName`
-    /// leaf out separately rather than evaluating it as an ordinary
-    /// value (it has no `Value` shape of its own to speak of — see
-    /// `typed::TypedExprKind::PoolName`'s own doc comment).
     fn split_args<'a>(
         args: &'a [(String, TypedExpr)],
         env: &mut Env,
@@ -2123,9 +1713,6 @@ fn eval_intrinsic<'a, 'p>(
 
     match key {
         "Image" => {
-            // plans/M15.md item B / 05-library.md §9: `Image(name, target,
-            // cores=N?)` — optional comptime usize ≥ 1 (default 1); unknown
-            // labels are a comptime error (close the silent-drop hole).
             let mut name_v = None;
             let mut target_v = None;
             let mut cores: Option<usize> = None;
@@ -2272,19 +1859,9 @@ fn eval_intrinsic<'a, 'p>(
             };
             eval_expr(r, env, dstack, loop_marker, ctx)
         }
-        // plans/M9.md item F3 decision 347: `[T; N].map_take` /
-        // `try_map_take` (05-library.md §7).
         "Array.map_take" | "Array.try_map_take" => {
             eval_array_map_take(key, receiver, args, env, dstack, loop_marker, ctx)
         }
-        // plans/M9.md item G1 decision 352: `Untrusted[T]` is a transparent
-        // newtype; `checked_le` is a pure compare → `Result[T, unit]`.
-        // Legal for comptime (no hardware effect); without this arm a
-        // reachable call would hit the unknown-intrinsic producer-bug
-        // fallback. The two producer-bug guards below are unreachable
-        // from ordinary source: sema's `check_untrusted_narrowing`
-        // always emits a receiver and a `bound`-labeled arg (census
-        // bump 70→72 in `internal_error_census.rs`).
         "Untrusted.checked_le" => {
             let Some(recv) = receiver else {
                 return Err(
@@ -2378,9 +1955,6 @@ fn eval_array_map_take<'a, 'p>(
                     outputs.push(v);
                 }
                 Value::Enum(value::RESULT_ERR, payload) => {
-                    // Unwind constructed outputs (data: drop) and reclaim
-                    // remaining inputs (data: drop). Evidence for the
-                    // golden is the Err payload surviving.
                     let _drop_outputs = outputs;
                     let _drop_rest: Vec<_> = inputs.drain(idx + 1..).collect();
                     return Ok(Value::Enum(value::RESULT_ERR, payload));
@@ -2418,7 +1992,6 @@ fn eval_binary<'a, 'p>(
     use BinOp::*;
     match op {
         Add | Sub | Mul => {
-            // plans/M9.md item C2: `String[..N] + String[..M]`.
             if op == Add {
                 if let (Value::Str(a), Value::Str(b)) = (&lv, &rv) {
                     let mut out = a.clone();
@@ -2427,8 +2000,6 @@ fn eval_binary<'a, 'p>(
                     return Ok(Value::Str(out));
                 }
             }
-            // Scalar arithmetic's own operand type is `l.ty` (float or
-            // integer); floats never abandon on ordinary `+ - *`.
             match (&lv, &rv) {
                 (Value::F32(a), Value::F32(b)) => Ok(match op {
                     Add => Value::F32(a + b),
@@ -2469,11 +2040,6 @@ fn eval_binary<'a, 'p>(
     }
 }
 
-// --- integration tests ---------------------------------------------------
-//
-// Full pipeline (lex -> parse -> `sema::check_typed` -> `eval_const`), real
-// production code rather than hand-built typed trees — each probes one
-// piece of item B's own required coverage list end to end.
 #[cfg(test)]
 mod integration_tests {
     use super::*;
@@ -2486,12 +2052,6 @@ mod integration_tests {
         sema::check_typed(&module, "<test>").expect("test source must check")
     }
 
-    /// M3-A's own acceptance probe (plans/M3.md's task note on `for take
-    /// x in take arr`): the typed tree records `take_binding` per element
-    /// but strips the iterable's own outer `take` — this proves move
-    /// semantics still evaluate correctly (Rust move == an ordinary
-    /// value read here, decision 4's own "you just move") by actually
-    /// summing every element of a whole-array take-consuming loop.
     #[test]
     fn for_take_consume_moves_each_element_correctly() {
         let program = typed_program(
@@ -2534,9 +2094,6 @@ const RESULT: u64 = Point(x=3, y=4).sum()
         assert_eq!(v, Value::U64(7));
     }
 
-    /// A `mut self` method's mutation is visible in the caller's own
-    /// place afterward (`eval_call`'s take-then-write-back path), not
-    /// just inside the method's own local frame.
     #[test]
     fn mut_receiver_method_mutates_the_caller_place() {
         let program = typed_program(
@@ -2561,15 +2118,6 @@ const RESULT: u64 = use_counter()
         assert_eq!(v, Value::U64(17));
     }
 
-    /// `defer` runs at real exit in reverse registration order
-    /// (02-language.md §10): the *second*-registered defer runs first.
-    /// Observed through a `mut self` method (a bare `return` exit) so
-    /// the post-defer mutation is visible afterward — a `return <expr>`
-    /// exit evaluates its own expression *before* running defers (there
-    /// are no named returns here for a defer to still influence), so a
-    /// value returned directly cannot observe a defer's own effect; a
-    /// mutated `self` written back to the caller's place after the call
-    /// can.
     #[test]
     fn defer_runs_at_exit_in_reverse_registration_order() {
         let program = typed_program(
@@ -2594,16 +2142,10 @@ pub fn use_trace() -> u64:
 const RESULT: u64 = use_trace()
 ",
         );
-        // The body runs first (log -> 3), then defers run in reverse
-        // registration order at the bare `return`: the second-
-        // registered one (+2) first (log -> 32), then the first-
-        // registered one (+1) (-> 321).
         let v = eval_const(&program, "RESULT").expect("must evaluate cleanly");
         assert_eq!(v, Value::U64(321));
     }
 
-    /// Match against a user enum's payload-carrying variant, plus `?`
-    /// with no conversion (`Option`'s own case).
     #[test]
     fn match_on_enum_payload_and_try_on_option() {
         let program = typed_program(
@@ -2635,12 +2177,10 @@ const AREA: u64 = area(.Square(4))
 const TRIED: u64 = use_try()
 ",
         );
-        // `.Square(4)` -> the `case .Square(side)` arm: 4 * 4 = 16.
         assert_eq!(eval_const(&program, "AREA").unwrap(), Value::U64(16));
         assert_eq!(eval_const(&program, "TRIED").unwrap(), Value::U64(42));
     }
 
-    /// Closures: non-escaping, direct application, passed positionally.
     #[test]
     fn closure_direct_application() {
         let program = typed_program(
@@ -2656,16 +2196,6 @@ const RESULT: u64 = apply_twice(|v: u64| v * 2, 3)
         assert_eq!(v, Value::U64(12));
     }
 
-    /// Explicit `panic` abandons with the live comptime call stack
-    /// (decision 5) — the function has an (unreachable in practice, but
-    /// statically present) trailing `return` so sema's own "missing
-    /// return on some path" check accepts it; the interpreter still
-    /// never reaches that `return`, since `panic` aborts evaluation
-    /// immediately. `sema::check_typed` itself now runs every `const`
-    /// eagerly (`eval::check_consts`, this item's own integration
-    /// surface), so the abandonment surfaces as `check_typed`'s own
-    /// `Err` directly — there is no separately-successful typed program
-    /// left to call `eval_const` on afterward.
     #[test]
     fn explicit_panic_abandons_with_call_stack() {
         let src = "module examples.eval_panic
@@ -2691,11 +2221,6 @@ const RESULT: u64 = always_fails()
         );
     }
 
-    /// plans/M9.md item G1 decision 352: `Untrusted.checked_le` evaluates
-    /// as a pure compare. No comptime mint of `Untrusted` exists (sealed;
-    /// live producer is runtime `written_len`), so bind transparent
-    /// payload bits through `eval_test_case` — the same vehicle
-    /// exhaustive tests use for parameterized bodies.
     #[test]
     fn untrusted_checked_le_ok_and_err() {
         let program = typed_program(

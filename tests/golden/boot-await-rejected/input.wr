@@ -1,13 +1,5 @@
 module examples.boot_await_rejected
 
-# plans/M13.md item H — `NotAdmitted(Admission, args)` composition.
-#
-# Conformance boot that fills a mailbox then `await`s with a `take`
-# argument: enqueue refuses, the caller still owns the arg words, and
-# codegen builds `Err(CallError.NotAdmitted(Admission.Full, (code,)))`
-# locally. The transcript pins the `NotAdmitted` arm and recovers the
-# handed-back payload (02 §9.4 / decision 4). Retires the dead
-# `BRK_AWAIT_ACTOR_REJECTED` floor.
 
 @actor
 pub struct Logger:

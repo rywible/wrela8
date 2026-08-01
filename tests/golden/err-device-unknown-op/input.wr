@@ -1,12 +1,5 @@
 module examples.err_device_unknown_op
 
-# plans/M7.md item H2b — `claimed.reset()` is not a bring-up op on
-# DriverClaimedDevice. Reset consumes `Running` (03-hardware.md §9);
-# calling it earlier is a typed rejection naming the required state.
-#
-# (Was H1's "unknown op" pin when `reset` did not exist at all; H2b made
-# `reset` real on `RunningDevice`, so this golden now pins the state
-# gate rather than an unknown-name miss.)
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

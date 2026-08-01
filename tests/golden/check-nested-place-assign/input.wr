@@ -1,8 +1,5 @@
 module examples.check_nested_place_assign
 
-# plans/M9.md item MM: nested field/index assignment and nested mut-self
-# receivers lower (RMW through Project/IndexSet/SetField). Guest-reachable
-# so H3 does not drop the methods from mwir/asm.
 
 struct Holder:
     data: [u64; 4]

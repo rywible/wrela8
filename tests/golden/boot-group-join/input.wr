@@ -1,9 +1,5 @@
 module examples.boot_group_join
 
-# plans/M6.md item F flagship: `with group(capacity=2)`, two `g.start`
-# children (distinct free async fns — item F's own disclosed floor: one
-# free-turn area per fn, so the same callee can only ever be `g.start`ed
-# from one static site), `g.join_all()`, results asserted.
 
 @actor
 pub struct Doubler:

@@ -1,10 +1,5 @@
 module examples.check_string_bound
 
-# plans/M9.md item C1. `String[..N]` — owned UTF-8 with capacity `N`
-# (02-language.md §6.2). Layout is one length word plus `N` byte slots
-# (each a machine slot, matching `Bytes[N]`'s slot-per-byte convention).
-# Value pins run through comptime digests into a u64 settle for the image
-# graph — `String[..N]` itself is not a boot-arg word.
 
 const S: String[..8] = "hi"
 
@@ -17,7 +12,6 @@ fn byte0(s: String[..8]) -> u64:
 fn byte1(s: String[..8]) -> u64:
     return s[1].to[u64]()
 
-# Layout probe: a parameter typed `String[..8]` must size (9 slots).
 fn probe(s: String[..8]) -> u64:
     return occupied(s)
 
@@ -34,8 +28,6 @@ pub fn t_value():
     assert SETTLED == 2104105, "length and bytes under one settle"
 
 
-# Guest-reachable path (plans/M9.md item KK): H3 dropped String[..N] helpers
-# from mwir; `@test(runtime)` seeds occupied/byte/probe.
 @test(runtime)
 pub fn guest_string():
     assert occupied(S) == 2, "len at guest"

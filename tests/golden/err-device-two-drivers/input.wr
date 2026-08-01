@@ -1,27 +1,5 @@
 module examples.err_device_two_drivers
 
-# Post-closure M7 sweep port (orphaned m7-sweep-2 / a35b05a), 03-hardware.md
-# §1: "The device itself is named once, at the image binding
-# (`img.driver(BlkDriver, device=blk_device)`), the single source of truth."
-#
-# Item A's mint check enforced the per-driver half (at most one
-# `DeviceCap` parameter per binding — `golden/err-cap-mint-*`). The
-# per-device half was only claimed: `layout::DeviceRegs`'s own comment
-# said "`eval::image_checks` already refuses a second binding of the
-# same device, so this is not a list". It did not.
-#
-# Before the guard this image rendered two `DeviceRegs` lines for
-# `device#0` at two different bases (`driver=A` at one, `driver=B` at
-# the next word), and boot handed each driver a different "authority
-# over one device instance". That is a wrong answer about which bytes a
-# device is — decision 11's `DeviceCap[D]` is the base of *the*
-# device's register window — not a missing feature.
-#
-# Caps are stored (not `_ = take cap`) so protocol-consumption does not
-# fire first; this golden pins the per-device binding rejection.
-#
-# The accepting control is any single-driver binding
-# (`golden/boot-device-claim`, `golden/check-cap-mint`).
 
 struct VirtioBlock:
     id: u32

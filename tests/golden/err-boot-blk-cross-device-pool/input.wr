@@ -1,58 +1,5 @@
 module examples.err_boot_blk_cross_device_pool
 
-# plans/M8.md item P's load-bearing oracle, and it is a **negative boot**,
-# not a build-time check — a build-time argument is exactly what the two
-# M7 post-closure guards already were.
-#
-# One-line twin of `golden/boot-blk-two-devices`: `BlockPayloads` is bound
-# to `aux_dev` (device#1) instead of `blk` (device#0). Everything else,
-# including the driver source, is byte-identical. The image builds: 03
-# §1's mint rule constrains a `DmaPool[P, N]` *capability* argument
-# (`golden/err-dma-pool-mint-wrong-device`), and this driver takes an
-# `own[BlockPayloads] DmaBlock` payload handle, which carries no device in
-# its type. Nothing at build time forbids handing a driver a payload from
-# another device's pool — deliberately, because 03-hardware.md §3's rule
-# ("all memory a device can reach originates from *its* bound pools") is
-# about what a device may *reach*, which is a property of the mapping and
-# is enforced where reaching happens.
-#
-# So the driver's `init` stamps MAGIC into the buffer and publishes a
-# 3-descriptor write whose data descriptor addresses device#1's window.
-# The window is real, placed, published to the VMM as `BlkPool name=
-# BlockPayloads device=device#1 ...`, and present in this `GuestMem`'s own
-# window list — and `GuestMem::window_offset` (the single guest→host
-# conversion site) still refuses it, because the access is device#0's.
-# The boot fails closed with `BlkFault::ForeignPool` naming the pool, its
-# owner, and the device that tried.
-#
-# Mutation that proves it is not vacuous: drop the `w.device != self.device`
-# arm from `window_offset` and this boot goes green — the descriptor is
-# then admitted and device#0 reads and writes device#1's pool.
-#
-# **What must stay true when `expected/test.txt` is regenerated.** That
-# line used to carry an absolute guest address, which any change to actor
-# or driver state sizes moved — so this one transcript was a hostage to
-# every layout change, and the address said nothing the image report did
-# not already say. plans/M10.md decision 700 replaced it with the
-# **pool-relative offset**, which is stable under layout change and is the
-# fact that actually localizes the access. Here the driver's only payload
-# is the pool's only slot, so the offset is `0x0`: the refused range is
-# the whole of `BlockPayloads`. The oracle is the three named facts, and
-# all three must survive:
-#
-#   1. the pool named is `BlockPayloads` (the *payload* pool, the one this
-#      image rebound to device#1) — not `BlockControl`, which stays on
-#      device#0 and would mean the ring, not the descriptor, was refused;
-#   2. `bound to device#1`; and
-#   3. `this access is device#0's`.
-#
-# A regenerated line whose offset is no longer `0x0` means the descriptor
-# stopped addressing the base of the pool — re-derive rather than accept.
-#
-# A regenerated line reporting `OutsidePool` ("no declared pool window
-# contains this range") instead is **not** this oracle: it would mean the
-# window stopped being declared at all, and the cross-device refusal went
-# untested while the boot still failed. Re-derive rather than accept.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:
@@ -85,7 +32,6 @@ const SECTOR: usize = 512
 const BLK_T_IN: u32 = 0
 const BLK_T_OUT: u32 = 1
 const MAGIC: u64 = 0xC0FFEE00BEEF42A1
-# phase: 1 = write in flight; 2 = read in flight; 3 = done
 const PHASE_WRITE: u32 = 1
 const PHASE_READ: u32 = 2
 const PHASE_DONE: u32 = 3
@@ -137,8 +83,6 @@ pub struct BlkDriver:
         irq.unmask()
         self.irq = take irq
         self.device = negotiated.start()
-        # Stamp MAGIC and publish the write before returning so the first
-        # checkpoint delivers a real used-ring IRQ (boot-irq-isr shape).
         b = take buffer
         b.word = MAGIC
         permit = self.queue.reserve(descriptors=3)
@@ -148,10 +92,6 @@ pub struct BlkDriver:
             payload=take b,
             device_writes_payload=false,
             status=BlkReqStatus(status=0xff),
-            # Item G (decision 18) made `idempotent=` required. A write is
-            # not idempotent by inspection — this case is about per-device pool
-            # reachability, not the retry rule, so it declares the honest value
-            # rather than the one that would let a retry through.
             idempotent=false,
         )
         receipt = self.queue.publish(operation=take op)
@@ -172,9 +112,6 @@ pub struct BlkDriver:
         status = self.pending.swap_acquire(0)
         if status == 0:
             return unit
-        # Take first: a quiet wake after the round trip (extra completion
-        # or inject bit) must not park inside `queue.drain` with nothing
-        # to claim. `await receipt` is not used here — see decision 22.
         slot = take self.inflight
         match slot:
             case .None:
@@ -189,7 +126,6 @@ pub struct BlkDriver:
                             pass
                         case .Err(_):
                             assert false, "write completion status Ok"
-                    # Write buffer-facing length is 0.
                     n = c.written_len
                     match n.checked_le(SECTOR):
                         case .Ok(v):
@@ -205,13 +141,9 @@ pub struct BlkDriver:
                         payload=take b,
                         device_writes_payload=true,
                         status=BlkReqStatus(status=0xff),
-                        # A read of a fixed sector is idempotent by
-                        # inspection (item G, decision 18).
                         idempotent=true,
                     )
                     receipt = self.queue.publish(operation=take op)
-                    # Restore taken field in one step (Option[Receipt] is a
-                    # resource — no None-then-Some overwrite).
                     self.inflight = Some(take receipt)
                     self.phase = PHASE_READ
                 else:
@@ -235,8 +167,6 @@ pub struct BlkDriver:
                         b = take c.payload
                         w = b.word
                         assert w == 0xC0FFEE00BEEF42A1, "read-back sees the hand-computed sector word"
-                        # Take the empty Option before restoring (Option[own]
-                        # is a resource — cannot overwrite a live None).
                         empty = take self.buffer
                         match empty:
                             case .None:
@@ -252,9 +182,6 @@ pub struct BlkDriver:
                         assert false, "drain in unexpected phase"
         return unit
 
-# device#1's own driver, so this image is two devices each with a driver
-# and a pool. It touches nothing: its only job is to make device#1 a real
-# bound device rather than a declaration.
 @driver
 pub struct AuxDriver:
     tag: u32
@@ -278,8 +205,6 @@ pub struct Ledger:
 
 @test(runtime)
 async fn blk_write_read_roundtrip(led: Actor[Ledger]):
-    # Two checkpoints: write IRQ+drain then read IRQ+drain. Surviving
-    # with marks 42 means every assert in both drain phases held.
     a = await led.mark(n=4)
     @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match a:

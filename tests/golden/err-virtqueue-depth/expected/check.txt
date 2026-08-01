@@ -1,1 +1,1 @@
-error[type]: `VirtQueue.configure`'s `depth=7` is not a nonzero power of two that fits virtio's 16-bit queue depth (VIRTIO 1.2 §2.6) at 39:32
+error[type]: `VirtQueue.configure`'s `depth=7` is not a nonzero power of two that fits virtio's 16-bit queue depth (VIRTIO 1.2 §2.6) at 36:32

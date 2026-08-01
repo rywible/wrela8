@@ -1,13 +1,5 @@
 module examples.err_retry_after_unknown_hoisted
 
-# plans/M8.md item G (decision 18): the no-auto-retry rule is not a
-# peephole on one call site. `prepare_block` is hoisted out of the match
-# entirely and only the `publish` is inside the `Unknown` arm — the
-# rejection still fires, because the author's declaration is carried by the
-# operation's own type (`QueueOp[P, false]`), not by where it was written.
-#
-# The `Completed` and `NotCompleted` arms publish the identical operation
-# and are accepted: the rule is about `Unknown`, not about publishing.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:
@@ -70,9 +62,6 @@ pub struct BlkDriver:
         self.device = negotiated.start()
         return Ok(unit)
 
-    # The `prepare_block` sits **outside** the match; only the `publish`
-    # is inside the `Unknown` arm. The declaration rides on the operation's
-    # own type (`QueueOp[P, false]`), so hoisting it out changes nothing.
     fn reissue(mut self,
                take receipt: Receipt[own[BlockPayloads] DmaBlock],
                take spare: own[BlockPayloads] DmaBlock,
@@ -89,17 +78,14 @@ pub struct BlkDriver:
         outcome = self.queue.recover(receipt=take receipt)
         match outcome:
             case .Completed:
-                # Legal: the outcome is known, so this is a fresh issue.
                 issued = self.queue.publish(operation=take operation)
                 _resolved = self.queue.recover(receipt=take issued)
                 return self.outcomes
             case .NotCompleted:
-                # Legal for the same reason.
                 issued = self.queue.publish(operation=take operation)
                 _resolved = self.queue.recover(receipt=take issued)
                 return self.outcomes
             case .Unknown:
-                # Rejected: 03-hardware.md §9.
                 issued = self.queue.publish(operation=take operation)
                 _resolved = self.queue.recover(receipt=take issued)
                 return self.outcomes

@@ -1,10 +1,5 @@
 module examples.err_mmio_read_writeonly
 
-# plans/M7.md item C, 03-hardware.md §2: a register's declared direction
-# governs its access. `interrupt_ack` is declared `WriteOnly[u32]` — the
-# acknowledge register of 03 §2's own worked example — so reading it does
-# not exist. The accept is `golden/check-mmio-access`, where the very
-# next line writes this same register.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

@@ -1,61 +1,5 @@
 module examples.boot_actor_reply_struct
 
-# plans/M7.md item Z1 (decisions 9a/9b), the reply transport's own flip
-# witness: a declared reply that is an **aggregate** — a plain struct,
-# not a `Result[T, E]`, which additionally needs Z2's
-# `Err(e) -> Err(CallError.Op(e))` retagging and still fails closed —
-# travels intact from the callee's own frame into the awaiting turn's
-# composed `Ok(reply)`.
-#
-# The mechanism under test, end to end: the awaiting turn stores the
-# address of its own reply staging slot into its turn record
-# (`codegen::OFF_TURN_REPLY_SLOT`) before enqueueing; the callee's
-# dispatch arm loads that address into `x8` — this machine's
-# aggregate-return-pointer register — before calling the method; the
-# method writes its declared reply straight into the awaiting frame; and
-# the resume stub composes `Ok(<those bytes>)`. The record's own scalar
-# reply word carries a deliberate 0 for such a method and is never read.
-#
-# BOTH dispatch arms are separately wired, so both are exercised:
-#   - `Ledger.origin` and `Store.snapshot` are **sync** — their return IS
-#     their turn's completion, and they spill `x8` in the ordinary sync
-#     prologue.
-#   - `Store.tally` is **async**: it parks on its own inner `await` and
-#     only then returns its aggregate. That is the load-bearing case —
-#     `x8` is spilled into the persistent frame on the FRESH entry only,
-#     and the address must survive the park, because the scheduler
-#     re-enters the resume path with no `x8` at all.
-#
-# `Store.tally` is also a *caller* of an aggregate-reply method, so the
-# reply crosses the wide transport twice on its way to the root:
-# `Ledger.origin` -> `Store.tally`'s staging slot -> (as `Store.tally`'s
-# own declared reply) -> `Probe.fetch`'s staging slot. `Probe.fetch`'s
-# two await sites share one slot (decision 9b: one per fn, not one per
-# site — a turn has at most one outstanding await, so it cannot be
-# aliased).
-#
-# Every field carries its own hand-computed, distinct value, so a
-# swapped, truncated or half-copied field is a failed assertion rather
-# than a plausible-looking number:
-#   - `Ledger.n` is 500 (from `init`), never touched again.
-#   - `Ledger.origin()`  -> Pair(lo = 500 + 7      = 507,
-#                                hi = 500 * 2 + 7  = 1007)
-#     which `Store.tally()` relays unchanged.
-#   - `Store.snapshot(key=41)`
-#                        -> Pair(lo = 41 + 1       = 42,
-#                                hi = 41 * 100 + 3 = 4103)
-# The four numbers are pairwise distinct, and no pair of them survives a
-# `lo`/`hi` swap, so exchanged fields cannot pass unnoticed.
-#
-# Why the assertions read each struct back through `Probe`'s own *sync*
-# methods instead of inline in the awaiting fn: 02-language.md §9.2's
-# cross-await path rule rejects every non-`self`-rooted field access
-# anywhere after an `await` in the same fn, and an awaiting fn has one by
-# construction. Storing the whole reply into `self` (a self-rooted
-# assignment, which the rule permits) and reading its fields from a plain
-# sync method is the rule-abiding shape — and it proves the same fact:
-# the bytes are correct where the *caller* can see them, not merely where
-# the callee wrote them.
 
 pub struct Pair:
     lo: u64
@@ -78,21 +22,11 @@ pub struct Ledger:
 @actor
 pub struct Store:
     led: Actor[Ledger]
-    # Only ever returned on the `Err` arm below, which no boot of this
-    # image reaches (nothing here fills a mailbox or cancels anything);
-    # it exists because the arm must return a `Pair` and an async body
-    # cannot construct one. Zero-initialized like every actor's state, so
-    # if it ever DID arrive it would read as (0, 0) — distinct from all
-    # four expected values above, never a plausible pass.
     fallback: Pair
 
-    # The sync arm: one complete, unsuspendable turn whose aggregate
-    # reply is written through the caller-supplied pointer.
     pub fn snapshot(read self, key: u64) -> Pair:
         return Pair(lo=key + 1, hi=key * 100 + 3)
 
-    # The async arm: parks on a real await, then returns an aggregate it
-    # itself received over the same transport.
     pub async fn tally(read self) -> Pair:
         t = await self.led.origin()
         @discard(reason="migrated: deliberate Err discard (M13 item L)")
@@ -108,15 +42,6 @@ pub struct Probe:
     from_sync: Pair
     from_async: Pair
 
-    # plans/M7.md item D closes item W's residual: a handle wired to a
-    # *field* of a struct with no `init` is never materialized — boot
-    # zero-fills the state slot and has nothing to call — so `store` used
-    # to arrive as 0 while this image declared `actor#1`. That is now a
-    # build error, and this `init` is the fix: `store=store` is matched
-    # against a real parameter and materialized by `build_boot_init_calls`
-    # like every other argument. `Store` itself needs none — its own
-    # `led=led` names `actor#0`, whose index *is* the zero the state-fill
-    # leaves, so the two paths already agreed there.
     init(mut self, store: Actor[Store]):
         self.store = store
         self.from_sync = Pair(lo=0, hi=0)

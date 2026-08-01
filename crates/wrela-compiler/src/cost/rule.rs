@@ -1,92 +1,27 @@
-//! Closed ISA op-class tags attached at `FnCtx::push` (plans/M18.md item C).
-//! Every variant in `ALL` must be priced by exactly one row of
-//! `bench/a76-pi5.toml` — a `[latency.<group>]` sub-table whose key is
-//! `as_str()`, or a `[crosscore]` term naming it (plans/M20.md item D).
-//!
-//! **The rule set is the SOG instruction-group set wrela actually emits**
-//! (freeze 1630), measured from codegen's own encoder call sites, not the
-//! ISA's group list. Deliberately *not* variants, each because no site
-//! emits it: extend-and-shift arithmetic, LSR/ASR/ROR-shifted arithmetic,
-//! `LDP`/`STP`, `BFM` insert, and the W-form (32-bit) **divide** group —
-//! every `enc_sdiv` / `enc_udiv` site in `codegen.rs` passes `sf = true`,
-//! and `SMULH`/`UMULH` have no W-form at all.
-//!
-//! **`ANDS` is emitted after all**, as `TST Xn, #mask`
-//! (plans/codegen-pareto.md item C2). It is tagged `Alu` rather than given
-//! a row: the "logical, shift, flagset" group SOG §3.4 prices at lat 2 /
-//! thru 1 / port M is the *shifted-register* form; `ANDS` with a bitmask
-//! **immediate** is the "logical, basic" group, which is the `alu` row
-//! already. Same for the bitmask-immediate `ORR` item C5 emits.
-//!
-//! **W-form multiply-accumulate is a variant since item C1** (decision
-//! 1740): `emit_arith_wrapping` now passes `sf = false` for a declared
-//! type of 32 bits or fewer, so the group is emitted and freeze 1630
-//! requires it priced. See [`CostRule::MulW`].
-
-/// ISA op-class for proxy-cycle ranking. Never parsed from mnemonics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum CostRule {
-    /// Arithmetic basic / logical basic / conditional compare / conditional
-    /// select / move register / bitfield-move basic / variable shift: all
-    /// 1 cycle, throughput 3, port I, so they share one group.
     Alu,
-    /// Load register, immed — latency 4 on an **L1D hit** (SOG §3.9).
     Load,
-    /// `LDAR`. T5 by absence: the SOG prices load-acquire nowhere. Not a
-    /// load/store-**exclusive** (`enc_ldaxr_w` is genuinely unused).
     LoadAcquire,
-    /// Store register — latency 1 to the **store buffer**, split into an
-    /// address uop (L) and a data uop on a V pipe (SOG §3.10).
     Store,
-    /// `STLR`. T5 by absence, exactly like `LoadAcquire`.
     StoreRelease,
     Branch,
-    /// `BL` — branch and link, immed. Lat 1, thru 1, ports I + B. The
-    /// callee-side residual is the swept `call_overhead`, not this row.
     Call,
     Abort,
     AbortVal,
-    /// `MOVZ` / `MOVK` — 1 cycle, throughput 3, port I. NarrowImm's win is
-    /// **throughput**, not latency and not footprint (decision 1620-K):
-    /// `load_imm` pushes every `MOVK` with empty `srcs`, so a materialization
-    /// is independent 1-cycle uops with no chain to shorten, and the I-side
-    /// footprint term scores zero on a closure this far inside its L1I.
     MovWide,
-    /// Multiply-accumulate, **X-form** (`MADD`/`MSUB`; `MUL` is `MADD` with
-    /// `XZR`). Lat 4 (acc 3), thru 1/3, port M, and stalls pipe M 2 extra
-    /// cycles (SOG §3.6 note 4).
     Mul,
-    /// Multiply-accumulate, **W-form** — the same `MADD`/`MSUB` group read
-    /// at 32-bit operand width. Lat 2 (acc 1), thru 1, port M, and **no**
-    /// M-pipe stall: SOG §3.6 note 4 attaches to the X-form row only.
-    ///
-    /// Split out by plans/codegen-pareto.md item C1 (decision 1740). Until
-    /// that item this group was deliberately *not* a variant, because no
-    /// emit site passed `sf = false`; item C1's width selection creates the
-    /// site, and freeze 1630 ("model only what wrela emits") is what makes
-    /// the row legitimate now and would have made it a fabrication before.
     MulW,
-    /// `SMULH` / `UMULH`. Lat 5 (acc 3), thru 1/4, port M, and stalls pipe
-    /// M 3 extra cycles (SOG §3.6 note 5). Emitted by `narrow_to_width`
-    /// and the checked-multiply overflow check.
     MulHigh,
-    /// Divide, X-form. 5-20 cycles with data-dependent early termination,
-    /// pinned pessimistic and swept; blocks subsequent divides on pipe M.
     Sdiv,
     Udiv,
     Adrp,
-    /// `DMB ishst` / `DMB ishld`. T5 by absence — no barrier entry exists
-    /// anywhere in the SOG's 46 pages.
     Barrier,
-    /// System / trap words (`BRK` today). T5 by absence.
     System,
-    /// FP/ASIMD data-processing, kept as one coarse row and not expanded
-    /// (dimension inventory row 35, freeze 1630).
     Neon,
 }
 
 impl CostRule {
-    /// Every rule the profile must price exactly once.
     pub const ALL: &'static [CostRule] = &[
         CostRule::Alu,
         CostRule::Load,
@@ -109,7 +44,6 @@ impl CostRule {
         CostRule::Neon,
     ];
 
-    /// TOML `[latency]` / `[crosscore].rule` key, and the dump Term id.
     pub fn as_str(self) -> &'static str {
         match self {
             CostRule::Alu => "alu",
@@ -159,8 +93,6 @@ impl CostRule {
         })
     }
 
-    /// Rust variant name (`"MulHigh"`) -> the variant. Only the emit-site
-    /// classifier scan uses this; the TOML key is `as_str` / `from_str`.
     pub fn from_str_variant(s: &str) -> Option<CostRule> {
         CostRule::ALL
             .iter()
@@ -168,8 +100,6 @@ impl CostRule {
             .find(|r| format!("{r:?}") == s)
     }
 
-    /// True for the rules whose cost is a **swept** cross-core term rather
-    /// than a pinned latency row (`[crosscore]`, decision 1602).
     pub fn is_crosscore(self) -> bool {
         matches!(
             self,
@@ -177,8 +107,6 @@ impl CostRule {
         )
     }
 
-    /// True for the rules that read or write memory — the ordered accesses
-    /// take the same memory path as their plain twins.
     pub fn is_load(self) -> bool {
         matches!(self, CostRule::Load | CostRule::LoadAcquire)
     }
@@ -188,25 +116,17 @@ impl CostRule {
     }
 }
 
-/// Memory class for load/store MemRef tags (cost hard-cut item B).
-/// Stack = proven SP-relative; Cold = everything else that was tagged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MemClass {
     Stack,
     Cold,
 }
 
-/// AArch64 load/store encoding of SP (not XZR) — the only Stack base.
 pub const MEM_SP_REG: u8 = 31;
 
-/// Proven or unique memory identity for scoreboard reuse (item C).
-/// Missing `EmittedWord::mem` is scored as a cold miss later; Adrp never
-/// carries a MemRef.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MemRef {
     pub class: MemClass,
-    /// Stack: frame byte offset from SP. Cold stable: packed base+imm.
-    /// Cold unique: high bit set + per-push sequence.
     pub key: u64,
 }
 
@@ -218,7 +138,6 @@ impl MemRef {
         }
     }
 
-    /// Stable Cold key for a proven `[base_reg, #imm]` (base ≠ SP).
     pub fn cold_stable(base_reg: u8, imm: u64) -> MemRef {
         MemRef {
             class: MemClass::Cold,
@@ -226,7 +145,6 @@ impl MemRef {
         }
     }
 
-    /// Unique Cold key when the address is not a proven base+imm.
     pub fn cold_unique(seq: u64) -> MemRef {
         MemRef {
             class: MemClass::Cold,
@@ -234,7 +152,6 @@ impl MemRef {
         }
     }
 
-    /// Classify a proven `[base_reg, #imm]`: SP → Stack; else Cold stable.
     pub fn for_base_imm(base_reg: u8, imm: u64) -> MemRef {
         if base_reg == MEM_SP_REG {
             MemRef::stack(imm)
@@ -243,8 +160,6 @@ impl MemRef {
         }
     }
 
-    /// Base register for a non-unique MemRef (Stack → SP; Cold stable →
-    /// packed base). Cold unique has no reusable base — `None`.
     pub fn base_reg(self) -> Option<u8> {
         match self.class {
             MemClass::Stack => Some(MEM_SP_REG),
@@ -258,8 +173,6 @@ impl MemRef {
         }
     }
 
-    /// Fail closed when a non-unique MemRef's base is absent from `srcs`
-    /// (integrity item C). Unique Cold keys skip the check.
     pub fn require_base_in_srcs(self, srcs: &[u8]) -> Result<(), String> {
         let Some(base) = self.base_reg() else {
             return Ok(());
@@ -272,15 +185,11 @@ impl MemRef {
     }
 }
 
-/// NZCV flag side-effect declared at emit (integrity item B). Never
-/// inferred from mnemonics (freeze 1303).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FlagEffect {
     #[default]
     None,
-    /// Writes NZCV (cmp / adds / subs / …).
     Write,
-    /// Reads NZCV (b.cond / cset / …).
     Read,
 }
 
@@ -294,9 +203,6 @@ impl FlagEffect {
     }
 }
 
-/// One machine word in the final asm stream, tagged at emit time
-/// (plans/M18.md freeze 1303). Scoreboard uses `rule` + regs; asm dump
-/// prints only `word` + `text`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EmittedWord {
     pub word: u32,
@@ -305,25 +211,8 @@ pub struct EmittedWord {
     pub dst: Option<u8>,
     pub srcs: [u8; 4],
     pub src_len: u8,
-    /// Load/Store memory identity when tagged at emit; `None` for Adrp
-    /// and untagged sites (scorer treats missing as cold miss).
     pub mem: Option<MemRef>,
-    /// NZCV read/write at emit (integrity item B).
     pub flags: FlagEffect,
-    /// Bytes this word transfers, for a load/store; `0` when the word is
-    /// not a load/store shape `encode.rs` knows (plans/M20.md item I).
-    ///
-    /// Assigned **at construction**, from the encoded word, by
-    /// `encode::access_width_bytes` — the module that wrote the `size`
-    /// field in the first place. Unlike `rule` and `mem`, the width is not
-    /// a semantic classification that has to be declared: it is *in* the
-    /// encoding, so threading a second `width` argument through every emit
-    /// site would create a source of truth that can disagree with the word
-    /// actually emitted, which is the defect freeze 1303 exists to
-    /// prevent. Nothing here reads the mnemonic text.
-    ///
-    /// `0` means "no width fact", and SOG §4.5's alignment terms treat it
-    /// as undecidable rather than as an aligned access (`score.rs`).
     pub access_bytes: u8,
 }
 
@@ -377,47 +266,22 @@ mod tests {
         }
     }
 
-    /// plans/M20.md item D's classifier oracle: every emit site of an
-    /// encoder whose SOG group is **not** the coarse integer-ALU group must
-    /// carry that group's `CostRule`.
-    ///
-    /// This is a source scan rather than a scoring assertion because the
-    /// defect class it catches is a **mistagged emit site**, which no
-    /// schedule number can see: before this item, `sdiv`/`udiv`, the
-    /// wrapping `MUL`, `SMULH`/`UMULH`, `STLR` and `LDAR` were all tagged
-    /// as `Alu` / `Load` / `Store`, so the coarse table priced a 20-cycle
-    /// divide at 1 cycle and no test could tell. Adding a site with the
-    /// wrong tag fails here; adding one at all moves the pinned count, so
-    /// the classification is a deliberate act.
     #[test]
     fn emit_sites_carry_their_sog_group() {
         let src = std::fs::read_to_string(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/codegen.rs"),
         )
         .expect("read codegen.rs");
-        // The unit-test module quotes some of these encoders in asserts
-        // rather than pushing words, so only production code is scanned.
         let cut = src
             .find("#[cfg(test)]\nmod tests {")
             .expect("codegen.rs test module marker");
         let prod = &src[..cut];
 
-        // (encoder, the expected tag at each site **in file order**)
-        //
-        // A list rather than one rule plus a count since
-        // plans/codegen-pareto.md item C1: `enc_mul` now has sites in two
-        // different SOG groups, because the same encoder emits the X-form
-        // and the W-form depending on `sf`. The list pins both the tags and
-        // (by its length) the count, so a new site still has to be
-        // classified deliberately and moved here in the same commit.
         let expected: &[(&str, &[CostRule])] = &[
             ("enc_sdiv", &[CostRule::Sdiv]),
             ("enc_udiv", &[CostRule::Udiv, CostRule::Udiv]),
             ("enc_smulh", &[CostRule::MulHigh]),
             ("enc_umulh", &[CostRule::MulHigh]),
-            // Sites in file order: the `narrow_to_width` helper's `mul_reg`,
-            // the checked narrow multiply, the **W-form** wrapping multiply
-            // (item C1), and the X-form wrapping multiply it falls back to.
             (
                 "enc_mul(",
                 &[CostRule::Mul, CostRule::Mul, CostRule::MulW, CostRule::Mul],
@@ -458,8 +322,6 @@ mod tests {
             let mut at = 0usize;
             while let Some(off) = prod[at..].find(&needle) {
                 let start = at + off;
-                // The tag is the third argument of the `push` this site
-                // feeds; it always lands within the same statement.
                 let window = &prod[start..(start + 1500).min(prod.len())];
                 let tag = window
                     .find("CostRule::")
@@ -554,7 +416,6 @@ mod tests {
         let cold = MemRef::cold_stable(28, 16);
         assert!(cold.require_base_in_srcs(&[28]).is_ok());
         assert!(cold.require_base_in_srcs(&[0]).is_err());
-        // Unique: no base check.
         assert!(MemRef::cold_unique(3).require_base_in_srcs(&[]).is_ok());
     }
 }

@@ -5,8 +5,6 @@ enum Mode:
     Low
     High
 
-# 02 §12.2 @test(exhaustive): the whole input domain is enumerated —
-# a passing run is a verified statement about every input, not a sample.
 @test(exhaustive)
 fn wrap_round_trip(x: u8):
     assert (x +% 1) -% 1 == x, "increment then decrement round-trips"

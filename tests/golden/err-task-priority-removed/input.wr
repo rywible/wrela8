@@ -1,9 +1,5 @@
 module examples.err_task_priority_removed
 
-# plans/M13.md item C cut 6: `@task(priority=)` was silently ignored
-# (sema set `is_task` from the attribute name only) and is cut — scheduling
-# is FIFO-per-mailbox + round-robin (04 §2 / decision 13). `@task(budget=)`
-# is refused the same way (cut 7); `trigger=` / `poll=` stay for the ISR gate.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

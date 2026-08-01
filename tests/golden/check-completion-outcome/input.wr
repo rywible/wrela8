@@ -1,22 +1,5 @@
 module examples.check_completion_outcome
 
-# plans/M8.md item G (decisions 17/18), 03-hardware.md §5/§9: `recover`
-# resolves a receipt through the `Recovery` state and reports a
-# `CompletionOutcome`, which source matches like any other enum.
-#
-# Dump oracle: the operation type-checks (`check`), the outcome's type is
-# the prelude enum and not a stringly-typed anything (`typed`), and it
-# lowers to one `QueueRecover` feeding an ordinary `EnumTag` compare chain
-# (`mwir`) — the same lowering a module-declared enum's `match` gets.
-#
-# It also pins the **permitted** half of the no-auto-retry rule: the
-# `Unknown` arm here re-issues an operation declared `idempotent=true`,
-# which is legal. `err-retry-after-unknown` is the same shape with
-# `idempotent=false` and is rejected by name; that pair is the rule's
-# positive/negative twin.
-#
-# Exhaustiveness is not opt-in: `err-completion-outcome-partial` drops the
-# `Unknown` arm and is rejected by the ordinary match-exhaustiveness pass.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:
@@ -79,9 +62,6 @@ pub struct BlkDriver:
         self.device = negotiated.start()
         return Ok(unit)
 
-    # Abandon a published operation and classify what is known about it.
-    # Re-reading the same sector is idempotent by inspection, so the
-    # `Unknown` arm may re-issue it — declared, not inferred.
     fn abandon(mut self,
                take receipt: Receipt[own[BlockPayloads] DmaBlock],
                take spare: own[BlockPayloads] DmaBlock,
@@ -107,8 +87,6 @@ pub struct BlkDriver:
                     idempotent=true,
                 )
                 retry = self.queue.publish(operation=take operation)
-                # A receipt resolves exactly once, so the retry's own
-                # receipt is resolved here too (03-hardware.md §5).
                 again = self.queue.recover(receipt=take retry)
                 match again:
                     case .Completed:

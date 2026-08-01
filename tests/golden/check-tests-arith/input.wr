@@ -1,10 +1,5 @@
 module examples.check_tests_arith
 
-# Hand-computed arithmetic identities (02-language.md §6.1), plans/M3.md
-# item E's own acceptance suite: the evaluator proves these, not a
-# comment. Every value below was worked out by hand against §6.1's own
-# rule table before this file was written (session report carries the
-# worked table); `wrela test` is what checks the arithmetic agrees.
 
 @test
 pub fn test_u8_wraps_past_max():

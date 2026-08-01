@@ -1,64 +1,23 @@
-//! **Placed-static census** (plans/M12.md item G / decisions 890–893).
-//!
-//! After the M12 representation rung the image report publishes
-//! `PlacedStatics count=N fixed=<list> spans=<k>`, and `cargo test`
-//! (wired into `xtask check`) asserts the ratchet
-//! `N ≤ fixed_set_len() + spans`.
-//!
-//! ## Counting rule (decision 890 / residual of item E)
-//!
-//! The generator still emits the full `INIT_SPAN0..INIT_SPAN_POOL_COUNT-1`
-//! import pool so `runtime.wr` can name every overlay (item E). Unused
-//! pool slots are 1-word high-zone placeholders and still appear as
-//! `PlacedStatic` lines. The census **does not** count those placeholders
-//! toward `N`:
-//!
-//! - **fixed** — the closed allowlist below (machine pages, `RT` /
-//!   `SCHED` / `GROUPS` / `RINGS_CTL` / `RINGS_DATA` / `WAKE`, and every
-//!   `MB{i}_DATA` / `MB{i}_CTL` for `i < MB_POOL_COUNT`)
-//! - **spans** — live coalesced init-span count (`N_INIT_SLOTS`), not
-//!   `INIT_SPAN_POOL_COUNT`
-//! - **N** — `|fixed ∩ present| +` live `INIT_SPAN{0..spans-1}` `+`
-//!   any name outside both classes (so a new emitter cannot hide)
-//!
-//! Ratchet: `N ≤ fixed_set_len() + spans`. Equality holds when every fixed
-//! name is present and nothing unexpected appears.
-//!
-//! ## Absent-name lock
-//!
-//! Numbered `RING{i}_*`, `WAKE_PEND*`, and `INIT_SLOT*` data statics died
-//! in items C–E. A unit test scans every golden `rtconfig.txt` so they
-//! cannot return silently.
-
 use crate::census;
 use crate::layout::PlacedStatic;
 use crate::rtconfig::{INIT_SPAN_POOL_COUNT, MB_POOL_COUNT};
 
-/// Machine pages + runtime overlays (excluding the MB pool and live
-/// init spans). From `tests/census.toml` `[placed_static]`.
 pub fn fixed_core_names() -> &'static [String] {
     &census::data().placed_static_fixed_core_names
 }
 
-/// `fixed_core_names().len() + MB_POOL_COUNT * 2` — the closed fixed-set
-/// size the ratchet compares against.
 pub fn fixed_set_len() -> usize {
     fixed_core_names().len() + MB_POOL_COUNT * 2
 }
 
-/// One image's census summary (report line + ratchet inputs).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Census {
-    /// Counted placed-statics (fixed ∪ live spans ∪ unexpected).
     pub count: usize,
-    /// Fixed-set names present in this image, sorted.
     pub fixed: Vec<String>,
-    /// Live coalesced init-span count (`N_INIT_SLOTS`).
     pub spans: usize,
 }
 
 impl Census {
-    /// `PlacedStatics count=N fixed=<list> spans=<k>`.
     pub fn render_line(&self) -> String {
         format!(
             "PlacedStatics count={} fixed={} spans={}",
@@ -68,18 +27,14 @@ impl Census {
         )
     }
 
-    /// `count ≤ fixed_set_len() + spans`.
     pub fn within_ratchet(&self) -> bool {
         self.count <= fixed_set_len() + self.spans
     }
 }
 
-/// Classify a placed-static name against the closed fixed set / init-span
-/// pool. `None` means unexpected (still counted toward `N`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Class {
     Fixed,
-    /// `INIT_SPAN{i}`; counted only when `i < spans_live`.
     InitSpan(usize),
     Unexpected,
 }
@@ -109,9 +64,6 @@ pub fn classify(name: &str) -> Class {
     Class::Unexpected
 }
 
-/// Census over a report's `PlacedStatic` list. `spans_live` is
-/// `N_INIT_SLOTS` from the live tables (0 when the image has no runtime
-/// table / no init work).
 pub fn summarize(placed: &[PlacedStatic], spans_live: usize) -> Census {
     let mut fixed = Vec::new();
     let mut count = 0usize;
@@ -125,10 +77,8 @@ pub fn summarize(placed: &[PlacedStatic], spans_live: usize) -> Census {
                 if i < spans_live {
                     count += 1;
                 }
-                // Placeholders (`i >= spans_live`) are emitted but not counted.
             }
             Class::Unexpected => {
-                // Count so the ratchet fails closed on a new emitter.
                 count += 1;
             }
         }
@@ -142,13 +92,10 @@ pub fn summarize(placed: &[PlacedStatic], spans_live: usize) -> Census {
     }
 }
 
-/// True when `name` is a forbidden numbered data-static prefix that items
-/// C–E deleted (`RING{i}_`, `WAKE_PEND`, `INIT_SLOT`).
 pub fn is_forbidden_rtconfig_static_name(name: &str) -> bool {
     if name.starts_with("WAKE_PEND") || name.starts_with("INIT_SLOT") {
         return true;
     }
-    // `RING{digits}_…` — not `RINGS_CTL` / `RINGS_DATA` / `RING_STRIDE_WORDS`.
     if let Some(rest) = name.strip_prefix("RING") {
         let digits = rest.bytes().take_while(|b| b.is_ascii_digit()).count();
         if digits > 0 {
@@ -158,8 +105,6 @@ pub fn is_forbidden_rtconfig_static_name(name: &str) -> bool {
     false
 }
 
-/// Scan generated rtconfig text for `pub static NAME:` lines that use a
-/// forbidden prefix.
 pub fn forbidden_statics_in_rtconfig(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     for line in text.lines() {
@@ -197,7 +142,6 @@ mod tests {
         assert_eq!(fixed_core_names().len(), 17);
         assert_eq!(MB_POOL_COUNT, 32);
         assert_eq!(fixed_set_len(), 81);
-        // Closed: every core name classifies as Fixed.
         for n in fixed_core_names() {
             assert_eq!(classify(n), Class::Fixed, "{n}");
         }
@@ -231,7 +175,6 @@ mod tests {
         let c = summarize(&placed, spans);
         assert_eq!(c.fixed.len(), fixed_set_len());
         assert_eq!(c.spans, spans);
-        // 81 fixed + 2 live spans; 6 placeholders excluded.
         assert_eq!(c.count, fixed_set_len() + spans);
         assert!(c.within_ratchet());
         assert_eq!(
@@ -254,10 +197,6 @@ mod tests {
 
     #[test]
     fn unexpected_name_on_full_fixed_set_breaks_the_ratchet() {
-        // The numeric ratchet catches growth past fixed_set_len() + spans
-        // (e.g. full fixed set + a resurrected RING0_DATA). A lone
-        // unexpected name on a sparse image is caught by the closed-set
-        // golden scan instead.
         let mut full = Vec::new();
         for n in fixed_core_names() {
             full.push(ps(n));
@@ -363,7 +302,6 @@ mod tests {
                 ));
                 continue;
             };
-            // Parse count=N … spans=k
             let mut count = None;
             let mut spans = None;
             for part in line.split_whitespace() {
@@ -388,7 +326,6 @@ mod tests {
                     case.file_name().unwrap().to_string_lossy()
                 ));
             }
-            // Closed set: every PlacedStatic name is fixed or INIT_SPAN*.
             for l in text.lines() {
                 let l = l.trim_start();
                 let Some(rest) = l.strip_prefix("PlacedStatic name=") else {

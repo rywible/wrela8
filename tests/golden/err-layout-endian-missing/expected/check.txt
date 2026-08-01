@@ -1,1 +1,1 @@
-error[type]: `@layout(dma, ...)` on struct `Descriptor` declares no `endian=`; a `@layout` type's byte order is never inferred — write `endian=little` or `endian=big` (03-hardware.md §3) at 8:1
+error[type]: `@layout(dma, ...)` on struct `Descriptor` declares no `endian=`; a `@layout` type's byte order is never inferred — write `endian=little` or `endian=big` (03-hardware.md §3) at 4:1

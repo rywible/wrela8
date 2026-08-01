@@ -1,1 +1,1 @@
-error[type]: field `Descriptor.len: ReadOnly[u32]` wraps a register, but `Descriptor` is a `@layout(dma)` type; `ReadOnly`/`WriteOnly` exist only in a register map (03-hardware.md §2) at 11:5
+error[type]: field `Descriptor.len: ReadOnly[u32]` wraps a register, but `Descriptor` is a `@layout(dma)` type; `ReadOnly`/`WriteOnly` exist only in a register map (03-hardware.md §2) at 7:5

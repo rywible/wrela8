@@ -1,1 +1,1 @@
-error[type]: `BlkDriver.leak` is a `pub` method of an `@actor`/`@driver` struct and returns `DeviceCap[BlockHw]` — 03-hardware.md §1: a driver may export safe actor APIs but never raw capabilities at 28:5
+error[type]: `BlkDriver.leak` is a `pub` method of an `@actor`/`@driver` struct and returns `DeviceCap[BlockHw]` — 03-hardware.md §1: a driver may export safe actor APIs but never raw capabilities at 15:5

@@ -1,12 +1,3 @@
-//! Loop-discharge **observes** bit (plans/M13.md item N / decision 11).
-//!
-//! Leaf observation is by placed address against the machine's pending-vector
-//! page and park MMIO — never by static name. The bit propagates through the
-//! callee graph the same way comptime legality does (fixed-point over
-//! `CalleeKey` spellings). A synchronous `for`/`while` without `@budget` is
-//! discharged only when every path from the loop head to its back edge
-//! passes an observation point (leaf or call to an observing fn).
-
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
@@ -19,18 +10,13 @@ use crate::syntax::ast::Span;
 
 use super::walk::{self, Visitor};
 
-/// Why a fn's observes bit is set — enough for the typed-dump chain.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ObservesReason {
-    /// Direct read of the pending-vector page (`wrela_machine::pending::BASE`).
     LeafPendingRead,
-    /// Direct write of the park MMIO (`wrela_machine::mmio::PARK_MMIO_ADDR`).
     LeafParkWrite,
-    /// Calls an observing callee (spelling).
     Calls(String),
 }
 
-/// Whole-program observes classification.
 #[derive(Debug, Clone, Default)]
 pub struct Observes {
     pub reasons: BTreeMap<String, ObservesReason>,
@@ -42,7 +28,6 @@ impl Observes {
     }
 }
 
-/// Classify every fn/method/instantiation key.
 pub fn classify(program: &TypedProgram) -> Observes {
     let static_addrs = static_addr_map(program);
     let nodes = build_nodes(program, &static_addrs);
@@ -74,7 +59,6 @@ pub fn classify(program: &TypedProgram) -> Observes {
     Observes { reasons }
 }
 
-/// Stable dump of the observes chain for `--stage=typed` goldens.
 pub fn dump(observes: &Observes) -> String {
     if observes.reasons.is_empty() {
         return String::new();
@@ -91,7 +75,6 @@ pub fn dump(observes: &Observes) -> String {
     out
 }
 
-/// Refuse unbounded sync loops that do not observation-discharge.
 pub fn check_loop_discharge(
     program: &TypedProgram,
     observes: &Observes,
@@ -109,8 +92,6 @@ pub fn check_loop_discharge(
             return Err(discharge_err(site.span));
         }
     }
-    // Catch sync fns whose unbounded loops were not recorded (should not
-    // happen for module-level bodies; fail closed).
     for (name, f) in &program.fns {
         if f.is_async {
             continue;
@@ -244,8 +225,6 @@ fn walk_unbounded(stmts: &[TypedStmt], visit: &mut dyn FnMut(&[TypedStmt]) -> bo
     }
 }
 
-/// Every path from body entry to a back edge (`Continue` or fall-through)
-/// must have observed. `Break`/`Return` exit the loop and need not.
 fn loop_body_discharges(
     body: &[TypedStmt],
     observes: &Observes,
@@ -329,11 +308,6 @@ fn walk_paths(
                         if !o {
                             return PathEnd::Fail;
                         }
-                        // A Continue inside an arm already required observed;
-                        // remaining stmts are still reachable from fall-through
-                        // arms only — handled by FallThrough join below.
-                        // If ANY arm continued, we already checked it; if ALL
-                        // non-exit arms continued, we're done.
                         return PathEnd::BackEdge { observed: true };
                     }
                     PathEnd::FallThrough { observed: o } => observed = o,
@@ -363,8 +337,6 @@ fn walk_paths(
             | TypedStmtKind::For {
                 body, budget: None, ..
             } => {
-                // Nested unbounded: must discharge on its own; zero-trip
-                // means it does not observe for the outer path.
                 if !loop_body_discharges(body, observes, static_addrs) {
                     return PathEnd::Fail;
                 }
@@ -470,8 +442,6 @@ fn join_arms(
         return PathEnd::BackEdge { observed: true };
     }
     if saw_continue && saw_fall {
-        // Some arms continue (already checked), some fall through —
-        // join fall-through observation for stmts after the if/match.
         let o = fall_obs.into_iter().all(|x| x);
         return PathEnd::FallThrough { observed: o };
     }
@@ -555,8 +525,6 @@ fn expr_observes(
         _ => false,
     }
 }
-
-// --- graph ---------------------------------------------------------------
 
 struct NodeInfo {
     callees: BTreeSet<String>,

@@ -1,51 +1,3 @@
-//! plans/codegen-pareto-2.md item J — three plain passes over MWIR.
-//!
-//! The optimization ladder's 2b (GVN + SCCP + DCE), written the way
-//! CLAUDE.md says to write them: three ordinary functions over the
-//! existing IR, in the existing single-threaded batch pipeline. **No pass
-//! manager, no trait over "a pass", no framework.** Each pass is one `fn`
-//! taking `&mut MwirFn`, and `optimize` below calls whichever of them
-//! their TLS knobs enable, in a fixed order.
-//!
-//! **The ladder's 2a — the shrinking inliner — is here, parked**
-//! (plans/codegen-pareto-2-P.md, decisions 1980–1989). Item J built it,
-//! measured it, refused it (decision 1935) and then *deleted* it before
-//! ever committing it, so the numbers that re-ranked the ladder's #1
-//! candidate could not be reproduced from this repository at all. CLAUDE.md's
-//! rule changed on the strength of exactly that (2026-07-31): **a refused
-//! opt is parked, not deleted.** Item P rebuilds it from item J's stated
-//! rule, keeps it out of `RELEASE_OPTS`, and re-derives the refusal with a
-//! measurement anyone can now re-run.
-//!
-//! It also settles the question item J's measurement could not answer.
-//! An inliner is an *enabling* pass — its value is what redundancy
-//! elimination can do to the merged body afterwards — and item J's opt
-//! list does not record where the inliner sat relative to `ConstProp`/
-//! `Gvn`/`Dce` **inside** this one `optimize` call. [`set_inline_after_redundancy`]
-//! is the knob that asks both orders; see [`optimize`] and
-//! `opts::win`'s `the_inliner_measured_in_both_pipeline_positions`.
-//!
-//! **Where these run (decision 1920).** At the top of
-//! `codegen::codegen_program` / `codegen::codegen_program_with_async`,
-//! against the *merged* `MwirProgram`. That is the single choke point
-//! every path shares — `wrela build`, `--stage=asm`, `--stage=report`,
-//! the cost stage the ∀ gate scores, `diff-eval` and both fuzz lanes —
-//! so the program the gate ranks is byte-for-byte the program that
-//! ships. It is also the point at which the program is *whole*:
-//! `lower.rs` emits an imported fn into every importing module's own
-//! MWIR and `merge_mwir_programs` resolves the duplicates last-wins, so
-//! a per-module pass would be looking at a different program from the
-//! one that ships.
-//!
-//! **The async path is excluded (decision 1927)**, the analogue of item
-//! E's decision 1762. A FlowWir fn's temps live in the persistent turn
-//! area precisely because they must survive a `ret`-to-scheduler
-//! suspension; a state's `ops` are one straight-line list but a temp
-//! defined in one state is read in another, so a per-state pass has no
-//! whole-body liveness to reason from and DCE would delete a definition
-//! whose only reader is three states away. FlowWir is never rewritten
-//! here and never read.
-
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -54,8 +6,6 @@ use crate::flowwir::{AwaitKind, FlowInst, FlowWirProgram, Transition};
 use crate::mwir::{Inst, LayoutCtx, MwirFn, MwirProgram, Temp};
 use crate::sema::types::Type;
 use crate::syntax::ast::{AccessMode, BinOp};
-
-// --- knobs ---------------------------------------------------------------
 
 thread_local! {
     static INLINE: Cell<bool> = const { Cell::new(false) };
@@ -68,15 +18,6 @@ thread_local! {
     static INLINED_CALLEES_DELETED: Cell<usize> = const { Cell::new(0) };
 }
 
-/// **Measured reach for the parked opt** (item P / decision 1985): how
-/// many call sites the inliner has spliced, and how many callees rule (i)
-/// consumed, since the last read. Reading resets both.
-///
-/// CLAUDE.md wants every lane to print its reach so a collapse to "clean
-/// about nothing" is visible. A refusal measurement is worth exactly as
-/// much as the number of sites it actually reached, and item J's own
-/// headline — "no customers on the appliance at all" — is a reach number
-/// wearing a sentence.
 pub fn take_inline_reach() -> (usize, usize) {
     (
         INLINED_SITES.with(|c| c.replace(0)),
@@ -84,10 +25,6 @@ pub fn take_inline_reach() -> (usize, usize) {
     )
 }
 
-/// Item P / decision 1980: the shrinking inliner, **parked**. Present,
-/// wired, proved by `diff-eval`, and deliberately absent from
-/// `RELEASE_OPTS` — see [`inline_program`] for the rule and
-/// plans/codegen-pareto-2-P.md for the measurement that refuses it.
 pub fn set_inline(enabled: bool) {
     INLINE.with(|c| c.set(enabled));
 }
@@ -95,24 +32,6 @@ pub fn inlining() -> bool {
     INLINE.with(|c| c.get())
 }
 
-/// **Item P / decision 1981 — the pipeline position, as a knob rather
-/// than as an argument.**
-///
-/// `false` (the default) puts the inliner *ahead* of `ConstProp`/`Gvn`/
-/// `Dce`: the splice happens first and redundancy elimination then runs
-/// over the merged body. That is the only order in which an enabling
-/// pass can enable anything, and it is what an inliner has to be
-/// measured in to be measured at all.
-///
-/// `true` puts it *after* all three, where by construction it can enable
-/// nothing: the callee's instructions arrive in the caller after the last
-/// pass that could have folded them together.
-///
-/// Item J's numbers were taken with the inliner somewhere in this one
-/// `optimize` call and the position was never committed. Item P measures
-/// both and reports the pair; the knob exists for that measurement and
-/// for nothing else, so it is **not** an [`crate::opts::OptId`] — an id
-/// is a product decision and this is a question.
 pub fn set_inline_after_redundancy(enabled: bool) {
     INLINE_AFTER_REDUNDANCY.with(|c| c.set(enabled));
 }
@@ -120,18 +39,6 @@ pub fn inline_after_redundancy() -> bool {
     INLINE_AFTER_REDUNDANCY.with(|c| c.get())
 }
 
-/// **Item P / decision 1988 — rule (i) alone, the framing item J said
-/// settles it.**
-///
-/// With this on, [`INLINE_MAX_BODY`] is effectively zero: only a callee
-/// whose splice consumes its *only* reference is inlined, so the body
-/// moves rather than duplicates and the callee is deleted outright. Words
-/// ought to fall by the whole call sequence. Item J measured +307 cycles
-/// against `dev` and +36 leave-one-out over the shipped list and called
-/// that the result that settles the ladder's 2a — and that number is one
-/// of the ones this repository could not re-derive. Same reason as
-/// [`set_inline_after_redundancy`]: a question, not a product decision,
-/// so not an `OptId`.
 pub fn set_inline_rule_one_only(enabled: bool) {
     INLINE_RULE_ONE_ONLY.with(|c| c.set(enabled));
 }
@@ -139,8 +46,6 @@ pub fn inline_rule_one_only() -> bool {
     INLINE_RULE_ONE_ONLY.with(|c| c.get())
 }
 
-/// Item J / decision 1924: extended-basic-block constant propagation and
-/// folding, plus constant-condition branch resolution.
 pub fn set_const_prop(enabled: bool) {
     CONST_PROP.with(|c| c.set(enabled));
 }
@@ -148,8 +53,6 @@ pub fn const_prop() -> bool {
     CONST_PROP.with(|c| c.get())
 }
 
-/// Item J / decision 1925: value numbering of pure scalar computations
-/// over an extended basic block.
 pub fn set_gvn(enabled: bool) {
     GVN.with(|c| c.set(enabled));
 }
@@ -157,9 +60,6 @@ pub fn gvn() -> bool {
     GVN.with(|c| c.get())
 }
 
-/// Item J / decision 1926: dead-code elimination — non-trapping pure
-/// instructions whose result is read nowhere, and unreachable
-/// instructions.
 pub fn set_dce(enabled: bool) {
     DCE.with(|c| c.set(enabled));
 }
@@ -167,48 +67,6 @@ pub fn dce() -> bool {
     DCE.with(|c| c.get())
 }
 
-/// Run whichever of item J's three passes are enabled, in pipeline order,
-/// over a whole merged MWIR program. Returns `None` when every knob is
-/// off, so `dev` and every pre-item-J opt list take the identical code
-/// path they always did.
-///
-/// **Decision 1932 — all three passes rewrite only the fns the user's own
-/// source declares.** [`is_late_bound`] names the rest, and they are
-/// skipped as *callers* here just as decision 1929 skips them as
-/// callees. There are three independent reasons and each one alone is
-/// sufficient:
-///
-/// 1. **Their bodies are placeholders.** `layout.rs` replaces
-///    `__test_call_{i}`, `__test_prefix_{i}`, `__method_{n}`,
-///    `__enqueue_{i}`, `rt_enqueue <actor>` and `__wrela_abort_tail`
-///    with hand-assembled code after codegen. Optimizing a placeholder
-///    optimizes nothing, and *inlining* one was the miscompile decision
-///    1929 records.
-/// 2. **Their block partition is a committed measurement.**
-///    `tests/golden/boot-actors/lane2-freq.txt` is a Lane 2 block-grain
-///    frequency vector keyed `<fn_key>#<block_index>`, and it is
-///    overwhelmingly runtime keys. Decision 1608's bridge fails closed
-///    when a key names a block the scored program no longer has — which
-///    is exactly what happens when a pass merges or deletes a runtime
-///    block. Re-partitioning the runtime without re-measuring would make
-///    the measured tier explain a program that does not exist. The
-///    honest options were "re-measure on HVF" or "do not repartition";
-///    this item takes the second and says so with the number it costs
-///    (plans/codegen-pareto-2-J.md).
-/// 3. **It puts the win where it can be attributed.** Item F measured
-///    all four product cases moving by the identical −47 and −108,
-///    because what moved lived in the shared runtime closure every one
-///    of them borrows. Confining item J to app code means its number is
-///    a statement about the *application*, which is the thing item M's
-///    compositor was added to make visible.
-/// **`flow` is how rule (i) stays honest (decision 1982).** The inliner's
-/// first rule deletes a callee whose splice consumed its *only* reference
-/// in the whole sealed program, and an async state machine references a
-/// sync fn every bit as much as another MWIR body does. `codegen_program_with_async`
-/// hands the `FlowWirProgram` in; `codegen_program` — the sync-only dump
-/// entry — passes `None`, which is not an approximation there because no
-/// FlowWir exists on that path. FlowWir itself is never rewritten
-/// (decision 1927 stands); it is only *read*, as a reference source.
 pub fn optimize(
     mwir: &MwirProgram,
     flow: Option<&FlowWirProgram>,
@@ -221,9 +79,6 @@ pub fn optimize(
         return None;
     }
     let mut prog = mwir.clone();
-    // Decision 1981: the inliner runs on one side of the other three or
-    // the other, and which side is the whole question item P exists to
-    // answer. Ahead of them is the *enabling* order.
     if inlining() && !inline_after_redundancy() {
         inline_program(&mut prog, flow, layout);
     }
@@ -247,14 +102,6 @@ pub fn optimize(
     Some(prog)
 }
 
-// --- instruction shape helpers ------------------------------------------
-//
-// MWIR has 53 instruction variants and no walker. These three functions
-// are that walker, written as exhaustive matches so a new variant is a
-// compile error rather than a silently unvisited temp. They are long and
-// boring on purpose (CLAUDE.md: "prefer long obvious files").
-
-/// Every `Temp` field of `inst`, in a fixed order, mutably.
 pub fn visit_temps_mut(inst: &mut Inst, f: &mut impl FnMut(&mut Temp)) {
     match inst {
         Inst::ConstInt { dst, .. }
@@ -302,10 +149,6 @@ pub fn visit_temps_mut(inst: &mut Inst, f: &mut impl FnMut(&mut Temp)) {
             f(lhs);
             f(rhs);
         }
-        // `Project`'s and `EnumPayload`'s `index` is a literal slot
-        // number, not a temp; `MemLoad`/`PtrOffset`/`MmioRead` carry a
-        // `u64` offset. `BytesIndexGet`'s `index` **is** a temp and
-        // belongs with `IndexGet` below, not here — see decision 1930.
         Inst::Project { dst, base, .. }
         | Inst::MemLoad { dst, base, .. }
         | Inst::PtrOffset { dst, base, .. }
@@ -378,10 +221,6 @@ pub fn visit_temps_mut(inst: &mut Inst, f: &mut impl FnMut(&mut Temp)) {
     }
 }
 
-/// The temp `inst` writes a fresh value into, if it writes one at all.
-/// **Not** the same as "every temp `inst` changes" — see [`clobbers`],
-/// which also covers the in-place forms (`SetField`, `IndexSet`, a
-/// `Call`'s write-backs).
 fn def_of(inst: &Inst) -> Option<Temp> {
     match inst {
         Inst::ConstInt { dst, .. }
@@ -440,9 +279,6 @@ fn def_of(inst: &Inst) -> Option<Temp> {
     }
 }
 
-/// Every temp whose *value* this instruction may change: its `def_of`
-/// plus the in-place mutation forms. Every table this file keeps is
-/// invalidated on each of these.
 fn clobbers(inst: &Inst, out: &mut Vec<Temp>) {
     out.clear();
     if let Some(d) = def_of(inst) {
@@ -463,9 +299,6 @@ fn clobbers(inst: &Inst, out: &mut Vec<Temp>) {
     }
 }
 
-/// The temps this instruction *reads*. Used only for liveness, so an
-/// in-place base counts as a read too (its old contents survive into the
-/// new value).
 fn reads_of(inst: &Inst, out: &mut Vec<Temp>) {
     out.clear();
     let def = def_of(inst);
@@ -473,15 +306,12 @@ fn reads_of(inst: &Inst, out: &mut Vec<Temp>) {
     let mut i = inst.clone();
     visit_temps_mut(&mut i, &mut |t| {
         if first && def.is_some() {
-            // `visit_temps_mut` always emits the `dst` first for every
-            // variant that has one.
             first = false;
             return;
         }
         first = false;
         out.push(*t);
     });
-    // The in-place forms read their base as well as writing it.
     match inst {
         Inst::SetField { base, .. }
         | Inst::IndexSet { base, .. }
@@ -492,7 +322,6 @@ fn reads_of(inst: &Inst, out: &mut Vec<Temp>) {
     }
 }
 
-/// A control-transfer instruction's own target, if it has one.
 fn target_of(inst: &Inst) -> Option<usize> {
     match inst {
         Inst::Jump { target } | Inst::JumpIfFalse { target, .. } => Some(*target),
@@ -507,7 +336,6 @@ fn set_target(inst: &mut Inst, new: usize) {
     }
 }
 
-/// Does control fall through from this instruction to the next?
 fn falls_through(inst: &Inst) -> bool {
     !matches!(
         inst,
@@ -515,17 +343,6 @@ fn falls_through(inst: &Inst) -> bool {
     )
 }
 
-/// **The purity whitelist for GVN.** A pure *scalar* computation: it
-/// reads and writes only scalar temps, touches no memory and no
-/// aggregate, and depends on nothing an in-place write could change.
-///
-/// Trapping arithmetic (`ArithChecked`, `DivRem`, `Shift`, `Neg`,
-/// `Convert`) **is** in this set, and that is sound in this direction:
-/// reaching the second of two identical trapping computations proves the
-/// first one did not trap, so the second cannot either, and both carry
-/// the byte-identical abort wording. It is emphatically *not* sound in
-/// DCE's direction, which is why [`dce_removable`] is a strictly smaller
-/// set.
 fn gvn_pure(inst: &Inst) -> bool {
     matches!(
         inst,
@@ -550,15 +367,6 @@ fn gvn_pure(inst: &Inst) -> bool {
     )
 }
 
-/// **The removability whitelist for DCE**, and it is deliberately
-/// narrower than [`gvn_pure`]: nothing here can abandon.
-///
-/// `ArithChecked`, `DivRem`, `Shift`, `Neg`, `Convert`, `IndexGet` and
-/// every memory read are excluded on purpose. A dead `let _ = a + b`
-/// still abandons in the evaluator when it overflows, so deleting it
-/// because its result is unread would make the backend disagree with the
-/// reference implementation — exactly the divergence `diff-eval` exists
-/// to catch. Fail closed (decision 1926).
 fn dce_removable(inst: &Inst) -> bool {
     matches!(
         inst,
@@ -584,17 +392,8 @@ fn dce_removable(inst: &Inst) -> bool {
     )
 }
 
-// --- rewriting a body while keeping its jump targets honest --------------
-
-/// Rebuild `body` keeping only the instructions `keep[i]` marks, and
-/// rewrite every `Jump`/`JumpIfFalse` target through the resulting index
-/// map. A target that pointed at a dropped instruction lands on the next
-/// surviving one, which is why every caller of this may only drop
-/// instructions that are semantically no-ops at that point. A target of
-/// `body.len()` (fall off the end) maps to the new length.
 fn compact(body: &mut Vec<Inst>, keep: &[bool]) {
     debug_assert_eq!(body.len(), keep.len());
-    // `map[i]` = index of the first surviving instruction at or after i.
     let mut map = vec![0usize; body.len() + 1];
     let mut n = 0usize;
     for i in 0..body.len() {
@@ -618,12 +417,6 @@ fn compact(body: &mut Vec<Inst>, keep: &[bool]) {
     *body = out;
 }
 
-/// Indices that are the first instruction of a new value-table scope: a
-/// jump target, index 0, or an instruction whose predecessor does not
-/// fall through. Everything between two of these is an *extended basic
-/// block* — a single-predecessor chain, so a value computed earlier in
-/// it dominates every later point of it and no dominator tree is needed
-/// (decision 1925).
 fn ebb_leaders(body: &[Inst]) -> Vec<bool> {
     let mut leader = vec![false; body.len()];
     if body.is_empty() {
@@ -643,44 +436,10 @@ fn ebb_leaders(body: &[Inst]) -> Vec<bool> {
     leader
 }
 
-/// **Decision 1929 — item J touches only keys the user's own source
-/// declares.**
-///
-/// Every compiler-generated runtime/harness key is *late-bound*:
-/// `layout.rs` **replaces** the compiled body of `__test_call_{i}`,
-/// `__test_prefix_{i}`, `__method_{n}`, `__enqueue_{i}`,
-/// `rt_enqueue <actor>`, `rt_boot_init 0` and `__wrela_abort_tail` with a
-/// hand-assembled one *after* codegen has run. What this pass can see at
-/// those keys is `rtconfig`'s placeholder — `return` / `return 0` — not
-/// the program. Others (`__wrela_deadline_poll`, `__wrela_runtime_probe`)
-/// are reached only by hand-written glue (`bl_call_key`) or by checkpoint
-/// and ISR relocations, neither of which is an `Inst::Call` this pass
-/// could count.
-///
-/// This is not a hypothetical. Before this rule existed, the (since
-/// refused) inliner spliced `__test_prefix_0`'s one-instruction `return`
-/// stub into `__wrela_test_append_prefix` and deleted the key, and the
-/// guest printed a bare `ok` for every test with the test's name gone.
-/// Units were green, both ∀ tiers were green; `diff-eval` is what caught
-/// it.
 fn is_late_bound(key: &str) -> bool {
     key.starts_with("__") || key.starts_with("rt_") || runtime_closure_keys().contains(key)
 }
 
-/// Every fn `stdlib/core/runtime.wr` declares, by the key `lower.rs`
-/// gives it — the shared runtime closure decision 1932 keeps off limits.
-///
-/// The prefix test above catches most of it, but not all: the runtime
-/// declares plain-named private helpers (`ascii_digit`,
-/// `copy_bytes_range`, `copy_line_buf_range`, `turns`) that look exactly
-/// like application code from inside `MwirProgram`, which loses module
-/// provenance at `merge_mwir_programs`. `ascii_digit#21` is how that gap
-/// was found: the committed Lane 2 vector names it, and DCE deleted one
-/// of its blocks.
-///
-/// Read once per process and cached. **Fails closed**: if the toolchain's
-/// runtime module cannot be read, [`optimize`] does nothing at all rather
-/// than optimize a closure it cannot identify.
 fn runtime_closure_keys() -> &'static BTreeSet<String> {
     static KEYS: std::sync::OnceLock<BTreeSet<String>> = std::sync::OnceLock::new();
     KEYS.get_or_init(|| {
@@ -693,8 +452,6 @@ fn runtime_closure_keys() -> &'static BTreeSet<String> {
     })
 }
 
-/// True when the runtime closure could be identified. Anything else is a
-/// toolchain this pass will not guess about.
 fn runtime_closure_is_known() -> bool {
     !runtime_closure_keys().is_empty()
 }
@@ -718,58 +475,13 @@ fn collect_module_fn_keys(m: &crate::syntax::ast::Module, out: &mut BTreeSet<Str
     }
 }
 
-// --- pass 1: the inliner, parked --------------------------------------------
-
-/// **Rule (ii)'s bound, counted rather than tuned** (item J's decision
-/// 1921, rebuilt here). A call site deletes 8 emitted words: a
-/// frame-carrying callee's prologue/epilogue/`ret` is 5 (`sub sp`,
-/// `str lr`, `ldr lr`, `add sp`, `ret`), the `BL` is 1, and a
-/// two-argument site's argument and result moves are 2. One MWIR
-/// instruction of a scalar body is one emitted word under `NarrowImm`,
-/// so a body of 8 is the break-even point on words. Nothing here
-/// consults a score, a frequency or a profile.
 const INLINE_MAX_BODY: usize = 8;
 
-/// Leaf-only inlining, re-applied (decision 1983). A caller that has just
-/// had its last call spliced away is itself a leaf, so the next round can
-/// inline *it*. Four rounds, and it terminates without a recursion check
-/// because a cycle is never a leaf: a self- or mutually recursive fn
-/// contains an `Inst::Call` and is refused on that alone.
 const INLINE_MAX_ROUNDS: usize = 4;
 
-/// **Decision 1984 — the frame bound, computed conservatively.**
-///
-/// `codegen::build_frame` fails closed above 4 095 bytes (the `ADD`/`SUB`
-/// `imm12` window). A splice adds one caller frame slot per callee temp
-/// it moves, and this pass runs *before* `RegAlloc`, so the frame it must
-/// respect is the spill-everything one. The estimate below is the
-/// pessimistic version of `build_frame`'s own arithmetic — every temp
-/// spilled, a self pointer, a pointer per parameter, a return pointer,
-/// the link register, and a slack word for the entropy/reply scratch this
-/// pass does not model. Over-estimating loses an inline; under-estimating
-/// stops the program compiling, which is what happened to
-/// `cost-icache-cliff` before item J had this bound at all.
 const INLINE_FRAME_CEILING: usize = 4095;
 const INLINE_FRAME_SLACK: usize = 64;
 
-/// **The rule, and every refusal on it, in one place.**
-///
-/// `Some(reason)` means this callee is not inlinable. The reasons are
-/// item J's (decision 1922), rebuilt: a receiver or a `mut`/`take`
-/// parameter would need a write-back the splice does not model; an
-/// `InterruptCell` op is an ordering-load-bearing access this pass will
-/// not move; a non-leaf callee would make the pass need a recursion
-/// check; and an assignment to the callee's *own parameter* is the one
-/// case where binding parameters by **aliasing** rather than copying
-/// would be observable in the caller.
-///
-/// `is_late_bound` leads the list, and that is decision 1932's
-/// runtime-closure exclusion doing double duty. Those bodies are
-/// `rtconfig` placeholders that `layout.rs` replaces after codegen with
-/// hand-assembled code; splicing one inlines a stub *instead of* the
-/// program. Item J did exactly that to `__test_prefix_0` and every guest
-/// test line lost its name — units green, both ∀ tiers green, caught only
-/// by `diff-eval` (item J §6, decision 1929).
 fn inline_refusal(key: &str, f: &MwirFn) -> Option<&'static str> {
     if is_late_bound(key) {
         return Some("late-bound: layout.rs replaces this body after codegen");
@@ -802,16 +514,6 @@ fn inline_refusal(key: &str, f: &MwirFn) -> Option<&'static str> {
     None
 }
 
-/// How many times each fn key is referenced by the **whole sealed
-/// program** — every MWIR body, including the late-bound ones, plus every
-/// FlowWir state (decision 1982). A key referenced exactly once is rule
-/// (i)'s case: the body *moves* into its one caller and the callee is
-/// deleted.
-///
-/// FlowWir contributes four shapes: an embedded `Inst::Call`, a `Send`'s
-/// and an awaited `ActorCall`'s `method_key`, and a `GroupStart`'s
-/// `callee_key`. Counting a key this pass could never inline costs
-/// nothing; *missing* one would delete a body something still calls.
 fn reference_counts(prog: &MwirProgram, flow: Option<&FlowWirProgram>) -> BTreeMap<String, usize> {
     let mut refs: BTreeMap<String, usize> = BTreeMap::new();
     let bump = |k: &str, refs: &mut BTreeMap<String, usize>| {
@@ -848,25 +550,6 @@ fn reference_counts(prog: &MwirProgram, flow: Option<&FlowWirProgram>) -> BTreeM
     refs
 }
 
-/// **The shrinking inliner (decision 1980), stated as item J stated it.**
-///
-/// > A call site whose callee is *inlinable* is inlined when either
-/// > **(i)** it is that callee's only reference in the whole sealed
-/// > program — MWIR bodies and FlowWir states both — in which case the
-/// > body *moves* rather than duplicates and the callee is deleted; or
-/// > **(ii)** the callee's body is at most [`INLINE_MAX_BODY`] MWIR
-/// > instructions.
-/// >
-/// > There are no other heuristics.
-///
-/// Parameters are bound by **aliasing**, not copying: the callee's
-/// parameter temp is rewritten to the caller's argument temp, so a splice
-/// is a strict deletion of the call sequence rather than a trade of a `BL`
-/// for a run of `mov`s. That is only sound because [`inline_refusal`]
-/// rejects every callee that writes to a parameter, directly or through
-/// an in-place base; it is also what the ABI already does for an
-/// aggregate argument, which `codegen` passes as a pointer to the
-/// caller's own slot.
 fn inline_program(prog: &mut MwirProgram, flow: Option<&FlowWirProgram>, layout: &LayoutCtx) {
     for _ in 0..INLINE_MAX_ROUNDS {
         let refs = reference_counts(prog, flow);
@@ -895,10 +578,6 @@ fn inline_program(prog: &mut MwirProgram, flow: Option<&FlowWirProgram>, layout:
     }
 }
 
-/// Splice every inlinable call site of one caller, one at a time,
-/// rescanning after each because a splice renumbers the body. Returns
-/// whether anything moved; `moved` collects the rule-(i) callees this
-/// caller consumed, which [`inline_program`] then deletes.
 fn inline_into(
     caller: &mut MwirFn,
     caller_key: &str,
@@ -920,9 +599,6 @@ fn inline_into(
             else {
                 continue;
             };
-            // A self-call is never a leaf, so this can only fire for a
-            // caller that has already had a body spliced into it; refuse
-            // it anyway rather than reason about the case.
             if key == caller_key || !write_backs.is_empty() {
                 continue;
             }
@@ -944,11 +620,6 @@ fn inline_into(
             return any;
         };
         if !splice(caller, at, &prog.fns[&key], layout) {
-            // The only refusal `splice` makes that this loop cannot
-            // simply skip past is the frame bound, and the frame only
-            // grows — so stop inlining into this caller entirely rather
-            // than keep a set of refused sites whose indices the next
-            // splice would renumber. Dumb and obviously terminating.
             return any;
         }
         any = true;
@@ -958,39 +629,20 @@ fn inline_into(
     }
 }
 
-/// The caller's frame under this pass's spill-everything assumption, or
-/// `None` when a temp's size cannot be computed at all. See
-/// [`INLINE_FRAME_CEILING`].
 fn frame_estimate(temp_types: &[Type], f: &MwirFn, layout: &LayoutCtx) -> Option<usize> {
     let mut off = 0usize;
     for ty in temp_types {
         off += crate::mwir::size_of(ty, layout).ok()?;
     }
-    off += 8; // self pointer
-    off += 8 * f.params.len(); // a `mut` parameter's pointer slot
-    off += 8; // aggregate-return pointer
-    off += 8; // the link register
+    off += 8;
+    off += 8 * f.params.len();
+    off += 8;
+    off += 8;
     off += INLINE_FRAME_SLACK;
     Some((off + 15) & !15)
 }
 
-/// Replace `caller.body[at]` — a `Call` — with `callee`'s body, renamed
-/// into the caller's temp space and with every jump target remapped.
-/// Returns `false` when the splice is refused, in which case `caller` is
-/// untouched.
-///
-/// **Two index spaces and a two-phase map.** A callee `Return` expands to
-/// up to two instructions (a copy into the call's `dst`, then a jump to
-/// the join), so callee index `j` does not survive as expansion index
-/// `j`. `start[j]` is the phase-one map from callee index to expansion
-/// offset, `start[n]` is the join, and phase two adds `at` to turn that
-/// into a caller index. Every *other* instruction of the caller shifts by
-/// `expansion.len() - 1`.
 fn splice(caller: &mut MwirFn, at: usize, callee: &MwirFn, layout: &LayoutCtx) -> bool {
-    // Policy — [`inline_refusal`] and the two rules — lives in
-    // [`inline_into`]. This is the mechanism, and it is kept callable
-    // on any callee shape so the walker test below can splice one
-    // instance of all 53 `Inst` variants at it.
     let Inst::Call { dst, args, .. } = caller.body[at].clone() else {
         return false;
     };
@@ -998,8 +650,6 @@ fn splice(caller: &mut MwirFn, at: usize, callee: &MwirFn, layout: &LayoutCtx) -
         return false;
     }
 
-    // Phase zero: the temp map. A parameter *aliases* its argument; every
-    // other temp the body actually mentions gets a fresh caller temp.
     let mut map: BTreeMap<usize, Temp> = BTreeMap::new();
     for ((p, _), a) in callee.params.iter().zip(args.iter()) {
         map.insert(p.0, *a);
@@ -1027,7 +677,6 @@ fn splice(caller: &mut MwirFn, at: usize, callee: &MwirFn, layout: &LayoutCtx) -
         _ => return false,
     }
 
-    // Phase one: the expansion, in callee target space.
     let n = callee.body.len();
     let mut start = vec![0usize; n + 1];
     let mut out: Vec<Inst> = Vec::with_capacity(n + 1);
@@ -1035,10 +684,6 @@ fn splice(caller: &mut MwirFn, at: usize, callee: &MwirFn, layout: &LayoutCtx) -
         start[j] = out.len();
         let mut inst = inst.clone();
         visit_temps_mut(&mut inst, &mut |t| {
-            // Every temp of every shape, through the one walker
-            // `visit_temps_mut_visits_exactly_the_temps_the_dump_prints`
-            // pins. A field the walker forgets is a silent miscompile
-            // here and nowhere else (decision 1930).
             if let Some(r) = map.get(&t.0) {
                 *t = *r;
             }
@@ -1048,8 +693,6 @@ fn splice(caller: &mut MwirFn, at: usize, callee: &MwirFn, layout: &LayoutCtx) -
                 if let Some(v) = value {
                     out.push(Inst::Copy { dst, src: v });
                 }
-                // A `Return` that is already the callee's last
-                // instruction falls straight through to the join.
                 if j + 1 != n {
                     out.push(Inst::Jump { target: n });
                 }
@@ -1059,14 +702,11 @@ fn splice(caller: &mut MwirFn, at: usize, callee: &MwirFn, layout: &LayoutCtx) -
     }
     start[n] = out.len();
 
-    // Phase two: callee target space -> caller index space.
     for inst in &mut out {
         if let Some(t) = target_of(inst) {
             set_target(inst, at + start[t.min(n)]);
         }
     }
-    // And the caller's own targets, which shift past the splice. A target
-    // *at* the call site still points at the splice's first instruction.
     let delta = out.len() as isize - 1;
     let shift = |u: usize| -> usize {
         if u <= at {
@@ -1090,23 +730,6 @@ fn splice(caller: &mut MwirFn, at: usize, callee: &MwirFn, layout: &LayoutCtx) -
     true
 }
 
-// --- pass 2: constant propagation and folding ----------------------------
-
-/// Item J's SCCP slot. **Decision 1924 names it for what it is:**
-/// MWIR is not SSA — `lower.rs` re-defines a loop's induction temp with
-/// a `Copy` on every back edge — so the sparse SSA-lattice algorithm has
-/// nothing to be sparse over. What lands is dense constant propagation
-/// over an *extended basic block* (a single-predecessor chain, so every
-/// fact established earlier in it holds at every later point of it),
-/// with the table dropped at every join, plus resolution of a
-/// `JumpIfFalse` whose condition is a known constant.
-///
-/// **Folding goes through the evaluator** (`eval::value`), which is the
-/// reference implementation of these semantics (CLAUDE.md: "evaluator
-/// before backend"). When the evaluator returns `Err` — an overflow, a
-/// division by zero, an out-of-range shift or conversion — the
-/// instruction is **left exactly as it was**, so the abandonment the
-/// program is entitled to still happens at run time. Fail closed.
 fn const_prop_fn(f: &mut MwirFn) {
     let leader = ebb_leaders(&f.body);
     let mut known: BTreeMap<Temp, Value> = BTreeMap::new();
@@ -1115,8 +738,6 @@ fn const_prop_fn(f: &mut MwirFn) {
         if leader[i] {
             known.clear();
         }
-        // Fold first, then record what the (possibly rewritten)
-        // instruction now defines.
         if let Some(folded) = fold(&f.body[i], &known) {
             f.body[i] = folded;
         }
@@ -1145,8 +766,6 @@ fn const_prop_fn(f: &mut MwirFn) {
             _ => {}
         }
     }
-    // A `JumpIfFalse` whose condition folded to a constant becomes a
-    // `Jump` or nothing at all; DCE then drops whichever arm went dead.
     let mut keep = vec![true; f.body.len()];
     let leader = ebb_leaders(&f.body);
     let mut known: BTreeMap<Temp, Value> = BTreeMap::new();
@@ -1204,8 +823,6 @@ fn int_value(ty: &Type, v: i128) -> Option<Value> {
     }
 }
 
-/// The reverse direction: a `Value` back into the `Inst` that
-/// materializes it, or `None` when no constant instruction can.
 fn const_inst(dst: Temp, ty: &Type, v: &Value) -> Option<Inst> {
     match v {
         Value::Bool(b) => Some(Inst::ConstBool { dst, value: *b }),
@@ -1222,9 +839,6 @@ fn const_inst(dst: Temp, ty: &Type, v: &Value) -> Option<Inst> {
     }
 }
 
-/// Fold one instruction against the facts in `known`, or `None` to leave
-/// it alone. Every arithmetic answer comes from `eval::value`; an `Err`
-/// from it means the instruction may abandon and is therefore kept.
 fn fold(inst: &Inst, known: &BTreeMap<Temp, Value>) -> Option<Inst> {
     let g = |t: &Temp| known.get(t);
     match inst {
@@ -1236,8 +850,6 @@ fn fold(inst: &Inst, known: &BTreeMap<Temp, Value>) -> Option<Inst> {
             rhs,
             ..
         } => {
-            // `eval_ordinary`'s own `checked_op` is `unreachable!` for
-            // anything but these three.
             if !matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul) {
                 return None;
             }
@@ -1290,18 +902,12 @@ fn fold(inst: &Inst, known: &BTreeMap<Temp, Value>) -> Option<Inst> {
             dst, op, lhs, rhs, ..
         } => {
             let (l, r) = (g(lhs)?, g(rhs)?);
-            // Floats are excluded outright: NaN makes both the ordering
-            // and the equality answers depend on a bit pattern this
-            // table does not carry.
             if matches!(l, Value::F32(_) | Value::F64(_))
                 || matches!(r, Value::F32(_) | Value::F64(_))
             {
                 return None;
             }
             let value = match op {
-                // `eval_compare` covers exactly the four orderings and
-                // panics on anything else; equality is answered here on
-                // the integer/bool/char shapes it is defined for.
                 BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => value::eval_compare(*op, l, r),
                 BinOp::Eq | BinOp::Ne => {
                     let eq = match (l, r) {
@@ -1316,7 +922,6 @@ fn fold(inst: &Inst, known: &BTreeMap<Temp, Value>) -> Option<Inst> {
             Some(Inst::ConstBool { dst: *dst, value })
         }
         Inst::Neg { dst, ty, src, .. } => {
-            // `eval_neg` is `unreachable!` on an unsigned operand.
             let s = g(src)?;
             if !matches!(
                 s,
@@ -1359,11 +964,6 @@ fn fold(inst: &Inst, known: &BTreeMap<Temp, Value>) -> Option<Inst> {
     }
 }
 
-// --- pass 3: value numbering --------------------------------------------
-
-/// The key a pure scalar computation is numbered by: the instruction
-/// itself with its `dst` normalized away, so two instructions match iff
-/// they compute the same value from the same operand temps.
 fn gvn_key(inst: &Inst) -> Inst {
     let mut k = inst.clone();
     let mut first = true;
@@ -1376,34 +976,10 @@ fn gvn_key(inst: &Inst) -> Inst {
     k
 }
 
-/// **Decision 1925 — GVN, scoped to an extended basic block.**
-///
-/// A redundant pure scalar computation is replaced by a `Copy` from the
-/// earlier result, and every *later* read of its destination inside the
-/// same EBB is rewritten to read the earlier temp directly. The `Copy`
-/// is what keeps a destination that is read after the EBB's end correct;
-/// where it is not, [`collect_gvn_copies`] deletes it outright and
-/// `RegAlloc`'s coalescing (item I) makes whatever survives free.
-///
-/// The scope is an EBB and not a dominator tree because that is the
-/// dumb version that is obviously right: an EBB is a single-predecessor
-/// chain, so every fact in it dominates every later point of it, and no
-/// dominator computation exists to be wrong. Redundancy across a join is
-/// left on the table, and the finding says so with a number.
-///
-/// Aggregates and every memory read are outside the whitelist, so no
-/// alias question is ever asked: `SetField`/`IndexSet`/`MemStore` write
-/// through a base temp, and two `MakeAggregate`s with equal elements are
-/// two distinct mutable objects, not one value.
 fn gvn_fn(f: &mut MwirFn) {
     let leader = ebb_leaders(&f.body);
-    // Indices of the `Copy`s this pass introduces, so it can collect the
-    // ones nothing reads rather than leaving them for `Dce` — see
-    // `gvn_collects_its_own_copies` below for why that matters.
     let mut introduced: Vec<usize> = Vec::new();
-    // (key, the temp holding that value).
     let mut table: Vec<(Inst, Temp)> = Vec::new();
-    // Reads of `k` in this EBB are reads of `v`.
     let mut rewrite: BTreeMap<Temp, Temp> = BTreeMap::new();
     let mut clob = Vec::new();
     for i in 0..f.body.len() {
@@ -1411,7 +987,6 @@ fn gvn_fn(f: &mut MwirFn) {
             table.clear();
             rewrite.clear();
         }
-        // Apply the EBB's rewrites to this instruction's *reads*.
         if !rewrite.is_empty() {
             let def = def_of(&f.body[i]);
             let mut first = true;
@@ -1437,8 +1012,6 @@ fn gvn_fn(f: &mut MwirFn) {
                     introduced.push(i);
                     rewrite.insert(dst, prev);
                 }
-                // The rewrite/table invalidation below still applies:
-                // `dst` was redefined by the `Copy`.
                 clobbers(&f.body[i], &mut clob);
                 invalidate(&mut table, &mut rewrite, &clob, dst);
                 rewrite.insert(dst, prev);
@@ -1455,27 +1028,6 @@ fn gvn_fn(f: &mut MwirFn) {
     collect_gvn_copies(f, &introduced);
 }
 
-/// **Decision 1936 — GVN collects its own leftovers, and that is what
-/// makes it rankable alone.**
-///
-/// The `Copy` this pass leaves where a redundant computation stood is an
-/// artifact of the implementation, not of the transform: the value is
-/// already in `prev`, and every read inside the EBB was rewritten to say
-/// so. Where nothing outside the EBB reads the old destination either,
-/// the `Copy` is pure overhead.
-///
-/// Leaving it for `Dce` was measured and it is not free. Asked alone over
-/// the shipped list, GVN-with-leftovers **raised** `cost-branch-bias` and
-/// `cost-mem-locality` by a cycle each while falling by 20 833 overall —
-/// and `CaseRose` is an absolute veto, so a 20 833-cycle transform was
-/// refused for two microbenchmark cycles it had itself created. Ten lines
-/// here is the answer; relaxing the veto would have been tuning the
-/// ruler.
-///
-/// The test is whole-body and deliberately conservative — "read nowhere
-/// in this function" — for the same reason [`dce_fn`]'s is: MWIR is not
-/// SSA, so a temp can be defined at several points and only the question
-/// that cannot be got wrong is worth asking.
 fn collect_gvn_copies(f: &mut MwirFn, introduced: &[usize]) {
     if introduced.is_empty() {
         return;
@@ -1510,8 +1062,6 @@ fn collect_gvn_copies(f: &mut MwirFn, introduced: &[usize]) {
     }
 }
 
-/// Drop every table entry and every rewrite that mentions a clobbered
-/// temp — in its key, in its value, or as the rewrite's own source.
 fn invalidate(
     table: &mut Vec<(Inst, Temp)>,
     rewrite: &mut BTreeMap<Temp, Temp>,
@@ -1538,25 +1088,9 @@ fn invalidate(
     }
 }
 
-// --- pass 4: dead code elimination --------------------------------------
-
-/// **Decision 1926 — DCE, and what it refuses to delete.**
-///
-/// Two things go: an instruction from [`dce_removable`] whose
-/// destination is read nowhere in the function, and an instruction no
-/// path from entry reaches. "Read nowhere in the function" is
-/// deliberately whole-body and not a liveness analysis — MWIR is not
-/// SSA, a temp can be defined at several points, and the conservative
-/// question is the one that cannot be got wrong.
-///
-/// Nothing that can abandon is ever removed, however dead its result:
-/// the evaluator abandons on a dead overflowing add and so must the
-/// backend, or `diff-eval` is measuring two different languages.
 fn dce_fn(f: &mut MwirFn) {
     loop {
         let mut keep = vec![true; f.body.len()];
-        // Unreachable first: a Jump whose target became a no-op leaves
-        // whole runs of body behind.
         let reach = reachable(&f.body);
         let mut changed = false;
         for i in 0..f.body.len() {
@@ -1565,7 +1099,6 @@ fn dce_fn(f: &mut MwirFn) {
                 changed = true;
             }
         }
-        // Then dead definitions, over what survives.
         let mut read: BTreeSet<Temp> = BTreeSet::new();
         if let Some((t, _)) = &f.receiver {
             read.insert(*t);
@@ -1600,7 +1133,6 @@ fn dce_fn(f: &mut MwirFn) {
     }
 }
 
-/// Which instructions a path from index 0 can reach.
 fn reachable(body: &[Inst]) -> Vec<bool> {
     let mut seen = vec![false; body.len()];
     if body.is_empty() {
@@ -1629,10 +1161,6 @@ mod tests {
     use crate::sema;
     use crate::syntax::{lexer, parser};
 
-    /// One instance of **every** `Inst` variant, with a distinct temp
-    /// number in every temp-shaped field. The list is the input to
-    /// `visit_temps_mut_visits_exactly_the_temps_the_dump_prints`, which
-    /// is the oracle for the walker every pass in this file is built on.
     fn one_of_every_variant() -> Vec<Inst> {
         let t = |n: usize| Temp(n);
         let u = || Type::U64;
@@ -1895,23 +1423,6 @@ mod tests {
         ]
     }
 
-    /// **The oracle for the walker, and it is not a formality.**
-    ///
-    /// Every pass in this file renames temps through
-    /// [`visit_temps_mut`]. A temp-shaped field the walker forgets is
-    /// silently *not* renamed when the inliner splices a callee, so the
-    /// inlined body reads whatever the caller happens to hold at that
-    /// number — a miscompile with no diagnostic anywhere.
-    ///
-    /// That is not hypothetical: `BytesIndexGet`'s `index` was grouped
-    /// with `Project`'s literal slot number and went unvisited, and the
-    /// guest printed 22 copies of the letter `t` instead of a test name
-    /// (decision 1930). Units were green and both ∀ tiers were green.
-    ///
-    /// The expected answer is taken from `mwir::fmt_inst` — the
-    /// `--stage=mwir` dump, an independently written, golden-pinned
-    /// formatter that prints every temp field. Two independent
-    /// enumerations of the same 53 variants have to agree.
     #[test]
     fn visit_temps_mut_visits_exactly_the_temps_the_dump_prints() {
         for inst in one_of_every_variant() {
@@ -1933,9 +1444,6 @@ mod tests {
         }
     }
 
-    /// Every variant appears in the list above. A `mwir::Inst` gains a
-    /// variant only rarely, and when it does the walker has to learn it —
-    /// this is what says so.
     #[test]
     fn the_variant_list_covers_every_inst_shape() {
         let names: BTreeSet<String> = one_of_every_variant()
@@ -1973,9 +1481,6 @@ pub fn shifted() -> u64:
     return (a *% b) >> 1
 "#;
 
-    /// **Constant propagation fires**: the whole expression is one
-    /// constant, and both the multiply and the shift (with its
-    /// out-of-range abort path) are gone.
     #[test]
     fn const_prop_folds_a_whole_expression() {
         apply_opts(&[OptId::ConstProp]);
@@ -1989,7 +1494,6 @@ pub fn shifted() -> u64:
                 .any(|i| matches!(i, Inst::Shift { .. } | Inst::ArithWrapping { .. })),
             "the shift and the multiply must both fold:\n{f:?}"
         );
-        // 6 * 7 = 42, >> 1 = 21 — the value, not merely "a constant".
         assert!(
             f.body
                 .iter()
@@ -1998,8 +1502,6 @@ pub fn shifted() -> u64:
         );
     }
 
-    /// **Fail closed.** An overflowing constant expression is *not*
-    /// folded: the evaluator abandons on it, so the backend must too.
     #[test]
     fn const_prop_refuses_to_fold_what_would_abandon() {
         const OVERFLOWS: &str = r#"
@@ -2030,7 +1532,6 @@ pub fn twice(x: u64, y: u64) -> u64:
     return (x & y) +% (x & y)
 "#;
 
-    /// **GVN fires**: the second `x & y` becomes a copy of the first.
     #[test]
     fn gvn_replaces_the_second_identical_computation() {
         apply_opts(&[]);
@@ -2056,8 +1557,6 @@ pub fn twice(x: u64, y: u64) -> u64:
         );
     }
 
-    /// **DCE fires**, and `Gvn` + `Dce` together delete rather than
-    /// merely rename: the copy GVN left behind has no reader.
     #[test]
     fn dce_deletes_the_copy_gvn_left_behind() {
         apply_opts(&[OptId::Gvn, OptId::Dce]);
@@ -2073,10 +1572,6 @@ pub fn twice(x: u64, y: u64) -> u64:
         );
     }
 
-    /// **Fail closed, DCE's direction.** A dead checked add still
-    /// abandons in the evaluator, so it may not be deleted for being
-    /// unread — this is the asymmetry between [`gvn_pure`] and
-    /// [`dce_removable`], asserted rather than argued.
     #[test]
     fn dce_keeps_a_dead_computation_that_can_abandon() {
         const DEAD: &str = r#"
@@ -2099,9 +1594,6 @@ pub fn f(a: u8, b: u8) -> u64:
         );
     }
 
-    /// Every one of the three is off under `dev`, and `optimize` takes
-    /// the identity path there — `dev` stays the correctness reference
-    /// (M19 freeze 1407).
     #[test]
     fn dev_runs_none_of_the_three() {
         apply_mode(CompileMode::Dev);
@@ -2113,12 +1605,6 @@ pub fn f(a: u8, b: u8) -> u64:
         apply_mode(CompileMode::Release);
     }
 
-    // --- item P: the inliner, parked (decisions 1980-1989) --------------
-
-    /// A body of `n` `U64` temps and nothing else, for the hand-built
-    /// programs below. Every one of them is deliberately synthetic: the
-    /// two miscompiles item J hit were both about *shapes* the source
-    /// language does not conveniently produce on demand.
     fn u64s(n: usize) -> Vec<Type> {
         vec![Type::U64; n]
     }
@@ -2142,9 +1628,6 @@ pub fn p_twice_over(a: u64, b: u64) -> u64:
     return p_leaf(a) +% p_leaf(b)
 "#;
 
-    /// **Rule (ii) fires**: an 8-instruction-or-smaller leaf is spliced
-    /// at every call site, the callee stays (it has two references), and
-    /// the arithmetic it contained is now the caller's.
     #[test]
     fn inlining_splices_a_small_leaf_at_every_site() {
         apply_opts(&[OptId::Inline]);
@@ -2179,8 +1662,6 @@ pub fn p_twice_over(a: u64, b: u64) -> u64:
         );
     }
 
-    /// **Rule (i) fires**: a callee with exactly one reference in the
-    /// whole program has its body *moved*, and the callee is deleted.
     #[test]
     fn rule_one_moves_the_body_and_deletes_the_callee() {
         const ONCE: &str = r#"
@@ -2208,19 +1689,6 @@ pub fn p_only_user(a: u64) -> u64:
         );
     }
 
-    /// **Item J §6's second miscompile, pinned** (decisions 1929/1932).
-    ///
-    /// `rtconfig` emits `__test_prefix_{i}` as a bare `return` stub and
-    /// `layout.rs` injects the real `"test <name>: "` body *after*
-    /// codegen. Item J's inliner saw a one-instruction single-call-site
-    /// leaf, spliced the stub, and deleted the key before layout could
-    /// inject anything — every guest test line became a bare `ok` with
-    /// the name gone. Units were green and both ∀ tiers were green;
-    /// `diff-eval` is what caught it.
-    ///
-    /// All three shapes of late-bound key are asked, including the
-    /// plain-named `stdlib/core/runtime.wr` half that no prefix test
-    /// catches.
     #[test]
     fn inlining_refuses_a_placeholder_body_layout_will_replace() {
         let layout = crate::mwir::LayoutCtx::default();
@@ -2263,23 +1731,6 @@ pub fn p_only_user(a: u64) -> u64:
         }
     }
 
-    /// **Item J §6's first miscompile, pinned** (decision 1930).
-    ///
-    /// The splice renames every callee temp into the caller's space
-    /// through [`visit_temps_mut`]. `BytesIndexGet`'s `index` was grouped
-    /// with `Project`'s literal slot number and went unvisited, so a
-    /// spliced `copy_bytes_range` kept reading the *callee's* loop
-    /// counter — which in the caller held `bump`. The guest printed 22
-    /// copies of the letter `t` where a test name should have been. Units
-    /// were green; both ∀ tiers were green.
-    ///
-    /// `visit_temps_mut_visits_exactly_the_temps_the_dump_prints` pins
-    /// the walker against the dump. **This pins the consequence**: splice
-    /// a callee whose body is one instance of all 53 variants and assert
-    /// that no callee temp number survives into the caller. The caller is
-    /// given a temp space large enough that every callee number is below
-    /// every fresh one, so an unrenamed field cannot hide as a plausible
-    /// fresh temp.
     #[test]
     fn splicing_renames_every_temp_of_every_inst_shape() {
         const CALLER_TEMPS: usize = 128;
@@ -2331,8 +1782,6 @@ pub fn p_only_user(a: u64) -> u64:
         }
     }
 
-    /// The refusals, stated as a table because that is what they are
-    /// (decision 1922). Each row is a callee this pass may not touch.
     #[test]
     fn the_inliner_refuses_what_aliasing_cannot_model() {
         let scalar = |body: Vec<Inst>, params: Vec<(Temp, AccessMode)>| MwirFn {
@@ -2412,7 +1861,6 @@ pub fn p_only_user(a: u64) -> u64:
                 "{name} must be refused"
             );
         }
-        // A receiver, which needs a self pointer the splice does not bind.
         let mut with_self = scalar(
             vec![Inst::Return {
                 value: Some(Temp(1)),
@@ -2424,7 +1872,6 @@ pub fn p_only_user(a: u64) -> u64:
             inline_refusal("p_callee", &with_self),
             Some("has a receiver")
         );
-        // And the one that is allowed, so the table above is not vacuous.
         assert_eq!(
             inline_refusal(
                 "p_callee",
@@ -2439,10 +1886,6 @@ pub fn p_only_user(a: u64) -> u64:
         );
     }
 
-    /// A callee referenced from a **FlowWir** state is not a rule-(i)
-    /// callee, however few MWIR call sites it has (decision 1982). This
-    /// is the counting half of the rule; getting it wrong deletes a body
-    /// an async state machine still calls.
     #[test]
     fn flowwir_references_count_towards_the_single_reference_rule() {
         use crate::flowwir::{FlowWirFn, FrameLayout, State};
@@ -2497,8 +1940,6 @@ pub fn p_only_user(a: u64) -> u64:
             with_flow.fns.contains_key("p_shared_leaf"),
             "the async state machine still calls it — rule (i) may not consume it"
         );
-        // The body is one instruction, so rule (ii) still splices the
-        // sync site: what the FlowWir reference changes is the *deletion*.
         let mut without_flow = prog.clone();
         inline_program(&mut without_flow, None, &layout);
         assert!(
@@ -2508,9 +1949,6 @@ pub fn p_only_user(a: u64) -> u64:
         );
     }
 
-    /// A splice renumbers the caller's body, and every jump target on
-    /// both sides of it has to follow. Asserted on a caller whose loop
-    /// back edge straddles the call site.
     #[test]
     fn a_splice_keeps_jump_targets_honest() {
         const LOOPY: &str = r#"
@@ -2547,7 +1985,6 @@ pub fn p_loop_user(n: u64) -> u64:
                 );
             }
         }
-        // The loop still exists: some target points backwards.
         assert!(
             f.body
                 .iter()
@@ -2557,9 +1994,6 @@ pub fn p_loop_user(n: u64) -> u64:
         );
     }
 
-    /// The parked opt must not rot: both pipeline positions produce a
-    /// program, deterministically, and `dev` still takes the identity
-    /// path with the inliner off.
     #[test]
     fn both_inline_positions_are_deterministic() {
         for after in [false, true] {
@@ -2581,10 +2015,6 @@ pub fn p_loop_user(n: u64) -> u64:
         apply_mode(CompileMode::Release);
     }
 
-    /// Determinism: the same input twice gives the identical program.
-    /// Every table in this file is a `BTreeMap`/`BTreeSet` or a `Vec`
-    /// walked in index order, so this holds by construction (CLAUDE.md);
-    /// this is the assertion that says so.
     #[test]
     fn the_passes_are_deterministic() {
         apply_mode(CompileMode::Release);

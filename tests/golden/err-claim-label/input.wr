@@ -1,8 +1,5 @@
 module examples.err_claim_label
 
-# plans/M7.md item H1 self-audit — `claim` with a label that is not `cap=`
-#
-# What this case would catch: a claim whose argument is labelled something other than §9's own `cap=` spelling.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

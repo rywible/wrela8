@@ -1,9 +1,5 @@
 module examples.boot_cores_3
 
-# plans/M15.md item G / decision 1072: stage-1 N=3 under the baton.
-# Thin twin of `boot-cross-core-call` so N is authored (`cores=3`), not
-# implied by a `core=1` pin alone. D already added `cores=3` to that
-# sibling; this golden names the stage-1 N=3 floor for the focused boot.
 
 @actor
 pub struct Off:

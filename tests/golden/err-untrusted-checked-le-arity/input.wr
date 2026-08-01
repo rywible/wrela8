@@ -1,6 +1,5 @@
 module examples.err_untrusted_checked_le_arity
 
-# plans/M7.md item H2a: `.checked_le(bound)` takes exactly one argument.
 
 fn bad(reported: Untrusted[usize]) -> Result[usize, unit]:
     return reported.checked_le()

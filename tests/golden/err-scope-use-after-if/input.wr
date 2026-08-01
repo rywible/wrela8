@@ -1,11 +1,5 @@
 module examples.err_scope_use_after_if
 
-# ledger `sema.init.definite`: `label` is declared fresh (typed) in each
-# of `then`/`elif`/`else` independently — none of the three bindings is
-# visible to either sibling, and none survives past the whole
-# `if`/`elif`/`else`. Reading it afterward is an ordinary unknown name,
-# exactly like reading a `while`/`for` body's own local after the loop
-# (`err-init-unassigned`) — this case adds `elif` to the mix.
 pub fn classify(n: u64) -> u64:
     if n == 0:
         label: u64 = 10

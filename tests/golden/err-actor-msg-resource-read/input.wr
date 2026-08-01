@@ -1,7 +1,5 @@
 module examples.err_actor_msg_resource_read
 
-# Decl-time: a plain resource parameter (not `own`) must still be `take`
-# (02 §9.3). Sibling of err-actor-msg-param-own-read for the non-own shape.
 
 resource struct Packet:
     pub n: u64

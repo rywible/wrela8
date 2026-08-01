@@ -1,9 +1,5 @@
 module examples.err_send_too_many_args
 
-# plans/M10.md item D: the by-value mailbox admission ABI carries x1/x2
-# only (decision 610). More than two scalar message args is refused at
-# emit_marshal_and_call — the milestone's register-budget guard, which
-# had never had a golden.
 
 @actor
 pub struct Sink:

@@ -1,17 +1,5 @@
 module examples.boot_entropy_hex
 
-# plans/M17.md item H / freeze 10: hex-printing sibling of boot-entropy.
-# Sync actor method so entropy reaches MWIR Inst::Entropy → EntropyRead
-# (same MWIR-floor reason as G). Packs the 8 entropy bytes big-endian and
-# prints that u64 via `__wrela_trace_u64` into the console transcript so
-# record/replay depends on the logged EntropyRead: clean replay is
-# byte-identical; tampering the first EntropyRead hex diverges the
-# transcript digest (EXIT_REPLAY_DIVERGENCE).
-#
-# NO expected/test.txt live pin — this case is exercised only by
-# `xtask repro`'s `repro_entropy_replay_is_choice_log_driven` lane.
-# Package shape (root + src/) is required so `from core.runtime import …`
-# can anchor; flat input.wr cannot import.
 
 from core.runtime import __wrela_trace_u64
 

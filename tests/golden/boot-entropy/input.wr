@@ -1,10 +1,5 @@
 module examples.boot_entropy
 
-# plans/M17.md item G / 05-library.md §5: entropy[N]() is a sealed
-# runtime fill. Sync actor method so entropy reaches MWIR Inst::Entropy
-# → EntropyRead (docs-win: sealed runtime effects lower from sync
-# bodies, not only FlowWir). Peer shape: boot-instant-monotonic.
-# Transcript pins a stable success line — never raw entropy bytes.
 
 @actor
 pub struct EntropyProbe:
@@ -12,7 +7,6 @@ pub struct EntropyProbe:
 
     pub fn sample(mut self) -> u64:
         b = entropy[8]()
-        # Touch every index so the fill is observed; values stay private.
         assert b[0] == b[0], "entropy:ok"
         assert b[1] == b[1], "entropy:ok"
         assert b[2] == b[2], "entropy:ok"

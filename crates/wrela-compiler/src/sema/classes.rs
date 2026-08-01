@@ -1,21 +1,8 @@
-//! Computed type classes (plans/M13.md item O / the lattice).
-//!
-//! Per-type classes — `copy`, `must_consume`, `crosses_actor`,
-//! `holds_authority` — derived structurally from a leaf table plus
-//! field-wise propagation (the same walk shape as
-//! `protocol_resource_carried` / `type_carries_named`).
-//!
-//! This module is the sole leaf for all four classes; the legacy name
-//! lists in `image_checks` (`is_sealed_authority_type_name` and the
-//! `must_consume` list before it) are deleted, and the M13 dual-run that
-//! proved the table equal to them is retired.
-
 use std::collections::BTreeSet;
 
 use crate::sema::types::{Classification, DeclItem, DeclStruct, Type, TypeArg};
 use crate::syntax::ast::Span;
 
-/// The four computed classes for one type (02 §3.1 / 03 §1 / 05 §2 / 02 §12).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TypeClasses {
     pub copy: bool,
@@ -26,7 +13,6 @@ pub struct TypeClasses {
 
 impl Default for TypeClasses {
     fn default() -> Self {
-        // Boring data default: copyable, may cross, no obligations.
         TypeClasses {
             copy: true,
             must_consume: false,
@@ -45,35 +31,26 @@ impl TypeClasses {
     }
 }
 
-/// The leaf table (plans/M13.md item O) — the single authority for all
-/// four classes. The old `image_checks` name lists it replaced are gone;
-/// the M13 dual-run that proved them equal has been retired.
 pub fn leaf_classes(name: &str) -> Option<TypeClasses> {
     let classes = match name {
-        // 03 §1 capabilities — DeviceCap/Mmio/IrqCap consume; DmaPool is
-        // §3.1 first-bullet reclaim (holds_authority only).
         "DeviceCap" | "Mmio" | "IrqCap" => TypeClasses {
             copy: false,
             must_consume: true,
             crosses_actor: false,
             holds_authority: true,
         },
-        // Pool / shared handles: sealed authority, but §3.1 first bullet
-        // (DmaPool) / no terminal sink yet (DmaShared) — not must_consume.
         "DmaPool" | "DmaShared" => TypeClasses {
             copy: false,
             must_consume: false,
             crosses_actor: false,
             holds_authority: true,
         },
-        // Sealed queue / receipt authority.
         "VirtQueue" | "QueuePermit" | "QueueOp" | "Receipt" => TypeClasses {
             copy: false,
             must_consume: true,
             crosses_actor: false,
             holds_authority: true,
         },
-        // 03 §9 bring-up states.
         "ResetDevice"
         | "AcknowledgedDevice"
         | "DriverClaimedDevice"
@@ -87,13 +64,13 @@ pub fn leaf_classes(name: &str) -> Option<TypeClasses> {
             holds_authority: true,
         },
         "InterruptCell" => TypeClasses {
-            copy: true, // source-constructible cell word; not a resource
+            copy: true,
             must_consume: false,
             crosses_actor: false,
             holds_authority: false,
         },
         "Actor" => TypeClasses {
-            copy: true, // handle word; storable-nowhere is a separate rule
+            copy: true,
             must_consume: false,
             crosses_actor: false,
             holds_authority: false,
@@ -104,8 +81,6 @@ pub fn leaf_classes(name: &str) -> Option<TypeClasses> {
             crosses_actor: true,
             holds_authority: false,
         },
-        // 02 §12: never serializes into the image, a diagnostic, or a
-        // comptime control decision. Encoded as !crosses_actor.
         "Secret" => TypeClasses {
             copy: false,
             must_consume: false,
@@ -117,8 +92,6 @@ pub fn leaf_classes(name: &str) -> Option<TypeClasses> {
     Some(classes)
 }
 
-/// Does the named leaf (or a `resource(manual)` fiat) require consume-on-
-/// every-path?
 pub fn name_must_consume(name: &str, is_manual_resource: bool) -> bool {
     if is_manual_resource {
         return true;
@@ -126,20 +99,16 @@ pub fn name_must_consume(name: &str, is_manual_resource: bool) -> bool {
     leaf_classes(name).map(|c| c.must_consume).unwrap_or(false)
 }
 
-/// Does the named leaf hold sealed authority?
 pub fn name_holds_authority(name: &str) -> bool {
     leaf_classes(name)
         .map(|c| c.holds_authority)
         .unwrap_or(false)
 }
 
-/// Leaf used by `driver_message_forbidden_carried`: authority or
-/// `InterruptCell`.
 pub fn name_forbidden_in_driver_message(name: &str) -> bool {
     name_holds_authority(name) || name == "InterruptCell"
 }
 
-/// Fill `classes` on every struct/enum in `items` (after classification).
 pub fn assign_classes(items: &mut [DeclItem]) {
     let snapshot: Vec<DeclItem> = items.to_vec();
     for item in items.iter_mut() {
@@ -212,8 +181,6 @@ fn fold_components(
     }
 }
 
-/// Classes of an arbitrary type, walking composites the same way
-/// `protocol_resource_carried` / `type_carries_named` do.
 pub fn classes_of_type(ty: &Type, items: &[DeclItem], seen: &mut BTreeSet<String>) -> TypeClasses {
     match ty {
         Type::Named(name, targs) => {
@@ -273,7 +240,7 @@ pub fn classes_of_type(ty: &Type, items: &[DeclItem], seen: &mut BTreeSet<String
         }
         Type::Own(_, _) => TypeClasses {
             copy: false,
-            must_consume: false, // pool handle: §3.1 first bullet reclaim
+            must_consume: false,
             crosses_actor: true,
             holds_authority: false,
         },
@@ -319,8 +286,6 @@ fn lookup_named_classes(
                 if s.classes_assigned {
                     return s.classes;
                 }
-                // During assign_classes over the snapshot: recompute from
-                // components without re-entering via classes_assigned.
                 let mut c = fold_components(&s.component_types, items, seen);
                 if s.is_manual_resource {
                     c.copy = false;
@@ -395,7 +360,6 @@ mod tests {
                 "{name} holds_authority"
             );
         }
-        // must_consume leaf pins (former protocol-consumption name list).
         for name in [
             "DeviceCap",
             "Mmio",

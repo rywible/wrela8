@@ -1,19 +1,5 @@
 module examples.err_dma_pool_own_mismatch
 
-# plans/M7.md item D — `hardware.dma.ownership-transfer`'s own first half.
-#
-# 02-language.md §4: "`own[Name] T` is a movable, uniquely owned handle to
-# a `T` allocated from that pool." 03-hardware.md §3 says the same thing
-# about the DMA form specifically: "**Transfer payloads** are `own[P] T`
-# where `P` is a device-bound DMA pool and `T` is `@layout(dma)`."
-#
-# `BlockControl` is bound with `BlkReqHeader` slots, so an
-# `own[BlockControl] BlkReqStatus` handle claims to own a 1-byte payload
-# in a 16-byte slot of a different type. Nothing constructs an `own[P] T`
-# in this language, so the declaration surface is where the disagreement
-# has to be caught — and it is a whole-*image* fact (which pool a name is
-# bound to is decided by the `@image` fn), which is why this check lives
-# with the graph checks rather than in per-module typing.
 
 @layout(dma, endian=little)
 struct BlkReqHeader:

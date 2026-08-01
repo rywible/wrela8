@@ -1,1 +1,1 @@
-error[parse]: expected a statement, found `)` at 11:9
+error[parse]: expected a statement, found `)` at 8:9

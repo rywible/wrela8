@@ -2,16 +2,6 @@ module main
 
 from lib import propagates, opt_propagates, fallible, opt
 
-# All four `?` outcomes, each evaluated at build time through an imported
-# body, each pinned by value in `expected/image.txt`:
-#
-#   Err  -> `Arg label=err value=1011`   (11 propagated, + 1000 by `settle_r`)
-#   Ok   -> `Arg label=ok value=7`       (3 * 2 = 6, then + 1)
-#   None -> `Arg label=none value=777`
-#   Some -> `Arg label=some value=103`
-#
-# `settle_r`/`settle_o` map the failure outcome into a range the success
-# outcome cannot reach, so "accepted" and "correct" are different results.
 
 fn settle_r(r: Result[u32, u32]) -> u32:
     match r:

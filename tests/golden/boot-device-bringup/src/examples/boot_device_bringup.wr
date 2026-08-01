@@ -1,35 +1,6 @@
 module examples.boot_device_bringup
 
-# plans/M7.md item E1's **real-boot oracle** (the A–H note): a Hypervisor.framework
-# boot in which the sealed bring-up chain walks all the way to `Running`, and
-# the VMM constructs its `BlkDevice` from the report lines this image emits.
-#
-# The driver's `init` is 03-hardware.md §1's own worked constructor shape and
-# §9's consuming chain: claim -> map_partition -> negotiate -> VirtQueue.configure
-# -> read_capacity_sectors -> start. IRQ arming is plans/M7.md item G and is
-# not here. Publishing an operation is E2/E3 and must fail closed by name.
-#
-# **What a green transcript proves, precisely:**
-#
-#   1. Boot calls a fallible `@driver` `init` returning `Result[unit, BootError]`
-#      and the Ok path continues into the runtime test.
-#   2. `negotiate` / `configure` / `read_capacity_sectors` / `start` are real
-#      authority transitions (decision 14: negotiate is a build-time fact;
-#      capacity is the image-declared constant).
-#   3. The VMM parsed `BlkDevice`/`BlkQueue`/`BlkPool` from *this* image's
-#      report (otherwise `BlkDevice::new` would refuse the boot).
-#   4. Capacity lands in the guest as 16 — the same number the report carries.
-#
-# **The vacuity control is its own golden**: `err-boot-device-bringup` returns
-# `Err(BootError.Failed)` from `init`, and its expected output is the guest
-# abort. Without it, every assertion here would also pass on a boot that never
-# called `init` at all.
 
-# M16 Wave D3: project-shape conversion. Layout/`@driver` bodies stay
-# local — any `from drivers.blk import …` is refused by A1b while this
-# module also declares `BlkDriver` / shared layout names that `drivers.blk`
-# exports (plans/M9.md item A1b). Full layout import also needs same-module
-# `Mmio[L]` + pub layout fields. Specialized local `@driver` kept.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:
@@ -94,9 +65,6 @@ pub struct Ledger:
 
 @test(runtime)
 async fn bringup_reached_running(led: Actor[Ledger]):
-    # The driver's own `init` already ran (06 §3 step 3). Its assertions are
-    # the oracle; this conversation exists so the image has a runtime test
-    # to report at all.
     a = await led.mark(n=4)
     @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match a:

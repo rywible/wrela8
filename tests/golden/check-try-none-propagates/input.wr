@@ -1,16 +1,5 @@
 module examples.check_try_none_propagates
 
-# plans/M9.md item BB, the panic half. 02-language.md §8.2: "`?` applies
-# to `Result` (and, in `Option`-returning functions, to `Option`)".
-# Before item BB the comptime evaluator decided success from the variant
-# *index* alone, and `None`'s index (0) is also `Ok`'s — so `None?` took
-# the success branch and then popped a payload off an empty `None`,
-# panicking the compiler outright (`thread panicked at
-# crates/wrela-compiler/src/eval/interp.rs`, "Some/Ok always carries one
-# payload value"). A panic is never an acceptable outcome (CLAUDE.md).
-#
-# `settle` maps `None` to 777 and `Some(v)` to `v`, so the two outcomes
-# can never be confused by accident.
 
 fn opt(x: u32) -> Option[u32]:
     if x == 0:
@@ -28,8 +17,6 @@ fn settle(o: Option[u32]) -> u32:
         case .None:
             return 777
 
-# Evaluated at build time; pinned in `expected/image.txt` as
-# `Arg label=settled value=777`.
 const SETTLED: u32 = settle(propagate(0))
 
 @test

@@ -3,14 +3,6 @@ module examples.err_reclaim_pool_if_leak_two_brand
 
 from core.io_error import IoError
 
-# plans/M8.md item H attack 1 follow-up: the if-leak re-opens the original
-# pool-confused hole once two brands are in play. `if status != 0` recovers
-# BlockPayloads and stashes the OtherPayloads receipt; `else` does the
-# opposite. Sema walks both arms; without restoring the brand map across
-# `if`, the else arm's OtherPayloads brand leaked to a later `reclaim`, and
-# at runtime (status != 0) the quarantined bytes were BlockPayloads while
-# the handle was `own[OtherPayloads]` — MAGIC asserted through the wrong
-# brand. Sibling of `err-reclaim-pool-mismatch` / `err-reclaim-pool-if-leak`.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:
@@ -135,10 +127,6 @@ pub struct BlkDriver:
                         return unit
                     case .Some(r_op):
                         self.queue.drain(max=QDEPTH)
-                        # if/else: each path consumes exactly one receipt via
-                        # recover and returns the other to a field. Sema walks
-                        # BOTH arms; without if-restore the last arm's brand
-                        # (OtherPayloads) leaks to the reclaim below.
                         if status != 0:
                             first = self.queue.recover(receipt=take r)
                             match first:

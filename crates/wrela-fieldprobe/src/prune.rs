@@ -1,33 +1,13 @@
-//! Tape pruning: Keeter 2020, as described in plans/graphics.md §2.2.
-//!
-//! Given affine enclosures of every slot over a region, any `min`/`max`
-//! whose branches are separable over that region collapses to the winner,
-//! and everything feeding the loser becomes dead. §2.2 calls this "the one
-//! mechanism in the design with a shape other than a constant factor", so
-//! the number it produces — pruned tape length by subdivision depth — is the
-//! probe's headline output.
-//!
-//! The compacted tape is a real, evaluable tape rather than just a count,
-//! because a count nobody can execute is a count nobody can check. The
-//! bit-identity gate in `probe::selfcheck` runs the pruned tape against the
-//! full one, which is §7's `diff-eval` clause applied to the instrument.
-
 use crate::aff::Iv;
 use crate::tape::{Op, Tape};
 
 pub struct Pruned {
     pub tape: Tape,
-    /// Live op count over the original tape (equals `tape.len()`).
     pub ops: usize,
-    /// Live FLOP-equivalent weight.
     pub weight: u32,
-    /// Blend nodes that survived. A blend that survives is a blend whose
-    /// band the region straddles — §16.3's blend-band question, asked
-    /// spatially instead of along a ray.
     pub blends: usize,
 }
 
-/// Which branch of a select node provably wins over the region.
 #[derive(Clone, Copy, PartialEq)]
 enum Sel {
     Both,
@@ -39,9 +19,6 @@ fn decide(op: &Op, r: &[Iv]) -> Sel {
     let (a, b, k, is_min) = match *op {
         Op::Min(a, b) => (a, b, 0.0, true),
         Op::Max(a, b) => (a, b, 0.0, false),
-        // `smin` equals `min` only outside the blend band, so separability
-        // needs an extra `k` of clearance. This is exactly why a cluster of
-        // wide blends resists pruning (§16.2's worst-case scene).
         Op::SMin(a, b, k) => (a, b, k, true),
         Op::SMax(a, b, k) => (a, b, k, false),
         _ => return Sel::Both,
@@ -69,8 +46,6 @@ fn decide(op: &Op, r: &[Iv]) -> Sel {
     Sel::Both
 }
 
-/// Prune `tape` against per-slot enclosures `ranges` and return a compacted,
-/// independently evaluable tape.
 pub fn prune(tape: &Tape, ranges: &[Iv]) -> Pruned {
     let n = tape.ops.len();
     debug_assert_eq!(ranges.len(), n);
@@ -80,8 +55,6 @@ pub fn prune(tape: &Tape, ranges: &[Iv]) -> Pruned {
         sel[i] = decide(&tape.ops[i], ranges);
     }
 
-    // Follow select chains to the slot that actually supplies the value.
-    // Bounded by n because every hop strictly decreases the index.
     let mut repr: Vec<u32> = (0..n as u32).collect();
     for i in 0..n {
         let r = match (sel[i], tape.ops[i]) {
@@ -96,7 +69,6 @@ pub fn prune(tape: &Tape, ranges: &[Iv]) -> Pruned {
         repr[i] = r;
     }
 
-    // Backward liveness from the resolved root.
     let mut live = vec![false; n];
     let root = repr[tape.root as usize];
     live[root as usize] = true;
@@ -110,7 +82,6 @@ pub fn prune(tape: &Tape, ranges: &[Iv]) -> Pruned {
         }
     }
 
-    // Forward compaction with index remapping.
     let mut map = vec![u32::MAX; n];
     let mut ops: Vec<Op> = Vec::new();
     let mut weight = 0u32;

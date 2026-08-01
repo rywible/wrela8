@@ -1,7 +1,5 @@
 module examples.mwir_calls
 
-# Nested plain-fn calls (plans/M5.md item B's own required golden
-# family).
 
 pub fn add_one(x: u64) -> u64:
     return x + 1

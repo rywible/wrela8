@@ -1,7 +1,5 @@
 module check.enum_methods
 
-# plans/M9.md item B2: an enum may declare methods and associated fns.
-# Four shapes under one settle, each pinned by value (BB's discipline).
 
 enum Cell:
     Hold(u32)
@@ -42,7 +40,6 @@ const R: u32 = Cell.Hold(1).value()
 const M: u32 = mut_path()
 const T: u32 = take_path()
 
-# settle = Z*1000 + R*100 + M*10 + T = 0 + 100 + 110 + 7 = 217
 const SETTLED: u32 = Z * 1000 + R * 100 + M * 10 + T
 
 @test
@@ -66,8 +63,6 @@ pub fn t_settled():
     assert SETTLED == 217, "all four under one settle"
 
 
-# Guest-reachable path (plans/M9.md item KK): H3 dropped comptime-only enum
-# methods from mwir/asm; `@test(runtime)` seeds the call graph.
 @test(runtime)
 pub fn guest_methods():
     assert Cell.empty().value() == 0, "assoc+read at guest"

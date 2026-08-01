@@ -1,11 +1,5 @@
 module examples.err_image_actor_undeclared
 
-# plans/M6.md item F/G follow-up: `Actor[T]` is a perfectly good type
-# whether or not this image declares a `T` instance, so a program that
-# messages an undeclared actor types and lowers fine and only fails when
-# `layout` looks for the `rt_enqueue` routine that was never built for it.
-# Reported as `internal error: call target `__rt_enqueue_Doubler` was never
-# codegen'd` until the audit that pinned this case.
 
 @actor
 pub struct Doubler:

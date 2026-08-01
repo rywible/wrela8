@@ -1,11 +1,5 @@
 module examples.err_send_in_loop
 
-# plans/M6.md item G, decision 5's second conjunct: "every such site sits
-# outside any loop ... (so each executes at most once per root turn)".
-# The mailbox here is declared far larger than the loop's own trip count,
-# deliberately: the proof counts *static* sites and never tries to bound a
-# loop, so a generous capacity changes nothing (bound proving is deferred
-# cleverness — `sema.bounds.loops` stays a gap).
 
 @actor
 pub struct Logger:

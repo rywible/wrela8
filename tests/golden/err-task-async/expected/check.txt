@@ -1,1 +1,1 @@
-error[type]: `@task` `BlkDriver.drain` must be a plain `fn`, not `async fn` (03-hardware.md §6: the bottom half never stays active while waiting) at 23:5
+error[type]: `@task` `BlkDriver.drain` must be a plain `fn`, not `async fn` (03-hardware.md §6: the bottom half never stays active while waiting) at 21:5

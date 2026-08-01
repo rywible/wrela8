@@ -1,8 +1,5 @@
 module examples.err_test_image_driver_wake_no_image
 
-# Sibling of `err-test-image-driver-irq-no-image`: a `@driver` with
-# `wake(...)` and `@test(runtime)`, no `@image`. No runtime tables means
-# nowhere to patch the wake-pending word.
 
 @driver
 pub struct BlkDriver:

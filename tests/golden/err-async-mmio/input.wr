@@ -1,8 +1,5 @@
 module examples.err_async_mmio
 
-# plans/M7.md item H1 self-audit — MMIO `.read()` inside an `async` driver method
-#
-# What this case would catch: the async MMIO path. Sync emits; an ISR / bottom-half reader is item G. Inventing a synchronous load here would be wrong.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

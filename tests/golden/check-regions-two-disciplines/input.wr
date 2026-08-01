@@ -1,60 +1,5 @@
 module examples.check_regions_two_disciplines
 
-# plans/M8.md item R, decision 16 — 04-compiler.md §3's group-vs-pool
-# asymmetry, demonstrated inside ONE function so the comparison needs no
-# second program and no second run: "a group's ... close is a join — a
-# node in the wait-for graph ... A pool is nominal and declared ... it
-# never participates in the wait-for graph".
-#
-# `run_both` below discharges both region obligations, four instructions
-# apart, in the same `async fn`. Read `expected/flowwir.txt`:
-#
-#   State 0
-#     0002: Mwir Call key=retire dst=t6 args=[t3]     <- the POOL half
-#     0003: Mwir ConstInt dst=t7 ty=usize value=2
-#     0004: GroupCreate group=t8 capacity=t7          <- the GROUP half
-#     0005: GroupStart group=t8 callee=child_a args=[t2]
-#     0006: GroupStart group=t8 callee=child_b args=[t2]
-#     Transition Await what=GroupJoin{group=t8,children=2} resume=1 ...
-#   State 1
-#     ...
-#     0030: GroupClose group=t8 cleanup=[]
-#
-# The `own[Parts] u32` handle's entire reclaim obligation is instruction
-# 0002 — an ordinary synchronous `Call`, in the same state, splitting
-# nothing. The pool leaves exactly one other trace anywhere in the dump,
-# and it is a *type*: `Temp t3 ty=own[Parts] u32`. Nominal, compile-time,
-# carried through `retire`'s signature. No `PoolCreate`, no `PoolClose`,
-# no transition, no lineage entry — nothing a wait-for graph could have
-# an edge to.
-#
-# The group's close is the opposite in every one of those respects: it is
-# the `Transition Await what=GroupJoin{...}` that *makes* this function
-# two states rather than one (`states=2` on the `Fn` line), it has a
-# runtime identity (`Temp t8 ty=Group`), and it has an explicit close
-# node. It suspends; the pool cannot.
-#
-# `expected/report.txt` is the same asymmetry one layer down, in the
-# artifact the VMM is configured from — the two disciplines cost storage
-# in two different places:
-#
-#   Pool name=Parts kind=image payload=u32 slots=4 slot_bytes=8
-#     base=0x40502230 size=32 ...          <- a placed region: an address
-#                                             and a slot count, in the
-#                                             image's `pooldata` section
-#   Totals actors=1 drivers=0 ready_queue=2 group_arena=1 bytes=1336
-#                                          <- a runtime arena slot in
-#                                             `rtdata`: owner turn,
-#                                             deadline, cancelled flag —
-#                                             the wait machinery itself
-#
-# What this case deliberately does NOT claim (decision 12, and the reason
-# `values.regions.two-binding-disciplines` stays a gap): it is not the
-# `with group` / `with pool` same-shape pair, because `with pool` is
-# `error[unimplemented]` (golden/err-with-pool-unimplemented). The pool
-# half here is therefore an *image* pool, which is the discipline the
-# clause's own note already counts as pinned by
-# `image.graph.pools-bound-once`.
 
 pool Parts
 
@@ -87,9 +32,6 @@ async fn child_b(a: Actor[Adder]) -> u64:
         case .Err(_):
             return 0
 
-# The pool half: `own[Parts] u32` crosses a signature by name, at compile
-# time, and the handle's slot returns to the pool that minted it when this
-# `take` parameter is consumed. Nothing suspends.
 pub fn retire(take part: own[Parts] u32) -> unit:
     return unit
 

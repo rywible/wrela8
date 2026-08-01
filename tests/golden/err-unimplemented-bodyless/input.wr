@@ -1,6 +1,3 @@
-# Minimized from a fuzz find (M2-H's deep run): a bodyless method — the
-# parser's doc-table signature shorthand — panicked access.rs's
-# receiver-effect inference. Sema now fails closed on bodyless fns.
 module examples.bodyless
 
 pub struct Widget:

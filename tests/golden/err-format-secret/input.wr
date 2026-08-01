@@ -1,6 +1,5 @@
 module examples.err_format_secret
 
-# plans/M9.md item C2 / 05 §6: `Secret` has no Format.
 
 pub struct Secret deriving(Format):
     n: u32

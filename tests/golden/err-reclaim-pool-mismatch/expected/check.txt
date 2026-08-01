@@ -1,1 +1,1 @@
-error[type]: `reclaim`'s `pool=OtherPayloads` does not match the pool brand recovered on this queue (`BlockPayloads`); the handle would be `own[OtherPayloads]` pointing at `BlockPayloads`'s bytes (03-hardware.md §9 / 04-compiler.md §1: DMA ownership transitions are valid) at 136:49
+error[type]: `reclaim`'s `pool=OtherPayloads` does not match the pool brand recovered on this queue (`BlockPayloads`); the handle would be `own[OtherPayloads]` pointing at `BlockPayloads`'s bytes (03-hardware.md §9 / 04-compiler.md §1: DMA ownership transitions are valid) at 125:49

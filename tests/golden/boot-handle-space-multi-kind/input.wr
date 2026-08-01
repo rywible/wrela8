@@ -1,10 +1,5 @@
 module examples.boot_handle_space_multi_kind
 
-# Orchestrator spot-probe for M8 item H attack 6, independent of the
-# agent's own golden: a shape with TWO drivers and TWO devices, so the
-# `n_actors + n_drivers + i` shift for devices is exercised with both
-# terms non-trivial. Expected words: marker=0, tags=1, s0=2, s1=3,
-# hw0=4, hw1=5.
 
 struct HwA:
     id: u32

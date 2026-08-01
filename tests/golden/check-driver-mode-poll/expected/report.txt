@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/check_driver_mode_poll.wr sha256=2e45a5a101bd79f8e459d90bf34b2fae7e05c59a1dca9c4ef99031eb2b75507c
+  Input path=examples/check_driver_mode_poll.wr sha256=5423d3a5c7585a94a8ed15abdd4fa0c7d80451824e14923c9301ee2bc9497807
   Input path=<generated> sha256=30f1ce82f71b86a460fef64122fac0e01598c4c1fa9b4499f92d5fdf73209003
   Name value=check-driver-mode-poll
   Target value=Target.wrela_machine_v1

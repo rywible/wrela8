@@ -1,7 +1,5 @@
 module examples.err_untrusted_string_index
 
-# plans/M9.md item G1 / decision 356: `String[..N][i]` is an index use
-# under 03 §8 — same refusal family as array index.
 
 fn bad(reported: Untrusted[usize], s: String[..16]) -> u8:
     return s[reported]

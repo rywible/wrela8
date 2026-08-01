@@ -1,1 +1,1 @@
-error[type]: the marked-value mechanism refuses policy `Secret[T]` — plans/M9.md item G3 defers it (decision 354): needs secret-preserving transforms and the comptime non-serialization rule (02-language.md §12); only `Untrusted[T]` is live (03-hardware.md §8) at 7:11
+error[type]: the marked-value mechanism refuses policy `Secret[T]` — plans/M9.md item G3 defers it (decision 354): needs secret-preserving transforms and the comptime non-serialization rule (02-language.md §12); only `Untrusted[T]` is live (03-hardware.md §8) at 4:11

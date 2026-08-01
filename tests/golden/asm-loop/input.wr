@@ -1,7 +1,5 @@
 module examples.mwir_loop
 
-# A `while` loop with an accumulator, plus a `for` loop over a fixed
-# array (plans/M5.md item B's own required golden family).
 
 pub fn sum_to(n: u64) -> u64:
     total: u64 = 0

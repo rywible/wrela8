@@ -1,8 +1,5 @@
 module examples.check_manual_resource_consumed
 
-# plans/M13.md item O / 02-language.md §3.1: a `resource(manual)` value
-# transferred out of the function (return) satisfies consume-on-every-path.
-# The check dump pins the per-type class line (04 §7).
 
 resource(manual) struct Token:
     bits: u64

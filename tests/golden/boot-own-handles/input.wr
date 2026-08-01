@@ -1,10 +1,5 @@
 module examples.boot_own_handles
 
-# plans/M7.md item E4 / decision 19: image-bound `own[P] T` substitution.
-# An `img.dma_pool` wired as `block=take payloads` materializes one own
-# handle — the guest address of slot 0 — into the actor's `init`. Writing
-# through that handle and reading it back proves the word addresses the
-# pool slot, not a by-value copy in actor state.
 
 @layout(dma, endian=little)
 struct DmaBlock:
@@ -22,10 +17,6 @@ pub struct Holder:
     seen: u64
 
     init(mut self, take block: own[BlockPayloads] DmaBlock):
-        # Nested `self.block.word =` is not lowered yet; take the handle,
-        # write through it (Own Project/SetField), put it back. Hand-
-        # computed value 0xA11CE — a handle that pointed at actor state
-        # (or nowhere) would leave the pool zero and fail the read-back.
         b = take block
         b.word = 0xA11CE
         self.seen = b.word

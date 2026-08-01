@@ -1,1 +1,1 @@
-error[actor]: a message argument that is a resource must be moved with `take` (`p`, 02-language.md §9.3) at 23:36
+error[actor]: a message argument that is a resource must be moved with `take` (`p`, 02-language.md §9.3) at 20:36

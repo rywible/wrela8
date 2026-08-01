@@ -22,13 +22,6 @@ pub struct Blk:
 @actor
 pub struct Store:
     count: u32
-    # A driver handle, honestly typed (plans/M6.md item A retires the
-    # M4-C placeholder note this comment used to carry —
-    # image.graph.init-args-match's own ledger clause): `img.actor`'s own
-    # `disk=disk.handle()` argument is still accepted through decl-reference
-    # substitution (`eval::image_checks`'s own `is_handle_type_name`, which
-    # matches by outer type name only), not by matching this declared
-    # type structurally — but the type itself is real now.
     disk: Actor[Blk]
 
     init(mut self, disk: Actor[Blk]):

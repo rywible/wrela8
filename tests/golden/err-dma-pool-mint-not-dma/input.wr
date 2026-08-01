@@ -1,15 +1,5 @@
 module examples.err_dma_pool_mint_not_dma
 
-# plans/M7.md item D, 03-hardware.md §1: `DmaPool[P, N]` is "a bounded
-# **device-reachable** pool". 05-library.md §9's other pool form,
-# `img.pool[T](name=P, slots=N, max_payload=B)`, declares no device at
-# all, so its memory is reachable by nothing — 03 §3: "All memory a device
-# can reach originates from its bound pools."
-#
-# Binding one to a driver as a `DmaPool` would hand out authority over
-# memory no device can reach, which is either a silent no-op or (if
-# anything later mapped it) exactly the leak plans/M7.md decision 5 calls
-# a security property. The message names the fix.
 
 struct BlockHw:
     id: u32

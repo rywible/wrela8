@@ -1,16 +1,3 @@
-# plans/M9.md item F2 (decision 346): `SlotMap[T, ..N]` with three-field
-# key discipline. `Key` is module-level (no nested `SlotMap.Key` path);
-# generation is `u8` so `GenerationExhausted` is reachable in a golden.
-# Lookups validate map_id + index + generation — foreign and stale keys
-# miss, never alias. `reserve`/`resolve` stay OUT (M10).
-#
-# Doc `get(key, fn -> R) -> Option[R]` needs a method type parameter
-# (JJ decision 185) — ship `get_value` / `lend` / `contains` until then.
-#
-# 05 §7: `SlotMap` mints a fresh non-wrapping instance id. Construction
-# takes no caller `map_id`; the compiler/evaluator assign one (see
-# `OFF_SLOTMAP_NEXT_ID` / comptime counter). `self.map_id = 0` below is
-# overwritten before the constructed value is observed.
 module slotmap
 
 pub enum GenerationExhausted:
@@ -19,7 +6,6 @@ pub enum GenerationExhausted:
 pub enum SlotMapFull:
     SlotMapFull
 
-## Copyable `(map_id, index, generation)` — 05-library.md §7's `SlotMap.Key`.
 pub struct Key:
     pub map_id: u64
     pub index: usize
@@ -60,8 +46,6 @@ pub struct SlotMap[T, const N: usize]:
             i = i + 1
         return Err(SlotMapFull.SlotMapFull)
 
-    ## Insert, naming generation exhaustion when every free slot has been
-    ## permanently retired (05 §7: remove never wraps).
     pub fn try_insert(mut self, take x: T) -> Result[Key, GenerationExhausted]:
         i: usize = 0
         saw_retired: bool = false

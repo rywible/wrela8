@@ -1,9 +1,5 @@
 module examples.err_recursion_method
 
-# The same rule through a struct method rather than a module-level fn —
-# `Walker.step` is a node in the very same call graph, keyed
-# `Walker.step`, so a self-call reachable from a runtime root is rejected
-# identically.
 
 struct Walker:
     depth: u64

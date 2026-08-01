@@ -1,17 +1,3 @@
-//! Pinhole camera and the ray-bundle wedge that affine arithmetic runs over.
-//!
-//! plans/graphics.md §2.1 classifies *screen tiles*, not world boxes, so the
-//! enclosure domain is a frustum wedge: a rectangle of screen directions
-//! crossed with a range of `t`. The three affine noise symbols are exactly
-//! that — ε₀ = u, ε₁ = v, ε₂ = t.
-//!
-//! The direction is normalised **inside** affine arithmetic rather than
-//! bounded by its four corner rays. Corner bounds would be cheaper and
-//! subtly unsound: `normalize` is nonlinear, so the set of unit directions
-//! over a tile is not the bilinear hull of the corner unit directions, and a
-//! probe that quietly widened by "a small safety factor" would be reporting
-//! its own fudge as an interior-tile fraction.
-
 use crate::aff::Aff;
 use crate::eval::DAff;
 
@@ -59,13 +45,11 @@ impl Camera {
         }
     }
 
-    /// Screen-x in pixels (continuous, 0..w) to the `u` coefficient.
     #[inline]
     pub fn u_of(&self, px: f32) -> f32 {
         (2.0 * px / self.w as f32 - 1.0) * self.aspect * self.tan_half
     }
 
-    /// Screen-y in pixels (continuous, 0..h) to the `v` coefficient.
     #[inline]
     pub fn v_of(&self, py: f32) -> f32 {
         (1.0 - 2.0 * py / self.h as f32) * self.tan_half
@@ -85,7 +69,6 @@ impl Camera {
         self.dir(self.u_of(px), self.v_of(py))
     }
 
-    /// Affine enclosure of the unit direction over a `(u, v)` rectangle.
     fn dir_aff(&self, u0: f32, u1: f32, v0: f32, v1: f32) -> [Aff; 3] {
         let u = Aff::sym(0, u0.min(u1), u0.max(u1));
         let v = Aff::sym(1, v0.min(v1), v0.max(v1));
@@ -100,7 +83,6 @@ impl Camera {
         [d[0].mul(inv), d[1].mul(inv), d[2].mul(inv)]
     }
 
-    /// Position enclosure over the wedge `(u,v) × [t0,t1]`.
     pub fn wedge(&self, u0: f32, u1: f32, v0: f32, v1: f32, t0: f32, t1: f32) -> [Aff; 3] {
         let dh = self.dir_aff(u0, u1, v0, v1);
         let t = Aff::sym(2, t0, t1);
@@ -111,10 +93,6 @@ impl Camera {
         ]
     }
 
-    /// The same wedge, carrying `∂p/∂t` — which is the unit direction
-    /// exactly. This is what makes the silhouette certificate cheap: the
-    /// directional derivative `∂f/∂t = ∇f·d̂` falls out of one dual-affine
-    /// pass, with no separate gradient program.
     pub fn wedge_daff(&self, u0: f32, u1: f32, v0: f32, v1: f32, t0: f32, t1: f32) -> [DAff; 3] {
         let dh = self.dir_aff(u0, u1, v0, v1);
         let t = Aff::sym(2, t0, t1);
@@ -134,9 +112,6 @@ impl Camera {
         ]
     }
 
-    /// Wedge at a fixed `t` — a screen rectangle at one depth. Used to prove
-    /// "exactly one crossing" by showing the field is positive across the
-    /// whole near face and negative across the whole far face.
     pub fn slice(&self, u0: f32, u1: f32, v0: f32, v1: f32, t: f32) -> [Aff; 3] {
         let dh = self.dir_aff(u0, u1, v0, v1);
         [

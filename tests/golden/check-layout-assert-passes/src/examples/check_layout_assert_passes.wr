@@ -1,8 +1,5 @@
 module examples.check_layout_assert_passes
 
-# plans/M9.md item H: a `@layout_assert` that reads real section facts
-# from the synthesized `ImageReport` and passes. Pins that the assert
-# ran against layout (entry == IMAGE_BASE, code_size > 0), not vacuously.
 from core.image_report import ImageReport
 
 @actor

@@ -1,28 +1,15 @@
-//! Image runtime config generator: `CORE_SLOTS` emit + `N_CORES-1` secondary trampoline pool.
-//!
-//! After `@image` evaluation + placement, the compiler pretty-prints a
-//! hidden facts-only module (`core.__image_runtime`) as source text and
-//! feeds it through the ordinary front end. No AST synthesis, no loops or
-//! decisions in the generated text — consts, `@layout(runtime)` types,
-//! `@placed` statics, and exhaustive `match` ladders over comptime indices.
-
 use crate::layout::{RingKind, RuntimeTables, place_runtime_tables};
 use crate::syntax::ast::Module;
 use crate::syntax::{lexer, parser};
 use wrela_machine::layout::RTDATA_BASE;
 
-/// One static `g.start` site.
 #[derive(Debug, Clone)]
 pub struct ChildSiteFact {
-    /// Free-async / group-child callee key (`program.fns` spelling).
     pub callee_key: String,
-    /// Slot ordinal within the group (image `GROUP_MAX_CHILDREN` fact).
     pub child_index: usize,
-    /// Index into `RT.turns` for this child's free-turn area.
     pub turn_index: usize,
 }
 
-/// One cross-core ring's placed facts.
 #[derive(Debug, Clone)]
 pub struct RingFact {
     pub kind: RingKind,
@@ -34,14 +21,10 @@ pub struct RingFact {
     pub head: u64,
     pub tail: u64,
     pub count: u64,
-    /// Request lane: image handle word of the target mailbox root
-    /// Handle identity, not type-alone.
     pub target_handle: Option<u64>,
-    /// Request lane: mailbox-root name for `rt_enqueue` remap until item J.
     pub target_actor: Option<String>,
 }
 
-/// One mailbox-root's placed facts.
 #[derive(Debug, Clone)]
 pub struct MailboxFact {
     pub name: String,
@@ -56,7 +39,6 @@ pub struct MailboxFact {
     pub methods: Vec<MethodFact>,
 }
 
-/// One dispatch method on a mailbox root.
 #[derive(Debug, Clone)]
 pub struct MethodFact {
     pub key: String,
@@ -64,144 +46,53 @@ pub struct MethodFact {
     pub reply_is_aggregate: bool,
 }
 
-/// Image-specific facts beyond [`RuntimeTables`].
-/// Empty vectors yield match ladders that always return 0 (stub / dump).
 #[derive(Debug, Clone, Default)]
 pub struct RtconfigExtras {
-    /// Mailbox-root names on each live core, in `mailbox_root_names` order
-    /// filtered by `actor_cores` — the RR select list `rt_run_one` walked.
     pub select_by_core: Vec<Vec<String>>,
-    /// `true` when this core has any inbound cross-core ring.
     pub drain_by_core: Vec<bool>,
-    /// `g.start` sites in `BTreeMap` key order (same as former inject).
     pub child_sites: Vec<ChildSiteFact>,
-    /// Cross-core rings in `RuntimeTables::rings` / placement order.
     pub rings: Vec<RingFact>,
-    /// Mailbox-root handle word per root (same order as enqueue stubs).
     pub enqueue_handles: Vec<u64>,
-    /// Mailbox-root names parallel to `enqueue_handles` (remap targets).
     pub enqueue_actors: Vec<String>,
-    /// M11 J: per-root mailbox overlays + method facts (enqueue_actors order).
     pub mailboxes: Vec<MailboxFact>,
-    /// M11 H / M12 item E: `(state_addr, nwords)` zero-fill slots — actors
-    /// then drivers. Generator coalesces adjacent ranges into maximal
-    /// `INIT_SPAN{k}` overlays; `N_INIT_SLOTS` is
-    /// the span count.
     pub init_slots: Vec<(u64, u64)>,
-    /// M11 H: number of boot `init` calls (drivers then actors).
     pub n_boot_calls: usize,
-    /// Pending-vector bit indices for sealed IRQ binds.
     pub irq_vector_bits: Vec<u64>,
-    /// M11 I / M12 item D: absolute addresses of each `WAKE.wake_pending[i]`
-    /// word (contiguous array; drain index aligned with `__wake_call_{i}`).
     pub wake_pending_addrs: Vec<u64>,
-    /// `@test(runtime)` runner facts. Empty for ordinary images / stub;
-    /// test-image reinject fills these.
     pub tests: Vec<TestRunnerFact>,
-    /// M11 K: call `__wrela_rt_boot_init` from the primary entry (wiring
-    /// present). Stub / ordinary dump leave this false.
     pub has_boot_init: bool,
 }
 
-/// One `@test(runtime)` root for the generated test-runner ladders
 #[derive(Debug, Clone)]
 pub struct TestRunnerFact {
     pub name: String,
     pub is_async: bool,
-    /// 0-based index into `RT.turns` for this test's free-turn area when
-    /// `is_async`; ignored for sync tests (ladder returns 0).
     pub turn_index: usize,
 }
 
-/// Hidden module address. Loader key is `["core", "__image_runtime"]`;
-/// the file declares plain `module __image_runtime` like every other `core.*` file.
 pub const MODULE_PATH: &[&str] = &["__image_runtime"];
 
-/// Dotted address used in TypedProgram / report maps.
 pub const MODULE_ADDR: &str = "core.__image_runtime";
 
-/// Report `Input path=` spelling for the generated module.
 pub const GENERATED_INPUT_PATH: &str = "<generated>";
 
-/// Dump stage name.
 pub const DUMP_STAGE: &str = "rtconfig";
 
-/// Fixed stub pools: `runtime.wr` always imports every stub so spliced
-/// match-ladder bodies can Call them. Counts are hard ceilings — generator
-/// fails closed if an image needs more.
 pub const SELECT_STUB_COUNT: usize = 32;
 pub const RESUME_STUB_COUNT: usize = 16;
-/// Cross-core ring / xsend / xreply pool. Matches the handwritten
-/// trampoline pools in `runtime.wr`.
 pub const RING_POOL_COUNT: usize = 8;
 pub const ENQUEUE_STUB_COUNT: usize = 32;
-/// Mailbox-root overlay pool. Same ceiling as enqueue stubs.
 pub const MB_POOL_COUNT: usize = 32;
-/// Flat method-call stub pool. `runtime.wr` imports every `__method_N`
-/// so `__wrela_call_method` bodies can Call them.
 pub const METHOD_CALL_POOL_COUNT: usize = 128;
-/// Integrity Phase 2 Item M — Lane 2 in-guest block-counter pool. Codegen
-/// fails closed if exhausted ([`crate::codegen`]'s `alloc_block_id`).
-///
-/// Raised from 1024: with
-/// `runtime` and `driver` instrumented, the measured id count of a
-/// `@test(runtime)` image is 2344 (`boot-hello`) to **2788**
-/// (`boot-cross-core-mailbox-depth`), `boot-actors` 2524 (2527 after item C's
-/// own three extra Lane 2 dump blocks) — every one of the
-/// 45 `boot-*` cases exhausted a 1024 pool. 3072 is the corpus maximum plus
-/// ~10%.
-///
-/// **This size costs device-window space, and the cost is real.** `LANE2` is
-/// `8 + 8 * BLOCK_POOL_COUNT` bytes at a host-pinned base
-/// (`wrela_vmm::lane3::LANE2_BASE`), so growing it pushed `LANE1` up inside
-/// the fixed 32 KiB window (`layout.rs`'s `DEVICE_WINDOW_LO/HI`): the Lane 1
-/// stripe now fits `N_CORES <= 5` where it fitted 19 before. That is within
-/// the Pi 5's four cores (freeze 1621) but far below `CORE_SLOTS = 32`, and
-/// it is the constraint to revisit before either pool grows again.
 pub const BLOCK_POOL_COUNT: usize = 3072;
-/// Non-zero `id:count,` pairs *reserved* in the transcript bound under
-/// `--block-count` (Item M). Must stay ≤ console DATA_SIZE headroom after
-/// Lane 1.
-///
-/// **This is a reservation, not a proof, and after item B it is
-/// knowingly smaller than the worst case.** It was already a deliberate
-/// under-reservation ("the dump emits non-zero entries only"), and item B's
-/// widening blew through the claim that came with it: measured non-zero
-/// blocks per boot are now 126 (`boot-hello`) to **609**
-/// (`boot-cross-core-mailbox-depth`), `boot-actors` **372** — all above 128.
-/// Nothing truncates at run time, because the *actual* line is ~9 bytes per
-/// pair while this bound charges the 42-byte worst case; the guest dump and
-/// the Lane 3 host DRAM snapshot agree byte for byte on `boot-actors`
-/// (`cargo xtask diff-block-count`).
-///
-/// Raising it to the real worst case is **not possible** in the current
-/// console geometry: `console::DATA_SIZE` is 16 KiB and the tightest
-/// `boot-*` images already refuse at 250 pairs (measured; 248 is the corpus
-/// ceiling), so 609 pairs cannot be bounded at all. Left at 128 on purpose
-/// — raising it only refuses images without making the bound sound. Closing
-/// the gap needs a decision this item is not allowed to make: a tighter
-/// per-pair worst case, a larger console, or making the Lane 3 host snapshot
-/// the normative Lane 2 sink (`wrela-vmm --dump-lane2` already exists).
 pub const BLOCK_BOUND_PRINT_PAIRS: usize = 128;
-/// Boot `init` call stub pool.
 pub const BOOT_CALL_POOL_COUNT: usize = 32;
-/// Coalesced init-span overlay pool.
-/// `runtime.wr` imports every `INIT_SPAN*` so reinject can lower store
-/// ladders; unused slots are 1-word high-zone placeholders. Live span
-/// count (`N_INIT_SLOTS`) is at most this ceiling.
 pub const INIT_SPAN_POOL_COUNT: usize = 8;
-/// IRQ handler / wake `@task` stub pools.
 pub const IRQ_CALL_POOL_COUNT: usize = 8;
 pub const WAKE_CALL_POOL_COUNT: usize = 8;
-/// `@test(runtime)` call / prefix stub pool.
-/// Ceiling above measured peak (`boot-many-tests` = 13).
 pub const TEST_CALL_POOL_COUNT: usize = 16;
-/// Sentinel edge index from match ladders when no ring matches.
 pub const NO_EDGE: usize = 255;
 
-/// Batch-1 stub text so `runtime.wr` can import counts / `RT` / `GROUPS`
-/// before a real image is evaluated.
-/// Addresses are placeholders; live images replace this via [`generate`].
 pub fn stub_text() -> String {
     let mut tables = RuntimeTables {
         n_turns: 0,
@@ -218,25 +109,11 @@ pub fn stub_text() -> String {
         .expect("rtconfig stub stays in pool ceilings")
 }
 
-/// Pretty-print the facts-only config module for `tables`.
-///
-/// `tables.cores` must already reflect `PlacementTable.cores` (call
-/// [`RuntimeTables::stripe_for_cores`] first). Emits `const N_CORES: usize =
-/// <tables.cores>` with that exact spelling.
-///
-/// Item E: structured `TurnArea` / `GroupSlot` overlays.
-/// Item F: `SCHED` stripe; child tag/payload fields; match ladders +
-/// fixed stub pools from `tables.select_by_core` / `drain_by_core` /
-/// `child_sites` (filled by `RuntimeWiring::derive`).
-/// Item G: ring overlays + handle-identity ladders.
 pub fn generate(tables: &RuntimeTables) -> Result<String, String> {
     let extras = extras_from_tables(tables)?;
     generate_with(tables, &extras)
 }
 
-/// Build [`RtconfigExtras`] from stamped `RuntimeTables` fields (shared by
-/// dump `generate` and live reinject. Placement holes fail closed rather
-/// than silently aliasing `RTDATA_BASE`.
 pub fn extras_from_tables(tables: &RuntimeTables) -> Result<RtconfigExtras, String> {
     let placement = place_runtime_tables(RTDATA_BASE, tables);
     let mut init_slots: Vec<(u64, u64)> = Vec::new();
@@ -402,18 +279,11 @@ pub fn extras_from_tables(tables: &RuntimeTables) -> Result<RtconfigExtras, Stri
     })
 }
 
-/// Live coalesced init-span count (`N_INIT_SLOTS`) for the placed-static
-/// census. Independent of the
-/// `INIT_SPAN_POOL_COUNT` placeholder pool the stub still emits.
 pub fn live_init_span_count(tables: &RuntimeTables) -> Result<usize, String> {
     let extras = extras_from_tables(tables)?;
     Ok(coalesce_init_spans(&extras.init_slots).len())
 }
 
-/// Sort live `(addr, nwords)` init slots and merge adjacent ranges into
-/// maximal spans. Adjacency is
-/// `addr_i + nwords_i*8 == addr_{i+1}` — mailboxes between actor states
-/// break the predicate, so spans never bridge them.
 fn coalesce_init_spans(slots: &[(u64, u64)]) -> Vec<(u64, u64)> {
     let mut live: Vec<(u64, u64)> = slots
         .iter()
@@ -434,27 +304,10 @@ fn coalesce_init_spans(slots: &[(u64, u64)]) -> Vec<(u64, u64)> {
     spans
 }
 
-/// Pretty-print the facts-only config module for `tables` + item-F/G extras.
-///
-/// `tables.cores` must already reflect `PlacementTable.cores` (call
-/// [`RuntimeTables::stripe_for_cores`] first). Emits `const N_CORES: usize =
-/// <tables.cores>` with that exact spelling.
-///
-/// Item E: structured `TurnArea` / `GroupSlot` overlays.
-/// Item F: `SchedCore` / `SCHED` for RR cursors; child tag/payload fields;
-/// match ladders + placeholder stubs that layout remaps onto
-/// `rt_select_and_run` / resume callees.
-/// Item G: ring overlays + handle-identity / drain lane ladders;
-/// enqueue stubs remapped to `rt_enqueue` until item J.
 pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<String, String> {
     let placement = place_runtime_tables(RTDATA_BASE, tables);
     let init_spans = coalesce_init_spans(&extras.init_slots);
     let n_turns_len = (tables.n_turns as usize).max(1);
-    // Overlay stride is at least 0x48 so `ambient_group` at TURN_RECORD_SIZE
-    // (0x40) always fits for batch-2 typecheck of deadline helpers. Live
-    // reinject still requires `tables.turn_stride >= 0x48` so indexing
-    // matches rtdata packing. G adds `reply_tag` at
-    // 0x38 (OFF_TURN_REPLY_TAG) so drain can write it through RT.turns.
     let turn_stride = if tables.turn_stride == 0 {
         128
     } else {
@@ -462,25 +315,13 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     };
     let group_cap = tables.group_arena_capacity as usize;
     let group_slots = group_cap.max(1);
-    // image GROUP_MAX_CHILDREN / GROUP_SLOT_SIZE facts.
     let max_children = tables
         .group_max_children
         .max(crate::codegen::GROUP_MAX_CHILDREN_FLOOR);
     let group_slot_size = crate::codegen::group_slot_size(max_children);
-    // When the arena is empty, `place_runtime_tables` still returns a
-    // `group_arena` cursor equal to the first ring's base (0-byte arena).
-    // Overlay GROUPS at a non-colliding placeholder so RINGS_CTL/DATA can
-    // own the real ring addresses — same move
-    // as empty-sched. Placeholder width tracks the image GROUP_SLOT_SIZE
-    // fact (floor 2 → 96 when the arena is empty).
     let n_rings = extras.rings.len();
     let n_wake = extras.wake_pending_addrs.len();
-    // High-zone reserve for the empty-ring placeholder overlays only
-    // (live rings place RINGS_* inside real rtdata). One RingCtl + one
-    // data word when N_RINGS_LEN=1 / RING_STRIDE_WORDS=1.
     let rings_high_reserve: u64 = if n_rings == 0 { 24 + 8 } else { 0 };
-    // M12 item D: empty-wake floor-1 WAKE static (03 §3.1 forbids [u64;0]).
-    // Live wakes place WAKE inside real rtdata after rings.
     let wake_high_reserve: u64 = if n_wake == 0 { 8 } else { 0 };
     let group_addr = if group_cap == 0 {
         RTDATA_BASE + wrela_machine::layout::RTDATA_SIZE_MAX
@@ -494,7 +335,6 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     let n_cores = tables.cores;
     let ready_cap = tables.ready_queue_capacity as usize;
 
-    // Flatten select actors for stub numbering (stable across cores).
     let mut select_flat: Vec<(usize, usize, String)> = Vec::new();
     for (core, actors) in extras.select_by_core.iter().enumerate() {
         for (slot, name) in actors.iter().enumerate() {
@@ -567,10 +407,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     out.push_str("# generated by wrela; do not edit (dump --stage=rtconfig)\n");
     out.push_str("\n");
     push_const(&mut out, "N_CORES", n_cores);
-    // packing ceiling for guest overlays
-    // (must match wrela_machine::CORE_SLOTS). Algorithms still index N_CORES.
     push_const(&mut out, "CORE_SLOTS", wrela_machine::CORE_SLOTS);
-    // Wave 1: machine addresses from wrela-machine (not hand-copied in runtime.wr).
     push_const(
         &mut out,
         "MACHINE_INFO_BASE",
@@ -593,7 +430,6 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     push_const(&mut out, "READY_QUEUE_CAPACITY", ready_cap);
     push_const(&mut out, "GROUP_ARENA_CAPACITY", group_cap);
     push_const(&mut out, "GROUP_SLOTS", group_slots);
-    // image facts, not Rust consts.
     push_const(&mut out, "GROUP_MAX_CHILDREN", max_children);
     push_const(&mut out, "GROUP_SLOT_SIZE", group_slot_size as usize);
     push_const(&mut out, "TURN_STRIDE", turn_stride);
@@ -612,8 +448,6 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     push_const(&mut out, "BLOCK_BOUND_PRINT_PAIRS", BLOCK_BOUND_PRINT_PAIRS);
     push_const(&mut out, "N_METHODS", n_methods);
     push_const(&mut out, "TURNS_BASE", RTDATA_BASE as usize);
-    // M12 item E: `N_INIT_SLOTS` names the coalesced live span count
-    // (runtime.wr already imports this const; keep the spelling).
     push_const(&mut out, "N_INIT_SLOTS", init_spans.len());
     push_const(&mut out, "INIT_SPAN_POOL_COUNT", INIT_SPAN_POOL_COUNT);
     push_const(&mut out, "N_BOOT_CALLS", extras.n_boot_calls);
@@ -621,8 +455,6 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     push_const(&mut out, "N_IRQ_VECTORS", extras.irq_vector_bits.len());
     push_const(&mut out, "IRQ_CALL_POOL_COUNT", IRQ_CALL_POOL_COUNT);
     push_const(&mut out, "N_WAKE_DRAINS", n_wake);
-    // Floor 1 when empty so `wake_pending: [u64; N_WAKE_DRAINS_LEN]` stays
-    // legal under 03 §3.1 (same empty-arena pattern as N_RINGS_LEN).
     let n_wake_len = n_wake.max(1);
     push_const(&mut out, "N_WAKE_DRAINS_LEN", n_wake_len);
     push_const(&mut out, "WAKE_CALL_POOL_COUNT", WAKE_CALL_POOL_COUNT);
@@ -635,8 +467,6 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     push_const(&mut out, "NO_EDGE", NO_EDGE);
     out.push('\n');
 
-    // Turn header. Waker / cur_method / reply_slot fill the gap before
-    // reply_tag — select/deliver through RT.turns.
     out.push_str("@layout(runtime, endian=little)\n");
     out.push_str("struct TurnArea:\n");
     out.push_str("    busy: u64\n");
@@ -656,9 +486,6 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     }
     out.push('\n');
 
-    // Group arena slot: header through +56, then
-    // `GROUP_MAX_CHILDREN` (tag, payload) pairs from +64. Slot size is the
-    // image fact `GROUP_SLOT_SIZE` (2→96, 4→128).
     out.push_str("@layout(runtime, endian=little)\n");
     out.push_str("struct GroupSlot:\n");
     out.push_str("    in_use: u64\n");
@@ -680,8 +507,6 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     }
     out.push('\n');
 
-    // Per-core ready queue + RR cursor, matching `place_runtime_tables`
-    // after the turn array.
     out.push_str("@layout(runtime, endian=little)\n");
     out.push_str("struct SchedCore:\n");
     out.push_str("    ready: [u64; READY_QUEUE_CAPACITY]\n");
@@ -692,11 +517,6 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     out.push_str("struct RuntimeTables:\n");
     out.push_str("    turns: [TurnArea; N_TURNS_LEN]\n");
     out.push('\n');
-    // When `n_turns == 0`, `place_runtime_tables` packs driver/actor state at
-    // `RTDATA_BASE`. Keep the RT overlay off that cursor so INIT_SPAN* can
-    // own the live state addresses — same empty-arena move as GROUPS.
-    // Placeholder sits just below the INIT
-    // span pool.
     let rt_addr = if tables.n_turns == 0 {
         RTDATA_BASE + wrela_machine::layout::RTDATA_SIZE_MAX
             - rings_high_reserve
@@ -736,10 +556,6 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     out.push_str("pub static GROUPS: GroupArena\n");
     out.push('\n');
 
-    // Cross-core ring overlays
-    // 875–879): two uniformly-strided statics — all CTLs, then DATA.
-    // `N_RINGS_LEN` is at least 1 so the array length rule (03 §3.1) holds
-    // for the empty-ring stub; live images size to `N_RINGS`.
     out.push_str("@layout(runtime, endian=little)\n");
     out.push_str("struct RingCtl:\n");
     out.push_str("    head: u64\n");
@@ -774,11 +590,6 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     out.push_str(&format!("@placed({rings_ctl_addr:#x})\n"));
     out.push_str("pub static RINGS_CTL: RingsCtl\n");
     out.push('\n');
-    // Flat word array: `N_RINGS_LEN * RING_STRIDE_WORDS` u64s, row-major
-    // by edge. Placed lowering supports `STATIC.array[i]` and
-    // `STATIC.struct_array[i].field`, but not `STATIC.row[i].words[j]` —
-    // so the uniform stride is an index arithmetic
-    // (`edge * RING_STRIDE_WORDS + wi`) rather than a nested array.
     let rings_data_words = n_rings_len * ring_stride_words;
     push_const(&mut out, "RINGS_DATA_WORDS", rings_data_words);
     out.push_str("@layout(runtime, endian=little)\n");
@@ -789,8 +600,6 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     out.push_str("pub static RINGS_DATA: RingsData\n");
     out.push('\n');
 
-    // Mailbox overlays. Pool is fixed so runtime.wr can
-    // import every MB*_CTL / MB*_DATA; unused slots sit at placeholders.
     out.push_str("@layout(runtime, endian=little)\n");
     out.push_str("struct MbCtl:\n");
     out.push_str("    head: u64\n");
@@ -825,9 +634,6 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
         out.push('\n');
     }
 
-    // Resume stubs + method-call stubs.
-    // Select/enqueue stubs deleted in item J — algorithms live in runtime.wr;
-    // method stubs are overwritten at inject with state/x8/bl bodies.
     for i in 0..RESUME_STUB_COUNT {
         out.push_str(&format!("pub fn __resume_{i}() -> u64:\n"));
         out.push_str("    return 0\n");
@@ -840,15 +646,11 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
         out.push_str("    return 0\n");
         out.push('\n');
     }
-    // Boot init call stubs: placeholder bodies overwritten at
-    // inject with specialized A64 (Relocs for DeviceRegs/Pool/Own*).
     for i in 0..BOOT_CALL_POOL_COUNT {
         out.push_str(&format!("pub fn __boot_call_{i}():\n"));
         out.push_str("    return\n");
         out.push('\n');
     }
-    // IRQ / wake stubs: overwritten at inject with
-    // `x0 = driver_state; bl handler/task`.
     for i in 0..IRQ_CALL_POOL_COUNT {
         out.push_str(&format!("pub fn __irq_call_{i}():\n"));
         out.push_str("    return\n");
@@ -860,10 +662,6 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
         out.push('\n');
     }
 
-    // exactly N_CORES-1 secondary
-    // entry trampolines (no spare pool to CORE_SLOTS-1). Each Calls a facts
-    // body stub; inject remaps the Call onto `__wrela_rt_secondary_entry` and
-    // prepends SP before republishing as `rt_secondary_core_entry <core>`.
     if n_cores > 1 {
         out.push_str("pub fn __wrela_secondary_entry_body(core: usize):\n");
         out.push_str("    return\n");
@@ -876,11 +674,6 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
         }
     }
 
-    // Init-span overlays: maximal adjacent
-    // `(addr, nwords)` ranges after sort+merge. Fixed pool so `runtime.wr`
-    // can import every INIT_SPAN* (report PlacedStatic walks the stub's
-    // imported statics). Live spans use place_runtime_tables state
-    // addresses; unused slots get a 1-word non-colliding placeholder.
     let init_placeholder_base = RTDATA_BASE + wrela_machine::layout::RTDATA_SIZE_MAX
         - rings_high_reserve
         - wake_high_reserve
@@ -901,9 +694,6 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
         out.push('\n');
     }
 
-    // Contiguous WAKE.wake_pending. Live
-    // drains place after rings; N_WAKE_DRAINS == 0 uses a floor-1 high-zone
-    // placeholder so the static always exists (item G census).
     let wake_addr = if n_wake == 0 {
         RTDATA_BASE + wrela_machine::layout::RTDATA_SIZE_MAX
             - rings_high_reserve
@@ -919,7 +709,6 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     out.push_str("pub static WAKE: WakeTables\n");
     out.push('\n');
 
-    // --- match ladders (facts only; no if/while) ---------------------------
     out.push_str("pub fn __wrela_select_count(core: usize) -> usize:\n");
     out.push_str("    match core:\n");
     for (core, actors) in extras.select_by_core.iter().enumerate() {
@@ -930,8 +719,6 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     out.push_str("            return 0\n");
     out.push('\n');
 
-    // (core, RR slot) → mailbox-root index. Runtime
-    // `__wrela_try_select` Calls `__wrela_rt_select(core, root)`.
     out.push_str("pub fn __wrela_select_root(core: usize, slot: usize) -> usize:\n");
     out.push_str("    match core:\n");
     for (core, actors) in extras.select_by_core.iter().enumerate() {
@@ -987,9 +774,6 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     out.push_str("            return 0\n");
     out.push('\n');
 
-    // store a harvested child result into the image's
-    // GroupSlot childN_* fields. Covers `GROUP_MAX_CHILDREN`; fail-closed
-    // above (returns 0 — `__wrela_child_poll` treats that as no progress).
     out.push_str(
         "pub fn __wrela_child_store_result(gi: usize, slot: usize, tag: u64, payload: u64) -> u64:\n",
     );
@@ -1008,7 +792,6 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     out.push_str("            return 0\n");
     out.push('\n');
 
-    // --- item G: ring / handle-identity ladders -------
     emit_ring_u64_ladder(&mut out, "capacity", extras, |r| r.capacity);
     emit_ring_usize_ladder(&mut out, "slot_words", extras, |r| {
         (r.slot_size / 8) as usize
@@ -1022,11 +805,7 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     emit_ring_usize_ladder(&mut out, "target_handle", extras, |r| {
         r.target_handle.unwrap_or(0) as usize
     });
-    // M12 item C: data ladders (get/set head/tail/count, load/store word)
-    // deleted — runtime.wr indexes RINGS_CTL / RINGS_DATA directly. Fact
-    // ladders above stay.
 
-    // --- item J: mailbox accessors + method dispatch ---
     emit_mb_u64_ladder(&mut out, "capacity", extras, |m| m.capacity);
     emit_mb_usize_ladder(&mut out, "slot_words", extras, |m| {
         (m.slot_size / 8) as usize
@@ -1169,8 +948,6 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     out.push_str("            return 0\n");
     out.push('\n');
 
-    // Exhaustive actor/method match → direct Calls to `__method_N`
-    // (inject overwrites with state/x8/bl).
     out.push_str(
         "pub fn __wrela_call_method(root: usize, method: usize, arg0: u64, arg1: u64, stage: u64) -> u64:\n",
     );
@@ -1197,7 +974,6 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     out.push_str("            return 0\n");
     out.push('\n');
 
-    // Handle-identity xsend edge lookup.
     out.push_str("pub fn __wrela_xsend_edge(handle: usize, src_core: usize) -> usize:\n");
     out.push_str("    match src_core:\n");
     let mut xsend_by_src: std::collections::BTreeMap<usize, Vec<(usize, usize)>> =
@@ -1222,7 +998,6 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     out.push_str(&format!("            return {NO_EDGE}\n"));
     out.push('\n');
 
-    // xreply edge by (src, dst).
     out.push_str("pub fn __wrela_xreply_edge(src_core: usize, dst_core: usize) -> usize:\n");
     out.push_str("    match src_core:\n");
     let mut xreply_by_src: std::collections::BTreeMap<usize, Vec<(usize, usize)>> =
@@ -1246,7 +1021,6 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     out.push_str(&format!("            return {NO_EDGE}\n"));
     out.push('\n');
 
-    // Per-core drain lane lists (reply first, then request).
     let mut reply_by_dst: Vec<Vec<usize>> = vec![Vec::new(); n_cores];
     let mut request_by_dst: Vec<Vec<usize>> = vec![Vec::new(); n_cores];
     for (ei, r) in extras.rings.iter().enumerate() {
@@ -1318,8 +1092,6 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     out.push_str(&format!("            return {NO_EDGE}\n"));
     out.push('\n');
 
-    // Handle → mailbox-root index. Runtime
-    // `__wrela_try_enqueue` Calls `__wrela_rt_enqueue(core, root, …)`.
     out.push_str("pub fn __wrela_enqueue_root(handle: usize) -> usize:\n");
     out.push_str("    match handle:\n");
     for (i, h) in extras.enqueue_handles.iter().enumerate() {
@@ -1330,9 +1102,6 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     out.push_str(&format!("            return {NO_EDGE}\n"));
     out.push('\n');
 
-    // Init zero-fill accessors: one arm per live
-    // coalesced span — pool placeholders stay unreachable from boot_init
-    // (`N_INIT_SLOTS` is the live count).
     out.push_str("pub fn __wrela_init_nwords(slot: usize) -> usize:\n");
     out.push_str("    match slot:\n");
     for (i, &(_, nwords)) in init_spans.iter().enumerate() {
@@ -1354,8 +1123,6 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     out.push_str("            return\n");
     out.push('\n');
 
-    // Boot call dispatch — only live arms so unused stubs
-    // stay unreachable (code must pack below RTDATA_BASE).
     out.push_str("pub fn __wrela_boot_call(i: usize):\n");
     out.push_str("    match i:\n");
     for i in 0..extras.n_boot_calls {
@@ -1367,7 +1134,6 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     out.push_str("            return\n");
     out.push('\n');
 
-    // IRQ / wake ladders.
     out.push_str("pub fn __wrela_irq_mask(i: usize) -> u64:\n");
     out.push_str("    match i:\n");
     for (i, &bit) in extras.irq_vector_bits.iter().enumerate() {
@@ -1390,8 +1156,6 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     out.push_str("            return\n");
     out.push('\n');
 
-    // Wake pending load/store ladders deleted (M12 item D): runtime.wr
-    // indexes WAKE.wake_pending[i] directly. Dispatch invoke stays.
     out.push_str("pub fn __wrela_wake_invoke(i: usize):\n");
     out.push_str("    match i:\n");
     for i in 0..extras.wake_pending_addrs.len() {
@@ -1403,8 +1167,6 @@ pub fn generate_with(tables: &RuntimeTables, extras: &RtconfigExtras) -> Result<
     out.push_str("            return\n");
     out.push('\n');
 
-    // `@test(runtime)` runner ladders. Fixed stub
-    // pool; inject overwrites live `__test_call_*` / `__test_prefix_*`.
     assert!(
         extras.tests.len() <= TEST_CALL_POOL_COUNT,
         "image needs {} runtime tests; pool is {TEST_CALL_POOL_COUNT}",
@@ -1544,9 +1306,6 @@ fn emit_mb_usize_ladder(
     out.push('\n');
 }
 
-/// Call-key remaps from generated stubs onto resume targets.
-/// Item J: select/enqueue remaps deleted — those bodies are generic wrela.
-/// Item E: secondary trampoline body → `__wrela_rt_secondary_entry`.
 pub fn stub_call_remaps(extras: &RtconfigExtras, n_cores: usize) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for (i, site) in extras.child_sites.iter().enumerate() {
@@ -1561,7 +1320,6 @@ pub fn stub_call_remaps(extras: &RtconfigExtras, n_cores: usize) -> Vec<(String,
     out
 }
 
-/// Rewrite `Reloc::Call` keys in `f` according to `remaps` (from→to).
 pub fn remap_call_keys(f: &mut crate::codegen::CodegenFn, remaps: &[(String, String)]) {
     for r in &mut f.relocs {
         if let crate::codegen::Reloc::Call { key, .. } = r {
@@ -1576,7 +1334,6 @@ fn push_const(out: &mut String, name: &str, value: usize) {
     out.push_str(&format!("pub const {name}: usize = {value}\n"));
 }
 
-/// Lex + parse generated text into a `Module` (ordinary front end).
 pub fn parse_generated(text: &str) -> Result<Module, String> {
     let tokens = lexer::lex(text)
         .map_err(|e| format!("rtconfig lex: {} at {}:{}", e.message, e.line, e.col))?;
@@ -1584,9 +1341,6 @@ pub fn parse_generated(text: &str) -> Result<Module, String> {
         .map_err(|e| format!("rtconfig parse: {} at {}:{}", e.message, e.line, e.col))
 }
 
-/// True when `text` contains a forbidden facts-only keyword as a whole word
-/// Deliberately dumb: substring-in-comment would also
-/// fail, which is fine — the generator never emits those words.
 pub fn contains_forbidden_construct(text: &str) -> bool {
     for word in ["while", "for", "async", "@actor"] {
         if text
@@ -1599,9 +1353,6 @@ pub fn contains_forbidden_construct(text: &str) -> bool {
     false
 }
 
-/// Insert `Input path=<generated> sha256=…` after the last existing
-/// `Input path=` line in a rendered report, or after the quota block if
-/// none. Stable across runs.
 pub fn insert_generated_input_line(report: &mut String, digest: &str) {
     let line = format!("  Input path={GENERATED_INPUT_PATH} sha256={digest}\n");
     let mut last_input_end: Option<usize> = None;
@@ -1631,8 +1382,6 @@ pub fn insert_generated_input_line(report: &mut String, digest: &str) {
     }
 }
 
-/// Batch-2 front end: parse generated text +
-/// unstripped `runtime.wr`, run the ordinary `check_program_typed`.
 pub fn typecheck_batch2(generated_text: &str) -> Result<(), String> {
     if contains_forbidden_construct(generated_text) {
         return Err(
@@ -1674,8 +1423,6 @@ pub fn typecheck_batch2(generated_text: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Generate + batch-2 typecheck for a laid-out image's runtime tables.
-/// Returns the generated source text.
 pub fn generate_and_typecheck(tables: &RuntimeTables) -> Result<String, String> {
     let text = generate(tables)?;
     typecheck_batch2(&text)?;
@@ -1688,8 +1435,6 @@ mod tests {
     use crate::layout::RuntimeTables;
 
     fn sample_tables(cores: usize) -> RuntimeTables {
-        // Consistent empty turn set so `place_runtime_tables` (used by
-        // `generate` for GROUPS @placed) does not trip its n_turns assert.
         let mut t = RuntimeTables {
             n_turns: 0,
             turn_stride: 0,
@@ -1738,7 +1483,6 @@ mod tests {
 
     #[test]
     fn secondary_entry_pool_is_exactly_n_cores_minus_one() {
-        // secondary entry trampolines.
         for n in [1usize, 2, 3] {
             let text = generate(&sample_tables(n)).unwrap();
             let expected = n.saturating_sub(1);
@@ -1763,7 +1507,6 @@ mod tests {
                     "N_CORES=1 must emit no secondary trampoline pool:\n{text}"
                 );
             }
-            // No spare at k == N_CORES (pool is 1..N, exclusive of N).
             assert!(
                 !text.contains(&format!("pub fn __wrela_secondary_entry_{n}():\n")),
                 "N_CORES={n}: must not emit __wrela_secondary_entry_{n}:\n{text}"
@@ -1773,8 +1516,6 @@ mod tests {
 
     #[test]
     fn placed_uses_rtdata_base_literal() {
-        // Empty-turn sample: RT moves to a placeholder so state/INIT_SPAN can
-        // own RTDATA_BASE; SCHED still uses a numeric literal.
         let text = generate(&sample_tables(1)).unwrap();
         assert!(!text.contains("@placed(RTDATA_BASE)"));
         assert!(
@@ -1890,8 +1631,6 @@ mod typecheck_live {
         );
         crate::eval::interp::eval_const(runtime, "GROUP_ARENA_CAPACITY")
             .expect("eval imported const");
-        // Deadline helpers are reinjected only when a group arena exists
-        // (not always force-rooted); seed them for this lower coverage.
         let mut only = crate::lower::guest_reachable_keys_closure(
             &{
                 let map: BTreeMap<String, _> = programs

@@ -1,7 +1,5 @@
 module examples.err_permit_drop
 
-# plans/M7.md item E3 closes E2's honesty hole: a QueuePermit reserved
-# and then dropped is illegal (02-language.md §3.1 protocol consumption).
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

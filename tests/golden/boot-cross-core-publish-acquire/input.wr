@@ -1,24 +1,5 @@
 module examples.boot_cross_core_publish_acquire
 
-# plans/M15.md item K / decision 1098: barrier-deletion witness.
-#
-# Attack 4 from plans/M8.md: store-store / load-load reordering across a
-# cross-core ring's occupancy word and its multi-word payload. Under true
-# concurrent record (item I deleted the baton), omitting the publish
-# `DMB ISHST` / acquire `DMB ISHLD` pair is supposed to let the consumer
-# observe `count` / pending before the payload words are visible.
-#
-# Shape (frozen):
-#   - cores=2; Sink on core 1; root test on core 0 publishes.
-#   - Multi-word ring payload (`a`, `b`); Sink returns `a + (b * 31)`.
-#   - Amplify inside ONE boot (ITERS tight awaits).
-#   - Intact (`wrela test`) → ok under concurrent record.
-#   - Mutated (`wrela test --omit-dmb`) → must FAILED checksum. Measured
-#     2026-07-27 on this macOS/HVF host: mutated also passes at ITERS=
-#     65536 (park/wake host path serializes visibility before the
-#     consumer runs). Item K is BLOCKED — see plans/REVIEW-QUEUE.md.
-#     Do not weaken to "barriers present in asm only."
-#   - No WRELA_VMM_BATON and no second scheduler.
 
 const ITERS: u64 = 8192
 const MAGIC_A: u64 = 1000003

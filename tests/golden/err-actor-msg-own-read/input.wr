@@ -1,8 +1,5 @@
 module examples.err_actor_msg_own_read
 
-# Call-site: decl is correctly `take`, but the argument is unmarked/`read`.
-# That used to typecheck and leave the sender initialized while the mailbox
-# held a copy (02 §9.3). Decl-time coverage is err-actor-msg-param-own-read.
 
 pool Packets
 

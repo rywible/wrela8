@@ -1,19 +1,4 @@
-// A measurement crate carries helpers it does not use on every path — an
-// interval `cos` beside the `sin` its scenes need, a `FrameCost` field kept
-// because the report may want it back. Deleting them would make the next
-// experiment re-derive them; the doctrine that losers are deleted is about
-// shipped optimisations, not about an instrument's bench.
 #![allow(dead_code)]
-
-//! `fieldprobe` — the plans/graphics.md §16 benchmark, in counts.
-//!
-//! Runs before any FieldWir exists, deliberately: §16.4 says *do not commit
-//! FieldWir before these numbers exist*, and a measurement that needs the
-//! thing it is meant to justify arrives too late to change anything.
-//!
-//! Everything printed is a count or a ratio. Per §16.1 the probe never
-//! times: on the M4 proxy, counts port to a Pi 5 and wall-clock does not.
-//! Converting counts to Pi 5 cycles is `bench/a76-pi5.toml`'s job.
 
 mod aff;
 mod atlas;
@@ -46,9 +31,6 @@ struct Config {
 
 fn main() {
     let mut cfg = Config {
-        // §1's floor. Ratios below are scale-relative, but the edge-cell and
-        // reconstruction numbers are per-pixel, so the resolution is part of
-        // the result and is printed with it.
         w: 512,
         h: 288,
         max_depth: 4,
@@ -146,7 +128,6 @@ fn main() {
         );
         println!("========================================================");
 
-        // --- self-check: nothing below means anything until this passes ---
         let chk = probe::run_selfcheck(sc, 240, 32, &mut rng, &mut s);
         println!();
         println!("[selfcheck]  (the instrument, not the design)");
@@ -169,16 +150,12 @@ fn main() {
             "  median enclosure overwidth {:.2}x  (1.0 = exact)",
             chk.mean_overwidth
         );
-        // Gate on p99, not max: a central difference within ~eps of a kink is
-        // genuinely neither one-sided derivative, so the tail measures the
-        // scene's non-smoothness, not the instrument's correctness.
         if chk.containment_failures > 0 || chk.prune_mismatches > 0 || chk.grad_p99_rel_err > 1e-2 {
             println!();
             println!("  FAIL — the instrument is unsound; every number below is void.");
             std::process::exit(1);
         }
 
-        // --- E1: classification + pruning by depth -------------------------
         let cl = probe::run_classify(sc, cfg.max_depth, cfg.base_tile, &mut s);
         let total_area = (cfg.w as f64) * (cfg.h as f64);
         println!();
@@ -245,7 +222,6 @@ fn main() {
             fmt_pct(edge_len * (3840.0 / cfg.w as f64) * 2.0, 3840.0 * 2160.0)
         );
 
-        // --- E4: AA vs plain IA -------------------------------------------
         let ti = probe::run_tightness(sc, 32.0, &mut s);
         println!();
         println!("[E4] affine vs plain interval arithmetic             §2.1");
@@ -263,7 +239,6 @@ fn main() {
             ti.width_ratio_sum / ti.width_ratio_n.max(1) as f64
         );
 
-        // --- E2/E3: marching ----------------------------------------------
         let mo = probe::run_march(sc, cfg.march_stride, cfg.band_samples, &mut s);
         println!();
         println!("[E2/E3] naive sphere tracing                         §1, §2.3");
@@ -294,7 +269,6 @@ fn main() {
             fmt_pct(mo.band_active_samples as f64, mo.band_samples as f64)
         );
 
-        // --- E5: continuation ---------------------------------------------
         let step = (cl.interior_cells.len() / cfg.cont_cells.max(1)).max(1);
         let cells: Vec<_> = cl.interior_cells.iter().step_by(step).copied().collect();
         let co = probe::run_continuation(sc, &cells, &mut s);
@@ -323,7 +297,6 @@ fn main() {
             co.max_err_px
         );
 
-        // --- E6: reconstruction factor ------------------------------------
         println!();
         println!("[E6] quadratic patch reconstruction — depth vs inverse depth");
         println!("  9 samples per cell reconstruct cell_px^2 pixels, so the");
@@ -414,10 +387,6 @@ fn main() {
             fmt_pct(ec.edge as f64, ec.pixels as f64)
         );
         {
-            // What a curve-bounded representation could reach: edge pixels
-            // sampled densely, everything else carried by 16px patches
-            // (9 samples each), which the quadtree already achieves wherever
-            // a cell is clean.
             let e = ec.edge as f64;
             let smooth = ec.pixels as f64 - e;
             let samples = e + smooth / (16.0 * 16.0) * 9.0;
@@ -428,7 +397,6 @@ fn main() {
             );
         }
 
-        // --- E7: reprojection ---------------------------------------------
         let rp = probe::run_reprojection(sc, cfg.reproj_stride, 0.08, &mut s);
         println!();
         println!("[E7] reprojection across the pose pair               §4.4");
@@ -450,7 +418,6 @@ fn main() {
             fmt_pct(rp.tunnelled as f64, rp.hinted.max(1) as f64)
         );
 
-        // --- E8: modelled frame cost, and the resolution it buys ----------
         let fc = probe::run_framecost(sc, &cl, &mut s);
         println!();
         println!(
@@ -546,7 +513,6 @@ fn main() {
             }
         }
 
-        // --- E9: the baked atlas ------------------------------------------
         let bcfg = atlas::BakeCfg {
             max_depth: cfg.atlas_depth,
             eps_frac: 0.10,
@@ -604,21 +570,10 @@ fn main() {
              / depth {} worst dt {:.4})",
             ao.mismatches, ao.miss_atlas_none, ao.miss_atlas_extra, ao.miss_depth, ao.worst_dt
         );
-        // Gate at 0.05% of pixels rather than zero. The residue is
-        // floating-point disagreement on cell faces between two marchers
-        // that start from different places; it is reported, not hidden, and
-        // a regression above this threshold means a real fault.
         if ao.mismatches * 2000 > ao.pixels {
-            // Void E9's numbers for this scene and carry on. E9's conclusion
-            // is a *rejection* — the atlas is not being built — so aborting
-            // the whole report over it would suppress the experiments that
-            // do inform the design. The disagreement is reported above and
-            // the numbers above it are marked void, which is the honest
-            // handling of a measurement that failed its own gate.
             println!("  VOID — atlas disagrees beyond tolerance; E9 numbers above are void.");
         }
 
-        // --- E10: the light bake ------------------------------------------
         {
             let b = sc.bounds;
             let (lo, hi) = match sc.name {
@@ -662,7 +617,6 @@ fn main() {
             );
         }
 
-        // --- E11: the frame budget under motion ---------------------------
         println!();
         println!("[E11] frame budget across a camera whip                 §4.4, §16.2");
         let seq = probe::run_motion(sc, &at, cfg.motion_stride, &mut s);
@@ -712,7 +666,6 @@ fn main() {
         println!();
     }
 
-    // --- §16.4's kill criterion, evaluated -------------------------------
     println!("========================================================");
     println!("§16.4 kill criterion");
     println!("  \"if the worst-case scene shows pruned tapes above ~100 ops at depth 3,");
@@ -740,21 +693,6 @@ fn main() {
     println!("deliberately not done here (§16.1: wall-clock on the M4 proxy does not port).");
 }
 
-/// How the reconstruction factor scales with output resolution.
-///
-/// Every reconstruction number so far was measured at 512x288 and then used
-/// to reason about 1080p and 4K, which silently assumes the factor is
-/// resolution-independent. It is not, and the direction is the favourable
-/// one: a patch is a quadratic fitted to *world* geometry, so raising the
-/// output resolution does not create new patches at the same rate it creates
-/// new pixels — only the edge set grows, and it grows with edge *length*,
-/// i.e. linearly, against pixels growing quadratically.
-///
-/// Two effects fight: patches survive resolution increases, but the fit
-/// tolerance is stated in pixels of parallax, so it tightens as the pixel
-/// footprint shrinks and patches must get smaller. Which wins is an
-/// empirical question, and it decides whether 4K is reachable — so it is
-/// measured here rather than argued.
 fn recon_sweep(only: &Option<String>) {
     println!("fieldprobe — reconstruction factor vs output resolution");
     println!();
@@ -788,15 +726,6 @@ fn recon_sweep(only: &Option<String>) {
     println!("  whole 4K argument; patch samples that grow with pixels kill it.");
 }
 
-/// E12 — the deformation benchmark.
-///
-/// plans/pixels.md §13.3: "Both scenes are static. §4.2's time-Lipschitz
-/// certificates, §10.1's implicit skinning, and the cost of re-pruning a
-/// moving `smin` cluster every frame are entirely untested. This is the
-/// next benchmark, not the next feature."
-///
-/// Nine poses across a sword swing, camera held still so that everything
-/// measured is attributable to the geometry moving.
 fn deform_bench(w: u32, h: u32, max_depth: u32, base_tile: f32) {
     println!("fieldprobe — E12 deformation (camera static, geometry swinging)");
     println!("resolution {}x{}  poses 9 across one swing", w, h);
@@ -883,23 +812,6 @@ fn deform_bench(w: u32, h: u32, max_depth: u32, base_tile: f32) {
     }
 }
 
-/// The port model: replace §1's "assume ~30% of peak" with a computed bound.
-///
-/// §1 derives 16 fp32 FLOP/cycle/core from two NEON pipes and then assumes
-/// "~30% of peak until measured", which is a reasonable prior for
-/// hand-tuned packet code and a guess all the same. Every resolution number
-/// in plans/pixels.md scales linearly in it.
-///
-/// For *this* loop the assumption is unnecessary. `bench/a76-pi5.toml` pins
-/// both FP/ASIMD pipes (`port_v0`/`port_v1`, SOG §2.1 pipelines 7 and 8,
-/// T1) at `thru 1/1`, so a register-resident branch-free interpreter is
-/// V-port-limited at **2 vector uops per cycle** — and §9.3's register
-/// arithmetic says the measured median pruned tape (28 ops) *is*
-/// register-resident at 4-wide fp32 or 8-wide fp16.
-///
-/// What the table cannot yet supply is per-group ASIMD throughput: it keeps
-/// one coarse `[latency.neon]` row, which cannot separate `FMLA` from
-/// `FSQRT`. Those groups are swept rather than pinned.
 fn cycle_model(w: u32, h: u32, max_depth: u32, base_tile: f32) {
     const GHZ: f64 = 2.4e9;
     const RENDER_CORES: f64 = 2.4;
@@ -931,11 +843,7 @@ fn cycle_model(w: u32, h: u32, max_depth: u32, base_tile: f32) {
                 let uops = fc.v_uops_lane / pk;
                 let cycles = uops / 2.0;
                 let per_px = cycles / fc.pixels as f64;
-                // Frames per second at this resolution, all render cores.
                 let fps = GHZ * RENDER_CORES / cycles;
-                // §1's peak is 16 fp32 FLOP/cycle/core; across the render
-                // share that is 16 * RENDER_CORES per wall-cycle. `cycles`
-                // is total work, so wall-cycles = cycles / RENDER_CORES.
                 let flop_per_wall_cycle = fc.total() / (cycles / RENDER_CORES);
                 let peak = 16.0 * RENDER_CORES;
                 println!(

@@ -1,220 +1,3 @@
-//! Cross-core, barrier, and system-op costs (plans/M20.md item G,
-//! decisions 1602 / 1603 / 1604 / 1609, freeze 1633,
-//! `compiler.costs.crosscore`).
-//!
-//! Inventory rows 17 (`DMB`), 18 (cross-core snoop), 19 (system-register
-//! access), 20 (abort-path entry) and 39 (`STLR` / `LDAR`). **Every one of
-//! them is T5 by absence**: the Cortex-A76 Software Optimization Guide has
-//! no barrier, no load/store-exclusive, no system-register and no prefetch
-//! instruction entry anywhere in its 46 pages, so under decision 1602 none
-//! of these magnitudes may be pinned. `[crosscore]` declares the terms and
-//! carries no numbers; the numbers are `[sweep]` dimensions read through a
-//! [`SweepPoint`]. This module is the whole charge.
-//!
-//! ## What wrela emits (census taken 2026-07-29, in this tree)
-//!
-//! - **6 `@dmb` call sites** in `stdlib/core/runtime.wr` — `:1363` and
-//!   `:1392` `ishst` (ring request / reply publish before the pending
-//!   raise), `:1437` and `:1466` `ishld` (reply / request drain acquire
-//!   before the payload loads), `:1880` `ishst` (a secondary's release
-//!   before it parks) and `:2156` `ishld` (the primary's acquire once the
-//!   secondaries read idle). The plan's research pass recorded **four**;
-//!   the last two arrived with `lane1-per-core.md`'s quiesce work, which
-//!   landed after that pass. One codegen emit site (`Inst::Dmb`) reaches
-//!   all six.
-//! - **6 `STLR` + 4 `LDAR` emit sites** in `codegen.rs`, all on the
-//!   **interrupt-cell** path (`InterruptCellLoadAcquire`,
-//!   `InterruptCellStoreRelease`, and `emit_interrupt_cell_rmw`'s
-//!   swap / fetch-or in both widths). Exactly inventory row 39's count.
-//! - **1 `CostRule::System` emit site**: the async-dispatch `BRK` trap.
-//! - Abort branches on every check (`compiler.codegen.naive-locked`).
-//!
-//! ## Row 17, barrier
-//!
-//! One swept `dmb_cost` for `ishst` and `ishld` alike. **No source
-//! distinguishes them** — the SOG prices neither, and nothing else found
-//! this pass separates a store barrier from a load barrier on this core —
-//! so inventing a distinction would be inventing a fact. Said plainly here
-//! rather than left as an absence.
-//!
-//! The magnitude is small (`dmb_cost` pins its bracket's **low** end, 1 of
-//! 1–64, because it is `removal_sensitive`), but the **ordering** is
-//! charged structurally: a `DMB` sets [`CrossExtra::serializes_window`], so
-//! nothing already in the window may still be in flight when it issues and
-//! nothing later issues before it retires. That is what a barrier *is*, it
-//! needs no magnitude, and it is where nearly all of a barrier's real cost
-//! lives. Charging it structurally rather than as a big coefficient is also
-//! what keeps freeze 1633 honest: see below.
-//!
-//! ## Row 18, cross-core snoop — what is and is not statically decidable
-//!
-//! Decision 1603 says sealed placement makes local-vs-remote static. It
-//! does, but only for part of the stream, and the boundary matters enough
-//! to write down.
-//!
-//! **Decidable from sealed placement + the `MemRef` surface:**
-//!
-//! 1. **Whether a peer core exists at all.** `PlacementTable::cores` is the
-//!    image's sealed `N`. At `N = 1` nothing can be remote — a real,
-//!    sound exclusion, not a default.
-//! 2. **The accessing function's own core**, via
-//!    [`accessing_core`] over `attr::classify_target`: a method or
-//!    `rt_enqueue` of a placed type resolves through that type's sealed
-//!    entry, and `rt_secondary_core_entry k` names core `k` outright.
-//!    Runtime helpers, aborts and free functions are `Shared` — they name
-//!    no core because any core runs them.
-//! 3. **That a frame slot is never remote.** `MemClass::Stack` is proven
-//!    SP-relative, so it is private to the executing core by construction.
-//! 4. **That an `LDAR` is a cross-core acquire.** The acquire half of
-//!    publish/acquire exists *because* another agent wrote the line; that
-//!    is the instruction's whole reason for being emitted. With a peer core
-//!    in the image this is a certain remote verdict, carried by the ISA tag
-//!    itself rather than by an address analysis.
-//! 4b. **That an `STLR` is a cross-core publish.** Point 4 run backwards,
-//!    and it is the same strength of claim: the release half exists
-//!    *because* another agent is going to read the line, so the store has
-//!    to take the line away from whatever core holds it. That
-//!    invalidation / ownership transfer is the same DSU transaction family
-//!    as the load-side snoop and is charged the same swept `snoop_cost`.
-//!
-//!    **This is a write-side charge that used to be missing entirely.**
-//!    Every store classified `Local` by construction, so the publish half
-//!    of cross-core publish/acquire was priced at the swept
-//!    `store_release_cost` alone — pinned 0 — while its acquire half was
-//!    priced at 312. There is no source that makes a coherency event free
-//!    in one direction; the asymmetry was an omission, not a finding, and
-//!    it was an **under**-cost, which is the direction 04 §5 forbids. The
-//!    bracket is shared with the load side (`snoop_cost`, 0–312), so the
-//!    ∀ sweep still visits the point where cross-core traffic is free.
-//!
-//! **Not decidable, and therefore not claimed:**
-//!
-//! 5. **Which core last wrote an arbitrary `MemClass::Cold` line.** A cold
-//!    `MemRef` is either `cold_stable(base_reg, imm)` — a runtime register
-//!    plus an immediate — or `cold_unique(seq)`, an opaque per-push
-//!    sequence. Neither names the placeable, the image section, or the
-//!    writer. So a plain `LDR` of some actor's state field gets
-//!    [`Locality::Unclassified`] and is charged **no** snoop.
-//! 6. **A narrower peer set than "every brought-up core".** Point 2 gives
-//!    the accessing core, but every core the image brings up runs the same
-//!    publish/acquire protocol (`PENDING`, `PARK`, the idle words), so
-//!    every other brought-up core is a possible writer. The accessing
-//!    core is therefore classifiable and *does not narrow the verdict* —
-//!    recorded because it is the natural thing to assume it does.
-//!
-//! **The residual, named in the direction it biases.** Point 5 leaves a
-//! genuinely-remote plain load charged as local — and, symmetrically, a
-//! plain `STR` to a line a peer core holds: an **under**-cost, which is the
-//! direction 04 §5 forbids. It is recorded rather than fixed, and the
-//! alternative is the decision-1609 conflict below. The conflict paragraph
-//! is written about loads because that is the larger population, but it
-//! governs both halves: an unclassifiable cold **store** in a multi-core
-//! image is the same unnameable-owner problem and takes the same verdict.
-//!
-//! ### DECISION 1609 CONFLICT, RECORDED RATHER THAN RESOLVED SILENTLY
-//!
-//! The over-cost repair for point 5 is to charge `snoop_cost` on every
-//! unclassifiable cold load in a multi-core image. That is conservative in
-//! the letter of decision 1609 and destructive in its spirit:
-//! `snoop_cost` pins **312**, so every cold load would cost 347 instead of
-//! 35, the memory term would swamp every other term in the model, and the
-//! credit for *deleting* a load would grow tenfold — the same
-//! removal-sensitivity hazard freeze 1633 names for barriers, on the
-//! largest population of words in the stream. It would also destroy the
-//! very signal row 18 exists to produce: a ruler that charges every load a
-//! snoop cannot show what cross-core traffic costs, because nothing is
-//! local any more.
-//!
-//! No ordering of "accurate" and "conservative" is obvious here, so per the
-//! plan's soundness posture this item **records the conflict** and states
-//! its choice instead of picking quietly: the narrow, statically-certain
-//! classification ships, and the named under-cost at point 5 stands as a
-//! known bias until something in the `MemRef` surface can name a line's
-//! owning placeable. A future item that wants the broad charge must
-//! re-open this paragraph, not just change a coefficient.
-//!
-//! **What bounds the damage today, and what removes that bound.** The
-//! under-cost is only *exploitable* by a transformation that changes which
-//! core reads a line — and this rung lands **no named opt at all**
-//! (freeze 1628), so nothing in the tree can currently spend it. The
-//! transformation that would is **actor co-placement**, which
-//! `plans/M20.md` item M names as a next-rung candidate precisely because
-//! row 18 makes placement a cost question for the first time
-//! (`placement.rs` packs on `(work, bytes)` with no notion of cross-core
-//! traffic). So: **co-placement may not be scored on this ruler until
-//! point 5 is closed.** Attempting it against an unclassifiable-cold-load
-//! model would let a candidate move an actor to another core and pay
-//! nothing for the remote reads it created — a proxy win that implies a
-//! real-machine loss, which is the one thing 04 §5 exists to forbid.
-//!
-//! ## Row 19, system-register access
-//!
-//! SOG §4.10 gives, per register, whether access is non-speculative,
-//! in-order, or carries a flush side-effect — **T1 for *which*, T5 for
-//! cost**. Two halves, charged differently:
-//!
-//! - **Ordering, structurally**: an in-order access is not reordered
-//!   against the window, which is `serializes_window` again — no
-//!   magnitude, so no provenance problem.
-//! - **The flush, swept**: `sysreg_flush_cost` is charged only for a
-//!   system-register **write** ([`system_word_flushes`], decoded from the
-//!   `MSR` register form). The model carries no per-register flush list,
-//!   because wrela has no reason to carry one and inventing one would be
-//!   inventing T1 facts; treating every emitted system-register write as
-//!   flushing is over-broad in the over-cost direction, and that is stated
-//!   rather than assumed.
-//!
-//! **No emitted system word carries a flush side-effect today.** wrela's
-//! only `CostRule::System` word is the async-dispatch `BRK` trap, which is
-//! not a system-register access at all. So the flush term is **live but
-//! unexercised by the emitted stream**, and its oracle is a unit on a
-//! synthetic `MSR` word. Recorded plainly: that is the honest outcome, not
-//! a stub.
-//!
-//! ## Row 20, abort path — and what it says about emit-every-check
-//!
-//! The abort **branch** is charged (it is an ordinary `CostRule::Branch`
-//! word in the checking function) and the handler body is **not**, because
-//! the handler never returns: `__wrela_abort` is scored once as its own
-//! function, not once per check site. This module adds nothing for
-//! `Abort` / `AbortVal`, which is the substance of row 20.
-//!
-//! **Recorded finding.** Under this model the naive "emit every check"
-//! policy (`compiler.codegen.naive-locked`) is **cheap**: each check costs
-//! one compare, one always-not-taken branch and one `BL` word, and the
-//! handler it targets is paid for exactly once for the whole program
-//! however many checks point at it. Nothing about the policy scales with
-//! check count except three words per check, and those words are the
-//! cheapest groups the T1 table has (1 cycle, throughput 3 on port I for
-//! the compare; 1 cycle on the single B pipe for the branch). Item H adds
-//! the other half — an always-not-taken branch is charged ~0 mispredict
-//! under a bias-derived model — and together these are the first
-//! quantitative defence of a core doctrine choice this ruler has been able
-//! to produce.
-//!
-//! ## Row 39, the ordered accesses
-//!
-//! `LDAR` / `STLR` take their plain twin's memory path plus a swept
-//! increment (`load_acquire_cost` / `store_release_cost`, both pinned at
-//! their bracket's low end of 0 because both are `removal_sensitive`).
-//! They are deliberately **not** given `serializes_window`: each orders in
-//! one direction only, and every emitted site sits inside a bracket a
-//! `@dmb` already fences, so charging both as two-way fences would
-//! double-count the bracket.
-//!
-//! ## Freeze 1633
-//!
-//! Barrier cost must never make barrier **removal** profitable, because
-//! barriers are correctness-load-bearing and
-//! `machine.cross-core.publish-acquire-barrier` is a known-risk gap in
-//! plans/BLOCKED.md. That is **not** a coefficient here. It is
-//! [`ordering_removals`], a structural refusal wired into `opts::win`:
-//! a candidate that emits strictly fewer words of any `[crosscore]`-priced
-//! rule than the baseline is refused, whatever the numbers say. It
-//! compares **counts of emitted words**, so no value of any sweep
-//! dimension, table row or coefficient can satisfy it — there is nothing
-//! to tune.
-
 use std::collections::BTreeMap;
 
 use crate::placement::PlacementTable;
@@ -225,23 +8,10 @@ use super::score::{CostReport, CrossExtra};
 use super::sweep::SweepPoint;
 use super::table::CostTable;
 
-// ---------------------------------------------------------------------------
-// The `[crosscore]` terms
-// ---------------------------------------------------------------------------
-
-/// Row 17. `DMB ishst` / `DMB ishld` alike — no source distinguishes them.
 const TERM_DMB: &str = "dmb";
-/// Row 18. Charged **above** the memory model's leaf latency.
 const TERM_SNOOP: &str = "snoop";
-/// Row 19. Charged only for a register §4.10 marks as flushing.
 const TERM_SYSREG_FLUSH: &str = "sysreg_flush";
 
-/// The `[sweep]` dimension a `[crosscore]` term names.
-///
-/// Fails closed rather than defaulting: a missing term would silently
-/// price its whole dimension at 0, which is a discount (decision 1609).
-/// This is the same posture `SweepPoint::get` takes for an undeclared
-/// dimension, for the same reason.
 fn sweep_dim<'t>(table: &'t CostTable, term: &str) -> &'t str {
     &table
         .crosscore(term)
@@ -254,22 +24,10 @@ fn sweep_dim<'t>(table: &'t CostTable, term: &str) -> &'t str {
         .sweep
 }
 
-/// The term's value at `point`.
 fn swept(table: &CostTable, term: &str, point: &SweepPoint) -> u64 {
     point.get(sweep_dim(table, term))
 }
 
-/// The term's value at `point` **above** the pinned value already folded
-/// into the rule's latency.
-///
-/// `[crosscore.dmb]` and `[crosscore.sysreg_flush]` carry no `base`, so
-/// `CostTable::latency` folds their dimension's *pinned* value straight
-/// into `latencies[rule]` — which is also the "the word occupies at least
-/// one cycle" floor both brackets name as their low end. Returning the
-/// full swept value here would double-count that cycle. Both terms are
-/// `removal_sensitive` and therefore pin their bracket's **low** end, so
-/// this difference is never negative; `removal_sensitive_terms_pin_the_low_end`
-/// holds that invariant against a profile edit.
 fn swept_above_pinned(table: &CostTable, term: &str, point: &SweepPoint) -> u64 {
     let dim = sweep_dim(table, term);
     let pinned = table
@@ -279,41 +37,19 @@ fn swept_above_pinned(table: &CostTable, term: &str, point: &SweepPoint) -> u64 
     point.get(dim).saturating_sub(pinned)
 }
 
-// ---------------------------------------------------------------------------
-// Row 18: the static local-vs-remote classification
-// ---------------------------------------------------------------------------
-
-/// What sealed placement can say about the core that last wrote a line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Locality {
-    /// Statically **local**: a frame slot, a non-load, or an image with no
-    /// peer core. Never charged a snoop.
     Local,
-    /// Statically **remote**: the acquire half of cross-core
-    /// publish/acquire, in an image that brings up a peer core.
     Remote,
-    /// A cold line whose writing core the `MemRef` surface cannot name.
-    /// Charged as `Local` — the named under-cost in the module doc's
-    /// decision-1609 conflict, not a claim that it is local.
     Unclassified,
 }
 
 impl Locality {
-    /// True only for a verdict the model is prepared to charge for.
     pub fn is_remote(self) -> bool {
         matches!(self, Locality::Remote)
     }
 }
 
-/// The core the function `fn_key` is sealed to, or `None` when sealed
-/// placement names no single core for it.
-///
-/// `None` covers `Shared` keys (runtime helpers, aborts, free functions —
-/// any core runs them) and the `Err` case where one type is placed on more
-/// than one core. Neither narrows the peer set, so both leave it at its
-/// widest, which is the over-cost direction (decision 1609). Reuses
-/// `attr::classify_target` so there is one mapping from a scored fn key to
-/// a core, not two.
 pub fn accessing_core(fn_key: &str, placement: &PlacementTable) -> Option<usize> {
     match classify_target(fn_key, placement) {
         Ok(AttrTarget::Core(n)) => Some(n),
@@ -321,33 +57,6 @@ pub fn accessing_core(fn_key: &str, placement: &PlacementTable) -> Option<usize>
     }
 }
 
-/// Static local-vs-remote verdict for one emitted word (decision 1603).
-///
-/// The derivation, in the order the code takes it:
-///
-/// 1. Only an access to memory can be a coherency event. A load is served
-///    by a remote cache; a store must take the line away from one. Both
-///    are the same DSU transaction family and both are priced by
-///    `snoop_cost` — see the module doc's write-side paragraph for why
-///    the store half is *not* free.
-/// 2. A `MemClass::Stack` slot is proven SP-relative and therefore private
-///    to the executing core.
-/// 3. A **peer core** must exist. Every core the image brings up runs the
-///    publish/acquire protocol, so the possible-writer set is
-///    `0..placement.cores`; a peer exists when that set holds a core other
-///    than the accessing one. With the accessing core known this reads as
-///    "some other brought-up core", and with it unknown as "more than one
-///    brought-up core" — the same condition, which is exactly the finding
-///    that the accessing core is classifiable but does not narrow the
-///    verdict.
-/// 4. A `LoadAcquire` is then **certainly** remote: the acquire half exists
-///    because another agent wrote the line.
-/// 5. A `StoreRelease` is **certainly** remote by the same argument run
-///    backwards: the release half exists because another agent is going to
-///    read the line, so the store must invalidate whatever copy that agent
-///    holds. Point 4's soundness is the ISA tag, not an address analysis,
-///    and the tag is exactly as informative in this direction.
-/// 6. Anything else cold is `Unclassified`.
 pub fn classify_line(fn_key: &str, ew: &EmittedWord, placement: &PlacementTable) -> Locality {
     if !ew.rule.is_load() && !ew.rule.is_store() {
         return Locality::Local;
@@ -369,37 +78,13 @@ pub fn classify_line(fn_key: &str, ew: &EmittedWord, placement: &PlacementTable)
     Locality::Unclassified
 }
 
-// ---------------------------------------------------------------------------
-// Row 19: which system words flush
-// ---------------------------------------------------------------------------
-
-/// AArch64 `MSR (register)`: `1101 0101 000 1 o0 op1 CRn CRm op2 Rt`.
-/// `MRS` is the same shape with bit 21 set, and `BRK` is not in this space
-/// at all.
 const MSR_REGISTER_MASK: u32 = 0xFFF0_0000;
 const MSR_REGISTER: u32 = 0xD510_0000;
 
-/// True when `word` is a system-register **write**, the family SOG §4.10
-/// documents as (for some registers) carrying a flush side-effect.
-///
-/// The model carries no per-register flush list: §4.10 says *which*
-/// registers flush (T1) but wrela emits no system-register access at all,
-/// so a list here would be speculative ISA coverage (freeze 1630) and
-/// unsourced pinned data (freeze 1629). Treating every system-register
-/// write as flushing is over-broad in the **over-cost** direction, and it
-/// is inert on today's stream: the only emitted `CostRule::System` word is
-/// the async-dispatch `BRK` trap, which is not a system-register access.
 pub fn system_word_flushes(word: u32) -> bool {
     word & MSR_REGISTER_MASK == MSR_REGISTER
 }
 
-// ---------------------------------------------------------------------------
-// The charge
-// ---------------------------------------------------------------------------
-
-/// The whole cross-core charge for one emitted word — `cost/score.rs`'s
-/// `crosscore_extra` seam delegates here so item G's model lives in one
-/// file.
 pub fn charge(
     fn_key: &str,
     ew: &EmittedWord,
@@ -411,37 +96,25 @@ pub fn charge(
     let mut serializes_window = false;
 
     match ew.rule {
-        // Row 17. One swept row for `ishst` and `ishld` alike — no source
-        // distinguishes them. The ordering is the structural half.
         CostRule::Barrier => {
             extra_cycles = swept_above_pinned(table, TERM_DMB, point);
             serializes_window = true;
         }
-        // Row 19. Ordering always (§4.10's in-order, non-speculative
-        // accesses, and a trap is certainly not reordered); the swept
-        // flush only for a system-register write.
         CostRule::System => {
             serializes_window = true;
             if system_word_flushes(ew.word) {
                 extra_cycles = swept_above_pinned(table, TERM_SYSREG_FLUSH, point);
             }
         }
-        // Row 39. Increments on the plain twin's `[latency]` row; not
-        // fences (see the module doc).
         CostRule::LoadAcquire | CostRule::StoreRelease => {
             if let Some(dim) = table.crosscore_extra_dim(ew.rule) {
                 extra_cycles = point.get(dim);
             }
         }
-        // Row 20. The abort branch is an ordinary `Branch` word and is
-        // already charged; the handler never returns, so there is no
-        // handler body to charge here. Named rather than defaulted.
         CostRule::Abort | CostRule::AbortVal => {}
         _ => {}
     }
 
-    // Row 18. Above the memory model's leaf latency (item F owns that
-    // path; this is an increment on top of it, never a reach into it).
     if classify_line(fn_key, ew, placement).is_remote() {
         extra_cycles = extra_cycles.saturating_add(swept(table, TERM_SNOOP, point));
     }
@@ -452,19 +125,6 @@ pub fn charge(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Freeze 1633: the structural barrier-removal refusal
-// ---------------------------------------------------------------------------
-
-/// The rules whose whole cost is a `[crosscore]` term: `barrier`,
-/// `system`, `load_acquire`, `store_release`. Derived from
-/// `CostRule::is_crosscore` rather than listed, so the refusal set cannot
-/// drift from the table's own notion of what a cross-core term prices.
-///
-/// Freeze 1633 names the barrier. The other three are the same hazard by
-/// their own profile rows: `sysreg_flush_cost`, `load_acquire_cost` and
-/// `store_release_cost` are each `removal_sensitive = true` with an
-/// `ambiguity` note citing this freeze.
 pub fn ordering_rules() -> Vec<CostRule> {
     CostRule::ALL
         .iter()
@@ -473,25 +133,12 @@ pub fn ordering_rules() -> Vec<CostRule> {
         .collect()
 }
 
-/// Ordering-word counts keyed by **(fn key, rule)**.
-///
-/// Per fn, not per program: a whole-program total is evadable by
-/// *relocation* — delete the barrier on the hot path, add one in cold code,
-/// and the totals match while the cycles improve. Freeze 1633 is about
-/// where an ordering word is, not how many exist.
 pub type OrderingCounts = BTreeMap<(String, &'static str), u64>;
 
-/// Emitted-word counts for every ordering rule in a scored program, per fn.
-/// Always the full rule set for every fn, so a rule absent from a fn reads
-/// as 0 rather than as a missing key.
 pub fn ordering_word_counts(report: &CostReport) -> OrderingCounts {
     ordering_word_counts_of(&report.fns)
 }
 
-/// [`ordering_word_counts`] over the per-fn rows alone — the lean scoring
-/// path's entry (plans/codegen-pareto-2.md item R, decision 1961). The
-/// whole report is more than this census needs, and the sweep does not
-/// build one.
 pub fn ordering_word_counts_of(fns: &[crate::cost::score::FnCost]) -> OrderingCounts {
     let mut out: OrderingCounts = BTreeMap::new();
     for f in fns {
@@ -512,8 +159,6 @@ pub fn ordering_word_counts_of(fns: &[crate::cost::score::FnCost]) -> OrderingCo
     out
 }
 
-/// Program-wide totals per rule, for reporting only. **Not** the refusal
-/// input — see [`OrderingCounts`] for why the totals are evadable.
 pub fn ordering_word_totals(counts: &OrderingCounts) -> BTreeMap<&'static str, u64> {
     let mut out: BTreeMap<&'static str, u64> = ordering_rules()
         .iter()
@@ -525,7 +170,6 @@ pub fn ordering_word_totals(counts: &OrderingCounts) -> BTreeMap<&'static str, u
     out
 }
 
-/// One rule one fn emits strictly fewer words of than the baseline.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrderingRemoval {
     pub fn_key: String,
@@ -535,8 +179,6 @@ pub struct OrderingRemoval {
 }
 
 impl OrderingRemoval {
-    /// Stable label for a veto/refusal report (04 §5 requires every reason
-    /// that fires to be reported).
     pub fn label(&self) -> String {
         format!(
             "ordering_words_removed:{}:{}:{}->{}",
@@ -545,22 +187,6 @@ impl OrderingRemoval {
     }
 }
 
-/// **Freeze 1633, structurally.** Every (fn, ordering rule) pair the
-/// candidate emits fewer words of than the baseline.
-///
-/// A non-empty result is a refusal, not a ranking input: barriers and the
-/// ordered accesses are correctness-load-bearing, so the gate may never
-/// credit their deletion however the cycles come out. This compares
-/// **counts of emitted words** — there is no coefficient, sweep dimension
-/// or table row whose value can make a removed word un-removed, which is
-/// what makes the rule impossible to tune around.
-///
-/// It is keyed per fn for a second reason: a program-wide total is
-/// impossible to tune around but perfectly possible to *move* around. A fn
-/// present in the baseline and absent from the candidate reads as having
-/// lost all of its ordering words — deleting the fn that held the barrier
-/// is the same evasion wearing a different hat, and the refusal makes it a
-/// deliberate human decision rather than a silent credit.
 pub fn ordering_removals(
     baseline: &OrderingCounts,
     candidate: &OrderingCounts,
@@ -609,8 +235,6 @@ mod tests {
         EmittedWord::new(enc, String::new(), rule, dst, srcs)
     }
 
-    /// A cold-unique load (never a reuse hit), in either ordered or plain
-    /// form, so "same reuse distance" is literally the same MemRef.
     fn cold_load(rule: CostRule, seq: u64) -> EmittedWord {
         word(rule, Some(1), &[0]).with_mem(MemRef::cold_unique(seq))
     }
@@ -647,7 +271,6 @@ mod tests {
         }
     }
 
-    /// One core, one placeable: no peer can have written anything.
     fn single_core() -> PlacementTable {
         PlacementTable {
             entries: vec![entry(ImageDeclRef::Actor(0), "Foo", 0)],
@@ -655,7 +278,6 @@ mod tests {
         }
     }
 
-    /// Three cores with placeables on two of them — the flagship shape.
     fn three_cores() -> PlacementTable {
         PlacementTable {
             entries: vec![
@@ -681,19 +303,11 @@ mod tests {
             .total_proxy_cycles
     }
 
-    // --- row 18: the placement oracle --------------------------------------
-
-    /// **The oracle proving placement is actually consulted.** The same
-    /// `LDAR` word, the same `MemRef`, the same reuse distance (none — a
-    /// cold unique key always misses), scored under two placements. Only
-    /// `PlacementTable` differs, and the remote one costs `snoop_cost`
-    /// more.
     #[test]
     fn a_remote_load_costs_more_than_the_identical_local_load() {
         let code = || vec![cold_load(CostRule::LoadAcquire, 0)];
         let local = total("Foo.turn", code(), &single_core());
         let remote = total("Foo.turn", code(), &three_cores());
-        // lat_l3 = 35, load_acquire_cost pinned 0, snoop_cost pinned 312.
         assert_eq!(local, 35, "one core: nothing can be remote");
         assert_eq!(
             remote,
@@ -704,7 +318,6 @@ mod tests {
             remote > local,
             "remote {remote} must exceed local {local} at equal reuse distance"
         );
-        // And the charge really is the swept dimension, not a constant.
         let lo = pinned().with("snoop_cost", 0);
         assert_eq!(
             total_at("Foo.turn", code(), &three_cores(), &lo),
@@ -713,65 +326,47 @@ mod tests {
         );
     }
 
-    /// The verdict boundary, stated as assertions so the module doc's
-    /// "what I can and cannot classify" list is executable.
     #[test]
     fn locality_classifies_exactly_what_placement_decides() {
         let three = three_cores();
         let one = single_core();
 
-        // (4) an LDAR with a peer core: certainly remote.
         assert_eq!(
             classify_line("Foo.turn", &cold_load(CostRule::LoadAcquire, 0), &three),
             Locality::Remote
         );
-        // (1) no peer core: local, whatever the rule.
         assert_eq!(
             classify_line("Foo.turn", &cold_load(CostRule::LoadAcquire, 0), &one),
             Locality::Local
         );
-        // (5) a plain cold load: the MemRef names no writer.
         assert_eq!(
             classify_line("Foo.turn", &cold_load(CostRule::Load, 0), &three),
             Locality::Unclassified
         );
-        // (3) a frame slot is private to the executing core.
         let stack = word(CostRule::LoadAcquire, Some(1), &[31]).with_mem(MemRef::stack(8));
         assert_eq!(classify_line("Foo.turn", &stack, &three), Locality::Local);
-        // (4b) an STLR with a peer core: certainly remote. The publish half
-        // of publish/acquire has to take the line away from whatever core
-        // holds it, and that is the same DSU transaction the acquire half
-        // pays for. Charging it in one direction only was an omission.
         let rel = word(CostRule::StoreRelease, None, &[0]).with_mem(MemRef::cold_unique(1));
         assert_eq!(classify_line("Foo.turn", &rel, &three), Locality::Remote);
         assert_eq!(classify_line("Foo.turn", &rel, &one), Locality::Local);
-        // A plain cold store is the write-side twin of (5): the MemRef
-        // names no owner, so it is the same recorded under-cost.
         let str_cold = word(CostRule::Store, None, &[0]).with_mem(MemRef::cold_unique(2));
         assert_eq!(
             classify_line("Foo.turn", &str_cold, &three),
             Locality::Unclassified
         );
-        // A frame slot store stays private however many cores exist.
         let str_stack = word(CostRule::Store, None, &[31]).with_mem(MemRef::stack(8));
         assert_eq!(
             classify_line("Foo.turn", &str_stack, &three),
             Locality::Local
         );
-        // A non-memory word is never a coherency event.
         assert_eq!(
             classify_line("Foo.turn", &word(CostRule::Alu, Some(1), &[0]), &three),
             Locality::Local
         );
-        // Only `Remote` is chargeable — `Unclassified` is the named
-        // under-cost, not a second remote verdict.
         assert!(Locality::Remote.is_remote());
         assert!(!Locality::Unclassified.is_remote());
         assert!(!Locality::Local.is_remote());
     }
 
-    /// `fn_key` is load-bearing: sealed placement resolves a method key
-    /// through its type's entry and a secondary-core entry key by name.
     #[test]
     fn accessing_core_comes_from_sealed_placement() {
         let three = three_cores();
@@ -779,11 +374,8 @@ mod tests {
         assert_eq!(accessing_core("Bar.turn", &three), Some(1));
         assert_eq!(accessing_core("rt_enqueue Bar", &three), Some(1));
         assert_eq!(accessing_core("rt_secondary_core_entry 2", &three), Some(2));
-        // Runtime helpers name no core — any core runs them.
         assert_eq!(accessing_core("__wrela_abort", &three), None);
         assert_eq!(accessing_core("free_helper", &three), None);
-        // A type on two cores names no single core either; the peer set
-        // stays at its widest rather than picking one.
         let split = PlacementTable {
             entries: vec![
                 entry(ImageDeclRef::Actor(0), "Foo", 0),
@@ -792,9 +384,6 @@ mod tests {
             cores: 2,
         };
         assert_eq!(accessing_core("Foo.turn", &split), None);
-        // The recorded finding: the accessing core is classifiable but
-        // does not narrow the verdict, because every brought-up core runs
-        // the publish/acquire protocol.
         for key in [
             "Foo.turn",
             "Bar.turn",
@@ -809,14 +398,6 @@ mod tests {
         }
     }
 
-    // --- row 17: the barrier -----------------------------------------------
-
-    /// A `DMB` costs more than an `ADD`. Not from the coefficient — at the
-    /// pinned point `dmb_cost` is 1, the same as an `ADD`'s latency — but
-    /// from the **ordering**: a barrier may not issue until everything
-    /// already in the window has retired. A 35-cycle cold load in front of
-    /// it makes that visible, and the `ADD` control shows the difference is
-    /// the fence and not the word.
     #[test]
     fn a_dmb_costs_more_than_an_add() {
         let one = single_core();
@@ -830,8 +411,6 @@ mod tests {
         assert_eq!(with_add, 35, "an independent ADD hides under the load");
         assert_eq!(with_dmb, 36, "the barrier waits for the load to retire");
         assert!(with_dmb > with_add);
-        // A later word may not pass the barrier either — the fence is live
-        // in both directions.
         let after = total(
             "f",
             vec![
@@ -846,7 +425,6 @@ mod tests {
             1 + 35,
             "the load cannot issue before the barrier retires"
         );
-        // And the swept magnitude reaches the schedule at the box's far end.
         let hi = pinned().with("dmb_cost", 64);
         assert_eq!(
             total_at("f", vec![word(CostRule::Barrier, None, &[])], &one, &hi),
@@ -860,8 +438,6 @@ mod tests {
         );
     }
 
-    /// `ishst` and `ishld` are charged identically: **no source
-    /// distinguishes them**, so the model does not either.
     #[test]
     fn ishst_and_ishld_share_one_swept_row() {
         let t = table();
@@ -876,24 +452,11 @@ mod tests {
         assert_eq!(sweep_dim(&t, TERM_DMB), "dmb_cost");
     }
 
-    // --- row 19: the system word ------------------------------------------
-
-    /// A flush-side-effect register write serializes the window while an
-    /// NZCV write does not.
-    ///
-    /// The NZCV half is a genuine cross-check on item E/I: NZCV and SP are
-    /// fully renamed on A76 (SOG §4.10 note 1), so a flag write must *not*
-    /// fence, and the same 35-cycle load in front makes both halves
-    /// observable on one shape.
     #[test]
     fn a_flushing_register_write_serializes_but_an_nzcv_write_does_not() {
         let one = single_core();
         let load = || cold_load(CostRule::Load, 0);
-        // `MSR TTBR0_EL1, x0` — op0=3 (o0 bit set), op1=0, CRn=2, CRm=0,
-        // op2=0, Rt=0: the MSR (register) form, not the MRS read.
         let msr = word_enc(0xD518_2000, CostRule::System, None, &[0]);
-        // Reads only registers the load does not write, so the only thing
-        // that could delay it is a fence.
         let nzcv = EmittedWord::new(0, String::new(), CostRule::Alu, None, &[5, 6])
             .with_flags(FlagEffect::Write);
 
@@ -908,8 +471,6 @@ mod tests {
             "an in-order system access waits for the window to drain"
         );
 
-        // The flush *charge* is what separates a register write from a
-        // trap, and it is swept: at the box's far end only the MSR moves.
         let t = table();
         let hi = pinned().with("sysreg_flush_cost", 64);
         let brk = word_enc(crate::encode::enc_brk(1), CostRule::System, None, &[]);
@@ -920,31 +481,19 @@ mod tests {
         );
         assert_eq!(charge("f", &msr, &t, &hi, &one).extra_cycles, 63);
         assert_eq!(charge("f", &brk, &t, &hi, &one).extra_cycles, 0);
-        // Both are ordered, though: a trap is certainly not reordered.
         assert!(charge("f", &msr, &t, &pinned(), &one).serializes_window);
         assert!(charge("f", &brk, &t, &pinned(), &one).serializes_window);
-        // `MRS` is a read, not a write: not charged the flush.
         assert!(!system_word_flushes(0xD530_0000));
     }
 
-    /// The emitted stream contains **no** flushing system word, so the
-    /// flush term is live but unexercised. Pinned as a finding: if codegen
-    /// ever emits an `MSR`, this fails and the term stops being inert
-    /// deliberately rather than by accident.
     #[test]
     fn no_emitted_system_word_carries_a_flush_side_effect() {
         assert!(
-            // `codegen::BRK_ASYNC_DISPATCH_NO_STATE_MATCHED` (private).
             !system_word_flushes(crate::encode::enc_brk(0xACD4)),
             "the only emitted CostRule::System word is the async-dispatch BRK trap"
         );
     }
 
-    // --- row 39: the ordered accesses -------------------------------------
-
-    /// The swept `LoadAcquire` / `StoreRelease` increments are live: an
-    /// ordered access costs **at least** as much as the plain word it
-    /// replaces, at every point of its bracket.
     #[test]
     fn ordered_accesses_never_cost_less_than_their_plain_twin() {
         let one = single_core();
@@ -982,15 +531,10 @@ mod tests {
                     ordered.as_str()
                 );
             }
-            // Pinned at the bracket's low end, so the canonical dump is
-            // unmoved (freeze 1633's family).
             assert_eq!(row.pinned, row.lo);
         }
     }
 
-    /// The ordered halves are increments, **not** fences: their sites sit
-    /// inside a `@dmb`-fenced bracket, so fencing them too would
-    /// double-count the bracket.
     #[test]
     fn ordered_accesses_do_not_serialize_the_window() {
         let t = table();
@@ -1006,18 +550,11 @@ mod tests {
         }
     }
 
-    // --- row 20: the abort path -------------------------------------------
-
-    /// The abort **branch** is charged and no handler body is: the handler
-    /// never returns, so it is scored once for the whole program however
-    /// many check sites target it. This is why "emit every check" is cheap
-    /// under this model.
     #[test]
     fn the_abort_branch_is_charged_but_no_handler_body_is() {
         let t = table();
         let p = pinned();
         let one = single_core();
-        // The cross-core model adds nothing to an abort site.
         for rule in [CostRule::Abort, CostRule::AbortVal] {
             assert_eq!(
                 charge("f", &word(rule, None, &[0]), &t, &p, &one),
@@ -1027,9 +564,6 @@ mod tests {
             );
         }
 
-        // A handler with a body, and a checker with N abort sites: the
-        // total grows with the checker's words and **not** with N copies of
-        // the handler.
         let handler: Vec<EmittedWord> = (0..20)
             .map(|i| word(CostRule::Alu, Some((i % 8) + 1), &[9, 9]))
             .collect();
@@ -1083,15 +617,12 @@ mod tests {
             .expect("handler")
             .proxy_cycles;
         assert!(handler_cost > 0, "the handler body is scored once");
-        // Three extra check sites cost strictly less than one extra copy of
-        // the handler would.
         let growth = four_sites.total_proxy_cycles - one_site.total_proxy_cycles;
         assert!(
             growth < handler_cost,
             "3 more checks cost {growth}, which must stay below one handler body \
              {handler_cost} — the handler never returns, so it is not per-site"
         );
-        // And the handler really is counted once, not once per site.
         assert_eq!(
             four_sites
                 .fns
@@ -1103,10 +634,6 @@ mod tests {
         );
     }
 
-    // --- freeze 1633 -------------------------------------------------------
-
-    /// The refusal set is the `[crosscore]`-priced rules, derived rather
-    /// than listed.
     #[test]
     fn ordering_rules_are_the_crosscore_priced_ones() {
         let names: Vec<&str> = ordering_rules().iter().map(|r| r.as_str()).collect();
@@ -1116,8 +643,6 @@ mod tests {
         );
     }
 
-    /// Counting is over emitted words, summed across functions, with every
-    /// rule present at 0.
     #[test]
     fn ordering_word_counts_sum_over_fns() {
         let mk = |key: &str, pairs: &[(&str, u64)]| FnCost {
@@ -1140,9 +665,6 @@ mod tests {
             total_proxy_cycles: 0,
             total_words: 0,
             owner_totals: BTreeMap::new(),
-            // Item F's per-core budget: empty here on purpose. This fixture
-            // exercises the freeze-1633 ordering-word refusal, which reads
-            // Term counts alone and must fire whatever the footprint says.
             footprint: Vec::new(),
             fns: vec![
                 mk("a", &[("barrier", 2), ("alu", 99), ("load_acquire", 1)]),
@@ -1153,7 +675,6 @@ mod tests {
             workload_coverage: BTreeMap::new(),
         };
         let counts = ordering_word_counts(&report);
-        // Per fn, so relocation between fns is visible.
         assert_eq!(counts[&("a".to_string(), "barrier")], 2);
         assert_eq!(counts[&("b".to_string(), "barrier")], 4);
         assert_eq!(counts[&("a".to_string(), "load_acquire")], 1);
@@ -1165,7 +686,6 @@ mod tests {
         );
         assert_eq!(counts.len(), 8, "no non-ordering rule leaks in: 2 fns x 4");
 
-        // The program-wide totals are still available for reporting.
         let totals = ordering_word_totals(&counts);
         assert_eq!(totals["barrier"], 6);
         assert_eq!(totals["load_acquire"], 1);
@@ -1174,8 +694,6 @@ mod tests {
         assert_eq!(totals.len(), 4);
     }
 
-    /// **Freeze 1633.** Removing an ordering word is a refusal; adding or
-    /// keeping one is not.
     #[test]
     fn ordering_removals_fire_only_on_a_drop() {
         let counts = |b: u64, l: u64, s: u64, y: u64| -> OrderingCounts {
@@ -1203,10 +721,7 @@ mod tests {
             }]
         );
         assert_eq!(dropped[0].label(), "ordering_words_removed:f:barrier:6->5");
-        // Every dropped rule is reported, not just the first.
         assert_eq!(ordering_removals(&base, &counts(0, 0, 0, 0)).len(), 4);
-        // A missing key is a drop to 0 — the `--omit-dmb` shape, where the
-        // candidate emits no barrier word at all.
         let mut missing = base.clone();
         missing.remove(&("f".to_string(), "barrier"));
         assert_eq!(
@@ -1220,9 +735,6 @@ mod tests {
         );
     }
 
-    /// **The relocation evasion the program-wide total could not see.**
-    /// Delete the barrier on the hot path, add one in cold code: the totals
-    /// match exactly, so a net count passes it. Per fn it is a refusal.
     #[test]
     fn moving_a_barrier_between_fns_is_a_removal_even_at_equal_totals() {
         let side = |hot: u64, cold: u64| -> OrderingCounts {
@@ -1249,8 +761,6 @@ mod tests {
             }]
         );
 
-        // Deleting the fn that held the barrier is the same evasion wearing
-        // a different hat, and reads as a drop to 0.
         let recreated = BTreeMap::from([(("new".to_string(), "barrier"), 2u64)]);
         assert_eq!(
             ordering_word_totals(&base),
@@ -1267,13 +777,6 @@ mod tests {
         );
     }
 
-    // --- provenance invariants this module depends on ----------------------
-
-    /// `swept_above_pinned` is only sound because `dmb_cost` and
-    /// `sysreg_flush_cost` pin their bracket's **low** end (freeze 1633's
-    /// family). If a profile edit ever pinned them high, the subtraction
-    /// would saturate to 0 and quietly stop sweeping — so the invariant is
-    /// asserted here rather than assumed.
     #[test]
     fn removal_sensitive_terms_pin_the_low_end() {
         let t = table();
@@ -1288,20 +791,11 @@ mod tests {
             assert_eq!(row.pinned, row.lo, "{dim} must pin its low end");
             assert!(row.ambiguity.is_some(), "{dim} must record its ambiguity");
         }
-        // And none of these may carry a magnitude in `[crosscore]` — item
-        // D's parser refuses one; this asserts the shape the model reads.
         for term in [TERM_DMB, TERM_SNOOP, TERM_SYSREG_FLUSH] {
             assert!(t.crosscore(term).is_some(), "[crosscore.{term}] required");
         }
     }
 
-    /// A missing `[crosscore]` term fails closed rather than pricing its
-    /// dimension at 0 — `snoop` is the reachable case, since it names no
-    /// `CostRule` and so its absence is not caught by the "every rule
-    /// priced" check.
-    // `#[should_panic]` first so `#[test]` sits directly above the `fn`:
-    // a textual scan attributes this name by finding a
-    // `#[test]` immediately followed by that function.
     #[should_panic(expected = "[crosscore.snoop] is required")]
     #[test]
     fn a_missing_crosscore_term_fails_closed() {

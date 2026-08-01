@@ -1,6 +1,5 @@
 module lib.tag
 
-# plans/M9.md item C2 fixture: deriving(Format) on a fieldful struct.
 
 pub struct Tag deriving(Format):
     pub n: u32

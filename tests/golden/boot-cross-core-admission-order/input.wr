@@ -1,32 +1,5 @@
 module examples.boot_cross_core_admission_order
 
-# plans/M8.md item C3, decision 42 — the workload the admission recorder is
-# measured against, and the one image in the corpus where two *different*
-# producing cores admit into one mailbox.
-#
-# `boot-cross-core-two-senders` already carries two cross-core messages, but
-# both of its senders sit on core 0, so both recorded `Admission` entries
-# read `mailbox=Sink sender=core0` and are indistinguishable from one
-# another. Here `Near` is on core 0 and `Far` is on core 2, and both message
-# `Sink` on core 1 — so `Sink`'s recorded admission sequence names two
-# different cores, in an order a tamper can invert. That is what makes the
-# recording an *order* rather than a count.
-#
-# Why `Far` uses a bare `send` rather than an `await`: an `await` inside a
-# turn placed on a secondary core is refused by item C2's decision 31
-# (`golden/err-cross-core-checkpoint`), because `__wrela_checkpoint_service`
-# names core 0's pending word by construction. A proven `send`
-# (02-language.md §9.4 — one static site, mailbox capacity 8) needs no
-# checkpoint, so a secondary core can produce into another core's mailbox
-# today, which is exactly the fact this golden needs.
-#
-# **plans/M15.md item I retarget.** Under the baton, both messages sat in
-# their rings before Sink drained, so drain order (src=0 then src=2) made
-# Near's await return `1`. Under overlapping `hv_vcpu_run`, Sink may drain
-# Far's earlier-published `+10` alone before Near publishes — Near then
-# returns `11`. Guest-visible fact that still holds: both messages admit,
-# and the final total is `11`. The choice log still records the observed
-# order; `xtask repro` checks replay + Progress/Admission tampers.
 
 @actor
 pub struct Sink:
@@ -35,16 +8,10 @@ pub struct Sink:
     init(mut self):
         self.n = 0
 
-    # The `await` target: accumulates and reports the running total, so the
-    # value it returns is evidence of what was admitted before it.
     pub fn add(mut self, by: u64) -> u64:
         self.n = self.n + by
         return self.n
 
-    # The bare-`send` target. 02-language.md §9.4 requires a `send`'s
-    # method to return `unit` — there is no reply channel for a statement
-    # that keeps none — which is why the two directions are two methods on
-    # one mailbox rather than one method used two ways.
     pub fn bump(mut self, by: u64) -> unit:
         self.n = self.n + by
         return unit
@@ -86,8 +53,6 @@ async fn admission_order_across_two_cores(near: Actor[Near], far: Actor[Far], si
     @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match x:
         case .Ok(n):
-            # 1 = Near admitted first (drain order with both pending);
-            # 11 = Far drained alone before Near published (overlap).
             ok: u64 = 0
             if n == 1:
                 ok = 1

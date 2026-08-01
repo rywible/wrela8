@@ -1,6 +1,5 @@
 module examples.err_reserve_descriptors
 
-# plans/M7.md item E2: machine v1's virtio-blk op is exactly 3 descriptors.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

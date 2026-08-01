@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/boot_deadline_driver_turn.wr sha256=bf454ea40e3d5aa1767bf129416a08e5d1261273b345bb3b4ed888c42edc86d7
+  Input path=examples/boot_deadline_driver_turn.wr sha256=8cd1d87209b026b9a7a492e4614d7d950b8e99e705fc9cc255127a3a44887e0a
   Input path=<generated> sha256=f4f57c3f80bd9391fcc40d56ff866ecd686885c3daf5894011f1932455371d3c
   Name value=boot-deadline-driver-turn
   Target value=Target.wrela_machine_v1

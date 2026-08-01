@@ -1,8 +1,5 @@
 module examples.err_isr_float_via_helper
 
-# plans/M7.md item G: forbidden effect reached through a helper — the
-# diagnostic names the call path ISR -> helper. The helper returns unit
-# so the call site itself is not float-typed.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

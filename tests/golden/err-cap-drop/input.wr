@@ -1,8 +1,5 @@
 module examples.err_cap_drop
 
-# 02-language.md §3.1 / values.resource.protocol-consumption: a taken
-# DeviceCap whose only consumer is claim must be consumed, returned, or
-# transferred — dropping it is a compile error naming the path.
 
 struct BlockHw:
     id: u32

@@ -1,32 +1,5 @@
 module examples.err_layout_offset_overflow
 
-# plans/M7.md item I (the adversarial sweep), 03-hardware.md §3: "For
-# every `@layout` type the compiler reports exact size, offsets, padding,
-# and endianness".
-#
-# `@offset(n)` decodes any `n` a `u64` holds, and `check_one_layout` then
-# did `offset + size` twice — once to decide whether a mis-ordered field
-# *overlaps* its predecessor, and once to advance the layout cursor.
-# Neither addition was checked.
-#
-# WHAT THAT WAS. In a debug build, `wrela dump --stage=layout-types` on
-# this file panicked ("attempt to add with overflow") out of
-# `sema/types.rs` — a crash, not a diagnostic. In a release build the
-# addition would have *wrapped*: `cursor` would become 0, so this layout
-# would report `size=0`. A zero-byte `@layout(dma)` type is a DMA pool of
-# `count` slots and zero bytes of backing (`img.dma_pool`'s own
-# `count × sizeof(T)`), and every subsequent field would be accepted at
-# offset 0 on top of every other — the exact fail-open 03 §2/§3 exist to
-# prevent, produced by a declaration a user can write.
-#
-# It is rejected before either addition runs now, by the fact that is
-# actually wrong: the field's last byte does not exist.
-#
-# Sibling rejections, each its own golden: `err-layout-offset-outside`
-# (an `@offset` inside a *non*-`@layout` struct), `err-layout-overlap`
-# (two fields sharing bytes), `err-layout-order` (descending offsets),
-# `err-layout-unaligned-offset` (an `@offset` its own width does not
-# divide).
 
 @layout(dma, endian=little)
 struct Huge:

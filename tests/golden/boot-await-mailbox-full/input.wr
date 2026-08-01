@@ -1,14 +1,5 @@
 module examples.boot_await_mailbox_full
 
-# plans/M10.md item J — `CallError::NotAdmitted` is a real deliverable.
-#
-# 02-language.md §9.4 names this outcome by name: `NotAdmitted(Admission)
-# # never ran: mailbox full`. Until item J the turn record had one scalar
-# reply word and no tag, so a rejected `await` enqueue had nothing honest
-# to deliver and aborted (M6 item H3's legible abort). The reply tag makes
-# `Ok` / `Cancelled` / `NotAdmitted` three values on the same channel;
-# filling a two-slot mailbox then `await`ing resolves `Err(NotAdmitted)`
-# and the test continues.
 
 @actor
 pub struct Logger:

@@ -1,8 +1,5 @@
 module examples.cost_runtime
 
-# Cost-stage golden (plans/M18.md item K) — `@test(runtime)` force-roots
-# `core.runtime` into the asm/cost emit set so Owner name=runtime is
-# nonzero (contrast cost-arith / cost-calls, which stay app-only).
 
 @test(runtime)
 pub fn probe_seed():

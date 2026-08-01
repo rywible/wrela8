@@ -1,16 +1,5 @@
 module examples.err_send_no_image
 
-# plans/M6.md item G, decision 5, the fail-closed floor: a build closure
-# with no `@image` fn declares no mailbox anywhere, so it can prove
-# nothing and every bare `send` statement is rejected — 02-language.md
-# §9.4's "otherwise the result must be consumed".
-#
-# This is item A's own `golden/err-send-bare-unproven` program, kept
-# byte-identical below the module line and renamed to the condition it
-# actually pins now that the proof exists (that case's old blanket
-# rejection — every bare `send`, proof or no proof — is superseded by
-# `golden/check-send-proven` + this err corpus; see the ledger clause
-# `actors.send.statement-requires-proof`).
 
 @actor
 pub struct Logger:

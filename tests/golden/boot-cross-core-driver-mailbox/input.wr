@@ -1,26 +1,5 @@
 module examples.boot_cross_core_driver_mailbox
 
-# plans/M8.md item H attack 5: the intersection item C2's thin list named —
-# an `@actor` on one core sending to a `mailbox=` `@driver` on another,
-# over a real Hypervisor.framework boot.
-#
-# Item C2 made cross-core sends to an `@actor` mailbox real
-# (`golden/boot-cross-core-call`); item D made a `mailbox=` `@driver`
-# messageable (`golden/boot-driver-message`). Nothing tested both at once.
-# Decision 28 already says a messageable driver is an ordinary ring
-# destination; this golden is the oracle that the intersection runs.
-#
-# **Why a one-way `send`, not an `await`.** An await-resume is a checkpoint
-# (06 §4), and decision 31 refuses checkpoints on a secondary core — so a
-# core-1 turn that `await`s the driver cannot build today. The satisfiable
-# lift is per-core checkpoint services. The witness therefore uses a
-# consumed `send` from `Probe` on core 1 into `Stub` on core 0 (no park on
-# core 1), then a same-core root await of `Stub.count`. The asserted `1` is
-# impossible unless `Ring kind=request src=1 dst=0 target=Stub` delivered
-# into the driver's mailbox and the turn ran.
-#
-# Vacuity: change `core=1` to `core=0` and the Stub request ring disappears
-# from the report (same-core send keeps the mailbox path).
 
 struct Hw:
     id: u32
@@ -49,11 +28,6 @@ pub struct Probe:
     init(mut self, disk: Actor[Stub]):
         self.disk = disk
 
-    # No await, no loop: nothing emits a CheckpointService reloc, so this
-    # turn is legal on core 1 (decision 31 keys off that reloc). The send
-    # is consumed rather than bare — `send_proof` still counts only
-    # `@actor` mailboxes for capacity (a disclosed residual), so a bare
-    # `send` to a driver is never proven infallible today.
     pub async fn fire(read self) -> unit:
         r = send self.disk.note()
         @discard(reason="migrated: deliberate Err discard (M13 item L)")
@@ -65,8 +39,6 @@ pub struct Probe:
 
 @test(runtime)
 async fn cross_core_send_into_driver_mailbox(p: Actor[Probe], d: Actor[Stub]):
-    # Cross-core call to Probe on core 1; Probe's body one-way-sends into
-    # Stub on core 0 over the request ring.
     r = await p.fire()
     @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match r:
@@ -74,8 +46,6 @@ async fn cross_core_send_into_driver_mailbox(p: Actor[Probe], d: Actor[Stub]):
             pass
         case .Err(_):
             assert false, "Probe.fire rejected"
-    # Same-core await of the driver: the counter can only be 1 if the ring
-    # delivered Probe's send into Stub's mailbox and the turn ran.
     v = await d.count()
     @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match v:

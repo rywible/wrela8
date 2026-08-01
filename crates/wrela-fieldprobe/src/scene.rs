@@ -1,42 +1,7 @@
-//! The two scenes plans/graphics.md §16.2 demands, and their specs.
-//!
-//! **The specs are written before the geometry, on purpose.** These numbers
-//! are only as honest as two hand-authored scenes written by someone who
-//! wants the answer to be yes. The mitigation is to fix the budget — op
-//! count, blend count, blend width, screen coverage — from what the design
-//! actually claims, build to it, and print the realised statistics next to
-//! every result so a reader can judge whether the answer was bought.
-//!
-//! If the hard-surface scene comes back at 3% blend-band fraction, the first
-//! question is not "§2.3 is a pillar" but "does this scene have enough
-//! blends in it to be a game".
-//!
-//! # Known optimism, stated up front
-//!
-//! - Displacement is a sum of sinusoids, not hashed-gradient `fbm`
-//!   (`Builder::displace_sin`). Sinusoids are smooth and band-limited, so
-//!   they enclose far better under affine arithmetic than real noise would.
-//!   Every displaced-surface number here is therefore an upper bound on how
-//!   well the real thing behaves.
-//! - Both scenes are static. §4's temporal machinery is exercised only by
-//!   the camera-pose pair, not by deforming geometry.
-//! - No instance BVH: every scene is one monolithic tape, which is the
-//!   pessimistic choice for tape length and the optimistic one for culling.
-
 use crate::atlas::Aabb;
 use crate::camera::Camera;
 use crate::tape::{Builder, Tape};
 
-/// A camera path with a whip in the middle.
-///
-/// §16.2's worst case is "camera whipping" and §4.4 calls it reprojection's
-/// weakest point, but a single pose pair cannot show what a *frame budget*
-/// experiences: frame time is set by the worst frame, not the mean, and the
-/// worst frame is somewhere inside the acceleration. So the path ramps from
-/// rest to a peak angular rate and back, and every frame is costed.
-///
-/// `peak_deg` is degrees of orbit per frame at the top of the ramp. A fast
-/// human flick is ~300-500 deg/s, so ~10-16 deg per frame at 30 Hz.
 fn whip_path(base: &Camera, target: [f32; 3], n: usize, peak_deg: f32) -> Vec<Camera> {
     let r = {
         let d = [
@@ -50,7 +15,6 @@ fn whip_path(base: &Camera, target: [f32; 3], n: usize, peak_deg: f32) -> Vec<Ca
     let mut out = Vec::with_capacity(n);
     let mut ang = 0.0f32;
     for i in 0..n {
-        // Smooth accelerate/decelerate: a raised cosine over the path.
         let u = i as f32 / (n - 1).max(1) as f32;
         let rate = peak_deg * (1.0 - (std::f32::consts::TAU * u).cos()) * 0.5;
         ang += rate.to_radians();
@@ -69,42 +33,18 @@ pub struct Scene {
     pub name: &'static str,
     pub tape: Tape,
     pub cam: Camera,
-    /// Second camera pose, for §4.4's reprojection measurement. Scene B's is
-    /// a hard whip; scene A's is a slow dolly.
     pub cam2: Camera,
     pub t_near: f32,
     pub t_far: f32,
     pub spec: &'static str,
-    /// Root box for the baked atlas (§13's certified accelerator).
     pub bounds: Aabb,
-    /// Motion sequence for the per-frame budget test.
     pub path: Vec<Camera>,
 }
 
-/// Scene A — "colonnade".
-///
-/// §16.2 case 1: *hard-surface architecture with smoothed seams, moderate
-/// instance count, a static camera path. Tests the optimistic case.*
-///
-/// Budget, fixed before construction:
-/// - 8-column colonnade by domain repetition, period 2.0
-/// - every seam smoothed at k ≤ 0.03 (architecture-grade fillets)
-/// - one wall with three smoothly-subtracted window openings
-/// - a stepped platform, hard unions only
-/// - ground displaced 2 octaves, amplitude 0.02 — inside the §6.4 margin
-/// - target 200–450 ops, ≥ 8 blend nodes, subject covering ≳ 50% of screen
 pub fn colonnade(w: u32, h: u32) -> Scene {
     colonnade_amp(w, h, 0.02, "colonnade")
 }
 
-/// The same scene with displacement switched off.
-///
-/// A control, not a scene. The interior certificate needs `∂f/∂t ≠ 0` over a
-/// cell, and on a grazing surface `∂f/∂t` is small — a displacement whose own
-/// slope is comparable to it makes the enclosure straddle zero and the
-/// certificate is refused. §9.3 calls mid-frequency displacement a *band* to
-/// populate; this pair measures what that band costs §2.1. Without a control
-/// the rejection rate is a number with two candidate explanations.
 pub fn colonnade_flat(w: u32, h: u32) -> Scene {
     colonnade_amp(w, h, 0.0, "colonnade-flat")
 }
@@ -113,7 +53,6 @@ fn colonnade_amp(w: u32, h: u32, amp: f32, name: &'static str) -> Scene {
     let mut b = Builder::new();
     let p = b.point();
 
-    // Ground: displaced plane.
     let ground = b.plane_y(p, 0.0);
     let ground = if amp > 0.0 {
         b.displace_sin(ground, p, amp, 1.7, 2, 0.0)
@@ -121,7 +60,6 @@ fn colonnade_amp(w: u32, h: u32, amp: f32, name: &'static str) -> Scene {
         ground
     };
 
-    // Colonnade: repeat along X with period 2.0, eight bays.
     let rx = b.rep(p[0], 2.0);
     let cp = [rx, p[1], p[2]];
     let shaft = b.cylinder_y(cp, 0.22, 1.4);
@@ -131,15 +69,12 @@ fn colonnade_amp(w: u32, h: u32, amp: f32, name: &'static str) -> Scene {
     let cap = b.round_box(cap_p, [0.34, 0.14, 0.34], 0.03);
     let col = b.smin(shaft, base, 0.03);
     let col = b.smin(col, cap, 0.03);
-    // Architrave spanning the bays.
     let arch_p = b.translate(cp, [0.0, 1.74, 0.0]);
     let arch = b.round_box(arch_p, [1.05, 0.16, 0.30], 0.02);
     let col = b.smin(col, arch, 0.025);
-    // Clip the repetition to eight bays with a slab.
     let bay_slab = b.boxd(p, [8.0, 4.0, 0.45]);
     let colonnade = b.max(col, bay_slab);
 
-    // Back wall with three windows.
     let wall_p = b.translate(p, [0.0, 1.6, -3.2]);
     let wall = b.round_box(wall_p, [5.0, 1.7, 0.22], 0.02);
     let win_x = b.rep(wall_p[0], 2.4);
@@ -147,7 +82,6 @@ fn colonnade_amp(w: u32, h: u32, amp: f32, name: &'static str) -> Scene {
     let win = b.round_box(win_p, [0.55, 0.9, 0.5], 0.05);
     let wall = b.ssubtract(wall, win, 0.02);
 
-    // Stepped platform: hard unions, no fillet.
     let s0 = b.translate(p, [0.0, 0.06, 1.6]);
     let s0 = b.boxd(s0, [4.0, 0.06, 0.5]);
     let s1 = b.translate(p, [0.0, 0.18, 2.1]);
@@ -167,7 +101,6 @@ fn colonnade_amp(w: u32, h: u32, amp: f32, name: &'static str) -> Scene {
         name,
         tape,
         cam,
-        // Slow dolly: the optimistic temporal case.
         cam2: Camera::look_at([1.16, 1.55, 5.31], [0.02, 1.15, 0.0], 55.0, w, h),
         bounds: Aabb {
             lo: [-26.0, -25.0, -26.0],
@@ -186,41 +119,11 @@ fn colonnade_amp(w: u32, h: u32, amp: f32, name: &'static str) -> Scene {
     }
 }
 
-/// Scene B — "melee".
-///
-/// §16.2 case 2: *a `smin` character cluster mid-swing, camera whipping.
-/// This one scene stresses three assumptions simultaneously — `smin`
-/// clusters do not prune, blend bands force marching, and a whipping camera
-/// is reprojection's weakest case. This is the scene that will tell the
-/// truth.*
-///
-/// Budget, fixed before construction:
-/// - 4 figures within a 2.5-unit cluster, limbs blended at k = 0.08
-/// - bodies unioned to each other hard (separate solids, per §10.1)
-/// - one swung blade plus its §10.3 swept-volume torus segment, k ≈ 0.06
-/// - target 400–700 ops, ≥ 24 blend nodes
-/// - camera close enough that figures fill the frame; second pose is a 14°
-///   whip, which is ~2.5× a fast human flick at 30 Hz
 pub fn melee(w: u32, h: u32) -> Scene {
     melee_at(w, h, 0.35)
 }
 
-/// The melee scene at a point in a sword swing, `swing` in `0.0..1.0`.
-///
-/// Every measurement in plans/pixels.md before this one was taken on a
-/// *static* scene: §16.2's "character cluster mid-swing" was a pose, not a
-/// motion, and §6's camera whip moved the camera while the geometry stood
-/// still. That leaves §10's animation machinery and §4.2's time-Lipschitz
-/// certificates untested, which is the one remaining unknown that could
-/// change the design's shape rather than its constants.
-///
-/// The swing follows §10.2's arc-and-pace factoring: the blade tip travels
-/// an arc and the *timing* along it carries the weight, so the angular rate
-/// peaks in the middle where a real swing snaps. That is deliberately the
-/// stress case — peak deformation rate coincides with peak blend-band
-/// overlap between arm, blade and swept volume.
 pub fn melee_at(w: u32, h: u32, swing: f32) -> Scene {
-    // Slow, SNAP, settle: rate peaks at the midpoint.
     let s_curve = 0.5 - 0.5 * (std::f32::consts::PI * swing).cos();
     melee_build(w, h, s_curve)
 }
@@ -232,7 +135,6 @@ fn melee_build(w: u32, h: u32, sw: f32) -> Scene {
     let ground = b.plane_y(p, 0.0);
 
     let mut bodies: Vec<u32> = Vec::new();
-    // (x, z, facing, phase) — clustered, overlapping silhouettes.
     let figs = [
         (0.0f32, 0.0f32, 0.35f32, 0.0f32),
         (0.85, -0.55, -0.9, 1.1),
@@ -249,15 +151,10 @@ fn melee_build(w: u32, h: u32, sw: f32) -> Scene {
         let head_p = b.translate(fp, [0.0, 1.52, 0.0]);
         let head = b.sphere(head_p, 0.15);
 
-        // Arms swing out of phase, so the blend bands overlap differently
-        // per figure — the point of the cluster.
         let arm_l_p = b.translate(fp, [-0.28, 1.18, 0.0]);
         let arm_l_p = b.rot_z(arm_l_p, 0.5 + 0.35 * ph.sin());
         let arm_l = b.capsule_y(arm_l_p, 0.24, 0.075);
 
-        // Figure 0's right arm drives the swing; the others idle out of
-        // phase so the cluster's blend bands move relative to each other
-        // rather than rigidly.
         let swing_ang = if i == 0 {
             -0.35 - 1.75 * sw
         } else {
@@ -275,7 +172,6 @@ fn melee_build(w: u32, h: u32, sw: f32) -> Scene {
         let leg_r_p = b.rot_z(leg_r_p, -0.12 * ph.cos());
         let leg_r = b.capsule_y(leg_r_p, 0.34, 0.088);
 
-        // Generous limb blends: this is what §16.2 says will not prune.
         let body = b.smin(torso, head, 0.08);
         let body = b.smin(body, arm_l, 0.08);
         let body = b.smin(body, arm_r, 0.08);
@@ -283,13 +179,9 @@ fn melee_build(w: u32, h: u32, sw: f32) -> Scene {
         let body = b.smin(body, leg_r, 0.08);
 
         let body = if i == 0 {
-            // The swing: blade, plus the §10.3 swept volume as a torus
-            // segment — the smear frame, one primitive.
             let hand_p = b.translate(fp, [0.42, 1.25, 0.10]);
             let hand_p = b.rot_z(hand_p, swing_ang - 0.8);
             let blade = b.round_box(hand_p, [0.035, 0.46, 0.011], 0.008);
-            // §10.3's smear: the swept volume grows with angular rate,
-            // which peaks mid-swing. A torus segment, one primitive.
             let rate = (std::f32::consts::PI * sw).sin();
             let swept_p = b.translate(fp, [0.30, 1.22, 0.0]);
             let swept_p = b.rot_z(swept_p, swing_ang * 0.5);
@@ -302,7 +194,6 @@ fn melee_build(w: u32, h: u32, sw: f32) -> Scene {
         bodies.push(body);
     }
 
-    // Bodies do not blend into each other — separate solids (§10.1).
     let mut cluster = bodies[0];
     for &x in &bodies[1..] {
         cluster = b.union(cluster, x);
@@ -316,7 +207,6 @@ fn melee_build(w: u32, h: u32, sw: f32) -> Scene {
         name: "melee",
         tape,
         cam,
-        // 14° whip about the subject in one 30 Hz frame.
         cam2: Camera::look_at([2.02, 1.38, 1.98], [0.0, 1.05, -0.35], 60.0, w, h),
         bounds: Aabb {
             lo: [-19.0, -18.0, -19.0],

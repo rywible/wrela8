@@ -1,1 +1,1 @@
-error[name]: `Mmio` is a capability type (03-hardware.md §1) and cannot be bound by an import: no import creates one at 13:18
+error[name]: `Mmio` is a capability type (03-hardware.md §1) and cannot be bound by an import: no import creates one at 4:18

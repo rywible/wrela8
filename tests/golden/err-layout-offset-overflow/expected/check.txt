@@ -1,1 +1,1 @@
-error[type]: field `Huge.z: u8` at offset 0xffffffffffffffff is 1 byte(s) wide, so its last byte lies past the end of a 64-bit address space; a `@layout` type's offsets and size are exact (03-hardware.md §3) at 34:33
+error[type]: field `Huge.z: u8` at offset 0xffffffffffffffff is 1 byte(s) wide, so its last byte lies past the end of a 64-bit address space; a `@layout` type's offsets and size are exact (03-hardware.md §3) at 7:33

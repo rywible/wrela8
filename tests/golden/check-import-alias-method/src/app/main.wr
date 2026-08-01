@@ -2,15 +2,6 @@ module app.main
 
 from lib.counter import Counter as Cnt
 
-# plans/M9.md item DD: an aliased imported type's methods resolve.
-# Before DD, `Cnt(n=1).get()` reported `error[type]: type `Counter` has
-# no method `get`` — construction under the alias worked, but the
-# synthesized `Type::Named` still carried the exporter's spelling, so
-# method lookup keyed on a name the importer's table never held.
-#
-# Four shapes under one alias, each pinned by value: a missing mut
-# write-back yields M=10 (settle 207); a wrong assoc that somehow
-# returned a bare zero without constructing still cannot forge 217.
 
 const Z: u32 = Cnt.zero().get()
 const R: u32 = Cnt(n=1).get()
@@ -27,7 +18,6 @@ fn take_path() -> u32:
 const M: u32 = mut_path()
 const T: u32 = take_path()
 
-# settle = Z*1000 + R*100 + M*10 + T = 0 + 100 + 110 + 7 = 217
 const SETTLED: u32 = Z * 1000 + R * 100 + M * 10 + T
 
 @test
@@ -51,8 +41,6 @@ pub fn t_settled():
     assert SETTLED == 217, "all four under one settle"
 
 
-# Guest-reachable path (plans/M9.md item KK): H3 dropped aliased methods from
-# asm; `@test(runtime)` seeds all four receiver shapes.
 @test(runtime)
 pub fn guest_alias_method():
     assert Cnt.zero().get() == 0, "assoc at guest"

@@ -1,49 +1,15 @@
-//! The abstract syntax tree (02-language.md, whole chapter).
-//!
-//! Shape decisions frozen by plans/M1.md (item C): plain enums/structs, one
-//! file, no arena — `Box` for recursion, `Vec` for sequences, nothing
-//! generic (decision 4); every node carries a `line:col` span, u32 pairs, no
-//! byte offsets (decision 3).
-//!
-//! Item D (plans/M1.md) replaces the item-D-era placeholders with the full
-//! grammar of chapter 02: declarations, types, statements, expressions, and
-//! patterns. Two module-scope and member-scope `comptime if` shapes exist
-//! (`ComptimeIfItem` / `ComptimeIfMember`) rather than one generic node,
-//! per decision 4 (nothing generic).
-//!
-//! F-strings (§1.1) are segmented into literal/interpolation parts at parse
-//! time using the lexer's brace-balance scan, but interpolation contents are
-//! **not** recursively parsed in M1 — each `Interp` keeps its raw source text
-//! and span only; a later milestone parses it as an expression.
-//!
-//! plans/M2.md item B adds `PartialEq, Eq` throughout (every shape above is
-//! unchanged; nothing here stops being "plain"): sema's `Type` (decision 4 —
-//! `derive(PartialEq, Eq, Clone, Debug)`, structural, no interning) keeps
-//! array lengths, `Bytes[N]`'s length, and generic const arguments as
-//! unevaluated `Expr`s embedded directly in itself rather than evaluating
-//! them early (item H evaluates the literal subset), so `Expr` — and
-//! everything it recursively reaches, `Stmt`/`Pattern` included, via
-//! `Closure`/`Is` — needs the same derives for `Type`'s own to compile.
-
-/// A source position, `(line, col)`, both 1-based — matches lexer::Token.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Span {
     pub line: u32,
     pub col: u32,
 }
 
-/// A `##` doc comment attached to the declaration (or module) immediately
-/// following it. Consecutive `##` lines join with `\n`; `text` has the one
-/// conventional leading space (`## text`) stripped, if present.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Doc {
     pub span: Span,
     pub text: String,
 }
 
-/// `@name` or `@name(arg, key=value, ...)` (02-language.md §13). Arguments
-/// share the call-argument shape (`Arg`) minus the `mut`/`take` mirroring,
-/// which is meaningless for comptime attribute arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Attr {
     pub span: Span,
@@ -51,19 +17,15 @@ pub struct Attr {
     pub args: Vec<Arg>,
 }
 
-/// One `module path.name` file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Module {
     pub span: Span,
-    /// Dotted path segments, e.g. `["examples", "tokens"]`.
     pub path: Vec<String>,
-    /// A doc comment directly preceding the `module` header, if any.
     pub doc: Option<Doc>,
     pub imports: Vec<Import>,
     pub items: Vec<Item>,
 }
 
-/// One imported name, with its optional `as Alias`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportName {
     pub span: Span,
@@ -71,22 +33,17 @@ pub struct ImportName {
     pub alias: Option<String>,
 }
 
-/// `[pub] from path.to.module import Name [as Alias][, ...]`, including the
-/// parenthesized multi-line list form (02-language.md §2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Import {
     pub span: Span,
     pub is_pub: bool,
-    /// Dotted `from` path segments.
     pub path: Vec<String>,
     pub names: Vec<ImportName>,
 }
 
-/// One top-level declaration (02-language.md §§4-7, §12; 03-hardware.md §3.1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Item {
     Const(ConstItem),
-    /// Module-level placed static (03-hardware.md §3.1, plans/M10.md item A2c).
     Static(StaticItem),
     Fn(FnItem),
     Struct(StructItem),
@@ -95,8 +52,6 @@ pub enum Item {
     ComptimeIf(ComptimeIfItem),
 }
 
-/// `[pub] const NAME [: Type] = expr` (02-language.md §12: a `const`
-/// initializer is a comptime context).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConstItem {
     pub span: Span,
@@ -108,9 +63,6 @@ pub struct ConstItem {
     pub value: Expr,
 }
 
-/// `[pub] static NAME: Type` (03-hardware.md §3.1): a module-level static of
-/// a `@layout(runtime)` type. No initializer — the bytes live at the address
-/// `@placed(ADDR)` binds. plans/M10.md item A2c / decision 586.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StaticItem {
     pub span: Span,
@@ -121,14 +73,12 @@ pub struct StaticItem {
     pub ty: Type,
 }
 
-/// A compile-time generic parameter: `T` (type) or `const N: usize` (value).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GenericParam {
     Type { span: Span, name: String },
     Const { span: Span, name: String, ty: Type },
 }
 
-/// `read` (the unwritten default) / `mut` / `take` (02-language.md §3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccessMode {
     Read,
@@ -146,16 +96,12 @@ impl AccessMode {
     }
 }
 
-/// The receiver parameter of a method: `read self` / `mut self` / `take
-/// self`, or bare `self` (`mode: None` — the unwritten default,
-/// 02-language.md §5.1). Explicit `read` is `Some(AccessMode::Read)`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Receiver {
     pub span: Span,
     pub mode: Option<AccessMode>,
 }
 
-/// One non-receiver parameter: `[mode] name: Type [= default]`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Param {
     pub span: Span,
@@ -165,11 +111,6 @@ pub struct Param {
     pub default: Option<Expr>,
 }
 
-/// `[pub] [async] fn NAME[generics](params) -> Ret: body` (02-language.md
-/// §5). `body` is `None` only for the rare bodyless signature shorthand a
-/// few doc tables use to describe a desugar target (05-language.md §8) —
-/// see the parser's `parse_fn_common` doc comment for the fail-closed
-/// reasoning; every real declaration has a body.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FnItem {
     pub span: Span,
@@ -185,8 +126,6 @@ pub struct FnItem {
     pub body: Option<Vec<Stmt>>,
 }
 
-/// `init(mut self, ...) [-> Result[unit, E]]: body` (02-language.md §7.1).
-/// Never `pub`, never generic — deliberate, per the docs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InitItem {
     pub span: Span,
@@ -198,9 +137,6 @@ pub struct InitItem {
     pub body: Vec<Stmt>,
 }
 
-/// `[pub] name: Type [= default]` struct field, with its own attrs (field-
-/// position attributes like `@offset(0x060)` land here, 02-language.md
-/// §13/03-hardware.md).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldItem {
     pub span: Span,
@@ -212,7 +148,6 @@ pub struct FieldItem {
     pub default: Option<Expr>,
 }
 
-/// One member of a `struct`/`resource struct` body.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Member {
     Field(FieldItem),
@@ -222,16 +157,12 @@ pub enum Member {
     ComptimeIf(ComptimeIfMember),
 }
 
-/// `[pub] [resource[(manual)]] struct NAME[generics] [deriving(...)]:` body
-/// (02-language.md §7.1, §7.5; §3.1 `resource(manual)` — plans/M13.md item O).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructItem {
     pub span: Span,
     pub name: String,
     pub is_pub: bool,
     pub is_resource: bool,
-    /// `resource(manual) struct` — withholds the derived reclaim action
-    /// (02-language.md §3.1 third bullet). Implies `is_resource`.
     pub is_manual_resource: bool,
     pub doc: Option<Doc>,
     pub attrs: Vec<Attr>,
@@ -240,8 +171,6 @@ pub struct StructItem {
     pub members: Vec<Member>,
 }
 
-/// A closed-sum variant payload: none, a positional tuple, or named fields
-/// (both forms bind positionally in match patterns — 02-language.md §7.2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VariantPayload {
     None,
@@ -263,11 +192,6 @@ pub struct Variant {
     pub payload: VariantPayload,
 }
 
-/// `[pub] enum NAME[generics] [deriving(...)]:` body (02-language.md §7.2,
-/// §7.5). Variants and methods/associated fns may interleave; the parser
-/// distinguishes them by the next token (`fn`/`pub`/`async` vs an ident).
-/// `members` holds only `Member::Fn` — an enum has no fields/`init`/`pool`
-/// (plans/M9.md item B2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnumItem {
     pub span: Span,
@@ -281,9 +205,6 @@ pub struct EnumItem {
     pub members: Vec<Member>,
 }
 
-/// `pool NAME` (02-language.md §4) — an image- or actor-scoped pool name
-/// binding. Grammatically `pub`-less (the pool name's visibility follows its
-/// owner), so there is no `is_pub` here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PoolItem {
     pub span: Span,
@@ -292,11 +213,6 @@ pub struct PoolItem {
     pub attrs: Vec<Attr>,
 }
 
-/// `comptime if ... : ... [comptime else: ...]` at declaration scope
-/// (02-language.md §12). Mirrors `ComptimeIfMember` at member scope and
-/// `ComptimeIfStmt` at statement scope — three near-identical shapes over
-/// three different content types, per decision 4 (nothing generic in the
-/// AST).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ComptimeIfItem {
     pub span: Span,
@@ -317,11 +233,6 @@ pub struct ComptimeIfMember {
     pub else_branch: Option<Vec<Member>>,
 }
 
-// --- types (02-language.md §6) ---------------------------------------------
-
-/// A generic argument at a type's use site: a type, a bounded-occupancy
-/// marker (`..N`), or a plain comptime expression (an integer/const-name
-/// argument, or a data-carrying expression like `256.KiB`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GenericArg {
     Type(Type),
@@ -329,8 +240,6 @@ pub enum GenericArg {
     Expr(Expr),
 }
 
-/// `Name[args...]` — a named type, possibly with generic arguments
-/// (`u64`, `never`, `unit`, `BootError`, `Option[T]`, `Bytes[..N]`, ...).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NamedType {
     pub span: Span,
@@ -338,7 +247,6 @@ pub struct NamedType {
     pub args: Vec<GenericArg>,
 }
 
-/// `[T; N]` — fixed array type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArrayType {
     pub span: Span,
@@ -346,15 +254,12 @@ pub struct ArrayType {
     pub len: Expr,
 }
 
-/// `(A, B)` / one-element `(T,)` — tuple type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TupleType {
     pub span: Span,
     pub elems: Vec<Type>,
 }
 
-/// `own[P] T` — pool handle (02-language.md §4). `pool` is the dotted pool
-/// path (`Name` or `Owner.Name`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnType {
     pub span: Span,
@@ -369,7 +274,6 @@ pub struct FnTypeParam {
     pub ty: Type,
 }
 
-/// `fn(read T, mut U) -> R` — function type (02-language.md §8.3).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FnType {
     pub span: Span,
@@ -398,18 +302,12 @@ impl Type {
     }
 }
 
-// --- patterns (02-language.md §7.2) -----------------------------------------
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Pattern {
     Wildcard(Span),
-    /// A literal pattern, including a unary-negated numeric literal.
     Literal(Span, Expr),
     Binding(Span, String),
-    /// `take` in payload position, wrapping the bound name.
     Take(Span, Box<Pattern>),
-    /// `.Name(...)` or `Enum.Name(...)`; payload binds positionally
-    /// regardless of whether the variant was declared with named fields.
     Variant {
         span: Span,
         enum_name: Option<String>,
@@ -418,7 +316,6 @@ pub enum Pattern {
     },
     Tuple(Span, Vec<Pattern>),
     Array(Span, Vec<Pattern>),
-    /// `p1 | p2 | ...` — same bindings, same types, in every alternative.
     Or(Span, Vec<Pattern>),
 }
 
@@ -436,8 +333,6 @@ impl Pattern {
         }
     }
 }
-
-// --- expressions (02-language.md §8.2) --------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnaryOp {
@@ -496,10 +391,6 @@ impl BinOp {
     }
 }
 
-/// One call/constructor argument: `[label=][mut|take] value`. The mirrored
-/// `mut`/`take` marker's operand must be a place expression (name, field,
-/// index, or a parenthesized place — parens are transparent, dropped at
-/// parse time) — checked where the argument is parsed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Arg {
     pub span: Span,
@@ -529,10 +420,6 @@ pub struct ClosureExpr {
     pub body: ClosureBody,
 }
 
-/// One segment of an interpolated string literal. `Interp` keeps the
-/// interior as raw text at parse time; `sema::fstring::desugar_fstring`
-/// (plans/M9.md item D) parses it and rewrites the f-string onto
-/// `.format()` + `String` concat before typing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FStringPart {
     Literal(Span, String),
@@ -557,12 +444,9 @@ pub enum Expr {
     Unit(Span),
     Name(Span, String),
     Field(Box<Expr>, Span, String),
-    /// `expr[args...]` — indexing or a generic-instantiation bracket; the
-    /// parser does not disambiguate the two (that is a semantic question).
     Index(Box<Expr>, Span, Vec<Expr>),
     Call(Box<Expr>, Span, Vec<Arg>),
     Unary(Span, UnaryOp, Box<Expr>),
-    /// Postfix `?`.
     Try(Span, Box<Expr>),
     Binary(Span, BinOp, Box<Expr>, Box<Expr>),
     Range(Span, Box<Expr>, Box<Expr>, bool),
@@ -570,26 +454,11 @@ pub enum Expr {
     Not(Span, Box<Expr>),
     And(Span, Box<Expr>, Box<Expr>),
     Or(Span, Box<Expr>, Box<Expr>),
-    /// Leading-dot enum reference in expression position: `.Variant` or
-    /// `.Variant(args)`.
     DotVariant(Span, String, Vec<Arg>),
     Closure(ClosureExpr),
-    /// `send actor.method(...)` used as a value (02-language.md §9.4): most
-    /// often a bare statement, but `match send logger.record(...):`
-    /// matches directly on the `Result`/`never` it produces, so `send` is
-    /// also a prefix expression form wrapping its (always-a-call) operand.
     Send(Span, Box<Expr>),
     Tuple(Span, Vec<Expr>),
-    /// `[a, b, c]` — a list literal. Not shown in 02-language.md's own
-    /// grammar summary, but used throughout its examples and the virtio
-    /// worked example wherever a bounded container is built from a
-    /// bracketed list (feature sets, child lists, seed files); the docs are
-    /// normative in the sense that they must parse, so this is treated as
-    /// an ordinary primary expression alongside literals and closures.
     List(Span, Vec<Expr>),
-    /// `[elem; N]` — array-repeat (plans/M9.md item F1, decision 343).
-    /// Sema desugars to a fixed `[T; N]` list of `N` copies; `N` is a
-    /// comptime usize expression (literal or const-generic name).
     ArrayRepeat(Span, Box<Expr>, Box<Expr>),
 }
 
@@ -626,14 +495,9 @@ impl Expr {
     }
 }
 
-/// Is `expr` a place (name, field, index, or a parenthesized place — parens
-/// are dropped at parse time so this needs no explicit case for them):
-/// 02-language.md §3/§5.1, the operand of a mirrored `mut`/`take` marker.
 pub fn is_place_expr(expr: &Expr) -> bool {
     matches!(expr, Expr::Name(..) | Expr::Field(..) | Expr::Index(..))
 }
-
-// --- statements (02-language.md §8.1, §9.4, §10) ----------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AssignOp {
@@ -706,15 +570,9 @@ pub struct MatchStmt {
     pub span: Span,
     pub scrutinee: Expr,
     pub arms: Vec<MatchArm>,
-    /// Optional `@discard(reason="...")` statement attribute
-    /// (02-language.md §13 / plans/M13.md item L / decision 9) — permits
-    /// a deliberate `Err` discard on an await/send/`?` `Result`.
     pub discard: Option<Attr>,
 }
 
-/// `for [take] name in iterable: body` (02-language.md §8.1).
-/// Optional `budget` is the statement-attribute `@budget(bound=N)` that
-/// immediately preceded this loop (02 §8.1 / §13; plans/M11.md decision 721).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForStmt {
     pub span: Span,
@@ -730,7 +588,6 @@ pub struct WhileStmt {
     pub span: Span,
     pub cond: Expr,
     pub body: Vec<Stmt>,
-    /// See [`ForStmt::budget`].
     pub budget: Option<Attr>,
 }
 
@@ -783,13 +640,8 @@ pub enum Stmt {
     Assert(AssertStmt),
     Defer(DeferStmt),
     With(WithStmt),
-    /// `send actor.method(...)` (02-language.md §9.4). The operand is
-    /// always a call expression.
     Send(Span, Expr),
     Expr(Span, Expr),
-    /// `@dmb(ishst)` / `@dmb(ishld)` — runtime-only data-memory barrier
-    /// (plans/M15.md item H, decisions 1080–1085). Standalone statement
-    /// attribute; sema refuses outside `stdlib/core/runtime.wr`.
     Dmb(Attr),
     ComptimeIf(ComptimeIfStmt),
     ComptimeAssert(Span, Expr, Option<Expr>),

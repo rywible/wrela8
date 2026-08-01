@@ -1,7 +1,5 @@
 module lib.validated
 
-# plans/M13.md item P: Validated as resource(manual) idiom — private
-# field seals minting to this module; into_value unwraps via take self.
 
 pub resource(manual) struct Validated:
     value: u64

@@ -1,23 +1,5 @@
 module examples.boot_actors
 
-# plans/M6.md item F flagship, decision 4's own flip witness for
-# `actors.turns.non-reentrant` (02-language.md §9.2: "An external message
-# starts a turn. The actor keeps it until the handler returns, errors, or
-# abandons; awaiting a dependency lets other actors run but admits no new
-# message into this actor.").
-#
-# `Ledger.marks` is a decimal trace: every `mark(n)` appends one digit, and
-# each `mark` is its own complete sync turn, so the digit order IS the order
-# the Ledger's mailbox admitted them (04-compiler.md §2: "selection is FIFO
-# per mailbox by admission order").
-#
-# The root `send`s TWO messages to `Worker` before awaiting anything, so
-# `quick` is sitting in Worker's mailbox for the whole span `slow` is parked
-# on its first await. Non-reentrancy says `quick` cannot start until `slow`
-# returns, giving marks = 123. A reentrant actor would have admitted `quick`
-# while `slow` was parked, and its `mark(3)` would have been enqueued behind
-# `mark(1)` but ahead of `mark(2)` — marks = 132. The two schedules are
-# distinguishable by exactly one assertion.
 
 @actor
 pub struct Ledger:
@@ -61,8 +43,6 @@ pub struct Worker:
                 pass
         return unit
 
-    # Admitted third, so it runs only once both turns above have completed —
-    # the root's own synchronization point.
     pub async fn report(read self) -> u64:
         r = await self.led.read_marks()
         @discard(reason="migrated: deliberate Err discard (M13 item L)")

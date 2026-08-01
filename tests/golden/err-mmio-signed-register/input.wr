@@ -1,8 +1,5 @@
 module examples.err_mmio_signed_register
 
-# plans/M7.md item H1 self-audit — an MMIO register declared `i32`
-#
-# What this case would catch: a signed register width. This backend emits only unsigned widths; a sign-extending load does not exist and zero-extending would be wrong.
 
 @layout(mmio, endian=little)
 struct Regs:

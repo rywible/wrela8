@@ -1,8 +1,5 @@
 module examples.err_map_partition_outside_driver
 
-# plans/M7.md item H1 self-audit — `map_partition` from a free function (no `self`)
-#
-# What this case would catch: a partition called outside any `@driver` method — there is no enclosing claim to partition.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

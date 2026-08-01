@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/check_placement_cross.wr sha256=d155d632a719e33894f05675e999e135404f3bace8551fecd47b920f2af90772
+  Input path=examples/check_placement_cross.wr sha256=cd12aa038bfc9a52a9d85c3932559d3d28fcb1ba43b75cce6c44e8b7fef28bbd
   Input path=<generated> sha256=d37bca01a5d6d2035f86e82b90abc85629e0b49b0496d318fd53048579ed29cc
   Name value=placement-cross
   Target value=Target.wrela_machine_v1

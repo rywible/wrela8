@@ -1,38 +1,3 @@
-//! Recursive-descent parser: token stream -> `ast::Module` (02-language.md,
-//! whole chapter). A hand-written `Parser` struct with `pos` plus small
-//! peek/bump/expect helpers (CLAUDE.md: no combinators, no traits, no
-//! lookahead machinery) — dumb and correct: one function per grammar
-//! production, precedence realized as a chain of functions (parse_or ->
-//! parse_and -> ... -> parse_postfix -> parse_primary), no Pratt tables.
-//!
-//! Item D (plans/M1.md) replaces the item-C token-skip with the full
-//! grammar. Two entry points exist: `parse` (a complete `module ...` file)
-//! and `parse_fragment`/`parse_any` (a bare sequence of items and/or
-//! statements with no `module` header) — most illustrative code blocks in
-//! docs/language/*.md are not full modules, so the corpus driver
-//! (xtask's `corpus` command) needs a lenient top-level entry point too.
-//! `parse_fragment` returns the parsed `FragmentEntry` sequence (not just a
-//! yes/no) because item E's oracles (xtask's `fuzz parser`/`roundtrip`)
-//! need real content to dump and pretty-print, exactly like a module's.
-//!
-//! Suite parsing note: `()[]{}` suppress NEWLINE/INDENT/DEDENT in the lexer
-//! (02-language.md §1) — except a `:` immediately followed by a newline
-//! opens a *layout island* (lexer.rs's module doc comment) that resumes
-//! real layout tokens for exactly that suite, so a suite-form closure body
-//! embedded inside an enclosing call's argument list (see
-//! docs/language/examples/virtio-storage.wr, `BlockCache.edit`/`peek`)
-//! parses through the ordinary NEWLINE+INDENT...DEDENT path in
-//! `parse_stmt_suite`, the same as any top-level suite. The only case left
-//! with no layout tokens at all is a `:` followed by real content on the
-//! *same* physical line (no newline ever appears for the lexer to act on),
-//! handled by `parse_inline_stmt_seq` — restricted to exactly one statement,
-//! since two statements jammed onto one line with no separator token is a
-//! genuine grammar ambiguity (`plans/pre-M3-findings.md`'s roundtrip-
-//! ambiguity finding; the pinned rule).
-//!
-//! Errors are fail-fast (plans/M1.md decision 2): the first one stops
-//! parsing.
-
 use super::ast::*;
 use super::lexer::{Token, TokenKind};
 
@@ -43,94 +8,32 @@ pub struct ParseError {
     pub col: u32,
 }
 
-/// The deepest live nesting of the expression precedence chain a single
-/// parse may build (`parse_unary`'s own guard) — mirrors
-/// `sema::bodies::MAX_GENERIC_DEPTH`/`eval::quota::MAX_CALL_DEPTH`'s own
-/// role one layer either side of this pass: an unbounded-nesting input
-/// (deeply parenthesized/bracketed groups, chained unary prefixes, or any
-/// mix — every one of them re-enters the chain through `parse_unary`
-/// exactly once per level) must fail closed with a diagnostic *before* it
-/// overflows this process's own native stack, which nothing before this
-/// guard existed to notice (found by `cargo xtask fuzz sema`, seed=11 —
-/// deeply nested groups blew the native stack well before any other
-/// limit fired). Chosen empirically, not measured/profiled: parsing (and
-/// the downstream AST dump/pretty-print/`sema::bodies::check_expr` walks,
-/// which recurse over the same shape) stayed clean through roughly 350
-/// levels of plain paren-nesting on this process's default stack, and
-/// broke somewhere before 400; 100 keeps a >3x margin below that observed
-/// ceiling while comfortably covering any reasonable hand-written
-/// expression (the deepest in the whole doc/example corpus is nowhere
-/// close).
 const MAX_EXPR_DEPTH: u32 = 100;
 
-/// The deepest nesting of *indented statement blocks* a single parse may
-/// build (`parse_stmts_until_dedent`'s own guard) — `MAX_EXPR_DEPTH`'s
-/// sibling for the second of this parser's two recursive descents
-/// (plans/M9.md item RR). The expression guard bounds only the precedence
-/// chain; a body of nested `if`/`while`/`for`/`match` suites recurses
-/// through `parse_stmt` -> `parse_suite` -> `parse_stmts_until_dedent`
-/// instead and was unbounded, so ~800 levels aborted the process with a
-/// native stack overflow — not a diagnostic, and not something the fuzz
-/// lanes can even observe, since every one of their guards is
-/// `std::panic::catch_unwind` and a stack-overflow abort does not unwind.
-///
-/// Same empirical method as `MAX_EXPR_DEPTH`, measured the same way:
-/// `wrela dump --stage=ast` on a chain of nested `if true:` suites stayed
-/// clean past 400 and aborted before 800, and the downstream walks that
-/// recurse over the same shape (`sema::bodies::check_stmt`, the AST dump,
-/// the pretty-printer) give out earlier than the parser does — `--stage=check`
-/// aborted around 600. 100 keeps a comfortable margin below the *earliest*
-/// of those ceilings while sitting far above any hand-written body.
 const MAX_BLOCK_DEPTH: u32 = 100;
 
-/// The deepest nesting of *type syntax* a single parse may build
-/// (`parse_type`'s own guard) — the third recursive descent, and the one
-/// whose downstream consumers give out first (plans/M9.md item RR).
-/// `Option[Option[...]]` nested ~300 deep parsed fine but aborted
-/// `sema::types::resolve_type` with a native stack overflow, and the
-/// parser itself aborted before 1600; `render_type`, `size_of` and the
-/// layout walks all recurse over the identical shape. Bounding the
-/// *source* depth here is what bounds every one of them at once: no later
-/// pass can be handed a type the parser refused to build. Generic
-/// instantiation can still synthesize types deeper than the source spells
-/// them, which is `sema::bodies::MAX_GENERIC_DEPTH`'s separate job.
-///
-/// 100 by the same margin argument as its two siblings; the deepest type
-/// in the whole doc/example corpus is nowhere close.
 const MAX_TYPE_DEPTH: u32 = 100;
 
 pub fn parse(tokens: Vec<Token>) -> Result<Module, ParseError> {
     Parser::new(tokens).parse_module()
 }
 
-/// One top-level construct accepted outside a `module` header: a
-/// declaration or a bare statement, interleaved freely (see
-/// `parse_fragment`'s doc comment). Corpus doc-blocks and the parser
-/// fuzzer's token-soup strategy (plans/M1.md item E) both need the actual
-/// parsed content — not just a yes/no — so it can be dumped and
-/// pretty-printed like a real module's contents.
 #[derive(Debug, Clone)]
 pub enum FragmentEntry {
     Item(Item),
     Stmt(Stmt),
 }
 
-/// The result of `parse_any`: a complete module, or a bare fragment.
 #[derive(Debug, Clone)]
 pub enum Parsed {
     Module(Module),
     Fragment(Vec<FragmentEntry>),
 }
 
-/// Parses a bare sequence of items and/or statements with no `module`
-/// header — used for corpus doc-blocks that are illustrative fragments
-/// rather than complete files.
 pub fn parse_fragment(tokens: Vec<Token>) -> Result<Vec<FragmentEntry>, ParseError> {
     Parser::new(tokens).parse_fragment_body()
 }
 
-/// Picks `parse` or `parse_fragment` based on whether the token stream's
-/// first substantive token is the `module` keyword.
 pub fn parse_any(tokens: Vec<Token>) -> Result<Parsed, ParseError> {
     let is_module = tokens
         .iter()
@@ -144,10 +47,6 @@ pub fn parse_any(tokens: Vec<Token>) -> Result<Parsed, ParseError> {
     }
 }
 
-/// Parses a single expression from a token stream that ends at `Eof`
-/// (plans/M9.md item D: f-string interpolation interiors). Trailing
-/// NEWLINE tokens the lexer inserts at EOF are skipped; anything else
-/// after the expression is a parse error.
 pub fn parse_expr(tokens: Vec<Token>) -> Result<Expr, ParseError> {
     let mut p = Parser::new(tokens);
     let expr = p.parse_or()?;
@@ -166,37 +65,9 @@ pub fn parse_expr(tokens: Vec<Token>) -> Result<Expr, ParseError> {
 struct Parser {
     tokens: Vec<Token>,
     pos: usize,
-    /// Live nesting depth of the expression precedence chain
-    /// (`parse_unary`'s own guard, `MAX_EXPR_DEPTH`) — every recursive
-    /// re-entry into the chain (a parenthesized/bracketed group, a call
-    /// argument, a chained unary prefix) passes through `parse_unary`
-    /// exactly once per level, so counting there bounds native recursion
-    /// depth regardless of which construct is doing the nesting.
     expr_depth: u32,
-    /// Live nesting depth of indented statement blocks
-    /// (`parse_stmts_until_dedent`'s own guard, `MAX_BLOCK_DEPTH`) — every
-    /// nested suite in the language reaches its statements through that
-    /// one function, so counting there bounds native recursion depth
-    /// regardless of which compound statement is doing the nesting.
     block_depth: u32,
-    /// Live nesting depth of type syntax (`parse_type`'s own guard,
-    /// `MAX_TYPE_DEPTH`) — every nested type position (a generic argument,
-    /// an array element, a tuple component, `own[P] T`'s inner type, an
-    /// `fn(...)` parameter or return) re-enters `parse_type` exactly once
-    /// per level.
     type_depth: u32,
-    /// Nesting depth of single-line inline suites (`parse_inline_stmt_seq`):
-    /// a `:` followed by real content on the same physical line, with no
-    /// `Newline` token ever going to appear (module doc comment above —
-    /// a `:`-newline instead opens a layout island or an ordinary indented
-    /// block, never this path). `parse_inline_stmt_seq` now parses exactly
-    /// one statement, but that one statement's own `end_of_simple_stmt`
-    /// call still needs to tolerate having no terminator token to consume
-    /// while this is nonzero (there's nothing there — the enclosing token,
-    /// `)`/`]`/`}`/`,`/Eof/Dedent, is what `parse_inline_stmt_seq` itself
-    /// checks for once control returns to it). At true depth 0 the lexer
-    /// always inserts a real `Newline`, so this fallback is unreachable
-    /// outside an inline suite.
     inline_depth: u32,
 }
 
@@ -216,14 +87,10 @@ impl Parser {
         }
     }
 
-    // --- low-level cursor ---------------------------------------------
-
     fn peek(&self) -> &Token {
         &self.tokens[self.pos]
     }
 
-    /// The token `offset` positions ahead, clamped to the trailing `Eof`
-    /// (there is nothing sensible to look at past the end of the stream).
     fn peek_at(&self, offset: usize) -> &Token {
         self.tokens
             .get(self.pos + offset)
@@ -246,7 +113,6 @@ impl Parser {
         self.peek().text.clone()
     }
 
-    /// Human-readable name for the current token, for error messages.
     fn peek_display(&self) -> String {
         let t = self.peek();
         if t.text.is_empty() {
@@ -256,8 +122,6 @@ impl Parser {
         }
     }
 
-    /// Advances past the current token and returns it. A no-op at `Eof` —
-    /// callers never need to special-case running off the end.
     fn bump(&mut self) -> Token {
         let t = self.tokens[self.pos].clone();
         if t.kind != TokenKind::Eof {
@@ -329,12 +193,6 @@ impl Parser {
         }
     }
 
-    /// Where a fresh name is declared, or a type is named: a `Keyword`
-    /// token gets its own diagnostic (`keyword \`<kw>\` cannot be used as a
-    /// name`) rather than the generic "expected X, found Y" — declaration
-    /// positions are not the member/label/`pool`-callable exceptions
-    /// (`expect_word`, `parse_path_segment`) where a reserved word doubles
-    /// as an ordinary word.
     fn expect_ident(&mut self, what: &str) -> Result<(Span, String), ParseError> {
         if self.at_kind(TokenKind::Ident) {
             let span = self.peek_span();
@@ -350,11 +208,6 @@ impl Parser {
         }
     }
 
-    /// Like `expect_ident`, but also accepts a `Keyword` token (its exact
-    /// text becomes the name). Used after `.` for field/method names: a
-    /// method can be named `read` (`interrupt_status.read()`), colliding
-    /// with the access-mode keyword — the docs' own worked example does
-    /// this, so member names are a separate namespace from reserved words.
     fn expect_word(&mut self, what: &str) -> Result<(Span, String), ParseError> {
         if self.at_kind(TokenKind::Ident) || self.at_kind(TokenKind::Keyword) {
             let span = self.peek_span();
@@ -365,18 +218,6 @@ impl Parser {
         }
     }
 
-    /// A declared `fn` name: an `Ident`, or the keyword `from` (02 §7.4 /
-    /// 05 §8's conversion associated fn, plans/M9.md item B decision 105).
-    ///
-    /// Ambiguity argument, established against this file: an import
-    /// statement's `from` is only ever recognized at statement position
-    /// (`parse_imports` / a future item-level `from`, both gated on
-    /// `at_keyword("from")` as the *first* token of the statement, or
-    /// `pub` then `from`). A function name is only ever read *after*
-    /// `fn` has already been consumed (`parse_fn_item`). Those two
-    /// positions never overlap, so accepting `from` here cannot steal an
-    /// import and cannot leave `from path import Name` unparseable. Other
-    /// keywords stay rejected (`keyword \`X\` cannot be used as a name`).
     fn expect_fn_name(&mut self) -> Result<(Span, String), ParseError> {
         if self.at_kind(TokenKind::Ident) {
             let span = self.peek_span();
@@ -411,18 +252,6 @@ impl Parser {
         }
     }
 
-    /// Like `expect_newline`, but tolerant of a declaration's value
-    /// expression ending in a nested suite (a closure's `|params|: suite`
-    /// body, `parse_closure`) whose own `Dedent`/trailing `Newline` already
-    /// closed out this logical line — mirrors `end_of_simple_stmt`'s own
-    /// depth-0 fallback (same reasoning, ast-expressions golden), minus
-    /// that one's statement-only bracket/`,` tolerances: a declaration's
-    /// value is never parsed inside an embedded `()[]{}` context, so those
-    /// never apply here. Without this, a `const`/field initializer whose
-    /// value is a suite-bodied closure round-trips through the printer
-    /// (which always renders `ClosureBody::Suite` as an indented `:` block,
-    /// print_closure's own doc comment) into something that fails to
-    /// reparse — sema.check.roundtrip-stable's fuzz-sema finding, seed=11.
     fn expect_declaration_terminator(&mut self) -> Result<(), ParseError> {
         if self.at_kind(TokenKind::Newline) {
             self.bump();
@@ -449,8 +278,6 @@ impl Parser {
         }
     }
 
-    /// A `Dedent` is always immediately followed by a `Newline` in the
-    /// token stream (lexer.rs `handle_indentation`); consume both.
     fn expect_dedent(&mut self) -> Result<(), ParseError> {
         if !self.at_kind(TokenKind::Dedent) {
             return Err(self.error_here(format!(
@@ -465,11 +292,6 @@ impl Parser {
         Ok(())
     }
 
-    /// A dotted-path segment is any word token — `Ident` or `Keyword`.
-    /// Module/import paths are a separate namespace from ordinary
-    /// identifiers (02-language.md §2), and the docs' own worked example
-    /// uses a reserved word as a path segment (`from runtime.pool import
-    /// Pool`); rejecting it would make the parser wrong, not the doc.
     fn parse_path_segment(&mut self) -> Result<(Span, String), ParseError> {
         if self.at_kind(TokenKind::Ident) || self.at_kind(TokenKind::Keyword) {
             let span = self.peek_span();
@@ -493,14 +315,9 @@ impl Parser {
     }
 }
 
-/// `## text` conventionally has one space after the markers; the lexer
-/// keeps it raw (it is not the lexer's job to decode), so the parser strips
-/// exactly one leading space, if present, when building a `Doc` node.
 fn strip_doc_leading_space(raw: &str) -> String {
     raw.strip_prefix(' ').unwrap_or(raw).to_string()
 }
-
-// --- module ------------------------------------------------------------
 
 impl Parser {
     fn parse_module(&mut self) -> Result<Module, ParseError> {
@@ -525,8 +342,6 @@ impl Parser {
         })
     }
 
-    /// Leading `##` doc comment(s) directly before the `module` header.
-    /// Consecutive lines join with `\n`.
     fn collect_leading_doc(&mut self) -> Option<Doc> {
         let mut span = None;
         let mut lines = Vec::new();
@@ -542,8 +357,6 @@ impl Parser {
         })
     }
 
-    // --- imports ---------------------------------------------------------
-
     fn parse_imports(&mut self) -> Result<Vec<Import>, ParseError> {
         let mut imports = Vec::new();
         loop {
@@ -558,8 +371,6 @@ impl Parser {
     }
 
     fn parse_import(&mut self) -> Result<Import, ParseError> {
-        // Starts at `pub` when present, otherwise at `from` — either way,
-        // the first token of the statement.
         let span = self.peek_span();
         let mut is_pub = false;
         if self.at_keyword("pub") {
@@ -594,14 +405,6 @@ impl Parser {
                 }
                 break;
             }
-            // plans/M6.md item H, a soak find (sema lane, seed 72): the
-            // parenthesized form accepted an EMPTY list, so `from a
-            // import()` parsed into an `Import` node with no names, which
-            // the pretty-printer faithfully rendered as `from a import `
-            // — and that cannot reparse, breaking the roundtrip oracle.
-            // 02-language.md §2's grammar is `from path import Name [as
-            // Alias]`: at least one name, always. Rejected by name rather
-            // than by letting an unspellable node exist.
             if names.is_empty() {
                 return Err(self.error_here(
                     "an import list cannot be empty (`from <path> import <Name>` needs at least \
@@ -631,12 +434,6 @@ impl Parser {
         Ok(ImportName { span, name, alias })
     }
 
-    // --- doc/attrs ---------------------------------------------------------
-
-    /// A run of `##` doc-comment lines and `@name(...)` attributes,
-    /// interleaved in any order, immediately before a declaration. Doc
-    /// lines join with `\n`; attributes are parsed as structured nodes in
-    /// source order.
     fn collect_doc_and_attrs(&mut self) -> Result<(Option<Doc>, Vec<Attr>), ParseError> {
         let mut doc_span = None;
         let mut doc_lines = Vec::new();
@@ -651,8 +448,6 @@ impl Parser {
             }
             if self.at_op("@") {
                 attrs.push(self.parse_attr()?);
-                // An attribute occupies its own logical line (unlike a doc
-                // comment, it is not layout-transparent in the lexer).
                 if self.at_kind(TokenKind::Newline) {
                     self.bump();
                 }
@@ -667,7 +462,6 @@ impl Parser {
         Ok((doc, attrs))
     }
 
-    /// `@name` or `@name(arg, key=value, ...)` (02-language.md §13).
     fn parse_attr(&mut self) -> Result<Attr, ParseError> {
         let span = self.expect_op("@")?;
         let (_, name) = self.expect_ident("an attribute name")?;
@@ -679,8 +473,6 @@ impl Parser {
         Ok(Attr { span, name, args })
     }
 }
-
-// --- top-level items ---------------------------------------------------
 
 impl Parser {
     fn parse_items(&mut self) -> Result<Vec<Item>, ParseError> {
@@ -703,9 +495,6 @@ impl Parser {
         Ok(items)
     }
 
-    /// Items nested inside a `comptime if`/`comptime else` branch at module
-    /// scope: same shape as `parse_items`, bounded by `Dedent` instead of
-    /// `Eof`. Assumes the caller has already consumed the branch's `:`.
     fn parse_indented_items(&mut self) -> Result<Vec<Item>, ParseError> {
         self.expect_newline()?;
         self.expect_indent()?;
@@ -738,8 +527,8 @@ impl Parser {
         }
 
         if self.at_keyword("async") && self.peek_is_keyword_at(1, "fn") {
-            self.bump(); // async
-            self.bump(); // fn
+            self.bump();
+            self.bump();
             return self
                 .parse_fn_item(start, is_pub, true, doc, attrs)
                 .map(Item::Fn);
@@ -800,8 +589,8 @@ impl Parser {
             if is_pub {
                 return Err(self.error_here("`pub` is not valid before `comptime if`"));
             }
-            self.bump(); // comptime
-            self.bump(); // if
+            self.bump();
+            self.bump();
             return self
                 .parse_comptime_if_item(start, doc, attrs)
                 .map(Item::ComptimeIf);
@@ -868,8 +657,6 @@ impl Parser {
         })
     }
 
-    /// `static NAME: Type` — required type, no initializer (03-hardware.md
-    /// §3.1 / plans/M10.md item A2c, decision 586).
     fn parse_static_item(
         &mut self,
         start: Span,
@@ -892,8 +679,6 @@ impl Parser {
     }
 }
 
-// --- fragments (corpus doc blocks with no `module` header) -------------
-
 impl Parser {
     fn parse_fragment_body(&mut self) -> Result<Vec<FragmentEntry>, ParseError> {
         let mut entries = Vec::new();
@@ -913,7 +698,6 @@ impl Parser {
             if self.looks_like_item_start() {
                 entries.push(FragmentEntry::Item(self.parse_item(doc, attrs)?));
             } else if !attrs.is_empty() {
-                // 02 §13: `@budget` before a loop, `@discard` before a match.
                 if doc.is_some() {
                     return Err(self.error_here(
                         "a `##` doc comment attaches to the immediately following declaration \
@@ -976,10 +760,7 @@ impl Parser {
     }
 }
 
-// --- generics, parameters, functions -------------------------------------
-
 impl Parser {
-    /// `[T, const N: usize]`, or nothing.
     fn parse_generic_params(&mut self) -> Result<Vec<GenericParam>, ParseError> {
         if !self.at_op("[") {
             return Ok(Vec::new());
@@ -1026,9 +807,6 @@ impl Parser {
         }
     }
 
-    /// Receiver mode: missing → `None` (plain `self`); explicit `read` →
-    /// `Some(Read)`. Param/arg modes still use `parse_optional_mode`
-    /// (missing defaults to `Read`).
     fn parse_receiver_mode(&mut self) -> Option<AccessMode> {
         if self.at_keyword("read") {
             self.bump();
@@ -1044,9 +822,6 @@ impl Parser {
         }
     }
 
-    /// `(params...)`, with the first parameter recognized as the receiver
-    /// when it is a bare (possibly mode-prefixed) `self` (02-language.md
-    /// §5.1).
     fn parse_param_list(&mut self) -> Result<(Option<Receiver>, Vec<Param>), ParseError> {
         self.expect_op("(")?;
         let mut receiver = None;
@@ -1105,8 +880,6 @@ impl Parser {
         doc: Option<Doc>,
         attrs: Vec<Attr>,
     ) -> Result<FnItem, ParseError> {
-        // `from` is the one reserved word a `fn` name may spell (02 §7.4);
-        // see `expect_fn_name`. Other keywords stay rejected.
         let (_, name) = self.expect_fn_name()?;
         let generics = self.parse_generic_params()?;
         let (receiver, params) = self.parse_param_list()?;
@@ -1126,36 +899,6 @@ impl Parser {
         })
     }
 
-    /// The `-> Ret: body` tail shared by `fn`/`init`, called right after the
-    /// closing `)` of the parameter list. Section 1 allows the header to
-    /// continue onto an indented line beginning with `->`; when it does,
-    /// the continuation shares one indentation level with the body itself
-    /// (there is no separate INDENT/DEDENT pair for the arrow line). A
-    /// header with neither a suite nor a one-line body (bare `fn NAME(...)
-    /// [-> Ret]` followed directly by a newline) is accepted with `body =
-    /// None` — a few library-contract tables in the docs show bare method
-    /// signatures this way (e.g. 05-library.md §8's operator-method table)
-    /// to describe a desugaring target, not a real declaration; the docs
-    /// are otherwise explicit that every real function has a body, so this
-    /// is a deliberately narrow, fail-open-on-syntax/fail-closed-on-
-    /// semantics allowance (a bodyless `fn` is syntactically well formed;
-    /// whether one may exist for real is a later milestone's question).
-    ///
-    /// Narrow fix (found by `xtask fuzz sema`'s sema-roundtrip oracle,
-    /// the pinned rule; golden/err-empty-body-
-    /// continuation): this branch's continuation line shares its one
-    /// INDENT with the body itself (see the doc comment above), so the
-    /// body never gets a fresh INDENT token the way `parse_stmt_suite`'s
-    /// ordinary path always does. A comment-only (or otherwise token-free)
-    /// body is invisible to the lexer's indentation tracking, so
-    /// `parse_stmts_until_dedent` below can land on an immediate `Dedent`
-    /// with zero statements collected -- its own end-of-file check does
-    /// not catch that, since this is a `Dedent`, not `Eof`. The ordinary
-    /// (non-continuation) path never has this hole: a body with no real
-    /// statement line never produces an INDENT at all, so its own
-    /// `expect_indent()` already fails closed. 02-language.md section 1's
-    /// `pass` statement exists exactly because every real body needs
-    /// explicit content, so an empty body here is rejected the same way.
     fn parse_fn_tail(&mut self) -> Result<(Option<Type>, Option<Vec<Stmt>>), ParseError> {
         if self.at_kind(TokenKind::Newline) {
             self.bump();
@@ -1214,8 +957,6 @@ impl Parser {
     }
 }
 
-// --- struct / enum bodies --------------------------------------------------
-
 impl Parser {
     fn parse_optional_deriving(&mut self) -> Result<Vec<String>, ParseError> {
         if !self.at_keyword("deriving") {
@@ -1239,9 +980,6 @@ impl Parser {
         Ok(names)
     }
 
-    /// Consumes `resource` or `resource(manual)` and the following `struct`.
-    /// Returns whether the resource withholds reclaim (`manual`).
-    /// plans/M13.md item O / decision 8.
     fn parse_resource_prefix(&mut self) -> Result<bool, ParseError> {
         self.expect_keyword("resource")?;
         let is_manual = if self.at_op("(") {
@@ -1293,7 +1031,6 @@ impl Parser {
         })
     }
 
-    /// Assumes the caller has already consumed the body's leading `:`.
     fn parse_indented_members(&mut self) -> Result<Vec<Member>, ParseError> {
         self.expect_newline()?;
         self.expect_indent()?;
@@ -1429,15 +1166,6 @@ impl Parser {
         })
     }
 
-    /// An enum body is a sequence of variants and `fn` members
-    /// (02-language.md §7.2 / §5; plans/M9.md item B2). The distinction is
-    /// lexical and unambiguous: a variant name is an Ident, while a method
-    /// or associated fn begins with `fn`, `pub`, or `async` (Keyword
-    /// tokens). Before this item, `parse_indented_variants` fed every line
-    /// to `parse_variant` → `expect_ident`, so `pub fn` / `fn` surfaced as
-    /// `keyword \`pub\`/\`fn\` cannot be used as a name` — a typo-shaped
-    /// diagnostic for a missing language surface. `init`, `pool`, and
-    /// field-shaped `name: Type` lines are refused by name.
     fn parse_indented_enum_body(&mut self) -> Result<(Vec<Variant>, Vec<Member>), ParseError> {
         self.expect_newline()?;
         self.expect_indent()?;
@@ -1466,9 +1194,6 @@ impl Parser {
             if self.at_keyword("pool") {
                 return Err(self.error_here("an enum may not declare a `pool`"));
             }
-            // Field-shaped `name: Type` — a struct member, not a variant
-            // (`Name` or `Name(...)`). Refuse before `parse_variant` would
-            // mis-read the ident and choke on the colon.
             if self.at_kind(TokenKind::Ident)
                 && self.peek_at(1).kind == TokenKind::Op
                 && self.peek_at(1).text == ":"
@@ -1478,8 +1203,6 @@ impl Parser {
                 ));
             }
             if doc.is_some() || !attrs.is_empty() {
-                // Variants do not attach doc/attrs today; refuse rather
-                // than silently drop them onto the next variant.
                 return Err(self
                     .error_here("a doc comment or attribute on an enum variant is not supported"));
             }
@@ -1489,8 +1212,6 @@ impl Parser {
         Ok((variants, members))
     }
 
-    /// `fn` / `pub fn` / `async fn` / `pub async fn` at the start of an
-    /// enum-body line — never a variant name (those are Idents).
     fn at_enum_method_start(&self) -> bool {
         if self.at_keyword("fn") {
             return true;
@@ -1592,15 +1313,7 @@ impl Parser {
     }
 }
 
-// --- types (02-language.md §6) ------------------------------------------
-
 impl Parser {
-    /// Guarded entry for type nesting (`MAX_TYPE_DEPTH`'s own doc
-    /// comment): every nested type position re-enters here exactly once
-    /// per level, so counting on entry/exit bounds native recursion depth
-    /// in this pass *and* in every later pass that walks the same shape.
-    /// The grammar lives in `parse_type_body`, unchanged below; this
-    /// wrapper only ever adds the counter (`parse_unary`'s own shape).
     fn parse_type(&mut self) -> Result<Type, ParseError> {
         self.type_depth += 1;
         if self.type_depth > MAX_TYPE_DEPTH {
@@ -1634,7 +1347,7 @@ impl Parser {
             let first = self.parse_type()?;
             if self.at_op(")") {
                 self.bump();
-                return Ok(first); // pure grouping: `(u64)` == `u64`
+                return Ok(first);
             }
             let mut elems = vec![first];
             loop {
@@ -1729,20 +1442,6 @@ impl Parser {
         Ok(args)
     }
 
-    /// One generic argument at a use site: `..N` (bounded occupancy), a
-    /// type, or — since bounded-type parameter positions can also take a
-    /// A type argument, a comptime expression like `40 + z + 96`, or a
-    /// plain comptime expression like `256.KiB` — a fallback to expression
-    /// parsing when the current token cannot start a type at all.
-    ///
-    /// Expression starters include unary prefixes (`-`/`~`) and a `(`
-    /// whose interior itself starts an expression. The pretty-printer
-    /// always wraps non-atomic Binary/Unary operands in parens
-    /// (`(40 + z) + 96`, `(-40) + z`), and without this branch those
-    /// spellings fell into `parse_type`'s tuple/grouping arm and rejected
-    /// the integer — a sema-roundtrip hole the deep soak found
-    /// (seed=8802). Tuple types `(T, U)` and `(u64)` grouping still start
-    /// with a type token after `(` and keep the type path.
     fn parse_generic_arg(&mut self) -> Result<GenericArg, ParseError> {
         if self.at_op("..") {
             self.bump();
@@ -1757,8 +1456,6 @@ impl Parser {
         Ok(GenericArg::Type(ty))
     }
 
-    /// See `parse_generic_arg`: tokens that begin a const/expression
-    /// generic arg rather than a type.
     fn starts_generic_arg_expr(&self) -> bool {
         if matches!(
             self.peek_kind(),
@@ -1805,21 +1502,7 @@ impl Parser {
     }
 }
 
-// --- expressions (02-language.md §8.2) -----------------------------------
-//
-// Precedence, tightest first: member/call/index; unary `-` `~` `await`
-// `take`; postfix `?`; `* / % *%`; `+ - +% -%`; `<< >>`; `& ^ |`; ranges;
-// comparisons and `is`; `not`; `and`; `or`. Realized as a chain of
-// functions, loosest first (each calls the next-tighter one): parse_or ->
-// parse_and -> parse_not -> parse_compare -> parse_range -> parse_bitor ->
-// parse_shift -> parse_addsub -> parse_muldiv -> parse_try -> parse_unary
-// -> parse_postfix -> parse_primary. `await op()?` therefore parses as
-// `(await op())?`: parse_try parses one parse_unary (which parses `await`
-// around the postfix chain `op()`) and only then wraps the trailing `?`.
-
 impl Parser {
-    /// The general expression entry point used everywhere a bare expression
-    /// is expected (there is no separate "top-level expr" production).
     fn parse_or(&mut self) -> Result<Expr, ParseError> {
         let mut left = self.parse_and()?;
         while self.at_keyword("or") {
@@ -1852,7 +1535,6 @@ impl Parser {
         self.parse_compare()
     }
 
-    /// Comparisons and `is` do not chain: at most one applies per level.
     fn parse_compare(&mut self) -> Result<Expr, ParseError> {
         let left = self.parse_range()?;
         if self.at_keyword("is") {
@@ -1880,7 +1562,6 @@ impl Parser {
         Ok(left)
     }
 
-    /// Ranges do not chain either (no example combines more than one).
     fn parse_range(&mut self) -> Result<Expr, ParseError> {
         let left = self.parse_bitor()?;
         if self.at_op("..") || self.at_op("..=") {
@@ -1990,14 +1671,6 @@ impl Parser {
         Ok(e)
     }
 
-    /// Guarded entry to the expression precedence chain (`MAX_EXPR_DEPTH`'s
-    /// own doc comment): every recursive re-entry — a parenthesized/
-    /// bracketed group via `parse_primary`, a chained unary prefix via
-    /// this function's own self-recursion — passes through here exactly
-    /// once per nesting level, so counting on entry/exit bounds native
-    /// recursion depth regardless of which construct is doing the
-    /// nesting. The actual grammar lives in `parse_unary_body`, unchanged
-    /// below; this wrapper only ever adds the counter.
     fn parse_unary(&mut self) -> Result<Expr, ParseError> {
         self.expr_depth += 1;
         if self.expr_depth > MAX_EXPR_DEPTH {
@@ -2088,10 +1761,6 @@ impl Parser {
         Ok(e)
     }
 
-    /// `(args...)` shared by calls and attributes: `[label=][mut|take]
-    /// value`. The mirrored `mut`/`take` marker's operand must be a place
-    /// expression (name, field, index — parens are transparent, dropped at
-    /// parse time so a parenthesized place needs no extra case here).
     fn parse_call_args(&mut self) -> Result<Vec<Arg>, ParseError> {
         self.expect_op("(")?;
         let mut args = Vec::new();
@@ -2100,10 +1769,6 @@ impl Parser {
                 break;
             }
             let span = self.peek_span();
-            // A label is any word token (`Ident` or `Keyword` — e.g.
-            // `VirtQueue.configure(pool=take control_pool, ...)` labels an
-            // argument `pool`, which is otherwise reserved) directly
-            // followed by `=` (never `==`, a distinct token).
             let label = if matches!(self.peek_kind(), TokenKind::Ident | TokenKind::Keyword) && {
                 let t = self.peek_at(1);
                 t.kind == TokenKind::Op && t.text == "="
@@ -2113,7 +1778,7 @@ impl Parser {
                 None
             };
             if label.is_some() {
-                self.bump(); // '='
+                self.bump();
             }
             let mode = if self.at_keyword("mut") {
                 self.bump();
@@ -2175,10 +1840,6 @@ impl Parser {
                 self.bump();
                 Ok(Expr::Name(span, "self".to_string()))
             }
-            // `pool(...)` (the scoped-pool constructor, 02-language.md §4)
-            // is an ordinary call in expression position; the `pool NAME`
-            // declaration form is recognized earlier, at item/member
-            // dispatch, so there is no ambiguity here.
             TokenKind::Keyword if self.peek_text() == "pool" => {
                 self.bump();
                 Ok(Expr::Name(span, "pool".to_string()))
@@ -2203,7 +1864,7 @@ impl Parser {
                 let first = self.parse_or()?;
                 if self.at_op(")") {
                     self.bump();
-                    return Ok(first); // pure grouping
+                    return Ok(first);
                 }
                 let mut elems = vec![first];
                 loop {
@@ -2227,7 +1888,6 @@ impl Parser {
                     return Ok(Expr::List(span, Vec::new()));
                 }
                 let first = self.parse_or()?;
-                // plans/M9.md item F1 decision 343: `[elem; N]` array-repeat.
                 if self.at_op(";") {
                     self.bump();
                     let count = self.parse_or()?;
@@ -2257,7 +1917,6 @@ impl Parser {
         }
     }
 
-    /// `|params| expr` or `|params|: suite` (02-language.md §8.3).
     fn parse_closure(&mut self) -> Result<Expr, ParseError> {
         let span = self.expect_op("|")?;
         let mut params = Vec::new();
@@ -2296,24 +1955,10 @@ impl Parser {
         Ok(Expr::Closure(ClosureExpr { span, params, body }))
     }
 
-    /// The `|params| BODY` short form's body: normally a pure expression,
-    /// but 02-language.md §8.3's own example body is a compound assignment
-    /// (`item.count += 1`) — assignment is a statement, not an expression,
-    /// in this grammar (§8.1). This deliberately does **not** go through
-    /// `parse_stmt`/`end_of_simple_stmt`: the closure is itself nested
-    /// inside a larger expression, so its body must not consume the
-    /// terminator that belongs to whatever statement encloses it.
     fn parse_closure_short_body(&mut self) -> Result<ClosureBody, ParseError> {
         let span = self.peek_span();
         let target = self.parse_or()?;
         if let Some(op) = self.assign_op_here() {
-            // Same place check as the ordinary statement path above
-            // (err-assign-nonplace-*): without it, `|x| 5 = true` built
-            // an AssignStmt with a non-place target through this one
-            // remaining side door — accepted here, rejected on reparse
-            // of its own pretty-printed suite form, which is exactly the
-            // roundtrip asymmetry `fuzz sema` found at seeds 41-43
-            // (golden/err-assign-nonplace-closure pins the shape).
             if !is_place_expr(&target) {
                 return Err(self.error_here(
                     "the left side of an assignment must be a place expression (name, field, index)",
@@ -2333,8 +1978,6 @@ impl Parser {
     }
 }
 
-/// One UTF-8 code point's byte length from its leading byte. Content here
-/// was already validated as UTF-8 by the lexer.
 fn utf8_char_len(b: u8) -> usize {
     if b & 0x80 == 0 {
         1
@@ -2347,18 +1990,8 @@ fn utf8_char_len(b: u8) -> usize {
     }
 }
 
-/// Segments an `FStr` token's raw text into literal/interpolation parts
-/// (02-language.md §1.1): `{{`/`}}` unescape to literal braces; a single
-/// `{` opens a balanced-brace interpolation extent. Interpolation contents
-/// are **not** parsed recursively in M1 (ast.rs `FStringPart` doc comment)
-/// — each `Interp` keeps its raw source text and span. Column arithmetic is
-/// byte-based, matching the lexer's own convention (lexer.rs `Lexer::bump`),
-/// so non-ASCII content inside the literal keeps consistent spans.
 fn split_fstring(token: &Token) -> FStringLit {
     let raw = token.text.as_str();
-    // Strip the `f"` prefix (2 bytes) and the trailing `"` (1 byte); a
-    // `b"..."`-style prefix never applies to FStr tokens (lexer.rs only
-    // tags FStr for the `f"` spelling).
     let body = &raw[2..raw.len() - 1];
     let bytes = body.as_bytes();
     let mut parts = Vec::new();
@@ -2404,7 +2037,7 @@ fn split_fstring(token: &Token) -> FStringLit {
                 }
                 let interp_text = body[start..i].to_string();
                 if i < bytes.len() {
-                    i += 1; // closing `}`
+                    i += 1;
                     col += 1;
                 }
                 parts.push(FStringPart::Interp(
@@ -2446,8 +2079,6 @@ fn split_fstring(token: &Token) -> FStringLit {
         parts,
     }
 }
-
-// --- patterns (02-language.md §7.2) -------------------------------------
 
 impl Parser {
     fn parse_pattern(&mut self) -> Result<Pattern, ParseError> {
@@ -2517,7 +2148,7 @@ impl Parser {
             let first = self.parse_pattern()?;
             if self.at_op(")") {
                 self.bump();
-                return Ok(first); // pure grouping
+                return Ok(first);
             }
             let mut elems = vec![first];
             loop {
@@ -2606,19 +2237,7 @@ impl Parser {
     }
 }
 
-// --- statements (02-language.md §8.1, §9.4, §10) -------------------------
-
 impl Parser {
-    /// Loops `parse_stmt` until `Dedent`, without consuming it — used right
-    /// after an `Indent` this function's caller already consumed.
-    ///
-    /// Guarded entry for block nesting (`MAX_BLOCK_DEPTH`'s own doc
-    /// comment): every nested suite in the language reaches its statements
-    /// through here exactly once per level, so counting on entry/exit
-    /// bounds native recursion depth regardless of which compound
-    /// statement is doing the nesting. The loop itself lives in
-    /// `parse_stmts_until_dedent_body`, unchanged below; this wrapper only
-    /// ever adds the counter (`parse_unary`'s own shape).
     fn parse_stmts_until_dedent(&mut self) -> Result<Vec<Stmt>, ParseError> {
         self.block_depth += 1;
         if self.block_depth > MAX_BLOCK_DEPTH {
@@ -2641,9 +2260,6 @@ impl Parser {
         Ok(stmts)
     }
 
-    /// A body statement, optionally preceded by a statement attribute
-    /// (02-language.md §13): `@budget(bound=N)` before a loop, or
-    /// `@discard(reason="...")` before a `match` (plans/M13.md item L).
     fn parse_stmt_maybe_budget(&mut self) -> Result<Stmt, ParseError> {
         if self.at_op("@") {
             let attr = self.parse_attr()?;
@@ -2663,8 +2279,6 @@ impl Parser {
         match attr.name.as_str() {
             "budget" => self.parse_loop_after_budget(attr),
             "discard" => self.parse_match_after_discard(attr),
-            // plans/M15.md item H: standalone `@dmb(ishst|ishld)` — no
-            // following statement; sema owns the runtime-wr-only gate.
             "dmb" => Ok(Stmt::Dmb(attr)),
             other => Err(self.error_at(
                 attr.span,
@@ -2709,26 +2323,12 @@ impl Parser {
         ))
     }
 
-    /// The suite following a `:` — either a normal indented block (now the
-    /// path taken for every multi-statement suite, including one embedded
-    /// in an enclosing `()[]{}`: the lexer's layout islands, see
-    /// `lexer.rs`'s module doc comment, hand real NEWLINE/INDENT/DEDENT
-    /// tokens back to the parser for exactly this case), or (see the module
-    /// doc comment) the single-statement inline form when the `:` is
-    /// followed by real content on the same physical line instead of a
-    /// newline. Assumes the caller has already consumed the leading `:`.
     fn parse_stmt_suite(&mut self) -> Result<Vec<Stmt>, ParseError> {
         if self.at_kind(TokenKind::Newline) {
             self.bump();
             self.expect_indent()?;
             let stmts = self.parse_stmts_until_dedent()?;
             self.expect_dedent()?;
-            // A suite holds at least one statement (`pass` exists for the
-            // empty case). Unreachable at depth 0 — a content-free block
-            // never lexes an INDENT there — but a layout island's INDENT
-            // can be immediately closed by the enclosing bracket
-            // (`combine(||:` then an indented `)`), which parsed as an
-            // empty suite until the sema-roundtrip oracle caught it.
             if stmts.is_empty() {
                 return Err(self.error_here(format!(
                     "expected a statement, found `{}`",
@@ -2744,20 +2344,6 @@ impl Parser {
         }
     }
 
-    /// The single-line inline suite: `:` immediately followed by real
-    /// content on the same physical line, with no layout tokens at all
-    /// (`if x: return 0`, or — since the lexer now only suppresses layout
-    /// entirely for a suite that never sees a newline before its content —
-    /// the same shape found one bracket deeper, e.g. a closure passed as a
-    /// call argument written `|x|: x.size` with nothing after it on the
-    /// line). Holds **exactly one** statement: with no separator token
-    /// available here (no real `Newline` was ever going to appear — a
-    /// `:`-newline always opens a layout island or an ordinary indented
-    /// block instead, see `parse_stmt_suite`), a second statement's leading
-    /// tokens are genuinely ambiguous with the first statement's own
-    /// trailing expression grammar (`plans/pre-M3-findings.md`'s
-    /// roundtrip-ambiguity finding) — so it is rejected outright rather than
-    /// guessed at.
     fn parse_inline_stmt_seq(&mut self) -> Result<Vec<Stmt>, ParseError> {
         let stmt = self.parse_stmt_maybe_budget()?;
         if self.at_kind(TokenKind::Newline) {
@@ -2775,14 +2361,6 @@ impl Parser {
         Ok(vec![stmt])
     }
 
-    /// Validates (without consuming) that a simple statement has ended:
-    /// either a real `Newline` (consumed here) or one of the delimiters
-    /// that bounds an embedded suite. Inside an embedded suite
-    /// (`inline_depth > 0`) a missing terminator is tolerated — the next
-    /// statement simply starts here with no separator token at all — but
-    /// this can never mask a real error at depth 0: the lexer always
-    /// inserts a genuine `Newline` there, so this fallback is unreachable
-    /// outside an embedded context.
     fn end_of_simple_stmt(&mut self) -> Result<(), ParseError> {
         if self.at_kind(TokenKind::Newline) {
             self.bump();
@@ -2797,10 +2375,6 @@ impl Parser {
         {
             return Ok(());
         }
-        // A simple statement's RHS expression can itself end in a nested
-        // suite (a closure's `|params|: suite` body — ast-expressions
-        // golden) whose own `Dedent`+`Newline` already closed out this
-        // logical line; nothing is left to consume.
         if self.pos > 0 && self.tokens[self.pos - 1].kind == TokenKind::Newline {
             return Ok(());
         }
@@ -2822,11 +2396,6 @@ impl Parser {
 
     fn parse_stmt(&mut self) -> Result<Stmt, ParseError> {
         let span = self.peek_span();
-        // 02-language.md §1: a `##` doc comment is "attached to the
-        // immediately following declaration". Statements are not
-        // declarations, so a doc comment in a body attaches to nothing.
-        // Say that, rather than letting it fall through to the expression
-        // parser and report the doc text as an unexpected token.
         if self.at_kind(TokenKind::DocComment) {
             return Err(self.error_here(
                 "a `##` doc comment attaches to the immediately following declaration \
@@ -2960,22 +2529,6 @@ impl Parser {
             None
         };
         if let Some(op) = self.assign_op_here() {
-            // The left side of `=`/a compound-assign op must itself be a
-            // place (name, field, index -- same shallow shape `take`/`mut`
-            // operands require above): the precedence chain happily parses
-            // a unary- or binary-wrapped target (`~total = ...`, or
-            // `i + 2 = ...`, which a stray `i +2= 1` typo produces once
-            // `+2` lexes as `+` `2`) with no complaint, and nothing
-            // downstream (sema's `check_assign`) re-derives this --
-            // lower.rs's `lower_place_write` and eval/interp.rs's
-            // `place_mut` both *assume* it and fail with their own
-            // internal-error guard when it does not hold, which is
-            // exactly the fuzzer-found disagreement (`cargo xtask fuzz
-            // lower` seeds 32/33; err-assign-nonplace-unary/-arith pin the
-            // two minimized shapes). Rejecting here, before an
-            // `AssignStmt` with a non-place target can even exist, is
-            // narrower than teaching every later pass to re-check the
-            // same shape.
             if !is_place_expr(&target) {
                 return Err(self.error_here(
                     "the left side of an assignment must be a place expression (name, field, index)",
@@ -2996,10 +2549,6 @@ impl Parser {
             return Err(self.error_here("expected `=` after a type annotation"));
         }
         self.end_of_simple_stmt()?;
-        // `send actor.method(...)` parses through the general expression
-        // grammar (parse_unary recognizes the `send` prefix) but is a
-        // named statement form (02-language.md §9.4) — re-tag it here
-        // rather than leaving it as a generic expression statement.
         if let Expr::Send(s, inner) = target {
             return Ok(Stmt::Send(s, *inner));
         }
@@ -3160,49 +2709,24 @@ impl Parser {
     }
 }
 
-// --- dump ------------------------------------------------------------------
-//
-// Stable text dump (plans/M1.md decision 5): one node per line, two-space
-// child indent, `Kind @line:col key=value`, string payloads quoted. Source
-// order throughout, so the dump is deterministic by construction. Every
-// statement-holding construct wraps its branch/body in an explicit `Then` /
-// `Else` / `Body` / `Case` / `Guard` / `Message` node so two adjacent
-// expression children are never ambiguous about which role they play.
-//
-// Every helper below threads a `strip: bool` flag alongside `depth`: when
-// true, the `@line:col` part of every node header is omitted entirely
-// (`hdr` below is the single place that decides). This is plumbing for the
-// roundtrip oracle (plans/M1.md item E, `xtask roundtrip`), which compares
-// a dump of the original parse against a dump of the pretty-printed-then-
-// reparsed result — the two ASTs are structurally identical but their
-// spans necessarily differ, since the pretty-printed text is laid out
-// differently from the original source. Adding the mode here (rather than
-// stripping spans out of the rendered text after the fact) keeps the
-// stripped dump an actual property of the AST, not a text-hack.
-
 pub fn dump(module: &Module) -> String {
     let mut out = String::new();
     dump_module(module, 0, false, &mut out);
     out
 }
 
-/// Same as `dump`, but every `@line:col` span is omitted.
 pub fn dump_no_spans(module: &Module) -> String {
     let mut out = String::new();
     dump_module(module, 0, true, &mut out);
     out
 }
 
-/// Dumps a bare fragment (`parse_fragment`'s result): each top-level item
-/// or statement in source order, same node format as `dump`, but with no
-/// enclosing `Module` header (a fragment has no module path).
 pub fn dump_fragment(entries: &[FragmentEntry]) -> String {
     let mut out = String::new();
     dump_fragment_entries(entries, 0, false, &mut out);
     out
 }
 
-/// Same as `dump_fragment`, but every `@line:col` span is omitted.
 pub fn dump_fragment_no_spans(entries: &[FragmentEntry]) -> String {
     let mut out = String::new();
     dump_fragment_entries(entries, 0, true, &mut out);
@@ -3243,8 +2767,6 @@ fn quote(s: &str) -> String {
     out
 }
 
-/// A dump line's `Kind` (spans stripped) or `Kind @line:col` (spans kept)
-/// header — the one place that decides, per `strip`.
 fn hdr(strip: bool, kind: &str, span: Span) -> String {
     if strip {
         kind.to_string()
@@ -3757,11 +3279,6 @@ fn dump_expr(e: &Expr, depth: usize, strip: bool, out: &mut String) {
             depth,
             &format!("{} text={}", hdr(strip, "Float", *s), text),
         ),
-        // Str/BStr/Char keep the lexer's raw token text, which already
-        // includes the source's own delimiting quotes (and a `b`/`f`
-        // prefix) — printed as-is rather than double-quoted; the lexer
-        // guarantees no raw newline can appear inside, so this stays a
-        // single dump line.
         Expr::Str(s, text) => push_line(
             out,
             depth,

@@ -1,1 +1,1 @@
-error[type]: `Untrusted[T]` cannot be used as an array index until checked-narrowed — write `.checked_le(bound)` (03-hardware.md §8) at 7:14
+error[type]: `Untrusted[T]` cannot be used as an array index until checked-narrowed — write `.checked_le(bound)` (03-hardware.md §8) at 5:14

@@ -1,8 +1,5 @@
 module examples.err_untrusted_compare
 
-# plans/M9.md item G1 / decision 351: comparing an `Untrusted[T]` is a
-# rejection naming `.checked_le(bound)`, not a silent control-flow use
-# of the tainted scalar (03-hardware.md §8).
 
 fn bad(reported: Untrusted[usize], bound: usize) -> bool:
     return reported < bound

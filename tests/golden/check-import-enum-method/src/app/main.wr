@@ -5,7 +5,6 @@ from lib.color import Color
 const D: u32 = Color.red().code()
 const E: u32 = Color.Blue.code()
 
-# settle = D*10 + E = 10 + 2 = 12
 const SETTLED: u32 = D * 10 + E
 
 @test
@@ -21,8 +20,6 @@ pub fn t_settled():
     assert SETTLED == 12, "import settle"
 
 
-# Guest-reachable path (plans/M9.md item KK): H3 dropped Color methods from
-# asm; `@test(runtime)` seeds imported enum methods.
 @test(runtime)
 pub fn guest_enum_method():
     assert Color.red().code() == 1, "assoc at guest"

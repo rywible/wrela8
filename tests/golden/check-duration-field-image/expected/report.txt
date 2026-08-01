@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/check_duration_field_image.wr sha256=89cd57492a095d06dd77b426e8e12f1cb6e81c84ca52f1ce785841bbe04d41b6
+  Input path=examples/check_duration_field_image.wr sha256=710122ba2f3d8828687f96134dc5842de5b1beac9d5ede526562fec374275ae5
   Input path=<generated> sha256=782d8b2dce8d42a3f22dd506570f1a45db4c1af04129cf73f42a04192090fcba
   Name value=duration-field-image
   Target value=Target.wrela_machine_v1

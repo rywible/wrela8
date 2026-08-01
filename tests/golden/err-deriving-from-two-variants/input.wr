@@ -1,7 +1,5 @@
 module examples.err_deriving_from_two_variants
 
-# plans/M9.md item B3. Sibling of err-deriving-from-two-fields: 05 §8 /
-# 02 §7.5 require exactly one variant for deriving(From) on an enum.
 
 pub enum Bad deriving(From):
     A(u32)

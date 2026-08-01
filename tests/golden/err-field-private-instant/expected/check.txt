@@ -1,1 +1,1 @@
-error[sema]: field `nanos` of `Instant` is private to module `core.time`; only that module may construct, read, write, or pattern-bind it (02-language.md §2) at 8:20
+error[sema]: field `nanos` of `Instant` is private to module `core.time`; only that module may construct, read, write, or pattern-bind it (02-language.md §2) at 6:20

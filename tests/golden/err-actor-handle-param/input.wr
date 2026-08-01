@@ -1,10 +1,5 @@
 module examples.err_actor_handle_param
 
-# The coordinator's own verification probe (02-language.md §9.1): a
-# public actor method's own parameter list is the message shape — an
-# `Actor[T]`-typed parameter can never be legally called (every caller
-# would have to smuggle a handle into a message to reach it at all), so
-# it is rejected at declaration, not lazily at the first call site.
 @actor
 pub struct A:
     n: u64

@@ -1,8 +1,5 @@
 module examples.err_isr_plain_field
 
-# plans/M7.md item G, decision 17: 03-hardware.md §6 — "A plain field is
-# not a communication channel." An ISR that assigns `self.flag` must be
-# refused; the channel is `InterruptCell[T]`.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

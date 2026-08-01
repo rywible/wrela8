@@ -1,16 +1,4 @@
 module examples.err_import_empty_list
 
-# plans/M6.md item H — a deep-soak find (sema lane, fresh seed 72,
-# iteration 576692), not an M6 defect: an M1-era parser hole.
-#
-# `from a import()` — the parenthesized import form accepted an EMPTY
-# name list, producing an `Import` node with no names. The pretty printer
-# faithfully rendered it as `from a import ` with nothing after, and that
-# cannot reparse: the roundtrip oracle failed, which is exactly what that
-# oracle is for. 02 §2's grammar is `from path import Name [as Alias]` —
-# at least one name, always.
-#
-# Counterexample, run and confirmed: `from a import (x, y as z)` still
-# parses and round-trips.
 
 from a import()

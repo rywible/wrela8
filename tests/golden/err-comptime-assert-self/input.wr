@@ -1,6 +1,5 @@
 module examples.err_comptime_assert_self
 
-# plans/M9.md item NN: `self` is a Local, not comptime-visible.
 struct Box:
     n: i64
     fn check(self) -> i64:

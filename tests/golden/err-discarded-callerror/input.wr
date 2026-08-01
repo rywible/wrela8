@@ -1,7 +1,5 @@
 module examples.err_discarded_callerror
 
-# plans/M13.md item L — silent Err discard of CallError is error[sema]
-# unless the match carries `@discard(reason="...")`.
 
 @actor
 pub struct Logger:

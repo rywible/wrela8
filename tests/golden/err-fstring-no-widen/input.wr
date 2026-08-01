@@ -1,7 +1,5 @@
 module examples.err_fstring_no_widen
 
-# plans/M9.md item D decision 260: String[..N] does not widen to
-# String[..M] for M > N. An f-string's summed bound is exact.
 
 const X: u32 = 42
 const S: String[..64] = f"n={X}"

@@ -1,8 +1,5 @@
 module examples.err_group_budget
 
-# plans/M13.md item C cut 4: `group(budget=)` was never implemented and is
-# cut at the revision boundary. Sema already refuses unknown group args
-# (`capacity=` / `deadline=` only); this golden pins the refusal.
 
 @actor
 pub struct C:

@@ -1,12 +1,3 @@
-//! Runtime emission + boot harness (plans/M10.md item K).
-//!
-//! Extracted from `layout.rs` after the M10 migrations: floor stubs,
-//! specialized inject helpers, JIT materializers of specialized twins,
-//! and the `wrela test` entry driver / abort-tail / image packing. Pure
-//! image layout (sections, placement, pool backing, reports) stays in
-//! the parent module. Public items are re-exported from `layout` so
-//! existing `layout::…` call sites keep stable paths.
-
 use std::collections::BTreeMap;
 
 use wrela_machine::machine_info as mi;
@@ -27,27 +18,13 @@ use super::{
 use crate::codegen::{CodegenProgram, Reloc};
 use crate::encode;
 
-// --- scratch registers for stub emission (never x0..x8/x29/x30/sp) -----
-
 const X_SP: u8 = 31;
 const SCRATCH_A: u8 = 9;
 const SCRATCH_B: u8 = 10;
 const SCRATCH_C: u8 = 11;
-/// The same bit pattern as `X_SP` (register field `31`), used only where
-/// the instruction's own Rt/source-register position is meant — `STR`'s
-/// own `Rt=11111` always denotes `XZR`, never `SP` (unlike `ADD`
-/// (immediate)'s Rd/Rn field, where `31` means `SP`) — a separate name so
-/// a reader never has to reason about which encoding class is in play at
-/// each call site.
 #[allow(dead_code)]
 const X_ZR: u8 = 31;
 
-/// Placeholder failure exit codes (module doc's own "Entry/abort
-/// contract" section) — distinct only so a post-mortem guest memory dump
-/// can tell, at a glance, which placeholder path halted; item E is
-/// expected to keep writing *a* documented exit code at this same
-/// `machine_info::OFF_EXIT_CODE` offset even once these bodies grow real
-/// console output, whether or not it reuses these exact numeric values.
 pub const EXIT_CODE_NO_RUNTIME: u64 = 0xE000_0001;
 pub const EXIT_CODE_ABORT_FIXED: u64 = 0xE000_0002;
 pub const EXIT_CODE_ABORT_VAL: u64 = 0xE000_0003;
@@ -64,12 +41,6 @@ pub(super) fn push_load_imm(words: &mut Vec<u32>, reg: u8, value: i64) {
     words.push(encode::enc_movk(reg, h3, 48, true));
 }
 
-/// The shared halt sequence the entry stub and the build-image abort
-/// landings end in — module doc's own "shared halt sequence" paragraph.
-/// plans/M10.md item C / decision 655: the named `build_abort_stub`
-/// helpers are gone; build images keep only this minimal halt so
-/// `Reloc::AbortFixed`/`AbortVal` still have a landing address (the test
-/// print path lives in force-rooted `__wrela_abort` / `__wrela_abort_val`).
 pub(super) fn push_halt(words: &mut Vec<u32>, exit_code: u64) {
     push_load_imm(words, SCRATCH_A, exit_code as i64);
     let exit_code_addr = machine_layout::MACHINE_INFO_BASE + machine_info::OFF_EXIT_CODE;
@@ -82,28 +53,16 @@ pub(super) fn push_halt(words: &mut Vec<u32>, exit_code: u64) {
 
 pub(super) fn build_entry_stub() -> Vec<u32> {
     let mut words = Vec::new();
-    // Production stub: single-core high-DRAM stack (plans/M15.md item D).
-    // Actor images use `build_primary_entry_trampoline` with the sealed N.
     let sp_top = machine_layout::core_stack_base_n(0, 1) + machine_layout::CORE_STACK_SIZE;
     push_load_imm(&mut words, SCRATCH_A, sp_top as i64);
-    words.push(encode::enc_add_imm(X_SP, SCRATCH_A, 0, true)); // `mov sp, x9`
+    words.push(encode::enc_add_imm(X_SP, SCRATCH_A, 0, true));
     push_halt(&mut words, EXIT_CODE_NO_RUNTIME);
     words
 }
-/// plans/M6.md item E, decision 7/06 §4: `__wrela_checkpoint_service` is
-/// now real — the shared target every `codegen::Reloc::CheckpointService`
-/// `BL` resolves to. M11 I: the checkpoint section holds only the
-/// floor-cat2 LR trampoline around `BL __wrela_rt_checkpoint` (decision
-/// 821); vector0 / pending / IRQ / wake algorithms live in force-rooted
-/// wrela. When `link_body` is false (no runtime wiring), the section is a
-/// bare `ret` so images without the wrela body still link.
 pub fn build_checkpoint_and_vector_stub(group: Option<&GroupServiceCtx>) -> CheckpointBlock {
     build_checkpoint_and_vector_stub_ex(group, &[], &[], true)
 }
 
-/// plans/M11.md item I: checkpoint section trampoline. `irq_vectors` /
-/// `wake_drains` no longer change section words — kept for call-site
-/// stability. `link_body` false ⇒ bare `ret` (no wrela body in `code`).
 pub fn build_checkpoint_and_vector_stub_ex(
     group: Option<&GroupServiceCtx>,
     _irq_vectors: &[IrqVectorEntry],
@@ -120,13 +79,6 @@ pub fn build_checkpoint_and_vector_stub_ex(
         relocs: emitted.relocs,
     }
 }
-/// plans/M10.md item F (decision 630): force-root one specialized
-/// `rt_select_and_run <Actor>` body per mailbox root into `program.fns`.
-/// Call after `RuntimeWiring::derive` and before the code section is
-/// laid out.
-/// M11 J: overwrite `__method_R_M` placeholders with specialized call stubs
-/// (state in x0, stage in x8, bl method — decision 831). Alias
-/// `rt_enqueue <Actor>` onto `__enqueue_N` trampolines (decision 834).
 pub(super) fn inject_rt_enqueue_and_dispatch_fns(
     program: &mut CodegenProgram,
     wiring: &RuntimeWiring,
@@ -150,9 +102,6 @@ pub(super) fn inject_rt_enqueue_and_dispatch_fns(
     for (i, name) in wiring.tables.enqueue_actors.iter().enumerate() {
         let tramp = format!("__enqueue_{i}");
         let Some(f) = program.fns.get(&tramp).cloned() else {
-            // Named rejection (not the producer-bug prefix) — callers that
-            // skip `lower_and_codegen_image` force-roots hit this; fuzz
-            // treats it as Rejected layout, not a Bug panic.
             return Err(LayoutError::new(format!(
                 "missing enqueue trampoline `{tramp}` after live codegen — lower with \
                  `ImageForceRootOpts::with_wiring` before `layout_test_image`"
@@ -165,11 +114,6 @@ pub(super) fn inject_rt_enqueue_and_dispatch_fns(
     Ok(())
 }
 
-/// M11 H (decisions 811 / 814) / M15 E (1053–1054): prepend floor-cat1 SP
-/// install onto each generated `__wrela_secondary_entry_<core>` trampoline
-/// (`core in 1..N_CORES`) and republish under `rt_secondary_core_entry <core>`
-/// for VMM `core_entries`. Parameterized on `wiring.tables.cores` — no spare
-/// pool to `CORE_SLOTS-1`.
 pub(super) fn inject_rt_cross_core_fns(
     program: &mut CodegenProgram,
     wiring: &RuntimeWiring,
@@ -222,10 +166,6 @@ fn shift_reloc_words(r: &mut crate::codegen::Reloc, delta: usize) {
     }
 }
 
-/// M11 H (decisions 812 / 814): overwrite `__boot_call_<i>` placeholders
-/// with specialized init-call bodies (Relocs). `__wrela_rt_boot_init` is
-/// already force-rooted / reinjected. Also alias `rt_boot_init 0` for any
-/// lingering synthetic-key callers.
 pub(super) fn inject_boot_init_fn(program: &mut CodegenProgram, wiring: &RuntimeWiring) {
     let to_arg = |a: &BootInitArg| -> crate::codegen::BootInitArgSpec {
         match a {
@@ -260,7 +200,6 @@ pub(super) fn inject_boot_init_fn(program: &mut CodegenProgram, wiring: &Runtime
             err_msg: c.err_msg,
         }
     };
-    // Call order: drivers then actors (M7 H1 / decision 680).
     let mut call_i = 0usize;
     for ((d, &size), call) in wiring
         .tables
@@ -306,14 +245,11 @@ pub(super) fn inject_boot_init_fn(program: &mut CodegenProgram, wiring: &Runtime
         call_i, wiring.tables.n_boot_calls,
         "boot call stub count disagrees with tables.n_boot_calls"
     );
-    // Alias synthetic key → wrela body for any residual bl_call_key sites.
     if let Some(f) = program.fns.get("__wrela_rt_boot_init").cloned() {
         program.fns.insert(crate::codegen::rt_boot_init_symbol(), f);
     }
 }
 
-/// M11 I / decision 823: overwrite `__irq_call_*` / `__wake_call_*` with
-/// specialized `x0 = driver_state; bl handler/task` bodies.
 pub(super) fn inject_checkpoint_irq_fns(program: &mut CodegenProgram, wiring: &RuntimeWiring) {
     for (i, (handler_key, driver_state)) in wiring.irq_calls.iter().enumerate() {
         let key = format!("__irq_call_{i}");
@@ -328,8 +264,6 @@ pub(super) fn inject_checkpoint_irq_fns(program: &mut CodegenProgram, wiring: &R
     }
     for (i, (task_key, driver_state)) in wiring.wake_calls.iter().enumerate() {
         let key = format!("__wake_call_{i}");
-        // M12 item D: pending bits live in WAKE.wake_pending[i]; the stub
-        // only materializes x0 = driver_state for the @task body.
         let spec = crate::codegen::CheckpointWakeSpec {
             driver_state: *driver_state,
             wake_pending_off: 0,
@@ -340,167 +274,18 @@ pub(super) fn inject_checkpoint_irq_fns(program: &mut CodegenProgram, wiring: &R
             .insert(key, crate::codegen::emit_checkpoint_wake_call(&spec));
     }
 }
-// M11 J: `build_rt_enqueue` / `build_rt_select_and_run` deleted with
-// `emit_rt_enqueue` / `emit_rt_select_and_run`; enqueue/select oracles live
-// in boot-*/expected/test.txt (decision 705).
 
 pub const DEADLOCK_MSG: &str =
     "runtime deadlock: no turn is ready and the root turn has not completed";
-// ===========================================================================
-// plans/M5.md item E: the runtime test image's own harness.
-//
-// `layout_program`/`build_entry_stub`/`build_abort_stub` above are the
-// *ordinary* image's entry/abort — `wrela build`/`--stage=report`'s own
-// path, untouched by this item (the four pre-existing report goldens pin
-// that placeholder entry's exact bytes; CLAUDE.md's "existing goldens must
-// not move" wins over the module doc's older, pre-item-E speculation that
-// item E would replace that body wholesale — it does not, for exactly this
-// reason, recorded here instead of silently contradicting the paragraph
-// above).
-//
-// Item E instead adds a **second**, wholly separate placement function,
-// `layout_test_image`, used only by `wrela test`'s runtime tier (`bin/
-// wrela.rs`): a real driver that calls every `@test(runtime)` fn in
-// declaration order, prints each one's own report line over the console
-// ring (decision 12), and an extended `__wrela_abort`/`__wrela_abort_val`
-// that also print before halting — the exact obligation the pre-existing
-// module doc named, now honestly split into its own code path instead of
-// silently changing the shared one.
-//
-// ## The landing pad (the plan's own required mechanism, precisely)
-//
-// Every runtime test's call goes through one fixed continuation slot,
-// `wrela_machine::machine_info::OFF_TEST_CONTINUATION`: right before the
-// entry driver's `BL` to a test fn, it stores the address of *its own next
-// step* (the point right after that test's own "ok" line and passed-
-// counter increment — i.e. the top of the next test's own block, or the
-// summary block for the last test) into that slot. `__wrela_abort`/
-// `__wrela_abort_val`'s own bodies, extended by this item, print the
-// `FAILED ...` line, increment the fail counter, then `LDR` that slot and
-// `BR` to it directly — never `RET` — resuming the driver exactly at the
-// point the aborted test's own "ok" line would have run, skipping it. This
-// is what makes an abort *inside* an arbitrarily deep call chain (a test
-// calling a helper calling a helper whose checked arithmetic overflows)
-// still land back in the flat, straight-line entry driver: the slot is a
-// fixed absolute guest address, not anything SP-relative, so it survives
-// regardless of how many un-popped frames sit between the abort site and
-// the driver's own stack depth at the point of the original `BL`.
-//
-// ## Why the entry driver needs no runtime loop at all
-//
-// Every `@test(runtime)` fn's name is known at compile time (the whole
-// point of `wrela test`'s runtime tier: one fixed image per build), so the
-// driver is fully unrolled — one straight-line block per test, in
-// declaration order, then one summary block — never a real loop over a
-// test list. This is why the landing pad's own continuation address can be
-// a single fixed slot reused test-to-test: only one test is ever "in
-// flight" at a time (M5 is synchronous, one vCPU), so there is never a
-// need to remember more than the *current* test's own resume point.
-//
-// ## The M5-G adversarial-sweep find/fix: one descriptor per LINE, plus a
-// static build-time bound
-//
-// The original design (this module doc, pre-fix) span one
-// `__wrela_ring_write` call — and so one consumed descriptor — per
-// *piece* of a report line: a passing test alone cost 2 calls (the
-// `test <name>: ` prefix, then `ok\n`); a failing test cost 3-4 (prefix,
-// `FAILED `, the message, the newline; `__wrela_abort_val`'s own
-// interpolated shape costs one more). With `console::QUEUE_SIZE` fixed
-// at 16, a mere 7-8 `@test(runtime)` fns — ordinary, not adversarial —
-// silently exhausted the queue mid-summary: `__wrela_ring_write` (below,
-// pre-fix) treated a full queue as a silent no-op, so the transcript
-// truncated (`"7 passed,"` then nothing) and `wrela test` failed with
-// "the wrela VMM's own transcript is not well-formed". Found by the
-// M5-G sweep's own adversarial pass, reproduced with a plain 8-test file
-// of trivial `assert 1 == 1`-shaped tests.
-//
-// The fix makes 02 §12.2's "statically bounded output" literally true,
-// in two parts:
-//
-// 1. **One descriptor per printed line, never per call.** Three new
-//    fixed subroutines replace the old single `__wrela_ring_write`:
-//    `__wrela_line_begin` (snapshots the data-bump cursor as the new
-//    line's own start, `machine_info::OFF_LINE_START`), `__wrela_ring_
-//    append` (copies bytes into the data region and advances the data-
-//    bump cursor — *no* descriptor published, *no* doorbell rung), and
-//    `__wrela_line_commit` (publishes exactly *one* descriptor spanning
-//    `[OFF_LINE_START, current data-bump)`, then rings the doorbell).
-//    Every report line — a test's `ok`/`FAILED ...` line, or the one
-//    summary line — is now `line_begin`, one or more `ring_append`
-//    calls, `line_commit`: exactly one descriptor, regardless of how
-//    many pieces compose the line. `build_entry_driver`/
-//    `__wrela_abort`/`__wrela_abort_val` (force-rooted wrela) all follow this
-//    pattern; an abort continues (never restarts) the line the entry
-//    driver's own prefix already began, so a `FAILED` line is still one
-//    descriptor covering "test <name>: FAILED ...\n" in full.
-// 2. **A static bound, checked at test-image *build* time, never at
-//    runtime.** `check_transcript_bound` (below) computes the worst-case
-//    line count (`runtime_tests.len() + 1`) and worst-case byte count
-//    (every test's own worst-case line — the longer of its "ok" line or
-//    a "FAILED" line whose message is over-approximated by the longest
-//    string already interned in `program.rodata`, module doc on
-//    `check_transcript_bound` itself has the exact formula) *before*
-//    `layout_test_image` ever assembles a single instruction. Either
-//    bound exceeded fails the build closed with a named diagnostic
-//    (`LayoutError`, surfaced by `bin/wrela.rs`'s existing "could not lay
-//    out the test image" wrapper) — never a truncated transcript.
-//    `console::QUEUE_SIZE` also grew, 16 -> 256 (`wrela-machine`'s own
-//    module doc has the ring-geometry consequences), so an ordinary
-//    build with genuinely many tests still fits comfortably; the static
-//    check is what makes the bound provably *safe* to rely on, not the
-//    bigger number alone.
-//
-// `__wrela_ring_append` / `__wrela_line_commit` overflow used to `BRK`
-// (`BRK_LINE_APPEND_OVERFLOW`/`BRK_LINE_COMMIT_OVERFLOW`). M10 B2–B5
-// migrated those routines to force-rooted wrela and dissolved the BRKs
-// into **status returns** (plans/M10.md decision 592) — not into
-// ordinary array-bounds checks that would re-enter the abort/console
-// path (decision 590). Once `check_transcript_bound` has passed, no
-// line the generated driver ever composes can exceed either bound; a
-// nonzero status from the compiled routines means the static check and
-// the generated code have drifted — a real bug in this module, not a
-// reachable guest condition.
-//
-// **Disclosed simplification of the split-ring contract (unchanged by
-// this fix)**: this producer never reorders or skips a descriptor index,
-// so nothing here ever populates `avail.ring[]` — the VMM's own console
-// model (`wrela-vmm`) reads descriptors `0..avail.idx` directly by index,
-// which is exactly what a real virtio consumer would get by walking
-// `avail.ring[]` *because* this producer's own `avail.ring[i]` would
-// always equal `i`. The `used` ring is never populated or read either
-// (M5 has no completion tracking to negotiate: the guest never waits on
-// it, and the transcript is read only after the guest halts, decision
-// 12).
 
-/// Every absolute guest address the harness subroutines below bake in via
-/// `Asm::load_imm` — bundled so the exact same generator functions can be
-/// re-run in a unit test against a host-mmap'd stand-in region instead of
-/// the real (unmapped-in-a-test-process) machine addresses, rather than
-/// hand-verifying the encoded bytes by eye (this module's own oracle for
-/// the hand-assembled routines below: real execution on this machine's own
-/// aarch64 CPU, `#[cfg(test)] mod harness_jit`, below).
-///
-/// Every consumer (`push_abort_tail` and the JIT self-tests) is
-/// `#[cfg(test)]`, so this bundle is too — plans/M11-L-findings.md L-19.
 #[cfg(test)]
 #[derive(Debug, Clone, Copy)]
 pub(super) struct HarnessAddrs {
-    /// `machine_info::` field base — production: `machine_layout::MACHINE_INFO_BASE`.
     info_base: u64,
-    /// `console::RING_BASE` (descriptor table + avail ring + doorbell).
-    /// Retained after M10 B5 so this bundle still names the full console
-    /// map; only `info_base` is still read by hand-asm abort/entry (console
-    /// routines live in force-rooted wrela).
     #[allow(dead_code)]
     ring_base: u64,
-    /// `console::DATA_BASE` (the byte buffers descriptors point into).
     #[allow(dead_code)]
     data_base: u64,
-    /// `mmio::EXIT_MMIO_ADDR` — only the entry driver's own summary/halt
-    /// tail uses this (never `ring_write`/`fmt_dec`/the abort stubs);
-    /// unexercised by the JIT self-tests above (which never call the
-    /// entry driver directly — a real MMIO trap needs a real VMM, item
-    /// E's own boot golden is that routine's oracle).
     #[allow(dead_code)]
     exit_mmio_addr: u64,
 }
@@ -517,22 +302,6 @@ impl HarnessAddrs {
     }
 }
 
-/// A tiny, self-contained word-list builder for the hand-assembled harness
-/// routines below — distinct from `codegen.rs`'s `FnCtx` (which is built
-/// around mwir's own per-instruction two-pass sizing scheme; this module's
-/// code is never generated from mwir at all, just written directly, one
-/// fixed shape per fn) but the same spirit: `start` is this fragment's own
-/// absolute word index within the eventual combined "entry" section
-/// (`__wrela_abort` / `__wrela_abort_val` / checkpoint stubs / optional
-/// runtime glue / the entry driver — console begin/append/commit/fmt_dec
-/// live in `code` as force-rooted wrela since M10 B2–B5). All of those
-/// fragments are assembled into *one* combined word list, in that fixed
-/// order, so every local call/branch between them is a directly computed
-/// `BL`/`B`/`B.cond` — no `Reloc` needed for anything that stays inside
-/// this one section. Only a `Reloc::Call` (an `@test(runtime)` fn,
-/// elsewhere in the `code` section) or `Reloc::Rodata` (a literal string,
-/// elsewhere in the `rodata` section) crosses out of it, and those reuse
-/// the exact same `Reloc` variants/resolution already proven by item D.
 pub(super) struct Asm {
     start: usize,
     pub(super) words: Vec<u32>,
@@ -548,9 +317,6 @@ impl Asm {
         }
     }
 
-    /// This fragment's own current absolute word index (its own `start`
-    /// plus how many words it has emitted so far) — the address every
-    /// local branch/call computes its delta against.
     fn abs(&self) -> usize {
         self.start + self.words.len()
     }
@@ -559,12 +325,6 @@ impl Asm {
         self.words.push(w);
     }
 
-    /// Materializes a 64-bit constant into `reg`, always exactly four
-    /// words (`MOVZ` + three unconditional `MOVK`s) — `codegen.rs`'s own
-    /// `load_imm`, duplicated here rather than threaded through as a
-    /// shared helper (this module's fragments are not `FnCtx`s; CLAUDE.md's
-    /// "prefer long obvious files" licenses the small duplication over a
-    /// generic seam neither side otherwise needs).
     fn load_imm(&mut self, reg: u8, value: u64) {
         let h0 = (value & 0xFFFF) as u16;
         let h1 = ((value >> 16) & 0xFFFF) as u16;
@@ -576,23 +336,12 @@ impl Asm {
         self.push(encode::enc_movk(reg, h3, 48, true));
     }
 
-    /// Emits a placeholder `load_imm reg, #0` (four words), remembering
-    /// where it started so `patch_load_imm_words` can later overwrite it
-    /// with the real value once known — the entry driver's own forward
-    /// reference for the landing pad's continuation address (module doc
-    /// above): the value (the address of the *next* test's own setup)
-    /// isn't known until after this test's whole pass-path block has been
-    /// emitted.
     fn load_imm_placeholder(&mut self, reg: u8) -> usize {
         let m = self.words.len();
         self.load_imm(reg, 0);
         m
     }
 
-    /// A `BL` to an `@test(runtime)` fn — a real `Reloc::Call` (the target
-    /// lives in the `code` section, placed elsewhere, base unknown until
-    /// the whole image is laid out) — `layout_test_image`'s own resolution
-    /// loop patches it exactly like an ordinary compiled call.
     pub(super) fn bl_call_key(&mut self, key: &str) {
         let w = self.abs();
         self.push(encode::enc_bl(0));
@@ -602,11 +351,6 @@ impl Asm {
         });
     }
 
-    /// A forward conditional branch whose target isn't known yet — mirrors
-    /// `codegen.rs`'s own `emit_skip`/`patch_skip` (`SkipKind`), a small,
-    /// deliberate duplicate for the same reason `load_imm` is (this
-    /// module's fragments are not `FnCtx`s). Only the JIT self-tests below
-    /// still build a fragment that needs one.
     #[cfg(test)]
     fn skip_placeholder(&mut self) -> usize {
         let w = self.words.len();
@@ -623,17 +367,6 @@ impl Asm {
     }
 }
 
-/// Appends one literal byte string to the growing rodata pool (shared
-/// across the whole test image: `program.rodata`'s own already-interned
-/// entries, plus every harness literal this module adds after them) and
-/// returns its own byte offset within the eventual concatenated rodata
-/// section — the same value `Reloc::Rodata::byte_offset` needs, computed
-/// the identical way `codegen.rs`'s private `RodataPool::byte_offset`
-/// does, just against a plain `(Vec<Vec<u8>>, running-total-cursor)` pair
-/// instead of a `BTreeMap` index (no dedup here: every harness string is
-/// already used at most a handful of times and interned at most once by
-/// its own call site below, so content-addressing would add bookkeeping
-/// this module does not need).
 pub(super) fn append_rodata(
     rodata: &mut Vec<Vec<u8>>,
     cursor: &mut usize,
@@ -645,20 +378,8 @@ pub(super) fn append_rodata(
     off
 }
 
-/// The shared tail every abort body ends in: clear the re-entrancy latch
-/// (plans/M10.md item B1 / decision 591), increment
-/// `machine_info::OFF_TEST_FAILED` and long-jump to the landing pad's own
-/// continuation address (module doc's own "landing pad" section) — never
-/// `RET`. Clobbers `x9`/`x10`.
-///
-/// plans/M10.md item C: live abort print clears latch / increments fail in
-/// wrela (`finish_abort`) then `bl`s `__wrela_abort_tail` (floor category 4
-/// `LDR`+`BR`, decision 650). Kept for the unit-test latch probe and for
-/// the hand-asm builders retained until C's delete commit.
 #[cfg(test)]
 pub(super) fn push_abort_tail(a: &mut Asm, addrs: &HarnessAddrs) {
-    // Clear latch before the continuation jump so a later green test never
-    // observes a stale "already aborting" bit from a prior abort.
     a.load_imm(9, addrs.info_base + mi::OFF_ABORT_LATCH);
     a.push(encode::enc_movz(10, 0, 0, true));
     a.push(encode::enc_str_x_imm(10, 9, 0));
@@ -671,10 +392,6 @@ pub(super) fn push_abort_tail(a: &mut Asm, addrs: &HarnessAddrs) {
     a.push(encode::enc_br(9));
 }
 
-/// plans/M10.md item C / decision 650: floor category 4 long-jump only —
-/// materialize `OFF_TEST_CONTINUATION`, `LDR x9, [x9]`, `BR x9`. Overwrites
-/// the compiled `__wrela_abort_tail` stub so test images never `ret` from
-/// abort.
 pub(super) fn build_abort_tail_codegen_fn() -> crate::codegen::CodegenFn {
     let addr = machine_layout::MACHINE_INFO_BASE + mi::OFF_TEST_CONTINUATION;
     use crate::cost::{CostRule, EmittedWord};
@@ -733,8 +450,6 @@ pub(super) fn build_abort_tail_codegen_fn() -> crate::codegen::CodegenFn {
     }
 }
 
-/// Replace the compiled `__wrela_abort_tail` stub with the floor long-jump.
-/// Irreducible floor inject — runs after the single live CodegenProgram.
 pub(super) fn install_abort_tail_floor(program: &mut CodegenProgram) -> Result<(), LayoutError> {
     if program.fns.contains_key("__wrela_abort") || program.fns.contains_key("__wrela_abort_val") {
         if !program.fns.contains_key("__wrela_abort_tail") {
@@ -750,7 +465,6 @@ pub(super) fn install_abort_tail_floor(program: &mut CodegenProgram) -> Result<(
     Ok(())
 }
 
-/// M11 K: free-turn index into `RT.turns` for an async `@test(runtime)` key.
 fn free_turn_index(tables: &RuntimeTables, name: &str) -> Option<usize> {
     let messageable = tables
         .drivers
@@ -765,7 +479,6 @@ fn free_turn_index(tables: &RuntimeTables, name: &str) -> Option<usize> {
         .map(|k| base + k)
 }
 
-/// M11 K / decision 851: build test-runner facts for rtconfig reinject.
 pub(super) fn test_runner_facts(
     runtime_tests: &[String],
     async_tests: &std::collections::BTreeSet<String>,
@@ -789,7 +502,6 @@ pub(super) fn test_runner_facts(
         .collect()
 }
 
-/// M11 K: overwrite `__test_call_*` / `__test_prefix_*` with specialized bodies.
 pub(super) fn inject_test_runner_fns(
     program: &mut CodegenProgram,
     tests: &[crate::rtconfig::TestRunnerFact],
@@ -813,18 +525,12 @@ pub(super) fn inject_test_runner_fns(
     }
 }
 
-/// M11 K / decision 852: thin floor trampoline — SP install, arm
-/// `OFF_TEST_CONTINUATION` at `__wrela_rt_primary_entry` (patched after
-/// code placement), `BL __wrela_rt_primary_boot`, `brk`. Replaces
-/// `build_entry_driver` (94 Unclassified).
-///
-/// Returns `(asm, continuation_load_imm_marker)`.
 pub(super) fn build_primary_entry_trampoline(start: usize, n_cores: usize) -> (Asm, usize) {
     let mut a = Asm::new(start);
     let n = n_cores.max(1);
     let sp_top = machine_layout::core_stack_base_n(0, n) + machine_layout::CORE_STACK_SIZE;
     a.load_imm(9, sp_top);
-    a.push(encode::enc_add_imm(31, 9, 0, true)); // mov sp, x9
+    a.push(encode::enc_add_imm(31, 9, 0, true));
     let cont_marker = a.load_imm_placeholder(9);
     a.load_imm(
         10,
@@ -836,28 +542,8 @@ pub(super) fn build_primary_entry_trampoline(start: usize, n_cores: usize) -> (A
     (a, cont_marker)
 }
 
-/// Deleted by M11 item K (decision 850): `@test(runtime)` roots run as
-/// ordinary supervised turns in `__wrela_rt_primary_entry` (stdlib
-/// `runtime.wr`); the harness keeps only [`build_primary_entry_trampoline`].
-
-/// Max decimal digits `__wrela_fmt_dec` ever writes, sign included:
-/// `i64::MIN` (`-9223372036854775808`) and `u64::MAX`
-/// (`18446744073709551615`) both render as exactly 20 ASCII characters —
-/// the widest either the summary line's two counts or an `AbortVal`
-/// line's interpolated value can ever be.
 const MAX_DECIMAL_DIGITS: u64 = 20;
 
-/// Widest decimal rendering of any value in `0..=max` — the honest digit
-/// count for a field with a **static** upper bound, as against
-/// [`MAX_DECIMAL_DIGITS`]' 20 for a field with none.
-///
-/// plans/M20.md item C / decision 1610 exists because this distinction was
-/// not being made: both Lane 1's flat method index (bounded by
-/// `METHOD_CALL_POOL_COUNT`) and Lane 2's block id (bounded by
-/// `BLOCK_POOL_COUNT`) were reserved at 20 digits, spending ~4 KiB of a 16
-/// KiB console on decimal places that cannot exist. The *count* fields stay
-/// at 20: they are `u64` guest counters with no static bound, so 20 is the
-/// honest worst case and there is no tightening left there.
 const fn decimal_digits(max: u64) -> u64 {
     let mut n = 1;
     let mut v = max;
@@ -868,34 +554,12 @@ const fn decimal_digits(max: u64) -> u64 {
     n
 }
 
-/// The worst-case transcript shape `check_transcript_bound` (below)
-/// checks against `console::QUEUE_SIZE`/`console::DATA_SIZE` — module
-/// doc's own "M5-G adversarial-sweep find/fix" section names this as the
-/// static-bound half of the fix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TranscriptBound {
-    /// One descriptor per test's own line, plus one for the summary, plus
-    /// two for the Lane 1 counter dump (`lane1 turns=…` / `lane1 hits=…`) —
-    /// exact for the test+summary half; lane1 is a fixed +2.
     pub lines: u64,
-    /// Every test's own worst-case line length, summed, plus the
-    /// summary's own exact worst case (`worst_case_test_line_bytes`/
-    /// `worst_case_summary_line_bytes`, below).
     pub worst_case_bytes: u64,
 }
 
-/// The longest single string already interned in `program.rodata` — the
-/// documented over-approximation this module's static bound stands on
-/// (module doc's own `check_transcript_bound` paragraph): rather than
-/// tracing which abort site is actually reachable from which test (real
-/// call-graph analysis this module does not have), every test's own
-/// worst-case *message* is bounded by the single longest literal string
-/// anywhere in the whole program's rodata pool, applied uniformly. Sound
-/// (it can only over-count, never under-count, since every reachable
-/// message is itself one of `program.rodata`'s own entries) and simple;
-/// the plan's own explicit license for "the longest string in the whole
-/// rodata pool ... documented over-approximation" over the alternative,
-/// harder-to-get-right "each test's own longest reachable message".
 fn longest_rodata_len(program: &CodegenProgram) -> u64 {
     program
         .rodata
@@ -905,17 +569,6 @@ fn longest_rodata_len(program: &CodegenProgram) -> u64 {
         .unwrap_or(0)
 }
 
-/// One test's own worst-case printed line length: `"test " + name + ": "`
-/// (exact — both are known at compile time), then the *longer* of the two
-/// shapes that line can ever take: `"ok\n"` (always exactly 3 bytes) or a
-/// `FAILED` line. A `FAILED` line's own worst case covers *both*
-/// `__wrela_abort` (one message, `"FAILED " + msg + "\n"`) and
-/// `__wrela_abort_val` (`"FAILED " + prefix + <=20 digits + suffix +
-/// "\n"`) uniformly, by allowing for *two* copies of the longest rodata
-/// string (covers `AbortVal`'s prefix+suffix pair; strictly more than
-/// `AbortFixed`'s one-string shape ever needs) plus the full 20-digit
-/// interpolation width — an honest over-approximation applied to every
-/// test regardless of which shape (if either) it can actually reach.
 fn worst_case_test_line_bytes(name: &str, longest_msg: u64) -> u64 {
     let prefix_len = "test ".len() as u64 + name.len() as u64 + ": ".len() as u64;
     let ok_len = "ok\n".len() as u64;
@@ -924,91 +577,39 @@ fn worst_case_test_line_bytes(name: &str, longest_msg: u64) -> u64 {
     prefix_len + ok_len.max(failed_len)
 }
 
-/// The summary line's own worst case, exact rather than over-approximated
-/// (both counts are `u64`s, bounded by `MAX_DECIMAL_DIGITS` each):
-/// `"<=20 digits> passed, <=20 digits> failed\n"`.
 fn worst_case_summary_line_bytes() -> u64 {
     2 * MAX_DECIMAL_DIGITS + " passed, ".len() as u64 + " failed\n".len() as u64
 }
 
-/// Bytes reserved for Lane 1's `flat:count,` pair list.
-///
-/// A flat method index is `< METHOD_CALL_POOL_COUNT` so it needs
-/// `decimal_digits(COUNT - 1)` digits, not 20 (decision 1610's tightening
-/// applied to Lane 1 as well). Charging every pair a trailing `,` when only
-/// `n - 1` separators are ever printed keeps this an over-approximation by
-/// exactly one byte.
 pub const fn lane1_pair_bytes() -> u64 {
     let n = crate::rtconfig::METHOD_CALL_POOL_COUNT as u64;
     let id_digits = decimal_digits(n - 1);
     n * (id_digits + 1 + MAX_DECIMAL_DIGITS + 1)
 }
 
-/// Bytes reserved for Lane 2's `id:count,` pair list — at most
-/// `BLOCK_BOUND_PRINT_PAIRS` pairs, because the guest dump now **stops**
-/// there and reports the remainder in the truncation marker (decision
-/// 1610). A Lane 2 id is `< BLOCK_POOL_COUNT`, so its digit count comes
-/// from that pool, not from `u64`.
 pub const fn lane2_pair_bytes() -> u64 {
     let pairs = crate::rtconfig::BLOCK_BOUND_PRINT_PAIRS as u64;
     let id_digits = decimal_digits(crate::rtconfig::BLOCK_POOL_COUNT as u64 - 1);
     pairs * (id_digits + 1 + MAX_DECIMAL_DIGITS + 1)
 }
 
-/// Bytes reserved for Lane 2's truncation marker, ` truncated=<N>`.
-///
-/// Printed **unconditionally**, with `N = 0` when nothing was dropped, so
-/// that a dropped pair is loud and never silent and so that the absence of
-/// the marker identifies a pre-decision-1610 transcript rather than a
-/// complete one. `N` is bounded by `BLOCK_POOL_COUNT`.
 pub const fn lane2_marker_bytes() -> u64 {
     " truncated=".len() as u64 + decimal_digits(crate::rtconfig::BLOCK_POOL_COUNT as u64)
 }
 
-/// Computes the exact worst-case shape `layout_test_image`'s own static
-/// bound check (below) enforces — a pure function of `program`/
-/// `runtime_tests` alone, callable standalone by unit tests without
-/// building a whole image.
 pub fn compute_transcript_bound(
     program: &CodegenProgram,
     runtime_tests: &[String],
 ) -> TranscriptBound {
-    // The deadlock diagnostic (`DEADLOCK_MSG`) is a FAILED-line message
-    // the *harness* interns, after this bound has already been checked —
-    // so it must be accounted for here explicitly, not discovered via
-    // `program.rodata` (the park-and-resume redesign's one addition to
-    // this bound; still an over-approximation, never an undercount).
     let longest_msg = longest_rodata_len(program).max(DEADLOCK_MSG.len() as u64);
     let mut worst_case_bytes = worst_case_summary_line_bytes();
     for name in runtime_tests {
         worst_case_bytes += worst_case_test_line_bytes(name, longest_msg);
     }
-    // Integrity Phase 2 Item I: two trailing `lane1 …` lines from
-    // `__wrela_lane1_dump` (scalars + compact hits). Hits worst-case is
-    // METHOD_CALL_POOL_COUNT `flat:count,` pairs under a fixed
-    // `lane1 hits=` prefix (`lane1_pair_bytes`) — over-approx, never under.
-    // Item M: one `lane2 hits=` line only when `--block-count` is on
-    // (otherwise dump is a no-op and must not inflate the default bound).
-    //
-    // plans/M20.md item C / decision 1610: the Lane 2 line is now a
-    // **bounded, explicitly-truncating diagnostic** and this reservation is
-    // an over-approximation of it again. The guest prints at most
-    // `BLOCK_BOUND_PRINT_PAIRS` pairs and then ` truncated=<N>`; measured
-    // non-zero hit blocks are 372 (`boot-actors`) to 609
-    // (`boot-cross-core-mailbox-depth`), so real boots *do* truncate, and
-    // the marker is what makes that loud instead of silent. The full `f`
-    // vector comes from the host snapshot (`wrela-vmm --dump-lane2`), which
-    // has no console bound at all — 04 §5 names the snapshot as Lane 2's
-    // normative sink and this line as the diagnostic.
-    // plans/lane1-per-core.md item B: a *third* possible trailing line,
-    // `lane1 quiesce=timeout`, when the bounded quiesce runs out of polls
-    // (decision 1504). It prints on at most one halt, and this bound is an
-    // over-approximation, so it is counted unconditionally rather than
-    // guessed at from the core count.
     const LANE1_LINES: u64 = 3;
-    const LANE1_SCALAR_LINE_BYTES: u64 = 12 + 20 + 9 + 20 + 10 + 20 + 1; // turns/run_one/messages
-    const LANE1_QUIESCE_LINE_BYTES: u64 = 21 + 1; // "lane1 quiesce=timeout\n"
-    const LANE1_HITS_PREFIX: u64 = 11; // "lane1 hits="
+    const LANE1_SCALAR_LINE_BYTES: u64 = 12 + 20 + 9 + 20 + 10 + 20 + 1;
+    const LANE1_QUIESCE_LINE_BYTES: u64 = 21 + 1;
+    const LANE1_HITS_PREFIX: u64 = 11;
     worst_case_bytes += LANE1_SCALAR_LINE_BYTES
         + LANE1_QUIESCE_LINE_BYTES
         + LANE1_HITS_PREFIX
@@ -1016,7 +617,7 @@ pub fn compute_transcript_bound(
         + 1;
     let mut lines = runtime_tests.len() as u64 + 1 + LANE1_LINES;
     if crate::codegen::block_count_enabled() {
-        const LANE2_HITS_PREFIX: u64 = 11; // "lane2 hits="
+        const LANE2_HITS_PREFIX: u64 = 11;
         worst_case_bytes += LANE2_HITS_PREFIX + lane2_pair_bytes() + lane2_marker_bytes() + 1;
         lines += 1;
     }
@@ -1026,15 +627,6 @@ pub fn compute_transcript_bound(
     }
 }
 
-/// The static bound check itself (module doc's own "M5-G adversarial-
-/// sweep find/fix" section, part 2): `Err` — a real, named, build-time
-/// diagnostic, never a runtime truncation — the moment either dimension
-/// of `compute_transcript_bound`'s own result would overflow the
-/// machine's fixed console geometry (`wrela-machine`'s own
-/// `console::QUEUE_SIZE`/`console::DATA_SIZE`). Called first thing in
-/// `layout_test_image`, below, before a single harness instruction is
-/// ever assembled — 02 §12.2's "statically bounded output" made literally
-/// true at build time, per this item's own task.
 pub fn check_transcript_bound(
     program: &CodegenProgram,
     runtime_tests: &[String],
@@ -1053,60 +645,13 @@ pub fn check_transcript_bound(
     Ok(())
 }
 
-/// Places a codegen'd test-image program into the machine's fixed
-/// contract, per module doc above: **one** combined "entry" section
-/// (`__wrela_abort`, `__wrela_abort_val`, checkpoint stubs, optional
-/// runtime glue, then the entry driver — console line_begin/append/
-/// commit/fmt_dec live in `code` as force-rooted wrela, called via
-/// `bl_call_key`), then `code` (every codegen'd fn, `@test(runtime)`
-/// fns included — they are ordinary fns to `codegen.rs`, called by name
-/// like any other), then `rodata` (`program.rodata`'s own already-interned
-/// entries, followed by every harness literal this fn appends —
-/// `append_rodata`, above). Every `Reloc` — the harness's own `Call`/
-/// `Rodata` entries and every ordinary compiled fn's `Call`/`Rodata`/
-/// `AbortFixed`/`AbortVal` — resolves through the identical `patch_bl`/
-/// `patch_adrp_add` this file's item-D half already proved;
-/// `AbortFixed`/`AbortVal` targets are force-rooted `__wrela_abort` /
-/// `__wrela_abort_val` in the `code` section (plans/M10.md item C); the
-/// floor category 4 long-jump is `__wrela_abort_tail` (hand-asm).
-///
-/// `Err` for a genuine internal inconsistency, **or** for a program whose
-/// worst-case transcript provably cannot fit (`check_transcript_bound`,
-/// called first, before anything else here) — module doc mirrors
-/// `layout_program`'s own doc here for the former: an out-of-range
-/// relocation, or a name in `runtime_tests` `codegen_program` never
-/// produced (an internal invariant `bin/wrela.rs`'s own caller is expected
-/// to have already checked via `TypedProgram::tests`, kept here anyway as
-/// a real `Err` rather than a silent skip).
-/// plans/M6.md item D: the three whole-build-closure facts needed to run
-/// a real actor boot sequence (`compute_runtime_tables`'s own signature,
-/// unchanged) — bundled so `layout_test_image`'s own signature grows by
-/// exactly one `Option` parameter rather than three. `None` (the
-/// overwhelming majority of today's corpus, and every pre-M6 golden)
-/// keeps `layout_test_image` byte-identical to its pre-item-D behavior:
-/// no `rtdata`, no boot sequence, no runtime-glue routines.
-// `codegen_runtime_force_roots_with` / `merge_live_runtime` deleted:
-// live rtconfig is swapped into the closure before the single
-// `CodegenProgram` (`layout::lower_and_codegen_image`).
-
 pub fn layout_test_image(
     program: &CodegenProgram,
     runtime_tests: &[String],
-    // Which of `runtime_tests` are async (state machines with the
-    // TURN_STATUS_* return ABI) — the entry driver's own scheduler loop
-    // wraps exactly these (`build_entry_driver`'s own doc comment).
     async_tests: &std::collections::BTreeSet<String>,
     boot: Option<BootCtx>,
-    // plans/M6.md decision 11b: every runtime test's own already-resolved
-    // `Actor[T]` param values (build-time actor indices, `bin/wrela.rs`'s
-    // own `resolve_runtime_test_args`), in declared param order — empty
-    // for every test with no params (every pre-decision-11b test, byte-
-    // identical).
     test_args: &BTreeMap<String, Vec<u64>>,
 ) -> Result<ImageLayout, LayoutError> {
-    // `program` must already be the single live CodegenProgram
-    // (`layout::lower_and_codegen_image`). Remaining work is named floor
-    // inject only — not a second runtime.wr codegen.
     let mut program = program.clone();
     check_transcript_bound(&program, runtime_tests)?;
 
@@ -1119,8 +664,6 @@ pub fn layout_test_image(
     let mut rodata: Vec<Vec<u8>> = program.rodata.clone();
     let mut rodata_cursor: usize = rodata.iter().map(Vec::len).sum();
 
-    // plans/M7.md item E1 / M10 H: intern fallible-`init` abort messages
-    // before inject_boot_init_fn so emit_boot_init sees err_msg offsets.
     if let Some(w) = wiring.as_mut() {
         intern_fallible_init_abort_messages(w, &mut rodata, &mut rodata_cursor);
     }
@@ -1131,7 +674,6 @@ pub fn layout_test_image(
     );
     install_abort_tail_floor(&mut program)?;
     if let Some(w) = wiring.as_ref() {
-        // Named floor: ImageStatic stub specialization + symbol aliases.
         super::apply_resume_remaps(&mut program, w);
         inject_rt_enqueue_and_dispatch_fns(&mut program, w)?;
         inject_rt_cross_core_fns(&mut program, w)?;
@@ -1164,23 +706,7 @@ pub fn layout_test_image(
     }
     let runtime_tables: Option<RuntimeTables> = wiring.as_ref().map(|w| w.tables.clone());
 
-    // plans/M10.md item C: abort print bodies are force-rooted wrela in
-    // `code` (`__wrela_abort` / `__wrela_abort_val`); harness no longer
-    // begins with hand-asm abort. Checkpoint is first.
     let checkpoint_start = 0usize;
-    // plans/M6.md item E: `__wrela_checkpoint_service` + its own
-    // `__wrela_vector0_service` sibling, the exact same real routine pair
-    // `layout_program`'s own `build_checkpoint_and_vector_stub` builds for
-    // the ordinary image path — placed once here, in the test harness's
-    // own combined word section, since a runtime-test image's compiled
-    // fns (`program.fns`, below) can carry `Reloc::CheckpointService`
-    // exactly like `Reloc::AbortFixed`/`AbortVal`, and the entry driver's
-    // own park-resume path (below) calls the service directly too.
-    // plans/M6.md item F: built twice (shape-only, then with real `rtdata`
-    // addresses), exactly like the runtime glue block below — the vector-0
-    // body is now the real deadline scan whenever this build has a group
-    // arena. `layout_program`'s own copy of this two-pass shape has the
-    // full reasoning.
     let checkpoint_shape = group_service_shape(runtime_tables.as_ref());
     let (irq_shape, wake_shape) =
         checkpoint_irq_shape(boot.as_ref(), None, runtime_tables.as_ref());
@@ -1194,8 +720,6 @@ pub fn layout_test_image(
     let checkpoint_service_offset = checkpoint_block.checkpoint_service_word;
     let _has_deadline_poll = checkpoint_block.has_deadline_poll;
     let checkpoint_words_len = checkpoint_block.words.len();
-    // `bl_call_key` records block-relative words when built at start=0;
-    // shift them to harness-absolute for the shared reloc resolver.
     let checkpoint_relocs: Vec<Reloc> = checkpoint_block
         .relocs
         .into_iter()
@@ -1212,12 +736,8 @@ pub fn layout_test_image(
         words: checkpoint_block.words,
         relocs: checkpoint_relocs,
     };
-    // `__wrela_checkpoint_service`'s own harness-absolute word index (see
-    // `build_checkpoint_and_vector_stub`'s doc: `__wrela_vector0_service`
-    // sits first, so the section's own start is never the right target).
     let checkpoint_service_word = checkpoint_start + checkpoint_service_offset;
 
-    // M11 K: harness is checkpoint + thin primary-entry trampoline.
     let entry_start = checkpoint_start + checkpoint_asm.words.len();
     let core_entry_starts: Vec<(usize, usize)> = Vec::new();
     let n_cores = wiring.as_ref().map(|w| w.tables.cores).unwrap_or(1).max(1);
@@ -1232,7 +752,6 @@ pub fn layout_test_image(
     harness_relocs.extend(entry_asm.relocs.clone());
     harness_words.extend(entry_asm.words.clone());
 
-    // --- place sections: entry(harness), code, rodata? -------------------
     let mut cursor = image_base;
     let harness_base = cursor;
     let harness_size = (harness_words.len() * 4) as u64;
@@ -1243,11 +762,6 @@ pub fn layout_test_image(
     let code_size = (code_words.len() * 4) as u64;
     cursor += code_size;
 
-    // Arm OFF_TEST_CONTINUATION at `__wrela_rt_primary_entry` (decision 852).
-    // Callers that go through `lower_and_codegen_image` with
-    // `with_test_runner` seed this key; the fuzz lower lane's sync-only
-    // codegen does not. Named (not `internal error:`) so a missing seed
-    // is a fail-closed rejection rather than a census bug.
     let primary_entry_word = *fn_word_base
         .get("__wrela_rt_primary_entry")
         .ok_or_else(|| {
@@ -1276,9 +790,6 @@ pub fn layout_test_image(
         cursor += rodata_bytes.len() as u64;
     }
 
-    // plans/M6.md item C, decision 3; M11 item C / 722: the `rtdata`
-    // section at the fixed `RTDATA_BASE`, sized exactly `tables.total_bytes`
-    // — mirroring `layout_program`'s identical convention.
     let rtdata_base = if let Some(tables) = runtime_tables.as_ref() {
         let base = steer_rtdata_base(cursor, tables)?;
         cursor = base + tables.total_bytes;
@@ -1287,21 +798,8 @@ pub fn layout_test_image(
         None
     };
 
-    // plans/M7.md item D: the same `pooldata` reservation `layout_program`
-    // makes, for the same reason — a test image that declares a pool
-    // reserves its backing too, or the two image flavors would emit
-    // different memory maps for the same source (plans/M6.md item F/G's
-    // own rule that the two flavors emit and reject identically). Only
-    // the *backing* is resolved here; the placement itself waits until
-    // the section table exists, so `place_pools` can check its own base
-    // against every section already placed.
     let pool_backings = image_pool_backings(boot.as_ref())?;
 
-    // plans/M7.md item H1: the same `devregs` reservation `layout_program`
-    // makes, at the same point in the same order (after `rtdata`, before
-    // `pooldata`). Placed *here*, before the runtime block's real-address
-    // pass below, because that pass is what bakes each `DeviceCap[D]`
-    // argument word into boot's own `init` call.
     let device_windows = device_register_windows(boot.as_ref())?;
     let placed_regs = place_device_regs(cursor, &device_windows);
     let device_regs: Vec<DeviceRegs> = match &placed_regs {
@@ -1313,16 +811,11 @@ pub fn layout_test_image(
     };
     let pool_cursor = cursor;
     let _ = cursor;
-    // Early pool bases for section placement only — boot_init resolves
-    // PoolBase/PoolSlot via Reloc after `place_pools` (decision 683).
     let early_pools = place_pools_unchecked(pool_cursor, &pool_backings)
         .map(|(pools, _, _, _)| pools)
         .unwrap_or_default();
     let _ = &early_pools;
 
-    // Now that `rtdata_base` is real, rebuild the checkpoint block's
-    // address-dependent bytes. Boot_init / glue no longer sit in the
-    // harness (M10 H / F2).
     let (glue_symbols, real_placement): (BTreeMap<String, usize>, Option<RuntimePlacement>) =
         if let Some(w) = &wiring {
             let tables = &w.tables;
@@ -1350,10 +843,6 @@ pub fn layout_test_image(
                 for (i, word) in real_cp.words.iter().enumerate() {
                     harness_words[checkpoint_start + i] = *word;
                 }
-                // Match layout_program: real-pass Call relocs replace the
-                // shape-pass ones (word indices are identical today; keep
-                // the swap so a future length-preserving reshuffle cannot
-                // leave an unpatched `enc_bl(0)` in the harness).
                 harness_relocs.retain(|r| match r {
                     Reloc::Call { word, .. } => *word >= entry_start,
                     Reloc::Rodata { word_adrp, .. } => *word_adrp >= entry_start,
@@ -1374,15 +863,6 @@ pub fn layout_test_image(
             (BTreeMap::new(), None)
         };
 
-    // Resolves a `Reloc::TurnFrameAddr` key to its real turn-area
-    // address (`RuntimePlacement::turn_area_for`'s own rule) — an
-    // internal error if no tables exist or the key was never sized.
-    // Internal-error audit: unreachable from any source program, for the
-    // identical reason `layout_program`'s own copy of this guard is —
-    // a `TurnFrameAddr` exists only for an async fn, one async fn is
-    // already enough for `compute_runtime_tables` to size a non-empty
-    // table set, and `turn_area_for` partitions every key of the same
-    // `async_frames` map codegen keyed its relocs by.
     let turn_area_addr = |key: &str| -> Result<u64, LayoutError> {
         let (Some(tables), Some(placement)) = (&runtime_tables, &real_placement) else {
             return Err(LayoutError::new(format!(
@@ -1396,10 +876,6 @@ pub fn layout_test_image(
             ))
         })
     };
-    // plans/M10.md item 0c1: the same resolution one step earlier — the
-    // `TurnId` itself, for a `Reloc::TurnIdImm`. Same unreachability
-    // argument as `turn_area_addr` above, since `turn_area_for` *is*
-    // `turn_id_for` scaled by the stride.
     let turn_id_imm = |key: &str| -> Result<u64, LayoutError> {
         let (Some(tables), Some(placement)) = (&runtime_tables, &real_placement) else {
             return Err(LayoutError::new(format!(
@@ -1463,16 +939,6 @@ pub fn layout_test_image(
         None => Vec::new(),
     };
 
-    // --- resolve relocs ----------------------------------------------------
-    // Internal-error audit: every guard in this harness loop is unreachable
-    // from any source program. `Call` targets here are the entry driver's
-    // own `@test(runtime)` roots (already checked against `fn_word_base` at
-    // the top of this fn), a declared actor's `pub` method keys and its
-    // zero-argument `init` — all read from the same module set `codegen`
-    // compiled, with a method that fails to lower stopping the attempt one
-    // layer up. `Rodata` cannot outrun its own pool (interning a literal is
-    // what fills it). The last arm is structural: the harness builders in
-    // this file emit no such reloc.
     for reloc in &harness_relocs {
         match reloc {
             Reloc::Call { word, key } => {
@@ -1499,9 +965,6 @@ pub fn layout_test_image(
                 patch_adrp_add(&mut harness_words, *word_adrp, this_addr, target_addr)?;
             }
             Reloc::RodataAdr { word, byte_offset } => {
-                // plans/codegen-pareto.md item B1: the `OptId::AdrAddressing`
-                // one-word form of the arm above. `patch_adr` proves the
-                // ±1 MiB reach here rather than assuming it (freeze 1713).
                 let rb = rodata_base.ok_or_else(|| {
                     LayoutError::new(
                         "internal error: a harness Reloc::RodataAdr exists but the rodata \
@@ -1513,13 +976,10 @@ pub fn layout_test_image(
                 patch_adr(&mut harness_words, *word, this_addr, target_addr)?;
             }
             Reloc::TurnFrameAddr { word, key } => {
-                // The entry driver's own root-turn-area loads (the
-                // scheduler loop reads `resume_ready` through them).
                 let addr = turn_area_addr(key)?;
                 patch_load_imm_words(&mut harness_words, *word, addr);
             }
             Reloc::AbortFixed { word } => {
-                // plans/M10.md item C: fallible-init Err path in boot_init.
                 let target_base = *fn_word_base.get("__wrela_abort").ok_or_else(|| {
                     LayoutError::new(
                         "internal error: harness AbortFixed needs `__wrela_abort` but it was \
@@ -1571,19 +1031,6 @@ pub fn layout_test_image(
         for reloc in &f.relocs {
             match reloc {
                 Reloc::Call { word, key: target } => {
-                    // plans/M6.md item D: an async `Send`/`Await{ActorCall}`
-                    // op's own symbolic call target is a per-actor runtime
-                    // glue routine (`glue_symbols`, harness-section-relative)
-                    // rather than an ordinary `program.fns` entry
-                    // (`fn_word_base`, code-section-relative) — checked
-                    // second (`codegen::rt_enqueue_actor`'s doc records the
-                    // one disclosed way the two naming schemes could ever
-                    // collide, and why nothing enforces against it yet).
-                    // The `else` arm is the audit's one genuinely
-                    // user-reachable find — `unresolved_call_target`.
-                    // plans/M8.md item C2 / M11 G: see `layout_program`'s twin —
-                    // cross-core enqueue → `__wrela_xsend_<edge>`;
-                    // `rt_xreply` → `__wrela_xreply_<edge>` (decision 804).
                     let redirect = resolve_cross_core_edge(key, target, wiring.as_ref())?;
                     let xreply = wiring.as_ref().and_then(|w| resolve_xreply_edge(target, w));
                     let target_owned: String =
@@ -1627,9 +1074,6 @@ pub fn layout_test_image(
                     patch_adr(&mut code_words, base + word, this_addr, target_addr)?;
                 }
                 Reloc::AbortFixed { word } => {
-                    // plans/M10.md item C: resolve to force-rooted
-                    // `__wrela_abort` in `code` (print + finish_abort +
-                    // floor BR via `__wrela_abort_tail`).
                     let target_base = fn_word_base.get("__wrela_abort").ok_or_else(|| {
                         LayoutError::new(
                             "internal error: Reloc::AbortFixed needs `__wrela_abort` but it was \
@@ -1659,21 +1103,14 @@ pub fn layout_test_image(
                     patch_bl(&mut code_words, base + word, this_addr, target_addr)?;
                 }
                 Reloc::TurnFrameAddr { word, key: fn_key } => {
-                    // The compiled async fn's own persistent-frame base
-                    // load (its X_FRAME setup) — patched with its turn
-                    // area's real `rtdata` address.
                     let addr = turn_area_addr(fn_key)?;
                     patch_load_imm_words(&mut code_words, base + word, addr);
                 }
                 Reloc::TurnIdImm { word, key: fn_key } => {
-                    // plans/M10.md item 0c1: this turn's own `TurnId`, as
-                    // the waker of every message it awaits and as the owner
-                    // half of its `OFF_TURN_REPLY_SLOT` pair.
                     let id = turn_id_imm(fn_key)?;
                     patch_load_imm_words(&mut code_words, base + word, id);
                 }
                 Reloc::TurnsBase { word } => {
-                    // plans/M10.md item 0c3, twin of `layout_program`'s arm.
                     let addr = real_placement
                         .as_ref()
                         .map(|p| p.turns_base)
@@ -1714,7 +1151,6 @@ pub fn layout_test_image(
                     let addr = driver_wake_pending_addr(p, t, driver)?;
                     patch_load_imm_words(&mut code_words, base + word, addr);
                 }
-                // M10 D / decision 614
                 Reloc::MailboxAddr { word, actor, field } => {
                     let (p, t) = match (real_placement.as_ref(), runtime_tables.as_ref()) {
                         (Some(p), Some(t)) => (p, t),
@@ -1741,7 +1177,6 @@ pub fn layout_test_image(
                     };
                     patch_load_imm_words(&mut code_words, base + word, addr);
                 }
-                // M10 E3 / decision 621
                 Reloc::RrCursor { word, core } => {
                     let p = real_placement.as_ref().ok_or_else(|| {
                         LayoutError::new(
@@ -1784,7 +1219,6 @@ pub fn layout_test_image(
                     };
                     patch_load_imm_words(&mut code_words, base + word, addr);
                 }
-                // M10 H / decision 682
                 Reloc::DriverState { word, driver } => {
                     let (p, t) = match (real_placement.as_ref(), runtime_tables.as_ref()) {
                         (Some(p), Some(t)) => (p, t),
@@ -1798,7 +1232,6 @@ pub fn layout_test_image(
                     let addr = driver_state_addr(p, t, driver)?;
                     patch_load_imm_words(&mut code_words, base + word, addr);
                 }
-                // M10 H / decision 683
                 Reloc::DeviceRegsBase { word, device } => {
                     let addr = device_regs
                         .iter()
@@ -1848,7 +1281,6 @@ pub fn layout_test_image(
         }
     }
 
-    // --- serialize -----------------------------------------------------
     let mut blob = Vec::new();
     for w in &harness_words {
         blob.extend_from_slice(&w.to_le_bytes());
@@ -1877,10 +1309,8 @@ pub fn layout_test_image(
     verify_section_sizes(&sections, image_base, blob.len() as u64)?;
     verify_pool_windows(&sections, &pools)?;
     verify_device_windows(&sections, &device_regs)?;
-    // blk filled later — ring verify runs in attach_blk_report
 
     let irq_host_injects = build_irq_host_injects(boot.as_ref(), &device_regs);
-    // M10 F2: secondary-core entries live in `code` (decision 633).
     let core_entries: Vec<(usize, u64)> = match (wiring.as_ref(), code_base) {
         (Some(w), cb) if w.tables.cores > 1 => (1..w.tables.cores)
             .filter_map(|core| {
@@ -1898,13 +1328,10 @@ pub fn layout_test_image(
         blob,
         entry: harness_base + (entry_start as u64) * 4,
         sections,
-        // plans/M6.md item D: real at last for an actor-bearing test image
-        // (`bin/wrela.rs::test_cmd` now passes a real `BootCtx` — the item-C
-        // sub-note's own "staged, named work" is this commit).
         runtime: runtime_tables,
         pools,
         device_regs,
-        blk: None, // filled by attach_blk_report after layout
+        blk: None,
         irq_host_injects,
         core_entries,
         cores,
@@ -1912,10 +1339,6 @@ pub fn layout_test_image(
     })
 }
 
-/// plans/M10.md item F0: live word counts for hand-emitted A64 emitters
-/// under the census reference configuration documented in
-/// `emitted_a64_census`. `#[cfg(test)]` so production builds keep the
-/// private builders private; the census unit test is the only caller.
 #[cfg(test)]
 pub(crate) fn emitted_a64_census_live_counts() -> std::collections::BTreeMap<&'static str, usize> {
     use std::collections::BTreeMap;
@@ -1927,19 +1350,6 @@ pub(crate) fn emitted_a64_census_live_counts() -> std::collections::BTreeMap<&'s
         );
     };
 
-    // --- reference configuration (pinned; image-dependent emitters use this) ---
-    // capacity=4, slot_size=32 (one arg word beyond the 16-byte header).
-    // One select target, no child polls, no drain, no xreply arms.
-    // Checkpoint: empty irq/wake (M6 path), no group arena.
-    // Deadline scan/poll: arena_capacity=1, one turn area.
-    // Boot init: one actor, state_size=8, no init calls.
-    // Entry driver: zero runtime tests, cores=1, no boot_init, no rt_run_one.
-    // Drain: core=0, one request lane + one reply lane, capacity=4.
-    // Group child poll: one child at index 0.
-    // Secondary core entry: core=1.
-    // M11 J: enqueue/select REF ActorAddrs/RingAddrs measures deleted with emitters.
-
-    // Floor / halt.
     {
         let mut w = Vec::new();
         push_halt(&mut w, 0);
@@ -1952,29 +1362,16 @@ pub(crate) fn emitted_a64_census_live_counts() -> std::collections::BTreeMap<&'s
         build_abort_tail_codegen_fn().code.len(),
     );
 
-    // M10 G: checkpoint + deadline emitters measured in
-    // codegen::emitted_a64_census_specialization_live_counts.
-    // M10 M (sweep find L-11): harness `push_turn_addr_from_id` was dead
-    // production code — its only caller was this measure function; the
-    // live index→address rule is `codegen::push_turn_addr_from_id`.
-    // Deleted, row removed from the census.
-
-    // Helpers measured in isolation (delta on a fresh Asm).
     {
         let mut w = Vec::new();
         push_load_imm(&mut w, 9, 0x1234);
         insert(&mut out, "push_load_imm", w.len());
     }
 
-    // M10 F/F2: hand-asm select / cross-core / ring_enqueue deleted.
-    // M11 J: JIT `build_rt_enqueue` / `build_rt_select_and_run` deleted with emitters.
-    // M10 H: emit_boot_init measured in codegen::emitted_a64_census_specialization_live_counts.
-    // M11 K: build_entry_driver deleted; primary trampoline is floor.
     {
         let (asm, _) = build_primary_entry_trampoline(0, 1);
         insert(&mut out, "build_primary_entry_trampoline", asm.words.len());
     }
-    // Test-only residue of item C (cfg(test) helper).
     {
         let addrs = HarnessAddrs::production();
         let mut a = Asm::new(0);
@@ -1984,23 +1381,6 @@ pub(crate) fn emitted_a64_census_live_counts() -> std::collections::BTreeMap<&'s
 
     out
 }
-// ===========================================================================
-// Item E's own oracle for the remaining hand-assembled harness routines
-// above (abort path — M10 item C migrates those; console fmt/append/
-// begin/commit are force-rooted wrela since B2–B5): real execution, on
-// this machine's own aarch64 CPU (every development/check host this
-// project targets is either Apple Silicon or aarch64 Linux — CLAUDE.md's
-// own machine — so this is never a cross-architecture emulation trick).
-// No assembler exists to cross-check these bytes against (decision 5), so
-// instead of hand-verifying each encoding by eye the way `encode.rs`'s
-// own unit tests do for single instructions, this writes the generated
-// words into an executable page and calls them as an ordinary
-// `extern "C" fn` — the *behavior* is the oracle, exactly the same
-// principle decision 5 already states for the VMM/`diff-eval` at the
-// whole-image level, applied here one level down, to routines that touch
-// only a host-mmap'd stand-in region (`HarnessAddrs`'s own
-// test-vs-production split, module doc above) — never the real,
-// unmapped-in-a-test-process `wrela_machine` constants.
 
 #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
 mod harness_jit {
@@ -2026,10 +1406,6 @@ mod harness_jit {
     const MAP_PRIVATE: i32 = 0x0002;
     const MAP_ANON: i32 = 0x1000;
 
-    /// A host page (or run of pages) holding real, callable machine code —
-    /// written RW, then flipped to R-X before it is ever called (two
-    /// separate `mmap`/`mprotect` steps, never simultaneously W+X, so this
-    /// needs no `MAP_JIT`/hardened-runtime entitlement on macOS).
     struct ExecPage {
         ptr: *mut u8,
         len: usize,
@@ -2059,10 +1435,6 @@ mod harness_jit {
             }
         }
 
-        /// The `_at` family: identical shape to a two-arg AAPCS64 leaf call,
-        /// but entering at `byte_offset` into this same page instead of its
-        /// very first byte. M11 J deleted the enqueue/select combined-page
-        /// oracles; `call2_at` remains for the abort-tail latch probe.
         #[allow(dead_code)]
         fn call0_at(&self, byte_offset: usize) -> u64 {
             assert!(byte_offset < self.len);
@@ -2095,12 +1467,6 @@ mod harness_jit {
         }
     }
 
-    /// A host-mmap'd stand-in for one page of "guest RAM" a harness
-    /// routine reads/writes via absolute addresses baked in at code-gen
-    /// time (`HarnessAddrs`) — real memory a test can inspect afterward,
-    /// standing in for `console::RING_BASE`/`DATA_BASE`/
-    /// `machine_layout::MACHINE_INFO_BASE` without needing those literal,
-    /// unmapped-in-this-process addresses to exist.
     struct HostRam {
         ptr: *mut u8,
         len: usize,
@@ -2119,20 +1485,6 @@ mod harness_jit {
                     0,
                 );
                 assert!(!p.is_null() && (p as isize) != -1, "mmap failed");
-                // Pre-fault every page by writing it once, up front —
-                // exactly what the real VMM does to the whole guest DRAM
-                // region before ever starting the vCPU ("zeroes the
-                // declared reservations", 06-machine.md §3): an untouched
-                // anonymous mapping's pages are backed by the shared,
-                // read-only system zero page until first written, and a
-                // write performed by *JIT'd code running under this same
-                // process* was observed (empirically, chasing down a real
-                // test failure) to not reliably fault such a page in on
-                // this host — pre-touching here removes that difference
-                // between this test harness and the VMM's own always-
-                // zeroed-first memory model, rather than working around a
-                // JIT-only artifact this module's actual production code
-                // path never hits.
                 std::ptr::write_bytes(p as *mut u8, 0, len);
                 HostRam {
                     ptr: p as *mut u8,
@@ -2150,11 +1502,6 @@ mod harness_jit {
             unsafe { std::ptr::read_unaligned(self.ptr.add(off as usize) as *const u64) }
         }
 
-        /// Plans/M6.md item C: pre-seeding a ring's `count`/`head`/`tail`
-        /// (ring-full/FIFO-order test setup) needs writes, not just reads
-        /// — every M5-era harness test only ever *reads* `HostRam` after
-        /// letting generated code write it; this item's own tests are the
-        /// first to need the reverse.
         fn write_u64(&self, off: u64, value: u64) {
             assert!((off as usize) + 8 <= self.len);
             unsafe { std::ptr::write_unaligned(self.ptr.add(off as usize) as *mut u64, value) }
@@ -2169,14 +1516,6 @@ mod harness_jit {
         }
     }
 
-    /// plans/M10.md item B1 / decision 591: a second entry into
-    /// `__wrela_abort` with the latch already set skips printing and
-    /// lands at the shared halt/continuation tail. First entry sets the
-    /// latch and clears it in that same tail.
-    ///
-    /// plans/M10.md item C: print bodies are wrela; this probe keeps the
-    /// latch+tail shape in hand-asm so the unit test does not need a
-    /// full force-rooted runtime JIT.
     #[test]
     fn abort_reentrancy_latch_skips_print_on_second_entry() {
         let ram = HostRam::new(4096 * 4);
@@ -2186,18 +1525,14 @@ mod harness_jit {
             data_base: ram.base() + 4096 * 2,
             exit_mmio_addr: 0,
         };
-        // Combined page: [ret stub][latch probe][landing ret]
-        // Probe mirrors `__wrela_abort`'s latch check + `finish_abort` /
-        // `push_abort_tail` without calling console helpers.
         let ret = encode::enc_ret(30);
         let abort_start = 1usize;
         let mut a = Asm::new(abort_start);
         a.load_imm(9, addrs.info_base + mi::OFF_ABORT_LATCH);
         a.push(encode::enc_ldr_x_imm(10, 9, 0));
-        let reenter = a.skip_placeholder(); // cbnz x10 → shared_tail
+        let reenter = a.skip_placeholder();
         a.push(encode::enc_movz(10, 1, 0, true));
         a.push(encode::enc_str_x_imm(10, 9, 0));
-        // (no print — first-entry body would call console helpers here)
         a.patch_cbnz(reenter, 10);
         push_abort_tail(&mut a, &addrs);
         let mut words = vec![ret];
@@ -2208,8 +1543,6 @@ mod harness_jit {
         let land_addr = page.ptr as u64 + (land_off * 4) as u64;
         ram.write_u64(mi::OFF_TEST_CONTINUATION, land_addr);
 
-        // Pre-set latch: second-entry path. Must not touch ring bump,
-        // must clear latch, must increment failed.
         ram.write_u64(mi::OFF_ABORT_LATCH, 1);
         ram.write_u64(mi::OFF_TEST_FAILED, 0);
         ram.write_u64(mi::OFF_RING_DATA_BUMP, 42);
@@ -2227,21 +1560,6 @@ mod harness_jit {
         );
     }
 
-    /// plans/M10.md item C / decision 650: the six floor words every abort
-    /// long-jumps through were pinned by nothing at all. `dump --stage=asm`
-    /// shows this symbol as the wrela `__wrela_abort_tail` stub's compiled
-    /// `ret` (the stub exists only so `finish_abort`'s call type-checks),
-    /// because the overwrite happens later, in `install_abort_tail_floor`
-    /// after the single live CodegenProgram. So the bytes that actually run appeared
-    /// in no golden and no test: dropping `install_abort_tail_floor` would
-    /// have left every test image *returning* from abort instead of
-    /// long-jumping to the landing pad, and the whole suite would still
-    /// have been green.
-    ///
-    /// The address is checked by decoding it back out of the `MOVZ`/`MOVK`
-    /// stream rather than by recomputing the same halfword arithmetic the
-    /// builder uses — an inverse, so a wrong constant fails instead of
-    /// agreeing with itself.
     #[test]
     fn install_abort_tail_floor_replaces_the_stub_with_the_long_jump() {
         let stub = crate::codegen::CodegenFn {
@@ -2277,7 +1595,6 @@ mod harness_jit {
         assert_eq!(tail.code[4].word, encode::enc_ldr_x_imm(9, 9, 0));
         assert_eq!(tail.code[5].word, encode::enc_br(9));
 
-        // MOVZ/MOVK: imm16 at bits[20:5], shift/16 at bits[22:21].
         let mut addr = 0u64;
         for ew in &tail.code[..4] {
             let imm16 = ((ew.word >> 5) & 0xFFFF) as u64;
@@ -2290,8 +1607,6 @@ mod harness_jit {
             "the tail must load the landing pad's own continuation slot"
         );
 
-        // Fail-closed: abort bodies present without the tail in the emit
-        // set is an internal inconsistency, never a silent skip.
         let mut orphan = CodegenProgram {
             fns: BTreeMap::new(),
             rodata: Vec::new(),
@@ -2305,10 +1620,4 @@ mod harness_jit {
             err.message
         );
     }
-
-    // --- rt_enqueue / rt_select_and_run / rt_run_one ------------------------
-    // M11 J: enqueue/select JIT oracles deleted with emit_rt_enqueue /
-    // emit_rt_select_and_run — boot transcripts are the oracle (decision 705).
-    // M11 F: RR oracle moved to boot goldens — `emit_rt_run_one` deleted;
-    // `__wrela_rt_run_one` is generic wrela over SCHED + match ladders.
 }

@@ -1,7 +1,5 @@
 module examples.cost_calls
 
-# Cost-stage golden (plans/M18.md item F) — nested calls so bl.call
-# appears; checked add surfaces abort path terms.
 
 pub fn add_one(x: u64) -> u64:
     return x + 1

@@ -1,8 +1,5 @@
 module examples.cost_branchy
 
-# Cost-stage golden (cost-model hard-cut item E) — control-flow heavy so
-# branch terms + branch_penalty=3 matter in the schedule (not a
-# straight-line ALU-only body).
 
 pub fn classify(x: u64) -> u64:
     if x < 10:

@@ -1,16 +1,5 @@
 module examples.err_layout_runtime_device_visible
 
-# plans/M10.md item A2, 03-hardware.md §3.1: "A `runtime` layout is not
-# device-visible — no device reads or writes it, so it is neither a `dma`
-# payload nor an `mmio` register map."
-#
-# The rule needs no new code — `Mmio[L]` has always required `L` to be
-# `@layout(mmio)`, and `img.dma_pool[T]`/`DmaShared[P, L]` have always
-# required `@layout(dma)`. What item A2 changed is that the rejection is now
-# *reachable*: until the class was accepted at its declaration, a
-# `@layout(runtime)` struct never got far enough to be named here, and this
-# half of §3.1's sentence was enforced only by the blanket refusal of the
-# whole kind. Pinned so that stays true now that the blanket is gone.
 
 @layout(runtime, endian=little)
 struct TurnArea:

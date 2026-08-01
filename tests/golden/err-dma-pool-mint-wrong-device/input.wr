@@ -1,21 +1,5 @@
 module examples.err_dma_pool_mint_wrong_device
 
-# plans/M7.md item D, 03-hardware.md §1: "The device itself is named once,
-# at the image binding (`img.driver(BlkDriver, device=blk_device)`), the
-# single source of truth" — which is only a single source of truth if the
-# pool and the driver name the *same* device.
-#
-# `BlkDriver` is bound to `blk`, and `BlockControl` is declared reachable
-# from `nic`. A `DmaPool[BlockControl, 4096]` handed to that driver would
-# be authority over memory its own device cannot reach, and (worse, under
-# plans/M7.md decision 5) a window the VMM maps for the wrong device
-# model.
-#
-# A second driver on `nic` so the pool's device is driven — otherwise the
-# post-closure driverless-device guard rejects the pool before this mint
-# check can name the mismatch. The mismatch itself is unchanged:
-# BlkDriver is still bound to `blk` while `BlockControl` is reachable
-# from `nic`.
 
 @layout(dma, endian=little)
 struct BlkReqHeader:
@@ -41,7 +25,6 @@ pub struct BlkDriver:
     pub fn capacity(read self) -> u64:
         return self.sectors
 
-# Keeps `nic` driven so pool_backings does not fire first.
 @driver
 pub struct NicDriver:
     held: DeviceCap[NicHw]

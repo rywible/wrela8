@@ -1,6 +1,5 @@
 module app.main
 
-# plans/M16.md item C: `from drivers.blk import …` typechecks.
 from drivers.blk import (
     BlkDriver,
     VirtioIrqMmio,

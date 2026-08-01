@@ -1,15 +1,5 @@
 module examples.err_scope_shadow_branch
 
-# 02-language.md §3.2: "Shadowing an outer local is an error; pick
-# another name." A typed declaration inside a branch is scoped to that
-# branch (`check-if-else-scoping`, `err-scope-use-after-if`), but it is
-# still a *fresh declaration*, not a different kind of statement — one
-# that happens to name an already-live outer local is exactly the
-# shadow case the doc rejects, the same as writing it directly at the
-# outer level would be (`err-name-shadow` pins the closure-param form of
-# the same rule). Chosen deliberately over silently treating this as a
-# branch-scoped shadow-and-forget: the dumbest fail-closed reading is
-# "the language has exactly one shadowing rule," not two.
 pub fn shadow_in_branch(cond: bool) -> u64:
     value: u64 = 0
     if cond:

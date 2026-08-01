@@ -1,35 +1,5 @@
 module examples.err_boot_driver_init_runs
 
-# plans/M7.md item H1's **vacuity control**, and it is a golden rather
-# than a paragraph because the thing it rules out is invisible by
-# construction.
-#
-# `golden/boot-device-claim` is this same image, and every one of its
-# assertions is of the form "this register still reads 0". The device
-# register window is a zeroed declared reservation, so **every one of
-# those assertions would also pass on a boot that never called the
-# driver's `init` at all** — which is precisely the class of wrong answer
-# plans/M7.md item W was written to close (an image that booted, asserted
-# and reported success over a field nothing materialized).
-#
-# So this file inverts exactly one assertion — the first register read's
-# — and pins the abort. A green `boot-device-claim` plus this file's own
-# `FAILED assertion failed: ...` line together say: boot really calls a
-# `@driver`'s `init`, that `init` really runs to the first MMIO read, and
-# the value it compares is the window's own byte.
-#
-# **It also pins a defect this item found by running.** Before item H1,
-# an abort anywhere inside a boot-time `init` — actor or driver, and item
-# W had made actor `init`s callable since — long-jumped through
-# `machine_info::OFF_TEST_CONTINUATION`, a word written only inside the
-# per-test loop. Before the first test that word is zero, so the guest
-# branched to address 0 and died as `unhandled exception ... pc=0x0`
-# instead of reporting anything at all. `layout::build_entry_driver` now
-# opens a report line and arms that continuation *before* boot runs, so a
-# failed initialization is image-fatal with a diagnosable line
-# (plans/M6.md decision 12, plans/M7.md decision 8) rather than a fault at
-# zero. This transcript — a `FAILED` line, no test lines, a summary
-# counting one failure — is that behavior.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:
@@ -54,36 +24,25 @@ pub struct BlkDriver:
     handled_bits: u32
 
     init(mut self, take cap: DeviceCap[VirtioBlock]):
-        # 03 §9: reset + acknowledge + driver-claimed, consuming the
-        # capability. On this machine that is a pure authority transition
-        # (06 §3: nothing to negotiate, no status register file).
         claimed = VirtioBlock.claim(cap=take cap)
         self.irq_regs = claimed.map_partition(VirtioIrqMmio)
         self.probe_regs = claimed.map_partition(BlkProbeMmio)
         self.claimed = take claimed
         self.handled_bits = 0
 
-        # A real load at base+0x60, 32 bits wide.
         s0 = self.irq_regs.interrupt_status.read()
         assert s0 == 1, "INVERTED ON PURPOSE: this is the vacuity control"
 
-        # Three real stores, at three declared offsets, at two widths.
         self.irq_regs.interrupt_ack.write(4294967295)
         self.probe_regs.probe_write.write(2779096485)
         self.probe_regs.probe_write_half.write(48879)
 
-        # 0x104 is the four bytes immediately after the `u32` written at
-        # 0x100: nonzero here means the store was wider than `u32`.
         r1 = self.probe_regs.probe_read.read()
         assert r1 == 0, "a `WriteOnly[u32]` store at 0x100 stayed inside its own four bytes"
 
-        # 0x10a is the two bytes immediately after the `u16` written at
-        # 0x108: nonzero here means the store was wider than `u16`.
         r2 = self.probe_regs.probe_read_half.read()
         assert r2 == 0, "a `WriteOnly[u16]` store at 0x108 stayed inside its own two bytes"
 
-        # 0x60 after every store: nonzero means a store ignored its
-        # register's declared offset and landed at the claim's base.
         s1 = self.irq_regs.interrupt_status.read()
         assert s1 == 0, "every store landed at its declared offset, not at the claim's base"
 
@@ -102,11 +61,6 @@ pub struct Ledger:
 
 @test(runtime)
 async fn device_claimed_image(led: Actor[Ledger]):
-    # The driver's own `init` already ran, before this test turn exists
-    # (06 §3 step 3: "runs typed driver and actor initialization in image
-    # dependency order"). Its assertions are the oracle; this
-    # conversation is here so the image has a runtime test to report at
-    # all, and so a green line means "the boot survived the driver".
     a = await led.mark(n=4)
     @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match a:

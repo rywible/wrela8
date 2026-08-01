@@ -1,27 +1,5 @@
 module examples.err_mmio_alias
 
-# plans/M7.md item C's flagship rejection (`hardware.mmio.no-alias`),
-# 03-hardware.md §2: "Minting a layout consumes those byte ranges from
-# the claim; two live layouts can never alias a register."
-#
-# This is `golden/check-mmio-access`'s own driver with its two partitions
-# moved on top of each other. `VirtioIrqMmio` is 03 §2's own worked
-# example — the interrupt partition a driver "maps only what its ISR
-# needs". `VirtioTransportMmio` is the *sealed transport's* partition,
-# which §2's very next sentence says the transport protocol owns:
-# "the sealed transport protocol owns the initialization/queue/status/
-# config partition". A driver that mints both has claimed the transport's
-# `device_status` register at 0x060 twice, under two names, with two
-# directions — the exact aliasing the sentence forbids.
-#
-# The diagnostic names **both** mints, because the rule is about a pair:
-# each field, its declared type, the layout it mints, the specific
-# register each one claims, and the byte range they actually share. A
-# message naming only one half would leave a reader to find the other.
-#
-# Sibling accepts: `golden/check-mmio-access` (the same two layouts, moved
-# apart) and `golden/check-capabilities` (a second layout reached through
-# a plain wrapper struct, still disjoint).
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

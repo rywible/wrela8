@@ -1,28 +1,5 @@
 module examples.err_blk_config_on_another_device
 
-# plans/M8.md item P, decision 25 — what *remains* refused once two
-# devices are a legal shape (`golden/check-pool-two-devices`).
-#
-# `BlkDevice` now names its device: the one whose pool hosts the ring the
-# single `VirtQueue.configure` site consumes. Everything on that line must
-# then be *that* device's own configuration. But `blk_capacity_sectors` /
-# `blk_accepted_features` are the one derivation of each fact and scan the
-# device list in declaration order — the lowerer reads them through
-# `TypedProgram::blk_capacity_sectors`, where no configure site is in scope
-# to disambiguate with. With one device those questions have one answer;
-# with two they do not.
-#
-# Rather than grow a second, device-scoped derivation and let the two
-# disagree, `derive_blk_report` refuses the only shape in which they could:
-# blk configuration declared on a device that is not the blk device.
-# 06-machine.md §6's device set is closed and machine v1 has exactly one
-# `blk`.
-#
-# Two-line twin of `golden/boot-blk-two-devices`: `capacity_sectors=`
-# moves from `blk` (device#0, whose pool hosts the ring) to `aux_dev`
-# (device#1). Verified by mutation: with the check disabled this builds and
-# renders `BlkDevice device=device#0 capacity_sectors=64` — device#0's line
-# carrying device#1's number.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:
@@ -55,7 +32,6 @@ const SECTOR: usize = 512
 const BLK_T_IN: u32 = 0
 const BLK_T_OUT: u32 = 1
 const MAGIC: u64 = 0xC0FFEE00BEEF42A1
-# phase: 1 = write in flight; 2 = read in flight; 3 = done
 const PHASE_WRITE: u32 = 1
 const PHASE_READ: u32 = 2
 const PHASE_DONE: u32 = 3
@@ -107,8 +83,6 @@ pub struct BlkDriver:
         irq.unmask()
         self.irq = take irq
         self.device = negotiated.start()
-        # Stamp MAGIC and publish the write before returning so the first
-        # checkpoint delivers a real used-ring IRQ (boot-irq-isr shape).
         b = take buffer
         b.word = MAGIC
         permit = self.queue.reserve(descriptors=3)
@@ -118,10 +92,6 @@ pub struct BlkDriver:
             payload=take b,
             device_writes_payload=false,
             status=BlkReqStatus(status=0xff),
-            # Item G (decision 18) made `idempotent=` required. A write is
-            # not idempotent by inspection — this case is about per-device pool
-            # reachability, not the retry rule, so it declares the honest value
-            # rather than the one that would let a retry through.
             idempotent=false,
         )
         receipt = self.queue.publish(operation=take op)
@@ -142,9 +112,6 @@ pub struct BlkDriver:
         status = self.pending.swap_acquire(0)
         if status == 0:
             return unit
-        # Take first: a quiet wake after the round trip (extra completion
-        # or inject bit) must not park inside `queue.drain` with nothing
-        # to claim. `await receipt` is not used here — see decision 22.
         slot = take self.inflight
         match slot:
             case .None:
@@ -159,7 +126,6 @@ pub struct BlkDriver:
                             pass
                         case .Err(_):
                             assert false, "write completion status Ok"
-                    # Write buffer-facing length is 0.
                     n = c.written_len
                     match n.checked_le(SECTOR):
                         case .Ok(v):
@@ -175,13 +141,9 @@ pub struct BlkDriver:
                         payload=take b,
                         device_writes_payload=true,
                         status=BlkReqStatus(status=0xff),
-                        # A read of a fixed sector is idempotent by
-                        # inspection (item G, decision 18).
                         idempotent=true,
                     )
                     receipt = self.queue.publish(operation=take op)
-                    # Restore taken field in one step (Option[Receipt] is a
-                    # resource — no None-then-Some overwrite).
                     self.inflight = Some(take receipt)
                     self.phase = PHASE_READ
                 else:
@@ -205,8 +167,6 @@ pub struct BlkDriver:
                         b = take c.payload
                         w = b.word
                         assert w == 0xC0FFEE00BEEF42A1, "read-back sees the hand-computed sector word"
-                        # Take the empty Option before restoring (Option[own]
-                        # is a resource — cannot overwrite a live None).
                         empty = take self.buffer
                         match empty:
                             case .None:
@@ -222,9 +182,6 @@ pub struct BlkDriver:
                         assert false, "drain in unexpected phase"
         return unit
 
-# device#1's own driver, so this image is two devices each with a driver
-# and a pool. It touches nothing: its only job is to make device#1 a real
-# bound device rather than a declaration.
 @driver
 pub struct AuxDriver:
     tag: u32
@@ -248,8 +205,6 @@ pub struct Ledger:
 
 @test(runtime)
 async fn blk_write_read_roundtrip(led: Actor[Ledger]):
-    # Two checkpoints: write IRQ+drain then read IRQ+drain. Surviving
-    # with marks 42 means every assert in both drain phases held.
     a = await led.mark(n=4)
     @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match a:
@@ -280,10 +235,6 @@ pub fn build() -> Image:
         required_features=[Feature.Flush],
         vector=1,
     )
-    # The blk device is device#0 (its pool hosts the ring). device#1
-    # declares the block capacity — so the *only* `capacity_sectors=` in
-    # this image belongs to a device that is not the block device, and the
-    # graph-wide scan would put 64 on a `BlkDevice device=device#0` line.
     aux_dev = img.device[AuxHw](transport=0x3000, capacity_sectors=64)
     control = img.dma_pool[BlkReqHeader](name=BlockControl, device=blk, count=32)
     payloads = img.dma_pool[DmaBlock](name=BlockPayloads, device=blk, count=1)

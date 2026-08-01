@@ -1,10 +1,5 @@
 module examples.check_try_some_unwraps
 
-# plans/M9.md item BB, the other half that must not regress: `Some(v)?`
-# still yields `v` (02-language.md §8.2's parenthesis, "and, in
-# `Option`-returning functions, to `Option`"). `Some`'s index is 1, which
-# is also `Err`'s — so this is the shape a fix that read the index and
-# merely swapped the constants around would break.
 
 struct Point:
     x: u32
@@ -35,8 +30,6 @@ fn settle(o: Option[u32]) -> u32:
         case .None:
             return 777
 
-# Evaluated at build time; pinned in `expected/image.txt` as
-# `Arg label=scalar value=30` and `Arg label=structured value=20`.
 const SCALAR: u32 = settle(unwrap_scalar(2))
 const STRUCTURED: u32 = settle(unwrap_struct(true))
 

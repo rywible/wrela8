@@ -1,65 +1,17 @@
-//! `cargo xtask agnostic-sweep` — plans/M20.md item A's own oracle.
-//!
-//! Until M20, the tree asserted in some two dozen places that the cost
-//! model was hardware-agnostic: "not an A76 SOG port map", "no real
-//! L1/L2/L3 KB geometry", "differential ISA ranking only",
-//! `target=isa_baseline`. M20 decision 1600 reverses that — the documented
-//! A76 port map **is** the model, pinned to `a76-pi5` — so every one of
-//! those sites had to move in item A's commit train or the tree
-//! contradicts itself, with CLAUDE.md making the docs ground truth over
-//! the code.
-//!
-//! The failure mode of that sweep is a **missed** site, not a wrong one,
-//! which is a thing a human diff review is bad at and a grep is good at.
-//! So the sweep gets a standing check rather than a one-time review: no
-//! superseded phrase survives anywhere in the tracked tree, and the phrase
-//! the reversal introduced is positively present where it belongs.
-//!
-//! Fail closed: any hit is an error naming every offending `path:line`.
-//! There is no allowlist of "known remaining" sites — the point of the
-//! check is that the set is empty.
-
 use std::process::Command;
 
 use crate::root;
 
-/// Directory prefixes the sweep does not scan, each for its own reason —
-/// not for convenience. Any other tracked file is fair game.
 const EXCLUDED_PREFIXES: &[(&str, &str)] = &[
-    // CLAUDE.md: "docs/archive/ — the superseded draft spec; read-only
-    // history." Rewriting history to match current doctrine is exactly
-    // what an archive exists to prevent.
     ("docs/archive/", "read-only history (CLAUDE.md)"),
-    // Historical milestone plans legitimately record the state of the
-    // tree when they were written, and plans/M20.md itself quotes, at
-    // length and on purpose, every phrase it is retiring — its item A
-    // inventory table is a list of the strings this check hunts.
     ("plans/", "plans record the superseded state deliberately"),
-    // This file. It is the list — it has to contain every phrase it hunts,
-    // and a check that flagged its own definition could never pass. The
-    // exclusion is therefore exact (one path, not a directory) so nothing
-    // else in `crates/xtask/` hides behind it.
     (
         "crates/xtask/src/agnostic_sweep.rs",
         "defines the phrase list",
     ),
 ];
 
-/// Every superseded assertion, in the normalized (whitespace-collapsed)
-/// form the scanner matches. Enumerated by grepping the tree before item A
-/// touched it, not guessed: each entry had at least one live occurrence,
-/// except the `*-agnostic` spellings, which are forward guards against the
-/// claim coming back in words the tree never happened to use.
-///
-/// Kept out of this list on purpose, because M20 does **not** reverse
-/// them: "no physical calibration", "not calibrated to host wall clocks",
-/// "no host PGO as a gate input", and every statement that physical
-/// measurement never gates an opt landing (M19 freeze 1404 / M20 freeze
-/// 1631). Those are still doctrine, and a check that flagged them would be
-/// arguing the opposite of the milestone.
 const SUPERSEDED: &[(&str, &str)] = &[
-    // The two pinned dump strings. These move every `--stage=cost`
-    // golden, so they are the clearest single signal of the reversal.
     (
         "ignore_cache=1",
         "the cache hierarchy is modelled now (item F)",
@@ -72,7 +24,6 @@ const SUPERSEDED: &[(&str, &str)] = &[
         "target=isa_baseline",
         "the target is the a76-pi5 profile now (freeze 1621)",
     ),
-    // The port-map denials, in every spelling the tree used.
     (
         "not an A76",
         "the A76 port map is the model (decision 1600)",
@@ -96,7 +47,6 @@ const SUPERSEDED: &[(&str, &str)] = &[
         "A76\u{2019}s real decode",
         "the real dispatch constraints are modelled now (item E)",
     ),
-    // The geometry denials.
     (
         "no real L1",
         "real L1/L2/L3 and TLB geometry is modelled now (item F)",
@@ -113,7 +63,6 @@ const SUPERSEDED: &[(&str, &str)] = &[
         "cache/L2/L3/branch-mispredict",
         "those models are in scope now (items F and H)",
     ),
-    // The scope denials.
     (
         "differential ISA ranking",
         "ranking is against a published-record A76 model now",
@@ -122,7 +71,6 @@ const SUPERSEDED: &[(&str, &str)] = &[
         "differential ISA proxy",
         "ranking is against a published-record A76 model now",
     ),
-    // Forward guards: spellings the claim could return in.
     (
         "hardware-agnostic",
         "the model is board-specific by mandate",
@@ -134,15 +82,11 @@ const SUPERSEDED: &[(&str, &str)] = &[
     ),
 ];
 
-/// Phrases that must be **present**, and where. The negative half of this
-/// check can be satisfied by deleting the dump line entirely; this half
-/// says what has to be there instead.
 const REQUIRED: &[(&str, &[&str])] = &[(
     "crates/wrela-compiler/src/cost/dump.rs",
     &["ignore_cache=0", "ignore_mispredict=0", "target=a76_pi5"],
 )];
 
-/// One offending site.
 struct Hit {
     path: String,
     line: u32,
@@ -170,14 +114,9 @@ pub(crate) fn agnostic_sweep() -> Result<(), String> {
         }
         let abs = root().join(rel);
         if !abs.is_file() {
-            // A tracked path that is not a regular file (submodule,
-            // symlink to nowhere) — nothing to read, nothing to claim.
             continue;
         }
         let bytes = std::fs::read(&abs).map_err(|e| format!("read {rel}: {e}"))?;
-        // Lossy on purpose: a tracked non-UTF-8 file must still be
-        // scanned rather than silently skipped. Every tracked file in this
-        // tree is valid UTF-8 today, so this never actually lossifies.
         let text = String::from_utf8_lossy(&bytes);
         scanned += 1;
         sweep_prose(rel, &text, &mut hits);
@@ -219,7 +158,6 @@ pub(crate) fn agnostic_sweep() -> Result<(), String> {
     ))
 }
 
-/// Every tracked path, repo-relative, in git's order.
 fn tracked_files() -> Result<Vec<String>, String> {
     let out = Command::new("git")
         .args(["ls-files", "-z"])
@@ -239,18 +177,6 @@ fn tracked_files() -> Result<Vec<String>, String> {
         .collect())
 }
 
-/// Ordinary files: whitespace-collapsed whole-file matching, no exemption.
-///
-/// Whole-file rather than per-line because the two normative documents and
-/// CLAUDE.md wrap prose at ~72 columns, so "not an A76 SOG port map"
-/// routinely straddles a newline and a line-at-a-time matcher would sail
-/// straight past the very sites this check exists to catch.
-///
-/// Known limitation, recorded rather than papered over: markdown emphasis
-/// *inside* a phrase (`not **A76** SOG`) defeats plain matching. No
-/// occurrence in this tree does that — the emphasis always wraps the whole
-/// clause — and the alternative (stripping markup) would make the matcher
-/// clever in exchange for making its failures hard to read.
 fn sweep_prose(rel: &str, text: &str, hits: &mut Vec<Hit>) {
     let (normal, lines) = normalize_with_lines(text);
     for (phrase, why) in SUPERSEDED {
@@ -265,9 +191,6 @@ fn sweep_prose(rel: &str, text: &str, hits: &mut Vec<Hit>) {
     }
 }
 
-/// Collapse every whitespace run to one space, and record, for each byte
-/// of the result, the 1-based source line it came from. A phrase spanning
-/// a wrap reports the line where it starts.
 fn normalize_with_lines(text: &str) -> (String, Vec<u32>) {
     let mut out = String::with_capacity(text.len());
     let mut lines: Vec<u32> = Vec::with_capacity(text.len());

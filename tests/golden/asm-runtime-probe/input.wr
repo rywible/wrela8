@@ -1,8 +1,5 @@
 module examples.asm_runtime_probe
 
-# plans/M10.md item A2d / decision 583: force-rooted `__wrela_runtime_probe`
-# from always-loaded `core.runtime` appears in the asm dump even though no
-# wrela Call names it. Hand-asm `bl_call_key` resolves against this emit.
 
 @test(runtime)
 pub fn probe_seed():

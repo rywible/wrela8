@@ -1,19 +1,8 @@
-//! Census tables (`tests/census.toml`).
-//!
-//! Allowlists that used to live as `pub const` tables in per-surface
-//! `*_census.rs` modules are data. This module is the one reader; the
-//! thin census modules keep their scan/test logic and pull the locked
-//! tables from here.
-//!
-//! `toml` is justified: these are ratchet tables, edited as data next to
-//! the tests they lock, not compiler structure.
-
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 const CENSUS_TOML: &str = include_str!("../../../tests/census.toml");
 
-/// Parsed census file (owned strings; built once).
 #[derive(Debug)]
 pub struct CensusFile {
     pub internal_error: InternalErrorCensus,
@@ -39,7 +28,7 @@ pub struct EmitterEntry {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // re-exported as Category from emitted_a64_census
+#[allow(dead_code)]
 pub enum EmittedCategory {
     Floor,
     ImageStatic,
@@ -77,8 +66,6 @@ pub struct CorpusSemaPin {
     pub why: Option<String>,
 }
 
-/// The process-wide parsed census. Panics if `tests/census.toml` is
-/// malformed — a broken lock file is a build bug, not a soft miss.
 pub fn data() -> &'static CensusFile {
     static DATA: OnceLock<CensusFile> = OnceLock::new();
     DATA.get_or_init(parse_census)

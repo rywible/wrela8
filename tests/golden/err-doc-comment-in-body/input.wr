@@ -1,19 +1,5 @@
 module examples.err_doc_comment_in_body
 
-# 02-language.md §1: a `##` doc comment is "attached to the immediately
-# following declaration". A statement is not a declaration, so a `##`
-# inside a body has nothing to attach to and is refused by name.
-#
-# The rejection matters because the fix that made doc comments participate
-# in layout (`lex-doc-comment-layout`) also made this shape *lex* cleanly
-# for the first time — before it, the DocComment token landed on the wrong
-# side of the body's INDENT and the failure was an accident of token order
-# rather than a rule. This case pins the rule, and the accepting sibling
-# `check-doc-comment-positions` pins every position that IS legal.
-#
-# The advice is the actionable half: a plain `#` comment is exactly what a
-# comment inside a body should be.
 
 fn count() -> u32:
-    ## this documents nothing
     return 1

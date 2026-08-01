@@ -1,10 +1,5 @@
 module examples.boot_cores_1
 
-# plans/M15.md item G / decision 1070: stage-1 N=1 under the baton.
-# Same non-reentrancy program as `boot-actors`, with explicit `cores=1`
-# so N is authored rather than defaulted. Transcript bytes match
-# `boot-actors` (test turns: ok); the allowed golden diff vs that
-# control is the report's `Cores count=1` + one high `CoreStack` line.
 
 @actor
 pub struct Ledger:

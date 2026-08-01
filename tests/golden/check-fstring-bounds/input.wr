@@ -1,13 +1,5 @@
 module examples.check_fstring_bounds
 
-# plans/M9.md item D / D2. f-strings sum Format bounds into String[..N]
-# (02 §1.1 / 05 §6). Value pins (bytes + length), not mere compilation.
-# Guest-tier lowering is pinned by check-format-fstring-guest (item D3);
-# after H3 this fixture's mwir is only Store.init (comptime-only callees).
-#
-# Item D2: the most obvious spellings first — `f"{42}"`, inferred
-# `a = 42; f"a={a}"` — not only annotated consts/params (which hid the
-# access-pass literal-defaulting hole).
 
 fn dig20(s: String[..20]) -> u64:
     return s.len.to[u64]() * 1000000 + s[0].to[u64]() * 1000 + s[1].to[u64]()
@@ -15,13 +7,11 @@ fn dig20(s: String[..20]) -> u64:
 fn dig22(s: String[..22]) -> u64:
     return s.len.to[u64]() * 1000000 + s[0].to[u64]() * 1000 + s[1].to[u64]()
 
-# Literal interpolation (defaults to i64 → String[..20]): value "42".
 fn fstr_lit() -> u64:
     return dig20(f"{42}")
 
 const LIT: u64 = fstr_lit()
 
-# Inferred local interpolation: value "a=42".
 fn fstr_inf() -> u64:
     a = 42
     return dig22(f"a={a}")
@@ -31,19 +21,16 @@ const INF: u64 = fstr_inf()
 const X: u32 = 42
 const Y: bool = false
 
-# f"n={X} ok={Y}" bound = 2+10+4+5 = 21; value "n=42 ok=false" (13 bytes).
 fn dig21(s: String[..21]) -> u64:
     return s.len.to[u64]() * 1000000 + s[0].to[u64]() * 1000 + s[1].to[u64]()
 
 const MIXED: u64 = dig21(f"n={X} ok={Y}")
 
-# f"{{literal}}" → "{literal}" bound 9.
 fn dig9(s: String[..9]) -> u64:
     return s.len.to[u64]() * 1000000 + s[0].to[u64]() * 1000 + s[1].to[u64]()
 
 const BRACES: u64 = dig9(f"{{literal}}")
 
-# Guest-reachable f-string: lowered fn body (not comptime-only).
 fn label(n: u32) -> String[..13]:
     return f"id={n}"
 

@@ -1,7 +1,5 @@
 module examples.err_task_async
 
-# plans/M7.md item G / 03 §7: the bottom half "never stays active while
-# waiting" — an `async` `@task` is refused at the declaration.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

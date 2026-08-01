@@ -1,9 +1,5 @@
 module examples.err_budget_const_zero
 
-# plans/M12.md item B: a `const` bound of zero is illegal — same ≥ 1 rule as
-# a literal `0` (and as layout lengths that must be one or more). The value
-# is reported in the message because the number is no longer visible at the
-# attribute once it is a name.
 
 const BOUND: u64 = 0
 

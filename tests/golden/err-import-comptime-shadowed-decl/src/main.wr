@@ -2,11 +2,6 @@ module main
 
 from lib import measure
 
-# plans/M9.md item A1b, decision 15: this module declares its *own*
-# `Helper`, different from `lib`'s. Splicing `measure`'s body in and
-# evaluating it here would resolve its `Helper(k=4)` against this
-# module's `Helper` — a silently wrong value, which is worse than a
-# missing one. The splice is withheld and the miss is named instead.
 struct Helper:
     k: u32
     extra: u32

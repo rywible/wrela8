@@ -1,37 +1,5 @@
 module examples.boot_dma_pool
 
-# plans/M7.md item D's **real-boot oracle** (the A–H note: "a real HVF boot
-# as the behavioral oracle wherever the item produces guest-visible
-# behavior ... M5/M6 both proved that dump review alone misses
-# register-level bugs").
-#
-# Item D's guest-visible product is a `pooldata` section: 05-library.md
-# §9's "reserve exact backing", emitted as zeroed image bytes and placed
-# after `rtdata`, exactly like the actor runtime tables. That is not a
-# report fact — it changes the emitted blob's length, the memory map, and
-# (before `rtdata` learned to advance the placement cursor) it silently
-# overlapped the actor state area. `--stage=report` review would not have
-# caught that; a boot does, immediately and loudly, because every actor's
-# state, mailbox and turn record lives in the section the pool now sits
-# after.
-#
-# So this image declares both pool forms — a device-reachable
-# `img.dma_pool` and a plain `img.pool`, 384 bytes of backing between them
-# — and then runs an ordinary actor conversation over it. The assertions
-# are about the actors, deliberately: nothing here reads pool memory (no
-# source construct produces an `own[P] T` yet — `hardware.dma.ownership-transfer`),
-# so what a green transcript proves is that reserving and placing the
-# backing left every runtime table exactly where it was. The identical
-# assertions with the two pool declarations deleted are the control, and
-# `golden/boot-actors` is effectively that control already.
-#
-# What this does **not** prove, stated rather than implied: the VMM never
-# sees a window here. `wrela test`'s own runtime report is hand-built
-# (`Machine revision=`/`Input`/`Section`/`Entry`) and does not carry the
-# `BlkPool name= base= size=` lines `render_layout_section` emits, so no
-# device model is configured and nothing maps this pool. That chain closes
-# at plans/M7.md item E, which emits the `BlkDevice`/`BlkQueue` lines a
-# `BlkPool` needs to bind to.
 
 @layout(dma, endian=little)
 struct BlkReqHeader:

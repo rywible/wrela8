@@ -1,1 +1,1 @@
-error[type]: `@layout` struct `VirtioIrqMmio` declares a method (`acknowledge`); a `@layout` type declares fields only (03-hardware.md §2/§3) at 13:5
+error[type]: `@layout` struct `VirtioIrqMmio` declares a method (`acknowledge`); a `@layout` type declares fields only (03-hardware.md §2/§3) at 8:5

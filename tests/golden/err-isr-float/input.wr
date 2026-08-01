@@ -1,6 +1,5 @@
 module examples.err_isr_float
 
-# plans/M7.md item G: 03-hardware.md §6 — an ISR may not use floating point.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

@@ -1,8 +1,5 @@
 module examples.err_task_budget_removed
 
-# plans/M13.md item C cut 7: `@task(budget=)` is an unimplemented scheduling
-# promise the FIFO+RR scheduler cannot honor — cut with `@task(priority=)`.
-# Twin of `err-task-priority-removed` (cut 6).
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

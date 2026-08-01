@@ -1,22 +1,5 @@
 module examples.err_boot_irq_isr_runs
 
-# plans/M7.md item G's **vacuity control** for the ISR HVF oracle.
-#
-# `golden/boot-irq-isr` is this same image. Its drain asserts
-# `status == 1` (the masked level signal). That assertion alone would
-# also be skipped — and the test would still report `ok` — on a boot
-# that never delivered the vector (no checkpoint dispatch, no ISR, no
-# wake). An all-zeros assertion set that never runs the ISR path passes
-# on a boot that never raised anything; that is the class
-# `err-boot-driver-init-runs` taught for init, and this file is the
-# same lesson for the ISR → bottom-half edge.
-#
-# So this file inverts exactly one assertion — the drain's level-signal
-# check — and pins the abort. A green `boot-irq-isr` plus this file's
-# own `FAILED assertion failed: ...` line together say: the VMM really
-# raised the vector, the checkpoint really called the ISR, the ISR
-# really woke the bottom half, and the value drain compared is the
-# published level signal.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

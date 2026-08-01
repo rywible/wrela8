@@ -1,1 +1,1 @@
-error[type]: `Mmio` is a capability type (03-hardware.md §1) and cannot be called: its constructor is not source-visible, and a capability is minted only where the image binds a declared device to a `@driver` at 11:16
+error[type]: `Mmio` is a capability type (03-hardware.md §1) and cannot be called: its constructor is not source-visible, and a capability is minted only where the image binds a declared device to a `@driver` at 5:16

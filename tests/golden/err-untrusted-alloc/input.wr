@@ -1,7 +1,5 @@
 module examples.err_untrusted_alloc
 
-# plans/M7.md item H2a, 03-hardware.md §8: an `Untrusted[T]` used as an
-# allocation size (`capacity=`) is a rejection naming `.checked_le(bound)`.
 
 fn alloc_slot(capacity: usize) -> usize:
     return capacity

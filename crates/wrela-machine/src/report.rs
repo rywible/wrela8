@@ -1,45 +1,21 @@
-//! Image report schema: structured types, parse, and Kind-line render
-//! helpers for the VMM-facing report subset (06-machine.md §3: the report
-//! is the VMM's whole configuration). Compiler and VMM share this schema
-//! and these line spellings; the compiler's full `--stage=report`
-//! `ImageReport v0` document (graph identity, quotas, edges, exact-bytes
-//! layouts) is still assembled in `wrela-compiler`, but every overlapping
-//! Kind line is formatted through helpers here so the two sides cannot
-//! drift.
-//!
-//! Line format: `Kind key=value key=value ...`, trim-leading whitespace.
-//! Fail closed on unknown keys, missing required fields, and set-level
-//! forgeries (`validate_report_invariants`).
-
-/// Ring bookkeeping beyond the slot bytes: head, tail, count — three
-/// u64s. Mirrored from the compiler's `MAILBOX_BOOKKEEPING_SIZE`; the
-/// `bytes == cap * slot + 24` check in `parse_report` is the tripwire if
-/// either side drifts.
 pub const RING_BOOKKEEPING_BYTES: u64 = 3 * 8;
 
-/// Empty-string SHA-256 — used by unit-test report preambles that do not
-/// boot a real image (parse-only). Live boots always carry the blob's own
-/// digest from the compiler.
 pub const EMPTY_SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
-/// One declared pool window (`BlkPool name= device= base= size=`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PoolWindow {
     pub name: String,
-    /// Declared-device index (`device#N` in the report).
     pub device: u64,
     pub base: u64,
     pub size: u64,
 }
 
-/// One split ring's addresses, exactly as the report declares them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlkQueueConfig {
     pub size: u16,
     pub desc: u64,
     pub avail: u64,
     pub used: u64,
-    /// 06 §5's shared-memory doorbell word (8 bytes).
     pub doorbell: u64,
 }
 
@@ -55,7 +31,6 @@ impl BlkQueueConfig {
     }
 }
 
-/// The whole configuration of one declared `blk` device.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlkConfig {
     pub device: u64,
@@ -66,15 +41,12 @@ pub struct BlkConfig {
     pub pools: Vec<PoolWindow>,
 }
 
-/// Secondary core entry (`CoreEntry core= base=`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CoreEntry {
     pub core: usize,
     pub base: u64,
 }
 
-/// Per-core high-DRAM stack (`CoreStack core= base= size=`), plans/M15.md
-/// decision 4 / item D.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CoreStack {
     pub core: usize,
@@ -82,101 +54,36 @@ pub struct CoreStack {
     pub size: u64,
 }
 
-/// Structural facts the VMM-facing report subset carries (06 §3's whole
-/// configuration for boot). Full `--stage=report` also has compiler-
-/// internal bookkeeping this parser ignores.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedReport {
     pub entry: u64,
-    /// SHA-256 hex of the sealed image blob (06 §3: "validates digests").
-    /// Checked against the `.img` bytes at boot.
     pub image_sha256: String,
-    /// `(path, sha256_hex)` for every `Input path=… sha256=…` line.
-    /// Verified against the file when that path is readable.
     pub input_digests: Vec<(String, String)>,
-    /// Executable section ranges (rtcode/code/entry) — used for W^X
-    /// `hv_vm_protect` after the image is loaded.
     pub exec_sections: Vec<ReportSection>,
-    /// plans/M7.md item F: the declared `blk` device, if any (06 §3: "the
-    /// VMM ... preconfigures every device, queue, and shared-memory window
-    /// the report declares — device topology is a *build output*, not a
-    /// probed fact"). `None` for every image built today: the compiler
-    /// emits no `Blk*` lines until the driver-side items (C/D/E) land, and
-    /// a report without them boots exactly as it did before this item, no
-    /// device model constructed at all.
     pub blk: Option<BlkConfig>,
-    /// plans/M7.md item G: host writes into `interrupt_status` plus the
-    /// vector to raise, applied before the vCPU runs. Empty for images
-    /// that bind no ISR.
     pub irq_injects: Vec<IrqHostInject>,
-    /// plans/M8.md item C1: `(core, entry address)` for every **secondary**
-    /// core the image brings up, ascending and contiguous from core 1.
-    /// Empty for every single-core image — which is every image built
-    /// before this item, so their boot path is unchanged down to the
-    /// number of vCPUs this VMM creates.
     pub core_entries: Vec<CoreEntry>,
-    /// Sealed bring-up count (`Cores count=N`), plans/M15.md decision 3–4.
-    /// Always `1..=CORE_SLOTS`. When the report omits `Cores` (hand-written
-    /// unit fixtures), parse defaults to `1 + core_entries.len()`.
     pub cores: usize,
-    /// Per-core high-DRAM stacks (`CoreStack` lines). Empty only on legacy
-    /// fixtures that omit them; compiler-emitted reports always carry
-    /// exactly `cores` lines matching `layout::core_stack_base_n`.
     pub core_stacks: Vec<CoreStack>,
-    /// plans/M8.md item C3, decision 42: this image's own cross-core
-    /// **request** rings, in report order — the order the guest's own
-    /// drain walks its lanes (`layout::build_rt_drain`), which is what
-    /// makes a reconstruction from occupancy words an ordered one. Reply
-    /// rings are parsed for shape and then dropped: a reply is addressed
-    /// to a turn record, not admitted to a mailbox, so it is not part of
-    /// 06 §8's "per-mailbox cross-core admission order". Empty for every
-    /// single-core image.
     pub request_rings: Vec<RequestRing>,
 }
 
-/// One `Ring kind=request ...` report line, as the recorder consumes it
-/// (plans/M8.md item C3). `count_addr` is the ring's occupancy word.
-///
-/// Pre-M12 packing: each ring was `capacity * slot_size` bytes of slots
-/// followed by `head`, `tail`, `count`, so count sat at
-/// `base + capacity * slot_size + 16`.
-///
-/// M12 item C (decision 875): all CTL records pack contiguously, then
-/// uniformly-strided DATA. When the report carries a `Rings count=…
-/// stride=…` line, `parse_report` rewrites `count_addr` from that
-/// geometry (`ctl_base + index * 24 + 16`). Without that line the
-/// pre-M12 derivation stands (hand-written unit fixtures).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequestRing {
-    /// The producing core — decision 28: the producer of a cross-core ring
-    /// is a *core*, not an actor, which is exactly what an `Admission`
-    /// entry's `sender` field names.
     pub src: usize,
-    /// The consuming core: the one whose drain performs the admission.
     pub dst: usize,
-    /// The mailbox root this ring feeds — exactly one, by decision 28.
     pub target: String,
-    /// DATA base from the report's `base=` (slots start here).
     pub data_base: u64,
     pub count_addr: u64,
-    /// Slot capacity (`cap=`). Needed so the admission witness can count
-    /// head advances under concurrent record (plans/M15.md item I).
     pub capacity: u64,
 }
 
-/// plans/M12.md item C: the report's `Rings count={} stride={} padding={}
-/// bytes={}` summary. Present on every image with cross-core rings after
-/// that item; absent on hand-written unit fixtures and ringless images.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RingsMeta {
     pub count: u64,
     pub stride: u64,
 }
 
-/// A ring's declared byte range (`base`..`base+bytes`), request or reply —
-/// kept only long enough for the overlap checks in `parse_report`. The
-/// three-word head/tail/count bookkeeping is part of `bytes` (same formula
-/// the compiler's `RingLayout::bytes` uses: `cap * slot + 24`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RingRange {
     pub kind: String,
@@ -193,9 +100,6 @@ impl RingRange {
     }
 }
 
-/// plans/M8.md item H sweep, Target A: a `Section name=... base=... size=`
-/// line, parsed fully so a `CoreEntry`/`Ring` that points into the wrong
-/// section (or into no section) can be refused by name rather than booted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReportSection {
     pub name: String,
@@ -213,10 +117,6 @@ impl ReportSection {
     }
 }
 
-/// One `Placement id=actor#N ... core=C ...` line. Optional in the
-/// VMM-facing report (`append_vmm_runtime_lines` does not emit them today),
-/// but when present they are configuration and a forgery that places an
-/// actor on a core this image never brings up must not boot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReportPlacement {
     pub id: String,
@@ -224,15 +124,12 @@ pub struct ReportPlacement {
     pub core: usize,
 }
 
-/// An `Actor index=` / `Driver index=` root the Placement set must cover
-/// exactly once (plans/M8.md item H Target A follow-up).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeclaredRoot {
     pub id: String,
     pub type_name: String,
 }
 
-/// One `IrqHostInject` report line (plans/M7.md item G).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IrqHostInject {
     pub base: u64,
@@ -241,11 +138,6 @@ pub struct IrqHostInject {
     pub vector: u64,
 }
 
-/// One `Kind key=value key=value ...` report line's own fields. Shared by
-/// every `Blk*` line below; deliberately strict — a malformed field, a
-/// missing required field, or an unknown key fails the whole report closed
-/// (as a `String` error), because a device declaration half-understood
-/// is exactly the configuration a boot must never accept.
 pub fn parse_report_fields<'a>(
     kind: &str,
     rest: &'a str,
@@ -268,7 +160,6 @@ pub fn parse_report_fields<'a>(
     Ok(fields)
 }
 
-/// A required `key=<integer>` field, decimal or `0x`-prefixed.
 pub fn report_u64(
     kind: &str,
     fields: &std::collections::BTreeMap<&str, &str>,
@@ -285,11 +176,6 @@ pub fn report_u64(
     parsed.map_err(|e| format!("`{kind}` field `{key}={raw}`: {e}"))
 }
 
-/// A required `device=device#<N>` field (plans/M8.md item P). The report
-/// spells a declared device the same way everywhere — `device#0` — and
-/// this VMM parses that spelling rather than a bare integer so a line that
-/// lost its prefix is a malformed report rather than a silently different
-/// device.
 pub fn report_device_index(
     kind: &str,
     fields: &std::collections::BTreeMap<&str, &str>,
@@ -309,25 +195,11 @@ pub fn report_device_index(
         .map_err(|e| format!("`{kind}` field `device={raw}`: {e}"))
 }
 
-/// Parses the minimal, internal (not itself golden-pinned — `wrela test`'s
-/// own merged stdout is the golden surface, not this file) report format
-/// `bin/wrela.rs`'s runtime tier writes alongside the image (a `Machine
-/// revision=` line, one or more `Input path=... sha256=...` lines, one
-/// `Image sha256=...` line, section/entry lines). Validates 06 §3/§10:
-/// machine revision, digest *presence and shape*, and — at boot — the
-/// image blob hash and every readable input file's hash.
 pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
     let mut revision: Option<String> = None;
     let mut input_digests: Vec<(String, String)> = Vec::new();
     let mut image_sha256: Option<String> = None;
     let mut entry: Option<u64> = None;
-    // plans/M7.md item F: the declared `blk` device's own three line
-    // kinds, accumulated here and assembled into one `BlkConfig` below.
-    // Deliberately `Blk`-prefixed rather than reusing `Device`/`Pool`:
-    // `report.rs`'s own full `--stage=report` artifact already spells
-    // those two words with entirely different fields, and `parse_report`
-    // trims indentation away, so a distinct prefix is what keeps the two
-    // formats from ever being silently confusable.
     let mut blk_device: Option<(u64, u64, u64, Option<u64>)> = None;
     let mut blk_queue: Option<BlkQueueConfig> = None;
     let mut blk_pools: Vec<PoolWindow> = Vec::new();
@@ -336,12 +208,6 @@ pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
     let mut cores_line: Option<usize> = None;
     let mut core_stacks: Vec<CoreStack> = Vec::new();
     let mut request_rings: Vec<RequestRing> = Vec::new();
-    // plans/M8.md item H sweep, Target A: semantic checks beyond
-    // presence/shape. Sections are parsed fully (a `CoreEntry` must land
-    // in `rtcode`); every ring's byte range is retained for overlap;
-    // `Placement`/`Actor` lines are optional but, when present, must agree
-    // with the core set and with each other — a forged report is an attack
-    // surface, not a convenience.
     let mut sections: Vec<ReportSection> = Vec::new();
     let mut ring_ranges: Vec<RingRange> = Vec::new();
     let mut placements: Vec<ReportPlacement> = Vec::new();
@@ -380,7 +246,6 @@ pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
             }
             input_digests.push((path.to_string(), dig.to_ascii_lowercase()));
         } else if let Some(rest) = line.strip_prefix("Rings ") {
-            // plans/M12.md item C: `Rings count={} stride={} padding={} bytes={}`.
             let fields =
                 parse_report_fields("Rings", rest, &["count", "stride", "padding", "bytes"])?;
             let count = report_u64("Rings", &fields, "count")?;
@@ -411,8 +276,6 @@ pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
                      bytes must equal count*24 + count*stride (={expect_bytes})"
                 ));
             }
-            // padding is disclosed; forge-check it against the Ring lines
-            // after the loop (needs every ring's cap*slot).
             rings_meta = Some(RingsMeta { count, stride });
         } else if let Some(rest) = line.strip_prefix("Section ") {
             let fields = parse_report_fields("Section", rest, &["name", "base", "size"])?;
@@ -437,23 +300,6 @@ pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
                 size,
             });
         } else if let Some(rest) = line.strip_prefix("Entry base=") {
-            // Duplicate-checked like every other structural field
-            // (`Image sha256=`, `Cores count=`, `BlkDevice`, `BlkQueue
-            // index=0`, `Section name=`). `Entry` used to be the one
-            // outlier: a plain `entry = ...` assignment inside this loop,
-            // so a second line silently won. That mattered more than the
-            // other fields, not less — the entry address lives in the
-            // *report*, not the image, so `validate_report_digests` cannot
-            // see the tamper: the blob still hashes correctly while core 0
-            // starts somewhere else. The surviving invariants only pin
-            // alignment, DRAM containment, and exec-section membership, so
-            // a last-wins duplicate redirects boot to any 4-aligned
-            // instruction in image text — past a prologue, past runtime
-            // init — on an otherwise clean boot (adversarial audit).
-            //
-            // The `0x` prefix is required exactly once, rather than
-            // `trim_start_matches`d (which strips a repeated `0x0x…` and
-            // would accept two spellings of one address).
             let rest = rest.trim();
             if entry.is_some() {
                 return Err("more than one `Entry base=` line".to_string());
@@ -465,7 +311,6 @@ pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
                 u64::from_str_radix(digits, 16).map_err(|e| format!("`Entry base={rest}`: {e}"))?;
             entry = Some(parsed);
         } else if let Some(rest) = line.strip_prefix("Cores count=") {
-            // plans/M15.md item D / decision 3: sealed bring-up count.
             let n: u64 = rest.trim().parse().map_err(|e| {
                 format!("`Cores count=`: expected a decimal integer, got {rest:?} ({e})")
             })?;
@@ -481,7 +326,6 @@ pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
             }
             cores_line = Some(n as usize);
         } else if let Some(rest) = line.strip_prefix("CoreStack ") {
-            // plans/M15.md item D / decision 4: high-DRAM per-core stack.
             let fields = parse_report_fields("CoreStack", rest, &["core", "base", "size"])?;
             let core = report_u64("CoreStack", &fields, "core")?;
             let base = report_u64("CoreStack", &fields, "base")?;
@@ -498,11 +342,6 @@ pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
                 size,
             });
         } else if let Some(rest) = line.strip_prefix("CoreEntry ") {
-            // plans/M8.md item C1 / 06 §3: where this VMM starts vCPU N once
-            // core 0's entry rings the release doorbell. Device topology is
-            // a build output and so is the core set — nothing here is
-            // probed, defaulted, or guessed. Bounds vs report N are checked
-            // in `validate_report_invariants` once `Cores` is known.
             let fields = parse_report_fields("CoreEntry", rest, &["core", "base"])?;
             let core = report_u64("CoreEntry", &fields, "core")?;
             let base = report_u64("CoreEntry", &fields, "base")?;
@@ -518,14 +357,6 @@ pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
                 base,
             });
         } else if let Some(rest) = line.strip_prefix("Ring ") {
-            // plans/M8.md item C3, decision 42: a cross-core ring the
-            // recorder must be able to *address*, because 06 §8 makes this
-            // VMM the recorder of "per-mailbox cross-core admission order"
-            // and the admission itself is performed by guest code in guest
-            // memory. Parsed strictly (an unknown field or a missing
-            // `base=` fails the report closed) for the same reason every
-            // device line is: a ring this VMM half-understands is one it
-            // would silently under-record.
             let fields = parse_report_fields(
                 "Ring",
                 rest,
@@ -560,15 +391,6 @@ pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
                      keep the mailbox path (04-compiler.md §3)"
                 ));
             }
-            // A zero `cap` or `slot` makes the `bytes == cap*slot+24`
-            // tripwire below **vacuous**, and that was the whole (and
-            // only) constraint on `cap`. With `slot=0`, `cap*slot` is 0
-            // for every capacity, so `bytes=24` matched `cap=u64::MAX` —
-            // and that forged capacity became the modulus and the
-            // push-loop bound in the VMM's `AdmissionWitness::observe`,
-            // i.e. ~2^63 allocations per vCPU exit. Refuse both floors
-            // here, the same way the `Rings` handler above already
-            // refuses `count=0`/`stride=0` (adversarial audit).
             if capacity == 0 || slot == 0 {
                 return Err(format!(
                     "`Ring cap={capacity} slot={slot}`: a live ring has at least one slot of at \
@@ -576,10 +398,6 @@ pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
                      check vacuous and would admit any capacity at all"
                 ));
             }
-            // plans/M8.md item H Target A: `bytes` is not decorative — it
-            // is `cap * slot + 24` (slots plus head/tail/count). A triple
-            // that does not add up would make `count_addr` disagree with
-            // the range the report claims to reserve.
             let expected_bytes = capacity
                 .checked_mul(slot)
                 .and_then(|s| s.checked_add(RING_BOOKKEEPING_BYTES))
@@ -608,15 +426,6 @@ pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
                         dst: dst as usize,
                         target: target.to_string(),
                         data_base: base,
-                        // Pre-M12 default; rewritten below when `Rings` meta
-                        // is present (CTL-then-DATA packing).
-                        //
-                        // Checked: `base` is raw report input, and the DRAM
-                        // containment check that would catch a wild one
-                        // lives in `validate_report_invariants`, which runs
-                        // *after* this loop — so `base = 0xffff…ffff` used
-                        // to overflow right here (found by `xtask fuzz
-                        // report` on its first run).
                         count_addr: base
                             .checked_add(expected_bytes.saturating_sub(8))
                             .ok_or_else(|| {
@@ -636,9 +445,6 @@ pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
                         bytes,
                     });
                 }
-                // A reply is delivered to a turn record, not admitted to a
-                // mailbox: retained for overlap checks, then dropped from
-                // the admission witness set.
                 "reply" => {
                     ring_ranges.push(RingRange {
                         kind: "reply".to_string(),
@@ -657,10 +463,6 @@ pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
                 }
             }
         } else if let Some(rest) = line.strip_prefix("Placement ") {
-            // Full `--stage=report` lines; optional in the VMM-facing
-            // subset. When present they must name a real actor and a core
-            // this image brings up — otherwise a forged placement would
-            // disagree with the CoreEntry set the VMM actually starts.
             let fields = parse_report_fields(
                 "Placement",
                 rest,
@@ -699,10 +501,6 @@ pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
                 core: core as usize,
             });
         } else if let Some(rest) = line.strip_prefix("Actor ") {
-            // Two spellings reach this VMM: the full report's
-            // `Actor index=N type=Name` and the layout section's
-            // `Actor name=Name mailbox=...`. Index roots are the Placement
-            // set's exact cover; bare names are still accepted as ids.
             let fields = parse_report_fields(
                 "Actor",
                 rest,
@@ -743,9 +541,6 @@ pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
                     type_name: type_name.to_string(),
                 });
             } else if let Some(name) = fields.get("name").copied() {
-                // A messageable driver is a ring target like any mailbox
-                // root, so its layout-section name belongs in the same
-                // pool invariant (9) checks against.
                 layout_root_names.push(name.to_string());
             }
         } else if let Some(rest) = line.strip_prefix("BlkDevice ") {
@@ -808,9 +603,6 @@ pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
                 size: report_u64("BlkPool", &fields, "size")?,
             });
         } else if let Some(rest) = line.strip_prefix("IrqHostInject ") {
-            // plans/M7.md item G: host `interrupt_status` writer + vector
-            // raise. Applied before the vCPU runs so the guest's first
-            // checkpoint delivers a status word the guest did not produce.
             let fields = parse_report_fields(
                 "IrqHostInject",
                 rest,
@@ -850,10 +642,6 @@ pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
         })
         .cloned()
         .collect();
-    // The three `Blk*` line kinds are all-or-nothing: a device with no
-    // queue, a queue with no device, or either with no pool is a report
-    // this VMM refuses outright rather than booting on a device model it
-    // would have to guess the shape of.
     let blk = match (blk_device, blk_queue) {
         (None, None) => {
             if !blk_pools.is_empty() {
@@ -870,11 +658,6 @@ pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
             return Err("a `BlkQueue` line with no `BlkDevice` line".to_string());
         }
         (Some((device, capacity_sectors, features, vector)), Some(queue)) => {
-            // plans/M8.md item P: per *this* device. A `BlkPool` naming
-            // some other device is a declared window this model may not
-            // reach — it is carried into `GuestMem` (which is what makes
-            // the refusal observable), but it cannot stand in for the
-            // device's own bound pool.
             if !blk_pools.iter().any(|p| p.device == device) {
                 return Err(format!(
                     "a `BlkDevice device=device#{device}` with no `BlkPool device=device#{device}` \
@@ -892,9 +675,6 @@ pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
             })
         }
     };
-    // M12 item C: when the report publishes `Rings …`, rewrite count_addrs
-    // and overlap ranges for CTL-then-uniform-DATA packing. Without that
-    // line (unit fixtures), pre-M12 DATA-then-CTL stands.
     if let Some(meta) = rings_meta {
         apply_uniform_ring_layout(&mut request_rings, &mut ring_ranges, meta)?;
     }
@@ -929,11 +709,6 @@ pub fn parse_report(text: &str) -> Result<ParsedReport, String> {
     })
 }
 
-/// plans/M12.md item C: fold the `Rings` summary into per-ring
-/// `count_addr` and into the ranges overlap checks walk. DATA bases stay
-/// as reported; each ring's overlap span becomes the uniform `stride`,
-/// and the contiguous CTL block is appended so stack/section checks see
-/// it (CTL words live immediately before the first DATA base).
 fn apply_uniform_ring_layout(
     request_rings: &mut [RequestRing],
     ring_ranges: &mut Vec<RingRange>,
@@ -992,10 +767,6 @@ fn apply_uniform_ring_layout(
     Ok(())
 }
 
-/// Set-level invariants over the report's own tables (plans/M8.md item H
-/// Target A follow-up; M15 item D for `Cores`/`CoreStack`). Per-line shape
-/// checks live in `parse_report`; this function is the one place that
-/// validates the **set**.
 fn validate_report_invariants(
     entry: u64,
     cores: usize,
@@ -1012,9 +783,6 @@ fn validate_report_invariants(
     use crate::layout as machine_layout;
     let dram_end = machine_layout::dram_end();
 
-    // (0) Every section and every ring range lies wholly inside guest DRAM
-    // — otherwise a forged report can name host-OOB GPAs that later
-    // `host_ram.add(off)` paths trust.
     for s in sections {
         let end = s.base.checked_add(s.size).ok_or_else(|| {
             format!(
@@ -1055,7 +823,6 @@ fn validate_report_invariants(
         }
     }
 
-    // (1) Sections are pairwise disjoint.
     for (i, a) in sections.iter().enumerate() {
         for b in sections.iter().skip(i + 1) {
             if a.base < b.end() && b.base < a.end() {
@@ -1068,7 +835,6 @@ fn validate_report_invariants(
         }
     }
 
-    // (2) Contiguous secondary-core set from core 1, agreeing with report N.
     core_entries.sort_by_key(|e| e.core);
     if cores_declared && core_entries.len() + 1 != cores {
         return Err(format!(
@@ -1095,8 +861,6 @@ fn validate_report_invariants(
         }
     }
 
-    // (2b) CoreStack lines: when present, exactly N contiguous high-DRAM
-    // stacks matching `layout::core_stack_base_n`.
     if !core_stacks.is_empty() || cores_declared {
         if core_stacks.len() != cores {
             return Err(format!(
@@ -1131,7 +895,6 @@ fn validate_report_invariants(
                     s.core, s.base, s.size
                 ));
             }
-            // Must not overlap the image packing window / fixed low pages.
             if s.base < layout_image_hi(sections) {
                 return Err(format!(
                     "`CoreStack core={} base={:#x}` overlaps the image / low-map window \
@@ -1151,11 +914,6 @@ fn validate_report_invariants(
         }
     }
 
-    // (3) Every CoreEntry base is 4-byte aligned and distinct from every
-    // other core's entry (including core 0's `Entry base=`). Core 0's
-    // entry must also sit in guest DRAM and inside an executable section
-    // (same rule as secondary cores — a forged `Entry` below DRAM_BASE
-    // used to pass structural checks and then fault host-side).
     if entry % 4 != 0 {
         return Err(format!(
             "`Entry base={entry:#x}` is not 4-byte aligned (an AArch64 PC must be)"
@@ -1213,7 +971,6 @@ fn validate_report_invariants(
         }
     }
 
-    // (4) Every CoreEntry lands in an executable section.
     const EXEC_SECTIONS: &[&str] = &["rtcode", "code", "entry"];
     for e in core_entries.iter() {
         let (core, base) = (e.core, e.base);
@@ -1237,7 +994,6 @@ fn validate_report_invariants(
         }
     }
 
-    // (5) Request rings name only brought-up cores (report N).
     for r in request_rings {
         if r.src >= cores || r.dst >= cores {
             return Err(format!(
@@ -1257,9 +1013,6 @@ fn validate_report_invariants(
         }
     }
 
-    // (6) Ring ranges: pairwise disjoint; disjoint from stacks; disjoint
-    // from every Section other than `rtdata` (and wholly inside `rtdata`
-    // when that section exists).
     for (i, a) in ring_ranges.iter().enumerate() {
         for b in ring_ranges.iter().skip(i + 1) {
             if a.base < b.end() && b.base < a.end() {
@@ -1317,7 +1070,6 @@ fn validate_report_invariants(
         }
     }
 
-    // (7) Declared Actor/Driver index= ids are unique.
     for (i, a) in declared_roots.iter().enumerate() {
         for b in declared_roots.iter().skip(i + 1) {
             if a.id == b.id {
@@ -1326,12 +1078,6 @@ fn validate_report_invariants(
         }
     }
 
-    // (9) Every request ring's `target=` names a root this report
-    // declares. A ring is the delivery path into a mailbox, so a target
-    // no `Actor`/`Driver` line accounts for is a forged edge — the same
-    // set-level defect as a repeated `Placement id=`, one field over.
-    // A reply ring carries `target=-` (it delivers back to its caller,
-    // not into a named mailbox) and is exempt by that spelling.
     if !declared_roots.is_empty() || !layout_root_names.is_empty() {
         for r in ring_ranges {
             if r.target == "-" {
@@ -1361,8 +1107,6 @@ fn validate_report_invariants(
         }
     }
 
-    // (8) Placement set — only when Placement lines are present (the
-    // VMM-facing subset from `append_vmm_runtime_lines` emits none).
     if placements.is_empty() {
         return Ok(());
     }
@@ -1404,7 +1148,6 @@ fn validate_report_invariants(
                 ));
             }
         } else if layout_root_names.iter().any(|n| n == &p.id) {
-            // Bare-name Placement against a layout-section Actor name=.
         } else if !declared_roots.is_empty() || !layout_root_names.is_empty() {
             let declared: Vec<&str> = declared_roots
                 .iter()
@@ -1436,9 +1179,6 @@ fn validate_report_invariants(
     Ok(())
 }
 
-/// Upper bound of the image / low-map window stacks must clear: the end of
-/// the highest `Section` at or above `IMAGE_BASE`, or the rtdata packing
-/// ceiling when no such section exists.
 fn layout_image_hi(sections: &[ReportSection]) -> u64 {
     use crate::layout as machine_layout;
     let mut hi = machine_layout::RTDATA_BASE + machine_layout::RTDATA_SIZE_MAX;
@@ -1449,8 +1189,6 @@ fn layout_image_hi(sections: &[ReportSection]) -> u64 {
     }
     hi
 }
-
-// --- shared Kind-line spellings (emitter + parser agree here) ------------
 
 pub fn line_machine_revision(revision: &str) -> String {
     format!("Machine revision={revision}")
@@ -1487,17 +1225,6 @@ pub fn line_core_stack(core: usize, base: u64, size: u64) -> String {
 pub fn line_irq_host_inject(base: u64, offset: u64, status: u32, vector: u64) -> String {
     format!("IrqHostInject base={base:#x} offset={offset:#x} status={status:#x} vector={vector}")
 }
-
-// --- the one spelling of each overlapping `Blk*` Kind line ---------------
-//
-// These three take primitives rather than either side's struct, because the
-// compiler renders them from `layout::Blk*Report` and the VMM from the
-// `Blk*Config` parsed back out of a report. Both call *these*, so the two
-// sides cannot drift. (They did: until this was unified the compiler
-// printed `BlkPool size=` in hex and this file printed it in decimal, and
-// `BlkQueue index=` came from the queue on one side and was hardcoded `0`
-// on the other. `report_u64` accepts both spellings, so nothing had failed
-// — the drift was simply invisible.)
 
 pub fn blk_device_line(
     device: u64,
@@ -1537,9 +1264,6 @@ pub fn line_blk_device(blk: &BlkConfig) -> String {
     blk_device_line(blk.device, blk.capacity_sectors, blk.features, blk.vector)
 }
 
-/// `BlkQueueConfig` carries no index of its own (a report declares one
-/// queue per device), so this passes `0` — the value this side has always
-/// printed.
 pub fn line_blk_queue(q: &BlkQueueConfig) -> String {
     blk_queue_line(0, q.size, q.desc, q.avail, q.used, q.doorbell)
 }
@@ -1548,17 +1272,11 @@ pub fn line_blk_pool(p: &PoolWindow) -> String {
     blk_pool_line(&p.name, p.device, p.base, p.size)
 }
 
-/// Render Cores / CoreStack / CoreEntry / Blk* / IrqHostInject lines from a
-/// `ParsedReport` (the runtime-config tail the compiler appends after
-/// Entry). Ring lines stay compiler-side: `RequestRing` is lossy vs the
-/// live `Ring kind=` spelling.
 pub fn render_runtime_tail(parsed: &ParsedReport) -> String {
     let mut out = String::new();
     out.push_str(&line_cores(parsed.cores));
     out.push('\n');
     if parsed.core_stacks.is_empty() {
-        // Synthesize the canonical high-DRAM table so parse→render→parse
-        // round-trips stay closed when a fixture omitted `CoreStack` lines.
         for core in 0..parsed.cores {
             let base = crate::layout::core_stack_base_n(core, parsed.cores);
             out.push_str(&line_core_stack(core, base, crate::layout::CORE_STACK_SIZE));
@@ -1593,12 +1311,6 @@ pub fn render_runtime_tail(parsed: &ParsedReport) -> String {
     out
 }
 
-/// Render the VMM-facing subset of a `ParsedReport` (identity, digests,
-/// exec sections, entry, secondary cores, blk, irq injects, request rings
-/// as best-effort occupancy witnesses). Enough for a parse→render→parse
-/// round trip on ringless reports; request rings re-emit with a synthetic
-/// `cap`/`slot`/`bytes` that preserves `base` and the occupancy word only
-/// when pre-M12 packing applies (`count_addr == base + cap*slot + 16`).
 pub fn render(parsed: &ParsedReport) -> String {
     let mut out = String::new();
     out.push_str(&line_machine_revision(crate::MACHINE_REVISION_STR));
@@ -1617,9 +1329,6 @@ pub fn render(parsed: &ParsedReport) -> String {
     out.push('\n');
     out.push_str(&render_runtime_tail(parsed));
     for r in &parsed.request_rings {
-        // Synthetic shape reserved for round-trip fixtures; live rings are
-        // emitted by the compiler with full cap/slot/bytes (RequestRing is
-        // lossy).
         let _ = r;
     }
     out
@@ -1711,16 +1420,9 @@ mod tests {
         assert!(err.contains("other-v9"));
     }
 
-    /// Adversarial-audit regressions (2026-07-29). Each pins one forged
-    /// report the parser used to accept or panic on. All three shapes are
-    /// also reachable by `cargo xtask fuzz report`; these lock them by
-    /// name so a rewrite cannot quietly drop one.
     mod forged {
         use super::*;
 
-        /// A two-core report with one request ring, as the generator in
-        /// `xtask::fuzz`'s `report` lane builds it: valid unless `mangle`
-        /// makes it otherwise.
         fn ring_report(cap: u64, slot: u64, bytes: u64, base: u64) -> String {
             let n = 2usize;
             format!(
@@ -1745,27 +1447,19 @@ mod tests {
             )
         }
 
-        /// `slot=0` made `bytes == cap*slot+24` vacuous, so `cap` — which
-        /// `wrela_vmm::exit_loop::AdmissionWitness` uses as a modulus and
-        /// a push-loop bound — was completely unconstrained.
         #[test]
         fn a_zero_slot_cannot_smuggle_an_unbounded_capacity() {
             let text = ring_report(u64::MAX, 0, 24, crate::layout::RTDATA_BASE);
             let err = parse_report(&text).expect_err("slot=0 must be refused");
             assert!(err.contains("at least one slot"), "got {err}");
-            // The zero-capacity mirror image is refused by the same rule.
             let text = ring_report(0, 16, 24, crate::layout::RTDATA_BASE);
             assert!(parse_report(&text).is_err(), "cap=0 must be refused");
-            // …and the well-formed triple still parses.
             let text = ring_report(4, 16, 4 * 16 + 24, crate::layout::RTDATA_BASE);
             let parsed = parse_report(&text).expect("a well-formed ring still parses");
             assert_eq!(parsed.request_rings.len(), 1);
             assert_eq!(parsed.request_rings[0].capacity, 4);
         }
 
-        /// A wild `Ring base=` overflowed `base + cap*slot + 16` before
-        /// the DRAM containment check (which runs after the parse loop)
-        /// could ever reject it. Found by `xtask fuzz report`, seed 7.
         #[test]
         fn a_ring_base_at_the_top_of_the_address_space_does_not_overflow() {
             let text = ring_report(4, 16, 4 * 16 + 24, u64::MAX);
@@ -1776,10 +1470,6 @@ mod tests {
             );
         }
 
-        /// `Entry base=` was the one structural field with no duplicate
-        /// check, so a second line silently won — and because the entry
-        /// address lives in the *report*, the image digest still verified
-        /// while core 0 started somewhere else entirely.
         #[test]
         fn a_second_entry_line_cannot_silently_redirect_the_boot() {
             let base = format!(
@@ -1799,9 +1489,6 @@ mod tests {
             assert!(err.contains("more than one `Entry base=`"), "got {err}");
         }
 
-        /// The prefix is required exactly once: `trim_start_matches("0x")`
-        /// used to strip a repeated prefix, giving one address two
-        /// spellings in a file whose whole job is to be unambiguous.
         #[test]
         fn entry_requires_exactly_one_0x_prefix() {
             for spelling in ["0x0x40500000", "40500000", ""] {

@@ -1,12 +1,3 @@
-//! Cost-stage emit pipeline (shared by `wrela dump --stage=cost` and the
-//! M19 proxy-win oracle).
-//!
-//! Matches the dump path: check the import/runtime closure, lower the
-//! guest-reachable set (so force-rooted `core.runtime` enters the emit
-//! set for `@test(runtime)`), codegen with async, then score. Opt TLS
-//! must already be set by the caller (`opts::apply_mode` /
-//! `opts::apply_opts`) before codegen.
-
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -24,7 +15,6 @@ use crate::syntax::{lexer, parser};
 use super::score::{CostReport, score_program};
 use super::table::load_default;
 
-/// Checked multi-module closure ready for cost-stage lower/codegen.
 pub struct CostStageClosure {
     pub root: String,
     pub programs: BTreeMap<String, TypedProgram>,
@@ -43,8 +33,6 @@ fn sema_err(e: SemaError) -> String {
     format!("sema: {}", e.message)
 }
 
-/// Load + check the same closure shape `wrela dump --stage=cost` uses
-/// (`check_closure` in `bin/wrela.rs`).
 pub fn load_cost_stage_closure(path: &Path) -> Result<CostStageClosure, String> {
     let path_str = path.to_string_lossy().into_owned();
     let src = std::fs::read_to_string(path).map_err(|e| format!("read {path_str}: {e}"))?;
@@ -140,23 +128,10 @@ fn load_runtime_bearing_singleton(path: &str, module: Module) -> Result<CostStag
     })
 }
 
-/// Lower + codegen the cost-stage closure (same pipeline as
-/// `wrela dump --stage=cost` / `--stage=asm`). Caller must have set opt
-/// TLS already.
 pub fn codegen_cost_stage(path: &Path) -> Result<CodegenProgram, String> {
     codegen_cost_stage_with_placement(path).map(|(prog, _)| prog)
 }
 
-/// Same, plus the sealed placement table the scorer needs.
-///
-/// plans/M20.md decision 1603: the I-side, TLB and cross-core terms are
-/// per **core**, and `PlacementTable::core_of` is what makes a load's
-/// local-vs-remote verdict a static fact. The cost-stage path builds the
-/// same table the image report publishes, from the same `ImageGraph` it
-/// already evaluates for the enqueue specs — so items F and G score
-/// against real placement rather than against an empty stand-in. A
-/// closure with no `@image` (most `cost-*` cases) has no placement to
-/// build and gets the default, which classifies nothing.
 pub fn codegen_cost_stage_with_placement(
     path: &Path,
 ) -> Result<(CodegenProgram, crate::placement::PlacementTable), String> {
@@ -165,25 +140,6 @@ pub fn codegen_cost_stage_with_placement(
     Ok((pieces.codegen()?, placement))
 }
 
-/// [`codegen_cost_stage_with_placement`], with plans/codegen-pareto.md item
-/// D's hot/cold block layout applied to the MWIR program in between.
-///
-/// This is the **parked** pass's pipeline entry point (CLAUDE.md's "a
-/// refused opt is parked, not deleted"; plans/codegen-pareto-2.md decisions
-/// 1910 and 1940). `classes` comes from [`super::layout_classes`] over the
-/// *same* path's sidecar and a block partition;
-/// [`crate::cost::LayoutClasses::Unmeasured`] plans the identity for every
-/// fn, so this reduces to [`codegen_cost_stage_with_placement`] exactly
-/// (proved, not asserted: `unit:no_sidecar_degrades_to_a_byte_identical_layout`
-/// at the pass, and the whole-program check in `blocklayout`'s measurement
-/// unit).
-///
-/// It is a **second** entry point rather than a parameter on the first
-/// because item D is not installed on the default compile path — see
-/// `blocklayout`'s "Why this pass is not installed" note and decision 1755.
-/// Nothing in the compiler calls it; the only callers are `blocklayout`'s
-/// own units, which is what keeps a parked pass from rotting
-/// (`unit:the_parked_pass_is_not_on_the_compile_path`).
 pub fn codegen_cost_stage_with_block_layout(
     path: &Path,
     classes: &crate::cost::LayoutClasses,
@@ -202,10 +158,6 @@ pub fn codegen_cost_stage_with_block_layout(
     Ok((pieces.codegen()?, placement, summary))
 }
 
-/// Everything `codegen_cost_stage_*` needs between lowering and emission.
-/// Not an abstraction — the two entry points above would otherwise be the
-/// same fifty lines twice, and item D has to reach the MWIR program in the
-/// middle of them.
 struct CostStagePieces {
     mwir: crate::mwir::MwirProgram,
     flow: flowwir::FlowWirProgram,
@@ -235,9 +187,6 @@ fn cost_stage_pieces(path: &Path) -> Result<CostStagePieces, String> {
     cost_stage_pieces_from(&checked)
 }
 
-/// [`cost_stage_pieces`] over an already-checked closure — the split
-/// plans/codegen-pareto-2.md item R (decision 1963) needs so a comparison
-/// can lex, parse, load and type-check once and lower/codegen twice.
 fn cost_stage_pieces_from(checked: &CostStageClosure) -> Result<CostStagePieces, String> {
     let reachable = lower::guest_reachable_keys_closure(&checked.programs, &LowerOpts::default());
     let lower_opts = LowerOpts {
@@ -292,22 +241,9 @@ fn cost_stage_pieces_from(checked: &CostStageClosure) -> Result<CostStagePieces,
     })
 }
 
-/// The program a scored budget line describes
-/// (plans/codegen-pareto-2.md item K, decision 1953).
-///
-/// `--stage=cost` and `--stage=report` printed two `hot_text_bytes` under
-/// two lines both called `Budget`, and on the appliance they read 7 936 B
-/// and 89 024 B. Neither was wrong; they are two different programs, and
-/// nothing on either line said so. This is what says so.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TextScope {
-    /// `lower::guest_reachable_keys_closure` against the **stub**
-    /// `core.__image_runtime`, with `emit_comptime_tests: false` and no
-    /// image build. Everything the runtime reaches only through the live
-    /// dispatch tables is absent, which is most of the runtime.
     Closure,
-    /// The program `wrela build` emits: live rtconfig, image force-roots,
-    /// entry and vector text. What the appliance ships.
     Image,
 }
 
@@ -320,45 +256,14 @@ impl TextScope {
     }
 }
 
-/// The program the appliance would **ship** for `path`, and its placement.
-///
-/// A root that declares an `@image` is compiled through
-/// [`crate::layout::lower_and_codegen_image`] — byte-for-byte the pipeline
-/// `wrela build` and `--stage=report` use — so a budget taken here is the
-/// budget of the shipped image rather than of a truncated closure. A root
-/// with no `@image` ships nothing, so the closure is all there is and the
-/// scope says so.
-///
-/// **This is what the ∀ gate scores** (decision 1954). Item H measured the
-/// gap and declined to close it; the gap is 11× on the flagship's hot text
-/// and it is the whole reason round 1's item D could not be scored — its
-/// premise (93–98 KB of text against a 64 KiB L1I) is a fact about the
-/// image column, and the gate read the closure one.
 pub fn codegen_shipped_program(
     path: &Path,
 ) -> Result<(CodegenProgram, crate::placement::PlacementTable, TextScope), String> {
     codegen_shipped_from(&load_shipped_front(path)?)
 }
 
-/// **The opt-independent front half of the shipped-program build**
-/// (plans/codegen-pareto-2.md item R, decision 1963).
-///
-/// Read, lex, parse, load the closure, type-check it, evaluate the
-/// `@image` and merge the layout context. **No opt knob is read by any of
-/// that.** `opts::apply_opts` drives exactly fifteen knobs and every
-/// reader of every one of them is in `lower`, `flowwir_lower`,
-/// `mwir_opt`, `codegen` or `regalloc` — the back end. `syntax`, `sema`,
-/// `loader` and `eval` do not read one, which is why this half can be
-/// shared and the other half repeated.
-///
-/// The ∀ gate compares two opt lists on the same source, so it used to
-/// run this whole front twice per case for an answer that could not
-/// differ. Now it runs once.
 pub struct ShippedFront {
     checked: CostStageClosure,
-    /// `Some` when the root declares an `@image`; a root that declares
-    /// none ships nothing and its closure is all there is
-    /// ([`TextScope::Closure`]).
     image: Option<ShippedImage>,
 }
 
@@ -367,7 +272,6 @@ struct ShippedImage {
     layout_ctx: crate::mwir::LayoutCtx,
 }
 
-/// Run the opt-independent front for `path` once. See [`ShippedFront`].
 pub fn load_shipped_front(path: &Path) -> Result<ShippedFront, String> {
     let checked = load_cost_stage_closure(path)?;
     let root = &checked.programs[&checked.root];
@@ -383,9 +287,6 @@ pub fn load_shipped_front(path: &Path) -> Result<ShippedFront, String> {
     Ok(ShippedFront { checked, image })
 }
 
-/// The back half: lower + codegen under the **current** opt TLS. Call
-/// [`crate::opts::apply_opts`] first; call it again and call this again to
-/// get the other side, off the same [`ShippedFront`].
 pub fn codegen_shipped_from(
     front: &ShippedFront,
 ) -> Result<(CodegenProgram, crate::placement::PlacementTable, TextScope), String> {
@@ -413,16 +314,12 @@ pub fn codegen_shipped_from(
     Ok((compiled.program, placement, TextScope::Image))
 }
 
-/// Full scored report for `path` under the current opt TLS (caller sets
-/// mode/opts first). The gate needs more than the cycle total — static
-/// word count and measured-W coverage are side conditions (04 §5).
 pub fn report_cost_stage_path(path: &Path) -> Result<CostReport, String> {
     let (prog, placement) = codegen_cost_stage_with_placement(path)?;
     let table = load_default()?;
     score_program(&prog, &table, &placement)
 }
 
-/// Score `path` under the current opt TLS (caller sets mode/opts first).
 pub fn score_cost_stage_path(path: &Path) -> Result<u64, String> {
     Ok(report_cost_stage_path(path)?.total_proxy_cycles)
 }
@@ -452,15 +349,6 @@ mod tests {
         )
     }
 
-    /// **K2's regression test (decision 1953/1954).** The two stages do not
-    /// agree, they measure two different programs — and the difference is
-    /// now named on the line and measured here rather than discovered by a
-    /// reader comparing two dumps.
-    ///
-    /// It fails on the old behaviour in the only way it can: before
-    /// `codegen_shipped_program` existed there was no way to ask for the
-    /// shipped program's budget from the cost side at all, so the gap could
-    /// not be stated as one number, let alone pinned.
     #[test]
     fn the_cost_stage_closure_and_the_shipped_image_are_two_programs_and_say_so() {
         crate::opts::apply_mode(crate::opts::CompileMode::Release);
@@ -497,8 +385,6 @@ mod tests {
         );
     }
 
-    /// A root with no `@image` ships nothing, so the closure is the whole
-    /// program and the scope says so rather than pretending.
     #[test]
     fn a_root_with_no_image_is_scored_as_a_closure_and_labelled_one() {
         crate::opts::apply_mode(crate::opts::CompileMode::Release);

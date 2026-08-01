@@ -1,19 +1,5 @@
 module examples.boot_deadline_driver_turn
 
-# plans/M10.md item G: pin the pre-G `group_service_ctx` defect — the
-# deadline delivery scan walked actors + free turns and **omitted
-# messageable-driver turn areas**. Item 0 made the omission visible (the
-# turn array enumerates driver turns); this golden makes it fail the
-# gate until the scan's `turn_areas` list matches that array.
-#
-# Behaviour mirrors `boot-deadline-cancel` (a free `g.start` child parks
-# on `Counter.bump` inside a zero-budget group). The image also declares
-# a `mailbox=` `@driver`, so `RT.turns` is `[Counter, Stub, worker,
-# root…]`. Without the fix the checkpoint block's unrolled delivery arms
-# skip `Stub`'s turn — `expected/report.txt`'s checkpoint size is the
-# oracle that fails first. With the fix the scan names every turn, the
-# report matches, and the child still cancels at the first checkpoint
-# (`Counter.n == 1`).
 
 struct Hw:
     id: u32
@@ -32,8 +18,6 @@ pub struct Counter:
     pub fn total(read self) -> u64:
         return self.n
 
-# Messageable so it owns a turn area in `RT.turns`. Idle during the test;
-# its presence alone widens the deadline delivery scan.
 @driver
 pub struct Stub:
     n: u64

@@ -1,9 +1,5 @@
 module examples.check_driver_mode_irq
 
-# plans/M7.md item G, decision 18: `BlkDriver[DriverMode.Irq]` keeps the
-# ISR and binds `vector=1`. Artifact twin of `check-driver-mode-poll`
-# (same `@task drain`; this build's report carries `vector=` +
-# `IrqHostInject` and a larger checkpoint; poll's does not).
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

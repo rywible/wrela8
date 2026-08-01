@@ -1,8 +1,5 @@
 module examples.err_comptime_assert_param
 
-# plans/M9.md item NN: a function parameter is not comptime-visible to
-# `comptime assert` — same rule as `comptime if` (err-comptime-if-not-
-# comptime), never `internal error: unbound local`.
 fn f(n: i64) -> i64:
     comptime assert n > 0, "param"
     return n

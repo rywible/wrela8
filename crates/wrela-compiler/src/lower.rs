@@ -1,178 +1,3 @@
-//! Lowering (plans/M5.md item B): `sema::typed::TypedProgram` ->
-//! `mwir::MwirProgram`, for the decision-2 surface exactly (the M3
-//! evaluator's own executable subset — 02-language.md §6.1 arithmetic,
-//! structs/enums/arrays by value, match, loops, calls, take-as-clone).
-//! `eval::interp`/`eval::value` are read throughout (never modified) as
-//! the observational contract this lowering must preserve — every
-//! comment below citing "interp.rs"/"value.rs" points at the exact
-//! function this code mirrors.
-//!
-//! ## Shape
-//!
-//! One pass, `lower_program`, walks `program.fns`/`program.structs`/
-//! `program.instantiations` (all three already `BTreeMap`s, so iteration
-//! order is deterministic) and produces one `mwir::MwirFn` per fn/method/
-//! `init`/instantiation, keyed by the exact string
-//! `sema::typed::CalleeKey::spelling()` would produce for it (built here
-//! directly via string formatting rather than constructing a `CalleeKey`
-//! — `Fn(name).spelling() == name`, `Method(s,m).spelling() ==
-//! "{s}.{m}"`, and so on; `lower.rs` only ever needs to *match* an
-//! existing `CalleeKey` at a call site, never re-derive one for a
-//! declaration). The program's own `@image` fn (`program.image_fn`, if
-//! any) is skipped entirely — plans/M5.md decision 2: "an `@image` fn is
-//! never lowered, it already ran at comptime". plans/M9.md item H2:
-//! `@layout_assert` and comptime-legal bare `@test` are likewise
-//! host-only (02 §12.1 / §12.2) and skipped by default;
-//! `LowerOpts::emit_comptime_tests` opts the latter back in for
-//! `diff-eval`'s evaluator-vs-backend comparison only. plans/M9.md
-//! item H3: only call-graph-reachable guest keys are lowered (see
-//! `guest_reachable_keys` / `guest_reachable_keys_closure`).
-//!
-//! A `FnBuilder` (below) owns one fn's own growing `temp_types`/`body`;
-//! `Lowerer` owns the one whole-program fact that outlives any single
-//! fn's builder (`&TypedProgram` plus the shared `rodata` interning
-//! table) so `MwirProgram::rodata` dedupes `Str`/`BStr` literals across
-//! every fn, not just within one. A local-variable environment
-//! (`LEnv`, `Vec<BTreeMap<String, mwir::Temp>>`) mirrors
-//! `eval::value::Env` exactly — one scope per block, pushed/popped
-//! around every nested block this file lowers.
-//!
-//! ## Control flow: a two-pass-free, single-walk backpatching assembler
-//!
-//! Every jump target is an instruction index into the same flat
-//! `Vec<Inst>` (decision 3). Since a structured construct's *start* is
-//! known the moment lowering reaches it but its own *end* (the natural
-//! target of a `break`/an `if`'s "after" label/...) is only known once
-//! everything nested inside has been lowered, every forward jump is
-//! emitted with a placeholder target and recorded for a `patch_jump`
-//! call once the real target position is known (`FnBuilder::patch_jump`)
-//! — an ordinary one-pass backpatching assembler, not a separate
-//! resolution phase.
-//!
-//! `break`/`continue` thread through `LoopCtx` (a stack, one frame per
-//! enclosing loop): both record their own placeholder jump's index into
-//! `break_fixups`/`continue_fixups`, patched once the loop's own end/
-//! increment position is known. `defer_marker` mirrors
-//! `interp::exec_for`/`exec_stmt`'s own `loop_marker` exactly — the
-//! active-defer-stack depth at loop entry, so `break`/`continue` only
-//! ever runs the defers registered *inside* this loop, never an
-//! enclosing block's.
-//!
-//! `defer` itself (`run_defers`, `lower_block`'s own tail) mirrors
-//! `interp::exec_block`/`run_defers` just as directly: every block tracks
-//! the active-defer stack's depth on entry, and — only on the path that
-//! falls off the end of the block *normally* — lowers every defer body
-//! registered since then, in reverse registration order, before
-//! continuing. `lower_stmt`/`lower_block` return whether control
-//! definitely left the block (`Return`/`Break`/`Continue`, or an `if`/
-//! `match` every one of whose branches/arms itself definitely diverges)
-//! so a block that ends in one of those never also runs its own trailing
-//! defer-drain a second time (the diverging statement already ran the
-//! exact defers *it* owns responsibility for — `TypedStmtKind::Return`'s
-//! own full-stack drain, `Break`/`Continue`'s own from-`loop_marker`
-//! drain, mirroring `interp.rs`'s identical split).
-//!
-//! ## Pattern matching: safe-to-compute-unconditionally sub-tests, but a
-//! genuinely short-circuited guard
-//!
-//! A pattern's own sub-tests (tag comparison, payload/tuple/array-element
-//! projection) are trap-free reads (`mwir::size_of`'s own "tag +
-//! max-payload union" layout guarantees a payload read is always
-//! in-bounds regardless of which variant is actually live) — so
-//! `lower_pattern_test` computes every sub-test *unconditionally* and
-//! folds them with `Inst::BoolAnd` (never a real branch) rather than
-//! emitting one jump per sub-pattern. A match arm's own *guard*, though,
-//! is an arbitrary expression that **can** trap (call a fn, divide,
-//! index...) — `interp::exec_stmt`'s own `Match` arm only ever evaluates
-//! a guard *after* confirming the pattern matched, so `lower_match`
-//! emits a real `JumpIfFalse` for the pattern test before ever lowering
-//! the guard, exactly preserving that short-circuit (documented again at
-//! `lower_match` itself, since getting this wrong would be an
-//! observable, silent divergence from the evaluator, not just a missed
-//! optimization).
-//!
-//! ## Fail-closed set (plans/M5.md decision 2)
-//!
-//! Everything below returns `LowerError::unimplemented(...)` — never an
-//! approximation:
-//!
-//! - **Closures** (`TypedExprKind::Closure`) **and any indirect call**
-//!   (`TypedExprKind::CallValue`, a bare `TypedExprKind::FnRef` used as a
-//!   value). `eval::interp`'s own closure support (`Value::Closure`,
-//!   `CallValue`'s own dispatch) is a real, if narrow, feature — but
-//!   mapping it here would need a first-class function value (a captured-
-//!   environment blob plus an indirect-call instruction) that decision
-//!   3's own instruction list never names and decision 4's calling
-//!   convention never accounts for; the honest call is to fail closed
-//!   rather than invent an ABI plans/M5.md's own codegen item never
-//!   signed up for.
-//! - **The `?` operator** (`TypedExprKind::Try`). Its own early exit runs
-//!   every active defer before propagating (`interp::eval_expr`'s `Try`
-//!   arm) exactly like `return`/`break`/`continue` — but doing that
-//!   correctly from *inside an expression's own lowering* would mean
-//!   threading the defer/loop-context state this file otherwise keeps
-//!   strictly statement-level all the way through `lower_expr`'s many
-//!   call sites. None of this item's required goldens use `?`; recorded
-//!   here as a real, disclosed gap rather than a rushed, riskier
-//!   implementation.
-//! - **A non-literal `assert`/`panic` message.** `interp::render_message`
-//!   falls back to Rust's own `{:?}` `Debug` formatting for a non-`Str`
-//!   value; reproducing arbitrary `Debug` output in machine code is not
-//!   a real lowering. A *literal* string message lowers to a precomputed
-//!   fixed `Inst::AssertFail` payload.
-//! - **An `|` (or) pattern** (`TypedPatternKind::Or`). Every other
-//!   pattern shape's sub-tests are safe to compute unconditionally
-//!   (above); an "or" is the one shape where that trick breaks
-//!   correctness for its own *bindings* (two alternatives can bind the
-//!   same name to two structurally different values, and only the
-//!   alternative that actually matched may survive) — doing this right
-//!   needs real per-alternative branching this item's required goldens
-//!   never exercise; recorded rather than risked.
-//! - **Assigning an `InterruptCell` through a nested field/index chain**
-//!   (deeper than bare `self.cell = ...`) — the live-driver-state STLR
-//!   path only knows a single field offset of `self` (plans/M7.md item G,
-//!   decision 17). Nested `InterruptCell` places stay refused by name
-//!   rather than silently writing a frame copy. Ordinary nested
-//!   field/index assignment (`self.data[i] = v`, `self.a.b = v`) and
-//!   nested `mut self` / `mut` argument places are live (plans/M9.md
-//!   item MM).
-//! - **Indexing a `Bytes` value**, and **an array/`Bytes` length that is
-//!   not a literal or a plain module `const` reference** (`eval_array_len`
-//!   below) — the evaluator supports both narrowly; this item's own
-//!   required coverage does not exercise either, and extending
-//!   `Inst::IndexGet`/`IndexSet`'s `len` to a *dynamic* bound is a real
-//!   design question for whichever item first needs it.
-//! - **A struct/enum/fn/closure/`@image`-decl-valued module `const`**
-//!   (`emit_const_value` below) — every *scalar* (and `Str`/`Bytes`/
-//!   array-or-tuple-of-scalars) const folds to a literal at its use site
-//!   (a const's value is always comptime-fixed by the time `check_typed`
-//!   succeeds, so inlining it is exact, not an approximation); an
-//!   aggregate-valued const would need the same struct/enum field-type
-//!   table `mwir::LayoutCtx` exists for, which this pass deliberately
-//!   never threads through (`mwir.rs`'s own module doc explains why).
-//! - **`TypedExprKind::Intrinsic`/`PoolName`** — the `@image` builder
-//!   surface, reachable only from the one `@image` fn this pass already
-//!   skips outright (`eval::legal` is what keeps these two node kinds
-//!   out of every *other* fn's body); present only as a defensive,
-//!   should-be-unreachable guard.
-//!
-//! Everything else async/await/send/with/actor-turn/pool-and-group-
-//! runtime/f-string-shaped is **not** in the list above because it
-//! cannot reach this pass at all: `sema::bodies` already rejects every
-//! one of those constructs at `check_typed` time
-//! (`sema::bodies::check_expr`'s `Await`/`Send` arms,
-//! `Stmt::With`'s own arm, f-strings never producing a typed `Str` node)
-//! — there is no typed-tree node shape left for them to arrive here as.
-//! **No checkable (`check_typed`-accepted) construct in this item's own
-//! required golden family is unlowerable** — the one deliberately
-//! constructed err golden below picks a construct that passes
-//! `check_typed` but hits this file's own narrower, disclosed boundary
-//! (a non-literal `assert` message), precisely because the fully-general
-//! fail-closed set above turned out to have no member reachable through
-//! an otherwise-ordinary, `check_typed`-accepted program *except* that
-//! one — recorded in the session report as the honest finding it is,
-//! not papered over with an invented case.
-
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -190,74 +15,36 @@ use crate::sema::typed::{
 use crate::sema::types::{Type, TypeArg};
 use crate::syntax::ast::{self, AccessMode, BinOp};
 
-// `BoundsElide` — proved literal-index bounds elision for `[T; N]`
-// (plans/M18.md item I / freeze 1307, plans/M19.md item D / 1440–1449) —
-// is **parked**, not deleted (decision 1911; CLAUDE.md 2026-07-31). It
-// was deleted by plans/codegen-pareto-2.md item L under the old "losers
-// are deleted" rule and restored here under the new one: it stays in
-// `OptId` and out of `RELEASE_OPTS`, so **the default of this knob is
-// `false`** and every `[T; N]` index, literal or not, keeps its runtime
-// bounds check in `dev` and `release` alike. The refusal, the mechanism
-// and the condition for re-asking it live on `opts::PARKED_OPTS`.
-//
-// Nothing but `opts::apply_opts(&[.., OptId::BoundsElide, ..])` turns it
-// on. Cost tags / scoreboard stay always-on regardless (freeze 1408) —
-// opts flip emission only.
 thread_local! {
     static BOUNDS_ELIDE: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Enable/disable literal `[T; N]` index → `Project`/`SetField` elision
-/// for the current thread. Prefer `opts::apply_opts`; this is the TLS
-/// primitive it sets. Default **off** — the opt is parked (decision
-/// 1911), so no product path reaches it.
 pub fn set_bounds_elide(enabled: bool) {
     BOUNDS_ELIDE.with(|c| c.set(enabled));
 }
 
-/// Whether literal `[T; N]` index bounds elision is enabled.
 pub(crate) fn bounds_elide() -> bool {
     BOUNDS_ELIDE.with(|c| c.get())
 }
 
-/// The one lowering diagnostic: printed by `bin/wrela.rs` as
-/// `error[unimplemented]: <message>`, matching this compiler's existing
-/// house style for a not-yet-implemented pipeline stage
-/// (`bin/wrela.rs`'s own `"stage `{other}` is not implemented"` line) —
-/// the typed tree carries no spans (decision 1, plans/M3.md), so there
-/// is no `at L:C` to add here either.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LowerError {
     pub message: String,
 }
 
 impl LowerError {
-    /// `construct` is the whole clause including its own copula (`"a
-    /// closure literal is"`, `"imports are"`-style — mirrors
-    /// `sema::unimplemented_at`'s own `subject` convention exactly, one
-    /// stage later), so this only ever supplies `"not implemented yet"`.
     fn unimplemented(construct: impl Into<String>) -> LowerError {
         LowerError {
             message: format!("lowering {} not implemented yet", construct.into()),
         }
     }
 
-    /// A complete fail-closed message that already carries its own ending
-    /// (an `imported.unresolvable` note ends in "is not supported yet").
-    /// Must not go through `unimplemented` — that would print
-    /// `lowering \`name\` is declared … is not supported yet not
-    /// implemented yet` (plans/M9.md item D3).
     fn named(message: impl Into<String>) -> LowerError {
         LowerError {
             message: message.into(),
         }
     }
 
-    /// A producer-bug guard — should be unreachable for any program
-    /// `sema::check_typed` accepted; mirrors `interp.rs`'s own
-    /// `"internal error: ..."` abandonment wording exactly (same
-    /// intent: a fact the walk needs but the tree/lowering lacks is a
-    /// bug here, not a legitimate rejection).
     fn internal(message: impl Into<String>) -> LowerError {
         LowerError {
             message: format!("internal error: {}", message.into()),
@@ -267,22 +54,9 @@ impl LowerError {
 
 type LEnv = Vec<BTreeMap<String, Temp>>;
 
-/// Options for `lower_program_with` (plans/M9.md items H2 / H3). Default is
-/// production: host-only fns stay out of MWIR; only guest-reachable keys
-/// lower.
 #[derive(Debug, Clone, Default)]
 pub struct LowerOpts {
-    /// When true, emit `TestKind::Comptime` fns as guest code. Only
-    /// `diff-eval` sets this — 02 §12.2 says a comptime-legal bare
-    /// `@test` runs in the build evaluator, but the evaluator-vs-backend
-    /// oracle boots those same bodies as guest code to compare tiers.
-    /// Production `wrela build` / `wrela test` / dump stages leave this
-    /// false.
     pub emit_comptime_tests: bool,
-    /// When `Some`, only these keys may lower (plans/M9.md item H3
-    /// whole-closure set from `guest_reachable_keys_closure`). When
-    /// `None`, compute `guest_reachable_keys` for this program alone
-    /// (dump `--stage=mwir`/`asm` path).
     pub only: Option<BTreeSet<String>>,
 }
 
@@ -296,10 +70,6 @@ fn is_host_only_comptime_test(program: &TypedProgram, name: &str, opts: &LowerOp
         .any(|t| t.name == name && t.kind == TestKind::Comptime)
 }
 
-/// `key` is a CalleeKey spelling (`drive`, `Maker.build`). Image-builder
-/// and comptime-`@test` names are always free fns; comparing only the
-/// bare member (`build` from `Maker.build`) against `@image fn build`
-/// falsely marks imported methods host-only (plans/M9.md item KK).
 fn is_host_only_fn(program: &TypedProgram, key: &str, f: &TypedFn, opts: &LowerOpts) -> bool {
     if program.image_fn.as_deref() == Some(key) {
         return true;
@@ -310,18 +80,10 @@ fn is_host_only_fn(program: &TypedProgram, key: &str, f: &TypedFn, opts: &LowerO
     is_host_only_comptime_test(program, key, opts)
 }
 
-/// Guest-reachable CalleeKey spellings for one typed program (plans/M9.md
-/// item H3). Used by dump-stage lower and as the per-program walk inside
-/// `guest_reachable_keys_closure`.
 pub fn guest_reachable_keys(program: &TypedProgram, opts: &LowerOpts) -> BTreeSet<String> {
     guest_reachable_keys_over(&[program], opts)
 }
 
-/// Whole-build-closure reachable set (plans/M9.md item H3): seeds from
-/// every module, callees looked up in every module's local+imported
-/// tables. `try_layout_program` passes this via `LowerOpts::only` so a
-/// library module with no actors does not emit its entire surface into
-/// the merged image.
 pub fn guest_reachable_keys_closure(
     programs: &BTreeMap<String, TypedProgram>,
     opts: &LowerOpts,
@@ -330,30 +92,17 @@ pub fn guest_reachable_keys_closure(
     guest_reachable_keys_over(&progs, opts)
 }
 
-/// CalleeKeys force-rooted into every runtime-bearing emit set
-/// (plans/M10.md item A2d / decision 583). Hand-asm `Reloc::Call` /
-/// `Asm::bl_call_key` targets that no wrela Call ever names — without
-/// these seeds they never lower and the reloc fails with "was never
-/// codegen'd". Bare names, not `core.runtime.*`.
 pub const RUNTIME_FORCE_ROOT_KEYS: &[&str] = &[
     "__wrela_runtime_probe",
-    // M10 B2: console line_begin / line_commit (harness bl_call_key targets).
     "__wrela_line_begin",
     "__wrela_line_commit",
-    // M10 B3: decimal renderer (harness bl_call_key target).
     "__wrela_fmt_dec",
-    // M10 B4: console append split (line_buf / Bytes).
     "__wrela_console_append_line_buf",
     "__wrela_console_append_bytes",
-    // M10 C: abort print bodies (Reloc::AbortFixed / AbortVal targets).
     "__wrela_abort",
     "__wrela_abort_val",
 ];
 
-/// Scheduler / mailbox / ring helpers force-rooted when live wiring is
-/// present (or a test image needs the same surface). Not in
-/// [`RUNTIME_FORCE_ROOT_KEYS`] — always-rooting blows code-size budgets
-/// on every runtime-bearing image (M11 E).
 pub const RUNTIME_WIRING_FORCE_ROOT_KEYS: &[&str] = &[
     "__wrela_deadline_poll",
     "__wrela_deadline_scan",
@@ -374,8 +123,6 @@ pub const RUNTIME_WIRING_FORCE_ROOT_KEYS: &[&str] = &[
     "__wrela_try_enqueue",
     "__wrela_enqueue_root",
     "__wrela_rt_enqueue",
-    // plans/lane1-per-core.md item A: the `__enqueue_N` trampolines' one
-    // shared "derive my own core from the baked root" hop.
     "__wrela_enqueue_local",
     "__wrela_call_method",
     "__wrela_deliver_reply",
@@ -410,9 +157,6 @@ pub const RUNTIME_WIRING_FORCE_ROOT_KEYS: &[&str] = &[
     "__wrela_xreply_edge",
     "__wrela_rt_boot_init",
     "__wrela_rt_secondary_entry",
-    // Secondary trampolines `__wrela_secondary_entry_k` are seeded from
-    // `ImageForceRootOpts::n_cores` (plans/M15.md item E / decision 1055) —
-    // exactly N_CORES-1, not a hardcoded 1/2 pool.
     "__wrela_init_nwords",
     "__wrela_init_store_word",
     "__wrela_boot_call",
@@ -421,15 +165,11 @@ pub const RUNTIME_WIRING_FORCE_ROOT_KEYS: &[&str] = &[
     "__wrela_irq_mask",
     "__wrela_irq_invoke",
     "__wrela_wake_invoke",
-    // Integrity Phase 2 Item I — Lane 1 counters (seeded: force-root list
-    // is not transitively closed after `seed_image_force_roots`).
     "__wrela_lane1_method_flat",
     "__wrela_lane1_record_method",
-    // Integrity Phase 2 Item M — Lane 2 block-hit helper (test-only emit).
     "__wrela_block_hit",
 ];
 
-/// Test-runner helpers force-rooted for `@test(runtime)` images (M11 K).
 pub const RUNTIME_TEST_FORCE_ROOT_KEYS: &[&str] = &[
     "__wrela_rt_primary_boot",
     "__wrela_rt_primary_entry",
@@ -443,44 +183,29 @@ pub const RUNTIME_TEST_FORCE_ROOT_KEYS: &[&str] = &[
     "__wrela_test_append_prefix",
     "__wrela_test_suspends",
     "__wrela_test_turn_index",
-    // Integrity Phase 2 Item I — Lane 1 counter dump surface.
     "__wrela_lane1_dump",
     "__wrela_lane1_append_u64",
-    // plans/lane1-per-core.md item A: the per-core row folds the dump reads
-    // (decision 1502). Seeded, like every helper here: the list is not
-    // transitively closed.
     "__wrela_lane1_sum_turns",
     "__wrela_lane1_sum_run_one",
     "__wrela_lane1_sum_messages",
     "__wrela_lane1_sum_method_hits",
-    // Integrity Phase 2 Item M — Lane 2 block-counter dump (no-op unless enabled).
     "__wrela_lane2_dump",
-    // plans/lane1-per-core.md item B: bounded quiesce before the halt dump
-    // (decision 1504) and the one line a timeout prints.
     "__wrela_quiesce_before_halt",
     "__wrela_secondaries_idle",
     "__wrela_lane1_quiesce_timeout_line",
 ];
 
-/// Optional seeds for the single image lower (wiring / test-runner).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ImageForceRootOpts {
-    /// Actor/driver wiring present — seed scheduler + live stub pools.
     pub with_wiring: bool,
-    /// `@test(runtime)` image — seed test-runner keys (implies scheduler).
     pub with_test_runner: bool,
     pub n_tests: usize,
     pub n_boot_calls: usize,
     pub n_irq_calls: usize,
     pub n_wake_calls: usize,
-    /// Live core count (`PlacementTable.cores`). Seeds
-    /// `__wrela_secondary_entry_k` for `k in 1..n_cores` (decision 1055).
     pub n_cores: usize,
 }
 
-/// Extend `only` with wiring-conditional / test-runner force-root seeds
-/// and generated stub prefixes present in `programs` (single CodegenProgram
-/// path — replaces the deleted `codegen_runtime_force_roots_with` seed set).
 pub fn seed_image_force_roots(
     only: &mut BTreeSet<String>,
     programs: &BTreeMap<String, TypedProgram>,
@@ -498,7 +223,6 @@ pub fn seed_image_force_roots(
         for i in 0..crate::rtconfig::ENQUEUE_STUB_COUNT {
             only.insert(format!("__enqueue_{i}"));
         }
-        // plans/M15.md item E / decision 1055: exactly N_CORES-1 trampolines.
         let n_cores = opts.n_cores.max(1);
         for core in 1..n_cores {
             only.insert(format!("__wrela_secondary_entry_{core}"));
@@ -530,7 +254,6 @@ pub fn seed_image_force_roots(
     if !need_scheduler {
         return;
     }
-    // Live ladders / trampolines from the generated module + runtime.wr.
     for typed in programs.values() {
         for name in typed.fns.keys().chain(typed.imported.fns.keys()) {
             if name.starts_with("__resume_")
@@ -557,16 +280,12 @@ fn guest_reachable_keys_over(programs: &[&TypedProgram], opts: &LowerOpts) -> BT
     for p in programs {
         seed_entry_points(p, opts, &mut work);
     }
-    // plans/M10.md item A2d / decision 583: force-root runtime helpers
-    // that exist in some program's fn table (auto-loaded `core.runtime`).
     for key in RUNTIME_FORCE_ROOT_KEYS {
         if programs.iter().any(|p| lookup_typed_fn(p, key).is_some()) {
             work.insert((*key).to_string());
         }
     }
     if work.is_empty() {
-        // Dump-stage / no-guest-surface fallback: cannot prove free fns
-        // unreachable from a guest that does not exist.
         for p in programs {
             for key in all_candidate_keys(p, opts) {
                 work.insert(key);
@@ -582,17 +301,12 @@ fn guest_reachable_keys_over(programs: &[&TypedProgram], opts: &LowerOpts) -> BT
         for p in programs {
             if let Some(f) = lookup_typed_fn(p, &key) {
                 if is_host_only_fn(p, &key, f, opts) {
-                    // Should not be seeded; defensive: do not walk into
-                    // host-only bodies.
                     continue;
                 }
                 collect_callees_from_fn(p, f, &mut work);
             }
         }
     }
-    // Drop any host-only keys that slipped into the set (e.g. a Call
-    // naming a layout_assert — should not happen, but fail closed to
-    // non-emission rather than emitting host code).
     reachable.retain(|key| {
         programs.iter().all(|p| match lookup_typed_fn(p, key) {
             Some(f) => !is_host_only_fn(p, key, f, opts),
@@ -614,10 +328,6 @@ fn seed_entry_points(program: &TypedProgram, opts: &LowerOpts, out: &mut BTreeSe
             TestKind::Comptime => {}
         }
     }
-    // Free top-level async fns are the group-child surface (02 §9.5) and
-    // may be started by name from any reachable `with group`. They are
-    // also the dump oracle for async lowering. Sync free fns stay
-    // call-graph-only (H3's helper-budget / unused-import fixes).
     for (name, f) in program.fns.iter().chain(program.imported.fns.iter()) {
         if f.is_async && !is_host_only_fn(program, name, f, opts) {
             out.insert(name.clone());
@@ -625,7 +335,6 @@ fn seed_entry_points(program: &TypedProgram, opts: &LowerOpts, out: &mut BTreeSe
     }
     seed_struct_entries(&program.structs, out);
     seed_struct_entries(&program.imported.structs, out);
-    // Instantiated actor/driver structs (rare; same rules).
     for (ikey, inst) in program
         .instantiations
         .iter()
@@ -651,8 +360,6 @@ fn seed_one_struct(key_prefix: &str, s: &TypedStruct, out: &mut BTreeSet<String>
         out.insert(format!("{key_prefix}.init"));
     }
     for (member, f) in &s.methods {
-        // Driver: every method (ISR conservatism). Actor: pub methods
-        // (message shapes) and @task (drivers only, but keep the bit).
         if s.is_driver || f.is_pub || f.is_task {
             out.insert(format!("{key_prefix}.{member}"));
         }
@@ -747,7 +454,6 @@ fn lookup_typed_fn<'a>(program: &'a TypedProgram, key: &str) -> Option<&'a Typed
             }
         }
     }
-    // Instantiation keys: `fn:name[...]` or `struct:name[...].member`.
     if let Some(inst) = program
         .instantiations
         .get(key)
@@ -943,7 +649,6 @@ fn collect_callees_from_expr(program: &TypedProgram, expr: &TypedExpr, out: &mut
                 match &a.value {
                     Some(e) => collect_callees_from_expr(program, e, out),
                     None => {
-                        // Defaulted arg: walk the callee's stored default.
                         if let Some(f) = lookup_typed_fn(program, &callee.spelling()) {
                             if let Some(d) = f.params.get(i).and_then(|p| p.default.as_ref()) {
                                 collect_callees_from_expr(program, d, out);
@@ -992,8 +697,6 @@ fn collect_callees_from_expr(program: &TypedProgram, expr: &TypedExpr, out: &mut
             for (_, e) in fields {
                 collect_callees_from_expr(program, e, out);
             }
-            // Omitted field defaults live on the struct; walk them when
-            // this construction site is reachable.
             if let Some(s) = program
                 .structs
                 .get(name)
@@ -1031,27 +734,17 @@ fn env_insert(env: &mut LEnv, name: String, t: Temp) {
     env.last_mut().expect("at least one scope").insert(name, t);
 }
 
-/// Whole-program lowering state that outlives any single fn's own
-/// `FnBuilder` — the typed program (read-only) and the shared `rodata`
-/// interning table (`MwirProgram::rodata` dedupes across every fn).
 struct Lowerer<'p> {
     prog: &'p TypedProgram,
     rodata: Vec<Vec<u8>>,
     rodata_index: BTreeMap<Vec<u8>, usize>,
 }
 
-/// One fn's own growing instruction list/temp table, plus a borrow of
-/// the shared `Lowerer` state — see this module's own doc comment.
 struct FnBuilder<'p, 'l> {
     lw: &'l mut Lowerer<'p>,
     temp_types: Vec<Type>,
     body: Vec<Inst>,
-    /// The fn's declared return type — needed by sync `?` (plans/M7.md
-    /// item E1) to build the early `Err` return.
     ret: Type,
-    /// plans/M7.md item G: when this fn is a struct member, the struct's
-    /// own name — `LoadIrqVector` needs the `@driver` that owns the
-    /// vector. `None` for free fns.
     owner_struct: Option<String>,
 }
 
@@ -1060,7 +753,6 @@ impl<'p, 'l> FnBuilder<'p, 'l> {
         self.lw.prog
     }
 
-    /// Image-declared blk capacity, if this program's `@image` sealed one.
     fn blk_capacity_sectors(&self) -> Option<u64> {
         self.lw.prog.blk_capacity_sectors
     }
@@ -1079,9 +771,6 @@ impl<'p, 'l> FnBuilder<'p, 'l> {
         self.body.len()
     }
 
-    /// Backpatches a previously-emitted `Jump`/`JumpIfFalse`'s own
-    /// `target` field — every forward jump in this file is emitted once
-    /// (with a placeholder) and patched exactly once, here.
     fn patch_jump(&mut self, idx: usize, target: usize) {
         match &mut self.body[idx] {
             Inst::Jump { target: t } => *t = target,
@@ -1090,9 +779,6 @@ impl<'p, 'l> FnBuilder<'p, 'l> {
         }
     }
 
-    /// Interns `bytes` into the shared, whole-program `rodata` table,
-    /// deduplicating by exact byte equality — first occurrence wins the
-    /// index, matching `MwirProgram::rodata`'s own doc comment.
     fn intern(&mut self, bytes: Vec<u8>) -> usize {
         if let Some(&i) = self.lw.rodata_index.get(&bytes) {
             return i;
@@ -1121,26 +807,12 @@ impl QueueSink for LowerQueueSink<'_, '_, '_> {
     }
 }
 
-/// One enclosing loop's own backpatch bookkeeping — `defer_marker`
-/// mirrors `interp::exec_for`'s own `loop_marker` (the active-defer-stack
-/// depth at loop entry, module doc's own "Control flow" section).
 struct LoopCtx {
     break_fixups: Vec<usize>,
     continue_fixups: Vec<usize>,
     defer_marker: usize,
 }
 
-// --- entry point ------------------------------------------------------
-
-/// `sema::typed::TypedProgram` -> `mwir::MwirProgram` (module doc's own
-/// "Shape" section). Every top-level fn, every struct's methods/
-/// associated fns/`init`, and every generic instantiation's own fn/
-/// struct-methods lowers — `program.image_fn` (if any) is skipped
-/// outright.
-/// plans/M7.md item H1: the `(layout, register)` pair an `Mmio.read`/
-/// `Mmio.write` node names — the receiver's own `Mmio[L]` type argument
-/// and the register-name `Str` leaf `sema::bodies::check_mmio_access`
-/// put in the node's first argument.
 fn mmio_access_names(
     mmio_ty: &Type,
     args: &[(String, TypedExpr)],
@@ -1173,19 +845,12 @@ fn mmio_access_names(
     Ok((layout.clone(), name.clone()))
 }
 
-/// The declared `@offset` of `register` in `layout`, out of
-/// `TypedProgram::layouts` — the very table `types::check_layouts`
-/// produced and the checker read, never a second computation of it.
 fn mmio_register_offset(
     layout: &str,
     register: &str,
     prog: &TypedProgram,
 ) -> Result<u64, LowerError> {
     let Some(l) = prog.layouts.iter().find(|l| l.name == layout) else {
-        // Reachable only for a layout declared in a *different* module of
-        // the build closure than the driver that maps it: `check_layouts`
-        // runs per module and `TypedProgram::layouts` is this module's
-        // own. Named rather than approximated with offset 0.
         return Err(LowerError::unimplemented(&format!(
             "an MMIO access through `Mmio[{layout}]`, whose `@layout(mmio)` declaration lives in \
              a different module than the driver that maps it — the exact-bytes table this \
@@ -1237,8 +902,6 @@ fn placed_static_addr(prog: &TypedProgram, name: &str) -> Result<u64, LowerError
         .ok_or_else(|| LowerError::internal(format!("placed static `{name}` not in TypedProgram")))
 }
 
-/// plans/M7.md item H2a: lower `reported.checked_le(bound)` to a compare
-/// against the bound and a branch that builds `Ok(payload)` or `Err(unit)`.
 fn lower_untrusted_checked_le(
     expr: &TypedExpr,
     receiver: &Option<Box<TypedExpr>>,
@@ -1262,7 +925,6 @@ fn lower_untrusted_checked_le(
             "`Untrusted.checked_le` with no bound argument".to_string(),
         ));
     };
-    // Transparent newtype: the receiver's bits *are* the payload.
     let payload = lower_expr(recv, b, env)?;
     let bound = lower_expr(bound_expr, b, env)?;
     let le = b.fresh(Type::Bool);
@@ -1302,14 +964,10 @@ pub fn lower_program(program: &TypedProgram) -> Result<MwirProgram, LowerError> 
     lower_program_with(program, &LowerOpts::default())
 }
 
-/// Like `lower_program`, with host-only / reachability opts (plans/M9.md
-/// items H2 / H3).
 pub fn lower_program_with(
     program: &TypedProgram,
     opts: &LowerOpts,
 ) -> Result<MwirProgram, LowerError> {
-    // Every use below is a `.contains()`, so borrow the caller's set rather
-    // than deep-cloning every key in it (this runs once per module, per pass).
     let computed;
     let reachable: &BTreeSet<String> = match &opts.only {
         Some(set) => set,
@@ -1329,30 +987,15 @@ pub fn lower_program_with(
         if program.image_fn.as_deref() == Some(name.as_str()) {
             continue;
         }
-        // plans/M6.md item D: an `async fn`/method never reaches this
-        // path at all — it lowers via `flowwir_lower::lower_program`
-        // instead (decision 2's own hard constraint, `flowwir.rs`'s own
-        // module doc: "a sync fn never leaves the M5 typed -> mwir path").
-        // Before this item, no `TypedProgram` this fn ever saw declared an
-        // `is_async` fn without also choking on an `await`/`send`/`with
-        // group` construct deeper inside `lower_fn` (the fail-closed
-        // `unimplemented` diagnostics those constructs' own match arms
-        // already carry) — this skip is what makes a *mixed* sync+async
-        // program's own sync half lower cleanly for the first time.
         if f.is_async {
             continue;
         }
-        // plans/M9.md item H2: `@layout_assert` is host-only (02 §12.1) —
-        // runs after layout in `eval::layout_assert`, never guest code.
         if f.is_layout_assert {
             continue;
         }
-        // plans/M9.md item H2: comptime-legal bare `@test` is host-only
-        // (02 §12.2) unless `diff-eval` opts back in.
         if is_host_only_comptime_test(program, name, opts) {
             continue;
         }
-        // plans/M9.md item H3: call-graph reachability.
         if !reachable.contains(name) {
             continue;
         }
@@ -1380,17 +1023,6 @@ pub fn lower_program_with(
             TypedInstantiation::Enum => {}
         }
     }
-    // plans/M9.md item EE / decision 90: emit imported fns/methods under
-    // the *local* spelling the typed tree already uses (decision 9), so a
-    // Call keyed `Duo.sum` / `twice` resolves in this module's own MWIR
-    // without merging the exporter's tables into `prog.fns`/`structs`
-    // (decision 13 rejected that — it would emit once per importer when
-    // `try_layout_program` lowers every module). Walking `imported` keeps
-    // the declaration tables honest ("what this module declares") and
-    // still emits each *Call key* once in this program. An unaliased name
-    // that also exists in the exporter's own lower may collide at
-    // `merge_mwir_programs` last-wins — that collision is already
-    // disclosed there. plans/M9.md item H3: only reachable imports.
     for (name, f) in &program.imported.fns {
         if f.is_async
             || f.is_layout_assert
@@ -1433,13 +1065,6 @@ pub fn lower_program_with(
     })
 }
 
-/// Lowers one struct's own methods/associated fns/`init`, keyed
-/// `"{key_prefix}.{member}"` — byte-identical to what
-/// `CalleeKey::Method`/`CalleeKey::MethodInstance::spelling()` would
-/// produce for `key_prefix` = the struct's own plain name or its own
-/// instantiation key, respectively (this fn's one caller passes whichever
-/// applies — the two cases share this one body, decision: no separate
-/// "instantiated struct" lowering path).
 fn lower_struct_members(
     key_prefix: &str,
     s: &TypedStruct,
@@ -1471,8 +1096,6 @@ fn lower_struct_members(
     Ok(())
 }
 
-/// plans/M9.md item B2: same keying as `lower_struct_members` —
-/// `"{enum}.{member}"` matches `CalleeKey::Method::spelling()`.
 fn lower_enum_members(
     key_prefix: &str,
     e: &crate::sema::typed::TypedEnum,
@@ -1528,10 +1151,6 @@ fn lower_fn(
     let mut defers: Vec<&TypedDeferBody> = Vec::new();
     let mut loops: Vec<LoopCtx> = Vec::new();
     lower_block(&f.body, &mut b, &mut env, &mut defers, &mut loops)?;
-    // Always append a trailing bare `Return` (module doc: dead code when
-    // every path already diverged, needed when the body legally falls
-    // off its own end — one uniform tail rather than special-casing
-    // which case this is).
     b.emit(Inst::Return { value: None });
     Ok(MwirFn {
         receiver,
@@ -1542,14 +1161,6 @@ fn lower_fn(
     })
 }
 
-// --- statements ---------------------------------------------------------
-
-/// Lowers one block's own statements; returns whether control definitely
-/// left the block (module doc's own "Control flow" section) — the
-/// trailing defer-drain only ever runs on the *non*-diverging path,
-/// mirroring `interp::exec_block` exactly (that fn's own `?`-based
-/// short-circuit never reaches its own trailing `run_defers` either, once
-/// any statement propagates an early exit).
 fn lower_block<'a>(
     stmts: &'a [TypedStmt],
     b: &mut FnBuilder,
@@ -1573,13 +1184,6 @@ fn lower_block<'a>(
     Ok(diverged)
 }
 
-/// Lowers every defer body in `active`, in reverse (registration order),
-/// using the *current* variable environment (not a fresh one — a defer
-/// body can reference enclosing locals/`self`, `interp::run_defers`'s own
-/// behavior) but a fresh, empty defer/loop context of its own (a defer
-/// body can neither `await`/`?` nor legally `break`/`continue` out of an
-/// enclosing loop, `sema::bodies::scan_defer_forbidden`'s own guard, so
-/// nothing here should ever need either).
 fn run_defers(
     active: &[&TypedDeferBody],
     b: &mut FnBuilder,
@@ -1703,10 +1307,6 @@ fn lower_stmt<'a>(
             b.patch_jump(after_fixup, after_pos);
             Ok(false)
         }
-        // Checked exactly once, unconditionally, by `eval::check_comptime_asserts`
-        // before this fn's own body is ever lowered — a no-op here,
-        // exactly like `interp::exec_stmt`'s own identical arm (its own
-        // doc comment explains why in full).
         TypedStmtKind::ComptimeAssert { .. } => Ok(false),
         TypedStmtKind::Defer(body) => {
             defers.push(body);
@@ -1716,19 +1316,9 @@ fn lower_stmt<'a>(
             lower_expr(e, b, env)?;
             Ok(false)
         }
-        // Plans/M6.md item A: sema now types `with group(...)` (real
-        // node, no longer fail-closed at the sema layer) but this pass
-        // (M5's sync-fn-only lowering) is not that lowering — item B
-        // (FlowWir) owns state-machine lowering for every async/actor
-        // construct; fail closed, named, here rather than mis-lowering a
-        // suspension point as if it were straight-line sync code.
         TypedStmtKind::WithGroup { .. } => Err(LowerError::unimplemented(
             "`with group` (FlowWir state machines, plans/M6.md item B) is",
         )),
-        // plans/M6.md item G: `send` requires an `async fn` context
-        // (`bodies::check_send`), and this pass only ever lowers sync
-        // fns — unreachable in practice, fail closed rather than
-        // mis-lowering an enqueue as straight-line sync code.
         TypedStmtKind::BareSend { .. } => Err(LowerError::unimplemented(
             "a bare `send` statement (FlowWir state machines, plans/M6.md item B) is",
         )),
@@ -1814,8 +1404,6 @@ fn lower_while<'a>(
         continue_fixups: Vec::new(),
         defer_marker: defers.len(),
     });
-    // Hidden trip counter (02 §8.1 / decision 721): abort if the body
-    // runs more than `N` times. Absent on async loops (checkpoint path).
     let trips = budget.map(|n| {
         let t = b.fresh(Type::U64);
         b.emit(Inst::ConstInt {
@@ -1850,7 +1438,6 @@ fn lower_while<'a>(
     Ok(())
 }
 
-/// Increment the trip counter and abort when it exceeds `bound`.
 fn emit_trip_check(b: &mut FnBuilder, trips_t: Temp, bound: u64) -> Result<(), LowerError> {
     let one = b.fresh(Type::U64);
     b.emit(Inst::ConstInt {
@@ -2061,8 +1648,6 @@ fn lower_for<'a>(
     Ok(())
 }
 
-/// A literal-string assert/panic message, decoded — fails closed on
-/// anything else (module doc's own fail-closed enumeration).
 fn assert_message_text(e: &TypedExpr) -> Result<String, LowerError> {
     if let TypedExprKind::Str(text) = &e.kind {
         Ok(String::from_utf8_lossy(&value::decode_str(text)).into_owned())
@@ -2073,17 +1658,6 @@ fn assert_message_text(e: &TypedExpr) -> Result<String, LowerError> {
     }
 }
 
-// --- match/pattern lowering ------------------------------------------------
-
-/// `interp::exec_stmt`'s own `Match` arm, lowered: tests each arm in
-/// source order, only evaluating a guard once the pattern itself matched
-/// (module doc's own "Pattern matching" section explains why this one
-/// piece needs a real branch rather than the unconditional-sub-test
-/// trick `lower_pattern_test` otherwise uses throughout). The trailing
-/// `AssertFail` mirrors `interp::exec_stmt`'s own defensive "no arm
-/// matched" line verbatim — exhaustiveness already proved it
-/// unreachable, kept anyway for parity (never a default arm: no case
-/// here ever changes *which* arm is selected).
 fn lower_match<'a>(
     scrutinee: &'a TypedExpr,
     arms: &'a [crate::sema::typed::TypedMatchArm],
@@ -2136,10 +1710,6 @@ fn lower_match<'a>(
     Ok(all_diverge)
 }
 
-/// Pre-allocates one temp per name a pattern binds (recursing through
-/// `Take`/`Variant`/`Tuple`/`Array`, mirroring `sema::matches`'s own
-/// tree walk) — called once per arm, before `lower_pattern_test`, so a
-/// `Binding` leaf always has a destination temp ready to copy into.
 fn collect_pattern_bindings(
     pat: &TypedPattern,
     out: &mut BTreeMap<String, Temp>,
@@ -2166,12 +1736,6 @@ fn collect_pattern_bindings(
     }
 }
 
-/// Tests `pattern` against the already-lowered `value` temp, writing
-/// every binding it introduces into the pre-allocated `bindings` table
-/// (via `Inst::Copy`) along the way; returns the `bool` temp holding the
-/// overall test result. Every sub-test here is trap-free (module doc's
-/// own "Pattern matching" section) so nested tests fold with
-/// `Inst::BoolAnd` rather than branching.
 fn lower_pattern_test(
     pattern: &TypedPattern,
     value: Temp,
@@ -2285,14 +1849,6 @@ fn lower_pattern_test(
     }
 }
 
-// --- places (assignment targets) ---------------------------------------
-
-/// Materialize `place` into a temp that a subsequent `SetField` /
-/// `IndexSet` / `mut` write-back can mutate. A bare local is its own
-/// frame slot (`needs_writeback = false`); a field/index chain is
-/// projected out as a copy that the caller must write back through
-/// `lower_place_write` after mutating (`needs_writeback = true`).
-/// plans/M9.md item MM: dumb RMW — no address caching, no CSE.
 fn materialize_place_mut(
     place: &TypedExpr,
     b: &mut FnBuilder,
@@ -2315,10 +1871,6 @@ fn materialize_place_mut(
     }
 }
 
-/// Writes `value` into `target`'s place — bare local, or an arbitrary
-/// depth chain of field/index projections (plans/M9.md item MM). Nested
-/// places project out, mutate, and write the modified aggregate back;
-/// a bare-local base is mutated in place via `SetField`/`IndexSet`.
 fn lower_place_write(
     target: &TypedExpr,
     value: Temp,
@@ -2334,8 +1886,6 @@ fn lower_place_write(
             Ok(())
         }
         TypedExprKind::Field(base, fname) => {
-            // plans/M10.md item A2c / decision 587: assign through a placed
-            // static's named field — MmioWrite at the layout offset.
             if let TypedExprKind::Static(sname) = &base.kind {
                 let layout_name = match bodies::unwrap_own(base.ty.clone()) {
                     Type::Named(n, _) => n,
@@ -2355,7 +1905,6 @@ fn lower_place_write(
                 });
                 return Ok(());
             }
-            // plans/M11.md item E / decision 786: `GROUPS.slots[i].f = v`.
             if let Some((static_expr, idx_expr, field_offset, elem_stride, len)) =
                 placed_struct_array_scalar_field(base, fname, b.prog())?
             {
@@ -2372,10 +1921,6 @@ fn lower_place_write(
                 });
                 return Ok(());
             }
-            // plans/M7.md item G, decision 17: assigning an `InterruptCell`
-            // field of `self` must STLR the live driver-state word. Only
-            // bare `self.<cell>` has a known live offset; nested chains
-            // refuse rather than write a frame copy and skip the STLR.
             if bodies::is_interrupt_cell_type(&target.ty) {
                 let TypedExprKind::Local(base_name) = &base.kind else {
                     return Err(LowerError::unimplemented(
@@ -2418,8 +1963,6 @@ fn lower_place_write(
             Ok(())
         }
         TypedExprKind::Index(base, idx_expr) => {
-            // plans/M10.md item B1: `STATIC.array_field[i] = value` — dense
-            // layout store, not a frame-slot IndexSet after MmioRead.
             if let Some((static_expr, field_offset, elem_stride, len)) =
                 placed_array_field_index(base, b.prog())?
             {
@@ -2438,10 +1981,6 @@ fn lower_place_write(
             }
             let (base_temp, needs_writeback) = materialize_place_mut(base, b, env)?;
             let len = eval_array_len(&base.ty)?;
-            // Parked `BoundsElide` (decision 1911): with the opt off —
-            // which is every product path — a literal index store keeps
-            // `IndexSet` and its runtime bounds check. With it on, a
-            // proved in-range literal index becomes `SetField`.
             if let Some(i) = literal_array_index_elide(idx_expr, len)? {
                 b.emit(Inst::SetField {
                     base: base_temp,
@@ -2468,13 +2007,6 @@ fn lower_place_write(
     }
 }
 
-// --- calls ----------------------------------------------------------------
-
-/// Lowers one `mut`-mode call-site operand to the place temp that will
-/// also appear in `Inst::Call::write_backs`. Nested field/index places
-/// project out as a scratch temp; the caller must write that temp back
-/// through `lower_place_write` after the call (plans/M9.md item MM). A
-/// bare local is mutated in place — no write-back place.
 fn lower_mut_arg_place<'a>(
     expr: &'a TypedExpr,
     b: &mut FnBuilder,
@@ -2497,18 +2029,6 @@ fn lower_mut_arg_place<'a>(
     }
 }
 
-/// Evaluates a call's own argument slots against the callee's declared
-/// parameters exactly like `interp::bind_params`: a supplied slot
-/// lowers in the *caller's* environment; an elided (defaulted) slot's
-/// own stored default (`TypedParam::default`) lowers in a small,
-/// progressively-growing "callee-shaped" environment seeded with `self`
-/// (if any) and every earlier parameter's own just-lowered temp — a
-/// default may reference either, `sema::bodies::check_params_with_defaults`'s
-/// own typing order, mirrored here one stage later. A `mut` parameter's
-/// supplied operand lowers through `lower_mut_arg_place` so the temp
-/// passed is the place itself (required for epilogue write-back). Nested
-/// `mut` places return a post-call write-back obligation in
-/// `nested_mut_writebacks` (plans/M9.md item MM).
 fn bind_args<'a>(
     f: &TypedFn,
     args: &'a [TypedCallArg],
@@ -2551,9 +2071,6 @@ fn bind_args<'a>(
     Ok(out)
 }
 
-/// Builds `Inst::Call::write_backs`: a `Mut` receiver at args index 0
-/// (when present) plus every non-receiver `mut` parameter, args-indexed
-/// with the receiver (if any) occupying slot 0.
 fn call_write_backs(
     f: &TypedFn,
     receiver_temp: Option<Temp>,
@@ -2575,9 +2092,6 @@ fn call_write_backs(
     write_backs
 }
 
-/// Dispatches one `Call` node (`interp::eval_call`'s own callee-key
-/// dispatch, one stage later): resolves the target, evaluates the
-/// receiver per its own declared mode, and emits the call.
 fn lower_call(
     callee: &CalleeKey,
     receiver: &Option<Box<TypedExpr>>,
@@ -2586,7 +2100,6 @@ fn lower_call(
     b: &mut FnBuilder,
     env: &mut LEnv,
 ) -> Result<Temp, LowerError> {
-    // plans/M9.md item C2: core-scalar `.format()` — no TypedFn exists.
     if let CalleeKey::Method(_, m) = callee {
         if m == "format" {
             if let Some(recv) = receiver {
@@ -2683,14 +2196,6 @@ fn lower_call(
     }
 }
 
-/// `init`'s own call-site translation — `interp::run_init`, one stage
-/// later: allocates a fresh, uninitialized `self` (flow's definite-init
-/// pass already proved every field is assigned before any real exit, so
-/// no placeholder value is needed, just a slot), runs the body with it
-/// as the receiver, then reinterprets the body's own result exactly like
-/// `run_init` does — `Unit` ret: the call's result *is* the written-back
-/// self (the body's own result value is discarded); `Result[Unit, E]`
-/// ret: `Ok` wraps the written-back self, `Err` propagates unchanged.
 fn lower_init_call(
     f: &TypedFn,
     key: &str,
@@ -2717,8 +2222,6 @@ fn lower_init_call(
         key: key.to_string(),
         args: call_args,
     });
-    // 05-library.md §7: mint after init write-back — explicit Inst, not a
-    // codegen key.contains("SlotMap") special case.
     if mwir::is_slotmap_type(&self_ty) {
         b.emit(Inst::SlotMapMint { map: self_temp });
     }
@@ -2786,12 +2289,6 @@ fn lower_init_call(
     }
 }
 
-// --- expressions ------------------------------------------------------------
-
-/// Sync `?` (plans/M7.md item E1 / 02-language.md §7.4): on `Ok`, project
-/// the payload; on `Err`, apply the target's `from` conversion when
-/// needed (plans/M9.md item B), build this fn's own `Err`-wrapped return,
-/// and early-return. Same shape as `flowwir_lower::lower_try_check`.
 fn lower_try_sync(
     value_temp: Temp,
     value_ty: &Type,
@@ -2865,9 +2362,6 @@ fn lower_try_sync(
     Ok(ok_payload)
 }
 
-/// Apply `?`'s one-hop `from` conversion (02 §7.4 / plans/M9.md item B3).
-/// Explicit and deriving-generated `from` are both Calls; there is no
-/// structural wrap fallback.
 fn lower_from_conversion(
     err_payload: Temp,
     conv: &Option<CalleeKey>,
@@ -2893,7 +2387,6 @@ fn lower_from_conversion(
     Ok(dst)
 }
 
-/// plans/M13.md item M: see `lower_shared::needs_collapse_reserve_permit`.
 fn collapse_reserve_permit_if_needed(
     expr_ty: &Type,
     src: Temp,
@@ -2971,8 +2464,6 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
         }
         TypedExprKind::Str(text) => {
             let bytes = value::decode_str(text);
-            // plans/M9.md item C1: `String[..N]` is a fixed aggregate
-            // (length word + N byte slots), not ConstText.
             if let Type::String(n_expr) = &expr.ty {
                 return emit_string_aggregate(&bytes, n_expr, &expr.ty, b);
             }
@@ -3007,8 +2498,6 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
         TypedExprKind::Local(name) => {
             let t = env_lookup(env, name)
                 .ok_or_else(|| LowerError::internal(format!("unbound local `{name}`")))?;
-            // plans/M13.md item M: a Local coerced from reserve's Result
-            // to `QueuePermit` still names a Result temp — unwrap Ok.
             collapse_reserve_permit_if_needed(&expr.ty, t, b)
         }
         TypedExprKind::Const(name) => {
@@ -3021,9 +2510,6 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
             })?;
             emit_const_value(&v, &expr.ty, b)
         }
-        // plans/M10.md item A2c / decision 587: a bare placed static is its
-        // base address. Named-field access uses this temp as the MmioRead/
-        // MmioWrite base.
         TypedExprKind::Static(name) => {
             let addr = placed_static_addr(b.prog(), name)?;
             let dst = b.fresh(Type::U64);
@@ -3038,8 +2524,6 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
             "a bare fn/method value reference is",
         )),
         TypedExprKind::Field(base, name) => {
-            // Named field of a placed static: MmioRead at the layout offset
-            // (decision 587 — the Mmio[L] codegen shape, not its API).
             if let TypedExprKind::Static(sname) = &base.kind {
                 let layout_name = match bodies::unwrap_own(base.ty.clone()) {
                     Type::Named(n, _) => n,
@@ -3060,7 +2544,6 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
                 });
                 return Ok(dst);
             }
-            // plans/M11.md item E / decision 786: `GROUPS.slots[i].f`.
             if let Some((static_expr, idx_expr, field_offset, elem_stride, len)) =
                 placed_struct_array_scalar_field(base, name, b.prog())?
             {
@@ -3080,8 +2563,6 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
             }
             let base_temp = lower_expr(base, b, env)?;
             let base_ty = bodies::unwrap_own(base.ty.clone());
-            // plans/M9.md item E: Duration/Instant are scalar newtypes —
-            // `.nanos` is the word itself.
             if let Type::Named(sname, _) = &base_ty {
                 if matches!(sname.as_str(), "Duration" | "Instant") && name == "nanos" {
                     let dst = b.fresh(expr.ty.clone());
@@ -3102,8 +2583,6 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
             Ok(dst)
         }
         TypedExprKind::Index(base, idx_expr) => {
-            // plans/M10.md item B1: `STATIC.array_field[i]` — dense layout
-            // load with the ordinary IndexGet bounds-check shape.
             if let Some((static_expr, field_offset, elem_stride, len)) =
                 placed_array_field_index(base, b.prog())?
             {
@@ -3123,8 +2602,6 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
             }
             let base_temp = lower_expr(base, b, env)?;
             let base_ty = bodies::unwrap_own(base.ty.clone());
-            // plans/M10.md item B4 / decisions 595–596: unbounded `Bytes`
-            // parameter — packed-byte index through the (base, len) handle.
             if matches!(base_ty, Type::Bytes(None)) {
                 let idx_temp = lower_expr(idx_expr, b, env)?;
                 let dst = b.fresh(expr.ty.clone());
@@ -3135,10 +2612,6 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
                 });
                 return Ok(dst);
             }
-            // Exact `Bytes[N]` is slot-per-byte (mwir::size_of / M17 layout
-            // fact). Literal index → Project slot `i` (no length prefix —
-            // unlike `String[..N]`). Needed by plans/M17.md item G's
-            // `b[0]..b[7]` touch on `entropy[8]()` results.
             if let Type::Bytes(Some(n_expr)) = &base_ty {
                 let cap = eval_len_expr(n_expr)?;
                 let i = match &idx_expr.kind {
@@ -3167,11 +2640,6 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
                 });
                 return Ok(dst);
             }
-            // plans/M9.md item C1: `String[..N][i]` with a literal index
-            // projects slot `1+i` after a compile-time capacity check.
-            // Dynamic indices (and occupied-length runtime checks beyond
-            // the capacity) are refused by name — C1's guest pin uses
-            // literal indices only.
             if let Type::String(n_expr) = &base_ty {
                 let cap = eval_len_expr(n_expr)?;
                 let i = match &idx_expr.kind {
@@ -3200,10 +2668,6 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
                 });
                 return Ok(dst);
             }
-            // Parked `BoundsElide` (decision 1911): off by default, so a
-            // literal index keeps `IndexGet` and its runtime bounds
-            // check. On, a proved in-range literal index becomes
-            // `Project` (same shape as `Bytes[N]` above).
             let len = eval_array_len(&base.ty)?;
             if let Some(i) = literal_array_index_elide(idx_expr, len)? {
                 let dst = b.fresh(expr.ty.clone());
@@ -3244,11 +2708,6 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
             Ok(dst)
         }
         TypedExprKind::Neg(inner) => {
-            // Mirrors `interp::eval_expr`'s own `Neg` arm exactly,
-            // including its own doc comment's reasoning: a negated
-            // integer *literal* (`i8::MIN`, ...) must decode and negate
-            // in `i128` directly, never truncate-then-negate (which
-            // double-wraps exactly the MIN literals).
             if let TypedExprKind::Int(text) = &inner.kind {
                 let raw = value::parse_int_literal(text)
                     .ok_or_else(|| LowerError::internal("invalid integer literal text"))?;
@@ -3281,42 +2740,16 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
             });
             Ok(dst)
         }
-        // Decision 2: "a take is a copy in mwir" — an ordinary read of
-        // `inner` is already observationally identical to a real move
-        // (`interp.rs`'s own `Take` arm: literally `eval_expr(inner, ...)`,
-        // no wrapping at all). Whichever context consumes this temp
-        // (a `Let`'s own destination temp, a call argument slot, an
-        // aggregate element) already gets its own distinct copy at *that*
-        // point, so nothing extra happens here.
         TypedExprKind::Take(inner) => {
             let t = lower_expr(inner, b, env)?;
-            // plans/M13.md item M: `take permit` after
-            // `permit = queue.reserve(...)` coerces
-            // `Result[QueuePermit, CapacityError]` → `QueuePermit`; extract
-            // the Ok payload (tag stays at the Result temp).
             collapse_reserve_permit_if_needed(&expr.ty, t, b)
         }
         TypedExprKind::Try(inner, conv) => {
-            // plans/M7.md item E1 / plans/M9.md item B: sync `?`
-            // (02-language.md §7.4). A driver's fallible `init` is a plain
-            // `fn` and must be able to `?`-propagate `BootError`. Active
-            // defers at the early-exit site are not run here — a driver's
-            // `init` that uses both `defer` and `?` fails closed by name
-            // rather than silently skipping cleanup (none of E1's goldens
-            // combine the two).
             let v = lower_expr(inner, b, env)?;
             lower_try_sync(v, &inner.ty, conv, b)
         }
         TypedExprKind::Binary(op, l, r) => lower_binary(*op, l, r, expr, b, env),
         TypedExprKind::OpCall(key, l, r) => {
-            // A user (`Named`) type's desugared operator method
-            // (`typed::TypedExprKind::OpCall`'s own doc comment): `self`
-            // (the left operand), then the right-hand operand — always
-            // exactly one declared parameter, never a default (an
-            // operator method's own signature is fixed by
-            // 05-library.md §8), so this is `lower_call`'s own
-            // read-receiver path with no argument-binding machinery
-            // needed at all.
             let lv = lower_expr(l, b, env)?;
             let rv = lower_expr(r, b, env)?;
             let f = resolve_fn(b.prog(), key).ok_or_else(|| missing_callee(b.prog(), key))?;
@@ -3334,14 +2767,6 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
             let mut bindings = BTreeMap::new();
             collect_pattern_bindings(pattern, &mut bindings, b);
             let test = lower_pattern_test(pattern, v, &bindings, b)?;
-            // "its bindings flow into the success branch" (02-language.md
-            // §7.2): inserted directly into the *current* scope, exactly
-            // like `interp::eval_expr`'s own `Is` arm — no push/pop of
-            // its own (whatever encloses this `Is` — an `if`'s own cond
-            // — already scopes the branch that can legally read them;
-            // sema is what actually keeps a read outside that branch from
-            // ever type-checking, this mirrors interp.rs's own identical
-            // shortcut).
             for (n, t) in bindings {
                 env_insert(env, n, t);
             }
@@ -3441,10 +2866,6 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
                 return Err(LowerError::internal("struct literal type is not `Named`"));
             };
             debug_assert_eq!(name, sname);
-            // plans/M9.md item E: `Duration`/`Instant` are one-word
-            // newtypes (private `nanos: u64`). Keep the pre-E ABI
-            // (`is_aggregate` treats them as scalars) by lowering a
-            // construction to a plain Copy of the nanos field.
             if matches!(sname.as_str(), "Duration" | "Instant") {
                 if fields.len() != 1 {
                     return Err(LowerError::internal(format!(
@@ -3491,197 +2912,133 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
             b.emit(Inst::AssertFail {
                 message: Some(format!("panic: {text}")),
             });
-            // Unreachable past this point (`ty` is `never`) — the temp
-            // is allocated only so this fn can return one uniformly; it
-            // is never read.
             Ok(b.fresh(expr.ty.clone()))
         }
-        // plans/M7.md item C (03-hardware.md §2): a typed MMIO register
-        // access type-checks in full, and stops here — deliberately, and
-        // not as a shortcut. **No `Mmio[L]` value can exist at runtime
-        // today**: `eval::image_checks::check_capability_substitution`
-        // rejects an `Mmio[L]` `init` parameter outright ("nothing mints a
-        // `Mmio` yet"), and `layout::build_boot_init_calls` walks
-        // `graph.actors` only — a `@driver`'s `init` is never called at
-        // boot at all — and fails closed on every capability parameter
-        // besides. Emitting a load/store against a base that is provably
-        // the zero a state-fill left is the exact wrong answer plans/M7.md
-        // item W exists to close, so this says so instead.
-        // plans/M7.md item H1 (03-hardware.md §2/§9): the sealed
-        // transport's own two operations. Both are pure *authority*
-        // transitions on this target and lower to a `Copy` of decision
-        // 11's one word — the device's own register-window base:
-        //
-        // - `claim` walks `Reset -> Acknowledged -> DriverClaimed`, which
-        //   on a real virtio transport is three status-register writes and
-        //   on machine v1 is nothing at all: 06-machine.md §3 deletes
-        //   discovery and negotiation ("device topology is a *build
-        //   output*"; "cold boot is a design property"), and the VMM has
-        //   no status register file to write to. Emitting invented writes
-        //   to a window no model reads would be worse than emitting none.
-        // - `map_partition` hands out one of the driver's declared
-        //   partitions. The partition's *offsets* live in the layout, so
-        //   the value handed out is the claim's own base, unchanged; what
-        //   makes the partitions disjoint is `check_mmio_claims`, at build
-        //   time, over the same field set this operation is restricted to.
         TypedExprKind::Intrinsic {
             key,
             receiver,
             args,
             ..
-        } if crate::sema::bodies::is_device_transport_intrinsic(key) => {
-            // plans/M7.md item E1: negotiate/start/configure are pure
-            // plans/M7.md item E1: negotiate/start/configure are pure
-            // authority transitions on this machine (decision 14: the
-            // accepted feature set is a build-time fact; capacity is a
-            // build constant). Each lowers to a Copy of the receiver's
-            // word, or — for read_capacity — a ConstInt filled in at the
-            // address pass from the image's declared capacity_sectors.
-            // VirtQueue.configure yields the pool base (decision 11's one
-            // word for the queue).
-            match key.as_str() {
-                "Device.take_irq" => {
-                    // plans/M7.md item G, decision 12: the word is the vector
-                    // bit index. Layout patches the reloc against this
-                    // driver's `vector=` once the image graph is in hand.
-                    let Some(driver) = b.owner_struct.clone() else {
-                        return Err(LowerError::internal(
-                            "`Device.take_irq` reached lowering outside a `@driver` member"
-                                .to_string(),
-                        ));
-                    };
-                    let _ = receiver; // authority already checked; the word does not need the base
-                    let dst = b.fresh(expr.ty.clone());
-                    b.emit(Inst::LoadIrqVector { dst, driver });
-                    Ok(dst)
-                }
-                "Device.read_capacity_sectors" => {
-                    let capacity = b.blk_capacity_sectors().ok_or_else(|| {
-                        LowerError::unimplemented(
-                            "`read_capacity_sectors`: this image declares no \
+        } if crate::sema::bodies::is_device_transport_intrinsic(key) => match key.as_str() {
+            "Device.take_irq" => {
+                let Some(driver) = b.owner_struct.clone() else {
+                    return Err(LowerError::internal(
+                        "`Device.take_irq` reached lowering outside a `@driver` member".to_string(),
+                    ));
+                };
+                let _ = receiver;
+                let dst = b.fresh(expr.ty.clone());
+                b.emit(Inst::LoadIrqVector { dst, driver });
+                Ok(dst)
+            }
+            "Device.read_capacity_sectors" => {
+                let capacity = b.blk_capacity_sectors().ok_or_else(|| {
+                    LowerError::unimplemented(
+                        "`read_capacity_sectors`: this image declares no \
                              `capacity_sectors=` on its `img.device` (plans/M7.md item E1: \
                              capacity is an image-declared build constant, not a register)",
-                        )
-                    })?;
-                    let ok_payload = b.fresh(Type::U64);
-                    b.emit(Inst::ConstInt {
-                        dst: ok_payload,
-                        ty: Type::U64,
-                        value: capacity as i128,
-                    });
-                    let dst = b.fresh(expr.ty.clone());
-                    b.emit(Inst::MakeEnum {
-                        dst,
-                        tag: value::RESULT_OK,
-                        payload: vec![ok_payload],
-                    });
-                    Ok(dst)
-                }
-                "Device.negotiate" | "VirtQueue.configure" => {
-                    // Both return Result[T, BootError]. The Ok payload is
-                    // the authority word: negotiate copies the claimed
-                    // device's base; configure copies the pool's base.
-                    let src = match (key.as_str(), receiver, args.as_slice()) {
-                        ("Device.negotiate", Some(state), _) => lower_expr(state, b, env)?,
-                        ("VirtQueue.configure", _, args) => {
-                            let (_, pool) =
-                                args.iter().find(|(l, _)| l == "pool").ok_or_else(|| {
-                                    LowerError::internal(
-                                        "`VirtQueue.configure` reached lowering without `pool=`"
-                                            .to_string(),
-                                    )
-                                })?;
-                            lower_expr(pool, b, env)?
-                        }
-                        _ => {
-                            return Err(LowerError::internal(format!(
-                                "sealed-transport intrinsic `{key}` reached lowering without \
-                                 its operand"
-                            )));
-                        }
-                    };
-                    let Type::Result(ok_ty, _) = &expr.ty else {
-                        return Err(LowerError::internal(format!(
-                            "`{key}`'s typed result is not a `Result`"
-                        )));
-                    };
-                    let payload = b.fresh((**ok_ty).clone());
-                    b.emit(Inst::Copy { dst: payload, src });
-                    let dst = b.fresh(expr.ty.clone());
-                    b.emit(Inst::MakeEnum {
-                        dst,
-                        tag: value::RESULT_OK,
-                        payload: vec![payload],
-                    });
-                    Ok(dst)
-                }
-                "Device.start" | "Device.claim" | "Device.map_partition" => {
-                    let src = match (key.as_str(), receiver, args.first()) {
-                        ("Device.claim", _, Some((_, cap))) => lower_expr(cap, b, env)?,
-                        ("Device.map_partition" | "Device.start", Some(state), _) => {
-                            lower_expr(state, b, env)?
-                        }
-                        _ => {
-                            return Err(LowerError::internal(format!(
-                                "sealed-transport intrinsic `{key}` reached lowering without \
-                                 its operand"
-                            )));
-                        }
-                    };
-                    let dst = b.fresh(expr.ty.clone());
-                    b.emit(Inst::Copy { dst, src });
-                    Ok(dst)
-                }
-                "Device.reset" => {
-                    let device = match receiver {
-                        Some(state) => lower_expr(state, b, env)?,
-                        None => {
-                            return Err(LowerError::internal(
-                                "`Device.reset` reached lowering without a RunningDevice receiver"
-                                    .to_string(),
-                            ));
-                        }
-                    };
-                    let queue = match args.first() {
-                        Some((_, q)) => lower_expr(q, b, env)?,
-                        None => {
-                            return Err(LowerError::internal(
-                                "`Device.reset` reached lowering without a queue argument"
-                                    .to_string(),
-                            ));
-                        }
-                    };
-                    let dst = b.fresh(expr.ty.clone());
-                    let depth = lower_queue::virtqueue_depth_of(&b.temp_types[queue.0])
-                        .map_err(LowerError::internal)?;
-                    lower_queue::expand_device_reset(
-                        dst,
-                        device,
-                        queue,
-                        depth,
-                        &mut LowerQueueSink(b),
                     )
-                    .map_err(LowerError::internal)?;
-                    Ok(dst)
-                }
-                other => Err(LowerError::internal(format!(
-                    "unknown sealed-transport intrinsic `{other}`"
-                ))),
+                })?;
+                let ok_payload = b.fresh(Type::U64);
+                b.emit(Inst::ConstInt {
+                    dst: ok_payload,
+                    ty: Type::U64,
+                    value: capacity as i128,
+                });
+                let dst = b.fresh(expr.ty.clone());
+                b.emit(Inst::MakeEnum {
+                    dst,
+                    tag: value::RESULT_OK,
+                    payload: vec![ok_payload],
+                });
+                Ok(dst)
             }
-        }
-        // plans/M7.md item G: bind/unmask are build-time facts for the
-        // vector table (collected from the typed tree by
-        // `eval::image_checks::check_vector_bindings`). At runtime they
-        // are no-ops — the table is already wired, and this machine has
-        // no per-vector mask bit in the pending word (06 §4; the
-        // InterruptCell level signal is the ISR/ordinary channel).
+            "Device.negotiate" | "VirtQueue.configure" => {
+                let src = match (key.as_str(), receiver, args.as_slice()) {
+                    ("Device.negotiate", Some(state), _) => lower_expr(state, b, env)?,
+                    ("VirtQueue.configure", _, args) => {
+                        let (_, pool) =
+                            args.iter().find(|(l, _)| l == "pool").ok_or_else(|| {
+                                LowerError::internal(
+                                    "`VirtQueue.configure` reached lowering without `pool=`"
+                                        .to_string(),
+                                )
+                            })?;
+                        lower_expr(pool, b, env)?
+                    }
+                    _ => {
+                        return Err(LowerError::internal(format!(
+                            "sealed-transport intrinsic `{key}` reached lowering without \
+                                 its operand"
+                        )));
+                    }
+                };
+                let Type::Result(ok_ty, _) = &expr.ty else {
+                    return Err(LowerError::internal(format!(
+                        "`{key}`'s typed result is not a `Result`"
+                    )));
+                };
+                let payload = b.fresh((**ok_ty).clone());
+                b.emit(Inst::Copy { dst: payload, src });
+                let dst = b.fresh(expr.ty.clone());
+                b.emit(Inst::MakeEnum {
+                    dst,
+                    tag: value::RESULT_OK,
+                    payload: vec![payload],
+                });
+                Ok(dst)
+            }
+            "Device.start" | "Device.claim" | "Device.map_partition" => {
+                let src = match (key.as_str(), receiver, args.first()) {
+                    ("Device.claim", _, Some((_, cap))) => lower_expr(cap, b, env)?,
+                    ("Device.map_partition" | "Device.start", Some(state), _) => {
+                        lower_expr(state, b, env)?
+                    }
+                    _ => {
+                        return Err(LowerError::internal(format!(
+                            "sealed-transport intrinsic `{key}` reached lowering without \
+                                 its operand"
+                        )));
+                    }
+                };
+                let dst = b.fresh(expr.ty.clone());
+                b.emit(Inst::Copy { dst, src });
+                Ok(dst)
+            }
+            "Device.reset" => {
+                let device = match receiver {
+                    Some(state) => lower_expr(state, b, env)?,
+                    None => {
+                        return Err(LowerError::internal(
+                            "`Device.reset` reached lowering without a RunningDevice receiver"
+                                .to_string(),
+                        ));
+                    }
+                };
+                let queue = match args.first() {
+                    Some((_, q)) => lower_expr(q, b, env)?,
+                    None => {
+                        return Err(LowerError::internal(
+                            "`Device.reset` reached lowering without a queue argument".to_string(),
+                        ));
+                    }
+                };
+                let dst = b.fresh(expr.ty.clone());
+                let depth = lower_queue::virtqueue_depth_of(&b.temp_types[queue.0])
+                    .map_err(LowerError::internal)?;
+                lower_queue::expand_device_reset(dst, device, queue, depth, &mut LowerQueueSink(b))
+                    .map_err(LowerError::internal)?;
+                Ok(dst)
+            }
+            other => Err(LowerError::internal(format!(
+                "unknown sealed-transport intrinsic `{other}`"
+            ))),
+        },
         TypedExprKind::Intrinsic { key, .. } if crate::sema::bodies::is_irq_cap_intrinsic(key) => {
             let dst = b.fresh(expr.ty.clone());
             b.emit(Inst::ConstUnit { dst });
             Ok(dst)
         }
-        // plans/M7.md item G, decision 17: `InterruptCell[T]` ops. Every
-        // method addresses the live cell at `self_ptr + field_off`.
         TypedExprKind::Intrinsic {
             key,
             receiver,
@@ -3690,7 +3047,6 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
         } if crate::sema::bodies::is_interrupt_cell_intrinsic(key) => {
             lower_interrupt_cell_intrinsic(key, receiver.as_deref(), args, &expr.ty, b, env)
         }
-        // plans/M7.md item G: `wake(Driver.task)` — sticky wake-pending bit.
         TypedExprKind::Intrinsic { key, args, .. }
             if crate::sema::bodies::is_wake_intrinsic(key) =>
         {
@@ -3724,10 +3080,6 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
             b.emit(Inst::ConstUnit { dst });
             Ok(dst)
         }
-        // plans/M7.md item H1: a typed MMIO access, emitted at last. The
-        // base is the `Mmio[L]` receiver's own word; the offset and the
-        // width both come from the declaration, looked up in the same
-        // `check_layouts` table the checker used.
         TypedExprKind::Intrinsic {
             key,
             receiver,
@@ -3775,11 +3127,6 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
                 Ok(dst)
             }
         }
-        // plans/M7.md item H2a, 03-hardware.md §8: `reported.checked_le(bound)`.
-        // A real compare and a real branch — not a cast, not a no-op. The
-        // `Untrusted[T]` receiver is a transparent newtype over `T` at the
-        // ABI (`mwir::size_of`), so lowering it is just lowering its bits;
-        // success builds `Ok(payload)`, failure builds `Err(unit)`.
         TypedExprKind::Intrinsic {
             key,
             receiver,
@@ -3789,295 +3136,252 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
         } if crate::sema::bodies::is_untrusted_narrowing_intrinsic(key) => {
             lower_untrusted_checked_le(expr, receiver, type_arg, args, b, env)
         }
-        // plans/M7.md item E2/E3, 03-hardware.md §4/§5 / decision 15/16:
-        // reserve/prepare package; publish emits the sealed write-order
-        // node (real DRAM stores wait for E4's pool-backed addresses);
-        // reject mints a resolved receipt without touching the ring.
         TypedExprKind::Intrinsic {
             key,
             receiver,
             type_arg,
             args,
             ..
-        } if crate::sema::bodies::is_queue_op_intrinsic(key) => {
-            match key.as_str() {
-                "VirtQueue.prepare_block" => {
-                    // plans/M7.md item E4 / decision 20: package header/
-                    // status into the control pool and record the payload
-                    // address. Payload length is the `@layout(dma)` size.
-                    let parts = lower_shared::unpack_prepare_block_args(args).map_err(|e| {
-                        match e {
-                            lower_shared::PrepareBlockUnpackError::Missing(label) => {
-                                LowerError::internal(format!(
-                                    "`prepare_block` reached lowering without `{label}`"
-                                ))
-                            }
-                            lower_shared::PrepareBlockUnpackError::NonLiteralDeviceWrites => {
-                                LowerError::unimplemented(
-                                    "`prepare_block`'s `device_writes_payload=` as a non-literal bool \
+        } if crate::sema::bodies::is_queue_op_intrinsic(key) => match key.as_str() {
+            "VirtQueue.prepare_block" => {
+                let parts = lower_shared::unpack_prepare_block_args(args).map_err(|e| match e {
+                    lower_shared::PrepareBlockUnpackError::Missing(label) => LowerError::internal(
+                        format!("`prepare_block` reached lowering without `{label}`"),
+                    ),
+                    lower_shared::PrepareBlockUnpackError::NonLiteralDeviceWrites => {
+                        LowerError::unimplemented(
+                            "`prepare_block`'s `device_writes_payload=` as a non-literal bool \
                                      (revision 0.1 requires a literal `true`/`false`)",
-                                )
-                            }
-                        }
-                    })?;
-                    let queue = match receiver {
-                        Some(q) => lower_expr(q, b, env)?,
-                        None => {
-                            return Err(LowerError::internal(
-                                "`prepare_block` reached lowering without a queue receiver"
-                                    .to_string(),
-                            ));
-                        }
-                    };
-                    let permit_t = lower_expr(parts.permit, b, env)?;
-                    let header_t = lower_expr(parts.header, b, env)?;
-                    let payload_t = lower_expr(parts.payload, b, env)?;
-                    let status_t = lower_expr(parts.status, b, env)?;
-                    let payload_len =
-                        lower_shared::prepare_block_payload_len(&parts.payload.ty, b.prog())
-                            .map_err(|e| {
-                                match e {
-                                lower_shared::PreparePayloadLenError::NoDmaSize => {
-                                    LowerError::internal(
-                                        "`prepare_block`'s payload type has no `@layout(dma)` size \
+                        )
+                    }
+                })?;
+                let queue = match receiver {
+                    Some(q) => lower_expr(q, b, env)?,
+                    None => {
+                        return Err(LowerError::internal(
+                            "`prepare_block` reached lowering without a queue receiver".to_string(),
+                        ));
+                    }
+                };
+                let permit_t = lower_expr(parts.permit, b, env)?;
+                let header_t = lower_expr(parts.header, b, env)?;
+                let payload_t = lower_expr(parts.payload, b, env)?;
+                let status_t = lower_expr(parts.status, b, env)?;
+                let payload_len = lower_shared::prepare_block_payload_len(
+                    &parts.payload.ty,
+                    b.prog(),
+                )
+                .map_err(|e| match e {
+                    lower_shared::PreparePayloadLenError::NoDmaSize => LowerError::internal(
+                        "`prepare_block`'s payload type has no `@layout(dma)` size \
                                          in this program"
-                                            .to_string(),
-                                    )
-                                }
-                                lower_shared::PreparePayloadLenError::BadSectorMultiple(n) => {
-                                    LowerError::unimplemented(&format!(
-                                        "`prepare_block` with payload layout size {n}: the \
+                            .to_string(),
+                    ),
+                    lower_shared::PreparePayloadLenError::BadSectorMultiple(n) => {
+                        LowerError::unimplemented(&format!(
+                            "`prepare_block` with payload layout size {n}: the \
                                          virtio-blk model requires a positive multiple of 512 \
                                          (SECTOR_SIZE)"
-                                    ))
-                                }
-                            }
-                            })?;
-                    let dst = b.fresh(expr.ty.clone());
-                    let _ = permit_t; // proof-only at runtime (decision 20)
-                    let depth = lower_queue::virtqueue_depth_of(&b.temp_types[queue.0])
-                        .map_err(LowerError::internal)?;
-                    lower_queue::expand_prepare(
-                        dst,
-                        queue,
-                        header_t,
-                        payload_t,
-                        status_t,
-                        parts.device_writes,
-                        payload_len as u32,
-                        depth,
-                        &mut LowerQueueSink(b),
-                    )
-                    .map_err(LowerError::internal)?;
-                    Ok(dst)
-                }
-                "VirtQueue.reserve" => {
-                    // plans/M7.md item E4 / decision 20: the permit word is
-                    // the descriptor-table head (single-flight: always 0).
-                    // The `descriptors=` argument is proof-only.
-                    // plans/M13.md item M: collapsed sites have ty
-                    // `QueuePermit`; Result-typed sites wrap `Ok(permit)`.
-                    // Runtime Exhausted is item G (backpressure); until
-                    // then a Result site still emits Ok(0).
-                    let _ = args
-                        .iter()
-                        .find(|(l, _)| l == "descriptors")
-                        .ok_or_else(|| {
-                            LowerError::internal(
-                                "`reserve` reached lowering without `descriptors=`".to_string(),
-                            )
-                        })?;
-                    let _ = receiver;
-                    let permit = b.fresh(Type::Named("QueuePermit".to_string(), vec![]));
-                    b.emit(Inst::ConstInt {
-                        dst: permit,
-                        ty: Type::U64,
-                        value: 0,
-                    });
-                    if matches!(&expr.ty, Type::Result(_, _)) {
-                        let dst = b.fresh(expr.ty.clone());
-                        b.emit(Inst::MakeEnum {
-                            dst,
-                            tag: value::RESULT_OK,
-                            payload: vec![permit],
-                        });
-                        Ok(dst)
-                    } else {
-                        Ok(permit)
+                        ))
                     }
-                }
-                "VirtQueue.publish" => {
-                    let op = args.iter().find(|(l, _)| l == "operation").ok_or_else(|| {
+                })?;
+                let dst = b.fresh(expr.ty.clone());
+                let _ = permit_t;
+                let depth = lower_queue::virtqueue_depth_of(&b.temp_types[queue.0])
+                    .map_err(LowerError::internal)?;
+                lower_queue::expand_prepare(
+                    dst,
+                    queue,
+                    header_t,
+                    payload_t,
+                    status_t,
+                    parts.device_writes,
+                    payload_len as u32,
+                    depth,
+                    &mut LowerQueueSink(b),
+                )
+                .map_err(LowerError::internal)?;
+                Ok(dst)
+            }
+            "VirtQueue.reserve" => {
+                let _ = args
+                    .iter()
+                    .find(|(l, _)| l == "descriptors")
+                    .ok_or_else(|| {
                         LowerError::internal(
-                            "`publish` reached lowering without `operation=`".to_string(),
+                            "`reserve` reached lowering without `descriptors=`".to_string(),
                         )
                     })?;
-                    let queue = match receiver {
-                        Some(q) => lower_expr(q, b, env)?,
-                        None => {
-                            return Err(LowerError::internal(
-                                "`publish` reached lowering without a queue receiver".to_string(),
-                            ));
-                        }
-                    };
-                    let operation = lower_expr(&op.1, b, env)?;
+                let _ = receiver;
+                let permit = b.fresh(Type::Named("QueuePermit".to_string(), vec![]));
+                b.emit(Inst::ConstInt {
+                    dst: permit,
+                    ty: Type::U64,
+                    value: 0,
+                });
+                if matches!(&expr.ty, Type::Result(_, _)) {
                     let dst = b.fresh(expr.ty.clone());
-                    let depth = lower_queue::virtqueue_depth_of(&b.temp_types[queue.0])
-                        .map_err(LowerError::internal)?;
-                    lower_queue::expand_publish(
+                    b.emit(Inst::MakeEnum {
                         dst,
-                        queue,
-                        operation,
-                        depth,
-                        &mut LowerQueueSink(b),
-                    )
-                    .map_err(LowerError::internal)?;
-                    Ok(dst)
-                }
-                "VirtQueue.reject" => {
-                    // Consume payload + error; mint a Receipt word (opaque).
-                    // Revision 0.1: reject still mints 0 — `await` of a
-                    // rejected receipt is fail-closed until reject writes a
-                    // resolved IoCompletion stash (flagship does not reject).
-                    for (_, a) in args {
-                        let _ = lower_expr(a, b, env)?;
-                    }
-                    let dst = b.fresh(expr.ty.clone());
-                    b.emit(Inst::ConstInt {
-                        dst,
-                        ty: Type::U64,
-                        value: 0,
+                        tag: value::RESULT_OK,
+                        payload: vec![permit],
                     });
-                    let _ = receiver;
                     Ok(dst)
+                } else {
+                    Ok(permit)
                 }
-                "VirtQueue.drain" => {
-                    let queue = match receiver {
-                        Some(q) => lower_expr(q, b, env)?,
-                        None => {
-                            return Err(LowerError::internal(
-                                "`drain` reached lowering without a queue receiver".to_string(),
-                            ));
-                        }
-                    };
-                    // `check_virtqueue_drain` folds `max=` into `type_arg`'s Bound.
-                    let max_val = match type_arg {
-                        Some(Type::Named(_, targs)) => match targs.first() {
-                            Some(crate::sema::types::TypeArg::Bound(
-                                crate::syntax::ast::Expr::Int(_, text),
-                            )) => text
-                                .parse::<u16>()
-                                .map_err(|_| LowerError::internal(format!("drain max `{text}`")))?,
-                            _ => {
-                                return Err(LowerError::internal(
-                                    "`drain` type_arg Bound is not an integer literal".to_string(),
-                                ));
-                            }
-                        },
+            }
+            "VirtQueue.publish" => {
+                let op = args.iter().find(|(l, _)| l == "operation").ok_or_else(|| {
+                    LowerError::internal(
+                        "`publish` reached lowering without `operation=`".to_string(),
+                    )
+                })?;
+                let queue = match receiver {
+                    Some(q) => lower_expr(q, b, env)?,
+                    None => {
+                        return Err(LowerError::internal(
+                            "`publish` reached lowering without a queue receiver".to_string(),
+                        ));
+                    }
+                };
+                let operation = lower_expr(&op.1, b, env)?;
+                let dst = b.fresh(expr.ty.clone());
+                let depth = lower_queue::virtqueue_depth_of(&b.temp_types[queue.0])
+                    .map_err(LowerError::internal)?;
+                lower_queue::expand_publish(dst, queue, operation, depth, &mut LowerQueueSink(b))
+                    .map_err(LowerError::internal)?;
+                Ok(dst)
+            }
+            "VirtQueue.reject" => {
+                for (_, a) in args {
+                    let _ = lower_expr(a, b, env)?;
+                }
+                let dst = b.fresh(expr.ty.clone());
+                b.emit(Inst::ConstInt {
+                    dst,
+                    ty: Type::U64,
+                    value: 0,
+                });
+                let _ = receiver;
+                Ok(dst)
+            }
+            "VirtQueue.drain" => {
+                let queue = match receiver {
+                    Some(q) => lower_expr(q, b, env)?,
+                    None => {
+                        return Err(LowerError::internal(
+                            "`drain` reached lowering without a queue receiver".to_string(),
+                        ));
+                    }
+                };
+                let max_val = match type_arg {
+                    Some(Type::Named(_, targs)) => match targs.first() {
+                        Some(crate::sema::types::TypeArg::Bound(
+                            crate::syntax::ast::Expr::Int(_, text),
+                        )) => text
+                            .parse::<u16>()
+                            .map_err(|_| LowerError::internal(format!("drain max `{text}`")))?,
                         _ => {
                             return Err(LowerError::internal(
-                                "`drain` reached lowering without a folded max Bound".to_string(),
+                                "`drain` type_arg Bound is not an integer literal".to_string(),
                             ));
                         }
-                    };
-                    let _ = args;
-                    let depth = lower_queue::virtqueue_depth_of(&b.temp_types[queue.0])
-                        .map_err(LowerError::internal)?;
-                    lower_queue::expand_drain(queue, max_val, depth, &mut LowerQueueSink(b))
-                        .map_err(LowerError::internal)?;
-                    let dst = b.fresh(Type::Unit);
-                    b.emit(Inst::ConstUnit { dst });
-                    Ok(dst)
-                }
-                "VirtQueue.suppress_interrupts" => {
-                    let queue = match receiver {
-                        Some(q) => lower_expr(q, b, env)?,
-                        None => {
-                            return Err(LowerError::internal(
-                                "`suppress_interrupts` reached lowering without a queue receiver"
-                                    .to_string(),
-                            ));
-                        }
-                    };
-                    let depth = lower_queue::virtqueue_depth_of(&b.temp_types[queue.0])
-                        .map_err(LowerError::internal)?;
-                    lower_queue::expand_suppress(queue, depth, &mut LowerQueueSink(b))
-                        .map_err(LowerError::internal)?;
-                    let dst = b.fresh(Type::Unit);
-                    b.emit(Inst::ConstUnit { dst });
-                    Ok(dst)
-                }
-                "VirtQueue.claim" => {
-                    let receipt_arg =
-                        args.iter().find(|(l, _)| l == "receipt").ok_or_else(|| {
-                            LowerError::internal(
-                                "`claim` reached lowering without `receipt=`".to_string(),
-                            )
-                        })?;
-                    let queue = match receiver {
-                        Some(q) => lower_expr(q, b, env)?,
-                        None => {
-                            return Err(LowerError::internal(
-                                "`claim` reached lowering without a queue receiver".to_string(),
-                            ));
-                        }
-                    };
-                    let receipt = lower_expr(&receipt_arg.1, b, env)?;
-                    let dst = b.fresh(expr.ty.clone());
-                    lower_queue::expand_claim(dst, queue, receipt, &mut LowerQueueSink(b))
-                        .map_err(LowerError::internal)?;
-                    Ok(dst)
-                }
-                "VirtQueue.recover" => {
-                    let receipt_arg =
-                        args.iter().find(|(l, _)| l == "receipt").ok_or_else(|| {
-                            LowerError::internal(
-                                "`recover` reached lowering without `receipt=`".to_string(),
-                            )
-                        })?;
-                    let queue = match receiver {
-                        Some(q) => lower_expr(q, b, env)?,
-                        None => {
-                            return Err(LowerError::internal(
-                                "`recover` reached lowering without a queue receiver".to_string(),
-                            ));
-                        }
-                    };
-                    let receipt = lower_expr(&receipt_arg.1, b, env)?;
-                    let dst = b.fresh(expr.ty.clone());
-                    let depth = lower_queue::virtqueue_depth_of(&b.temp_types[queue.0])
-                        .map_err(LowerError::internal)?;
-                    lower_queue::expand_recover(dst, queue, receipt, depth, &mut LowerQueueSink(b))
-                        .map_err(LowerError::internal)?;
-                    Ok(dst)
-                }
-                "VirtQueue.reclaim" => {
-                    // `pool=`/`payload=` are *declarations* read by sema —
-                    // a bound pool name and a `@layout(dma)` type name,
-                    // neither of which has a value form. The handle the
-                    // gate hands back is the quarantined slot's own
-                    // payload word, so nothing here is lowered.
-                    let queue = match receiver {
-                        Some(q) => lower_expr(q, b, env)?,
-                        None => {
-                            return Err(LowerError::internal(
-                                "`reclaim` reached lowering without a queue receiver".to_string(),
-                            ));
-                        }
-                    };
-                    let _ = args;
-                    let dst = b.fresh(expr.ty.clone());
-                    let depth = lower_queue::virtqueue_depth_of(&b.temp_types[queue.0])
-                        .map_err(LowerError::internal)?;
-                    lower_queue::expand_reclaim(dst, queue, depth, &mut LowerQueueSink(b))
-                        .map_err(LowerError::internal)?;
-                    Ok(dst)
-                }
-                other => Err(LowerError::internal(format!(
-                    "unknown queue-op intrinsic `{other}`"
-                ))),
+                    },
+                    _ => {
+                        return Err(LowerError::internal(
+                            "`drain` reached lowering without a folded max Bound".to_string(),
+                        ));
+                    }
+                };
+                let _ = args;
+                let depth = lower_queue::virtqueue_depth_of(&b.temp_types[queue.0])
+                    .map_err(LowerError::internal)?;
+                lower_queue::expand_drain(queue, max_val, depth, &mut LowerQueueSink(b))
+                    .map_err(LowerError::internal)?;
+                let dst = b.fresh(Type::Unit);
+                b.emit(Inst::ConstUnit { dst });
+                Ok(dst)
             }
-        }
+            "VirtQueue.suppress_interrupts" => {
+                let queue = match receiver {
+                    Some(q) => lower_expr(q, b, env)?,
+                    None => {
+                        return Err(LowerError::internal(
+                            "`suppress_interrupts` reached lowering without a queue receiver"
+                                .to_string(),
+                        ));
+                    }
+                };
+                let depth = lower_queue::virtqueue_depth_of(&b.temp_types[queue.0])
+                    .map_err(LowerError::internal)?;
+                lower_queue::expand_suppress(queue, depth, &mut LowerQueueSink(b))
+                    .map_err(LowerError::internal)?;
+                let dst = b.fresh(Type::Unit);
+                b.emit(Inst::ConstUnit { dst });
+                Ok(dst)
+            }
+            "VirtQueue.claim" => {
+                let receipt_arg = args.iter().find(|(l, _)| l == "receipt").ok_or_else(|| {
+                    LowerError::internal("`claim` reached lowering without `receipt=`".to_string())
+                })?;
+                let queue = match receiver {
+                    Some(q) => lower_expr(q, b, env)?,
+                    None => {
+                        return Err(LowerError::internal(
+                            "`claim` reached lowering without a queue receiver".to_string(),
+                        ));
+                    }
+                };
+                let receipt = lower_expr(&receipt_arg.1, b, env)?;
+                let dst = b.fresh(expr.ty.clone());
+                lower_queue::expand_claim(dst, queue, receipt, &mut LowerQueueSink(b))
+                    .map_err(LowerError::internal)?;
+                Ok(dst)
+            }
+            "VirtQueue.recover" => {
+                let receipt_arg = args.iter().find(|(l, _)| l == "receipt").ok_or_else(|| {
+                    LowerError::internal(
+                        "`recover` reached lowering without `receipt=`".to_string(),
+                    )
+                })?;
+                let queue = match receiver {
+                    Some(q) => lower_expr(q, b, env)?,
+                    None => {
+                        return Err(LowerError::internal(
+                            "`recover` reached lowering without a queue receiver".to_string(),
+                        ));
+                    }
+                };
+                let receipt = lower_expr(&receipt_arg.1, b, env)?;
+                let dst = b.fresh(expr.ty.clone());
+                let depth = lower_queue::virtqueue_depth_of(&b.temp_types[queue.0])
+                    .map_err(LowerError::internal)?;
+                lower_queue::expand_recover(dst, queue, receipt, depth, &mut LowerQueueSink(b))
+                    .map_err(LowerError::internal)?;
+                Ok(dst)
+            }
+            "VirtQueue.reclaim" => {
+                let queue = match receiver {
+                    Some(q) => lower_expr(q, b, env)?,
+                    None => {
+                        return Err(LowerError::internal(
+                            "`reclaim` reached lowering without a queue receiver".to_string(),
+                        ));
+                    }
+                };
+                let _ = args;
+                let dst = b.fresh(expr.ty.clone());
+                let depth = lower_queue::virtqueue_depth_of(&b.temp_types[queue.0])
+                    .map_err(LowerError::internal)?;
+                lower_queue::expand_reclaim(dst, queue, depth, &mut LowerQueueSink(b))
+                    .map_err(LowerError::internal)?;
+                Ok(dst)
+            }
+            other => Err(LowerError::internal(format!(
+                "unknown queue-op intrinsic `{other}`"
+            ))),
+        },
         TypedExprKind::Intrinsic { key, .. }
             if let Some(owner) = crate::sema::bodies::is_queue_op_deferred(key) =>
         {
@@ -4091,7 +3395,6 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
         } if key == "Array.map_take" || key == "Array.try_map_take" => {
             lower_array_map_take(key, receiver.as_deref(), args, &expr.ty, b, env)
         }
-        // plans/M15.md item H: `@dmb(ishst|ishld)` → one DMB word.
         TypedExprKind::Intrinsic { key, .. } if key == "dmb.ishst" || key == "dmb.ishld" => {
             let option = key.strip_prefix("dmb.").unwrap_or(key).to_string();
             b.emit(Inst::Dmb { option });
@@ -4099,9 +3402,6 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
             b.emit(Inst::ConstUnit { dst });
             Ok(dst)
         }
-        // plans/M17.md item Es / freeze 4: sealed runtime effects lower
-        // from sync bodies (docs-win for 05 §5). Parallel to FlowWir's
-        // `now`/`entropy` arms; must not fall into the `@image` catch-all.
         TypedExprKind::Intrinsic { key, .. } if key.as_str() == "now" => {
             let dst = b.fresh(expr.ty.clone());
             b.emit(Inst::Now { dst });
@@ -4121,12 +3421,6 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
         TypedExprKind::PoolName(_) => Err(LowerError::unimplemented(
             "a bare pool name (the `@image` builder surface) is",
         )),
-        // Plans/M6.md item A: `await`/`send`/a group-child reference are
-        // all suspension-bearing constructs — FlowWir (item B) is the
-        // typed, suspension-explicit IR between the typed tree and mwir
-        // that actually lowers them; this pass (M5's straight-line sync
-        // lowering) fails closed, named, rather than mis-lowering one as
-        // ordinary sync code.
         TypedExprKind::Await(_) => Err(LowerError::unimplemented(
             "an `await` expression (FlowWir, plans/M6.md item B) is",
         )),
@@ -4147,7 +3441,6 @@ fn lower_binary(
     b: &mut FnBuilder,
     env: &mut LEnv,
 ) -> Result<Temp, LowerError> {
-    // plans/M9.md item C2: `String[..N] + String[..M] -> String[..N+M]`.
     if op == BinOp::Add {
         if let (Type::String(ln), Type::String(rn), Type::String(_)) = (&l.ty, &r.ty, &expr.ty) {
             let lhs_cap = eval_len_expr(ln)?;
@@ -4271,14 +3564,6 @@ fn lower_binary(
     }
 }
 
-// --- const folding (module doc's own fail-closed enumeration) -----------
-
-/// Materializes an already-evaluated comptime `Value` (a module `const`'s
-/// own value — always comptime-fixed by the time `check_typed` succeeds)
-/// into instructions. Scalars, `Str`/`Bytes`, and tuples/arrays *of*
-/// those, fold exactly; a struct/enum/fn/closure/`@image`-decl value
-/// fails closed (this module's own doc comment explains the real gap:
-/// no struct/enum field-type table is threaded through this pass).
 fn emit_const_value(v: &Value, ty: &Type, b: &mut FnBuilder) -> Result<Temp, LowerError> {
     match v {
         Value::U8(_)
@@ -4382,19 +3667,12 @@ fn emit_const_value(v: &Value, ty: &Type, b: &mut FnBuilder) -> Result<Temp, Low
     }
 }
 
-// --- shared lookups (mirroring interp.rs's own, one stage later) --------
-
-/// This module's own struct `name`, else the imported one bound to that
-/// local name (plans/M9.md item EE — same union `eval::interp` already
-/// applies; before EE an imported `Pair` abandoned with
-/// `internal error: struct \`Pair\` not found`).
 fn struct_by_name<'p>(prog: &'p TypedProgram, name: &str) -> Option<&'p TypedStruct> {
     prog.structs
         .get(name)
         .or_else(|| prog.imported.structs.get(name))
 }
 
-/// This module's own instantiation `key`, else the exporting module's.
 fn instantiation_by_key<'p>(prog: &'p TypedProgram, key: &str) -> Option<&'p TypedInstantiation> {
     prog.instantiations
         .get(key)
@@ -4461,17 +3739,9 @@ fn resolve_struct<'p>(
     }
 }
 
-/// Plain declaration name a callee key hangs off — mirrors
-/// `eval::interp::callee_decl_name` for the `unresolvable` lookup.
-/// Fail-closed miss for a Call/OpCall: prefer the import splice's own
-/// `unresolvable` note (decision 15), else name the real cause. Never
-/// blame "an unresolved generic instantiation" for a plain imported
-/// name that simply was not wired into lower (plans/M9.md item EE).
 fn missing_callee(prog: &TypedProgram, key: &CalleeKey) -> LowerError {
     let name = crate::eval::interp::callee_decl_name(key);
     if let Some(note) = prog.imported.unresolvable.get(&name) {
-        // Note is a complete sentence (`` `{name}` is declared… ``);
-        // `named`, not `unimplemented` (plans/M9.md item D3).
         return LowerError::named(format!("`{name}` {note}"));
     }
     match key {
@@ -4485,10 +3755,6 @@ fn missing_callee(prog: &TypedProgram, key: &CalleeKey) -> LowerError {
     }
 }
 
-/// Fail-closed miss for a struct layout/construction lookup. An
-/// `internal error: struct \`X\` not found` reachable from ordinary
-/// source is a bug by house rule; after EE the ordinary imported case
-/// resolves, and a genuine miss names the import closure.
 fn missing_struct(prog: &TypedProgram, name: &str) -> LowerError {
     if let Some(note) = prog.imported.unresolvable.get(name) {
         return LowerError::named(format!("`{name}` {note}"));
@@ -4499,9 +3765,6 @@ fn missing_struct(prog: &TypedProgram, name: &str) -> LowerError {
 }
 
 fn field_index(prog: &TypedProgram, base_ty: &Type, field_name: &str) -> Result<usize, LowerError> {
-    // plans/M10.md item B4: `Bytes.len` is handle word 1 (capacity). A row
-    // here, not a special case at each `Field` lowering site — the general
-    // path below emits the identical `Project`.
     if matches!(base_ty, Type::Bytes(None)) {
         return match field_name {
             "len" => Ok(1),
@@ -4510,7 +3773,6 @@ fn field_index(prog: &TypedProgram, base_ty: &Type, field_name: &str) -> Result<
             ))),
         };
     }
-    // plans/M9.md item C1: `String[..N].len` is slot 0.
     if matches!(base_ty, Type::String(_)) {
         return match field_name {
             "len" => Ok(0),
@@ -4522,10 +3784,7 @@ fn field_index(prog: &TypedProgram, base_ty: &Type, field_name: &str) -> Result<
     let Type::Named(sname, targs) = base_ty else {
         return Err(LowerError::internal("field base is not a `Named` type"));
     };
-    // plans/M7.md item E4: IoCompletion is not a DeclStruct.
     if sname == "IoCompletion" {
-        // Same ordered table `mwir::{size_of, field_offset}` and
-        // `sema::bodies` use — the index *is* that order.
         let fields = crate::mwir::io_completion_fields(targs).map_err(LowerError::internal)?;
         return fields
             .iter()
@@ -4541,8 +3800,6 @@ fn field_index(prog: &TypedProgram, base_ty: &Type, field_name: &str) -> Result<
         .ok_or_else(|| LowerError::internal(format!("unknown field `{field_name}`")))
 }
 
-/// Materialize a `String[..N]` value as `MakeAggregate` of
-/// `[len, b0, b1, …, b_{N-1}]` (padding unoccupied slots with 0).
 fn emit_string_aggregate(
     bytes: &[u8],
     n_expr: &ast::Expr,
@@ -4579,9 +3836,6 @@ fn emit_string_aggregate(
     Ok(dst)
 }
 
-/// Byte offset of field `index` inside `base_ty` — same walk codegen's
-/// `field_offset_size` uses, so the live-cell address and the frame
-/// layout can never disagree.
 fn interrupt_cell_field_off(
     b: &FnBuilder,
     base_ty: &Type,
@@ -4594,9 +3848,6 @@ fn interrupt_cell_field_off(
     };
     let s =
         resolve_struct(b.prog(), sname, targs).ok_or_else(|| missing_struct(b.prog(), sname))?;
-    // Builtin-pseudo-type fields (capabilities, `InterruptCell`, scalars,
-    // `Option[...]`) size without a populated `LayoutCtx`. A nested user
-    // struct field would need one; fail closed rather than guess.
     let layout = mwir::LayoutCtx::default();
     let mut off = 0usize;
     for (i, fname) in s.fields.iter().enumerate() {
@@ -4619,7 +3870,6 @@ fn interrupt_cell_field_off(
     )))
 }
 
-/// plans/M7.md item G, decision 17: lower one `InterruptCell` intrinsic.
 fn lower_interrupt_cell_intrinsic(
     key: &str,
     receiver: Option<&TypedExpr>,
@@ -4644,7 +3894,6 @@ fn lower_interrupt_cell_intrinsic(
             "`{key}` reached lowering with no receiver"
         )));
     };
-    // Receiver must be `self.<field>` — the live cell lives in driver state.
     let TypedExprKind::Field(base, fname) = &recv.kind else {
         return Err(LowerError::unimplemented(
             "an `InterruptCell` op on a non-field place (only `self.<cell>` is supported) is",
@@ -4663,7 +3912,7 @@ fn lower_interrupt_cell_intrinsic(
     let base_ty = bodies::unwrap_own(base.ty.clone());
     let idx = field_index(b.prog(), &base_ty, fname)?;
     let field_off = interrupt_cell_field_off(b, &base_ty, idx)?;
-    let width = 4u8; // `InterruptCell[u32]` only, today
+    let width = 4u8;
     match key {
         "InterruptCell.load_acquire" => {
             let dst = b.fresh(ret_ty.clone());
@@ -4744,19 +3993,9 @@ fn variant_index(prog: &TypedProgram, enum_name: &str, variant: &str) -> Result<
                 "unknown Result variant `{other}`"
             ))),
         },
-        // plans/M13.md item I: `CallError[E]` is source-nameable, so a
-        // sync `from(take e: CallError[E])` match must resolve tags here
-        // (flowwir_lower already had the arm for async awaits; this is
-        // the sync twin — `bodies::call_error_variant_index` is the
-        // single table).
         "CallError" => crate::sema::bodies::call_error_variant_index(variant)
             .ok_or_else(|| LowerError::internal(format!("unknown CallError variant `{variant}`"))),
         _ => {
-            // plans/M9.md item A1b / A2: this module's own enums, else the
-            // ones it imports. Before this an *imported* enum (A2's
-            // `IoError` from `stdlib/core/io_error.wr`) fell into the
-            // "generic enum instantiation" rejection and named the wrong
-            // cause — the same defect A1b already fixed in `eval::interp`.
             let en = prog
                 .enums
                 .get(enum_name)
@@ -4788,12 +4027,6 @@ fn int_bits(ty: &Type) -> Result<u32, LowerError> {
     }
 }
 
-/// plans/M9.md item MM / F3: lower sealed `[T; N].map_take` /
-/// `try_map_take`. N is compile-time known, so the walk unrolls — each
-/// element is taken via `IndexGet`, passed `take` to the named mapper,
-/// and collected into a `MakeAggregate`. `try_map_take` branches on each
-/// `Result` tag; an `Err` becomes the whole expression's `Err` (data
-/// reclaim is frame drop, matching the evaluator).
 fn lower_array_map_take(
     key: &str,
     receiver: Option<&TypedExpr>,
@@ -4860,7 +4093,6 @@ fn lower_array_map_take(
         return Ok(dst);
     }
 
-    // try_map_take: Result[[U; N], E]
     let Type::Result(ok_arr_ty, err_ty) = result_ty else {
         return Err(LowerError::internal(
             "`Array.try_map_take` result is not a Result",
@@ -4966,13 +4198,6 @@ fn lower_array_map_take(
     Ok(result)
 }
 
-/// The parked `BoundsElide` transform itself (plans/M18.md item I;
-/// parked by decision 1911): when the knob is on and `idx_expr` is an
-/// `Int` literal with `0 <= i < len`, return `Some(i)` so the caller can
-/// emit `Project` / `SetField` instead of `IndexGet` / `IndexSet`.
-///
-/// Returns `Ok(None)` unconditionally while the opt is parked, which is
-/// every path that does not name it in `apply_opts`.
 fn literal_array_index_elide(
     idx_expr: &TypedExpr,
     len: usize,
@@ -4991,9 +4216,6 @@ fn literal_array_index_elide(
     if i < len { Ok(Some(i)) } else { Ok(None) }
 }
 
-/// `base`'s own array length, resolved at lowering time — a literal, or
-/// a plain module `const` reference (module doc's own fail-closed
-/// enumeration covers anything else, and `Bytes`).
 fn eval_array_len(ty: &Type) -> Result<usize, LowerError> {
     match ty {
         Type::Array(_, len_expr) => eval_len_expr(len_expr),
@@ -5013,8 +4235,6 @@ fn eval_len_expr(e: &ast::Expr) -> Result<usize, LowerError> {
     ))
 }
 
-/// Array length for lowering, including a module-level `const` name
-/// (plans/M10.md item B1 — placed tables sized by `const N`).
 fn eval_array_len_with_prog(ty: &Type, prog: &TypedProgram) -> Result<usize, LowerError> {
     match ty {
         Type::Array(_, len_expr) => eval_len_expr_with_prog(len_expr, prog),
@@ -5046,8 +4266,6 @@ fn eval_len_expr_with_prog(e: &ast::Expr, prog: &TypedProgram) -> Result<usize, 
     ))
 }
 
-// --- unit tests -----------------------------------------------------------
-
 #[cfg(test)]
 mod builder_tests {
     use super::*;
@@ -5060,11 +4278,6 @@ mod builder_tests {
         }
     }
 
-    // plans/M5.md item B, task note 6: "label resolution" — a direct,
-    // builder-level test of the backpatch mechanism every structured
-    // construct (`if`/`while`/`for`/`match`/`and`/`or`) relies on: a
-    // forward jump emitted with a placeholder must end up pointing at
-    // the exact instruction index reached once patched.
     #[test]
     fn patch_jump_resolves_a_forward_jump_to_the_patched_index() {
         let prog = TypedProgram::default();
@@ -5130,12 +4343,6 @@ mod integration_tests {
         sema::check_typed(&module, "<test>").expect("test source must check")
     }
 
-    /// plans/lane1-per-core.md item B / decision 1504: the quiesce wait is
-    /// **bounded**. An unbounded wait would turn a scheduling bug (a released
-    /// core that never parks) into a hang at halt, so the loop must carry its
-    /// `@budget` trip counter — which lowers to a "loop budget exceeded"
-    /// abort against a literal bound. Deleting the `@budget`, or letting the
-    /// loop condition outrun it, fails here.
     #[test]
     fn quiesce_before_halt_is_a_bounded_wait() {
         let (runtime_key, runtime_loaded) = match crate::loader::load_runtime_module() {
@@ -5180,8 +4387,6 @@ mod integration_tests {
             "the quiesce wait must be `@budget`-bounded; body:\n{:?}",
             f.body
         );
-        // The trip bound is the poll bound, not some other literal: the
-        // budget's own `ConstInt` carries it.
         let bound = f
             .body
             .iter()
@@ -5195,16 +4400,6 @@ mod integration_tests {
             })
             .max()
             .expect("a budget bound literal must be present");
-        // Raised 4096 -> 262144 on 2026-07-30, deliberately, with the
-        // measurement in `runtime.wr` beside the constant: at 4096 the boot
-        // corpus produced 1-3 transcript mismatches per round under 8
-        // concurrent boots on a 10-core host, because the bound races the
-        // *host* scheduler rather than guest work. At 262144 that is 1 in
-        // five rounds, and all 993 golden expectations are byte-identical
-        // either way. What this oracle exists to protect is unchanged and
-        // is asserted above: the wait is `@budget`-bounded and halts rather
-        // than hanging. The number is the mitigation; the bound is the
-        // contract.
         assert_eq!(
             bound, 262_144,
             "QUIESCE_POLL_BOUND changed; update this oracle deliberately"
@@ -5213,9 +4408,6 @@ mod integration_tests {
 
     #[test]
     fn runtime_force_root_seeds_probe_when_runtime_loaded() {
-        // plans/M10.md item A2d / decision 583: a `@test(runtime)` root
-        // with auto-loaded `core.runtime` force-roots the probe into the
-        // reachable set even though no Call names it.
         let src = "\
 module examples.force_root_probe
 
@@ -5257,7 +4449,6 @@ pub fn t():
             reachable.contains("__wrela_runtime_probe"),
             "force-root must seed the probe: {reachable:?}"
         );
-        // M10 B2
         assert!(
             reachable.contains("__wrela_line_begin"),
             "force-root must seed line_begin: {reachable:?}"
@@ -5266,12 +4457,10 @@ pub fn t():
             reachable.contains("__wrela_line_commit"),
             "force-root must seed line_commit: {reachable:?}"
         );
-        // M10 B3
         assert!(
             reachable.contains("__wrela_fmt_dec"),
             "force-root must seed fmt_dec: {reachable:?}"
         );
-        // M10 C
         assert!(
             reachable.contains("__wrela_abort"),
             "force-root must seed abort: {reachable:?}"
@@ -5313,12 +4502,6 @@ pub fn add_one(x: u64) -> u64:
         assert!(matches!(f.body.last(), Some(Inst::Return { .. })));
     }
 
-    /// `BoundsElide` is parked, not shipped (decisions 1970/1911), and
-    /// the **check** was never the thing refused. A literal `[T; N]`
-    /// index keeps `IndexGet` / `IndexSet` — and therefore the runtime
-    /// check `emit_index_addr` builds from `len` — in *both* product
-    /// modes. `Project` / `SetField` on an array in `Release` or `Dev`
-    /// would mean the parked opt had leaked into the product.
     #[test]
     fn literal_fixed_array_index_keeps_its_bounds_check_in_both_modes() {
         let get = typed_program(
@@ -5372,12 +4555,6 @@ pub fn write_zero(mut a: [u64; 4], v: u64):
         apply_mode(CompileMode::Release);
     }
 
-    /// The parked transform, exercised (decision 1911). This is the
-    /// oracle that stops `PARKED_OPTS` from decaying into a comment: with
-    /// the opt explicitly named, a proved-in-range literal index really
-    /// does become `Project` / `SetField`, in the same shape item H
-    /// measured. If this stops firing, the thing in the tree is no
-    /// longer the opt that was refused, and the park is a fiction.
     #[test]
     fn parked_bounds_elide_still_elides_when_named() {
         let get = typed_program(
@@ -5427,9 +4604,6 @@ pub fn write_zero(mut a: [u64; 4], v: u64):
             f.body
         );
 
-        // An out-of-range literal is not "proved in range" and keeps its
-        // check even with the opt on — the elision was never a licence to
-        // trust the programmer's arithmetic.
         let oob = typed_program(
             "module examples.lower_bounds_elide_parked_oob
 
@@ -5450,8 +4624,6 @@ pub fn at_nine(a: [u64; 4]) -> u64:
         apply_mode(CompileMode::Release);
     }
 
-    /// plans/M17.md item Es: sync MWIR lowers `now()` / `entropy[N]()`
-    /// rather than falling into the `@image` builder catch-all.
     #[test]
     fn lowers_now_and_entropy_intrinsics() {
         let program = typed_program(
@@ -5622,14 +4794,6 @@ const RESULT: u64 = apply_twice(|v: u64| v * 2, 3)
         assert!(err.message.contains("closure"), "message: {}", err.message);
     }
 
-    // `sema::bodies::check_assert` requires `assert`'s own message to be
-    // a text *literal* — so a non-literal message can never reach this
-    // pass through `assert`; `panic(msg)`'s own message, though, only
-    // needs to type-check as `Static[Str]` (`check_call_by_name`'s own
-    // `"panic"` arm), which a non-literal expression satisfies just
-    // fine. This is the one construct this item's own required err
-    // golden pins: it passes `check_typed` but this pass cannot lower it
-    // (module doc's own fail-closed enumeration).
     #[test]
     fn a_non_literal_panic_message_fails_closed() {
         let program = typed_program(
@@ -5651,12 +4815,6 @@ pub fn check():
         );
     }
 
-    /// plans/M7.md item H1 self-audit: `mmio_register_offset`'s cross-
-    /// module arm and the `None`-register internal. The cross-module
-    /// case is not source-reachable from a single-module golden (the
-    /// build closure would need a layout in another module that this
-    /// module's `TypedProgram::layouts` does not carry); pinned by
-    /// constructing a program whose layouts table is empty.
     #[test]
     fn mmio_register_offset_fail_closed_arms() {
         let empty = TypedProgram::default();
@@ -5668,8 +4826,6 @@ pub fn check():
             cross.message
         );
 
-        // A layout is present but the register is not — the checker
-        // already refused this, so it is an `internal`.
         let mut prog = TypedProgram::default();
         prog.layouts.push(crate::sema::types::LayoutType {
             name: "Regs".to_string(),
@@ -5688,10 +4844,6 @@ pub fn check():
         );
     }
 
-    /// plans/M7.md item H1 self-audit: `mmio_access_names`' defensive
-    /// internals — each is unreachable through a checked program
-    /// (`check_mmio_access` already shapes the node), kept as named
-    /// rejections rather than panics.
     #[test]
     fn mmio_access_names_internal_guards() {
         let not_mmio = mmio_access_names(&Type::U32, &[]).expect_err("not Mmio");

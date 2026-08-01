@@ -1,124 +1,23 @@
-//! **The intrinsic surface, written down** (plans/M9.md item AA,
-//! decisions 56–59; the pinned rule).
-//!
-//! An *intrinsic* here means exactly one thing: a name `sema::bodies`
-//! recognizes by spelling and turns into a `TypedExprKind::Intrinsic`
-//! node carrying a `key`, instead of an ordinary `Call` to a function
-//! that exists in source. The compiler, not a library, supplies its
-//! meaning. Every such key is listed below.
-//!
-//! ## Why this file exists
-//!
-//! plans/M10.md warns that migrating item-by-item while adding whatever
-//! intrinsic each item needs "designs the permanent surface by
-//! accretion, in the one place this project can least afford it." That
-//! pressure is in **M9**, not M10: every stdlib item can quietly reach
-//! for a compiler-recognized name instead of writing wrela.
-//! plans/M9.md shape decision 1 forbids it in prose; this file plus its
-//! test is what enforces it. Adding a name to the compiler without
-//! adding it here fails `cargo test`, and vice versa — so growing the
-//! intrinsic surface becomes a deliberate, reviewable act with a
-//! justification attached.
-//!
-//! The signature this exists to catch is already on the record:
-//! 05-library.md §5 called the `Duration` constructors "ordinary
-//! phase-neutral functions", yet `ms` and `seconds` were compiler
-//! intrinsic arms — and the other four (`ns`, `us`, `minutes`, `hours`)
-//! did not exist at all, because nobody needed them for a golden.
-//! **plans/M9.md item E deleted those two arms** and landed all six as
-//! ordinary wrela in `stdlib/core/time.wr`; the surface shrank 44→42.
-//! `now` remains (sealed recorded effect). This file's job is to keep
-//! the next accretion from landing silently.
-//!
-//! ## What this covers, and what it does not
-//!
-//! Covered: intrinsic **keys** — *meaning*. Bare-name **resolution** for
-//! the subset that appears as identifiers is [`is_bare_resolvable`]
-//! (plans/M9.md item I). They are different surfaces and not in
-//! bijection: `Target` is a stdlib enum with no intrinsic key; `Mmio.read`
-//! is an intrinsic key that is not a bare name. This file owns holding
-//! the intrinsic *key* surface still; item I deleted the old
-//! `prelude.rs` placeholder that used to conflate the two.
-//!
-//! ## How the list is checked (see the test module below)
-//!
-//! `sema/bodies.rs` is the sole producer of intrinsic nodes. It is read
-//! as text (`include_str!`, so a missing file is a compile error rather
-//! than a silently-empty scan) and every occurrence of the node's type
-//! name followed by `{` — **any prefix, any path qualification** — is
-//! located. Each occurrence's brace-balanced field region is then asked
-//! whether it binds a `key`: a string literal or a `format!` is a census
-//! entry, no `key:` at all is an ordinary pattern match and is ignored,
-//! and a `key:` bound to anything else fails closed rather than being
-//! quietly missed. The same scan runs over the whole workspace, where
-//! the only permitted key sites are the enumerated ones in
-//! `ALLOWED_OFFSITE_KEY_SITES`.
-//!
-//! Four sites build the key with `format!`; each one's expansion is
-//! written down in `FORMAT_KEY_SITES` **together with the source line of
-//! the guard that bounds its variable**, and that guard line is itself
-//! asserted to be present verbatim — so widening a guard (adding a fifth
-//! `InterruptCell` method to its match arm, say) fails the test too,
-//! which hand-resolving the set alone would not catch.
-
-/// **05-library.md §9's image-builder surface.** This is the part of the
-/// intrinsic surface that is *not* an exception and is not expected to
-/// shrink: it is comptime-only, emits no code, and its effects land on
-/// the compiler's own image graph. Making it ordinary wrela would mean
-/// exposing the image IR as a language type (plans/M9.md item E states
-/// this as settled). §9 names them one by one; this list is that
-/// paragraph, in key form.
-///
-/// It is also exactly `sema::typed::is_restricted_intrinsic`'s set — the
-/// predicate `eval::legal` uses to reject a builder call anywhere but the
-/// one reachable `@image` fn — and the test below asserts that equality
-/// in both directions.
 pub const IMAGE_BUILDER_SURFACE: &[&str] = &[
-    // `Image(name, target, cores=N?)` — the one builder intrinsic called by
-    // bare name; produces the resource builder (optional cores defaults to 1).
     "Image",
-    // `img.device[D](transport=..., required_features=...)`
     "Image.device",
-    // `img.driver(A[...], device=d, mailbox=n?, ...)`
     "Image.driver",
-    // `img.actor(A, mailbox=n, ...)`
     "Image.actor",
-    // `img.pool[T](name=P, slots=N, max_payload=B)`
     "Image.pool",
-    // `img.dma_pool[T](name=P, device=d, count=N)`
     "Image.dma_pool",
-    // `img.on_failure(policy=...)`
     "Image.on_failure",
-    // `img.check_layout(f)` — registers a `@layout_assert` (04 §2).
     "Image.check_layout",
-    // `img.seal()` — consumes the builder.
     "Image.seal",
-    // `decl.handle()` — installs an `Actor[A]` identity as another
-    // actor's `init` dependency.
     "ImageDecl.handle",
 ];
 
-/// **The exception set**: every intrinsic key that is *not* 05 §9's
-/// builder surface, each with the one line that justifies it being
-/// compiler-supplied rather than wrela source.
-///
-/// A new entry here is the thing this file exists to make visible. The
-/// bar plans/M9.md sets: an intrinsic is justified when wrela source
-/// *cannot* express the thing (no expression form, a build-time graph
-/// edge, a sealed wrapper, a recorded effect) — not when writing it in
-/// wrela would merely be inconvenient.
-///
-/// Sorted by the surface each name belongs to, then alphabetically
-/// within it.
 pub const EXCEPTIONS: &[(&str, &str)] = &[
-    // --- 05 §5: time -------------------------------------------------
     (
         "now",
         "05 §5: a sealed effect. It is forbidden in comptime and ISR context and is \
          recorded/replayed through the recorder's `ClockRead` choice entry — wrela source can \
          express neither the prohibition nor the choice-point binding.",
     ),
-    // --- 05 §5 / plans/M17.md item E: entropy ------------------------
     (
         "entropy",
         "05 §5 / plans/M17.md: a sealed effect `entropy[N]() -> Bytes[N]`. Forbidden in \
@@ -126,7 +25,6 @@ pub const EXCEPTIONS: &[(&str, &str)] = &[
          `EntropyRead` choice entry — wrela source can express neither the prohibition nor \
          the choice-point binding.",
     ),
-    // --- plans/M15.md item H: runtime-only cross-core barriers ---------
     (
         "dmb.ishld",
         "plans/M15.md item H / 04 §3 acquire barrier: one inlined DMB ISHLD word. Same \
@@ -138,7 +36,6 @@ pub const EXCEPTIONS: &[(&str, &str)] = &[
          inside stdlib/core/runtime.wr — not an author-facing 05 §9 surface; wrela has no fence \
          expression form.",
     ),
-    // --- 05 §7: sealed array whole-consumption -------------------------
     (
         "Array.map_take",
         "05 §7: sealed whole-array consumption on the builtin `[T; N]` — there is no \
@@ -149,7 +46,6 @@ pub const EXCEPTIONS: &[(&str, &str)] = &[
         "05 §7: sealed fallible whole-array consumption with unwind-and-reclaim on Err — \
          same reason as `Array.map_take`.",
     ),
-    // --- 03 §2: typed MMIO -------------------------------------------
     (
         "Mmio.read",
         "03 §2: a volatile read of a declared register. Direction, width and endianness come \
@@ -160,19 +56,12 @@ pub const EXCEPTIONS: &[(&str, &str)] = &[
         "Mmio.write",
         "03 §2: the write half of the same access, with the same reasoning.",
     ),
-    // --- 03 §8 / 05 §6: marked values --------------------------------
     (
         "Untrusted.checked_le",
         "03 §8: the sealed wrapper's one narrowing. The seal is the point — wrela source may \
          neither construct nor unwrap an `Untrusted[T]`, so its narrowing cannot be wrela \
          either without breaking the seal.",
     ),
-    // --- 03 §1 / §9: device bring-up ---------------------------------
-    //
-    // Each of these consumes or advances a capability along 03 §9's
-    // bring-up chain: the transition is a build-time-proven fact about
-    // the image graph *and* a device-transport effect. Neither half has
-    // a wrela spelling.
     (
         "Device.claim",
         "03 §1: consumes a `DeviceCap` and partitions its MMIO — capability consumption is a \
@@ -204,12 +93,6 @@ pub const EXCEPTIONS: &[(&str, &str)] = &[
         "03 §1: splits an `IrqCap` out of a `DeviceCap` — capability creation, which by 03 §1 \
          no address, import or cast may do.",
     ),
-    // --- 03 §4 / §5: queues and receipts ------------------------------
-    //
-    // Every one of these is a reservation/publication step whose safety
-    // is a *build-time* proof (`sema::reserve_proof`) over a ring the
-    // compiler laid out. A wrela function could perform the stores; it
-    // could not carry the proof.
     (
         "VirtQueue.claim",
         "03 §5: claims a completion against a receipt the compiler tracks.",
@@ -255,7 +138,6 @@ pub const EXCEPTIONS: &[(&str, &str)] = &[
         "03 §4: flips the ring's no-interrupt flag with the ordering the device contract \
          requires.",
     ),
-    // --- 03 §6: interrupts and bottom halves --------------------------
     (
         "IrqCap.bind",
         "03 §6: binds a plain `fn` to a vector at build time, and the binding is what makes \
@@ -295,7 +177,6 @@ pub const EXCEPTIONS: &[(&str, &str)] = &[
          resolved at build time, and the language has no value form for one (03 §6, and \
          `check_field_expr`'s own \"cannot reference method without calling it\").",
     ),
-    // --- 02 §9 / 05 §4: scoped concurrency ----------------------------
     (
         "Group.join_all",
         "02 §9: `with group(...)`'s scoped join. It is a suspension point with compiler-\
@@ -307,34 +188,18 @@ pub const EXCEPTIONS: &[(&str, &str)] = &[
     ),
 ];
 
-/// The four `sema/bodies.rs` sites that build a key with `format!`, and
-/// therefore the four reasons the surface cannot be counted by grepping
-/// for string literals.
-///
-/// Each entry is `(template, the concrete set the variable ranges over,
-/// the source line that bounds it)`. **All four are statically knowable**
-/// — each variable is constrained by a guard a few lines above or around
-/// its construction site, and that guard's exact source text is the third
-/// field so the test can assert it has not been widened.
 pub const FORMAT_KEY_SITES: &[(&str, &[&str], &str)] = &[
     (
-        // `check_image_bracket_intrinsic`, dispatched from
-        // `check_call_index`.
         "Image.{mname}",
         &["Image.device", "Image.pool", "Image.dma_pool"],
         r#"if mname == "device" || mname == "pool" || mname == "dma_pool" {"#,
     ),
     (
-        // `check_mmio_access` — anything else is a type error before the
-        // node is built.
         "Mmio.{op}",
         &["Mmio.read", "Mmio.write"],
         r#"if !matches!(op, "read" | "write") {"#,
     ),
     (
-        // `check_interrupt_cell_call` — the construction site is *inside*
-        // this match arm; `load_acquire` has its own literal site and
-        // every other method falls to the `other =>` rejection.
         "InterruptCell.{method}",
         &[
             "InterruptCell.store_release",
@@ -344,23 +209,12 @@ pub const FORMAT_KEY_SITES: &[(&str, &[&str], &str)] = &[
         r#""store_release" | "swap_acquire" | "fetch_or_release" => {"#,
     ),
     (
-        // `check_image_method_intrinsic` — the construction site is
-        // inside this match arm; `on_failure`/`check_layout`/`seal` have
-        // their own literal sites and anything else is "no builder
-        // method".
         "Image.{name}",
         &["Image.driver", "Image.actor"],
         r#""driver" | "actor" => {"#,
     ),
 ];
 
-/// Keys a **consumer-side** predicate accepts that no construction site
-/// in `sema/bodies.rs` ever produces — dead boundary, recorded rather
-/// than removed (AA measures and locks; it does not remove).
-///
-/// If a producer for one of these ever appears, the closure test fails
-/// with the name in the "in the compiler, not in the list" column, which
-/// is the correct outcome: adding it is then a deliberate act.
 pub const UNPRODUCED_CONSUMER_KEYS: &[(&str, &str)] = &[
     (
         "VirtQueue.poll_sources",
@@ -373,13 +227,6 @@ pub const UNPRODUCED_CONSUMER_KEYS: &[(&str, &str)] = &[
     ),
 ];
 
-/// Bare names that must resolve with no import so `symbols::resolve`
-/// reaches the intrinsic / `with`-constructor arms in `bodies`
-/// (plans/M9.md item I). Intrinsic *keys* (meaning) live in
-/// [`IMAGE_BUILDER_SURFACE`] / [`EXCEPTIONS`] above; these are the
-/// subset that also appear as bare identifiers in source. Not in
-/// bijection with the key surface: `group` / `pool` are `with`-
-/// constructors, not intrinsic keys.
 pub fn is_bare_resolvable(name: &str) -> bool {
     matches!(
         name,
@@ -387,8 +234,6 @@ pub fn is_bare_resolvable(name: &str) -> bool {
     )
 }
 
-/// The whole written-down surface: 05 §9's builder names plus the
-/// exception set, sorted, deduplicated by assertion rather than silently.
 pub fn written_down_surface() -> Vec<&'static str> {
     let mut all: Vec<&'static str> = IMAGE_BUILDER_SURFACE.to_vec();
     all.extend(EXCEPTIONS.iter().map(|(k, _)| *k));
@@ -408,28 +253,14 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
 
-    /// `sema/bodies.rs`, embedded at compile time. A missing or renamed
-    /// file is a build failure, never an empty scan that passes.
     const BODIES_SRC: &str = include_str!("bodies.rs");
     const TRANSPORT_SRC: &str = include_str!("transport.rs");
     const ACTOR_SRC: &str = include_str!("actor.rs");
 
-    /// The marker the census keys on (decision 60), assembled at runtime
-    /// from two halves so that *this file's own code* never contains it
-    /// verbatim and therefore needs no exclusion from the walk.
-    ///
-    /// Deliberately the **weak** form: no `kind:` prefix and no path
-    /// qualification, so `crate::sema::typed::TypedExprKind::Intrinsic {`
-    /// and a bare `TypedExprKind::Intrinsic { key: ... }` both match. The
-    /// first version of this test keyed on the whole line
-    /// `kind: TypedExprKind::Intrinsic {` and was evaded three separate
-    /// ways by spelling the construction differently; see decision 60.
     fn marker() -> String {
         format!("{}{}", "TypedExprKind::Intrinsic", " {")
     }
 
-    /// One occurrence of the marker that *produces* a key, with the key
-    /// as written.
     #[derive(Debug)]
     struct KeySite {
         file: String,
@@ -439,32 +270,10 @@ mod tests {
 
     #[derive(Debug, PartialEq)]
     enum KeyForm {
-        /// `key: "Image.seal".to_string()` / `.into()`.
         Literal(String),
-        /// `key: format!("Mmio.{op}")`.
         Template(String),
     }
 
-    /// Every marker occurrence in `src` that assigns a `key`, classified.
-    ///
-    /// The classification is structural rather than positional, which is
-    /// what makes it hard to evade: from each marker's `{`, the
-    /// brace-balanced field region is collected (across lines), and the
-    /// region is then asked whether it binds `key:` to a value.
-    ///
-    /// - No `key:` in the region → a **pattern** (`{ key, .. }`,
-    ///   `{ receiver, args, .. }`, `{ .. }`). Ignored, and deliberately
-    ///   *not* counted: pattern matches on this node are added and
-    ///   removed by ordinary downstream work, and a census that churned
-    ///   on those would teach everyone to bump a number without reading.
-    /// - `key:` bound to a string literal or a `format!` → a **key site**.
-    /// - `key:` bound to anything else → **panic**. A computed key is
-    ///   surface this census cannot resolve, so it fails closed and says
-    ///   so rather than silently missing a name.
-    ///
-    /// Comment lines are skipped (they do not compile); this is why the
-    /// worked example inside `bodies.rs`'s own `check_mmio_access` prose
-    /// is not a site.
     fn scan_key_sites(label: &str, src: &str) -> Vec<KeySite> {
         let marker = marker();
         let lines: Vec<&str> = src.lines().collect();
@@ -478,7 +287,7 @@ mod tests {
             };
             let region = brace_region(&lines, i, col + marker.len() - 1, label);
             let Some(value) = key_binding(&region) else {
-                continue; // a pattern match, not a construction
+                continue;
             };
             let form = if let Some(rest) = value.strip_prefix('"') {
                 let end = rest.find('"').unwrap_or_else(|| {
@@ -509,9 +318,6 @@ mod tests {
         out
     }
 
-    /// The brace-balanced text between the `{` at `lines[start][open]`
-    /// and its matching `}`. Fails loudly rather than returning a
-    /// truncated region.
     fn brace_region(lines: &[&str], start: usize, open: usize, label: &str) -> String {
         let mut depth = 0i32;
         let mut region = String::new();
@@ -522,7 +328,7 @@ mod tests {
                     '{' => {
                         depth += 1;
                         if depth == 1 {
-                            continue; // skip the opening brace itself
+                            continue;
                         }
                     }
                     '}' => {
@@ -543,9 +349,6 @@ mod tests {
         );
     }
 
-    /// The value bound to a `key:` field in `region`, if any. Matches
-    /// `key` only at a token boundary, so no other field name can be
-    /// mistaken for it.
     fn key_binding(region: &str) -> Option<&str> {
         let mut from = 0usize;
         while let Some(rel) = region[from..].find("key:") {
@@ -563,7 +366,6 @@ mod tests {
         None
     }
 
-    /// Every `.rs` file in the workspace, with a repo-relative label.
     fn crate_sources() -> Vec<(String, String)> {
         let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -590,15 +392,8 @@ mod tests {
             .collect()
     }
 
-    /// **The ratchet** (plans/M9.md item AA): the set of intrinsic keys
-    /// `sema::bodies` can construct equals the set written down in this
-    /// file. Fails when a name is added to the compiler without being
-    /// added here, and when a name is removed from the compiler without
-    /// being removed here.
     #[test]
     fn intrinsic_surface_equals_the_written_down_list() {
-        // Wave 7: sealed-transport / actor call checkers live in sibling
-        // files; the closed surface is the union of their key sites.
         let mut sites = scan_key_sites("sema/bodies.rs", BODIES_SRC);
         sites.extend(scan_key_sites("sema/transport.rs", TRANSPORT_SRC));
         sites.extend(scan_key_sites("sema/actor.rs", ACTOR_SRC));
@@ -621,7 +416,6 @@ mod tests {
             }
         }
 
-        // Every `format!` template found must be one we have resolved.
         let declared_templates: BTreeSet<String> = FORMAT_KEY_SITES
             .iter()
             .map(|(t, _, _)| (*t).to_string())
@@ -662,11 +456,6 @@ mod tests {
         );
     }
 
-    /// The `format!` expansions above are hand-resolved, so the closure
-    /// test alone would not notice a *widened* guard (a fifth
-    /// `InterruptCell` method added to its match arm produces a fifth
-    /// key from an unchanged construction site). Locking the guard's
-    /// source text closes that hole.
     #[test]
     fn format_key_guards_are_locked() {
         for (tmpl, expansion, guard) in FORMAT_KEY_SITES {
@@ -680,17 +469,9 @@ mod tests {
         }
     }
 
-    /// The only intrinsic key sites outside `sema/bodies.rs`: `(file,
-    /// key)`, enumerated rather than counted, so an *added* site fails
-    /// even in a file that already has one.
     const ALLOWED_OFFSITE_KEY_SITES: &[(&str, &str)] = &[
-        // A `#[cfg(test)]` fixture asserting `wake` is ISR-legal. A test
-        // fixture is not surface.
         ("wrela-compiler/src/eval/legal.rs", "wake"),
-        // A `#[cfg(test)]` fixture asserting `entropy` is ISR-forbidden
-        // (plans/M17.md item E / close). A test fixture is not surface.
         ("wrela-compiler/src/eval/legal.rs", "entropy"),
-        // Wave 7 artifact split: sealed-transport / actor call checkers.
         ("wrela-compiler/src/sema/transport.rs", "Device.claim"),
         ("wrela-compiler/src/sema/transport.rs", "Device.take_irq"),
         ("wrela-compiler/src/sema/transport.rs", "Device.negotiate"),
@@ -727,9 +508,6 @@ mod tests {
         ("wrela-compiler/src/sema/actor.rs", "Group.start"),
     ];
 
-    /// `sema/bodies.rs` is the sole producer of intrinsic nodes, which is
-    /// what makes scanning that one file a complete census. Walks the
-    /// whole workspace so a key site added anywhere else fails here.
     #[test]
     fn bodies_rs_is_the_only_producer() {
         let files = crate_sources();
@@ -743,9 +521,6 @@ mod tests {
         for (label, src) in &files {
             if label.ends_with("sema/bodies.rs") {
                 saw_bodies = true;
-                // The walked file and the compile-time embed must be the
-                // same text, or the census is reading a different tree
-                // from the one this test polices.
                 assert_eq!(
                     src, BODIES_SRC,
                     "the walked sema/bodies.rs differs from the `include_str!` embed"
@@ -797,10 +572,6 @@ mod tests {
         }
     }
 
-    /// 05 §9's surface and `sema::typed::is_restricted_intrinsic` are the
-    /// same set — the predicate is what confines a builder call to the one
-    /// reachable `@image` fn, so a §9 name missing from it would be a
-    /// builder intrinsic callable from ordinary code.
     #[test]
     fn image_builder_surface_matches_the_restriction_predicate() {
         for k in IMAGE_BUILDER_SURFACE {
@@ -819,9 +590,6 @@ mod tests {
         }
     }
 
-    /// The recorded dead consumer boundary stays dead: `is_queue_op_deferred`
-    /// still names both keys, and neither is produced (which the closure
-    /// test above independently enforces by their absence from the list).
     #[test]
     fn unproduced_consumer_keys_are_still_unproduced() {
         let written = written_down_surface();
@@ -839,7 +607,6 @@ mod tests {
         }
     }
 
-    /// Every exception carries a justification, and no name is listed twice.
     #[test]
     fn every_exception_is_justified() {
         for (k, why) in EXCEPTIONS {
@@ -848,6 +615,6 @@ mod tests {
                 "`{k}`'s justification is too short to be one: `{why}`"
             );
         }
-        let _ = written_down_surface(); // asserts no duplicates
+        let _ = written_down_surface();
     }
 }

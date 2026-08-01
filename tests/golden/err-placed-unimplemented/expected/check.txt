@@ -1,1 +1,1 @@
-error[type]: `@placed` is legal only on a module-level `static` of a `@layout(runtime)` type (03-hardware.md §3.1); it is legal nowhere else at 8:1
+error[type]: `@placed` is legal only on a module-level `static` of a `@layout(runtime)` type (03-hardware.md §3.1); it is legal nowhere else at 4:1

@@ -1,4 +1,4 @@
-error[type]: `reserve` is not proven infallible for this image — every admitted handler must be a complete unit against the queue's descriptor capacity (03-hardware.md §4); the use site demanded `QueuePermit` (plans/M13.md decision 1) at 57:38
+error[type]: `reserve` is not proven infallible for this image — every admitted handler must be a complete unit against the queue's descriptor capacity (03-hardware.md §4); the use site demanded `QueuePermit` (plans/M13.md decision 1) at 52:38
   queue: VirtQueue[..8]
   descriptors_per_op: 3
   in-flight bound: floor(8/3) = 2

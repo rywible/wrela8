@@ -1,8 +1,5 @@
 module examples.check_event_loop_observation
 
-# plans/M13.md item N / decision 11: unbounded sync loop discharged by
-# observation (pending-vector read via a helper whose observes bit is set),
-# not by a function-name allowlist.
 
 @layout(runtime, endian=little)
 struct PendingPage:

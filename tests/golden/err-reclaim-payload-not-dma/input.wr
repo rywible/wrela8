@@ -1,34 +1,5 @@
 module examples.err_reclaim_payload_not_dma
 
-# plans/M8.md item F: `reclaim`'s `payload=` declares the `@layout(dma)`
-# struct the quarantined slot holds (03-hardware.md §3: "transfer payloads
-# are `own[P] T` where `P` is a device-bound DMA pool and `T` is
-# `@layout(dma)`"). This is `boot-dma-reclaim` with that one name changed
-# to a `@layout(wire)` struct — exact bytes, emphatically not device
-# memory — and it is refused by name.
-#
-# The image declares **one** DMA payload block (`count=1`) and the driver
-# holds no spare. So the second publish below is possible only because the
-# first block came back, and every one of this item's mechanisms is on the
-# path to it rather than beside it:
-#
-#   init      write MAGIC into the one block, publish it to sector 0.
-#   phase 1   the device completes it; `drain` resolves the receipt;
-#             `recover` reports **Completed** and *quarantines* the slot —
-#             the payload word stays where it is and the queue records the
-#             host's quiesce count at the moment of the quarantine.
-#             `RunningDevice.reset` then traps to `QUIESCE_MMIO_ADDR`: the
-#             VMM finishes everything its model still holds, stops it using
-#             the ring, and increments that count. Only now does `reclaim`
-#             hand the block back — still holding MAGIC, which is the
-#             evidence that the handle is the abandoned buffer and not a
-#             fresh address. It is rewritten and published to sector 1.
-#   phase 2   the second operation completes under the new epoch and
-#             `claim` returns the payload the ordinary way.
-#
-# Vacuity / negative twin: `err-boot-dma-reclaim-early` is this file with
-# the one `reset` line deleted. Nothing else changes, and the boot must
-# abort with "reclaim before quiescence" — that is the whole rule.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:
@@ -64,7 +35,6 @@ const QDEPTH: usize = 8
 const BLK_T_OUT: u32 = 1
 const MAGIC: u64 = 0xC0FFEE00BEEF42A1
 const REUSED: u64 = 0x5EC05EC05EC05EC0
-# phase: 1 = first write in flight; 2 = the reclaimed block in flight; 3 = done
 const PHASE_FIRST: u32 = 1
 const PHASE_SECOND: u32 = 2
 const PHASE_DONE: u32 = 3
@@ -154,11 +124,7 @@ pub struct BlkDriver:
                         case .Unknown:
                             assert false, "no reset happened before the first recover"
                     self.inflight = None
-                    # Establish quiescence with the *device*: this traps to
-                    # the VMM, which finishes and stops its model and only
-                    # then increments the count `reclaim` gates on.
                     self.device = self.device.reset(queue=mut self.queue)
-                    # 03-hardware.md §9: "and only then is memory reclaimed".
                     b = self.queue.reclaim(pool=BlockPayloads, payload=WireBlock)
                     self.reclaimed_word = b.word
                     b.word = REUSED
@@ -172,8 +138,6 @@ pub struct BlkDriver:
                         idempotent=true,
                     )
                     receipt = self.queue.publish(operation=take op)
-                    # Take the empty Option before restoring (a live `None`
-                    # cannot be overwritten — `Option[Receipt]` is a resource).
                     empty = take self.inflight
                     match empty:
                         case .None:
@@ -198,8 +162,6 @@ pub struct BlkDriver:
                         self.inflight = None
                         self.phase = PHASE_DONE
             else:
-                # A quiet wake after both phases is expected and must not
-                # abort — the same event `boot-blk-roundtrip` absorbs.
                 return unit
         return unit
 
@@ -216,8 +178,6 @@ pub struct Ledger:
 
 @test(runtime)
 async fn a_quarantined_block_comes_back_after_quiescence(led: Actor[Ledger]):
-    # Two checkpoints: the phase-1 IRQ+drain (recover, quiesce, reclaim,
-    # republish) and the phase-2 IRQ+drain (claim).
     a = await led.mark(n=7)
     match a:
         case .Ok(_):

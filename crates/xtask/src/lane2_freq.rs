@@ -1,53 +1,9 @@
-//! `cargo xtask gen-lane2-freq <case>` — the Lane 2 sidecar generator
-//! (plans/M20.md item C).
-//!
-//! ## Why this is offline
-//!
-//! `wrela dump --stage=cost` cannot boot a guest, so a measured `f` vector
-//! has to be a committed fixture. Lane 1 already works this way
-//! (`lane1-freq.txt`: flat index → method key resolved offline). Lane 2's
-//! version has one extra wrinkle item C measured: there are **two disjoint
-//! Lane 2 id spaces**. `boot-actors` assigns 184 block ids in the cost-stage
-//! closure `--stage=cost` scores and 2527 in the `@test(runtime)` image the
-//! guest boots, so an id read out of a boot **does not index the scored
-//! program at all**. Keying the sidecar by id would attribute hits to the
-//! wrong blocks — exactly the nearest-offset attribution decision 1608
-//! forbids.
-//!
-//! So the sidecar is keyed by `<fn_key>#<block_index>`, an identity that
-//! survives both closures, and the id → key translation happens **here**,
-//! against the *test-image* closure's own assignment map. This generator
-//! runs the identical `build_runtime_test_image` chain the boot goldens and
-//! `bench guest` run, with `--block-count` emission **on**, so the map it
-//! reads is literally the one the booted image used.
-//!
-//! ## The chain
-//!
-//! 1. build the test image under `set_block_count(true)` +
-//!    `set_block_bridge(true)`, and take `codegen::block_spans()` — the
-//!    `id → fn_key#block_index` map of *that* build;
-//! 2. boot it on the codesigned `wrela-vmm` with `--dump-lane2`, which
-//!    writes the **host DRAM snapshot** (`lane3 hits=…`). The snapshot, not
-//!    the transcript line, is Lane 2's normative sink (decision 1610): the
-//!    transcript is capped at `BLOCK_BOUND_PRINT_PAIRS` pairs and says so,
-//!    while the snapshot has no console bound;
-//! 3. translate every snapshot id through the map — an id with no entry is
-//!    a **fail-closed error**, never a dropped or nearest-offset hit;
-//! 4. write `tests/golden/<case>/lane2-freq.txt`.
-//!
-//! The scored closure then resolves `fn_key#idx` to a word-block range in
-//! **its own** partition (`cost::bridge`). Two closures, one stable key, no
-//! cross-closure id arithmetic.
-
 use std::collections::BTreeMap;
 
 use crate::bench::golden_test_image;
 use crate::golden::build_and_sign_vmm;
 use crate::{root, stage_repro_dir};
 
-/// Parse `wrela-vmm --dump-lane2`'s file body: one `lane3 hits=<id>:<n>,…`
-/// line. Fail closed on anything else — a malformed snapshot must not
-/// produce a plausible-looking sidecar.
 fn parse_lane3_dump(text: &str) -> Result<Vec<(u32, u64)>, String> {
     let line = text
         .lines()
@@ -89,7 +45,6 @@ pub(crate) fn gen_lane2_freq(case: &str) -> Result<(), String> {
         );
     }
 
-    // (1) the id -> key map of the instrumented test-image build.
     wrela_compiler::codegen::set_block_count(true);
     wrela_compiler::codegen::set_block_bridge(true);
     let built = golden_test_image(case);
@@ -118,7 +73,6 @@ pub(crate) fn gen_lane2_freq(case: &str) -> Result<(), String> {
         ));
     }
 
-    // (2) boot it and take the host DRAM snapshot.
     let vmm = build_and_sign_vmm()?;
     let (_, img_path, report_path, _) = stage_repro_dir(
         &format!("target/gen-lane2-freq-{case}"),
@@ -146,7 +100,6 @@ pub(crate) fn gen_lane2_freq(case: &str) -> Result<(), String> {
         .map_err(|e| format!("gen-lane2-freq: read {}: {e}", dump_path.display()))?;
     let hits = parse_lane3_dump(&snapshot_text)?;
 
-    // (3) translate — fail closed on any id the map does not know.
     let mut counts: BTreeMap<String, u64> = BTreeMap::new();
     for (id, n) in &hits {
         let key = key_of.get(id).ok_or_else(|| {
@@ -161,7 +114,6 @@ pub(crate) fn gen_lane2_freq(case: &str) -> Result<(), String> {
         }
     }
 
-    // (4) write the sidecar.
     let transcript_line = transcript
         .lines()
         .find(|l| l.starts_with("lane2 hits="))

@@ -1,19 +1,5 @@
 module examples.err_cap_provenance_body
 
-# plans/M7.md item A, 03-hardware.md §1 — the provenance check's other
-# arm: a fn whose own *signature* names no capability at all, but whose
-# body evaluates a capability-bearing value.
-#
-# `RegsBundle.tag_of` takes `read self`, and a receiver is not a
-# parameter; what makes it a hardware-touching fn is that `self` is a
-# value carrying an `Mmio[VirtioIrqMmio]`, so evaluating `self.tag` is
-# evaluating an expression of capability-bearing type. A plain struct may
-# hold a capability (03 §1 restricts `@actor`, not every struct) — what it
-# may not do is give a fn outside any driver's authority a way to reach
-# one.
-#
-# `golden/check-capabilities` accepts this same method, unchanged, with a
-# driver calling it.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

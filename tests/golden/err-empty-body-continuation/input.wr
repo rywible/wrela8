@@ -2,6 +2,3 @@ module test
 
 fn f()
     -> u32:
-    # a header may continue onto an indented `->` line (02 §1); this
-    # comment-only body must still be rejected, not silently accepted as
-    # empty

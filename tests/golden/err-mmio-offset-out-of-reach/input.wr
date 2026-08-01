@@ -1,8 +1,5 @@
 module examples.err_mmio_offset_out_of_reach
 
-# plans/M7.md item H1 self-audit — an MMIO register at offset 0x10000
-#
-# What this case would catch: an offset outside the unsigned-immediate encoder's scaled reach. No base-plus-register form is emitted yet.
 
 @layout(mmio, endian=little)
 struct Regs:

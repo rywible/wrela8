@@ -9,8 +9,6 @@ resource struct Packet:
 pub fn consume(take p: Packet) -> u64:
     return p.size
 
-# A plain (non-`take`) binding over a resource-typed array is a per-element
-# read loan (02-language.md §3.2): legal, and the array is untouched.
 pub fn peek_all(arr: [Packet; 2]) -> u64:
     total: u64 = 0
     @budget(bound=1000000)
@@ -18,8 +16,6 @@ pub fn peek_all(arr: [Packet; 2]) -> u64:
         total += p.size
     return total
 
-# The sanctioned way to consume an array whole (02-language.md §3.2):
-# `for take x in take array`. The array is Moved after the loop.
 pub fn consume_all(take arr: [Packet; 2]) -> u64:
     total: u64 = 0
     @budget(bound=1000000)

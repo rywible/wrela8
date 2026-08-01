@@ -1,11 +1,5 @@
 module examples.check_await_loop_post_suspension_local
 
-# plans/M9.md item RR, the accept side of the back-edge rule: a value bound
-# AFTER the loop body's suspension is rebound on every iteration before it
-# is read, so it never spans anything and stays legal. Its sibling
-# `err-await-external-path-loop` pins the reject side. `self`-rooted access
-# after the await stays legal too (02-language.md §9.2's whole point), and
-# a loop with no `await` in it at all is untouched by the rule.
 
 struct Payload:
     value: u64
@@ -25,7 +19,6 @@ pub struct Store:
     pub async fn combine(mut self, input: Payload) -> u64:
         total: u64 = 0
         i: u64 = 0
-        # No suspension in this loop: an external-rooted access is fine.
         while i < 2:
             total = total + input.value
             i = i + 1

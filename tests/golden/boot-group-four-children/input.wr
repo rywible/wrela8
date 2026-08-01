@@ -1,8 +1,5 @@
 module examples.boot_group_four_children
 
-# plans/M12.md item F: `with group(capacity=4)`, four distinct `g.start`
-# children (duplicate callee_key is rejected — one free-turn area per fn),
-# `g.join_all()`, sum asserted. Pins 02 §9.5's capacity=4 example as runnable.
 
 @actor
 pub struct Doubler:

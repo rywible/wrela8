@@ -1,7 +1,5 @@
 module examples.mwir_struct
 
-# A struct with `init` plus a `mut self` and a `read self` method
-# (plans/M5.md item B's own required golden family).
 
 pub struct Point:
     x: u64

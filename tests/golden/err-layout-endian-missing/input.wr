@@ -1,9 +1,5 @@
 module examples.err_layout_endian_missing
 
-# plans/M7.md decision 4: "no inference". 03-hardware.md §3 requires the
-# compiler to *report* every `@layout` type's endianness; there is no
-# default to report, so `endian=` is written or the declaration is
-# rejected.
 
 @layout(dma)
 struct Descriptor:

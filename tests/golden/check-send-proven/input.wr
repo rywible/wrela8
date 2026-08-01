@@ -1,17 +1,5 @@
 module examples.check_send_proven
 
-# plans/M6.md item G, decision 5 / 02-language.md §9.4: "When mailbox
-# analysis proves admission cannot fail ... `send` stands as a bare
-# statement; otherwise the result must be consumed."
-#
-# `Logger` is targeted by exactly three static message sites — two bare
-# `send`s and one `await` — every one of them in the `@test(runtime)`
-# root's own body, outside every loop and every `g.start` child, so each
-# executes at most once per root turn. The declared `mailbox=4` is ≥ 3, so
-# admission provably cannot fail and both bare statements are legal.
-#
-# The consumed-`Result` form is unaffected and still legal everywhere
-# (`golden/check-actor-send` pins it on its own).
 
 @actor
 pub struct Logger:

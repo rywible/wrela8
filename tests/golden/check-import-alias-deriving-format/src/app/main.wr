@@ -2,8 +2,6 @@ module app.main
 
 from lib.tag import Tag as Label
 
-# Aliased generated Format: Label(n=9).format() → "Tag(n=9)" (type name
-# in the derived body is the declaration name, not the alias).
 
 fn digest(s: String[..17]) -> u64:
     return s.len.to[u64]() * 1000000 + s[0].to[u64]() * 1000 + s[1].to[u64]()
@@ -15,8 +13,6 @@ pub fn t_alias_format():
     assert OUT == 8084097, "aliased derived Format must pin \"Tag(n=9)\""
 
 
-# Guest-reachable path (plans/M9.md item KK): H3 dropped Label.format from
-# asm; `@test(runtime)` seeds aliased deriving Format.
 @test(runtime)
 pub fn guest_alias_format():
     assert digest(Label(n=9).format()) == 8084097, "aliased Format at guest"

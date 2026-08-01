@@ -1,34 +1,7 @@
 module examples.check_panic_diverges
 
-# 02-language.md §11: "`panic(message)`, failed `assert`, checked-arithmetic
-# failure, out-of-bounds access, and violated invariants **abandon** the
-# actor: the turn stops ... Abandonment is not catchable." A statement whose
-# type is `never` therefore has no fallthrough — exactly like `return`.
-#
-# plans/M8.md item E, decision 34: `sema::flow` did not know that, and the
-# gap was invisible because the only source that relies on it is the
-# normative worked example, which is a **parse-tier** golden
-# (`golden/ast-virtio` / `docs/language/examples/virtio-storage.wr`, six
-# `panic(...)` sites, e.g. `panic("cache line has no payload")` — where the
-# `panic` arm is the only reason the sibling arm's binding is definitely
-# initialized afterwards). Nothing had ever put one through the flow pass.
-#
-# What is pinned here is the half that is constructible: a `panic` arm
-# supplying **totality** for a value-returning body, and a `panic` as a
-# plain statement. Both are `error[init]: missing return of type \`u64\` on
-# some path` without the fix (verified by mutation).
-#
-# The example's *other* shape — a binding assigned in the `.Some` arm only
-# and read after the `match`, made definite by the `panic` arm — is **not**
-# constructible in this compiler and is not this item's to fix: a name
-# first bound inside an arm is out of scope after the join
-# (`sema.names.resolution`'s own scope-leak fix), so it is `error[name]`
-# one pass earlier, `panic` or no `panic`. Recorded rather than papered
-# over; `docs/language/examples/virtio-storage.wr` is parse-tier only, so
-# nothing yet forces the question.
 
 fn unwrap_or_abandon(v: Option[u64]) -> u64:
-    # Totality: the `.None` arm returns nothing and falls off no end.
     match v:
         case .Some(x):
             return x
@@ -36,7 +9,4 @@ fn unwrap_or_abandon(v: Option[u64]) -> u64:
             panic("no value to unwrap")
 
 fn abandon_ends_a_block() -> u64:
-    # A `panic` as a plain statement, not inside a `match` — the same rule,
-    # with no join in sight, so the `return` below it is unreachable and
-    # the body is total either way.
     panic("this function never produces a value")

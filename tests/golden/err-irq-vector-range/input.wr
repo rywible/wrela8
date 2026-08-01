@@ -1,7 +1,5 @@
 module examples.err_irq_vector_range
 
-# plans/M7.md item G self-audit: a device-owned vector must fit the
-# per-core pending word (bits 1..=63; bit 0 is the deadline vector).
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

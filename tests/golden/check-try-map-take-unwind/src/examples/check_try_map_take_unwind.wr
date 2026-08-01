@@ -1,16 +1,5 @@
 module examples.check_try_map_take_unwind
 
-# plans/M9.md item F3: try_map_take unwinds constructed outputs and
-# reclaims remaining inputs on Err.
-#
-# Evidence chain (not mere assertion):
-#   1. bump(1) returns Ok(10) — one constructed output exists before fail.
-#   2. bump(2) returns Err(2) — must not surface as Ok([...]); Err payload
-#      is the failing element's value.
-#   3. Eval path (`eval_array_map_take`): on Err, drops `outputs` (the Ok(10)
-#      above) and `inputs.drain(idx+1..)` (remaining [3]) before returning.
-#   4. A fresh array's map_take still succeeds — evaluator not abandoned.
-# Comptime-only (eval); guest lowering of Array.map_take is refused by name.
 
 fn bump(take x: u64) -> Result[u64, u64]:
     if x == 2:
@@ -31,9 +20,6 @@ fn try_map_take_err_payload():
 
 @test
 fn map_take_ok_after_unwind():
-    # Fresh array after the Err path above — proves reclaim left the
-    # evaluator usable (data reclaim is drop; the Err path must not
-    # abandon).
     ys: [u64; 2] = [4, 5]
     zs = ys.map_take(double)
     assert zs[0] == 8, "a"

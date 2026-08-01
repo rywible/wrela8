@@ -4,9 +4,6 @@ module examples.err_test_runtime_param_mut
 pub struct Store:
     value: u64
 
-# plans/M6.md decision 11b: a @test(runtime) fn's own Actor[T] handle
-# parameter must be plain (read) — it is borrowed for the run, never
-# mutated or consumed, mirroring @test(exhaustive)'s own mode rule.
 @test(runtime)
 fn test_bad(mut store: Actor[Store]):
     assert true

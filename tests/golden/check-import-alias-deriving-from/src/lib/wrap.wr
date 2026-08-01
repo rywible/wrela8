@@ -1,7 +1,5 @@
 module lib.wrap
 
-# plans/M9.md item B3 fixture: same deriving(From) surface as the plain
-# import case; the importer aliases it.
 
 pub struct Src:
     pub n: u32

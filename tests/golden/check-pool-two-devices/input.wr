@@ -1,34 +1,5 @@
 module examples.check_pool_two_devices
 
-# plans/M8.md item P: the **accepting** shape that the M7 post-closure
-# sweep's `err-pool-two-devices` guard used to refuse.
-#
-# What the guard actually protected was an artifact defect, not a rule:
-# `render_layout_section` emitted one `BlkPool name= base= size=` line per
-# device-reachable pool with **no device field**, and `wrela-vmm`'s
-# `parse_report` collected every one of them into a single
-# `Vec<PoolWindow>` handed to its one `BlkDevice`. So `ControlB` — declared
-# reachable from `other` alone — would have been reachable from the blk
-# model. Refusing the image was the only fail-closed move available.
-#
-# The line now carries `device=device#N`, `devices::GuestMem` carries the
-# device whose view it is, and `window_offset` (still the single guest→host
-# conversion site) admits a range only if it lies in a window bound to
-# *that* device. So two devices, each with its own pool and its own
-# `@driver`, is an ordinary image — pinned here as two `Pool`/`BlkPool`
-# pairs with distinct `device=` fields.
-#
-# The runtime half is a boot, not this dump:
-# `golden/boot-blk-two-devices` runs the accepted shape, and
-# `golden/err-boot-blk-cross-device-pool` is its one-line twin in which the
-# blk driver's payload comes from the *other* device's pool and the model
-# refuses the descriptor by name.
-#
-# What is still refused, and why it is not this: 03-hardware.md §1's mint
-# rule — a driver bound to device#Y taking `DmaPool[P, N]` for a pool
-# declared reachable from device#X (`golden/err-dma-pool-mint-wrong-device`)
-# — and blk configuration declared on a device that is not the blk device
-# (`golden/err-blk-config-on-another-device`).
 
 @layout(dma, endian=little)
 struct Ctl:

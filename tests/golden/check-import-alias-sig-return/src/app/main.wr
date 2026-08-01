@@ -3,8 +3,6 @@ module app.main
 from lib.ret import Outer as Out
 from lib.ret import Inner as In
 
-# plans/M9.md item GG: peer type aliased in *return* position. Before GG,
-# peel returned `Inner` while the annotation said `In`. RET = 5 + 300 = 305.
 
 fn drive() -> u32:
     o = Out(n=5)

@@ -1,31 +1,5 @@
 module examples.check_dma_pool
 
-# plans/M7.md item D, 03-hardware.md §3 + 05-library.md §9: a real
-# image-declared DMA pool.
-#
-# `img.dma_pool[T](name=P, device=d, count=N)` binds the previously
-# unbound pool name `P` exactly once, reserves exact backing, and creates
-# the initial handles; the DMA form requires a `@layout(dma)` `T` and
-# device reachability. All four halves are visible in this one case:
-#
-#  - `BlkReqHeader` is `@layout(dma)`, so its bytes are exact (item B):
-#    16 bytes, 8-byte alignment, and the report says so;
-#  - `device=disk` is 03 §3's own worked spelling — the *driver* bound to
-#    the device, one hop from `img.driver(..., device=blk)`; 05 §9's
-#    `device=d` naming the device directly is accepted identically;
-#  - `count=8` × 16 bytes is the pool's exact backing, placed in the
-#    image's own `pooldata` section and reported with its base;
-#  - `own[BlockControl] BlkReqHeader` below is 03 §3's transfer-payload
-#    handle, and its payload type must be the one the pool was bound with
-#    (`err-dma-pool-own-mismatch` is the rejection).
-#
-# `CacheBuffers` is the *other* pool form, in the same image, to keep the
-# two visibly distinct in the report: an `img.pool` reserves backing too,
-# but nothing declares it reachable from a device, so it never becomes a
-# `BlkPool` window the VMM maps (plans/M7.md decision 5).
-#
-# Publishing a payload to the device — `queue.publish`, `Receipt[P]` — is
-# plans/M7.md item E and fails closed by name until it lands.
 
 @layout(dma, endian=little)
 struct BlkReqHeader:

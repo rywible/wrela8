@@ -1,5 +1,3 @@
-//! Boot-init argument materialization and `RuntimeWiring`.
-
 use std::collections::BTreeMap;
 
 use crate::eval::image::ImageGraph;
@@ -19,30 +17,7 @@ use super::{
     reject_unlowerable_cross_core_shapes,
 };
 
-/// plans/M7.md item W: every struct's own declared `init`, in the shape
-/// boot needs to *call* it — the `program.fns` key, the declared
-/// parameter list (name, access mode, declared type, declaration order)
-/// and the declared return type. `build_boot_init_calls` (below) turns
-/// one of these plus one `ActorDecl`'s own wiring arguments into the
-/// argument words `build_boot_init` loads into `x1..`.
-///
-/// What this replaced, recorded because it was a *rejection* and is not
-/// one any more: until item W this returned only which structs declared
-/// a **zero-argument** `init` — the one shape a boot sequence with no
-/// argument marshalling could call — plus the parameter count of every
-/// other one, purely so `RuntimeWiring::derive` could refuse to lay the
-/// image out at all. That guard existed because the two halves of the
-/// rule had silently composed into a wrong answer: `eval::image_checks`
-/// accepts `depth=7` (it really does name a real `Sink.init` parameter),
-/// boot never called that `init`, and the actor booted with `depth == 0`
-/// while every assertion over it read 0 and all three tiers reported
-/// success. Boot now calls a declared `init` with its declared
-/// arguments, so the guard is gone; what remains fails closed on the
-/// *specific shape it cannot marshal*, named one at a time in
-/// `build_boot_init_calls`, never on "declares parameters at all".
 pub(crate) struct ActorInit {
-    /// `"{Struct}.init"` — `lower::lower_struct`'s own key for the
-    /// compiled body, which is what `Asm::bl_call_key` resolves against.
     pub(crate) key: String,
     pub(crate) params: Vec<crate::sema::types::DeclParam>,
     pub(crate) ret: crate::sema::types::Type,
@@ -80,72 +55,24 @@ pub(crate) fn actor_inits(
     Ok(out)
 }
 
-/// One declared actor instance's own boot-time `init` call: the compiled
-/// body's key and its already-materialized argument words, in declared
-/// parameter order. `build_boot_init` loads word `i` into `x{i+1}`.
-///
-/// **The ABI is not restated here, it is derived**: `codegen::emit_prologue`
-/// spills the receiver from `x0` into the frame's `self_ptr` slot (a
-/// pointer — the receiver is always by address), then walks `f.params` in
-/// declaration order spilling each one from the next register up, by
-/// value for a non-aggregate and by address for an aggregate
-/// (`codegen::is_aggregate`), and refuses past `x8`. `codegen`'s own
-/// `Inst::Call` emitter is the mirror image of that, and
-/// `build_rt_select_and_run_core`'s hand-assembled dispatch already
-/// relies on the `x0`-is-`self`-pointer half (`a.load_imm(0, addrs.state)`
-/// before every method call). Boot is a third caller of the identical
-/// convention: `x0` = the actor's own state address, `x1..` = the
-/// scalar arguments. Aggregates are not passed at all — they would need
-/// a staging buffer boot has nowhere to put — so `boot_init_arg_word`
-/// fails closed on every one of them instead.
 #[derive(Debug)]
 pub(crate) struct BootInitCall {
     pub(crate) key: String,
     pub(crate) args: Vec<BootInitArg>,
-    /// plans/M7.md item E1: `true` when `init` returns
-    /// `Result[unit, BootError]` — boot must arm `x8` with a reply slot
-    /// and abort on `Err`.
     pub(crate) fallible: bool,
-    /// When `fallible`: `(rodata_byte_offset, len)` of the abort message
-    /// `"{key} returned Err"`, interned once before either assembly pass
-    /// so the sizing and real-address builds agree on every word. `None`
-    /// until `intern_fallible_init_abort_messages` runs (and forever for
-    /// an infallible `init`).
     pub(crate) err_msg: Option<(usize, usize)>,
 }
 
-/// One materialized `init` argument word — or the promise of one whose
-/// value is not known until the section table is placed.
-///
-/// plans/M7.md item H1: a `DeviceCap[D]` argument is decision 11's own
-/// representation, the base address of the device's declared register
-/// window, and that address exists only after `place_device_regs` has run.
-/// Every other argument is already a build-time constant by the time
-/// `build_boot_init_calls` sees it. Carrying the one unresolved case as
-/// its own variant (rather than threading placement through the whole
-/// derivation, or patching a word after the fact) keeps the emitted word
-/// count identical in both of `build_runtime_block`'s passes — a
-/// `load_imm` is four words whatever it loads — which is the invariant
-/// both image flavors' two-pass assembly rests on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum BootInitArg {
     Word(u64),
-    /// The base of `ImageGraph::devices[.0]`'s own register window.
     DeviceRegsBase(usize),
-    /// The base of the named pool's own backing in `pooldata` — decision
-    /// 11's word for a `DmaPool[P, N]`, which item D placed and reported
-    /// but nothing could yet pass to an `init`.
     PoolBase(String),
-    /// plans/M7.md item E4 / decision 19: one `own[P] T` — the guest
-    /// address of slot `index` in pool `name` (`base + index * slot_bytes`).
     OwnSlot {
         pool: String,
         index: u64,
         slot_bytes: u64,
     },
-    /// plans/M7.md item E4: `[own[P] T; N]` — boot builds a table of
-    /// `count` slot addresses on its own stack and passes the table's
-    /// address (this machine's bare-pointer aggregate ABI).
     OwnHandleArray {
         pool: String,
         count: u64,
@@ -154,13 +81,6 @@ pub(crate) enum BootInitArg {
 }
 
 impl BootInitArg {
-    /// The word this argument actually loads. `regs`/`pools` are the
-    /// placed window lists; a reference with no matching placement is an
-    /// internal inconsistency (both parameters only exist on a driver
-    /// whose binding `eval::image_checks` already resolved), reported
-    /// rather than silently zeroed.
-    /// Kept for unit tests / future inject-time validation; specialized
-    /// emit uses Reloc variants (decision 683) instead.
     #[allow(dead_code)]
     pub(crate) fn resolve(
         &self,
@@ -214,23 +134,6 @@ impl BootInitArg {
     }
 }
 
-/// The one place a build-time `eval::value::Value` becomes the 64-bit
-/// word boot loads into an argument register. Deliberately exhaustive and
-/// deliberately narrow: `None` means "this compiler has no register
-/// representation for this value", and the caller turns that into a named
-/// diagnostic rather than into a zero.
-///
-/// The encodings are `codegen`'s own, not new ones — an integer is
-/// `Inst::ConstInt`'s `load_imm(value as i64)` (a negative value is
-/// therefore its sign-extended two's complement, exactly as a compiled
-/// `-5` would be), a bool is `Inst::ConstBool`'s 0/1, a char is
-/// `Inst::ConstChar`'s code point, and `unit` is all-zero (the same fact
-/// `build_boot_init`'s own zero-fill already rests on).
-///
-/// Counts that define the shared image-declaration handle space
-/// (plans/M8.md item H attack 6). Derived once from the sealed graph so
-/// every consumer (`boot_init_arg_word`, `resolve_runtime_test_args`)
-/// sees the same shift.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct HandleSpace {
     pub(crate) n_actors: usize,
@@ -246,24 +149,6 @@ impl HandleSpace {
     }
 }
 
-/// **Contract: no two distinct image declarations share a handle word,
-/// whatever their kind.** Every `ImageDeclRef` variant is named here so a
-/// fourth kind cannot quietly reuse a number — it either gets a fresh
-/// range or fails closed like a pool.
-///
-/// Layout (dumb, deterministic, actors-then-drivers-then-devices):
-/// - `Actor(i)`  → `i`
-/// - `Driver(i)` → `n_actors + i`
-/// - `Device(i)` → `n_actors + n_drivers + i`
-/// - `Pool` / `DmaPool` → no word (`None`); they are named by string, not
-///   indexed (`ImageDeclRef`'s own two recording disciplines).
-///
-/// Why one space for all three indexed kinds: `decl.handle()` erases the
-/// declaration's type into a bare `u32` (`check_image_decl_method_intrinsic`
-/// accepts it on any `ImageDecl`), so a kind-local scheme for devices is
-/// the same shape of hole item D decision 22 left for actors/drivers —
-/// found by orchestrator spot-probe after the first attack-6 fix covered
-/// only two of the three kinds.
 pub(crate) fn image_decl_handle_word(
     space: HandleSpace,
     decl: &crate::eval::image::ImageDeclRef,
@@ -277,14 +162,6 @@ pub(crate) fn image_decl_handle_word(
     }
 }
 
-/// A declaration handle (`Value::ImageDecl`) becomes its word in the
-/// shared space (`image_decl_handle_word`) — the identical number
-/// `resolve_runtime_test_args` hands a `@test(runtime)` root for an
-/// `Actor[T]` parameter. **What that number is and is not**: `codegen`
-/// still routes every `await`/`send` statically by actor type today, but
-/// the guest can store and compare the word (and the day handles become
-/// dynamic this is the one place that has to change). A pool reference
-/// is named by a string, not an index, so it has no word and fails closed.
 pub(crate) fn boot_init_arg_word(
     value: &crate::eval::value::Value,
     space: HandleSpace,
@@ -302,11 +179,6 @@ pub(crate) fn boot_init_arg_word(
         Value::Char(c) => *c as u32 as u64,
         Value::Unit => 0,
         Value::ImageDecl(decl) => return image_decl_handle_word(space, decl),
-        // Every remaining shape is either an aggregate (no register
-        // representation: `Struct`/`Tuple`/`Array`/`Enum`/`Str`/`Bytes`),
-        // a float (`codegen` has no FP/SIMD encoder subset at all —
-        // `Inst::ConstFloat` fails closed for the identical reason), or a
-        // callable (`Fn`/`Closure` — not a value this machine passes).
         Value::F32(_)
         | Value::F64(_)
         | Value::Str(_)
@@ -320,8 +192,6 @@ pub(crate) fn boot_init_arg_word(
     })
 }
 
-/// A `Value`'s own shape, for a diagnostic that has to name what it
-/// could not marshal without printing the whole value.
 fn value_shape_name(value: &crate::eval::value::Value) -> &'static str {
     use crate::eval::image::ImageDeclRef;
 
@@ -356,50 +226,6 @@ fn value_shape_name(value: &crate::eval::value::Value) -> &'static str {
     }
 }
 
-/// **plans/M7.md item W's residual, closed here** (item W named item D as
-/// its owner; this is that).
-///
-/// The residual, in item W's own words: "A handle wired through an `init`
-/// *parameter* now carries its real construction index; a handle wired
-/// straight to a *field* (05-library.md §9's literal-constructor path,
-/// which has no `init` to call) still arrives as the zero the state-fill
-/// leaves. The two paths genuinely disagree. ... the fix is either
-/// materializing into the field's own offset with W's marshalling or
-/// failing closed on a nonzero index."
-///
-/// **Failing closed is the option taken**, for three reasons stated once
-/// so the choice is reviewable rather than inferred:
-///
-/// 1. It is *exact*, not conservative. A field-wired argument whose boot
-///    word is `0` agrees with the state-fill byte for byte — there is no
-///    disagreement to close, which is why `golden/image-field-wired-accept`
-///    (`led=<actor#0>`) stays green untouched. Every word that is not `0`
-///    is a wrong answer today, and every one of them is now rejected. The
-///    two paths therefore never disagree again, which is the whole
-///    property the residual asked for.
-/// 2. Materializing would build a mechanism with no consumer.
-///    `codegen` routes every `await`/`send` statically, by actor *type*
-///    (`codegen::rt_enqueue_symbol`), so nothing reads a handle word at
-///    runtime; storing one into a field offset would be an unobservable
-///    write, and the house rule is that a feature waits for the thing that
-///    needs it. When an `Actor[T]` becomes comparable, storable or
-///    sendable, this rejection is what fails and points at the work.
-/// 3. It generalizes correctly rather than only to handles. Item W found
-///    the defect through a handle, but a *scalar* wired to a field of a
-///    no-`init` struct is silently zero for exactly the same reason
-///    (`img.actor(Store, seed=8)` against `Store.seed: u32`, no `init` —
-///    accepted by `eval::image_checks`' literal-constructor arm, never
-///    materialized by anything). "Nonzero index" and "nonzero value" are
-///    one rule: *a field-wired argument must equal the zero the state-fill
-///    leaves*. A value with no register representation at all is rejected
-///    too, since this compiler cannot show it is zero either.
-/// Image-wiring labels that are never field/init arguments — the same
-/// sets `eval::image_checks::reserved_args` uses, restated here by `kind`
-/// because that helper is not `pub` and `is_reserved_actor_arg` only
-/// covers the actor half. Sharing the actor predicate for drivers would
-/// let `device=` fall through as a field wire (and, once device handles
-/// left word 0, fail closed against zero-fill — the exact break
-/// `check-driver-mode-irq`/`-poll` hit under attack 6's device half).
 fn is_reserved_wiring_arg(kind: &str, label: &str) -> bool {
     match kind {
         "driver" => matches!(label, "device" | "core" | "mailbox"),
@@ -443,62 +269,6 @@ fn check_field_wired_args(
     Ok(())
 }
 
-/// plans/M7.md item W: every declared actor *and driver* instance's own
-/// boot `init` call, in `graph.actors`/`graph.drivers` order — which is
-/// `RuntimeTables::actors`/`RuntimeTables::drivers` order too
-/// (`compute_runtime_tables` builds one entry per graph entry, in the same
-/// walks), so each result indexes 1:1 against the matching
-/// `RuntimePlacement` list.
-///
-/// **plans/M7.md item H1, decision 10's second prerequisite**: until this
-/// item the walk was `graph.actors` only, so a `@driver`'s `init` was
-/// never called at boot at all and no capability of any kind had bytes at
-/// runtime. A driver's `init` is now called exactly like an actor's, with
-/// one difference that is the whole point: its `DeviceCap[D]` parameter
-/// carries no explicit image argument (05-library.md §9 substitutes it)
-/// and is materialized as decision 11's own word — the base of the device
-/// register window `place_device_regs` reserved for the device its
-/// `device=` binding names.
-///
-/// `None` for an actor whose struct declares no `init` at all: its state
-/// is its own literal constructor's, and `build_boot_init`'s zero-fill
-/// already gave every field a defined value (`eval::image_checks`'s own
-/// missing-slot note rests on exactly that).
-///
-/// Everything this cannot do fails closed with an ordinary named
-/// diagnostic — never `internal error:` (that spelling is reserved for a
-/// producer bug), and never a zero. The shapes, all of them:
-///
-/// - a **fallible `init`** (`-> Result[...]`): running one means driving
-///   03-hardware.md §9's consuming transition chain from boot, which is
-///   plans/M7.md item H's bring-up work. Until then a fallible `init`
-///   fails closed rather than having its `Result` dropped on the floor.
-///   Note this arm also closes a live defect that predates item W: a
-///   *zero-argument* `init` returning a `Result` was called by the old
-///   boot sequence with no `x8`, so the callee wrote its aggregate reply
-///   through whatever `x8` happened to hold — a real guest fault at
-///   `ipa=0x0`, verified by running it.
-/// - any other **non-`unit` return**, for the same reason with no item to
-///   name: boot has nowhere to put the value.
-/// - a **capability parameter other than `DeviceCap[D]` on a `@driver`**
-///   (recognized by name exactly as `eval::image_checks` recognizes them):
-///   `eval::image_checks::check_capability_substitution` already refuses
-///   each of these at the image binding, naming the item that mints it;
-///   this is the same refusal for the shape that check cannot see (an
-///   `img.actor(...)` naming a struct that is not an `@actor`).
-/// - an **`Actor[T]` parameter with no explicit argument**: 05-library.md
-///   §9 lets an actor handle be substituted by type rather than wired by
-///   name, and boot materializes only what the image explicitly wired.
-/// - a **pool handle argument** (05-library.md §9's "create the initial
-///   handles", wired as `blocks=take cache_blocks`): plans/M7.md item E4
-///   / decision 19 materializes each `own[P] T` as the guest address of
-///   one pool slot. A single `own` is that word; an `[own; N]` is a
-///   stack-built table of them passed by the bare-pointer aggregate ABI.
-///   Any other parameter type wired from a pool still fails closed.
-/// - an **argument whose value has no register representation**
-///   (an aggregate, a float, ...).
-/// - **more than eight arguments**, the register budget `x1..x8` leaves
-///   once `x0` carries the receiver — `codegen`'s own identical limit.
 pub(crate) fn build_boot_init_calls(
     graph: &ImageGraph,
     inits: &BTreeMap<String, ActorInit>,
@@ -532,10 +302,6 @@ pub(crate) fn build_boot_init_calls(
     Ok((actors, drivers))
 }
 
-/// The `device#N` an `img.driver(..., device=...)` declaration binds, if
-/// its `device=` argument is a device reference at all. `None` is never a
-/// silent default: the one caller that needs it turns it into a named
-/// rejection on the `DeviceCap[D]` parameter that would have used it.
 pub(crate) fn device_index_of(args: &[crate::eval::image::DeclArg]) -> Option<usize> {
     use crate::eval::image::ImageDeclRef;
     args.iter()
@@ -546,10 +312,6 @@ pub(crate) fn device_index_of(args: &[crate::eval::image::DeclArg]) -> Option<us
         })
 }
 
-/// One declaration's own boot `init` call. `kind` is the noun every
-/// diagnostic here uses (`actor`/`driver`) so a driver is never described
-/// as an actor and vice versa; `device` is the driver's own bound device
-/// index (`None` for an actor, which binds none).
 fn one_boot_init_call(
     kind: &str,
     decl_type: &crate::sema::types::Type,
@@ -569,12 +331,6 @@ fn one_boot_init_call(
     };
     if init.ret != Type::Unit {
         let rendered = render_type(&init.ret);
-        // plans/M7.md item E1: a fallible `init` returning
-        // `Result[unit, BootError]` is now real — 03 §1's own constructor
-        // signature. Boot allocates a reply slot, calls `init`, and on
-        // `Err` aborts with a diagnosable line (plans/M6.md decision 12 /
-        // plans/M7.md decision 8). Any other non-`unit` return still fails
-        // closed: boot has nowhere to put the value.
         let ok_fallible = matches!(
             &init.ret,
             Type::Result(ok, err)
@@ -608,26 +364,12 @@ fn one_boot_init_call(
     }
     let mut args = Vec::with_capacity(init.params.len());
     for p in &init.params {
-        // Reserved labels are skipped through the same predicate
-        // `eval::image_checks` accepts them by, so the acceptance rule
-        // and this materialization rule can never disagree about which
-        // label is image-wiring metadata rather than an `init`
-        // argument (a parameter that happens to be named `mailbox` is
-        // therefore unsatisfiable on both sides alike, not satisfiable
-        // on one).
         let wired = decl_args.iter().find(|a| {
             a.label == p.name && !crate::eval::image_checks::is_reserved_actor_arg(&a.label)
         });
         let Some(a) = wired else {
             let param_ty = render_type(&p.ty);
             if let Type::Named(tn, targs) = &p.ty {
-                // plans/M7.md item H1: **the mint, materialized.** A
-                // `@driver`'s `DeviceCap[D]` parameter carries no explicit
-                // argument — 05-library.md §9 substitutes it from the
-                // `device=` binding, and `check_capability_substitution`
-                // has already checked that `D` *is* the device that
-                // binding names. Its word is decision 11's: the base of
-                // that device's own declared register window.
                 if tn == "DeviceCap" {
                     let Some(i) = device else {
                         return Err(LayoutError::new(format!(
@@ -641,13 +383,6 @@ fn one_boot_init_call(
                     args.push(BootInitArg::DeviceRegsBase(i));
                     continue;
                 }
-                // plans/M7.md item H1: a `DmaPool[P, N]` parameter is
-                // substituted the same way, and its word is decision 11's
-                // — the base of pool `P`'s own backing, which item D
-                // already sized, placed and reported.
-                // `check_dma_pool_mint` has already checked that `P` is
-                // bound, DMA, reachable from *this* driver's device and at
-                // least `N` bytes wide, so nothing is re-derived here.
                 if tn == "DmaPool" {
                     let Some(crate::sema::types::TypeArg::Pool(pool)) = targs.first() else {
                         return Err(LayoutError::new(format!(
@@ -658,10 +393,6 @@ fn one_boot_init_call(
                     args.push(BootInitArg::PoolBase(pool.clone()));
                     continue;
                 }
-                // plans/M7.md item G, decision 12: an `IrqCap[V]` parameter
-                // is the vector bit index. `check_irq_cap_mint` already
-                // required `vector=`; the word is known here, so it is a
-                // plain `Word` rather than a reloc against placement.
                 if tn == "IrqCap" {
                     let Some(i) = device else {
                         return Err(LayoutError::new(format!(
@@ -725,12 +456,6 @@ fn one_boot_init_call(
                 p.name, p.name
             )));
         };
-        // plans/M7.md item E4 / decision 19: a pool wired to an `own[P] T`
-        // or `[own[P] T; N]` parameter becomes the initial handles
-        // 05-library.md §9 promises. Each handle is one word — the guest
-        // address of a pool slot. A single `own` is that word; an array
-        // is a pre-built table of them passed by the bare-pointer
-        // aggregate ABI.
         if matches!(
             a.value,
             crate::eval::value::Value::ImageDecl(
@@ -836,17 +561,6 @@ fn one_boot_init_call(
     }))
 }
 
-/// Intern one abort message per fallible `init` into `rodata`, recording
-/// the offset/len on the call. Must run **once** before either of
-/// `build_runtime_block`'s two assembly passes, so both see the same
-/// offsets and emit the same word count.
-///
-/// Message shape matches an `assert` failure inside `init`: the harness
-/// `__wrela_abort` prepends `FAILED `, so the interned text is just
-/// `"{Actor}.init returned Err"` — the `@driver`/`@actor` struct name is
-/// already in `BootInitCall::key`. The concrete `BootError` variant is
-/// not recovered (would need a second formatting path over the reply
-/// slot); named in the plan's Done prose rather than pretended.
 pub(crate) fn intern_fallible_init_abort_messages(
     wiring: &mut RuntimeWiring,
     rodata: &mut Vec<Vec<u8>>,
@@ -868,98 +582,21 @@ pub(crate) fn intern_fallible_init_abort_messages(
     }
 }
 
-// plans/M10.md item H: `build_boot_init` / `emit_boot_init_arg` deleted —
-// specialized `codegen::emit_boot_init` lives in `code` under
-// `rt_boot_init 0` (decisions 680–684). `build_boot_init_calls` remains:
-// it materializes the call specs inject_boot_init_fn consumes.
-
-// ===========================================================================
-// plans/M6.md item F/G follow-up (the found-and-fixed `layout_program`
-// defect): the runtime machinery, derived and assembled **once**, for both
-// image flavors.
-//
-// Until this landed, only `layout_test_image` built the per-actor
-// `__rt_enqueue_*`/`rt_select_and_run` glue, the group-child poll routines,
-// `rt_run_one` and the boot-init routine. `layout_program` — the path
-// `wrela build`/`wrela dump --stage=report` take — reserved `rtdata` but
-// emitted none of the code that addresses it, so the first `.wr` image that
-// actually *messaged* an actor (any `await`/`send` through an `Actor[T]`
-// handle, which codegen lowers to a `Reloc::Call` at the symbolic
-// `codegen::rt_enqueue_symbol` name) died in reloc resolution with
-// `internal error: call target `__rt_enqueue_X` was never codegen'd` — an
-// internal-error guard on a plainly user-reachable path. `tests/golden/
-// appliance` never caught it because its actors are declared and never
-// messaged, so no such `Reloc::Call` is ever emitted.
-//
-// The rule (item C's own, restated): the runtime tables **and** the routines
-// that address them are part of the image, tests or not. So both paths now
-// derive their inputs through `RuntimeWiring::derive` and assemble the exact
-// same words through `build_runtime_block`. The only thing that legitimately
-// differs is the entry driver — `layout_test_image`'s real console harness +
-// test roots vs. `layout_program`'s `build_entry_stub` placeholder, which
-// still halts with `EXIT_CODE_NO_RUNTIME` and therefore never calls any of
-// this. That the block is unreachable in a `wrela build` image today is the
-// identical, already-recorded position `rtdata`'s own reservation takes
-// (`layout_program`'s doc): it is *there* because it is part of the image,
-// not because anything executes it yet. The moment a real non-test image
-// entry exists (M7+), it is one `bl_to(boot_init_start)` away, byte-for-byte
-// the same machinery `wrela test` already boots for real.
-
-/// Every whole-build fact the runtime block needs, derived once from a
-/// `BootCtx` so the two image flavors can never disagree about an actor's
-/// dispatch keys, its `init`, or the group-child index. `None` means "this
-/// build has no actor runtime at all" (no `@actor` declaration, or tables
-/// that size to zero bytes) — the overwhelming majority of today's corpus,
-/// for which both paths stay byte-identical to their pre-M6 behavior.
 pub(crate) struct RuntimeWiring {
     pub(crate) tables: RuntimeTables,
-    /// Per actor, in `tables.actors` order: its own name and its `pub`
-    /// method dispatch keys (`"{Actor}.{method}"`, `program.fns` keys) with
-    /// each one's asyncness and (plans/M7.md item Z1) whether its declared
-    /// reply is an aggregate.
     pub(crate) dispatch: Vec<(String, Vec<(String, bool, bool)>)>,
-    /// Per declared actor *instance*, in `tables.actors` order: the boot
-    /// `init` call to make for it, or `None` if its struct declares no
-    /// `init` at all (plans/M7.md item W, `build_boot_init_calls`).
-    ///
-    /// Per instance rather than per struct name, because the arguments
-    /// come from the *declaration* (`ActorDecl::args`) and not from the
-    /// struct: two `img.actor(Same, ...)` calls are two calls with two
-    /// argument lists.
     pub(crate) init_calls: Vec<Option<BootInitCall>>,
-    /// plans/M7.md item H1: the same, per declared `@driver` instance, in
-    /// `tables.drivers` order.
     pub(crate) driver_init_calls: Vec<Option<BootInitCall>>,
     pub(crate) state_sizes: Vec<u64>,
     pub(crate) driver_state_sizes: Vec<u64>,
     pub(crate) group_child_index: BTreeMap<String, usize>,
-    /// plans/M8.md item C1: each actor instance's own core, in
-    /// `tables.actors` (= `ImageGraph::actors`) order — read straight off
-    /// the report's own Placement table (`placement::place`), never
-    /// re-derived here. Shape decision 2: the report's assignment *is* the
-    /// runtime's assignment, or there are two truths.
     pub(crate) actor_cores: Vec<usize>,
-    /// The whole placement table, kept for the cross-core edge check both
-    /// image flavors run during reloc resolution.
     pub(crate) placement: crate::placement::PlacementTable,
-    /// M11 I: IRQ handler stubs to overwrite (`handler_key`, `driver_state`).
     pub(crate) irq_calls: Vec<(String, u64)>,
-    /// M11 I: wake `@task` stubs (`task_key`, `driver_state`).
     pub(crate) wake_calls: Vec<(String, u64)>,
 }
 
 impl RuntimeWiring {
-    /// One derivation for both image flavors, with no flavor-conditional
-    /// behavior in it at all. plans/M6.md item F/G's own found-and-fixed
-    /// defect (this module's block comment above) is exactly that the
-    /// runtime block **is** part of the image, tests or not, so the day
-    /// `layout_program` grows a real entry it must find the identical boot
-    /// sequence `wrela test` already boots. plans/M7.md item W removed the
-    /// one exception that had grown back: a `reject_parameterized_init`
-    /// flag, set only by `layout_test_image`, that made a parameterized
-    /// `init` a build error on the path that boots and a silent no-op on
-    /// the path that does not. Both paths now materialize the same
-    /// arguments and fail closed on the same shapes.
     pub(crate) fn derive(boot: &BootCtx) -> Result<Option<RuntimeWiring>, LayoutError> {
         let group_max_children = crate::codegen::group_max_children_of(boot.group_child_index);
         let Some(mut tables) = compute_runtime_tables(
@@ -973,25 +610,10 @@ impl RuntimeWiring {
         .filter(|t| t.total_bytes > 0) else {
             return Ok(None);
         };
-        // plans/M8.md item C1: placement first — it decides how many cores
-        // this image brings up, which stripes the scheduler tables before
-        // anything is placed or emitted against them.
         let placement =
             crate::placement::place(boot.graph, boot.modules, boot.layout_ctx, boot.graph.cores)
                 .map_err(LayoutError::new)?;
         tables.stripe_for_cores(placement.cores);
-        // plans/M8.md item C1's second fail-closed arm. A `@driver`'s ISR
-        // and `@task` bottom half are emitted into the **checkpoint
-        // service**, which only core 0's entry driver and core 0's compiled
-        // code ever call; its `init` likewise runs in core 0's boot
-        // sequence. So a driver inferred or annotated onto a secondary core
-        // would be a second truth of exactly the shape shape decision 2
-        // forbids — the report saying `core=2` while every one of that
-        // driver's own instructions runs on core 0. 04 §3 is explicit
-        // ("a `@driver`'s vectors, pools, permits, and recovery lanes live
-        // on its core; there is no cross-core hardware state"), so this is
-        // refused rather than approximated. Lifting it is item C2's
-        // per-core checkpoint work, not a silent demotion here.
         for (i, d) in tables.drivers.iter().enumerate() {
             let core = placement
                 .core_of(&crate::eval::image::ImageDeclRef::Driver(i))
@@ -1007,15 +629,6 @@ impl RuntimeWiring {
                 )));
             }
         }
-        // plans/M8.md item C2, on top of item D: one entry per **mailbox
-        // root**, in `mailbox_root_names` order — every declared actor,
-        // then every messageable `@driver`. A driver's entry is always 0:
-        // shape decision 2 keeps `@driver` on core 0 and the arm just above
-        // refuses anything else, so a messageable driver is only ever a
-        // ring *destination*, never a ring source, and 04 §3's "a
-        // `@driver`'s vectors, pools, permits, and recovery lanes live on
-        // its core" is not in tension — a ring slot carries a method index,
-        // a waker and that method's own argument words, and nothing else.
         let mut actor_cores: Vec<usize> = (0..tables.actors.len())
             .map(|i| {
                 placement
@@ -1031,12 +644,6 @@ impl RuntimeWiring {
                 .map(|_| 0),
         );
         let shapes = merge_actor_pub_methods(boot.modules, boot.layout_ctx)?;
-        // plans/M8.md item D: dispatch tables are per *mailbox root*, in
-        // `mailbox_root_names`' order — the same order
-        // `build_runtime_glue_block` walks. A messageable driver's methods
-        // are numbered by the identical `merge_actor_pub_methods` shapes
-        // `actor_method_index_tables` hands codegen, so an admitted method
-        // index means the same thing on both sides.
         let dispatch = mailbox_root_names(&tables)
             .into_iter()
             .map(|name| {
@@ -1054,14 +661,6 @@ impl RuntimeWiring {
                 (name, keys)
             })
             .collect();
-        // Every rejection this pass can still make lives in here, keyed on
-        // the shape boot genuinely cannot marshal rather than on "declares
-        // parameters at all" (`build_boot_init_calls`'s own doc comment
-        // lists them). Derived against the *declared* actor set, never
-        // against every struct in the closure — an `init` on a plain data
-        // struct is ordinary, legal code (`Pair.init(lo, hi)` in
-        // `golden/boot-actor-reply-struct`) and is none of this pass's
-        // business.
         let layouts = closure_layout_types(boot.modules, boot.programs)?;
         let backings =
             crate::eval::image_checks::pool_backings(boot.graph, &layouts).map_err(|e| {
@@ -1098,23 +697,15 @@ impl RuntimeWiring {
             irq_calls: Vec::new(),
             wake_calls: Vec::new(),
         };
-        // plans/M8.md item C2 / Wave 1: rings from FlowWir call sites (no
-        // CodegenProgram) so live rtconfig can generate before runtime codegen.
         let rings = cross_core_rings(boot.flow, &wiring)?;
         reject_unlowerable_cross_core_shapes(&rings, &wiring, boot, boot.flow)?;
         wiring.tables.add_cross_core_rings(rings);
-        // M11 F: stamp select/drain/child facts onto tables so dump and
-        // live runtime codegen share one `rtconfig::generate` input.
         fill_rtconfig_facts(&mut wiring)?;
-        // M11 I: IRQ/wake facts for checkpoint body (decision 823).
         fill_checkpoint_irq_facts(&mut wiring, boot)?;
         Ok(Some(wiring))
     }
 }
 
-/// Fill `RuntimeTables::{select_by_core,drain_by_core,child_sites,
-/// ring_target_handles,enqueue_handles,enqueue_actors}` from the finished
-/// wiring (plans/M11.md item F / decision 790; item G / decision 801).
 fn fill_rtconfig_facts(wiring: &mut RuntimeWiring) -> Result<(), LayoutError> {
     let roots = mailbox_root_names(&wiring.tables);
     let mut select_by_core: Vec<Vec<String>> = vec![Vec::new(); wiring.tables.cores];
@@ -1149,9 +740,6 @@ fn fill_rtconfig_facts(wiring: &mut RuntimeWiring) -> Result<(), LayoutError> {
         };
         child_sites.push((callee_key.clone(), child_index, actor_n + msg_drivers + pos));
     }
-    // Handle space: actors then drivers then devices (image_decl_handle_word).
-    // Mailbox roots are actors then messageable drivers — handle word for
-    // actor i is i; for messageable driver at drivers[j] it is actor_n + j.
     let mut enqueue_handles = Vec::new();
     let mut enqueue_actors = Vec::new();
     for (i, a) in wiring.tables.actors.iter().enumerate() {
@@ -1194,14 +782,12 @@ fn fill_rtconfig_facts(wiring: &mut RuntimeWiring) -> Result<(), LayoutError> {
             .map(|(_, m)| m.clone())
             .unwrap_or_default();
         root_methods.push(methods);
-        // `actor_cores` is parallel to `mailbox_root_names` == enqueue_actors order.
         root_cores.push(wiring.actor_cores.get(i).copied().unwrap_or(0));
     }
     wiring.tables.enqueue_handles = enqueue_handles;
     wiring.tables.enqueue_actors = enqueue_actors;
     wiring.tables.root_methods = root_methods;
     wiring.tables.root_cores = root_cores;
-    // M11 H: drivers then actors (same call order as former emit_boot_init).
     let n_boot_calls = wiring
         .driver_init_calls
         .iter()
@@ -1218,14 +804,10 @@ fn fill_rtconfig_facts(wiring: &mut RuntimeWiring) -> Result<(), LayoutError> {
     Ok(())
 }
 
-/// M11 I / decision 823 / M12 item D: stamp IRQ vector bits + contiguous
-/// `WAKE.wake_pending` addresses onto `tables`, and handler/task keys onto
-/// `wiring` for inject.
 fn fill_checkpoint_irq_facts(
     wiring: &mut RuntimeWiring,
     boot: &BootCtx,
 ) -> Result<(), LayoutError> {
-    // Place once for driver_state addresses (wake region still empty).
     let rtdata = place_runtime_tables(wrela_machine::layout::RTDATA_BASE, &wiring.tables);
     let (irq, wake) = checkpoint_irq_shape(Some(boot), Some(&rtdata), Some(&wiring.tables));
     if irq.len() > crate::rtconfig::IRQ_CALL_POOL_COUNT {
@@ -1242,8 +824,6 @@ fn fill_checkpoint_irq_facts(
             crate::rtconfig::WAKE_CALL_POOL_COUNT
         )));
     }
-    // Reserve the contiguous WAKE array after rings, then re-place so
-    // `wake_base` sits past the ring reservation.
     wiring.tables.total_bytes += (wake.len() as u64) * 8;
     wiring.tables.wake_pending_addrs = vec![0; wake.len()];
     let rtdata = place_runtime_tables(wrela_machine::layout::RTDATA_BASE, &wiring.tables);
@@ -1251,12 +831,10 @@ fn fill_checkpoint_irq_facts(
     wiring.tables.wake_pending_addrs = (0..wake.len())
         .map(|i| rtdata.wake_base + (i as u64) * 8)
         .collect();
-    // First drain index per driver (shared-bit / Reloc::WakePending target).
     for d in &mut wiring.tables.drivers {
         d.wake_drain_index = None;
     }
     for e in &wake {
-        // Match by placed driver_state address.
         if let Some(di) = rtdata
             .drivers
             .iter()
@@ -1282,24 +860,9 @@ fn fill_checkpoint_irq_facts(
 pub struct BootCtx<'a> {
     pub graph: &'a ImageGraph,
     pub modules: &'a BTreeMap<String, Module>,
-    /// Typed programs for the same closure — needed so
-    /// `closure_layout_types` can run `complete_layouts` (plans/M10.md
-    /// item E1 / A2b carry): a `@layout(runtime)` array length that is a
-    /// `const` name has no size until after const evaluation, and that
-    /// evaluation's results live here.
     pub programs: &'a BTreeMap<String, TypedProgram>,
     pub layout_ctx: &'a LayoutCtx,
-    /// `codegen::async_frame_sizes`' result for this same build — every
-    /// async fn's own persistent frame bytes, the park-and-resume
-    /// redesign's sizing input (`compute_runtime_tables`'s own doc).
     pub async_frames: &'a BTreeMap<String, u64>,
-    /// `codegen::compute_group_child_indices`' result for this same build
-    /// (plans/M6.md item F / M10 E4): every `g.start`-able callee's own
-    /// fixed child-slot ordinal — consumed by `__wrela_child_poll` /
-    /// rtconfig child ladders (M11 F). Empty for a build with no
-    /// `with group(...)` sites at all.
     pub group_child_index: &'a BTreeMap<String, usize>,
-    /// Guest FlowWir for this build — Wave 1 ring/checkpoint facts for
-    /// `RuntimeWiring::derive` without a compiled `CodegenProgram`.
     pub flow: &'a FlowWirProgram,
 }

@@ -1,15 +1,5 @@
 module examples.boot_actor_chain
 
-# The two-hop await chain (park-and-resume's own flagship shape, pinned
-# as a transcript golden): the root test turn parks awaiting
-# `Outer.relay`; Outer's turn parks awaiting `Inner.get` — a nested
-# suspension, each turn carrying its own waker (root's area in Outer's
-# message, Outer's area in Inner's) — Inner's sync turn completes as one
-# unsuspendable turn, Outer resumes at its saved state with the reply in
-# its own reply slot and completes, and the root resumes the same way.
-# Every hop goes through the one real scheduler (`rt_select_and_run`/
-# `rt_run_one` + the entry driver's root loop): no turn ever nests on
-# another's native call stack (04-compiler.md §2).
 
 @actor
 pub struct Inner:

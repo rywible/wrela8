@@ -1,8 +1,5 @@
 module examples.err_actor_handle_reply
 
-# 02-language.md §9.1: a public actor method's own return type is the
-# reply shape — handing an `Actor[T]` handle back through a reply is the
-# identical violation as taking one in, rejected at declaration.
 @actor
 pub struct Registry:
     id: u64

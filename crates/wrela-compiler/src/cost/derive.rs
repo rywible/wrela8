@@ -1,34 +1,3 @@
-//! Lane 2 **derived tables** (plans/codegen-pareto.md item A, decisions
-//! 1720–1729).
-//!
-//! M20 item C committed one measured artifact: `lane2-freq.txt`, a
-//! `<fn_key>#<block_index> = <count>` vector taken from the host DRAM
-//! snapshot of a real boot ([`super::freq::BlockFreq`]). This module turns
-//! that one vector into the three tables the codegen-Pareto plan keys off:
-//!
-//! 1. **per-loop measured trip counts** — decides whether unrolling is ever
-//!    worth pulling in from the backlog;
-//! 2. **per-block hot/cold classification** — item D's whole input;
-//! 3. **per-fn call frequency** — the plan's deliverable (its consumer, F6,
-//!    was cut at activation by decision 1770; nothing is built on it here).
-//!
-//! ## Why the derivation reads the sidecar and nothing else (decision 1720)
-//!
-//! The sidecar's key space is the `@test(runtime)` image's closure (2527
-//! Lane 2 blocks). No in-compiler build reproduces that closure — the
-//! cost-stage closure has 184 — so a CFG-based derivation would have to
-//! rebuild and re-partition the test image inside a unit test. It does not
-//! need to: every number below is *provable from the counts alone*. What
-//! needs the program being compiled is only the fail-closed staleness check
-//! ([`DerivedTables::check_against_spans`]) and item D's entry point
-//! ([`layout_classes`]), and both take the spans they are handed.
-//!
-//! ## Determinism
-//!
-//! Every map is a `BTreeMap`, every table a `Vec` built in sorted key
-//! order, and every ratio is carried as an integer (milli-trips) — there is
-//! no float and no `HashMap` on any path that reaches an output.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -38,59 +7,12 @@ use super::Fnv64;
 use super::bridge::split_key;
 use super::freq::{self, BlockFreq};
 
-/// The one fn whose Lane 2 counts are an **instrumentation artifact**
-/// rather than a measurement (decision 1724).
-///
-/// `__wrela_rt_primary_boot` contains the loop that zeroes the counter pool
-/// itself:
-///
-/// ```text
-/// @budget(bound=4096)
-/// while zj < BLOCK_POOL_COUNT:
-///     LANE2.hits[zj] = 0
-/// ```
-///
-/// The loop's own blocks increment their counters on every iteration while
-/// the same loop is walking `LANE2.hits[0..3072]` clearing them, so each of
-/// its blocks ends holding *the number of iterations left after its own
-/// global id was passed* — a function of where codegen happened to place
-/// that block in the id space, not of the workload. Measured on
-/// `boot-actors` those four blocks hold 986/984/983/981 and the fn totals
-/// **3938 of the vector's 6647 hits (59.2%)**; its entry block `#0` is
-/// absent from the sidecar entirely, because the zeroing loop wiped it
-/// after it ran. Left in, this fn is the "hottest" code in the image and
-/// every derived table is about the counter-clearing loop.
-///
-/// Excluded **by name**, the same shape `codegen::BLOCK_HIT_KEY` already
-/// uses for the counter helper, and reported rather than hidden:
-/// [`DerivedTables::artifact_hits`] carries the mass that was removed.
 pub const COUNTER_CLEARING_KEY: &str = "__wrela_rt_primary_boot";
 
-/// What the measurement says about one block's layout placement.
-///
-/// **`Unmeasured` is not `Cold`** (decision 1723). The sidecar carries
-/// every non-zero counter from a pool that covers every assigned id, so a
-/// block that is *absent from a fn the sidecar does name* really did
-/// execute zero times — that is `Cold`, real evidence. A block in a fn the
-/// sidecar never names has no evidence at all, and sinking it would be a
-/// guess wearing a measurement's clothes. Item D must leave `Unmeasured`
-/// blocks exactly where they are.
-///
-/// Measured over the real cost-stage closure of `boot-actors`, the split is
-/// 81 hot / 85 cold / **18** unmeasured of 184 blocks
-/// (`unit:layout_classes_over_a_real_bridge_mode_build`) — so on *this*
-/// program the conflation would misplace 18 blocks, not most of them. The
-/// distinction is kept because a layout pass has no way to know in advance
-/// which of the two it is looking at: the same sidecar over a program the
-/// `@test(runtime)` image does not cover would be almost entirely
-/// unmeasured, and nothing in the vector announces that.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum BlockClass {
-    /// Measured, count ≥ 1.
     Hot,
-    /// Measured, count 0 (absent from a fn the sidecar does name).
     Cold,
-    /// No evidence — the sidecar does not name this fn at all.
     Unmeasured,
 }
 
@@ -104,7 +26,6 @@ impl BlockClass {
     }
 }
 
-/// One row of the per-block hot/cold table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockRow {
     pub fn_key: String,
@@ -113,87 +34,45 @@ pub struct BlockRow {
     pub class: BlockClass,
 }
 
-/// One row of the per-fn call-frequency table.
-///
-/// `calls` is `f(fn#0)` (decision 1721). Leader 0's span starts at word 0
-/// of the fn (`codegen::record_spans`), so every **call** runs it. For an
-/// async fn that is the count of *fresh* entries only: the dispatch header
-/// branches straight to `state_flat_base[k]` on a resume, past block 0.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallRow {
     pub fn_key: String,
-    /// `f(fn#0)`, or `None` when block 0 is absent (see
-    /// [`COUNTER_CLEARING_KEY`] — the only measured instance).
     pub calls: Option<u64>,
-    /// Distinct blocks of this fn with a non-zero count.
     pub hot_blocks: u64,
-    /// `Σ f(b)` over this fn.
     pub hits: u64,
 }
 
-/// One row of the per-loop trip-count table.
-///
-/// The grain is a **contiguous run of loop-resident block indices**, not a
-/// proved natural loop — see decision 1722. A gap in the run (an abort
-/// check's cold arm, say) splits one source loop into two rows; two
-/// adjacent source loops with no gap between them merge into one. The row
-/// is therefore a *lower* bound on how many loops there are and an exact
-/// statement about the blocks it names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoopRow {
     pub fn_key: String,
     pub first_block: u32,
     pub last_block: u32,
-    /// Blocks in the run.
     pub blocks: u64,
-    /// `f(fn#0)` — the denominator.
     pub calls: u64,
-    /// `max f(b)` over the run.
     pub peak_count: u64,
-    /// `peak_count / calls`, ×1000 (integer; no float on an output path).
     pub trips_milli: u64,
-    /// `Σ f(b)` over the run.
     pub hits: u64,
 }
 
 impl LoopRow {
-    /// `trips_milli` rendered as a fixed-point decimal.
     pub fn trips_text(&self) -> String {
         format!("{}.{:03}", self.trips_milli / 1000, self.trips_milli % 1000)
     }
 }
 
-/// The three tables, derived from one `lane2-freq.txt`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DerivedTables {
     pub workload: String,
-    /// FNV-1a over the sorted `key=count` body — moves whenever the sidecar
-    /// is edited or regenerated (decision 1725).
     pub sidecar_digest: u64,
-    /// Per-block hot/cold, sorted by `(fn_key, block_index)`. Carries the
-    /// measured (`Hot`) rows only; every other block of a named fn is
-    /// `Cold` and every block of an unnamed fn is `Unmeasured`, both
-    /// answered by [`DerivedTables::class_of`] without a row.
     pub blocks: Vec<BlockRow>,
-    /// Per-loop trip counts, sorted by `(fn_key, first_block)`.
     pub loops: Vec<LoopRow>,
-    /// Per-fn call frequency, sorted by `fn_key`.
     pub calls: Vec<CallRow>,
-    /// `Σ f(b)` over the whole sidecar, artifact included.
     pub total_hits: u64,
-    /// Of `total_hits`, the mass removed by decision 1724.
     pub artifact_hits: u64,
-    /// Fns named by the sidecar, artifact excluded.
     pub measured_fns: u64,
-    /// Keys the sidecar carries, artifact excluded.
     pub measured_keys: u64,
 }
 
-/// Derive the three tables from a parsed sidecar.
-///
-/// Fails closed on a malformed key (`split_key`) and on a sidecar with no
-/// usable row left after decision 1724's exclusion — a vector that is
-/// nothing but the counter-clearing artifact is not a measurement.
 pub fn derive(freq: &BlockFreq) -> Result<DerivedTables, String> {
     let mut per_fn: BTreeMap<&str, BTreeMap<u32, u64>> = BTreeMap::new();
     let mut total_hits: u64 = 0;
@@ -252,11 +131,6 @@ pub fn derive(freq: &BlockFreq) -> Result<DerivedTables, String> {
                 class: BlockClass::Hot,
             });
         }
-        // Decision 1722: a block cannot run more than once per invocation
-        // without a back-edge, so `f(b) > f(fn#0)` *proves* loop residency
-        // and `f(b)/f(fn#0)` is its measured per-call trip count. Needs no
-        // CFG. Without an entry count there is no denominator and the fn
-        // contributes no loop row.
         let Some(entry) = entry.filter(|&e| e > 0) else {
             continue;
         };
@@ -294,7 +168,6 @@ pub fn derive(freq: &BlockFreq) -> Result<DerivedTables, String> {
     })
 }
 
-/// Split a sorted, deduplicated index list into maximal `+1` runs.
 fn contiguous_runs(sorted: &[u32]) -> Vec<Vec<u32>> {
     let mut out: Vec<Vec<u32>> = Vec::new();
     for &b in sorted {
@@ -306,34 +179,16 @@ fn contiguous_runs(sorted: &[u32]) -> Vec<Vec<u32>> {
     out
 }
 
-/// What [`DerivedTables::check_against_spans`] proved about one program.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PartitionCheck {
-    /// FNV-1a over the built program's `(fn_key, block_count)` pairs,
-    /// restricted to the fns the sidecar names. Moves whenever a measured
-    /// fn's block partition changes — the in-range drift the key checks
-    /// below cannot see (decision 1725).
     pub partition_digest: u64,
-    /// Fns named by both the sidecar and the built program.
     pub matched_fns: u64,
-    /// Sidecar keys resolving to a block of a matched fn.
     pub matched_keys: u64,
-    /// Fns the sidecar names that the built program does not contain. Not
-    /// an error — the sidecar's closure is the `@test(runtime)` image and
-    /// any other build is legitimately a different fn set.
     pub unmatched_fns: u64,
 }
 
 impl DerivedTables {
-    /// Item D's classifier: the class of one block of the **built**
-    /// program.
-    ///
-    /// `Hot` when the sidecar measured it non-zero; `Cold` when the sidecar
-    /// names the fn but not this block (a real measured zero); `Unmeasured`
-    /// when the sidecar does not name the fn at all.
     pub fn class_of(&self, fn_key: &str, block_index: u32) -> BlockClass {
-        // `blocks` is sorted by `(fn_key, block_index)`, so both questions
-        // are one binary search each.
         let hit = self
             .blocks
             .binary_search_by(|r| (r.fn_key.as_str(), r.block_index).cmp(&(fn_key, block_index)))
@@ -352,26 +207,6 @@ impl DerivedTables {
         }
     }
 
-    /// **Fail closed on a stale sidecar** (decision 1725).
-    ///
-    /// `spans` is the block partition of the program being compiled, as
-    /// `codegen::block_spans()` records it under bridge mode. Three
-    /// directions error, each with its own unit:
-    ///
-    /// 1. a sidecar key names a fn the built program *does* contain, at a
-    ///    block index that fn does not have — the fn was recompiled into a
-    ///    different shape and its measured counts no longer describe it;
-    /// 2. no fn is named by both — the sidecar describes some other
-    ///    program;
-    /// 3. `spans` is empty — the caller did not build under bridge mode, so
-    ///    there is nothing to check against and a silent pass would be a
-    ///    fiction.
-    ///
-    /// What this **cannot** see is drift that leaves every measured fn's
-    /// block count unchanged and every index in range. That is what
-    /// [`PartitionCheck::partition_digest`] is for: it is a number a caller
-    /// pins, and a pinned artifact that moves is this repo's staleness
-    /// detector of record.
     pub fn check_against_spans(&self, spans: &[BlockSpan]) -> Result<PartitionCheck, String> {
         if spans.is_empty() {
             return Err(format!(
@@ -443,8 +278,6 @@ impl DerivedTables {
         })
     }
 
-    /// The three tables as deterministic text — the review surface, and the
-    /// source of the tables committed to `plans/codegen-pareto-A.md`.
     pub fn render(&self) -> String {
         let mut s = String::new();
         s.push_str(&format!(
@@ -520,26 +353,13 @@ impl DerivedTables {
     }
 }
 
-/// Item D's hot/cold classification for one program.
-///
-/// The two states are deliberately distinct types rather than an empty map:
-/// "no sidecar" and "a sidecar that measured nothing here" must not be the
-/// same call for a layout pass.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LayoutClasses {
-    /// No `lane2-freq.txt` next to the source. **Item D must leave the
-    /// layout exactly as it found it** — every block is hot, nothing moves.
-    /// This is the degradation, not a guess at coldness.
     Unmeasured,
-    /// A sidecar that passed [`DerivedTables::check_against_spans`].
     Measured(Box<DerivedTables>, PartitionCheck),
 }
 
 impl LayoutClasses {
-    /// The class of one block of the built program.
-    ///
-    /// [`LayoutClasses::Unmeasured`] answers [`BlockClass::Unmeasured`] for
-    /// every block — item D reads that as "leave it where it is".
     pub fn class_of(&self, fn_key: &str, block_index: u32) -> BlockClass {
         match self {
             LayoutClasses::Unmeasured => BlockClass::Unmeasured,
@@ -547,26 +367,11 @@ impl LayoutClasses {
         }
     }
 
-    /// Whether any measurement is behind this classification at all.
     pub fn is_measured(&self) -> bool {
         matches!(self, LayoutClasses::Measured(..))
     }
 }
 
-/// **Item D's entry point.**
-///
-/// `source` is the compiled `input.wr` (the sidecar is its sibling,
-/// `super::freq::sibling_block_freq_path`); `spans` is the block partition
-/// of the program being compiled, from `codegen::block_spans()` under
-/// bridge mode.
-///
-/// - No `source`, or no sidecar beside it → [`LayoutClasses::Unmeasured`].
-///   Item D leaves layout unchanged. This is the **only** silent path, and
-///   it is silent because "there is no measurement" is the ordinary case
-///   for every non-boot-bearing program in the tree.
-/// - A sidecar that is present but malformed, or stale against `spans` →
-///   `Err`. A stale profile is a wrong profile and it must not lay out an
-///   image (fail closed).
 pub fn layout_classes(source: Option<&Path>, spans: &[BlockSpan]) -> Result<LayoutClasses, String> {
     let Some(source) = source else {
         return Ok(LayoutClasses::Unmeasured);
@@ -599,8 +404,6 @@ mod tests {
         }
     }
 
-    /// Spans that cover every key of the committed sidecar exactly — the
-    /// "fresh" partition every staleness unit perturbs.
     fn fresh_spans(t: &DerivedTables) -> Vec<BlockSpan> {
         let mut arity: BTreeMap<&str, u32> = BTreeMap::new();
         for b in &t.blocks {
@@ -616,14 +419,11 @@ mod tests {
         out
     }
 
-    // --- the derivation itself -----------------------------------------
-
     #[test]
     fn derives_the_committed_boot_actors_vector() {
         let t = derive(&committed()).expect("derive");
         assert_eq!(t.workload, "boot-actors");
         assert_eq!(t.total_hits, 6647);
-        // Decision 1724: the counter-clearing loop is 59.2% of the vector.
         assert_eq!(t.artifact_hits, 3938);
         assert_eq!(t.measured_fns, 67);
         assert_eq!(t.measured_keys, 364);
@@ -636,28 +436,20 @@ mod tests {
 
     #[test]
     fn the_peak_measured_trip_count_is_thirteen() {
-        // The number the unrolling pull-in decision rests on: no loop in
-        // the workload runs more than 13 iterations per call, and the only
-        // loop that runs 13 runs once in the whole boot.
         let t = derive(&committed()).expect("derive");
         let peak = t.loops.iter().max_by_key(|l| l.trips_milli).expect("loops");
         assert_eq!(peak.fn_key, "copy_bytes_range");
         assert_eq!(peak.trips_milli, 13_000);
         assert_eq!(peak.calls, 1);
-        // The busiest loop by hit mass is the line-buffer copy, at 3.697.
         let busiest = t.loops.iter().max_by_key(|l| l.hits).expect("loops");
         assert_eq!(busiest.fn_key, "copy_line_buf_range");
-        assert_eq!(busiest.trips_milli, 3_696); // 122*1000/33, floored
+        assert_eq!(busiest.trips_milli, 3_696);
         assert_eq!(busiest.hits, 300);
         assert_eq!(busiest.trips_text(), "3.696");
     }
 
     #[test]
     fn call_freq_agrees_with_lane1_on_the_sync_methods() {
-        // Decision 1721's oracle. Lane 1 counts **turns**; `f(fn#0)` counts
-        // **fresh entries**. For a sync method the two must be identical;
-        // for an async one they differ by exactly the suspension count, so
-        // Lane 1 must never be *below* Lane 2's entry count.
         let t = derive(&committed()).expect("derive");
         let lane1 = freq::load_from_path(
             &super::super::repo_root().join("tests/golden/boot-actors/lane1-freq.txt"),
@@ -668,12 +460,10 @@ mod tests {
             .iter()
             .map(|c| (c.fn_key.as_str(), c.calls))
             .collect();
-        // Sync methods: exact agreement.
         assert_eq!(lane1.counts["Ledger.mark"], 3);
         assert_eq!(calls["Ledger.mark"], Some(3));
         assert_eq!(lane1.counts["Ledger.read_marks"], 1);
         assert_eq!(calls["Ledger.read_marks"], Some(1));
-        // Async methods: one fresh entry, several turns.
         for (m, turns) in [
             ("Worker.slow", 3),
             ("Worker.quick", 2),
@@ -686,9 +476,6 @@ mod tests {
 
     #[test]
     fn hot_cold_is_three_valued_and_unmeasured_is_not_cold() {
-        // Decision 1723. `Worker.slow` is measured at blocks 0,1,2,3,7,8,
-        // 9,10,14 — so block 4 of that fn is a measured zero (cold), while
-        // a fn the sidecar never names is unmeasured and must not move.
         let t = derive(&committed()).expect("derive");
         assert_eq!(t.class_of("Worker.slow", 0), BlockClass::Hot);
         assert_eq!(t.class_of("Worker.slow", 4), BlockClass::Cold);
@@ -697,20 +484,11 @@ mod tests {
             t.class_of("A.fn_the_sidecar_never_named", 0),
             BlockClass::Unmeasured
         );
-        // The artifact fn is excluded, so it reads as unmeasured, never as
-        // the hottest code in the image.
         assert_eq!(t.class_of(COUNTER_CLEARING_KEY, 13), BlockClass::Unmeasured);
     }
 
-    // --- determinism ----------------------------------------------------
-
     #[test]
     fn derivation_is_byte_identical_across_runs_and_input_orders() {
-        // Freeze 1714: this exercises the derivation, not a stub. Same
-        // input twice -> identical render; and because every input map is
-        // a `BTreeMap`, the insertion order of the parse cannot leak in —
-        // re-parsing the same body with its lines shuffled must produce the
-        // identical bytes.
         let f = committed();
         let a = derive(&f).expect("a").render();
         let b = derive(&f).expect("b").render();
@@ -738,12 +516,8 @@ mod tests {
         assert_eq!(t.sidecar_digest, derive(&f).expect("again").sidecar_digest);
     }
 
-    // --- fail closed -----------------------------------------------------
-
     #[test]
     fn missing_sidecar_degrades_to_unmeasured_never_to_a_guess() {
-        // Item D's failure mode: no sidecar -> every block unmeasured ->
-        // layout unchanged. Never `Cold`, which would sink the program.
         let none = super::super::repo_root().join("tests/golden/cost-arith/input.wr");
         assert!(freq::sibling_block_freq_path(&none).is_none());
         let lc =
@@ -759,8 +533,6 @@ mod tests {
 
     #[test]
     fn a_present_sidecar_over_an_unbuilt_partition_fails_closed() {
-        // Direction 3: the caller did not build under bridge mode. A pass
-        // here would classify an image against nothing.
         let t = derive(&committed()).expect("derive");
         let err = t.check_against_spans(&[]).expect_err("empty partition");
         assert!(err.contains("set_block_bridge"), "got: {err}");
@@ -772,9 +544,6 @@ mod tests {
 
     #[test]
     fn a_stale_sidecar_fails_closed_on_a_shrunken_fn() {
-        // Direction 1 — the realistic drift: a measured fn is recompiled
-        // into fewer blocks, so its old block indices name blocks that no
-        // longer exist. `Worker.slow` is measured up to block 14.
         let t = derive(&committed()).expect("derive");
         let fresh = fresh_spans(&t);
         t.check_against_spans(&fresh)
@@ -793,7 +562,6 @@ mod tests {
 
     #[test]
     fn a_sidecar_for_a_different_program_fails_closed() {
-        // Direction 2: not one fn in common.
         let t = derive(&committed()).expect("derive");
         let err = t
             .check_against_spans(&[span("Stranger.turn", 0), span("Stranger.turn", 1)])
@@ -803,9 +571,6 @@ mod tests {
 
     #[test]
     fn in_range_drift_is_invisible_to_the_key_checks_and_visible_in_the_digest() {
-        // The honest limit of decision 1725, pinned so it cannot be
-        // forgotten: a partition change that keeps every measured index in
-        // range passes the key checks, and the digest is what moves.
         let t = derive(&committed()).expect("derive");
         let fresh = fresh_spans(&t);
         let a = t.check_against_spans(&fresh).expect("fresh");
@@ -833,35 +598,6 @@ mod tests {
         assert!(err.contains("counter-clearing artifact"), "got: {err}");
     }
 
-    // --- end to end, over a real build ----------------------------------
-
-    /// The sidecar's closure and the cost-stage closure are **different
-    /// programs**, and this is the unit that pins how far apart.
-    ///
-    /// `layout_classes` is item D's entry point, so it must be exercised
-    /// against a real bridge-mode build and not only against the synthetic
-    /// partitions the staleness units use. What it proves:
-    ///
-    /// - the committed sidecar is *not* stale against a fresh build — the
-    ///   fns it names that this closure contains all still have their
-    ///   measured indices in range;
-    /// - the overlap is small and asymmetric in **both** directions, and
-    ///   the two directions are not the same fact. 53 of the sidecar's 67
-    ///   fns are absent from this closure (the sidecar's `@test(runtime)`
-    ///   image carries a test harness and boot init this program does not),
-    ///   and only 81 of its 364 keys resolve — which is M20's own
-    ///   independently-derived "81 resolve" number, so this unit
-    ///   cross-checks that figure rather than restating it.
-    ///
-    /// **The correction this unit forced.** Item A's first pass asserted
-    /// that unmeasured blocks would dominate a real closure, and that this
-    /// was why decision 1723 must keep `Unmeasured` separate from `Cold`.
-    /// Measured, that is false: 81 hot + 85 cold + **18** unmeasured of 184.
-    /// The closure is almost entirely covered. The decision survives on the
-    /// narrower and more honest ground asserted below — 18 blocks would be
-    /// sunk on no evidence whatever, and a layout pass that cannot tell
-    /// "measured zero" from "never measured" has no way to know it is only
-    /// 18 rather than most of the program.
     #[test]
     fn layout_classes_over_a_real_bridge_mode_build() {
         let input = super::super::repo_root().join("tests/golden/boot-actors/input.wr");
@@ -879,22 +615,15 @@ mod tests {
         assert!(lc.is_measured());
         assert_eq!(t.sidecar_digest, 0x4a53_6169_0b06_f87a);
 
-        // The overlap, pinned. `matched_fns + unmatched_fns` is the whole
-        // measured fn set (67, artifact already excluded by decision 1724).
         assert_eq!(check.matched_fns, 14);
         assert_eq!(check.unmatched_fns, 53);
         assert_eq!(check.matched_fns + check.unmatched_fns, t.measured_fns);
-        // M20's independently-derived figure for this pair of closures.
         assert_eq!(check.matched_keys, 81);
         assert!(
             check.matched_keys < t.measured_keys,
             "a closure that resolved every key would mean the two closures were the same program"
         );
 
-        // Decision 1723 over a real partition. The honest distribution: the
-        // closure is *mostly covered*, and the 18 blocks that are not are
-        // exactly the ones a cold-by-default reading would sink on no
-        // evidence.
         let mut hot = 0u64;
         let mut cold = 0u64;
         let mut unmeasured = 0u64;
@@ -906,13 +635,6 @@ mod tests {
             }
         }
         assert_eq!(hot + cold + unmeasured, spans.len() as u64);
-        // **85 -> 83 cold at plans/codegen-pareto-2.md item J** (decision
-        // 1934). Item J leaves the shared runtime closure alone by
-        // construction (decision 1932), so every *hot* block — every key
-        // the committed sidecar resolves — is untouched at 81, and the
-        // two blocks that go are cold ones in `boot-actors`' own actor
-        // methods. The three-valued classification is what makes that
-        // legible rather than a bare total moving.
         assert_eq!((hot, cold, unmeasured), (81, 83, 18));
         assert_eq!(hot, check.matched_keys, "every resolved key is a hot block");
         assert!(
@@ -924,8 +646,6 @@ mod tests {
 
     #[test]
     fn print_the_committed_tables() {
-        // The source of the tables in `plans/codegen-pareto-A.md`. Run with
-        // `-- --nocapture` to regenerate them.
         let t = derive(&committed()).expect("derive");
         println!("{}", t.render());
     }

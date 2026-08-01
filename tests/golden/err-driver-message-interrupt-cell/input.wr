@@ -1,39 +1,5 @@
 module examples.err_driver_message_interrupt_cell
 
-# plans/M8.md item D, decision 23 — the gap the orchestrator's own
-# capability-escape sweep found after the first item-D commit, in the
-# reply direction.
-#
-# `InterruptCell[T]` is **not** sealed authority and deliberately so (M7
-# decision 17: `InterruptCell(v)` is source-constructible, an `@actor` may
-# hold one, it has no `@layout` byte encoding question and no protocol
-# consumption obligation). Every containment rule that the sealed-authority
-# list drives would give the wrong answer for it — so it is invisible to
-# `sema::types::validate_fn_capability_types`, which refuses the other six
-# things a driver could try to export.
-#
-# What *is* true of it is narrower and lives exactly at this boundary.
-# 03-hardware.md §6: "`InterruptCell[T]` is the **sole** ISR/ordinary-code
-# channel: `load_acquire`, `store_release`, `swap_acquire`,
-# `fetch_or_release`, and friends, interrupt-atomic with respect to every
-# vector that may touch the cell. A plain field is not a communication
-# channel." That is a channel between *this* driver's ISR and *this*
-# driver's own ordinary code. A mailbox is a different channel between
-# different principals; a cell crossing it is a second, unordered one,
-# handing the interrupt-status word's value to a sender that owns none of
-# §6's ordering.
-#
-# **Honest about severity.** This was latent, not live, when it was found:
-# `InterruptCell`'s four operations lower against `self.<field>` with a
-# `field_off`, so calling one on a received value stops at
-# `error[unimplemented]: mirroring a method call through this base
-# expression is not checked yet`, and the value is copied so the receiver's
-# cell does not alias the driver's. It is pinned because it becomes live
-# the day method calls through arbitrary base expressions land, and because
-# the value itself already crosses.
-#
-# This is `boot-driver-message`'s own source with one method added. That
-# boot passes; this does not build.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:
@@ -96,13 +62,9 @@ pub struct BlkDriver:
         irq.unmask()
         self.irq = take irq
         self.device = negotiated.start()
-        # Last statement of 03 §9's `Reset -> ... -> Running` chain. A
-        # message that could be *selected* before bring-up finished would
-        # observe 0 here (`root_never_reenters_bring_up`).
         self.bringup_done = 1
         return Ok(unit)
 
-    # 03 §6's ISR: private, restricted effect set, never admissible.
     fn on_queue_irq(self):
         status = self.irq_regs.interrupt_status.read()
         handled = status & 1
@@ -111,7 +73,6 @@ pub struct BlkDriver:
             self.irq_regs.interrupt_ack.write(handled)
             wake(BlkDriver.drain)
 
-    # 03 §6's bottom half: private, woken not admitted.
     @task
     fn drain(mut self):
         status = self.pending.swap_acquire(0)
@@ -120,8 +81,6 @@ pub struct BlkDriver:
         self.drains = self.drains + 1
         return unit
 
-    # The exported surface: plain data in, plain data out. No capability,
-    # no sealed queue value, no receipt crosses this boundary.
     pub fn capacity(read self) -> u64:
         return self.capacity_sectors
 
@@ -134,8 +93,6 @@ pub struct BlkDriver:
     pub fn leak_pending(read self) -> InterruptCell[u32]:
         return self.pending
 
-    # A driver turn that parks: `await` inside a `@driver`'s own `pub async
-    # fn`, resolved into the driver's own turn area (not a free turn).
     pub async fn scaled_capacity(read self) -> u64:
         v = await self.scale.times(n=self.capacity_sectors)
         @discard(reason="migrated: deliberate Err discard (M13 item L)")
@@ -159,7 +116,6 @@ pub struct Scale:
 pub struct Storage:
     disk: Actor[BlkDriver]
 
-    # plans/M8.md item H attack 6: see boot-driver-message.
     init(mut self, disk: Actor[BlkDriver]):
         self.disk = disk
 
@@ -204,11 +160,6 @@ async fn a_driver_turn_parks_and_resumes(disk: Actor[BlkDriver]):
 
 @test(runtime)
 async fn root_never_reenters_bring_up(disk: Actor[BlkDriver]):
-    # 03-hardware.md §9: publication requires `Running`, and every state
-    # transition consumes its input. A driver mailbox must not become a way
-    # to re-enter a driver mid-chain — boot calls every `init` to completion
-    # before the scheduler runs a single turn, so the first admissible
-    # message already sees `Running`. Asserted, not assumed.
     v = await disk.ready()
     @discard(reason="migrated: deliberate Err discard (M13 item L)")
     match v:

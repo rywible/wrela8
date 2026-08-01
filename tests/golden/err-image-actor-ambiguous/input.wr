@@ -1,16 +1,5 @@
 module examples.err_image_actor_ambiguous
 
-# plans/M6.md item H (orchestrator verification probe): the other half of
-# 02-language.md §12.2's own runtime-test handle rule — "If the closure's
-# image declares zero or more than one instance of `T`, the build fails
-# naming the candidates; nothing is searched for or mocked."
-#
-# The zero case is pinned by `golden/err-image-actor-undeclared`. The
-# more-than-one case had no test at all, so half of a rule this repo
-# itself introduced (decision 11b) was unverified. Two `Store` instances,
-# one `Actor[Store]` test parameter: the build must fail *and* name both
-# candidates, because picking either one silently is exactly the
-# "searched for or mocked" behaviour the sentence forbids.
 
 @actor
 pub struct Store:

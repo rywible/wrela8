@@ -1,9 +1,5 @@
 module app.main
 
-# plans/M9.md item II: reachable generic + aliased peer. Import Src under
-# an alias and wrap_box/peel_box, but not Box. Instantiation keys must
-# re-key under the alias (Box[Src] → Box[Item]) or comptime abandons with
-# internal error: struct `Box` not found (HH finding #1).
 from lib.g import Src as Item
 from lib.g import wrap_box
 from lib.g import peel_box
@@ -21,10 +17,6 @@ pub fn t():
     assert D == 406, "aliased peer + reachable generic Box"
 
 
-# Guest-reachable path (plans/M9.md item KK): `@test(runtime)` cannot
-# boot here — layout refuses sizing the reachable generic instantiation
-# (`Box[...]`) in the test-image context. An actor `pub` method seeds
-# the same call graph for mwir/asm without the runtime-test layout path.
 @actor
 pub struct Store:
     settled: u32

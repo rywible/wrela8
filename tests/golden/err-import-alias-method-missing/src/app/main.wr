@@ -2,10 +2,6 @@ module app.main
 
 from lib.pair import Pair as Duo
 
-# plans/M9.md item DD: a genuinely absent method still fails, and the
-# diagnostic names the spelling the author wrote (`Duo`), not the
-# exporter's (`Pair`). Before DD the same shape said `Pair` even when
-# the source never mentioned that name.
 
 fn f(d: Duo) -> u32:
     return d.nope()

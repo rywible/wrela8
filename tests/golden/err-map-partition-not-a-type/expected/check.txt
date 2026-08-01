@@ -1,1 +1,1 @@
-error[type]: `map_partition(L)`'s argument names an `@layout(mmio)` type (03-hardware.md §2), not a value at 20:43
+error[type]: `map_partition(L)`'s argument names an `@layout(mmio)` type (03-hardware.md §2), not a value at 17:43

@@ -1,7 +1,5 @@
 module examples.err_unbounded_no_observation
 
-# plans/M13.md item N: the same shape as check-event-loop-observation but
-# with the observation call removed — refused (no @budget, no observes).
 
 pub fn event_loop() -> u64:
     n: u64 = 0

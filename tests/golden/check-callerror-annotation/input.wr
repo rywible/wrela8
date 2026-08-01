@@ -1,10 +1,5 @@
 module examples.check_callerror_annotation
 
-# plans/M13.md item I — `CallError[E]` and `Admission` are source-nameable.
-# Annotation `Result[_, CallError[E]]` and `from(take e: CallError[E])`
-# type-check (02 §2 prelude / decision 6). Construction of CallError values
-# is still only via await composition; this golden pins the annotation
-# surface and Admission's auto-visible variants.
 
 pub enum AppErr:
     Busy

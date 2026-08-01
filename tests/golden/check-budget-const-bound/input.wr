@@ -1,9 +1,5 @@
 module examples.check_budget_const_bound
 
-# plans/M12.md item B / decisions 871–874: `@budget(bound=NAME)` accepts a
-# module-level `const` of integer type with comptime value ≥ 1, resolved by
-# the same rule as `@layout(runtime)` array lengths (03 §3.1 wording). The
-# typed dump shows the resolved trip-counter N (not the name).
 
 const BOUND: u64 = 64
 

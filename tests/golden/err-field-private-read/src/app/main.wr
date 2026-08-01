@@ -2,8 +2,6 @@ module app.main
 
 from lib.sealed import Sealed, mint
 
-# plans/M13.md item G3: read of a non-`pub` field outside the declaring
-# module is error[sema] naming that module.
 fn probe() -> u32:
     s = mint()
     return s.hidden

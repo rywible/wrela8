@@ -6,7 +6,7 @@ ImageReport v0
   Quota max_memory=10000000
   Quota max_call_depth=1000
   Quota max_exhaustive_cases=65536
-  Input path=examples/boot_handle_index_distinct.wr sha256=5392855536884084b80628a152f025b6cc188fa93d577877932522a07c0ae122
+  Input path=examples/boot_handle_index_distinct.wr sha256=2dd355c53150a8004d1852836f709890be1b623a12a7ae9d2b8ce5f13acf0a66
   Input path=<generated> sha256=d292dc3b2594d68810631d0e804f75618f07496295ab097be2f76d8cd66c9e6f
   Name value=handle-index-distinct
   Target value=Target.wrela_machine_v1

@@ -1,8 +1,5 @@
 module examples.err_map_partition_not_mmio
 
-# plans/M7.md item H1 self-audit — `map_partition(DmaThing)` — not an `@layout(mmio)`
-#
-# What this case would catch: a partition of a type that is not an `@layout(mmio)` struct.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

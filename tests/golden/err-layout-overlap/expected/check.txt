@@ -1,1 +1,1 @@
-error[type]: field `VirtioIrqMmio.interrupt_ack` at offset 0x60 overlaps `VirtioIrqMmio.interrupt_status` (0x60..0x64); a `@layout` type's fields are declared in ascending offset order and never overlap (03-hardware.md §2) at 11:20
+error[type]: field `VirtioIrqMmio.interrupt_ack` at offset 0x60 overlaps `VirtioIrqMmio.interrupt_status` (0x60..0x64); a `@layout` type's fields are declared in ascending offset order and never overlap (03-hardware.md §2) at 7:20

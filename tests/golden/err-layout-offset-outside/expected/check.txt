@@ -1,1 +1,1 @@
-error[type]: `@offset` on field `Header.sector` outside a `@layout` declaration; `@offset(n)` is a field offset inside a `@layout` type (02-language.md §13) at 10:5
+error[type]: `@offset` on field `Header.sector` outside a `@layout` declaration; `@offset(n)` is a field offset inside a `@layout` type (02-language.md §13) at 5:5

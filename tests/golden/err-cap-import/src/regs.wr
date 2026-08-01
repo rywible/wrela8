@@ -1,8 +1,5 @@
 module regs
 
-# The exporting side of `golden/err-cap-import`: an ordinary, real,
-# constructible struct. Nothing here is wrong — the rejection is entirely
-# about the *local* name the importer binds it under.
 pub struct RawRegs:
     base: u64
     len: u64

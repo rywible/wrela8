@@ -1,7 +1,5 @@
 module examples.err_string_exact_form
 
-# plans/M9.md item C1: `String[..N]` is the bounded-occupancy form
-# (02 §6.2). Exact `String[N]` is refused by name.
 
 fn takes(s: String[8]) -> u64:
     return 0

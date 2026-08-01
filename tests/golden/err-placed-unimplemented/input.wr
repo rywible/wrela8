@@ -1,9 +1,5 @@
 module examples.err_placed_unimplemented
 
-# plans/M10.md item A2c: `@placed` is legal only on a module-level
-# `static` of a `@layout(runtime)` type (03-hardware.md §3.1). Retargeted
-# from item A's total refusal ("no static exists") to a wrong-position
-# rejection now that `static` exists.
 
 @placed(0x40500000)
 struct TurnTable:

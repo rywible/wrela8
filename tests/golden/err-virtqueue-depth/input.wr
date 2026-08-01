@@ -1,8 +1,5 @@
 module examples.err_virtqueue_depth
 
-# plans/M7.md item E1: `VirtQueue.configure`'s `depth=` must be a
-# comptime-known nonzero power of two. A non-power-of-two would make the
-# one ring-geometry derivation disagree with virtio's own queue size.
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:

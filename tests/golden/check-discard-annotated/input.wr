@@ -1,7 +1,5 @@
 module examples.check_discard_annotated
 
-# plans/M13.md item L — deliberate Err discard is legal only with
-# `@discard(reason="...")` on the match (02 §13 / decision 9).
 
 @actor
 pub struct Logger:

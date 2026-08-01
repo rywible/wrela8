@@ -1,107 +1,3 @@
-//! Corpus proxy win oracle (plans/M19.md item E / decisions 1450–1453)
-//! plus multi-workload overall veto-then-rank (Phase 2 item K).
-//!
-//! Discover every `tests/golden/cost-*/input.wr` (sorted), score under
-//! two opt-list configs by `total_proxy_cycles` only, and assert the
-//! freeze-1403 win rule: candidate must not raise any case and must
-//! strictly lower at least one.
-//!
-//! Scoring uses the same emit path as `wrela dump --stage=cost`
-//! (`cost::stage`) so force-rooted `core.runtime` is in the totals when
-//! a case is runtime-bearing — the surface opts are gated on.
-//!
-//! Overall compare (item K): given an `OverallSide` for baseline vs
-//! candidate and pinned weights from `bench/workloads.toml`, **veto** if
-//! any non-`flat` workload rises (ε=0), if measured coverage falls, or if
-//! any core's text/TLB budget overflow **grows**; else **rank** by the
-//! weighted mean of relative deltas `(cand−base)/base`.
-//!
-//! The coverage and budget vetoes are soundness side conditions, not
-//! rankings. The scoreboard prices neither "the candidate explains less of
-//! the workload" nor "the candidate no longer fits the core it runs on",
-//! and 04 §5 requires that a proxy win never imply a real-machine loss —
-//! so both are refused rather than absorbed into the mean.
-//!
-//! ## Item J: the words veto retired, the per-core budget installed
-//!
-//! Emitted word count is a **reported column** (04 §5 as item A rewrote it)
-//! and no longer a condition of its own; the hard constraint in its place
-//! is the per-core hot-text / I-TLB / L2-TLB budget of
-//! [`cost::footprint`](crate::cost::footprint). Both landed in one commit,
-//! never one ahead of the other (freeze 1626).
-//!
-//! The replacement is a **delta** rule — no core's over-budget quantity may
-//! rise — and that is decision 1619. The reason is what the rule *means*,
-//! not whether it would fire: an absolute
-//! [`within_budget`](crate::cost::CoreBudget::within_budget) veto refuses a
-//! candidate for a property of the **baseline** (a program already over its
-//! L1I is refused however much better the candidate makes it), while the
-//! veto being retired said "a candidate may not pay for schedule with more
-//! footprint", which is a statement about the **change**. The delta keeps
-//! that sentence true wherever the baseline sits relative to the ceiling.
-//!
-//! **plans/codegen-pareto-2.md decision 1954 made that reasoning load-
-//! bearing rather than hypothetical.** This gate used to score the
-//! cost-stage closure, which is comfortably inside every budget — the
-//! flagship at 7 936 B of hot text against a 65 536 B L1I, `charge = 0` on
-//! both sides. Item F's 91–92 KiB figure was the **image** program, a
-//! different and much larger closure printing a line with the same name,
-//! and item H measured the gap on the flagship at 11×. The gate now scores
-//! the image each root would ship ([`crate::cost::stage::codegen_shipped_program`]),
-//! so *every* image-bearing case is 89–391 KB of hot text and 367–5 092
-//! lines over its L1I on both sides. An absolute veto would now refuse
-//! every candidate including the identity, on every program the appliance
-//! ships — pinned as
-//! `unit:an_over_budget_identity_is_refused_absolutely_and_allowed_as_a_delta`.
-//! The delta rule ranks them, and it is no longer silent: `release` takes
-//! the flagship's `charge` from 6132 to 2569.
-//!
-//! **One** absolute assertion is kept alongside the delta: `within_budget()`
-//! on every `cost-*` case in the corpus oracle, so the rule is live and
-//! silent rather than inert.
-//!
-//! The absolute **I-TLB veto is retired** (plans/M20.md decision 1636). It
-//! was kept on the premise that the I-side page span "is inside budget on
-//! both surfaces", which item M falsified by building the `cost-itlb-span`
-//! golden this plan asked for: core 0 at 57 text pages against 48, which
-//! made the rule refuse **every** candidate at **every** box point, the
-//! identity included. That is precisely the failure decision 1619 names —
-//! an absolute rule refuses a candidate for a property of the **baseline**,
-//! where the veto it replaced spoke about the **change**. The delta rule
-//! already watches `over_itlb_pages`, so a candidate that *worsens* the
-//! span is still refused and nothing was lost by retiring this.
-//!
-//! ## Item J: the ∀ sweep
-//!
-//! [`compare_opt_lists_over_box`] scores both sides at every point of the
-//! residual-uncertainty box that can matter and refuses on any rank flip,
-//! **naming the flipping point**. There is no per-point win predicate in
-//! this module's public surface (freeze 1624) — `∃` is not a shape the API
-//! can express, and `unit:no_public_per_point_win_predicate_exists` checks
-//! that structurally rather than by comment.
-//!
-//! ## Freeze 1633: the barrier-removal refusal (plans/M20.md item G)
-//!
-//! A third side condition, and the only one that is a **correctness** rule
-//! rather than a soundness-of-the-proxy rule: a candidate that emits fewer
-//! ordering words (`DMB`, `LDAR`, `STLR`, system) than the baseline is
-//! **refused**, whatever the cycle numbers say. Barriers are
-//! correctness-load-bearing and `machine.cross-core.publish-acquire-barrier`
-//! is a known-risk gap in plans/BLOCKED.md, so the gate may never credit
-//! deleting one. The rule compares **counts of emitted words** —
-//! [`cost::crosscore::ordering_removals`] — so there is no coefficient,
-//! sweep dimension or table row whose value can satisfy it. Both gates
-//! carry it: [`CorpusCompare::wins`] / [`assert_wins`] for the corpus gate
-//! and [`VetoReason::OrderingWordsRemoved`] for the overall gate.
-//!
-//! **Note for item J:** the model side of this lives entirely in
-//! `cost/crosscore.rs`; the only thing here is the plumbing — two
-//! `CaseDelta` fields plus [`CaseDelta::ordering_removed`], one
-//! `OverallSide` field plus [`OverallSide::with_ordering`], and one
-//! `VetoReason` variant. Retiring the words veto (decision 1626) does not
-//! touch any of it; the barrier refusal is independent of, and outlives,
-//! the words condition.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -122,29 +18,17 @@ use crate::placement::PlacementTable;
 
 use super::{CompileMode, OptId, RELEASE_OPTS, apply_mode, apply_opts};
 
-/// One cost-* case scored under baseline vs candidate.
 #[derive(Debug, Clone)]
 pub struct CaseDelta {
     pub name: String,
-    /// Which corpus tier this case belongs to (decision 1780). Reported in
-    /// every table: decision 1717 forbids a reader having to guess which
-    /// corpus a verdict came from.
     pub tier: CostTier,
-    /// Which program was scored (decision 1954): the shipped image, or a
-    /// closure for a root that declares no `@image`.
     pub scope: TextScope,
     pub baseline: u64,
     pub candidate: u64,
-    /// Static emitted word counts — a **reported column** since item J
-    /// retired the words veto (freeze 1626); no longer a condition.
     pub baseline_words: u64,
     pub candidate_words: u64,
-    /// Per-core text/TLB budgets at the pinned point — the hard constraint
-    /// that replaced the words veto, read as a **delta** (decision 1619).
     pub baseline_budgets: Vec<CoreBudget>,
     pub candidate_budgets: Vec<CoreBudget>,
-    /// Ordering-word counts per `[crosscore]`-priced rule — the freeze-1633
-    /// refusal input (plans/M20.md item G).
     pub baseline_ordering: OrderingCounts,
     pub candidate_ordering: OrderingCounts,
 }
@@ -158,32 +42,22 @@ impl CaseDelta {
         self.candidate_words as i64 - self.baseline_words as i64
     }
 
-    /// **Freeze 1633.** Ordering rules this case emits fewer words of under
-    /// the candidate. Non-empty is a refusal, never a ranking input.
     pub fn ordering_removed(&self) -> Vec<OrderingRemoval> {
         ordering_removals(&self.baseline_ordering, &self.candidate_ordering)
     }
 
-    /// **Decision 1619.** Per-core budget overflow quantities that rose.
-    /// Non-empty is a refusal; this is what stands in the retired words
-    /// veto's place. `Err` when the two sides disagree about how many cores
-    /// exist — that is not a rank, it is two different machines.
     pub fn budget_growth(&self) -> Result<Vec<BudgetGrowth>, String> {
         budget_overflow_growth(&self.baseline_budgets, &self.candidate_budgets)
     }
 }
 
-/// Total priced overflow charge across a side's cores — the reported
-/// magnitude of the budget column.
 fn total_charge(budgets: &[CoreBudget]) -> u64 {
     budgets.iter().fold(0u64, |a, b| a.saturating_add(b.charge))
 }
 
-/// One per-core budget quantity that rose from baseline to candidate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BudgetGrowth {
     pub core: usize,
-    /// The [`CoreBudget`] field name, as printed in the 04 §6 budget line.
     pub field: &'static str,
     pub baseline: u64,
     pub candidate: u64,
@@ -198,10 +72,6 @@ impl BudgetGrowth {
     }
 }
 
-/// The over-budget quantities the delta rule watches, in the order the
-/// 04 §6 budget line prints them. Written as one list so a new overflow
-/// field is added here or nowhere — the failure mode a hand-rolled
-/// comparison per call site would have.
 fn over_budget_quantities(b: &CoreBudget) -> [(&'static str, u64); 7] {
     [
         ("over_l1i_lines", b.over_l1i_lines),
@@ -214,18 +84,6 @@ fn over_budget_quantities(b: &CoreBudget) -> [(&'static str, u64); 7] {
     ]
 }
 
-/// **Decision 1619 — the rule that replaces the words veto.** No core's
-/// over-budget quantity may increase.
-///
-/// The plan asked for the budget "as the hard constraint in its place",
-/// which reads as an absolute [`CoreBudget::within_budget`] test. That
-/// reading is implementable on the cost-stage closure — which is inside
-/// every budget — but it is the wrong rule: it refuses a candidate for a
-/// property of the **baseline**, while the veto it replaces was about the
-/// **change**. It is also unsafe on the image program, whose every core is
-/// already 409–413 lines over its 64 KiB L1I under `W_flat`, where an
-/// absolute veto refuses every candidate including the identity. The delta
-/// is what the words veto actually was, moved onto the right denominator.
 pub fn budget_overflow_growth(
     baseline: &[CoreBudget],
     candidate: &[CoreBudget],
@@ -260,9 +118,6 @@ pub fn budget_overflow_growth(
     Ok(out)
 }
 
-/// The absolute half, kept **in addition** to the delta rule. Item F
-
-/// Full corpus comparison result (per-case + sums).
 #[derive(Debug, Clone)]
 pub struct CorpusCompare {
     pub cases: Vec<CaseDelta>,
@@ -281,25 +136,6 @@ impl CorpusCompare {
         self.candidate_words as i64 - self.baseline_words as i64
     }
 
-    /// True when no case rises in cycles, no case grows a per-core budget
-    /// overflow, no case deletes an ordering word, and at least one
-    /// strictly falls in cycles.
-    ///
-    /// **Words are not checked here** (freeze 1626): with the I-side
-    /// footprint priced, 04 §5 makes the emitted word count a reported
-    /// column and the per-core hot-text / I-TLB / L2-TLB budget the hard
-    /// constraint. The budget condition still exists for the reason the
-    /// word one did — the scoreboard is in-order over an out-of-order core,
-    /// so a candidate must not buy modelled cycles with real instructions —
-    /// but it now asks the question against the denominator the machine has
-    /// rather than against a whole-image word total.
-    ///
-    /// The ordering condition is freeze 1633 and is a different kind of
-    /// rule: not "the proxy might be wrong" but "this word is
-    /// correctness-load-bearing and its deletion is never a win".
-    ///
-    /// A core-count disagreement between the two sides is an error, and an
-    /// error is not a win.
     pub fn wins(&self) -> bool {
         let mut any_fall = false;
         for c in &self.cases {
@@ -321,44 +157,9 @@ impl CorpusCompare {
     }
 }
 
-// ---------------------------------------------------------------------------
-// The corpus and its two tiers (plans/codegen-pareto.md item H,
-// decisions 1716/1717, 1780–1789)
-// ---------------------------------------------------------------------------
-
-/// Which tier of the cost corpus a case belongs to.
-///
-/// **Decision 1780.** The tier is read off the case's *shape*, not off a
-/// list somebody maintains and not off its name:
-///
-/// - **[`Micro`](CostTier::Micro)** — the case owns its program. There is
-///   `.wr` source inside the case directory (the flat `input.wr` shape, or
-///   a `root` naming a package inside the case).
-/// - **[`Product`](CostTier::Product)** — the case owns *no* source at
-///   all. Its whole content is a one-line `root` naming a program that
-///   already exists elsewhere in the tree for its own reasons.
-///
-/// The rule is the honesty rule. Decision 1716's first consequence is
-/// **self-selection**: every item is told to add a `cost-*` case if none
-/// exercises its opt, so each opt ends up graded on a program written to
-/// show it off. A case that does not *contain* its program cannot have had
-/// that program tuned for the gate — the appliance image and the boot
-/// transcripts are what they are for reasons that predate this plan. So
-/// "borrowed" and "product-scale" are the same predicate here, and the
-/// classifier can be a total function of the directory rather than a
-/// declaration a future case could get wrong.
-///
-/// Every other shape — no source and no `root`, both `input.wr` and a
-/// `root`, a `root` that names nothing, a `root` pointing outside the case
-/// while `.wr` files sit inside it — is an **error**, never a default
-/// (decision 1793). M20's `MAX_SWEPT_DIMS` is the worked example of the
-/// failure this avoids from the other side: a gate that silently does not
-/// run is worse than one that admits it is off.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CostTier {
-    /// A microbenchmark written for this corpus.
     Micro,
-    /// A program the appliance actually ships, borrowed whole.
     Product,
 }
 
@@ -370,8 +171,6 @@ impl CostTier {
         }
     }
 
-    /// Both tiers, in the order the tables print them. Written once so a
-    /// third tier is added here or nowhere.
     pub const ALL: [CostTier; 2] = [CostTier::Micro, CostTier::Product];
 }
 
@@ -381,13 +180,8 @@ impl std::fmt::Display for CostTier {
     }
 }
 
-/// One discovered `cost-*` case: its directory name, its tier, and the
-/// program the cost stage is handed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CostCase {
-    /// The case **directory** name (`cost-product-actors`), never the
-    /// borrowed program's directory — the gate's rows must name the case a
-    /// reader can find under `tests/golden/`.
     pub name: String,
     pub tier: CostTier,
     pub input: PathBuf,
@@ -397,14 +191,6 @@ fn golden_root() -> PathBuf {
     normalize_lexically(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/golden"))
 }
 
-/// Collapse `.` and `..` components without touching the filesystem.
-///
-/// A borrowed case's `root` is `../boot-actors/input.wr`, so the joined
-/// path lexically *starts with* the case directory it is escaping — which
-/// would make "does this case own its program?" answer yes for every
-/// product case. Purely lexical because that is what the question is
-/// about: which directory the case's `root` line points into. No symlink
-/// resolution, no `canonicalize`, nothing that depends on the checkout.
 fn normalize_lexically(p: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for c in p.components() {
@@ -421,8 +207,6 @@ fn normalize_lexically(p: &Path) -> PathBuf {
     out
 }
 
-/// Every `.wr` file at or under `dir`, recursively. Used only to decide
-/// whether a case owns source; the answer is a bool, so it stops early.
 fn contains_wr_source(dir: &Path) -> bool {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return false;
@@ -443,13 +227,6 @@ fn contains_wr_source(dir: &Path) -> bool {
     false
 }
 
-/// **Decision 1793 — a case belongs to exactly one tier, or the corpus
-/// refuses to be discovered.**
-///
-/// Returns `Err` with the case named and the shape described. There is no
-/// "assume micro" branch: a case that falls through the classifier would be
-/// scored by the gate while belonging to no tier's verdict, which is
-/// precisely the lane-nobody-runs failure M20 spent an item on.
 pub fn classify_cost_case(dir: &Path) -> Result<CostCase, String> {
     let dir = &normalize_lexically(dir);
     let name = dir
@@ -493,8 +270,6 @@ pub fn classify_cost_case(dir: &Path) -> Result<CostCase, String> {
                 ));
             }
             let owns_source = contains_wr_source(dir);
-            // Read off the normalized target, not off the `root` line's
-            // spelling: `./../x` and `../x` are the same escape.
             let borrowed = !target.starts_with(dir);
             match (borrowed, owns_source) {
                 (true, false) => Ok(CostCase {
@@ -522,13 +297,6 @@ pub fn classify_cost_case(dir: &Path) -> Result<CostCase, String> {
     }
 }
 
-/// Deterministic discovery of every `tests/golden/cost-*` case with its
-/// tier, sorted by case name (decision 1450's ordering, widened by
-/// decision 1780's tiering).
-///
-/// Fails closed: one unclassifiable directory refuses the **whole** corpus
-/// rather than dropping that case. Sampling the corpus and ranking over
-/// what is left is the failure this item exists to correct.
 pub fn try_discover_cost_cases() -> Result<Vec<CostCase>, String> {
     let root = golden_root();
     let entries = std::fs::read_dir(&root).map_err(|e| format!("read {}: {e}", root.display()))?;
@@ -552,14 +320,10 @@ pub fn try_discover_cost_cases() -> Result<Vec<CostCase>, String> {
     Ok(cases)
 }
 
-/// [`try_discover_cost_cases`], panicking with the offending case named.
-/// Every gate entry point goes through this, so an untiered case stops the
-/// gate instead of quietly leaving the corpus.
 pub fn discover_cost_cases() -> Vec<CostCase> {
     try_discover_cost_cases().unwrap_or_else(|e| panic!("cost corpus: {e}"))
 }
 
-/// Cases in one tier only.
 pub fn discover_cost_cases_in(tier: CostTier) -> Vec<CostCase> {
     discover_cost_cases()
         .into_iter()
@@ -567,21 +331,14 @@ pub fn discover_cost_cases_in(tier: CostTier) -> Vec<CostCase> {
         .collect()
 }
 
-/// The scored programs of the whole corpus, both tiers, sorted by case
-/// name (decision 1450). Kept path-only for the several structural census
-/// tests outside this module that walk the corpus and do not care which
-/// tier a program came from.
 pub fn discover_cost_corpus() -> Vec<PathBuf> {
     discover_cost_cases().into_iter().map(|c| c.input).collect()
 }
 
-/// Lower+codegen+score `path` under an explicit opt list, via the
-/// dump `--stage=cost` pipeline (force-roots included when relevant).
 pub fn score_path_under_opts(path: &Path, opts: &[OptId]) -> u64 {
     report_path_under_opts(path, opts).total_proxy_cycles
 }
 
-/// Same, returning the full report (cycles + static words).
 pub fn report_path_under_opts(path: &Path, opts: &[OptId]) -> CostReport {
     apply_opts(opts);
     report_cost_stage_path(path).unwrap_or_else(|e| {
@@ -589,12 +346,6 @@ pub fn report_path_under_opts(path: &Path, opts: &[OptId]) -> CostReport {
     })
 }
 
-/// [`report_path_under_opts`] over the program that would **ship**
-/// (decision 1954) — the image where the root declares one, the closure
-/// where it does not — plus which of the two it was.
-///
-/// The corpus gate and the ∀ sweep both go through this, so they rank the
-/// same program as each other and as `wrela build`.
 fn shipped_report_under_opts(path: &Path, opts: &[OptId]) -> (CostReport, TextScope) {
     apply_opts(opts);
     let (program, placement, scope) = codegen_shipped_program(path)
@@ -605,8 +356,6 @@ fn shipped_report_under_opts(path: &Path, opts: &[OptId]) -> (CostReport, TextSc
     (report, scope)
 }
 
-/// Score every cost-* case under `baseline` vs `candidate` opt lists
-/// (decision 1451–1452). Restores `CompileMode::Release` afterward.
 pub fn compare_opt_lists(baseline: &[OptId], candidate: &[OptId]) -> CorpusCompare {
     let corpus = discover_cost_cases();
     assert!(
@@ -659,16 +408,12 @@ pub fn compare_opt_lists(baseline: &[OptId], candidate: &[OptId]) -> CorpusCompa
     }
 }
 
-/// Freeze-1403 oracle: `RELEASE_OPTS` vs empty (`dev`). Panics with the
-/// per-case table if any case rises or none falls.
 pub fn assert_release_wins_cost_corpus() -> CorpusCompare {
     let cmp = compare_opt_lists(&[], RELEASE_OPTS);
     assert_wins(&cmp, "release", "dev");
     cmp
 }
 
-/// Candidate helper: `candidate` must win vs `baseline` the same way
-/// (decision 1452).
 pub fn assert_candidate_wins(baseline: &[OptId], candidate: &[OptId]) -> CorpusCompare {
     let cmp = compare_opt_lists(baseline, candidate);
     assert_wins(&cmp, "candidate", "baseline");
@@ -709,8 +454,6 @@ fn assert_wins(cmp: &CorpusCompare, cand_label: &str, base_label: &str) {
         rose.len(),
         rose.join("\n"),
     );
-    // Decision 1619: the per-core budget replaces the words veto, as a
-    // **delta**. Words stay in the table above as a reported column.
     assert!(
         grew.is_empty(),
         "{cand_label} grew a per-core text/TLB budget overflow on {} \
@@ -719,11 +462,6 @@ fn assert_wins(cmp: &CorpusCompare, cand_label: &str, base_label: &str) {
         grew.len(),
         grew.join("\n"),
     );
-    // Freeze 1633: barriers and the ordered accesses are
-    // correctness-load-bearing, so their deletion is refused structurally
-    // rather than priced. Checked before the "something fell" rule, since a
-    // candidate whose only gain is a deleted barrier must read as refused,
-    // not as "no case fell".
     assert!(
         unordered.is_empty(),
         "{cand_label} deleted correctness-load-bearing ordering words on {} case(s) — \
@@ -737,13 +475,6 @@ fn assert_wins(cmp: &CorpusCompare, cand_label: &str, base_label: &str) {
     );
 }
 
-/// Stable text table for item L's evidence block.
-///
-/// `words_b` / `words_c` / `Δw` stay — as a **reported column** (freeze
-/// 1626), no longer a veto — and `chg_b` / `chg_c` / `Δchg` carry the
-/// per-core budget charge that took the veto's place. `cores=0` in the
-/// budget column means the case has no `@image`, so there is no per-core
-/// denominator and the budget rule is inert on it.
 pub fn format_delta_table(cmp: &CorpusCompare, base_label: &str, cand_label: &str) -> String {
     let mut out = String::new();
     out.push_str(&format!(
@@ -780,9 +511,6 @@ pub fn format_delta_table(cmp: &CorpusCompare, base_label: &str, cand_label: &st
             c.baseline_budgets.len(),
         ));
     }
-    // Decision 1717: both tiers get printed, and a per-tier subtotal is
-    // what makes "the two tiers disagree" a thing a reader can see rather
-    // than derive. The product row governs.
     for tier in CostTier::ALL {
         let rows: Vec<&CaseDelta> = cmp.cases.iter().filter(|c| c.tier == tier).collect();
         if rows.is_empty() {
@@ -841,81 +569,8 @@ pub fn format_delta_table(cmp: &CorpusCompare, base_label: &str, cand_label: &st
     out
 }
 
-// ---------------------------------------------------------------------------
-// The ∀ sweep over the residual-uncertainty box (plans/M20.md item J,
-// decision 1604, freeze 1624)
-// ---------------------------------------------------------------------------
-
-/// Fail-closed bound on how many dimensions one case may sweep.
-///
-/// The bound exists so a model change that makes many more dimensions live
-/// **errors** rather than silently truncating the sweep — decision 1604
-/// forbids dropping a dimension, so the only honest response to a box this
-/// gate cannot enumerate is to refuse to rank. It is not a performance
-/// target and never a knob to turn until a candidate passes.
-///
-/// **Set to 14 deliberately, on a measurement, 2026-07-30.** `cost-crosscore`
-/// reads `dmb_cost`, `snoop_cost`, `load_acquire_cost` and
-/// `store_release_cost` on top of the ten the rest of the corpus reaches,
-/// so its probe reports 14 surviving dimensions. At the old bound of 12
-/// the whole-corpus gate did not rank *anything*: it refused at
-/// `cost-crosscore` before reaching any candidate, and since freeze 1714
-/// routes every landing through `compare_opt_lists_over_box`, no opt could
-/// be ranked over the box at all. A bound that refuses the entire corpus
-/// is not a fail-closed bound, it is an outage.
-///
-/// The cost is measured, not guessed. The 1916 s (31 m 58 s) figure once
-/// recorded here does not reproduce, and the run that produced it also
-/// *failed*, on the since-retired absolute I-TLB veto.
-///
-/// The unit to plan by is **∀ points enumerated per side**, because that is
-/// determined; wall clock on the machine that measured this was not, and
-/// is quoted below only as a range with its `n`.
-///
-/// | when | corpus | release sweep pts/side | whole deep lane pts/side |
-/// | --- | --- | --- | --- |
-/// | 2026-07-30 (M20) | 15 micro | 26 112 | 52 224 |
-/// | 2026-07-31 (item H) | 15 micro + 4 product | 36 352 | **93 184** |
-///
-/// Item H's four product cases raise the release sweep by 10 240
-/// points/side (28% of it) and add a third deep test,
-/// `each_release_opt_is_re_asked_alone_on_the_product_tier`, for **×1.78
-/// the deep lane's ∀ work**.
-///
-/// **That ×1.78 did not show up as wall clock.** As `xtask::deep_lane`
-/// invokes it, the widened lane ran in **309 / 362 / 397 s** (n=3) against
-/// **411 s** (n=1) before — all three faster, on the same laptop under the
-/// same concurrent-worktree load. Not because the product cases are cheap:
-/// because the third `#[ignore]`d test gives `cargo test` a third harness
-/// thread, and two long sweeps had been leaving cores idle. The same
-/// widened corpus with only two tests took 597 s, which is what the extra
-/// points cost without that parallelism. Minutes either way is a deep-lane
-/// cost, not a `cargo test` cost, which is why these sweeps are
-/// `#[ignore]`d and run by `xtask::deep_lane` — a lane that, until that
-/// function landed, did not exist, so this gate was refusing into a void
-/// nothing executed. `--fast` does not reach it (`xtask::check` returns
-/// first), so the cost lands at milestone close and nowhere else. M20's
-/// 243 s idle figure is not comparable to any of these; an idle
-/// re-measurement belongs to the close.
-///
-/// No product case pushes the probe past this bound: the widest is
-/// `cost-product-blk`/`cost-product-receipt` at `k=12`, under
-/// `cost-crosscore`'s 14. That was the risk worth naming — a borrowed
-/// program reaching `k=15` would have made the widened corpus refuse to
-/// rank at all, which is this constant's own worked failure.
-///
-/// Raising it further needs the same treatment: a measured wall time for
-/// the deep lane, in its own commit, with the reason the model now reads
-/// more of the box.
 pub const MAX_SWEPT_DIMS: usize = 14;
 
-/// A dimension the sensitivity probe proved cannot matter for one case, so
-/// it is held at its pinned value instead of being cornered over.
-///
-/// This is **not** dropping a dimension (decision 1604). `read=false` means
-/// the model never asked for this dimension's value while scoring either
-/// side — a term that is never read cannot change a score at any point of
-/// the box, whatever the other dimensions do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeldDim {
     pub dim: String,
@@ -930,20 +585,11 @@ impl HeldDim {
     }
 }
 
-/// One point of one case's residual box, both sides scored.
-///
-/// Deliberately plain data with no verdict on it: a `wins`-shaped method
-/// here would be the `∃` form freeze 1624 refuses, one `.iter().any()` away
-/// from a search for a flattering assumption. The only verdict in this
-/// module's public surface is [`SweepCompare::wins`], which is ∀.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PointRow {
-    /// [`SweepPoint::label_over`] the case's surviving dimensions.
     pub point: String,
     pub baseline: u64,
     pub candidate: u64,
-    /// Σ per-core budget charge, which moves with the point (its terms are
-    /// `l2_latency`, `l3_latency` and `tlb_walk_cost`).
     pub baseline_charge: u64,
     pub candidate_charge: u64,
 }
@@ -954,25 +600,15 @@ impl PointRow {
     }
 }
 
-/// One case swept over its residual box.
 #[derive(Debug, Clone)]
 pub struct CaseSweep {
     pub name: String,
-    /// Which corpus tier this case belongs to (decision 1780).
     pub tier: CostTier,
-    /// Dimensions the committed profile declares — the nominal box.
     pub box_dims: usize,
-    /// `2^box_dims`: the endpoint-corner cardinality of the whole box.
     pub box_cardinality: u64,
-    /// Dimensions this case is sensitive to; `k = swept.len()`.
     pub swept: Vec<String>,
-    /// Dimensions held at pinned, with the bracket each was held across.
     pub held: Vec<HeldDim>,
-    /// Read by the model but with no measured effect at any probe base.
-    /// **Kept in `swept` anyway** — the probe excludes on "never read", and
-    /// this list is the doubt it refused to resolve in its own favour.
     pub read_but_static: Vec<String>,
-    /// `2^k` rows, in [`endpoint_corners`] order.
     pub points: Vec<PointRow>,
 }
 
@@ -982,45 +618,28 @@ impl CaseSweep {
     }
 }
 
-/// Why a swept comparison was refused. Every variant that can name a point
-/// does (04 §5: a reason that fires at one point of the residual box names
-/// that point).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SweepVeto {
-    /// The candidate's total is higher than the baseline's at this point.
     CaseRose {
         case: String,
         point: String,
         baseline: u64,
         candidate: u64,
     },
-    /// **Decision 1619.** A per-core budget overflow quantity rose at this
-    /// point.
     BudgetGrew {
         case: String,
         point: String,
         growth: BudgetGrowth,
     },
-    /// **Freeze 1633.** Point-independent: a count of emitted words.
     OrderingWordsRemoved {
         case: String,
         rule: &'static str,
         baseline: u64,
         candidate: u64,
     },
-    /// No case **in this tier** falls at *every* point of its own box.
-    /// 04 §5's "must strictly lower at least one" read under ∀: a case that
-    /// falls only where the assumptions flatter it has not lowered
-    /// anything.
-    ///
-    /// **Decision 1782 — the rule is per tier, not per corpus.** Decision
-    /// 1717 says an opt may not gate on a case it authored alone, and a
-    /// corpus-wide quantifier is exactly the loophole that permits it: with
-    /// the tiers pooled, an opt that wins only on the microbenchmark it
-    /// shipped with satisfies "some case fell everywhere" while the
-    /// appliance never moved. Asking the question once per tier is what
-    /// makes the product tier a gate rather than a printout.
-    NoCaseFallsEverywhere { tier: CostTier },
+    NoCaseFallsEverywhere {
+        tier: CostTier,
+    },
 }
 
 impl SweepVeto {
@@ -1051,10 +670,6 @@ impl SweepVeto {
         }
     }
 
-    /// The tier this refusal is about, when it has one. `CaseRose` and
-    /// friends name a case rather than a tier; the sweep looks the case's
-    /// tier up, which is why this returns `None` for them and
-    /// [`SweepCompare::reasons_for_tier`] does the join.
     pub fn tier(&self) -> Option<CostTier> {
         match self {
             SweepVeto::NoCaseFallsEverywhere { tier } => Some(*tier),
@@ -1062,7 +677,6 @@ impl SweepVeto {
         }
     }
 
-    /// The case this refusal names, when it names one.
     pub fn case(&self) -> Option<&str> {
         match self {
             SweepVeto::CaseRose { case, .. }
@@ -1073,7 +687,6 @@ impl SweepVeto {
     }
 }
 
-/// The ∀ verdict plus the per-point table for the evidence block.
 #[derive(Debug, Clone)]
 pub struct SweepCompare {
     pub table_digest: String,
@@ -1082,19 +695,14 @@ pub struct SweepCompare {
 }
 
 impl SweepCompare {
-    /// **The only verdict this module exposes**, and it is ∀: no case rose,
-    /// no budget overflow grew and no ordering word vanished at **any**
-    /// point, and some case fell at **every** point (freeze 1624).
     pub fn wins(&self) -> bool {
         self.reasons.is_empty()
     }
 
-    /// Total points scored per side across the corpus.
     pub fn scored_points(&self) -> usize {
         self.cases.iter().map(CaseSweep::corners).sum()
     }
 
-    /// The tiers this sweep actually covered, in [`CostTier::ALL`] order.
     pub fn tiers(&self) -> Vec<CostTier> {
         CostTier::ALL
             .into_iter()
@@ -1110,9 +718,6 @@ impl SweepCompare {
         self.cases_in(tier).iter().map(|c| c.corners()).sum()
     }
 
-    /// Every refusal attributable to `tier` — the tier-tagged ones plus the
-    /// case-named ones whose case sits in that tier (decision 1717: both
-    /// tiers' verdicts are reported, so each must be separable).
     pub fn reasons_for_tier(&self, tier: CostTier) -> Vec<&SweepVeto> {
         self.reasons
             .iter()
@@ -1124,15 +729,10 @@ impl SweepCompare {
             .collect()
     }
 
-    /// The ∀ verdict restricted to one tier. **Decision 1717: the
-    /// `Product` answer governs**, and this is the accessor that makes the
-    /// two answers separately statable. `wins()` is still the conjunction —
-    /// a candidate is not landed on a tier split.
     pub fn wins_in_tier(&self, tier: CostTier) -> bool {
         self.reasons_for_tier(tier).is_empty()
     }
 
-    /// The one line decision 1717 asks for: both tiers' verdicts, named.
     pub fn tier_verdicts(&self) -> String {
         self.tiers()
             .into_iter()
@@ -1149,28 +749,17 @@ impl SweepCompare {
     }
 }
 
-/// One side of one case, compiled once and scored at many points. Codegen
-/// dominates the cost of a comparison, so it happens `2 × cases` times, not
-/// `2 × cases × points` times.
 struct CompiledSide {
     program: CodegenProgram,
     placement: PlacementTable,
-    /// Which program this is (decision 1954). Reported on every table row
-    /// so nobody has to infer from a case name whether a verdict is about
-    /// the shipped image or about a truncated closure.
     scope: TextScope,
 }
 
-/// Everything the gate reads from one side at one point.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SideScore {
     cycles: u64,
     words: u64,
     budgets: Vec<CoreBudget>,
-    /// Present only when the caller asked for it (item R, decision 1962).
-    /// `None` means "not computed", never "this side emits no ordering
-    /// words" — [`refuse_at_point`] fails closed on it rather than reading
-    /// an absent census as an absence of barriers.
     ordering: Option<OrderingCounts>,
 }
 
@@ -1180,35 +769,11 @@ impl SideScore {
     }
 }
 
-/// **Decision 1954: the gate scores what would ship.**
-///
-/// This used to be [`codegen_cost_stage_with_placement`] — the
-/// guest-reachable closure against a *stub* `core.__image_runtime`, which
-/// on the flagship is 21 fns and 7 936 B of hot text with `charge = 0`.
-/// The image `wrela build` emits for the same root is 325 fns and 89 024 B,
-/// 367 lines over its 64 KiB L1I, charged 2 569. Both printed a line called
-/// `Budget`, and the gate read the small one — so every landing decision on
-/// this plan was taken against a program the appliance does not ship, and
-/// round 1's item D could not be scored because its premise lived in the
-/// other column (item H's decision 1788).
-///
-/// A case whose root declares no `@image` ships nothing; its closure *is*
-/// its program, and [`TextScope::Closure`] says so on the row.
-/// One side straight off a path. The sweep goes through
-/// [`compile_side_from`] instead, so that it can share one front between
-/// the two sides (item R); this single-side spelling is what the units
-/// that build one side ask for, and is `cfg(test)` rather than dead.
 #[cfg(test)]
 fn compile_side(path: &Path, opts: &[OptId]) -> Result<CompiledSide, String> {
     compile_side_from(&load_shipped_front(path)?, opts)
 }
 
-/// [`compile_side`] off an already-loaded front (item R, decision 1963).
-///
-/// A comparison builds **two** sides from one source, and read → lex →
-/// parse → load → sema → `@image` eval reads no opt knob, so it is done
-/// once per case and lower/codegen twice. See [`ShippedFront`] for the
-/// audit that licenses it.
 fn compile_side_from(front: &ShippedFront, opts: &[OptId]) -> Result<CompiledSide, String> {
     apply_opts(opts);
     let (program, placement, scope) = codegen_shipped_from(front)?;
@@ -1219,13 +784,6 @@ fn compile_side_from(front: &ShippedFront, opts: &[OptId]) -> Result<CompiledSid
     })
 }
 
-/// Score one side at one point through the lean entry (item R, decision
-/// 1961).
-///
-/// `ctx` is [`ScoreCtx`] built from `table` — the port map and dispatch
-/// caps, which no sweep dimension can move — hoisted out of the corner
-/// loop. `want_ordering` asks for the point-invariant ordering census;
-/// see [`SideScore::ordering`].
 fn score_side_at(
     side: &CompiledSide,
     table: &CostTable,
@@ -1249,13 +807,10 @@ fn score_side_at(
     })
 }
 
-/// `2^n` where `n` is the number of dimensions the committed profile
-/// declares — the nominal endpoint-corner cardinality of the box.
 pub fn box_cardinality(table: &CostTable) -> u64 {
     1u64 << table.sweep_dimensions().len().min(63)
 }
 
-/// What the sensitivity probe learned about one case.
 #[derive(Debug)]
 struct Probe {
     swept: Vec<String>,
@@ -1263,22 +818,6 @@ struct Probe {
     read_but_static: Vec<String>,
 }
 
-/// Decide which dimensions this case can be swept over without dropping
-/// one (decision 1604).
-///
-/// For each dimension `d` the probe scores **both sides** with `d` at `lo`
-/// and at `hi`, over three bases — the pinned corner, the all-lo corner and
-/// the all-hi corner — recording, at every one of those scorings, which
-/// dimensions the model actually *read* through [`SweepPoint::get`].
-///
-/// A dimension is held only when it was **never read by either side at any
-/// probe point**. That is a reason rather than an observation: a term no
-/// scoring path asks for cannot move a total at any assignment of the other
-/// dimensions. "Neither side's total moved" is kept as a cross-check — a
-/// dimension that moved a total while never being read would mean the model
-/// reads the box through some other door, so that combination is an error
-/// (fail closed), not a silent exclusion. A dimension that *was* read but
-/// moved nothing stays in the sweep: it is doubt, and doubt keeps it in.
 fn probe_case(
     name: &str,
     base: &CompiledSide,
@@ -1288,10 +827,6 @@ fn probe_case(
     probe_case_bounded(name, base, cand, table, MAX_SWEPT_DIMS)
 }
 
-/// [`probe_case`] with the fail-closed bound supplied, so the refusal path
-/// can be driven by a test at a bound the committed profile can exceed.
-/// Every production caller goes through `probe_case` and gets
-/// [`MAX_SWEPT_DIMS`].
 fn probe_case_bounded(
     name: &str,
     base: &CompiledSide,
@@ -1319,11 +854,6 @@ fn probe_case_bounded(
     let mut read: BTreeSet<String> = BTreeSet::new();
     let mut moved: BTreeSet<String> = BTreeSet::new();
     let mut err: Option<String> = None;
-    // The probe keeps the ordering census on **both** sides at every one
-    // of its points (item R): its whole verdict is `a != z` over the
-    // scored value, so it must compare the same value the pre-item-R
-    // probe compared. It is `dims × 3 bases × 2 ends × 2 sides` scorings,
-    // not `2^k`, so nothing here is in the loop item R is cutting.
     let ctx = ScoreCtx::new(table)?;
     let mut score = |side: &CompiledSide, p: &SweepPoint| -> Option<SideScore> {
         let (out, r) = record_reads(|| score_side_at(side, table, &ctx, p, true));
@@ -1407,17 +937,6 @@ fn probe_case_bounded(
     })
 }
 
-/// Every refusal that can fire at one point, for one case, appended to
-/// `reasons` — and the evidence row for that point.
-///
-/// This is the whole per-point rule and it is **private and one-way**: it
-/// pushes reasons and never answers "did the candidate win here". The ∀
-/// quantifier lives in the loop that calls it, which is the only place a
-/// verdict is formed (freeze 1624).
-///
-/// `check_ordering` exists because ordering-word counts are counts of
-/// emitted words and therefore identical at every point of the box —
-/// reporting the same refusal `2^k` times would bury every other reason.
 fn refuse_at_point(
     case: &str,
     label: &str,
@@ -1442,8 +961,6 @@ fn refuse_at_point(
         });
     }
     if check_ordering {
-        // Fail closed: the caller asked for the ordering refusal, so an
-        // uncomputed census is a harness bug, not "no barriers removed".
         let (bo, co) = match (&b.ordering, &c.ordering) {
             (Some(bo), Some(co)) => (bo, co),
             _ => {
@@ -1472,22 +989,6 @@ fn refuse_at_point(
     })
 }
 
-/// Sweep one already-compiled case over its residual box.
-
-/// Score every corner of one case on both sides, in parallel.
-///
-/// See the call site in [`sweep_case`] for why this may be parallel at all
-/// and why the result is deterministic regardless of how many threads run.
-///
-/// **The ordering census is computed at corner 0 only** (item R, decision
-/// 1962). [`refuse_at_point`] already asks for it at the first point and
-/// nowhere else, because ordering-word counts are counts of *emitted
-/// words* and therefore identical at every point of the box — the reason
-/// its `check_ordering` flag exists. Building it costs a per-rule term map,
-/// i.e. one `String` allocation per emitted word of the program, so the
-/// other `2^k − 1` corners were paying for a value nothing read. Corner 0
-/// is the one `sweep_case` passes `check_ordering = true` for, so what is
-/// computed and what is read are the same corner by construction.
 fn score_corners_in_parallel(
     corners: &[SweepPoint],
     base: &CompiledSide,
@@ -1500,7 +1001,6 @@ fn score_corners_in_parallel(
         .map(|p| p.get())
         .unwrap_or(1)
         .min(n);
-    // Below this the thread hand-off costs more than the scoring does.
     if workers < 2 || n < 64 {
         return corners
             .iter()
@@ -1549,23 +1049,6 @@ fn sweep_case(
     let swept_refs: Vec<&str> = probe.swept.iter().map(String::as_str).collect();
     let corners = endpoint_corners(table, &swept_refs);
 
-    // **Scoring is parallel; refusing is not** (decision 1917).
-    //
-    // `score_side_at` is pure — `&CompiledSide`, `&CostTable`, `&SweepPoint`
-    // in, numbers out — and the only thread-local in the scorer
-    // (`cost::sweep::READS`) is live solely during the probe, which has
-    // already run. Corners are the multiplicative term in this lane: 21
-    // cases x up to 4096 corners x 2 sides, and the deep lane had grown to
-    // 87 minutes. CLAUDE.md's determinism clause governs the *compiler*;
-    // it explicitly permits the harness to run independent work in
-    // parallel, and this is measurement, not emission.
-    //
-    // Determinism is by construction rather than by discipline: every
-    // result is written to its own index, so the vector is identical
-    // whatever the thread count, and `refuse_at_point` — which pushes veto
-    // reasons and carries `ordering_reported` — then runs over it in the
-    // same sequential order it always did. Small cases stay serial because
-    // spawning costs more than it saves.
     let ctx = ScoreCtx::new(table)?;
     let scored = score_corners_in_parallel(&corners, base, cand, table, &ctx)?;
 
@@ -1597,13 +1080,6 @@ fn sweep_case(
     })
 }
 
-/// **The public ∀ entry.** Compare two opt lists over the whole cost-*
-/// corpus at every point of the residual-uncertainty box that can matter,
-/// returning the verdict together with the per-point table.
-///
-/// There is no per-point win predicate here or anywhere in this module's
-/// public surface (freeze 1624). The caller gets rows and one ∀ verdict; it
-/// cannot ask "did the candidate win *somewhere*".
 pub fn compare_opt_lists_over_box(
     baseline: &[OptId],
     candidate: &[OptId],
@@ -1611,10 +1087,6 @@ pub fn compare_opt_lists_over_box(
     sweep_corpus(baseline, candidate, CorpusSel::All)
 }
 
-/// The same ∀ sweep restricted to one tier. Exists so the deep lane can
-/// say what the product tier costs and what it decides **on its own**,
-/// without the micro tier's fifteen cases in the average — decision 1717's
-/// "both numbers are reported" needs each to be obtainable alone.
 pub fn compare_opt_lists_over_box_in_tier(
     baseline: &[OptId],
     candidate: &[OptId],
@@ -1623,14 +1095,6 @@ pub fn compare_opt_lists_over_box_in_tier(
     sweep_corpus(baseline, candidate, CorpusSel::Tier(tier))
 }
 
-/// The same ∀ sweep restricted to one named case — the **smoke lane**.
-///
-/// The whole-corpus sweep is minutes once item M's cases join it, so it is
-/// `#[ignore]`d and run by `cargo xtask check`, exactly as every `fuzz_*`
-/// lane splits a smoke budget from a deep one. This is what keeps ∀ coverage
-/// in the default `cargo test` loop: it is the identical code path, the
-/// identical probe and the identical refusals, over one case instead of
-/// fifteen. A smoke lane that ran *different* code would be worthless.
 pub fn compare_opt_lists_over_box_for_case(
     baseline: &[OptId],
     candidate: &[OptId],
@@ -1639,9 +1103,6 @@ pub fn compare_opt_lists_over_box_for_case(
     sweep_corpus(baseline, candidate, CorpusSel::Case(case))
 }
 
-/// Which slice of the corpus a sweep runs over. Deliberately a closed enum
-/// rather than a predicate: "sweep whatever these cases are" is one step
-/// from "sweep the cases that flatter the candidate".
 #[derive(Debug, Clone, Copy)]
 enum CorpusSel<'a> {
     All,
@@ -1684,7 +1145,6 @@ fn sweep_corpus(
     let mut reasons = Vec::new();
     for case in &corpus {
         let path = case.input.as_path();
-        // One front, two backs (item R, decision 1963).
         let front = load_shipped_front(path)?;
         let b = compile_side_from(&front, baseline)?;
         let c = compile_side_from(&front, candidate)?;
@@ -1699,16 +1159,6 @@ fn sweep_corpus(
     }
     apply_mode(CompileMode::Release);
 
-    // 04 §5's "must strictly lower at least one", read under ∀: a case that
-    // falls only at some points has not lowered anything the gate can rely
-    // on. Checked after the refusals so a candidate whose only gain is a
-    // deleted barrier reads as refused rather than as "nothing fell".
-    //
-    // **Decision 1782: once per tier.** Asked once over the pooled corpus,
-    // the quantifier is satisfied by whichever tier is easiest, which for
-    // every item on this plan is the microbenchmark it wrote itself. Only
-    // the tiers actually swept are asked — the smoke lane sweeps one case
-    // and must keep meaning what it meant.
     for tier in CostTier::ALL {
         let in_tier: Vec<&CaseSweep> = cases.iter().filter(|c| c.tier == tier).collect();
         if in_tier.is_empty() {
@@ -1729,12 +1179,6 @@ fn sweep_corpus(
     })
 }
 
-/// Stable per-point evidence table (printed under `--nocapture`).
-///
-/// Prints both the nominal box cardinality and the surviving `k` per case,
-/// so a reader sees what was enumerated *and* what it stands for, and lists
-/// every held dimension with the bracket it was held across — a silent
-/// reduction would be exactly the failure decision 1604 exists to prevent.
 pub fn format_sweep_table(cmp: &SweepCompare, base_label: &str, cand_label: &str) -> String {
     let mut out = String::new();
     out.push_str(&format!("table_digest={}\n", cmp.table_digest));
@@ -1785,10 +1229,6 @@ pub fn format_sweep_table(cmp: &SweepCompare, base_label: &str, cand_label: &str
             ));
         }
     }
-    // **Decision 1783 — every verdict is printed beside the tier it came
-    // from.** Decision 1717 makes the product tier govern where the two
-    // disagree, which is only usable if a reader can tell them apart
-    // without going and looking up which corpus a case name belongs to.
     for t in cmp.tiers() {
         let rows = cmp.cases_in(t);
         let refusals = cmp.reasons_for_tier(t);
@@ -1827,8 +1267,6 @@ pub fn format_sweep_table(cmp: &SweepCompare, base_label: &str, cand_label: &str
     out
 }
 
-/// Assert the ∀ verdict, panicking with the per-point table and every
-/// reason that fired (04 §5: not just the first).
 pub fn assert_sweep_wins(cmp: &SweepCompare, cand_label: &str, base_label: &str) {
     if !cmp.reasons.is_empty() {
         let table = format_sweep_table(cmp, base_label, cand_label);
@@ -1841,18 +1279,6 @@ pub fn assert_sweep_wins(cmp: &SweepCompare, cand_label: &str, base_label: &str)
     }
 }
 
-// ---------------------------------------------------------------------------
-// Per-opt attribution (plans/M20.md item K)
-// ---------------------------------------------------------------------------
-
-/// One `cost-*` case scored under one named opt configuration.
-///
-/// Four columns because item K's question needs all four at once: `cycles`
-/// is what the gate ranks on, `words` is the reported column freeze 1626
-/// left behind, `charge` is the priced I-side term that replaced it, and
-/// `hot_text_bytes` is the quantity `charge` is computed from — printed so
-/// a footprint win that the budget prices at **zero** is visible as a
-/// footprint win rather than as nothing at all.
 #[derive(Debug, Clone)]
 pub struct AttributionCell {
     pub config: String,
@@ -1862,7 +1288,6 @@ pub struct AttributionCell {
     pub hot_text_bytes: u64,
 }
 
-/// One `cost-*` case across every configuration, in the order given.
 #[derive(Debug, Clone)]
 pub struct AttributionRow {
     pub name: String,
@@ -1876,16 +1301,6 @@ impl AttributionRow {
     }
 }
 
-/// Score the whole cost-* corpus under each named opt configuration
-/// (plans/M20.md item K). `compare_opt_lists` answers "does the candidate
-/// beat the baseline"; this answers "which opt paid for it", which is a
-/// different question and gets its own dumb loop rather than a flag on the
-/// comparison.
-///
-/// This is **attribution, not a gate.** It returns no verdict and no win
-/// predicate — freeze 1624's prohibition is on `∃`-shaped win predicates,
-/// and the honest way to stay clear of one is to expose no predicate here
-/// at all. Restores `CompileMode::Release` afterward, like its neighbours.
 pub fn attribute_opts(configs: &[(&str, &[OptId])]) -> Vec<AttributionRow> {
     let corpus = discover_cost_cases();
     assert!(
@@ -1916,13 +1331,6 @@ pub fn attribute_opts(configs: &[(&str, &[OptId])]) -> Vec<AttributionRow> {
     rows
 }
 
-/// Stable text form of [`attribute_opts`] for item K's evidence block.
-///
-/// Every number here is a **flat** (`f ≡ 1`) total on the cost-stage
-/// closure, not a measured one — decision 1617's coverage rider attaches to
-/// the measured surface, and decision 1619 says the veto is read off the
-/// flat row. The header says so, so no reader can lift a row out of this
-/// table and call it a measurement.
 pub fn format_attribution_table(rows: &[AttributionRow]) -> String {
     let mut out = String::new();
     out.push_str("f=1 (flat); not a measured total\n");
@@ -1948,10 +1356,6 @@ pub fn format_attribution_table(rows: &[AttributionRow]) -> String {
         .first()
         .map(|r| r.cells.iter().map(|c| c.config.as_str()).collect())
         .unwrap_or_default();
-    // Per-tier subtotals first, then the pooled one — decision 1783: a
-    // reader must never have to guess which corpus a number came from, and
-    // a pooled sum with fifteen micro rows and four product ones is exactly
-    // that guess.
     for tier in CostTier::ALL {
         if !rows.iter().any(|r| r.tier == tier) {
             continue;
@@ -2002,11 +1406,6 @@ pub fn format_attribution_table(rows: &[AttributionRow]) -> String {
     out
 }
 
-// ---------------------------------------------------------------------------
-// Overall veto-then-rank (Phase 2 item K)
-// ---------------------------------------------------------------------------
-
-/// One pinned workload's baseline vs candidate proxy totals.
 #[derive(Debug, Clone)]
 pub struct WorkloadDelta {
     pub name: String,
@@ -2020,8 +1419,6 @@ impl WorkloadDelta {
         self.candidate as i64 - self.baseline as i64
     }
 
-    /// Relative delta `(cand − base) / base`. Both zero → `0.0`; base zero
-    /// and cand positive → `+∞` (a rise; non-flat already vetoed).
     pub fn relative_delta(&self) -> f64 {
         if self.baseline == 0 {
             if self.candidate == 0 {
@@ -2038,45 +1435,27 @@ impl WorkloadDelta {
         self.name == FLAT_NAME
     }
 
-    /// ε=0 rise: candidate strictly greater than baseline.
     pub fn rises(&self) -> bool {
         self.candidate > self.baseline
     }
 }
 
-/// Why an overall compare was vetoed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VetoReason {
-    /// A non-`flat` measured workload rose (ε=0).
-    WorkloadRose { name: String },
-    /// Measured coverage fell: the candidate's `Σ f×s` explains less of
-    /// the workload than the baseline's did. Without this, any transform
-    /// that removes a hot method key from the scored set reads as a win —
-    /// the gate would be rewarding *measuring less*, not running faster.
+    WorkloadRose {
+        name: String,
+    },
     CoverageFell {
         name: String,
         baseline: (u64, u64),
         candidate: (u64, u64),
     },
-    /// **Decision 1619.** A per-core text/TLB budget overflow quantity
-    /// rose. This is what replaced the retired word-count veto (freeze
-    /// 1626): with the I-side term real, 04 §5 prices footprint growth and
-    /// makes the **budget** the hard constraint. It is read as a delta
-    /// because the veto it replaces was one — "a candidate may not pay for
-    /// schedule with more footprint" is a claim about the change, not about
-    /// where the baseline sits relative to the ceiling.
     BudgetOverflowGrew {
         core: usize,
         field: &'static str,
         baseline: u64,
         candidate: u64,
     },
-    /// **Freeze 1633.** The candidate emits fewer words of a
-    /// `[crosscore]`-priced ordering rule (`DMB`, `LDAR`, `STLR`, system).
-    /// Those words are correctness-load-bearing —
-    /// `machine.cross-core.publish-acquire-barrier` is a known-risk gap —
-    /// so their deletion is refused structurally, not priced. Compares
-    /// counts of emitted words, so no coefficient can satisfy it.
     OrderingWordsRemoved {
         rule: &'static str,
         baseline: u64,
@@ -2111,26 +1490,20 @@ impl VetoReason {
     }
 }
 
-/// Outcome of overall compare over the pinned workload set.
 #[derive(Debug, Clone)]
 pub enum OverallOutcome {
-    /// At least one veto condition fired.
     Veto { reasons: Vec<VetoReason> },
-    /// No veto; `weighted_mean_rel` is Σ(w·rel)/Σ(w).
     Rank { weighted_mean_rel: f64 },
 }
 
-/// Full overall comparison (per-W rows + veto/rank outcome).
 #[derive(Debug, Clone)]
 pub struct OverallCompare {
     pub workloads_digest: String,
     pub workloads: Vec<WorkloadDelta>,
     pub baseline_coverage: BTreeMap<String, (u64, u64)>,
     pub candidate_coverage: BTreeMap<String, (u64, u64)>,
-    /// Reported column, not a veto input (freeze 1626).
     pub baseline_words: u64,
     pub candidate_words: u64,
-    /// The hard constraint that replaced it (decision 1619).
     pub baseline_budgets: Vec<CoreBudget>,
     pub candidate_budgets: Vec<CoreBudget>,
     pub outcome: OverallOutcome,
@@ -2141,7 +1514,6 @@ impl OverallCompare {
         matches!(self.outcome, OverallOutcome::Veto { .. })
     }
 
-    /// Veto reasons, empty when ranked.
     pub fn veto_reasons(&self) -> &[VetoReason] {
         match &self.outcome {
             OverallOutcome::Veto { reasons } => reasons,
@@ -2149,7 +1521,6 @@ impl OverallCompare {
         }
     }
 
-    /// Names of non-flat workloads that rose.
     pub fn risen(&self) -> Vec<String> {
         self.veto_reasons()
             .iter()
@@ -2160,7 +1531,6 @@ impl OverallCompare {
             .collect()
     }
 
-    /// Weighted mean of relative deltas when not vetoed.
     pub fn weighted_mean_rel(&self) -> Option<f64> {
         match self.outcome {
             OverallOutcome::Rank { weighted_mean_rel } => Some(weighted_mean_rel),
@@ -2168,8 +1538,6 @@ impl OverallCompare {
         }
     }
 
-    /// Win: not vetoed and weighted mean of relative deltas is strictly
-    /// negative (overall proxy improvement under pinned weights).
     pub fn wins(&self) -> bool {
         match self.outcome {
             OverallOutcome::Veto { .. } => false,
@@ -2178,28 +1546,16 @@ impl OverallCompare {
     }
 }
 
-/// One side of the overall gate: per-W proxy totals, per-W measured
-/// coverage, the reported word count, and the per-core budgets.
 #[derive(Debug, Clone, Default)]
 pub struct OverallSide {
     pub totals: BTreeMap<String, u64>,
-    /// Workload name → (matched_hits, total_hits).
     pub coverage: BTreeMap<String, (u64, u64)>,
-    /// **Reported**, never a veto input, since item J (freeze 1626).
     pub words: u64,
-    /// Per-core text/TLB budgets — the hard constraint that replaced the
-    /// word veto, read as a delta (decision 1619). Empty on both sides
-    /// leaves the rule inert, which is what a plumbing test wants.
     pub budgets: Vec<CoreBudget>,
-    /// Ordering-word counts per `[crosscore]`-priced rule — the freeze-1633
-    /// refusal input (plans/M20.md item G). Empty on both sides leaves the
-    /// refusal inert, which is what a plumbing test wants.
     pub ordering: OrderingCounts,
 }
 
 impl OverallSide {
-    /// Read all four from a composed report (`cost::attach_workloads`
-    /// must have run for measured rows to be present).
     pub fn from_report(report: &CostReport) -> Self {
         Self {
             totals: report.workload_totals.clone(),
@@ -2210,9 +1566,6 @@ impl OverallSide {
         }
     }
 
-    /// Totals only — no coverage rows, zero words, no budgets, no ordering
-    /// counts. For plumbing tests and flat-only callers; the coverage /
-    /// budget / ordering refusals stay inert.
     pub fn from_totals(totals: BTreeMap<String, u64>) -> Self {
         Self {
             totals,
@@ -2244,37 +1597,20 @@ impl OverallSide {
     }
 }
 
-/// Build a per-W totals map with only the `flat` row (pre-J shape).
 pub fn flat_only_totals(flat_proxy_cycles: u64) -> BTreeMap<String, u64> {
     let mut m = BTreeMap::new();
     m.insert(FLAT_NAME.to_string(), flat_proxy_cycles);
     m
 }
 
-/// Stub every pinned workload with the same total (stand-in until item J
-/// supplies measured `f×s` rows; useful for plumbing tests).
 pub fn stub_all_workload_totals(proxy_cycles: u64, set: &WorkloadSet) -> BTreeMap<String, u64> {
     set.names().map(|n| (n.to_string(), proxy_cycles)).collect()
 }
 
-/// Load pinned weights from the committed `bench/workloads.toml`.
 pub fn load_pinned_workloads() -> Result<WorkloadSet, String> {
     workload::load_default()
 }
 
-/// Compare candidate vs baseline under `weights`.
-///
-/// Fail closed if any pinned name is missing from either side. Extra keys
-/// (not in the pinned set) are ignored. Veto — in this order, all reasons
-/// collected — when any non-`flat` workload rises (ε=0), when measured
-/// coverage falls, when a per-core budget overflow grows, or when the
-/// candidate's text overflows the L1 I-TLB. Otherwise rank by the weighted
-/// mean of relative deltas.
-///
-/// The added vetoes close the ways a candidate could win the cycle number
-/// while leaving real hardware the same or worse: explaining less of the
-/// workload (coverage) and no longer fitting the core it runs on (budget).
-/// The word count is a reported column and vetoes nothing (freeze 1626).
 pub fn compare_overall(
     baseline: &OverallSide,
     candidate: &OverallSide,
@@ -2316,8 +1652,6 @@ pub fn compare_overall(
         }
     }
 
-    // Coverage: every workload the baseline measured must still be
-    // explained at least as well. A missing candidate row is total loss.
     for (name, &base_cov) in &baseline.coverage {
         let cand_cov = candidate
             .coverage
@@ -2341,11 +1675,6 @@ pub fn compare_overall(
         }
     }
 
-    // Decision 1619 / freeze 1626: the words veto is gone (words are the
-    // reported column above) and the per-core budget stands in its place,
-    // as a **delta** — under `W_flat` the absolute budget is already
-    // breached on every core of every boot case, so an absolute reading
-    // would refuse the identity.
     for g in budget_overflow_growth(&baseline.budgets, &candidate.budgets)? {
         reasons.push(VetoReason::BudgetOverflowGrew {
             core: g.core,
@@ -2355,8 +1684,6 @@ pub fn compare_overall(
         });
     }
 
-    // Freeze 1633: a deleted ordering word is refused however the cycles
-    // come out. Counts of emitted words, so nothing here is tunable.
     for r in ordering_removals(&baseline.ordering, &candidate.ordering) {
         reasons.push(VetoReason::OrderingWordsRemoved {
             rule: r.rule,
@@ -2395,12 +1722,6 @@ pub fn compare_overall(
     })
 }
 
-/// Coverage fraction as `matched/total (pp.p%)`, or `-` when the row is
-/// not a measured one. **Decision 1617:** block-grain coverage on
-/// `boot-actors` is 893/6647 ≈ 13.4%, and with ~5 754 uncovered hits each
-/// charged at the program maximum the measured total is dominated by that
-/// term — so the fraction is printed *beside* the number it qualifies,
-/// never on a line a reader can skip.
 fn coverage_cell(cov: Option<(u64, u64)>) -> String {
     match cov {
         Some((m, t)) if t > 0 => {
@@ -2411,11 +1732,6 @@ fn coverage_cell(cov: Option<(u64, u64)>) -> String {
     }
 }
 
-/// Stable per-W evidence table (printed under `--nocapture`).
-///
-/// Each measured row carries its coverage fraction **in the row**
-/// (decision 1617): a 13.4%-covered total is not a measured result about
-/// the program, and a reader must not be able to take it for one.
 pub fn format_overall_table(cmp: &OverallCompare, base_label: &str, cand_label: &str) -> String {
     let mut out = String::new();
     out.push_str(&format!("workloads_digest={}\n", cmp.workloads_digest));
@@ -2456,7 +1772,6 @@ pub fn format_overall_table(cmp: &OverallCompare, base_label: &str, cand_label: 
             .unwrap_or((0, b_t));
         out.push_str(&format!("coverage {name} {b_m}/{b_t} -> {c_m}/{c_t}\n"));
     }
-    // Reported column, not a veto (freeze 1626).
     out.push_str(&format!(
         "{:<16} {:>8} {:>12} {:>12} {:>+10} {:>12}\n",
         "words(reported)",
@@ -2466,7 +1781,6 @@ pub fn format_overall_table(cmp: &OverallCompare, base_label: &str, cand_label: 
         cmp.candidate_words as i64 - cmp.baseline_words as i64,
         "-"
     ));
-    // The hard constraint that replaced it (decision 1619).
     for (i, b) in cmp.baseline_budgets.iter().enumerate() {
         let c = cmp.candidate_budgets.get(i);
         out.push_str(&format!("budget_b {}\n", b.render()));
@@ -2489,7 +1803,6 @@ pub fn format_overall_table(cmp: &OverallCompare, base_label: &str, cand_label: 
     out
 }
 
-/// Assert overall win (not vetoed, weighted mean rel < 0); panics with table.
 pub fn assert_overall_wins(cmp: &OverallCompare, cand_label: &str, base_label: &str) {
     let table = format_overall_table(cmp, base_label, cand_label);
     if let OverallOutcome::Veto { reasons } = &cmp.outcome {
@@ -2528,27 +1841,12 @@ mod tests {
         }
         assert!(names.iter().any(|n| n == "cost-bounds-elide"));
         assert!(names.iter().any(|n| n == "cost-calls"));
-        // The path list stays the scored programs, in the same order.
         assert_eq!(
             discover_cost_corpus(),
             cases.iter().map(|c| c.input.clone()).collect::<Vec<_>>()
         );
     }
 
-    // -----------------------------------------------------------------------
-    // Item H: the tier split (decisions 1780–1783)
-    // -----------------------------------------------------------------------
-
-    /// **Decision 1793's oracle: every case is in exactly one tier, and
-    /// both tiers are populated.**
-    ///
-    /// The second half is the one M20 paid for. `MAX_SWEPT_DIMS` at 12 made
-    /// the ∀ gate refuse the whole corpus, and the whole-corpus sweep was
-    /// `#[ignore]`d into a lane that did not exist — twice, the failure was
-    /// a gate that silently scored nothing. An empty `product` tier would
-    /// be the same failure in a new place: `compare_opt_lists_over_box`
-    /// would keep returning `wins`, over the microbenchmarks only, and
-    /// nothing would say so.
     #[test]
     fn every_cost_case_belongs_to_exactly_one_tier_and_both_tiers_are_populated() {
         let cases = discover_cost_cases();
@@ -2599,10 +1897,6 @@ mod tests {
         );
     }
 
-    /// **Decision 1793: an unclassifiable case refuses the corpus, it does
-    /// not fall out of it.** Every shape that is neither tier is driven
-    /// here, on real directories, because the failure mode being guarded is
-    /// a case that scores in the gate while belonging to no tier's verdict.
     #[test]
     fn an_unclassifiable_cost_case_fails_closed_rather_than_being_dropped() {
         let tmp = std::env::temp_dir().join(format!(
@@ -2637,8 +1931,6 @@ mod tests {
         let e = classify_cost_case(&dangling).expect_err("dangling root");
         assert!(e.contains("which is not a file"), "{e}");
 
-        // The shape that would let a product case smuggle in a program of
-        // its own — borrowed *and* self-authored.
         let hybrid = mk("cost-hybrid");
         std::fs::create_dir_all(hybrid.join("src")).unwrap();
         std::fs::write(hybrid.join("src/extra.wr"), "module x\n").unwrap();
@@ -2646,7 +1938,6 @@ mod tests {
         let e = classify_cost_case(&hybrid).expect_err("borrowed but self-authored");
         assert!(e.contains("owns no program of its own"), "{e}");
 
-        // And the two shapes that *are* tiers, from the same classifier.
         let micro = mk("cost-micro");
         std::fs::write(micro.join("input.wr"), "module x\n").unwrap();
         assert_eq!(
@@ -2663,9 +1954,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// **Decision 1783: the tier is on the row.** A verdict a reader has to
-    /// attribute to a corpus by recognising case names is a verdict that
-    /// gets attributed wrong.
     #[test]
     fn every_reported_table_names_the_tier_of_every_row() {
         let cmp = compare_opt_lists_over_box_for_case(&[], RELEASE_OPTS, "cost-bounds-elide")
@@ -2687,10 +1975,6 @@ mod tests {
         assert!(cmp.wins_in_tier(CostTier::Micro));
     }
 
-    /// **Decision 1782 checked on a real refusal:** a candidate that falls
-    /// everywhere in one tier and nowhere in the other is vetoed, and the
-    /// veto names the tier. Built by hand rather than by finding an opt
-    /// that does this, because the rule must hold before such an opt exists.
     #[test]
     fn a_win_confined_to_one_tier_is_vetoed_and_the_tier_is_named() {
         let flat_case = |name: &str, tier: CostTier, fell: bool| CaseSweep {
@@ -2737,34 +2021,23 @@ mod tests {
         );
     }
 
-    /// A tier the corpus does not populate is an **error**, never a
-    /// vacuous ∀ win. Same lesson as `MAX_SWEPT_DIMS`, from the other
-    /// direction: a gate must not report success about nothing.
     #[test]
     fn sweeping_an_unpopulated_tier_is_an_error() {
-        // Both tiers are populated on this tree, so drive the refusal
-        // through the selector's own emptiness path with a name that
-        // matches nothing.
         let e = compare_opt_lists_over_box_for_case(&[], RELEASE_OPTS, "cost-does-not-exist")
             .expect_err("must refuse");
         assert!(e.contains("no cost corpus case named"), "{e}");
     }
 
-    /// plans/M19.md item E / decisions 1450–1451: release vs dev on the
-    /// full cost-* corpus (dump `--stage=cost` pipeline).
     #[test]
     fn assert_release_wins_cost_corpus_oracle() {
         let cmp = assert_release_wins_cost_corpus();
         let table = format_delta_table(&cmp, "dev", "release");
         eprintln!("corpus proxy win (dev → release):\n{table}");
-        // Stable shape for item L: every case + SUM row.
         for c in &cmp.cases {
             assert!(table.contains(&c.name), "table missing case {}", c.name);
         }
         assert!(table.contains("SUM"));
         assert!(cmp.sum_delta() < 0, "corpus sum must fall under release");
-        // Runtime-bearing case must see force-rooted runtime (not the
-        // thin 6-cycle probe-only path).
         let runtime = cmp
             .cases
             .iter()
@@ -2786,40 +2059,6 @@ mod tests {
         );
     }
 
-    /// **The parked opt, measured — the cheap half** (decision 1914).
-    ///
-    /// `BoundsElide` ships nowhere, so nothing else in this file scores
-    /// it: every gate here iterates `RELEASE_OPTS`. Without this, the
-    /// park's three written claims would be prose with no oracle under
-    /// them, and the first refactor to break the transform would leave
-    /// them describing something that no longer exists.
-    ///
-    /// Three claims, one per assertion:
-    ///
-    /// 1. **It still transforms.** On `cost-bounds-elide`, the
-    ///    microbenchmark written for it, naming the opt takes the
-    ///    scored program from 1839 to 314 proxy cycles.
-    /// 2. **The refusal still holds where it was made.** On the four
-    ///    programs the appliance ships it is exactly flat — same cycles,
-    ///    same words — which is item H's finding and the reason it is
-    ///    parked rather than shipped.
-    /// 3. **On item M's compute title it is not flat — and where the
-    ///    delta sits is the finding.** `cost-product-compositor` moves
-    ///    10 975 → 10 848 cycles and 11 658 → 11 523 words, but the only
-    ///    two functions that change are `sprite_is_exact` and
-    ///    `background_pass_is_exact`, the case's own `@test(runtime)`
-    ///    assertions. The kernel — `fill_background`, `blit_scaled`,
-    ///    `make_sprite`, `render_strip` — is untouched, because every
-    ///    index in it is computed rather than constant. Pinned as a
-    ///    strict inequality rather than as those numbers, so ordinary
-    ///    drift does not re-pin it; what it defends is the sentence in
-    ///    `PARKED_OPTS` that says where the delta comes from.
-    ///
-    /// Point estimates under the committed profile, deliberately: the ∀
-    /// box sweep over the product tier is the deep lane
-    /// (`each_release_opt_is_re_asked_alone_on_the_product_tier`), and
-    /// un-parking is a human decision that needs that sweep, not this
-    /// test.
     #[test]
     fn parked_bounds_elide_still_transforms_and_is_still_flat_on_the_appliance() {
         assert!(
@@ -2841,8 +2080,6 @@ mod tests {
              A park whose transform no longer fires is not the opt that was refused."
         );
 
-        // The appliance's four, and item M's compositor, scored as the
-        // program each would actually ship (decision 1954).
         let mut compositor: Option<(u64, u64, u64, u64)> = None;
         for case in discover_cost_cases_in(CostTier::Product) {
             let (dev, _) = shipped_report_under_opts(&case.input, &[]);
@@ -2895,7 +2132,6 @@ mod tests {
         apply_mode(CompileMode::Release);
     }
 
-    /// Decision 1453: NarrowImm alone wins on at least one cost-* case.
     #[test]
     fn narrow_imm_alone_wins_some_cost_case() {
         let corpus = discover_cost_cases();
@@ -2915,41 +2151,8 @@ mod tests {
         eprintln!("NarrowImm alone wins:\n{}", wins.join("\n"));
     }
 
-    /// **plans/M20.md item K — the NarrowImm finding, pinned.**
-    ///
-    /// The plan predicted that under the A76 ruler NarrowImm "may score near
-    /// zero on cycles and win only on the footprint term", because
-    /// `MOVZ`/`MOVK` are 1-cycle, throughput-3, port-I. Measured, the
-    /// prediction is **inverted** and this oracle pins both halves of the
-    /// inversion:
-    ///
-    /// 1. NarrowImm's win is **entirely on cycles** — it lowers the corpus
-    ///    proxy total on its own, and (checked below) does so at every point
-    ///    of the residual box in `unit:narrow_imm_alone_wins_at_every_box_point`.
-    ///    It is not a latency win and never was: `load_imm` pushes each
-    ///    `MOVK` with **no** source register, so the four-word materialization
-    ///    is four *independent* 1-cycle uops, not a dependence chain. What
-    ///    NarrowImm buys is dispatch and port-I **issue bandwidth**, bounded
-    ///    above by one third of a cycle per deleted word (three I pipes).
-    /// 2. NarrowImm's **footprint** win — which the plan expected to be the
-    ///    whole story — is the half the gate cannot see. Hot text falls, and
-    ///    the priced overflow `charge` is **0 on both sides of every case**,
-    ///    because the cost-stage closure sits far inside its 64 KiB L1I. The
-    ///    term that replaced the words veto (decision 1619) prices this
-    ///    saving at exactly zero.
-    ///
-    /// So the retirement of the words veto did cost the gate a signal, and
-    /// this oracle is where that is stated as a measurement: had NarrowImm
-    /// been the footprint-only opt the plan expected, the gate would now be
-    /// blind to it. It survives on cycles alone.
     #[test]
     fn narrow_imm_wins_on_cycles_while_its_footprint_win_is_priced_at_zero() {
-        // **Derived from `RELEASE_OPTS`, not hand-listed** (item F). The
-        // comment on `rankable` below already names the trap a hand-list
-        // walks into — "silently becomes `release beats two of its six
-        // opts`" — and the array underneath it was itself a hand-list, so
-        // item F's three ids appeared in `rankable` and not in `configs`
-        // and the lookup panicked. One source, both readers.
         let singles: Vec<(String, Vec<OptId>)> = RELEASE_OPTS
             .iter()
             .map(|id| (format!("{id:?}"), vec![*id]))
@@ -2958,17 +2161,12 @@ mod tests {
         for (label, opts) in &singles {
             configs.push((label.as_str(), opts.as_slice()));
         }
-        // The list as it stood before item F.
         let pre_f: Vec<OptId> = RELEASE_OPTS
             .iter()
             .copied()
             .take_while(|id| *id != OptId::InterprocRegs)
             .collect();
         configs.push(("release-minus-F", pre_f.as_slice()));
-        // **The list every member of which is rankable alone** — the only
-        // list the sum-of-singles bound below can honestly be asked over
-        // (decision 1971). Kept in sync with `UNRANKABLE_ALONE`, asserted
-        // there.
         let rankable_only: Vec<OptId> = RELEASE_OPTS
             .iter()
             .copied()
@@ -2996,32 +2194,18 @@ mod tests {
         let dev_cycles = sum("dev", |c| c.proxy_cycles);
         let ni_cycles = sum("NarrowImm", |c| c.proxy_cycles);
 
-        // (1) Not "near zero on cycles".
         assert!(
             ni_cycles < dev_cycles,
             "NarrowImm alone must still lower the corpus proxy total: \
              dev {dev_cycles} -> NarrowImm {ni_cycles}\n{table}"
         );
 
-        // (2) There is a real footprint win...
         let dev_hot = sum("dev", |c| c.hot_text_bytes);
         let ni_hot = sum("NarrowImm", |c| c.hot_text_bytes);
         assert!(
             ni_hot < dev_hot,
             "NarrowImm must still shrink hot text: {dev_hot} -> {ni_hot}\n{table}"
         );
-        // ...and whether the **gate** can see it depends on the corpus, not
-        // on the opt. Item K measured every case at `charge = 0` and
-        // concluded the gate was blind to a footprint-only candidate. Item M
-        // then added `cost-icache-cliff` and `cost-itlb-span`, which exist to
-        // breach the budget, and the term became live: on those two cases
-        // NarrowImm **lowers the priced charge** (5229 -> 2982 and
-        // 24428 -> 18463). So the blindness was a property of the corpus and
-        // the two witness cases fixed it (decision 1638).
-        //
-        // Both halves are asserted, because each is a real claim: the six
-        // original cases still price the footprint win at zero, and at least
-        // one case now prices it above zero and falls under NarrowImm.
         const INSIDE_BUDGET: &[&str] = &[
             "cost-arith",
             "cost-bounds-elide",
@@ -3061,44 +2245,6 @@ mod tests {
              candidate again and decision 1638 needs rewriting.\n{table}"
         );
 
-        // (3) Which opt "carries the corpus" is a fact about the **corpus**,
-        // not about the ruler. M20's evidence block credited `BoundsElide`
-        // with 43.2% of release's cycle win across the fifteen micro
-        // cases; item H then measured it byte-identical to `dev` on all
-        // four programs the appliance ships, and item L dropped it from
-        // `RELEASE_OPTS` (decision 1970; it is parked, not deleted —
-        // decision 1911). That 43.2% was a fact about six fixtures, and
-        // the disjointness claim that used to sit here — "NarrowImm is the
-        // sole mover wherever BoundsElide is flat" — went with it.
-        //
-        // So the assertion is the one that is actually about the ruler:
-        // every rankable opt contributes, none is inert, and their sum
-        // bounds release's (they overlap rather than compose freely).
-        //
-        // The singles are derived from `RELEASE_OPTS` rather than written
-        // out, because both item C and item E hit the same trap: a
-        // hand-listed pair stops testing the claim the moment the list
-        // grows, and silently becomes "release beats two of its six opts".
-        //
-        // `WideImmForms` is the one member that cannot be ranked against
-        // `dev` at all (decision 1747): with `NarrowImm` off, `load_imm`
-        // returns to `load_imm_naive` before C5's one-word forms are ever
-        // reached, so `[] -> [WideImmForms]` is the identity comparison and
-        // its "win" is zero for reasons that have nothing to do with C5. It
-        // is excluded here by name and gated on its own baseline in
-        // `ITEM_C_SMOKE`. The exclusion is asserted to be exactly that one
-        // id, so a future opt cannot join it silently.
-        //
-        // **Item F adds two more, for the same structural reason.**
-        // Neither is a transform of its own against `dev`:
-        // `InterprocRegs` changes which register the allocator may pick
-        // and `Frameless` is read off the allocation's own result, so
-        // with `RegAlloc` off both are the identity. Each is gated on its
-        // real baseline in `ITEM_F_SMOKE`, which is a chain rather than a
-        // single baseline precisely because they compose in this order.
-        // `TailCalls` joins them at decision 1909: F5 fires only where F3
-        // has already removed the frame, so `dev -> [TailCalls]` is the
-        // identity comparison, exactly as it is for the three above.
         const UNRANKABLE_ALONE: &[OptId] = &[
             OptId::WideImmForms,
             OptId::InterprocRegs,
@@ -3133,53 +2279,6 @@ mod tests {
             "every rankable opt must contribute on cycles: {wins:?}
 {table}"
         );
-        // **The sum-of-singles bound, restated by item F (decision 1777)
-        // and corrected by item L (decision 1971).**
-        //
-        // Through item E the claim was `rel_win <= Σ singles`: the opts
-        // overlap rather than compose, so none of them creates cycles
-        // that none creates alone. Item F breaks that, and the break is
-        // the finding rather than a bug. Three of its four ids
-        // (`InterprocRegs`, `Frameless`, `TailCalls`) are *unreachable*
-        // against a `dev` baseline — none of them is a transform of its
-        // own, each only fires once the one before it has — so their
-        // singles are all exactly zero while their joint contribution is
-        // not. Measuring `Σ singles` against `release` therefore compares
-        // a sum that is missing three terms with a total that has them.
-        //
-        // **On the whole corpus the bound is now false, and that is the
-        // finding (decision 1971).** Unshipping `BoundsElide` did not
-        // create the violation; it removed what was hiding it. It was
-        // byte-identical on all four product cases, so it contributed
-        // exactly 0 to both sides of the product-tier arithmetic, while on
-        // the micro tier its 4592-cycle single was strongly sub-additive
-        // inside the list. That micro slack covered a product-tier excess
-        // that was already there.
-        //
-        // Measured, over the list every member of which really is
-        // rankable alone (`release-minus-F` is *not* such a list — it
-        // carries `WideImmForms`, the id `UNRANKABLE_ALONE` names below):
-        //
-        // | tier | joint win | Σ singles | excess |
-        // | --- | ---: | ---: | ---: |
-        // | micro | 35 349 | 35 375 | **−26** |
-        // | product | 2 445 | 2 397 | **+48** |
-        //
-        // and the +48 is `cost-product-blk` (+29) and
-        // `cost-product-receipt` (+27), the two largest borrowed programs.
-        // Localized to one **pair**: `NarrowImm` + `RegAlloc` beats the
-        // sum of its own two singles by +33 and +31 on those two cases,
-        // and every other pair of rankable ids is flat or sub-additive.
-        // The mechanism is the obvious one — `NarrowImm` turns a four-word
-        // `movk` chain into one word, and the allocator then keeps live
-        // what the vanished chain's scratch pressure used to spill; each
-        // opt alone leaves the other's saving on the table.
-        //
-        // So the bound is asserted on the tier where it was established
-        // and still holds, and the tier where it fails is *localized* by a
-        // positive claim rather than absorbed by a tolerance. Weakening
-        // this to `Σ singles + fudge` would be exactly the tuning this
-        // round forbids.
         let tier_sum = |tier: CostTier, label: &str| -> i64 {
             rows.iter()
                 .filter(|r| r.tier == tier)
@@ -3191,21 +2290,6 @@ mod tests {
             |tier: CostTier| -> i64 { wins.iter().map(|(label, _)| tier_win(tier, label)).sum() };
         let micro_win = tier_win(CostTier::Micro, "rankable-only");
         let micro_singles = tier_singles(CostTier::Micro);
-        // **And item I took the micro tier too** (decision 1906). Item L
-        // could still assert the bound here, because the allocator it
-        // measured was item E's: one that *relocated* spill traffic into
-        // `mov`s. Coalescing and argument/return hinting delete that
-        // traffic instead, and the interaction L localized below —
-        // `NarrowImm` frees the scratch pressure the allocator then keeps
-        // live — gets strictly stronger when keeping a value live costs no
-        // instruction at all. So the sum of singles now undercounts on
-        // *both* tiers.
-        //
-        // Not relaxed into a tolerance: the bound is gone, so it is
-        // reported as the measurement it now is, and the *positive* claim
-        // below — that the excess is one identified pair on a named case —
-        // is what carries the weight. A bound nobody can state is worth
-        // less than a mechanism somebody can check.
         eprintln!(
             "micro tier: joint {micro_win} vs Σ singles {micro_singles} \
              (excess {})",
@@ -3221,10 +2305,6 @@ mod tests {
             product_win - product_singles
         );
 
-        // The localization, asserted rather than asserted-away: the one
-        // super-additive pair is `NarrowImm` + `RegAlloc`, on the largest
-        // borrowed program. If this interaction stops existing, the table
-        // above stops describing anything and the comment must be redone.
         let e_win = dev_cycles - sum("release-minus-F", |c| c.proxy_cycles);
 
         let blk = discover_cost_cases_in(CostTier::Product)
@@ -3260,25 +2340,6 @@ mod tests {
         );
     }
 
-    /// **plans/M20.md item K.** The cycle half of the finding above, under
-    /// `∀` rather than at the pinned point: NarrowImm alone falls at **every**
-    /// point of the residual box, on every case. That is the evidence that the
-    /// win is a dispatch/issue-bandwidth effect and not a latency or memory
-    /// one — the box varies every bracketed latency the model has, and on five
-    /// of six cases NarrowImm's delta does not move across it at all.
-    /// **Deep lane.** `#[ignore]`d by default and run by
-    /// `xtask::deep_lane`, which `cargo xtask check` calls — matching how
-    /// every `fuzz_*` lane already splits a smoke budget from a deep one
-    /// (`crates/xtask/src/main.rs`). Measured 2026-07-31, after item H
-    /// widened the corpus: **36 352 points per side** across 19 cases —
-    /// 15 micro and 4 product — for **×1.78** the deep lane's ∀ work, which
-    /// did not show up as wall clock: 309–397 s (n=3) against 411 s (n=1)
-    /// before (see [`MAX_SWEPT_DIMS`] for why, and for why the work and not
-    /// the clock is the stated number). That is not a cost the default `cargo test` loop
-    /// should carry; CLAUDE.md separates the
-    /// cheap per-item lane from the expensive close lane, and a
-    /// whole-corpus ∀ gate belongs in the latter. Nothing about the
-    /// oracle's strength changed — only which lane runs it.
     #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
     #[test]
     fn narrow_imm_alone_wins_at_every_box_point() {
@@ -3298,15 +2359,6 @@ mod tests {
         );
     }
 
-    /// **plans/codegen-pareto.md item B1, the land gate — smoke form.**
-    ///
-    /// `AdrAddressing` alone, over one case, at every point of that case's
-    /// residual box. `cost-arith` is the smoke case: it is small (147
-    /// proxy-cycles under release) and it emits six rodata references from
-    /// its checked-arithmetic abort stubs, so the substitution is the only
-    /// thing separating the two sides. Freeze 1714 in one sentence — the
-    /// oracle exercises the new path or it is not an oracle, and this one
-    /// scores zero delta if `load_rodata_addr` stops substituting.
     #[test]
     fn adr_addressing_wins_at_every_box_point_on_the_smoke_case() {
         let cmp = compare_opt_lists_over_box_for_case(&[], &[OptId::AdrAddressing], "cost-arith")
@@ -3333,11 +2385,6 @@ mod tests {
         );
     }
 
-    /// The same gate asked the question that actually decides the landing:
-    /// not "is `AdrAddressing` a win against `dev`" but "does adding it to
-    /// the already-shipping list still fall". A candidate that only wins
-    /// from a `dev` baseline could be riding another opt's coattails; this
-    /// one holds `NarrowImm` fixed on both sides.
     #[test]
     fn adr_addressing_is_a_marginal_win_over_the_previous_release_list() {
         const WITHOUT: &[OptId] = &[OptId::NarrowImm];
@@ -3360,10 +2407,6 @@ mod tests {
         );
     }
 
-    /// **plans/codegen-pareto.md item B1, the land gate — whole corpus.**
-    /// `RELEASE_OPTS` minus `AdrAddressing` vs `RELEASE_OPTS`, ∀ over the
-    /// residual box, over every `cost-*` case. **Deep lane**, same budget
-    /// argument as its two neighbours above.
     #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
     #[test]
     fn adr_addressing_wins_at_every_point_of_the_residual_box() {
@@ -3380,21 +2423,6 @@ mod tests {
         );
     }
 
-    /// **Deep lane. Decision 1784 — every `RELEASE_OPTS` member is
-    /// re-asked, alone, on the product tier.**
-    ///
-    /// Decision 1717 says an opt may not gate on a case it authored alone.
-    /// That sentence has no force unless somebody actually re-runs the
-    /// landing question over the borrowed programs, so this is that run:
-    /// for each opt in `RELEASE_OPTS`, `dev` vs `[opt]` over the product
-    /// tier only, ∀ across each case's residual box.
-    ///
-    /// Product tier only, deliberately. The whole-corpus sweep above
-    /// already covers both tiers for the list as a whole; repeating it per
-    /// member would triple a lane that item H already measured at
-    /// 411 s → 597 s. What is not covered anywhere else is the *member's*
-    /// verdict on the programs it did not choose, and that is 4 cases
-    /// rather than 19.
     #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
     #[test]
     fn each_release_opt_is_re_asked_alone_on_the_product_tier() {
@@ -3406,45 +2434,6 @@ mod tests {
         let mut measured: Vec<(String, &'static str)> = Vec::new();
         for opt in RELEASE_OPTS {
             let label = format!("{opt:?}");
-            // Each member is asked over **its own** baseline, not blindly
-            // over `dev`. `WideImmForms` is the one member for which
-            // `dev -> [it]` is the *identity* comparison (decision 1747):
-            // with `NarrowImm` off, `load_imm` returns to `load_imm_naive`
-            // before C5's one-word forms are ever reached, so a `dev`
-            // baseline would record a veto that says nothing about the
-            // product tier and everything about the question being
-            // unanswerable. Asking the wrong question and pinning the
-            // answer is worse than not asking.
-            //
-            // **Item F's two ids need the same treatment, and for the
-            // same reason** (decision 1792). Neither is a transform of
-            // its own: `InterprocRegs` changes which register the
-            // allocator may hand out, and `Frameless` is read off the
-            // allocation's own result, so with `RegAlloc` off both are
-            // the identity and a `dev` baseline would pin a veto that
-            // says nothing. Each is asked over its own link in item F's
-            // chain, derived from `RELEASE_OPTS` rather than written out.
-            //
-            // `WideImmForms` was widened from `[NarrowImm]` to
-            // `[NarrowImm, RegAlloc]` by decision 1791, and the reason is
-            // the same mechanism one item earlier: C5 cannot be ranked
-            // against `dev` at all (1747), and on the product tier it
-            // cannot be ranked without `RegAlloc` either, because its
-            // saving is *words* and words only become cycles once the
-            // allocator has removed the schedule slack that absorbs them.
-            // Both halves are measured in plans/codegen-pareto-C.md. That
-            // baseline was widened *after* a red test, so it is not what
-            // the membership claim rests on — leave-one-out is, and it has
-            // no baseline freedom at all.
-            // **Item J's `Gvn` needs it a third time, and for the same
-            // mechanism** (decision 1937). GVN's saving is *words* — on
-            // `cost-branch-bias` it takes 230 to 224 — and words become
-            // cycles only once the allocator has removed the schedule
-            // slack that absorbs them, exactly as decision 1791 found for
-            // C5. Asked over a bare `[ConstProp]` it raises all three
-            // product cases; asked over the configuration the product
-            // ships, it falls on all three. `ConstProp` and `Dce` need no
-            // such widening: both are ranked against `dev` below.
             let base: Vec<OptId> = match opt {
                 OptId::WideImmForms => vec![OptId::NarrowImm, OptId::RegAlloc],
                 OptId::Gvn => {
@@ -3458,8 +2447,6 @@ mod tests {
                     b.push(OptId::InterprocRegs);
                     b
                 }
-                // Decision 1909: F5 fires only where F3 has already
-                // removed the frame, so `dev` is the identity for it.
                 OptId::TailCalls => {
                     let mut b = item_f_baseline();
                     b.push(OptId::InterprocRegs);
@@ -3539,25 +2526,7 @@ mod tests {
         );
     }
 
-    /// **Decision 1785.** The measured per-tier verdict of each
-    /// `RELEASE_OPTS` member, standing alone, over the product tier —
-    /// pinned so a change in either direction is loud. See
-    /// `unit:each_release_opt_is_re_asked_alone_on_the_product_tier` for
-    /// what the two rows mean and why a `veto` row is a finding rather
-    /// than a broken gate.
-    ///
-    /// **Every row here is `wins` (decisions 1970/1911).** This set has
-    /// one row per `RELEASE_OPTS` member, so a refused opt leaves it by
-    /// leaving the shipped list — the one `veto` row it ever carried was
-    /// `BoundsElide`'s, now parked (`opts::PARKED_OPTS`). A future `veto`
-    /// row is therefore a finding to act on, not a shape this table is
-    /// expected to have.
     const PINNED_PRODUCT_TIER_VERDICTS: &[(&str, &str)] = &[
-        // **plans/codegen-pareto-2.md item J** (decision 1937). All three
-        // fall on the product tier over their own baseline. `Gvn`'s is
-        // the shipped configuration rather than `dev` for the reason the
-        // `base` match above states; `ConstProp` and `Dce` are asked
-        // against `dev` and win there.
         ("ConstProp", "wins"),
         ("Gvn", "wins"),
         ("Dce", "wins"),
@@ -3565,69 +2534,14 @@ mod tests {
         ("AdrAddressing", "wins"),
         ("BfxNarrow", "wins"),
         ("MaskCheck", "wins"),
-        // **Item H's second finding, now resolved — decision 1791.** Over
-        // `[NarrowImm]` this was `veto`: Δ = +0 at all 10 240 product-tier
-        // points. Item H's hypothesis — that `MaskCheck` deletes the
-        // constant materializations C5 would shorten — was **measured and
-        // is true**: on the four shipped programs `MaskCheck` removes 4 of
-        // C5's 7 customers, every bitmask-immediate one, leaving three
-        // `MOVN`s on two programs.
-        //
-        // But that is not why the verdict was `veto`. The missing
-        // ingredient was `RegAlloc`, not `MaskCheck`: C5's saving is
-        // words, and words become cycles only once the allocator removes
-        // the slack that absorbs them — the same crossover item C1 hit.
-        // Asked over `[NarrowImm, RegAlloc]`, the configuration the
-        // product actually ships, C5 falls at **every** one of the 10 240
-        // points on `cost-product-blk` and `cost-product-receipt` and
-        // rises nowhere. Leave-one-out against the whole shipped list
-        // gives the identical verdict on the identical two cases.
         ("WideImmForms", "wins"),
         ("RegAlloc", "wins"),
-        // **plans/codegen-pareto.md item F, decision 1780.** Both win on
-        // all four borrowed programs, which is the question decision 1717
-        // exists to ask: neither is carried by a microbenchmark it wrote
-        // itself. At the pinned point each of the four product cases
-        // falls by **-47** under `InterprocRegs` and by a further
-        // **-108** under `Frameless` — the same number on every one of
-        // them, because what both delete lives in the shared runtime
-        // closure all four borrow rather than in any one program.
-        //
-        // F5 (tail calls) had no row because it had no id — **that changed
-        // at decision 1909** and it is the last row of this table now.
         ("InterprocRegs", "wins"),
         ("Frameless", "wins"),
-        // **plans/codegen-pareto-2.md item L, decision 1976.** B4 is a
-        // transform of its own against `dev` — nothing else has to fire
-        // first for a trailing branch to be a trailing branch — so unlike
-        // item F's two it is rankable alone, and it falls on all four
-        // borrowed programs.
         ("BranchCleanup", "wins"),
-        // **Decision 1909.** F5 was unrankable while no corpus case fired
-        // a tail call; item L's `BranchCleanup`, item I's coalescing and
-        // item M's compute workload between them made tail position
-        // reachable, and it now falls on all five product programs.
         ("TailCalls", "wins"),
     ];
 
-    // --- plans/codegen-pareto-2.md item J: the MWIR passes' gate -------
-    //
-    // Three ids over one chain, and the chain's **baseline is the rest of
-    // the shipped list**, not `dev` (decision 1937). That is not baseline
-    // shopping; it is the same mechanism decision 1791 measured for item
-    // C5 one round earlier. What these three passes delete is *words* —
-    // a redundant computation, a folded constant, an unread definition —
-    // and on this backend words become cycles only after `RegAlloc` has
-    // removed the schedule slack that absorbs them. Asked over `dev` the
-    // whole block still falls by 31 534 proxy cycles, so nothing here
-    // rests on the choice; what the choice buys is that the *links* are
-    // individually clean instead of one of them absorbing another's
-    // leftovers.
-    // -------------------------------------------------------------------
-
-    /// `RELEASE_OPTS` without item J's three ids — the list as it stood
-    /// at the end of item M, and the baseline the first link is measured
-    /// against.
     fn item_j_baseline() -> Vec<OptId> {
         RELEASE_OPTS
             .iter()
@@ -3636,53 +2550,12 @@ mod tests {
             .collect()
     }
 
-    /// **Item J's chain, and the one link that is a pair.**
-    ///
-    /// `(label, ids added at this link, smoke case)`. Each link's
-    /// baseline is [`item_j_baseline`] plus every id every earlier link
-    /// added.
-    ///
-    /// **`Gvn` and `Dce` are one link, and that is a finding rather than
-    /// a convenience** (decision 1936/1938). GVN replaces a redundant
-    /// computation with a reference to the earlier result; where the old
-    /// destination is read outside the extended basic block it has to
-    /// leave a `Copy` behind, and deleting *that* is DCE's job. Asked
-    /// strictly alone, GVN falls by 20 833 proxy cycles across the corpus
-    /// and **raises `cost-branch-bias` by 7 and `cost-mem-locality` by 1**
-    /// — on `cost-branch-bias` it takes words 230 to 224 while taking
-    /// cycles 190 to 197, which is a live range it extended, not a
-    /// mistake it made. `CaseRose` is an absolute veto, so a 20 833-cycle
-    /// transform would have been refused for two microbenchmark cycles it
-    /// created itself. The pair is asked together; `Dce`'s own link is
-    /// asked *again* immediately afterwards, so a `Dce` refusal still
-    /// names `Dce` alone and only `Gvn` loses its solo verdict.
-    ///
-    /// The **case** on each row is the one whose shapes the link actually
-    /// reaches, measured rather than guessed (freeze 1714):
-    ///
-    /// - `ConstProp` moves exactly three of the twenty at the pinned
-    ///   point, all of them product cases; `cost-product-compositor` is
-    ///   much the largest fall (-111) and is item M's own compute
-    ///   workload, which is where folding a literal shift count or a
-    ///   fixed-point constant actually happens.
-    /// - `Gvn`+`Dce` moves nine. The two largest are `cost-itlb-span`
-    ///   and `cost-icache-cliff`, both by about a fifth; `cost-itlb-span`
-    ///   is the larger fall and `cost-icache-cliff` is the cheaper sweep
-    ///   (1 024 corners against 1 024 but a much smaller closure to
-    ///   compile), so the smoke lane takes the second and the deep lane
-    ///   below covers both. At the first corner it is 29 228 -> 23 473.
-    /// - `Dce` alone moves all twenty; `cost-arith-w` is the largest
-    ///   *relative* fall of the cheap ones and is four scalar
-    ///   expressions, so it is also the cheapest to sweep.
     const ITEM_J_CHAIN: &[(&str, &[OptId], &str)] = &[
         ("ConstProp", &[OptId::ConstProp], "cost-product-compositor"),
         ("Gvn+Dce", &[OptId::Gvn, OptId::Dce], "cost-icache-cliff"),
         ("Dce", &[OptId::Dce], "cost-arith-w"),
     ];
 
-    /// The candidate list at link `n` of [`ITEM_J_CHAIN`], and the
-    /// baseline it is asked over. The third link re-asks `Dce` on its
-    /// own, so its baseline is the second link's candidate minus `Dce`.
     fn item_j_link(n: usize) -> (Vec<OptId>, Vec<OptId>) {
         let mut acc = item_j_baseline();
         for &(_, ids, _) in &ITEM_J_CHAIN[..n] {
@@ -3699,17 +2572,12 @@ mod tests {
             }
         }
         if ITEM_J_CHAIN[n].0 == "Dce" {
-            // Re-ask `Dce` alone, over everything else item J adds.
             let base: Vec<OptId> = cand.iter().copied().filter(|o| *o != OptId::Dce).collect();
             return (base, cand);
         }
         (acc, cand)
     }
 
-    /// **Item J's smoke lane.** Each link falls at *every* point of its
-    /// own case's residual box, over its own place in the chain, and is
-    /// refused for nothing. Same code path, same probe and same refusals
-    /// as the whole-corpus lane below.
     #[test]
     fn each_item_j_link_wins_at_every_box_point_on_its_smoke_case() {
         for (n, &(label, _, case)) in ITEM_J_CHAIN.iter().enumerate() {
@@ -3745,31 +2613,9 @@ mod tests {
         }
     }
 
-    /// **The land gate for item J.** Each link, over the whole `cost-*`
-    /// corpus at every point of the residual box, against its own place
-    /// in the chain: no case may rise anywhere, and at least one must
-    /// fall everywhere — asked once per tier (decision 1782), so the
-    /// micro corpus cannot satisfy the quantifier on the product tier's
-    /// behalf.
-    ///
-    /// **Deep lane**: three whole-corpus sweeps.
     #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
     #[test]
     fn each_item_j_link_wins_over_the_whole_box() {
-        // **`ConstProp` stopped falling on the micro tier, and it is
-        // recorded rather than asserted away (decision 1965).** Item J
-        // measured this chain before `Frameless` returned to the shipped
-        // list and before F5 became an id; with both of them in the
-        // baseline, `ConstProp`'s *marginal* contribution over the rest of
-        // the list is zero on the micro corpus — the other two links plus
-        // the allocator already fold what it would have folded. It still
-        // falls on the **product** tier, and decision 1717 says the
-        // product tier governs, so it ships.
-        //
-        // The distinction that matters: no case *rose* anywhere. The
-        // refusal is `no_case_falls_everywhere`, which is "this adds
-        // nothing here", not "this makes something worse". A rise would be
-        // a veto and would park the opt.
         const MICRO_MARGINAL_ZERO: &[&str] = &["ConstProp"];
         for (n, &(label, _, _)) in ITEM_J_CHAIN.iter().enumerate() {
             let (base, cand) = item_j_link(n);
@@ -3799,12 +2645,6 @@ mod tests {
         }
     }
 
-    /// **The evidence for decision 1936**, kept as a live measurement
-    /// rather than a sentence: GVN with its leftovers left for `Dce` is
-    /// refused by `CaseRose`, and collecting them is what makes it
-    /// rankable. Asserted on the *shape* of the refusal, not on the
-    /// magnitude, so a re-measurement moves numbers without moving the
-    /// claim.
     #[test]
     fn gvn_collects_its_own_copies() {
         let (base, cand) = item_j_link(1);
@@ -3843,9 +2683,6 @@ mod tests {
         apply_mode(CompileMode::Release);
     }
 
-    /// **Item J over the whole shipped list, in one number.** The three
-    /// ids together against everything else the product ships, at the
-    /// pinned point, on the whole corpus. Pinned so a collapse is loud.
     #[test]
     fn item_j_as_a_block_over_the_shipped_list() {
         let base = item_j_baseline();
@@ -3862,34 +2699,6 @@ mod tests {
         apply_mode(CompileMode::Release);
     }
 
-    // --- item P: the parked inliner, in both pipeline positions ---------
-
-    /// **The measurement item P exists for** (decisions 1986/1987).
-    ///
-    /// Item J refused the inliner on `[ConstProp,Gvn,Dce] → +Inline` =
-    /// +628 cycles and `release-minus-Inline → release` = +221 cycles /
-    /// +308 words. Both framings look like the right question. But **the
-    /// opt list's order is not the pipeline's order**: all four passes
-    /// run inside one `mwir_opt::optimize` call, and where the inliner
-    /// sat *inside* that call was never committed. An inliner is an
-    /// *enabling* pass — its value is not what it does alone but what
-    /// redundancy elimination can do to the merged body afterwards — so
-    /// an inliner measured after GVN/DCE is a measurement of nothing.
-    ///
-    /// This asks both orders, on both framings, over the whole corpus,
-    /// and prints cycles *and* words for each. If the two positions
-    /// differ materially, item J's refusal was measuring the wrong thing.
-    /// If they do not, the refusal stands and is now re-derivable from
-    /// this repository — which is the whole reason the opt is parked
-    /// rather than deleted.
-    ///
-    /// The third framing is **rule (i) alone** (decision 1988): only a
-    /// callee whose splice consumes its one and only reference, so the
-    /// body moves rather than duplicates and the callee is deleted.
-    /// That is the framing item J called "the result that settles it",
-    /// and it is one of the numbers this repository could not re-derive.
-    ///
-    /// **Deep lane**: six whole-corpus comparisons.
     #[ignore = "deep lane: six whole-corpus comparisons (--ignored)"]
     #[test]
     fn the_inliner_measured_in_both_pipeline_positions() {
@@ -3956,20 +2765,6 @@ mod tests {
         );
     }
 
-    /// The same question on the **two shipped images** — the appliance
-    /// and item M's compute workload — in emitted words, which is the
-    /// currency an inliner is supposed to be spending. The reach counters
-    /// say how many sites each one actually offered it.
-    ///
-    /// **And the mechanism, as a measurement rather than a story.** The
-    /// per-mnemonic counts are what say *why* a splice costs words on
-    /// this backend: a callee's temps become the caller's frame slots,
-    /// the caller's live ranges grow, and item E's per-function
-    /// linear-scan allocator answers by spilling. If that is the
-    /// mechanism, `str`/`ldr` rise with the splice; if it were merely
-    /// duplication, every mnemonic would rise together.
-    ///
-    /// **Deep lane**: six image compilations.
     #[ignore = "deep lane: six shipped-image compilations (--ignored)"]
     #[test]
     fn the_inliner_on_the_two_shipped_images_in_both_positions() {
@@ -3981,14 +2776,11 @@ mod tests {
         with_inline.push(OptId::Inline);
         const MNEMONICS: [&str; 6] = ["str", "ldr", "mov", "bl", "movz", "movk"];
 
-        // (words, per-mnemonic counts), under whatever opts are set.
         let measure = |path: &Path, opts: &[OptId]| -> (u64, Vec<usize>) {
             let (report, _) = shipped_report_under_opts(path, opts);
             let (program, ..) = crate::cost::stage::codegen_shipped_program(path)
                 .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
             let asm = crate::codegen::dump(&program);
-            // `  0007: 910003e0  add x0, sp, #0  ; ...` — the mnemonic is
-            // the third whitespace-separated token of a body line.
             let counts = MNEMONICS
                 .iter()
                 .map(|m| {
@@ -4016,7 +2808,6 @@ mod tests {
             for after in [false, true] {
                 crate::mwir_opt::set_inline_after_redundancy(after);
                 let (cand_words, cand_counts) = measure(path, &with_inline);
-                // Two compilations per side (score + dump), so halve.
                 let (sites, moved) = crate::mwir_opt::take_inline_reach();
                 let position = if after {
                     "ConstProp/Gvn/Dce → inline"
@@ -4040,16 +2831,8 @@ mod tests {
         eprintln!("{table}\n(the mnemonic columns are Δ against release)");
     }
 
-    /// Decision 1453: swapped opt-list order vs RELEASE_OPTS — document
-    /// independence when totals match (lower vs codegen axes).
     #[test]
     fn swapped_order_scores_same_as_release_opts() {
-        // The **reverse** of the live list, not a hand-written pair: the
-        // claim is that the order of the slice cannot change a score,
-        // and a hardcoded pair stops testing that the moment the list
-        // grows (plans/codegen-pareto.md item C added four ids, and the
-        // stale pair silently turned this into a "release beats two of
-        // its six opts" test instead).
         let swapped: Vec<OptId> = RELEASE_OPTS.iter().rev().copied().collect();
         assert_ne!(
             swapped.as_slice(),
@@ -4059,8 +2842,6 @@ mod tests {
         let cmp = compare_opt_lists(RELEASE_OPTS, &swapped);
         let table = format_delta_table(&cmp, "RELEASE_OPTS", "swapped");
         eprintln!("order swap note:\n{table}");
-        // Both axes are independent TLS knobs; enabling both before
-        // lower+codegen yields identical scores regardless of slice order.
         assert_eq!(
             cmp.baseline_sum,
             cmp.candidate_sum,
@@ -4076,24 +2857,17 @@ mod tests {
         }
     }
 
-    /// Corrupting the candidate (no opts) fails the win rule.
     #[test]
     #[should_panic(expected = "must strictly lower at least one")]
     fn empty_candidate_fails_win_oracle() {
         let _ = assert_candidate_wins(&[], &[]);
     }
 
-    /// Dropping every opt but `NarrowImm` from the shipped list raises
-    /// cases the dropped opts carry — the candidate oracle must refuse it.
     #[test]
     #[should_panic(expected = "raised proxy total")]
     fn disabling_shipped_opts_fails_candidate_oracle() {
         let _ = assert_candidate_wins(RELEASE_OPTS, &[OptId::NarrowImm]);
     }
-
-    // -----------------------------------------------------------------------
-    // Overall veto-then-rank (Phase 2 item K)
-    // -----------------------------------------------------------------------
 
     fn pinned_set() -> WorkloadSet {
         load_pinned_workloads().expect("load bench/workloads.toml")
@@ -4121,7 +2895,6 @@ mod tests {
     #[test]
     fn overall_vetoes_when_non_flat_rises() {
         let set = pinned_set();
-        // flat improves; boot-actors rises → veto (ε=0).
         let baseline = totals(&[("flat", 1000), ("boot-actors", 5000)]);
         let candidate = totals(&[("flat", 800), ("boot-actors", 5001)]);
         let cmp = compare_overall(&baseline, &candidate, &set).expect("compare");
@@ -4144,10 +2917,6 @@ mod tests {
     #[test]
     fn overall_flat_rise_alone_does_not_veto() {
         let set = pinned_set();
-        // flat rises, boot-actors falls enough that weighted mean < 0.
-        // weights: flat=1, boot-actors=10
-        // rel_flat = +0.10; rel_boot = -0.20
-        // mean = (1*0.10 + 10*(-0.20)) / 11 = (-1.9)/11 < 0 → win
         let baseline = totals(&[("flat", 1000), ("boot-actors", 5000)]);
         let candidate = totals(&[("flat", 1100), ("boot-actors", 4000)]);
         let cmp = compare_overall(&baseline, &candidate, &set).expect("compare");
@@ -4168,11 +2937,6 @@ mod tests {
     #[test]
     fn overall_rank_loss_when_weighted_mean_non_negative() {
         let set = pinned_set();
-        // No non-flat rise, but overall mean ≥ 0.
-        // rel_flat = -0.01; rel_boot = +0.0 (equal)
-        // mean = (1*(-0.01) + 10*0) / 11 < 0 → actually a tiny win.
-        // Use: flat falls a little, boot equal → win. Need loss:
-        // flat rises a lot, boot equal → mean > 0, no veto.
         let baseline = totals(&[("flat", 1000), ("boot-actors", 5000)]);
         let candidate = totals(&[("flat", 1200), ("boot-actors", 5000)]);
         let cmp = compare_overall(&baseline, &candidate, &set).expect("compare");
@@ -4187,7 +2951,6 @@ mod tests {
     #[test]
     fn overall_equal_non_flat_is_not_veto() {
         let set = pinned_set();
-        // ε=0: equal is allowed; flat falls → win.
         let baseline = totals(&[("flat", 1000), ("boot-actors", 5000)]);
         let candidate = totals(&[("flat", 900), ("boot-actors", 5000)]);
         let cmp = compare_overall(&baseline, &candidate, &set).expect("compare");
@@ -4209,8 +2972,6 @@ mod tests {
 
     #[test]
     fn overall_stub_all_with_corpus_sums_ranks_like_flat() {
-        // Until J supplies measured rows: stub every W with the corpus sum.
-        // Relative deltas identical across W → weighted mean == flat rel.
         let set = pinned_set();
         let cmp_corpus = compare_opt_lists(&[], RELEASE_OPTS);
         let baseline =
@@ -4258,11 +3019,6 @@ mod tests {
         assert_eq!(m.get(FLAT_NAME), Some(&42));
     }
 
-    // -----------------------------------------------------------------------
-    // Soundness side conditions: coverage + static footprint
-    // -----------------------------------------------------------------------
-
-    /// Losing measured coverage vetoes even when every cycle total falls.
     #[test]
     fn overall_vetoes_when_coverage_falls() {
         let set = pinned_set();
@@ -4271,7 +3027,6 @@ mod tests {
             11,
             11,
         )]));
-        // Every number improves — but the candidate explains 3 fewer hits.
         let candidate = totals(&[("flat", 900), ("boot-actors", 4000)]).with_coverage(cov(&[(
             "boot-actors",
             8,
@@ -4296,7 +3051,6 @@ mod tests {
         );
     }
 
-    /// A candidate that drops the measured row entirely is total loss.
     #[test]
     fn overall_vetoes_when_coverage_row_missing() {
         let set = pinned_set();
@@ -4318,7 +3072,6 @@ mod tests {
         );
     }
 
-    /// Rising coverage is fine — explaining more is not a regression.
     #[test]
     fn overall_rising_coverage_does_not_veto() {
         let set = pinned_set();
@@ -4337,8 +3090,6 @@ mod tests {
         assert!(cmp.wins());
     }
 
-    /// Mismatched denominators mean the sides were measured against
-    /// different frequency vectors — fail closed, don't rank.
     #[test]
     fn overall_coverage_denominator_change_fails_closed() {
         let set = pinned_set();
@@ -4356,13 +3107,6 @@ mod tests {
         assert!(err.contains("denominator"), "got: {err}");
     }
 
-    // -----------------------------------------------------------------------
-    // Decision 1619 / freeze 1626: the words veto retired, the per-core
-    // budget delta installed in its place.
-    // -----------------------------------------------------------------------
-
-    /// A synthetic `CoreBudget`. `over_itlb_pages == 0` carries item F's
-    /// measured 23 text pages against the 48-entry L1 I-TLB.
     fn budget(n: usize, over_l1i_lines: u64, over_itlb_pages: u64, charge: u64) -> CoreBudget {
         CoreBudget {
             n,
@@ -4389,8 +3133,6 @@ mod tests {
         }
     }
 
-    /// **The replacement fires when an overflow rises.** Every cycle number
-    /// falls; one core needs one more line than it did.
     #[test]
     fn overall_vetoes_when_a_core_budget_overflow_grows() {
         let set = pinned_set();
@@ -4418,9 +3160,6 @@ mod tests {
         );
     }
 
-    /// Every watched quantity is watched, not just the first — including
-    /// the priced `charge`, which is the only one that moves with the sweep
-    /// point.
     #[test]
     fn overall_budget_veto_watches_every_over_quantity() {
         let set = pinned_set();
@@ -4459,21 +3198,9 @@ mod tests {
         }
     }
 
-    /// **Decision 1619's counter-example.**
-    ///
-    /// These are the **image** program's budgets, not the cost-stage
-    /// closure's — item F measured every core of every `boot-*` case
-    /// already 409–413 lines over its 64 KiB L1I under `W_flat`. Nothing
-    /// constrains this gate's inputs to be cost-stage closures, and handed
-    /// these an absolute `CoreBudget::within_budget()` veto fires on the
-    /// **identity**, refusing a program compared against itself and
-    /// therefore every candidate there will ever be. The delta reading does
-    /// not fire, which is why an absolute whole-budget veto is not the rule
-    /// that replaces the words veto.
     #[test]
     fn an_over_budget_identity_is_refused_absolutely_and_allowed_as_a_delta() {
         let set = pinned_set();
-        // The three cores item F reported on `boot-cores-3`.
         let boot = vec![
             budget(0, 409, 0, 2863),
             budget(1, 413, 0, 2891),
@@ -4486,7 +3213,6 @@ mod tests {
                 b.n
             );
         }
-        // The identity: same budgets on both sides.
         let side = totals(&[("flat", 1000), ("boot-actors", 5000)]).with_budgets(boot.clone());
         let mut better = side.clone();
         better.totals.insert("flat".to_string(), 900);
@@ -4499,7 +3225,6 @@ mod tests {
              rule would have refused every one of these three cores:\n{table}"
         );
         assert!(cmp.wins());
-        // And one line more on any core is still refused.
         let mut worse = boot.clone();
         worse[0].over_l1i_lines += 1;
         let cmp =
@@ -4510,18 +3235,9 @@ mod tests {
         );
     }
 
-    /// **Decision 1636.** The absolute I-TLB veto is retired, so an
-    /// over-span *baseline* no longer refuses everything — but a candidate
-    /// that **worsens** the span is still refused, by the delta rule, which
-    /// watches `over_itlb_pages` among its seven quantities. Both halves are
-    /// asserted here, because retiring a rule is only safe if what replaces
-    /// it still fires.
     #[test]
     fn an_over_itlb_baseline_is_allowed_but_worsening_the_span_is_refused() {
         let set = pinned_set();
-        // Baseline already over the 48-entry I-TLB (the `cost-itlb-span`
-        // shape). Candidate is no worse. Under the retired absolute rule
-        // this was refused; under the delta it ranks.
         let over = totals(&[("flat", 1000), ("boot-actors", 5000)])
             .with_budgets(vec![budget(0, 0, 2, 116)]);
         let same = totals(&[("flat", 900), ("boot-actors", 4000)])
@@ -4532,7 +3248,6 @@ mod tests {
             !cmp.vetoed(),
             "an unchanged over-span baseline must not veto: {labels:?}"
         );
-        // Now worsen it by one page: the delta rule must fire.
         let worse = totals(&[("flat", 900), ("boot-actors", 4000)])
             .with_budgets(vec![budget(0, 0, 3, 116)]);
         let cmp = compare_overall(&over, &worse, &set).expect("compare");
@@ -4544,8 +3259,6 @@ mod tests {
         );
     }
 
-    /// A core-count change is not a rank: the two sides were placed on
-    /// different machines.
     #[test]
     fn overall_budget_core_count_change_fails_closed() {
         let set = pinned_set();
@@ -4557,8 +3270,6 @@ mod tests {
         assert!(err.contains("core count changed 1->2"), "got: {err}");
     }
 
-    /// **Freeze 1626, the retirement half.** Word growth alone is no longer
-    /// a veto — it is a reported column — provided the budgets hold.
     #[test]
     fn word_growth_no_longer_vetoes_but_is_still_reported() {
         let set = pinned_set();
@@ -4583,15 +3294,11 @@ mod tests {
             table.contains("words(reported)") && table.contains("+100"),
             "words must still be reported:\n{table}"
         );
-        // And no veto reason mentions words at all.
         for r in cmp.veto_reasons() {
             assert!(!r.label().contains("words_grew"), "{:?}", r);
         }
     }
 
-    /// **Decision 1617.** The measured row prints its coverage fraction
-    /// beside its own number, so a 13.4%-covered total cannot be read as a
-    /// measured result about the program.
     #[test]
     fn measured_rows_print_their_coverage_fraction_beside_the_number() {
         let set = pinned_set();
@@ -4616,7 +3323,6 @@ mod tests {
             row.contains("893/6647 (13.4%)"),
             "the measured row must carry its coverage fraction: {row}"
         );
-        // The flat row is not a measured row and claims no coverage.
         let flat = table
             .lines()
             .find(|l| l.starts_with("flat"))
@@ -4624,7 +3330,6 @@ mod tests {
         assert!(!flat.contains('%'), "flat is not a measured row: {flat}");
     }
 
-    /// All firing conditions are collected, not short-circuited.
     #[test]
     fn overall_collects_every_veto_reason() {
         let set = pinned_set();
@@ -4635,17 +3340,9 @@ mod tests {
             .with_coverage(cov(&[("boot-actors", 8, 11)]))
             .with_budgets(vec![budget(0, 410, 0, 2870)]);
         let cmp = compare_overall(&baseline, &candidate, &set).expect("compare");
-        // rise + coverage + two budget quantities (lines and charge).
         assert_eq!(cmp.veto_reasons().len(), 4, "{:?}", cmp.veto_reasons());
     }
 
-    // -----------------------------------------------------------------------
-    // Freeze 1633: the barrier-removal refusal (plans/M20.md item G)
-    // -----------------------------------------------------------------------
-
-    /// Ordering counts for a single-fn program. `OrderingCounts` is keyed
-    /// per fn (freeze 1633 is about *where* an ordering word is), so these
-    /// fixtures name one fn and vary the counts within it.
     fn ord(pairs: &[(&'static str, u64)]) -> OrderingCounts {
         pairs
             .iter()
@@ -4653,11 +3350,6 @@ mod tests {
             .collect()
     }
 
-    /// **Freeze 1633 on the overall gate.** Every cycle number falls and
-    /// coverage and words are clean — and the candidate is still refused,
-    /// because it emits one fewer `DMB`. This is the `--omit-dmb` shape: the
-    /// mutation arm of `boot-cross-core-publish-acquire` is exactly "delete
-    /// the barrier and see if anything notices".
     #[test]
     fn overall_refuses_a_candidate_whose_only_gain_is_deleting_a_dmb() {
         let set = pinned_set();
@@ -4694,9 +3386,6 @@ mod tests {
         );
     }
 
-    /// The refusal covers the ordered halves too — they carry the same
-    /// hazard by their own `removal_sensitive` profile rows — and it does
-    /// **not** fire on keeping or adding an ordering word.
     #[test]
     fn overall_ordering_refusal_covers_every_crosscore_rule() {
         let set = pinned_set();
@@ -4711,16 +3400,12 @@ mod tests {
         };
         let baseline =
             totals(&[("flat", 1000), ("boot-actors", 5000)]).with_ordering(base_ord.clone());
-        // Identical counts: no refusal, ordinary win.
         let same = compare_overall(&baseline, &side(base_ord.clone()), &set).expect("cmp");
         assert!(!same.vetoed() && same.wins());
-        // Adding is fine.
         let mut more = base_ord.clone();
         more.insert(("f".to_string(), "barrier"), 7);
         let added = compare_overall(&baseline, &side(more), &set).expect("cmp");
         assert!(!added.vetoed() && added.wins());
-        // Dropping any one of the four is refused, and every dropped rule
-        // is reported rather than only the first.
         for rule in ["barrier", "load_acquire", "store_release", "system"] {
             let mut fewer = base_ord.clone();
             *fewer.get_mut(&("f".to_string(), rule)).unwrap() -= 1;
@@ -4732,8 +3417,6 @@ mod tests {
         assert_eq!(cmp.veto_reasons().len(), 4, "{:?}", cmp.veto_reasons());
     }
 
-    /// **Freeze 1633 on the corpus gate.** A case whose cycles fall while
-    /// its barrier count drops is not a win, and `assert_wins` says why.
     #[test]
     fn corpus_gate_refuses_barrier_removal() {
         let cmp = CorpusCompare {
@@ -4783,14 +3466,6 @@ mod tests {
         );
     }
 
-    /// **Item G's coverage gap is closed** (plans/M20.md item M). Item G
-    /// reported that no `cost-*` case reached a `barrier` /
-    /// `load_acquire` / `store_release` / `system` word at all, so freeze
-    /// 1633's refusal was live but inert on the live corpus. The
-    /// `cost-crosscore` golden reaches all four, so this test now asserts
-    /// the opposite of what it used to: **some** case must carry ordering
-    /// words, every case must still carry a slot for each of the four
-    /// rules, and `release` must remove none of them anywhere.
     #[test]
     fn release_removes_no_ordering_words_and_the_corpus_reaches_them() {
         let cmp = compare_opt_lists(&[], RELEASE_OPTS);
@@ -4801,8 +3476,6 @@ mod tests {
                 "{}: release removed an ordering word",
                 c.name
             );
-            // Keyed per fn: every fn carries a slot for each of the four
-            // rules, so the map is 4 x the case's fn count.
             assert!(
                 c.baseline_ordering.len() % 4 == 0 && !c.baseline_ordering.is_empty(),
                 "{}: every crosscore rule must have a slot on every fn, present at 0",
@@ -4824,14 +3497,6 @@ mod tests {
         apply_mode(CompileMode::Release);
     }
 
-    // -----------------------------------------------------------------------
-    // Null-opt oracle: the ruler must not reward a semantically neutral
-    // change. These test the gate itself, not the code it gates.
-    // -----------------------------------------------------------------------
-
-    /// Renaming every scored fn key changes nothing a machine executes.
-    /// Under method-grain compose the frequency vector stops matching, so
-    /// this is exactly the fusion/rename shape — it must not win.
     #[test]
     fn null_opt_renaming_fn_keys_is_never_a_win() {
         use crate::cost::compose::{WorkloadAttach, attach_workloads};
@@ -4906,8 +3571,6 @@ mod tests {
         assert!(cmp.vetoed(), "expected a coverage veto:\n{table}");
     }
 
-    /// Comparing a program against itself must never be a win, on either
-    /// gate. (Identity is the weakest possible null opt.)
     #[test]
     fn null_opt_identity_is_never_a_win() {
         let set = pinned_set();
@@ -4918,7 +3581,6 @@ mod tests {
         assert!(!cmp.wins(), "identity must not win the overall gate");
         assert_eq!(cmp.weighted_mean_rel(), Some(0.0));
 
-        // Corpus gate: release vs release.
         let corpus = compare_opt_lists(RELEASE_OPTS, RELEASE_OPTS);
         assert!(!corpus.wins(), "identity must not win the corpus gate");
         assert_eq!(corpus.sum_delta(), 0);
@@ -4926,17 +3588,6 @@ mod tests {
         apply_mode(CompileMode::Release);
     }
 
-    /// **Decision 1954, stated as a set rather than as a claim.** Every
-    /// case whose root declares an `@image` is scored as the image the
-    /// appliance would ship; every other is scored as its closure and says
-    /// so. The two lists are pinned so a case silently changing sides — a
-    /// root losing its `@image`, or the image build starting to fail and
-    /// falling back — is a failure rather than a quiet re-tiering.
-    ///
-    /// This is the K2 regression test: on the old behaviour every row here
-    /// was a closure, including the flagship, and `hot_text_bytes` on the
-    /// gate's side of the appliance read 7 936 B against the 89 024 B
-    /// `--stage=report` printed for the same root.
     #[test]
     fn the_gate_scores_the_image_every_root_would_ship() {
         let cmp = compare_opt_lists(RELEASE_OPTS, RELEASE_OPTS);
@@ -4967,42 +3618,12 @@ mod tests {
             !closure.contains(&"cost-product-appliance"),
             "the flagship must never be ranked as a closure again"
         );
-        // Every product-tier case ships an image: the tier exists to ask
-        // the gate about programs the appliance runs, and a product case
-        // that ranked as a closure would not be doing that.
         for c in cmp.cases.iter().filter(|c| c.tier == CostTier::Product) {
             assert_eq!(c.scope, TextScope::Image, "{}", c.name);
         }
         apply_mode(CompileMode::Release);
     }
 
-    /// **Freeze 1626 on the corpus gate, both halves in one test.** Words
-    /// are still a column and are recorded here; the condition the corpus
-    /// gate now enforces on the same run is the per-core budget delta.
-    ///
-    /// The rule's coverage on this corpus is stated rather than assumed,
-    /// and **plans/codegen-pareto-2.md decision 1954 changed what that
-    /// statement is**. The gate used to score the cost-stage closure, which
-    /// fits its L1I on every case but the two item M built to breach one:
-    /// the constraint was live and almost entirely silent, and item H
-    /// recorded that as "the budget rule is inert on real programs". It was
-    /// inert on the *wrong* program. Scoring the image each root would
-    /// actually ship, the claim inverts and becomes a clean one:
-    ///
-    /// * **every shipped image is over its L1I; no closure is.** 89–391 KB
-    ///   of hot text against 64 KiB, on all eight image-bearing cases and
-    ///   on both cores of the two-core ones. `within_budget()` is false on
-    ///   exactly the `TextScope::Image` rows.
-    /// * the **delta** rule still holds everywhere (no core's overflow
-    ///   grows from `dev` to `release`) — that is the rule freeze 1626
-    ///   installed and it is what this gate enforces. It is now doing real
-    ///   work: `release` takes the flagship from `charge = 6132` to 2569.
-    ///
-    /// This is also the tree's live demonstration of decision 1619's
-    /// central point, now on the whole product tier rather than on two
-    /// fixtures — an *absolute* whole-budget veto would refuse the identity
-    /// of every program the appliance ships, while the delta rule ranks
-    /// them fine.
     #[test]
     fn release_words_are_reported_and_the_budget_is_the_live_condition() {
         let cmp = compare_opt_lists(&[], RELEASE_OPTS);
@@ -5029,7 +3650,6 @@ mod tests {
                 c.name
             );
             let cores = match c.name.as_str() {
-                // plans/M20.md item M's two-core image-bearing cases.
                 "cost-crosscore" | "cost-itlb-span" => 2,
                 _ => 1,
             };
@@ -5040,20 +3660,6 @@ mod tests {
                 c.name
             );
             let ships = c.scope == TextScope::Image;
-            // **It stopped being true, and it is reported here rather than
-            // absorbed** (plans/codegen-pareto-2.md item M, decision 1907).
-            // Until the compositor joined the corpus, every image in this
-            // tree overflowed its 64 KiB L1I, and that fact is what made
-            // item D's premise look load-bearing and every code-growing opt
-            // look unaffordable. `cost-product-compositor` — a real
-            // compute workload rather than the full appliance with its
-            // whole driver and actor set — lands at **47 744 B of hot text
-            // against 65 536, charge 0**, with roughly 17 KB of headroom.
-            //
-            // The consequence is not cosmetic: an inliner and every other
-            // code-growing candidate on the ladder have room on *this*
-            // shape of program and do not on the appliance. So the
-            // invariant is now per-case and named, not universal.
             const FITS_IN_L1I: &[&str] = &["cost-product-compositor"];
             let expected_over = !FITS_IN_L1I.contains(&c.name.as_str());
             for b in c.baseline_budgets.iter().chain(c.candidate_budgets.iter()) {
@@ -5081,10 +3687,6 @@ mod tests {
         }
     }
 
-    /// **The retirement itself, structurally.** A candidate that grows the
-    /// word count while lowering cycles wins the corpus gate now. Under the
-    /// pre-J rule this exact shape was refused; the new refusal is on the
-    /// budget, and this case's budgets are unchanged.
     #[test]
     fn corpus_gate_no_longer_refuses_word_growth() {
         let grew = CorpusCompare {
@@ -5112,7 +3714,6 @@ mod tests {
             "+100 words at an unchanged budget is a priced trade now, not a \
              refusal (freeze 1626)"
         );
-        // …and the same case with one more overflowing line is refused.
         let mut over = grew.clone();
         over.cases[0].candidate_budgets[0].over_l1i_lines += 1;
         assert!(
@@ -5134,18 +3735,6 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // The ∀ sweep (plans/M20.md item J, decision 1604, freeze 1624)
-    // -----------------------------------------------------------------------
-
-    /// **Freeze 1624, checked structurally rather than by comment.**
-    ///
-    /// The `∃` form ("does this candidate win at *some* point") must not be
-    /// expressible through this module's public surface. The check reads
-    /// this file's own source and pins the set of public `bool`-returning
-    /// functions: a new per-point predicate — `wins_at`, `wins_anywhere`, a
-    /// `PointRow::wins` — cannot be added without failing here, which is
-    /// the only kind of freeze that survives a rewrite.
     #[test]
     fn no_public_per_point_win_predicate_exists() {
         let src = std::fs::read_to_string(
@@ -5186,7 +3775,6 @@ mod tests {
              particular anything taking a SweepPoint or a PointRow and \
              answering yes/no — is the ∃ form freeze 1624 refuses."
         );
-        // No public signature may take a point and answer a verdict.
         for line in src.lines() {
             let t = line.trim();
             if t.starts_with("pub fn") && t.contains("SweepPoint") {
@@ -5196,16 +3784,12 @@ mod tests {
                 );
             }
         }
-        // And PointRow carries data, not a verdict.
         assert!(
             !src.contains("impl PointRow {\n    pub fn wins"),
             "PointRow must not answer whether the candidate won here"
         );
     }
 
-    /// The nominal box is 2^17 = 131072 endpoint corners, and the plan's
-    /// "reduce by bracket endpoints only" is already that number — which is
-    /// why item J needs the per-case sensitivity probe.
     #[test]
     fn the_residual_box_has_two_to_the_seventeen_endpoint_corners() {
         let table = load_default().expect("committed profile");
@@ -5213,15 +3797,6 @@ mod tests {
         assert_eq!(box_cardinality(&table), 131_072);
     }
 
-    /// **Smoke lane: the ∀ sweep on one case, in the default `cargo test`.**
-    ///
-    /// The whole-corpus sweep below is `#[ignore]`d and run by
-    /// `cargo xtask check` (decision 1637). This keeps the property under
-    /// test on every ordinary run, through the *identical* code path — same
-    /// probe, same corners, same refusals — over `cost-bounds-elide`, the
-    /// case with the largest and most stable delta (1839 → 314 at the pinned
-    /// point), so a real regression in the sweep machinery cannot hide until
-    /// close.
     #[test]
     fn release_wins_at_every_box_point_on_the_smoke_case() {
         let cmp = compare_opt_lists_over_box_for_case(&[], RELEASE_OPTS, "cost-bounds-elide")
@@ -5246,26 +3821,9 @@ mod tests {
             "smoke sweep vetoed: {:?}",
             cmp.reasons.iter().map(|r| r.label()).collect::<Vec<_>>()
         );
-        // The nominal box is still reported even though one case is swept:
-        // a reader must see what the enumerated corners stand for.
         assert_eq!(case.box_cardinality, 131_072);
     }
 
-    /// **The live ∀ sweep: `release` vs `dev`.** Records the per-point
-    /// table, the nominal box cardinality and the surviving `k` per case.
-    /// **Deep lane.** `#[ignore]`d by default and run by
-    /// `xtask::deep_lane`, which `cargo xtask check` calls — matching how
-    /// every `fuzz_*` lane already splits a smoke budget from a deep one
-    /// (`crates/xtask/src/main.rs`). Measured 2026-07-31, after item H
-    /// widened the corpus: **36 352 points per side** across 19 cases —
-    /// 15 micro and 4 product — for **×1.78** the deep lane's ∀ work, which
-    /// did not show up as wall clock: 309–397 s (n=3) against 411 s (n=1)
-    /// before (see [`MAX_SWEPT_DIMS`] for why, and for why the work and not
-    /// the clock is the stated number). That is not a cost the default `cargo test` loop
-    /// should carry; CLAUDE.md separates the
-    /// cheap per-item lane from the expensive close lane, and a
-    /// whole-corpus ∀ gate belongs in the latter. Nothing about the
-    /// oracle's strength changed — only which lane runs it.
     #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
     #[test]
     fn release_wins_at_every_point_of_the_residual_box() {
@@ -5275,14 +3833,6 @@ mod tests {
         for c in &cmp.cases {
             assert_eq!(c.box_dims, 17);
             assert_eq!(c.box_cardinality, 131_072);
-            // **Not `2^k` any more, and that is item K's fix working.**
-            // The residual box carries joint constraints now (`[sweep.*].le`),
-            // so `endpoint_corners` drops every enumerated point the machine
-            // cannot physically be at — the divide-lo corner, where a 32-bit
-            // divide scored slower than the 64-bit one it replaced, was such
-            // a point and it used to veto a correct opt. A constrained box is
-            // not a hypercube, so the count is bounded by `2^k` rather than
-            // equal to it, and it must not be empty or the ∀ would be vacuous.
             assert!(
                 c.points.len() <= 1usize << c.swept.len() && !c.points.is_empty(),
                 "{}: {} corners over k={}, which must be a non-empty subset of \
@@ -5301,61 +3851,9 @@ mod tests {
         assert!(cmp.wins());
     }
 
-    // ---------------------------------------------------------------
-    // plans/codegen-pareto.md item C: one ∀ gate per arithmetic opt
-    // (decision 1745). Each id is ranked **alone against `dev`**, so a
-    // refusal names one transform rather than the bundle.
-    // ---------------------------------------------------------------
-
-    /// One row per item-C opt: `(baseline, opt, smoke case)`.
-    ///
-    /// The **case** is the one whose shapes the transform actually
-    /// reaches; a smoke lane pointed at a case the opt does not touch is
-    /// the green-unit-that-is-not-an-oracle freeze 1714 forbids, so the
-    /// pairing is written down rather than defaulted.
-    ///
-    /// The **baseline** is `dev` except for `WideImmForms`, which is
-    /// gated against `[NarrowImm]` (decision 1747). That is not a softer
-    /// gate, it is the only gate that means anything for this opt:
-    /// `load_imm` returns to `load_imm_naive` before it ever reaches
-    /// C5's one-word forms when `NarrowImm` is off, so `[] → [WideImmForms]`
-    /// is the identity comparison and would "pass" or "fail" for reasons
-    /// that have nothing to do with C5. Item C5 is named in the plan as
-    /// "the `NarrowImm` sequel"; this is what that composition means when
-    /// the gate has to rank it.
     const ITEM_C_SMOKE: &[(&[OptId], OptId, &str)] = &[
-        // Narrow checked `+`/`-`/`*` and the narrowing `.to[T]()`.
         (&[], OptId::MaskCheck, "cost-arith"),
-        // `narrow_to_width` — every wrapping narrow op. `cost-arith`'s own
-        // shapes move only in words, so the ranked case is the one whose
-        // cycles move.
         (&[], OptId::BfxNarrow, "cost-runtime"),
-        // The signed bounds constants and the `MIN`/`-1` divide guard.
-        //
-        // **Baseline widened to include `RegAlloc` at decision 1791**, and
-        // this is the one row where the baseline is load-bearing, so the
-        // reasoning is here rather than in the findings alone.
-        //
-        // Asked over `[NarrowImm]` this opt **fails** on the product
-        // tier — `no_case_falls_everywhere`, which is what turned this
-        // lane red on master once item H made the product tier part of the
-        // box. That result is real and is not being papered over; it is
-        // reproduced and explained in plans/codegen-pareto-C.md. What it
-        // means is that `[NarrowImm]` is now the wrong baseline for the
-        // same reason `dev` was wrong for it at decision 1747: it asks the
-        // question in a configuration the product does not ship. C5's
-        // saving is **words**, and words only become cycles when the
-        // schedule has no slack left to absorb them. `RegAlloc` is what
-        // removes that slack, and `RegAlloc` ships.
-        //
-        // The baseline was not chosen by hunting for a green one. The
-        // *strictest* membership question available — leave-one-out
-        // against the entire shipped list, where C5 has to beat every
-        // other opt including the two that delete most of its customers —
-        // gives the identical verdict on the identical two cases, and is
-        // pinned separately in
-        // `unit:item_c5_earns_its_place_by_leave_one_out_on_the_product_tier`
-        // so this row's baseline cannot be what carries the claim.
         (
             &[OptId::NarrowImm, OptId::RegAlloc],
             OptId::WideImmForms,
@@ -5363,25 +3861,6 @@ mod tests {
         ),
     ];
 
-    /// **Decision 1791: C5's membership claim, asked the hardest way.**
-    ///
-    /// `ITEM_C_SMOKE` ranks each opt over a chosen baseline, and a chosen
-    /// baseline is exactly the kind of freedom that can flatter an opt. So
-    /// C5's place in `RELEASE_OPTS` is pinned here instead, by the one
-    /// question that has no such freedom: **remove it from the shipped
-    /// list and see whether the shipped list gets worse.**
-    ///
-    /// This is strictly harder than the alone-gate. C5 must beat the whole
-    /// rest of `RELEASE_OPTS`, including `MaskCheck`, which deletes 4 of
-    /// its 7 constant-materialization customers on the four programs the
-    /// appliance ships — every bitmask-immediate one, leaving only three
-    /// `MOVN`s across two of the four. It still falls at **every** point
-    /// of the product box on both of those two, and rises nowhere.
-    ///
-    /// If this ever stops holding — most plausibly because `MaskCheck`'s
-    /// coverage grows and eats the remaining `MOVN` customers — C5 has
-    /// become dead weight and the doctrine is to delete it, not to look
-    /// for a baseline where it still wins.
     #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
     #[test]
     fn item_c5_earns_its_place_by_leave_one_out_on_the_product_tier() {
@@ -5420,14 +3899,6 @@ mod tests {
         );
     }
 
-    /// Item C's attribution table, printed for
-    /// `plans/codegen-pareto-C.md`: each opt alone against `dev`, at the
-    /// pinned point, in cycles **and** in words.
-    ///
-    /// Not a gate — [`attribute_opts`]'s own doc says why it exposes no
-    /// verdict. It exists because the gate ranks on cycles alone, and an
-    /// opt whose whole effect is words needs a place where that effect is
-    /// *visible* rather than a place where it reads as nothing.
     #[test]
     fn item_c_attribution_over_the_corpus() {
         let rows = attribute_opts(&[
@@ -5452,8 +3923,6 @@ mod tests {
             ),
         ]);
         eprintln!("item C attribution:\n{}", format_attribution_table(&rows));
-        // The corpus must actually contain a customer for each opt, or the
-        // table above is four columns of the identity (freeze 1714).
         for label in ["BfxNarrow", "MaskCheck", "+NI+WideImm"] {
             let moved = rows.iter().any(|r| {
                 let dev = r.cell("dev").expect("dev cell");
@@ -5468,41 +3937,6 @@ mod tests {
         }
     }
 
-    /// **Why item C1 scores zero, measured rather than asserted**
-    /// (plans/codegen-pareto-C.md, decision 1746).
-    ///
-    /// Decision 1740 predicted C1 would be unrankable because the table
-    /// had no W-form row, and made adding one C1's job. The row is added,
-    /// with T1 provenance; W-form multiplies *are* emitted and *are*
-    /// priced at their own latency — and `WFormMul` still moves the total
-    /// by exactly zero on every case in the corpus. So the missing row was
-    /// not the reason, and this test finds the reason that is.
-    ///
-    /// It ablates the **X-form** multiply row upward, one cycle at a time,
-    /// and reports the latency at which the substitution first becomes
-    /// visible. Below that threshold the difference between an X-form
-    /// multiply and a W-form one is absorbed by slack the block already
-    /// has: under `compiler.codegen.naive-locked`'s spill-everything
-    /// frame every operand arrives from a 4-cycle frame load and every
-    /// result leaves through a store, so the two L pipes bound the block
-    /// and the M pipe has cycles to spare. The committed X-form numbers
-    /// (lat 4, hold `ceil(3/1) + 2 = 5`) fit inside that slack; the W-form
-    /// numbers (lat 2, hold 1) fit inside it too, and two quantities that
-    /// both fit under the same bound are the same number to a block
-    /// schedule.
-    ///
-    /// The threshold is the useful output, not the zero: it says how much
-    /// headroom the frame convention is currently donating, and therefore
-    /// how much of item C1's win item E has to unlock before the row added
-    /// here starts to pay. `cost-mpipe-block`'s golden recorded the same
-    /// shape for the X-form *stall* in M20 ("the frame's own load/store
-    /// traffic already spaces the multiplies more than five cycles
-    /// apart"); this is that observation carried to the latency, on the
-    /// case built to carry item C1.
-    ///
-    /// The test also refuses the *other* failure: if no inflation made any
-    /// difference, the multiply term would be inert in the model and the
-    /// zero would mean nothing at all.
     #[test]
     fn item_c1_becomes_visible_once_the_allocator_removes_the_frame_slack() {
         let case = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -5517,11 +3951,6 @@ mod tests {
              moved, fix the patch rather than letting this test pass vacuously"
         );
 
-        // One program, the one the compiler actually emits. The
-        // substitution is priced by moving the **row**, not the opt:
-        // C1 is unconditional (decision 1746), so there is no second
-        // program to compare against, and pricing the emitted W-form
-        // words at the X-form row is exactly the counterfactual anyway.
         let side = compile_side(&case, RELEASE_OPTS).expect("release side");
         apply_mode(CompileMode::Release);
         let rules: Vec<_> = side
@@ -5557,45 +3986,15 @@ mod tests {
                 .cycles
         };
 
-        // The committed W-form row, and the same words priced at the
-        // X-form row this item replaced (SOG §3.6: lat 4, thru 1/3,
-        // note 4's 2-cycle M-pipe stall).
         let w_form = score_with_mul_w_at(2, 1, 0);
         let x_form = score_with_mul_w_at(4, 3, 2);
 
-        // **The crossover item C predicted, arriving on schedule.** On item
-        // C's own tree these two were equal: the spill-everything frame
-        // donated 6 cycles of M-pipe slack per multiply, against the 2 the
-        // substitution saves, so C1 scored exactly zero and decision 1746
-        // kept it out of `RELEASE_OPTS` as an unrankable form change. Item
-        // E's allocator removed that slack, and C1 became visible in the
-        // same merge that landed the allocator — which is precisely what
-        // item C's findings said would happen ("C1's payoff is gated on
-        // item E, not on the ruler").
-        //
-        // Promoting C1 to a ranked `OptId` was item C's follow-up, and the
-        // answer is **no** — decision 1790. Not because it is unrankable
-        // any more (it is: 3 cycles here), but because of *which* case
-        // falls. `cost-arith-w` is the only case in either tier that moves
-        // at all, item C wrote it, and C1 is worth exactly zero on all
-        // four programs the appliance ships. Freeze 1717 forbids gating on
-        // a case the opt authored alone, and that is the whole gate C1
-        // would have had. See plans/codegen-pareto-C.md.
-        //
-        // What this pins is the *direction and size* of the crossover, so
-        // it cannot quietly reverse.
         assert!(
             w_form < x_form,
             "item C1 has stopped being visible again: W-form {w_form} vs X-form \
              {x_form}. On the merged tree the allocator has removed the frame \
              slack that used to hide it, so W must now score strictly better."
         );
-        // (37, 70) -> (26, 28) at plans/codegen-pareto-2.md item J
-        // (decision 1934). `cost-arith-w` is a handful of scalar
-        // expressions with no runtime at all, so item J's GVN reaches
-        // nearly all of it: the two sides converge because most of what
-        // separated them was redundant recomputation rather than the
-        // width choice. The direction is what this pins, and it holds.
         assert_eq!(
             (w_form, x_form),
             (26, 28),
@@ -5605,9 +4004,6 @@ mod tests {
              rescaling it"
         );
 
-        // Walk the counterfactual X-form latency up until it does not, so
-        // the zero above is a measured amount of slack rather than an
-        // inert term. Throughput and stall held at the X-form values.
         let mut threshold = None;
         for lat in 5..=40u32 {
             let inflated = score_with_mul_w_at(lat, 3, 2);
@@ -5636,9 +4032,6 @@ mod tests {
         );
     }
 
-    /// Smoke lane for item C: every one of its opts falls at **every**
-    /// point of its own case's residual box, alone, and is refused for
-    /// nothing.
     #[test]
     fn each_item_c_opt_wins_at_every_box_point_on_its_smoke_case() {
         for &(base, id, case) in ITEM_C_SMOKE {
@@ -5673,12 +4066,6 @@ mod tests {
         }
     }
 
-    /// **The land gate for item C.** Each opt, alone, over the whole
-    /// `cost-*` corpus at every point of the residual box: no case may
-    /// rise anywhere, and at least one must fall everywhere.
-    ///
-    /// **Deep lane**, for the same reason its neighbours are: this is four
-    /// whole-corpus sweeps.
     #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
     #[test]
     fn each_item_c_opt_wins_over_the_whole_box_alone() {
@@ -5694,24 +4081,8 @@ mod tests {
         }
     }
 
-    /// Everything in `RELEASE_OPTS` **except** the allocator — the
-    /// baseline item E's ∀ gate is measured against, so the verdict is
-    /// about this item and not about the whole mode
-    /// (plans/codegen-pareto.md decision 1764).
     const WITHOUT_REGALLOC: &[OptId] = &[OptId::NarrowImm];
 
-    /// **Item E's smoke lane: the ∀ sweep of the allocator alone, on one
-    /// case, in the default `cargo test`.** Same code path, same probe,
-    /// same refusals as the whole-corpus sweep below — over
-    /// `cost-branch-bias`, which the allocator alone takes from 562 to
-    /// 437 at the pinned point, the largest *relative* fall in the corpus
-    /// (22%) and so the one whose collapse would be most visible.
-    ///
-    /// `cost-bounds-elide` — the smoke case the `dev -> release` sweep
-    /// uses — would be the wrong choice here: the allocator does not move
-    /// it at all, because every temp in it is read exactly once and
-    /// decision 1765 declines to promote those. A smoke lane over a case
-    /// the candidate cannot change asserts nothing.
     #[test]
     fn regalloc_wins_at_every_box_point_on_the_smoke_case() {
         let cmp =
@@ -5739,19 +4110,6 @@ mod tests {
         );
     }
 
-    /// **Item E's ∀ gate: the allocator alone, over the whole `cost-*`
-    /// corpus, at every point of the residual box.** No case may rise at
-    /// any point; at least one must fall at every point.
-    ///
-    /// The allocator's win is *structural* — it deletes a `str`/`ldr`
-    /// pair, the store's V-pipe data uop and both accesses' AGU uops, and
-    /// leaves one I-pipe `mov` — so no box coordinate can turn it into a
-    /// loss. In particular it does **not** depend on the swept
-    /// store-to-load-forwarding latency, which is what this sweep is for:
-    /// the claim is checked at the corners, not argued.
-    ///
-    /// **Deep lane.** `#[ignore]`d and run by `cargo xtask check`, for the
-    /// same reason the `dev -> release` sweep above is.
     #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
     #[test]
     fn regalloc_wins_at_every_point_of_the_residual_box() {
@@ -5762,19 +4120,6 @@ mod tests {
         assert!(cmp.wins());
     }
 
-    // --- plans/codegen-pareto.md item F: the no-ABI gate ---------------
-    //
-    // Two ids, asked over a **chain** of baselines rather than over `dev`.
-    // Neither is a transform of its own: `InterprocRegs` changes which
-    // register the allocator may hand out and `Frameless` is read off the
-    // allocation's own result, so `dev -> [it]` is the identity for both
-    // and a verdict from it would be a verdict about nothing (decision
-    // 1747's lesson, applied a second time).
-    // ---------------------------------------------------------------
-
-    /// Everything in `RELEASE_OPTS` before item F's first id — the list as
-    /// it stood at the end of item E, and the baseline the first link of
-    /// the chain is measured against.
     fn item_f_baseline() -> Vec<OptId> {
         RELEASE_OPTS
             .iter()
@@ -5783,30 +4128,11 @@ mod tests {
             .collect()
     }
 
-    /// `(opt, smoke case)` in `RELEASE_OPTS` order; each row's baseline is
-    /// `item_f_baseline()` plus every row before it.
-    ///
-    /// The **case** is the one whose shapes the transform actually
-    /// reaches, measured rather than guessed (freeze 1714):
-    ///
-    /// - `InterprocRegs` moves six of the twenty cases at the pinned
-    ///   point. `cost-crosscore` moves by the most (4142 -> 4052, -90) but
-    ///   carries **16 384** corners — a 53 s smoke lane on its own, which
-    ///   is a lane changing kind, not a smoke test
-    ///   (`bench/thresholds.toml`'s `[tests]` note). `cost-runtime` falls
-    ///   by -47 over 1 024 corners and is the same transform.
-    /// - `Frameless` moves eighteen of twenty; `cost-arith` is the
-    ///   largest *relative* fall (136 -> 74, **-46 %**) and is four
-    ///   functions, so it is also the cheapest of the eighteen to sweep.
     const ITEM_F_SMOKE: &[(OptId, &str)] = &[
         (OptId::InterprocRegs, "cost-runtime"),
         (OptId::Frameless, "cost-arith"),
     ];
 
-    /// **Item F's smoke lane.** Each id falls at *every* point of its own
-    /// case's residual box, over its own place in the chain, and is
-    /// refused for nothing. Same code path, same probe and same refusals
-    /// as the whole-corpus lane below.
     #[test]
     fn each_item_f_opt_wins_at_every_box_point_on_its_smoke_case() {
         let mut base = item_f_baseline();
@@ -5843,13 +4169,6 @@ mod tests {
         }
     }
 
-    /// **The land gate for item F.** Each id, over the whole `cost-*`
-    /// corpus at every point of the residual box, against its own link in
-    /// the chain: no case may rise anywhere, and at least one must fall
-    /// everywhere — asked once per tier (decision 1782), so the micro
-    /// corpus cannot satisfy the quantifier on the product tier's behalf.
-    ///
-    /// **Deep lane**: two whole-corpus sweeps.
     #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
     #[test]
     fn each_item_f_opt_wins_over_the_whole_box_alone() {
@@ -5868,17 +4187,6 @@ mod tests {
         }
     }
 
-    // ---------------------------------------------------------------
-    // plans/codegen-pareto-2.md item L: B4's gate (decisions 1973–1976).
-    //
-    // `BranchCleanup` is asked over **its own baseline** — the shipped
-    // list with it removed — so the verdict is about the transform and
-    // not about the mode it rides in (decision 1717 / 1764), and asked
-    // once per tier (decision 1782) so the fifteen micro cases cannot
-    // satisfy the quantifier on the four borrowed programs' behalf.
-    // ---------------------------------------------------------------
-
-    /// `RELEASE_OPTS` with B4 removed: the baseline B4 is ranked against.
     fn without_branch_cleanup() -> Vec<OptId> {
         RELEASE_OPTS
             .iter()
@@ -5887,12 +4195,6 @@ mod tests {
             .collect()
     }
 
-    /// **B4's smoke lane.** `cost-arith-w` is the largest *relative* fall
-    /// in either tier (93 → 88 at the pinned point, −5.4 %) and is four
-    /// small fns, so it is also among the cheapest to sweep. A smoke lane
-    /// over a case the transform cannot reach would assert nothing
-    /// (freeze 1714), and every fn ends in a `Return`, so it reaches this
-    /// one everywhere.
     #[test]
     fn branch_cleanup_wins_at_every_box_point_on_the_smoke_case() {
         let base = without_branch_cleanup();
@@ -5920,13 +4222,6 @@ mod tests {
         );
     }
 
-    /// **The land gate for B4**, over the whole `cost-*` corpus at every
-    /// point of the residual box, marginally over the shipped list.
-    ///
-    /// **Deep lane.** Item B measured B4 falling on all fifteen micro
-    /// cases and reverted it for the bridge, not for the ruler; this is
-    /// the same question asked of the boundary-preserving form that
-    /// landed.
     #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
     #[test]
     fn branch_cleanup_wins_at_every_point_of_the_residual_box() {
@@ -5943,10 +4238,6 @@ mod tests {
         );
     }
 
-    /// The same question asked of **each tier alone** (decision 1782), so
-    /// the product tier decides on its own four programs.
-    ///
-    /// **Deep lane.**
     #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
     #[test]
     fn branch_cleanup_wins_in_each_tier_on_its_own() {
@@ -5969,13 +4260,6 @@ mod tests {
         }
     }
 
-    /// **F5 has an `OptId` now (decision 1909).** It did not, under
-    /// decision 1779, because the gate corpus never fired a tail call and
-    /// an unrankable transform may not be an id (freeze 1714). Item L's
-    /// `BranchCleanup`, item I's coalescing and item M's compute workload
-    /// between them made tail position reachable — 14 sites across four
-    /// cases — so the evidence 1779 rested on is gone and the opt is
-    /// ranked like every other.
     #[test]
     fn f5_is_an_opt_id_now_that_the_corpus_fires_tail_calls() {
         assert!(
@@ -5990,16 +4274,6 @@ mod tests {
         apply_mode(CompileMode::Release);
     }
 
-    /// **F5's verdict, and why it is not an `OptId`** (decision 1779).
-    ///
-    /// **Superseded by decision 1909 and kept as its inverse.** This
-    /// asserted that no `cost-*` case fires a tail call, which is what
-    /// denied F5 an `OptId` under decision 1779. Item L's `BranchCleanup`,
-    /// item I's coalescing and item M's compute workload made tail
-    /// position reachable, this oracle failed *by design* reporting 14
-    /// fired sites, and F5 was ranked and shipped. What is worth keeping
-    /// is the count: if it collapses to zero the corpus has stopped
-    /// exercising F5 and its gate has gone quiet.
     #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
     #[test]
     fn the_corpus_still_fires_tail_calls() {
@@ -6026,8 +4300,6 @@ mod tests {
         eprintln!("tail-call sites by case: {fired:?}");
     }
 
-    /// Sweep one named case only — the ∀ machinery on a single input, for
-    /// oracles that would otherwise pay for the whole corpus.
     fn sweep_one(
         case: &str,
         baseline: &[OptId],
@@ -6044,12 +4316,6 @@ mod tests {
         (sweep, reasons)
     }
 
-    /// **A candidate that wins at one point and loses at another is vetoed,
-    /// with the point named** (04 §5). The two scores are supplied, but the
-    /// rule that reads them is the one `sweep_case` runs at every corner —
-    /// and the point labels are real [`SweepPoint`] labels, so what is
-    /// asserted is that the refusal carries the box coordinate a reader
-    /// needs to reproduce it.
     #[test]
     fn a_candidate_that_wins_at_one_point_and_loses_at_another_is_vetoed_with_the_point_named() {
         let table = load_default().expect("committed profile");
@@ -6066,7 +4332,6 @@ mod tests {
             ordering: Some(BTreeMap::new()),
         };
         let mut reasons = Vec::new();
-        // Wins here…
         let row = refuse_at_point(
             "cost-flip",
             &flatter,
@@ -6081,7 +4346,6 @@ mod tests {
             reasons.is_empty(),
             "a point the candidate wins at fires nothing: {reasons:?}"
         );
-        // …and loses there.
         let row = refuse_at_point(
             "cost-flip",
             &harsher,
@@ -6097,8 +4361,6 @@ mod tests {
             vec![format!("case_rose:cost-flip:1000->1100@[{harsher}]")],
             "the flip must be refused and must name the flipping point"
         );
-        // The ∀ verdict on that pair is a loss, and there is no way to ask
-        // for the other answer: `SweepCompare::wins` is the only verdict.
         let cmp = SweepCompare {
             table_digest: table.table_digest(),
             cases: Vec::new(),
@@ -6108,9 +4370,6 @@ mod tests {
         assert!(format_sweep_table(&cmp, "base", "cand").contains("outcome=veto"));
     }
 
-    /// The sensitivity probe holds a dimension only when the model never
-    /// read it, reports what it held and what it kept, and the residual
-    /// corner count is `2^k` over what survived.
     #[test]
     fn the_sensitivity_probe_holds_only_unread_dimensions_and_reports_them() {
         let (case, _) = sweep_one("cost-arith", &[], RELEASE_OPTS);
@@ -6127,7 +4386,6 @@ mod tests {
             .map(str::to_string)
             .collect();
         for c in &cmp.cases {
-            // Nothing is dropped: swept ∪ held is the whole declared box.
             let mut seen: Vec<String> = c.swept.clone();
             seen.extend(c.held.iter().map(|h| h.dim.clone()));
             seen.sort();
@@ -6138,8 +4396,6 @@ mod tests {
                 c.name,
                 c.swept.len()
             );
-            // Every held dimension is named with the bracket it was held
-            // across — silent reduction is the failure this guards.
             for h in &c.held {
                 assert!(
                     table.contains(&h.label()),
@@ -6148,8 +4404,6 @@ mod tests {
                     h.dim
                 );
             }
-            // A dimension kept only because it was read but never moved is
-            // still swept: doubt keeps it in.
             for d in &c.read_but_static {
                 assert!(
                     c.swept.contains(d),
@@ -6161,9 +4415,6 @@ mod tests {
         eprintln!("probe report:\n{table}");
     }
 
-    /// Held dimensions really are inert for that case: moving one from lo
-    /// to hi changes nothing, at the pinned corner and at both extreme
-    /// corners. This is the probe's own claim, re-checked from outside it.
     #[test]
     fn a_held_dimension_moves_nothing_at_any_extreme_corner() {
         let table = load_default().expect("table");
@@ -6201,11 +4452,6 @@ mod tests {
         }
     }
 
-    /// **Freeze 1633 survives the rewrite.** The barrier-removal refusal is
-    /// still on the swept gate, still derived from `CostRule::is_crosscore`
-    /// rather than a hand-list, and still independent of the retired words
-    /// veto: this fixture grows words *and* deletes a `DMB`, and it is the
-    /// barrier that refuses it.
     #[test]
     fn the_sweep_still_refuses_barrier_removal() {
         let mut reasons = Vec::new();
@@ -6238,7 +4484,6 @@ mod tests {
             cmp.reasons.iter().map(SweepVeto::label).collect::<Vec<_>>(),
             vec!["ordering_words_removed:cost-crosscore:barrier:6->5".to_string()]
         );
-        // The corpus gate's own refusal is untouched by item J.
         let removed = CaseDelta {
             scope: TextScope::Closure,
             tier: CostTier::Micro,
@@ -6266,11 +4511,6 @@ mod tests {
         );
     }
 
-    /// **The fail-closed bound is a refusal, not a truncation** — driven
-    /// through the real probe, not asserted about a string this test wrote
-    /// itself. `probe_case_bounded` takes the bound so a test can put it
-    /// below what the committed profile reaches; every production caller
-    /// goes through `probe_case` at `MAX_SWEPT_DIMS`.
     #[test]
     fn too_many_surviving_dimensions_is_an_error_not_a_truncation() {
         assert!(
@@ -6286,8 +4526,6 @@ mod tests {
         let b = compile_side(&path, &[]).expect("baseline");
         let c = compile_side(&path, RELEASE_OPTS).expect("candidate");
 
-        // At a bound of 0 every surviving dimension is over it, so the
-        // probe must refuse rather than hand back a truncated `swept`.
         let err = probe_case_bounded("cost-bounds-elide", &b, &c, &table, 0)
             .expect_err("a bound the case exceeds must refuse");
         assert!(
@@ -6297,13 +4535,9 @@ mod tests {
             "the refusal must name the bound and say it is not a truncation: {err}"
         );
 
-        // The same probe at the real bound succeeds and reports a `swept`
-        // set — so the refusal above is the bound firing, not the case
-        // being broken.
         let ok = probe_case_bounded("cost-bounds-elide", &b, &c, &table, MAX_SWEPT_DIMS)
             .expect("the smoke case must fit the committed bound");
         assert!(!ok.swept.is_empty() && ok.swept.len() <= MAX_SWEPT_DIMS);
-        // And the bound is exactly what the refusal counted against.
         assert!(
             probe_case_bounded("cost-bounds-elide", &b, &c, &table, ok.swept.len() - 1).is_err(),
             "one dimension under the surviving count must still refuse"
@@ -6317,22 +4551,8 @@ mod frameless_disposition {
     use super::*;
     use crate::opts::{OptId, RELEASE_OPTS};
 
-    /// **The measurement that parks or ships `Frameless`** (decision 1918).
-    ///
-    /// F3 elides the `x30` save on a function with no returning call — two
-    /// fewer instructions — and it won on every boot-shaped program. Item
-    /// M's compute workload refused it. Both refusals predate item J's
-    /// MWIR passes, so this asks the question again over one case rather
-    /// than the whole box, which is the difference between a minute and
-    /// forty-five.
-    ///
-    /// Baseline is the shipped list plus `InterprocRegs`, which is what
-    /// F3 composes on; `dev` would be the identity comparison.
     #[test]
     fn frameless_on_the_compute_workload() {
-        // The shipped list with `Frameless` held out, against the shipped
-        // list. Derived from `RELEASE_OPTS` rather than written out, so it
-        // keeps measuring the marginal question as the list grows.
         let base: Vec<OptId> = RELEASE_OPTS
             .iter()
             .copied()
@@ -6364,13 +4584,6 @@ mod frameless_disposition {
             case.points.len(),
             rose.len()
         );
-        // **Decision 1919: `Frameless` ships again.** It was parked on two
-        // measurements that both predate item J's MWIR passes; asked again
-        // over the same case afterwards it **falls at every one of the 512
-        // points and rises at none**. Item J's ConstProp/Gvn/Dce removed
-        // whatever the rise was — which also means the mechanism that
-        // refused it was never the frame-size shuffle the narrowing in
-        // `build_frame` was built on.
         assert!(
             rose.is_empty(),
             "Frameless rises again on the compute workload — this is what \

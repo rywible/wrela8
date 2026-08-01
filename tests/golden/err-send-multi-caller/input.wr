@@ -1,14 +1,5 @@
 module examples.err_send_multi_caller
 
-# plans/M6.md item G: the counting rule's soundness case, and the one
-# place this analysis is deliberately stricter than decision 5's own
-# parenthetical. `Fanout.once`'s bare `send` sits outside every loop and
-# every `g.start` child — decision 5's two lexical tests both pass — but
-# `Fanout.once` is itself invoked from two static message sites, so the
-# one static site inside it enqueues *two* messages per root turn.
-# Counting static sites alone would under-count, which is the one failure
-# mode that could let a real image drop a message, so the holder's own
-# execution count is part of the proof (`sema::send_proof::at_most_once`).
 
 @actor
 pub struct Logger:

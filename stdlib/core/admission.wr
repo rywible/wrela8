@@ -1,7 +1,3 @@
-# plans/M13.md item I / decision 6: mailbox-admission reasons.
-# Live set after item F: Full | DeadlineUnmeetable.
-# `Quarantined` is reserved (03 §9) and not a live variant in revision 0.1.
-# Declaration order is load-bearing for variant tags (Full = 0).
 module admission
 
 pub enum Admission:

@@ -1,10 +1,3 @@
-# plans/M9.md item J2d: the post-await exemption is per-suspension.
-# `completion` is bound from the first await, so it does not span *that*
-# await (check-await-result-path pins the legal single-await shape) — but
-# it is read after a *second* await, which it does span, and it is not
-# self-rooted. 02-language.md §9.2 refuses that. Without clearing the
-# exemption set at each suspension the name stays permanently allowed and
-# this program typechecks, which is the hole this case exists to pin.
 module examples.err_await_spans_later_await
 
 struct Payload:

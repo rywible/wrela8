@@ -5,9 +5,6 @@ from lib.pk import Hand as Grip
 from lib.ret import Inner as Src
 from lib.ret import Outer as Out
 
-# plans/M9.md item GG found-in-passing: the true adversarial swap
-# typechecks (check-import-alias-sig-swap) but A1b decision 15 withholds
-# body-bearing splices — local `Src` is not lib.pk's `Src`.
 
 fn drive() -> u32:
     s = Inner(n=3)

@@ -1,7 +1,5 @@
 module examples.err_reserve_in_loop
 
-# plans/M7.md item E2: a `reserve` site inside a loop is not
-# at-most-once (same shape as `sema::send_proof` / decision 6).
 
 @layout(mmio, endian=little)
 struct VirtioIrqMmio:
@@ -47,9 +45,6 @@ pub struct BlkDriver:
         self.device = negotiated.start()
         return Ok(unit)
 
-    # Demands `QueuePermit` so the failed at-most-once proof surfaces at
-    # the use site (plans/M13.md item M); a Result-typed site would stay
-    # legal and item L would cover silent Err discard instead.
     fn many(mut self, n: u32) -> QueuePermit:
         i: u32 = 0
         @budget(bound=1000000)
