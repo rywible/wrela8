@@ -613,31 +613,8 @@ pub fn score_program_at_with_hot(
     hot: HotBlocks<'_>,
     counts: BlockCounts<'_>,
 ) -> Result<CostReport, String> {
-    let machine = Machine::from_table(table)?;
-    let mut fns = Vec::with_capacity(program.fns.len());
-    let mut total_proxy_cycles = 0u64;
-    let mut owner_totals = BTreeMap::from([
-        ("app".to_string(), 0u64),
-        ("runtime".to_string(), 0u64),
-        ("driver".to_string(), 0u64),
-    ]);
-
-    let mut total_words = 0u64;
-    for (key, f) in &program.fns {
-        let (proxy_cycles, terms) = score_fn(key, f, table, placement, point, &machine, &counts)?;
-        let words = f.code.len() as u64;
-        total_proxy_cycles = total_proxy_cycles.saturating_add(proxy_cycles);
-        total_words = total_words.saturating_add(words);
-        let owner = classify_owner(key).to_string();
-        *owner_totals.entry(owner.clone()).or_insert(0) += proxy_cycles;
-        fns.push(FnCost {
-            key: key.clone(),
-            owner,
-            proxy_cycles,
-            words,
-            terms,
-        });
-    }
+    let ctx = ScoreCtx::new(table)?;
+    let totals = score_program_core(program, table, placement, point, &ctx, hot, counts, true)?;
 
     Ok(CostReport {
         version: table.version,
@@ -649,13 +626,181 @@ pub fn score_program_at_with_hot(
         dispatch_mops: table.dispatch_mops(),
         dispatch_uops: table.dispatch_uops(),
         reorder_window: table.reorder_window(),
+        total_proxy_cycles: totals.total_proxy_cycles,
+        total_words: totals.total_words,
+        owner_totals: totals.owner_totals,
+        fns: totals.fns,
+        workloads_digest: None,
+        workload_totals: BTreeMap::new(),
+        workload_coverage: BTreeMap::new(),
+        footprint: totals.footprint,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// The lean scoring path (plans/codegen-pareto-2.md item R, decisions
+// 1960–1963)
+// ---------------------------------------------------------------------------
+
+/// Table-derived scoring constants, built **once** and reused at every
+/// point of a sweep (decision 1960).
+///
+/// [`score_program_at`] is called once per corner of the residual box —
+/// 21 cases × up to 12 288 corners × 2 sides — and every one of those
+/// calls used to rebuild [`Machine`] out of the profile's `[pipelines]`
+/// rows: five string pipe-range parses and a `Vec` of port letters, none
+/// of which any sweep dimension can move. Nothing here reads a
+/// [`SweepPoint`], which is the whole reason it is safe to hoist: a
+/// `ScoreCtx` built from a table scores every point of that table's box.
+///
+/// This is the same category of fix as `super::branch`'s hoisted
+/// `penalty()` — a per-call reconstruction of a constant, in a loop whose
+/// only job is to vary something else.
+pub struct ScoreCtx {
+    machine: Machine,
+}
+
+impl ScoreCtx {
+    pub fn new(table: &CostTable) -> Result<ScoreCtx, String> {
+        Ok(ScoreCtx {
+            machine: Machine::from_table(table)?,
+        })
+    }
+}
+
+/// Everything a ∀-sweep corner reads out of a scoring, and nothing else
+/// (decision 1961).
+///
+/// [`CostReport`] carries three table digests — each of which formats
+/// every row of the profile into a `String` and hashes it — a per-fn
+/// [`FnCost`] with a cloned key, an owner `String` and a term map, and the
+/// profile header fields. The sweep keeps cycles, words, budgets and the
+/// ordering counts, and throws the rest away at every corner. This is the
+/// part it keeps.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScoreTotals {
+    pub total_proxy_cycles: u64,
+    pub total_words: u64,
+    pub footprint: Vec<CoreBudget>,
+    /// Per-`(fn, ordering rule)` emitted-word counts, present only when
+    /// the caller asked for them.
+    ///
+    /// **Ordering counts are counts of emitted words, so they are
+    /// identical at every point of the box** — the same fact
+    /// `opts::win::refuse_at_point`'s `check_ordering` flag already rests
+    /// on. Computing them requires the per-rule term map, which is one
+    /// `String` allocation per emitted word (~22 000 of them on the
+    /// flagship image), so a corner that will not read them does not build
+    /// them. `None` means "not computed", never "no ordering words": a
+    /// caller that asked for them and got `None` is a bug, and
+    /// `refuse_at_point` fails closed on it rather than reading an empty
+    /// map as an absence of barriers.
+    pub ordering: Option<super::crosscore::OrderingCounts>,
+}
+
+/// Score at `point` for the totals a sweep reads, skipping the report
+/// (decision 1961).
+///
+/// Identical arithmetic to [`score_program_at`] — the same
+/// [`score_program_core`] over the same words in the same order — with
+/// the report assembly and, when `want_ordering` is false, the per-rule
+/// term maps left unbuilt. `ctx` is the hoisted table constant; passing
+/// one built from a *different* table than `table` would be a caller bug
+/// the type system does not catch, so every caller builds it from the
+/// table it then scores against.
+pub fn score_totals_at(
+    program: &CodegenProgram,
+    table: &CostTable,
+    placement: &PlacementTable,
+    point: &SweepPoint,
+    ctx: &ScoreCtx,
+    want_ordering: bool,
+) -> Result<ScoreTotals, String> {
+    let core = score_program_core(
+        program,
+        table,
+        placement,
+        point,
+        ctx,
+        HotBlocks::All,
+        BlockCounts::Flat,
+        want_ordering,
+    )?;
+    Ok(ScoreTotals {
+        total_proxy_cycles: core.total_proxy_cycles,
+        total_words: core.total_words,
+        footprint: core.footprint,
+        ordering: want_ordering.then(|| super::crosscore::ordering_word_counts_of(&core.fns)),
+    })
+}
+
+/// What [`score_program_core`] produces: the report's body, before the
+/// header.
+struct ProgramCore {
+    total_proxy_cycles: u64,
+    total_words: u64,
+    owner_totals: BTreeMap<String, u64>,
+    /// Empty when `want_fns` was false.
+    fns: Vec<FnCost>,
+    footprint: Vec<CoreBudget>,
+}
+
+/// The one scoring loop. Both entry points above go through it, so the
+/// lean path cannot drift from the reported one: `want_fns` decides
+/// whether the per-fn rows and their term maps are *materialized*, never
+/// what is *computed*.
+#[allow(clippy::too_many_arguments)]
+fn score_program_core(
+    program: &CodegenProgram,
+    table: &CostTable,
+    placement: &PlacementTable,
+    point: &SweepPoint,
+    ctx: &ScoreCtx,
+    hot: HotBlocks<'_>,
+    counts: BlockCounts<'_>,
+    want_fns: bool,
+) -> Result<ProgramCore, String> {
+    let mut fns = Vec::with_capacity(if want_fns { program.fns.len() } else { 0 });
+    let mut total_proxy_cycles = 0u64;
+    let mut owner_totals = BTreeMap::from([
+        ("app".to_string(), 0u64),
+        ("runtime".to_string(), 0u64),
+        ("driver".to_string(), 0u64),
+    ]);
+
+    let mut total_words = 0u64;
+    for (key, f) in &program.fns {
+        let (proxy_cycles, terms) = score_fn(
+            key,
+            f,
+            table,
+            placement,
+            point,
+            &ctx.machine,
+            &counts,
+            want_fns,
+        )?;
+        let words = f.code.len() as u64;
+        total_proxy_cycles = total_proxy_cycles.saturating_add(proxy_cycles);
+        total_words = total_words.saturating_add(words);
+        if want_fns {
+            let owner = classify_owner(key).to_string();
+            *owner_totals.entry(owner.clone()).or_insert(0) += proxy_cycles;
+            fns.push(FnCost {
+                key: key.clone(),
+                owner,
+                proxy_cycles,
+                words,
+                terms,
+            });
+        }
+    }
+
+    Ok(ProgramCore {
         total_proxy_cycles,
         total_words,
         owner_totals,
         fns,
-        workloads_digest: None,
-        workload_totals: BTreeMap::new(),
-        workload_coverage: BTreeMap::new(),
         footprint: footprint::compute(program, table, point, placement, hot)?,
     })
 }
@@ -734,6 +879,7 @@ pub fn block_schedule_lengths_with_counts(
             &point,
             &machine,
             &branch_terms,
+            true,
         )?;
         out.push(s);
     }
@@ -748,6 +894,7 @@ fn score_fn(
     point: &SweepPoint,
     machine: &Machine,
     counts: &BlockCounts<'_>,
+    want_terms: bool,
 ) -> Result<(u64, BTreeMap<String, u64>), String> {
     let mut terms: BTreeMap<String, u64> = BTreeMap::new();
     if f.code.is_empty() {
@@ -768,6 +915,7 @@ fn score_fn(
             point,
             machine,
             &branch_terms,
+            want_terms,
         )?;
         proxy_cycles = proxy_cycles.saturating_add(s);
         for (k, v) in block_terms {
@@ -797,6 +945,13 @@ fn score_words(
     point: &SweepPoint,
     machine: &Machine,
     branch_terms: &BranchTerms,
+    // `want_terms`: build the per-rule word-count map. It is one `String`
+    // allocation per emitted word and the only thing that reads it is the
+    // ordering census, which is point-invariant — so the ∀ sweep asks for
+    // it once per case rather than once per corner (item R, decision
+    // 1961). It is an output, never an input: no branch of the scoreboard
+    // below reads `terms`.
+    want_terms: bool,
 ) -> Result<(u64, BTreeMap<String, u64>), String> {
     let mut terms: BTreeMap<String, u64> = BTreeMap::new();
     if code.is_empty() {
@@ -837,7 +992,9 @@ fn score_words(
     let mut max_retire = 0u64;
 
     for (i, ew) in code.iter().enumerate() {
-        *terms.entry(ew.rule.as_str().to_string()).or_insert(0) += 1;
+        if want_terms {
+            *terms.entry(ew.rule.as_str().to_string()).or_insert(0) += 1;
+        }
         check_mem_base_in_srcs(ew)?;
 
         let row = timing_row(ew.rule, table);
