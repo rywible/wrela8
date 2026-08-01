@@ -651,13 +651,30 @@ pub(crate) fn wide_imm_forms() -> bool {
 // plans/codegen-pareto.md item F3, decision 1772: one more knob, default
 // **off**, so `dev` keeps every frame the reference model has.
 //
-// F5 (tail calls) has **no knob** (decision 1779). It fires only where F3
-// has already removed the frame, so it is unreachable under `dev` without
-// one — and the ∀ gate scores it at exactly zero on both tiers, which
-// freeze 1714 says disqualifies it as an `OptId`. An unconditional
-// transform that cannot fire in the reference mode needs no switch.
+// F5 (tail calls) had **no knob** under decision 1779, on the evidence
+// that the gate corpus never fired one: the ∀ gate scored it at exactly
+// zero on both tiers, which freeze 1714 says disqualifies an `OptId`.
+//
+// **That evidence expired (decision 1909).** Item L's `BranchCleanup` and
+// item I's coalescing between them made tail position reachable, and item
+// M's compute workload joined the corpus; a `tail_calls_are_not_rankable`
+// oracle then failed *by design*, reporting 14 fired sites across
+// `cost-crosscore` (3), `cost-product-appliance` (3), `cost-product-blk`
+// (4) and `cost-product-receipt` (4), with the instruction to re-rank. So
+// F5 gets its knob and its `OptId` after all, and `dev` keeps `BL`+`RET`
+// as the reference form like every other opt.
 thread_local! {
     static FRAMELESS_FNS: Cell<bool> = const { Cell::new(false) };
+    static TAIL_CALLS: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Item F5: a call in tail position is a `B`, not `BL`+`RET`.
+pub fn set_tail_calls(enabled: bool) {
+    TAIL_CALLS.with(|c| c.set(enabled));
+}
+
+pub(crate) fn tail_calls() -> bool {
+    TAIL_CALLS.with(|c| c.get())
 }
 
 /// Item F3: a function with no frame bytes left and no returning call
@@ -1487,7 +1504,24 @@ fn build_frame(
     // 2. **The frame itself.** If dropping the `x30` slot leaves *no*
     //    bytes at all, there is nothing to point `sp` at and the
     //    `sub sp`/`add sp` pair goes too.
-    let lr_saved = save_lr || slot_bias != 0;
+    // **Item F3, narrowed by round 2 (decision 1908).** Eliding the `x30`
+    // save is two fewer instructions, and the slot sits *after* every temp,
+    // so dropping it never moves a temp's offset. But when it changes
+    // `round_up_16`, the whole frame shrinks 16 bytes and every slot's
+    // *absolute* address moves with `sp` — and item K's density term
+    // charges for exactly that. The ∀ gate caught it on item M's compute
+    // workload: `cost-product-compositor` rose 7526 -> 7544 at every
+    // `store_to_load_forwarding=1` corner, which vetoed `Frameless` and
+    // with it the whole release list.
+    //
+    // So the elision is taken **only when the frame size does not move**.
+    // That keeps the instruction win, which is the part F3 was actually
+    // about, and gives up the frame-size win, which is the part that was
+    // buying an address shuffle the model prices. A leaf with no frame at
+    // all is unaffected: `offset == 0` on both sides of the `round_up_16`,
+    // so the whole `sub sp`/`add sp` pair still goes.
+    let elide_changes_size = round_up_16(offset) != round_up_16(offset + 8);
+    let lr_saved = (save_lr || slot_bias != 0) || (elide_changes_size && offset != 0);
     let lr_off = offset;
     if lr_saved {
         offset += 8;
@@ -5736,6 +5770,10 @@ impl TailPlan {
 fn plan_tail_calls(f: &MwirFn, block_ids: &[Option<u32>]) -> TailPlan {
     let n = f.body.len();
     let mut plan = TailPlan::none(n);
+    // Decision 1909: `dev` keeps `BL`+`RET` as the reference form.
+    if !tail_calls() {
+        return plan;
+    }
     // The epilogue must be a bare teardown: no receiver write-back, no
     // `mut` parameter write-back.
     if let Some((_, mode)) = f.receiver {

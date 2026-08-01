@@ -2726,7 +2726,10 @@ mod tests {
             .filter(|id| {
                 !matches!(
                     id,
-                    OptId::WideImmForms | OptId::InterprocRegs | OptId::Frameless
+                    OptId::WideImmForms
+                        | OptId::InterprocRegs
+                        | OptId::Frameless
+                        | OptId::TailCalls
                 )
             })
             .collect();
@@ -2843,8 +2846,15 @@ mod tests {
         // with `RegAlloc` off both are the identity. Each is gated on its
         // real baseline in `ITEM_F_SMOKE`, which is a chain rather than a
         // single baseline precisely because they compose in this order.
-        const UNRANKABLE_ALONE: &[OptId] =
-            &[OptId::WideImmForms, OptId::InterprocRegs, OptId::Frameless];
+        // `TailCalls` joins them at decision 1909: F5 fires only where F3
+        // has already removed the frame, so `dev -> [TailCalls]` is the
+        // identity comparison, exactly as it is for the three above.
+        const UNRANKABLE_ALONE: &[OptId] = &[
+            OptId::WideImmForms,
+            OptId::InterprocRegs,
+            OptId::Frameless,
+            OptId::TailCalls,
+        ];
         let rankable: Vec<OptId> = RELEASE_OPTS
             .iter()
             .copied()
@@ -3182,6 +3192,14 @@ mod tests {
                 OptId::Frameless => {
                     let mut b = item_f_baseline();
                     b.push(OptId::InterprocRegs);
+                    b
+                }
+                // Decision 1909: F5 fires only where F3 has already
+                // removed the frame, so `dev` is the identity for it.
+                OptId::TailCalls => {
+                    let mut b = item_f_baseline();
+                    b.push(OptId::InterprocRegs);
+                    b.push(OptId::Frameless);
                     b
                 }
                 _ => Vec::new(),
@@ -5222,16 +5240,25 @@ mod tests {
         }
     }
 
-    /// The cheap half of decision 1779: F5 is not a `RELEASE_OPTS`
-    /// member, so nothing can quietly re-add it without also having to
-    /// explain the zero the deep lane below pins.
+    /// **F5 has an `OptId` now (decision 1909).** It did not, under
+    /// decision 1779, because the gate corpus never fired a tail call and
+    /// an unrankable transform may not be an id (freeze 1714). Item L's
+    /// `BranchCleanup`, item I's coalescing and item M's compute workload
+    /// between them made tail position reachable — 14 sites across four
+    /// cases — so the evidence 1779 rested on is gone and the opt is
+    /// ranked like every other.
     #[test]
-    fn f5_has_no_opt_id() {
+    fn f5_is_an_opt_id_now_that_the_corpus_fires_tail_calls() {
         assert!(
-            !format!("{RELEASE_OPTS:?}").contains("TailCalls"),
-            "F5 has no id: the gate scores it at zero on both tiers \
-             (decision 1779)"
+            RELEASE_OPTS.contains(&OptId::TailCalls),
+            "F5 is rankable, so it is gated like everything else"
         );
+        apply_opts(&[]);
+        assert!(
+            !crate::codegen::tail_calls(),
+            "`dev` must keep BL+RET as the reference form"
+        );
+        apply_mode(CompileMode::Release);
     }
 
     /// **F5's verdict, and why it is not an `OptId`** (decision 1779).

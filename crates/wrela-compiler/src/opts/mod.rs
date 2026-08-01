@@ -61,6 +61,9 @@ pub enum OptId {
     /// Item F3: a function with nothing left to keep gets no frame
     /// (decision 1772).
     Frameless,
+    /// Item F5: a call in tail position is a `B`, not `BL`+`RET`
+    /// (decision 1909 — rankable since the corpus started firing them).
+    TailCalls,
     /// Item B4, landed by plans/codegen-pareto-2.md item L: an
     /// unconditional branch to the next emitted word is deleted, where
     /// deleting it merges no Lane 2 block (decision 1973).
@@ -113,6 +116,7 @@ pub const RELEASE_OPTS: &[OptId] = &[
     OptId::InterprocRegs,
     OptId::Frameless,
     OptId::BranchCleanup,
+    OptId::TailCalls,
 ];
 
 /// Enable exactly the named opts (decision 1452). Product modes go
@@ -126,6 +130,7 @@ pub fn apply_opts(opts: &[OptId]) {
     crate::regalloc::set_regalloc(opts.contains(&OptId::RegAlloc));
     crate::regalloc::set_interproc_regs(opts.contains(&OptId::InterprocRegs));
     crate::codegen::set_frameless_fns(opts.contains(&OptId::Frameless));
+    crate::codegen::set_tail_calls(opts.contains(&OptId::TailCalls));
     crate::codegen::set_branch_cleanup(opts.contains(&OptId::BranchCleanup));
 }
 
@@ -157,6 +162,7 @@ mod tests {
             (OptId::RegAlloc, crate::regalloc::regalloc()),
             (OptId::InterprocRegs, crate::regalloc::interproc_regs()),
             (OptId::Frameless, frameless_fns()),
+            (OptId::TailCalls, crate::codegen::tail_calls()),
             (OptId::BranchCleanup, branch_cleanup()),
         ]
     }
@@ -222,6 +228,7 @@ mod tests {
                 OptId::InterprocRegs,
                 OptId::Frameless,
                 OptId::BranchCleanup,
+                OptId::TailCalls,
             ]
         );
         // Decision 1774: everything the *probe* must see precedes
@@ -235,9 +242,15 @@ mod tests {
             .collect();
         assert_eq!(
             after,
-            vec![OptId::InterprocRegs, OptId::Frameless, OptId::BranchCleanup],
-            "only allocation-reading opts, and B4 — which deletes a word \
-             the allocator never reads — may follow the allocator"
+            vec![
+                OptId::InterprocRegs,
+                OptId::Frameless,
+                OptId::BranchCleanup,
+                OptId::TailCalls,
+            ],
+            "only allocation-reading opts, B4 — which deletes a word the \
+             allocator never reads — and F5, which fires only where F3 has \
+             already removed the frame, may follow the allocator"
         );
     }
 
