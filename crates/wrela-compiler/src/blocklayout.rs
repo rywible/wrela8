@@ -1282,7 +1282,7 @@ mod tests {
              release-minus-RegAlloc) and 207 with every other single opt removed."
         );
 
-        // **Decision 1943 — decision 1753's identity no longer holds for
+        // **Decision 1948 — decision 1753's identity no longer holds for
         // every fn, and that is a finding, not a test to loosen.** The
         // reorder unit is the MWIR block; the Lane 2 id space is keyed over
         // the *emitted* partition. Item J's `mwir_opt` runs **inside**
@@ -1303,7 +1303,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![("Ledger.mark", 2, 1), ("Ledger.read_marks", 2, 1)],
             "the MWIR partition this pass reorders and the emitted partition Lane 2 \
-             keys its ids over have diverged (decision 1943). See the comment above \
+             keys its ids over have diverged (decision 1948). See the comment above \
              before changing this list."
         );
     }
@@ -1377,7 +1377,7 @@ mod tests {
     ///    except the entry point's own definition and this test module. A
     ///    future session that wires it has to delete this assertion, which
     ///    is the point: wiring re-keys the Lane 2 bridge (decision 1755)
-    ///    and diverges from the emitted partition (decision 1943), and both
+    ///    and diverges from the emitted partition (decision 1948), and both
     ///    are decisions, not edits.
     #[test]
     fn the_parked_pass_is_not_on_the_compile_path() {
@@ -1456,7 +1456,7 @@ mod tests {
             callers,
             vec!["blocklayout.rs".to_string(), "cost/stage.rs".to_string()],
             "the parked pass grew a caller. Wiring it is decision 1755 and decision \
-             1943, not an edit — see the module doc."
+             1948, not an edit — see the module doc."
         );
     }
 
