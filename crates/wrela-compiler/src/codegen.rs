@@ -670,6 +670,94 @@ pub(crate) fn frameless_fns() -> bool {
     FRAMELESS_FNS.with(|c| c.get())
 }
 
+// **B4 — branch-to-fallthrough cleanup** (plans/codegen-pareto-B.md B4,
+// landed by plans/codegen-pareto-2.md item L, decisions 1973–1975).
+//
+// An unconditional branch whose target is the very next emitted word is
+// a word that does nothing. Item B built the general form — chase a
+// branch-to-branch through, elide a branch-to-fallthrough — measured it
+// winning on all fifteen cost cases, and reverted it, because eliding a
+// branch **merges two emitted-word blocks** while the Lane 2 MWIR
+// partition stays exactly as fine as it was, which is the disagreement
+// M20 decision 1608's bridge fails closed on.
+//
+// What lands here is the *boundary-preserving* rule item B's findings
+// name, and it is boundary-preserving **unconditionally** — the leader
+// set is computed from the body in every mode, never from `block_ids`
+// (which are `None` unless Lane 2 is active), so `dev`, `release`,
+// `--block-count` and bridge mode all emit the identical word stream and
+// `unit:block_bridge_mode_leaves_the_word_stream_byte_identical` still
+// holds with the opt on. The chase is dropped entirely (decision 1974).
+thread_local! {
+    static BRANCH_CLEANUP: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Item B's B4: delete an unconditional branch to the next word, where
+/// deleting it cannot merge two Lane 2 blocks.
+pub fn set_branch_cleanup(enabled: bool) {
+    BRANCH_CLEANUP.with(|c| c.set(enabled));
+}
+
+pub(crate) fn branch_cleanup() -> bool {
+    BRANCH_CLEANUP.with(|c| c.get())
+}
+
+/// The elision plan for one body, decided **before** either codegen pass
+/// out of information both passes have — body indices (decision 1734).
+///
+/// `target_of(i)` is the body index the unconditional branch at `i`
+/// declares, or `None` if `i` emits no unconditional branch at all;
+/// `n` is the epilogue sentinel index every `Return` branches to.
+///
+/// Two conditions, both necessary:
+///
+/// 1. **`t == i + 1`** — the branch's target is the next body index, so
+///    its word target is the word immediately after it. `word_offsets` is
+///    a prefix sum, so this is decidable without it.
+/// 2. **`i + 1` is not a Lane 2 block leader.** A Lane 2 span starting at
+///    `i + 1` needs `word_offsets[i + 1]` to be an emitted-word block
+///    leader, and the only reason it is one is the branch about to be
+///    deleted. This is the condition that makes decision 1608's rule 4
+///    survive the transform rather than be relaxed for it.
+///
+/// Every `Jump`, `JumpIfFalse` and `Return` marks `i + 1` a leader, so in
+/// practice condition 2 admits exactly the **final** body instruction,
+/// whose `i + 1 == n` lies past the leader vector. That is not a
+/// weakening: item B measured 357 of 791 unconditional `b` words to be
+/// branch-to-fallthrough and all of them the trailing `Return` of a fn.
+fn plan_branch_elision(
+    n: usize,
+    leaders: &[bool],
+    target_of: impl Fn(usize) -> Option<usize>,
+) -> Vec<bool> {
+    let mut elide = vec![false; n];
+    if !branch_cleanup() {
+        return elide;
+    }
+    for (i, e) in elide.iter_mut().enumerate() {
+        let Some(t) = target_of(i) else { continue };
+        if t != i + 1 {
+            continue;
+        }
+        if i + 1 < n && leaders[i + 1] {
+            continue;
+        }
+        *e = true;
+    }
+    elide
+}
+
+/// [`plan_branch_elision`] over a sync MWIR body.
+fn sync_branch_elision(body: &[Inst]) -> Vec<bool> {
+    let n = body.len();
+    let leaders = mwir_block_leaders(body);
+    plan_branch_elision(n, &leaders, |i| match &body[i] {
+        Inst::Jump { target } => Some(*target),
+        Inst::Return { .. } => Some(n),
+        _ => None,
+    })
+}
+
 // plans/M6.md decision 6 / plans/M11.md decision 740: a *backward*
 // unconditional `Jump` (`target <= idx`) is a loop's own back-edge —
 // the exact shape `lower.rs` / `flowwir_lower.rs` emit for a `while`/
@@ -1558,6 +1646,14 @@ struct FnCtx<'a> {
     /// serve it (see [`VIRT_SLOT_BASE`]). `emit_fn` turns it into a
     /// producer-bug error rather than emitting a wrong instruction.
     resident_misuse: Option<String>,
+    /// **B4 (plans/codegen-pareto-2.md item L, decision 1973).** Set by
+    /// the caller for exactly the body index whose unconditional branch
+    /// the elision plan deleted; the `Inst::Jump` and `Inst::Return` arms
+    /// of `emit_one` read it and emit no branch word. It is a *plan*, not
+    /// a peephole (decision 1734): both the sizing pass and the emitting
+    /// pass are handed the same vector, so `word_offsets` and the words
+    /// agree by construction.
+    elide_branch: bool,
 }
 
 /// Integrity item D: structural emit-tag shape checked at `FnCtx::push` /
@@ -3135,7 +3231,13 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             ctx.and_reg(X_C, X_A, X_B);
             ctx.store_slot(X_C, ctx.frame.off(*dst));
         }
-        Inst::Jump { target } => ctx.b_unconditional(*target),
+        // B4 (decision 1973): the plan already decided this branch
+        // targets the next word and deleting it merges no Lane 2 block.
+        Inst::Jump { target } => {
+            if !ctx.elide_branch {
+                ctx.b_unconditional(*target)
+            }
+        }
         Inst::JumpIfFalse { cond, target } => {
             ctx.load_slot(X_A, ctx.frame.off(*cond));
             ctx.cbz(X_A, *target);
@@ -3199,7 +3301,9 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
                     ctx.load_slot(0, ctx.frame.off(*v));
                 }
             }
-            ctx.b_unconditional(f.body.len());
+            if !ctx.elide_branch {
+                ctx.b_unconditional(f.body.len());
+            }
         }
         Inst::AssertFail { message } => {
             // Item E's own exact obligation (module doc, "The abort
@@ -5208,6 +5312,11 @@ fn probe_fn_facts(
     // is conditional on the allocation, and the allocation would
     // otherwise be conditional on F5.
     let plan = &TailPlan::none(f.body.len());
+    // **And it never elides a branch either**, for the same reason: an
+    // elided `b` has no dst and no srcs, so it cannot move a register
+    // fact, and the probe measuring the conservative program keeps the
+    // allocator's answer sound whichever way the plan goes.
+    let no_elision = vec![false; f.body.len()];
     let dummy_targets = vec![0usize; f.body.len() + 1];
     let mut points: Vec<regalloc::PointFacts> = Vec::with_capacity(f.body.len() + 2);
 
@@ -5268,6 +5377,7 @@ fn probe_fn_facts(
             cold_seq: 0,
             slot_accesses: Vec::new(),
             resident_misuse: None,
+            elide_branch: false,
         };
         emit_prologue(f, frame, &mut ctx)?;
         points.push(finish(ctx));
@@ -5287,8 +5397,9 @@ fn probe_fn_facts(
             cold_seq: 0,
             slot_accesses: Vec::new(),
             resident_misuse: None,
+            elide_branch: false,
         };
-        emit_body_inst(i, f, &mut ctx, plan, block_ids)?;
+        emit_body_inst(i, f, &mut ctx, plan, block_ids, &no_elision)?;
         points.push(finish(ctx));
     }
 
@@ -5306,6 +5417,7 @@ fn probe_fn_facts(
             cold_seq: 0,
             slot_accesses: Vec::new(),
             resident_misuse: None,
+            elide_branch: false,
         };
         emit_epilogue(f, frame, &mut ctx)?;
         points.push(finish(ctx));
@@ -5516,6 +5628,7 @@ fn emit_body_inst(
     ctx: &mut FnCtx,
     plan: &TailPlan,
     block_ids: &[Option<u32>],
+    elide: &[bool],
 ) -> Result<(), CodegenError> {
     if plan.suppressed[i] {
         return Ok(());
@@ -5534,7 +5647,10 @@ fn emit_body_inst(
         };
         return emit_tail_call(key, args, ctx);
     }
-    emit_one(&f.body[i], f, ctx)
+    ctx.elide_branch = elide[i];
+    let r = emit_one(&f.body[i], f, ctx);
+    ctx.elide_branch = false;
+    r
 }
 
 /// Everything about one sync fn that is decided **before** any function
@@ -5737,6 +5853,11 @@ fn emit_fn(
         &prepared.plan
     };
 
+    // B4's plan, decided once from the body and handed to **both** passes
+    // (decision 1734: a word deleted after emission would invalidate every
+    // reloc index, branch displacement and Lane 2 span).
+    let elide = sync_branch_elision(&f.body);
+
     let empty: [usize; 0] = [];
     let mut probe_pro = FnCtx {
         frame: &frame,
@@ -5750,6 +5871,7 @@ fn emit_fn(
         cold_seq: 0,
         slot_accesses: Vec::new(),
         resident_misuse: None,
+        elide_branch: false,
     };
     emit_prologue(f, &frame, &mut probe_pro)?;
     let prologue_len = probe_pro.words.len();
@@ -5769,8 +5891,9 @@ fn emit_fn(
             cold_seq: 0,
             slot_accesses: Vec::new(),
             resident_misuse: None,
+            elide_branch: false,
         };
-        emit_body_inst(i, f, &mut probe, plan, block_ids)?;
+        emit_body_inst(i, f, &mut probe, plan, block_ids, &elide)?;
         counts.push(probe.words.len());
     }
     let mut word_offsets = vec![0usize; f.body.len() + 1];
@@ -5793,6 +5916,7 @@ fn emit_fn(
         cold_seq: 0,
         slot_accesses: Vec::new(),
         resident_misuse: None,
+        elide_branch: false,
     };
     emit_prologue(f, &frame, &mut ctx)?;
     debug_assert_eq!(ctx.words.len(), prologue_len);
@@ -5801,7 +5925,7 @@ fn emit_fn(
         // counters only — no `FnCtx::checkpoint` (M10 decision 597
         // dissolved for console helpers; multi-core layout ownership
         // of `Reloc::CheckpointService` stays async-only).
-        emit_body_inst(i, f, &mut ctx, plan, block_ids)?;
+        emit_body_inst(i, f, &mut ctx, plan, block_ids, &elide)?;
     }
     debug_assert_eq!(ctx.words.len(), word_offsets[f.body.len()]);
     emit_epilogue(f, &frame, &mut ctx)?;
@@ -9649,6 +9773,7 @@ fn emit_flowwir_fn(
         cold_seq: 0,
         slot_accesses: Vec::new(),
         resident_misuse: None,
+        elide_branch: false,
     };
     emit_async_entry(
         &synthetic,
@@ -9658,6 +9783,8 @@ fn emit_flowwir_fn(
         &resume_target,
     )?;
     let prologue_len = probe_pro.words.len();
+    // B4's plan for the flat stream (decision 1973), handed to both passes.
+    let elide = flat_branch_elision(&flat, &state_flat_base);
     let mut counts = Vec::with_capacity(total);
     for (i, entry) in flat.iter().enumerate() {
         let mut probe = FnCtx {
@@ -9672,6 +9799,7 @@ fn emit_flowwir_fn(
             cold_seq: 0,
             slot_accesses: Vec::new(),
             resident_misuse: None,
+            elide_branch: elide[i],
         };
         if let Some(id) = block_ids[i] {
             if block_count() {
@@ -9719,6 +9847,7 @@ fn emit_flowwir_fn(
         cold_seq: 0,
         slot_accesses: Vec::new(),
         resident_misuse: None,
+        elide_branch: false,
     };
     emit_async_epilogue(&synthetic, &mut probe_epi)?;
     word_offsets[total + 1] = acc + probe_epi.words.len();
@@ -9735,6 +9864,7 @@ fn emit_flowwir_fn(
         cold_seq: 0,
         slot_accesses: Vec::new(),
         resident_misuse: None,
+        elide_branch: false,
     };
     emit_async_entry(&synthetic, fn_key, &mut ctx, state_temp, &resume_target)?;
     debug_assert_eq!(ctx.words.len(), prologue_len);
@@ -9744,6 +9874,7 @@ fn emit_flowwir_fn(
                 ctx.emit_block_hit(id);
             }
         }
+        ctx.elide_branch = elide[i];
         emit_flat_entry(
             entry,
             i,
@@ -9755,6 +9886,7 @@ fn emit_flowwir_fn(
             state_temp,
             &state_flat_base,
         )?;
+        ctx.elide_branch = false;
     }
     debug_assert_eq!(ctx.words.len(), word_offsets[total]);
     emit_async_epilogue(&synthetic, &mut ctx)?;
@@ -9771,6 +9903,20 @@ fn emit_flowwir_fn(
         frame_size: frame.size,
         code: ctx.words,
         relocs: ctx.relocs,
+    })
+}
+
+/// [`plan_branch_elision`] over a flattened async stream. Same two
+/// conditions, same unconditional leader set — `flat_block_leaders` is a
+/// pure function of the stream, so bridge mode and release agree.
+fn flat_branch_elision(flat: &[FlatEntry], state_flat_base: &[usize]) -> Vec<bool> {
+    let n = flat.len();
+    let leaders = flat_block_leaders(flat, state_flat_base);
+    plan_branch_elision(n, &leaders, |i| match &flat[i] {
+        FlatEntry::Op(FlowInst::Mwir(Inst::Jump { target })) => Some(*target),
+        FlatEntry::Op(FlowInst::Mwir(Inst::Return { .. })) => Some(n),
+        FlatEntry::Trans(Transition::Return(_)) => Some(n),
+        _ => None,
     })
 }
 
@@ -13905,6 +14051,145 @@ pub fn spans(a: u64) -> u64:
         for _ in 0..4 {
             let b = emit(LEAF, RELEASE_OPTS);
             assert_eq!(b.conventions, a.conventions);
+        }
+    }
+}
+
+/// **B4 — branch-to-fallthrough cleanup** (plans/codegen-pareto-B.md B4,
+/// landed by plans/codegen-pareto-2.md item L).
+///
+/// Item B reverted this transform because it broke M20 decision 1608's
+/// bridge contract. These are the oracles that say the landed form does
+/// not — the refusal rule, the word it deletes, and the Lane 2 identity it
+/// preserves. The bridge half lives in `cost::bridge`'s
+/// `unit:an_elided_branch_chain_still_resolves_its_lane_2_block_identity`,
+/// because that is where the partition check it must survive lives.
+#[cfg(test)]
+mod b4_tests {
+    use super::regalloc_tests::emit;
+    use super::*;
+    use crate::opts::{CompileMode, OptId, RELEASE_OPTS, apply_mode, apply_opts};
+
+    /// The plan, asked directly. **The refusal is the whole design**: the
+    /// transform declines every elision that would leave a Lane 2 span
+    /// boundary sitting inside an emitted-word block, which is the
+    /// disagreement decision 1608 fails closed on.
+    #[test]
+    fn b4_refuses_every_elision_that_would_merge_a_lane_2_block() {
+        // 0: Jump 1        — target is the next index, but 1 is a leader
+        //                    *because of this jump*, so it must be refused.
+        // 1: Jump 3        — not a fallthrough at all.
+        // 2: Return        — 3 is a leader (index 1's jump target), refused.
+        // 3: Return        — the final index: `i + 1 == n`, no Lane 2 span
+        //                    can start there, so this one is elided.
+        let body = vec![
+            Inst::Jump { target: 1 },
+            Inst::Jump { target: 3 },
+            Inst::Return { value: None },
+            Inst::Return { value: None },
+        ];
+        let leaders = mwir_block_leaders(&body);
+        assert_eq!(
+            leaders,
+            vec![true, true, true, true],
+            "every branch makes its successor a leader — that is why the \
+             refusal admits only the final index"
+        );
+
+        apply_opts(&[]);
+        assert_eq!(
+            sync_branch_elision(&body),
+            vec![false; 4],
+            "the opt is off: the plan must be empty"
+        );
+
+        apply_opts(&[OptId::BranchCleanup]);
+        assert_eq!(
+            sync_branch_elision(&body),
+            vec![false, false, false, true],
+            "only the final branch may go"
+        );
+        apply_mode(CompileMode::Release);
+    }
+
+    /// A body whose final instruction is not a branch at all elides
+    /// nothing — the plan never deletes a word it did not put there.
+    #[test]
+    fn b4_elides_nothing_when_the_body_does_not_end_in_a_branch() {
+        apply_opts(&[OptId::BranchCleanup]);
+        let body = vec![
+            Inst::Return { value: None },
+            Inst::AssertFail { message: None },
+        ];
+        assert_eq!(sync_branch_elision(&body), vec![false, false]);
+        apply_mode(CompileMode::Release);
+    }
+
+    const TWO_FNS: &str = r#"
+module examples.b4_trailing_branch
+
+pub fn leaf(x: u64) -> u64:
+    return x +% 1
+
+pub fn two(x: u64) -> u64:
+    if x > 3:
+        return x +% 1
+    return x +% 2
+"#;
+
+    /// The emitted words, which is where freeze 1714 says the claim has to
+    /// be visible. Every fn loses exactly one word, that word is the `b`
+    /// to the epilogue one word ahead, and **nothing else moves** — if the
+    /// two codegen passes had disagreed about the plan (decision 1734),
+    /// every later word and every branch displacement would have shifted.
+    #[test]
+    fn b4_deletes_the_trailing_branch_word_and_moves_nothing_else() {
+        let without: Vec<OptId> = RELEASE_OPTS
+            .iter()
+            .copied()
+            .filter(|o| *o != OptId::BranchCleanup)
+            .collect();
+        let off = emit(TWO_FNS, &without);
+        let on = emit(TWO_FNS, RELEASE_OPTS);
+        apply_mode(CompileMode::Release);
+
+        assert_eq!(
+            off.fns.keys().collect::<Vec<_>>(),
+            on.fns.keys().collect::<Vec<_>>()
+        );
+        for (key, f_off) in &off.fns {
+            let f_on = &on.fns[key];
+            assert_eq!(
+                f_on.code.len() + 1,
+                f_off.code.len(),
+                "fn `{key}` must be exactly one word shorter under B4"
+            );
+            // Compare **mnemonic** sequences: the one thing B4 may change
+            // besides deleting the branch is the displacement of a branch
+            // that jumped over the deleted word, which is a re-derived
+            // field of the same instruction, not a moved instruction.
+            fn mn(f: &CodegenFn) -> Vec<&str> {
+                f.code
+                    .iter()
+                    .map(|w| w.text.split(' ').next().unwrap_or(""))
+                    .collect()
+            }
+            let (a, b) = (mn(f_off), mn(f_on));
+            let at = (0..b.len()).find(|&i| a[i] != b[i]).unwrap_or(b.len());
+            assert_eq!(a[at], "b", "fn `{key}`: B4 deleted something else");
+            assert_eq!(
+                f_off.code[at].text, "b #4",
+                "fn `{key}`: the deleted branch must target the very next \
+                 word (one word = 4 bytes)"
+            );
+            assert_eq!(
+                &a[at + 1..],
+                &b[at..],
+                "fn `{key}`: every instruction after the deleted branch must \
+                 still be there, in order — a two-pass disagreement about the \
+                 plan would have desynchronized the stream"
+            );
+            assert_eq!(&a[..at], &b[..at], "fn `{key}`: instructions before it moved");
         }
     }
 }

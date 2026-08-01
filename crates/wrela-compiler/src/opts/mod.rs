@@ -61,6 +61,10 @@ pub enum OptId {
     /// Item F3: a function with nothing left to keep gets no frame
     /// (decision 1772).
     Frameless,
+    /// Item B4, landed by plans/codegen-pareto-2.md item L: an
+    /// unconditional branch to the next emitted word is deleted, where
+    /// deleting it merges no Lane 2 block (decision 1973).
+    BranchCleanup,
 }
 
 /// Fixed release order. Add opts here — nowhere else.
@@ -108,6 +112,7 @@ pub const RELEASE_OPTS: &[OptId] = &[
     OptId::RegAlloc,
     OptId::InterprocRegs,
     OptId::Frameless,
+    OptId::BranchCleanup,
 ];
 
 /// Enable exactly the named opts (decision 1452). Product modes go
@@ -121,6 +126,7 @@ pub fn apply_opts(opts: &[OptId]) {
     crate::regalloc::set_regalloc(opts.contains(&OptId::RegAlloc));
     crate::regalloc::set_interproc_regs(opts.contains(&OptId::InterprocRegs));
     crate::codegen::set_frameless_fns(opts.contains(&OptId::Frameless));
+    crate::codegen::set_branch_cleanup(opts.contains(&OptId::BranchCleanup));
 }
 
 /// Single front door for product-mode TLS knobs (decision 1422).
@@ -135,7 +141,8 @@ pub fn apply_mode(mode: CompileMode) {
 mod tests {
     use super::*;
     use crate::codegen::{
-        adr_addressing, bfx_narrow, frameless_fns, mask_check, narrow_imm, wide_imm_forms,
+        adr_addressing, bfx_narrow, branch_cleanup, frameless_fns, mask_check, narrow_imm,
+        wide_imm_forms,
     };
     /// Every knob `apply_opts` drives, read back. Written as one list so a
     /// new `OptId` whose knob is never wired reads as a failure here
@@ -150,6 +157,7 @@ mod tests {
             (OptId::RegAlloc, crate::regalloc::regalloc()),
             (OptId::InterprocRegs, crate::regalloc::interproc_regs()),
             (OptId::Frameless, frameless_fns()),
+            (OptId::BranchCleanup, branch_cleanup()),
         ]
     }
 
@@ -213,6 +221,7 @@ mod tests {
                 OptId::RegAlloc,
                 OptId::InterprocRegs,
                 OptId::Frameless,
+                OptId::BranchCleanup,
             ]
         );
         // Decision 1774: everything the *probe* must see precedes
@@ -226,8 +235,13 @@ mod tests {
             .collect();
         assert_eq!(
             after,
-            vec![OptId::InterprocRegs, OptId::Frameless],
-            "only allocation-reading opts may follow the allocator"
+            vec![
+                OptId::InterprocRegs,
+                OptId::Frameless,
+                OptId::BranchCleanup
+            ],
+            "only allocation-reading opts, and B4 — which deletes a word \
+             the allocator never reads — may follow the allocator"
         );
     }
 

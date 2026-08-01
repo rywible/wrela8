@@ -3239,6 +3239,12 @@ mod tests {
         // beside it).
         ("InterprocRegs", "wins"),
         ("Frameless", "wins"),
+        // **plans/codegen-pareto-2.md item L, decision 1976.** B4 is a
+        // transform of its own against `dev` — nothing else has to fire
+        // first for a trailing branch to be a trailing branch — so unlike
+        // item F's two it is rankable alone, and it falls on all four
+        // borrowed programs.
+        ("BranchCleanup", "wins"),
     ];
 
     /// Decision 1453: swapped opt-list order vs RELEASE_OPTS — document
@@ -4705,8 +4711,9 @@ mod tests {
         );
         assert_eq!(
             (w_form, x_form),
-            (93, 96),
-            "the measured size of C1's win once item E removed the frame slack; \
+            (88, 91),
+            "the measured size of C1's win once item E removed the frame slack \
+             (93/96 before item L's B4 deleted this case's trailing branches); \
              re-measure this rather than rescaling it"
         );
 
@@ -4970,6 +4977,107 @@ mod tests {
             );
             assert_sweep_wins(&cmp, &format!("+{id:?}"), "base");
             base = candidate;
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // plans/codegen-pareto-2.md item L: B4's gate (decisions 1973–1976).
+    //
+    // `BranchCleanup` is asked over **its own baseline** — the shipped
+    // list with it removed — so the verdict is about the transform and
+    // not about the mode it rides in (decision 1717 / 1764), and asked
+    // once per tier (decision 1782) so the fifteen micro cases cannot
+    // satisfy the quantifier on the four borrowed programs' behalf.
+    // ---------------------------------------------------------------
+
+    /// `RELEASE_OPTS` with B4 removed: the baseline B4 is ranked against.
+    fn without_branch_cleanup() -> Vec<OptId> {
+        RELEASE_OPTS
+            .iter()
+            .copied()
+            .filter(|o| *o != OptId::BranchCleanup)
+            .collect()
+    }
+
+    /// **B4's smoke lane.** `cost-arith-w` is the largest *relative* fall
+    /// in either tier (93 → 88 at the pinned point, −5.4 %) and is four
+    /// small fns, so it is also among the cheapest to sweep. A smoke lane
+    /// over a case the transform cannot reach would assert nothing
+    /// (freeze 1714), and every fn ends in a `Return`, so it reaches this
+    /// one everywhere.
+    #[test]
+    fn branch_cleanup_wins_at_every_box_point_on_the_smoke_case() {
+        let base = without_branch_cleanup();
+        let cmp = compare_opt_lists_over_box_for_case(&base, RELEASE_OPTS, "cost-arith-w")
+            .expect("smoke sweep");
+        assert_eq!(cmp.cases.len(), 1, "the smoke lane sweeps exactly one case");
+        let case = &cmp.cases[0];
+        assert!(
+            !case.points.is_empty(),
+            "the smoke case must enumerate corners, not zero"
+        );
+        assert!(
+            case.points.iter().all(|p| p.candidate < p.baseline),
+            "BranchCleanup must fall at every point of {}: {:?}",
+            case.name,
+            case.points
+                .iter()
+                .map(|p| (p.baseline, p.candidate))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            cmp.wins(),
+            "smoke sweep vetoed: {:?}",
+            cmp.reasons.iter().map(|r| r.label()).collect::<Vec<_>>()
+        );
+    }
+
+    /// **The land gate for B4**, over the whole `cost-*` corpus at every
+    /// point of the residual box, marginally over the shipped list.
+    ///
+    /// **Deep lane.** Item B measured B4 falling on all fifteen micro
+    /// cases and reverted it for the bridge, not for the ruler; this is
+    /// the same question asked of the boundary-preserving form that
+    /// landed.
+    #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
+    #[test]
+    fn branch_cleanup_wins_at_every_point_of_the_residual_box() {
+        let base = without_branch_cleanup();
+        let cmp = compare_opt_lists_over_box(&base, RELEASE_OPTS).expect("sweep");
+        let table = format_sweep_table(&cmp, "release−BranchCleanup", "release");
+        eprintln!("∀ sweep (release−BranchCleanup → release):\n{table}");
+        assert_sweep_wins(&cmp, "release", "release−BranchCleanup");
+        assert!(cmp.wins());
+        eprintln!(
+            "BranchCleanup ∀-sweep: {} points/side over {} cases",
+            cmp.scored_points(),
+            cmp.cases.len()
+        );
+    }
+
+    /// The same question asked of **each tier alone** (decision 1782), so
+    /// the product tier decides on its own four programs.
+    ///
+    /// **Deep lane.**
+    #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
+    #[test]
+    fn branch_cleanup_wins_in_each_tier_on_its_own() {
+        let base = without_branch_cleanup();
+        for tier in CostTier::ALL {
+            let cmp = compare_opt_lists_over_box_in_tier(&base, RELEASE_OPTS, tier)
+                .expect("tier sweep");
+            eprintln!(
+                "BranchCleanup ∀ [{tier}]:\n{}",
+                format_sweep_table(&cmp, "release−BranchCleanup", "release")
+            );
+            assert!(
+                cmp.wins_in_tier(tier),
+                "BranchCleanup must win on the {tier} tier alone: {:?}",
+                cmp.reasons_for_tier(tier)
+                    .iter()
+                    .map(|r| r.label())
+                    .collect::<Vec<_>>()
+            );
         }
     }
 
@@ -5306,3 +5414,4 @@ mod tests {
         apply_mode(CompileMode::Release);
     }
 }
+
