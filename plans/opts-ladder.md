@@ -19,11 +19,18 @@ numbers from whatever plan adopts it.
 **Pull-in priority when the plan closes** (revise against its measured
 results, not against this ordering):
 
-1. **The inliner (2a) + GVN/SCCP/DCE (2b).** The largest parked win. wrela's
-   redundancy is *spatial* — repeated constant materialization, repeated
-   rodata addressing, repeated bounds-check subexpressions — and inlining
-   plus redundancy elimination is what kills it. Deferred from the plan only
-   because it is a large build, not because it ranks low.
+1. ~~**The inliner (2a) + GVN/SCCP/DCE (2b).**~~ **Pulled in and settled
+   by [codegen-pareto-2.md](codegen-pareto-2.md) item J
+   ([findings](codegen-pareto-2-J.md)), and it came out split.** 2b is
+   real and large: `ConstProp` + `Gvn` + `Dce` are worth **−10.3 %** proxy
+   cycles and **−10.3 %** emitted words over the whole shipped list, more
+   than `NarrowImm` or `RegAlloc`. **2a is a loss on this backend** — the
+   inliner was built, worked, agreed with `diff-eval` and three boot
+   transcripts, and cost `+221` cycles / `+308` words leave-one-out over
+   the shipped list, `+326` words on the compositor and `+0` on the
+   appliance (it has no customers there). Even single-call-site inlining,
+   where the body moves rather than duplicates, was `+36`. It is deleted
+   (decision 1935). See 2a below for the re-ranking.
 2. **Range propagation (Tier 7 beyond type-known widths).** Potentiates 2b
    and unlocks provable check elision.
 3. **Block page tables (6a).** Plausibly the single largest lever in Tier 6,
@@ -351,19 +358,31 @@ budget fuzzing effort accordingly.
 
 ## Tier 2 — inline and clean (where the spatial redundancy dies)
 
-**2a. Shrinking inliner.** Inline where the callee is (i) single-call-site
-or (ii) smaller than the call overhead it deletes (BL + frame setup + arg
-spill/reload). Both cases *reduce* words — gate-legal even before the
-words veto retires. No inlining heuristics beyond these two rules; the
-point is the enabling effect, and freeze-style discipline keeps it from
-becoming a tuning pit.
+**2a. Shrinking inliner. MEASURED AND REFUSED** — codegen-pareto-2.md
+item J, decision 1935. The rule above was implemented exactly as written
+(single call site, or a body no larger than the call sequence it
+deletes, no other heuristics) and the premise "both cases *reduce* words"
+is **false on this backend**. Every temp a splice moves becomes a caller
+frame slot under spill-everything, and item K's footprint term now
+charges for density, so a merged body pays twice: `+308` words and `+221`
+cycles over the shipped list, `+326` words on the compositor,
+`+36` cycles even for single-call-site-only. Re-rank 2a **below** 2b and
+mark it blocked on a register allocator that survives the splice, not on
+being built. The numbers are in [codegen-pareto-2-J.md](codegen-pareto-2-J.md).
 
-**2b. GVN/CSE + SCCP + DCE over the inlined bodies.** The passes the
-inliner feeds. Exclusivity means loads are trivially CSE-able within a
-turn (no aliasing writes to prove absent). Targets, concretely: repeated
-constant materializations, repeated `ADRP`+`ADD` rodata addressing,
-repeated bounds-check subexpressions, `narrow_to_width` canonicalizations
-of already-canonical values.
+**2b. GVN/CSE + SCCP + DCE. LANDED** — codegen-pareto-2.md item J,
+decisions 1924–1926. It did **not** need the inliner to feed it: scoped
+to an extended basic block, over application code only, it is worth
+`-10.3 %` on both cycles and words over the shipped list, and `-9.3 %`
+emitted words on item M's compositor. SCCP is `ConstProp` — MWIR is not
+SSA, so the sparse algorithm has nothing to be sparse over. Loads and
+aggregates are deliberately *outside* the whitelist rather than
+CSE-able: `SetField`/`IndexSet`/`MemStore` write through a base temp, so
+exclusivity is not the same as no-aliasing at MWIR grain. Residual, and
+it is the biggest single block of dead words left in both shipped
+images: the shift **count-range check**, 19 emitted words per site at
+every literal-count shift (24 sites on the compositor). That needs an
+unchecked-shift form in `mwir::Inst` and is 2c/2d work, not 2b.
 
 **2c. Redundant `narrow_to_width` elision.** The LSL/LSR pair is dead when
 the input is provably canonical (prior narrow of same width, in-range

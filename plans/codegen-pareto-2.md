@@ -57,21 +57,33 @@ Both ∀ tiers. `diff-eval`. **A named boot case, run by you** (see the boot
 rule below).
 **Decisions 1900–1919.**
 
-### J. The inliner, then GVN/SCCP/DCE
+### J. The inliner, then GVN/SCCP/DCE — **DONE**, and it split
 
-The ladder's pull-in #1 and #2, parked by round 1 for size, not rank.
-wrela's redundancy is **spatial** — repeated constant materialization,
-repeated rodata addressing, repeated bounds-check subexpressions — and
-inlining plus redundancy elimination is what kills it. The 780 `movk` in
-dev is that redundancy, visible.
+Findings: [codegen-pareto-2-J.md](codegen-pareto-2-J.md).
 
-Land the inliner first (single-call-site inlining is the cheap majority),
-then GVN/SCCP/DCE over the widened scope. Each is its own `OptId` and its
-own gate run.
+**2b landed and is the largest single win this backend has taken.**
+`ConstProp`, `Gvn` and `Dce` join `RELEASE_OPTS`: **206 848 → 185 513**
+proxy cycles and **167 269 → 150 087** emitted words over the shipped
+list (−10.3 % on both), no case rising at any point of either tier's
+residual box. On item M's compositor, **7 575 → 6 871** emitted words
+(−9.3 %) and 31 168 B → 28 416 B of hot text, one whole text page.
 
-**Oracle:** both ∀ tiers per opt, word and cycle deltas on the product tier,
-`diff-eval`, a named boot case.
-**Decisions 1920–1949.**
+**2a — the inliner — was built, measured and refused** (decision 1935).
+It worked and it lost: `+221` cycles and `+308` words leave-one-out over
+the shipped list, `+326` words on the compositor, `+0` on the appliance
+because it has no customers there at all, and `+36` cycles even
+restricted to single-call-site inlining where the body moves rather than
+duplicates. Losers are deleted. The ladder's ranking of 2a as "the
+largest parked win" is overturned.
+
+The appliance moved by **3 words**, and that is the item's other finding:
+decision 1932 keeps the shared runtime closure off limits (its bodies are
+placeholders `layout.rs` replaces, and its block partition is a committed
+Lane 2 measurement decision 1608 fails closed on), and the appliance's
+application half is six methods. Item M's compositor is where a codegen
+opt is visible on this tree — exactly what item M was added for.
+
+**Decisions 1920–1938.**
 
 ### K. Fix the ruler's three known defects
 
