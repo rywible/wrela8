@@ -1089,6 +1089,9 @@ pub fn caller(a: u64) -> u64:
             footprint: vec![cost::CoreBudget {
                 n: 0,
                 hot_text_bytes: 1216,
+                hot_code_bytes: 1200,
+                packing_floor_lines: 19,
+                slack_lines: 0,
                 l1i_bytes: 65536,
                 over_l1i_lines: 0,
                 over_l2_lines: 0,
@@ -1115,7 +1118,7 @@ pub fn caller(a: u64) -> u64:
                \x20   Owner name=runtime proxy_cycles=12\n\
                \x20   Owner name=driver proxy_cycles=8\n\
                \x20   Core n=0 proxy_cycles=0 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn_model=n/a\n\
-               \x20   Budget n=0 hot_text_bytes=1216 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 text_pages=1 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=2 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0\n\
+               \x20   Budget n=0 hot_text_bytes=1216 hot_code_bytes=1200 slack_lines=0 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 text_pages=1 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=2 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0\n\
                \x20   Shared proxy_cycles=0\n"
         );
     }

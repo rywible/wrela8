@@ -191,6 +191,8 @@ const SWEEP_ROW_KEYS: &[&str] = &[
     "tier",
     "source",
     "note",
+    "le",
+    "le_physics",
 ];
 
 /// Keys a `[crosscore]` term may **never** carry: a magnitude of any kind.
@@ -313,6 +315,49 @@ pub struct CrossRow {
     pub note: Option<String>,
 }
 
+/// A **joint constraint** on the residual box: `this <= minuend` or
+/// `this <= minuend - subtrahend`, where `minuend` and `subtrahend` are
+/// other sweep dimensions (plans/codegen-pareto-2.md item K, decision
+/// 1950).
+///
+/// The box is a product of independent brackets. Two brackets that measure
+/// **correlated physical quantities** therefore admit corners no silicon
+/// can be at — and because the ∀ gate treats every corner as equally
+/// admissible, one impossible corner is enough to veto a correct
+/// optimization. A constraint is the statement of the correlation, in the
+/// same file and under the same relock discipline as the brackets it
+/// relates.
+///
+/// Deliberately just this shape. It is what the two instances in the record
+/// need (`w_form <= x_form`; `snoop <= dram - l3`), and a general
+/// expression language here would be a place to hide an assumption.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SweepBound {
+    pub minuend: String,
+    pub subtrahend: Option<String>,
+    /// Why the inequality is a fact about the machine and not a
+    /// convenience. Required: removing corners can only ever make a
+    /// candidate easier to land, so the physics has to be written down.
+    pub physics: String,
+}
+
+impl SweepBound {
+    /// Canonical `le` text, as written in the profile.
+    pub fn expr(&self) -> String {
+        match &self.subtrahend {
+            Some(s) => format!("{} - {s}", self.minuend),
+            None => self.minuend.clone(),
+        }
+    }
+
+    /// The bound's value given the other dimensions' values at a point.
+    /// Saturating: a subtraction that would go negative bounds `this` at 0,
+    /// which is the tightest honest reading and never widens the box.
+    pub fn bound_at(&self, minuend: u64, subtrahend: u64) -> u64 {
+        minuend.saturating_sub(subtrahend)
+    }
+}
+
 /// One residual-uncertainty dimension.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SweepRow {
@@ -325,6 +370,9 @@ pub struct SweepRow {
     /// must state its ambiguity.
     pub removal_sensitive: bool,
     pub ambiguity: Option<String>,
+    /// Joint constraint on this dimension (decision 1950). `None` — the
+    /// ordinary case — is an independent bracket.
+    pub le: Option<SweepBound>,
     pub tier: Tier,
     pub source: String,
     pub note: Option<String>,
@@ -607,6 +655,12 @@ impl CostTable {
                 s.pessimistic.as_str(),
                 u8::from(s.removal_sensitive),
             ));
+            // A joint constraint is *box shape*, not prose: it decides
+            // which points the ∀ gate visits, so it moves the value
+            // digest (decision 1950).
+            if let Some(b) = &s.le {
+                l.push(format!("sweep.{name}.le={}", b.expr()));
+            }
         }
         l.sort();
         l
@@ -655,11 +709,12 @@ impl CostTable {
         }
         for (name, s) in &self.sweep {
             l.push(format!(
-                "sweep.{name}={}\u{1}{}\u{1}{}\u{1}{}",
+                "sweep.{name}={}\u{1}{}\u{1}{}\u{1}{}\u{1}{}",
                 s.tier.as_str(),
                 s.source,
                 opt(&s.ambiguity),
                 opt(&s.note),
+                s.le.as_ref().map(|b| b.physics.clone()).unwrap_or_default(),
             ));
         }
         l.sort();
@@ -1437,6 +1492,7 @@ fn parse_sweeps(tbl: &Tbl) -> Result<BTreeMap<String, SweepRow>, String> {
                 ));
             }
         }
+        let le = parse_sweep_bound(&path, row)?;
         out.insert(
             name.clone(),
             SweepRow {
@@ -1446,13 +1502,125 @@ fn parse_sweeps(tbl: &Tbl) -> Result<BTreeMap<String, SweepRow>, String> {
                 pessimistic,
                 removal_sensitive,
                 ambiguity,
+                le,
                 tier: req_tier(&path, row)?,
                 source: req_str(&path, row, "source")?,
                 note: opt_str(&path, row, "note")?,
             },
         );
     }
+    check_sweep_bounds(&out)?;
     Ok(out)
+}
+
+/// `le = "<dim>"` or `le = "<dim> - <dim>"`, plus its required
+/// `le_physics` justification (decision 1950).
+fn parse_sweep_bound(path: &str, row: &Tbl) -> Result<Option<SweepBound>, String> {
+    let Some(expr) = opt_str(path, row, "le")? else {
+        if opt_str(path, row, "le_physics")?.is_some() {
+            return Err(format!(
+                "{path}.le_physics without `le`: a justification for a constraint that \
+                 does not exist is a comment pretending to be data"
+            ));
+        }
+        return Ok(None);
+    };
+    let physics = opt_str(path, row, "le_physics")?.ok_or_else(|| {
+        format!(
+            "{path}.le requires `le_physics`: a constraint removes corners from the box \
+             and can only ever make a candidate easier to land, so why the inequality \
+             holds on the machine must be written down (decision 1950)"
+        )
+    })?;
+    let (minuend, subtrahend) = match expr.split_once('-') {
+        Some((a, b)) => (a.trim().to_string(), Some(b.trim().to_string())),
+        None => (expr.trim().to_string(), None),
+    };
+    if minuend.is_empty() || subtrahend.as_deref() == Some("") {
+        return Err(format!(
+            "{path}.le `{expr}`: expected `<dim>` or `<dim> - <dim>`"
+        ));
+    }
+    Ok(Some(SweepBound {
+        minuend,
+        subtrahend,
+        physics,
+    }))
+}
+
+/// Every joint constraint must name real dimensions, must not be
+/// self-referential, must leave the box non-empty, must be satisfied at
+/// the pinned point, and must actually **cut** something (decision 1950).
+///
+/// The last two are the ones that keep this from becoming a knob. A
+/// constraint the pinned point violates would mean the committed profile
+/// pins a physically impossible model; a constraint no corner violates is
+/// decoration that a later bracket edit would silently turn load-bearing.
+fn check_sweep_bounds(sweep: &BTreeMap<String, SweepRow>) -> Result<(), String> {
+    for (name, row) in sweep {
+        let Some(b) = &row.le else { continue };
+        let path = format!("sweep.{name}");
+        let mut ends: Vec<(u64, u64)> = Vec::new(); // (lo, hi) of each named dim
+        for dim in [Some(&b.minuend), b.subtrahend.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            if dim == name {
+                return Err(format!(
+                    "{path}.le `{}`: a dimension cannot bound itself",
+                    b.expr()
+                ));
+            }
+            let other = sweep
+                .get(dim.as_str())
+                .ok_or_else(|| format!("{path}.le `{}`: no such [sweep.{dim}] row", b.expr()))?;
+            if other.le.is_some() {
+                return Err(format!(
+                    "{path}.le `{}`: `{dim}` is itself constrained — chained constraints \
+                     are refused rather than solved, so the box stays a thing a reader \
+                     can enumerate by hand",
+                    b.expr()
+                ));
+            }
+            ends.push((other.lo, other.hi));
+        }
+        let (m_lo, m_hi) = ends[0];
+        let (s_lo, s_hi) = ends.get(1).copied().unwrap_or((0, 0));
+        // Non-empty: the loosest bound the box can offer must still admit
+        // this dimension's own low end.
+        if row.lo > b.bound_at(m_hi, s_lo) {
+            return Err(format!(
+                "{path}.le `{}`: unsatisfiable — {name} >= {} but the bound is at most {} \
+                 anywhere in the box",
+                b.expr(),
+                row.lo,
+                b.bound_at(m_hi, s_lo)
+            ));
+        }
+        // Satisfied at the pinned point: the model's own committed point
+        // may not be a point the machine cannot be at.
+        let m_pin = sweep[&b.minuend].pinned;
+        let s_pin = b.subtrahend.as_ref().map(|d| sweep[d].pinned).unwrap_or(0);
+        if row.pinned > b.bound_at(m_pin, s_pin) {
+            return Err(format!(
+                "{path}.le `{}`: the pinned point violates it ({} > {}) — the committed \
+                 model would be pinned at a point the machine cannot be at",
+                b.expr(),
+                row.pinned,
+                b.bound_at(m_pin, s_pin)
+            ));
+        }
+        // Non-vacuous: some corner of the *unconstrained* product box must
+        // violate it, or the row constrains nothing.
+        if row.hi <= b.bound_at(m_lo, s_hi) {
+            return Err(format!(
+                "{path}.le `{}`: vacuous — no corner of the box violates it, so it is a \
+                 comment rather than a constraint (decision 1950)",
+                b.expr()
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -2133,6 +2301,184 @@ mod tests {
                 "pinned = 99",
             ),
             "outside 9..11",
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Joint constraints (plans/codegen-pareto-2.md item K, decision 1950)
+    // -----------------------------------------------------------------
+
+    /// The committed profile's one constraint, parsed as data rather than
+    /// read as prose.
+    #[test]
+    fn the_committed_snoop_constraint_is_parsed_and_names_its_physics() {
+        let t = load_default().expect("committed profile");
+        let b = t
+            .sweep("snoop_cost")
+            .expect("[sweep.snoop_cost]")
+            .le
+            .as_ref()
+            .expect("decision 1951's constraint");
+        assert_eq!(b.expr(), "dram_latency - l3_latency");
+        assert_eq!(b.minuend, "dram_latency");
+        assert_eq!(b.subtrahend.as_deref(), Some("l3_latency"));
+        assert!(
+            b.physics.contains("DRAM path"),
+            "the constraint must say why it holds on the machine: {}",
+            b.physics
+        );
+        // Every other dimension is an independent bracket, so a reader can
+        // tell at a glance how much of the box is a product.
+        let constrained: Vec<&str> = t
+            .sweep_dimensions()
+            .into_iter()
+            .filter(|d| t.sweep(d).expect("row").le.is_some())
+            .collect();
+        assert_eq!(constrained, vec!["snoop_cost"]);
+    }
+
+    /// Replace, inside `header`'s block, the whole line starting with
+    /// `prefix`. `edit_block` matches a full line and the constraint fields
+    /// carry long prose, so this is its by-prefix twin.
+    fn edit_line_starting(text: &str, header: &str, prefix: &str, to: &str) -> String {
+        let mut out = String::new();
+        let mut inside = false;
+        let mut done = false;
+        for line in text.lines() {
+            let t = line.trim_start();
+            if t.starts_with('[') {
+                inside = t.starts_with(header);
+            }
+            if inside && !done && t.starts_with(prefix) {
+                out.push_str(to);
+                out.push('\n');
+                done = true;
+                continue;
+            }
+            out.push_str(line);
+            out.push('\n');
+        }
+        assert!(done, "edit_line_starting: `{prefix}` not found in {header}");
+        out
+    }
+
+    const SNOOP: &str = "[sweep.snoop_cost]";
+
+    /// A constraint with no stated physics is refused. Removing corners can
+    /// only ever make a candidate easier to land, so this is the field that
+    /// keeps decision 1950 from being a knob.
+    #[test]
+    fn reject_a_constraint_with_no_physics() {
+        assert_err_names(
+            edit_line_starting(&committed_text(), SNOOP, "le_physics", "# no physics"),
+            "requires `le_physics`",
+        );
+    }
+
+    #[test]
+    fn reject_a_constraint_naming_no_such_dimension() {
+        assert_err_names(
+            edit_line_starting(
+                &committed_text(),
+                SNOOP,
+                "le = ",
+                "le = \"dram_latency - not_a_dimension\"",
+            ),
+            "no such [sweep.not_a_dimension] row",
+        );
+    }
+
+    #[test]
+    fn reject_a_self_referential_constraint() {
+        assert_err_names(
+            edit_line_starting(&committed_text(), SNOOP, "le = ", "le = \"snoop_cost\""),
+            "cannot bound itself",
+        );
+    }
+
+    /// A constraint no corner violates is a comment. It is refused so a
+    /// later bracket edit cannot silently turn a decoration load-bearing —
+    /// or leave a real correlation looking like it is already handled.
+    #[test]
+    fn reject_a_vacuous_constraint() {
+        assert_err_names(
+            edit_line_starting(
+                &committed_text(),
+                SNOOP,
+                "le = ",
+                "le = \"effective_l3_bytes\"",
+            ),
+            "vacuous",
+        );
+    }
+
+    /// The committed model may not be pinned at a point the machine cannot
+    /// be at.
+    #[test]
+    fn reject_a_constraint_the_pinned_point_violates() {
+        let text = edit_block(
+            &committed_text(),
+            "[sweep.dram_latency]",
+            "hi = 347",
+            "hi = 340",
+        );
+        let e = err_of(edit_block(
+            &text,
+            "[sweep.dram_latency]",
+            "pinned = 347",
+            "pinned = 340",
+        ));
+        assert!(
+            e.contains("pinned point violates it"),
+            "lowering dram's high end below snoop + l3 must be refused: {e}"
+        );
+    }
+
+    /// A constraint is box shape, so it moves `table_digest`; its physics is
+    /// prose, so it moves `provenance_digest`. Both, and separably.
+    #[test]
+    fn a_constraint_moves_the_value_digest_and_its_physics_the_provenance_one() {
+        let base = load_default().expect("committed profile");
+        let dropped = err_of(edit_line_starting(
+            &committed_text(),
+            SNOOP,
+            "le = ",
+            "# le removed",
+        ));
+        assert!(
+            dropped.contains("le_physics without `le`"),
+            "got: {dropped}"
+        );
+
+        let reworded = parse(&edit_line_starting(
+            &committed_text(),
+            SNOOP,
+            "le_physics",
+            "le_physics = \"reworded\"",
+        ))
+        .expect("reworded physics still parses");
+        assert_eq!(
+            base.table_digest(),
+            reworded.table_digest(),
+            "rewording the physics moves no value"
+        );
+        assert_ne!(
+            base.provenance_digest(),
+            reworded.provenance_digest(),
+            "rewording the physics must move the provenance digest"
+        );
+
+        let unconstrained = parse(&edit_line_starting(
+            &edit_line_starting(&committed_text(), SNOOP, "le = ", "# none"),
+            SNOOP,
+            "le_physics",
+            "# none",
+        ))
+        .expect("dropping both fields leaves an independent bracket");
+        assert_ne!(
+            base.table_digest(),
+            unconstrained.table_digest(),
+            "the constraint is box shape and must move the value digest"
         );
     }
 

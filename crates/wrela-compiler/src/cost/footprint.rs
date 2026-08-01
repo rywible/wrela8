@@ -39,6 +39,20 @@
 //!   does; for contiguous text the two coincide.
 //! - **L2**, 512 KiB 8-way (1024 sets): per-set overflow beyond 8 ways,
 //!   charged `lat_l3 − lat_l2` each.
+//! - **Density**, the order-sensitive term (plans/codegen-pareto-2.md item
+//!   K3, decision 1955). Each fn starts at a 64 B boundary, so the fewest
+//!   lines *any* intra-fn block ordering can occupy is
+//!   `Σ_fn ⌈hot bytes of that fn / 64⌉`. A layout that occupies more than
+//!   that floor is performing that many extra instruction-fetch line fills
+//!   for bytes that never execute — the same event the L1I overflow term
+//!   prices, for a different reason — so each slack line is charged the
+//!   same `lat_l2 − lat_l1d_hit`. The floor itself is **not** charged:
+//!   every layout pays it, and pricing it would be a second static
+//!   footprint term. This is what makes the model see block *order* at all.
+//!   Under [`HotBlocks::All`] a fn's hot bytes are all its bytes, so the
+//!   floor equals the line count and the charge is identically zero — the
+//!   flat row is order-invariant as a theorem rather than as an omission
+//!   (`unit:the_flat_row_has_no_density_slack_by_construction`).
 //! - **L1 TLB** (48 entries, I-side and D-side alike) and the **L2 TLB**
 //!   (1280 entries): pages beyond each are charged one swept
 //!   `tlb_walk_cost`. No source prices an L2-TLB *hit*, and the only
@@ -123,6 +137,16 @@ pub struct CoreBudget {
     pub n: usize,
     /// Hot text: distinct 64 B lines × the line size.
     pub hot_text_bytes: u64,
+    /// Bytes of hot text that are actually **code that runs** — the hot
+    /// blocks' own spans, unrounded. `hot_text_bytes − hot_code_bytes` is
+    /// fetched-and-never-executed (decision 1955).
+    pub hot_code_bytes: u64,
+    /// `Σ_fn ⌈that fn's hot bytes / 64⌉` — the fewest lines any intra-fn
+    /// block ordering can occupy, since each fn starts 64 B-aligned.
+    pub packing_floor_lines: u64,
+    /// `lines − packing_floor_lines`: extra line fills this *ordering*
+    /// costs. Zero under [`HotBlocks::All`] by construction.
+    pub slack_lines: u64,
     /// `[geometry] l1i_bytes` — the denominator.
     pub l1i_bytes: u64,
     /// Σ per-set lines beyond the L1I's 4 ways.
@@ -182,12 +206,15 @@ impl CoreBudget {
 
     fn render_line(&self, label: &str, prefix: String) -> String {
         format!(
-            "{label} {prefix}n={} hot_text_bytes={} l1i_bytes={} over_l1i_lines={} over_l2_lines={} \
+            "{label} {prefix}n={} hot_text_bytes={} hot_code_bytes={} slack_lines={} \
+             l1i_bytes={} over_l1i_lines={} over_l2_lines={} \
              text_pages={} itlb_entries={} over_itlb_pages={} tlb_l2_entries={} \
              over_tlb_l2_pages={} data_pages={} over_dtlb_pages={} \
              over_data_tlb_l2_pages={} charge={}",
             self.n,
             self.hot_text_bytes,
+            self.hot_code_bytes,
+            self.slack_lines,
             self.l1i_bytes,
             self.over_l1i_lines,
             self.over_l2_lines,
@@ -299,9 +326,12 @@ pub fn compute(
         // This core's text region: its own fns, then the shared text every
         // core must hold. Each fn starts at the next 64 B boundary.
         let mut at = 0u64;
+        let mut hot_code_bytes = 0u64;
+        let mut packing_floor_lines = 0u64;
         for key in owned[n].iter().chain(shared.iter()) {
             let f = &program.fns[*key];
             let fn_bytes = (f.code.len() as u64).saturating_mul(4);
+            let mut fn_hot_bytes = 0u64;
             for (bi, (start, end)) in basic_block_ranges(&f.code).into_iter().enumerate() {
                 if !hot.is_hot(key, bi) {
                     continue;
@@ -311,6 +341,7 @@ pub fn compute(
                 if hi <= lo {
                     continue;
                 }
+                fn_hot_bytes = fn_hot_bytes.saturating_add(hi - lo);
                 for l in (lo / line_bytes)..=((hi - 1) / line_bytes) {
                     lines.insert(l);
                 }
@@ -325,11 +356,17 @@ pub fn compute(
                     }
                 }
             }
+            hot_code_bytes = hot_code_bytes.saturating_add(fn_hot_bytes);
+            // Each fn is 64 B-aligned, so this is the fewest lines this
+            // fn's hot blocks could occupy under *any* ordering of them.
+            packing_floor_lines =
+                packing_floor_lines.saturating_add(fn_hot_bytes.div_ceil(line_bytes));
             // Saturating like every other arithmetic on this path: a
             // pathological word count must clamp the synthetic address, not
             // panic partway through a scoring run.
             at = at.saturating_add(fn_bytes.div_ceil(line_bytes).saturating_mul(line_bytes));
         }
+        let slack_lines = (lines.len() as u64).saturating_sub(packing_floor_lines);
 
         let over_l1i_lines = over_ways(&lines, l1i_sets, l1i_ways);
         let over_l2_lines = over_ways(&lines, l2_sets, l2_ways);
@@ -346,6 +383,7 @@ pub fn compute(
         let (over_tlb_l2_pages, over_data_tlb_l2_pages) =
             unified_l2_tlb_overflow(text_pages, data_pages, tlb_l2);
         let charge = over_l1i_lines
+            .saturating_add(slack_lines)
             .saturating_mul(lat_l2.saturating_sub(lat_l1d_hit))
             .saturating_add(over_l2_lines.saturating_mul(lat_l3.saturating_sub(lat_l2)))
             .saturating_add(
@@ -358,6 +396,9 @@ pub fn compute(
         out.push(CoreBudget {
             n,
             hot_text_bytes: (lines.len() as u64).saturating_mul(line_bytes),
+            hot_code_bytes,
+            packing_floor_lines,
+            slack_lines,
             l1i_bytes,
             over_l1i_lines,
             over_l2_lines,
@@ -434,6 +475,9 @@ mod tests {
         let b = CoreBudget {
             n: 1,
             hot_text_bytes: 7744,
+            hot_code_bytes: 6420,
+            packing_floor_lines: 106,
+            slack_lines: 15,
             l1i_bytes: 65536,
             over_l1i_lines: 0,
             over_l2_lines: 0,
@@ -690,6 +734,128 @@ mod tests {
         assert!(
             measured[0].hot_text_bytes <= flat[0].hot_text_bytes,
             "a colder f cannot span more text"
+        );
+    }
+
+    /// **K3's regression test: the term sees block order.** Two orderings
+    /// of the *same* blocks, with the same blocks hot, must score
+    /// differently — which is exactly what was impossible before decision
+    /// 1955, and is why round 1's item D could not be ranked.
+    ///
+    /// The fixture is one fn of eight single-word blocks, four hot. Packed
+    /// (hot first) they occupy one 64 B line; interleaved they straddle
+    /// two, for the same four words of code that actually run. Same words,
+    /// same hotness, different order, different charge.
+    #[test]
+    fn two_orderings_of_the_same_blocks_score_differently() {
+        use crate::encode::{Cond, enc_b_cond};
+        let t = table();
+        let p = point(&t);
+        let place = PlacementTable {
+            cores: 1,
+            entries: vec![entry(ImageDeclRef::Actor(0), "A", 0)],
+        };
+        // 32 blocks of one word each: a conditional branch is a block
+        // terminator, so every word is its own block.
+        let body = || -> CodegenFn {
+            CodegenFn {
+                frame_size: 0,
+                code: (0..32)
+                    .map(|_| {
+                        EmittedWord::new(
+                            enc_b_cond(Cond::Eq, 4),
+                            String::new(),
+                            CostRule::Branch,
+                            None,
+                            &[],
+                        )
+                    })
+                    .collect(),
+                relocs: Vec::new(),
+            }
+        };
+        let prog = program(&[("A.turn", body())]);
+        // 32 words = 128 B = 2 lines. Sixteen hot blocks, 64 B of code.
+        let packed = |_: &str, bi: usize| bi < 16; // hot blocks contiguous
+        let spread = |_: &str, bi: usize| bi % 2 == 0; // hot blocks alternating
+        let a = compute(&prog, &t, &p, &place, HotBlocks::Measured(&packed)).expect("packed");
+        let b = compute(&prog, &t, &p, &place, HotBlocks::Measured(&spread)).expect("spread");
+
+        assert_eq!(a[0].hot_code_bytes, b[0].hot_code_bytes, "same code runs");
+        assert_eq!(
+            a[0].packing_floor_lines, b[0].packing_floor_lines,
+            "same floor: the floor is a property of how much runs, not of where"
+        );
+        assert_eq!(a[0].hot_text_bytes, 64, "packed: one line fetched");
+        assert_eq!(
+            b[0].hot_text_bytes, 128,
+            "spread: two lines for the same code"
+        );
+        assert_eq!(a[0].slack_lines, 0);
+        assert_eq!(b[0].slack_lines, 1);
+        assert!(
+            b[0].charge > a[0].charge,
+            "the spread ordering must cost more: {} vs {}",
+            b[0].charge,
+            a[0].charge
+        );
+        assert_eq!(
+            b[0].charge - a[0].charge,
+            11 - 4,
+            "one slack line is charged the same lat_l2 - lat_l1d_hit an overflowing \
+             line is: it is the same extra fetch from L2, for a different reason"
+        );
+        // Neither side is anywhere near an overflow, which is the whole
+        // point: the old term charged for overflow only and scored these
+        // two identically at zero.
+        assert_eq!(a[0].over_l1i_lines, 0);
+        assert_eq!(b[0].over_l1i_lines, 0);
+    }
+
+    /// The flat row is order-invariant **as a theorem**, not as an
+    /// omission: under `HotBlocks::All` a fn's hot bytes are all its bytes,
+    /// so the packing floor equals the line count and the density charge is
+    /// identically zero. This is why making the term order-sensitive does
+    /// not by itself make block layout rankable — the column the forall
+    /// gate reads cannot see order, and cannot be made to.
+    #[test]
+    fn the_flat_row_has_no_density_slack_by_construction() {
+        use crate::encode::{Cond, enc_b, enc_b_cond};
+        let t = table();
+        let p = point(&t);
+        let place = PlacementTable {
+            cores: 1,
+            entries: vec![entry(ImageDeclRef::Actor(0), "A", 0)],
+        };
+        // A diamond, a straight line, and an odd-length body, on one core.
+        let diamond = CodegenFn {
+            frame_size: 0,
+            code: vec![
+                EmittedWord::new(0, String::new(), CostRule::Alu, Some(1), &[0]),
+                EmittedWord::new(
+                    enc_b_cond(Cond::Eq, 12),
+                    String::new(),
+                    CostRule::Branch,
+                    None,
+                    &[],
+                ),
+                EmittedWord::new(0, String::new(), CostRule::Alu, Some(2), &[0]),
+                EmittedWord::new(enc_b(8), String::new(), CostRule::Branch, None, &[]),
+                EmittedWord::new(0, String::new(), CostRule::Alu, Some(3), &[0]),
+            ],
+            relocs: Vec::new(),
+        };
+        let prog = program(&[
+            ("A.turn", diamond),
+            ("A.other", straight(17)),
+            ("__wrela_helper", straight(64)),
+        ]);
+        let b = compute(&prog, &t, &p, &place, HotBlocks::All).expect("flat");
+        assert_eq!(b[0].slack_lines, 0, "the flat row has no slack: {:?}", b[0]);
+        assert_eq!(
+            b[0].hot_text_bytes / 64,
+            b[0].packing_floor_lines,
+            "under f = 1 the fetched line set *is* the packing floor"
         );
     }
 

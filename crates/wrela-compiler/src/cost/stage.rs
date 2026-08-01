@@ -165,38 +165,6 @@ pub fn codegen_cost_stage_with_placement(
     Ok((pieces.codegen()?, placement))
 }
 
-/// [`codegen_cost_stage_with_placement`], with plans/codegen-pareto.md item
-/// D's hot/cold block layout applied to the MWIR program in between.
-///
-/// This is the pass's real pipeline entry point. `classes` comes from
-/// [`super::layout_classes`] over the *same* path's sidecar and a block
-/// partition; [`crate::cost::LayoutClasses::Unmeasured`] plans the
-/// identity for every fn, so this reduces to
-/// [`codegen_cost_stage_with_placement`] exactly (proved, not asserted:
-/// `unit:no_sidecar_degrades_to_a_byte_identical_layout` at the pass, and
-/// the whole-program check in `blocklayout`'s measurement unit).
-///
-/// It is a **second** entry point rather than a parameter on the first
-/// because item D is not installed on the default compile path — see
-/// `blocklayout`'s "Why this pass is not installed" note and decision 1755.
-pub fn codegen_cost_stage_with_block_layout(
-    path: &Path,
-    classes: &crate::cost::LayoutClasses,
-) -> Result<
-    (
-        CodegenProgram,
-        crate::placement::PlacementTable,
-        crate::blocklayout::LayoutSummary,
-    ),
-    String,
-> {
-    let mut pieces = cost_stage_pieces(path)?;
-    let (relaid, summary) = crate::blocklayout::relayout_program(&pieces.mwir, classes)?;
-    pieces.mwir = relaid;
-    let placement = pieces.placement.clone();
-    Ok((pieces.codegen()?, placement, summary))
-}
-
 /// Everything `codegen_cost_stage_*` needs between lowering and emission.
 /// Not an abstraction — the two entry points above would otherwise be the
 /// same fifty lines twice, and item D has to reach the MWIR program in the
@@ -280,6 +248,75 @@ fn cost_stage_pieces(path: &Path) -> Result<CostStagePieces, String> {
     })
 }
 
+/// The program a scored budget line describes
+/// (plans/codegen-pareto-2.md item K, decision 1953).
+///
+/// `--stage=cost` and `--stage=report` printed two `hot_text_bytes` under
+/// two lines both called `Budget`, and on the appliance they read 7 936 B
+/// and 89 024 B. Neither was wrong; they are two different programs, and
+/// nothing on either line said so. This is what says so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextScope {
+    /// `lower::guest_reachable_keys_closure` against the **stub**
+    /// `core.__image_runtime`, with `emit_comptime_tests: false` and no
+    /// image build. Everything the runtime reaches only through the live
+    /// dispatch tables is absent, which is most of the runtime.
+    Closure,
+    /// The program `wrela build` emits: live rtconfig, image force-roots,
+    /// entry and vector text. What the appliance ships.
+    Image,
+}
+
+impl TextScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TextScope::Closure => "closure",
+            TextScope::Image => "image",
+        }
+    }
+}
+
+/// The program the appliance would **ship** for `path`, and its placement.
+///
+/// A root that declares an `@image` is compiled through
+/// [`crate::layout::lower_and_codegen_image`] — byte-for-byte the pipeline
+/// `wrela build` and `--stage=report` use — so a budget taken here is the
+/// budget of the shipped image rather than of a truncated closure. A root
+/// with no `@image` ships nothing, so the closure is all there is and the
+/// scope says so.
+///
+/// **This is what the ∀ gate scores** (decision 1954). Item H measured the
+/// gap and declined to close it; the gap is 11× on the flagship's hot text
+/// and it is the whole reason round 1's item D could not be scored — its
+/// premise (93–98 KB of text against a 64 KiB L1I) is a fact about the
+/// image column, and the gate read the closure one.
+pub fn codegen_shipped_program(
+    path: &Path,
+) -> Result<(CodegenProgram, crate::placement::PlacementTable, TextScope), String> {
+    let checked = load_cost_stage_closure(path)?;
+    let root = &checked.programs[&checked.root];
+    let Some(image_fn) = root.image_fn.clone() else {
+        let (prog, placement) = codegen_cost_stage_with_placement(path)?;
+        return Ok((prog, placement, TextScope::Closure));
+    };
+    let graph = crate::eval::interp::eval_image(root, &image_fn)
+        .map_err(|e| format!("eval @image `{image_fn}`: {}", e.message))?;
+    let layout_ctx = crate::layout::merge_layout_ctx(&checked.modules).map_err(sema_err)?;
+    let compiled = crate::layout::lower_and_codegen_image(
+        &checked.modules,
+        &checked.programs,
+        &layout_ctx,
+        &graph,
+        &[],
+        &std::collections::BTreeSet::new(),
+        false,
+    )?;
+    let placement =
+        crate::placement::place(&graph, &compiled.modules, &compiled.layout_ctx, graph.cores)
+            .unwrap_or_default();
+    Ok((compiled.program, placement, TextScope::Image))
+}
+
 /// Full scored report for `path` under the current opt TLS (caller sets
 /// mode/opts first). The gate needs more than the cycle total — static
 /// word count and measured-W coverage are side conditions (04 §5).
@@ -292,4 +329,84 @@ pub fn report_cost_stage_path(path: &Path) -> Result<CostReport, String> {
 /// Score `path` under the current opt TLS (caller sets mode/opts first).
 pub fn score_cost_stage_path(path: &Path) -> Result<u64, String> {
     Ok(report_cost_stage_path(path)?.total_proxy_cycles)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cost::footprint::{self, HotBlocks};
+    use crate::cost::sweep::SweepPoint;
+
+    fn case(name: &str) -> std::path::PathBuf {
+        let dir = super::super::repo_root().join("tests/golden").join(name);
+        match std::fs::read_to_string(dir.join("root")) {
+            Ok(r) => dir.join(r.trim()),
+            Err(_) => dir.join("input.wr"),
+        }
+    }
+
+    fn budget(prog: &CodegenProgram, place: &crate::placement::PlacementTable) -> (u64, u64, u64) {
+        let t = load_default().expect("table");
+        let p = SweepPoint::pinned(&t);
+        let b = footprint::compute(prog, &t, &p, place, HotBlocks::All).expect("footprint");
+        (
+            b.iter().map(|c| c.hot_text_bytes).sum(),
+            b.iter().map(|c| c.over_l1i_lines).sum(),
+            b.iter().map(|c| c.charge).sum(),
+        )
+    }
+
+    /// **K2's regression test (decision 1953/1954).** The two stages do not
+    /// agree, they measure two different programs — and the difference is
+    /// now named on the line and measured here rather than discovered by a
+    /// reader comparing two dumps.
+    ///
+    /// It fails on the old behaviour in the only way it can: before
+    /// `codegen_shipped_program` existed there was no way to ask for the
+    /// shipped program's budget from the cost side at all, so the gap could
+    /// not be stated as one number, let alone pinned.
+    #[test]
+    fn the_cost_stage_closure_and_the_shipped_image_are_two_programs_and_say_so() {
+        crate::opts::apply_mode(crate::opts::CompileMode::Release);
+        let path = case("cost-product-appliance");
+        let (closure, cplace) = codegen_cost_stage_with_placement(&path).expect("closure");
+        let (image, iplace, scope) = codegen_shipped_program(&path).expect("image");
+        assert_eq!(scope, TextScope::Image, "the flagship declares an @image");
+        assert_eq!(TextScope::Closure.as_str(), "closure");
+
+        let (c_hot, c_over, c_charge) = budget(&closure, &cplace);
+        let (i_hot, i_over, i_charge) = budget(&image, &iplace);
+        eprintln!(
+            "K2 appliance closure hot={c_hot} over_l1i={c_over} charge={c_charge} fns={}",
+            closure.fns.len()
+        );
+        eprintln!(
+            "K2 appliance image   hot={i_hot} over_l1i={i_over} charge={i_charge} fns={}",
+            image.fns.len()
+        );
+        assert!(
+            i_hot > c_hot * 5,
+            "the shipped image is an order of magnitude more text than the cost-stage \
+             closure; if that stops being true the reconciliation has changed shape: \
+             closure={c_hot} image={i_hot}"
+        );
+        assert_eq!(
+            c_over, 0,
+            "the closure fits its L1I — which is why the gate never saw the constraint"
+        );
+        assert!(
+            i_over > 0 && i_charge > 0,
+            "the shipped image is over its L1I and is charged for it: over={i_over} \
+             charge={i_charge}"
+        );
+    }
+
+    /// A root with no `@image` ships nothing, so the closure is the whole
+    /// program and the scope says so rather than pretending.
+    #[test]
+    fn a_root_with_no_image_is_scored_as_a_closure_and_labelled_one() {
+        crate::opts::apply_mode(crate::opts::CompileMode::Release);
+        let (_, _, scope) = codegen_shipped_program(&case("cost-arith")).expect("closure");
+        assert_eq!(scope, TextScope::Closure);
+    }
 }

@@ -810,11 +810,22 @@ ambiguity = "a larger charge over-credits barrier removal, which freeze 1633 for
 tier = "T5"
 source = "unpriced by absence (no barrier entry in the SOG). Bracket is an engineering bound, not a citation: >= 1 cycle for the word itself, and <= 64 — a barrier ordering against the shared DSU cannot plausibly be cheaper than an L3 access (35) and no source prices it above 64"
 
+# DECISION 1951. `snoop_cost` is derived from `dram_latency` and
+# `l3_latency` — its own `source` says so — but the box swept all three
+# independently, so 2 of the 4 (dram, l3) corners admitted
+# `snoop_cost = 312` while `dram - l3` was only 254 or 263. That is a
+# remote load costing more than going to DRAM, on a machine whose DSU can
+# always go to DRAM instead. The constraint restates the row's published
+# derivation as box shape rather than as prose. The pinned corner
+# (312, 347, 35) is unchanged and still feasible, so no scored number
+# moves; what moves is which corners the ∀ gate visits.
 [sweep.snoop_cost]
 lo = 0
 hi = 312
 pinned = 312
 pessimistic = "hi"
+le = "dram_latency - l3_latency"
+le_physics = "a snooped remote line is at worst the DRAM path: the DSU can always fetch from memory instead of from a peer, so the extra a remote load pays over an L3 hit can never exceed dram_latency - l3_latency. This is the same arithmetic this row's own `source` uses to derive its high end (347 - 35), asserted at every point of the box instead of only at the pinned one"
 tier = "T5"
 source = "unpriced by absence. Bracket is an engineering bound: 0 (a remote line already in L3 costs nothing extra) to 312 — a remote load is at worst the DRAM path, so the extra over L3 is bounded by 347 - 35"
 

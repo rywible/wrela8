@@ -150,6 +150,52 @@ impl SweepPoint {
         }
         out
     }
+
+    /// Every joint constraint (`[sweep.*].le`) this point violates, as
+    /// readable text — empty for a point the machine could be at
+    /// (plans/codegen-pareto-2.md decision 1950).
+    ///
+    /// Reads the point's raw values, **not** through [`Self::get`]:
+    /// feasibility is a property of the box, and recording it as a model
+    /// read would make every dimension look live to item J's sensitivity
+    /// probe.
+    pub fn violations(&self, table: &CostTable) -> Vec<String> {
+        let mut out = Vec::new();
+        for dim in table.sweep_dimensions() {
+            let row = match table.sweep(dim) {
+                Some(r) => r,
+                None => continue,
+            };
+            let Some(b) = &row.le else { continue };
+            let v = self.values.get(dim).copied().unwrap_or(row.pinned);
+            let m = self
+                .values
+                .get(&b.minuend)
+                .copied()
+                .unwrap_or_else(|| table.sweep(&b.minuend).map(|r| r.pinned).unwrap_or(0));
+            let s = b
+                .subtrahend
+                .as_ref()
+                .map(|d| {
+                    self.values
+                        .get(d)
+                        .copied()
+                        .unwrap_or_else(|| table.sweep(d).map(|r| r.pinned).unwrap_or(0))
+                })
+                .unwrap_or(0);
+            let bound = b.bound_at(m, s);
+            if v > bound {
+                out.push(format!("{dim}={v} > {} = {bound}", b.expr()));
+            }
+        }
+        out
+    }
+
+    /// True when every joint constraint holds — i.e. this is a point the
+    /// machine could actually be at.
+    pub fn is_feasible(&self, table: &CostTable) -> bool {
+        self.violations(table).is_empty()
+    }
 }
 
 /// Every endpoint corner of the box restricted to `dims`, with all other
@@ -161,7 +207,39 @@ impl SweepPoint {
 /// 1604 forbids): the caller's contract is that a dimension left out has
 /// been shown not to move either side's total, so no corner over it can
 /// flip a rank. Item J owns that sensitivity probe and must state it.
+///
+/// **Corners the machine cannot be at are not enumerated**
+/// (plans/codegen-pareto-2.md decision 1950). The box is a product of
+/// independent brackets, so two brackets over correlated quantities admit
+/// points no silicon reaches — and one such point is enough for the ∀ gate
+/// to veto a correct optimization, since the gate treats every corner as
+/// equally admissible. Every `[sweep.*].le` constraint is checked against
+/// the whole point (swept dimensions *and* the ones held pinned) and a
+/// violating corner is dropped. Removing corners can only ever make a
+/// candidate easier to land, which is why each constraint must carry its
+/// `le_physics` and why the pinned point is asserted feasible at parse.
+///
+/// Fails closed on an empty result: a box with no admissible corner would
+/// make the ∀ gate vacuously true, which is the one thing a gate must
+/// never be.
 pub fn endpoint_corners(table: &CostTable, dims: &[&str]) -> Vec<SweepPoint> {
+    let out = endpoint_corners_unconstrained(table, dims);
+    let total = out.len();
+    let kept: Vec<SweepPoint> = out.into_iter().filter(|p| p.is_feasible(table)).collect();
+    assert!(
+        !kept.is_empty(),
+        "the residual box has no feasible corner over [{}] of {total} enumerated — every \
+         point violates a [sweep.*].le constraint, which would make the ∀ gate vacuous",
+        dims.join(", ")
+    );
+    kept
+}
+
+/// [`endpoint_corners`] without the feasibility filter — the raw product
+/// box. Exists so the units can show what the filter removes; **not**
+/// public, because a caller that wanted the unfiltered box would be asking
+/// the gate to rank at points the machine cannot be at.
+fn endpoint_corners_unconstrained(table: &CostTable, dims: &[&str]) -> Vec<SweepPoint> {
     let base = SweepPoint::pinned(table);
     let mut brackets = Vec::with_capacity(dims.len());
     for d in dims {
@@ -310,6 +388,166 @@ mod tests {
         let table = load_default().expect("committed profile");
         let p = SweepPoint::pinned(&table);
         let _ = record_reads(|| record_reads(|| p.get("l2_latency")));
+    }
+
+    // -----------------------------------------------------------------
+    // Joint constraints (plans/codegen-pareto-2.md item K, decision 1950)
+    // -----------------------------------------------------------------
+
+    /// The `[sweep.divide_w_latency]` row plans/codegen-pareto.md decision
+    /// 1749 could not add, with its constraint. This is the fixture the
+    /// defect is stated over: item C found that independent `[5,20]` and
+    /// `[5,12]` brackets put `(divide_x_latency = 5, divide_w_latency = 12)`
+    /// inside the box, and refused to add the row because of it.
+    ///
+    /// It lives here rather than in `bench/a76-pi5.toml` because freeze
+    /// 1630 admits a `[latency]` group only where the emitted stream
+    /// contains it, and item K changes no emission (decision 1952). The row
+    /// is written out in full so whoever lands C1's divide half or C4 can
+    /// paste it, constraint included, without re-deriving the argument.
+    const DIVIDE_W_ROW: &str = "\n\
+        [sweep.divide_w_latency]\n\
+        lo = 5\n\
+        hi = 12\n\
+        pinned = 12\n\
+        pessimistic = \"hi\"\n\
+        le = \"divide_x_latency\"\n\
+        le_physics = \"one divider, one early-termination rule: a 32-bit divide \
+        of a value cannot take more iterations than the 64-bit divide of the same \
+        value, because it has strictly fewer significant bits to retire. \
+        divide_w_latency > divide_x_latency describes no A76.\"\n\
+        tier = \"T1\"\n\
+        source = \"SOG 3.6 divide, W-form - 5-12 cycles with data-dependent early termination\"\n";
+
+    fn table_text() -> String {
+        std::fs::read_to_string(crate::cost::table::default_table_path())
+            .expect("bench/a76-pi5.toml")
+    }
+
+    /// **K1's regression test.** No corner of the box may be a point the
+    /// machine cannot be at — and the *same* box without the constraint
+    /// enumerates exactly such a corner, which is the old behaviour.
+    #[test]
+    fn no_physically_impossible_divide_corner_is_enumerated() {
+        let constrained =
+            crate::cost::table::parse(&(table_text() + DIVIDE_W_ROW)).expect("constrained");
+        let unconstrained = crate::cost::table::parse(
+            &(table_text()
+                + &DIVIDE_W_ROW
+                    .lines()
+                    .filter(|l| !l.starts_with("le"))
+                    .collect::<Vec<_>>()
+                    .join("\n")),
+        )
+        .expect("unconstrained");
+
+        let dims = ["divide_x_latency", "divide_w_latency"];
+        let loose = endpoint_corners_unconstrained(&unconstrained, &dims);
+        assert_eq!(loose.len(), 4, "the raw product box is 2^2");
+        let impossible: Vec<String> = loose
+            .iter()
+            .filter(|p| p.get("divide_w_latency") > p.get("divide_x_latency"))
+            .map(|p| p.label_over(&dims))
+            .collect();
+        assert_eq!(
+            impossible,
+            vec!["divide_x_latency=5 divide_w_latency=12".to_string()],
+            "the defect: the product box contains a corner where the 32-bit divide \
+             is slower than the 64-bit one"
+        );
+
+        let tight = endpoint_corners(&constrained, &dims);
+        assert_eq!(tight.len(), 3, "the impossible corner is dropped, no other");
+        for p in &tight {
+            assert!(
+                p.get("divide_w_latency") <= p.get("divide_x_latency"),
+                "enumerated a corner no divider can be at: {}",
+                p.label_over(&dims)
+            );
+            assert!(p.is_feasible(&constrained));
+        }
+    }
+
+    /// **The C4-shaped comparison.** A candidate that replaces a 64-bit
+    /// divide with the 32-bit divide of the same value must not *rise* at
+    /// any point of the box. Over the product box it rises at one corner
+    /// and the ∀ gate refuses; over the constrained box there is no such
+    /// corner and the substitution wins everywhere.
+    ///
+    /// Priced arithmetically rather than through `score_program` on
+    /// purpose: no site emits a W-form divide (decision 1952), so a scored
+    /// program could only assert this by pretending one does. The claim
+    /// under test is about the *box*, and this is that claim with nothing
+    /// else in it.
+    #[test]
+    fn the_c4_shaped_comparison_no_longer_vetoes_at_the_divide_lo_corner() {
+        let constrained =
+            crate::cost::table::parse(&(table_text() + DIVIDE_W_ROW)).expect("constrained");
+        let unconstrained = crate::cost::table::parse(
+            &(table_text()
+                + &DIVIDE_W_ROW
+                    .lines()
+                    .filter(|l| !l.starts_with("le"))
+                    .collect::<Vec<_>>()
+                    .join("\n")),
+        )
+        .expect("unconstrained");
+        let dims = ["divide_x_latency", "divide_w_latency"];
+        // baseline: one X-form divide. candidate: the same divide at 32 bits.
+        // The candidate "rises" exactly where its latency exceeds the
+        // baseline's, which is the whole of the comparison for one word.
+        let rose = |corners: Vec<SweepPoint>| -> Vec<String> {
+            corners
+                .into_iter()
+                .filter(|p| p.get("divide_w_latency") > p.get("divide_x_latency"))
+                .map(|p| p.label_over(&dims))
+                .collect()
+        };
+        assert_eq!(
+            rose(endpoint_corners_unconstrained(&unconstrained, &dims)),
+            vec!["divide_x_latency=5 divide_w_latency=12".to_string()],
+            "old behaviour: the candidate rises at the divide-lo corner, so the ∀ gate \
+             vetoes a substitution that cannot be a loss on one divider"
+        );
+        assert!(
+            rose(endpoint_corners(&constrained, &dims)).is_empty(),
+            "the candidate must not rise anywhere in the constrained box"
+        );
+    }
+
+    /// A held dimension is still checked: `endpoint_corners` restricted to
+    /// one of a constraint's dimensions must not emit a corner the *pinned*
+    /// value of the other makes impossible.
+    #[test]
+    fn a_constraint_is_checked_against_held_dimensions_too() {
+        let t = load_default().expect("committed profile");
+        // `snoop_cost <= dram_latency - l3_latency`, with dram and l3 held
+        // pinned (347, 35 → bound 312). snoop's hi is exactly 312, so both
+        // corners survive; sweeping dram too drops the ones that do not.
+        let one = endpoint_corners(&t, &["snoop_cost"]);
+        assert_eq!(one.len(), 2);
+        let three = endpoint_corners(&t, &["snoop_cost", "dram_latency", "l3_latency"]);
+        assert_eq!(
+            three.len(),
+            6,
+            "2 of the 8 product corners are a remote load costing more than DRAM"
+        );
+        for p in &three {
+            assert!(
+                p.get("snoop_cost") <= p.get("dram_latency") - p.get("l3_latency"),
+                "enumerated a remote load dearer than the DRAM path: {}",
+                p.label_over(&["snoop_cost", "dram_latency", "l3_latency"])
+            );
+        }
+    }
+
+    /// The committed profile's own pinned point is feasible — the model may
+    /// not be pinned at a point the machine cannot be at.
+    #[test]
+    fn the_committed_pinned_point_is_physically_realizable() {
+        let t = load_default().expect("committed profile");
+        let p = SweepPoint::pinned(&t);
+        assert_eq!(p.violations(&t), Vec::<String>::new());
     }
 
     #[test]
