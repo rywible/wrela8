@@ -248,6 +248,21 @@ pub const RELEASE_OPTS: &[OptId] = &[
 /// Un-parking is a human decision, and it needs the ∀ product-tier gate
 /// green — not a microbenchmark, and not a delta that lives in test
 /// scaffolding.
+/// **`Frameless` joins them (decision 1918).** Item F3 elides the `x30`
+/// save on a function with no returning call — two fewer instructions,
+/// and it won on every boot-shaped program. Item M's compute workload
+/// refused it: `cost-product-compositor` rose **7526 → 7544** at every
+/// `store_to_load_forwarding=1` corner, which vetoed the whole release
+/// list. Narrowing the elision to cases where the frame size does not
+/// move (so no slot's absolute address shifts) did **not** fix it and
+/// measured slightly worse, **7526 → 7563** — so the mechanism is not the
+/// frame-size shuffle that narrowing was built on, and it is not yet
+/// known.
+///
+/// **Re-ask when:** the mechanism is identified. The honest state is that
+/// two instructions are being deleted and a compute kernel gets slower,
+/// and nobody can say why. That is a question about the ruler or about
+/// the allocator's interaction with `x30`, not about F3's rule.
 pub const PARKED_OPTS: &[OptId] = &[OptId::BoundsElide, OptId::Inline];
 
 /// Every id the compiler knows, shipped then parked. Both lists in one

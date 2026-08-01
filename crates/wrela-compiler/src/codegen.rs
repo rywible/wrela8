@@ -13890,12 +13890,20 @@ mod item_f_tests {
     /// DCE simply fold away, leaving no call site to assert about. Item
     /// F's transform is unchanged; its subject is what moved, so these
     /// ask over the list that still has one (decision 1933).
+    ///
+    /// **Plus `Frameless`, which is parked** (decision 1918): item M's
+    /// compute workload vetoed it and narrowing did not fix it, so it is
+    /// out of `RELEASE_OPTS`. The three F3/F5 claims below are about the
+    /// transform, not about whether it ships, and a parked opt stays
+    /// switchable precisely so its own oracles keep running.
     fn release_without_item_j() -> Vec<OptId> {
-        RELEASE_OPTS
+        let mut v: Vec<OptId> = RELEASE_OPTS
             .iter()
             .copied()
             .filter(|o| !matches!(o, OptId::ConstProp | OptId::Gvn | OptId::Dce))
-            .collect()
+            .collect();
+        v.push(OptId::Frameless);
+        v
     }
 
     fn mnems<'a>(prog: &'a CodegenProgram, key: &str) -> Vec<&'a str> {
@@ -13927,7 +13935,7 @@ pub fn blend(a: u64, b: u64) -> u64:
     #[test]
     fn a_leaf_does_not_save_the_link_register() {
         let before = emit(LEAF, E);
-        let after = emit(LEAF, RELEASE_OPTS);
+        let after = emit(LEAF, &release_without_item_j());
         let b = mnems(&before, "blend");
         assert!(
             b.iter().any(|t| t.starts_with("str lr")),
@@ -13960,7 +13968,7 @@ pub fn nothing():
     pass
 "#;
         let before = emit(SRC, E);
-        let after = emit(SRC, RELEASE_OPTS);
+        let after = emit(SRC, &release_without_item_j());
         assert!(
             frame_of(&before, "nothing") > 0,
             "item E framed even this; if not, the oracle is vacuous"
@@ -14146,7 +14154,7 @@ pub fn spans(a: u64) -> u64:
     /// function that does not use the scratch set gets the scratch set.
     #[test]
     fn the_pool_reaches_past_item_es_nine_registers() {
-        let after = emit(LEAF, RELEASE_OPTS);
+        let after = emit(LEAF, &release_without_item_j());
         let conv = after.conventions.get("blend").expect("convention");
         assert!(
             conv.pool.len() > regalloc::POOL.len(),

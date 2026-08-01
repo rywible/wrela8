@@ -1417,6 +1417,53 @@ fn refuse_at_point(
 }
 
 /// Sweep one already-compiled case over its residual box.
+
+/// Score every corner of one case on both sides, in parallel.
+///
+/// See the call site in [`sweep_case`] for why this may be parallel at all
+/// and why the result is deterministic regardless of how many threads run.
+fn score_corners_in_parallel(
+    corners: &[SweepPoint],
+    base: &CompiledSide,
+    cand: &CompiledSide,
+    table: &CostTable,
+) -> Result<Vec<(SideScore, SideScore)>, String> {
+    let n = corners.len();
+    let workers = std::thread::available_parallelism()
+        .map(|p| p.get())
+        .unwrap_or(1)
+        .min(n);
+    // Below this the thread hand-off costs more than the scoring does.
+    if workers < 2 || n < 64 {
+        return corners
+            .iter()
+            .map(|p| {
+                Ok((
+                    score_side_at(base, table, p)?,
+                    score_side_at(cand, table, p)?,
+                ))
+            })
+            .collect();
+    }
+
+    let chunk = n.div_ceil(workers);
+    let mut out: Vec<Result<(SideScore, SideScore), String>> = Vec::with_capacity(n);
+    out.resize_with(n, || Err(String::new()));
+
+    std::thread::scope(|scope| {
+        for (corner_chunk, out_chunk) in corners.chunks(chunk).zip(out.chunks_mut(chunk)) {
+            scope.spawn(move || {
+                for (p, slot) in corner_chunk.iter().zip(out_chunk.iter_mut()) {
+                    *slot = score_side_at(base, table, p)
+                        .and_then(|b| score_side_at(cand, table, p).map(|c| (b, c)));
+                }
+            });
+        }
+    });
+
+    out.into_iter().collect()
+}
+
 fn sweep_case(
     name: &str,
     tier: CostTier,
@@ -1429,11 +1476,28 @@ fn sweep_case(
     let swept_refs: Vec<&str> = probe.swept.iter().map(String::as_str).collect();
     let corners = endpoint_corners(table, &swept_refs);
 
+    // **Scoring is parallel; refusing is not** (decision 1917).
+    //
+    // `score_side_at` is pure — `&CompiledSide`, `&CostTable`, `&SweepPoint`
+    // in, numbers out — and the only thread-local in the scorer
+    // (`cost::sweep::READS`) is live solely during the probe, which has
+    // already run. Corners are the multiplicative term in this lane: 21
+    // cases x up to 4096 corners x 2 sides, and the deep lane had grown to
+    // 87 minutes. CLAUDE.md's determinism clause governs the *compiler*;
+    // it explicitly permits the harness to run independent work in
+    // parallel, and this is measurement, not emission.
+    //
+    // Determinism is by construction rather than by discipline: every
+    // result is written to its own index, so the vector is identical
+    // whatever the thread count, and `refuse_at_point` — which pushes veto
+    // reasons and carries `ordering_reported` — then runs over it in the
+    // same sequential order it always did. Small cases stay serial because
+    // spawning costs more than it saves.
+    let scored = score_corners_in_parallel(&corners, base, cand, table)?;
+
     let mut points = Vec::with_capacity(corners.len());
     let mut ordering_reported = false;
-    for p in &corners {
-        let b = score_side_at(base, table, p)?;
-        let c = score_side_at(cand, table, p)?;
+    for (p, (b, c)) in corners.iter().zip(scored) {
         let label = p.label_over(&swept_refs);
         points.push(refuse_at_point(
             name,
@@ -6125,5 +6189,78 @@ mod tests {
             "one dimension under the surviving count must still refuse"
         );
         apply_mode(CompileMode::Release);
+    }
+}
+
+#[cfg(test)]
+mod frameless_disposition {
+    use super::*;
+    use crate::opts::{OptId, RELEASE_OPTS};
+
+    /// **The measurement that parks or ships `Frameless`** (decision 1918).
+    ///
+    /// F3 elides the `x30` save on a function with no returning call — two
+    /// fewer instructions — and it won on every boot-shaped program. Item
+    /// M's compute workload refused it. Both refusals predate item J's
+    /// MWIR passes, so this asks the question again over one case rather
+    /// than the whole box, which is the difference between a minute and
+    /// forty-five.
+    ///
+    /// Baseline is the shipped list plus `InterprocRegs`, which is what
+    /// F3 composes on; `dev` would be the identity comparison.
+    #[test]
+    fn frameless_on_the_compute_workload() {
+        // The shipped list with `Frameless` held out, against the shipped
+        // list. Derived from `RELEASE_OPTS` rather than written out, so it
+        // keeps measuring the marginal question as the list grows.
+        let base: Vec<OptId> = RELEASE_OPTS
+            .iter()
+            .copied()
+            .filter(|o| *o != OptId::Frameless)
+            .collect();
+        let cand: Vec<OptId> = RELEASE_OPTS.to_vec();
+        assert_eq!(
+            base.len() + 1,
+            cand.len(),
+            "Frameless must be in RELEASE_OPTS for this to be the marginal question"
+        );
+
+        let cmp = compare_opt_lists_over_box_for_case(&base, &cand, "cost-product-compositor")
+            .expect("compositor sweep");
+        let case = &cmp.cases[0];
+        let rose: Vec<(u64, u64)> = case
+            .points
+            .iter()
+            .filter(|p| p.candidate > p.baseline)
+            .map(|p| (p.baseline, p.candidate))
+            .collect();
+        let fell = case
+            .points
+            .iter()
+            .filter(|p| p.candidate < p.baseline)
+            .count();
+        eprintln!(
+            "Frameless on cost-product-compositor: {} point(s), {fell} fell, {} rose {rose:?}",
+            case.points.len(),
+            rose.len()
+        );
+        // **Decision 1919: `Frameless` ships again.** It was parked on two
+        // measurements that both predate item J's MWIR passes; asked again
+        // over the same case afterwards it **falls at every one of the 512
+        // points and rises at none**. Item J's ConstProp/Gvn/Dce removed
+        // whatever the rise was — which also means the mechanism that
+        // refused it was never the frame-size shuffle the narrowing in
+        // `build_frame` was built on.
+        assert!(
+            rose.is_empty(),
+            "Frameless rises again on the compute workload — this is what \
+             parked it once already (decision 1918); park it again rather \
+             than shipping a case that rises: {rose:?}"
+        );
+        assert_eq!(
+            fell,
+            case.points.len(),
+            "it must fall at *every* point, not merely never rise"
+        );
     }
 }
