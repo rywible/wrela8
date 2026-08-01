@@ -1448,6 +1448,134 @@ mod tests {
         );
     }
 
+    /// **The compositor measurement — decision 1946**, and the reason this
+    /// module is back in the tree.
+    ///
+    /// Item K deleted this pass partly on the argument that no image in the
+    /// tree has L1I headroom, so density can never matter. Item M's
+    /// `boot-tile-compositor` landed hours later and is the first program
+    /// here with real headroom. This unit asks the question that could not
+    /// be asked then, on the workload that did not exist then, and pins
+    /// the answer.
+    ///
+    /// Print the numbers with
+    /// `cargo test -p wrela-compiler --lib
+    /// blocklayout::tests::the_compositor_is_the_workload_that_could_re_ask
+    /// -- --nocapture`.
+    #[test]
+    fn the_compositor_is_the_workload_that_could_re_ask() {
+        use crate::cost::{self, HotBlocks, SweepPoint};
+
+        let input = cost::repo_root().join("tests/golden/boot-tile-compositor/input.wr");
+        let table = cost::load_default().expect("cost table");
+
+        let mut flat = Vec::new();
+        for (label, mode) in [
+            ("dev", crate::opts::CompileMode::Dev),
+            ("release", crate::opts::CompileMode::Release),
+        ] {
+            crate::opts::apply_mode(mode);
+            let (prog, placement) =
+                cost::codegen_cost_stage_with_placement(&input).expect("cost-stage codegen");
+            let budget = cost::footprint::compute(
+                &prog,
+                &table,
+                &SweepPoint::pinned(&table),
+                &placement,
+                HotBlocks::All,
+            )
+            .expect("footprint");
+            let words: u64 = prog.fns.values().map(|f| f.code.len() as u64).sum();
+            eprintln!(
+                "O-COMPOSITOR {label}: words={words} hot_text={} hot_code={} \
+                 slack_lines={} l1i={} charge={} pages={}",
+                budget[0].hot_text_bytes,
+                budget[0].hot_code_bytes,
+                budget[0].slack_lines,
+                budget[0].l1i_bytes,
+                budget[0].charge,
+                budget[0].text_pages
+            );
+            flat.push((words, budget[0].clone()));
+        }
+
+        // **The answer, and it is a null with a named cause.** The pass is
+        // the identity on this program, because the pass reorders on
+        // *measured* coldness and this program has no block-grain sidecar:
+        // `cargo xtask gen-lane2-freq boot-tile-compositor` has never been
+        // run. Not "the pass loses here" — "the pass cannot be asked here".
+        assert!(
+            cost::sibling_block_freq_path(&input).is_none(),
+            "a `lane2-freq.txt` appeared next to the compositor. That is the named \
+             re-ask condition in this module's doc: re-run this test, re-measure the \
+             density charge under `HotBlocks::Measured`, and re-argue decision 1946 — \
+             do not just update the assertion below."
+        );
+        crate::opts::apply_mode(crate::opts::CompileMode::Release);
+        crate::codegen::set_block_bridge(true);
+        let (before, placement) =
+            cost::codegen_cost_stage_with_placement(&input).expect("cost-stage codegen");
+        let spans = crate::codegen::block_spans();
+        crate::codegen::set_block_bridge(false);
+        let classes = cost::layout_classes(Some(&input), &spans).expect("classify");
+        assert_eq!(
+            classes,
+            crate::cost::LayoutClasses::Unmeasured,
+            "no sidecar means no classification, which is the whole finding"
+        );
+        crate::codegen::set_block_bridge(true);
+        let (after, _, summary) =
+            cost::codegen_cost_stage_with_block_layout(&input, &classes).expect("relaid");
+        crate::codegen::set_block_bridge(false);
+        eprintln!("O-COMPOSITOR pass: {}", summary.render());
+        assert_eq!((summary.fns_moved, summary.repairs), (0, 0));
+        for (key, f) in &before.fns {
+            assert_eq!(&after.fns[key].code, &f.code, "fn `{key}`");
+        }
+
+        // And the second half of the null, which no sidecar can fix: the
+        // column the ∀ gate reads is `HotBlocks::All`, where `slack_lines`
+        // is zero **by construction** (item K, decision 1955) — every block
+        // hot means each fn's fetched line count *is* its packing floor.
+        // So even a compositor sidecar would move the measured column only,
+        // and ranking this pass would still need a gate that reads it.
+        let after_flat = cost::footprint::compute(
+            &after,
+            &table,
+            &SweepPoint::pinned(&table),
+            &placement,
+            HotBlocks::All,
+        )
+        .expect("footprint after");
+        assert_eq!(flat[1].1.slack_lines, 0);
+        assert_eq!(flat[1].1.charge, after_flat[0].charge);
+
+        // The headroom that makes the question worth re-asking at all.
+        // Pinned rather than tracked, for the same reason
+        // `BEFORE_HOT_TEXT_BYTES` is: when it moves, decision 1946 is
+        // re-argued from the new number, not rescaled from the old one.
+        assert_eq!(
+            (
+                flat[0].1.hot_text_bytes,
+                flat[1].1.hot_text_bytes,
+                flat[1].1.l1i_bytes
+            ),
+            (47_744, 28_480, 65_536),
+            "the compositor's flat hot text, dev and release, against the L1I. Item M's \
+             ~17 KB-of-headroom figure is the **dev** column; release has 37 KB of \
+             headroom, so the L1I overflow term is zero on both sides and the only \
+             footprint term that could ever rank this pass here is the density one \
+             (decision 1946). Re-measure before touching."
+        );
+        assert!(
+            flat[1].1.hot_text_bytes < flat[1].1.l1i_bytes,
+            "the compositor's release hot text must fit the L1I with room, or the \
+             density argument changes shape: {} vs {}",
+            flat[1].1.hot_text_bytes,
+            flat[1].1.l1i_bytes
+        );
+    }
+
     /// A stale sidecar must **fail the build**, not lay out an image.
     ///
     /// Item A owns the three staleness directions; this is item D's own
