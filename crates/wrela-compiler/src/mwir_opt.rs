@@ -63,6 +63,25 @@ thread_local! {
     static CONST_PROP: Cell<bool> = const { Cell::new(false) };
     static GVN: Cell<bool> = const { Cell::new(false) };
     static DCE: Cell<bool> = const { Cell::new(false) };
+    static INLINE_RULE_ONE_ONLY: Cell<bool> = const { Cell::new(false) };
+    static INLINED_SITES: Cell<usize> = const { Cell::new(0) };
+    static INLINED_CALLEES_DELETED: Cell<usize> = const { Cell::new(0) };
+}
+
+/// **Measured reach for the parked opt** (item P / decision 1985): how
+/// many call sites the inliner has spliced, and how many callees rule (i)
+/// consumed, since the last read. Reading resets both.
+///
+/// CLAUDE.md wants every lane to print its reach so a collapse to "clean
+/// about nothing" is visible. A refusal measurement is worth exactly as
+/// much as the number of sites it actually reached, and item J's own
+/// headline — "no customers on the appliance at all" — is a reach number
+/// wearing a sentence.
+pub fn take_inline_reach() -> (usize, usize) {
+    (
+        INLINED_SITES.with(|c| c.replace(0)),
+        INLINED_CALLEES_DELETED.with(|c| c.replace(0)),
+    )
 }
 
 /// Item P / decision 1980: the shrinking inliner, **parked**. Present,
@@ -99,6 +118,25 @@ pub fn set_inline_after_redundancy(enabled: bool) {
 }
 pub fn inline_after_redundancy() -> bool {
     INLINE_AFTER_REDUNDANCY.with(|c| c.get())
+}
+
+/// **Item P / decision 1988 — rule (i) alone, the framing item J said
+/// settles it.**
+///
+/// With this on, [`INLINE_MAX_BODY`] is effectively zero: only a callee
+/// whose splice consumes its *only* reference is inlined, so the body
+/// moves rather than duplicates and the callee is deleted outright. Words
+/// ought to fall by the whole call sequence. Item J measured +307 cycles
+/// against `dev` and +36 leave-one-out over the shipped list and called
+/// that the result that settles the ladder's 2a — and that number is one
+/// of the ones this repository could not re-derive. Same reason as
+/// [`set_inline_after_redundancy`]: a question, not a product decision,
+/// so not an `OptId`.
+pub fn set_inline_rule_one_only(enabled: bool) {
+    INLINE_RULE_ONE_ONLY.with(|c| c.set(enabled));
+}
+pub fn inline_rule_one_only() -> bool {
+    INLINE_RULE_ONE_ONLY.with(|c| c.get())
 }
 
 /// Item J / decision 1924: extended-basic-block constant propagation and
@@ -849,6 +887,7 @@ fn inline_program(prog: &mut MwirProgram, flow: Option<&FlowWirProgram>, layout:
         }
         for k in &consumed {
             prog.fns.remove(k);
+            INLINED_CALLEES_DELETED.with(|c| c.set(c.get() + 1));
         }
         if !changed {
             return;
@@ -894,7 +933,8 @@ fn inline_into(
                 continue;
             }
             let single = refs.get(key).copied() == Some(1);
-            if !(single || callee.body.len() <= INLINE_MAX_BODY) {
+            let small = !inline_rule_one_only() && callee.body.len() <= INLINE_MAX_BODY;
+            if !(single || small) {
                 continue;
             }
             site = Some((i, key.clone(), single));
@@ -1046,6 +1086,7 @@ fn splice(caller: &mut MwirFn, at: usize, callee: &MwirFn, layout: &LayoutCtx) -
 
     caller.body.splice(at..at + 1, out);
     caller.temp_types = new_types;
+    INLINED_SITES.with(|c| c.set(c.get() + 1));
     true
 }
 

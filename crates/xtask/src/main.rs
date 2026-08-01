@@ -277,7 +277,14 @@ fn main() -> ExitCode {
         // making bare `cargo xtask repro` a strict superset of `cargo
         // xtask report-determinism` rather than a bare synonym for it.
         Some("repro") => repro(),
-        Some("diff-eval") => diff_eval(),
+        // plans/codegen-pareto-2.md item P: `--inline` runs the same
+        // oracle with the **parked** `OptId::Inline` enabled. CLAUDE.md's
+        // parking rule (2026-07-31) requires a refused opt to still
+        // compile and pass `diff-eval`, so it cannot rot into a
+        // miscompile while it sits out of `RELEASE_OPTS`; without a way
+        // to ask for it, that requirement has no lane. One boolean, named
+        // for the one opt it enables.
+        Some("diff-eval") => diff_eval(args[1..].iter().any(|a| a == "--inline")),
         Some("diff-block-count") => diff_block_count(),
         Some("diff-blk") => diff_blk(),
         // plans/M20.md item C: the Lane 2 block-grain sidecar generator.
@@ -290,7 +297,7 @@ fn main() -> ExitCode {
         Some("bench") => bench(&args[1..]),
         _ => {
             eprintln!(
-                "usage: cargo xtask <check [--fast]|golden [--update] [--filter <substr>] [--only-boot|--no-boot] [--jobs N] [--boot-jobs N]|corpus [--sema]|fuzz [lexer|parser|sema|eval|lower|async|imports|report] [--iters N] [--seed S]|roundtrip|report-determinism|agnostic-sweep|cost-inventory|stdlib-test|repro|diff-eval|diff-block-count|diff-blk|gen-lane2-freq <case>|profile|bench <compiler|build|guest>>"
+                "usage: cargo xtask <check [--fast]|golden [--update] [--filter <substr>] [--only-boot|--no-boot] [--jobs N] [--boot-jobs N]|corpus [--sema]|fuzz [lexer|parser|sema|eval|lower|async|imports|report] [--iters N] [--seed S]|roundtrip|report-determinism|agnostic-sweep|cost-inventory|stdlib-test|repro|diff-eval [--inline]|diff-block-count|diff-blk|gen-lane2-freq <case>|profile|bench <compiler|build|guest>>"
             );
             return ExitCode::FAILURE;
         }
@@ -2801,7 +2808,28 @@ pub(crate) fn parse_guest_record(text: &str) -> Result<GuestRecord, String> {
 /// opt knobs default NarrowImm **off**; without `apply_mode` this lane
 /// would score a half-release backend. Call once before any lower/codegen.
 fn diff_eval_over_cases(vmm: &Path, filter: Option<&[&str]>) -> Result<DiffEvalTally, String> {
-    opts::apply_mode(CompileMode::Release);
+    diff_eval_over_cases_with(vmm, filter, false)
+}
+
+/// [`diff_eval_over_cases`], plus item P's parked `OptId::Inline`.
+///
+/// `with_inline` is `release` **plus** the one opt that is deliberately
+/// not in `RELEASE_OPTS`. A parked opt that stopped agreeing with the
+/// evaluator would be a miscompile nobody was running, which is exactly
+/// what "parked, not deleted" is not allowed to mean.
+fn diff_eval_over_cases_with(
+    vmm: &Path,
+    filter: Option<&[&str]>,
+    with_inline: bool,
+) -> Result<DiffEvalTally, String> {
+    if with_inline {
+        let mut list: Vec<opts::OptId> = opts::RELEASE_OPTS.to_vec();
+        list.push(opts::OptId::Inline);
+        opts::apply_opts(&list);
+        println!("diff-eval: release + the parked OptId::Inline (item P)");
+    } else {
+        opts::apply_mode(CompileMode::Release);
+    }
     let golden_dir = root().join("tests/golden");
     let mut tally = DiffEvalTally::default();
     for case in golden_case_dirs(&golden_dir)? {
@@ -3009,9 +3037,9 @@ fn diff_eval_over_cases(vmm: &Path, filter: Option<&[&str]>) -> Result<DiffEvalT
 /// grows; it is a floor, not a lock, so an added case never fails here.
 const DIFF_EVAL_MIN_AGREE: usize = 100;
 
-fn diff_eval() -> Result<(), String> {
+fn diff_eval(with_inline: bool) -> Result<(), String> {
     let vmm = build_and_sign_vmm()?;
-    let tally = diff_eval_over_cases(&vmm, None)?;
+    let tally = diff_eval_over_cases_with(&vmm, None, with_inline)?;
     println!(
         "diff-eval: {} test(s) agree across {} case(s), {} lowering-skips, {} exhaustive-skips, \
          {} quota-skips, {} import-skips",
