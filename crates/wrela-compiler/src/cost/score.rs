@@ -653,18 +653,134 @@ pub fn score_program_at_with_hot(
 /// [`SweepPoint`], which is the whole reason it is safe to hoist: a
 /// `ScoreCtx` built from a table scores every point of that table's box.
 ///
+/// It also carries the **per-rule** table reads the scoreboard's innermost
+/// loop was doing once per *emitted word* (decision 1964): the uop
+/// expansion of a rule's port string — which split that string and
+/// allocated a `Vec<Uop>` for every one of the ~22 000 words of the
+/// flagship image, at every corner — and the `[latency]` row's throughput
+/// hold, M-pipe stall and block flag. All of those are properties of the
+/// rule and the profile, not of the point.
+///
 /// This is the same category of fix as `super::branch`'s hoisted
 /// `penalty()` — a per-call reconstruction of a constant, in a loop whose
 /// only job is to vary something else.
 pub struct ScoreCtx {
     machine: Machine,
+    /// Per-rule uop expansion, indexed by `rule as usize`.
+    ///
+    /// The **`Result` is cached, not just the value**: a rule the profile
+    /// cannot price must still fail with the identical message, and must
+    /// still fail only when a word naming that rule is actually scored.
+    /// Resolving every rule up front and surfacing the error at the word
+    /// keeps both properties; resolving lazily would need interior
+    /// mutability for no gain.
+    uops: Vec<Result<Vec<Uop>, String>>,
+    /// Per-rule `(hold, m_pipe_stall, m_pipe_block)` from the governing
+    /// `[latency]` row, with the same defaults the per-word path used when
+    /// no row governs.
+    timing: Vec<(u64, u64, bool)>,
+    /// Per-rule execution-latency spec — see [`ScoreCtx::rule_latency`].
+    lat: Vec<LatSpec>,
+}
+
+/// What [`rule_latency`] needs from the table, separated from what it
+/// needs from the point.
+struct LatSpec {
+    /// `(lat, sweep, sweep_add)` of the `[latency]` row keyed by the
+    /// rule's own name, when one exists.
+    row: Option<(u64, Option<String>, Option<String>)>,
+    /// `CostTable::latency` — the `[crosscore]`-folded value the rules
+    /// with no row of their own (`barrier`, `system`, the ordered
+    /// accesses) are priced at.
+    folded: u64,
 }
 
 impl ScoreCtx {
     pub fn new(table: &CostTable) -> Result<ScoreCtx, String> {
+        let machine = Machine::from_table(table)?;
+        let n = CostRule::ALL.len();
+        // Fail closed on a rule `CostRule::ALL` does not list: it would
+        // otherwise be scored against whatever the loop below happened to
+        // leave in its slot. A word naming it errors instead.
+        let mut uops: Vec<Result<Vec<Uop>, String>> = (0..n)
+            .map(|_| {
+                Err(
+                    "cost model: a CostRule missing from `CostRule::ALL` reached the \
+                     scoreboard; the rule census and the port map disagree"
+                        .to_string(),
+                )
+            })
+            .collect();
+        let mut timing = vec![(1u64, 0u64, false); n];
+        let mut lat = Vec::with_capacity(n);
+        lat.resize_with(n, || LatSpec {
+            row: None,
+            folded: 0,
+        });
+        for rule in CostRule::ALL {
+            let i = *rule as usize;
+            uops[i] = ports_for(*rule, table).and_then(|p| machine.uops_for(p));
+            let row = timing_row(*rule, table);
+            timing[i] = (
+                row.map(|r| r.thru_den.div_ceil(r.thru_num).max(1))
+                    .unwrap_or(1),
+                row.map(|r| r.m_pipe_stall).unwrap_or(0),
+                row.map(|r| r.m_pipe_block).unwrap_or(false),
+            );
+            lat[i] = LatSpec {
+                row: table
+                    .latency_row(rule.as_str())
+                    .map(|r| (r.lat, r.sweep.clone(), r.sweep_add.clone())),
+                folded: table.latency(*rule),
+            };
+        }
         Ok(ScoreCtx {
-            machine: Machine::from_table(table)?,
+            machine,
+            uops,
+            timing,
+            lat,
         })
+    }
+
+    /// This rule's uops, or the identical failure the per-word expansion
+    /// produced.
+    fn uops(&self, rule: CostRule) -> Result<&[Uop], String> {
+        match &self.uops[rule as usize] {
+            Ok(u) => Ok(u),
+            Err(e) => Err(e.clone()),
+        }
+    }
+
+    /// `(hold, m_pipe_stall, m_pipe_block)` for this rule.
+    fn timing(&self, rule: CostRule) -> (u64, u64, bool) {
+        self.timing[rule as usize]
+    }
+
+    /// Execution latency for `rule` at `point`: the row's `lat`, read
+    /// through the sweep dimension it names when it is bracketed (today
+    /// only the divide's 5-20), plus any swept residual the row declares
+    /// (`call_overhead`). Equals `CostTable::latency` at the pinned point.
+    ///
+    /// The **table** half is cached; the **point** half is still read
+    /// through [`SweepPoint::get`], word by word, exactly as before — so
+    /// the set of dimensions a scoring reads, which is what `opts::win`'s
+    /// sensitivity probe records and what decides how many corners a case
+    /// is swept over, is unchanged by the caching.
+    fn rule_latency(&self, rule: CostRule, point: &SweepPoint) -> u64 {
+        let spec = &self.lat[rule as usize];
+        match &spec.row {
+            Some((lat, sweep, sweep_add)) => {
+                let mut l = match sweep {
+                    Some(dim) => point.get(dim),
+                    None => *lat,
+                };
+                if let Some(dim) = sweep_add {
+                    l = l.saturating_add(point.get(dim));
+                }
+                l
+            }
+            None => spec.folded,
+        }
     }
 }
 
@@ -770,16 +886,8 @@ fn score_program_core(
 
     let mut total_words = 0u64;
     for (key, f) in &program.fns {
-        let (proxy_cycles, terms) = score_fn(
-            key,
-            f,
-            table,
-            placement,
-            point,
-            &ctx.machine,
-            &counts,
-            want_fns,
-        )?;
+        let (proxy_cycles, terms) =
+            score_fn(key, f, table, placement, point, ctx, &counts, want_fns)?;
         let words = f.code.len() as u64;
         total_proxy_cycles = total_proxy_cycles.saturating_add(proxy_cycles);
         total_words = total_words.saturating_add(words);
@@ -865,7 +973,7 @@ pub fn block_schedule_lengths_with_counts(
     placement: &PlacementTable,
     counts: &BlockCounts<'_>,
 ) -> Result<Vec<u64>, String> {
-    let machine = Machine::from_table(table)?;
+    let ctx = ScoreCtx::new(table)?;
     let point = SweepPoint::pinned(table);
     let branch_terms = BranchTerms::compute(fn_key, code, table, &point, counts)?;
     let mut out = Vec::new();
@@ -877,7 +985,7 @@ pub fn block_schedule_lengths_with_counts(
             table,
             placement,
             &point,
-            &machine,
+            &ctx,
             &branch_terms,
             true,
         )?;
@@ -892,7 +1000,7 @@ fn score_fn(
     table: &CostTable,
     placement: &PlacementTable,
     point: &SweepPoint,
-    machine: &Machine,
+    ctx: &ScoreCtx,
     counts: &BlockCounts<'_>,
     want_terms: bool,
 ) -> Result<(u64, BTreeMap<String, u64>), String> {
@@ -913,7 +1021,7 @@ fn score_fn(
             table,
             placement,
             point,
-            machine,
+            ctx,
             &branch_terms,
             want_terms,
         )?;
@@ -943,7 +1051,7 @@ fn score_words(
     table: &CostTable,
     placement: &PlacementTable,
     point: &SweepPoint,
-    machine: &Machine,
+    ctx: &ScoreCtx,
     branch_terms: &BranchTerms,
     // `want_terms`: build the per-rule word-count map. It is one `String`
     // allocation per emitted word and the only thing that reads it is the
@@ -960,7 +1068,7 @@ fn score_words(
 
     let mut mem = MemState::new(table, point);
     // Per-pipe next-free cycle. Index 0 unused (pipes are 1-based).
-    let mut pipe_free = vec![0u64; machine.pipes + 1];
+    let mut pipe_free = vec![0u64; ctx.machine.pipes + 1];
     // Functional-unit hold per dispatch class — only ever non-zero for a
     // class whose group holds its unit for more than one cycle (pipe M).
     let mut unit_free = [0u64; PORT_CLASS_COUNT];
@@ -997,19 +1105,18 @@ fn score_words(
         }
         check_mem_base_in_srcs(ew)?;
 
-        let row = timing_row(ew.rule, table);
-        let uops = machine.uops_for(ports_for(ew.rule, table)?)?;
-        // Throughput below one per cycle holds the functional unit; at or
-        // above one per cycle the pipe count already expresses it.
-        let hold = row
-            .map(|r| r.thru_den.div_ceil(r.thru_num).max(1))
-            .unwrap_or(1);
-        let m_stall = row.map(|r| r.m_pipe_stall).unwrap_or(0);
-        let blocks = row.map(|r| r.m_pipe_block).unwrap_or(false);
+        // Every table read here is per-**rule** and hoisted into
+        // `ScoreCtx` (item R, decision 1964): expanding the port string
+        // into uops allocated a `Vec` for every emitted word, at every
+        // corner. Throughput below one per cycle holds the functional
+        // unit; at or above one per cycle the pipe count already
+        // expresses it.
+        let uops = ctx.uops(ew.rule)?;
+        let (hold, m_stall, blocks) = ctx.timing(ew.rule);
         let occupancy = hold.saturating_add(m_stall);
         // Execution latency, read through the point wherever the row is
         // bracketed (today: the divide's 5-20).
-        let exec_lat = rule_latency(ew.rule, table, point);
+        let exec_lat = ctx.rule_latency(ew.rule, point);
         // Computed before issue because its `serializes_window` half is an
         // *ordering* constraint, not a latency: item G turns it on by
         // returning `true` here and needs no scheduler change.
@@ -1017,8 +1124,8 @@ fn score_words(
 
         // --- dispatch: in-order, capped, and bounded by the reorder depth
         let mut min_disp = disp_cycle;
-        if i >= machine.window {
-            min_disp = min_disp.max(retire[i - machine.window]);
+        if i >= ctx.machine.window {
+            min_disp = min_disp.max(retire[i - ctx.machine.window]);
         }
         if min_disp > disp_cycle {
             disp_cycle = min_disp;
@@ -1027,36 +1134,36 @@ fn score_words(
             disp_class = [0u64; PORT_CLASS_COUNT];
         }
         let mut want_class = [0u64; PORT_CLASS_COUNT];
-        for u in &uops {
+        for u in uops {
             want_class[u.class.index()] += 1;
         }
         // Fail closed rather than spin: a Mop that can never fit means the
         // profile's caps and the port strings disagree.
-        if uops.len() as u64 > machine.dispatch_uops {
+        if uops.len() as u64 > ctx.machine.dispatch_uops {
             return Err(format!(
                 "cost model: `{}` expands to {} uops, above [pipelines] dispatch_uops {}",
                 ew.rule.as_str(),
                 uops.len(),
-                machine.dispatch_uops
+                ctx.machine.dispatch_uops
             ));
         }
         for (c, want) in want_class.iter().enumerate() {
-            if *want > machine.caps[c] {
+            if *want > ctx.machine.caps[c] {
                 return Err(format!(
                     "cost model: `{}` wants {want} uops of one dispatch class, above its \
                      [pipelines] cap {}",
                     ew.rule.as_str(),
-                    machine.caps[c]
+                    ctx.machine.caps[c]
                 ));
             }
         }
         loop {
-            let fits = disp_mops < machine.dispatch_mops
-                && disp_uops + uops.len() as u64 <= machine.dispatch_uops
+            let fits = disp_mops < ctx.machine.dispatch_mops
+                && disp_uops + uops.len() as u64 <= ctx.machine.dispatch_uops
                 && want_class
                     .iter()
                     .enumerate()
-                    .all(|(c, want)| disp_class[c] + want <= machine.caps[c]);
+                    .all(|(c, want)| disp_class[c] + want <= ctx.machine.caps[c]);
             if fits {
                 break;
             }
@@ -1105,7 +1212,7 @@ fn score_words(
             base_ready = base_ready.max(max_retire);
         }
         let mut issue = base_ready;
-        for u in &uops {
+        for u in uops {
             // **Waiting on the hold is unconditional; only setting one is
             // not.** A functional unit an earlier uop is holding is busy
             // for every uop of that class, not just for the ones that
@@ -1260,28 +1367,6 @@ fn ports_for(rule: CostRule, table: &CostTable) -> Result<&str, String> {
                 rule.as_str()
             )
         })
-}
-
-/// Execution latency for `rule` at `point`: the row's `lat`, read through
-/// the sweep dimension it names when it is bracketed (today only the
-/// divide's 5-20), plus any swept residual the row declares
-/// (`call_overhead`). Equals `CostTable::latency` at the pinned point.
-fn rule_latency(rule: CostRule, table: &CostTable, point: &SweepPoint) -> u64 {
-    match table.latency_row(rule.as_str()) {
-        Some(row) => {
-            let mut lat = match &row.sweep {
-                Some(dim) => point.get(dim),
-                None => row.lat,
-            };
-            if let Some(dim) = &row.sweep_add {
-                lat = lat.saturating_add(point.get(dim));
-            }
-            lat
-        }
-        // `barrier` / `system` / the ordered accesses: priced by
-        // `[crosscore]`, which `CostTable` has already folded in.
-        None => table.latency(rule),
-    }
 }
 
 /// PC-relative branch target as a word index, or `None` for register
