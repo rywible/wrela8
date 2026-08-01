@@ -62,7 +62,7 @@ Three things were deleted under the old rule and are restored, parked:
 
 | what | deleted by | restored as |
 | --- | --- | --- |
-| `BoundsElide` | item L, decision 1970 | item N |
+| `BoundsElide` | item L, decision 1970 | item N — **DONE**, [findings](codegen-pareto-2-N.md). Item M's compositor was measured as the re-ask condition and **refused it again**: −127 cycles, but all of it in the case's own `@test(runtime)` asserts, none in the kernel, whose every index is computed. The condition is now a capability, not a workload. |
 | `blocklayout.rs` (item D's pass) | item K, decision 1956 | item O |
 | the inliner | item J, decision 1935 | item P — **rebuilt**, since it was never committed ([findings](codegen-pareto-2-P.md)) |
 
