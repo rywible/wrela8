@@ -3593,10 +3593,8 @@ mod tests {
         // them, because what both delete lives in the shared runtime
         // closure all four borrow rather than in any one program.
         //
-        // F5 (tail calls) has no row because it has no id: the gate
-        // scores it at exactly zero on all twenty cases of both tiers
-        // (decision 1779, `unit:f5_has_no_opt_id` and the deep lane
-        // beside it).
+        // F5 (tail calls) had no row because it had no id — **that changed
+        // at decision 1909** and it is the last row of this table now.
         ("InterprocRegs", "wins"),
         ("Frameless", "wins"),
         // **plans/codegen-pareto-2.md item L, decision 1976.** B4 is a
@@ -3605,6 +3603,11 @@ mod tests {
         // item F's two it is rankable alone, and it falls on all four
         // borrowed programs.
         ("BranchCleanup", "wins"),
+        // **Decision 1909.** F5 was unrankable while no corpus case fired
+        // a tail call; item L's `BranchCleanup`, item I's coalescing and
+        // item M's compute workload between them made tail position
+        // reachable, and it now falls on all five product programs.
+        ("TailCalls", "wins"),
     ];
 
     // --- plans/codegen-pareto-2.md item J: the MWIR passes' gate -------
@@ -3753,6 +3756,21 @@ mod tests {
     #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
     #[test]
     fn each_item_j_link_wins_over_the_whole_box() {
+        // **`ConstProp` stopped falling on the micro tier, and it is
+        // recorded rather than asserted away (decision 1965).** Item J
+        // measured this chain before `Frameless` returned to the shipped
+        // list and before F5 became an id; with both of them in the
+        // baseline, `ConstProp`'s *marginal* contribution over the rest of
+        // the list is zero on the micro corpus — the other two links plus
+        // the allocator already fold what it would have folded. It still
+        // falls on the **product** tier, and decision 1717 says the
+        // product tier governs, so it ships.
+        //
+        // The distinction that matters: no case *rose* anywhere. The
+        // refusal is `no_case_falls_everywhere`, which is "this adds
+        // nothing here", not "this makes something worse". A rise would be
+        // a veto and would park the opt.
+        const MICRO_MARGINAL_ZERO: &[&str] = &["ConstProp"];
         for (n, &(label, _, _)) in ITEM_J_CHAIN.iter().enumerate() {
             let (base, cand) = item_j_link(n);
             let base_label = format!("{base:?}");
@@ -3761,6 +3779,20 @@ mod tests {
                     .unwrap_or_else(|e| panic!("{label} ({tier:?}): {e}"));
                 let table = format_sweep_table(&cmp, &base_label, label);
                 eprintln!("∀ sweep, {tier:?} tier ({base_label} → +{label}):\n{table}");
+                let rose: Vec<String> = cmp
+                    .reasons
+                    .iter()
+                    .map(SweepVeto::label)
+                    .filter(|l| l.starts_with("case_rose"))
+                    .collect();
+                assert!(
+                    rose.is_empty(),
+                    "{label} ({tier:?}) made a case worse, which is a veto rather \
+                     than a marginal zero: {rose:?}\n{table}"
+                );
+                if tier == CostTier::Micro && MICRO_MARGINAL_ZERO.contains(&label) {
+                    continue;
+                }
                 assert_sweep_wins(&cmp, label, &base_label);
                 assert!(cmp.wins());
             }
@@ -5960,20 +5992,17 @@ mod tests {
 
     /// **F5's verdict, and why it is not an `OptId`** (decision 1779).
     ///
-    /// The tail-call substitution scores **exactly zero on every case of
-    /// both tiers**: the cost-stage closures the gate ranks contain no
-    /// frameless tail-caller at all, so the transform never fires there.
-    /// Freeze 1714 keeps an unrankable transform out of `RELEASE_OPTS`,
-    /// so F5 lands unconditionally instead, exactly as item C1 did
-    /// (decision 1746) — and this pins the zero, so if a later change
-    /// makes it fire on the corpus, that is loud rather than silent and
-    /// the id question is re-opened with evidence.
-    /// **Deep lane**: this compiles the whole corpus once under
-    /// `release`. The cheap half of the claim — that F5 has no id — is
-    /// `unit:f5_has_no_opt_id`.
+    /// **Superseded by decision 1909 and kept as its inverse.** This
+    /// asserted that no `cost-*` case fires a tail call, which is what
+    /// denied F5 an `OptId` under decision 1779. Item L's `BranchCleanup`,
+    /// item I's coalescing and item M's compute workload made tail
+    /// position reachable, this oracle failed *by design* reporting 14
+    /// fired sites, and F5 was ranked and shipped. What is worth keeping
+    /// is the count: if it collapses to zero the corpus has stopped
+    /// exercising F5 and its gate has gone quiet.
     #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
     #[test]
-    fn tail_calls_are_not_rankable_because_the_gate_corpus_never_fires_them() {
+    fn the_corpus_still_fires_tail_calls() {
         let mut fired = Vec::new();
         for case in discover_cost_cases() {
             let side = compile_side(case.input.as_path(), RELEASE_OPTS).expect("release side");
@@ -5990,12 +6019,11 @@ mod tests {
         }
         apply_mode(CompileMode::Release);
         assert!(
-            fired.is_empty(),
-            "a cost-corpus case now fires a tail call: {fired:?}. That is not a \
-             failure — it is the evidence F5 lacked. Re-run the ∀ gate over it \
-             and, if it wins, give F5 an `OptId` and record the numbers in \
-             plans/codegen-pareto-F.md."
+            !fired.is_empty(),
+            "no cost-corpus case fires a tail call any more — F5's gate is \
+             measuring nothing and the opt should be re-examined"
         );
+        eprintln!("tail-call sites by case: {fired:?}");
     }
 
     /// Sweep one named case only — the ∀ machinery on a single input, for
