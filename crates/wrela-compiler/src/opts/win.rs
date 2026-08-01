@@ -5167,11 +5167,21 @@ mod tests {
         for c in &cmp.cases {
             assert_eq!(c.box_dims, 17);
             assert_eq!(c.box_cardinality, 131_072);
-            assert_eq!(
+            // **Not `2^k` any more, and that is item K's fix working.**
+            // The residual box carries joint constraints now (`[sweep.*].le`),
+            // so `endpoint_corners` drops every enumerated point the machine
+            // cannot physically be at — the divide-lo corner, where a 32-bit
+            // divide scored slower than the 64-bit one it replaced, was such
+            // a point and it used to veto a correct opt. A constrained box is
+            // not a hypercube, so the count is bounded by `2^k` rather than
+            // equal to it, and it must not be empty or the ∀ would be vacuous.
+            assert!(
+                c.points.len() <= 1usize << c.swept.len() && !c.points.is_empty(),
+                "{}: {} corners over k={}, which must be a non-empty subset of \
+                 the 2^k product box",
+                c.name,
                 c.points.len(),
-                1usize << c.swept.len(),
-                "{}: corners must be 2^k",
-                c.name
+                c.swept.len()
             );
             assert!(
                 table.contains(&format!("case {} box_cardinality=131072", c.name))
