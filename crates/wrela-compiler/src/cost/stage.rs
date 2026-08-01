@@ -232,6 +232,13 @@ impl CostStagePieces {
 
 fn cost_stage_pieces(path: &Path) -> Result<CostStagePieces, String> {
     let checked = load_cost_stage_closure(path)?;
+    cost_stage_pieces_from(&checked)
+}
+
+/// [`cost_stage_pieces`] over an already-checked closure — the split
+/// plans/codegen-pareto-2.md item R (decision 1963) needs so a comparison
+/// can lex, parse, load and type-check once and lower/codegen twice.
+fn cost_stage_pieces_from(checked: &CostStageClosure) -> Result<CostStagePieces, String> {
     let reachable = lower::guest_reachable_keys_closure(&checked.programs, &LowerOpts::default());
     let lower_opts = LowerOpts {
         emit_comptime_tests: false,
@@ -330,27 +337,79 @@ impl TextScope {
 pub fn codegen_shipped_program(
     path: &Path,
 ) -> Result<(CodegenProgram, crate::placement::PlacementTable, TextScope), String> {
+    codegen_shipped_from(&load_shipped_front(path)?)
+}
+
+/// **The opt-independent front half of the shipped-program build**
+/// (plans/codegen-pareto-2.md item R, decision 1963).
+///
+/// Read, lex, parse, load the closure, type-check it, evaluate the
+/// `@image` and merge the layout context. **No opt knob is read by any of
+/// that.** `opts::apply_opts` drives exactly fifteen knobs and every
+/// reader of every one of them is in `lower`, `flowwir_lower`,
+/// `mwir_opt`, `codegen` or `regalloc` — the back end. `syntax`, `sema`,
+/// `loader` and `eval` do not read one, which is why this half can be
+/// shared and the other half repeated.
+///
+/// The ∀ gate compares two opt lists on the same source, so it used to
+/// run this whole front twice per case for an answer that could not
+/// differ. Now it runs once.
+pub struct ShippedFront {
+    checked: CostStageClosure,
+    /// `Some` when the root declares an `@image`; a root that declares
+    /// none ships nothing and its closure is all there is
+    /// ([`TextScope::Closure`]).
+    image: Option<ShippedImage>,
+}
+
+struct ShippedImage {
+    graph: crate::eval::image::ImageGraph,
+    layout_ctx: crate::mwir::LayoutCtx,
+}
+
+/// Run the opt-independent front for `path` once. See [`ShippedFront`].
+pub fn load_shipped_front(path: &Path) -> Result<ShippedFront, String> {
     let checked = load_cost_stage_closure(path)?;
     let root = &checked.programs[&checked.root];
-    let Some(image_fn) = root.image_fn.clone() else {
-        let (prog, placement) = codegen_cost_stage_with_placement(path)?;
-        return Ok((prog, placement, TextScope::Closure));
+    let image = match root.image_fn.clone() {
+        None => None,
+        Some(image_fn) => {
+            let graph = crate::eval::interp::eval_image(root, &image_fn)
+                .map_err(|e| format!("eval @image `{image_fn}`: {}", e.message))?;
+            let layout_ctx = crate::layout::merge_layout_ctx(&checked.modules).map_err(sema_err)?;
+            Some(ShippedImage { graph, layout_ctx })
+        }
     };
-    let graph = crate::eval::interp::eval_image(root, &image_fn)
-        .map_err(|e| format!("eval @image `{image_fn}`: {}", e.message))?;
-    let layout_ctx = crate::layout::merge_layout_ctx(&checked.modules).map_err(sema_err)?;
+    Ok(ShippedFront { checked, image })
+}
+
+/// The back half: lower + codegen under the **current** opt TLS. Call
+/// [`crate::opts::apply_opts`] first; call it again and call this again to
+/// get the other side, off the same [`ShippedFront`].
+pub fn codegen_shipped_from(
+    front: &ShippedFront,
+) -> Result<(CodegenProgram, crate::placement::PlacementTable, TextScope), String> {
+    let Some(img) = &front.image else {
+        let pieces = cost_stage_pieces_from(&front.checked)?;
+        let placement = pieces.placement.clone();
+        return Ok((pieces.codegen()?, placement, TextScope::Closure));
+    };
     let compiled = crate::layout::lower_and_codegen_image(
-        &checked.modules,
-        &checked.programs,
-        &layout_ctx,
-        &graph,
+        &front.checked.modules,
+        &front.checked.programs,
+        &img.layout_ctx,
+        &img.graph,
         &[],
         &std::collections::BTreeSet::new(),
         false,
     )?;
-    let placement =
-        crate::placement::place(&graph, &compiled.modules, &compiled.layout_ctx, graph.cores)
-            .unwrap_or_default();
+    let placement = crate::placement::place(
+        &img.graph,
+        &compiled.modules,
+        &compiled.layout_ctx,
+        img.graph.cores,
+    )
+    .unwrap_or_default();
     Ok((compiled.program, placement, TextScope::Image))
 }
 

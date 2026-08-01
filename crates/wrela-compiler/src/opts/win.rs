@@ -111,7 +111,10 @@ use crate::cost::crosscore::{
 };
 use crate::cost::footprint::CoreBudget;
 use crate::cost::score::{CostReport, ScoreCtx, score_totals_at};
-use crate::cost::stage::{TextScope, codegen_shipped_program, report_cost_stage_path};
+use crate::cost::stage::{
+    ShippedFront, TextScope, codegen_shipped_from, codegen_shipped_program, load_shipped_front,
+    report_cost_stage_path,
+};
 use crate::cost::sweep::{SweepPoint, endpoint_corners, record_reads};
 use crate::cost::table::{CostTable, load_default};
 use crate::cost::workload::{self, FLAT_NAME, WorkloadSet};
@@ -1191,9 +1194,24 @@ impl SideScore {
 ///
 /// A case whose root declares no `@image` ships nothing; its closure *is*
 /// its program, and [`TextScope::Closure`] says so on the row.
+/// One side straight off a path. The sweep goes through
+/// [`compile_side_from`] instead, so that it can share one front between
+/// the two sides (item R); this single-side spelling is what the units
+/// that build one side ask for, and is `cfg(test)` rather than dead.
+#[cfg(test)]
 fn compile_side(path: &Path, opts: &[OptId]) -> Result<CompiledSide, String> {
+    compile_side_from(&load_shipped_front(path)?, opts)
+}
+
+/// [`compile_side`] off an already-loaded front (item R, decision 1963).
+///
+/// A comparison builds **two** sides from one source, and read → lex →
+/// parse → load → sema → `@image` eval reads no opt knob, so it is done
+/// once per case and lower/codegen twice. See [`ShippedFront`] for the
+/// audit that licenses it.
+fn compile_side_from(front: &ShippedFront, opts: &[OptId]) -> Result<CompiledSide, String> {
     apply_opts(opts);
-    let (program, placement, scope) = codegen_shipped_program(path)?;
+    let (program, placement, scope) = codegen_shipped_from(front)?;
     Ok(CompiledSide {
         program,
         placement,
@@ -1666,8 +1684,10 @@ fn sweep_corpus(
     let mut reasons = Vec::new();
     for case in &corpus {
         let path = case.input.as_path();
-        let b = compile_side(path, baseline)?;
-        let c = compile_side(path, candidate)?;
+        // One front, two backs (item R, decision 1963).
+        let front = load_shipped_front(path)?;
+        let b = compile_side_from(&front, baseline)?;
+        let c = compile_side_from(&front, candidate)?;
         cases.push(sweep_case(
             &case.name,
             case.tier,
