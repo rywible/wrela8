@@ -11351,7 +11351,12 @@ pub fn codegen_program_with_async(
     // plans/codegen-pareto-2.md item J, decision 1920: the three MWIR
     // passes run here, at the one choke point every path shares, so the
     // program the ∀ gate scores is byte-for-byte the program that ships.
-    let optimized = crate::mwir_opt::optimize(mwir);
+    // Item P, decision 1982: the FlowWir program is handed in as a
+    // *reference source* — a state machine references a sync fn every bit
+    // as much as another MWIR body does, and the inliner's rule (i)
+    // deletes a callee whose one reference it consumed. FlowWir itself is
+    // never rewritten (decision 1927).
+    let optimized = crate::mwir_opt::optimize(mwir, Some(flow), layout);
     let mwir = optimized.as_ref().unwrap_or(mwir);
     if block_ids_active() {
         NEXT_BLOCK_ID.with(|c| c.set(0));
@@ -11405,7 +11410,9 @@ pub fn codegen_program(
     layout: &LayoutCtx,
 ) -> Result<CodegenProgram, CodegenError> {
     // Item J, decision 1920 — same hook as `codegen_program_with_async`.
-    let optimized = crate::mwir_opt::optimize(mwir);
+    // `None` for the flow program is exact rather than approximate here:
+    // this is the sync-only entry, and no FlowWir exists on it.
+    let optimized = crate::mwir_opt::optimize(mwir, None, layout);
     let mwir = optimized.as_ref().unwrap_or(mwir);
     if block_ids_active() {
         NEXT_BLOCK_ID.with(|c| c.set(0));
