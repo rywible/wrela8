@@ -236,3 +236,19 @@ pub fn strip_digest_matches():
     sprite = make_sprite()
     digest = render_strip(sprite)
     assert digest == 0x5E7FDA3AD980AD39, "strip digest"
+
+# ---- the image --------------------------------------------------------
+#
+# A title is an image, so this program declares one. It carries no actor
+# and no device: what the flagship would wire here — 06 §7's worker actors
+# and the frame actor that gathers their tiles — is `boot-actors`' subject,
+# already in the product tier, and duplicating it would only dilute the
+# compute this case exists to measure. What the declaration does buy is the
+# per-core `Budget` row: without an image the cost stage emits no footprint
+# at all, and this program's hot text is the largest in the corpus.
+
+@image
+pub fn build() -> Image:
+    img = Image(name="tile-compositor", target=Target.wrela_machine_v1)
+    img.on_failure(policy=Failure.Halt)
+    return img.seal()
