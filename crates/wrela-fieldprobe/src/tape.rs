@@ -209,11 +209,19 @@ pub struct UopSweep {
 impl UopSweep {
     /// The pessimistic end of every bracket (over-cost rule, decision 1609).
     pub fn pessimistic() -> UopSweep {
-        UopSweep { sqrt: 12.0, sin: 16.0, rep: 8.0 }
+        UopSweep {
+            sqrt: 12.0,
+            sin: 16.0,
+            rep: 8.0,
+        }
     }
     /// The optimistic end: rsqrt-chain `length`, a short minimax sine.
     pub fn optimistic() -> UopSweep {
-        UopSweep { sqrt: 6.0, sin: 8.0, rep: 3.0 }
+        UopSweep {
+            sqrt: 6.0,
+            sin: 8.0,
+            rep: 3.0,
+        }
     }
 }
 
@@ -260,7 +268,10 @@ pub struct Builder {
 #[allow(dead_code)]
 impl Builder {
     pub fn new() -> Builder {
-        Builder { ops: Vec::new(), cse: BTreeMap::new() }
+        Builder {
+            ops: Vec::new(),
+            cse: BTreeMap::new(),
+        }
     }
 
     pub fn push(&mut self, op: Op) -> u32 {
@@ -275,7 +286,10 @@ impl Builder {
     }
 
     pub fn finish(self, root: u32) -> Tape {
-        Tape { ops: self.ops, root }
+        Tape {
+            ops: self.ops,
+            root,
+        }
     }
 
     // --- leaves -----------------------------------------------------------
@@ -326,10 +340,18 @@ impl Builder {
         self.push(Op::Sin(a))
     }
     pub fn addc(&mut self, a: u32, v: f32) -> u32 {
-        if v == 0.0 { a } else { self.push(Op::AddC(a, v)) }
+        if v == 0.0 {
+            a
+        } else {
+            self.push(Op::AddC(a, v))
+        }
     }
     pub fn mulc(&mut self, a: u32, v: f32) -> u32 {
-        if v == 1.0 { a } else { self.push(Op::MulC(a, v)) }
+        if v == 1.0 {
+            a
+        } else {
+            self.push(Op::MulC(a, v))
+        }
     }
     pub fn rep(&mut self, a: u32, p: f32) -> u32 {
         self.push(Op::Rep(a, p))
@@ -352,7 +374,11 @@ impl Builder {
     // --- vector helpers ---------------------------------------------------
 
     pub fn translate(&mut self, p: [u32; 3], t: [f32; 3]) -> [u32; 3] {
-        [self.addc(p[0], -t[0]), self.addc(p[1], -t[1]), self.addc(p[2], -t[2])]
+        [
+            self.addc(p[0], -t[0]),
+            self.addc(p[1], -t[1]),
+            self.addc(p[2], -t[2]),
+        ]
     }
 
     /// Rotation about Y by a comptime-known angle. §6.3's line — topology is

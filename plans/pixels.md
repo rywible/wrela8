@@ -339,11 +339,24 @@ closed-form roots verified against the true tape.
 
 | | atlas | live sphere tracing | ratio |
 | --- | --- | --- | --- |
-| melee | 1,934 FLOP/px | 1,336 | **0.69×** |
-| colonnade | 1,618 | 1,577 | **0.97×** |
+| **melee** (sound: 9 disagreements in 147,456) | **1,110 FLOP/px** | 1,493 | **0.74×** |
+| colonnade | 1,618 | 1,885 | 1.16× — **void** |
+| colonnade-flat | 976 | 1,047 | 0.93× — **void** |
 
-Slower, at every depth and every epsilon, on both scenes. Adding proxies
-made it *worse*.
+Only the melee row counts. Both colonnade runs fail their own soundness
+gate (291–296 disagreements against an independent march, traced to
+`march_cell`'s step cap on grazing ground rays) and their numbers are
+therefore void — including the 1.16×, which would otherwise read as the
+atlas *winning*. An earlier draft of this table quoted colonnade's ratio
+without that qualification, which was citing a failed measurement in
+support of a conclusion.
+
+Slower at every depth and every epsilon on the scene where the measurement
+holds, and adding proxies made it *worse*. The conclusion rests on one
+sound scene rather than three, which is weaker evidence than the original
+draft implied — but it is the scene §16.2 nominates as the truth-teller,
+and the mechanism below explains the result rather than merely reporting
+it.
 
 The reason is structural rather than a tuning failure: **an SDF already is
 an acceleration structure**, and its empty-space skipping is *exact* where

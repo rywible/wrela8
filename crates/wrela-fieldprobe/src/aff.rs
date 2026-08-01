@@ -53,7 +53,11 @@ pub struct Aff {
 impl Aff {
     #[inline]
     pub fn konst(c: f32) -> Aff {
-        Aff { c, d: [0.0; NSYM], e: 0.0 }
+        Aff {
+            c,
+            d: [0.0; NSYM],
+            e: 0.0,
+        }
     }
 
     /// A form that is exactly the `i`-th symbol scaled to span `[lo, hi]`.
@@ -61,13 +65,21 @@ impl Aff {
     pub fn sym(i: usize, lo: f32, hi: f32) -> Aff {
         let mut d = [0.0; NSYM];
         d[i] = 0.5 * (hi - lo);
-        Aff { c: 0.5 * (lo + hi), d, e: 0.0 }
+        Aff {
+            c: 0.5 * (lo + hi),
+            d,
+            e: 0.0,
+        }
     }
 
     /// An opaque interval with no correlation to anything.
     #[inline]
     pub fn opaque(lo: f32, hi: f32) -> Aff {
-        Aff { c: 0.5 * (lo + hi), d: [0.0; NSYM], e: 0.5 * (hi - lo).abs() }
+        Aff {
+            c: 0.5 * (lo + hi),
+            d: [0.0; NSYM],
+            e: 0.5 * (hi - lo).abs(),
+        }
     }
 
     /// Total radius: the half-width of the guaranteed enclosure.
@@ -98,14 +110,16 @@ impl Aff {
     /// here" (CLAUDE.md: an unimplemented path errors loudly).
     #[inline]
     pub fn is_finite(&self) -> bool {
-        self.c.is_finite()
-            && self.d.iter().all(|x| x.is_finite())
-            && self.e.is_finite()
+        self.c.is_finite() && self.d.iter().all(|x| x.is_finite()) && self.e.is_finite()
     }
 
     #[inline]
     pub fn neg(self) -> Aff {
-        Aff { c: -self.c, d: [-self.d[0], -self.d[1], -self.d[2]], e: self.e }
+        Aff {
+            c: -self.c,
+            d: [-self.d[0], -self.d[1], -self.d[2]],
+            e: self.e,
+        }
     }
 
     #[inline]
@@ -124,7 +138,11 @@ impl Aff {
 
     #[inline]
     pub fn add_c(self, k: f32) -> Aff {
-        Aff { c: self.c + k, d: self.d, e: self.e }
+        Aff {
+            c: self.c + k,
+            d: self.d,
+            e: self.e,
+        }
     }
 
     #[inline]
@@ -171,7 +189,11 @@ impl Aff {
         let half = 0.5 * r * r;
         Aff {
             c: self.c * self.c + half,
-            d: [2.0 * self.c * self.d[0], 2.0 * self.c * self.d[1], 2.0 * self.c * self.d[2]],
+            d: [
+                2.0 * self.c * self.d[0],
+                2.0 * self.c * self.d[1],
+                2.0 * self.c * self.d[2],
+            ],
             e: 2.0 * self.c.abs() * self.e + half,
         }
     }
@@ -302,7 +324,11 @@ impl Aff {
     pub fn recip(self) -> Aff {
         let (lo, hi) = self.interval();
         if lo <= 0.0 && hi >= 0.0 {
-            return Aff { c: f32::NAN, d: [0.0; NSYM], e: f32::INFINITY };
+            return Aff {
+                c: f32::NAN,
+                d: [0.0; NSYM],
+                e: f32::INFINITY,
+            };
         }
         let m = lo.abs().min(hi.abs());
         let fc = 1.0 / self.c;
@@ -329,11 +355,13 @@ impl Aff {
     /// radius is wide enough that the quadratic remainder swamps the linear
     /// term — at which point the correlation it costs is worth nothing.
     pub fn sin(self) -> Aff {
-        self.taylor1(self.c.sin(), self.c.cos(), 1.0).intersect_opaque(-1.0, 1.0)
+        self.taylor1(self.c.sin(), self.c.cos(), 1.0)
+            .intersect_opaque(-1.0, 1.0)
     }
 
     pub fn cos(self) -> Aff {
-        self.taylor1(self.c.cos(), -self.c.sin(), 1.0).intersect_opaque(-1.0, 1.0)
+        self.taylor1(self.c.cos(), -self.c.sin(), 1.0)
+            .intersect_opaque(-1.0, 1.0)
     }
 
     /// `clamp(x, 0, 1)`.
@@ -356,7 +384,9 @@ impl Aff {
         // gone and stops the blowup from being amplified by the surrounding
         // `smin` — where a `k` of 0.025 multiplies the operand difference by
         // 20 before it ever reaches this clamp.
-        self.max(Aff::konst(0.0)).min(Aff::konst(1.0)).intersect_opaque(0.0, 1.0)
+        self.max(Aff::konst(0.0))
+            .min(Aff::konst(1.0))
+            .intersect_opaque(0.0, 1.0)
     }
 
     /// Domain repetition: `x − p·round(x/p)`.
@@ -393,7 +423,11 @@ impl Aff {
 /// tile as "boundary" and reports zero interior area as if that were a
 /// finding about the design.
 fn tighter(a: Aff, b: Aff) -> Aff {
-    if a.rad() <= b.rad() && a.is_finite() { a } else { b }
+    if a.rad() <= b.rad() && a.is_finite() {
+        a
+    } else {
+        b
+    }
 }
 
 /// Plain interval arithmetic, kept only so the report can state how much
@@ -490,7 +524,11 @@ impl Iv {
         Iv::new(lo, hi)
     }
     pub fn cos(self) -> Iv {
-        Iv::new(self.lo + std::f32::consts::FRAC_PI_2, self.hi + std::f32::consts::FRAC_PI_2).sin()
+        Iv::new(
+            self.lo + std::f32::consts::FRAC_PI_2,
+            self.hi + std::f32::consts::FRAC_PI_2,
+        )
+        .sin()
     }
     pub fn clamp01(self) -> Iv {
         Iv::new(self.lo.clamp(0.0, 1.0), self.hi.clamp(0.0, 1.0))
@@ -655,7 +693,11 @@ mod tests {
             };
             let m = a.min(b);
             assert!(s <= m + 1e-5, "smin {s} above min {m}");
-            assert!(s >= m - 0.25 * k - 1e-5, "smin {s} below min-k/4 {}", m - 0.25 * k);
+            assert!(
+                s >= m - 0.25 * k - 1e-5,
+                "smin {s} below min-k/4 {}",
+                m - 0.25 * k
+            );
         }
     }
 
@@ -667,6 +709,9 @@ mod tests {
         let b = Aff::sym(1, 1.0, 2.0);
         let m = a.min(b);
         let (lo, hi) = m.interval();
-        assert!((lo - 1.0).abs() < 1e-5 && (hi - 2.0).abs() < 1e-5, "[{lo}, {hi}]");
+        assert!(
+            (lo - 1.0).abs() < 1e-5 && (hi - 2.0).abs() < 1e-5,
+            "[{lo}, {hi}]"
+        );
     }
 }

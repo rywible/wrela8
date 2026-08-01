@@ -39,7 +39,11 @@ use crate::tape::{Builder, Tape};
 /// human flick is ~300-500 deg/s, so ~10-16 deg per frame at 30 Hz.
 fn whip_path(base: &Camera, target: [f32; 3], n: usize, peak_deg: f32) -> Vec<Camera> {
     let r = {
-        let d = [base.eye[0] - target[0], base.eye[1] - target[1], base.eye[2] - target[2]];
+        let d = [
+            base.eye[0] - target[0],
+            base.eye[1] - target[1],
+            base.eye[2] - target[2],
+        ];
         (d[0] * d[0] + d[2] * d[2]).sqrt().max(1e-3)
     };
     let a0 = (base.eye[2] - target[2]).atan2(base.eye[0] - target[0]);
@@ -111,7 +115,11 @@ fn colonnade_amp(w: u32, h: u32, amp: f32, name: &'static str) -> Scene {
 
     // Ground: displaced plane.
     let ground = b.plane_y(p, 0.0);
-    let ground = if amp > 0.0 { b.displace_sin(ground, p, amp, 1.7, 2, 0.0) } else { ground };
+    let ground = if amp > 0.0 {
+        b.displace_sin(ground, p, amp, 1.7, 2, 0.0)
+    } else {
+        ground
+    };
 
     // Colonnade: repeat along X with period 2.0, eight bays.
     let rx = b.rep(p[0], 2.0);
@@ -161,7 +169,10 @@ fn colonnade_amp(w: u32, h: u32, amp: f32, name: &'static str) -> Scene {
         cam,
         // Slow dolly: the optimistic temporal case.
         cam2: Camera::look_at([1.16, 1.55, 5.31], [0.02, 1.15, 0.0], 55.0, w, h),
-        bounds: Aabb { lo: [-26.0, -25.0, -26.0], hi: [26.0, 27.0, 26.0] },
+        bounds: Aabb {
+            lo: [-26.0, -25.0, -26.0],
+            hi: [26.0, 27.0, 26.0],
+        },
         path: whip_path(&cam, [0.0, 1.15, 0.0], 16, 9.0),
         t_near: 0.05,
         t_far: 24.0,
@@ -307,7 +318,10 @@ fn melee_build(w: u32, h: u32, sw: f32) -> Scene {
         cam,
         // 14° whip about the subject in one 30 Hz frame.
         cam2: Camera::look_at([2.02, 1.38, 1.98], [0.0, 1.05, -0.35], 60.0, w, h),
-        bounds: Aabb { lo: [-19.0, -18.0, -19.0], hi: [19.0, 20.0, 19.0] },
+        bounds: Aabb {
+            lo: [-19.0, -18.0, -19.0],
+            hi: [19.0, 20.0, 19.0],
+        },
         path: whip_path(&cam, [0.0, 1.05, -0.35], 16, 16.0),
         t_near: 0.05,
         t_far: 18.0,

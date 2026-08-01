@@ -60,7 +60,6 @@ fn smax_scalar(a: f32, b: f32, k: f32) -> f32 {
     b + (a - b) * h + k * h * (1.0 - h)
 }
 
-
 /// Interval enclosure of a polynomial smooth minimum.
 ///
 /// **Do not evaluate the formula.** `mix(b, a, h)` multiplies the operand
@@ -92,7 +91,6 @@ fn smax_iv(x: Iv, y: Iv, k: f32) -> Iv {
     let m = x.max(y);
     Iv::new(m.lo, m.hi + 0.25 * k)
 }
-
 
 /// Scalar-dual length: `∇|v| = v/|v|`, zero at the origin where it is
 /// undefined (the SDF is still continuous there; only its gradient is not).
@@ -147,7 +145,10 @@ fn len_daff(v: &[DAff]) -> DAff {
         for x in v {
             dot = dot.add(x.v.mul(x.dt));
         }
-        DAff { v: l, dt: dot.mul(inv) }
+        DAff {
+            v: l,
+            dt: dot.mul(inv),
+        }
     } else {
         let b = v
             .iter()
@@ -158,7 +159,10 @@ fn len_daff(v: &[DAff]) -> DAff {
             .map(|m| m * m)
             .sum::<f32>()
             .sqrt();
-        DAff { v: l, dt: Aff::opaque(-b, b) }
+        DAff {
+            v: l,
+            dt: Aff::opaque(-b, b),
+        }
     }
 }
 
@@ -195,8 +199,11 @@ pub fn eval(tape: &Tape, p: [f32; 3], scratch: &mut Vec<f32>) -> f32 {
                 (x * x + y * y).sqrt()
             }
             Op::Len3(a, b, c) => {
-                let (x, y, z) =
-                    (scratch[a as usize], scratch[b as usize], scratch[c as usize]);
+                let (x, y, z) = (
+                    scratch[a as usize],
+                    scratch[b as usize],
+                    scratch[c as usize],
+                );
                 (x * x + y * y + z * z).sqrt()
             }
         };
@@ -244,15 +251,24 @@ impl D {
     }
     #[inline]
     fn add(self, o: D) -> D {
-        D { v: self.v + o.v, g: [self.g[0] + o.g[0], self.g[1] + o.g[1], self.g[2] + o.g[2]] }
+        D {
+            v: self.v + o.v,
+            g: [self.g[0] + o.g[0], self.g[1] + o.g[1], self.g[2] + o.g[2]],
+        }
     }
     #[inline]
     fn sub(self, o: D) -> D {
-        D { v: self.v - o.v, g: [self.g[0] - o.g[0], self.g[1] - o.g[1], self.g[2] - o.g[2]] }
+        D {
+            v: self.v - o.v,
+            g: [self.g[0] - o.g[0], self.g[1] - o.g[1], self.g[2] - o.g[2]],
+        }
     }
     #[inline]
     fn scale(self, k: f32) -> D {
-        D { v: self.v * k, g: [self.g[0] * k, self.g[1] * k, self.g[2] * k] }
+        D {
+            v: self.v * k,
+            g: [self.g[0] * k, self.g[1] * k, self.g[2] * k],
+        }
     }
     #[inline]
     fn mul(self, o: D) -> D {
@@ -276,9 +292,18 @@ pub fn eval_grad(tape: &Tape, p: [f32; 3], scratch: &mut Vec<(f32, [f32; 3])>) -
     };
     for i in 0..tape.ops.len() {
         let r = match tape.ops[i] {
-            Op::X => D { v: p[0], g: [1.0, 0.0, 0.0] },
-            Op::Y => D { v: p[1], g: [0.0, 1.0, 0.0] },
-            Op::Z => D { v: p[2], g: [0.0, 0.0, 1.0] },
+            Op::X => D {
+                v: p[0],
+                g: [1.0, 0.0, 0.0],
+            },
+            Op::Y => D {
+                v: p[1],
+                g: [0.0, 1.0, 0.0],
+            },
+            Op::Z => D {
+                v: p[2],
+                g: [0.0, 0.0, 1.0],
+            },
             Op::Const(v) => D::c(v),
             Op::Neg(a) => get(scratch, a).scale(-1.0),
             Op::Add(a, b) => get(scratch, a).add(get(scratch, b)),
@@ -286,13 +311,19 @@ pub fn eval_grad(tape: &Tape, p: [f32; 3], scratch: &mut Vec<(f32, [f32; 3])>) -
             Op::Mul(a, b) => get(scratch, a).mul(get(scratch, b)),
             Op::Square(a) => {
                 let x = get(scratch, a);
-                D { v: x.v * x.v, g: [2.0 * x.v * x.g[0], 2.0 * x.v * x.g[1], 2.0 * x.v * x.g[2]] }
+                D {
+                    v: x.v * x.v,
+                    g: [2.0 * x.v * x.g[0], 2.0 * x.v * x.g[1], 2.0 * x.v * x.g[2]],
+                }
             }
             Op::Sqrt(a) => {
                 let x = get(scratch, a);
                 let s = x.v.max(0.0).sqrt();
                 let inv = if s > 1e-12 { 0.5 / s } else { 0.0 };
-                D { v: s, g: [x.g[0] * inv, x.g[1] * inv, x.g[2] * inv] }
+                D {
+                    v: s,
+                    g: [x.g[0] * inv, x.g[1] * inv, x.g[2] * inv],
+                }
             }
             Op::Abs(a) => {
                 let x = get(scratch, a);
@@ -328,7 +359,10 @@ pub fn eval_grad(tape: &Tape, p: [f32; 3], scratch: &mut Vec<(f32, [f32; 3])>) -
             Op::Sin(a) => {
                 let x = get(scratch, a);
                 let c = x.v.cos();
-                D { v: x.v.sin(), g: [x.g[0] * c, x.g[1] * c, x.g[2] * c] }
+                D {
+                    v: x.v.sin(),
+                    g: [x.g[0] * c, x.g[1] * c, x.g[2] * c],
+                }
             }
             Op::AddC(a, v) => {
                 let x = get(scratch, a);
@@ -338,12 +372,13 @@ pub fn eval_grad(tape: &Tape, p: [f32; 3], scratch: &mut Vec<(f32, [f32; 3])>) -
             Op::Rep(a, p) => {
                 let x = get(scratch, a);
                 // Derivative of x − p·round(x/p) is 1 wherever it is defined.
-                D { v: x.v - p * (x.v / p).round(), g: x.g }
+                D {
+                    v: x.v - p * (x.v / p).round(),
+                    g: x.g,
+                }
             }
             Op::Len2(a, b) => len_d(&[get(scratch, a), get(scratch, b)]),
-            Op::Len3(a, b, c) => {
-                len_d(&[get(scratch, a), get(scratch, b), get(scratch, c)])
-            }
+            Op::Len3(a, b, c) => len_d(&[get(scratch, a), get(scratch, b), get(scratch, c)]),
         };
         scratch[i] = (r.v, r.g);
     }
@@ -430,9 +465,7 @@ pub fn eval_aff(tape: &Tape, p: [Aff; 3], out: &mut Vec<Aff>, out_iv: &mut Vec<I
             Op::MulC(a, v) => iv(a, out_iv).mul(Iv::konst(v)),
             Op::Rep(a, v) => iv(a, out_iv).rep(v),
             Op::Len2(a, b) => len_iv(&[iv(a, out_iv), iv(b, out_iv)]),
-            Op::Len3(a, b, c) => {
-                len_iv(&[iv(a, out_iv), iv(b, out_iv), iv(c, out_iv)])
-            }
+            Op::Len3(a, b, c) => len_iv(&[iv(a, out_iv), iv(b, out_iv), iv(c, out_iv)]),
         };
         let v = match tape.ops[i] {
             Op::X => p[0],
@@ -455,9 +488,10 @@ pub fn eval_aff(tape: &Tape, p: [Aff; 3], out: &mut Vec<Aff>, out_iv: &mut Vec<I
             Op::AddC(a, v) => out[a as usize].add_c(v),
             Op::MulC(a, v) => out[a as usize].mul_c(v),
             Op::Rep(a, v) => out[a as usize].rep(v),
-            Op::Len2(a, b) => {
-                out[a as usize].square().add(out[b as usize].square()).sqrt()
-            }
+            Op::Len2(a, b) => out[a as usize]
+                .square()
+                .add(out[b as usize].square())
+                .sqrt(),
             Op::Len3(a, b, c) => out[a as usize]
                 .square()
                 .add(out[b as usize].square())
@@ -484,7 +518,10 @@ fn smin_aff(a: Aff, b: Aff, k: f32) -> Aff {
     let lin = b.add(a.sub(b).mul(h));
     // h(1−h) ∈ [0, 1/4] for h ∈ [0,1]; pinning that keeps the bulge term
     // from re-widening what `clamp01` just bounded.
-    let bulge = h.mul(Aff::konst(1.0).sub(h)).intersect_opaque(0.0, 0.25).mul_c(k);
+    let bulge = h
+        .mul(Aff::konst(1.0).sub(h))
+        .intersect_opaque(0.0, 0.25)
+        .mul_c(k);
     lin.sub(bulge)
 }
 
@@ -510,19 +547,31 @@ pub struct DAff {
 impl DAff {
     #[inline]
     pub fn konst(v: f32) -> DAff {
-        DAff { v: Aff::konst(v), dt: Aff::konst(0.0) }
+        DAff {
+            v: Aff::konst(v),
+            dt: Aff::konst(0.0),
+        }
     }
     #[inline]
     fn add(self, o: DAff) -> DAff {
-        DAff { v: self.v.add(o.v), dt: self.dt.add(o.dt) }
+        DAff {
+            v: self.v.add(o.v),
+            dt: self.dt.add(o.dt),
+        }
     }
     #[inline]
     fn sub(self, o: DAff) -> DAff {
-        DAff { v: self.v.sub(o.v), dt: self.dt.sub(o.dt) }
+        DAff {
+            v: self.v.sub(o.v),
+            dt: self.dt.sub(o.dt),
+        }
     }
     #[inline]
     fn mul_c(self, k: f32) -> DAff {
-        DAff { v: self.v.mul_c(k), dt: self.dt.mul_c(k) }
+        DAff {
+            v: self.v.mul_c(k),
+            dt: self.dt.mul_c(k),
+        }
     }
     #[inline]
     fn mul(self, o: DAff) -> DAff {
@@ -567,7 +616,10 @@ pub fn eval_daff(tape: &Tape, p: [DAff; 3], bounds: &[Iv], out: &mut Vec<DAff>) 
             Op::Mul(a, b) => out[a as usize].mul(out[b as usize]),
             Op::Square(a) => {
                 let x = out[a as usize];
-                DAff { v: x.v.square(), dt: x.v.mul(x.dt).mul_c(2.0) }
+                DAff {
+                    v: x.v.square(),
+                    dt: x.v.mul(x.dt).mul_c(2.0),
+                }
             }
             Op::Sqrt(a) => {
                 let x = out[a as usize];
@@ -592,7 +644,10 @@ pub fn eval_daff(tape: &Tape, p: [DAff; 3], bounds: &[Iv], out: &mut Vec<DAff>) 
                 } else {
                     // Sign is not determined over this region, so neither is
                     // the derivative. Carry the ambiguity.
-                    DAff { v: x.v.abs(), dt: x.dt.hull(x.dt.neg()) }
+                    DAff {
+                        v: x.v.abs(),
+                        dt: x.dt.hull(x.dt.neg()),
+                    }
                 }
             }
             Op::Min(a, b) => sel_daff(out[a as usize], out[b as usize], true),
@@ -611,26 +666,36 @@ pub fn eval_daff(tape: &Tape, p: [DAff; 3], bounds: &[Iv], out: &mut Vec<DAff>) 
                 } else if hi <= 0.0 {
                     DAff::konst(0.0)
                 } else {
-                    DAff { v: x.v.clamp01(), dt: x.dt.hull(Aff::konst(0.0)) }
+                    DAff {
+                        v: x.v.clamp01(),
+                        dt: x.dt.hull(Aff::konst(0.0)),
+                    }
                 }
             }
             Op::Sin(a) => {
                 let x = out[a as usize];
-                DAff { v: x.v.sin(), dt: x.dt.mul(x.v.cos()) }
+                DAff {
+                    v: x.v.sin(),
+                    dt: x.dt.mul(x.v.cos()),
+                }
             }
             Op::AddC(a, v) => {
                 let x = out[a as usize];
-                DAff { v: x.v.add_c(v), dt: x.dt }
+                DAff {
+                    v: x.v.add_c(v),
+                    dt: x.dt,
+                }
             }
             Op::MulC(a, v) => out[a as usize].mul_c(v),
             Op::Rep(a, v) => {
                 let x = out[a as usize];
-                DAff { v: x.v.rep(v), dt: x.dt }
+                DAff {
+                    v: x.v.rep(v),
+                    dt: x.dt,
+                }
             }
             Op::Len2(a, b) => len_daff(&[out[a as usize], out[b as usize]]),
-            Op::Len3(a, b, c) => {
-                len_daff(&[out[a as usize], out[b as usize], out[c as usize]])
-            }
+            Op::Len3(a, b, c) => len_daff(&[out[a as usize], out[b as usize], out[c as usize]]),
         };
         // The value enclosure tightens at every slot — `bounds[i]` is that
         // slot's own. The Lipschitz cap applies only at the root: `‖∇d‖ ≤ 1`
@@ -666,7 +731,10 @@ fn sel_daff(a: DAff, b: DAff, is_min: bool) -> DAff {
         if bhi <= alo {
             return b;
         }
-        DAff { v: a.v.min(b.v), dt: a.dt.hull(b.dt) }
+        DAff {
+            v: a.v.min(b.v),
+            dt: a.dt.hull(b.dt),
+        }
     } else {
         if alo >= bhi {
             return a;
@@ -674,7 +742,10 @@ fn sel_daff(a: DAff, b: DAff, is_min: bool) -> DAff {
         if blo >= ahi {
             return b;
         }
-        DAff { v: a.v.max(b.v), dt: a.dt.hull(b.dt) }
+        DAff {
+            v: a.v.max(b.v),
+            dt: a.dt.hull(b.dt),
+        }
     }
 }
 
@@ -690,7 +761,10 @@ fn smin_daff(a: DAff, b: DAff, k: f32) -> DAff {
     } else if hi <= 0.0 {
         DAff::konst(0.0)
     } else {
-        DAff { v: raw_v.clamp01(), dt: t.dt.hull(Aff::konst(0.0)) }
+        DAff {
+            v: raw_v.clamp01(),
+            dt: t.dt.hull(Aff::konst(0.0)),
+        }
     };
     let lin = b.add(a.sub(b).mul(h));
     let one = DAff::konst(1.0);
@@ -728,9 +802,7 @@ pub fn eval_iv(tape: &Tape, p: [Iv; 3], out: &mut Vec<Iv>) -> Iv {
             Op::MulC(a, v) => out[a as usize].mul(Iv::konst(v)),
             Op::Rep(a, v) => out[a as usize].rep(v),
             Op::Len2(a, b) => len_iv(&[out[a as usize], out[b as usize]]),
-            Op::Len3(a, b, c) => {
-                len_iv(&[out[a as usize], out[b as usize], out[c as usize]])
-            }
+            Op::Len3(a, b, c) => len_iv(&[out[a as usize], out[b as usize], out[c as usize]]),
         };
         out[i] = v;
     }

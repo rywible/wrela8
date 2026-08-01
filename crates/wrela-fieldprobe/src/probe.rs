@@ -9,8 +9,8 @@
 
 use crate::aff::{Aff, Iv};
 use crate::camera::Camera;
-use crate::eval::{eval, eval_aff, eval_blend_active, eval_daff, eval_grad, eval_iv, DAff};
-use crate::prune::{prune, Pruned};
+use crate::eval::{DAff, eval, eval_aff, eval_blend_active, eval_daff, eval_grad, eval_iv};
+use crate::prune::{Pruned, prune};
 use crate::scene::Scene;
 use crate::tape::Tape;
 
@@ -301,7 +301,13 @@ fn classify(
         if certified {
             out.area_interior += area;
             out.area_interior_empirical += area;
-            out.interior_cells.push(InteriorCell { x0, y0, size, t0: lo, t1: hi });
+            out.interior_cells.push(InteriorCell {
+                x0,
+                y0,
+                size,
+                t0: lo,
+                t1: hi,
+            });
             out.leaves.push(Leaf {
                 x0,
                 y0,
@@ -415,7 +421,10 @@ fn empirically_smooth(
     let lo = (t0 * 0.5).max(1e-3);
     let hi = t1 * 2.0;
     let mut c = [0.0f32; 4];
-    for (i, &(dx, dy)) in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)].iter().enumerate() {
+    for (i, &(dx, dy)) in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)]
+        .iter()
+        .enumerate()
+    {
         let d = cam.dir_at_pixel(x0 + dx * size, y0 + dy * size);
         match march(tape, cam.eye, d, lo, hi, s).0 {
             Some(t) => c[i] = t,
@@ -510,7 +519,14 @@ pub static STEP_CAP_HITS: std::sync::atomic::AtomicU64 = std::sync::atomic::Atom
 /// tracing — §1's "pre-pruning landing zone" assumes the classical
 /// amortisations, so the count reported here is the thing those
 /// amortisations have to beat.
-pub fn march(tape: &Tape, o: [f32; 3], d: [f32; 3], t_near: f32, t_far: f32, s: &mut Scratch) -> (Option<f32>, u32) {
+pub fn march(
+    tape: &Tape,
+    o: [f32; 3],
+    d: [f32; 3],
+    t_near: f32,
+    t_far: f32,
+    s: &mut Scratch,
+) -> (Option<f32>, u32) {
     let mut t = t_near;
     let mut steps = 0;
     let mut prev = 0.0f32;
@@ -860,7 +876,11 @@ pub fn run_reconstruction_capped(
     s: &mut Scratch,
 ) -> ReconOut {
     let cam = &sc.cam;
-    let mut o = ReconOut { cell_px, tested: 0, passed: 0 };
+    let mut o = ReconOut {
+        cell_px,
+        tested: 0,
+        passed: 0,
+    };
     let nx = (cam.w as f32 / cell_px) as u32;
     let ny = (cam.h as f32 / cell_px) as u32;
     // Deterministic stride rather than a random sample: a fixed lattice is
@@ -889,8 +909,7 @@ pub fn run_reconstruction_capped(
                     let px = x0 + fx * cell_px;
                     let py = y0 + fy * cell_px;
                     let d = cam.dir_at_pixel(px + 0.5, py + 0.5);
-                    if let (Some(t), _) = march(&sc.tape, cam.eye, d, sc.t_near, sc.t_far, s)
-                    {
+                    if let (Some(t), _) = march(&sc.tape, cam.eye, d, sc.t_near, sc.t_far, s) {
                         let b = [
                             1.0,
                             fx as f64,
@@ -1051,7 +1070,8 @@ pub fn run_reprojection(sc: &Scene, stride: u32, slack: f32, s: &mut Scratch) ->
                     let px = (u / (c1.aspect * c1.tan_half) + 1.0) * 0.5 * c1.w as f32;
                     let py = (1.0 - v / c1.tan_half) * 0.5 * c1.h as f32;
                     if px >= 0.0 && py >= 0.0 {
-                        let (ix, iy) = ((px as u32 / stride) as usize, (py as u32 / stride) as usize);
+                        let (ix, iy) =
+                            ((px as u32 / stride) as usize, (py as u32 / stride) as usize);
                         if ix < w && iy < h {
                             let dist = (r[0] * r[0] + r[1] * r[1] + r[2] * r[2]).sqrt();
                             let c = &mut hint[iy * w + ix];
@@ -1068,7 +1088,13 @@ pub fn run_reprojection(sc: &Scene, stride: u32, slack: f32, s: &mut Scratch) ->
     }
 
     // Verify.
-    let mut o = ReprojOut { pixels: 0, hinted: 0, verified: 0, disoccluded: 0, tunnelled: 0 };
+    let mut o = ReprojOut {
+        pixels: 0,
+        hinted: 0,
+        verified: 0,
+        disoccluded: 0,
+        tunnelled: 0,
+    };
     for iy in 0..h {
         for ix in 0..w {
             let px = (ix as u32 * stride) as f32 + 0.5;
@@ -1125,7 +1151,13 @@ pub struct SelfCheck {
 /// The bit-identity clause is §7's `diff-eval` gate applied to the
 /// instrument: a pruning bug that deletes a live branch would otherwise show
 /// up as a spectacular §2.2 result.
-pub fn run_selfcheck(sc: &Scene, cells: u32, pts: u32, rng: &mut Rng, s: &mut Scratch) -> SelfCheck {
+pub fn run_selfcheck(
+    sc: &Scene,
+    cells: u32,
+    pts: u32,
+    rng: &mut Rng,
+    s: &mut Scratch,
+) -> SelfCheck {
     let cam = &sc.cam;
     let mut o = SelfCheck {
         samples: 0,
@@ -1170,7 +1202,11 @@ pub fn run_selfcheck(sc: &Scene, cells: u32, pts: u32, rng: &mut Rng, s: &mut Sc
             let v = rng.range(v0.min(v1), v0.max(v1));
             let t = rng.range(t0, t1);
             let d = cam.dir(u, v);
-            let q = [cam.eye[0] + t * d[0], cam.eye[1] + t * d[1], cam.eye[2] + t * d[2]];
+            let q = [
+                cam.eye[0] + t * d[0],
+                cam.eye[1] + t * d[1],
+                cam.eye[2] + t * d[2],
+            ];
 
             let truth = eval(&sc.tape, q, &mut full_scratch);
             o.samples += 1;
@@ -1387,8 +1423,8 @@ pub fn run_framecost_sw(
     let mut step_sum = 0u64;
     let mut ideal_primary = 0.0f64;
     let total_area = (cam.w as f64) * (cam.h as f64);
-    let liftable = ((cl.area_interior_empirical - cl.area_interior).max(0.0) / total_area)
-        .clamp(0.0, 1.0);
+    let liftable =
+        ((cl.area_interior_empirical - cl.area_interior).max(0.0) / total_area).clamp(0.0, 1.0);
     let ratio = (sc.t_far / sc.t_near).powf(1.0 / NSLAB as f32);
     let mut aff = Vec::new();
     let mut ivs = Vec::new();
@@ -1445,7 +1481,11 @@ pub fn run_framecost_sw(
                 let (hit, steps) = march(&tape, cam.eye, d, lo, hi, s);
                 // A certified-interior cell resolves from corner depths plus
                 // a Newton polish — two gradient evaluations, no search.
-                let charged = if lf.class == Class::Interior { 6.0 } else { steps as f64 };
+                let charged = if lf.class == Class::Interior {
+                    6.0
+                } else {
+                    steps as f64
+                };
                 step_sum += steps as u64;
                 fc.primary += charged * w;
                 fc.v_uops_lane += charged * wu;
@@ -1495,15 +1535,17 @@ pub fn run_framecost_sw(
                     continue;
                 }
                 let d = cam.dir_at_pixel(xx as f32 + 0.5, yy as f32 + 0.5);
-                if march(&sc.tape, cam.eye, d, sc.t_near, sc.t_far, s).0.is_some() {
+                if march(&sc.tape, cam.eye, d, sc.t_near, sc.t_far, s)
+                    .0
+                    .is_some()
+                {
                     fc.exterior_hits += 1;
                 }
             }
         }
     }
     fc.mean_steps = step_sum as f64 / fc.marched_px.max(1) as f64;
-    fc.total_ideal =
-        fc.traversal + ideal_primary + fc.shadow + fc.ao_gi + fc.shade + fc.post;
+    fc.total_ideal = fc.traversal + ideal_primary + fc.shadow + fc.ao_gi + fc.shade + fc.post;
     fc
 }
 
@@ -1673,7 +1715,13 @@ fn recon_cell(
     }
 }
 
-pub fn run_recon_adaptive(sc: &Scene, base: f32, min_size: f32, tol_px: f32, s: &mut Scratch) -> ReconAdaptive {
+pub fn run_recon_adaptive(
+    sc: &Scene,
+    base: f32,
+    min_size: f32,
+    tol_px: f32,
+    s: &mut Scratch,
+) -> ReconAdaptive {
     let mut out = ReconAdaptive {
         samples: 0,
         pixels: 0,
@@ -1685,10 +1733,20 @@ pub fn run_recon_adaptive(sc: &Scene, base: f32, min_size: f32, tol_px: f32, s: 
     let ny = (cam.h as f32 / base).ceil() as u32;
     for ty in 0..ny {
         for tx in 0..nx {
-            recon_cell(sc, tx as f32 * base, ty as f32 * base, base, min_size, tol_px, s, &mut out);
+            recon_cell(
+                sc,
+                tx as f32 * base,
+                ty as f32 * base,
+                base,
+                min_size,
+                tol_px,
+                s,
+                &mut out,
+            );
         }
     }
-    out.patches.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    out.patches
+        .sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     out
 }
 
@@ -1730,7 +1788,12 @@ pub fn run_edge_census(sc: &Scene, s: &mut Scratch) -> EdgeCensus {
             }
         }
     }
-    let mut o = EdgeCensus { pixels: (w * h) as u64, silhouette: 0, depth_step: 0, edge: 0 };
+    let mut o = EdgeCensus {
+        pixels: (w * h) as u64,
+        silhouette: 0,
+        depth_step: 0,
+        edge: 0,
+    };
     for y in 0..h {
         for x in 0..w {
             let c = depth[y * w + x];
@@ -1804,7 +1867,14 @@ pub fn run_atlas(sc: &Scene, at: &crate::atlas::Atlas, s: &mut Scratch) -> Atlas
         for x in 0..cam.w {
             let d = cam.dir_at_pixel(x as f32 + 0.5, y as f32 + 0.5);
             let got = crate::atlas::trace(
-                at, &sc.tape, cam.eye, d, sc.t_near, sc.t_far, &mut o.cost, s,
+                at,
+                &sc.tape,
+                cam.eye,
+                d,
+                sc.t_near,
+                sc.t_far,
+                &mut o.cost,
+                s,
             );
             let truth = march(&sc.tape, cam.eye, d, sc.t_near, sc.t_far, s).0;
             if got.is_some() {
@@ -1941,8 +2011,9 @@ pub fn run_motion(
         // Angular step from the previous pose.
         let deg = match &prev {
             Some((p0, _)) => {
-                let dot = (p0.fwd[0] * cam.fwd[0] + p0.fwd[1] * cam.fwd[1] + p0.fwd[2] * cam.fwd[2])
-                    .clamp(-1.0, 1.0);
+                let dot =
+                    (p0.fwd[0] * cam.fwd[0] + p0.fwd[1] * cam.fwd[1] + p0.fwd[2] * cam.fwd[2])
+                        .clamp(-1.0, 1.0);
                 dot.acos().to_degrees()
             }
             None => 0.0,
@@ -2114,7 +2185,12 @@ fn recon_edge_cell(
     }
 }
 
-pub fn run_edge_recon(sc: &Scene, tol_px: f32, base: usize, s: &mut Scratch) -> (EdgeCensus, EdgeRecon) {
+pub fn run_edge_recon(
+    sc: &Scene,
+    tol_px: f32,
+    base: usize,
+    s: &mut Scratch,
+) -> (EdgeCensus, EdgeRecon) {
     let cam = &sc.cam;
     let (w, h) = (cam.w as usize, cam.h as usize);
     let mut depth = vec![f32::INFINITY; w * h];
@@ -2127,7 +2203,12 @@ pub fn run_edge_recon(sc: &Scene, tol_px: f32, base: usize, s: &mut Scratch) -> 
         }
     }
     let mut edge = vec![false; w * h];
-    let mut cen = EdgeCensus { pixels: (w * h) as u64, silhouette: 0, depth_step: 0, edge: 0 };
+    let mut cen = EdgeCensus {
+        pixels: (w * h) as u64,
+        silhouette: 0,
+        depth_step: 0,
+        edge: 0,
+    };
     for y in 0..h {
         for x in 0..w {
             let c = depth[y * w + x];
@@ -2253,7 +2334,14 @@ fn ao_at(tape: &Tape, p: [f32; 3], dirs: &[[f32; 3]; AO_RAYS], s: &mut Scratch) 
 ///
 /// The reported error is the honest part: a trilinear tap is worthless if it
 /// does not agree with the integral it replaces.
-pub fn run_light_bake(sc: &Scene, lo: [f32; 3], hi: [f32; 3], cell: f32, rng: &mut Rng, s: &mut Scratch) -> LightBake {
+pub fn run_light_bake(
+    sc: &Scene,
+    lo: [f32; 3],
+    hi: [f32; 3],
+    cell: f32,
+    rng: &mut Rng,
+    s: &mut Scratch,
+) -> LightBake {
     let dims = [
         (((hi[0] - lo[0]) / cell).ceil() as usize + 1).max(2),
         (((hi[1] - lo[1]) / cell).ceil() as usize + 1).max(2),
@@ -2316,8 +2404,18 @@ pub fn run_light_bake(sc: &Scene, lo: [f32; 3], hi: [f32; 3], cell: f32, rng: &m
             Some(t) => t,
             None => continue,
         };
-        let p = [cam.eye[0] + t * d[0], cam.eye[1] + t * d[1], cam.eye[2] + t * d[2]];
-        if p[0] < lo[0] || p[1] < lo[1] || p[2] < lo[2] || p[0] > hi[0] || p[1] > hi[1] || p[2] > hi[2] {
+        let p = [
+            cam.eye[0] + t * d[0],
+            cam.eye[1] + t * d[1],
+            cam.eye[2] + t * d[2],
+        ];
+        if p[0] < lo[0]
+            || p[1] < lo[1]
+            || p[2] < lo[2]
+            || p[0] > hi[0]
+            || p[1] > hi[1]
+            || p[2] > hi[2]
+        {
             continue;
         }
         let truth = ao_at(&sc.tape, p, &dirs, s);
@@ -2459,8 +2557,18 @@ pub fn run_sun_bake(
             Some(t) => t,
             None => continue,
         };
-        let p = [cam.eye[0] + t * d[0], cam.eye[1] + t * d[1], cam.eye[2] + t * d[2]];
-        if p[0] < lo[0] || p[1] < lo[1] || p[2] < lo[2] || p[0] > hi[0] || p[1] > hi[1] || p[2] > hi[2] {
+        let p = [
+            cam.eye[0] + t * d[0],
+            cam.eye[1] + t * d[1],
+            cam.eye[2] + t * d[2],
+        ];
+        if p[0] < lo[0]
+            || p[1] < lo[1]
+            || p[2] < lo[2]
+            || p[0] > hi[0]
+            || p[1] > hi[1]
+            || p[2] > hi[2]
+        {
             continue;
         }
         // Lift off the surface by half a cell along the normal: the shadow

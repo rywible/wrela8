@@ -34,17 +34,15 @@ fn norm3(v: [f32; 3]) -> [f32; 3] {
 }
 
 fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
 }
 
 impl Camera {
-    pub fn look_at(
-        eye: [f32; 3],
-        target: [f32; 3],
-        fov_deg: f32,
-        w: u32,
-        h: u32,
-    ) -> Camera {
+    pub fn look_at(eye: [f32; 3], target: [f32; 3], fov_deg: f32, w: u32, h: u32) -> Camera {
         let fwd = norm3([target[0] - eye[0], target[1] - eye[1], target[2] - eye[2]]);
         let right = norm3(cross(fwd, [0.0, 1.0, 0.0]));
         let up = cross(right, fwd);
@@ -93,7 +91,9 @@ impl Camera {
         let v = Aff::sym(1, v0.min(v1), v0.max(v1));
         let mut d = [Aff::konst(0.0); 3];
         for i in 0..3 {
-            d[i] = Aff::konst(self.fwd[i]).add(u.mul_c(self.right[i])).add(v.mul_c(self.up[i]));
+            d[i] = Aff::konst(self.fwd[i])
+                .add(u.mul_c(self.right[i]))
+                .add(v.mul_c(self.up[i]));
         }
         let l2 = d[0].square().add(d[1].square()).add(d[2].square());
         let inv = l2.sqrt().recip();
@@ -115,21 +115,22 @@ impl Camera {
     /// exactly. This is what makes the silhouette certificate cheap: the
     /// directional derivative `∂f/∂t = ∇f·d̂` falls out of one dual-affine
     /// pass, with no separate gradient program.
-    pub fn wedge_daff(
-        &self,
-        u0: f32,
-        u1: f32,
-        v0: f32,
-        v1: f32,
-        t0: f32,
-        t1: f32,
-    ) -> [DAff; 3] {
+    pub fn wedge_daff(&self, u0: f32, u1: f32, v0: f32, v1: f32, t0: f32, t1: f32) -> [DAff; 3] {
         let dh = self.dir_aff(u0, u1, v0, v1);
         let t = Aff::sym(2, t0, t1);
         [
-            DAff { v: dh[0].mul(t).add_c(self.eye[0]), dt: dh[0] },
-            DAff { v: dh[1].mul(t).add_c(self.eye[1]), dt: dh[1] },
-            DAff { v: dh[2].mul(t).add_c(self.eye[2]), dt: dh[2] },
+            DAff {
+                v: dh[0].mul(t).add_c(self.eye[0]),
+                dt: dh[0],
+            },
+            DAff {
+                v: dh[1].mul(t).add_c(self.eye[1]),
+                dt: dh[1],
+            },
+            DAff {
+                v: dh[2].mul(t).add_c(self.eye[2]),
+                dt: dh[2],
+            },
         ]
     }
 

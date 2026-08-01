@@ -154,5 +154,13 @@ pub fn prune(tape: &Tape, ranges: &[Iv]) -> Pruned {
 
     let new_root = map[root as usize];
     let ops_len = ops.len();
-    Pruned { tape: Tape { ops, root: new_root }, ops: ops_len, weight, blends }
+    Pruned {
+        tape: Tape {
+            ops,
+            root: new_root,
+        },
+        ops: ops_len,
+        weight,
+        blends,
+    }
 }

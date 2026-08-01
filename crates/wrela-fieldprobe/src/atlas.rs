@@ -32,9 +32,9 @@
 //!    exactly where §16.2's worst-case scene spends its time.
 
 use crate::aff::{Aff, Iv};
-use crate::eval::{eval, eval_aff, LIPSCHITZ};
+use crate::eval::{eval, eval_aff};
+use crate::probe::{Scratch, march};
 use crate::prune::prune;
-use crate::probe::{march, Scratch};
 use crate::tape::Tape;
 
 #[derive(Clone, Copy, Debug)]
@@ -230,7 +230,7 @@ fn fit_proxy(
     chk_n: usize,
     s: &mut Scratch,
     evals: &mut u64,
-) -> Option<(([f32; 10]), f32)> {
+) -> Option<([f32; 10], f32)> {
     let c = bb.centre();
     let h = bb.half();
     let to_world = |u: [f32; 3]| [c[0] + u[0] * h[0], c[1] + u[1] * h[1], c[2] + u[2] * h[2]];
@@ -241,7 +241,11 @@ fn fit_proxy(
     for i in 0..fit_n {
         for j in 0..fit_n {
             for k in 0..fit_n {
-                let u = [-1.0 + i as f32 * step, -1.0 + j as f32 * step, -1.0 + k as f32 * step];
+                let u = [
+                    -1.0 + i as f32 * step,
+                    -1.0 + j as f32 * step,
+                    -1.0 + k as f32 * step,
+                ];
                 let v = eval(tape, to_world(u), &mut s.f) as f64;
                 *evals += 1;
                 let b = basis(u);
@@ -269,8 +273,11 @@ fn fit_proxy(
     for i in 0..chk_n {
         for j in 0..chk_n {
             for k in 0..chk_n {
-                let u =
-                    [-1.0 + i as f32 * cstep, -1.0 + j as f32 * cstep, -1.0 + k as f32 * cstep];
+                let u = [
+                    -1.0 + i as f32 * cstep,
+                    -1.0 + j as f32 * cstep,
+                    -1.0 + k as f32 * cstep,
+                ];
                 let w = to_world(u);
                 let f = eval(tape, w, &mut s.f);
                 *evals += 1;
@@ -307,7 +314,13 @@ pub struct BakeCfg {
 
 impl Default for BakeCfg {
     fn default() -> Self {
-        BakeCfg { max_depth: 11, eps_frac: 0.10, eps_abs: 0.01, fit_n: 4, chk_n: 6 }
+        BakeCfg {
+            max_depth: 11,
+            eps_frac: 0.10,
+            eps_abs: 0.01,
+            fit_n: 4,
+            chk_n: 6,
+        }
     }
 }
 
@@ -374,11 +387,16 @@ fn bake_node(
     }
 
     if depth < cfg.max_depth {
-        if let Some((coef, eps)) = fit_proxy(&pr.tape, &bb, cfg.fit_n, cfg.chk_n, s, &mut at.bake_evals)
+        if let Some((coef, eps)) =
+            fit_proxy(&pr.tape, &bb, cfg.fit_n, cfg.chk_n, s, &mut at.bake_evals)
         {
             if eps <= cfg.eps_frac * bb.diag() && eps <= cfg.eps_abs {
                 let t = palette(at, &pr.tape);
-                at.proxies.push(Proxy { c: coef, eps, tape: t });
+                at.proxies.push(Proxy {
+                    c: coef,
+                    eps,
+                    tape: t,
+                });
                 at.n_proxy += 1;
                 return Kind::Proxy((at.proxies.len() - 1) as u32);
             }
@@ -497,7 +515,14 @@ fn quad_root(a: f32, b: f32, c: f32, t0: f32, t1: f32) -> Option<f32> {
     let sq = disc.sqrt();
     // Numerically stable pair.
     let q = -0.5 * (b + b.signum() * sq);
-    let (r0, r1) = (q / a, if q.abs() > 1e-20 { c / q } else { f32::INFINITY });
+    let (r0, r1) = (
+        q / a,
+        if q.abs() > 1e-20 {
+            c / q
+        } else {
+            f32::INFINITY
+        },
+    );
     let (lo, hi) = if r0 <= r1 { (r0, r1) } else { (r1, r0) };
     if lo >= t0 && lo <= t1 {
         Some(lo)
@@ -547,7 +572,11 @@ fn trace_node(
             let c = bb.centre();
             let h = bb.half();
             // Ray in cell-local normalised coordinates.
-            let lo = [(o[0] - c[0]) / h[0], (o[1] - c[1]) / h[1], (o[2] - c[2]) / h[2]];
+            let lo = [
+                (o[0] - c[0]) / h[0],
+                (o[1] - c[1]) / h[1],
+                (o[2] - c[2]) / h[2],
+            ];
             let ld = [d[0] / h[0], d[1] / h[1], d[2] / h[2]];
             let k = &px.c;
             let a = k[4] * ld[0] * ld[0]
@@ -627,9 +656,18 @@ fn trace_node(
             for &(_, i) in &order[..n] {
                 let cb = bb.child(i);
                 if let Some((a, b)) = cb.hit(o, inv, t0, t1) {
-                    if let Some(t) =
-                        trace_node(at, at.nodes[base as usize + i], cb, o, d, inv, a, b, cost, s)
-                    {
+                    if let Some(t) = trace_node(
+                        at,
+                        at.nodes[base as usize + i],
+                        cb,
+                        o,
+                        d,
+                        inv,
+                        a,
+                        b,
+                        cost,
+                        s,
+                    ) {
                         return Some(t);
                     }
                 }
@@ -651,9 +689,21 @@ pub fn trace(
     s: &mut Scratch,
 ) -> Option<f32> {
     let inv = [
-        1.0 / if d[0].abs() < 1e-9 { 1e-9f32.copysign(d[0]) } else { d[0] },
-        1.0 / if d[1].abs() < 1e-9 { 1e-9f32.copysign(d[1]) } else { d[1] },
-        1.0 / if d[2].abs() < 1e-9 { 1e-9f32.copysign(d[2]) } else { d[2] },
+        1.0 / if d[0].abs() < 1e-9 {
+            1e-9f32.copysign(d[0])
+        } else {
+            d[0]
+        },
+        1.0 / if d[1].abs() < 1e-9 {
+            1e-9f32.copysign(d[1])
+        } else {
+            d[1]
+        },
+        1.0 / if d[2].abs() < 1e-9 {
+            1e-9f32.copysign(d[2])
+        } else {
+            d[2]
+        },
     ];
     if let Some((a, b)) = at.bounds.hit(o, inv, t_near, t_far) {
         if let Some(t) = trace_node(at, at.nodes[0], at.bounds, o, d, inv, a, b, cost, s) {
