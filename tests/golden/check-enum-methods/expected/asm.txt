@@ -9,10 +9,9 @@ Program
     0006: f900012a  str x10, [x9, #0]
     0007: f94007ea  ldr x10, [sp, #8]
     0008: f900052a  str x10, [x9, #8]
-    0009: 14000002  b #8
-    0010: 14000001  b #4
-    0011: 910083ff  add sp, sp, #32
-    0012: d65f03c0  ret
+    0009: 14000001  b #4
+    0010: 910083ff  add sp, sp, #32
+    0011: d65f03c0  ret
   Fn key=Cell.fill frame=48 bytes
     0000: d100c3ff  sub sp, sp, #48
     0001: f90013e0  str x0, [sp, #32]
@@ -28,14 +27,13 @@ Program
     0011: f90003e9  str x9, [sp, #0]
     0012: f9400fe9  ldr x9, [sp, #24]
     0013: f90007e9  str x9, [sp, #8]
-    0014: 14000001  b #4
-    0015: f94013e9  ldr x9, [sp, #32]
-    0016: f94003ea  ldr x10, [sp, #0]
-    0017: f900012a  str x10, [x9, #0]
-    0018: f94007ea  ldr x10, [sp, #8]
-    0019: f900052a  str x10, [x9, #8]
-    0020: 9100c3ff  add sp, sp, #48
-    0021: d65f03c0  ret
+    0014: f94013e9  ldr x9, [sp, #32]
+    0015: f94003ea  ldr x10, [sp, #0]
+    0016: f900012a  str x10, [x9, #0]
+    0017: f94007ea  ldr x10, [sp, #8]
+    0018: f900052a  str x10, [x9, #8]
+    0019: 9100c3ff  add sp, sp, #48
+    0020: d65f03c0  ret
   Fn key=Cell.into_n frame=32 bytes
     0000: d10083ff  sub sp, sp, #32
     0001: f9000be0  str x0, [sp, #16]
@@ -53,7 +51,7 @@ Program
     0013: d2800021  movz x1, #0x1
     0014: 8a010062  and x2, x3, x1
     0015: b4000062  cbz x2, #12
-    0016: 14000013  b #76
+    0016: 14000012  b #72
     0017: 14000011  b #68
     0018: f94003e9  ldr x9, [sp, #0]
     0019: aa0903e1  mov x1, x9
@@ -62,7 +60,7 @@ Program
     0022: 9a9f17e3  cset x3, eq
     0023: b4000083  cbz x3, #16
     0024: d2800000  movz x0, #0x0
-    0025: 1400000a  b #40
+    0025: 14000009  b #36
     0026: 14000008  b #32
     0027: d10043ff  sub sp, sp, #16  ; abort Bytes slot
     0028: 10000009  adr x9, rodata+0x0
@@ -71,9 +69,8 @@ Program
     0031: f90007e9  str x9, [sp, #8]  ; Bytes.len
     0032: 910003e0  add x0, sp, #0  ; *Bytes
     0033: 94000000  bl <__wrela_abort>
-    0034: 14000001  b #4
-    0035: 910083ff  add sp, sp, #32
-    0036: d65f03c0  ret
+    0034: 910083ff  add sp, sp, #32
+    0035: d65f03c0  ret
   Fn key=Cell.value frame=32 bytes
     0000: d10083ff  sub sp, sp, #32
     0001: f9000be0  str x0, [sp, #16]
@@ -91,7 +88,7 @@ Program
     0013: d2800021  movz x1, #0x1
     0014: 8a010062  and x2, x3, x1
     0015: b4000062  cbz x2, #12
-    0016: 14000013  b #76
+    0016: 14000012  b #72
     0017: 14000011  b #68
     0018: f94003e9  ldr x9, [sp, #0]
     0019: aa0903e1  mov x1, x9
@@ -100,7 +97,7 @@ Program
     0022: 9a9f17e3  cset x3, eq
     0023: b4000083  cbz x3, #16
     0024: d2800000  movz x0, #0x0
-    0025: 1400000a  b #40
+    0025: 14000009  b #36
     0026: 14000008  b #32
     0027: d10043ff  sub sp, sp, #16  ; abort Bytes slot
     0028: 10000009  adr x9, rodata+0x0
@@ -109,9 +106,8 @@ Program
     0031: f90007e9  str x9, [sp, #8]  ; Bytes.len
     0032: 910003e0  add x0, sp, #0  ; *Bytes
     0033: 94000000  bl <__wrela_abort>
-    0034: 14000001  b #4
-    0035: 910083ff  add sp, sp, #32
-    0036: d65f03c0  ret
+    0034: 910083ff  add sp, sp, #32
+    0035: d65f03c0  ret
   Fn key=Store.init frame=16 bytes
     0000: d10043ff  sub sp, sp, #16
     0001: f90003e0  str x0, [sp, #0]
@@ -119,12 +115,11 @@ Program
     0003: f940012a  ldr x10, [x9, #0]
     0004: aa0a03e2  mov x2, x10
     0005: aa0103e2  mov x2, x1
-    0006: 14000001  b #4
-    0007: f94003e9  ldr x9, [sp, #0]
-    0008: aa0203ea  mov x10, x2
-    0009: f900012a  str x10, [x9, #0]
-    0010: 910043ff  add sp, sp, #16
-    0011: d65f03c0  ret
+    0006: f94003e9  ldr x9, [sp, #0]
+    0007: aa0203ea  mov x10, x2
+    0008: f900012a  str x10, [x9, #0]
+    0009: 910043ff  add sp, sp, #16
+    0010: d65f03c0  ret
   Fn key=__wrela_abort frame=32 bytes
     0000: d10083ff  sub sp, sp, #32
     0001: f9000ffe  str lr, [sp, #24]
@@ -139,7 +134,7 @@ Program
     0010: 9a9f07e4  cset x4, ne
     0011: b4000084  cbz x4, #16
     0012: 94000000  bl <finish_abort>
-    0013: 14000011  b #68
+    0013: 14000010  b #64
     0014: 14000001  b #4
     0015: d2800022  movz x2, #0x1
     0016: d2a80003  movz x3, #0x4000, lsl #16
@@ -155,14 +150,12 @@ Program
     0026: 94000000  bl <__wrela_line_commit>
     0027: f9000be0  str x0, [sp, #16]
     0028: 94000000  bl <finish_abort>
-    0029: 14000001  b #4
-    0030: f9400ffe  ldr lr, [sp, #24]
-    0031: 910083ff  add sp, sp, #32
-    0032: d65f03c0  ret
+    0029: f9400ffe  ldr lr, [sp, #24]
+    0030: 910083ff  add sp, sp, #32
+    0031: d65f03c0  ret
   Fn key=__wrela_abort_tail frame=0 bytes
-    0000: 14000002  b #8
-    0001: 14000001  b #4
-    0002: d65f03c0  ret
+    0000: 14000001  b #4
+    0001: d65f03c0  ret
   Fn key=__wrela_abort_val frame=64 bytes
     0000: d10103ff  sub sp, sp, #64
     0001: f9001ffe  str lr, [sp, #56]
@@ -183,7 +176,7 @@ Program
     0016: 9a9f07e6  cset x6, ne
     0017: b4000086  cbz x6, #16
     0018: 94000000  bl <finish_abort>
-    0019: 1400001c  b #112
+    0019: 1400001b  b #108
     0020: 14000001  b #4
     0021: d2800024  movz x4, #0x1
     0022: d2a80005  movz x5, #0x4000, lsl #16
@@ -210,10 +203,9 @@ Program
     0043: 94000000  bl <__wrela_line_commit>
     0044: f9001be0  str x0, [sp, #48]
     0045: 94000000  bl <finish_abort>
-    0046: 14000001  b #4
-    0047: f9401ffe  ldr lr, [sp, #56]
-    0048: 910103ff  add sp, sp, #64
-    0049: d65f03c0  ret
+    0046: f9401ffe  ldr lr, [sp, #56]
+    0047: 910103ff  add sp, sp, #64
+    0048: d65f03c0  ret
   Fn key=__wrela_console_append_bytes frame=32 bytes
     0000: d10083ff  sub sp, sp, #32
     0001: f9000bfe  str lr, [sp, #16]
@@ -230,21 +222,21 @@ Program
     0012: 9a9fd7e4  cset x4, gt
     0013: b4000084  cbz x4, #16
     0014: d2800020  movz x0, #0x1
-    0015: 14000018  b #96
+    0015: 14000017  b #92
     0016: 14000001  b #4
     0017: 8b020038  add x24, x1, x2
     0018: eb01031f  cmp x24, x1
     0019: 9a9fa7e3  cset x3, lt
     0020: b4000083  cbz x3, #16
     0021: d2800020  movz x0, #0x1
-    0022: 14000011  b #68
+    0022: 14000010  b #64
     0023: 14000001  b #4
     0024: d2880003  movz x3, #0x4000
     0025: eb03031f  cmp x24, x3
     0026: 9a9fd7e4  cset x4, gt
     0027: b4000084  cbz x4, #16
     0028: d2800020  movz x0, #0x1
-    0029: 1400000a  b #40
+    0029: 14000009  b #36
     0030: 14000001  b #4
     0031: 910003e0  add x0, sp, #0
     0032: 94000000  bl <copy_bytes_range>
@@ -252,11 +244,10 @@ Program
     0034: d2a80003  movz x3, #0x4000, lsl #16
     0035: f9002878  str x24, [x3, #80]
     0036: d2800000  movz x0, #0x0
-    0037: 14000002  b #8
-    0038: 14000001  b #4
-    0039: f9400bfe  ldr lr, [sp, #16]
-    0040: 910083ff  add sp, sp, #32
-    0041: d65f03c0  ret
+    0037: 14000001  b #4
+    0038: f9400bfe  ldr lr, [sp, #16]
+    0039: 910083ff  add sp, sp, #32
+    0040: d65f03c0  ret
   Fn key=__wrela_console_append_line_buf frame=16 bytes
     0000: d10043ff  sub sp, sp, #16
     0001: f90003fe  str lr, [sp, #0]
@@ -269,14 +260,14 @@ Program
     0008: 9a9fa7e3  cset x3, lt
     0009: b4000083  cbz x3, #16
     0010: d2800020  movz x0, #0x1
-    0011: 14000011  b #68
+    0011: 14000010  b #64
     0012: 14000001  b #4
     0013: d2880003  movz x3, #0x4000
     0014: eb03033f  cmp x25, x3
     0015: 9a9fd7e4  cset x4, gt
     0016: b4000084  cbz x4, #16
     0017: d2800020  movz x0, #0x1
-    0018: 1400000a  b #40
+    0018: 14000009  b #36
     0019: 14000001  b #4
     0020: aa0203e0  mov x0, x2
     0021: 94000000  bl <copy_line_buf_range>
@@ -284,11 +275,10 @@ Program
     0023: d2a80002  movz x2, #0x4000, lsl #16
     0024: f9002859  str x25, [x2, #80]
     0025: d2800000  movz x0, #0x0
-    0026: 14000002  b #8
-    0027: 14000001  b #4
-    0028: f94003fe  ldr lr, [sp, #0]
-    0029: 910043ff  add sp, sp, #16
-    0030: d65f03c0  ret
+    0026: 14000001  b #4
+    0027: f94003fe  ldr lr, [sp, #0]
+    0028: 910043ff  add sp, sp, #16
+    0029: d65f03c0  ret
   Fn key=__wrela_fmt_dec frame=48 bytes
     0000: d100c3ff  sub sp, sp, #48
     0001: f90017fe  str lr, [sp, #40]
@@ -401,7 +391,7 @@ Program
     0108: f94007e9  ldr x9, [sp, #8]
     0109: 8b070120  add x0, x9, x7
     0110: aa0003e0  mov x0, x0
-    0111: 140000db  b #876
+    0111: 140000da  b #872
     0112: 14000001  b #4
     0113: d2800007  movz x7, #0x0
     0114: d2800008  movz x8, #0x0
@@ -618,19 +608,17 @@ Program
     0325: aa0903eb  mov x11, x9
     0326: f90013eb  str x11, [sp, #32]
     0327: f94013e0  ldr x0, [sp, #32]
-    0328: 14000002  b #8
-    0329: 14000001  b #4
-    0330: f94017fe  ldr lr, [sp, #40]
-    0331: 9100c3ff  add sp, sp, #48
-    0332: d65f03c0  ret
+    0328: 14000001  b #4
+    0329: f94017fe  ldr lr, [sp, #40]
+    0330: 9100c3ff  add sp, sp, #48
+    0331: d65f03c0  ret
   Fn key=__wrela_line_begin frame=0 bytes
     0000: d2a80000  movz x0, #0x4000, lsl #16
     0001: f9402800  ldr x0, [x0, #80]
     0002: d2a80001  movz x1, #0x4000, lsl #16
     0003: f9003020  str x0, [x1, #96]
-    0004: 14000002  b #8
-    0005: 14000001  b #4
-    0006: d65f03c0  ret
+    0004: 14000001  b #4
+    0005: d65f03c0  ret
   Fn key=__wrela_line_commit frame=0 bytes
     0000: d2a80004  movz x4, #0x4000, lsl #16
     0001: f9402c84  ldr x4, [x4, #88]
@@ -639,7 +627,7 @@ Program
     0004: 9a9fb7e6  cset x6, ge
     0005: b4000086  cbz x6, #16
     0006: d2800020  movz x0, #0x1
-    0007: 14000060  b #384
+    0007: 1400005f  b #380
     0008: 14000001  b #4
     0009: d2a80005  movz x5, #0x4000, lsl #16
     0010: f94030a5  ldr x5, [x5, #96]
@@ -733,13 +721,11 @@ Program
     0098: f2a80005  movk x5, #0x4000, lsl #16
     0099: f90d04a4  str x4, [x5, #6664]
     0100: d2800000  movz x0, #0x0
-    0101: 14000002  b #8
-    0102: 14000001  b #4
-    0103: d65f03c0  ret
+    0101: 14000001  b #4
+    0102: d65f03c0  ret
   Fn key=__wrela_runtime_probe frame=0 bytes
-    0000: 14000002  b #8
-    0001: 14000001  b #4
-    0002: d65f03c0  ret
+    0000: 14000001  b #4
+    0001: d65f03c0  ret
   Fn key=append_failed_literal frame=16 bytes
     0000: d10043ff  sub sp, sp, #16
     0001: f90003fe  str lr, [sp, #0]
@@ -936,11 +922,10 @@ Program
     0192: 94000000  bl <__wrela_console_append_line_buf>
     0193: aa0003e4  mov x4, x0
     0194: aa0403e0  mov x0, x4
-    0195: 14000002  b #8
-    0196: 14000001  b #4
-    0197: f94003fe  ldr lr, [sp, #0]
-    0198: 910043ff  add sp, sp, #16
-    0199: d65f03c0  ret
+    0195: 14000001  b #4
+    0196: f94003fe  ldr lr, [sp, #0]
+    0197: 910043ff  add sp, sp, #16
+    0198: d65f03c0  ret
   Fn key=append_newline_literal frame=16 bytes
     0000: d10043ff  sub sp, sp, #16
     0001: f90003fe  str lr, [sp, #0]
@@ -975,11 +960,10 @@ Program
     0030: 94000000  bl <__wrela_console_append_line_buf>
     0031: aa0003e4  mov x4, x0
     0032: aa0403e0  mov x0, x4
-    0033: 14000002  b #8
-    0034: 14000001  b #4
-    0035: f94003fe  ldr lr, [sp, #0]
-    0036: 910043ff  add sp, sp, #16
-    0037: d65f03c0  ret
+    0033: 14000001  b #4
+    0034: f94003fe  ldr lr, [sp, #0]
+    0035: 910043ff  add sp, sp, #16
+    0036: d65f03c0  ret
   Fn key=ascii_digit frame=0 bytes
     0000: aa0003e1  mov x1, x0
     0001: d2800002  movz x2, #0x0
@@ -987,75 +971,74 @@ Program
     0003: 9a9f17e3  cset x3, eq
     0004: b4000083  cbz x3, #16
     0005: d2800600  movz x0, #0x30
-    0006: 14000044  b #272
+    0006: 14000043  b #268
     0007: 14000001  b #4
     0008: d2800022  movz x2, #0x1
     0009: eb02003f  cmp x1, x2
     0010: 9a9f17e3  cset x3, eq
     0011: b4000083  cbz x3, #16
     0012: d2800620  movz x0, #0x31
-    0013: 1400003d  b #244
+    0013: 1400003c  b #240
     0014: 14000001  b #4
     0015: d2800042  movz x2, #0x2
     0016: eb02003f  cmp x1, x2
     0017: 9a9f17e3  cset x3, eq
     0018: b4000083  cbz x3, #16
     0019: d2800640  movz x0, #0x32
-    0020: 14000036  b #216
+    0020: 14000035  b #212
     0021: 14000001  b #4
     0022: d2800062  movz x2, #0x3
     0023: eb02003f  cmp x1, x2
     0024: 9a9f17e3  cset x3, eq
     0025: b4000083  cbz x3, #16
     0026: d2800660  movz x0, #0x33
-    0027: 1400002f  b #188
+    0027: 1400002e  b #184
     0028: 14000001  b #4
     0029: d2800082  movz x2, #0x4
     0030: eb02003f  cmp x1, x2
     0031: 9a9f17e3  cset x3, eq
     0032: b4000083  cbz x3, #16
     0033: d2800680  movz x0, #0x34
-    0034: 14000028  b #160
+    0034: 14000027  b #156
     0035: 14000001  b #4
     0036: d28000a2  movz x2, #0x5
     0037: eb02003f  cmp x1, x2
     0038: 9a9f17e3  cset x3, eq
     0039: b4000083  cbz x3, #16
     0040: d28006a0  movz x0, #0x35
-    0041: 14000021  b #132
+    0041: 14000020  b #128
     0042: 14000001  b #4
     0043: d28000c2  movz x2, #0x6
     0044: eb02003f  cmp x1, x2
     0045: 9a9f17e3  cset x3, eq
     0046: b4000083  cbz x3, #16
     0047: d28006c0  movz x0, #0x36
-    0048: 1400001a  b #104
+    0048: 14000019  b #100
     0049: 14000001  b #4
     0050: d28000e2  movz x2, #0x7
     0051: eb02003f  cmp x1, x2
     0052: 9a9f17e3  cset x3, eq
     0053: b4000083  cbz x3, #16
     0054: d28006e0  movz x0, #0x37
-    0055: 14000013  b #76
+    0055: 14000012  b #72
     0056: 14000001  b #4
     0057: d2800102  movz x2, #0x8
     0058: eb02003f  cmp x1, x2
     0059: 9a9f17e3  cset x3, eq
     0060: b4000083  cbz x3, #16
     0061: d2800700  movz x0, #0x38
-    0062: 1400000c  b #48
+    0062: 1400000b  b #44
     0063: 14000001  b #4
     0064: d2800122  movz x2, #0x9
     0065: eb02003f  cmp x1, x2
     0066: 9a9f17e3  cset x3, eq
     0067: b4000083  cbz x3, #16
     0068: d2800720  movz x0, #0x39
-    0069: 14000005  b #20
+    0069: 14000004  b #16
     0070: 14000001  b #4
     0071: d2800600  movz x0, #0x30
-    0072: 14000002  b #8
-    0073: 14000001  b #4
-    0074: d65f03c0  ret
+    0072: 14000001  b #4
+    0073: d65f03c0  ret
   Fn key=copy_bytes_range frame=16 bytes
     0000: d10043ff  sub sp, sp, #16
     0001: f9400009  ldr x9, [x0, #0]
@@ -1135,10 +1118,9 @@ Program
     0075: 8b1600d7  add x23, x6, x22
     0076: aa1703e6  mov x6, x23
     0077: 17ffffbc  b #-272
-    0078: 14000002  b #8
-    0079: 14000001  b #4
-    0080: 910043ff  add sp, sp, #16
-    0081: d65f03c0  ret
+    0078: 14000001  b #4
+    0079: 910043ff  add sp, sp, #16
+    0080: d65f03c0  ret
   Fn key=copy_line_buf_range frame=0 bytes
     0000: aa0003e4  mov x4, x0
     0001: aa0103e5  mov x5, x1
@@ -1217,9 +1199,8 @@ Program
     0074: 8b1700d8  add x24, x6, x23
     0075: aa1803e6  mov x6, x24
     0076: 17ffffb8  b #-288
-    0077: 14000002  b #8
-    0078: 14000001  b #4
-    0079: d65f03c0  ret
+    0077: 14000001  b #4
+    0078: d65f03c0  ret
   Fn key=finish_abort frame=16 bytes
     0000: d10043ff  sub sp, sp, #16
     0001: f90003fe  str lr, [sp, #0]
@@ -1233,11 +1214,10 @@ Program
     0009: d2a80001  movz x1, #0x4000, lsl #16
     0010: f9002423  str x3, [x1, #72]
     0011: 94000000  bl <__wrela_abort_tail>
-    0012: 14000002  b #8
-    0013: 14000001  b #4
-    0014: f94003fe  ldr lr, [sp, #0]
-    0015: 910043ff  add sp, sp, #16
-    0016: d65f03c0  ret
+    0012: 14000001  b #4
+    0013: f94003fe  ldr lr, [sp, #0]
+    0014: 910043ff  add sp, sp, #16
+    0015: d65f03c0  ret
   Fn key=guest_methods frame=48 bytes
     0000: d100c3ff  sub sp, sp, #48
     0001: f90013fe  str lr, [sp, #32]
@@ -1301,10 +1281,9 @@ Program
     0059: f90007e9  str x9, [sp, #8]  ; Bytes.len
     0060: 910003e0  add x0, sp, #0  ; *Bytes
     0061: 94000000  bl <__wrela_abort>
-    0062: 14000001  b #4
-    0063: f94013fe  ldr lr, [sp, #32]
-    0064: 9100c3ff  add sp, sp, #48
-    0065: d65f03c0  ret
+    0062: f94013fe  ldr lr, [sp, #32]
+    0063: 9100c3ff  add sp, sp, #48
+    0064: d65f03c0  ret
   Fn key=mut_path frame=48 bytes
     0000: d100c3ff  sub sp, sp, #48
     0001: f90013fe  str lr, [sp, #32]
@@ -1319,11 +1298,10 @@ Program
     0010: 94000000  bl <Cell.fill>
     0011: 910043e0  add x0, sp, #16
     0012: 94000000  bl <Cell.value>
-    0013: 14000002  b #8
-    0014: 14000001  b #4
-    0015: f94013fe  ldr lr, [sp, #32]
-    0016: 9100c3ff  add sp, sp, #48
-    0017: d65f03c0  ret
+    0013: 14000001  b #4
+    0014: f94013fe  ldr lr, [sp, #32]
+    0015: 9100c3ff  add sp, sp, #48
+    0016: d65f03c0  ret
   Fn key=take_path frame=48 bytes
     0000: d100c3ff  sub sp, sp, #48
     0001: f90013fe  str lr, [sp, #32]
@@ -1337,11 +1315,10 @@ Program
     0009: f9000fe9  str x9, [sp, #24]
     0010: 910043e0  add x0, sp, #16
     0011: 94000000  bl <Cell.into_n>
-    0012: 14000002  b #8
-    0013: 14000001  b #4
-    0014: f94013fe  ldr lr, [sp, #32]
-    0015: 9100c3ff  add sp, sp, #48
-    0016: d65f03c0  ret
+    0012: 14000001  b #4
+    0013: f94013fe  ldr lr, [sp, #32]
+    0014: 9100c3ff  add sp, sp, #48
+    0015: d65f03c0  ret
   Rodata
     0: offset=0x0 assertion failed: match: no arm matched (exhaustiveness already proved this cannot happen)
     1: offset=0x5a shift count 

@@ -63,10 +63,10 @@ ImageReport v0
   Cores count=1
   CoreStack core=0 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=54920
-  Section name=rodata base=0x4050d6d8 size=511
-  Section name=abort base=0x4050d8d8 size=120
-  Section name=checkpoint base=0x4050d950 size=28
+  Section name=code base=0x40500050 size=53636
+  Section name=rodata base=0x4050d1d8 size=511
+  Section name=abort base=0x4050d3d8 size=120
+  Section name=checkpoint base=0x4050d450 size=28
   Section name=rtdata base=0x40540000 size=192
   Section name=devregs base=0x405400c0 size=8
   Entry base=0x40500000
@@ -165,14 +165,14 @@ ImageReport v0
   Turns count=1 stride=64 bytes=64
   Totals actors=1 drivers=1 ready_queue=2 group_arena=0 bytes=192
   DeviceRegs device=device#0 type=VirtioBlock driver=BlkDriver base=0x405400c0 size=8
-  Cost version=3 digest=ed181b5abc4dd5d5 total=18075 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=18075
-    Owner name=app proxy_cycles=697
-    Owner name=runtime proxy_cycles=17378
+  Cost version=3 digest=ed181b5abc4dd5d5 total=17678 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=17678
+    Owner name=app proxy_cycles=613
+    Owner name=runtime proxy_cycles=17065
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=106 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn_model=n/a
-    Budget n=0 hot_text_bytes=67776 hot_code_bytes=54116 slack_lines=0 l1i_bytes=65536 over_l1i_lines=35 over_l2_lines=0 text_pages=17 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=5 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=245
-    Shared proxy_cycles=17969
+    Core n=0 proxy_cycles=82 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn_model=n/a
+    Budget n=0 hot_text_bytes=67648 hot_code_bytes=52832 slack_lines=0 l1i_bytes=65536 over_l1i_lines=33 over_l2_lines=0 text_pages=17 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=5 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=231
+    Shared proxy_cycles=17596
   Convention fns=321 frameless=240 tail_calls=2
     Fn key=BlkDriver.init frame=16 residents=2 regs=x1-x2 clobbers=x0-x2,x9-x10,x30-x31 pool=23
     Fn key=Probe.init frame=16 residents=2 regs=x1-x2 clobbers=x0-x2,x9-x10,x30-x31 pool=24

@@ -11,9 +11,8 @@ Program
     0008: 910003e0  add x0, sp, #0  ; *Bytes
     0009: 94000000  bl <__wrela_abort>
     0010: aa0203e0  mov x0, x2
-    0011: 14000002  b #8
-    0012: 14000001  b #4
-    0013: d65f03c0  ret
+    0011: 14000001  b #4
+    0012: d65f03c0  ret
   Fn key=checked_div frame=0 bytes
     0000: eb1f003f  cmp x1, xzr
     0001: 54000101  b.ne #32
@@ -39,9 +38,8 @@ Program
     0021: 94000000  bl <__wrela_abort>
     0022: 9ac10c02  sdiv x2, x0, x1
     0023: aa0203e0  mov x0, x2
-    0024: 14000002  b #8
-    0025: 14000001  b #4
-    0026: d65f03c0  ret
+    0024: 14000001  b #4
+    0025: d65f03c0  ret
   Fn key=mixed frame=0 bytes
     0000: 8b010003  add x3, x0, x1
     0001: d3403c63  ubfx x3, x3, #0, #16
@@ -55,16 +53,14 @@ Program
     0009: f90007e9  str x9, [sp, #8]  ; Bytes.len
     0010: 910003e0  add x0, sp, #0  ; *Bytes
     0011: 94000000  bl <__wrela_abort>
-    0012: 14000002  b #8
-    0013: 14000001  b #4
-    0014: d65f03c0  ret
+    0012: 14000001  b #4
+    0013: d65f03c0  ret
   Fn key=wrapping_add frame=0 bytes
     0000: 8b010002  add x2, x0, x1
     0001: d3401c42  ubfx x2, x2, #0, #8
     0002: aa0203e0  mov x0, x2
-    0003: 14000002  b #8
-    0004: 14000001  b #4
-    0005: d65f03c0  ret
+    0003: 14000001  b #4
+    0004: d65f03c0  ret
   Rodata
     0: offset=0x0 arithmetic overflow in `+`
     1: offset=0x1a division by zero

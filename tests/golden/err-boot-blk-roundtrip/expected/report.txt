@@ -87,10 +87,10 @@ ImageReport v0
   Cores count=1
   CoreStack core=0 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=62628
-  Section name=rodata base=0x4050f4f8 size=1595
-  Section name=abort base=0x4050fb34 size=120
-  Section name=checkpoint base=0x4050fbac size=28
+  Section name=code base=0x40500050 size=61340
+  Section name=rodata base=0x4050eff0 size=1595
+  Section name=abort base=0x4050f62c size=120
+  Section name=checkpoint base=0x4050f6a4 size=28
   Section name=rtdata base=0x40540000 size=2400
   Section name=devregs base=0x40540960 size=104
   Section name=pooldata base=0x405409c8 size=1024
@@ -199,14 +199,14 @@ ImageReport v0
   BlkDevice device=device#0 capacity_sectors=16 features=0x100000200 vector=1
   BlkQueue index=0 size=8 desc=0x405409c8 avail=0x40540a48 used=0x40540a60 doorbell=0x40540aa8
   BlkAccounting descriptors_per_op=3 queue_depth=8 occupancy_bound=2
-  Cost version=3 digest=ed181b5abc4dd5d5 total=20867 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=20867
-    Owner name=app proxy_cycles=3209
-    Owner name=runtime proxy_cycles=17517
-    Owner name=driver proxy_cycles=141
-    Core n=0 proxy_cycles=1837 max_turn_proxy=1314 turns_per_sec=1826484.0182648401 ms_per_turn_model=0.0005475
-    Budget n=0 hot_text_bytes=75456 hot_code_bytes=61632 slack_lines=0 l1i_bytes=65536 over_l1i_lines=155 over_l2_lines=0 text_pages=19 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=7 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=1085
-    Shared proxy_cycles=19030
+  Cost version=3 digest=ed181b5abc4dd5d5 total=20488 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=20488
+    Owner name=app proxy_cycles=3144
+    Owner name=runtime proxy_cycles=17204
+    Owner name=driver proxy_cycles=140
+    Core n=0 proxy_cycles=1832 max_turn_proxy=1313 turns_per_sec=1827875.0952018278 ms_per_turn_model=0.0005470833
+    Budget n=0 hot_text_bytes=75328 hot_code_bytes=60332 slack_lines=0 l1i_bytes=65536 over_l1i_lines=153 over_l2_lines=0 text_pages=19 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=7 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=1071
+    Shared proxy_cycles=18656
   Convention fns=324 frameless=240 tail_calls=3
     Fn key=BlkDriver.drain frame=448 residents=283 regs=x0-x8,x13-x15 clobbers=x0-x15,x30-x31 pool=22
     Fn key=BlkDriver.init frame=288 residents=91 regs=x1-x7,x12-x14 clobbers=x0-x14,x30-x31 pool=19

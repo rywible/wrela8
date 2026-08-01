@@ -68,14 +68,14 @@ ImageReport v0
   CoreStack core=1 base=0x7fe00000 size=0x100000
   CoreStack core=2 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=60304
-  Section name=rodata base=0x4050ebe0 size=848
-  Section name=abort base=0x4050ef30 size=120
-  Section name=checkpoint base=0x4050efa8 size=28
+  Section name=code base=0x40500050 size=58988
+  Section name=rodata base=0x4050e6c0 size=848
+  Section name=abort base=0x4050ea10 size=120
+  Section name=checkpoint base=0x4050ea88 size=28
   Section name=rtdata base=0x40540000 size=2728
   Entry base=0x40500000
-  CoreEntry core=1 base=0x4050e6c0
-  CoreEntry core=2 base=0x4050e6fc
+  CoreEntry core=1 base=0x4050e1a8
+  CoreEntry core=2 base=0x4050e1e0
   PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
@@ -175,18 +175,18 @@ ImageReport v0
   Turns count=4 stride=512 bytes=2048
   Rings count=2 stride=96 padding=48 bytes=240
   Totals actors=3 drivers=0 ready_queue=4 group_arena=0 bytes=2728
-  Cost version=3 digest=ed181b5abc4dd5d5 total=20412 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=20412
-    Owner name=app proxy_cycles=2372
-    Owner name=runtime proxy_cycles=18040
+  Cost version=3 digest=ed181b5abc4dd5d5 total=20020 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=20020
+    Owner name=app proxy_cycles=2296
+    Owner name=runtime proxy_cycles=17724
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=938 max_turn_proxy=469 turns_per_sec=5117270.7889125803 ms_per_turn_model=0.0001954167
-    Budget n=0 hot_text_bytes=72768 hot_code_bytes=58928 slack_lines=0 l1i_bytes=65536 over_l1i_lines=113 over_l2_lines=0 text_pages=18 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=791
-    Core n=1 proxy_cycles=130 max_turn_proxy=61 turns_per_sec=39344262.2950819656 ms_per_turn_model=0.0000254167
-    Budget n=1 hot_text_bytes=71872 hot_code_bytes=57964 slack_lines=0 l1i_bytes=65536 over_l1i_lines=99 over_l2_lines=0 text_pages=18 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=693
-    Core n=2 proxy_cycles=16 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn_model=n/a
-    Budget n=2 hot_text_bytes=71680 hot_code_bytes=57816 slack_lines=0 l1i_bytes=65536 over_l1i_lines=96 over_l2_lines=0 text_pages=18 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=672
-    Shared proxy_cycles=19328
+    Core n=0 proxy_cycles=936 max_turn_proxy=468 turns_per_sec=5128205.128205128 ms_per_turn_model=0.000195
+    Budget n=0 hot_text_bytes=72640 hot_code_bytes=57636 slack_lines=0 l1i_bytes=65536 over_l1i_lines=111 over_l2_lines=0 text_pages=18 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=777
+    Core n=1 proxy_cycles=116 max_turn_proxy=60 turns_per_sec=40000000 ms_per_turn_model=0.000025
+    Budget n=1 hot_text_bytes=71744 hot_code_bytes=56668 slack_lines=0 l1i_bytes=65536 over_l1i_lines=97 over_l2_lines=0 text_pages=18 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=679
+    Core n=2 proxy_cycles=15 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn_model=n/a
+    Budget n=2 hot_text_bytes=71552 hot_code_bytes=56528 slack_lines=0 l1i_bytes=65536 over_l1i_lines=94 over_l2_lines=0 text_pages=18 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=658
+    Shared proxy_cycles=18953
   Convention fns=324 frameless=241 tail_calls=1
     Fn key=Sink.bump frame=16 residents=5 regs=x0-x4 clobbers=x0-x4,x9-x11,x30-x31 pool=22
     Fn key=Sink.init frame=16 residents=2 regs=x1-x2 clobbers=x0-x2,x9-x10,x30-x31 pool=24

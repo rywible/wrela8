@@ -27,10 +27,9 @@ Program
     0024: f94003eb  ldr x11, [sp, #0]
     0025: 8b04016b  add x11, x11, x4
     0026: 39400160  ldrb w0, [x11, #0]
-    0027: 14000002  b #8
-    0028: 14000001  b #4
-    0029: 910043ff  add sp, sp, #16
-    0030: d65f03c0  ret
+    0027: 14000001  b #4
+    0028: 910043ff  add sp, sp, #16
+    0029: d65f03c0  ret
   Rodata
     0: offset=0x0 index 
     1: offset=0x6  out of bounds (Bytes)

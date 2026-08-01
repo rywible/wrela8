@@ -760,6 +760,91 @@ mod tests {
         (prog, spans, ids)
     }
 
+    /// **B4's own bridge oracle** — the exact thing M20 decision 1608 was
+    /// protecting, asked of the transform that broke it the first time
+    /// (plans/codegen-pareto-B.md B4, landed by
+    /// plans/codegen-pareto-2.md item L, decision 1973).
+    ///
+    /// Item B's revert message was
+    /// `` bridge: fn `Ledger.mark` block 0 ends at word 42 which is not an
+    /// emitted-word block leader ``. The landed form must produce **no**
+    /// such error, and it must do so while actually deleting words —
+    /// otherwise this passes for the boring reason.
+    ///
+    /// What is asserted is block **identity**, not merely that the build
+    /// succeeded: the same Lane 2 keys resolve, with the same ordinals and
+    /// the same fns, before and after. Every Lane 2 block still means
+    /// exactly what it meant; the emitted-word partition underneath it is
+    /// one block coarser per fn, and that merge lands inside the final
+    /// span, whose `word_end` is `code_len` either way.
+    #[test]
+    fn an_elided_branch_chain_still_resolves_its_lane_2_block_identity() {
+        use crate::opts::{OptId, RELEASE_OPTS, apply_opts};
+
+        let without: Vec<OptId> = RELEASE_OPTS
+            .iter()
+            .copied()
+            .filter(|o| *o != OptId::BranchCleanup)
+            .collect();
+        let t = table();
+
+        let build = |opts: &[OptId], case: &str| {
+            apply_opts(opts);
+            crate::codegen::set_block_bridge(true);
+            let prog = crate::cost::codegen_cost_stage(&corpus(case)).expect("cost-stage codegen");
+            let spans = crate::codegen::block_spans();
+            crate::codegen::set_block_bridge(false);
+            let bridge = BlockBridge::build(&prog, &spans, &t, &PlacementTable::default())
+                .unwrap_or_else(|e| panic!("{case}: bridge must agree: {e}"));
+            let words: usize = prog.fns.values().map(|f| f.code.len()).sum();
+            let word_blocks: u64 = prog
+                .fns
+                .values()
+                .map(|f| basic_block_ranges(&f.code).len() as u64)
+                .sum();
+            (bridge, words, word_blocks)
+        };
+
+        for case in ["boot-actors", "cost-runtime", "boot-hello"] {
+            let (off, off_words, off_wb) = build(&without, case);
+            let (on, on_words, on_wb) = build(RELEASE_OPTS, case);
+
+            // Not vacuous: B4 really deleted branch words here.
+            assert!(
+                on_words < off_words,
+                "{case}: B4 deleted nothing, so this oracle proves nothing \
+                 ({off_words} vs {on_words} words)"
+            );
+            // And the emitted-word partition really did get coarser — the
+            // merge decision 1608 fails closed on, happening.
+            assert!(
+                on_wb < off_wb,
+                "{case}: no emitted-word blocks merged ({off_wb} vs {on_wb}), \
+                 so the disagreement this rule guards is not being exercised"
+            );
+
+            // The Lane 2 identity is untouched, key for key.
+            let keys_off: Vec<&String> = off.blocks().map(|(k, _)| k).collect();
+            let keys_on: Vec<&String> = on.blocks().map(|(k, _)| k).collect();
+            assert_eq!(
+                keys_off, keys_on,
+                "{case}: B4 changed which Lane 2 blocks exist"
+            );
+            assert_eq!(
+                off.block_count, on.block_count,
+                "{case}: Lane 2 block count moved"
+            );
+            for ((k, b_off), (_, b_on)) in off.blocks().zip(on.blocks()) {
+                assert_eq!(
+                    (b_off.fn_key.as_str(), b_off.block_index),
+                    (b_on.fn_key.as_str(), b_on.block_index),
+                    "{case}: block `{k}` changed identity"
+                );
+            }
+        }
+        crate::opts::apply_mode(crate::opts::CompileMode::Release);
+    }
+
     /// **The bridge-agreement oracle** (decision 1608), on real corpus
     /// closures rather than a synthetic stream: the two partitions agree.
     ///
@@ -1198,12 +1283,25 @@ mod tests {
         // exactly what it explained before, in two fewer blocks. Attributed
         // by ablation: with `MaskCheck` alone removed from `RELEASE_OPTS`
         // every number here returns to its M20 value.
+        //
+        // **188 -> 187 at plans/codegen-pareto-2.md item L** (decision
+        // 1975), and this is the number that shows B4 is boundary-
+        // preserving rather than boundary-breaking. `BranchCleanup`
+        // deletes each fn's trailing branch to the epilogue, which merges
+        // the epilogue's word block into the last body block — a merge
+        // that happens *inside* the final Lane 2 span, whose `word_end` is
+        // `code_len` either way. So exactly one emitted-word block
+        // disappears, and **`resolved_keys` / `unresolved_keys` /
+        // `fn_count` do not move at all**: the same measurement still
+        // explains the same Lane 2 blocks. Had the transform merged a
+        // Lane 2 boundary, `BlockBridge::build` would have refused the
+        // whole build (decision 1608 rule 4) rather than shifted a count.
         assert_eq!(
-            mb.measured_word_blocks, 188,
+            mb.measured_word_blocks, 187,
             "emitted-word blocks the measurement reaches"
         );
         assert_eq!(
-            mb.hot_word_blocks, 188,
+            mb.hot_word_blocks, 187,
             "the committed sidecar carries only non-zero hits, so every measured block is hot"
         );
         assert_eq!(mb.fn_count(), 14, "scored fns the measurement reaches");
@@ -1215,8 +1313,8 @@ mod tests {
             .map(|f| basic_block_ranges(&f.code).len() as u64)
             .sum();
         assert_eq!(
-            all_word_blocks, 331,
-            "emitted-word blocks in the scored closure — every one of them is hot under W_flat"
+            all_word_blocks, 312,
+            "emitted-word blocks in the scored closure — every one of them is hot under W_flat              (331 before item L's B4 deleted one trailing branch per fn, decision 1975)"
         );
         assert!(
             mb.hot_word_blocks < all_word_blocks,
@@ -1240,7 +1338,9 @@ mod tests {
                     branch_mispredict_charge(point.get("mispredict_penalty"), terms.bias_at(w));
             }
         }
-        assert_eq!(branches, 264, "branch words in the scored closure");
+        // 264 -> 243 at item L: B4 deletes 21 unconditional branch words
+        // from this closure, one per fn whose body ends in a `Return`.
+        assert_eq!(branches, 243, "branch words in the scored closure");
         assert_eq!(
             biased, 14,
             "branches a real measured vector can bias — the number item J must not mistake \

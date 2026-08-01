@@ -6,7 +6,7 @@ Program
       0000: ConstInt dst=t1 ty=usize value=0
       0001: SetField base=t0 index=0 value=t1
       0002: Return
-  Fn key=Store.map_ok ret=u64 temps=16 receiver=t0:mut
+  Fn key=Store.map_ok ret=u64 temps=18 receiver=t0:mut
     Temp t0 ty=Store
     Temp t1 ty=u64
     Temp t2 ty=u64
@@ -20,9 +20,11 @@ Program
     Temp t10 ty=u64
     Temp t11 ty=[u64; 2]
     Temp t12 ty=[u64; 2]
-    Temp t13 ty=u64
+    Temp t13 ty=usize
     Temp t14 ty=u64
-    Temp t15 ty=u64
+    Temp t15 ty=usize
+    Temp t16 ty=u64
+    Temp t17 ty=u64
     Body
       0000: ConstInt dst=t1 ty=u64 value=4
       0001: ConstInt dst=t2 ty=u64 value=5
@@ -36,11 +38,13 @@ Program
       0009: Call key=double dst=t10 args=[t9]
       0010: MakeAggregate dst=t11 elems=[t7,t10]
       0011: Copy dst=t12 src=t11
-      0012: Project dst=t13 base=t12 index=0
-      0013: Project dst=t14 base=t12 index=1
-      0014: ArithChecked op=+ ty=u64 dst=t15 lhs=t13 rhs=t14 abort="arithmetic overflow in `+`"
-      0015: Return value=t15
-      0016: Return
+      0012: ConstInt dst=t13 ty=usize value=0
+      0013: IndexGet dst=t14 base=t12 index=t13 len=2
+      0014: ConstInt dst=t15 ty=usize value=1
+      0015: IndexGet dst=t16 base=t12 index=t15 len=2
+      0016: ArithChecked op=+ ty=u64 dst=t17 lhs=t14 rhs=t16 abort="arithmetic overflow in `+`"
+      0017: Return value=t17
+      0018: Return
   Fn key=Store.try_err ret=u64 temps=46 receiver=t0:mut
     Temp t0 ty=Store
     Temp t1 ty=u64

@@ -173,7 +173,6 @@
 //! one — recorded in the session report as the honest finding it is,
 //! not papered over with an invented case.
 
-use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::eval::value::{self, Value};
@@ -190,29 +189,14 @@ use crate::sema::typed::{
 use crate::sema::types::{Type, TypeArg};
 use crate::syntax::ast::{self, AccessMode, BinOp};
 
-// plans/M18.md item I / freeze 1307 + plans/M19.md item D / 1440–1449:
-// proved literal-index bounds elision for `[T; N]`. Product default =
-// `CompileMode::Release` = elide **on** (byte-compatible with today's
-// release-shaped goldens). `opts::apply_mode` is the front door
-// (decision 1422); this TLS is the knob it drives. Surgical A/B may
-// still call `set_bounds_elide` directly. Cost tags / scoreboard stay
-// always-on regardless of mode (freeze 1408) — modes flip emission only.
-thread_local! {
-    static BOUNDS_ELIDE: Cell<bool> = const { Cell::new(true) };
-}
-
-/// plans/M19.md item D: enable/disable literal `[T; N]` index → Project
-/// / SetField elision for the current thread. Prefer
-/// `opts::apply_mode(Release|Dev)`; this is the TLS primitive it sets.
-pub fn set_bounds_elide(enabled: bool) {
-    BOUNDS_ELIDE.with(|c| c.set(enabled));
-}
-
-/// Whether literal `[T; N]` index bounds elision is enabled.
-/// Default `true` matches `apply_mode(Release)` / product default path.
-pub(crate) fn bounds_elide() -> bool {
-    BOUNDS_ELIDE.with(|c| c.get())
-}
+// `BoundsElide` — proved literal-index bounds elision for `[T; N]`
+// (plans/M18.md item I, plans/M19.md item D) — was **deleted** by
+// plans/codegen-pareto-2.md item L, decision 1970. It was byte-identical
+// to `dev` on all four programs the appliance ships; its whole measured
+// effect was six microbenchmarks. Every `[T; N]` index, literal or not,
+// now lowers to `IndexGet` / `IndexSet` and keeps its runtime bounds
+// check in both `dev` and `release`. The **check** is not an
+// optimization and was never the thing deleted.
 
 /// The one lowering diagnostic: printed by `bin/wrela.rs` as
 /// `error[unimplemented]: <message>`, matching this compiler's existing
@@ -2432,23 +2416,15 @@ fn lower_place_write(
             }
             let (base_temp, needs_writeback) = materialize_place_mut(base, b, env)?;
             let len = eval_array_len(&base.ty)?;
-            // plans/M18.md item I / freeze 1307: literal index in range →
-            // SetField (no runtime bounds check). Mirrors IndexGet → Project.
-            if let Some(i) = literal_array_index_elide(idx_expr, len)? {
-                b.emit(Inst::SetField {
-                    base: base_temp,
-                    index: i,
-                    value,
-                });
-            } else {
-                let idx_temp = lower_expr(idx_expr, b, env)?;
-                b.emit(Inst::IndexSet {
-                    base: base_temp,
-                    index: idx_temp,
-                    value,
-                    len,
-                });
-            }
+            // Decision 1970: every `[T; N]` index store keeps its runtime
+            // bounds check. The literal-index → `SetField` elision is gone.
+            let idx_temp = lower_expr(idx_expr, b, env)?;
+            b.emit(Inst::IndexSet {
+                base: base_temp,
+                index: idx_temp,
+                value,
+                len,
+            });
             if needs_writeback {
                 lower_place_write(base, base_temp, b, env)?;
             }
@@ -3192,19 +3168,9 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
                 });
                 return Ok(dst);
             }
-            // plans/M18.md item I / freeze 1307: `[T; N]` with a proved
-            // literal index → Project (same shape as `Bytes[N]` above).
-            // Dynamic / unproved indices keep IndexGet + runtime check.
+            // Decision 1970: every `[T; N]` index keeps IndexGet and its
+            // runtime bounds check, literal index or not.
             let len = eval_array_len(&base.ty)?;
-            if let Some(i) = literal_array_index_elide(idx_expr, len)? {
-                let dst = b.fresh(expr.ty.clone());
-                b.emit(Inst::Project {
-                    dst,
-                    base: base_temp,
-                    index: i,
-                });
-                return Ok(dst);
-            }
             let idx_temp = lower_expr(idx_expr, b, env)?;
             let dst = b.fresh(expr.ty.clone());
             b.emit(Inst::IndexGet {
@@ -4957,27 +4923,6 @@ fn lower_array_map_take(
     Ok(result)
 }
 
-/// plans/M18.md item I: when bounds elision is on and `idx_expr` is an
-/// `Int` literal with `0 <= i < len`, return `Some(i)` so the caller can
-/// emit `Project` / `SetField` instead of `IndexGet` / `IndexSet`.
-fn literal_array_index_elide(
-    idx_expr: &TypedExpr,
-    len: usize,
-) -> Result<Option<usize>, LowerError> {
-    if !bounds_elide() {
-        return Ok(None);
-    }
-    let TypedExprKind::Int(text) = &idx_expr.kind else {
-        return Ok(None);
-    };
-    let raw = value::parse_int_literal(text)
-        .ok_or_else(|| LowerError::internal("invalid integer literal text"))?;
-    let Ok(i) = usize::try_from(raw) else {
-        return Ok(None);
-    };
-    if i < len { Ok(Some(i)) } else { Ok(None) }
-}
-
 /// `base`'s own array length, resolved at lowering time — a literal, or
 /// a plain module `const` reference (module doc's own fail-closed
 /// enumeration covers anything else, and `Bytes`).
@@ -5300,94 +5245,61 @@ pub fn add_one(x: u64) -> u64:
         assert!(matches!(f.body.last(), Some(Inst::Return { .. })));
     }
 
-    /// plans/M18.md item I / M19 item D: literal `[T; N]` index → Project
-    /// when BoundsElide is on (`apply_mode(Release)`); IndexGet when off
-    /// (`Dev`).
+    /// Decision 1970 deleted `BoundsElide`, **not** the bounds check.
+    /// A literal `[T; N]` index now keeps `IndexGet` / `IndexSet` — and
+    /// therefore the runtime check `emit_index_addr` builds from `len` —
+    /// in *both* modes. `Project` / `SetField` on an array must never
+    /// reappear: that shape was the elision.
     #[test]
-    fn literal_fixed_array_index_elides_to_project() {
-        let program = typed_program(
-            "module examples.lower_bounds_elide
+    fn literal_fixed_array_index_keeps_its_bounds_check_in_both_modes() {
+        let get = typed_program(
+            "module examples.lower_array_index_checked
 
 pub fn at_zero(a: [u64; 4]) -> u64:
     return a[0]
 ",
         );
-        apply_mode(CompileMode::Release);
-        let mwir = lower_program(&program).expect("must lower cleanly");
-        let f = mwir.fns.get("at_zero").expect("fn lowered");
-        assert!(
-            f.body
-                .iter()
-                .any(|i| matches!(i, Inst::Project { index: 0, .. })),
-            "enabled: expected Project index=0, got {:?}",
-            f.body
-        );
-        assert!(
-            f.body.iter().all(|i| !matches!(i, Inst::IndexGet { .. })),
-            "enabled: must not emit IndexGet, got {:?}",
-            f.body
-        );
-
-        apply_mode(CompileMode::Dev);
-        let mwir_off = lower_program(&program).expect("must lower cleanly");
-        let f_off = mwir_off.fns.get("at_zero").expect("fn lowered");
-        assert!(
-            f_off
-                .body
-                .iter()
-                .any(|i| matches!(i, Inst::IndexGet { len: 4, .. })),
-            "disabled: expected IndexGet len=4, got {:?}",
-            f_off.body
-        );
-        assert!(
-            f_off
-                .body
-                .iter()
-                .all(|i| !matches!(i, Inst::Project { .. })),
-            "disabled: must not emit Project, got {:?}",
-            f_off.body
-        );
-        apply_mode(CompileMode::Release);
-    }
-
-    /// plans/M18.md item I / M19 item D: literal IndexSet → SetField when
-    /// BoundsElide is on (`Release`); IndexSet when off (`Dev`).
-    #[test]
-    fn literal_fixed_array_index_set_elides_to_set_field() {
-        let program = typed_program(
-            "module examples.lower_bounds_elide_set
+        let set = typed_program(
+            "module examples.lower_array_index_set_checked
 
 pub fn write_zero(mut a: [u64; 4], v: u64):
     a[0] = v
 ",
         );
-        apply_mode(CompileMode::Release);
-        let mwir = lower_program(&program).expect("must lower cleanly");
-        let f = mwir.fns.get("write_zero").expect("fn lowered");
-        assert!(
-            f.body
-                .iter()
-                .any(|i| matches!(i, Inst::SetField { index: 0, .. })),
-            "enabled: expected SetField index=0, got {:?}",
-            f.body
-        );
-        assert!(
-            f.body.iter().all(|i| !matches!(i, Inst::IndexSet { .. })),
-            "enabled: must not emit IndexSet, got {:?}",
-            f.body
-        );
 
-        apply_mode(CompileMode::Dev);
-        let mwir_off = lower_program(&program).expect("must lower cleanly");
-        let f_off = mwir_off.fns.get("write_zero").expect("fn lowered");
-        assert!(
-            f_off
-                .body
-                .iter()
-                .any(|i| matches!(i, Inst::IndexSet { len: 4, .. })),
-            "disabled: expected IndexSet len=4, got {:?}",
-            f_off.body
-        );
+        for mode in [CompileMode::Release, CompileMode::Dev] {
+            apply_mode(mode);
+
+            let mwir = lower_program(&get).expect("must lower cleanly");
+            let f = mwir.fns.get("at_zero").expect("fn lowered");
+            assert!(
+                f.body
+                    .iter()
+                    .any(|i| matches!(i, Inst::IndexGet { len: 4, .. })),
+                "{mode:?}: literal read must keep IndexGet len=4, got {:?}",
+                f.body
+            );
+            assert!(
+                f.body.iter().all(|i| !matches!(i, Inst::Project { .. })),
+                "{mode:?}: the elision to Project is deleted, got {:?}",
+                f.body
+            );
+
+            let mwir = lower_program(&set).expect("must lower cleanly");
+            let f = mwir.fns.get("write_zero").expect("fn lowered");
+            assert!(
+                f.body
+                    .iter()
+                    .any(|i| matches!(i, Inst::IndexSet { len: 4, .. })),
+                "{mode:?}: literal write must keep IndexSet len=4, got {:?}",
+                f.body
+            );
+            assert!(
+                f.body.iter().all(|i| !matches!(i, Inst::SetField { .. })),
+                "{mode:?}: the elision to SetField is deleted, got {:?}",
+                f.body
+            );
+        }
         apply_mode(CompileMode::Release);
     }
 

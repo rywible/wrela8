@@ -60,14 +60,14 @@ ImageReport v0
   CoreStack core=1 base=0x7fe00000 size=0x100000
   CoreStack core=2 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=56756
-  Section name=rodata base=0x4050de08 size=690
-  Section name=abort base=0x4050e0bc size=120
-  Section name=checkpoint base=0x4050e134 size=28
+  Section name=code base=0x40500050 size=55448
+  Section name=rodata base=0x4050d8e8 size=690
+  Section name=abort base=0x4050db9c size=120
+  Section name=checkpoint base=0x4050dc14 size=28
   Section name=rtdata base=0x40540000 size=1368
   Entry base=0x40500000
-  CoreEntry core=1 base=0x4050db0c
-  CoreEntry core=2 base=0x4050db48
+  CoreEntry core=1 base=0x4050d5fc
+  CoreEntry core=2 base=0x4050d634
   PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
@@ -165,18 +165,18 @@ ImageReport v0
   Turns count=2 stride=512 bytes=1024
   Rings count=2 stride=64 padding=48 bytes=176
   Totals actors=1 drivers=0 ready_queue=2 group_arena=0 bytes=1368
-  Cost version=3 digest=ed181b5abc4dd5d5 total=18759 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=18759
-    Owner name=app proxy_cycles=1112
-    Owner name=runtime proxy_cycles=17647
+  Cost version=3 digest=ed181b5abc4dd5d5 total=18369 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=18369
+    Owner name=app proxy_cycles=1038
+    Owner name=runtime proxy_cycles=17331
     Owner name=driver proxy_cycles=0
     Core n=0 proxy_cycles=0 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn_model=n/a
-    Budget n=0 hot_text_bytes=69504 hot_code_bytes=55672 slack_lines=0 l1i_bytes=65536 over_l1i_lines=62 over_l2_lines=0 text_pages=17 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=434
-    Core n=1 proxy_cycles=112 max_turn_proxy=43 turns_per_sec=55813953.4883720949 ms_per_turn_model=0.0000179167
-    Budget n=1 hot_text_bytes=69696 hot_code_bytes=55800 slack_lines=0 l1i_bytes=65536 over_l1i_lines=65 over_l2_lines=0 text_pages=18 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=455
-    Core n=2 proxy_cycles=16 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn_model=n/a
-    Budget n=2 hot_text_bytes=69568 hot_code_bytes=55712 slack_lines=0 l1i_bytes=65536 over_l1i_lines=63 over_l2_lines=0 text_pages=17 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=441
-    Shared proxy_cycles=18631
+    Budget n=0 hot_text_bytes=69376 hot_code_bytes=54388 slack_lines=0 l1i_bytes=65536 over_l1i_lines=60 over_l2_lines=0 text_pages=17 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=420
+    Core n=1 proxy_cycles=98 max_turn_proxy=42 turns_per_sec=57142857.1428571418 ms_per_turn_model=0.0000175
+    Budget n=1 hot_text_bytes=69568 hot_code_bytes=54504 slack_lines=0 l1i_bytes=65536 over_l1i_lines=63 over_l2_lines=0 text_pages=17 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=441
+    Core n=2 proxy_cycles=15 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn_model=n/a
+    Budget n=2 hot_text_bytes=69440 hot_code_bytes=54424 slack_lines=0 l1i_bytes=65536 over_l1i_lines=61 over_l2_lines=0 text_pages=17 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=427
+    Shared proxy_cycles=18256
   Convention fns=324 frameless=241 tail_calls=1
     Fn key=Off.get frame=16 residents=2 regs=x0 clobbers=x0,x9-x10,x30-x31 pool=24
     Fn key=Off.init frame=16 residents=2 regs=x1-x2 clobbers=x0-x2,x9-x10,x30-x31 pool=24

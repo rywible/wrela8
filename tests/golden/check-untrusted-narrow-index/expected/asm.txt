@@ -40,7 +40,7 @@ Program
     0037: f900012a  str x10, [x9, #0]
     0038: f9401fea  ldr x10, [sp, #56]
     0039: f900052a  str x10, [x9, #8]
-    0040: 14000022  b #136
+    0040: 14000021  b #132
     0041: d280008a  movz x10, #0x4
     0042: eb0a009f  cmp x4, x10
     0043: 54000203  b.cc #64
@@ -72,10 +72,9 @@ Program
     0069: f900012a  str x10, [x9, #0]
     0070: f94027ea  ldr x10, [sp, #72]
     0071: f900052a  str x10, [x9, #8]
-    0072: 14000002  b #8
-    0073: 14000001  b #4
-    0074: 910183ff  add sp, sp, #96
-    0075: d65f03c0  ret
+    0072: 14000001  b #4
+    0073: 910183ff  add sp, sp, #96
+    0074: d65f03c0  ret
   Rodata
     0: offset=0x0 index 
     1: offset=0x6  out of bounds (length 4)

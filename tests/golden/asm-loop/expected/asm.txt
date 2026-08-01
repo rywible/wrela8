@@ -62,10 +62,9 @@ Program
     0059: aa1703e6  mov x6, x23
     0060: 17ffffd1  b #-188
     0061: aa0403e0  mov x0, x4
-    0062: 14000002  b #8
-    0063: 14000001  b #4
-    0064: 910083ff  add sp, sp, #32
-    0065: d65f03c0  ret
+    0062: 14000001  b #4
+    0063: 910083ff  add sp, sp, #32
+    0064: d65f03c0  ret
   Fn key=sum_to frame=0 bytes
     0000: aa0003e1  mov x1, x0
     0001: d2800002  movz x2, #0x0
@@ -113,9 +112,8 @@ Program
     0043: aa0f03e3  mov x3, x15
     0044: 17ffffd8  b #-160
     0045: aa0203e0  mov x0, x2
-    0046: 14000002  b #8
-    0047: 14000001  b #4
-    0048: d65f03c0  ret
+    0046: 14000001  b #4
+    0047: d65f03c0  ret
   Rodata
     0: offset=0x0 assertion failed: loop budget exceeded
     1: offset=0x26 index 

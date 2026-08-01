@@ -1,13 +1,11 @@
 Program
   Fn key=consume frame=0 bytes
-    0000: 14000002  b #8
-    0001: 14000001  b #4
-    0002: d65f03c0  ret
+    0000: 14000001  b #4
+    0001: d65f03c0  ret
   Fn key=consume_box frame=0 bytes
     0000: f9400000  ldr x0, [x0, #0]
-    0001: 14000002  b #8
-    0002: 14000001  b #4
-    0003: d65f03c0  ret
+    0001: 14000001  b #4
+    0002: d65f03c0  ret
   Fn key=use_takes frame=64 bytes
     0000: d10103ff  sub sp, sp, #64
     0001: f9001ffe  str lr, [sp, #56]
@@ -109,11 +107,10 @@ Program
     0097: f90007e9  str x9, [sp, #8]  ; Bytes.len
     0098: 910003e0  add x0, sp, #0  ; *Bytes
     0099: 94000000  bl <__wrela_abort>
-    0100: 14000002  b #8
-    0101: 14000001  b #4
-    0102: f9401ffe  ldr lr, [sp, #56]
-    0103: 910103ff  add sp, sp, #64
-    0104: d65f03c0  ret
+    0100: 14000001  b #4
+    0101: f9401ffe  ldr lr, [sp, #56]
+    0102: 910103ff  add sp, sp, #64
+    0103: d65f03c0  ret
   Rodata
     0: offset=0x0 assertion failed: loop budget exceeded
     1: offset=0x26 index 

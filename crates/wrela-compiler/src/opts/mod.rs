@@ -20,8 +20,12 @@ pub enum CompileMode {
 
 /// Named opts that `apply_mode(Release)` may enable.
 ///
-/// Two ids at M19 (decision 1421): lower-side bounds elision and codegen
-/// narrow immediates. plans/codegen-pareto.md adds five more: item B's
+/// M19 (decision 1421) named two: lower-side bounds elision and codegen
+/// narrow immediates. `BoundsElide` was **deleted** by
+/// plans/codegen-pareto-2.md item L (decision 1970) — it was
+/// byte-identical to `dev` on all four programs the appliance ships, and
+/// losers are deleted, not kept disabled. plans/codegen-pareto.md adds
+/// five more: item B's
 /// one-word `ADR` addressing (decision 1730), item C's three arithmetic
 /// substitutions, and item E's per-function register allocation
 /// (decision 1760).
@@ -37,7 +41,6 @@ pub enum CompileMode {
 /// would be a claimed win with no evidence behind it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OptId {
-    BoundsElide,
     NarrowImm,
     /// Item B: one `ADR` where an `ADRP`+`ADD` pair stood.
     AdrAddressing,
@@ -58,12 +61,17 @@ pub enum OptId {
     /// Item F3: a function with nothing left to keep gets no frame
     /// (decision 1772).
     Frameless,
+    /// Item B4, landed by plans/codegen-pareto-2.md item L: an
+    /// unconditional branch to the next emitted word is deleted, where
+    /// deleting it merges no Lane 2 block (decision 1973).
+    BranchCleanup,
 }
 
 /// Fixed release order. Add opts here — nowhere else.
 ///
-/// Order is part of the product (decision 1423): BoundsElide then
-/// NarrowImm, then item B's `AdrAddressing`, then item C's three in the
+/// Order is part of the product (decision 1423): `NarrowImm` first —
+/// `BoundsElide` used to precede it and was deleted by decision 1970 —
+/// then item B's `AdrAddressing`, then item C's three in the
 /// order their transforms compose — `WideImmForms` after `MaskCheck`
 /// because `MaskCheck` deletes most of the constant materializations
 /// `WideImmForms` would otherwise shorten, and the gate is run in this
@@ -96,7 +104,6 @@ pub enum OptId {
 /// dependence: each one's transform is only reachable once the one
 /// before it has fired.
 pub const RELEASE_OPTS: &[OptId] = &[
-    OptId::BoundsElide,
     OptId::NarrowImm,
     OptId::AdrAddressing,
     OptId::BfxNarrow,
@@ -105,12 +112,12 @@ pub const RELEASE_OPTS: &[OptId] = &[
     OptId::RegAlloc,
     OptId::InterprocRegs,
     OptId::Frameless,
+    OptId::BranchCleanup,
 ];
 
 /// Enable exactly the named opts (decision 1452). Product modes go
 /// through [`apply_mode`]; tests and candidate A/B use this directly.
 pub fn apply_opts(opts: &[OptId]) {
-    crate::lower::set_bounds_elide(opts.contains(&OptId::BoundsElide));
     crate::codegen::set_narrow_imm(opts.contains(&OptId::NarrowImm));
     crate::codegen::set_adr_addressing(opts.contains(&OptId::AdrAddressing));
     crate::codegen::set_bfx_narrow(opts.contains(&OptId::BfxNarrow));
@@ -119,6 +126,7 @@ pub fn apply_opts(opts: &[OptId]) {
     crate::regalloc::set_regalloc(opts.contains(&OptId::RegAlloc));
     crate::regalloc::set_interproc_regs(opts.contains(&OptId::InterprocRegs));
     crate::codegen::set_frameless_fns(opts.contains(&OptId::Frameless));
+    crate::codegen::set_branch_cleanup(opts.contains(&OptId::BranchCleanup));
 }
 
 /// Single front door for product-mode TLS knobs (decision 1422).
@@ -133,16 +141,14 @@ pub fn apply_mode(mode: CompileMode) {
 mod tests {
     use super::*;
     use crate::codegen::{
-        adr_addressing, bfx_narrow, frameless_fns, mask_check, narrow_imm, wide_imm_forms,
+        adr_addressing, bfx_narrow, branch_cleanup, frameless_fns, mask_check, narrow_imm,
+        wide_imm_forms,
     };
-    use crate::lower::bounds_elide;
-
     /// Every knob `apply_opts` drives, read back. Written as one list so a
     /// new `OptId` whose knob is never wired reads as a failure here
     /// rather than as a silently inert entry in `RELEASE_OPTS`.
     fn live_knobs() -> Vec<(OptId, bool)> {
         vec![
-            (OptId::BoundsElide, bounds_elide()),
             (OptId::NarrowImm, narrow_imm()),
             (OptId::AdrAddressing, adr_addressing()),
             (OptId::BfxNarrow, bfx_narrow()),
@@ -151,6 +157,7 @@ mod tests {
             (OptId::RegAlloc, crate::regalloc::regalloc()),
             (OptId::InterprocRegs, crate::regalloc::interproc_regs()),
             (OptId::Frameless, frameless_fns()),
+            (OptId::BranchCleanup, branch_cleanup()),
         ]
     }
 
@@ -206,7 +213,6 @@ mod tests {
         assert_eq!(
             RELEASE_OPTS,
             &[
-                OptId::BoundsElide,
                 OptId::NarrowImm,
                 OptId::AdrAddressing,
                 OptId::BfxNarrow,
@@ -215,6 +221,7 @@ mod tests {
                 OptId::RegAlloc,
                 OptId::InterprocRegs,
                 OptId::Frameless,
+                OptId::BranchCleanup,
             ]
         );
         // Decision 1774: everything the *probe* must see precedes
@@ -228,33 +235,25 @@ mod tests {
             .collect();
         assert_eq!(
             after,
-            vec![OptId::InterprocRegs, OptId::Frameless],
-            "only allocation-reading opts may follow the allocator"
+            vec![OptId::InterprocRegs, OptId::Frameless, OptId::BranchCleanup],
+            "only allocation-reading opts, and B4 — which deletes a word \
+             the allocator never reads — may follow the allocator"
         );
     }
 
     #[test]
     fn apply_opts_enables_only_named() {
         apply_opts(&[OptId::NarrowImm]);
-        assert!(!bounds_elide());
         assert!(narrow_imm());
         assert!(!adr_addressing());
         assert!(!crate::regalloc::regalloc());
 
-        apply_opts(&[OptId::BoundsElide]);
-        assert!(bounds_elide());
-        assert!(!narrow_imm());
-        assert!(!adr_addressing());
-        assert!(!crate::regalloc::regalloc());
-
         apply_opts(&[OptId::AdrAddressing]);
-        assert!(!bounds_elide());
         assert!(!narrow_imm());
         assert!(adr_addressing());
         assert!(!crate::regalloc::regalloc());
 
         apply_opts(&[OptId::RegAlloc]);
-        assert!(!bounds_elide());
         assert!(!narrow_imm());
         assert!(!adr_addressing());
         assert!(crate::regalloc::regalloc());

@@ -61,10 +61,10 @@ ImageReport v0
   Cores count=1
   CoreStack core=0 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=55996
-  Section name=rodata base=0x4050db10 size=562
-  Section name=abort base=0x4050dd44 size=120
-  Section name=checkpoint base=0x4050ddbc size=28
+  Section name=code base=0x40500050 size=54708
+  Section name=rodata base=0x4050d608 size=562
+  Section name=abort base=0x4050d83c size=120
+  Section name=checkpoint base=0x4050d8b4 size=28
   Section name=rtdata base=0x40540000 size=416
   Entry base=0x40500000
   PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
@@ -161,14 +161,14 @@ ImageReport v0
   Actor name=Probe mailbox=4 slot=16 frame=64 state=8
   Turns count=2 stride=64 bytes=128
   Totals actors=2 drivers=0 ready_queue=3 group_arena=0 bytes=416
-  Cost version=3 digest=ed181b5abc4dd5d5 total=18389 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=18389
-    Owner name=app proxy_cycles=783
-    Owner name=runtime proxy_cycles=17606
+  Cost version=3 digest=ed181b5abc4dd5d5 total=17990 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=17990
+    Owner name=app proxy_cycles=697
+    Owner name=runtime proxy_cycles=17293
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=192 max_turn_proxy=43 turns_per_sec=55813953.4883720949 ms_per_turn_model=0.0000179167
-    Budget n=0 hot_text_bytes=68416 hot_code_bytes=55056 slack_lines=0 l1i_bytes=65536 over_l1i_lines=45 over_l2_lines=0 text_pages=17 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=5 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=315
-    Shared proxy_cycles=18197
+    Core n=0 proxy_cycles=166 max_turn_proxy=42 turns_per_sec=57142857.1428571418 ms_per_turn_model=0.0000175
+    Budget n=0 hot_text_bytes=68224 hot_code_bytes=53764 slack_lines=0 l1i_bytes=65536 over_l1i_lines=42 over_l2_lines=0 text_pages=17 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=5 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=294
+    Shared proxy_cycles=17824
   Convention fns=323 frameless=239 tail_calls=2
     Fn key=Probe.init frame=16 residents=2 regs=x1-x2 clobbers=x0-x2,x9-x10,x30-x31 pool=24
     Fn key=Probe.ready frame=16 residents=2 regs=x0 clobbers=x0,x9-x10,x30-x31 pool=24

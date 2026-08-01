@@ -2,41 +2,41 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
   Provenance T1=39 T2=19 T3=0 T4=10 T5=16 rows=84
   Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method valid_for=static_shape_opts workload=flat pseudo_lru=modelled_as_lru
   Composition sum_of_fn_schedules=1
-  Total proxy_cycles=359
-  Workload name=flat proxy_cycles=359
-  Owner name=app proxy_cycles=359
+  Total proxy_cycles=354
+  Workload name=flat proxy_cycles=354
+  Owner name=app proxy_cycles=354
   Owner name=runtime proxy_cycles=0
   Owner name=driver proxy_cycles=0
-  Fn key=alu_chain owner=app proxy_cycles=9
+  Fn key=alu_chain owner=app proxy_cycles=8
     Term rule=alu count=16
-    Term rule=branch count=3
+    Term rule=branch count=2
     Term rule=mov_wide count=5
-  Fn key=checked_mul owner=app proxy_cycles=89
+  Fn key=checked_mul owner=app proxy_cycles=88
     Term rule=abort count=6
     Term rule=adrp count=6
     Term rule=alu count=29
-    Term rule=branch count=9
+    Term rule=branch count=8
     Term rule=mov_wide count=11
     Term rule=mul count=6
     Term rule=mul_high count=6
     Term rule=store count=12
-  Fn key=div_chain owner=app proxy_cycles=136
+  Fn key=div_chain owner=app proxy_cycles=135
     Term rule=abort count=6
     Term rule=adrp count=6
     Term rule=alu count=29
-    Term rule=branch count=9
+    Term rule=branch count=8
     Term rule=mov_wide count=11
     Term rule=store count=12
     Term rule=udiv count=6
-  Fn key=sdiv_chain owner=app proxy_cycles=94
+  Fn key=sdiv_chain owner=app proxy_cycles=93
     Term rule=abort count=6
     Term rule=adrp count=6
     Term rule=alu count=26
-    Term rule=branch count=12
+    Term rule=branch count=11
     Term rule=mov_wide count=14
     Term rule=sdiv count=3
     Term rule=store count=12
-  Fn key=wrap_mul owner=app proxy_cycles=31
+  Fn key=wrap_mul owner=app proxy_cycles=30
     Term rule=alu count=5
-    Term rule=branch count=3
+    Term rule=branch count=2
     Term rule=mul count=6

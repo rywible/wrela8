@@ -19,10 +19,9 @@ Program
     0016: f900012a  str x10, [x9, #0]
     0017: f94007ea  ldr x10, [sp, #8]
     0018: f900052a  str x10, [x9, #8]
-    0019: 14000002  b #8
-    0020: 14000001  b #4
-    0021: 910083ff  add sp, sp, #32
-    0022: d65f03c0  ret
+    0019: 14000001  b #4
+    0020: 910083ff  add sp, sp, #32
+    0021: d65f03c0  ret
   Fn key=use_ok frame=16 bytes
     0000: d10043ff  sub sp, sp, #16
     0001: f9400002  ldr x2, [x0, #0]
@@ -46,7 +45,7 @@ Program
     0019: d2800022  movz x2, #0x1
     0020: 8a020083  and x3, x4, x2
     0021: b4000063  cbz x3, #12
-    0022: 14000016  b #88
+    0022: 14000015  b #84
     0023: 14000014  b #80
     0024: f94003e9  ldr x9, [sp, #0]
     0025: aa0903e2  mov x2, x9
@@ -58,7 +57,7 @@ Program
     0031: 8a020083  and x3, x4, x2
     0032: b4000083  cbz x3, #16
     0033: d2800000  movz x0, #0x0
-    0034: 1400000a  b #40
+    0034: 14000009  b #36
     0035: 14000008  b #32
     0036: d10043ff  sub sp, sp, #16  ; abort Bytes slot
     0037: 10000009  adr x9, rodata+0x0
@@ -67,8 +66,7 @@ Program
     0040: f90007e9  str x9, [sp, #8]  ; Bytes.len
     0041: 910003e0  add x0, sp, #0  ; *Bytes
     0042: 94000000  bl <__wrela_abort>
-    0043: 14000001  b #4
-    0044: 910043ff  add sp, sp, #16
-    0045: d65f03c0  ret
+    0043: 910043ff  add sp, sp, #16
+    0044: d65f03c0  ret
   Rodata
     0: offset=0x0 assertion failed: match: no arm matched (exhaustiveness already proved this cannot happen)
