@@ -58,10 +58,10 @@ ImageReport v0
   Cores count=1
   CoreStack core=0 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=77576
-  Section name=rodata base=0x40512f58 size=538
-  Section name=abort base=0x40513174 size=120
-  Section name=checkpoint base=0x405131ec size=28
+  Section name=code base=0x40500050 size=55004
+  Section name=rodata base=0x4050d730 size=538
+  Section name=abort base=0x4050d94c size=120
+  Section name=checkpoint base=0x4050d9c4 size=28
   Section name=rtdata base=0x40540000 size=248
   Entry base=0x40500000
   PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
@@ -157,15 +157,17 @@ ImageReport v0
   Actor name=Store mailbox=8 slot=16 frame=64 state=8
   Turns count=1 stride=64 bytes=64
   Totals actors=1 drivers=0 ready_queue=2 group_arena=0 bytes=248
-  Cost version=3 digest=b2484a1b9c00d7fa total=22726 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=22726
-    Owner name=app proxy_cycles=902
-    Owner name=runtime proxy_cycles=21824
+  Cost version=3 digest=ed181b5abc4dd5d5 total=18088 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=18088
+    Owner name=app proxy_cycles=706
+    Owner name=runtime proxy_cycles=17382
     Owner name=driver proxy_cycles=0
     Core n=0 proxy_cycles=97 max_turn_proxy=43 turns_per_sec=55813953.4883720949 ms_per_turn_model=0.0000179167
-    Budget n=0 hot_text_bytes=86848 l1i_bytes=65536 over_l1i_lines=333 over_l2_lines=0 text_pages=22 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=5 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=2331
-    Shared proxy_cycles=22629
-  Convention fns=80 frameless=50 tail_calls=1
+    Budget n=0 hot_text_bytes=68032 hot_code_bytes=54208 slack_lines=0 l1i_bytes=65536 over_l1i_lines=39 over_l2_lines=0 text_pages=17 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=5 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=273
+    Shared proxy_cycles=17991
+  Convention fns=322 frameless=241 tail_calls=1
+    Fn key=Store.budget_ns frame=16 residents=2 regs=x0-x1 clobbers=x0-x1,x9-x10,x30-x31 pool=24
+    Fn key=Store.init frame=16 residents=4 regs=x0-x1,x3 clobbers=x0-x3,x9-x12,x30-x31 pool=24
     Fn key=__boot_call_0 frame=0 residents=0 regs=none clobbers=all pool=27
     Fn key=__boot_call_1 frame=0 residents=0 regs=none clobbers=all pool=27
     Fn key=__boot_call_10 frame=0 residents=0 regs=none clobbers=all pool=27
@@ -198,6 +200,38 @@ ImageReport v0
     Fn key=__boot_call_7 frame=0 residents=0 regs=none clobbers=all pool=27
     Fn key=__boot_call_8 frame=0 residents=0 regs=none clobbers=all pool=27
     Fn key=__boot_call_9 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__enqueue_0 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
+    Fn key=__enqueue_1 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
+    Fn key=__enqueue_10 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
+    Fn key=__enqueue_11 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
+    Fn key=__enqueue_12 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
+    Fn key=__enqueue_13 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
+    Fn key=__enqueue_14 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
+    Fn key=__enqueue_15 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
+    Fn key=__enqueue_16 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
+    Fn key=__enqueue_17 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
+    Fn key=__enqueue_18 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
+    Fn key=__enqueue_19 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
+    Fn key=__enqueue_2 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
+    Fn key=__enqueue_20 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
+    Fn key=__enqueue_21 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
+    Fn key=__enqueue_22 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
+    Fn key=__enqueue_23 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
+    Fn key=__enqueue_24 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
+    Fn key=__enqueue_25 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
+    Fn key=__enqueue_26 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
+    Fn key=__enqueue_27 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
+    Fn key=__enqueue_28 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
+    Fn key=__enqueue_29 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
+    Fn key=__enqueue_3 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
+    Fn key=__enqueue_30 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
+    Fn key=__enqueue_31 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
+    Fn key=__enqueue_4 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
+    Fn key=__enqueue_5 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
+    Fn key=__enqueue_6 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
+    Fn key=__enqueue_7 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
+    Fn key=__enqueue_8 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
+    Fn key=__enqueue_9 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
     Fn key=__irq_call_0 frame=0 residents=0 regs=none clobbers=all pool=27
     Fn key=__irq_call_1 frame=0 residents=0 regs=none clobbers=all pool=27
     Fn key=__irq_call_2 frame=0 residents=0 regs=none clobbers=all pool=27
@@ -206,6 +240,150 @@ ImageReport v0
     Fn key=__irq_call_5 frame=0 residents=0 regs=none clobbers=all pool=27
     Fn key=__irq_call_6 frame=0 residents=0 regs=none clobbers=all pool=27
     Fn key=__irq_call_7 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__method_0 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_1 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_10 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_100 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_101 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_102 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_103 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_104 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_105 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_106 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_107 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_108 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_109 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_11 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_110 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_111 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_112 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_113 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_114 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_115 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_116 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_117 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_118 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_119 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_12 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_120 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_121 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_122 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_123 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_124 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_125 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_126 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_127 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_13 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_14 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_15 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_16 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_17 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_18 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_19 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_2 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_20 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_21 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_22 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_23 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_24 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_25 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_26 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_27 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_28 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_29 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_3 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_30 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_31 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_32 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_33 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_34 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_35 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_36 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_37 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_38 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_39 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_4 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_40 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_41 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_42 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_43 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_44 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_45 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_46 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_47 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_48 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_49 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_5 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_50 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_51 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_52 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_53 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_54 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_55 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_56 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_57 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_58 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_59 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_6 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_60 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_61 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_62 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_63 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_64 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_65 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_66 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_67 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_68 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_69 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_7 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_70 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_71 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_72 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_73 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_74 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_75 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_76 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_77 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_78 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_79 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_8 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_80 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_81 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_82 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_83 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_84 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_85 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_86 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_87 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_88 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_89 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_9 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_90 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_91 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_92 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_93 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_94 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_95 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_96 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_97 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_98 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__method_99 frame=0 residents=4 regs=x0-x2 clobbers=all pool=23
+    Fn key=__resume_0 frame=0 residents=1 regs=x0 clobbers=all pool=25
+    Fn key=__resume_1 frame=0 residents=1 regs=x0 clobbers=all pool=25
+    Fn key=__resume_10 frame=0 residents=1 regs=x0 clobbers=all pool=25
+    Fn key=__resume_11 frame=0 residents=1 regs=x0 clobbers=all pool=25
+    Fn key=__resume_12 frame=0 residents=1 regs=x0 clobbers=all pool=25
+    Fn key=__resume_13 frame=0 residents=1 regs=x0 clobbers=all pool=25
+    Fn key=__resume_14 frame=0 residents=1 regs=x0 clobbers=all pool=25
+    Fn key=__resume_15 frame=0 residents=1 regs=x0 clobbers=all pool=25
+    Fn key=__resume_2 frame=0 residents=1 regs=x0 clobbers=all pool=25
+    Fn key=__resume_3 frame=0 residents=1 regs=x0 clobbers=all pool=25
+    Fn key=__resume_4 frame=0 residents=1 regs=x0 clobbers=all pool=25
+    Fn key=__resume_5 frame=0 residents=1 regs=x0 clobbers=all pool=25
+    Fn key=__resume_6 frame=0 residents=1 regs=x0 clobbers=all pool=25
+    Fn key=__resume_7 frame=0 residents=1 regs=x0 clobbers=all pool=25
+    Fn key=__resume_8 frame=0 residents=1 regs=x0 clobbers=all pool=25
+    Fn key=__resume_9 frame=0 residents=1 regs=x0 clobbers=all pool=25
     Fn key=__wake_call_0 frame=0 residents=0 regs=none clobbers=all pool=27
     Fn key=__wake_call_1 frame=0 residents=0 regs=none clobbers=all pool=27
     Fn key=__wake_call_2 frame=0 residents=0 regs=none clobbers=all pool=27
@@ -214,35 +392,99 @@ ImageReport v0
     Fn key=__wake_call_5 frame=0 residents=0 regs=none clobbers=all pool=27
     Fn key=__wake_call_6 frame=0 residents=0 regs=none clobbers=all pool=27
     Fn key=__wake_call_7 frame=0 residents=0 regs=none clobbers=all pool=27
+    Fn key=__wrela_abort frame=32 residents=13 regs=x0-x4 clobbers=all pool=22
     Fn key=__wrela_abort_tail frame=0 residents=0 regs=none clobbers=all pool=27
-    Fn key=__wrela_block_hit frame=112 residents=1 regs=x4 clobbers=all pool=18
-    Fn key=__wrela_child_poll frame=544 residents=4 regs=x4 clobbers=all pool=18
-    Fn key=__wrela_child_store_result frame=96 residents=4 regs=x4-x7 clobbers=all pool=18
-    Fn key=__wrela_console_append_bytes frame=160 residents=3 regs=x3-x4,x6 clobbers=all pool=21
-    Fn key=__wrela_console_append_line_buf frame=112 residents=3 regs=x2-x3,x6 clobbers=all pool=22
-    Fn key=__wrela_deadline_poll frame=336 residents=6 regs=x4-x7 clobbers=all pool=18
-    Fn key=__wrela_deadline_scan frame=512 residents=7 regs=x4-x7 clobbers=all pool=18
-    Fn key=__wrela_deliver_reply frame=288 residents=2 regs=x4 clobbers=all pool=17
-    Fn key=__wrela_fmt_dec frame=480 residents=7 regs=x4-x7 clobbers=all pool=17
-    Fn key=__wrela_lane1_record_method frame=176 residents=2 regs=x4 clobbers=all pool=18
-    Fn key=__wrela_line_commit frame=304 residents=3 regs=x4-x5 clobbers=all pool=18
-    Fn key=__wrela_mb_get_count frame=1040 residents=1 regs=x1 clobbers=all pool=23
-    Fn key=__wrela_mb_get_head frame=1040 residents=1 regs=x1 clobbers=all pool=23
-    Fn key=__wrela_mb_get_tail frame=1040 residents=1 regs=x1 clobbers=all pool=23
-    Fn key=__wrela_mb_load_word frame=1040 residents=2 regs=x4-x5 clobbers=all pool=18
-    Fn key=__wrela_mb_set_count frame=784 residents=2 regs=x2-x3 clobbers=all pool=22
-    Fn key=__wrela_mb_set_head frame=784 residents=2 regs=x2-x3 clobbers=all pool=22
-    Fn key=__wrela_mb_set_tail frame=784 residents=2 regs=x2-x3 clobbers=all pool=22
-    Fn key=__wrela_mb_store_word frame=784 residents=3 regs=x4-x6 clobbers=all pool=18
-    Fn key=__wrela_rt_checkpoint frame=912 residents=2 regs=x4-x5 clobbers=all pool=18
-    Fn key=__wrela_rt_enqueue frame=544 residents=1 regs=x7 clobbers=all pool=14
-    Fn key=__wrela_rt_run_one frame=704 residents=1 regs=x4 clobbers=all pool=18
-    Fn key=__wrela_rt_select frame=1632 residents=4 regs=x5 clobbers=all pool=16
-    Fn key=__wrela_rt_xreply frame=368 residents=7 regs=x4-x8 clobbers=all pool=18
-    Fn key=__wrela_rt_xsend frame=592 residents=6 regs=x6-x8,x15 clobbers=all pool=15
+    Fn key=__wrela_abort_val frame=64 residents=19 regs=x0-x1,x4-x6 clobbers=all pool=20
+    Fn key=__wrela_block_hit frame=0 residents=14 regs=x4-x7 clobbers=all pool=18
+    Fn key=__wrela_boot_call frame=0 residents=5 regs=x0-x2 clobbers=all pool=23
+    Fn key=__wrela_call_method frame=16 residents=14 regs=x0-x6 clobbers=all pool=19
+    Fn key=__wrela_child_poll frame=48 residents=65 regs=x0-x1,x4-x6 clobbers=all pool=18
+    Fn key=__wrela_child_slot frame=0 residents=3 regs=x0-x1 clobbers=all pool=25
+    Fn key=__wrela_child_store_result frame=0 residents=16 regs=x0,x4-x8,x14 clobbers=all pool=18
+    Fn key=__wrela_child_turn_index frame=0 residents=3 regs=x0-x1 clobbers=all pool=25
+    Fn key=__wrela_console_append_bytes frame=32 residents=19 regs=x0-x4,x24 clobbers=all pool=21
+    Fn key=__wrela_console_append_line_buf frame=16 residents=16 regs=x0-x4,x25 clobbers=all pool=22
+    Fn key=__wrela_deadline_poll frame=80 residents=38 regs=x4-x8,x14-x17,x19-x27 clobbers=all pool=18
+    Fn key=__wrela_deadline_scan frame=256 residents=40 regs=x4-x8,x14-x17,x19-x27 clobbers=all pool=18
+    Fn key=__wrela_deliver_reply frame=48 residents=33 regs=x0-x1,x4-x7 clobbers=all pool=17
+    Fn key=__wrela_drain_reply_count frame=0 residents=6 regs=x0-x2 clobbers=all pool=23
+    Fn key=__wrela_drain_reply_edge frame=0 residents=7 regs=x0-x3 clobbers=all pool=22
+    Fn key=__wrela_drain_request_count frame=0 residents=6 regs=x0-x2 clobbers=all pool=23
+    Fn key=__wrela_drain_request_edge frame=0 residents=7 regs=x0-x3 clobbers=all pool=22
+    Fn key=__wrela_enqueue_local frame=64 residents=2 regs=x0,x7 clobbers=all pool=20
+    Fn key=__wrela_enqueue_root frame=0 residents=6 regs=x0-x2 clobbers=all pool=23
+    Fn key=__wrela_fmt_dec frame=48 residents=60 regs=x0-x1,x4-x8,x15-x17,x19-x27 clobbers=all pool=17
+    Fn key=__wrela_init_nwords frame=0 residents=6 regs=x0-x2 clobbers=all pool=23
+    Fn key=__wrela_init_store_word frame=0 residents=7 regs=x0-x1,x4-x6 clobbers=all pool=18
+    Fn key=__wrela_invoke_xreply frame=32 residents=25 regs=x0,x3-x4 clobbers=all pool=21
+    Fn key=__wrela_irq_invoke frame=0 residents=2 regs=x0-x1 clobbers=all pool=25
+    Fn key=__wrela_irq_mask frame=0 residents=3 regs=x0-x1 clobbers=all pool=25
+    Fn key=__wrela_lane1_method_flat frame=144 residents=3 regs=x0,x2 clobbers=all pool=22
+    Fn key=__wrela_lane1_record_method frame=16 residents=22 regs=x0-x1,x4-x7 clobbers=all pool=18
+    Fn key=__wrela_line_begin frame=0 residents=3 regs=x0-x1 clobbers=all pool=25
+    Fn key=__wrela_line_commit frame=0 residents=40 regs=x0,x4-x8,x14 clobbers=all pool=18
+    Fn key=__wrela_mb_capacity frame=0 residents=6 regs=x0-x2 clobbers=all pool=23
+    Fn key=__wrela_mb_core frame=0 residents=6 regs=x0-x2 clobbers=all pool=23
+    Fn key=__wrela_mb_get_count frame=0 residents=131 regs=x0-x3 clobbers=all pool=23
+    Fn key=__wrela_mb_get_head frame=0 residents=131 regs=x0-x3 clobbers=all pool=23
+    Fn key=__wrela_mb_get_tail frame=0 residents=131 regs=x0-x3 clobbers=all pool=23
+    Fn key=__wrela_mb_has_lineage frame=0 residents=6 regs=x0-x2 clobbers=all pool=23
+    Fn key=__wrela_mb_load_word frame=0 residents=132 regs=x0,x4-x7 clobbers=all pool=18
+    Fn key=__wrela_mb_method_count frame=0 residents=6 regs=x0-x2 clobbers=all pool=23
+    Fn key=__wrela_mb_set_count frame=0 residents=99 regs=x0-x3 clobbers=all pool=22
+    Fn key=__wrela_mb_set_head frame=0 residents=99 regs=x0-x3 clobbers=all pool=22
+    Fn key=__wrela_mb_set_tail frame=0 residents=99 regs=x0-x3 clobbers=all pool=22
+    Fn key=__wrela_mb_slot_words frame=0 residents=6 regs=x0-x2 clobbers=all pool=23
+    Fn key=__wrela_mb_state frame=0 residents=6 regs=x0-x2 clobbers=all pool=23
+    Fn key=__wrela_mb_store_word frame=0 residents=100 regs=x4-x8 clobbers=all pool=18
+    Fn key=__wrela_mb_turn_index frame=0 residents=6 regs=x0-x2 clobbers=all pool=23
+    Fn key=__wrela_method_is_aggregate frame=0 residents=11 regs=x0-x3 clobbers=all pool=22
+    Fn key=__wrela_method_suspends frame=0 residents=11 regs=x0-x3 clobbers=all pool=22
+    Fn key=__wrela_resume_child frame=0 residents=3 regs=x0-x1 clobbers=all pool=25
+    Fn key=__wrela_ring_capacity frame=0 residents=3 regs=x0-x1 clobbers=all pool=25
+    Fn key=__wrela_ring_dst_core frame=0 residents=3 regs=x0-x1 clobbers=all pool=25
+    Fn key=__wrela_ring_slot_words frame=0 residents=3 regs=x0-x1 clobbers=all pool=25
+    Fn key=__wrela_ring_src_core frame=0 residents=3 regs=x0-x1 clobbers=all pool=25
+    Fn key=__wrela_ring_target_handle frame=0 residents=3 regs=x0-x1 clobbers=all pool=25
+    Fn key=__wrela_rt_boot_init frame=288 residents=2 regs=x3 clobbers=all pool=21
+    Fn key=__wrela_rt_checkpoint frame=800 residents=17 regs=x4-x8,x14-x17,x19-x23 clobbers=all pool=18
+    Fn key=__wrela_rt_drain frame=1328 residents=9 regs=x0,x7-x8 clobbers=all pool=14
+    Fn key=__wrela_rt_enqueue frame=112 residents=56 regs=x0-x2,x7-x8,x15 clobbers=all pool=14
+    Fn key=__wrela_rt_run_one frame=592 residents=15 regs=x0,x4-x6 clobbers=all pool=18
+    Fn key=__wrela_rt_secondary_entry frame=128 residents=4 regs=x4-x5 clobbers=all pool=18
+    Fn key=__wrela_rt_select frame=128 residents=193 regs=x0-x3,x5-x8,x15 clobbers=all pool=16
+    Fn key=__wrela_rt_xreply frame=32 residents=48 regs=x4-x8,x14-x15 clobbers=all pool=18
+    Fn key=__wrela_rt_xsend frame=80 residents=70 regs=x0,x6-x8,x15-x17,x19-x21 clobbers=all pool=15
     Fn key=__wrela_runtime_probe frame=0 residents=0 regs=none clobbers=all pool=27
-    Fn key=__wrela_try_enqueue frame=112 residents=1 regs=x7 clobbers=all pool=17
-    Fn key=__wrela_try_select frame=64 residents=1 regs=x2 clobbers=all pool=22
-    Fn key=ascii_digit frame=256 residents=1 regs=x1 clobbers=x0-x1,x9-x11,x30-x31 pool=23
-    Fn key=copy_bytes_range frame=128 residents=2 regs=x4-x5 clobbers=x0-x5,x9-x13,x30-x31 pool=18
-    Fn key=copy_line_buf_range frame=112 residents=2 regs=x4-x5 clobbers=x0-x5,x9-x13,x30-x31 pool=18
+    Fn key=__wrela_select_count frame=0 residents=6 regs=x0-x2 clobbers=all pool=23
+    Fn key=__wrela_select_root frame=0 residents=11 regs=x0-x3 clobbers=all pool=22
+    Fn key=__wrela_try_drain frame=32 residents=7 regs=x0-x3 clobbers=all pool=23
+    Fn key=__wrela_try_enqueue frame=64 residents=7 regs=x0-x1,x7-x8 clobbers=all pool=17
+    Fn key=__wrela_try_select frame=16 residents=7 regs=x0-x4 clobbers=all pool=22
+    Fn key=__wrela_vector0 frame=16 residents=9 regs=x0-x3 clobbers=all pool=23
+    Fn key=__wrela_wake_invoke frame=0 residents=2 regs=x0-x1 clobbers=all pool=25
+    Fn key=__wrela_xreply_0 frame=16 residents=4 regs=x0,x2-x4 clobbers=all pool=23
+    Fn key=__wrela_xreply_1 frame=16 residents=4 regs=x0,x2-x4 clobbers=all pool=23
+    Fn key=__wrela_xreply_2 frame=16 residents=4 regs=x0,x2-x4 clobbers=all pool=23
+    Fn key=__wrela_xreply_3 frame=16 residents=4 regs=x0,x2-x4 clobbers=all pool=23
+    Fn key=__wrela_xreply_4 frame=16 residents=4 regs=x0,x2-x4 clobbers=all pool=23
+    Fn key=__wrela_xreply_5 frame=16 residents=4 regs=x0,x2-x4 clobbers=all pool=23
+    Fn key=__wrela_xreply_6 frame=16 residents=4 regs=x0,x2-x4 clobbers=all pool=23
+    Fn key=__wrela_xreply_7 frame=16 residents=4 regs=x0,x2-x4 clobbers=all pool=23
+    Fn key=__wrela_xreply_edge frame=0 residents=4 regs=x0-x2 clobbers=all pool=24
+    Fn key=__wrela_xsend_0 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
+    Fn key=__wrela_xsend_1 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
+    Fn key=__wrela_xsend_2 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
+    Fn key=__wrela_xsend_3 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
+    Fn key=__wrela_xsend_4 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
+    Fn key=__wrela_xsend_5 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
+    Fn key=__wrela_xsend_6 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
+    Fn key=__wrela_xsend_7 frame=16 residents=7 regs=x0,x5-x8,x10-x11 clobbers=all pool=20
+    Fn key=__wrela_xsend_edge frame=0 residents=4 regs=x0-x2 clobbers=all pool=24
+    Fn key=append_failed_literal frame=16 residents=23 regs=x0,x4-x6 clobbers=all pool=18
+    Fn key=append_newline_literal frame=16 residents=5 regs=x0,x4-x6 clobbers=all pool=18
+    Fn key=ascii_digit frame=0 residents=32 regs=x0-x3 clobbers=x0-x3,x9-x11,x30-x31 pool=23
+    Fn key=copy_bytes_range frame=16 residents=15 regs=x4-x8,x14-x17,x19-x23 clobbers=x0-x17,x19-x23,x30-x31 pool=18
+    Fn key=copy_line_buf_range frame=0 residents=16 regs=x4-x8,x14-x17,x19-x24 clobbers=x0-x17,x19-x24,x30-x31 pool=18
+    Fn key=finish_abort frame=16 residents=8 regs=x0-x3 clobbers=all pool=23
+    Fn key=ms frame=0 residents=4 regs=x0-x2 clobbers=x0-x2,x9-x12,x30-x31 pool=22

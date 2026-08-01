@@ -1,39 +1,35 @@
-Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reorder_window=128 digest=b2484a1b9c00d7fa provenance=e851020b74800045 ghz=2.4 workloads_digest=ad0a87410c842eff
+Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reorder_window=128 digest=ed181b5abc4dd5d5 provenance=673bbd943e50d8ea ghz=2.4 workloads_digest=ad0a87410c842eff
   Provenance T1=39 T2=19 T3=0 T4=10 T5=16 rows=84
   Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method valid_for=static_shape_opts workload=flat pseudo_lru=modelled_as_lru
   Composition sum_of_fn_schedules=1
-  Total proxy_cycles=347
-  Workload name=flat proxy_cycles=347
-  Owner name=app proxy_cycles=347
+  Total proxy_cycles=206
+  Workload name=flat proxy_cycles=206
+  Owner name=app proxy_cycles=206
   Owner name=runtime proxy_cycles=0
   Owner name=driver proxy_cycles=0
-  Fn key=checks owner=app proxy_cycles=79
+  Fn key=checks owner=app proxy_cycles=35
     Term rule=abort count=8
     Term rule=adrp count=8
-    Term rule=alu count=35
+    Term rule=alu count=24
     Term rule=branch count=11
-    Term rule=load count=17
     Term rule=mov_wide count=8
-    Term rule=store count=33
-  Fn key=ladder owner=app proxy_cycles=145
+    Term rule=store count=16
+  Fn key=ladder owner=app proxy_cycles=87
     Term rule=abort count=1
     Term rule=adrp count=1
-    Term rule=alu count=29
+    Term rule=alu count=25
     Term rule=branch count=26
-    Term rule=load count=33
+    Term rule=load count=1
     Term rule=mov_wide count=17
-    Term rule=store count=34
-  Fn key=nested owner=app proxy_cycles=77
-    Term rule=alu count=24
+    Term rule=store count=2
+  Fn key=nested owner=app proxy_cycles=56
+    Term rule=alu count=13
     Term rule=branch count=21
-    Term rule=load count=17
     Term rule=mov_wide count=11
-    Term rule=store count=17
-  Fn key=spin owner=app proxy_cycles=46
+  Fn key=spin owner=app proxy_cycles=28
     Term rule=abort count=2
     Term rule=adrp count=2
-    Term rule=alu count=26
+    Term rule=alu count=16
     Term rule=branch count=8
-    Term rule=load count=11
     Term rule=mov_wide count=9
-    Term rule=store count=15
+    Term rule=store count=4

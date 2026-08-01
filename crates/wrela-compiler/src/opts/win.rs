@@ -2912,12 +2912,33 @@ mod tests {
         // the list **as it stood before item F**, whose members are all
         // rankable alone. `release` is then required to beat that, which
         // is the claim item F is actually making.
+        // **Item I breaks it again, and further** (decision 1905). Even
+        // the pre-item-F list is now superadditive: coalescing and
+        // argument/return hinting mean a value's home *is* the register
+        // its consumer wants, so `RegAlloc`'s win is larger in the
+        // presence of the opts that decide where consumers put things
+        // than it is alone. The sum of singles undercounts the list by a
+        // small, real margin.
+        //
+        // The bound is therefore replaced by the *measurement*: how far
+        // the whole exceeds the sum of its parts. Pinned rather than
+        // dropped, and pinned as a ratio bound rather than a constant, so
+        // that a wild divergence — which would mean an attribution bug
+        // rather than composition — still fails loudly.
         let e_win = dev_cycles - sum("release-minus-F", |c| c.proxy_cycles);
+        let singles: i64 = wins.iter().map(|(_, w)| *w).sum();
+        let excess = e_win - singles;
         assert!(
-            e_win <= wins.iter().map(|(_, w)| *w).sum::<i64>(),
-            "the pre-item-F list's win cannot exceed the sum of its singles: \
-             {e_win} vs {wins:?}
-{table}"
+            excess > 0,
+            "item I made this list superadditive; if the singles now bound it \
+             again, coalescing or hinting has stopped composing: \
+             {e_win} vs {singles}\n{table}"
+        );
+        assert!(
+            excess * 200 < singles,
+            "the whole may exceed the sum of its parts by composition, but not \
+             by this much — {excess} on {singles} is past what hinting can \
+             explain and reads as an attribution bug\n{table}"
         );
         assert!(
             rel_win > e_win,
@@ -4778,9 +4799,10 @@ mod tests {
         );
         assert_eq!(
             (w_form, x_form),
-            (93, 96),
-            "the measured size of C1's win once item E removed the frame slack; \
-             re-measure this rather than rescaling it"
+            (42, 75),
+            "the measured size of C1's win once item E removed the frame slack \
+             and item I coalesced the allocator's copies; re-measure this rather \
+             than rescaling it"
         );
 
         // Walk the counterfactual X-form latency up until it does not, so

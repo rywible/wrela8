@@ -14,16 +14,19 @@ ImageReport v0
   Cores count=1
   CoreStack core=0 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=192
-  Section name=rodata base=0x40500110 size=26
-  Section name=abort base=0x4050012c size=120
-  Section name=checkpoint base=0x405001a4 size=4
+  Section name=code base=0x40500050 size=140
+  Section name=rodata base=0x405000e0 size=26
+  Section name=abort base=0x405000fc size=120
+  Section name=checkpoint base=0x40500174 size=4
   Entry base=0x40500000
-  Cost version=3 digest=b2484a1b9c00d7fa total=47 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=47
-    Owner name=app proxy_cycles=47
+  Cost version=3 digest=ed181b5abc4dd5d5 total=30 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=30
+    Owner name=app proxy_cycles=30
     Owner name=runtime proxy_cycles=0
     Owner name=driver proxy_cycles=0
     Core n=0 proxy_cycles=0 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn_model=n/a
-    Budget n=0 hot_text_bytes=256 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 text_pages=1 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=1 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0
-    Shared proxy_cycles=47
+    Budget n=0 hot_text_bytes=192 hot_code_bytes=140 slack_lines=0 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 text_pages=1 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=1 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0
+    Shared proxy_cycles=30
+  Convention fns=2 frameless=1 tail_calls=0
+    Fn key=add_one frame=0 residents=3 regs=x0-x2 clobbers=x0-x2,x9-x11,x30-x31 pool=23
+    Fn key=compute frame=16 residents=4 regs=x0,x2-x3 clobbers=x0-x3,x9-x11,x30-x31 pool=22

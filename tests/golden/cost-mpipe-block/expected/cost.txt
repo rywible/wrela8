@@ -1,49 +1,42 @@
-Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reorder_window=128 digest=b2484a1b9c00d7fa provenance=e851020b74800045 ghz=2.4 workloads_digest=ad0a87410c842eff
+Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reorder_window=128 digest=ed181b5abc4dd5d5 provenance=673bbd943e50d8ea ghz=2.4 workloads_digest=ad0a87410c842eff
   Provenance T1=39 T2=19 T3=0 T4=10 T5=16 rows=84
   Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method valid_for=static_shape_opts workload=flat pseudo_lru=modelled_as_lru
   Composition sum_of_fn_schedules=1
-  Total proxy_cycles=506
-  Workload name=flat proxy_cycles=506
-  Owner name=app proxy_cycles=506
+  Total proxy_cycles=359
+  Workload name=flat proxy_cycles=359
+  Owner name=app proxy_cycles=359
   Owner name=runtime proxy_cycles=0
   Owner name=driver proxy_cycles=0
-  Fn key=alu_chain owner=app proxy_cycles=43
-    Term rule=alu count=32
+  Fn key=alu_chain owner=app proxy_cycles=9
+    Term rule=alu count=16
     Term rule=branch count=3
-    Term rule=load count=27
     Term rule=mov_wide count=5
-    Term rule=store count=27
-  Fn key=checked_mul owner=app proxy_cycles=144
+  Fn key=checked_mul owner=app proxy_cycles=89
     Term rule=abort count=6
     Term rule=adrp count=6
-    Term rule=alu count=44
+    Term rule=alu count=29
     Term rule=branch count=9
-    Term rule=load count=27
     Term rule=mov_wide count=11
     Term rule=mul count=6
     Term rule=mul_high count=6
-    Term rule=store count=39
-  Fn key=div_chain owner=app proxy_cycles=175
+    Term rule=store count=12
+  Fn key=div_chain owner=app proxy_cycles=136
     Term rule=abort count=6
     Term rule=adrp count=6
-    Term rule=alu count=44
+    Term rule=alu count=29
     Term rule=branch count=9
-    Term rule=load count=27
     Term rule=mov_wide count=11
-    Term rule=store count=39
+    Term rule=store count=12
     Term rule=udiv count=6
-  Fn key=sdiv_chain owner=app proxy_cycles=112
+  Fn key=sdiv_chain owner=app proxy_cycles=94
     Term rule=abort count=6
     Term rule=adrp count=6
-    Term rule=alu count=35
+    Term rule=alu count=26
     Term rule=branch count=12
-    Term rule=load count=12
     Term rule=mov_wide count=14
     Term rule=sdiv count=3
-    Term rule=store count=24
-  Fn key=wrap_mul owner=app proxy_cycles=32
-    Term rule=alu count=21
+    Term rule=store count=12
+  Fn key=wrap_mul owner=app proxy_cycles=31
+    Term rule=alu count=5
     Term rule=branch count=3
-    Term rule=load count=17
     Term rule=mul count=6
-    Term rule=store count=17

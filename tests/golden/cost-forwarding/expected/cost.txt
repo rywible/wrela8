@@ -1,24 +1,20 @@
-Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reorder_window=128 digest=b2484a1b9c00d7fa provenance=e851020b74800045 ghz=2.4 workloads_digest=ad0a87410c842eff
+Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reorder_window=128 digest=ed181b5abc4dd5d5 provenance=673bbd943e50d8ea ghz=2.4 workloads_digest=ad0a87410c842eff
   Provenance T1=39 T2=19 T3=0 T4=10 T5=16 rows=84
   Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method valid_for=static_shape_opts workload=flat pseudo_lru=modelled_as_lru
   Composition sum_of_fn_schedules=1
-  Total proxy_cycles=306
-  Workload name=flat proxy_cycles=306
-  Owner name=app proxy_cycles=306
+  Total proxy_cycles=244
+  Workload name=flat proxy_cycles=244
+  Owner name=app proxy_cycles=244
   Owner name=runtime proxy_cycles=0
   Owner name=driver proxy_cycles=0
-  Fn key=cross_block owner=app proxy_cycles=23
-    Term rule=alu count=14
+  Fn key=cross_block owner=app proxy_cycles=18
+    Term rule=alu count=4
     Term rule=branch count=6
-    Term rule=load count=7
-    Term rule=store count=7
-  Fn key=forwarded owner=app proxy_cycles=14
-    Term rule=alu count=15
+  Fn key=forwarded owner=app proxy_cycles=4
+    Term rule=alu count=4
     Term rule=branch count=3
-    Term rule=load count=7
-    Term rule=store count=7
-  Fn key=l1_path owner=app proxy_cycles=269
+  Fn key=l1_path owner=app proxy_cycles=222
     Term rule=alu count=9
     Term rule=branch count=3
-    Term rule=load count=79
-    Term rule=store count=71
+    Term rule=load count=56
+    Term rule=store count=48

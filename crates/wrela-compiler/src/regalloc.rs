@@ -269,10 +269,17 @@ pub struct CallWord {
 /// cases.
 #[derive(Clone, Debug, Default)]
 pub struct PointFacts {
-    /// `(temp index, touch, word index within this point)`, in emission
-    /// order. The word index is what makes the call barrier precise
-    /// enough to be worth having — see [`allocate`]'s step 4.
-    pub touches: Vec<(usize, Touch, usize)>,
+    /// `(temp index, touch, word index within this point, register)`, in
+    /// emission order. The word index is what makes the call barrier
+    /// precise enough to be worth having — see [`allocate`]'s step 4.
+    ///
+    /// The **register** is the one the emitter moved that value through
+    /// at that access, and it is item I's argument/return-position input
+    /// (decision 1902): an access at a fixed-role register — `x0..x7` at
+    /// a call site, `x0` at a `Return`, the incoming parameter register
+    /// in the prologue — is a copy whose other end this module can
+    /// coalesce by *choosing that register as the temp's home*.
+    pub touches: Vec<(usize, Touch, usize, u8)>,
     /// Every `CostRule::Call` word this point emits: a call that
     /// returns, and therefore a point at which the callee's clobber set
     /// takes effect. `CostRule::Abort`/`AbortVal` are noreturn and are
@@ -282,6 +289,17 @@ pub struct PointFacts {
     /// a `src`. The pool is intersected with the complement of the union
     /// over all points.
     pub regs: BTreeSet<u8>,
+    /// The same information at **word** grain: `(word index, register)`
+    /// for every register each word of this point names.
+    ///
+    /// [`regs`](Self::regs) answers "does this function use `x1`", which
+    /// is the only question a per-function pool can ask and the reason
+    /// item F could not reach argument position: a function with any call
+    /// at all names `x1`, so `free_pool` withholds it from every temp.
+    /// This field answers the question that was actually wanted — "is
+    /// `x1` busy *here*" — and item I's [`hint_admissible`] is what turns
+    /// it into a decision.
+    pub word_regs: Vec<(usize, u8)>,
 }
 
 /// Everything the allocator is told about one function. Every field is
@@ -351,10 +369,21 @@ impl Assignment {
     }
 }
 
-/// A temp's closed live interval over program points.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// A closed live interval over program points, and the temps that share
+/// it.
+///
+/// It is a *set* of temps rather than one because of item I's coalescing
+/// (plans/codegen-pareto-2.md, decision 1901): when a copy's two ends do
+/// not otherwise interfere they are one value in one register, and the
+/// copy is then not an instruction at all.
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Interval {
-    temp: usize,
+    /// Every temp in this class, ascending. One entry before coalescing.
+    temps: Vec<usize>,
+    /// The lowest temp number in `temps`: the scan's tie-break key, so
+    /// the order is a function of the facts alone (CLAUDE.md,
+    /// determinism through dumbness).
+    key: usize,
     start: usize,
     end: usize,
     /// Registers this interval may **not** occupy, because a callee it
@@ -362,6 +391,21 @@ struct Interval {
     /// call; [`ALL_REGS`] under item E's total barrier, which is why
     /// the same scan expresses both policies.
     forbidden: RegSet,
+    /// Item I's coalescing hints, in preference order: fixed-role
+    /// registers the emitter already moves this value through, each one
+    /// verified free over the whole interval by [`hint_admissible`].
+    /// Taking one deletes the copy at every access that uses it.
+    hints: Vec<u8>,
+}
+
+/// Union-find over temps, used only by [`coalesce`]. A plain `Vec` with
+/// path halving — no interning, no arena (CLAUDE.md).
+fn uf_find(parent: &mut [usize], mut x: usize) -> usize {
+    while parent[x] != x {
+        parent[x] = parent[parent[x]];
+        x = parent[x];
+    }
+    x
 }
 
 /// Every register this function's own baseline emission names, as a
@@ -403,7 +447,7 @@ pub fn free_pool(facts: &FnFacts, base_pool: &[u8]) -> Vec<u8> {
 /// `scalar_slot[t]` says the temp occupies exactly one 8-byte frame
 /// slot; anything wider is refused before the scan even looks at it.
 pub fn allocate(facts: &FnFacts, scalar_slot: &[bool]) -> Assignment {
-    allocate_with(facts, scalar_slot, POOL, None, true)
+    allocate_with(facts, scalar_slot, POOL, None, false)
 }
 
 /// Decide residency for one function under item F's rules.
@@ -437,7 +481,7 @@ pub fn allocate_with(
         .map(|t| scalar_slot.get(t).copied().unwrap_or(false))
         .collect();
     for p in &facts.points {
-        for &(t, touch, _) in &p.touches {
+        for &(t, touch, _, _) in &p.touches {
             if t < n && touch == Touch::Escape {
                 eligible[t] = false;
             }
@@ -470,7 +514,7 @@ pub fn allocate_with(
     // write and one read deletes nothing.
     let mut reads: Vec<usize> = vec![0; n];
     for p in &facts.points {
-        for &(t, touch, _) in &p.touches {
+        for &(t, touch, _, _) in &p.touches {
             if t < n && touch == Touch::Read {
                 reads[t] += 1;
             }
@@ -488,7 +532,7 @@ pub fn allocate_with(
     let mut first: Vec<Option<usize>> = vec![None; n];
     let mut last: Vec<Option<usize>> = vec![None; n];
     for (i, p) in facts.points.iter().enumerate() {
-        for &(t, _, _) in &p.touches {
+        for &(t, _, _, _) in &p.touches {
             if t >= n {
                 continue;
             }
@@ -502,10 +546,12 @@ pub fn allocate_with(
         .filter(|&t| eligible[t])
         .filter_map(|t| match (first[t], last[t]) {
             (Some(a), Some(b)) => Some(Interval {
-                temp: t,
+                temps: vec![t],
+                key: t,
                 start: a,
                 end: b,
                 forbidden: 0,
+                hints: Vec::new(),
             }),
             _ => None,
         })
@@ -594,8 +640,8 @@ pub fn allocate_with(
             }
             let mut lo_w: Option<usize> = None;
             let mut hi_w: Option<usize> = None;
-            for &(t, _, w) in &p.touches {
-                if t != iv.temp {
+            for &(t, _, w, _) in &p.touches {
+                if !iv.temps.contains(&t) {
                     continue;
                 }
                 lo_w = Some(lo_w.map_or(w, |c: usize| c.min(w)));
@@ -636,18 +682,34 @@ pub fn allocate_with(
             }
         }
     }
-    intervals.retain(|iv| pool_mask & !iv.forbidden != 0);
+    // --- 5b. coalescing (item I, decisions 1901 / 1902) ---------------
+    coalesce(facts, &mut intervals, pool_mask);
+    for iv in intervals.iter_mut() {
+        iv.hints = hints_for(facts, iv);
+    }
+
+    // An interval survives if it can take *some* register: one of the
+    // pool's, or one of the fixed-role registers item I proved free over
+    // its whole range.
+    intervals.retain(|iv| {
+        let hint_mask: RegSet = iv.hints.iter().fold(0, |m, &r| m | reg_bit(r));
+        (pool_mask | hint_mask) & !iv.forbidden != 0
+    });
     if intervals.is_empty() {
         return out;
     }
 
     // --- 6. the scan --------------------------------------------------
-    intervals.sort_by_key(|iv| (iv.start, iv.temp));
+    intervals.sort_by(|a, b| (a.start, a.key).cmp(&(b.start, b.key)));
     let mut free: BTreeSet<u8> = pool.iter().copied().collect();
     // `active` stays sorted by (end, temp): the eviction victim is its
     // last element, and expiry drops everything that ended earlier.
     let mut active: Vec<(usize, usize, u8)> = Vec::new(); // (end, temp, reg)
     let mut assigned: BTreeMap<usize, u8> = BTreeMap::new();
+    // Item I: hinted registers live outside the pool, so they get their
+    // own occupancy book — `reg -> the end point of the class holding
+    // it`. A later interval may take it only once that end has passed.
+    let mut hint_held: BTreeMap<u8, usize> = BTreeMap::new();
 
     for iv in &intervals {
         // Expire everything that ended strictly before this start.
@@ -661,18 +723,52 @@ pub fn allocate_with(
         }
         active = still;
 
+        // **Item I, decision 1902.** A hint is a fixed-role register the
+        // emitter already moves this value through, and [`hints_for`] has
+        // already proved it free over the whole interval. Taking it
+        // deletes a `mov` at every access that uses it — the whole of
+        // argument and return position. Hints are tried before the pool,
+        // and a hint outside the pool is booked in `hint_held` so a
+        // second, overlapping interval cannot take it too.
+        let mut pick = None;
+        for &r in &iv.hints {
+            if iv.forbidden & reg_bit(r) != 0 {
+                continue;
+            }
+            if pool_mask & reg_bit(r) != 0 {
+                // Also a pool register: bias towards it, but it is the
+                // ordinary `free` set that says whether it is available.
+                if free.contains(&r) {
+                    pick = Some(r);
+                    break;
+                }
+            } else if hint_held.get(&r).is_none_or(|&e| e < iv.start) {
+                hint_held.insert(r, iv.end);
+                assigned.insert(iv.key, r);
+                pick = Some(r);
+                break;
+            }
+        }
+        if let Some(r) = pick {
+            if pool_mask & reg_bit(r) == 0 {
+                // A hinted register outside the pool: already booked.
+                active.sort_by_key(|&(end, temp, _)| (end, temp));
+                continue;
+            }
+        }
         // The lowest free register this interval is *allowed* to take.
         // Under item E `forbidden` is only ever `0` or `ALL_REGS`, so
         // this reduces exactly to "the lowest free register".
-        let pick = free
-            .iter()
-            .copied()
-            .find(|&r| iv.forbidden & reg_bit(r) == 0);
+        let pick = pick.or_else(|| {
+            free.iter()
+                .copied()
+                .find(|&r| iv.forbidden & reg_bit(r) == 0)
+        });
         match pick {
             Some(reg) => {
                 free.remove(&reg);
-                assigned.insert(iv.temp, reg);
-                active.push((iv.end, iv.temp, reg));
+                assigned.insert(iv.key, reg);
+                active.push((iv.end, iv.key, reg));
             }
             None => {
                 // Furthest-end heuristic: keep the shorter-lived value.
@@ -686,11 +782,11 @@ pub fn allocate_with(
                     .filter(|&(_, _, reg)| iv.forbidden & reg_bit(reg) == 0)
                     .max_by_key(|&(end, temp, _)| (end, temp));
                 match victim {
-                    Some((vend, vtemp, vreg)) if vend > iv.end => {
-                        assigned.remove(&vtemp);
-                        active.retain(|&(_, t, _)| t != vtemp);
-                        assigned.insert(iv.temp, vreg);
-                        active.push((iv.end, iv.temp, vreg));
+                    Some((vend, vkey, vreg)) if vend > iv.end => {
+                        assigned.remove(&vkey);
+                        active.retain(|&(_, k, _)| k != vkey);
+                        assigned.insert(iv.key, vreg);
+                        active.push((iv.end, iv.key, vreg));
                     }
                     // This interval outlives every active one: it stays
                     // in the frame, which is simply today's behaviour.
@@ -701,10 +797,224 @@ pub fn allocate_with(
         active.sort_by_key(|&(end, temp, _)| (end, temp));
     }
 
-    for (t, r) in assigned {
-        out.reg[t] = Some(r);
+    for iv in &intervals {
+        if let Some(&r) = assigned.get(&iv.key) {
+            for &t in &iv.temps {
+                out.reg[t] = Some(r);
+            }
+        }
     }
     out
+}
+
+/// **Item I's coalescing** (plans/codegen-pareto-2.md, decision 1901).
+///
+/// A copy is two live ranges that meet at exactly one program point and
+/// are otherwise disjoint. The scan cannot see that: both ranges contain
+/// the copy's point, so they "interfere", get different registers, and
+/// the copy survives as a `mov`. That is precisely the 161 moves item E
+/// added to the appliance image. This pass merges such a pair into one
+/// interval *before* the scan runs, so the two ends get one register and
+/// `FnCtx::mov_reg` elides the copy outright.
+///
+/// **What counts as a copy is measured, not asserted.** A copy point is
+/// a point whose entire slot traffic is one `Read` of `s` followed by one
+/// `Write` of `d` — read off the probe's own emission, exactly like every
+/// other fact this module consumes (decision 1761). That signature also
+/// catches `Neg`, `Not`, `BitNot`, `Convert`, `EnumTag`, `PtrOffset`, a
+/// scalar `Project` and an `MmioRead`: every MWIR instruction with one
+/// source temp and one destination temp. Merging those is not an
+/// approximation — a single-source instruction reads its operand and
+/// writes its result in one instruction, so `neg x4, x4` and
+/// `ldr x4, [x4, #8]` are exactly as correct as `mov x4, x4` is
+/// unnecessary, and each is one word instead of two.
+///
+/// **The merge condition is the whole proof.** `s` and `d` are merged
+/// only when the copy point is `s`'s class's *last* point and `d`'s
+/// class's *first*, so the union of the two ranges is the single interval
+/// `[s.start, d.end]` and no other value is live inside it that was not
+/// live inside one of them. Classes are merged iteratively in point
+/// order against their *current* extents, so a chain `y = x; z = y`
+/// collapses onto one register and a merge that would create an overlap
+/// is refused rather than approximated. A point that emits a returning
+/// call is never a copy point: the barrier owns those.
+fn coalesce(facts: &FnFacts, intervals: &mut Vec<Interval>, pool_mask: RegSet) {
+    if intervals.len() < 2 {
+        return;
+    }
+    let n = facts.temp_count;
+    // temp -> index into `intervals`, and the union-find that merges them.
+    let mut idx: Vec<Option<usize>> = vec![None; n];
+    for (i, iv) in intervals.iter().enumerate() {
+        idx[iv.temps[0]] = Some(i);
+    }
+    let mut parent: Vec<usize> = (0..intervals.len()).collect();
+    let mut merged = false;
+
+    for (i, p) in facts.points.iter().enumerate() {
+        if !p.call_words.is_empty() || p.touches.len() != 2 {
+            continue;
+        }
+        let (s, sh, sw, _) = p.touches[0];
+        let (d, dh, dw, _) = p.touches[1];
+        if sh != Touch::Read || dh != Touch::Write || s == d || sw > dw {
+            continue;
+        }
+        let (Some(si), Some(di)) = (idx.get(s).copied().flatten(), idx.get(d).copied().flatten())
+        else {
+            continue;
+        };
+        let (cs, cd) = (uf_find(&mut parent, si), uf_find(&mut parent, di));
+        if cs == cd {
+            continue;
+        }
+        // The two ranges must meet at this point and nowhere else, and
+        // the merged class must still have a register it may occupy.
+        if intervals[cs].end != i || intervals[cd].start != i {
+            continue;
+        }
+        let forbidden = intervals[cs].forbidden | intervals[cd].forbidden;
+        if pool_mask & !forbidden == 0 {
+            continue;
+        }
+        let hints = Vec::new();
+        let (start, end) = (intervals[cs].start, intervals[cd].end);
+        let mut temps = std::mem::take(&mut intervals[cd].temps);
+        temps.append(&mut intervals[cs].temps);
+        temps.sort_unstable();
+        temps.dedup();
+        let key = temps[0];
+        intervals[cs] = Interval {
+            temps,
+            key,
+            start,
+            end,
+            forbidden,
+            hints,
+        };
+        // `cd` is now empty; point it at `cs` and leave the husk to be
+        // dropped below.
+        parent[cd] = cs;
+        merged = true;
+    }
+
+    if merged {
+        intervals.retain(|iv| !iv.temps.is_empty());
+    }
+}
+
+/// The highest register item I will hint. `x0..=x8` are the fixed-role
+/// registers — the argument/result set — and they are the *only* place
+/// argument and return position can live. Nothing above them is hinted:
+/// `x9..x17` are the emitter's scratch set, and a scratch register the
+/// emission never names is already an ordinary pool register, so hinting
+/// it would buy nothing that [`free_pool`] does not already give.
+pub const MAX_HINT_REG: u8 = 8;
+
+/// **Item I's argument/return position** (decision 1902).
+///
+/// The `mov` around every call site exists because a value cannot be
+/// homed in the register it is about to occupy: the call site's argument
+/// load names `x1`, so [`free_pool`]'s per-function subtraction withholds
+/// `x1` from every temp in any function that makes a call. That is item
+/// F's own recorded residual, and its note says the fix needs "a
+/// per-point interference model rather than a per-function union of
+/// registers".
+///
+/// This is that model, and it is small because the question is small.
+/// The candidates are not guessed: they are the registers the emitter
+/// **was measured moving this value through** — `x0..x7` at a call site,
+/// `x0` at a `Return`, the incoming parameter register in the prologue.
+/// Each is then admitted only if [`hint_admissible`] finds it free at
+/// every *word* the value is live over, counting the value's own accesses
+/// as free because those are exactly the copies being coalesced away.
+///
+/// Order is by how many accesses the register would delete, then by
+/// register number — a function of the facts alone, so the answer does
+/// not depend on iteration order (CLAUDE.md).
+fn hints_for(facts: &FnFacts, iv: &Interval) -> Vec<u8> {
+    let mut counts: BTreeMap<u8, usize> = BTreeMap::new();
+    for i in iv.start..=iv.end.min(facts.points.len().saturating_sub(1)) {
+        for &(t, how, _, reg) in &facts.points[i].touches {
+            if reg <= MAX_HINT_REG && how != Touch::Escape && iv.temps.contains(&t) {
+                *counts.entry(reg).or_insert(0) += 1;
+            }
+        }
+    }
+    let mut cands: Vec<(usize, u8)> = counts
+        .into_iter()
+        .filter(|&(r, _)| hint_admissible(facts, iv, r))
+        .map(|(r, c)| (c, r))
+        .collect();
+    // Descending by count, ascending by register on a tie.
+    cands.sort_by(|a, b| (b.0, a.1).cmp(&(a.0, b.1)));
+    cands.into_iter().map(|(_, r)| r).collect()
+}
+
+/// Is register `r` free over every word this interval is live across?
+///
+/// The window inside one point is the same one the call barrier uses: a
+/// value live *into* the point occupies its register from word 0, and a
+/// value live *past* it occupies it to the last word — but at the point
+/// where the range begins, the words before its first access are not its
+/// own, and at the point where it ends, the words after its last access
+/// are not either. That refinement is the whole reason argument position
+/// is reachable: a temp whose last access is `ldr x1, [sp, #N]` at word 1
+/// of a call point is dead by the `bl` at word 2, so the `bl` naming `x1`
+/// is not a conflict.
+///
+/// A word that is one of the value's **own** accesses is never a
+/// conflict. That is not a loophole, it is the coalescing: an access at
+/// `x1` is a copy between `x1` and the home, and choosing `x1` as the
+/// home is what deletes it.
+///
+/// **Why the baseline's word indices describe the final program.** The
+/// facts come from the probe, which emits with nothing resident. The
+/// final emission differs by deleting words (item I's coalescing) and by
+/// substituting a home register for a scratch one at an access. Deleting
+/// words only removes register uses; a substitution puts the home of the
+/// temp *that access belongs to* where a scratch register was, and two
+/// temps that are simultaneously live never share a register — so no word
+/// inside this interval can come to name `r` unless it already did.
+fn hint_admissible(facts: &FnFacts, iv: &Interval, r: u8) -> bool {
+    let last = facts.points.len().saturating_sub(1);
+    for i in iv.start..=iv.end.min(last) {
+        let p = &facts.points[i];
+        let mut own: Vec<usize> = Vec::new();
+        for &(t, _, w, _) in &p.touches {
+            if iv.temps.contains(&t) {
+                own.push(w);
+            }
+        }
+        let lo = if iv.start < i {
+            0
+        } else {
+            match own.iter().min() {
+                Some(&w) => w,
+                // The range starts at this point but touches nothing in
+                // it: only a widened range does that, and it is live
+                // throughout.
+                None => 0,
+            }
+        };
+        let hi = if iv.end > i {
+            usize::MAX
+        } else {
+            match own.iter().max() {
+                Some(&w) => w,
+                None => usize::MAX,
+            }
+        };
+        for &(w, reg) in &p.word_regs {
+            if reg != r || w < lo || w > hi {
+                continue;
+            }
+            if !own.contains(&w) {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 // --- item F: the whole-program convention -----------------------------------
@@ -860,7 +1170,7 @@ fn allocate_one(
         &input.scalar_slot,
         WIDE_POOL,
         Some(clobbers),
-        true,
+        false,
     );
     // **Decision 1775, and what the ∀ gate did to it.**
     //
@@ -960,9 +1270,14 @@ pub(crate) mod tests_support {
     /// call — the shape most of these oracles need.
     pub(crate) fn point(touches: &[(usize, Touch)]) -> PointFacts {
         PointFacts {
-            touches: touches.iter().map(|&(t, h)| (t, h, 0usize)).collect(),
+            // Register 9 (`codegen::X_A`) is the scratch register the
+            // emitter really uses for most of these accesses, and it is
+            // above `MAX_HINT_REG`, so these fixtures exercise the
+            // ordinary pool path rather than item I's hinting.
+            touches: touches.iter().map(|&(t, h)| (t, h, 0usize, 9u8)).collect(),
             call_words: Vec::new(),
             regs: BTreeSet::new(),
+            word_regs: Vec::new(),
         }
     }
 
@@ -981,6 +1296,7 @@ pub(crate) mod tests_support {
                 callee: callee.map(str::to_string),
             }],
             regs: BTreeSet::new(),
+            word_regs: Vec::new(),
         }
     }
 }
@@ -1227,18 +1543,33 @@ mod pays_for_itself_tests {
     use super::tests_support::*;
     use super::*;
 
-    /// **Decision 1765.** A temp written once and read once is a *copy*,
-    /// not a residency: residency would turn an independent `str`/`ldr`
-    /// pair into a serial two-`mov` chain and buy nothing. It is refused.
+    /// **Decision 1765, overturned by item I (decision 1904).**
+    ///
+    /// 1765 refused a temp written once and read once, because residency
+    /// then turned an independent `str`/`ldr` pair into a *serial
+    /// two-`mov` chain* and bought nothing — the ∀ gate caught exactly
+    /// that, rising at every `store_to_load_forwarding=1` corner.
+    ///
+    /// Coalescing removes the premise. A single-read temp's copy is now
+    /// elided rather than emitted, so residency costs **no** instruction
+    /// instead of two, and the `str`/`ldr` pair is deleted outright. The
+    /// rule 1765 imposed was never about read counts; it was about the
+    /// price of a copy, and that price is now zero. So a single-read temp
+    /// **is** promoted, and this test pins the reversal rather than being
+    /// deleted, so that losing coalescing would fail here loudly instead
+    /// of silently reintroducing the regression 1765 was written to stop.
     #[test]
-    fn a_single_read_temp_is_refused_because_a_register_buys_nothing() {
+    fn a_single_read_temp_is_now_promoted_because_its_copy_is_free() {
         let facts = FnFacts {
             temp_count: 1,
             points: vec![point(&[(0, Touch::Write)]), point(&[(0, Touch::Read)])],
             back_edges: Vec::new(),
             ..Default::default()
         };
-        assert_eq!(allocate(&facts, &[true]).of(0), None);
+        assert!(
+            allocate(&facts, &[true]).of(0).is_some(),
+            "with coalescing a single-read temp's copy is free, so residency pays"
+        );
     }
 
     /// ...and the second read is exactly what tips it.
@@ -1260,13 +1591,25 @@ mod pays_for_itself_tests {
     /// A write-only temp is never resident either: nothing reads it, so
     /// there is no reload to delete.
     #[test]
-    fn a_write_only_temp_is_refused() {
+    /// **Also reversed by item I (decision 1904).** A temp written twice
+    /// and never read used to be refused on the same "a register buys
+    /// nothing" reasoning. With coalescing it buys two deleted `str`s and
+    /// costs nothing, so it is promoted.
+    ///
+    /// Safe because a frame slot is private to its function: a temp with
+    /// no read in `FnFacts` has no reader anywhere, and item E's rule that
+    /// `addr_of_slot` on a resident temp is a **build failure** is what
+    /// keeps an address-taken value from reaching this path at all. (The
+    /// writes are also dead, and a DCE pass should delete them outright —
+    /// that is item J's, not the allocator's.)
+    #[test]
+    fn a_write_only_temp_is_now_promoted_and_its_stores_deleted() {
         let facts = FnFacts {
             temp_count: 1,
             points: vec![point(&[(0, Touch::Write)]), point(&[(0, Touch::Write)])],
             back_edges: Vec::new(),
             ..Default::default()
         };
-        assert_eq!(allocate(&facts, &[true]).of(0), None);
+        assert!(allocate(&facts, &[true]).of(0).is_some());
     }
 }
