@@ -19,7 +19,12 @@ changed is that the *shape* of the design is now decided by evidence rather
 than by argument, and three things graphics.md was open to are now known to
 be dead ends.
 
-Decision block **1900–1999** requested. Not claimed until a human activates.
+Decision block **2000–2099** requested. Not claimed until a human activates.
+
+Not 1900–1999, which is what [graphics.md](graphics.md) asks for: master's
+`codegen-pareto-2` item K has since claimed **1950–1969** inside that
+range. graphics.md's request is now partially invalid and wants the same
+correction.
 
 ---
 
