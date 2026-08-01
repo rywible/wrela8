@@ -11,6 +11,97 @@ blocks something that is now known to be worth doing, **overturn it and say so
 in a numbered decision here.** Golden churn is expected and is the
 orchestrator's to re-pin.
 
+## Evidence block (close, 2026-07-31)
+
+**The appliance, `dev` → `release`, across both rounds:**
+
+| | dev | round 1 close | round 2 close |
+| --- | --- | --- | --- |
+| `str` | 509 | 461 | **202** |
+| `ldr` | 430 | 344 | **97** |
+| `movk` | 780 | 0 | 0 |
+| total words | 2660 | 1807 | **1211** |
+
+**−54.5 % from `dev`**, against −32 % at round 1's close. The round-1 close
+asked why its number was small and answered: the allocator *relocated* data
+movement into `mov`s instead of deleting it. Coalescing and argument/return
+hinting (item I) deleted it — 516 memory operations on this image — and item
+J's redundancy passes took another 10.4 % on top.
+
+**Product tier, `release` (proxy cycles):** actors 3525 · appliance 1459 ·
+blk 4002 · receipt 5511 · compositor 8597. The `dev` baselines are unchanged
+from round 1, so the four original programs fell 20 541 → 14 497, **−29.4 %**,
+roughly double round 1's −15.5 %.
+
+**Fourteen shipped opts, two parked.** `ConstProp`, `Gvn`, `Dce`,
+`NarrowImm`, `AdrAddressing`, `BfxNarrow`, `MaskCheck`, `WideImmForms`,
+`RegAlloc`, `InterprocRegs`, `Frameless`, `BranchCleanup`, `TailCalls`, and
+C1 landing unconditionally. Parked: `BoundsElide`, `Inline`.
+
+**Not one guest transcript moved** across either round.
+
+### What changed about how this project decides things
+
+1. **The doctrine changed mid-round.** "Losers are deleted" became
+   [**a refused opt is parked, not deleted**](../CLAUDE.md) — it stays in the
+   tree with its measurement, its mechanism, and the named workload or
+   capability that would justify re-asking, and it must still compile and
+   pass `diff-eval` so it cannot rot into a miscompile. The rule had cost
+   real work twice in one session: item D's pass was deleted hours before
+   item M's workload inverted its premise, and the inliner was deleted before
+   it was ever committed, so the numbers that re-ranked ladder 2a were
+   unreproducible.
+
+2. **The rule paid for itself the same day, twice.** `blocklayout` came back
+   verbatim from git, compiled first try, and **wins on the compositor**
+   (density charge 63 → 0). `Frameless` was parked on two measurements that
+   both predated item J and, asked again afterwards, **falls at all 512
+   compositor points and rises at none** — so it ships again. A parked opt's
+   verdict flipping when an unrelated pass lands underneath it is not
+   hypothetical.
+
+3. **A refusal must be reproducible.** Item P rebuilt the inliner from item
+   J's findings file — which is what `CLAUDE.md` says code is for — and
+   settled the question item J could not: the pipeline position matters
+   enormously (**3.5× on cycles, 4.3× on words** between inline-first and
+   inline-last), *and* item J had measured the enabling order. Decision 1935
+   survives and is now re-derivable. The inliner's re-ask condition is **the
+   allocator, not the corpus**.
+
+4. **A vindication that wasn't.** Item N found `BoundsElide` winning on the
+   compositor and refused to un-park it: per function the delta is entirely
+   in two `@test(runtime)` assertion fns indexing `pixels[0]`; the kernel is
+   byte-identical because every hot-loop index is computed. Its re-ask
+   condition became a **capability** — constant propagation that reaches
+   *lowering*, one stage earlier than item J's.
+
+5. **The gate got faster without getting weaker.** Corner scoring runs in
+   parallel (decision 1917) and the sweep's inner loops stopped recomputing
+   table constants and re-running the front end per side (item R). Deep
+   sweep **2676 s → 134 s**; default unit lane **90 s → 31 s**. Proven inert
+   rather than asserted: 29 318 lines of ∀ evidence table, md5-identical
+   before and after.
+
+### Open, with owners
+
+- **Item Q** — the configuration search — is specced below and **not run**.
+  The space now includes two parked opts, and `Frameless` just showed a
+  verdict can flip under an unrelated landing, which is the argument for
+  re-asking every member rather than only the parked ones.
+- **Item S** (compile memo, per-member test split, probe memo) is **not
+  built**. Its read-only analysis found the trap that would have made it
+  wrong: `compile_side`'s first statement is `apply_opts`, which writes the
+  compiler's opt TLS, so a memo returning a cached clone must still set it —
+  and a cold-vs-cached unit comparing `CompiledSide`s would not catch that.
+- **Two ruler defects found by item O**, neither fixed: any Lane 2 sidecar
+  generated today for a program with app code is **unusable by the model**
+  (`gen-lane2-freq` builds a `dev` image, `--stage=cost` scores `release`,
+  and since item J's `Dce` the partitions disagree); and item J's `Dce`
+  falsified decision 1753's "the MWIR partition is the emitted partition".
+- **`footprint::compute` rebuilds its per-core sets at every corner** — item
+  R's named next win, deliberately not taken because it can move the probe's
+  read set and therefore the box.
+
 ## What round 1 actually showed
 
 On the real appliance image, `dev` → `release`:
