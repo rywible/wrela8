@@ -3176,8 +3176,22 @@ mod tests {
             // baseline was widened *after* a red test, so it is not what
             // the membership claim rests on — leave-one-out is, and it has
             // no baseline freedom at all.
+            // **Item J's `Gvn` needs it a third time, and for the same
+            // mechanism** (decision 1937). GVN's saving is *words* — on
+            // `cost-branch-bias` it takes 230 to 224 — and words become
+            // cycles only once the allocator has removed the schedule
+            // slack that absorbs them, exactly as decision 1791 found for
+            // C5. Asked over a bare `[ConstProp]` it raises all three
+            // product cases; asked over the configuration the product
+            // ships, it falls on all three. `ConstProp` and `Dce` need no
+            // such widening: both are ranked against `dev` below.
             let base: Vec<OptId> = match opt {
                 OptId::WideImmForms => vec![OptId::NarrowImm, OptId::RegAlloc],
+                OptId::Gvn => {
+                    let mut b = item_j_baseline();
+                    b.push(OptId::ConstProp);
+                    b
+                }
                 OptId::InterprocRegs => item_f_baseline(),
                 OptId::Frameless => {
                     let mut b = item_f_baseline();
@@ -3267,6 +3281,14 @@ mod tests {
     /// A future `veto` row is therefore a finding to act on, not a shape
     /// this table is expected to have.
     const PINNED_PRODUCT_TIER_VERDICTS: &[(&str, &str)] = &[
+        // **plans/codegen-pareto-2.md item J** (decision 1937). All three
+        // fall on the product tier over their own baseline. `Gvn`'s is
+        // the shipped configuration rather than `dev` for the reason the
+        // `base` match above states; `ConstProp` and `Dce` are asked
+        // against `dev` and win there.
+        ("ConstProp", "wins"),
+        ("Gvn", "wins"),
+        ("Dce", "wins"),
         ("NarrowImm", "wins"),
         ("AdrAddressing", "wins"),
         ("BfxNarrow", "wins"),
@@ -3312,6 +3334,229 @@ mod tests {
         // borrowed programs.
         ("BranchCleanup", "wins"),
     ];
+
+    // --- plans/codegen-pareto-2.md item J: the MWIR passes' gate -------
+    //
+    // Three ids over one chain, and the chain's **baseline is the rest of
+    // the shipped list**, not `dev` (decision 1937). That is not baseline
+    // shopping; it is the same mechanism decision 1791 measured for item
+    // C5 one round earlier. What these three passes delete is *words* —
+    // a redundant computation, a folded constant, an unread definition —
+    // and on this backend words become cycles only after `RegAlloc` has
+    // removed the schedule slack that absorbs them. Asked over `dev` the
+    // whole block still falls by 31 534 proxy cycles, so nothing here
+    // rests on the choice; what the choice buys is that the *links* are
+    // individually clean instead of one of them absorbing another's
+    // leftovers.
+    // -------------------------------------------------------------------
+
+    /// `RELEASE_OPTS` without item J's three ids — the list as it stood
+    /// at the end of item M, and the baseline the first link is measured
+    /// against.
+    fn item_j_baseline() -> Vec<OptId> {
+        RELEASE_OPTS
+            .iter()
+            .copied()
+            .filter(|o| !matches!(o, OptId::ConstProp | OptId::Gvn | OptId::Dce))
+            .collect()
+    }
+
+    /// **Item J's chain, and the one link that is a pair.**
+    ///
+    /// `(label, ids added at this link, smoke case)`. Each link's
+    /// baseline is [`item_j_baseline`] plus every id every earlier link
+    /// added.
+    ///
+    /// **`Gvn` and `Dce` are one link, and that is a finding rather than
+    /// a convenience** (decision 1936/1938). GVN replaces a redundant
+    /// computation with a reference to the earlier result; where the old
+    /// destination is read outside the extended basic block it has to
+    /// leave a `Copy` behind, and deleting *that* is DCE's job. Asked
+    /// strictly alone, GVN falls by 20 833 proxy cycles across the corpus
+    /// and **raises `cost-branch-bias` by 7 and `cost-mem-locality` by 1**
+    /// — on `cost-branch-bias` it takes words 230 to 224 while taking
+    /// cycles 190 to 197, which is a live range it extended, not a
+    /// mistake it made. `CaseRose` is an absolute veto, so a 20 833-cycle
+    /// transform would have been refused for two microbenchmark cycles it
+    /// created itself. The pair is asked together; `Dce`'s own link is
+    /// asked *again* immediately afterwards, so a `Dce` refusal still
+    /// names `Dce` alone and only `Gvn` loses its solo verdict.
+    ///
+    /// The **case** on each row is the one whose shapes the link actually
+    /// reaches, measured rather than guessed (freeze 1714):
+    ///
+    /// - `ConstProp` moves exactly three of the twenty at the pinned
+    ///   point, all of them product cases; `cost-product-compositor` is
+    ///   much the largest fall (-111) and is item M's own compute
+    ///   workload, which is where folding a literal shift count or a
+    ///   fixed-point constant actually happens.
+    /// - `Gvn`+`Dce` moves nine. The two largest are `cost-itlb-span`
+    ///   and `cost-icache-cliff`, both by about a fifth; `cost-itlb-span`
+    ///   is the larger fall and `cost-icache-cliff` is the cheaper sweep
+    ///   (1 024 corners against 1 024 but a much smaller closure to
+    ///   compile), so the smoke lane takes the second and the deep lane
+    ///   below covers both. At the first corner it is 29 228 -> 23 473.
+    /// - `Dce` alone moves all twenty; `cost-arith-w` is the largest
+    ///   *relative* fall of the cheap ones and is four scalar
+    ///   expressions, so it is also the cheapest to sweep.
+    const ITEM_J_CHAIN: &[(&str, &[OptId], &str)] = &[
+        ("ConstProp", &[OptId::ConstProp], "cost-product-compositor"),
+        ("Gvn+Dce", &[OptId::Gvn, OptId::Dce], "cost-icache-cliff"),
+        ("Dce", &[OptId::Dce], "cost-arith-w"),
+    ];
+
+    /// The candidate list at link `n` of [`ITEM_J_CHAIN`], and the
+    /// baseline it is asked over. The third link re-asks `Dce` on its
+    /// own, so its baseline is the second link's candidate minus `Dce`.
+    fn item_j_link(n: usize) -> (Vec<OptId>, Vec<OptId>) {
+        let mut acc = item_j_baseline();
+        for &(_, ids, _) in &ITEM_J_CHAIN[..n] {
+            for id in ids {
+                if !acc.contains(id) {
+                    acc.push(*id);
+                }
+            }
+        }
+        let mut cand = acc.clone();
+        for id in ITEM_J_CHAIN[n].1 {
+            if !cand.contains(id) {
+                cand.push(*id);
+            }
+        }
+        if ITEM_J_CHAIN[n].0 == "Dce" {
+            // Re-ask `Dce` alone, over everything else item J adds.
+            let base: Vec<OptId> = cand.iter().copied().filter(|o| *o != OptId::Dce).collect();
+            return (base, cand);
+        }
+        (acc, cand)
+    }
+
+    /// **Item J's smoke lane.** Each link falls at *every* point of its
+    /// own case's residual box, over its own place in the chain, and is
+    /// refused for nothing. Same code path, same probe and same refusals
+    /// as the whole-corpus lane below.
+    #[test]
+    fn each_item_j_link_wins_at_every_box_point_on_its_smoke_case() {
+        for (n, &(label, _, case)) in ITEM_J_CHAIN.iter().enumerate() {
+            let (base, cand) = item_j_link(n);
+            let cmp = compare_opt_lists_over_box_for_case(&base, &cand, case)
+                .unwrap_or_else(|e| panic!("{label} on {case}: {e}"));
+            assert_eq!(cmp.cases.len(), 1, "the smoke lane sweeps exactly one case");
+            let sweep = &cmp.cases[0];
+            assert!(
+                !sweep.points.is_empty(),
+                "{label} on {case}: the probe enumerated no corners"
+            );
+            assert!(
+                sweep.points.iter().all(|p| p.candidate < p.baseline),
+                "{label} must fall at every point of {case}; got {:?}",
+                sweep
+                    .points
+                    .iter()
+                    .map(|p| (p.baseline, p.candidate))
+                    .collect::<Vec<_>>()
+            );
+            assert!(
+                cmp.wins(),
+                "{label} refused on {case}: {:?}",
+                cmp.reasons.iter().map(SweepVeto::label).collect::<Vec<_>>()
+            );
+            eprintln!(
+                "item J smoke: {label} on {case} — {} corners, {} -> {} at the first",
+                sweep.points.len(),
+                sweep.points[0].baseline,
+                sweep.points[0].candidate
+            );
+        }
+    }
+
+    /// **The land gate for item J.** Each link, over the whole `cost-*`
+    /// corpus at every point of the residual box, against its own place
+    /// in the chain: no case may rise anywhere, and at least one must
+    /// fall everywhere — asked once per tier (decision 1782), so the
+    /// micro corpus cannot satisfy the quantifier on the product tier's
+    /// behalf.
+    ///
+    /// **Deep lane**: three whole-corpus sweeps.
+    #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
+    #[test]
+    fn each_item_j_link_wins_over_the_whole_box() {
+        for (n, &(label, _, _)) in ITEM_J_CHAIN.iter().enumerate() {
+            let (base, cand) = item_j_link(n);
+            let base_label = format!("{base:?}");
+            for tier in [CostTier::Micro, CostTier::Product] {
+                let cmp = compare_opt_lists_over_box_in_tier(&base, &cand, tier)
+                    .unwrap_or_else(|e| panic!("{label} ({tier:?}): {e}"));
+                let table = format_sweep_table(&cmp, &base_label, label);
+                eprintln!("∀ sweep, {tier:?} tier ({base_label} → +{label}):\n{table}");
+                assert_sweep_wins(&cmp, label, &base_label);
+                assert!(cmp.wins());
+            }
+        }
+    }
+
+    /// **The evidence for decision 1936**, kept as a live measurement
+    /// rather than a sentence: GVN with its leftovers left for `Dce` is
+    /// refused by `CaseRose`, and collecting them is what makes it
+    /// rankable. Asserted on the *shape* of the refusal, not on the
+    /// magnitude, so a re-measurement moves numbers without moving the
+    /// claim.
+    #[test]
+    fn gvn_collects_its_own_copies() {
+        let (base, cand) = item_j_link(1);
+        let mut gvn_only: Vec<OptId> = base.clone();
+        gvn_only.push(OptId::Gvn);
+        let alone = compare_opt_lists(&base, &gvn_only);
+        let paired = compare_opt_lists(&base, &cand);
+        let rose = |c: &CorpusCompare| -> Vec<String> {
+            c.cases
+                .iter()
+                .filter(|r| r.candidate > r.baseline)
+                .map(|r| format!("{}(+{})", r.name, r.candidate - r.baseline))
+                .collect()
+        };
+        eprintln!(
+            "item J: Gvn alone rose on {:?}; Gvn+Dce rose on {:?}",
+            rose(&alone),
+            rose(&paired)
+        );
+        assert!(
+            alone.candidate_sum < alone.baseline_sum,
+            "GVN alone must still be a large fall overall: {} -> {}",
+            alone.baseline_sum,
+            alone.candidate_sum
+        );
+        assert!(
+            !rose(&alone).is_empty(),
+            "if GVN alone stopped raising anything it would be rankable alone \
+             and ITEM_J_CHAIN's pair should be split back into two links"
+        );
+        assert!(
+            rose(&paired).is_empty(),
+            "the pair must raise nothing: {:?}",
+            rose(&paired)
+        );
+        apply_mode(CompileMode::Release);
+    }
+
+    /// **Item J over the whole shipped list, in one number.** The three
+    /// ids together against everything else the product ships, at the
+    /// pinned point, on the whole corpus. Pinned so a collapse is loud.
+    #[test]
+    fn item_j_as_a_block_over_the_shipped_list() {
+        let base = item_j_baseline();
+        let cmp = compare_opt_lists(&base, RELEASE_OPTS);
+        let table = format_delta_table(&cmp, "release-minus-J", "release");
+        eprintln!("item J as a block:\n{table}");
+        assert_wins(&cmp, "release", "release-minus-J");
+        assert_eq!(
+            (cmp.baseline_sum, cmp.candidate_sum),
+            (206_848, 185_513),
+            "item J's measured size over the shipped list (-10.3%); re-measure \
+             this rather than rescaling it"
+        );
+        apply_mode(CompileMode::Release);
+    }
 
     /// Decision 1453: swapped opt-list order vs RELEASE_OPTS — document
     /// independence when totals match (lower vs codegen axes).

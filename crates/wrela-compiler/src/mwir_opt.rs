@@ -925,8 +925,8 @@ fn gvn_key(inst: &Inst) -> Inst {
 /// earlier result, and every *later* read of its destination inside the
 /// same EBB is rewritten to read the earlier temp directly. The `Copy`
 /// is what keeps a destination that is read after the EBB's end correct;
-/// where it is not, `RegAlloc`'s coalescing (item I) makes it free and
-/// DCE deletes it outright.
+/// where it is not, [`collect_gvn_copies`] deletes it outright and
+/// `RegAlloc`'s coalescing (item I) makes whatever survives free.
 ///
 /// The scope is an EBB and not a dominator tree because that is the
 /// dumb version that is obviously right: an EBB is a single-predecessor
@@ -940,6 +940,10 @@ fn gvn_key(inst: &Inst) -> Inst {
 /// two distinct mutable objects, not one value.
 fn gvn_fn(f: &mut MwirFn) {
     let leader = ebb_leaders(&f.body);
+    // Indices of the `Copy`s this pass introduces, so it can collect the
+    // ones nothing reads rather than leaving them for `Dce` — see
+    // `gvn_collects_its_own_copies` below for why that matters.
+    let mut introduced: Vec<usize> = Vec::new();
     // (key, the temp holding that value).
     let mut table: Vec<(Inst, Temp)> = Vec::new();
     // Reads of `k` in this EBB are reads of `v`.
@@ -973,6 +977,7 @@ fn gvn_fn(f: &mut MwirFn) {
                 let prev = *prev;
                 if prev != dst {
                     f.body[i] = Inst::Copy { dst, src: prev };
+                    introduced.push(i);
                     rewrite.insert(dst, prev);
                 }
                 // The rewrite/table invalidation below still applies:
@@ -989,6 +994,62 @@ fn gvn_fn(f: &mut MwirFn) {
         }
         clobbers(&inst, &mut clob);
         invalidate(&mut table, &mut rewrite, &clob, Temp(usize::MAX));
+    }
+    collect_gvn_copies(f, &introduced);
+}
+
+/// **Decision 1936 — GVN collects its own leftovers, and that is what
+/// makes it rankable alone.**
+///
+/// The `Copy` this pass leaves where a redundant computation stood is an
+/// artifact of the implementation, not of the transform: the value is
+/// already in `prev`, and every read inside the EBB was rewritten to say
+/// so. Where nothing outside the EBB reads the old destination either,
+/// the `Copy` is pure overhead.
+///
+/// Leaving it for `Dce` was measured and it is not free. Asked alone over
+/// the shipped list, GVN-with-leftovers **raised** `cost-branch-bias` and
+/// `cost-mem-locality` by a cycle each while falling by 20 833 overall —
+/// and `CaseRose` is an absolute veto, so a 20 833-cycle transform was
+/// refused for two microbenchmark cycles it had itself created. Ten lines
+/// here is the answer; relaxing the veto would have been tuning the
+/// ruler.
+///
+/// The test is whole-body and deliberately conservative — "read nowhere
+/// in this function" — for the same reason [`dce_fn`]'s is: MWIR is not
+/// SSA, so a temp can be defined at several points and only the question
+/// that cannot be got wrong is worth asking.
+fn collect_gvn_copies(f: &mut MwirFn, introduced: &[usize]) {
+    if introduced.is_empty() {
+        return;
+    }
+    let mut read: BTreeSet<Temp> = BTreeSet::new();
+    if let Some((t, _)) = &f.receiver {
+        read.insert(*t);
+    }
+    for (t, _) in &f.params {
+        read.insert(*t);
+    }
+    let mut buf = Vec::new();
+    for inst in &f.body {
+        reads_of(inst, &mut buf);
+        for t in &buf {
+            read.insert(*t);
+        }
+    }
+    let mut keep = vec![true; f.body.len()];
+    let mut any = false;
+    for &i in introduced {
+        let Inst::Copy { dst, .. } = &f.body[i] else {
+            continue;
+        };
+        if !read.contains(dst) {
+            keep[i] = false;
+            any = true;
+        }
+    }
+    if any {
+        compact(&mut f.body, &keep);
     }
 }
 
