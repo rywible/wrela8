@@ -86,9 +86,9 @@ pub use score::{
     block_schedule_lengths_with_counts, score_program, score_program_at, score_program_at_with_hot,
 };
 pub use stage::{
-    CostStageClosure, TextScope, codegen_cost_stage, codegen_cost_stage_with_placement,
-    codegen_shipped_program, load_cost_stage_closure, report_cost_stage_path,
-    score_cost_stage_path,
+    CostStageClosure, TextScope, codegen_cost_stage, codegen_cost_stage_with_block_layout,
+    codegen_cost_stage_with_placement, codegen_shipped_program, load_cost_stage_closure,
+    report_cost_stage_path, score_cost_stage_path,
 };
 pub use sweep::{SweepPoint, endpoint_corners, record_reads};
 pub use table::{

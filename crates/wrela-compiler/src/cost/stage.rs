@@ -165,6 +165,43 @@ pub fn codegen_cost_stage_with_placement(
     Ok((pieces.codegen()?, placement))
 }
 
+/// [`codegen_cost_stage_with_placement`], with plans/codegen-pareto.md item
+/// D's hot/cold block layout applied to the MWIR program in between.
+///
+/// This is the **parked** pass's pipeline entry point (CLAUDE.md's "a
+/// refused opt is parked, not deleted"; plans/codegen-pareto-2.md decisions
+/// 1910 and 1940). `classes` comes from [`super::layout_classes`] over the
+/// *same* path's sidecar and a block partition;
+/// [`crate::cost::LayoutClasses::Unmeasured`] plans the identity for every
+/// fn, so this reduces to [`codegen_cost_stage_with_placement`] exactly
+/// (proved, not asserted: `unit:no_sidecar_degrades_to_a_byte_identical_layout`
+/// at the pass, and the whole-program check in `blocklayout`'s measurement
+/// unit).
+///
+/// It is a **second** entry point rather than a parameter on the first
+/// because item D is not installed on the default compile path — see
+/// `blocklayout`'s "Why this pass is not installed" note and decision 1755.
+/// Nothing in the compiler calls it; the only callers are `blocklayout`'s
+/// own units, which is what keeps a parked pass from rotting
+/// (`unit:the_parked_pass_is_not_on_the_compile_path`).
+pub fn codegen_cost_stage_with_block_layout(
+    path: &Path,
+    classes: &crate::cost::LayoutClasses,
+) -> Result<
+    (
+        CodegenProgram,
+        crate::placement::PlacementTable,
+        crate::blocklayout::LayoutSummary,
+    ),
+    String,
+> {
+    let mut pieces = cost_stage_pieces(path)?;
+    let (relaid, summary) = crate::blocklayout::relayout_program(&pieces.mwir, classes)?;
+    pieces.mwir = relaid;
+    let placement = pieces.placement.clone();
+    Ok((pieces.codegen()?, placement, summary))
+}
+
 /// Everything `codegen_cost_stage_*` needs between lowering and emission.
 /// Not an abstraction — the two entry points above would otherwise be the
 /// same fifty lines twice, and item D has to reach the MWIR program in the
