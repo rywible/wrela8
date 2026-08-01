@@ -2,5 +2,4 @@ Program
   Fn key=read_wall_seed frame=0 bytes
     0000: d2a80000  movz x0, #0x4000, lsl #16
     0001: f9401000  ldr x0, [x0, #32]
-    0002: 14000001  b #4
-    0003: d65f03c0  ret
+    0002: d65f03c0  ret

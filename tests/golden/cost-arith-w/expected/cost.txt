@@ -2,32 +2,32 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
   Provenance T1=39 T2=19 T3=0 T4=10 T5=16 rows=84
   Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method valid_for=static_shape_opts workload=flat pseudo_lru=modelled_as_lru
   Composition sum_of_fn_schedules=1
-  Total proxy_cycles=37
-  Workload name=flat proxy_cycles=37
-  Owner name=app proxy_cycles=37
+  Total proxy_cycles=26
+  Workload name=flat proxy_cycles=26
+  Owner name=app proxy_cycles=26
   Owner name=runtime proxy_cycles=0
   Owner name=driver proxy_cycles=0
-  Fn key=checked_mul_u32 owner=app proxy_cycles=10
+  Fn key=checked_mul_u32 owner=app proxy_cycles=9
     Term rule=abort count=1
     Term rule=adrp count=1
     Term rule=alu count=4
-    Term rule=branch count=3
+    Term rule=branch count=2
     Term rule=mov_wide count=1
     Term rule=mul count=1
     Term rule=store count=2
-  Fn key=wrap_mul_i16 owner=app proxy_cycles=4
+  Fn key=wrap_mul_i16 owner=app proxy_cycles=3
+    Term rule=alu count=6
+    Term rule=branch count=1
+    Term rule=mul_w count=1
+  Fn key=wrap_mul_u16 owner=app proxy_cycles=3
+    Term rule=alu count=6
+    Term rule=branch count=1
+    Term rule=mul_w count=1
+  Fn key=wrap_mul_u32 owner=app proxy_cycles=7
+    Term rule=alu count=18
+    Term rule=branch count=1
+    Term rule=mul_w count=1
+  Fn key=wrap_mul_u64 owner=app proxy_cycles=4
     Term rule=alu count=4
-    Term rule=branch count=2
-    Term rule=mul_w count=2
-  Fn key=wrap_mul_u16 owner=app proxy_cycles=4
-    Term rule=alu count=4
-    Term rule=branch count=2
-    Term rule=mul_w count=2
-  Fn key=wrap_mul_u32 owner=app proxy_cycles=9
-    Term rule=alu count=16
-    Term rule=branch count=2
-    Term rule=mul_w count=6
-  Fn key=wrap_mul_u64 owner=app proxy_cycles=10
-    Term rule=alu count=1
-    Term rule=branch count=2
-    Term rule=mul count=2
+    Term rule=branch count=1
+    Term rule=mul count=1

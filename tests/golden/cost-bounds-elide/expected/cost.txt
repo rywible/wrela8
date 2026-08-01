@@ -11,8 +11,8 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=abort_val count=64
     Term rule=adrp count=64
     Term rule=alu count=257
-    Term rule=branch count=34
-    Term rule=load count=66
+    Term rule=branch count=33
+    Term rule=load count=67
     Term rule=mov_wide count=192
     Term rule=mul count=32
-    Term rule=store count=162
+    Term rule=store count=163

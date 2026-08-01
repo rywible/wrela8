@@ -72,10 +72,10 @@ ImageReport v0
   Cores count=1
   CoreStack core=0 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=53476
-  Section name=rodata base=0x4050d138 size=538
-  Section name=abort base=0x4050d354 size=120
-  Section name=checkpoint base=0x4050d3cc size=28
+  Section name=code base=0x40500050 size=53496
+  Section name=rodata base=0x4050d148 size=538
+  Section name=abort base=0x4050d364 size=120
+  Section name=checkpoint base=0x4050d3dc size=28
   Section name=rtdata base=0x40540000 size=48
   Section name=devregs base=0x40540030 size=104
   Section name=pooldata base=0x40540098 size=4096
@@ -179,16 +179,16 @@ ImageReport v0
   BlkDevice device=device#0 capacity_sectors=16 features=0x100000200
   BlkQueue index=0 size=128 desc=0x40540098 avail=0x40540898 used=0x405409a0 doorbell=0x40540da8
   BlkAccounting descriptors_per_op=3 queue_depth=128 occupancy_bound=42
-  Cost version=3 digest=ed181b5abc4dd5d5 total=17568 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=17568
-    Owner name=app proxy_cycles=688
-    Owner name=runtime proxy_cycles=16880
+  Cost version=3 digest=ed181b5abc4dd5d5 total=17597 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=17597
+    Owner name=app proxy_cycles=705
+    Owner name=runtime proxy_cycles=16892
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=157 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn_model=n/a
-    Budget n=0 hot_text_bytes=67200 hot_code_bytes=52704 slack_lines=0 l1i_bytes=65536 over_l1i_lines=26 over_l2_lines=0 text_pages=17 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=5 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=182
-    Shared proxy_cycles=17411
+    Core n=0 proxy_cycles=163 max_turn_proxy=0 turns_per_sec=n/a ms_per_turn_model=n/a
+    Budget n=0 hot_text_bytes=67200 hot_code_bytes=52724 slack_lines=0 l1i_bytes=65536 over_l1i_lines=26 over_l2_lines=0 text_pages=17 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=5 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=182
+    Shared proxy_cycles=17434
   Convention fns=320 frameless=241 tail_calls=1
-    Fn key=BlkDriver.init frame=160 residents=26 regs=x1-x6 clobbers=x0-x6,x8-x11,x30-x31 pool=20
+    Fn key=BlkDriver.init frame=176 residents=26 regs=x1-x6 clobbers=x0-x6,x8-x11,x30-x31 pool=20
     Fn key=__boot_call_0 frame=0 residents=0 regs=none clobbers=all pool=27
     Fn key=__boot_call_1 frame=0 residents=0 regs=none clobbers=all pool=27
     Fn key=__boot_call_10 frame=0 residents=0 regs=none clobbers=all pool=27
@@ -425,7 +425,7 @@ ImageReport v0
     Fn key=__wrela_child_turn_index frame=0 residents=3 regs=x0-x1 clobbers=all pool=25
     Fn key=__wrela_console_append_bytes frame=32 residents=19 regs=x0-x4,x24 clobbers=all pool=21
     Fn key=__wrela_console_append_line_buf frame=16 residents=16 regs=x0-x4,x25 clobbers=all pool=22
-    Fn key=__wrela_deadline_poll frame=80 residents=38 regs=x4-x8,x14-x17,x19-x27 clobbers=all pool=18
+    Fn key=__wrela_deadline_poll frame=96 residents=38 regs=x4-x8,x14-x17,x19-x27 clobbers=all pool=18
     Fn key=__wrela_deadline_scan frame=256 residents=40 regs=x4-x8,x14-x17,x19-x27 clobbers=all pool=18
     Fn key=__wrela_deliver_reply frame=48 residents=33 regs=x0-x1,x4-x7 clobbers=all pool=17
     Fn key=__wrela_drain_reply_count frame=0 residents=6 regs=x0-x2 clobbers=all pool=23
@@ -505,6 +505,6 @@ ImageReport v0
     Fn key=append_failed_literal frame=16 residents=23 regs=x0,x4-x6 clobbers=all pool=18
     Fn key=append_newline_literal frame=16 residents=5 regs=x0,x4-x6 clobbers=all pool=18
     Fn key=ascii_digit frame=0 residents=32 regs=x0-x3 clobbers=x0-x3,x9-x11,x30-x31 pool=23
-    Fn key=copy_bytes_range frame=16 residents=15 regs=x4-x8,x14-x17,x19-x23 clobbers=x0-x17,x19-x23,x30-x31 pool=18
+    Fn key=copy_bytes_range frame=32 residents=15 regs=x4-x8,x14-x17,x19-x23 clobbers=x0-x17,x19-x23,x30-x31 pool=18
     Fn key=copy_line_buf_range frame=0 residents=16 regs=x4-x8,x14-x17,x19-x24 clobbers=x0-x17,x19-x24,x30-x31 pool=18
     Fn key=finish_abort frame=16 residents=8 regs=x0-x3 clobbers=all pool=23

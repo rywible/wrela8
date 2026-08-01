@@ -1,11 +1,9 @@
 Program
   Fn key=consume frame=0 bytes
-    0000: 14000001  b #4
-    0001: d65f03c0  ret
+    0000: d65f03c0  ret
   Fn key=consume_box frame=0 bytes
     0000: f9400000  ldr x0, [x0, #0]
-    0001: 14000001  b #4
-    0002: d65f03c0  ret
+    0001: d65f03c0  ret
   Fn key=use_takes frame=64 bytes
     0000: d10103ff  sub sp, sp, #64
     0001: f9001ffe  str lr, [sp, #56]
@@ -23,18 +21,18 @@ Program
     0013: f9400be9  ldr x9, [sp, #16]
     0014: f90017e9  str x9, [sp, #40]
     0015: d2800005  movz x5, #0x0
-    0016: d2800006  movz x6, #0x0
+    0016: aa0503e6  mov x6, x5
     0017: d2800007  movz x7, #0x0
     0018: d2800068  movz x8, #0x3
     0019: eb0800ff  cmp x7, x8
     0020: 9a9fa7ef  cset x15, lt
     0021: b40006cf  cbz x15, #216
     0022: d2800030  movz x16, #0x1
-    0023: 8b1000d1  add x17, x6, x16
-    0024: aa1103e6  mov x6, x17
+    0023: 8b1000b1  add x17, x5, x16
+    0024: aa1103e5  mov x5, x17
     0025: d2884813  movz x19, #0x4240
     0026: f2a001f3  movk x19, #0xf, lsl #16
-    0027: eb1300df  cmp x6, x19
+    0027: eb1300bf  cmp x5, x19
     0028: 9a9fc7f4  cset x20, le
     0029: b4000054  cbz x20, #8
     0030: 14000008  b #32
@@ -68,7 +66,7 @@ Program
     0058: 9b0c7ced  mul x13, x7, x12
     0059: 8b0d016b  add x11, x11, x13
     0060: f9400175  ldr x21, [x11, #0]
-    0061: ab1500b6  adds x22, x5, x21
+    0061: ab1500d6  adds x22, x6, x21
     0062: 54000103  b.cc #32
     0063: d10043ff  sub sp, sp, #16  ; abort Bytes slot
     0064: 10000009  adr x9, rodata+0x45
@@ -77,19 +75,19 @@ Program
     0067: f90007e9  str x9, [sp, #8]  ; Bytes.len
     0068: 910003e0  add x0, sp, #0  ; *Bytes
     0069: 94000000  bl <__wrela_abort>
-    0070: aa1603e5  mov x5, x22
+    0070: aa1603e6  mov x6, x22
     0071: d2800037  movz x23, #0x1
     0072: 8b1700f8  add x24, x7, x23
     0073: aa1803e7  mov x7, x24
     0074: 17ffffc9  b #-220
-    0075: d2800126  movz x6, #0x9
-    0076: f9001be6  str x6, [sp, #48]
+    0075: d2800125  movz x5, #0x9
+    0076: f9001be5  str x5, [sp, #48]
     0077: aa0403e0  mov x0, x4
     0078: 94000000  bl <consume>
-    0079: aa0003e6  mov x6, x0
+    0079: aa0003e5  mov x5, x0
     0080: 9100c3e0  add x0, sp, #48
     0081: 94000000  bl <consume_box>
-    0082: ab0000c4  adds x4, x6, x0
+    0082: ab0000a4  adds x4, x5, x0
     0083: 54000103  b.cc #32
     0084: d10043ff  sub sp, sp, #16  ; abort Bytes slot
     0085: 10000009  adr x9, rodata+0x45
@@ -98,7 +96,7 @@ Program
     0088: f90007e9  str x9, [sp, #8]  ; Bytes.len
     0089: 910003e0  add x0, sp, #0  ; *Bytes
     0090: 94000000  bl <__wrela_abort>
-    0091: ab050080  adds x0, x4, x5
+    0091: ab060080  adds x0, x4, x6
     0092: 54000103  b.cc #32
     0093: d10043ff  sub sp, sp, #16  ; abort Bytes slot
     0094: 10000009  adr x9, rodata+0x45
@@ -107,10 +105,9 @@ Program
     0097: f90007e9  str x9, [sp, #8]  ; Bytes.len
     0098: 910003e0  add x0, sp, #0  ; *Bytes
     0099: 94000000  bl <__wrela_abort>
-    0100: 14000001  b #4
-    0101: f9401ffe  ldr lr, [sp, #56]
-    0102: 910103ff  add sp, sp, #64
-    0103: d65f03c0  ret
+    0100: f9401ffe  ldr lr, [sp, #56]
+    0101: 910103ff  add sp, sp, #64
+    0102: d65f03c0  ret
   Rodata
     0: offset=0x0 assertion failed: loop budget exceeded
     1: offset=0x26 index 

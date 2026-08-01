@@ -7,13 +7,13 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
   Owner name=app proxy_cycles=1520
   Owner name=runtime proxy_cycles=1125
   Owner name=driver proxy_cycles=728
-  Core n=0 proxy_cycles=1400 max_turn_proxy=728 turns_per_sec=3296703.2967032967 ms_per_turn_model=0.0003033333
+  Core n=0 proxy_cycles=1401 max_turn_proxy=728 turns_per_sec=3296703.2967032967 ms_per_turn_model=0.0003033333
   Budget n=0 hot_text_bytes=7168 hot_code_bytes=6464 slack_lines=0 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 text_pages=2 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0
-  Core n=1 proxy_cycles=54 max_turn_proxy=54 turns_per_sec=44444444.4444444478 ms_per_turn_model=0.0000225
-  Budget n=1 hot_text_bytes=6784 hot_code_bytes=6160 slack_lines=0 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 text_pages=2 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0
-  Shared proxy_cycles=1919
+  Core n=1 proxy_cycles=42 max_turn_proxy=42 turns_per_sec=57142857.1428571418 ms_per_turn_model=0.0000175
+  Budget n=1 hot_text_bytes=6784 hot_code_bytes=6164 slack_lines=0 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 text_pages=2 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0
+  Shared proxy_cycles=1930
   Placeable id=driver#0 type=Doorbell core=0 turn_proxy=728 method=Doorbell.on_irq
-  Placeable id=actor#0 type=Peer core=1 turn_proxy=54 method=Peer.publish
+  Placeable id=actor#0 type=Peer core=1 turn_proxy=42 method=Peer.publish
   Fn key=Doorbell.drain owner=app proxy_cycles=338
     Term rule=alu count=5
     Term rule=branch count=1
@@ -22,24 +22,24 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=mov_wide count=1
     Term rule=store count=8
     Term rule=store_release count=1
-  Fn key=Doorbell.init owner=app proxy_cycles=334
-    Term rule=alu count=4
+  Fn key=Doorbell.init owner=app proxy_cycles=335
+    Term rule=alu count=5
     Term rule=branch count=1
-    Term rule=load count=9
-    Term rule=mov_wide count=8
-    Term rule=store count=11
+    Term rule=load count=10
+    Term rule=mov_wide count=5
+    Term rule=store count=12
     Term rule=store_release count=1
   Fn key=Doorbell.on_irq owner=driver proxy_cycles=728
     Term rule=alu count=9
     Term rule=branch count=3
     Term rule=load count=8
     Term rule=load_acquire count=1
-    Term rule=mov_wide count=9
+    Term rule=mov_wide count=7
     Term rule=store count=6
     Term rule=store_release count=1
-  Fn key=Peer.publish owner=app proxy_cycles=54
+  Fn key=Peer.publish owner=app proxy_cycles=42
     Term rule=alu count=4
-    Term rule=branch count=2
+    Term rule=branch count=1
     Term rule=call count=1
     Term rule=load count=7
     Term rule=mov_wide count=2
@@ -152,16 +152,16 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=alu count=21
     Term rule=branch count=32
     Term rule=mov_wide count=21
-  Fn key=copy_bytes_range owner=app proxy_cycles=124
+  Fn key=copy_bytes_range owner=app proxy_cycles=135
     Term rule=abort count=1
     Term rule=abort_val count=4
     Term rule=adrp count=5
     Term rule=alu count=28
     Term rule=branch count=8
-    Term rule=load count=5
+    Term rule=load count=6
     Term rule=mov_wide count=16
     Term rule=mul count=1
-    Term rule=store count=13
+    Term rule=store count=14
   Fn key=copy_line_buf_range owner=app proxy_cycles=74
     Term rule=abort count=1
     Term rule=abort_val count=4

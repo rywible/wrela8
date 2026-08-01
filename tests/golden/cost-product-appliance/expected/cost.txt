@@ -2,43 +2,43 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
   Provenance T1=39 T2=19 T3=0 T4=10 T5=16 rows=84
   Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method valid_for=static_shape_opts workload=flat pseudo_lru=modelled_as_lru
   Composition sum_of_fn_schedules=1
-  Total proxy_cycles=1479
-  Workload name=flat proxy_cycles=1479
-  Owner name=app proxy_cycles=716
+  Total proxy_cycles=1459
+  Workload name=flat proxy_cycles=1459
+  Owner name=app proxy_cycles=696
   Owner name=runtime proxy_cycles=763
   Owner name=driver proxy_cycles=0
-  Core n=0 proxy_cycles=281 max_turn_proxy=58 turns_per_sec=41379310.3448275849 ms_per_turn_model=0.0000241667
-  Budget n=0 hot_text_bytes=5504 hot_code_bytes=4816 slack_lines=0 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 text_pages=2 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=5 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0
-  Shared proxy_cycles=1198
-  Placeable id=driver#0 type=StorageDriver core=0 turn_proxy=42 method=StorageDriver.capacity
-  Placeable id=actor#0 type=CacheActor core=0 turn_proxy=58 method=CacheActor.touch
-  Placeable id=actor#1 type=StatsActor core=0 turn_proxy=58 method=StatsActor.record
-  Fn key=CacheActor.init owner=app proxy_cycles=41
+  Core n=0 proxy_cycles=250 max_turn_proxy=42 turns_per_sec=57142857.1428571418 ms_per_turn_model=0.0000175
+  Budget n=0 hot_text_bytes=5504 hot_code_bytes=4844 slack_lines=0 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 text_pages=2 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=5 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0
+  Shared proxy_cycles=1209
+  Placeable id=driver#0 type=StorageDriver core=0 turn_proxy=41 method=StorageDriver.capacity
+  Placeable id=actor#0 type=CacheActor core=0 turn_proxy=42 method=CacheActor.touch
+  Placeable id=actor#1 type=StatsActor core=0 turn_proxy=42 method=StatsActor.record
+  Fn key=CacheActor.init owner=app proxy_cycles=42
     Term rule=alu count=2
     Term rule=branch count=1
-    Term rule=load count=8
+    Term rule=load count=9
     Term rule=mov_wide count=1
-    Term rule=store count=10
-  Fn key=CacheActor.touch owner=app proxy_cycles=58
+    Term rule=store count=11
+  Fn key=CacheActor.touch owner=app proxy_cycles=42
     Term rule=alu count=4
-    Term rule=branch count=2
-    Term rule=load count=10
+    Term rule=branch count=1
+    Term rule=load count=11
     Term rule=mov_wide count=1
-    Term rule=store count=8
-  Fn key=StatsActor.init owner=app proxy_cycles=41
+    Term rule=store count=9
+  Fn key=StatsActor.init owner=app proxy_cycles=42
     Term rule=alu count=2
     Term rule=branch count=1
-    Term rule=load count=8
+    Term rule=load count=9
     Term rule=mov_wide count=1
-    Term rule=store count=10
-  Fn key=StatsActor.record owner=app proxy_cycles=58
+    Term rule=store count=11
+  Fn key=StatsActor.record owner=app proxy_cycles=42
     Term rule=alu count=4
-    Term rule=branch count=2
-    Term rule=load count=10
-    Term rule=store count=8
-  Fn key=StorageDriver.capacity owner=app proxy_cycles=42
+    Term rule=branch count=1
+    Term rule=load count=11
+    Term rule=store count=9
+  Fn key=StorageDriver.capacity owner=app proxy_cycles=41
     Term rule=alu count=2
-    Term rule=branch count=2
+    Term rule=branch count=1
     Term rule=load count=4
     Term rule=store count=3
   Fn key=StorageDriver.init owner=app proxy_cycles=41
@@ -130,16 +130,16 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=alu count=21
     Term rule=branch count=32
     Term rule=mov_wide count=21
-  Fn key=copy_bytes_range owner=app proxy_cycles=124
+  Fn key=copy_bytes_range owner=app proxy_cycles=135
     Term rule=abort count=1
     Term rule=abort_val count=4
     Term rule=adrp count=5
     Term rule=alu count=28
     Term rule=branch count=8
-    Term rule=load count=5
+    Term rule=load count=6
     Term rule=mov_wide count=16
     Term rule=mul count=1
-    Term rule=store count=13
+    Term rule=store count=14
   Fn key=copy_line_buf_range owner=app proxy_cycles=74
     Term rule=abort count=1
     Term rule=abort_val count=4

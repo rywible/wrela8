@@ -72,12 +72,11 @@ Program
     0015: f90007e9  str x9, [sp, #8]  ; Bytes.len
     0016: 910003e0  add x0, sp, #0  ; *Bytes
     0017: 94000000  bl <__wrela_abort>
-    0018: 14000001  b #4
-    0019: 910083ff  add sp, sp, #32
-    0020: d65f03c0  ret
+    0018: 910083ff  add sp, sp, #32
+    0019: d65f03c0  ret
   Fn key=make_and_sum frame=48 bytes
     0000: d100c3ff  sub sp, sp, #48
-    0001: f90013fe  str lr, [sp, #32]
+    0001: f90017fe  str lr, [sp, #40]
     0002: d2800061  movz x1, #0x3
     0003: d2800082  movz x2, #0x4
     0004: 910003e0  add x0, sp, #0
@@ -87,14 +86,13 @@ Program
     0008: f94007e9  ldr x9, [sp, #8]
     0009: f9000fe9  str x9, [sp, #24]
     0010: d2800021  movz x1, #0x1
-    0011: d2800022  movz x2, #0x1
-    0012: 910043e0  add x0, sp, #16
+    0011: 910043e0  add x0, sp, #16
+    0012: aa0103e2  mov x2, x1
     0013: 94000000  bl <Point.shift>
     0014: 910043e0  add x0, sp, #16
     0015: 94000000  bl <Point.sum>
-    0016: 14000001  b #4
-    0017: f94013fe  ldr lr, [sp, #32]
-    0018: 9100c3ff  add sp, sp, #48
-    0019: d65f03c0  ret
+    0016: f94017fe  ldr lr, [sp, #40]
+    0017: 9100c3ff  add sp, sp, #48
+    0018: d65f03c0  ret
   Rodata
     0: offset=0x0 arithmetic overflow in `+`

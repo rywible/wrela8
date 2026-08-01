@@ -169,14 +169,14 @@ ImageReport v0
   Turns count=4 stride=1024 bytes=4096
   Totals actors=1 drivers=1 ready_queue=3 group_arena=1 bytes=4480
   DeviceRegs device=device#0 type=Hw driver=Stub base=0x40541180 size=8
-  Cost version=3 digest=ed181b5abc4dd5d5 total=20721 ghz=2.4 workloads_digest=ad0a87410c842eff
-    Workload name=flat proxy_cycles=20721
-    Owner name=app proxy_cycles=3356
-    Owner name=runtime proxy_cycles=17365
+  Cost version=3 digest=ed181b5abc4dd5d5 total=20739 ghz=2.4 workloads_digest=ad0a87410c842eff
+    Workload name=flat proxy_cycles=20739
+    Owner name=app proxy_cycles=3362
+    Owner name=runtime proxy_cycles=17377
     Owner name=driver proxy_cycles=0
-    Core n=0 proxy_cycles=202 max_turn_proxy=60 turns_per_sec=40000000 ms_per_turn_model=0.000025
+    Core n=0 proxy_cycles=198 max_turn_proxy=58 turns_per_sec=41379310.3448275849 ms_per_turn_model=0.0000241667
     Budget n=0 hot_text_bytes=72512 hot_code_bytes=57744 slack_lines=0 l1i_bytes=65536 over_l1i_lines=109 over_l2_lines=0 text_pages=18 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=6 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=763
-    Shared proxy_cycles=20519
+    Shared proxy_cycles=20541
   Convention fns=324 frameless=240 tail_calls=1
     Fn key=Counter.bump frame=16 residents=5 regs=x0-x4 clobbers=x0-x4,x9-x11,x30-x31 pool=23
     Fn key=Counter.total frame=16 residents=2 regs=x0 clobbers=x0,x9-x10,x30-x31 pool=24
@@ -418,7 +418,7 @@ ImageReport v0
     Fn key=__wrela_child_turn_index frame=0 residents=6 regs=x0-x2 clobbers=all pool=23
     Fn key=__wrela_console_append_bytes frame=32 residents=19 regs=x0-x4,x24 clobbers=all pool=21
     Fn key=__wrela_console_append_line_buf frame=16 residents=16 regs=x0-x4,x25 clobbers=all pool=22
-    Fn key=__wrela_deadline_poll frame=80 residents=38 regs=x4-x8,x14-x17,x19-x27 clobbers=all pool=18
+    Fn key=__wrela_deadline_poll frame=96 residents=38 regs=x4-x8,x14-x17,x19-x27 clobbers=all pool=18
     Fn key=__wrela_deadline_scan frame=256 residents=40 regs=x4-x8,x14-x17,x19-x27 clobbers=all pool=18
     Fn key=__wrela_deliver_reply frame=48 residents=33 regs=x0-x1,x4-x7 clobbers=all pool=17
     Fn key=__wrela_drain_reply_count frame=0 residents=6 regs=x0-x2 clobbers=all pool=23
@@ -498,7 +498,7 @@ ImageReport v0
     Fn key=append_failed_literal frame=16 residents=23 regs=x0,x4-x6 clobbers=all pool=18
     Fn key=append_newline_literal frame=16 residents=5 regs=x0,x4-x6 clobbers=all pool=18
     Fn key=ascii_digit frame=0 residents=32 regs=x0-x3 clobbers=x0-x3,x9-x11,x30-x31 pool=23
-    Fn key=copy_bytes_range frame=16 residents=15 regs=x4-x8,x14-x17,x19-x23 clobbers=x0-x17,x19-x23,x30-x31 pool=18
+    Fn key=copy_bytes_range frame=32 residents=15 regs=x4-x8,x14-x17,x19-x23 clobbers=x0-x17,x19-x23,x30-x31 pool=18
     Fn key=copy_line_buf_range frame=0 residents=16 regs=x4-x8,x14-x17,x19-x24 clobbers=x0-x17,x19-x24,x30-x31 pool=18
     Fn key=finish_abort frame=16 residents=8 regs=x0-x3 clobbers=all pool=23
     Fn key=ms frame=0 residents=4 regs=x0-x2 clobbers=x0-x2,x9-x12,x30-x31 pool=22

@@ -2,18 +2,18 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
   Provenance T1=39 T2=19 T3=0 T4=10 T5=16 rows=84
   Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method valid_for=static_shape_opts workload=flat pseudo_lru=modelled_as_lru
   Composition sum_of_fn_schedules=1
-  Total proxy_cycles=15762
-  Workload name=flat proxy_cycles=15762
-  Owner name=app proxy_cycles=14999
+  Total proxy_cycles=10066
+  Workload name=flat proxy_cycles=10066
+  Owner name=app proxy_cycles=9303
   Owner name=runtime proxy_cycles=763
   Owner name=driver proxy_cycles=0
-  Core n=0 proxy_cycles=54 max_turn_proxy=54 turns_per_sec=44444444.4444444478 ms_per_turn_model=0.0000225
-  Budget n=0 hot_text_bytes=65792 hot_code_bytes=65060 slack_lines=0 l1i_bytes=65536 over_l1i_lines=4 over_l2_lines=0 text_pages=17 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=5 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=28
-  Shared proxy_cycles=15708
-  Placeable id=actor#0 type=Hot core=0 turn_proxy=54 method=Hot.run
-  Fn key=Hot.run owner=app proxy_cycles=54
+  Core n=0 proxy_cycles=42 max_turn_proxy=42 turns_per_sec=57142857.1428571418 ms_per_turn_model=0.0000175
+  Budget n=0 hot_text_bytes=47872 hot_code_bytes=47084 slack_lines=0 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 text_pages=12 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=5 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0
+  Shared proxy_cycles=10024
+  Placeable id=actor#0 type=Hot core=0 turn_proxy=42 method=Hot.run
+  Fn key=Hot.run owner=app proxy_cycles=42
     Term rule=alu count=23
-    Term rule=branch count=2
+    Term rule=branch count=1
     Term rule=call count=5
     Term rule=load count=4
     Term rule=store count=3
@@ -100,61 +100,66 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=alu count=21
     Term rule=branch count=32
     Term rule=mov_wide count=21
-  Fn key=bulk0 owner=app proxy_cycles=2902
-    Term rule=abort count=294
-    Term rule=adrp count=294
-    Term rule=alu count=927
-    Term rule=branch count=296
-    Term rule=mov_wide count=294
-    Term rule=mul count=168
-    Term rule=mul_high count=168
-    Term rule=store count=588
-  Fn key=bulk1 owner=app proxy_cycles=2902
-    Term rule=abort count=294
-    Term rule=adrp count=294
-    Term rule=alu count=927
-    Term rule=branch count=296
-    Term rule=mov_wide count=294
-    Term rule=mul count=168
-    Term rule=mul_high count=168
-    Term rule=store count=588
-  Fn key=bulk2 owner=app proxy_cycles=2902
-    Term rule=abort count=294
-    Term rule=adrp count=294
-    Term rule=alu count=927
-    Term rule=branch count=296
-    Term rule=mov_wide count=294
-    Term rule=mul count=168
-    Term rule=mul_high count=168
-    Term rule=store count=588
-  Fn key=bulk3 owner=app proxy_cycles=2902
-    Term rule=abort count=294
-    Term rule=adrp count=294
-    Term rule=alu count=927
-    Term rule=branch count=296
-    Term rule=mov_wide count=294
-    Term rule=mul count=168
-    Term rule=mul_high count=168
-    Term rule=store count=588
-  Fn key=bulk4 owner=app proxy_cycles=2902
-    Term rule=abort count=294
-    Term rule=adrp count=294
-    Term rule=alu count=927
-    Term rule=branch count=296
-    Term rule=mov_wide count=294
-    Term rule=mul count=168
-    Term rule=mul_high count=168
-    Term rule=store count=588
-  Fn key=copy_bytes_range owner=app proxy_cycles=124
+  Fn key=bulk0 owner=app proxy_cycles=1763
+    Term rule=abort count=212
+    Term rule=adrp count=212
+    Term rule=alu count=683
+    Term rule=branch count=213
+    Term rule=load count=1
+    Term rule=mov_wide count=212
+    Term rule=mul count=86
+    Term rule=mul_high count=86
+    Term rule=store count=425
+  Fn key=bulk1 owner=app proxy_cycles=1763
+    Term rule=abort count=212
+    Term rule=adrp count=212
+    Term rule=alu count=683
+    Term rule=branch count=213
+    Term rule=load count=1
+    Term rule=mov_wide count=212
+    Term rule=mul count=86
+    Term rule=mul_high count=86
+    Term rule=store count=425
+  Fn key=bulk2 owner=app proxy_cycles=1763
+    Term rule=abort count=212
+    Term rule=adrp count=212
+    Term rule=alu count=683
+    Term rule=branch count=213
+    Term rule=load count=1
+    Term rule=mov_wide count=212
+    Term rule=mul count=86
+    Term rule=mul_high count=86
+    Term rule=store count=425
+  Fn key=bulk3 owner=app proxy_cycles=1763
+    Term rule=abort count=212
+    Term rule=adrp count=212
+    Term rule=alu count=683
+    Term rule=branch count=213
+    Term rule=load count=1
+    Term rule=mov_wide count=212
+    Term rule=mul count=86
+    Term rule=mul_high count=86
+    Term rule=store count=425
+  Fn key=bulk4 owner=app proxy_cycles=1763
+    Term rule=abort count=212
+    Term rule=adrp count=212
+    Term rule=alu count=683
+    Term rule=branch count=213
+    Term rule=load count=1
+    Term rule=mov_wide count=212
+    Term rule=mul count=86
+    Term rule=mul_high count=86
+    Term rule=store count=425
+  Fn key=copy_bytes_range owner=app proxy_cycles=135
     Term rule=abort count=1
     Term rule=abort_val count=4
     Term rule=adrp count=5
     Term rule=alu count=28
     Term rule=branch count=8
-    Term rule=load count=5
+    Term rule=load count=6
     Term rule=mov_wide count=16
     Term rule=mul count=1
-    Term rule=store count=13
+    Term rule=store count=14
   Fn key=copy_line_buf_range owner=app proxy_cycles=74
     Term rule=abort count=1
     Term rule=abort_val count=4

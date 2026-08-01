@@ -27,8 +27,7 @@ Program
     0024: 8b0d016b  add x11, x11, x13
     0025: f9400165  ldr x5, [x11, #0]
     0026: aa0503e0  mov x0, x5
-    0027: 14000001  b #4
-    0028: d65f03c0  ret
+    0027: d65f03c0  ret
   Fn key=write_mark frame=0 bytes
     0000: aa0103e4  mov x4, x1
     0001: d2a80005  movz x5, #0x4000, lsl #16

@@ -2,9 +2,9 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
   Provenance T1=39 T2=19 T3=0 T4=10 T5=16 rows=84
   Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method valid_for=static_shape_opts workload=flat pseudo_lru=modelled_as_lru
   Composition sum_of_fn_schedules=1
-  Total proxy_cycles=1200
-  Workload name=flat proxy_cycles=1200
-  Owner name=app proxy_cycles=437
+  Total proxy_cycles=1210
+  Workload name=flat proxy_cycles=1210
+  Owner name=app proxy_cycles=447
   Owner name=runtime proxy_cycles=763
   Owner name=driver proxy_cycles=0
   Fn key=__wrela_abort owner=runtime proxy_cycles=69
@@ -90,16 +90,16 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=alu count=21
     Term rule=branch count=32
     Term rule=mov_wide count=21
-  Fn key=copy_bytes_range owner=app proxy_cycles=124
+  Fn key=copy_bytes_range owner=app proxy_cycles=135
     Term rule=abort count=1
     Term rule=abort_val count=4
     Term rule=adrp count=5
     Term rule=alu count=28
     Term rule=branch count=8
-    Term rule=load count=5
+    Term rule=load count=6
     Term rule=mov_wide count=16
     Term rule=mul count=1
-    Term rule=store count=13
+    Term rule=store count=14
   Fn key=copy_line_buf_range owner=app proxy_cycles=74
     Term rule=abort count=1
     Term rule=abort_val count=4
@@ -117,5 +117,5 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=load count=2
     Term rule=mov_wide count=5
     Term rule=store count=3
-  Fn key=probe_seed owner=app proxy_cycles=2
-    Term rule=branch count=2
+  Fn key=probe_seed owner=app proxy_cycles=1
+    Term rule=branch count=1

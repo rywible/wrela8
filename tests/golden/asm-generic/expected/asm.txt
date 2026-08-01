@@ -18,12 +18,10 @@ Program
     0015: 910003e0  add x0, sp, #0  ; *Bytes
     0016: 94000000  bl <__wrela_abort>
     0017: aa0103e0  mov x0, x1
-    0018: 14000001  b #4
-    0019: f94003fe  ldr lr, [sp, #0]
-    0020: 910043ff  add sp, sp, #16
-    0021: d65f03c0  ret
+    0018: f94003fe  ldr lr, [sp, #0]
+    0019: 910043ff  add sp, sp, #16
+    0020: d65f03c0  ret
   Fn key=fn:identity[u64] frame=0 bytes
-    0000: 14000001  b #4
-    0001: d65f03c0  ret
+    0000: d65f03c0  ret
   Rodata
     0: offset=0x0 arithmetic overflow in `+`
