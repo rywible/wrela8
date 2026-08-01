@@ -617,22 +617,6 @@ fn collect_module_fn_keys(m: &crate::syntax::ast::Module, out: &mut BTreeSet<Str
     }
 }
 
-/// **Decision 1931 — the inliner never builds a frame the machine cannot
-/// address.**
-///
-/// Every callee temp this pass splices becomes a fresh caller temp, and
-/// under `dev`'s spill-everything discipline a temp is a frame slot.
-/// `codegen::build_frame` fails closed above **4095 bytes** — the
-/// `ADD`/`SUB`-immediate `imm12` window every slot reference is encoded
-/// in — so an inliner that ignores that limit turns a compiling program
-/// into a `codegen for frames larger than 4095 bytes … is not
-/// implemented yet` refusal. `cost-icache-cliff` is exactly that program,
-/// and it is how this rule was found.
-///
-/// The bound is the machine's, not a tuning knob, and it is computed the
-/// conservative way: this pass runs **before** `RegAlloc`, so it may not
-/// assume any temp will be promoted out of the frame. The estimate below
-/// is `build_frame`'s own arithmetic with an empty assignment.
 // --- pass 2: constant propagation and folding ----------------------------
 
 /// Item J's SCCP slot. **Decision 1924 names it for what it is:**
