@@ -670,7 +670,13 @@ Worker.report=2
         .expect("committed sidecar");
         let m = block_grain_fxs(&report.fns, &bridge, &f.counts).expect("compose");
 
-        assert_eq!(bridge.block_count, 184, "scored-closure Lane 2 blocks");
+        // 184 -> 182 at plans/codegen-pareto-2.md item J (decision 1934):
+        // the two blocks are in `boot-actors`' own actor methods, not in
+        // the runtime closure the sidecar covers, so `resolved_keys` /
+        // `unresolved_keys` / the matched hit mass below are all
+        // unchanged — the same measurement still explains the same Lane 2
+        // blocks (decision 1932).
+        assert_eq!(bridge.block_count, 182, "scored-closure Lane 2 blocks");
         assert_eq!(f.counts.len(), 372, "measured non-zero hit blocks");
         assert_eq!(m.resolved_keys, 81, "measured hit-blocks that resolve");
         assert_eq!(m.unresolved_keys, 291, "measured hit-blocks that do not");
@@ -833,11 +839,14 @@ Worker.report=2
         // plan, 170 after item B1, 134 at item C/E, 110 once item F's
         // whole-program convention landed, 108 once item L's B4 deleted
         // this case's two trailing branches to the epilogue, and lower
-        // again once item I coalesced the allocator's copies away. The
+        // again once item I coalesced the allocator's copies away, and
+        // **59 -> 47 at plans/codegen-pareto-2.md item J** (decision
+        // 1934), which is item J's four MWIR passes over a case that is
+        // one branchy application function and no runtime at all. The
         // number is pinned so the *wiring* stays inert, not to pin a cost
         // model — re-measure it, never rescale it.
-        assert_eq!(report.total_proxy_cycles, 59, "the pinned flat total");
-        assert_eq!(report.workload_totals["flat"], 59);
+        assert_eq!(report.total_proxy_cycles, 47, "the pinned flat total");
+        assert_eq!(report.workload_totals["flat"], 47);
         assert_eq!(report.workload_totals.len(), 1, "flat row only");
     }
 

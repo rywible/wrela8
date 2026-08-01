@@ -44,6 +44,7 @@ pub mod lower;
 pub mod lower_queue;
 pub mod lower_shared;
 pub mod mwir;
+pub mod mwir_opt;
 pub mod opts;
 pub mod placed_static_census;
 pub mod placement;

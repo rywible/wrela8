@@ -4850,12 +4850,19 @@ mod tests {
              {x_form}. On the merged tree the allocator has removed the frame \
              slack that used to hide it, so W must now score strictly better."
         );
+        // (37, 70) -> (26, 28) at plans/codegen-pareto-2.md item J
+        // (decision 1934). `cost-arith-w` is a handful of scalar
+        // expressions with no runtime at all, so item J's GVN reaches
+        // nearly all of it: the two sides converge because most of what
+        // separated them was redundant recomputation rather than the
+        // width choice. The direction is what this pins, and it holds.
         assert_eq!(
             (w_form, x_form),
-            (37, 70),
-            "the measured size of C1's win once item E removed the frame slack \
-             and item I coalesced the allocator's copies; re-measure this rather \
-             than rescaling it"
+            (26, 28),
+            "the measured size of C1's win once item E removed the frame slack, \
+             item I coalesced the allocator's copies and item J's GVN removed \
+             the redundancy under both forms; re-measure this rather than \
+             rescaling it"
         );
 
         // Walk the counterfactual X-form latency up until it does not, so

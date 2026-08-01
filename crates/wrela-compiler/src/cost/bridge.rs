@@ -1312,8 +1312,19 @@ mod tests {
             .values()
             .map(|f| basic_block_ranges(&f.code).len() as u64)
             .sum();
+        // **312 -> 310 at plans/codegen-pareto-2.md item J** (decision
+        // 1934), and the pair above is again what makes it safe: item J
+        // leaves the shared runtime closure alone (decision 1932), so the
+        // two blocks it removes are in `boot-actors`' own actor methods,
+        // `resolved_keys`/`unresolved_keys`/`measured_word_blocks`/
+        // `fn_count` do not move at all, and the same measurement still
+        // explains the same Lane 2 blocks. Had item J repartitioned a
+        // runtime fn the sidecar names, `MeasuredBlocks::resolve` would
+        // have refused the whole join (decision 1608) rather than shifted
+        // a count — which is exactly what it did before decision 1932
+        // existed, on `ascii_digit#21`.
         assert_eq!(
-            all_word_blocks, 312,
+            all_word_blocks, 310,
             "emitted-word blocks in the scored closure — every one of them is hot under W_flat              (331 before item L's B4 deleted one trailing branch per fn, decision 1975)"
         );
         assert!(
@@ -1340,7 +1351,13 @@ mod tests {
         }
         // 264 -> 243 at item L: B4 deletes 21 unconditional branch words
         // from this closure, one per fn whose body ends in a `Return`.
-        assert_eq!(branches, 243, "branch words in the scored closure");
+        // **243 -> 241 at item J** (decision 1934): constant propagation
+        // resolves two `JumpIfFalse`es in `boot-actors`' own actor
+        // methods whose conditions are compile-time known, and DCE
+        // collects the arms they orphan. Neither is a branch the measured
+        // vector biases — `biased` below does not move — because item J
+        // never touches the runtime closure the vector covers.
+        assert_eq!(branches, 241, "branch words in the scored closure");
         assert_eq!(
             biased, 14,
             "branches a real measured vector can bias — the number item J must not mistake \
