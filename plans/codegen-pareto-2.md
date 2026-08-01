@@ -64,7 +64,7 @@ Three things were deleted under the old rule and are restored, parked:
 | --- | --- | --- |
 | `BoundsElide` | item L, decision 1970 | item N |
 | `blocklayout.rs` (item D's pass) | item K, decision 1956 | item O |
-| the inliner | item J, decision 1935 | item P — **rebuilt**, since it was never committed |
+| the inliner | item J, decision 1935 | item P — **rebuilt**, since it was never committed ([findings](codegen-pareto-2-P.md)) |
 
 Item P also settles a question the original measurement cannot answer: the
 inliner's numbers were taken with it *in* the opt list, but the pipeline
@@ -173,6 +173,35 @@ guest transcript. It must be a genuine program, not a benchmark written to
 flatter an opt: state plainly what it computes and why that shape.
 
 **Decisions 1990–1999.**
+
+### P. The inliner, rebuilt and parked — **DONE**
+
+Findings: [codegen-pareto-2-P.md](codegen-pareto-2-P.md).
+
+`OptId::Inline` is back in the tree, wired, proved by `cargo xtask
+diff-eval --inline`, and deliberately out of `RELEASE_OPTS`. **The
+ordering question was real**: the inliner run *before*
+`ConstProp`/`Gvn`/`Dce` and the same inliner run *after* them differ by
+3.5× on cycles and 4.3× on words, so item J's un-recorded pipeline
+position was a genuine gap (decision 1986). **And decision 1935 survives
+it**: both positions lose in both whole-list framings, and the
+enabling-order numbers land within ~16 % of item J's — which also
+identifies item J as having measured the enabling order (decision 1987).
+The refusal is now re-derivable from this repository, which it was not
+before.
+
+Two refinements. Rule (i) alone — body moves, callee deleted, nothing
+duplicated — is a **wash** on the totals rather than a loss (+26 cycles /
++5 words leave-one-out), and is refused by exactly one case rising:
+`cost-product-compositor`, under `CaseRose` (decision 1988). And the
+mechanism is measured rather than argued: on the compositor a splice adds
++100 `str` and +41 `ldr` while `bl` does not move at all, so the call
+sequence it deletes is repaid twice over — once by the abort paths the
+duplicated bodies copy, once by the spills a longer live range costs the
+per-function allocator. The named re-ask condition is therefore the
+**allocator, not the corpus** (decision 1989).
+
+**Decisions 1980–1989.**
 
 ## Rules for this round
 
