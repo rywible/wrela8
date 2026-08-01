@@ -174,6 +174,64 @@ flatter an opt: state plainly what it computes and why that shape.
 
 **Decisions 1990–1999.**
 
+### Q. The configuration search — evidence, not an autotuner
+
+**Premise, established before speccing this (decision 1911).** `apply_opts`
+reads `opts.contains(..)` — **membership only**. Permuting `RELEASE_OPTS`
+cannot change an emitted word, and `swapped_order_scores_same_as_release_opts`
+already asserts it. Every ordering rationale in the tree ("`RegAlloc` last
+because the allocator decides against the emitter's output", "`WideImmForms`
+after `MaskCheck`", "everything the probe must see precedes `RegAlloc`")
+documents the *pipeline's* hardcoded order; it does not cause it. So there is
+no list-order search space, and building one means making the list drive pass
+invocation — a **pass manager**, which M19 freeze 1402 forbids. Not proposed.
+
+What is real, and what this item does:
+
+**Q1. Subset search over every `OptId`, including the parked ones.** The
+shipped list is a hand-accumulated subset, one opt per item, each admitted
+against the list as it stood that day. Nothing has ever asked whether the
+*subset* is right — and the opts are now known to compose **superadditively
+on both tiers**, which is exactly the regime where hand-accumulation is
+wrong. Parked opts are in the space by construction: parking exists so the
+question can be re-asked, and this is the thing that re-asks it.
+
+Exhaustive is not affordable (2^n over a 20-case corpus), so the search is
+staged and **deterministic** — sorted iteration, no RNG, no wall clock, no
+threads (`CLAUDE.md`'s determinism clause applies to it exactly as to the
+compiler):
+
+1. every single opt against `dev`;
+2. every **pair** — n(n−1)/2, ~120 configs — because the known interactions
+   are pairwise (`NarrowImm`+`RegAlloc`, `MaskCheck`+`WideImmForms`,
+   `Frameless`+`TailCalls`);
+3. greedy forward selection seeded by (1) and (2), then backward
+   elimination, so a member that stopped paying once its neighbours landed
+   is dropped;
+4. the winner validated against the shipped list on the **∀ box, both
+   tiers** — the search scores at the pinned point for speed, and a pinned
+   point is not a gate.
+
+**Q2. The one real order probe.** `mwir_opt::optimize` runs ConstProp → Gvn →
+Dce in code. That is 6 permutations, plus the question of whether a second
+`Gvn` after `Dce` pays. Cheap, and it is the only place in the compiler where
+pass order is both real and free.
+
+**Q3. Anti-overfit, built in rather than bolted on.** A search maximizes
+against the corpus — that is the definition of overfitting, and it is the
+failure this whole plan has been fighting since decision 1716. So: every
+result is reported **per tier**, and no configuration may be recommended
+unless it wins on the **product** tier, not merely on the total. The output
+is a *report with mechanisms*, not a rewritten `RELEASE_OPTS`; adopting it is
+the human's call.
+
+**Explicitly not an ML model.** Twenty cases is not a training set; more
+decisively, a learned heuristic cannot state a mechanism, and every decision
+in this tree carries one. A deterministic search gives the same answer with an
+explanation attached.
+
+**Decisions 1912–1919.**
+
 ## Rules for this round
 
 - **Every item runs its own named boot case.** Round 1 barred agents from the
