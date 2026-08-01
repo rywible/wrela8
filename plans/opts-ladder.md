@@ -381,7 +381,8 @@ CSE-able: `SetField`/`IndexSet`/`MemStore` write through a base temp, so
 exclusivity is not the same as no-aliasing at MWIR grain. Residual, and
 it is the biggest single block of dead words left in both shipped
 images: the shift **count-range check**, 19 emitted words per site at
-every literal-count shift (24 sites on the compositor). That needs an
+every shift whose count is not a folded constant — 11 sites in the
+shipped compositor, ≈ 3 % of it. That needs an
 unchecked-shift form in `mwir::Inst` and is 2c/2d work, not 2b.
 
 **2c. Redundant `narrow_to_width` elision.** The LSL/LSR pair is dead when

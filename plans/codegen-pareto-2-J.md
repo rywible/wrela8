@@ -354,13 +354,16 @@ the residual is unmeasured.
 
 ### The shift-count range check is untouched, and it is the next big word
 
-The single largest block of dead words in both shipped images is a check
-item J cannot express. `Inst::Shift` carries a runtime count-range test,
+The largest single block of dead words item J leaves behind is a check
+it cannot express. `Inst::Shift` carries a runtime count-range test,
 and codegen expands it to **19 emitted words** — `movz`/`cmp`/`b.cc` plus
-a full `__wrela_abort_val` prologue — *at every shift site, including the
-ones whose count is a literal that is obviously in range*. The compositor
-release image emits **24** of these; the appliance closure emits 3. That
-is ≈ 456 words on the compositor, ≈ 6 % of it.
+a full `__wrela_abort_val` prologue — *at every shift site whose count is
+not a folded constant, including the ones whose count is a literal that
+is obviously in range*. The shipped compositor emits **11** of these
+after item J and the appliance closure emits **1**: ≈ 209 words, **3.0 %
+of the compositor's 6 871**. (Before the inliner was refused it was 24 —
+duplicating `chan` duplicated its check, which is a fair sample of why
+2a lost.)
 
 ConstProp folds a shift whose *operands are both* constant, so it kills
 the check there. It cannot kill the check where the count is constant and
@@ -369,8 +372,7 @@ the value is not, because MWIR has no unchecked shift and no field on
 IR change (one field, three sites: `lower.rs`, `codegen::emit_shift`,
 `mwir::fmt_inst`), and it is ladder 2c/2d work rather than 2b's. It is
 named here with the count so the next item can pick it up without
-re-deriving it. It is the obvious successor to item J, and it is
-*bigger* on the compositor than anything left in 2b.
+re-deriving it, and it is the obvious successor to item J.
 
 ### Not done
 
