@@ -148,35 +148,16 @@ boot_actors_median_us = 700000
 # a test whose *subject* belongs in the default `cargo test` lane grows a
 # *cost* that does not.
 #
-# The worked example is on the record. The whole-corpus ∀ sweep scores the
-# whole program once per corner, was measured at 31m58s, and was `#[ignore]`d
-# out of the default lane (plans/M20.md decision 1637). It was never
-# reformulated or brought back: it stayed `#[ignore]`d, and — until
-# `xtask::deep_lane` landed — nothing ran it at all, so the exile silently
-# became a deletion. That move was found by a human noticing a slow gate
-# rather than by an oracle, and its consequence by a human reading the gate.
-# Measured 2026-07-30, the same thing had happened again unnoticed:
-# `cost::branch::tests::branch_terms_census_over_the_cost_corpus` alone was
-# **393s of a 417s** compiler lib suite. This key is the oracle that says so.
+# Broad optimization/cost proofs belong to `verify-milestone`; the default
+# lane keeps focused units and smoke cases. After that classification, the
+# warm execution-only suite measured 3.3s on the Apple M4 (892 passed,
+# 26 milestone tests ignored). The 15s lock is deliberately loose enough for
+# several agent worktrees contending at once, but tight enough that moving a
+# whole-corpus or whole-sweep proof back into `verify` is a placement failure.
 #
-# Measured after the `[profile.dev]` optimization landed (Apple M4, warm
-# target dir, `--no-run` build excluded so this times execution only):
-# **56.6s** for `cargo test --workspace --exclude wrela-vmm`, and that
-# measurement was taken with another build saturating a core.
-#
-# The multiple is deliberately *tighter* than the 10x every `[compiler]` /
-# `[build]` / `[guest]` lock in this file uses, and for a stated reason: those
-# guard against algorithmic blowup, where 10x is the smallest thing worth
-# calling a regression, and diluting them costs nothing. This one guards
-# against a lane changing kind, and a 10x budget (~9 minutes) would happily
-# admit the exact 393s test it exists to catch. 4x admits ordinary contention
-# — several agent worktrees compiling at once, the scenario `[compiler]`'s own
-# comment already describes — and refuses a minutes-long newcomer.
-#
-# A trip is not "make the number bigger". It is: find the long pole
-# (`cargo test -p wrela-compiler --lib 2>&1 | tail -20` — libtest prints each
-# test as it finishes, so the slow ones are last), then either reformulate it
-# cheap or move it behind `#[ignore]` plus an xtask deep lane the close item
-# runs. Re-lock only deliberately, in its own commit, citing why.
+# A trip is not "make the number bigger". Find the long pole by running the
+# compiler lib suite with `--test-threads=1`; libtest prints each test when it
+# finishes. Reformulate it or classify it into the milestone lane, and keep a
+# focused smoke test in `verify`.
 [tests]
-workspace_suite_max_us = 240000000
+workspace_suite_max_us = 15000000

@@ -5,6 +5,8 @@ const CENSUS_TOML: &str = include_str!("../../../tests/census.toml");
 
 #[derive(Debug)]
 pub struct CensusFile {
+    pub cost_dimension_ids: Vec<u32>,
+    pub cost_dimension_names: Vec<String>,
     pub internal_error: InternalErrorCensus,
     pub emitted_a64: EmittedA64Census,
     pub placed_static_fixed_core_names: Vec<String>,
@@ -75,7 +77,33 @@ fn parse_census() -> CensusFile {
     let value: toml::Value = CENSUS_TOML
         .parse()
         .unwrap_or_else(|e| panic!("tests/census.toml: parse failed: {e}"));
+    let cost_dimension = value
+        .get("cost_dimension")
+        .expect("census.toml: [cost_dimension]");
+    let cost_dimension_ids: Vec<u32> = cost_dimension
+        .get("ids")
+        .and_then(|v| v.as_array())
+        .expect("census.toml: cost_dimension.ids")
+        .iter()
+        .map(|v| {
+            v.as_integer()
+                .and_then(|n| u32::try_from(n).ok())
+                .expect("census.toml: cost_dimension.ids must contain u32 values")
+        })
+        .collect();
+    let cost_dimension_names = parse_string_array(
+        cost_dimension
+            .get("names")
+            .expect("census.toml: cost_dimension.names"),
+    );
+    assert_eq!(
+        cost_dimension_ids.len(),
+        cost_dimension_names.len(),
+        "census.toml: cost_dimension.ids/names length mismatch"
+    );
     CensusFile {
+        cost_dimension_ids,
+        cost_dimension_names,
         internal_error: parse_internal_error(&value),
         emitted_a64: parse_emitted_a64(&value),
         placed_static_fixed_core_names: parse_string_array(

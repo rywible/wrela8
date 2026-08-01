@@ -2,6 +2,58 @@
 # Loaded by crates/wrela-compiler/src/census.rs and xtask corpus pins.
 # Update deliberately in the same commit that changes a locked surface.
 
+# Dense, one-indexed cost dimensions. The row number is the stable identity
+# named by CostRule::inventory_rows. This machine-owned census replaces the
+# deleted milestone plan as the normative inventory.
+[cost_dimension]
+ids = [
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+    11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+    21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
+    31, 32, 33, 34, 35, 36, 37, 38, 39,
+]
+names = [
+    "Integer ALU latency / throughput / port",
+    "Shift/extend forms taking pipe M",
+    "Multiply, MAC, multiply-high, and M-pipe stalls",
+    "Divide range and pipe blocking",
+    "Dispatch caps",
+    "Bounded out-of-order reorder window",
+    "Load latency on L1D hit",
+    "Store address/data split and V-pipe contention",
+    "L1D / L2 / L3 / DRAM miss latency",
+    "Cache associativity conflicts",
+    "L2 inclusivity of L1D",
+    "Reuse distance at 64-byte line grain",
+    "Store buffer and store-to-load forwarding",
+    "D-TLB / L2-TLB span and walk cost",
+    "Per-core hot-text footprint versus L1I",
+    "I-TLB span per core",
+    "DMB barrier",
+    "Cross-core coherency and snoop",
+    "System-register access",
+    "Exception and abort path entry",
+    "Branch latency and port",
+    "Bias-scaled branch mispredict penalty",
+    "Branch density",
+    "Branch or target crossing a 2 MiB region",
+    "Loop exceeding one aligned 32-byte region",
+    "Unaligned subroutine entry or branch target",
+    "Range-crossing penalty",
+    "NZCV and SP renaming",
+    "Load crossing a 64-byte cache line",
+    "Store crossing a 16-byte boundary",
+    "Hardware prefetcher",
+    "Region-based fast forwarding",
+    "Quad-word dispatch stall after single-word writes",
+    "Load/store-exclusive and atomics",
+    "FP/ASIMD data-processing latency",
+    "L1I fetch bandwidth per cycle",
+    "DSU/SLC presence on BCM2712",
+    "L3 contention from the housekeeping Linux core",
+    "Ordered STLR and LDAR accesses",
+]
+
 [internal_error]
 total = 197
 

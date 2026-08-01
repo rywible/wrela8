@@ -10872,19 +10872,6 @@ mod item_i_tests {
         prog.fns.get(key).expect("fn present").code.len()
     }
 
-    fn named_regs(prog: &CodegenProgram, key: &str) -> BTreeSet<u8> {
-        let mut out = BTreeSet::new();
-        for w in &prog.fns[key].code {
-            if let Some(d) = w.dst {
-                out.insert(d);
-            }
-            for &s in &w.srcs[..w.src_len as usize] {
-                out.insert(s);
-            }
-        }
-        out
-    }
-
     const CHAIN: &str = r#"
 module examples.coalesce_chain
 

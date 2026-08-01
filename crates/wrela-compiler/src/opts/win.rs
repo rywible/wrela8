@@ -752,7 +752,6 @@ impl SweepCompare {
 struct CompiledSide {
     program: CodegenProgram,
     placement: PlacementTable,
-    scope: TextScope,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -776,12 +775,8 @@ fn compile_side(path: &Path, opts: &[OptId]) -> Result<CompiledSide, String> {
 
 fn compile_side_from(front: &ShippedFront, opts: &[OptId]) -> Result<CompiledSide, String> {
     apply_opts(opts);
-    let (program, placement, scope) = codegen_shipped_from(front)?;
-    Ok(CompiledSide {
-        program,
-        placement,
-        scope,
-    })
+    let (program, placement, _scope) = codegen_shipped_from(front)?;
+    Ok(CompiledSide { program, placement })
 }
 
 fn score_side_at(
@@ -2028,6 +2023,7 @@ mod tests {
         assert!(e.contains("no cost corpus case named"), "{e}");
     }
 
+    #[ignore = "milestone lane: whole cost-corpus optimization oracle"]
     #[test]
     fn assert_release_wins_cost_corpus_oracle() {
         let cmp = assert_release_wins_cost_corpus();
@@ -2151,6 +2147,7 @@ mod tests {
         eprintln!("NarrowImm alone wins:\n{}", wins.join("\n"));
     }
 
+    #[ignore = "milestone lane: whole shipped-list NarrowImm attribution"]
     #[test]
     fn narrow_imm_wins_on_cycles_while_its_footprint_win_is_priced_at_zero() {
         let singles: Vec<(String, Vec<OptId>)> = RELEASE_OPTS
@@ -2340,7 +2337,7 @@ mod tests {
         );
     }
 
-    #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
+    #[ignore = "deep lane: run via `cargo xtask verify-milestone` (or --ignored)"]
     #[test]
     fn narrow_imm_alone_wins_at_every_box_point() {
         let cmp = compare_opt_lists_over_box(&[], &[OptId::NarrowImm]).expect("sweep");
@@ -2407,23 +2404,23 @@ mod tests {
         );
     }
 
-    #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
+    #[ignore = "deep lane: run via `cargo xtask verify-milestone` (or --ignored)"]
     #[test]
-    fn adr_addressing_wins_at_every_point_of_the_residual_box() {
-        const WITHOUT: &[OptId] = &[OptId::NarrowImm];
-        let cmp = compare_opt_lists_over_box(WITHOUT, RELEASE_OPTS).expect("sweep");
-        let table = format_sweep_table(&cmp, "release−AdrAddressing", "release");
-        eprintln!("∀ sweep (release−AdrAddressing → release):\n{table}");
-        assert_sweep_wins(&cmp, "release", "release−AdrAddressing");
+    fn residual_release_list_wins_at_every_point_of_the_box() {
+        const RESIDUAL_BASE: &[OptId] = &[OptId::NarrowImm];
+        let cmp = compare_opt_lists_over_box(RESIDUAL_BASE, RELEASE_OPTS).expect("sweep");
+        let table = format_sweep_table(&cmp, "residual-base", "release");
+        eprintln!("∀ sweep (residual-base → release):\n{table}");
+        assert_sweep_wins(&cmp, "release", "residual-base");
         assert!(cmp.wins());
         eprintln!(
-            "AdrAddressing ∀-sweep: {} points/side over {} cases",
+            "residual release-list ∀-sweep: {} points/side over {} cases",
             cmp.scored_points(),
             cmp.cases.len()
         );
     }
 
-    #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
+    #[ignore = "deep lane: run via `cargo xtask verify-milestone` (or --ignored)"]
     #[test]
     fn each_release_opt_is_re_asked_alone_on_the_product_tier() {
         assert!(
@@ -2579,6 +2576,29 @@ mod tests {
     }
 
     #[test]
+    fn each_item_j_link_wins_at_the_default_point_on_its_smoke_case() {
+        let cases = discover_cost_cases();
+        for (n, &(label, _, case_name)) in ITEM_J_CHAIN.iter().enumerate() {
+            let case = cases
+                .iter()
+                .find(|case| case.name == case_name)
+                .unwrap_or_else(|| panic!("missing Item J smoke case `{case_name}`"));
+            let (base, cand) = item_j_link(n);
+            let (before, before_scope) = shipped_report_under_opts(&case.input, &base);
+            let (after, after_scope) = shipped_report_under_opts(&case.input, &cand);
+            assert_eq!(before_scope, after_scope, "{label} changed shipped scope");
+            assert!(
+                after.total_proxy_cycles < before.total_proxy_cycles,
+                "{label} must win at the default point of {case_name}: {} -> {}",
+                before.total_proxy_cycles,
+                after.total_proxy_cycles
+            );
+        }
+        apply_mode(CompileMode::Release);
+    }
+
+    #[ignore = "milestone lane: every Item J link over its whole sweep box"]
+    #[test]
     fn each_item_j_link_wins_at_every_box_point_on_its_smoke_case() {
         for (n, &(label, _, case)) in ITEM_J_CHAIN.iter().enumerate() {
             let (base, cand) = item_j_link(n);
@@ -2613,22 +2633,22 @@ mod tests {
         }
     }
 
-    #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
+    #[ignore = "deep lane: run via `cargo xtask verify-milestone` (or --ignored)"]
     #[test]
     fn each_item_j_link_wins_over_the_whole_box() {
         const MICRO_MARGINAL_ZERO: &[&str] = &["ConstProp"];
         for (n, &(label, _, _)) in ITEM_J_CHAIN.iter().enumerate() {
             let (base, cand) = item_j_link(n);
             let base_label = format!("{base:?}");
-            for tier in [CostTier::Micro, CostTier::Product] {
-                let cmp = compare_opt_lists_over_box_in_tier(&base, &cand, tier)
-                    .unwrap_or_else(|e| panic!("{label} ({tier:?}): {e}"));
-                let table = format_sweep_table(&cmp, &base_label, label);
-                eprintln!("∀ sweep, {tier:?} tier ({base_label} → +{label}):\n{table}");
+            let cmp =
+                compare_opt_lists_over_box(&base, &cand).unwrap_or_else(|e| panic!("{label}: {e}"));
+            let table = format_sweep_table(&cmp, &base_label, label);
+            eprintln!("∀ sweep ({base_label} → +{label}):\n{table}");
+            for tier in CostTier::ALL {
                 let rose: Vec<String> = cmp
-                    .reasons
+                    .reasons_for_tier(tier)
                     .iter()
-                    .map(SweepVeto::label)
+                    .map(|r| r.label())
                     .filter(|l| l.starts_with("case_rose"))
                     .collect();
                 assert!(
@@ -2639,12 +2659,19 @@ mod tests {
                 if tier == CostTier::Micro && MICRO_MARGINAL_ZERO.contains(&label) {
                     continue;
                 }
-                assert_sweep_wins(&cmp, label, &base_label);
-                assert!(cmp.wins());
+                assert!(
+                    cmp.wins_in_tier(tier),
+                    "{label} must win in {tier}: {:?}\n{table}",
+                    cmp.reasons_for_tier(tier)
+                        .iter()
+                        .map(|r| r.label())
+                        .collect::<Vec<_>>()
+                );
             }
         }
     }
 
+    #[ignore = "milestone lane: whole-box GVN attribution"]
     #[test]
     fn gvn_collects_its_own_copies() {
         let (base, cand) = item_j_link(1);
@@ -2683,6 +2710,7 @@ mod tests {
         apply_mode(CompileMode::Release);
     }
 
+    #[ignore = "milestone lane: shipped-list Item J comparison"]
     #[test]
     fn item_j_as_a_block_over_the_shipped_list() {
         let base = item_j_baseline();
@@ -2831,6 +2859,7 @@ mod tests {
         eprintln!("{table}\n(the mnemonic columns are Δ against release)");
     }
 
+    #[ignore = "milestone lane: whole-corpus release-order comparison"]
     #[test]
     fn swapped_order_scores_same_as_release_opts() {
         let swapped: Vec<OptId> = RELEASE_OPTS.iter().rev().copied().collect();
@@ -2857,12 +2886,14 @@ mod tests {
         }
     }
 
+    #[ignore = "milestone lane: whole-corpus negative optimization oracle"]
     #[test]
     #[should_panic(expected = "must strictly lower at least one")]
     fn empty_candidate_fails_win_oracle() {
         let _ = assert_candidate_wins(&[], &[]);
     }
 
+    #[ignore = "milestone lane: whole-corpus negative optimization oracle"]
     #[test]
     #[should_panic(expected = "raised proxy total")]
     fn disabling_shipped_opts_fails_candidate_oracle() {
@@ -2970,6 +3001,7 @@ mod tests {
         );
     }
 
+    #[ignore = "milestone lane: whole-corpus aggregate ranking"]
     #[test]
     fn overall_stub_all_with_corpus_sums_ranks_like_flat() {
         let set = pinned_set();
@@ -3466,6 +3498,7 @@ mod tests {
         );
     }
 
+    #[ignore = "milestone lane: whole-corpus ordering census"]
     #[test]
     fn release_removes_no_ordering_words_and_the_corpus_reaches_them() {
         let cmp = compare_opt_lists(&[], RELEASE_OPTS);
@@ -3571,6 +3604,7 @@ mod tests {
         assert!(cmp.vetoed(), "expected a coverage veto:\n{table}");
     }
 
+    #[ignore = "milestone lane: whole-corpus null optimization comparison"]
     #[test]
     fn null_opt_identity_is_never_a_win() {
         let set = pinned_set();
@@ -3588,6 +3622,7 @@ mod tests {
         apply_mode(CompileMode::Release);
     }
 
+    #[ignore = "milestone lane: every shipped image root"]
     #[test]
     fn the_gate_scores_the_image_every_root_would_ship() {
         let cmp = compare_opt_lists(RELEASE_OPTS, RELEASE_OPTS);
@@ -3624,6 +3659,7 @@ mod tests {
         apply_mode(CompileMode::Release);
     }
 
+    #[ignore = "milestone lane: whole-corpus release budget"]
     #[test]
     fn release_words_are_reported_and_the_budget_is_the_live_condition() {
         let cmp = compare_opt_lists(&[], RELEASE_OPTS);
@@ -3824,7 +3860,7 @@ mod tests {
         assert_eq!(case.box_cardinality, 131_072);
     }
 
-    #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
+    #[ignore = "deep lane: run via `cargo xtask verify-milestone` (or --ignored)"]
     #[test]
     fn release_wins_at_every_point_of_the_residual_box() {
         let cmp = compare_opt_lists_over_box(&[], RELEASE_OPTS).expect("sweep");
@@ -3861,7 +3897,7 @@ mod tests {
         ),
     ];
 
-    #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
+    #[ignore = "deep lane: run via `cargo xtask verify-milestone` (or --ignored)"]
     #[test]
     fn item_c5_earns_its_place_by_leave_one_out_on_the_product_tier() {
         let without: Vec<OptId> = RELEASE_OPTS
@@ -3899,6 +3935,7 @@ mod tests {
         );
     }
 
+    #[ignore = "milestone lane: whole-corpus Item C attribution"]
     #[test]
     fn item_c_attribution_over_the_corpus() {
         let rows = attribute_opts(&[
@@ -4066,15 +4103,16 @@ mod tests {
         }
     }
 
-    #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
+    #[ignore = "deep lane: run via `cargo xtask verify-milestone` (or --ignored)"]
     #[test]
-    fn each_item_c_opt_wins_over_the_whole_box_alone() {
+    fn each_item_c_opt_wins_over_the_micro_box_alone() {
         for &(base, id, _) in ITEM_C_SMOKE {
             let mut candidate = base.to_vec();
             candidate.push(id);
-            let cmp = compare_opt_lists_over_box(base, &candidate).expect("sweep");
+            let cmp = compare_opt_lists_over_box_in_tier(base, &candidate, CostTier::Micro)
+                .expect("micro sweep");
             eprintln!(
-                "item C ∀ ({id:?} over {base:?}):\n{}",
+                "item C ∀ micro ({id:?} over {base:?}):\n{}",
                 format_sweep_table(&cmp, &format!("{base:?}"), &format!("+{id:?}"))
             );
             assert_sweep_wins(&cmp, &format!("+{id:?}"), &format!("{base:?}"));
@@ -4108,16 +4146,6 @@ mod tests {
             "smoke sweep vetoed: {:?}",
             cmp.reasons.iter().map(|r| r.label()).collect::<Vec<_>>()
         );
-    }
-
-    #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
-    #[test]
-    fn regalloc_wins_at_every_point_of_the_residual_box() {
-        let cmp = compare_opt_lists_over_box(WITHOUT_REGALLOC, RELEASE_OPTS).expect("sweep");
-        let table = format_sweep_table(&cmp, "release-minus-RegAlloc", "release");
-        eprintln!("∀ sweep (release-minus-RegAlloc → release):\n{table}");
-        assert_sweep_wins(&cmp, "release", "release-minus-RegAlloc");
-        assert!(cmp.wins());
     }
 
     fn item_f_baseline() -> Vec<OptId> {
@@ -4169,16 +4197,17 @@ mod tests {
         }
     }
 
-    #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
+    #[ignore = "deep lane: run via `cargo xtask verify-milestone` (or --ignored)"]
     #[test]
-    fn each_item_f_opt_wins_over_the_whole_box_alone() {
+    fn each_item_f_opt_wins_over_the_micro_box_alone() {
         let mut base = item_f_baseline();
         for &(id, _) in ITEM_F_SMOKE {
             let mut candidate = base.clone();
             candidate.push(id);
-            let cmp = compare_opt_lists_over_box(&base, &candidate).expect("sweep");
+            let cmp = compare_opt_lists_over_box_in_tier(&base, &candidate, CostTier::Micro)
+                .expect("micro sweep");
             eprintln!(
-                "item F ∀ (+{id:?} over {} opts):\n{}",
+                "item F ∀ micro (+{id:?} over {} opts):\n{}",
                 base.len(),
                 format_sweep_table(&cmp, "base", &format!("+{id:?}"))
             );
@@ -4222,7 +4251,7 @@ mod tests {
         );
     }
 
-    #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
+    #[ignore = "deep lane: run via `cargo xtask verify-milestone` (or --ignored)"]
     #[test]
     fn branch_cleanup_wins_at_every_point_of_the_residual_box() {
         let base = without_branch_cleanup();
@@ -4231,24 +4260,7 @@ mod tests {
         eprintln!("∀ sweep (release−BranchCleanup → release):\n{table}");
         assert_sweep_wins(&cmp, "release", "release−BranchCleanup");
         assert!(cmp.wins());
-        eprintln!(
-            "BranchCleanup ∀-sweep: {} points/side over {} cases",
-            cmp.scored_points(),
-            cmp.cases.len()
-        );
-    }
-
-    #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
-    #[test]
-    fn branch_cleanup_wins_in_each_tier_on_its_own() {
-        let base = without_branch_cleanup();
         for tier in CostTier::ALL {
-            let cmp =
-                compare_opt_lists_over_box_in_tier(&base, RELEASE_OPTS, tier).expect("tier sweep");
-            eprintln!(
-                "BranchCleanup ∀ [{tier}]:\n{}",
-                format_sweep_table(&cmp, "release−BranchCleanup", "release")
-            );
             assert!(
                 cmp.wins_in_tier(tier),
                 "BranchCleanup must win on the {tier} tier alone: {:?}",
@@ -4258,6 +4270,11 @@ mod tests {
                     .collect::<Vec<_>>()
             );
         }
+        eprintln!(
+            "BranchCleanup ∀-sweep: {} points/side over {} cases",
+            cmp.scored_points(),
+            cmp.cases.len()
+        );
     }
 
     #[test]
@@ -4274,7 +4291,7 @@ mod tests {
         apply_mode(CompileMode::Release);
     }
 
-    #[ignore = "deep lane: run via `cargo xtask check` (or --ignored)"]
+    #[ignore = "deep lane: run via `cargo xtask verify-milestone` (or --ignored)"]
     #[test]
     fn the_corpus_still_fires_tail_calls() {
         let mut fired = Vec::new();

@@ -20,48 +20,38 @@ pub fn inventory_rows(rule: CostRule) -> &'static [u32] {
     }
 }
 
-pub fn plan_inventory_rows(plan_text: &str) -> Result<BTreeSet<u32>, String> {
+pub fn dimension_inventory_rows() -> Result<BTreeSet<u32>, String> {
+    let census = crate::census::data();
+    if census.cost_dimension_ids.is_empty() {
+        return Err("tests/census.toml: cost_dimension.ids is empty".to_string());
+    }
     let mut rows = BTreeSet::new();
-    let mut inside = false;
-    for line in plan_text.lines() {
-        if line.starts_with("## ") {
-            inside = line.trim() == "## Cost dimension inventory";
-            continue;
-        }
-        if !inside || !line.starts_with('|') {
-            continue;
-        }
-        let first = line
-            .trim_start_matches('|')
-            .split('|')
-            .next()
-            .unwrap_or("")
-            .trim();
-        if let Ok(n) = first.parse::<u32>()
-            && !rows.insert(n)
-        {
+    for (&id, name) in census
+        .cost_dimension_ids
+        .iter()
+        .zip(&census.cost_dimension_names)
+    {
+        if name.trim().is_empty() {
             return Err(format!(
-                "plans/M20.md: dimension inventory row {n} appears twice"
+                "tests/census.toml: cost dimension row {id} has an empty name"
             ));
         }
-    }
-    if rows.is_empty() {
-        return Err(
-            "plans/M20.md: no `## Cost dimension inventory` table found (freeze 1632's list)"
-                .to_string(),
-        );
+        if !rows.insert(id) {
+            return Err(format!(
+                "tests/census.toml: cost dimension row {id} appears twice"
+            ));
+        }
     }
     Ok(rows)
 }
 
-pub fn check_dimension_inventory(plan_text: &str) -> Result<String, String> {
-    let declared = plan_inventory_rows(plan_text)?;
+fn check_dimension_inventory_rows(declared: &BTreeSet<u32>) -> Result<String, String> {
     let max = declared.iter().copied().max().unwrap_or(0);
     for n in 1..=max {
         if !declared.contains(&n) {
             return Err(format!(
-                "plans/M20.md: dimension inventory is missing row {n} (rows must be dense 1..={max}; \
-                 a dimension is removed by superseding its row, never by deleting it)"
+                "tests/census.toml: cost dimension inventory is missing row {n} \
+                 (rows must be dense 1..={max})"
             ));
         }
     }
@@ -70,15 +60,15 @@ pub fn check_dimension_inventory(plan_text: &str) -> Result<String, String> {
         let rows = inventory_rows(rule);
         if rows.is_empty() {
             return Err(format!(
-                "freeze 1632: CostRule::{rule:?} (`{}`) names no dimension-inventory row",
+                "CostRule::{rule:?} (`{}`) names no cost-dimension row",
                 rule.as_str()
             ));
         }
         for &r in rows {
             if !declared.contains(&r) {
                 return Err(format!(
-                    "freeze 1632: CostRule::{rule:?} (`{}`) names inventory row {r}, which does not \
-                     exist in plans/M20.md's table",
+                    "CostRule::{rule:?} (`{}`) names cost-dimension row {r}, which does not \
+                     exist in tests/census.toml",
                     rule.as_str()
                 ));
             }
@@ -86,16 +76,15 @@ pub fn check_dimension_inventory(plan_text: &str) -> Result<String, String> {
         }
     }
     Ok(format!(
-        "dimension inventory: {} row(s) in plans/M20.md, {} rule(s) accounted for across {} row(s)",
+        "dimension inventory: {} row(s) in tests/census.toml, {} rule(s) accounted for across {} row(s)",
         declared.len(),
         CostRule::ALL.len(),
         claimed.len()
     ))
 }
 
-pub fn plan_text() -> Result<String, String> {
-    let path = super::repo_root().join("plans/M20.md");
-    std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))
+pub fn check_dimension_inventory() -> Result<String, String> {
+    check_dimension_inventory_rows(&dimension_inventory_rows()?)
 }
 
 #[cfg(test)]
@@ -1196,36 +1185,31 @@ mod tests {
     }
 
     #[test]
-    fn every_cost_rule_names_an_inventory_row_that_exists_in_the_plan() {
-        let text = plan_text().expect("plans/M20.md");
-        let summary = check_dimension_inventory(&text).expect("freeze 1632");
+    fn every_cost_rule_names_an_inventory_row_that_exists_in_the_census() {
+        let summary = check_dimension_inventory().expect("cost dimension census");
         eprintln!("{summary}");
-        let rows = plan_inventory_rows(&text).expect("rows");
+        let rows = dimension_inventory_rows().expect("rows");
         assert!(
             rows.contains(&39),
             "row 39 (the ordered accesses) must exist"
         );
         assert!(
             !rows.contains(&40),
-            "the plan grew a row this check does not know about"
+            "the census grew a row this check does not know about"
         );
     }
 
     #[test]
     fn the_inventory_check_fails_closed_on_a_missing_row() {
-        let text = plan_text().expect("plans/M20.md");
-        let pruned: String = text
-            .lines()
-            .filter(|l| !l.starts_with("| 17 |"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let e = check_dimension_inventory(&pruned).expect_err("a deleted row must be refused");
+        let mut pruned = dimension_inventory_rows().expect("rows");
+        pruned.remove(&17);
+        let e = check_dimension_inventory_rows(&pruned).expect_err("a deleted row must be refused");
         assert!(
             e.contains("17"),
             "the refusal must name the missing row, got: {e}"
         );
-        let e = check_dimension_inventory("# no inventory here\n").expect_err("no table");
-        assert!(e.contains("Cost dimension inventory"), "got: {e}");
+        let e = check_dimension_inventory_rows(&BTreeSet::new()).expect_err("empty inventory");
+        assert!(e.contains("row"), "got: {e}");
     }
 
     #[test]

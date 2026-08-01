@@ -2,14 +2,10 @@ use std::process::Command;
 
 use crate::root;
 
-const EXCLUDED_PREFIXES: &[(&str, &str)] = &[
-    ("docs/archive/", "read-only history (CLAUDE.md)"),
-    ("plans/", "plans record the superseded state deliberately"),
-    (
-        "crates/xtask/src/agnostic_sweep.rs",
-        "defines the phrase list",
-    ),
-];
+const EXCLUDED_PREFIXES: &[(&str, &str)] = &[(
+    "crates/xtask/src/agnostic_sweep.rs",
+    "defines the phrase list",
+)];
 
 const SUPERSEDED: &[(&str, &str)] = &[
     (
@@ -151,8 +147,8 @@ pub(crate) fn agnostic_sweep() -> Result<(), String> {
         println!("  {m}");
     }
     Err(format!(
-        "agnostic-sweep: {} superseded assertion(s) and {} missing required phrase(s) \
-         (plans/M20.md item A: the whole tree moves together, or it contradicts itself)",
+        "agnostic-sweep: {} superseded assertion(s) and {} missing required phrase(s); \
+         the whole tree must move together or it contradicts itself",
         hits.len(),
         missing.len()
     ))
@@ -243,7 +239,7 @@ mod tests {
         let mut hits = Vec::new();
         sweep_prose(
             "fake.md",
-            "plans/M20.md item A lifted this: not an A76 SOG port map.\n",
+            "a completed migration claimed this was lifted: not an A76 SOG port map.\n",
             &mut hits,
         );
         assert!(

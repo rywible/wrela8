@@ -44,6 +44,14 @@ pub const RELEASE_OPTS: &[OptId] = &[
 
 pub const PARKED_OPTS: &[OptId] = &[OptId::BoundsElide, OptId::Inline];
 
+thread_local! {
+    static ACTIVE_OPTS: std::cell::RefCell<Vec<OptId>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+pub fn active_opts() -> Vec<OptId> {
+    ACTIVE_OPTS.with(|active| active.borrow().clone())
+}
+
 pub fn all_opts() -> Vec<OptId> {
     RELEASE_OPTS.iter().chain(PARKED_OPTS).copied().collect()
 }
@@ -68,6 +76,11 @@ pub fn apply_opts(opts: &[OptId]) {
     crate::codegen::set_frameless_fns(opts.contains(&OptId::Frameless));
     crate::codegen::set_tail_calls(opts.contains(&OptId::TailCalls));
     crate::codegen::set_branch_cleanup(opts.contains(&OptId::BranchCleanup));
+    ACTIVE_OPTS.with(|active| {
+        let mut active = active.borrow_mut();
+        active.clear();
+        active.extend_from_slice(opts);
+    });
 }
 
 pub fn apply_mode(mode: CompileMode) {
@@ -102,6 +115,14 @@ mod tests {
             (OptId::TailCalls, crate::codegen::tail_calls()),
             (OptId::BranchCleanup, branch_cleanup()),
         ]
+    }
+
+    #[test]
+    fn active_opts_tracks_the_applied_set() {
+        apply_opts(&[OptId::NarrowImm, OptId::RegAlloc]);
+        assert_eq!(active_opts(), vec![OptId::NarrowImm, OptId::RegAlloc]);
+        apply_mode(CompileMode::Dev);
+        assert!(active_opts().is_empty());
     }
 
     #[test]

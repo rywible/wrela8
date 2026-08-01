@@ -21,12 +21,17 @@ pub(crate) struct DocBlock {
 
 pub(crate) fn extract_doc_blocks() -> Result<(Vec<DocBlock>, Vec<String>), String> {
     let docs_dir = root().join("docs/language");
-    let mut doc_files: Vec<_> = std::fs::read_dir(&docs_dir)
-        .map_err(|e| format!("read {}: {e}", docs_dir.display()))?
-        .filter_map(Result::ok)
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "md"))
-        .collect();
+    let entries =
+        std::fs::read_dir(&docs_dir).map_err(|e| format!("read {}: {e}", docs_dir.display()))?;
+    let mut doc_files = Vec::new();
+    for entry in entries {
+        let path = entry
+            .map_err(|e| format!("read {} entry: {e}", docs_dir.display()))?
+            .path();
+        if path.extension().is_some_and(|x| x == "md") {
+            doc_files.push(path);
+        }
+    }
     doc_files.sort();
     let mut blocks = Vec::new();
     let mut failures = Vec::new();
@@ -71,12 +76,16 @@ pub(crate) fn extract_doc_blocks() -> Result<(Vec<DocBlock>, Vec<String>), Strin
 
 pub(crate) fn extract_example_files() -> Result<Vec<DocBlock>, String> {
     let dir = root().join("docs/language/examples");
-    let mut files: Vec<_> = std::fs::read_dir(&dir)
-        .map_err(|e| format!("read {}: {e}", dir.display()))?
-        .filter_map(Result::ok)
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "wr"))
-        .collect();
+    let entries = std::fs::read_dir(&dir).map_err(|e| format!("read {}: {e}", dir.display()))?;
+    let mut files = Vec::new();
+    for entry in entries {
+        let path = entry
+            .map_err(|e| format!("read {} entry: {e}", dir.display()))?
+            .path();
+        if path.extension().is_some_and(|x| x == "wr") {
+            files.push(path);
+        }
+    }
     files.sort();
     let mut entries = Vec::new();
     for path in files {
@@ -101,7 +110,8 @@ pub(crate) fn corpus(args: &[String]) -> Result<(), String> {
     let mut verbose_sema = false;
     for a in args {
         match a.as_str() {
-            "--sema" => verbose_sema = true,
+            "--sema" if !verbose_sema => verbose_sema = true,
+            "--sema" => return Err("corpus: `--sema` specified more than once".to_string()),
             other => {
                 return Err(format!(
                     "corpus: unknown argument `{other}` (want `corpus` or `corpus --sema`)"

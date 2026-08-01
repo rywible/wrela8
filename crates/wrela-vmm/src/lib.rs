@@ -373,6 +373,7 @@ mod tests {
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[ignore = "HVF lane: run via `cargo xtask verify-milestone`"]
     #[test]
     fn drain_console_reads_more_than_the_old_16_descriptor_limit() {
         use wrela_machine::{console, layout as machine_layout};
@@ -405,6 +406,7 @@ mod tests {
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[ignore = "HVF lane: run via `cargo xtask verify-milestone`"]
     #[test]
     fn record_replay_roundtrips_and_detects_every_divergence_shape() {
         use wrela_compiler::encode;
@@ -889,6 +891,7 @@ mod tests {
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[ignore = "HVF lane: run via `cargo xtask verify-milestone`"]
     #[test]
     fn park_and_resume_two_hop_await_chain_over_hvf() {
         let src = r#"module conformance.chain
@@ -940,6 +943,7 @@ pub fn build() -> Image:
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[ignore = "HVF lane: run via `cargo xtask verify-milestone`"]
     #[test]
     fn park_and_resume_fifo_second_message_waits_for_the_suspended_turn_over_hvf() {
         let src = r#"module conformance.fifo
@@ -1007,6 +1011,7 @@ pub fn build() -> Image:
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[ignore = "HVF lane: run via `cargo xtask verify-milestone`"]
     #[test]
     fn park_and_resume_interleaves_a_third_actor_while_suspended_over_hvf() {
         let src = r#"module conformance.interleave
@@ -1097,6 +1102,7 @@ pub fn build() -> Image:
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[ignore = "HVF lane: run via `cargo xtask verify-milestone`"]
     #[test]
     fn deadlock_diagnostic_prints_the_named_line_and_exits_nonzero_over_hvf() {
         use wrela_compiler::codegen::{OFF_TURN_BUSY, OFF_TURN_SUSPENDED};
@@ -1155,6 +1161,7 @@ pub fn build() -> Image:
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[ignore = "HVF lane: run via `cargo xtask verify-milestone`"]
     #[test]
     fn park_conformance_wakes_at_the_deadline_and_resumes_over_hvf() {
         use wrela_compiler::encode;
@@ -1200,6 +1207,7 @@ pub fn build() -> Image:
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[ignore = "HVF lane: run via `cargo xtask verify-milestone`"]
     #[test]
     fn subword_mmio_access_is_a_named_guest_fault_over_hvf() {
         use wrela_compiler::encode;
@@ -1227,6 +1235,7 @@ pub fn build() -> Image:
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[ignore = "HVF lane: run via `cargo xtask verify-milestone`"]
     #[test]
     fn vector_raise_observed_at_a_checkpoint_over_hvf() {
         use wrela_compiler::encode;
@@ -1301,7 +1310,7 @@ pub fn build() -> Image:
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[ignore = "HVF lane: run via `cargo xtask verify-milestone`"]
     #[test]
     fn an_el1_fault_into_the_absent_vector_table_names_the_original_esr_over_hvf() {
         use wrela_compiler::encode;
@@ -1352,6 +1361,8 @@ pub fn build() -> Image:
         );
     }
 
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[ignore = "HVF lane: run via `cargo xtask verify-milestone`"]
     #[test]
     fn record_replay_of_the_park_wake_scenario_is_byte_stable_and_detects_tamper() {
         use wrela_compiler::encode;
@@ -1425,6 +1436,7 @@ pub fn build() -> Image:
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[ignore = "HVF lane: run via `cargo xtask verify-milestone`"]
     #[test]
     fn replay_divergence_and_record_failures_exit_nonzero_through_the_real_binary() {
         use std::process::Command;
@@ -1803,6 +1815,7 @@ pub fn build() -> Image:
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[ignore = "HVF lane: run via `cargo xtask verify-milestone`"]
     #[test]
     fn blk_doorbell_write_then_read_completes_over_hvf() {
         let (report_path, img_path) = write_blk_conformance_image("blk-doorbell");
@@ -1852,6 +1865,7 @@ pub fn build() -> Image:
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[ignore = "HVF lane: run via `cargo xtask verify-milestone`"]
     #[test]
     fn blk_completions_record_and_replay_and_every_tamper_diverges() {
         let (report_path, img_path) = write_blk_conformance_image("blk-replay");
@@ -1950,6 +1964,7 @@ pub fn build() -> Image:
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[ignore = "HVF lane: run via `cargo xtask verify-milestone`"]
     #[test]
     fn a_descriptor_outside_every_declared_pool_fails_the_boot_closed_over_hvf() {
         use wrela_machine::layout as machine_layout;
@@ -2219,6 +2234,7 @@ pub fn build() -> Image:
 "#;
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[ignore = "HVF lane: run via `cargo xtask verify-milestone`"]
     #[test]
     fn three_cores_come_up_on_a_cross_core_image_over_hvf() {
         let outcome = boot_source(CROSS_CORE_SRC, "c1-three-cores");
@@ -2238,6 +2254,7 @@ pub fn build() -> Image:
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[ignore = "HVF lane: run via `cargo xtask verify-milestone`"]
     #[test]
     fn two_cores_come_up_under_baton_over_hvf() {
         let outcome = boot_source(TWO_CORE_SRC, "f-two-cores");
@@ -2247,6 +2264,7 @@ pub fn build() -> Image:
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[ignore = "HVF lane: run via `cargo xtask verify-milestone`"]
     #[test]
     fn concurrent_boot_observes_hv_vcpu_run_overlap_depth() {
         hv::hv_vcpu_run_depth_max_reset();
@@ -2287,6 +2305,7 @@ pub fn build() -> Image:
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[ignore = "HVF lane: run via `cargo xtask verify-milestone`"]
     #[test]
     fn host_refuses_when_vcpu_create_fails_over_hvf() {
         let _guard = vcpu_create_inject::Guard;
@@ -2353,6 +2372,7 @@ pub fn build() -> Image:
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[ignore = "HVF lane: run via `cargo xtask verify-milestone`"]
     #[test]
     fn check_core_marks_scopes_to_declared_n() {
         use wrela_machine::layout as machine_layout;
@@ -2369,6 +2389,7 @@ pub fn build() -> Image:
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[ignore = "HVF lane: run via `cargo xtask verify-milestone`"]
     #[test]
     fn a_miswired_core_entry_fails_the_boot_closed_over_hvf() {
         let (image, report) = compile_test_image(CROSS_CORE_SRC);
@@ -2398,6 +2419,7 @@ pub fn build() -> Image:
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[ignore = "HVF lane: run via `cargo xtask verify-milestone`"]
     #[test]
     fn a_production_cross_core_image_halts_with_no_runtime_not_a_bring_up_fault() {
         let (image, report) = compile_program_image(CROSS_CORE_SRC);
@@ -2415,6 +2437,7 @@ pub fn build() -> Image:
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[ignore = "HVF lane: run via `cargo xtask verify-milestone`"]
     #[test]
     fn a_fault_on_a_secondary_core_names_that_core_over_hvf() {
         let (image, report) = compile_test_image(CROSS_CORE_SRC);
@@ -2934,6 +2957,7 @@ pub fn build() -> Image:
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[ignore = "HVF lane: run via `cargo xtask verify-milestone`"]
     #[test]
     fn block_count_lane2_agrees_with_host_dram_on_boot_actors() {
         let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

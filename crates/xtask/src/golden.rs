@@ -3,6 +3,19 @@ use std::process::Command;
 
 use crate::{golden_case_dirs, root, run};
 
+fn read_dir_paths(dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("read {}: {e}", dir.display()))?;
+    let mut paths = Vec::new();
+    for entry in entries {
+        paths.push(
+            entry
+                .map_err(|e| format!("read {} entry: {e}", dir.display()))?
+                .path(),
+        );
+    }
+    Ok(paths)
+}
+
 pub(crate) fn hex_dump(bytes: &[u8]) -> String {
     let mut out = String::new();
     for (i, chunk) in bytes.chunks(16).enumerate() {
@@ -59,6 +72,12 @@ pub(crate) fn build_and_sign_vmm() -> Result<PathBuf, String> {
 }
 
 fn build_and_sign_vmm_uncached() -> Result<PathBuf, String> {
+    if !(cfg!(target_os = "macos") && cfg!(target_arch = "aarch64")) {
+        return Err(
+            "wrela-vmm boot lanes require macOS/aarch64 and Hypervisor.framework; refusing to run a stub VMM"
+                .to_string(),
+        );
+    }
     run(
         Command::new("cargo").args(["build", "--quiet", "-p", "wrela-vmm", "--bin", "wrela-vmm"]),
         "cargo build wrela-vmm",
@@ -74,7 +93,7 @@ fn build_and_sign_vmm_uncached() -> Result<PathBuf, String> {
     Ok(bin)
 }
 
-pub(crate) fn test_wrela_vmm_signed() -> Result<(), String> {
+pub(crate) fn test_wrela_vmm_hvf_signed() -> Result<(), String> {
     let output = Command::new("cargo")
         .current_dir(root())
         .args(["test", "-p", "wrela-vmm", "--no-run"])
@@ -105,6 +124,7 @@ pub(crate) fn test_wrela_vmm_signed() -> Result<(), String> {
             "cargo test -p wrela-vmm --no-run: found no test executable(s) to sign".to_string(),
         );
     }
+    let mut total = 0usize;
     for exe in &executables {
         if cfg!(target_os = "macos") {
             let mut cmd = Command::new("codesign");
@@ -113,10 +133,34 @@ pub(crate) fn test_wrela_vmm_signed() -> Result<(), String> {
             cmd.arg(exe);
             run(&mut cmd, "codesign wrela-vmm test binary")?;
         }
+        let listed = Command::new(exe)
+            .args(["--ignored", "--list"])
+            .output()
+            .map_err(|e| format!("list ignored tests in {}: {e}", exe.display()))?;
+        if !listed.status.success() {
+            return Err(format!(
+                "list ignored tests in {} failed:\n{}",
+                exe.display(),
+                String::from_utf8_lossy(&listed.stderr)
+            ));
+        }
+        let count = String::from_utf8_lossy(&listed.stdout)
+            .lines()
+            .filter(|line| line.ends_with(": test"))
+            .count();
+        if count == 0 {
+            continue;
+        }
+        total += count;
         run(
-            Command::new(exe).arg("--test-threads=1"),
-            &format!("run {}", exe.display()),
+            Command::new(exe).args(["--ignored", "--test-threads=1"]),
+            &format!("run {count} ignored HVF tests in {}", exe.display()),
         )?;
+    }
+    if total != VMM_HVF_TESTS {
+        return Err(format!(
+            "wrela-vmm HVF test census changed: found {total}, expected {VMM_HVF_TESTS}"
+        ));
     }
     Ok(())
 }
@@ -141,6 +185,7 @@ pub(crate) fn default_jobs() -> usize {
 }
 
 pub(crate) const DEFAULT_BOOT_JOBS: usize = 4;
+pub(crate) const VMM_HVF_TESTS: usize = 24;
 
 impl Default for GoldenOpts {
     fn default() -> Self {
@@ -154,23 +199,46 @@ impl Default for GoldenOpts {
     }
 }
 
-fn case_boots(expected_dir: &Path) -> bool {
-    let Ok(entries) = std::fs::read_dir(expected_dir) else {
-        return false;
-    };
-    entries.filter_map(Result::ok).any(|e| {
-        e.path()
+fn stage_boots(stage: &str) -> bool {
+    stage == "test" || stage == "test-omit-dmb"
+}
+
+fn stage_selected(stage: &str, boot: BootSel) -> bool {
+    match boot {
+        BootSel::All => true,
+        BootSel::Only => stage_boots(stage),
+        BootSel::None => !stage_boots(stage),
+    }
+}
+
+fn case_has_selected_stage(case: &Path, boot: BootSel) -> Result<(bool, bool), String> {
+    let expected_dir = case.join("expected");
+    let entries = std::fs::read_dir(&expected_dir)
+        .map_err(|e| format!("read {}: {e}", expected_dir.display()))?;
+    let mut selected = false;
+    let mut selected_boot = false;
+    for entry in entries {
+        let path = entry
+            .map_err(|e| format!("read {} entry: {e}", expected_dir.display()))?
+            .path();
+        let stage = path
             .file_stem()
             .and_then(|s| s.to_str())
-            .is_some_and(|s| s == "test" || s == "test-omit-dmb")
-    })
+            .ok_or_else(|| format!("bad expected file name: {}", path.display()))?;
+        if stage_selected(stage, boot) {
+            selected = true;
+            selected_boot |= stage_boots(stage);
+        }
+    }
+    Ok((selected, selected_boot))
 }
 
 fn run_case(
     case: &Path,
     wrela: &Path,
-    vmm: &Path,
+    vmm: Option<&Path>,
     update: bool,
+    boot: BootSel,
 ) -> Result<(usize, Vec<String>), String> {
     let mut cases = 0usize;
     let mut failures = Vec::new();
@@ -186,11 +254,16 @@ fn run_case(
                 return Ok((cases, failures));
             }
         };
-        let mut expected_files: Vec<_> = std::fs::read_dir(&expected_dir)
-            .map_err(|e| format!("read {}: {e}", expected_dir.display()))?
-            .filter_map(Result::ok)
-            .map(|e| e.path())
-            .collect();
+        let entries = std::fs::read_dir(&expected_dir)
+            .map_err(|e| format!("read {}: {e}", expected_dir.display()))?;
+        let mut expected_files = Vec::new();
+        for entry in entries {
+            expected_files.push(
+                entry
+                    .map_err(|e| format!("read {} entry: {e}", expected_dir.display()))?
+                    .path(),
+            );
+        }
         expected_files.sort();
         for exp in expected_files {
             let stage = exp
@@ -198,6 +271,9 @@ fn run_case(
                 .and_then(|s| s.to_str())
                 .ok_or_else(|| format!("bad expected file name: {}", exp.display()))?
                 .to_string();
+            if !stage_selected(&stage, boot) {
+                continue;
+            }
             let rel_input = input.strip_prefix(root()).unwrap_or(&input);
             let case_name = case
                 .file_name()
@@ -215,10 +291,8 @@ fn run_case(
                     .map_err(|e| format!("create {}: {e}", build_out_dir_abs.display()))?;
             }
             if stage == "img" {
-                let written: Vec<_> = std::fs::read_dir(&build_out_dir_abs)
-                    .map_err(|e| format!("read {}: {e}", build_out_dir_abs.display()))?
-                    .filter_map(Result::ok)
-                    .map(|e| e.path())
+                let written: Vec<_> = read_dir_paths(&build_out_dir_abs)?
+                    .into_iter()
                     .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("img"))
                     .collect();
                 let img_bytes = match written.as_slice() {
@@ -255,6 +329,12 @@ fn run_case(
                 continue;
             }
             let out = if stage == "test" || stage == "test-omit-dmb" {
+                let vmm = vmm.ok_or_else(|| {
+                    format!(
+                        "{} [{stage}]: boot stage selected without a VMM",
+                        case.display()
+                    )
+                })?;
                 let mut cmd = Command::new(&wrela);
                 cmd.current_dir(root()).arg("test").arg(rel_input);
                 if stage == "test-omit-dmb" {
@@ -329,10 +409,8 @@ fn run_case(
             if stage == "build" {
                 let report_expected = expected_dir.join("report.txt");
                 if report_expected.is_file() {
-                    let written: Vec<_> = std::fs::read_dir(&build_out_dir_abs)
-                        .map_err(|e| format!("read {}: {e}", build_out_dir_abs.display()))?
-                        .filter_map(Result::ok)
-                        .map(|e| e.path())
+                    let written: Vec<_> = read_dir_paths(&build_out_dir_abs)?
+                        .into_iter()
                         .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("txt"))
                         .filter(|p| {
                             p.file_name()
@@ -380,8 +458,9 @@ fn run_case(
 fn run_cases_parallel(
     cases: &[PathBuf],
     wrela: &Path,
-    vmm: &Path,
+    vmm: Option<&Path>,
     update: bool,
+    boot: BootSel,
     jobs: usize,
 ) -> Result<(usize, Vec<String>), String> {
     if cases.is_empty() {
@@ -401,7 +480,7 @@ fn run_cases_parallel(
                     if i >= cases.len() {
                         return;
                     }
-                    match run_case(&cases[i], wrela, vmm, update) {
+                    match run_case(&cases[i], wrela, vmm, update, boot) {
                         Ok((n, f)) => results.lock().expect("results lock").push((i, n, f)),
                         Err(e) => {
                             let mut slot = hard_error.lock().expect("error lock");
@@ -435,7 +514,6 @@ pub(crate) fn golden(opts: &GoldenOpts) -> Result<(), String> {
         "cargo build wrela",
     )?;
     let wrela = root().join("target/debug/wrela");
-    let vmm = build_and_sign_vmm()?;
     let golden_dir = root().join("tests/golden");
 
     let mut dump_cases = Vec::new();
@@ -452,14 +530,12 @@ pub(crate) fn golden(opts: &GoldenOpts) -> Result<(), String> {
                 continue;
             }
         }
-        let boots = case_boots(&case.join("expected"));
-        match (boots, opts.boot) {
-            (true, BootSel::None) => continue,
-            (false, BootSel::Only) => continue,
-            _ => {}
+        let (selected, selected_boot) = case_has_selected_stage(&case, opts.boot)?;
+        if !selected {
+            continue;
         }
         selected_names.push(name);
-        if boots {
+        if selected_boot {
             boot_cases.push(case);
         } else {
             dump_cases.push(case);
@@ -468,52 +544,66 @@ pub(crate) fn golden(opts: &GoldenOpts) -> Result<(), String> {
 
     if dump_cases.is_empty() && boot_cases.is_empty() {
         return Err(match &opts.filter {
-            Some(f) => format!("golden: --filter `{f}` matched no case under tests/golden/"),
-            None => "golden: no cases selected".to_string(),
+            Some(f) => format!(
+                "golden: --filter `{f}` matched no selected expectation under tests/golden/"
+            ),
+            None => "golden: no expectations selected".to_string(),
         });
     }
 
-    let (n1, mut failures) = run_cases_parallel(&dump_cases, &wrela, &vmm, opts.update, opts.jobs)?;
+    let vmm = if boot_cases.is_empty() {
+        None
+    } else {
+        Some(build_and_sign_vmm()?)
+    };
+    let (n1, mut failures) = run_cases_parallel(
+        &dump_cases,
+        &wrela,
+        vmm.as_deref(),
+        opts.update,
+        opts.boot,
+        opts.jobs,
+    )?;
     let (n2, boot_failures) = run_cases_parallel(
         &boot_cases,
         &wrela,
-        &vmm,
+        vmm.as_deref(),
         opts.update,
+        opts.boot,
         opts.boot_jobs.min(opts.jobs),
     )?;
     failures.extend(boot_failures);
     let cases = n1 + n2;
 
+    if !failures.is_empty() {
+        for f in &failures {
+            eprintln!("{f}\n");
+        }
+        return Err(format!("golden: {} failure(s)", failures.len()));
+    }
+    assert_no_internal_error_in_goldens(&golden_dir)?;
     if opts.update {
         println!("golden: updated {cases} expectation(s) — review the diff before committing");
         return Ok(());
     }
-    assert_no_internal_error_in_goldens(&golden_dir)?;
-    if failures.is_empty() {
-        let scope = match (&opts.filter, opts.boot) {
-            (None, BootSel::All) => String::new(),
-            _ => format!(
-                " ({} case(s){}{})",
-                selected_names.len(),
-                match &opts.filter {
-                    Some(f) => format!(", filter `{f}`"),
-                    None => String::new(),
-                },
-                match opts.boot {
-                    BootSel::All => "",
-                    BootSel::Only => ", boots only",
-                    BootSel::None => ", boots skipped",
-                }
-            ),
-        };
-        println!("golden: {cases} expectation(s) ok{scope}");
-        Ok(())
-    } else {
-        for f in &failures {
-            eprintln!("{f}\n");
-        }
-        Err(format!("golden: {} failure(s)", failures.len()))
-    }
+    let scope = match (&opts.filter, opts.boot) {
+        (None, BootSel::All) => String::new(),
+        _ => format!(
+            " ({} case(s){}{})",
+            selected_names.len(),
+            match &opts.filter {
+                Some(f) => format!(", filter `{f}`"),
+                None => String::new(),
+            },
+            match opts.boot {
+                BootSel::All => "",
+                BootSel::Only => ", boot stages only",
+                BootSel::None => ", boot stages skipped",
+            }
+        ),
+    };
+    println!("golden: {cases} expectation(s) ok{scope}");
+    Ok(())
 }
 
 pub(crate) fn assert_no_internal_error_in_goldens(golden_dir: &Path) -> Result<(), String> {
@@ -524,12 +614,17 @@ pub(crate) fn assert_no_internal_error_in_goldens(golden_dir: &Path) -> Result<(
         if !expected_dir.is_dir() {
             continue;
         }
-        let mut files: Vec<_> = std::fs::read_dir(&expected_dir)
-            .map_err(|e| format!("read {}: {e}", expected_dir.display()))?
-            .filter_map(Result::ok)
-            .map(|e| e.path())
-            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("txt"))
-            .collect();
+        let entries = std::fs::read_dir(&expected_dir)
+            .map_err(|e| format!("read {}: {e}", expected_dir.display()))?;
+        let mut files = Vec::new();
+        for entry in entries {
+            let path = entry
+                .map_err(|e| format!("read {} entry: {e}", expected_dir.display()))?
+                .path();
+            if path.extension().and_then(|e| e.to_str()) == Some("txt") {
+                files.push(path);
+            }
+        }
         files.sort();
         for path in files {
             let text = std::fs::read_to_string(&path)
@@ -549,9 +644,26 @@ pub(crate) fn assert_no_internal_error_in_goldens(golden_dir: &Path) -> Result<(
     } else {
         Err(format!(
             "golden: {} expectation(s) contain `internal error:` (a compiler bug, never a \
-             pinned outcome — plans/M9.md item II):\n  {}",
+             pinned outcome):\n  {}",
             hits.len(),
             hits.join("\n  ")
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn boot_selection_is_per_expectation_not_per_case() {
+        assert!(stage_selected("asm", BootSel::None));
+        assert!(stage_selected("check", BootSel::None));
+        assert!(!stage_selected("test", BootSel::None));
+        assert!(!stage_selected("asm", BootSel::Only));
+        assert!(stage_selected("test", BootSel::Only));
+        assert!(stage_selected("test-omit-dmb", BootSel::Only));
+        assert!(stage_selected("asm", BootSel::All));
+        assert!(stage_selected("test", BootSel::All));
     }
 }

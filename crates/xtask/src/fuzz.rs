@@ -45,89 +45,115 @@ impl Rng {
 }
 
 pub(crate) fn fuzz(args: &[String]) -> Result<(), String> {
-    let (target, rest) = match args.first() {
-        Some(a)
-            if a == "lexer"
-                || a == "parser"
-                || a == "sema"
-                || a == "eval"
-                || a == "lower"
-                || a == "async"
-                || a == "imports"
-                || a == "report" =>
-        {
-            (a.as_str(), &args[1..])
+    const TARGETS: &[&str] = &[
+        "smoke", "all", "lexer", "parser", "sema", "eval", "lower", "async", "imports", "report",
+    ];
+    let _mode = crate::CompileOptsGuard::mode(wrela_compiler::opts::CompileMode::Dev);
+    let (target, mut i) = match args.first() {
+        Some(a) if !a.starts_with('-') => {
+            if !TARGETS.contains(&a.as_str()) {
+                return Err(format!(
+                    "fuzz: unknown target `{a}` (expected {})",
+                    TARGETS.join(", ")
+                ));
+            }
+            (a.as_str(), 1usize)
         }
-        _ => ("lexer", args),
+        Some(a) => {
+            return Err(format!(
+                "fuzz: expected a target before `{a}` (expected {})",
+                TARGETS.join(", ")
+            ));
+        }
+        None => {
+            return Err(format!(
+                "fuzz: missing target (expected {})",
+                TARGETS.join(", ")
+            ));
+        }
     };
+    let mut iters = None;
+    let mut seed = None;
+    while i < args.len() {
+        let arg = &args[i];
+        let (slot, name, inline) = if let Some(v) = arg.strip_prefix("--iters=") {
+            (&mut iters, "--iters", Some(v))
+        } else if let Some(v) = arg.strip_prefix("--seed=") {
+            (&mut seed, "--seed", Some(v))
+        } else if arg == "--iters" {
+            (&mut iters, "--iters", None)
+        } else if arg == "--seed" {
+            (&mut seed, "--seed", None)
+        } else {
+            return Err(format!("fuzz: unknown argument `{arg}`"));
+        };
+        if slot.is_some() {
+            return Err(format!("fuzz: `{name}` specified more than once"));
+        }
+        let value = match inline {
+            Some(v) if !v.is_empty() => v,
+            Some(_) => return Err(format!("fuzz: `{name}` needs a value")),
+            None => {
+                i += 1;
+                args.get(i)
+                    .map(String::as_str)
+                    .ok_or_else(|| format!("fuzz: `{name}` needs a value"))?
+            }
+        };
+        *slot = Some(
+            value
+                .parse::<u64>()
+                .map_err(|e| format!("fuzz: {name}: {e}"))?,
+        );
+        i += 1;
+    }
     match target {
-        "lexer" => {
-            let iters = parse_flag_u64(rest, "--iters")?.unwrap_or(FUZZ_LEXER_DEEP_ITERS);
-            let seed = parse_flag_u64(rest, "--seed")?.unwrap_or(FUZZ_LEXER_DEEP_SEED);
-            fuzz_lexer(iters, seed)
+        "smoke" => {
+            if iters.is_some() || seed.is_some() {
+                return Err("fuzz smoke: --iters/--seed are fixed by the suite".to_string());
+            }
+            fuzz_smoke_all()
         }
-        "parser" => {
-            let iters = parse_flag_u64(rest, "--iters")?.unwrap_or(FUZZ_PARSER_DEEP_ITERS);
-            let seed = parse_flag_u64(rest, "--seed")?.unwrap_or(FUZZ_PARSER_DEEP_SEED);
-            fuzz_parser(iters, seed)
+        "all" => {
+            if iters.is_some() || seed.is_some() {
+                return Err("fuzz all: --iters/--seed are fixed per target".to_string());
+            }
+            fuzz_deep_all()
         }
-        "sema" => {
-            let iters = parse_flag_u64(rest, "--iters")?.unwrap_or(FUZZ_SEMA_DEEP_ITERS);
-            let seed = parse_flag_u64(rest, "--seed")?.unwrap_or(FUZZ_SEMA_DEEP_SEED);
-            fuzz_sema(iters, seed)
-        }
-        "eval" => {
-            let iters = parse_flag_u64(rest, "--iters")?.unwrap_or(FUZZ_EVAL_DEEP_ITERS);
-            let seed = parse_flag_u64(rest, "--seed")?.unwrap_or(FUZZ_EVAL_DEEP_SEED);
-            fuzz_eval(iters, seed)
-        }
-        "lower" => {
-            let iters = parse_flag_u64(rest, "--iters")?.unwrap_or(FUZZ_LOWER_DEEP_ITERS);
-            let seed = parse_flag_u64(rest, "--seed")?.unwrap_or(FUZZ_LOWER_DEEP_SEED);
-            fuzz_lower(iters, seed)
-        }
-        "async" => {
-            let iters = parse_flag_u64(rest, "--iters")?.unwrap_or(FUZZ_ASYNC_DEEP_ITERS);
-            let seed = parse_flag_u64(rest, "--seed")?.unwrap_or(FUZZ_ASYNC_DEEP_SEED);
-            fuzz_async(iters, seed)
-        }
-        "imports" => {
-            let iters = parse_flag_u64(rest, "--iters")?.unwrap_or(FUZZ_IMPORTS_DEEP_ITERS);
-            let seed = parse_flag_u64(rest, "--seed")?.unwrap_or(FUZZ_IMPORTS_DEEP_SEED);
-            fuzz_imports(iters, seed)
-        }
-        "report" => {
-            let iters = parse_flag_u64(rest, "--iters")?.unwrap_or(FUZZ_REPORT_DEEP_ITERS);
-            let seed = parse_flag_u64(rest, "--seed")?.unwrap_or(FUZZ_REPORT_DEEP_SEED);
-            fuzz_report(iters, seed)
-        }
-        other => Err(format!(
-            "fuzz: unknown target `{other}` (expected `lexer`, `parser`, `sema`, `eval`, \
-             `lower`, `async`, `imports`, or `report`)"
-        )),
+        "lexer" => fuzz_lexer(
+            iters.unwrap_or(FUZZ_LEXER_DEEP_ITERS),
+            seed.unwrap_or(FUZZ_LEXER_DEEP_SEED),
+        ),
+        "parser" => fuzz_parser(
+            iters.unwrap_or(FUZZ_PARSER_DEEP_ITERS),
+            seed.unwrap_or(FUZZ_PARSER_DEEP_SEED),
+        ),
+        "sema" => fuzz_sema(
+            iters.unwrap_or(FUZZ_SEMA_DEEP_ITERS),
+            seed.unwrap_or(FUZZ_SEMA_DEEP_SEED),
+        ),
+        "eval" => fuzz_eval(
+            iters.unwrap_or(FUZZ_EVAL_DEEP_ITERS),
+            seed.unwrap_or(FUZZ_EVAL_DEEP_SEED),
+        ),
+        "lower" => fuzz_lower(
+            iters.unwrap_or(FUZZ_LOWER_DEEP_ITERS),
+            seed.unwrap_or(FUZZ_LOWER_DEEP_SEED),
+        ),
+        "async" => fuzz_async(
+            iters.unwrap_or(FUZZ_ASYNC_DEEP_ITERS),
+            seed.unwrap_or(FUZZ_ASYNC_DEEP_SEED),
+        ),
+        "imports" => fuzz_imports(
+            iters.unwrap_or(FUZZ_IMPORTS_DEEP_ITERS),
+            seed.unwrap_or(FUZZ_IMPORTS_DEEP_SEED),
+        ),
+        "report" => fuzz_report(
+            iters.unwrap_or(FUZZ_REPORT_DEEP_ITERS),
+            seed.unwrap_or(FUZZ_REPORT_DEEP_SEED),
+        ),
+        _ => unreachable!("target validated above"),
     }
-}
-
-pub(crate) fn parse_flag_u64(args: &[String], flag: &str) -> Result<Option<u64>, String> {
-    let with_eq = format!("{flag}=");
-    for (i, a) in args.iter().enumerate() {
-        if let Some(v) = a.strip_prefix(&with_eq) {
-            return v
-                .parse::<u64>()
-                .map(Some)
-                .map_err(|e| format!("{flag}: {e}"));
-        }
-        if a == flag {
-            let v = args
-                .get(i + 1)
-                .ok_or_else(|| format!("{flag}: missing value"))?;
-            return v
-                .parse::<u64>()
-                .map(Some)
-                .map_err(|e| format!("{flag}: {e}"));
-        }
-    }
-    Ok(None)
 }
 
 pub(crate) const PROJECT_SEED_CASES: &[&str] = &[
@@ -2551,7 +2577,7 @@ pub(crate) fn import_shape_comptime_construct(n: u32, k: u32) -> ImportClosure {
         modules: vec![
             (
                 vec!["lib".into(), "g".into()],
-                "module lib.g\n\npub struct Cell:\n    n: u32\n".into(),
+                "module lib.g\n\npub struct Cell:\n    pub n: u32\n".into(),
             ),
             (vec!["app".into(), "main".into()], app),
         ],
@@ -2569,7 +2595,7 @@ pub(crate) fn import_shape_fields_and_method(a: u32, b: u32) -> ImportClosure {
         modules: vec![
             (
                 vec!["lib".into(), "g".into()],
-                "module lib.g\n\npub struct Pair:\n    a: u32\n    b: u32\n\n    pub fn sum(read self) -> u32:\n        return self.a + self.b\n"
+                "module lib.g\n\npub struct Pair:\n    pub a: u32\n    pub b: u32\n\n    pub fn sum(read self) -> u32:\n        return self.a + self.b\n"
                     .into(),
             ),
             (vec!["app".into(), "main".into()], app),
@@ -2588,7 +2614,7 @@ pub(crate) fn import_shape_reachable_unimported(seed: u32, add: u32) -> ImportCl
         modules: vec![
             (
                 vec!["lib".into(), "g".into()],
-                "module lib.g\n\npub struct Box:\n    n: u32\n\npub struct Maker:\n    seed: u32\n\n    pub fn build(read self) -> Box:\n        return Box(n=self.seed + 1)\n"
+                "module lib.g\n\npub struct Box:\n    pub n: u32\n\npub struct Maker:\n    pub seed: u32\n\n    pub fn build(read self) -> Box:\n        return Box(n=self.seed + 1)\n"
                     .into(),
             ),
             (vec!["app".into(), "main".into()], app),
@@ -2607,7 +2633,7 @@ pub(crate) fn import_shape_alias_peer_generic(n: u32, add: u32) -> ImportClosure
         modules: vec![
             (
                 vec!["lib".into(), "g".into()],
-                "module lib.g\n\npub struct Src:\n    n: u32\n\npub struct Box[T]:\n    v: T\n\npub fn peel_box(take b: Box[Src]) -> Src:\n    return b.v\n\npub fn wrap_box(take s: Src) -> Box[Src]:\n    return Box[Src](v=s)\n"
+                "module lib.g\n\npub struct Src:\n    pub n: u32\n\npub struct Box[T]:\n    pub v: T\n\npub fn peel_box(take b: Box[Src]) -> Src:\n    return b.v\n\npub fn wrap_box(take s: Src) -> Box[Src]:\n    return Box[Src](v=s)\n"
                     .into(),
             ),
             (vec!["app".into(), "main".into()], app),
@@ -2626,16 +2652,16 @@ pub(crate) fn import_shape_chain(seed: u32, add: u32) -> ImportClosure {
         modules: vec![
             (
                 vec!["lib".into(), "c".into()],
-                "module lib.c\n\npub struct C:\n    n: u32\n".into(),
+                "module lib.c\n\npub struct C:\n    pub n: u32\n".into(),
             ),
             (
                 vec!["lib".into(), "b".into()],
-                "module lib.b\n\nfrom lib.c import C\n\npub struct B:\n    inner: C\n\n    pub fn get(read self) -> C:\n        return self.inner\n"
+                "module lib.b\n\nfrom lib.c import C\n\npub struct B:\n    pub inner: C\n\n    pub fn get(read self) -> C:\n        return self.inner\n"
                     .into(),
             ),
             (
                 vec!["lib".into(), "a".into()],
-                "module lib.a\n\nfrom lib.b import B\nfrom lib.c import C\n\npub struct A:\n    seed: u32\n\n    pub fn make(read self) -> B:\n        return B(inner=C(n=self.seed + 1))\n"
+                "module lib.a\n\nfrom lib.b import B\nfrom lib.c import C\n\npub struct A:\n    pub seed: u32\n\n    pub fn make(read self) -> B:\n        return B(inner=C(n=self.seed + 1))\n"
                     .into(),
             ),
             (vec!["app".into(), "main".into()], app),
@@ -2654,7 +2680,7 @@ pub(crate) fn import_shape_alias_owner(seed: u32, add: u32) -> ImportClosure {
         modules: vec![
             (
                 vec!["lib".into(), "g".into()],
-                "module lib.g\n\npub struct Box:\n    n: u32\n\npub struct Maker:\n    seed: u32\n\n    pub fn build(read self) -> Box:\n        return Box(n=self.seed + 1)\n"
+                "module lib.g\n\npub struct Box:\n    pub n: u32\n\npub struct Maker:\n    pub seed: u32\n\n    pub fn build(read self) -> Box:\n        return Box(n=self.seed + 1)\n"
                     .into(),
             ),
             (vec!["app".into(), "main".into()], app),
@@ -2673,7 +2699,7 @@ pub(crate) fn import_shape_enum_payload(n: u32, add: u32) -> ImportClosure {
         modules: vec![
             (
                 vec!["lib".into(), "g".into()],
-                "module lib.g\n\npub struct Payload:\n    n: u32\n\npub enum Res:\n    Good(Payload)\n    Bad\n\npub fn make(n: u32) -> Res:\n    return Res.Good(Payload(n=n))\n"
+                "module lib.g\n\npub struct Payload:\n    pub n: u32\n\npub enum Res:\n    Good(Payload)\n    Bad\n\npub fn make(n: u32) -> Res:\n    return Res.Good(Payload(n=n))\n"
                     .into(),
             ),
             (vec!["app".into(), "main".into()], app),
@@ -2692,7 +2718,7 @@ pub(crate) fn import_shape_enum_payload_generic(n: u32, add: u32) -> ImportClosu
         modules: vec![
             (
                 vec!["lib".into(), "g".into()],
-                "module lib.g\n\npub struct Payload:\n    n: u32\n\npub struct Box[T]:\n    v: T\n\npub enum Res:\n    Good(Box[Payload])\n    Bad\n\npub fn make(n: u32) -> Res:\n    return Res.Good(Box[Payload](v=Payload(n=n)))\n"
+                "module lib.g\n\npub struct Payload:\n    pub n: u32\n\npub struct Box[T]:\n    pub v: T\n\npub enum Res:\n    Good(Box[Payload])\n    Bad\n\npub fn make(n: u32) -> Res:\n    return Res.Good(Box[Payload](v=Payload(n=n)))\n"
                     .into(),
             ),
             (vec!["app".into(), "main".into()], app),
@@ -2881,6 +2907,13 @@ pub(crate) fn run_imports_fuzz(iters: u64, seed: u64) -> Result<(), String> {
         totals.lower_ok,
         totals.lower_rejected,
     );
+    if totals.check_accepted == 0 || totals.run_tests == 0 || totals.lower_ok == 0 {
+        return Err(format!(
+            "fuzz imports: reach collapsed (accepted={}, run_tests={}, lower_ok={}); \
+             a lane that reaches none of its subject fails closed",
+            totals.check_accepted, totals.run_tests, totals.lower_ok
+        ));
+    }
     Ok(())
 }
 
@@ -3144,4 +3177,27 @@ pub(crate) fn fuzz_report_smoke() -> Result<(), String> {
         }
         Ok(())
     })
+}
+
+pub(crate) fn fuzz_smoke_all() -> Result<(), String> {
+    fuzz_lexer_smoke()?;
+    fuzz_parser_smoke()?;
+    fuzz_sema_smoke()?;
+    fuzz_eval_smoke()?;
+    fuzz_lower_smoke()?;
+    fuzz_async_smoke()?;
+    fuzz_imports_smoke()?;
+    fuzz_report_smoke()
+}
+
+pub(crate) fn fuzz_deep_all() -> Result<(), String> {
+    let _mode = crate::CompileOptsGuard::mode(wrela_compiler::opts::CompileMode::Dev);
+    fuzz_lexer(FUZZ_LEXER_DEEP_ITERS, FUZZ_LEXER_DEEP_SEED)?;
+    fuzz_parser(FUZZ_PARSER_DEEP_ITERS, FUZZ_PARSER_DEEP_SEED)?;
+    fuzz_sema(FUZZ_SEMA_DEEP_ITERS, FUZZ_SEMA_DEEP_SEED)?;
+    fuzz_eval(FUZZ_EVAL_DEEP_ITERS, FUZZ_EVAL_DEEP_SEED)?;
+    fuzz_lower(FUZZ_LOWER_DEEP_ITERS, FUZZ_LOWER_DEEP_SEED)?;
+    fuzz_async(FUZZ_ASYNC_DEEP_ITERS, FUZZ_ASYNC_DEEP_SEED)?;
+    fuzz_imports(FUZZ_IMPORTS_DEEP_ITERS, FUZZ_IMPORTS_DEEP_SEED)?;
+    fuzz_report(FUZZ_REPORT_DEEP_ITERS, FUZZ_REPORT_DEEP_SEED)
 }

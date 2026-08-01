@@ -863,7 +863,7 @@ In descending order of how much rests on them.
 2. **The seven rules of §11**, written into the spec before code is written
    against them.
 3. **Pin `fieldprobe`'s counts as a golden**, and add it to
-   `cargo xtask check`. §16.1 asked for this so a later Pi 5 run is a
+   `cargo xtask verify-milestone`. §16.1 asked for this so a later Pi 5 run is a
    one-variable experiment; the numbers currently live in a text file
    nothing enforces.
 4. **FieldWir**: the sema pass, the evaluator extension, the flatten pass,

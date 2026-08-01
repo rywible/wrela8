@@ -17,8 +17,8 @@ use wrela_compiler::syntax::parser::{self};
 use crate::corpus::{extract_doc_blocks, extract_example_files};
 use crate::golden::{build_and_sign_vmm, golden_case_target};
 use crate::{
-    GuestRecord, build_runtime_test_image, fail_closed, golden_case_dirs, parse_guest_record,
-    produce_report_and_image, root, typecheck_for_diff_eval,
+    CompileOptsGuard, GuestRecord, build_runtime_test_image, fail_closed, golden_case_dirs,
+    parse_guest_record, produce_report_and_image, root, typecheck_for_diff_eval,
 };
 
 pub(crate) const BENCH_GUEST_WARMUP_ITERS: usize = 2;
@@ -33,6 +33,7 @@ pub(crate) fn boot_hello_test_image() -> Result<(Vec<u8>, String), String> {
 }
 
 pub(crate) fn golden_test_image(case_name: &str) -> Result<(Vec<u8>, String), String> {
+    let _mode = CompileOptsGuard::mode(wrela_compiler::opts::CompileMode::Release);
     let case = root().join("tests/golden").join(case_name);
     let target = golden_case_target(&case)?
         .ok_or_else(|| format!("tests/golden/{case_name} has no input.wr"))?;
@@ -64,6 +65,7 @@ pub(crate) fn golden_test_image(case_name: &str) -> Result<(Vec<u8>, String), St
 }
 
 pub(crate) fn bench_guest_lane() -> Result<(), String> {
+    let _mode = CompileOptsGuard::mode(wrela_compiler::opts::CompileMode::Release);
     let vmm = build_and_sign_vmm()?;
     let (img_bytes, report_text) = golden_test_image("boot-actors")?;
 
@@ -183,6 +185,7 @@ pub(crate) fn bench_guest_lane() -> Result<(), String> {
 }
 
 pub(crate) fn profile() -> Result<(), String> {
+    let _mode = CompileOptsGuard::mode(wrela_compiler::opts::CompileMode::Release);
     let vmm = build_and_sign_vmm()?;
     let case = root().join("tests/golden/boot-hello");
     let target = golden_case_target(&case)?
@@ -531,6 +534,7 @@ pub(crate) fn median(sorted: &[Duration]) -> Duration {
 }
 
 pub(crate) fn bench_compiler() -> Result<(), String> {
+    let _mode = CompileOptsGuard::mode(wrela_compiler::opts::CompileMode::Release);
     let entries = bench_corpus_entries()?;
     let (track_index, largest_name, largest_len) = entries
         .iter()
@@ -675,6 +679,7 @@ pub(crate) fn run_build_bench_workload(target: &Path) -> Duration {
 }
 
 pub(crate) fn bench_build_lane() -> Result<(), String> {
+    let _mode = CompileOptsGuard::mode(wrela_compiler::opts::CompileMode::Release);
     let target = bench_build_target()?;
 
     for _ in 0..BENCH_WARMUP_ITERS {
@@ -718,17 +723,21 @@ pub(crate) fn bench_build_lane() -> Result<(), String> {
 }
 
 pub(crate) fn bench(args: &[String]) -> Result<(), String> {
-    match args.first().map(String::as_str) {
-        Some("compiler") => bench_compiler(),
-        Some("build") => bench_build_lane(),
-        Some("guest") => bench_guest_lane(),
-        None => fail_closed(
+    match args {
+        [lane] if lane == "compiler" => bench_compiler(),
+        [lane] if lane == "build" => bench_build_lane(),
+        [lane] if lane == "guest" => bench_guest_lane(),
+        [] => fail_closed(
             "bench",
             "bare `bench` fails closed; run `bench compiler`, `bench build`, or `bench guest` \
              (all live)",
         ),
-        Some(other) => Err(format!(
+        [other] => Err(format!(
             "bench: unknown lane `{other}` (expected `compiler`, `build`, or `guest`)"
+        )),
+        _ => Err(format!(
+            "bench: unexpected argument(s): {}",
+            args[1..].join(" ")
         )),
     }
 }

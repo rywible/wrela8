@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use wrela_compiler::eval;
 use wrela_compiler::layout;
@@ -22,6 +22,7 @@ mod corpus_sema_context;
 mod agnostic_sweep;
 mod bench;
 mod corpus;
+mod diff_blk;
 mod fuzz;
 mod golden;
 mod lane2_freq;
@@ -30,6 +31,7 @@ mod stdlib_test;
 use agnostic_sweep::*;
 use bench::*;
 use corpus::*;
+use diff_blk::{blk_shape, diff_blk, fill_blk_ring, qemu_path};
 use fuzz::*;
 use golden::*;
 use lane2_freq::*;
@@ -44,47 +46,77 @@ pub(crate) fn root() -> PathBuf {
 }
 
 pub(crate) fn golden_case_dirs(golden_dir: &Path) -> Result<Vec<PathBuf>, String> {
-    let mut dirs: Vec<_> = std::fs::read_dir(golden_dir)
-        .map_err(|e| format!("read {}: {e}", golden_dir.display()))?
-        .filter_map(Result::ok)
-        .map(|e| e.path())
-        .filter(|p| p.is_dir())
-        .collect();
+    let entries =
+        std::fs::read_dir(golden_dir).map_err(|e| format!("read {}: {e}", golden_dir.display()))?;
+    let mut dirs = Vec::new();
+    for entry in entries {
+        let path = entry
+            .map_err(|e| format!("read {} entry: {e}", golden_dir.display()))?
+            .path();
+        if path.is_dir() {
+            dirs.push(path);
+        }
+    }
     dirs.sort();
     Ok(dirs)
 }
 
+const USAGE: &str = "agent verification:\n  cargo xtask verify\n  cargo xtask verify-milestone\n\nmaintainer commands:\n  cargo xtask golden [--update] [--filter <substr>] [--only-boot|--no-boot] [--jobs N] [--boot-jobs N]\n  cargo xtask corpus [--sema]\n  cargo xtask fuzz <smoke|all|lexer|parser|sema|eval|lower|async|imports|report> [--iters N] [--seed S]\n  cargo xtask roundtrip|report-determinism|agnostic-sweep|cost-inventory|stdlib-test|repro\n  cargo xtask diff-eval [--with-opt <OptId>]\n  cargo xtask diff-block-count|diff-blk|profile\n  cargo xtask gen-lane2-freq <case>\n  cargo xtask bench <compiler|build|guest>";
+
+fn no_args(command: &str, args: &[String]) -> Result<(), String> {
+    if args.len() == 1 {
+        Ok(())
+    } else {
+        Err(format!(
+            "{command}: unexpected argument(s): {}",
+            args[1..].join(" ")
+        ))
+    }
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let result = match args.first().map(String::as_str) {
-        Some("check") => check(args.iter().any(|a| a == "--fast")),
-        Some("golden") => match parse_golden_opts(&args[1..]) {
-            Ok(opts) => golden(&opts),
-            Err(e) => Err(e),
-        },
-        Some("corpus") => corpus(&args[1..]),
-        Some("roundtrip") => roundtrip(),
-        Some("report-determinism") => report_determinism(),
-        Some("agnostic-sweep") => agnostic_sweep(),
-        Some("cost-inventory") => cost_inventory(),
-        Some("stdlib-test") => stdlib_test(),
-        Some("repro") => repro(),
-        Some("diff-eval") => diff_eval(&args[1..]),
-        Some("diff-block-count") => diff_block_count(),
-        Some("diff-blk") => diff_blk(),
-        Some("gen-lane2-freq") => match args.get(1) {
-            Some(case) => gen_lane2_freq(case),
-            None => Err("usage: cargo xtask gen-lane2-freq <golden-case>".to_string()),
-        },
-        Some("profile") => profile(),
-        Some("fuzz") => fuzz(&args[1..]),
-        Some("bench") => bench(&args[1..]),
-        _ => {
-            eprintln!(
-                "usage: cargo xtask <check [--fast]|golden [--update] [--filter <substr>] [--only-boot|--no-boot] [--jobs N] [--boot-jobs N]|corpus [--sema]|fuzz [lexer|parser|sema|eval|lower|async|imports|report] [--iters N] [--seed S]|roundtrip|report-determinism|agnostic-sweep|cost-inventory|stdlib-test|repro|diff-eval [--with-opt <OptId>]|diff-block-count|diff-blk|gen-lane2-freq <case>|profile|bench <compiler|build|guest>>"
-            );
+    if matches!(args.first().map(String::as_str), Some("-h" | "--help")) {
+        if args.len() != 1 {
+            eprintln!("xtask: --help takes no arguments");
             return ExitCode::FAILURE;
         }
+        println!("{USAGE}");
+        return ExitCode::SUCCESS;
+    }
+    let result = match args.first().map(String::as_str) {
+        Some("verify") => no_args("verify", &args).and_then(|()| verify()),
+        Some("verify-milestone") => {
+            no_args("verify-milestone", &args).and_then(|()| verify_milestone())
+        }
+        Some("check") => Err(
+            "`check` was replaced by `verify` and `verify-milestone`; choose the scope explicitly"
+                .to_string(),
+        ),
+        Some("golden") => parse_golden_opts(&args[1..]).and_then(|opts| golden(&opts)),
+        Some("corpus") => corpus(&args[1..]),
+        Some("roundtrip") => no_args("roundtrip", &args).and_then(|()| roundtrip()),
+        Some("report-determinism") => {
+            no_args("report-determinism", &args).and_then(|()| report_determinism())
+        }
+        Some("agnostic-sweep") => no_args("agnostic-sweep", &args).and_then(|()| agnostic_sweep()),
+        Some("cost-inventory") => no_args("cost-inventory", &args).and_then(|()| cost_inventory()),
+        Some("stdlib-test") => no_args("stdlib-test", &args).and_then(|()| stdlib_test()),
+        Some("repro") => no_args("repro", &args).and_then(|()| repro()),
+        Some("diff-eval") => diff_eval(&args[1..]),
+        Some("diff-block-count") => {
+            no_args("diff-block-count", &args).and_then(|()| diff_block_count())
+        }
+        Some("diff-blk") => no_args("diff-blk", &args).and_then(|()| diff_blk()),
+        Some("gen-lane2-freq") => match args.as_slice() {
+            [_, case] => gen_lane2_freq(case),
+            _ => Err("usage: cargo xtask gen-lane2-freq <golden-case>".to_string()),
+        },
+        Some("profile") => no_args("profile", &args).and_then(|()| profile()),
+        Some("fuzz") => fuzz(&args[1..]),
+        Some("bench") => bench(&args[1..]),
+        Some(other) => Err(format!("unknown xtask command `{other}`\n\n{USAGE}")),
+        None => Err(USAGE.to_string()),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -105,8 +137,9 @@ fn deep_lane() -> Result<(), String> {
             "--quiet",
             "--",
             "--ignored",
+            "--test-threads=1",
         ]),
-        "cargo test -- --ignored (deep lane)",
+        "cargo test -- --ignored --test-threads=1 (deep lane)",
     )
 }
 
@@ -118,12 +151,11 @@ fn assert_unit_suite_within_budget(elapsed: std::time::Duration) -> Result<(), S
             "cargo test: the default unit lane took {:.1}s, over its locked budget of {:.1}s \
              (bench/thresholds.toml `[tests] workspace_suite_max_us`).\n\
              \n\
-             This is a *placement* failure, not a speed one. A test whose cost has grown into \
-             the minutes belongs behind `#[ignore]` with an xtask deep lane the close item \
-             runs, or reformulated until it is cheap again (plans/M20.md decisions 1637/1644 \
-             are the worked example of both moves). Find the long pole with:\n\
-             \n    cargo test -p wrela-compiler --lib 2>&1 | tail -20\n\n\
-             — libtest prints each test as it *finishes*, so the slow ones are the last lines.\n\
+             This is a *placement* failure, not a speed one. Broad whole-corpus and whole-sweep \
+             proofs belong behind `#[ignore]` in `verify-milestone`; keep focused smoke coverage \
+             in `verify`. Find the long pole with:\n\
+             \n    cargo test -p wrela-compiler --lib -- --test-threads=1\n\n\
+             — libtest prints each test as it finishes, making long gaps visible.\n\
              \n\
              Re-lock this number only deliberately, in its own commit, citing why — never to \
              make a regression quietly pass.",
@@ -140,40 +172,64 @@ fn assert_unit_suite_within_budget(elapsed: std::time::Duration) -> Result<(), S
 }
 
 fn parse_golden_opts(args: &[String]) -> Result<GoldenOpts, String> {
+    fn positive(name: &str, value: &str) -> Result<usize, String> {
+        let n = value
+            .parse::<usize>()
+            .map_err(|e| format!("golden: {name}: {e}"))?;
+        if n == 0 {
+            return Err(format!("golden: {name} must be at least 1"));
+        }
+        Ok(n)
+    }
+
     let mut opts = GoldenOpts::default();
-    let mut i = 0;
+    let mut seen_update = false;
+    let mut seen_boot = false;
+    let mut seen_filter = false;
+    let mut seen_jobs = false;
+    let mut seen_boot_jobs = false;
+    let mut i = 0usize;
     while i < args.len() {
-        let a = args[i].as_str();
-        let mut value = |what: &str| -> Result<String, String> {
-            i += 1;
-            args.get(i)
-                .cloned()
-                .ok_or_else(|| format!("golden: `{what}` needs a value"))
+        let arg = args[i].as_str();
+        let next = |i: &mut usize, name: &str| -> Result<&str, String> {
+            *i += 1;
+            args.get(*i)
+                .map(String::as_str)
+                .ok_or_else(|| format!("golden: `{name}` needs a value"))
         };
-        match a {
-            "--update" => opts.update = true,
-            "--no-boot" => opts.boot = BootSel::None,
-            "--only-boot" => opts.boot = BootSel::Only,
-            "--filter" => opts.filter = Some(value("--filter")?),
-            "--jobs" => {
-                opts.jobs = value("--jobs")?
-                    .parse::<usize>()
-                    .map_err(|e| format!("golden: --jobs: {e}"))?
-                    .max(1)
+        match arg {
+            "--update" if !seen_update => {
+                seen_update = true;
+                opts.update = true;
             }
-            "--boot-jobs" => {
-                opts.boot_jobs = value("--boot-jobs")?
-                    .parse::<usize>()
-                    .map_err(|e| format!("golden: --boot-jobs: {e}"))?
-                    .max(1)
+            "--no-boot" if !seen_boot => {
+                seen_boot = true;
+                opts.boot = BootSel::None;
             }
-            other => {
-                if let Some(f) = other.strip_prefix("--filter=") {
-                    opts.filter = Some(f.to_string());
-                } else {
-                    return Err(format!("golden: unknown flag `{other}`"));
-                }
+            "--only-boot" if !seen_boot => {
+                seen_boot = true;
+                opts.boot = BootSel::Only;
             }
+            "--filter" if !seen_filter => {
+                seen_filter = true;
+                opts.filter = Some(next(&mut i, "--filter")?.to_string());
+            }
+            "--jobs" if !seen_jobs => {
+                seen_jobs = true;
+                opts.jobs = positive("--jobs", next(&mut i, "--jobs")?)?;
+            }
+            "--boot-jobs" if !seen_boot_jobs => {
+                seen_boot_jobs = true;
+                opts.boot_jobs = positive("--boot-jobs", next(&mut i, "--boot-jobs")?)?;
+            }
+            other if other.starts_with("--filter=") && !seen_filter => {
+                seen_filter = true;
+                opts.filter = Some(other["--filter=".len()..].to_string());
+            }
+            "--update" | "--no-boot" | "--only-boot" | "--filter" | "--jobs" | "--boot-jobs" => {
+                return Err(format!("golden: duplicate or conflicting flag `{arg}`"));
+            }
+            other => return Err(format!("golden: unknown flag `{other}`")),
         }
         i += 1;
     }
@@ -181,15 +237,11 @@ fn parse_golden_opts(args: &[String]) -> Result<GoldenOpts, String> {
 }
 
 fn cost_inventory() -> Result<(), String> {
-    let plan = wrela_compiler::cost::plan_text()?;
-    println!(
-        "{}",
-        wrela_compiler::cost::check_dimension_inventory(&plan)?
-    );
+    println!("{}", wrela_compiler::cost::check_dimension_inventory()?);
     Ok(())
 }
 
-pub(crate) fn fail_closed(name: &str, why: &str) -> Result<(), String> {
+pub(crate) fn fail_closed<T>(name: &str, why: &str) -> Result<T, String> {
     Err(format!(
         "`{name}` fails closed: {why}. It must never fake a pass."
     ))
@@ -207,11 +259,88 @@ pub(crate) fn run(cmd: &mut Command, what: &str) -> Result<(), String> {
     }
 }
 
-fn check(fast: bool) -> Result<(), String> {
+pub(crate) struct CompileOptsGuard {
+    saved: Vec<opts::OptId>,
+}
+
+impl CompileOptsGuard {
+    pub(crate) fn mode(mode: CompileMode) -> Self {
+        let saved = opts::active_opts();
+        opts::apply_mode(mode);
+        Self { saved }
+    }
+}
+
+impl Drop for CompileOptsGuard {
+    fn drop(&mut self) {
+        opts::apply_opts(&self.saved);
+    }
+}
+
+fn verify_stage(
+    lane: &str,
+    name: &str,
+    rerun: &str,
+    f: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    println!("{lane}: START {name}");
+    let started = Instant::now();
+    match f() {
+        Ok(()) => {
+            println!(
+                "{lane}: PASS {name} ({:.2}s)",
+                started.elapsed().as_secs_f64()
+            );
+            Ok(())
+        }
+        Err(e) => Err(format!("{lane}: FAIL {name}\nrerun: {rerun}\n{e}")),
+    }
+}
+
+fn test_wrela_vmm_portable() -> Result<(), String> {
+    fn listed(args: &[&str]) -> Result<usize, String> {
+        let out = Command::new("cargo")
+            .current_dir(root())
+            .args(args)
+            .output()
+            .map_err(|e| format!("list wrela-vmm tests: {e}"))?;
+        if !out.status.success() {
+            return Err(format!(
+                "list wrela-vmm tests failed:\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            ));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|line| line.ends_with(": test"))
+            .count())
+    }
+
+    const ALL: usize = 122;
+    let all = listed(&["test", "-q", "-p", "wrela-vmm", "--lib", "--", "--list"])?;
+    let hvf = listed(&[
+        "test",
+        "-q",
+        "-p",
+        "wrela-vmm",
+        "--lib",
+        "--",
+        "--ignored",
+        "--list",
+    ])?;
+    if all != ALL || hvf != VMM_HVF_TESTS {
+        return Err(format!(
+            "wrela-vmm test census changed: total={all} (expected {ALL}), HVF={hvf} \
+             (expected {VMM_HVF_TESTS}); classify new tests deliberately"
+        ));
+    }
     run(
-        Command::new("cargo").args(["fmt", "--all", "--check"]),
-        "cargo fmt --check",
-    )?;
+        Command::new("cargo").args(["test", "-p", "wrela-vmm", "--lib", "--quiet"]),
+        "portable wrela-vmm tests",
+    )
+}
+
+fn unit_lane() -> Result<(), String> {
     run(
         Command::new("cargo").args([
             "test",
@@ -223,60 +352,156 @@ fn check(fast: bool) -> Result<(), String> {
         ]),
         "cargo test --no-run",
     )?;
-    let unit_start = std::time::Instant::now();
+    let unit_start = Instant::now();
     run(
         Command::new("cargo").args(["test", "--workspace", "--exclude", "wrela-vmm", "--quiet"]),
         "cargo test",
     )?;
-    assert_unit_suite_within_budget(unit_start.elapsed())?;
-    if fast {
-        golden(&GoldenOpts {
-            boot: BootSel::None,
-            ..GoldenOpts::default()
-        })?;
-        corpus(&[])?;
-        fuzz_lexer_smoke()?;
-        fuzz_parser_smoke()?;
-        fuzz_sema_smoke()?;
-        fuzz_eval_smoke()?;
-        fuzz_lower_smoke()?;
-        fuzz_async_smoke()?;
-        fuzz_imports_smoke()?;
-        fuzz_report_smoke()?;
-        roundtrip()?;
-        stdlib_test()?;
-        agnostic_sweep()?;
-        cost_inventory()?;
-        println!(
-            "xtask check --fast: ok — SKIPPED every HVF lane (golden boots, wrela-vmm units, \
-             repro, bench guest) and the measurement lanes (report-determinism, diff-eval, \
-             bench compiler/build). This is not the gate; a milestone is not COMPLETE until \
-             bare `cargo xtask check` is green."
+    assert_unit_suite_within_budget(unit_start.elapsed())
+}
+
+fn milestone_preflight() -> Result<(), String> {
+    if !(cfg!(target_os = "macos") && cfg!(target_arch = "aarch64")) {
+        return fail_closed(
+            "verify-milestone",
+            "requires macOS/aarch64 for the Hypervisor.framework lanes",
         );
-        return Ok(());
     }
-    deep_lane()?;
-    test_wrela_vmm_signed()?;
-    golden(&GoldenOpts::default())?;
-    diff_eval_smoke()?;
-    corpus(&[])?;
-    fuzz_lexer_smoke()?;
-    fuzz_parser_smoke()?;
-    fuzz_sema_smoke()?;
-    fuzz_eval_smoke()?;
-    fuzz_lower_smoke()?;
-    fuzz_async_smoke()?;
-    fuzz_imports_smoke()?;
-    fuzz_report_smoke()?;
-    roundtrip()?;
-    stdlib_test()?;
-    repro()?;
-    bench_compiler()?;
-    bench_build_lane()?;
-    bench_guest_lane()?;
-    agnostic_sweep()?;
-    cost_inventory()?;
-    println!("xtask check: ok");
+    qemu_path()?;
+    let entitlements = root().join("crates/wrela-vmm/entitlements.plist");
+    for path in [Path::new("/usr/bin/codesign"), entitlements.as_path()] {
+        if !path.is_file() {
+            return fail_closed(
+                "verify-milestone",
+                &format!("required tool/input `{}` is missing", path.display()),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn verify() -> Result<(), String> {
+    const LANE: &str = "verify";
+    verify_stage(LANE, "format", "cargo fmt --all --check", || {
+        run(
+            Command::new("cargo").args(["fmt", "--all", "--check"]),
+            "cargo fmt --check",
+        )
+    })?;
+    verify_stage(
+        LANE,
+        "cost inventory",
+        "cargo xtask cost-inventory",
+        cost_inventory,
+    )?;
+    verify_stage(
+        LANE,
+        "tracked-tree sweep",
+        "cargo xtask agnostic-sweep",
+        agnostic_sweep,
+    )?;
+    verify_stage(
+        LANE,
+        "workspace units",
+        "cargo test --workspace --exclude wrela-vmm",
+        unit_lane,
+    )?;
+    verify_stage(
+        LANE,
+        "portable VMM units",
+        "cargo test -p wrela-vmm --lib",
+        test_wrela_vmm_portable,
+    )?;
+    verify_stage(
+        LANE,
+        "static goldens",
+        "cargo xtask golden --no-boot",
+        || {
+            golden(&GoldenOpts {
+                boot: BootSel::None,
+                ..GoldenOpts::default()
+            })
+        },
+    )?;
+    verify_stage(LANE, "documentation corpus", "cargo xtask corpus", || {
+        corpus(&[])
+    })?;
+    verify_stage(LANE, "roundtrip", "cargo xtask roundtrip", roundtrip)?;
+    verify_stage(LANE, "stdlib", "cargo xtask stdlib-test", stdlib_test)?;
+    println!("verify: ok");
+    Ok(())
+}
+
+fn verify_milestone() -> Result<(), String> {
+    const LANE: &str = "verify-milestone";
+    verify_stage(
+        LANE,
+        "host preflight",
+        "cargo xtask verify-milestone",
+        milestone_preflight,
+    )?;
+    verify_stage(LANE, "fast verification", "cargo xtask verify", verify)?;
+    verify_stage(
+        LANE,
+        "report determinism",
+        "cargo xtask report-determinism",
+        report_determinism,
+    )?;
+    verify_stage(
+        LANE,
+        "deep optimizer proofs",
+        "cargo test --workspace --exclude wrela-vmm -- --ignored --test-threads=1",
+        deep_lane,
+    )?;
+    verify_stage(
+        LANE,
+        "signed HVF VMM tests",
+        "cargo xtask verify-milestone",
+        test_wrela_vmm_hvf_signed,
+    )?;
+    verify_stage(
+        LANE,
+        "boot goldens",
+        "cargo xtask golden --only-boot",
+        || {
+            golden(&GoldenOpts {
+                boot: BootSel::Only,
+                ..GoldenOpts::default()
+            })
+        },
+    )?;
+    verify_stage(
+        LANE,
+        "full differential eval",
+        "cargo xtask diff-eval",
+        || diff_eval(&[]),
+    )?;
+    verify_stage(
+        LANE,
+        "hardware reproducibility",
+        "cargo xtask repro",
+        repro_hardware,
+    )?;
+    verify_stage(LANE, "QEMU block oracle", "cargo xtask diff-blk", diff_blk)?;
+    verify_stage(
+        LANE,
+        "compiler benchmarks",
+        "cargo xtask bench compiler",
+        bench_compiler,
+    )?;
+    verify_stage(
+        LANE,
+        "build benchmark",
+        "cargo xtask bench build",
+        bench_build_lane,
+    )?;
+    verify_stage(
+        LANE,
+        "guest benchmark",
+        "cargo xtask bench guest",
+        bench_guest_lane,
+    )?;
+    println!("verify-milestone: ok");
     Ok(())
 }
 
@@ -534,6 +759,7 @@ pub(crate) fn produce_report_and_image(target: &Path) -> Result<(String, Option<
 }
 
 fn report_determinism() -> Result<(), String> {
+    let _mode = CompileOptsGuard::mode(CompileMode::Release);
     let golden_dir = root().join("tests/golden");
     let targets: Vec<PathBuf> = golden_case_dirs(&golden_dir)?
         .into_iter()
@@ -1094,6 +1320,11 @@ fn repro_entropy_replay_is_choice_log_driven(vmm: &Path) -> Result<(), String> {
 
 fn repro() -> Result<(), String> {
     report_determinism()?;
+    repro_hardware()
+}
+
+fn repro_hardware() -> Result<(), String> {
+    let _mode = CompileOptsGuard::mode(CompileMode::Release);
     repro_test_image()?;
     let vmm = build_and_sign_vmm()?;
     repro_choice_log_roundtrip(&vmm)?;
@@ -1961,6 +2192,8 @@ fn diff_eval_over_cases(
     filter: Option<&[&str]>,
     extra_opts: &[opts::OptId],
 ) -> Result<DiffEvalTally, String> {
+    let saved = opts::active_opts();
+    let _restore = CompileOptsGuard { saved };
     if extra_opts.is_empty() {
         opts::apply_mode(CompileMode::Release);
     } else {
@@ -2187,36 +2420,6 @@ fn diff_eval(args: &[String]) -> Result<(), String> {
              (DIFF_EVAL_MIN_AGREE). Every comparison was skipped, so this lane proved nothing; \
              the skip lines above name why.",
             tally.agree
-        ));
-    }
-    Ok(())
-}
-
-const DIFF_EVAL_SMOKE_CASES: [&str; 3] = ["boot-hello", "check-tests-arith", "check-tests-program"];
-
-const DIFF_EVAL_SMOKE_AGREE: usize = 14;
-const DIFF_EVAL_SMOKE_CASES_AGREED: usize = 2;
-
-fn diff_eval_smoke() -> Result<(), String> {
-    let vmm = build_and_sign_vmm()?;
-    let tally = diff_eval_over_cases(&vmm, Some(&DIFF_EVAL_SMOKE_CASES), &[])?;
-    println!(
-        "diff-eval (smoke): {} test(s) agree across {} case(s), {} lowering-skips, {} \
-         exhaustive-skips, {} quota-skips, {} import-skips",
-        tally.agree,
-        tally.cases_agreed,
-        tally.lowering_skips,
-        tally.exhaustive_skips,
-        tally.quota_skips,
-        tally.import_skips
-    );
-    if tally.agree != DIFF_EVAL_SMOKE_AGREE || tally.cases_agreed != DIFF_EVAL_SMOKE_CASES_AGREED {
-        return Err(format!(
-            "diff-eval (smoke): reach changed — {} test(s) agreed across {} case(s), expected \
-             exactly {DIFF_EVAL_SMOKE_AGREE} across {DIFF_EVAL_SMOKE_CASES_AGREED} \
-             (DIFF_EVAL_SMOKE_AGREE). If a smoke case's own @test set moved, update the number \
-             deliberately; if the count fell to zero, the lane compared nothing.",
-            tally.agree, tally.cases_agreed
         ));
     }
     Ok(())
@@ -2524,630 +2727,4 @@ fn diff_block_count() -> Result<(), String> {
          on control case boot-actors (--block-count) ({ran} test(s))"
     );
     Ok(())
-}
-
-const QEMU_AARCH64: &str = "/opt/homebrew/bin/qemu-system-aarch64";
-
-const VIRT_UART: u64 = 0x0900_0000;
-
-fn diff_blk() -> Result<(), String> {
-    if !Path::new(QEMU_AARCH64).exists() {
-        return fail_closed(
-            "diff-blk",
-            &format!("{QEMU_AARCH64} is not installed on this host"),
-        );
-    }
-    let dir = root().join("target/diff-blk-tmp");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
-
-    let smoke_path = dir.join("smoke.bin");
-    std::fs::write(&smoke_path, build_qemu_smoke_guest()).map_err(|e| format!("write: {e}"))?;
-    let smoke = run_qemu(&smoke_path, None)?;
-    if !smoke.contains("WRELA-SMOKE") {
-        return Err(format!(
-            "diff-blk: QEMU did not run this harness's own smallest guest at all (got {smoke:?}) — \
-             the oracle refuses to report agreement it never established"
-        ));
-    }
-
-    let guest_path = dir.join("guest.bin");
-    std::fs::write(&guest_path, build_qemu_blk_guest()).map_err(|e| format!("write guest: {e}"))?;
-    let disk_path = dir.join("disk.img");
-    std::fs::write(&disk_path, vec![0u8; 16 * 512]).map_err(|e| format!("write disk: {e}"))?;
-    let qemu_out = run_qemu(&guest_path, Some(&disk_path))?;
-    let fields: Vec<u64> = match qemu_out.split_whitespace().collect::<Vec<_>>().as_slice() {
-        ["R", rest @ ..] if rest.len() == 7 => rest
-            .iter()
-            .map(|h| u64::from_str_radix(h, 16).map_err(|e| format!("bad qemu hex {h:?}: {e}")))
-            .collect::<Result<_, _>>()?,
-        _ => {
-            return Err(format!(
-                "diff-blk: the QEMU guest did not complete its own two operations (it prints \
-                 `NODEV`/`FEAT`/`TMO1`/`TMO2` for each way bring-up can fail): {qemu_out:?}"
-            ));
-        }
-    };
-    let (used_w0, used_w1, used_w2) = (fields[0], fields[1], fields[2]);
-    let qemu = BlkAnswer {
-        used_idx: ((used_w0 >> 16) & 0xFFFF) as u32,
-        head0: (used_w0 >> 32) as u32,
-        len0: (used_w1 & 0xFFFF_FFFF) as u32,
-        head1: (used_w1 >> 32) as u32,
-        len1: (used_w2 & 0xFFFF_FFFF) as u32,
-        status0: fields[3] as u32,
-        status1: fields[4] as u32,
-        digest0: format!("{:016x}", fields[5]),
-        digest1: format!("{:016x}", fields[6]),
-    };
-
-    let vmm = build_and_sign_vmm()?;
-    let (img_bytes, report_text) = blk_conformance_image();
-    let img_path = dir.join("wrela.img");
-    let report_path = dir.join("wrela.report.txt");
-    let record_path = dir.join("wrela.record.txt");
-    std::fs::write(&img_path, &img_bytes).map_err(|e| format!("write img: {e}"))?;
-    std::fs::write(&report_path, &report_text).map_err(|e| format!("write report: {e}"))?;
-    let out = Command::new(&vmm)
-        .arg(&report_path)
-        .arg(&img_path)
-        .arg("--record")
-        .arg(&record_path)
-        .output()
-        .map_err(|e| format!("run wrela-vmm: {e}"))?;
-    if out.status.code() != Some(0) {
-        return Err(format!(
-            "diff-blk: the wrela side's own boot failed (exit {:?}):\n{}",
-            out.status.code(),
-            String::from_utf8_lossy(&out.stderr)
-        ));
-    }
-    let record_text = std::fs::read_to_string(&record_path)
-        .map_err(|e| format!("read {}: {e}", record_path.display()))?;
-    let completions: Vec<BTreeMap<String, String>> = record_text
-        .lines()
-        .filter(|l| l.contains("=DeviceCompletion "))
-        .map(|l| {
-            l.split_whitespace()
-                .filter_map(|p| p.split_once('='))
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect()
-        })
-        .collect();
-    if completions.len() != 2 {
-        return Err(format!(
-            "diff-blk: the wrela side recorded {} completion(s), expected 2",
-            completions.len()
-        ));
-    }
-    let field = |i: usize, k: &str| -> Result<String, String> {
-        completions[i]
-            .get(k)
-            .cloned()
-            .ok_or_else(|| format!("diff-blk: recorded completion #{i} has no `{k}` field"))
-    };
-    let num = |i: usize, k: &str| -> Result<u32, String> {
-        field(i, k)?
-            .parse()
-            .map_err(|e| format!("diff-blk: completion #{i} field `{k}`: {e}"))
-    };
-    let wrela = BlkAnswer {
-        used_idx: completions.len() as u32,
-        head0: num(0, "head")?,
-        len0: num(0, "len")?,
-        head1: num(1, "head")?,
-        len1: num(1, "len")?,
-        status0: num(0, "status")?,
-        status1: num(1, "status")?,
-        digest0: field(0, "digest")?,
-        digest1: field(1, "digest")?,
-    };
-
-    let facts: Vec<(&str, String, String)> = vec![
-        (
-            "used.idx",
-            wrela.used_idx.to_string(),
-            qemu.used_idx.to_string(),
-        ),
-        (
-            "write: used id",
-            wrela.head0.to_string(),
-            qemu.head0.to_string(),
-        ),
-        (
-            "write: used len",
-            wrela.len0.to_string(),
-            qemu.len0.to_string(),
-        ),
-        (
-            "write: status",
-            wrela.status0.to_string(),
-            qemu.status0.to_string(),
-        ),
-        (
-            "write: payload digest",
-            wrela.digest0.clone(),
-            qemu.digest0.clone(),
-        ),
-        (
-            "read: used id",
-            wrela.head1.to_string(),
-            qemu.head1.to_string(),
-        ),
-        (
-            "read: used len",
-            wrela.len1.to_string(),
-            qemu.len1.to_string(),
-        ),
-        (
-            "read: status",
-            wrela.status1.to_string(),
-            qemu.status1.to_string(),
-        ),
-        (
-            "read: payload digest",
-            wrela.digest1.clone(),
-            qemu.digest1.clone(),
-        ),
-    ];
-    let mut disagreements = Vec::new();
-    for (what, w, q) in &facts {
-        if w != q {
-            disagreements.push(format!("  {what}: wrela says `{w}`, QEMU says `{q}`"));
-        }
-    }
-    if !disagreements.is_empty() {
-        return Err(format!(
-            "diff-blk: the two virtio-blk implementations disagree on {} of {} compared fact(s):\n{}",
-            disagreements.len(),
-            facts.len(),
-            disagreements.join("\n")
-        ));
-    }
-    for (what, w, _) in &facts {
-        println!("diff-blk:   {what} = {w} (both)");
-    }
-    println!(
-        "diff-blk: {} fact(s) agree between wrela-vmm's own virtio-blk model and QEMU {}'s, over \
-         the identical descriptor chains",
-        facts.len(),
-        qemu_version()?
-    );
-    Ok(())
-}
-
-struct BlkAnswer {
-    used_idx: u32,
-    head0: u32,
-    len0: u32,
-    head1: u32,
-    len1: u32,
-    status0: u32,
-    status1: u32,
-    digest0: String,
-    digest1: String,
-}
-
-fn qemu_version() -> Result<String, String> {
-    let out = Command::new(QEMU_AARCH64)
-        .arg("--version")
-        .output()
-        .map_err(|e| format!("run qemu --version: {e}"))?;
-    Ok(String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .next()
-        .unwrap_or("qemu-system-aarch64")
-        .trim()
-        .to_string())
-}
-
-fn run_qemu(guest: &Path, disk: Option<&Path>) -> Result<String, String> {
-    let mut cmd = Command::new(QEMU_AARCH64);
-    cmd.args([
-        "-M",
-        "virt",
-        "-cpu",
-        "cortex-a72",
-        "-m",
-        "256",
-        "-nographic",
-        "-no-reboot",
-        "-global",
-        "virtio-mmio.force-legacy=false",
-    ]);
-    cmd.arg("-device");
-    cmd.arg(format!(
-        "loader,file={},addr=0x40100000,force-raw=on",
-        guest.display()
-    ));
-    cmd.arg("-device").arg("loader,addr=0x40100000,cpu-num=0");
-    if let Some(disk) = disk {
-        cmd.arg("-drive")
-            .arg(format!("if=none,file={},format=raw,id=d0", disk.display()));
-        cmd.arg("-device").arg("virtio-blk-device,drive=d0");
-    }
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
-    cmd.stdin(std::process::Stdio::null());
-    let mut child = cmd.spawn().map_err(|e| format!("spawn qemu: {e}"))?;
-    let deadline = Instant::now() + Duration::from_secs(20);
-    loop {
-        match child.try_wait().map_err(|e| format!("wait qemu: {e}"))? {
-            Some(_) => break,
-            None => {
-                if Instant::now() > deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(
-                        "diff-blk: the QEMU guest never reached its own SYSTEM_OFF within 20s"
-                            .to_string(),
-                    );
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            }
-        }
-    }
-    let out = child
-        .wait_with_output()
-        .map_err(|e| format!("collect qemu output: {e}"))?;
-    Ok(String::from_utf8_lossy(&out.stdout).to_string())
-}
-
-fn qemu_load_imm(reg: u8, value: u64) -> Vec<u32> {
-    use wrela_compiler::encode;
-    vec![
-        encode::enc_movz(reg, (value & 0xFFFF) as u16, 0, true),
-        encode::enc_movk(reg, ((value >> 16) & 0xFFFF) as u16, 16, true),
-        encode::enc_movk(reg, ((value >> 32) & 0xFFFF) as u16, 32, true),
-        encode::enc_movk(reg, ((value >> 48) & 0xFFFF) as u16, 48, true),
-    ]
-}
-
-const ENC_HVC0: u32 = 0xD400_0002;
-
-fn qemu_system_off(w: &mut Vec<u32>) {
-    w.extend(qemu_load_imm(0, 0x8400_0008));
-    w.push(ENC_HVC0);
-}
-
-fn build_qemu_smoke_guest() -> Vec<u8> {
-    use wrela_compiler::encode;
-    let mut w = Vec::new();
-    w.extend(qemu_load_imm(9, VIRT_UART));
-    for b in b"WRELA-SMOKE\n" {
-        w.push(encode::enc_movz(10, *b as u16, 0, false));
-        w.push(encode::enc_str_w_imm(10, 9, 0));
-    }
-    qemu_system_off(&mut w);
-    w.iter().flat_map(|x| x.to_le_bytes()).collect()
-}
-
-const MMIO_MAGIC: u16 = 0x000;
-const MMIO_VERSION: u16 = 0x004;
-const MMIO_DEVICE_ID: u16 = 0x008;
-const MMIO_DEVICE_FEATURES: u16 = 0x010;
-const MMIO_DEVICE_FEATURES_SEL: u16 = 0x014;
-const MMIO_DRIVER_FEATURES: u16 = 0x020;
-const MMIO_DRIVER_FEATURES_SEL: u16 = 0x024;
-const MMIO_QUEUE_SEL: u16 = 0x030;
-const MMIO_QUEUE_NUM: u16 = 0x038;
-const MMIO_QUEUE_READY: u16 = 0x044;
-const MMIO_QUEUE_NOTIFY: u16 = 0x050;
-const MMIO_STATUS: u16 = 0x070;
-const MMIO_QUEUE_DESC_LOW: u16 = 0x080;
-const MMIO_QUEUE_DESC_HIGH: u16 = 0x084;
-const MMIO_QUEUE_DRIVER_LOW: u16 = 0x090;
-const MMIO_QUEUE_DRIVER_HIGH: u16 = 0x094;
-const MMIO_QUEUE_DEVICE_LOW: u16 = 0x0A0;
-const MMIO_QUEUE_DEVICE_HIGH: u16 = 0x0A4;
-
-const VIRT_MMIO_BASE: u64 = 0x0A00_0000;
-const VIRT_MMIO_STRIDE: u64 = 0x200;
-const VIRT_MMIO_SLOTS: u64 = 32;
-const QEMU_LOAD_ADDR: u64 = 0x4010_0000;
-
-mod blk_shape {
-    pub const QUEUE_SIZE: u64 = 8;
-    pub const DESC_SIZE: u64 = 16;
-    pub const DESC_F_NEXT: u16 = 1;
-    pub const DESC_F_WRITE: u16 = 2;
-    pub const T_IN: u32 = 0;
-    pub const T_OUT: u32 = 1;
-    pub const OFF_DESC: u64 = 0x000;
-    pub const OFF_AVAIL: u64 = 0x080;
-    pub const OFF_USED: u64 = 0x0C0;
-    pub const OFF_HDR1: u64 = 0x150;
-    pub const OFF_HDR2: u64 = 0x160;
-    pub const OFF_STATUS1: u64 = 0x170;
-    pub const OFF_STATUS2: u64 = 0x178;
-    pub const OFF_SRC: u64 = 0x200;
-    pub const OFF_DST: u64 = 0x400;
-    pub const DATA_REGION_SIZE: u64 = 0x600;
-
-    pub fn payload() -> Vec<u8> {
-        (0..512u32).map(|i| ((i * 7 + 3) % 256) as u8).collect()
-    }
-}
-
-fn fill_blk_ring(img: &mut [u8], data_off: usize, data_base: u64) {
-    use blk_shape::*;
-    let put = |img: &mut [u8], off: u64, bytes: &[u8]| {
-        let at = data_off + off as usize;
-        img[at..at + bytes.len()].copy_from_slice(bytes);
-    };
-    let desc = |img: &mut [u8], i: u64, addr: u64, len: u32, flags: u16, next: u16| {
-        let at = OFF_DESC + i * DESC_SIZE;
-        put(img, at, &addr.to_le_bytes());
-        put(img, at + 8, &len.to_le_bytes());
-        put(img, at + 12, &flags.to_le_bytes());
-        put(img, at + 14, &next.to_le_bytes());
-    };
-    put(img, OFF_HDR1, &T_OUT.to_le_bytes());
-    put(img, OFF_HDR1 + 8, &0u64.to_le_bytes());
-    desc(img, 0, data_base + OFF_HDR1, 16, DESC_F_NEXT, 1);
-    desc(img, 1, data_base + OFF_SRC, 512, DESC_F_NEXT, 2);
-    desc(img, 2, data_base + OFF_STATUS1, 1, DESC_F_WRITE, 0);
-    put(img, OFF_HDR2, &T_IN.to_le_bytes());
-    put(img, OFF_HDR2 + 8, &0u64.to_le_bytes());
-    desc(img, 3, data_base + OFF_HDR2, 16, DESC_F_NEXT, 4);
-    desc(
-        img,
-        4,
-        data_base + OFF_DST,
-        512,
-        DESC_F_NEXT | DESC_F_WRITE,
-        5,
-    );
-    desc(img, 5, data_base + OFF_STATUS2, 1, DESC_F_WRITE, 0);
-    put(img, OFF_STATUS1, &[0xEE]);
-    put(img, OFF_STATUS2, &[0xEE]);
-    put(img, OFF_SRC, &blk_shape::payload());
-}
-
-fn build_qemu_blk_guest() -> Vec<u8> {
-    use blk_shape::*;
-    use wrela_compiler::encode;
-    use wrela_compiler::encode::Cond;
-
-    let build = |data_base: u64| -> Vec<u32> {
-        let mut w: Vec<u32> = Vec::new();
-        let li = |w: &mut Vec<u32>, reg: u8, v: u64| w.extend(qemu_load_imm(reg, v));
-
-        li(&mut w, 22, VIRT_UART);
-        li(&mut w, 21, data_base);
-
-        let putc = |w: &mut Vec<u32>, b: u8| {
-            w.push(encode::enc_movz(10, b as u16, 0, false));
-            w.push(encode::enc_str_w_imm(10, 22, 0));
-        };
-        let puts = |w: &mut Vec<u32>, s: &[u8]| {
-            for b in s {
-                putc(w, *b);
-            }
-        };
-
-        li(&mut w, 20, VIRT_MMIO_BASE);
-        li(&mut w, 19, VIRT_MMIO_SLOTS);
-        let scan_top = w.len();
-        w.push(encode::enc_ldr_w_imm(9, 20, MMIO_MAGIC));
-        li(&mut w, 10, 0x7472_6976);
-        w.push(encode::enc_cmp_reg(9, 10, false));
-        let magic_ne = w.len();
-        w.push(0);
-        w.push(encode::enc_ldr_w_imm(9, 20, MMIO_VERSION));
-        w.push(encode::enc_cmp_imm(9, 2, false));
-        let version_ne = w.len();
-        w.push(0);
-        w.push(encode::enc_ldr_w_imm(9, 20, MMIO_DEVICE_ID));
-        w.push(encode::enc_cmp_imm(9, 2, false));
-        let id_eq = w.len();
-        w.push(0);
-        let next_slot = w.len();
-        li(&mut w, 10, VIRT_MMIO_STRIDE);
-        w.push(encode::enc_add_reg(20, 20, 10, true));
-        w.push(encode::enc_subs_imm(19, 19, 1, true));
-        {
-            let this = w.len();
-            w.push(encode::enc_cbnz(
-                19,
-                ((scan_top as i64 - this as i64) * 4) as i32,
-                true,
-            ));
-        }
-        puts(&mut w, b"NODEV\n");
-        qemu_system_off(&mut w);
-        let found = w.len();
-        for (at, cond) in [(magic_ne, Cond::Ne), (version_ne, Cond::Ne)] {
-            w[at] = encode::enc_b_cond(cond, ((next_slot as i64 - at as i64) * 4) as i32);
-        }
-        w[id_eq] = encode::enc_b_cond(Cond::Eq, ((found as i64 - id_eq as i64) * 4) as i32);
-
-        let status = |w: &mut Vec<u32>, bits: u16| {
-            w.push(encode::enc_movz(10, bits, 0, false));
-            w.push(encode::enc_str_w_imm(10, 20, MMIO_STATUS));
-        };
-        status(&mut w, 0);
-        status(&mut w, 1);
-        status(&mut w, 3);
-
-        w.push(encode::enc_movz(10, 1, 0, false));
-        w.push(encode::enc_str_w_imm(10, 20, MMIO_DEVICE_FEATURES_SEL));
-        w.push(encode::enc_str_w_imm(10, 20, MMIO_DRIVER_FEATURES_SEL));
-        w.push(encode::enc_movz(10, 1, 0, false));
-        w.push(encode::enc_str_w_imm(10, 20, MMIO_DRIVER_FEATURES));
-        w.push(encode::enc_movz(10, 0, 0, false));
-        w.push(encode::enc_str_w_imm(10, 20, MMIO_DEVICE_FEATURES_SEL));
-        w.push(encode::enc_str_w_imm(10, 20, MMIO_DRIVER_FEATURES_SEL));
-        w.push(encode::enc_ldr_w_imm(9, 20, MMIO_DEVICE_FEATURES));
-        w.push(encode::enc_movz(10, 1 << 9, 0, false));
-        w.push(encode::enc_and_reg(10, 10, 9, false));
-        w.push(encode::enc_str_w_imm(10, 20, MMIO_DRIVER_FEATURES));
-
-        status(&mut w, 3 | 8);
-        w.push(encode::enc_ldr_w_imm(9, 20, MMIO_STATUS));
-        w.push(encode::enc_movz(10, 8, 0, false));
-        w.push(encode::enc_and_reg(9, 9, 10, false));
-        let feat_ok = w.len();
-        w.push(0);
-        puts(&mut w, b"FEAT\n");
-        qemu_system_off(&mut w);
-        {
-            let target = w.len();
-            w[feat_ok] = encode::enc_cbnz(9, ((target as i64 - feat_ok as i64) * 4) as i32, true);
-        }
-
-        w.push(encode::enc_movz(10, 0, 0, false));
-        w.push(encode::enc_str_w_imm(10, 20, MMIO_QUEUE_SEL));
-        w.push(encode::enc_movz(10, QUEUE_SIZE as u16, 0, false));
-        w.push(encode::enc_str_w_imm(10, 20, MMIO_QUEUE_NUM));
-        for (lo, hi, addr) in [
-            (
-                MMIO_QUEUE_DESC_LOW,
-                MMIO_QUEUE_DESC_HIGH,
-                data_base + OFF_DESC,
-            ),
-            (
-                MMIO_QUEUE_DRIVER_LOW,
-                MMIO_QUEUE_DRIVER_HIGH,
-                data_base + OFF_AVAIL,
-            ),
-            (
-                MMIO_QUEUE_DEVICE_LOW,
-                MMIO_QUEUE_DEVICE_HIGH,
-                data_base + OFF_USED,
-            ),
-        ] {
-            li(&mut w, 10, addr & 0xFFFF_FFFF);
-            w.push(encode::enc_str_w_imm(10, 20, lo));
-            li(&mut w, 10, addr >> 32);
-            w.push(encode::enc_str_w_imm(10, 20, hi));
-        }
-        w.push(encode::enc_movz(10, 1, 0, false));
-        w.push(encode::enc_str_w_imm(10, 20, MMIO_QUEUE_READY));
-        status(&mut w, 3 | 8 | 4);
-
-        let mut timeout_markers: Vec<(usize, &[u8])> = Vec::new();
-        for (round, (avail_idx, want_used)) in [(1u64, 1u32), (2u64, 2u32)].iter().enumerate() {
-            li(&mut w, 9, data_base + OFF_AVAIL);
-            li(&mut w, 10, (avail_idx << 16) | (3 << 48));
-            w.push(encode::enc_str_x_imm(10, 9, 0));
-            w.push(encode::enc_movz(10, 0, 0, false));
-            w.push(encode::enc_str_w_imm(10, 20, MMIO_QUEUE_NOTIFY));
-            li(&mut w, 12, 200_000_000);
-            li(&mut w, 9, data_base + OFF_USED);
-            let poll_top = w.len();
-            w.push(encode::enc_ldr_w_imm(10, 9, 0));
-            w.push(encode::enc_lsr_imm(10, 10, 16, false));
-            w.push(encode::enc_cmp_imm(10, *want_used as u16, false));
-            let done = w.len();
-            w.push(0);
-            w.push(encode::enc_subs_imm(12, 12, 1, true));
-            {
-                let this = w.len();
-                w.push(encode::enc_cbnz(
-                    12,
-                    ((poll_top as i64 - this as i64) * 4) as i32,
-                    true,
-                ));
-            }
-            let marker: &[u8] = if round == 0 { b"TMO1\n" } else { b"TMO2\n" };
-            timeout_markers.push((w.len(), marker));
-            puts(&mut w, marker);
-            qemu_system_off(&mut w);
-            let target = w.len();
-            w[done] = encode::enc_b_cond(Cond::Eq, ((target as i64 - done as i64) * 4) as i32);
-        }
-        let _ = timeout_markers;
-
-        li(&mut w, 9, data_base + OFF_USED);
-        w.push(encode::enc_ldr_x_imm(23, 9, 0));
-        w.push(encode::enc_ldr_x_imm(24, 9, 8));
-        w.push(encode::enc_ldr_x_imm(25, 9, 16));
-        li(&mut w, 9, data_base + OFF_STATUS1);
-        w.push(encode::enc_ldrb_imm(19, 9, 0));
-        li(&mut w, 9, data_base + OFF_STATUS2);
-        w.push(encode::enc_ldrb_imm(28, 9, 0));
-
-        let fnv = |w: &mut Vec<u32>, start: u64, len: u64, status_at: u64, out: u8| {
-            li(w, 13, 0xcbf2_9ce4_8422_2325);
-            li(w, 14, 0x0000_0100_0000_01b3);
-            li(w, 11, start);
-            li(w, 15, start + len);
-            let top = w.len();
-            w.push(encode::enc_ldrb_imm(16, 11, 0));
-            w.push(encode::enc_eor_reg(13, 13, 16, true));
-            w.push(encode::enc_mul(13, 13, 14, true));
-            w.push(encode::enc_add_imm(11, 11, 1, true));
-            w.push(encode::enc_cmp_reg(11, 15, true));
-            {
-                let this = w.len();
-                w.push(encode::enc_b_cond(
-                    Cond::Ne,
-                    ((top as i64 - this as i64) * 4) as i32,
-                ));
-            }
-            li(w, 11, status_at);
-            w.push(encode::enc_ldrb_imm(16, 11, 0));
-            w.push(encode::enc_eor_reg(13, 13, 16, true));
-            w.push(encode::enc_mul(13, 13, 14, true));
-            w.push(encode::enc_mov_reg(out, 13, true));
-        };
-        fnv(
-            &mut w,
-            data_base + OFF_SRC,
-            512,
-            data_base + OFF_STATUS1,
-            26,
-        );
-        fnv(
-            &mut w,
-            data_base + OFF_DST,
-            512,
-            data_base + OFF_STATUS2,
-            27,
-        );
-
-        let print_hex = |w: &mut Vec<u32>, src: u8| {
-            w.push(encode::enc_movz(11, 60, 0, true));
-            let top = w.len();
-            w.push(encode::enc_lsr_reg(12, src, 11, true));
-            w.push(encode::enc_movz(13, 0xF, 0, true));
-            w.push(encode::enc_and_reg(12, 12, 13, true));
-            w.push(encode::enc_cmp_imm(12, 10, true));
-            w.push(encode::enc_movz(13, b'0' as u16, 0, true));
-            w.push(encode::enc_movz(14, (b'a' - 10) as u16, 0, true));
-            w.push(encode::enc_csel(13, 13, 14, Cond::Cc, true));
-            w.push(encode::enc_add_reg(12, 12, 13, true));
-            w.push(encode::enc_str_w_imm(12, 22, 0));
-            w.push(encode::enc_subs_imm(11, 11, 4, true));
-            {
-                let this = w.len();
-                w.push(encode::enc_b_cond(
-                    Cond::Ge,
-                    ((top as i64 - this as i64) * 4) as i32,
-                ));
-            }
-        };
-        puts(&mut w, b"R ");
-        for reg in [23u8, 24, 25, 19, 28, 26, 27] {
-            print_hex(&mut w, reg);
-            putc(&mut w, b' ');
-        }
-        putc(&mut w, b'\n');
-        qemu_system_off(&mut w);
-        w
-    };
-
-    let probe_len = build(0).len();
-    let data_base = {
-        let after_code = QEMU_LOAD_ADDR + (probe_len as u64) * 4;
-        after_code.div_ceil(16) * 16
-    };
-    let words = build(data_base);
-    assert_eq!(words.len(), probe_len, "guest length must not move");
-    let mut img: Vec<u8> = words.iter().flat_map(|x| x.to_le_bytes()).collect();
-    img.resize((data_base - QEMU_LOAD_ADDR + DATA_REGION_SIZE) as usize, 0);
-    let data_off = (data_base - QEMU_LOAD_ADDR) as usize;
-    fill_blk_ring(&mut img, data_off, data_base);
-    img
 }
