@@ -374,6 +374,19 @@ IR change (one field, three sites: `lower.rs`, `codegen::emit_shift`,
 named here with the count so the next item can pick it up without
 re-deriving it, and it is the obvious successor to item J.
 
+### `--stage=mwir` shows the program before the passes, not after
+
+The passes run inside `codegen_program`, so the `--stage=mwir` dump is
+the *input* to them. CLAUDE.md wants every pipeline stage to have a
+stable text dump, and item J's output does not have one of its own: what
+pins it is the `asm` / `image` / `cost` goldens downstream. That is a
+deliberate trade for decision 1920 — one hook, at the point where the
+program is whole and where the gate and the shipped image cannot diverge
+— but it is a real gap, and the cheapest way to close it is a
+`--stage=mwir-opt` that runs `mwir_opt::optimize` and dumps. Not done
+here; it adds a golden surface the orchestrator would have to pin in the
+same merge.
+
 ### Not done
 
 - No re-measurement of `lane2-freq.txt` (needs HVF and would need one per
