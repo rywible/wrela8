@@ -37,6 +37,42 @@ Three facts follow, and they set this round's agenda:
    opt to win on, so the corpus cannot show what these opts are for. That is
    the same self-selection failure round 1's item H found, one level up.
 
+## Decision 1910 — the parking rule, and what this round deleted under the old one
+
+**The rule changed mid-round (2026-07-31, human).** "Losers are deleted, not
+kept disabled" is replaced in CLAUDE.md by: *a refused opt is parked, not
+deleted*. It stays in the tree, out of `RELEASE_OPTS`, carrying the
+measurement that refused it, the **mechanism**, and the **named workload or
+capability that would make it worth re-asking**. It must still compile and
+pass `diff-eval`, so it cannot rot into a miscompile while parked.
+
+The old rule cost real work twice inside this one session, which is why it
+changed:
+
+- **Item D's block layout** was deleted by item K on the measurement that it
+  vetoes under every wiring available in the tree — and then item M's compute
+  workload landed *hours later* and inverted the premise the deletion rested
+  on (that no image has L1I headroom; the compositor has ~17 KB).
+- **The inliner** was refused on a corpus that, until item M, contained no
+  compute-heavy program at all — and was deleted before it was ever
+  committed, so the numbers that re-ranked ladder 2a **cannot be reproduced
+  from this repository**. `git log -S"OptId::Inline"` returns nothing.
+
+Three things were deleted under the old rule and are restored, parked:
+
+| what | deleted by | restored as |
+| --- | --- | --- |
+| `BoundsElide` | item L, decision 1970 | item N |
+| `blocklayout.rs` (item D's pass) | item K, decision 1956 | item O |
+| the inliner | item J, decision 1935 | item P — **rebuilt**, since it was never committed |
+
+Item P also settles a question the original measurement cannot answer: the
+inliner's numbers were taken with it *in* the opt list, but the pipeline
+order — whether it ran before or after `ConstProp`/`Gvn`/`Dce`, which is what
+decides whether an enabling pass can enable anything — is not recorded
+anywhere committed. An inliner measured after redundancy elimination is a
+measurement of nothing.
+
 ## Items
 
 ### I. Register coalescing — delete the 161 movs
@@ -149,4 +185,9 @@ flatter an opt: state plainly what it computes and why that shape.
   decision 1717).
 - **Never tune the cost model to make an opt win.** Item K changes the model
   *only* where it is provably wrong, with provenance.
-- Losers are deleted.
+- **A refused opt is parked, not deleted** (CLAUDE.md, 2026-07-31). It stays
+  in the tree, out of `RELEASE_OPTS`, with the measurement that refused it,
+  the mechanism, and the named workload that would justify re-asking. It
+  must still compile and pass `diff-eval`. This replaces the "losers are
+  deleted" rule this round was written under, and items J, K and L each
+  deleted something under the old rule — see decision 1910.

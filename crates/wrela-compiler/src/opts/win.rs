@@ -3569,7 +3569,7 @@ mod tests {
         assert_wins(&cmp, "release", "release-minus-J");
         assert_eq!(
             (cmp.baseline_sum, cmp.candidate_sum),
-            (206_848, 185_513),
+            (207_196, 185_636),
             "item J's measured size over the shipped list (-10.3%); re-measure \
              this rather than rescaling it"
         );

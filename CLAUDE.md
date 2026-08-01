@@ -40,6 +40,19 @@ next item from it and do not relitigate it mid-milestone.
   runner we keep.
 - **Diagnostics are the one place not to be dumb** — errors are pinned
   golden artifacts and a core feature.
+- **A refused opt is parked, not deleted** (2026-07-31, replacing "losers
+  are deleted, not kept disabled"). An opt that fails the gate stays in the
+  tree, out of `RELEASE_OPTS`, carrying three things: the measurement that
+  refused it, the **mechanism** that explains the loss, and the **named
+  workload or capability that would make it worth re-asking**. The old rule
+  cost real work twice in one session — item D's block layout was deleted
+  hours before a compute workload arrived that inverted its premise, and the
+  inliner was refused on a corpus that had no compute program in it at all
+  and then deleted before it was ever committed, so the refusal is not
+  reproducible. A parked opt must still **compile and pass `diff-eval`**, so
+  it cannot rot into a miscompile while disabled; that is what makes this a
+  park rather than a graveyard. Delete only what is *wrong*, not what is
+  merely unprofitable on today's corpus.
 - **No foreign code in an image, ever.** No dynamic loader, JIT, or fused
   foreign driver. Read a Linux driver as a _specification_ of the
   hardware's register contract, then write the driver in wrela under 03's
