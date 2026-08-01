@@ -1868,6 +1868,31 @@ fn verify_section_sizes(
 /// *reachable from a source program*: an image whose text outgrows 2 MiB
 /// breaks it without any editing mistake. So it is a build error, not an
 /// internal error, and it says what to do about it.
+/// SOG §4.8's region size, in bytes: "keep a branch and its target within
+/// the same 2 MiB region". The cost table carries the same number in
+/// `[branch.region_bytes]`; this constant is the *layout* side of it and is
+/// checked against the table row by
+/// `unit:the_region_constant_agrees_with_the_cost_table`.
+///
+/// Lived in `blocklayout.rs` until plans/codegen-pareto-2.md decision 1956
+/// deleted that module; the property it proves (decision 1754) is
+/// independent of the block-layout pass and outlives it.
+pub const REGION_BYTES: u64 = 2 * 1024 * 1024;
+
+/// Whether every branch in `[lo, hi)` necessarily shares a 2 MiB region
+/// with its target — true exactly when the whole code span sits inside one
+/// aligned region.
+///
+/// **Stronger** than "the base is 2 MiB-aligned" (a 2 MiB-aligned base
+/// followed by more than 2 MiB of code still straddles) and it is what
+/// SOG §4.8 actually says.
+pub fn same_region_holds(lo: u64, hi: u64) -> bool {
+    if hi <= lo {
+        return true;
+    }
+    lo / REGION_BYTES == (hi - 1) / REGION_BYTES
+}
+
 fn verify_branch_region(sections: &[Section]) -> Result<(), LayoutError> {
     let branchable: Vec<&Section> = sections
         .iter()
@@ -1878,14 +1903,14 @@ fn verify_branch_region(sections: &[Section]) -> Result<(), LayoutError> {
     };
     let lo = first.base;
     let hi = last.base + last.size;
-    if !crate::blocklayout::same_region_holds(lo, hi) {
+    if !same_region_holds(lo, hi) {
         return Err(LayoutError::new(format!(
             "branchable text spans {lo:#x}..{hi:#x} ({} bytes), which straddles a \
              {region}-byte region boundary — SOG §4.8 requires every branch and its target to \
              share one 2 MiB region, so the text base must move to a region boundary \
              (plans/codegen-pareto.md decision 1754)",
             hi - lo,
-            region = crate::blocklayout::REGION_BYTES
+            region = REGION_BYTES
         )));
     }
     Ok(())
@@ -5784,6 +5809,31 @@ fn two():
     /// **proved**, not assumed from an aligned base. A branchable text span
     /// that straddles a 2 MiB boundary is refused, and one that does not is
     /// accepted whether or not its base is aligned.
+    #[test]
+    fn same_region_is_the_span_property_not_the_base_property() {
+        // The current image: code 0x40500050..0x40515610.
+        assert!(same_region_holds(0x4050_0050, 0x4051_5610));
+        // A 2 MiB-aligned base does not by itself buy the property.
+        assert!(!same_region_holds(
+            0x4060_0000,
+            0x4060_0000 + REGION_BYTES + 4
+        ));
+        // …and an unaligned base that stays inside one region does.
+        assert!(same_region_holds(0x4050_0050, 0x405F_FFFC));
+        // Straddling the boundary is exactly what §4.8 warns about.
+        assert!(!same_region_holds(0x405F_FFF0, 0x4060_0010));
+    }
+
+    /// The layout constant and the cost table must mean the same region.
+    #[test]
+    fn the_region_constant_agrees_with_the_cost_table() {
+        let table = crate::cost::load_default().expect("cost table");
+        let row = table
+            .branch_row("region_bytes")
+            .expect("[branch.region_bytes] is SOG §4.8's region size");
+        assert_eq!(row.value, REGION_BYTES);
+    }
+
     #[test]
     fn verify_branch_region_refuses_a_straddling_text_span() {
         let straddle = vec![
