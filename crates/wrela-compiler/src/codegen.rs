@@ -1459,13 +1459,27 @@ impl Frame {
         }
     }
 
-    /// One bit per register that is some resident temp's home
+    /// One bit per register that is some resident temp's home and that
+    /// this function's own emission provably never names
     /// (plans/codegen-pareto-2.md item I, decision 1900). Empty in `dev`
     /// and on the async path, where nothing is resident.
+    ///
+    /// **`x0..=x8` are deliberately excluded.** Those are the only
+    /// registers item I's argument/return hinting (decision 1902) ever
+    /// hands out, and a hinted home is one the emitter *does* name, on
+    /// purpose, at the very accesses being coalesced — so a per-function
+    /// "nothing may write this" rule cannot express the invariant there
+    /// and `hint_admissible`'s per-word check is the proof instead.
+    /// Everything above `x8` reaches a temp only through `free_pool`,
+    /// which subtracted every register the emission was measured naming,
+    /// so a write to one of those can only be a borrowed operand being
+    /// clobbered — which is exactly what this mask exists to catch.
     fn home_mask(&self) -> u32 {
         let mut m = 0u32;
         for &r in self.virt_to_reg.values() {
-            m |= 1u32 << (r & 31);
+            if r > regalloc::MAX_HINT_REG {
+                m |= 1u32 << (r & 31);
+            }
         }
         m
     }
@@ -1564,7 +1578,7 @@ struct FnCtx<'a> {
     /// recorded — a `Vec` push per slot access — rather than gated on a
     /// flag, so the probe can never observe a different emitter than the
     /// one that runs.
-    slot_accesses: Vec<(usize, regalloc::Touch, usize)>,
+    slot_accesses: Vec<(usize, regalloc::Touch, usize, u8)>,
     /// Set when a virtual slot offset reached a helper that cannot
     /// serve it (see [`VIRT_SLOT_BASE`]). `emit_fn` turns it into a
     /// producer-bug error rather than emitting a wrong instruction.
@@ -1861,7 +1875,7 @@ impl<'a> FnCtx<'a> {
     fn use_slot(&mut self, scratch: u8, off: usize) -> u8 {
         if let Some(home) = self.frame.reg_at(off) {
             self.slot_accesses
-                .push((off, regalloc::Touch::Read, self.words.len()));
+                .push((off, regalloc::Touch::Read, self.words.len(), scratch));
             return home;
         }
         self.load_slot(scratch, off);
@@ -1897,7 +1911,7 @@ impl<'a> FnCtx<'a> {
 
     fn load_slot(&mut self, reg: u8, off: usize) {
         self.slot_accesses
-            .push((off, regalloc::Touch::Read, self.words.len()));
+            .push((off, regalloc::Touch::Read, self.words.len(), reg));
         if let Some(home) = self.frame.reg_at(off) {
             self.mov_reg(reg, home);
             return;
@@ -1921,7 +1935,7 @@ impl<'a> FnCtx<'a> {
 
     fn store_slot(&mut self, reg: u8, off: usize) {
         self.slot_accesses
-            .push((off, regalloc::Touch::Write, self.words.len()));
+            .push((off, regalloc::Touch::Write, self.words.len(), reg));
         if let Some(home) = self.frame.reg_at(off) {
             // The one authorized write to a home register that is not a
             // `def_reg` definition: the temp's own store. `mov_reg`
@@ -2012,7 +2026,7 @@ impl<'a> FnCtx<'a> {
     /// sync fns, the persistent turn area for async fns).
     fn addr_of_slot(&mut self, reg: u8, off: usize) {
         self.slot_accesses
-            .push((off, regalloc::Touch::Escape, self.words.len()));
+            .push((off, regalloc::Touch::Escape, self.words.len(), reg));
         if off >= VIRT_SLOT_BASE {
             // Cannot happen: the probe marks every address-taken temp
             // `Touch::Escape`, and an escaped temp is never resident.
@@ -3412,27 +3426,29 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             ty,
         } => {
             let width = mmio_access_width(ty, *offset)?;
-            ctx.load_slot(X_A, ctx.frame.off(*base));
+            let b = ctx.use_slot(X_A, ctx.frame.off(*base));
             let off = *offset as u16;
+            let dst_off = ctx.frame.off(*dst);
+            let d = ctx.def_reg(X_B, dst_off);
             let (enc, mnem) = match width {
-                1 => (encode::enc_ldrb_imm(X_B, X_A, off), "ldrb"),
-                2 => (encode::enc_ldrh_imm(X_B, X_A, off), "ldrh"),
-                4 => (encode::enc_ldr_w_imm(X_B, X_A, off), "ldr"),
-                _ => (encode::enc_ldr_x_imm(X_B, X_A, off), "ldr"),
+                1 => (encode::enc_ldrb_imm(d, b, off), "ldrb"),
+                2 => (encode::enc_ldrh_imm(d, b, off), "ldrh"),
+                4 => (encode::enc_ldr_w_imm(d, b, off), "ldr"),
+                _ => (encode::enc_ldr_x_imm(d, b, off), "ldr"),
             };
             let rt = if width == 8 {
-                reg_name(X_B)
+                reg_name(d)
             } else {
-                format!("w{X_B}")
+                format!("w{d}")
             };
             ctx.push(
                 enc,
-                format!("{mnem} {rt}, [{}, #{off}]", reg_name(X_A)),
+                format!("{mnem} {rt}, [{}, #{off}]", reg_name(b)),
                 CostRule::Load,
-                Some(X_B),
-                &[X_A],
+                Some(d),
+                &[b],
             );
-            ctx.store_slot(X_B, ctx.frame.off(*dst));
+            ctx.store_slot(d, dst_off);
         }
         // plans/M7.md item G, decision 12: load the driver's vector bit
         // index into an `IrqCap` word. The immediate is patched by layout
@@ -3440,15 +3456,17 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
         // `Reloc::TurnFrameAddr`/`GroupArenaBase`.
         Inst::LoadIrqVector { dst, driver } => {
             let word = ctx.words.len();
-            ctx.load_imm_naive(X_A, 0);
+            let dst_off = ctx.frame.off(*dst);
+            let d = ctx.def_reg(X_A, dst_off);
+            ctx.load_imm_naive(d, 0);
             if let Some(ew) = ctx.words.get_mut(word) {
-                ew.text = format!("irq-vector[{}] {}", driver, reg_name(X_A));
+                ew.text = format!("irq-vector[{}] {}", driver, reg_name(d));
             }
             ctx.relocs.push(Reloc::IrqVector {
                 word,
                 driver: driver.clone(),
             });
-            ctx.store_slot(X_A, ctx.frame.off(*dst));
+            ctx.store_slot(d, dst_off);
         }
         // plans/M7.md item G, decision 17: live-cell ops through self_ptr.
         Inst::InterruptCellLoadAcquire {
@@ -3486,6 +3504,8 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
                 }
             }
             ctx.store_slot(X_B, ctx.frame.off(*dst));
+            // (`X_B` is the acquire load's own destination register; the
+            // ordered-load encoders are not parameterised over it here.)
         }
         Inst::InterruptCellStoreRelease {
             field_off,
@@ -3608,26 +3628,26 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             value,
         } => {
             let width = mmio_access_width(ty, *offset)?;
-            ctx.load_slot(X_A, ctx.frame.off(*base));
-            ctx.load_slot(X_B, ctx.frame.off(*value));
+            let b = ctx.use_slot(X_A, ctx.frame.off(*base));
+            let v = ctx.use_slot(X_B, ctx.frame.off(*value));
             let off = *offset as u16;
             let (enc, mnem) = match width {
-                1 => (encode::enc_strb_imm(X_B, X_A, off), "strb"),
-                2 => (encode::enc_strh_imm(X_B, X_A, off), "strh"),
-                4 => (encode::enc_str_w_imm(X_B, X_A, off), "str"),
-                _ => (encode::enc_str_x_imm(X_B, X_A, off), "str"),
+                1 => (encode::enc_strb_imm(v, b, off), "strb"),
+                2 => (encode::enc_strh_imm(v, b, off), "strh"),
+                4 => (encode::enc_str_w_imm(v, b, off), "str"),
+                _ => (encode::enc_str_x_imm(v, b, off), "str"),
             };
             let rt = if width == 8 {
-                reg_name(X_B)
+                reg_name(v)
             } else {
-                format!("w{X_B}")
+                format!("w{v}")
             };
             ctx.push(
                 enc,
-                format!("{mnem} {rt}, [{}, #{off}]", reg_name(X_A)),
+                format!("{mnem} {rt}, [{}, #{off}]", reg_name(b)),
                 CostRule::Store,
                 None,
-                &[X_B, X_A],
+                &[v, b],
             );
         }
         Inst::MemLoad {
@@ -3647,13 +3667,15 @@ fn emit_one(inst: &Inst, f: &MwirFn, ctx: &mut FnCtx) -> Result<(), CodegenError
             emit_mem_store(ctx, *base, *offset, *value, *width)?;
         }
         Inst::PtrOffset { dst, base, offset } => {
-            ctx.load_slot(X_A, ctx.frame.off(*base));
+            let b = ctx.use_slot(X_A, ctx.frame.off(*base));
+            let dst_off = ctx.frame.off(*dst);
             if *offset == 0 {
-                ctx.store_slot(X_A, ctx.frame.off(*dst));
+                ctx.store_slot(b, dst_off);
             } else {
                 ctx.load_imm(X_B, *offset as i64);
-                ctx.add_reg(X_C, X_A, X_B);
-                ctx.store_slot(X_C, ctx.frame.off(*dst));
+                let d = ctx.def_reg(X_C, dst_off);
+                ctx.add_reg(d, b, X_B);
+                ctx.store_slot(d, dst_off);
             }
         }
         Inst::TurnAddrFromId { dst, id } => {
@@ -5396,7 +5418,7 @@ fn probe_fn_facts(
 
     let finish = |ctx: FnCtx| -> regalloc::PointFacts {
         let mut touches = Vec::new();
-        for &(off, how, word) in &ctx.slot_accesses {
+        for &(off, how, word, reg) in &ctx.slot_accesses {
             if let Some((temp, is_base)) = frame.temp_at_offset(off) {
                 let whole_slot = frame.temp_size[temp] == FRAME_SLOT_BYTES as usize;
                 let how = if how == regalloc::Touch::Escape || !is_base || !whole_slot {
@@ -5404,7 +5426,7 @@ fn probe_fn_facts(
                 } else {
                     how
                 };
-                touches.push((temp, how, word));
+                touches.push((temp, how, word, reg));
             }
         }
         // Item F: the callee's *identity*, taken from the reloc the
@@ -5415,6 +5437,7 @@ fn probe_fn_facts(
         // the fail-closed answer for it.
         let mut call_words = Vec::new();
         let mut regs = BTreeSet::new();
+        let mut word_regs = Vec::new();
         for (i, w) in ctx.words.iter().enumerate() {
             if w.rule == CostRule::Call {
                 let callee = ctx.relocs.iter().find_map(|r| match r {
@@ -5425,15 +5448,18 @@ fn probe_fn_facts(
             }
             if let Some(d) = w.dst {
                 regs.insert(d);
+                word_regs.push((i, d));
             }
             for &s in &w.srcs[..w.src_len as usize] {
                 regs.insert(s);
+                word_regs.push((i, s));
             }
         }
         regalloc::PointFacts {
             touches,
             call_words,
             regs,
+            word_regs,
         }
     };
 
