@@ -1,0 +1,7 @@
+test pixel_kernel_identities: ok
+test sprite_is_exact: ok
+test background_pass_is_exact: ok
+test strip_digest_matches: ok
+4 passed, 0 failed
+lane1 turns=0 run_one=0 messages=0
+lane1 hits=
