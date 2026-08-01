@@ -110,8 +110,11 @@ use crate::cost::crosscore::{
     OrderingCounts, OrderingRemoval, ordering_removals, ordering_word_counts,
 };
 use crate::cost::footprint::CoreBudget;
-use crate::cost::score::{CostReport, score_program_at};
-use crate::cost::stage::{TextScope, codegen_shipped_program, report_cost_stage_path};
+use crate::cost::score::{CostReport, ScoreCtx, score_totals_at};
+use crate::cost::stage::{
+    ShippedFront, TextScope, codegen_shipped_from, codegen_shipped_program, load_shipped_front,
+    report_cost_stage_path,
+};
 use crate::cost::sweep::{SweepPoint, endpoint_corners, record_reads};
 use crate::cost::table::{CostTable, load_default};
 use crate::cost::workload::{self, FLAT_NAME, WorkloadSet};
@@ -1164,7 +1167,11 @@ struct SideScore {
     cycles: u64,
     words: u64,
     budgets: Vec<CoreBudget>,
-    ordering: OrderingCounts,
+    /// Present only when the caller asked for it (item R, decision 1962).
+    /// `None` means "not computed", never "this side emits no ordering
+    /// words" — [`refuse_at_point`] fails closed on it rather than reading
+    /// an absent census as an absence of barriers.
+    ordering: Option<OrderingCounts>,
 }
 
 impl SideScore {
@@ -1187,9 +1194,24 @@ impl SideScore {
 ///
 /// A case whose root declares no `@image` ships nothing; its closure *is*
 /// its program, and [`TextScope::Closure`] says so on the row.
+/// One side straight off a path. The sweep goes through
+/// [`compile_side_from`] instead, so that it can share one front between
+/// the two sides (item R); this single-side spelling is what the units
+/// that build one side ask for, and is `cfg(test)` rather than dead.
+#[cfg(test)]
 fn compile_side(path: &Path, opts: &[OptId]) -> Result<CompiledSide, String> {
+    compile_side_from(&load_shipped_front(path)?, opts)
+}
+
+/// [`compile_side`] off an already-loaded front (item R, decision 1963).
+///
+/// A comparison builds **two** sides from one source, and read → lex →
+/// parse → load → sema → `@image` eval reads no opt knob, so it is done
+/// once per case and lower/codegen twice. See [`ShippedFront`] for the
+/// audit that licenses it.
+fn compile_side_from(front: &ShippedFront, opts: &[OptId]) -> Result<CompiledSide, String> {
     apply_opts(opts);
-    let (program, placement, scope) = codegen_shipped_program(path)?;
+    let (program, placement, scope) = codegen_shipped_from(front)?;
     Ok(CompiledSide {
         program,
         placement,
@@ -1197,17 +1219,33 @@ fn compile_side(path: &Path, opts: &[OptId]) -> Result<CompiledSide, String> {
     })
 }
 
+/// Score one side at one point through the lean entry (item R, decision
+/// 1961).
+///
+/// `ctx` is [`ScoreCtx`] built from `table` — the port map and dispatch
+/// caps, which no sweep dimension can move — hoisted out of the corner
+/// loop. `want_ordering` asks for the point-invariant ordering census;
+/// see [`SideScore::ordering`].
 fn score_side_at(
     side: &CompiledSide,
     table: &CostTable,
+    ctx: &ScoreCtx,
     point: &SweepPoint,
+    want_ordering: bool,
 ) -> Result<SideScore, String> {
-    let r = score_program_at(&side.program, table, &side.placement, point)?;
+    let r = score_totals_at(
+        &side.program,
+        table,
+        &side.placement,
+        point,
+        ctx,
+        want_ordering,
+    )?;
     Ok(SideScore {
         cycles: r.total_proxy_cycles,
         words: r.total_words,
-        budgets: r.footprint.clone(),
-        ordering: ordering_word_counts(&r),
+        budgets: r.footprint,
+        ordering: r.ordering,
     })
 }
 
@@ -1281,8 +1319,14 @@ fn probe_case_bounded(
     let mut read: BTreeSet<String> = BTreeSet::new();
     let mut moved: BTreeSet<String> = BTreeSet::new();
     let mut err: Option<String> = None;
+    // The probe keeps the ordering census on **both** sides at every one
+    // of its points (item R): its whole verdict is `a != z` over the
+    // scored value, so it must compare the same value the pre-item-R
+    // probe compared. It is `dims × 3 bases × 2 ends × 2 sides` scorings,
+    // not `2^k`, so nothing here is in the loop item R is cutting.
+    let ctx = ScoreCtx::new(table)?;
     let mut score = |side: &CompiledSide, p: &SweepPoint| -> Option<SideScore> {
-        let (out, r) = record_reads(|| score_side_at(side, table, p));
+        let (out, r) = record_reads(|| score_side_at(side, table, &ctx, p, true));
         read.extend(r);
         match out {
             Ok(s) => Some(s),
@@ -1398,7 +1442,19 @@ fn refuse_at_point(
         });
     }
     if check_ordering {
-        for r in ordering_removals(&b.ordering, &c.ordering) {
+        // Fail closed: the caller asked for the ordering refusal, so an
+        // uncomputed census is a harness bug, not "no barriers removed".
+        let (bo, co) = match (&b.ordering, &c.ordering) {
+            (Some(bo), Some(co)) => (bo, co),
+            _ => {
+                return Err(format!(
+                    "{case} at {label}: the ordering refusal was asked for at a point \
+                     scored without the ordering census — freeze 1633's veto may not \
+                     be answered from an absent count"
+                ));
+            }
+        };
+        for r in ordering_removals(bo, co) {
             reasons.push(SweepVeto::OrderingWordsRemoved {
                 case: case.to_string(),
                 rule: r.rule,
@@ -1422,11 +1478,22 @@ fn refuse_at_point(
 ///
 /// See the call site in [`sweep_case`] for why this may be parallel at all
 /// and why the result is deterministic regardless of how many threads run.
+///
+/// **The ordering census is computed at corner 0 only** (item R, decision
+/// 1962). [`refuse_at_point`] already asks for it at the first point and
+/// nowhere else, because ordering-word counts are counts of *emitted
+/// words* and therefore identical at every point of the box — the reason
+/// its `check_ordering` flag exists. Building it costs a per-rule term map,
+/// i.e. one `String` allocation per emitted word of the program, so the
+/// other `2^k − 1` corners were paying for a value nothing read. Corner 0
+/// is the one `sweep_case` passes `check_ordering = true` for, so what is
+/// computed and what is read are the same corner by construction.
 fn score_corners_in_parallel(
     corners: &[SweepPoint],
     base: &CompiledSide,
     cand: &CompiledSide,
     table: &CostTable,
+    ctx: &ScoreCtx,
 ) -> Result<Vec<(SideScore, SideScore)>, String> {
     let n = corners.len();
     let workers = std::thread::available_parallelism()
@@ -1437,10 +1504,11 @@ fn score_corners_in_parallel(
     if workers < 2 || n < 64 {
         return corners
             .iter()
-            .map(|p| {
+            .enumerate()
+            .map(|(i, p)| {
                 Ok((
-                    score_side_at(base, table, p)?,
-                    score_side_at(cand, table, p)?,
+                    score_side_at(base, table, ctx, p, i == 0)?,
+                    score_side_at(cand, table, ctx, p, i == 0)?,
                 ))
             })
             .collect();
@@ -1451,11 +1519,16 @@ fn score_corners_in_parallel(
     out.resize_with(n, || Err(String::new()));
 
     std::thread::scope(|scope| {
-        for (corner_chunk, out_chunk) in corners.chunks(chunk).zip(out.chunks_mut(chunk)) {
+        for (ci, (corner_chunk, out_chunk)) in
+            corners.chunks(chunk).zip(out.chunks_mut(chunk)).enumerate()
+        {
+            let first = ci * chunk;
             scope.spawn(move || {
-                for (p, slot) in corner_chunk.iter().zip(out_chunk.iter_mut()) {
-                    *slot = score_side_at(base, table, p)
-                        .and_then(|b| score_side_at(cand, table, p).map(|c| (b, c)));
+                for (j, (p, slot)) in corner_chunk.iter().zip(out_chunk.iter_mut()).enumerate() {
+                    let want_ordering = first + j == 0;
+                    *slot = score_side_at(base, table, ctx, p, want_ordering).and_then(|b| {
+                        score_side_at(cand, table, ctx, p, want_ordering).map(|c| (b, c))
+                    });
                 }
             });
         }
@@ -1493,7 +1566,8 @@ fn sweep_case(
     // reasons and carries `ordering_reported` — then runs over it in the
     // same sequential order it always did. Small cases stay serial because
     // spawning costs more than it saves.
-    let scored = score_corners_in_parallel(&corners, base, cand, table)?;
+    let ctx = ScoreCtx::new(table)?;
+    let scored = score_corners_in_parallel(&corners, base, cand, table, &ctx)?;
 
     let mut points = Vec::with_capacity(corners.len());
     let mut ordering_reported = false;
@@ -1610,8 +1684,10 @@ fn sweep_corpus(
     let mut reasons = Vec::new();
     for case in &corpus {
         let path = case.input.as_path();
-        let b = compile_side(path, baseline)?;
-        let c = compile_side(path, candidate)?;
+        // One front, two backs (item R, decision 1963).
+        let front = load_shipped_front(path)?;
+        let b = compile_side_from(&front, baseline)?;
+        let c = compile_side_from(&front, candidate)?;
         cases.push(sweep_case(
             &case.name,
             case.tier,
@@ -5443,7 +5519,10 @@ mod tests {
                 .unwrap_or_else(|e| panic!("profile with mul_w lat={lat}: {e}"));
             assert_eq!(table.latency(crate::cost::rule::CostRule::MulW), lat as u64);
             let p = SweepPoint::pinned(&table);
-            score_side_at(&side, &table, &p).expect("score").cycles
+            let ctx = ScoreCtx::new(&table).expect("ctx");
+            score_side_at(&side, &table, &ctx, &p, true)
+                .expect("score")
+                .cycles
         };
 
         // The committed W-form row, and the same words priced at the
@@ -5956,7 +6035,7 @@ mod tests {
             cycles,
             words: 400,
             budgets: Vec::new(),
-            ordering: BTreeMap::new(),
+            ordering: Some(BTreeMap::new()),
         };
         let mut reasons = Vec::new();
         // Wins here…
@@ -6083,8 +6162,11 @@ mod tests {
         for h in &probe.held {
             for base in [&pinned, &all_lo, &all_hi] {
                 for side in [&dev, &rel] {
-                    let lo = score_side_at(side, &table, &base.with(&h.dim, h.lo)).expect("lo");
-                    let hi = score_side_at(side, &table, &base.with(&h.dim, h.hi)).expect("hi");
+                    let ctx = ScoreCtx::new(&table).expect("ctx");
+                    let lo = score_side_at(side, &table, &ctx, &base.with(&h.dim, h.lo), true)
+                        .expect("lo");
+                    let hi = score_side_at(side, &table, &ctx, &base.with(&h.dim, h.hi), true)
+                        .expect("hi");
                     assert_eq!(lo, hi, "held dimension `{}` moved a score", h.dim);
                 }
             }

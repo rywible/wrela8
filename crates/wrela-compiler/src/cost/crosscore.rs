@@ -485,8 +485,16 @@ pub type OrderingCounts = BTreeMap<(String, &'static str), u64>;
 /// Always the full rule set for every fn, so a rule absent from a fn reads
 /// as 0 rather than as a missing key.
 pub fn ordering_word_counts(report: &CostReport) -> OrderingCounts {
+    ordering_word_counts_of(&report.fns)
+}
+
+/// [`ordering_word_counts`] over the per-fn rows alone — the lean scoring
+/// path's entry (plans/codegen-pareto-2.md item R, decision 1961). The
+/// whole report is more than this census needs, and the sweep does not
+/// build one.
+pub fn ordering_word_counts_of(fns: &[crate::cost::score::FnCost]) -> OrderingCounts {
     let mut out: OrderingCounts = BTreeMap::new();
-    for f in &report.fns {
+    for f in fns {
         for r in ordering_rules() {
             out.insert((f.key.clone(), r.as_str()), 0);
         }
