@@ -20,12 +20,16 @@ pub enum CompileMode {
 
 /// Named opts that `apply_mode(Release)` may enable.
 ///
+/// An id here is *nameable*, not *shipped*: `RELEASE_OPTS` is the
+/// shipped list and [`PARKED_OPTS`] is the refused-but-kept list, and
+/// every id belongs to exactly one of them (`unit:
+/// every_opt_id_is_either_shipped_or_parked`).
+///
 /// M19 (decision 1421) named two: lower-side bounds elision and codegen
-/// narrow immediates. `BoundsElide` was **deleted** by
-/// plans/codegen-pareto-2.md item L (decision 1970) — it was
-/// byte-identical to `dev` on all four programs the appliance ships, and
-/// losers are deleted, not kept disabled. plans/codegen-pareto.md adds
-/// five more: item B's
+/// narrow immediates. `BoundsElide` is **parked** — deleted by
+/// plans/codegen-pareto-2.md item L (decision 1970) and restored,
+/// disabled, by item N (decision 1911) under CLAUDE.md's parking rule.
+/// plans/codegen-pareto.md adds five more: item B's
 /// one-word `ADR` addressing (decision 1730), item C's three arithmetic
 /// substitutions, and item E's per-function register allocation
 /// (decision 1760).
@@ -41,6 +45,12 @@ pub enum CompileMode {
 /// would be a claimed win with no evidence behind it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OptId {
+    /// **Parked** (decision 1911) — see [`PARKED_OPTS`]. plans/M18.md
+    /// item I / plans/M19.md item D: a `[T; N]` index whose index is an
+    /// integer literal proved in range lowers to `Project`/`SetField`
+    /// instead of `IndexGet`/`IndexSet`, dropping the runtime bounds
+    /// check. Not in `RELEASE_OPTS`.
+    BoundsElide,
     NarrowImm,
     /// Item B: one `ADR` where an `ADRP`+`ADD` pair stood.
     AdrAddressing,
@@ -85,8 +95,8 @@ pub enum OptId {
 /// Fixed release order. Add opts here — nowhere else.
 ///
 /// Order is part of the product (decision 1423): `NarrowImm` first —
-/// `BoundsElide` used to precede it and was deleted by decision 1970 —
-/// then item B's `AdrAddressing`, then item C's three in the
+/// `BoundsElide` used to precede it and is now parked ([`PARKED_OPTS`],
+/// decisions 1970/1911) — then item B's `AdrAddressing`, then item C's three in the
 /// order their transforms compose — `WideImmForms` after `MaskCheck`
 /// because `MaskCheck` deletes most of the constant materializations
 /// `WideImmForms` would otherwise shorten, and the gate is run in this
@@ -129,7 +139,10 @@ pub enum OptId {
 /// **There is no `Inline` id.** The ladder's 2a was built and measured
 /// and it lost on both words and cycles in every framing it was asked in
 /// (decision 1935, `mwir_opt.rs`'s module doc and
-/// plans/codegen-pareto-2-J.md). Losers are deleted.
+/// plans/codegen-pareto-2-J.md).
+///
+/// **A refused opt is not here and is not gone either** — it is in
+/// [`PARKED_OPTS`].
 pub const RELEASE_OPTS: &[OptId] = &[
     OptId::ConstProp,
     OptId::Gvn,
@@ -146,9 +159,83 @@ pub const RELEASE_OPTS: &[OptId] = &[
     OptId::TailCalls,
 ];
 
+/// **Refused, kept, disabled** (CLAUDE.md 2026-07-31; decision 1911).
+///
+/// An opt here is not shipped and not deleted. It stays wired to its own
+/// knob, so `apply_opts(&[.., id, ..])` still turns it on, and it is held
+/// to `diff-eval` like any other transform — a parked opt that has rotted
+/// into a miscompile is not parked, it is a trap. Nothing in the product
+/// reaches it: no `CompileMode` names it and it is absent from
+/// `RELEASE_OPTS`, so its TLS knob defaults off.
+///
+/// Each entry carries the three things the doctrine requires — the
+/// measurement that refused it, the mechanism, and the named workload or
+/// capability that would make it worth re-asking.
+///
+/// ## `BoundsElide` — literal-index bounds-check elision
+///
+/// **The measurement (item H, re-verified by item L, decision 1970).**
+/// Byte-identical to `dev` on all four programs the appliance ships:
+/// same proxy cycles, same emitted words, same hot text, on
+/// `--stage=asm`, `--stage=cost` and `--stage=image` for
+/// `cost-product-{actors,appliance,blk,receipt}`. Its entire measured
+/// effect was six microbenchmarks, the largest of which
+/// (`cost-bounds-elide`, 1839 → 314 proxy cycles) was written for it.
+/// M20's evidence block had credited it with 43.2 % of release's cycle
+/// win; that credit came from fixtures, and the ∀ gate scored it `veto`
+/// on the product tier — the only `veto` row that set has ever carried.
+///
+/// **The mechanism.** The transform fires only on an index that is an
+/// integer *literal*, syntactically, at the point of the index. The
+/// appliance's code indexes with loop variables, actor ids and field
+/// reads, not with `a[3]`; and where a literal index does occur it is
+/// usually a struct-shaped access that never became an array in the
+/// first place. So the opt's precondition is a property of *fixture*
+/// code, and widening the corpus to programs nobody wrote for the gate
+/// took its measured effect to exactly zero. It is decision 1716's
+/// self-selection failure, caught by exactly the widening item H exists
+/// to do.
+///
+/// **The named condition for re-asking it.** A shipped program with a
+/// tight indexed loop over a fixed-size array whose indices are *proved
+/// constants at lowering time* — either because they are written as
+/// literals, or because a constant-propagating pass has made them so.
+/// Item M's tile compositor (`tests/golden/boot-tile-compositor`,
+/// scored as `cost-product-compositor`) is the first program in this
+/// repo with that shape: tight loops over `[u32; 128]` tile buffers.
+/// Item N measured it there — see plans/codegen-pareto-2-N.md for the
+/// number. Re-ask when either (a) that measurement turns positive on the
+/// compositor or a successor compute title, or (b) `ConstProp` grows the
+/// capability to *rewrite* a folded index into an `Int` literal in MWIR,
+/// which is what would give this transform, whose precondition is
+/// syntactic, a source of customers that is not the programmer's typing.
+///
+/// Un-parking is a human decision, and it needs the ∀ product-tier gate
+/// green — not a microbenchmark.
+pub const PARKED_OPTS: &[OptId] = &[OptId::BoundsElide];
+
+/// Every id the compiler knows, shipped then parked. Both lists in one
+/// place so a caller that means "all of them" cannot pick up only the
+/// shipped half.
+pub fn all_opts() -> Vec<OptId> {
+    RELEASE_OPTS.iter().chain(PARKED_OPTS).copied().collect()
+}
+
+/// An id by its `Debug` name, for the one caller that takes an opt name
+/// from a command line (`cargo xtask diff-eval --with-opt <Name>`,
+/// decision 1913). Derived from [`all_opts`] rather than a second
+/// hand-written table, so a new id is spellable the day it exists and a
+/// removed one stops being spellable the day it does not.
+pub fn opt_by_name(name: &str) -> Option<OptId> {
+    all_opts().into_iter().find(|id| format!("{id:?}") == name)
+}
+
 /// Enable exactly the named opts (decision 1452). Product modes go
 /// through [`apply_mode`]; tests and candidate A/B use this directly.
+/// A [`PARKED_OPTS`] id may be named here and it will fire — that is
+/// what keeps a park honest.
 pub fn apply_opts(opts: &[OptId]) {
+    crate::lower::set_bounds_elide(opts.contains(&OptId::BoundsElide));
     crate::mwir_opt::set_const_prop(opts.contains(&OptId::ConstProp));
     crate::mwir_opt::set_gvn(opts.contains(&OptId::Gvn));
     crate::mwir_opt::set_dce(opts.contains(&OptId::Dce));
@@ -181,9 +268,11 @@ mod tests {
     };
     /// Every knob `apply_opts` drives, read back. Written as one list so a
     /// new `OptId` whose knob is never wired reads as a failure here
-    /// rather than as a silently inert entry in `RELEASE_OPTS`.
+    /// rather than as a silently inert entry in `RELEASE_OPTS` — or, for
+    /// a [`PARKED_OPTS`] id, as a park that cannot actually be entered.
     fn live_knobs() -> Vec<(OptId, bool)> {
         vec![
+            (OptId::BoundsElide, crate::lower::bounds_elide()),
             (OptId::ConstProp, crate::mwir_opt::const_prop()),
             (OptId::Gvn, crate::mwir_opt::gvn()),
             (OptId::Dce, crate::mwir_opt::dce()),
@@ -203,7 +292,11 @@ mod tests {
     #[test]
     fn dev_disables_every_opt() {
         apply_mode(CompileMode::Release);
-        assert!(live_knobs().iter().all(|(_, on)| *on));
+        assert!(
+            live_knobs()
+                .iter()
+                .all(|(id, on)| *on == RELEASE_OPTS.contains(id))
+        );
 
         apply_mode(CompileMode::Dev);
         for (id, on) in live_knobs() {
@@ -233,12 +326,72 @@ mod tests {
         }
     }
 
+    /// **Every id is shipped or parked, never both and never neither**
+    /// (decision 1911). `live_knobs` is the exhaustive list of ids, so
+    /// this is also what catches an id added to `OptId` and to no list:
+    /// a parked opt is a member of the tree with a reason attached, and
+    /// an id in neither list is just an unreachable knob.
+    #[test]
+    fn every_opt_id_is_either_shipped_or_parked() {
+        for (id, _) in live_knobs() {
+            let shipped = RELEASE_OPTS.contains(&id);
+            let parked = PARKED_OPTS.contains(&id);
+            assert!(
+                shipped != parked,
+                "{id:?} is {} — every id belongs to exactly one of \
+                 RELEASE_OPTS and PARKED_OPTS",
+                if shipped {
+                    "in both lists"
+                } else {
+                    "in neither list"
+                }
+            );
+        }
+        assert_eq!(
+            live_knobs().len(),
+            RELEASE_OPTS.len() + PARKED_OPTS.len(),
+            "an id in a list has no knob in `live_knobs`"
+        );
+        assert!(
+            PARKED_OPTS.contains(&OptId::BoundsElide),
+            "`BoundsElide` is parked, not deleted (decision 1911): item H \
+             measured it byte-identical to `dev` on all four product \
+             programs, and CLAUDE.md's 2026-07-31 rule keeps a refused opt \
+             in the tree with its refusal, its mechanism and its re-ask \
+             condition attached"
+        );
+        assert!(!RELEASE_OPTS.contains(&OptId::BoundsElide));
+    }
+
+    /// A parked opt whose knob is dead is not parked, it is broken. The
+    /// product never names it, so this is the only thing standing
+    /// between `PARKED_OPTS` and a comment.
+    #[test]
+    fn a_parked_opt_can_still_be_switched_on() {
+        for &id in PARKED_OPTS {
+            apply_mode(CompileMode::Release);
+            assert!(
+                live_knobs().iter().all(|(other, on)| !*on || *other != id),
+                "{id:?} is parked but `Release` enables it"
+            );
+            apply_opts(&[id]);
+            assert!(
+                live_knobs().iter().any(|(other, on)| *other == id && *on),
+                "{id:?} is parked and its knob does not respond to \
+                 `apply_opts` — a park with a dead knob cannot be \
+                 diff-eval'd and rots into a miscompile"
+            );
+        }
+        apply_mode(CompileMode::Release);
+    }
+
     /// Every `OptId` reaches exactly one knob, and no other. A knob that
     /// is never set by its own id is an opt the ∀ gate would rank at
-    /// identity while believing it measured something.
+    /// identity while believing it measured something. Parked ids are
+    /// included: their knobs are held to the same standard.
     #[test]
     fn each_opt_id_drives_exactly_its_own_knob() {
-        for &id in RELEASE_OPTS {
+        for &id in RELEASE_OPTS.iter().chain(PARKED_OPTS) {
             apply_opts(&[id]);
             for (other, on) in live_knobs() {
                 assert_eq!(on, other == id, "enabling {id:?} also moved {other:?}");

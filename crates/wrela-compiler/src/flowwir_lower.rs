@@ -581,6 +581,28 @@ fn resolve_callee_fn<'p>(
     }
 }
 
+/// The async lowerer's copy of the parked `BoundsElide` transform
+/// (plans/M18.md item I; parked by decision 1911) — proved literal index
+/// on `[T; N]` elides to `Project`/`SetField` when
+/// `crate::lower::bounds_elide()` is on. It is **off** on every product
+/// path, so this returns `Ok(None)` there; the two lowerers must agree
+/// under the opt as well as without it. Cost instrumentation is
+/// always-on (freeze 1408) — this gate flips emission only.
+fn literal_array_index_elide(idx_expr: &TypedExpr, len: usize) -> Result<Option<usize>, FlowError> {
+    if !crate::lower::bounds_elide() {
+        return Ok(None);
+    }
+    let TypedExprKind::Int(text) = &idx_expr.kind else {
+        return Ok(None);
+    };
+    let raw = value::parse_int_literal(text)
+        .ok_or_else(|| FlowError::internal("invalid integer literal text"))?;
+    let Ok(i) = usize::try_from(raw) else {
+        return Ok(None);
+    };
+    if i < len { Ok(Some(i)) } else { Ok(None) }
+}
+
 fn eval_array_len(ty: &Type) -> Result<usize, FlowError> {
     match ty {
         Type::Array(_, len_expr) => {
@@ -2254,15 +2276,24 @@ fn lower_place_write(
             }
             let (base_temp, needs_writeback) = materialize_place_mut(base, b, env)?;
             let len = eval_array_len(&base.ty)?;
-            // Decision 1970: every `[T; N]` index store keeps its runtime
-            // bounds check (mirrors sync `lower.rs`).
-            let idx_temp = lower_expr_flat(idx_expr, b, env)?;
-            b.emit_mwir(Inst::IndexSet {
-                base: base_temp,
-                index: idx_temp,
-                value,
-                len,
-            });
+            // Parked `BoundsElide` (decision 1911), mirroring sync
+            // `lower.rs`: off by default, so the store keeps `IndexSet`
+            // and its runtime bounds check.
+            if let Some(i) = literal_array_index_elide(idx_expr, len)? {
+                b.emit_mwir(Inst::SetField {
+                    base: base_temp,
+                    index: i,
+                    value,
+                });
+            } else {
+                let idx_temp = lower_expr_flat(idx_expr, b, env)?;
+                b.emit_mwir(Inst::IndexSet {
+                    base: base_temp,
+                    index: idx_temp,
+                    value,
+                    len,
+                });
+            }
             if needs_writeback {
                 lower_place_write(base, base_temp, b, env)?;
             }
@@ -2662,9 +2693,19 @@ fn lower_expr_flat(e: &TypedExpr, b: &mut FlowBuilder, env: &mut FEnv) -> Result
                 });
                 return Ok(dst);
             }
-            // Decision 1970: every `[T; N]` index keeps its runtime bounds
-            // check (mirrors sync `lower.rs`).
+            // Parked `BoundsElide` (decision 1911), mirroring sync
+            // `lower.rs`: off by default, so the read keeps `IndexGet`
+            // and its runtime bounds check.
             let len = eval_array_len(&base.ty)?;
+            if let Some(i) = literal_array_index_elide(idx_expr, len)? {
+                let dst = b.fresh(e.ty.clone());
+                b.emit_mwir(Inst::Project {
+                    dst,
+                    base: base_temp,
+                    index: i,
+                });
+                return Ok(dst);
+            }
             let idx_temp = lower_expr_flat(idx_expr, b, env)?;
             let dst = b.fresh(e.ty.clone());
             b.emit_mwir(Inst::IndexGet {

@@ -173,6 +173,7 @@
 //! one — recorded in the session report as the honest finding it is,
 //! not papered over with an invented case.
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::eval::value::{self, Value};
@@ -190,13 +191,34 @@ use crate::sema::types::{Type, TypeArg};
 use crate::syntax::ast::{self, AccessMode, BinOp};
 
 // `BoundsElide` — proved literal-index bounds elision for `[T; N]`
-// (plans/M18.md item I, plans/M19.md item D) — was **deleted** by
-// plans/codegen-pareto-2.md item L, decision 1970. It was byte-identical
-// to `dev` on all four programs the appliance ships; its whole measured
-// effect was six microbenchmarks. Every `[T; N]` index, literal or not,
-// now lowers to `IndexGet` / `IndexSet` and keeps its runtime bounds
-// check in both `dev` and `release`. The **check** is not an
-// optimization and was never the thing deleted.
+// (plans/M18.md item I / freeze 1307, plans/M19.md item D / 1440–1449) —
+// is **parked**, not deleted (decision 1911; CLAUDE.md 2026-07-31). It
+// was deleted by plans/codegen-pareto-2.md item L under the old "losers
+// are deleted" rule and restored here under the new one: it stays in
+// `OptId` and out of `RELEASE_OPTS`, so **the default of this knob is
+// `false`** and every `[T; N]` index, literal or not, keeps its runtime
+// bounds check in `dev` and `release` alike. The refusal, the mechanism
+// and the condition for re-asking it live on `opts::PARKED_OPTS`.
+//
+// Nothing but `opts::apply_opts(&[.., OptId::BoundsElide, ..])` turns it
+// on. Cost tags / scoreboard stay always-on regardless (freeze 1408) —
+// opts flip emission only.
+thread_local! {
+    static BOUNDS_ELIDE: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Enable/disable literal `[T; N]` index → `Project`/`SetField` elision
+/// for the current thread. Prefer `opts::apply_opts`; this is the TLS
+/// primitive it sets. Default **off** — the opt is parked (decision
+/// 1911), so no product path reaches it.
+pub fn set_bounds_elide(enabled: bool) {
+    BOUNDS_ELIDE.with(|c| c.set(enabled));
+}
+
+/// Whether literal `[T; N]` index bounds elision is enabled.
+pub(crate) fn bounds_elide() -> bool {
+    BOUNDS_ELIDE.with(|c| c.get())
+}
 
 /// The one lowering diagnostic: printed by `bin/wrela.rs` as
 /// `error[unimplemented]: <message>`, matching this compiler's existing
@@ -2416,15 +2438,25 @@ fn lower_place_write(
             }
             let (base_temp, needs_writeback) = materialize_place_mut(base, b, env)?;
             let len = eval_array_len(&base.ty)?;
-            // Decision 1970: every `[T; N]` index store keeps its runtime
-            // bounds check. The literal-index → `SetField` elision is gone.
-            let idx_temp = lower_expr(idx_expr, b, env)?;
-            b.emit(Inst::IndexSet {
-                base: base_temp,
-                index: idx_temp,
-                value,
-                len,
-            });
+            // Parked `BoundsElide` (decision 1911): with the opt off —
+            // which is every product path — a literal index store keeps
+            // `IndexSet` and its runtime bounds check. With it on, a
+            // proved in-range literal index becomes `SetField`.
+            if let Some(i) = literal_array_index_elide(idx_expr, len)? {
+                b.emit(Inst::SetField {
+                    base: base_temp,
+                    index: i,
+                    value,
+                });
+            } else {
+                let idx_temp = lower_expr(idx_expr, b, env)?;
+                b.emit(Inst::IndexSet {
+                    base: base_temp,
+                    index: idx_temp,
+                    value,
+                    len,
+                });
+            }
             if needs_writeback {
                 lower_place_write(base, base_temp, b, env)?;
             }
@@ -3168,9 +3200,20 @@ fn lower_expr(expr: &TypedExpr, b: &mut FnBuilder, env: &mut LEnv) -> Result<Tem
                 });
                 return Ok(dst);
             }
-            // Decision 1970: every `[T; N]` index keeps IndexGet and its
-            // runtime bounds check, literal index or not.
+            // Parked `BoundsElide` (decision 1911): off by default, so a
+            // literal index keeps `IndexGet` and its runtime bounds
+            // check. On, a proved in-range literal index becomes
+            // `Project` (same shape as `Bytes[N]` above).
             let len = eval_array_len(&base.ty)?;
+            if let Some(i) = literal_array_index_elide(idx_expr, len)? {
+                let dst = b.fresh(expr.ty.clone());
+                b.emit(Inst::Project {
+                    dst,
+                    base: base_temp,
+                    index: i,
+                });
+                return Ok(dst);
+            }
             let idx_temp = lower_expr(idx_expr, b, env)?;
             let dst = b.fresh(expr.ty.clone());
             b.emit(Inst::IndexGet {
@@ -4923,6 +4966,31 @@ fn lower_array_map_take(
     Ok(result)
 }
 
+/// The parked `BoundsElide` transform itself (plans/M18.md item I;
+/// parked by decision 1911): when the knob is on and `idx_expr` is an
+/// `Int` literal with `0 <= i < len`, return `Some(i)` so the caller can
+/// emit `Project` / `SetField` instead of `IndexGet` / `IndexSet`.
+///
+/// Returns `Ok(None)` unconditionally while the opt is parked, which is
+/// every path that does not name it in `apply_opts`.
+fn literal_array_index_elide(
+    idx_expr: &TypedExpr,
+    len: usize,
+) -> Result<Option<usize>, LowerError> {
+    if !bounds_elide() {
+        return Ok(None);
+    }
+    let TypedExprKind::Int(text) = &idx_expr.kind else {
+        return Ok(None);
+    };
+    let raw = value::parse_int_literal(text)
+        .ok_or_else(|| LowerError::internal("invalid integer literal text"))?;
+    let Ok(i) = usize::try_from(raw) else {
+        return Ok(None);
+    };
+    if i < len { Ok(Some(i)) } else { Ok(None) }
+}
+
 /// `base`'s own array length, resolved at lowering time — a literal, or
 /// a plain module `const` reference (module doc's own fail-closed
 /// enumeration covers anything else, and `Bytes`).
@@ -5051,7 +5119,7 @@ mod builder_tests {
 #[cfg(test)]
 mod integration_tests {
     use super::*;
-    use crate::opts::{CompileMode, apply_mode};
+    use crate::opts::{CompileMode, OptId, apply_mode, apply_opts};
     use crate::sema;
     use crate::syntax::ast::Span;
     use crate::syntax::{lexer, parser};
@@ -5245,11 +5313,12 @@ pub fn add_one(x: u64) -> u64:
         assert!(matches!(f.body.last(), Some(Inst::Return { .. })));
     }
 
-    /// Decision 1970 deleted `BoundsElide`, **not** the bounds check.
-    /// A literal `[T; N]` index now keeps `IndexGet` / `IndexSet` — and
-    /// therefore the runtime check `emit_index_addr` builds from `len` —
-    /// in *both* modes. `Project` / `SetField` on an array must never
-    /// reappear: that shape was the elision.
+    /// `BoundsElide` is parked, not shipped (decisions 1970/1911), and
+    /// the **check** was never the thing refused. A literal `[T; N]`
+    /// index keeps `IndexGet` / `IndexSet` — and therefore the runtime
+    /// check `emit_index_addr` builds from `len` — in *both* product
+    /// modes. `Project` / `SetField` on an array in `Release` or `Dev`
+    /// would mean the parked opt had leaked into the product.
     #[test]
     fn literal_fixed_array_index_keeps_its_bounds_check_in_both_modes() {
         let get = typed_program(
@@ -5296,10 +5365,88 @@ pub fn write_zero(mut a: [u64; 4], v: u64):
             );
             assert!(
                 f.body.iter().all(|i| !matches!(i, Inst::SetField { .. })),
-                "{mode:?}: the elision to SetField is deleted, got {:?}",
+                "{mode:?}: no product mode may elide to SetField, got {:?}",
                 f.body
             );
         }
+        apply_mode(CompileMode::Release);
+    }
+
+    /// The parked transform, exercised (decision 1911). This is the
+    /// oracle that stops `PARKED_OPTS` from decaying into a comment: with
+    /// the opt explicitly named, a proved-in-range literal index really
+    /// does become `Project` / `SetField`, in the same shape item H
+    /// measured. If this stops firing, the thing in the tree is no
+    /// longer the opt that was refused, and the park is a fiction.
+    #[test]
+    fn parked_bounds_elide_still_elides_when_named() {
+        let get = typed_program(
+            "module examples.lower_bounds_elide_parked
+
+pub fn at_zero(a: [u64; 4]) -> u64:
+    return a[0]
+",
+        );
+        let set = typed_program(
+            "module examples.lower_bounds_elide_parked_set
+
+pub fn write_zero(mut a: [u64; 4], v: u64):
+    a[0] = v
+",
+        );
+
+        apply_opts(&[OptId::BoundsElide]);
+
+        let mwir = lower_program(&get).expect("must lower cleanly");
+        let f = mwir.fns.get("at_zero").expect("fn lowered");
+        assert!(
+            f.body
+                .iter()
+                .any(|i| matches!(i, Inst::Project { index: 0, .. })),
+            "parked opt on: expected Project index=0, got {:?}",
+            f.body
+        );
+        assert!(
+            f.body.iter().all(|i| !matches!(i, Inst::IndexGet { .. })),
+            "parked opt on: must not emit IndexGet, got {:?}",
+            f.body
+        );
+
+        let mwir = lower_program(&set).expect("must lower cleanly");
+        let f = mwir.fns.get("write_zero").expect("fn lowered");
+        assert!(
+            f.body
+                .iter()
+                .any(|i| matches!(i, Inst::SetField { index: 0, .. })),
+            "parked opt on: expected SetField index=0, got {:?}",
+            f.body
+        );
+        assert!(
+            f.body.iter().all(|i| !matches!(i, Inst::IndexSet { .. })),
+            "parked opt on: must not emit IndexSet, got {:?}",
+            f.body
+        );
+
+        // An out-of-range literal is not "proved in range" and keeps its
+        // check even with the opt on — the elision was never a licence to
+        // trust the programmer's arithmetic.
+        let oob = typed_program(
+            "module examples.lower_bounds_elide_parked_oob
+
+pub fn at_nine(a: [u64; 4]) -> u64:
+    return a[9]
+",
+        );
+        let mwir = lower_program(&oob).expect("must lower cleanly");
+        let f = mwir.fns.get("at_nine").expect("fn lowered");
+        assert!(
+            f.body
+                .iter()
+                .any(|i| matches!(i, Inst::IndexGet { len: 4, .. })),
+            "parked opt on: an out-of-range literal keeps IndexGet, got {:?}",
+            f.body
+        );
+
         apply_mode(CompileMode::Release);
     }
 
