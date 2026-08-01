@@ -51,7 +51,8 @@ fn item_m_measure() {
         for c in &prod {
             let d = report_path_under_opts(&c.input, &[]);
             let o = report_path_under_opts(&c.input, &[opt]);
-            let same = d.total_proxy_cycles == o.total_proxy_cycles && d.total_words == o.total_words;
+            let same =
+                d.total_proxy_cycles == o.total_proxy_cycles && d.total_words == o.total_words;
             print!(
                 " {:>22}",
                 format!(
@@ -67,13 +68,19 @@ fn item_m_measure() {
     print!("{:<16}", "dev");
     for c in &prod {
         let d = report_path_under_opts(&c.input, &[]);
-        print!(" {:>22}", format!("{}/{}", d.total_proxy_cycles, d.total_words));
+        print!(
+            " {:>22}",
+            format!("{}/{}", d.total_proxy_cycles, d.total_words)
+        );
     }
     println!();
     print!("{:<16}", "release");
     for c in &prod {
         let r = report_path_under_opts(&c.input, RELEASE_OPTS);
-        print!(" {:>22}", format!("{}/{}", r.total_proxy_cycles, r.total_words));
+        print!(
+            " {:>22}",
+            format!("{}/{}", r.total_proxy_cycles, r.total_words)
+        );
     }
     println!();
 
@@ -128,7 +135,11 @@ fn item_m_bounds_elide_alone_over_box() {
     ] {
         let r = compare_opt_lists_over_box_for_case(&[], &[OptId::BoundsElide], case);
         match r {
-            Ok(cmp) => println!("{case}: BoundsElide wins={} reasons={:?}", cmp.wins(), cmp.reasons),
+            Ok(cmp) => println!(
+                "{case}: BoundsElide wins={} reasons={:?}",
+                cmp.wins(),
+                cmp.reasons
+            ),
             Err(e) => println!("{case}: ERR {e}"),
         }
     }
@@ -139,7 +150,8 @@ fn item_m_bounds_elide_alone_over_box() {
 fn item_m_product_tier_pins() {
     use wrela_compiler::opts::win::compare_opt_lists_over_box_in_tier;
     for &opt in RELEASE_OPTS {
-        let cmp = compare_opt_lists_over_box_in_tier(&[], &[opt], CostTier::Product).expect("sweep");
+        let cmp =
+            compare_opt_lists_over_box_in_tier(&[], &[opt], CostTier::Product).expect("sweep");
         println!(
             "{opt:?}: product={} points={} reasons={:?}",
             if cmp.wins() { "wins" } else { "veto" },

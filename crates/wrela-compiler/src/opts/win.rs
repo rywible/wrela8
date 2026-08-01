@@ -4230,6 +4230,7 @@ mod tests {
                 "cost-product-actors",
                 "cost-product-appliance",
                 "cost-product-blk",
+                "cost-product-compositor",
                 "cost-product-receipt",
             ],
             "the image-bearing cases changed"
@@ -4312,13 +4313,31 @@ mod tests {
                 c.name
             );
             let ships = c.scope == TextScope::Image;
+            // **It stopped being true, and it is reported here rather than
+            // absorbed** (plans/codegen-pareto-2.md item M, decision 1907).
+            // Until the compositor joined the corpus, every image in this
+            // tree overflowed its 64 KiB L1I, and that fact is what made
+            // item D's premise look load-bearing and every code-growing opt
+            // look unaffordable. `cost-product-compositor` — a real
+            // compute workload rather than the full appliance with its
+            // whole driver and actor set — lands at **47 744 B of hot text
+            // against 65 536, charge 0**, with roughly 17 KB of headroom.
+            //
+            // The consequence is not cosmetic: an inliner and every other
+            // code-growing candidate on the ladder have room on *this*
+            // shape of program and do not on the appliance. So the
+            // invariant is now per-case and named, not universal.
+            const FITS_IN_L1I: &[&str] = &["cost-product-compositor"];
+            let expected_over = !FITS_IN_L1I.contains(&c.name.as_str());
             for b in c.baseline_budgets.iter().chain(c.candidate_budgets.iter()) {
                 if ships {
-                    assert!(
+                    assert_eq!(
                         !b.within_budget(),
-                        "{}: every image this tree ships is over its 64 KiB L1I; if \
-                         that stops being true it is the biggest result on this plan \
-                         and must be reported, not absorbed: {}",
+                        expected_over,
+                        "{}: this case's L1I verdict moved. The images this tree \
+                         ships are over their 64 KiB L1I except those named in \
+                         FITS_IN_L1I; a move in either direction is a result to \
+                         report, not to absorb: {}",
                         c.name,
                         b.render()
                     );
