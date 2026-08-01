@@ -19,15 +19,27 @@
 //!   the tree carries a block-grain sidecar
 //!   (`tests/golden/boot-actors/lane2-freq.txt`), so even a gate reading
 //!   the measured column could see this pass move at most one case.
-//! - **What would make it worth re-asking.** Two things, both concrete.
-//!   (1) A **block-grain sidecar for a program with L1I headroom**: item M's
-//!   `boot-tile-compositor` is the first image in this tree whose hot text
-//!   (47 744 B) sits meaningfully under the 65 536 B L1I, so density is
-//!   physically able to matter there — but `cargo xtask gen-lane2-freq
-//!   boot-tile-compositor` has never been run, so no cold block is *known*
-//!   and this pass is the identity on it (decision 1946). (2) **Async block
-//!   layout**: `plans/codegen-pareto-D.md` §8.4 measured 36 % of hot blocks
-//!   in async fns, which this pass does not reach at all (decision 1756).
+//! - **What would make it worth re-asking — and it has already half
+//!   happened.** Item M's `boot-tile-compositor` is the first program here
+//!   with L1I headroom (47 744 B of flat hot text in `dev`, 28 480 B in
+//!   `release`, against a 65 536 B L1I). Item O ran `cargo xtask
+//!   gen-lane2-freq boot-tile-compositor` once, off-tree, and measured this
+//!   pass against that sidecar: **measured hot text 28 736 → 26 688 B and
+//!   density charge 63 → 0**, 16 of 32 fns moved, 88 cold blocks sunk, for
+//!   +244 words. On the workload that did not exist when it was refused,
+//!   the pass does exactly what it claims — the opposite of its result on
+//!   `boot-actors`. Two things still block ranking it, and both are the
+//!   ruler's, not the pass's: the ∀ gate reads `HotBlocks::All` (zero slack
+//!   by construction), and that sidecar does **not resolve** against a
+//!   `RELEASE_OPTS` closure at all, because `gen-lane2-freq` measures a
+//!   `dev` image while `--stage=cost` scores a `release` one and item J's
+//!   `Dce` now makes those two partitions disagree (decision 1947). The
+//!   numbers above are therefore taken with `ConstProp`/`Gvn`/`Dce` off,
+//!   which is the only configuration where the bridge resolves.
+//!   `plans/codegen-pareto-2-O.md` has the full run.
+//! - **The other rung, untouched.** `plans/codegen-pareto-D.md` §8.4
+//!   measured 36 % of hot blocks in **async** fns, which this pass does not
+//!   reach at all (decision 1756).
 //!
 //! Wiring it also still re-keys the Lane 2 bridge — see "Why this pass is
 //! not installed on the emission path" below, which is unchanged.
@@ -1499,11 +1511,19 @@ mod tests {
             flat.push((words, budget[0].clone()));
         }
 
-        // **The answer, and it is a null with a named cause.** The pass is
-        // the identity on this program, because the pass reorders on
-        // *measured* coldness and this program has no block-grain sidecar:
-        // `cargo xtask gen-lane2-freq boot-tile-compositor` has never been
-        // run. Not "the pass loses here" — "the pass cannot be asked here".
+        // **The answer, in the tree, is a null with a named cause.** The
+        // pass is the identity on this program, because it reorders on
+        // *measured* coldness and no block-grain sidecar is committed here.
+        //
+        // Item O ran `cargo xtask gen-lane2-freq boot-tile-compositor` once
+        // and measured the pass against the result (decision 1946): hot
+        // text 28 736 → 26 688 B, density charge 63 → 0, 16/32 fns moved,
+        // 88 cold blocks sunk, +244 words. That sidecar is **not**
+        // committed, because it does not resolve against a `RELEASE_OPTS`
+        // closure at all (decision 1947) and because committing it moves
+        // `cost-product-compositor`'s golden. So the tree's answer is the
+        // null below and the real number lives in the findings file — which
+        // is what the assertion's message is for.
         assert!(
             cost::sibling_block_freq_path(&input).is_none(),
             "a `lane2-freq.txt` appeared next to the compositor. That is the named \
