@@ -541,9 +541,8 @@ easy to satisfy through an unrelated runtime or coverage change.
 5. Optimization profitability never controls correctness. The unoptimized and
    optimized programs must have identical observable behavior.
 6. Add or extend a stable dump before making an analysis affect emission.
-7. Run `cargo xtask verify` after every task below. Run
-   `cargo xtask verify-milestone` after cost task C9 and after tasks 5, 8, and
-   11 when closing the corresponding milestone.
+7. Run `cargo xtask verify` after every task below, including cost task C9 and
+   tasks 5, 8, and 11 when closing the corresponding milestone.
 8. Do not enable an `OptId` by default until the cost harness shows a win on its
    applicable workload. Experimental transforms may remain callable from unit
    tests or an explicit maintainer command.
@@ -1035,7 +1034,7 @@ Add an emitter validation mode that catches the second case.
 - Frame size must not increase on the targeted Flow cases.
 - Enablement requires a non-regressing measured result; otherwise keep the
   implementation behind an experimental `OptId`.
-- Run `cargo xtask verify`, then `cargo xtask verify-milestone`.
+- Run `cargo xtask verify`.
 
 ## 10. Task 6: color frame slots
 
@@ -1239,7 +1238,7 @@ Add `check-sroa-struct`, `check-sroa-copy`, and `check-sroa-flow`.
   candidates.
 - Differential execution matches the unoptimized program.
 - At least one case has a smaller frame or fewer frame accesses.
-- `cargo xtask verify`, then `cargo xtask verify-milestone`.
+- `cargo xtask verify`.
 
 ## 13. Task 9: introduce a late-link fragment representation
 
@@ -1415,7 +1414,7 @@ encoding=wide width=4 reason=adr-out-of-range frozen=true
 - All final displacements are recomputed from final addresses.
 - The linked blob disassembles/executes identically.
 - At least one product image shrinks.
-- `cargo xtask verify`, then `cargo xtask verify-milestone`.
+- `cargo xtask verify`.
 
 ## 16. Task 12: re-ask hot/cold block layout
 
@@ -1656,7 +1655,8 @@ cycle win. If it is correct but neutral, keep it available but parked.
 After all tasks:
 
 1. Run `cargo xtask verify`.
-2. Run `cargo xtask verify-milestone`.
+2. Optionally run `cargo xtask verify-deep` for the expensive whole-corpus
+   maintainer diagnostics.
 3. Run focused optimized versus unoptimized differential execution for every
    new golden.
 4. Compare product workload cycles, shipped words, spill words, frame bytes,

@@ -814,7 +814,7 @@ mod tests {
         );
         assert_eq!(
             (words_before, words_after, summary.repairs, regained),
-            (1754, 1754, 0, 0)
+            (1756, 1756, 0, 0)
         );
         assert_eq!(summary.fns_moved, 0);
         assert_eq!(

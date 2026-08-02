@@ -63,14 +63,14 @@ ImageReport v0
   CoreStack core=1 base=0x7fe00000 size=0x100000
   CoreStack core=2 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=54388
+  Section name=code base=0x40500050 size=54392
   Section name=rodata base=0x4050d4c8 size=613
   Section name=abort base=0x4050d730 size=120
   Section name=checkpoint base=0x4050d7a8 size=28
   Section name=rtdata base=0x40540000 size=1792
   Entry base=0x40500000
-  CoreEntry core=1 base=0x4050d454
-  CoreEntry core=2 base=0x4050d48c
+  CoreEntry core=1 base=0x4050d458
+  CoreEntry core=2 base=0x4050d490
   PlacedStatic name=CLOCK type=ClockMmio addr=0x8000000 size=8
   PlacedStatic name=CONSOLE_DATA type=ConsoleDataPage addr=0x40003000 size=16384
   PlacedStatic name=CONSOLE_RING type=ConsoleRingPage addr=0x40001000 size=6672
@@ -166,19 +166,19 @@ ImageReport v0
   Turn fn=cross_core frame=288
   Turns count=3 stride=512 bytes=1536
   Totals actors=2 drivers=0 ready_queue=3 group_arena=0 bytes=1792
-  Cost version=3 scope=linked-image digest=ed181b5abc4dd5d5 total=10223 rank_cycles=10223 schedule_cycles=10223 footprint_cycles=0 executable_words=13654 executable_code_bytes=54616 fetched_text_bytes=163840 rodata_bytes=613 image_bytes=263936 sync_frame_max_bytes=1328 async_frame_total_bytes=224 ghz=2.4
+  Cost version=3 scope=linked-image digest=ed181b5abc4dd5d5 total=10223 rank_cycles=10223 schedule_cycles=10223 footprint_cycles=0 executable_words=13655 executable_code_bytes=54620 fetched_text_bytes=163840 rodata_bytes=613 image_bytes=263936 sync_frame_max_bytes=1328 async_frame_total_bytes=224 ghz=2.4
     Workload name=flat proxy_cycles=10223
     Owner name=app proxy_cycles=516
     Owner name=runtime proxy_cycles=9707
     Owner name=driver proxy_cycles=0
     Core n=0 proxy_cycles=32 max_entry_method_proxy_cycles=10
-    Budget n=0 fetched_text_bytes=54592 executable_code_bytes=54280 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 over_l3_lines=0 text_pages=14 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=3 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0
+    Budget n=0 fetched_text_bytes=54592 executable_code_bytes=54284 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 over_l3_lines=0 text_pages=14 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=3 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0
     Core n=1 proxy_cycles=52 max_entry_method_proxy_cycles=10
-    Budget n=1 fetched_text_bytes=54720 executable_code_bytes=54372 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 over_l3_lines=0 text_pages=14 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=3 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0
+    Budget n=1 fetched_text_bytes=54720 executable_code_bytes=54376 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 over_l3_lines=0 text_pages=14 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=3 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0
     Core n=2 proxy_cycles=20 max_entry_method_proxy_cycles=0
-    Budget n=2 fetched_text_bytes=54528 executable_code_bytes=54220 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 over_l3_lines=0 text_pages=14 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=3 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0
+    Budget n=2 fetched_text_bytes=54528 executable_code_bytes=54224 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 over_l3_lines=0 text_pages=14 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=3 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0
     Shared proxy_cycles=9735
-    Scope name=linked-image executable_words=13654 executable_code_bytes=54616 fetched_text_bytes=163840 image_bytes=263936 rodata_bytes=613 sync_frame_max_bytes=1328 async_frame_total_bytes=224
+    Scope name=linked-image executable_words=13655 executable_code_bytes=54620 fetched_text_bytes=163840 image_bytes=263936 rodata_bytes=613 sync_frame_max_bytes=1328 async_frame_total_bytes=224
   Convention fns=326 frameless=240 tail_calls=2
     Fn key=Idle.init frame=16 residents=2 regs=x1-x2 clobbers=x0-x2,x9-x10,x30-x31 pool=24
     Fn key=Idle.poke frame=16 residents=2 regs=x0 clobbers=x0,x9-x10,x30-x31 pool=24

@@ -93,15 +93,15 @@ fn build_and_sign_vmm_uncached() -> Result<PathBuf, String> {
     Ok(bin)
 }
 
-pub(crate) fn test_wrela_vmm_hvf_signed() -> Result<(), String> {
+fn build_signed_vmm_test_executables() -> Result<Vec<PathBuf>, String> {
     let output = Command::new("cargo")
         .current_dir(root())
-        .args(["test", "-p", "wrela-vmm", "--no-run"])
+        .args(["test", "-p", "wrela-vmm", "--lib", "--no-run"])
         .output()
-        .map_err(|e| format!("cargo test -p wrela-vmm --no-run: {e}"))?;
+        .map_err(|e| format!("cargo test -p wrela-vmm --lib --no-run: {e}"))?;
     if !output.status.success() {
         return Err(format!(
-            "cargo test -p wrela-vmm --no-run failed:\n{}",
+            "cargo test -p wrela-vmm --lib --no-run failed:\n{}",
             String::from_utf8_lossy(&output.stderr)
         ));
     }
@@ -121,10 +121,9 @@ pub(crate) fn test_wrela_vmm_hvf_signed() -> Result<(), String> {
     }
     if executables.is_empty() {
         return Err(
-            "cargo test -p wrela-vmm --no-run: found no test executable(s) to sign".to_string(),
+            "cargo test -p wrela-vmm --lib --no-run: found no test executable to sign".to_string(),
         );
     }
-    let mut total = 0usize;
     for exe in &executables {
         if cfg!(target_os = "macos") {
             let mut cmd = Command::new("codesign");
@@ -133,21 +132,57 @@ pub(crate) fn test_wrela_vmm_hvf_signed() -> Result<(), String> {
             cmd.arg(exe);
             run(&mut cmd, "codesign wrela-vmm test binary")?;
         }
-        let listed = Command::new(exe)
-            .args(["--ignored", "--list"])
-            .output()
-            .map_err(|e| format!("list ignored tests in {}: {e}", exe.display()))?;
-        if !listed.status.success() {
-            return Err(format!(
-                "list ignored tests in {} failed:\n{}",
-                exe.display(),
-                String::from_utf8_lossy(&listed.stderr)
-            ));
+    }
+    Ok(executables)
+}
+
+fn ignored_tests(exe: &Path) -> Result<Vec<String>, String> {
+    let listed = Command::new(exe)
+        .args(["--ignored", "--list"])
+        .output()
+        .map_err(|e| format!("list ignored tests in {}: {e}", exe.display()))?;
+    if !listed.status.success() {
+        return Err(format!(
+            "list ignored tests in {} failed:\n{}",
+            exe.display(),
+            String::from_utf8_lossy(&listed.stderr)
+        ));
+    }
+    Ok(String::from_utf8_lossy(&listed.stdout)
+        .lines()
+        .filter_map(|line| line.strip_suffix(": test").map(str::to_string))
+        .collect())
+}
+
+pub(crate) fn test_wrela_vmm_hvf_signed_smoke() -> Result<(), String> {
+    const TEST: &str =
+        "tests::park_and_resume_fifo_second_message_waits_for_the_suspended_turn_over_hvf";
+    let executables = build_signed_vmm_test_executables()?;
+    let mut found = 0usize;
+    for exe in &executables {
+        if !ignored_tests(exe)?.iter().any(|name| name == TEST) {
+            continue;
         }
-        let count = String::from_utf8_lossy(&listed.stdout)
-            .lines()
-            .filter(|line| line.ends_with(": test"))
-            .count();
+        found += 1;
+        run(
+            Command::new(exe).args([TEST, "--ignored", "--exact", "--test-threads=1"]),
+            &format!("run focused HVF test `{TEST}` in {}", exe.display()),
+        )?;
+    }
+    if found != 1 {
+        return Err(format!(
+            "focused HVF test census changed: found `{TEST}` in {found} test executable(s), expected 1"
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn test_wrela_vmm_hvf_signed() -> Result<(), String> {
+    let executables = build_signed_vmm_test_executables()?;
+    let mut total = 0usize;
+    for exe in &executables {
+        let tests = ignored_tests(exe)?;
+        let count = tests.len();
         if count == 0 {
             continue;
         }
@@ -184,7 +219,10 @@ pub(crate) fn default_jobs() -> usize {
     std::thread::available_parallelism().map_or(1, |n| n.get())
 }
 
-pub(crate) const DEFAULT_BOOT_JOBS: usize = 4;
+// Four concurrent HVF guests intermittently starve multicore quiescence long
+// enough to produce a false `quiesce=timeout` transcript. Two keeps the hosts
+// busy without making scheduler contention part of a golden expectation.
+pub(crate) const DEFAULT_BOOT_JOBS: usize = 2;
 pub(crate) const VMM_HVF_TESTS: usize = 24;
 
 impl Default for GoldenOpts {

@@ -747,7 +747,7 @@ pub fn relax_linked_immediates(
                 .min()
                 .unwrap_or(0),
         );
-    refresh_section_padding(&mut out);
+    refresh_section_padding(&mut out)?;
     out.validate()?;
     Ok((out, dump))
 }
@@ -951,27 +951,66 @@ fn change_rodata_site(
     Ok(())
 }
 
-fn refresh_section_padding(linked: &mut crate::linked::LinkedProgram) {
+fn section_payload_bytes(
+    linked: &crate::linked::LinkedProgram,
+    section_id: usize,
+) -> Result<u64, String> {
+    let section = linked
+        .sections
+        .get(section_id)
+        .ok_or_else(|| format!("missing linked section {section_id}"))?;
+    if !section.executable {
+        return Ok(section.raw_bytes.len() as u64);
+    }
+    linked
+        .fns
+        .values()
+        .filter(|f| f.section == section_id)
+        .try_fold(0u64, |words, f| {
+            words
+                .checked_add(f.code.len() as u64)
+                .ok_or_else(|| "linked executable size overflow".to_string())
+        })?
+        .checked_mul(4)
+        .ok_or_else(|| "linked executable size overflow".to_string())
+}
+
+fn refresh_section_padding(linked: &mut crate::linked::LinkedProgram) -> Result<(), String> {
+    let payloads: Vec<u64> = (0..linked.sections.len())
+        .map(|section_id| section_payload_bytes(linked, section_id))
+        .collect::<Result<_, _>>()?;
     let mut previous_end = None;
-    for section in &mut linked.sections {
+    for (section, payload) in linked.sections.iter_mut().zip(payloads) {
         section.padding_before = previous_end
             .map(|end| section.byte_address.saturating_sub(end))
             .unwrap_or(0);
-        previous_end = Some(section.end());
+        previous_end = Some(
+            section
+                .byte_address
+                .checked_add(payload)
+                .ok_or_else(|| "linked section address overflow".to_string())?,
+        );
     }
+    Ok(())
 }
 
-fn repack_linked_sections(linked: &mut crate::linked::LinkedProgram) {
+fn repack_linked_sections(linked: &mut crate::linked::LinkedProgram) -> Result<(), String> {
+    let payloads: Vec<u64> = (0..linked.sections.len())
+        .map(|section_id| section_payload_bytes(linked, section_id))
+        .collect::<Result<_, _>>()?;
     let mut cursor = linked
         .sections
         .first()
         .map(|section| section.byte_address)
         .unwrap_or(0);
     let mut fixed = false;
-    for section in &mut linked.sections {
+    for (section, payload) in linked.sections.iter_mut().zip(payloads) {
         if section.name == "rtdata" {
             fixed = true;
-            cursor = section.end();
+            cursor = section
+                .byte_address
+                .checked_add(payload)
+                .ok_or_else(|| "linked section address overflow".to_string())?;
             continue;
         }
         if fixed {
@@ -979,12 +1018,15 @@ fn repack_linked_sections(linked: &mut crate::linked::LinkedProgram) {
         }
         let alignment = if section.executable { 4 } else { 8 };
         section.byte_address = cursor.div_ceil(alignment) * alignment;
-        cursor = section.end();
+        cursor = section
+            .byte_address
+            .checked_add(payload)
+            .ok_or_else(|| "linked section address overflow".to_string())?;
     }
-    refresh_section_padding(linked);
+    refresh_section_padding(linked)
 }
 
-fn rebuild_linked_executable_sections(
+fn relayout_linked_executable_sections(
     linked: &mut crate::linked::LinkedProgram,
 ) -> Result<(), String> {
     for section_id in 0..linked.sections.len() {
@@ -1003,7 +1045,6 @@ fn rebuild_linked_executable_sections(
             continue;
         }
         let mut cursor = section_address;
-        let mut code = Vec::new();
         for key in keys {
             let f = linked
                 .fns
@@ -1013,14 +1054,45 @@ fn rebuild_linked_executable_sections(
             cursor = cursor
                 .checked_add((f.code.len() as u64) * 4)
                 .ok_or_else(|| "linked executable address overflow".to_string())?;
-            code.extend(f.code.iter().cloned());
         }
-        linked.sections[section_id].code = code;
+    }
+    Ok(())
+}
+
+fn rebuild_linked_executable_sections(
+    linked: &mut crate::linked::LinkedProgram,
+) -> Result<(), String> {
+    relayout_linked_executable_sections(linked)?;
+    for section_id in 0..linked.sections.len() {
+        if !linked.sections[section_id].executable {
+            continue;
+        }
+        let mut keys: Vec<String> = linked
+            .fns
+            .values()
+            .filter(|f| f.section == section_id)
+            .map(|f| f.key.clone())
+            .collect();
+        keys.sort_by_key(|key| (linked.fns[key].byte_address, key.clone()));
+        linked.sections[section_id].code = keys
+            .iter()
+            .flat_map(|key| linked.fns[key].code.iter().cloned())
+            .collect();
     }
     linked.image_bytes = linked
         .sections
         .iter()
-        .map(crate::linked::LinkedSection::end)
+        .enumerate()
+        .map(|(section_id, section)| {
+            section_payload_bytes(linked, section_id).and_then(|payload| {
+                section
+                    .byte_address
+                    .checked_add(payload)
+                    .ok_or_else(|| "linked section address overflow".to_string())
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
         .max()
         .unwrap_or(0)
         .saturating_sub(
@@ -1031,8 +1103,7 @@ fn rebuild_linked_executable_sections(
                 .min()
                 .unwrap_or(0),
         );
-    refresh_section_padding(linked);
-    Ok(())
+    refresh_section_padding(linked)
 }
 
 fn blocked_address_sites_fit(linked: &crate::linked::LinkedProgram) -> Result<bool, String> {
@@ -1199,6 +1270,15 @@ pub fn relax_linked_addresses(
     linked: &crate::linked::LinkedProgram,
 ) -> Result<(crate::linked::LinkedProgram, String), String> {
     let mut out = linked.clone();
+    // Functions own every executable word. During convergence their code is
+    // authoritative, so do not duplicate the full instruction stream in each
+    // transactional trial. The final rebuild restores section materialization
+    // before validation and serialization.
+    for section in &mut out.sections {
+        if section.executable {
+            section.code.clear();
+        }
+    }
     let mut frozen = BTreeSet::<(String, u32)>::new();
     let mut original_widths = BTreeMap::<(String, u32), usize>::new();
     let mut site_count = 0usize;
@@ -1228,9 +1308,9 @@ pub fn relax_linked_addresses(
     let cap = site_count.saturating_mul(2).saturating_add(1).max(1);
     let mut converged = false;
     for _ in 0..cap {
-        rebuild_linked_executable_sections(&mut out)?;
-        repack_linked_sections(&mut out);
-        rebuild_linked_executable_sections(&mut out)?;
+        relayout_linked_executable_sections(&mut out)?;
+        repack_linked_sections(&mut out)?;
+        relayout_linked_executable_sections(&mut out)?;
         let mut actions: Vec<(String, usize, usize, bool, u32)> = Vec::new();
         for (key, f) in &out.fns {
             let blocked = !control_rewrite_allowed(f);
@@ -1267,6 +1347,33 @@ pub fn relax_linked_addresses(
             break;
         }
         actions.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.cmp(&a.1)));
+        let shrinks: Vec<_> = actions
+            .iter()
+            .filter(|(_, _, _, shrink, _)| *shrink)
+            .cloned()
+            .collect();
+        if !shrinks.is_empty() {
+            // Shrinks are monotone, so try the whole descending-index set in
+            // one transaction. If an existing blocked address would stop
+            // fitting, fall back to the conservative one-site transactions
+            // below and freeze only the responsible sites.
+            let mut trial = out.clone();
+            for (key, word, byte_offset, _, _) in shrinks {
+                let f = trial
+                    .fns
+                    .get_mut(&key)
+                    .ok_or_else(|| format!("missing linked function `{key}`"))?;
+                change_rodata_site(f, word, byte_offset, true)?;
+            }
+            relayout_linked_executable_sections(&mut trial)?;
+            repack_linked_sections(&mut trial)?;
+            relayout_linked_executable_sections(&mut trial)?;
+            if blocked_address_sites_fit(&trial)? {
+                patch_linked_addresses(&mut trial)?;
+                out = trial;
+                continue;
+            }
+        }
         for (key, word, byte_offset, shrink, ordinal) in actions {
             let mut trial = out.clone();
             let f = trial
@@ -1274,9 +1381,9 @@ pub fn relax_linked_addresses(
                 .get_mut(&key)
                 .ok_or_else(|| format!("missing linked function `{key}`"))?;
             change_rodata_site(f, word, byte_offset, shrink)?;
-            rebuild_linked_executable_sections(&mut trial)?;
-            repack_linked_sections(&mut trial);
-            rebuild_linked_executable_sections(&mut trial)?;
+            relayout_linked_executable_sections(&mut trial)?;
+            repack_linked_sections(&mut trial)?;
+            relayout_linked_executable_sections(&mut trial)?;
             if !blocked_address_sites_fit(&trial)? {
                 frozen.insert((key, ordinal));
                 continue;
@@ -1295,7 +1402,7 @@ pub fn relax_linked_addresses(
         ));
     }
     rebuild_linked_executable_sections(&mut out)?;
-    repack_linked_sections(&mut out);
+    repack_linked_sections(&mut out)?;
     rebuild_linked_executable_sections(&mut out)?;
     patch_linked_addresses(&mut out)?;
     rebuild_linked_executable_sections(&mut out)?;
@@ -1633,6 +1740,87 @@ mod tests {
             Reloc::RodataAdr { word: 0, .. }
         ));
         assert!(dump.contains("kind=addr") && dump.contains("encoding=adr"));
+        out.validate().expect("relaxed linked program");
+    }
+
+    #[test]
+    fn linked_address_relaxation_batches_multiple_shrinks() {
+        let pair = |reg| {
+            [
+                EmittedWord::new(
+                    crate::encode::enc_adrp(reg, 0),
+                    format!("adrp x{reg}, rodata"),
+                    CostRule::Adrp,
+                    Some(reg),
+                    &[],
+                ),
+                EmittedWord::new(
+                    crate::encode::enc_add_imm(reg, reg, 0, true),
+                    format!("add x{reg}, x{reg}, rodata"),
+                    CostRule::Alu,
+                    Some(reg),
+                    &[reg],
+                ),
+            ]
+        };
+        let code: Vec<_> = pair(9).into_iter().chain(pair(10)).collect();
+        let linked = crate::linked::LinkedProgram::from_parts(
+            vec![
+                crate::linked::LinkedSection {
+                    id: 0,
+                    name: "code".to_string(),
+                    byte_address: 0x1000,
+                    executable: true,
+                    code: code.clone(),
+                    raw_bytes: Vec::new(),
+                    padding_before: 0,
+                },
+                crate::linked::LinkedSection {
+                    id: 1,
+                    name: "rodata".to_string(),
+                    byte_address: 0x2000,
+                    executable: false,
+                    code: Vec::new(),
+                    raw_bytes: vec![0; 8],
+                    padding_before: 0,
+                },
+            ],
+            BTreeMap::from([(
+                "f".to_string(),
+                crate::linked::LinkedFn {
+                    key: "f".to_string(),
+                    section: 0,
+                    byte_address: 0x1000,
+                    origin_word_ranges: crate::linked::default_origin_ranges(&code),
+                    code,
+                    relocs: vec![
+                        Reloc::Rodata {
+                            word_adrp: 0,
+                            byte_offset: 0,
+                        },
+                        Reloc::Rodata {
+                            word_adrp: 2,
+                            byte_offset: 4,
+                        },
+                    ],
+                    frame_size: 0,
+                },
+            )]),
+            0x1000,
+        )
+        .expect("linked program");
+
+        let (out, dump) = relax_linked_addresses(&linked).expect("address relax");
+        assert_eq!(out.fns["f"].code.len(), 2);
+        assert_eq!(out.sections[0].code, out.fns["f"].code);
+        assert!(matches!(
+            out.fns["f"].relocs.as_slice(),
+            [
+                Reloc::RodataAdr { word: 0, .. },
+                Reloc::RodataAdr { word: 1, .. }
+            ]
+        ));
+        assert_eq!(dump.matches("encoding=adr").count(), 2);
         out.validate().expect("relaxed linked program");
     }
 

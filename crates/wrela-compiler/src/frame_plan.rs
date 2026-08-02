@@ -197,6 +197,10 @@ fn same_state_interference(a: &FlowLiveness, state: usize, left: Temp, right: Te
         if !in_state {
             return false;
         }
+        let mentioned = |t| p.uses.contains(&t) || p.defs.contains(&t);
+        if mentioned(left) && mentioned(right) {
+            return true;
+        }
         let live = |set: &[Temp]| set.contains(&left) && set.contains(&right);
         live(&p.live_in) || live(&p.live_out)
     })
@@ -619,5 +623,44 @@ mod tests {
         assert!(matches!(p.homes[0], Home::Frame { .. }));
         assert!(!matches!(p.homes[2], Home::None));
         validate(&f, &a, &p).expect("validation");
+    }
+
+    #[test]
+    fn one_instruction_never_reuses_a_state_register_for_its_input_and_output() {
+        let f = FlowWirFn {
+            receiver: None,
+            params: Vec::new(),
+            ret: Type::U64,
+            frame: FrameLayout {
+                temp_types: vec![Type::U64, Type::U64, Type::U64, Type::U64],
+                lineage_group_slot: Temp(2),
+                lineage_deadline_slot: Temp(3),
+            },
+            states: vec![State {
+                ops: vec![
+                    FlowInst::Mwir(crate::mwir::Inst::ConstInt {
+                        dst: Temp(0),
+                        ty: Type::U64,
+                        value: 1,
+                    }),
+                    FlowInst::Mwir(crate::mwir::Inst::ArithWrapping {
+                        dst: Temp(1),
+                        op: crate::syntax::ast::BinOp::AddW,
+                        ty: Type::U64,
+                        lhs: Temp(0),
+                        rhs: Temp(0),
+                    }),
+                ],
+                transition: Transition::Return(Some(Temp(1))),
+            }],
+        };
+        let analysis = flow_liveness::analyze(&f).expect("analysis");
+        let plan = plan_flow(&f, &analysis, &LayoutCtx::default()).expect("plan");
+        let input = plan.states[0].temp_regs[0].expect("input register");
+        let output = plan.states[0].temp_regs[1].expect("output register");
+        assert_ne!(
+            input, output,
+            "a general Flow operation may need its inputs after starting to define its output"
+        );
     }
 }

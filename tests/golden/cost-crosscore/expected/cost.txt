@@ -2,16 +2,16 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
   Provenance T1=39 T2=19 T3=0 T4=10 T5=16 rows=84
   Assumptions ignore_cache=0 ignore_mispredict=0 target=a76_pi5 ghz_model=1 turn_path=max_entry_method_proxy_cycles valid_for=static_shape_opts workload=flat pseudo_lru=modelled_as_lru
   Composition sum_of_fn_schedules=1
-  Rank rank_cycles=11375 schedule_cycles=11375 footprint_cycles=0 total_proxy_cycles=11375
-  Workload name=flat proxy_cycles=11375
-  Owner name=app proxy_cycles=1152
+  Rank rank_cycles=11376 schedule_cycles=11376 footprint_cycles=0 total_proxy_cycles=11376
+  Workload name=flat proxy_cycles=11376
+  Owner name=app proxy_cycles=1153
   Owner name=runtime proxy_cycles=9569
   Owner name=driver proxy_cycles=654
   Core n=0 proxy_cycles=1317 max_entry_method_proxy_cycles=654
   Budget n=0 fetched_text_bytes=53824 executable_code_bytes=53664 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 over_l3_lines=0 text_pages=14 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=3 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0
   Core n=1 proxy_cycles=48 max_entry_method_proxy_cycles=16
   Budget n=1 fetched_text_bytes=53696 executable_code_bytes=53532 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 over_l3_lines=0 text_pages=14 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=3 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0
-  Shared proxy_cycles=9626
+  Shared proxy_cycles=9627
   Placeable id=driver#0 type=Doorbell core=0 turn_proxy=654 method=Doorbell.on_irq
   Placeable id=actor#0 type=Peer core=1 turn_proxy=16 method=Peer.publish
   Fn key=Doorbell.drain owner=app frame_bytes=48 proxy_cycles=333
@@ -1852,7 +1852,7 @@ Cost version=3 profile=a76-pi5 pipelines=8 dispatch_mops=4 dispatch_uops=8 reord
     Term rule=mov_wide count=20
     Term rule=mul count=2
     Term rule=store count=11
-  Fn key=crosses owner=app frame_bytes=208 proxy_cycles=94
+  Fn key=crosses owner=app frame_bytes=208 proxy_cycles=95
     Term rule=Mem level=buffered count=27
     Term rule=Mem level=forwarded count=2
     Term rule=Mem level=l1_hit count=9

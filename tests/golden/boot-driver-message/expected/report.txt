@@ -84,10 +84,10 @@ ImageReport v0
   Cores count=1
   CoreStack core=0 base=0x7ff00000 size=0x100000
   Section name=entry base=0x40500000 size=80
-  Section name=code base=0x40500050 size=59360
-  Section name=rodata base=0x4050e830 size=988
-  Section name=abort base=0x4050ec0c size=120
-  Section name=checkpoint base=0x4050ec84 size=28
+  Section name=code base=0x40500050 size=59384
+  Section name=rodata base=0x4050e848 size=988
+  Section name=abort base=0x4050ec24 size=120
+  Section name=checkpoint base=0x4050ec9c size=28
   Section name=rtdata base=0x40540000 size=4048
   Section name=devregs base=0x40540fd0 size=104
   Section name=pooldata base=0x40541038 size=512
@@ -198,15 +198,15 @@ ImageReport v0
   BlkDevice device=device#0 capacity_sectors=16 features=0x100000200 vector=1
   BlkQueue index=0 size=8 desc=0x40541038 avail=0x405410b8 used=0x405410d0 doorbell=0x40541118
   BlkAccounting descriptors_per_op=3 queue_depth=8 occupancy_bound=2
-  Cost version=3 scope=linked-image digest=ed181b5abc4dd5d5 total=11365 rank_cycles=11365 schedule_cycles=11365 footprint_cycles=0 executable_words=14897 executable_code_bytes=59588 fetched_text_bytes=59648 rodata_bytes=988 image_bytes=266808 sync_frame_max_bytes=1328 async_frame_total_bytes=1440 ghz=2.4
-    Workload name=flat proxy_cycles=11365
-    Owner name=app proxy_cycles=1392
-    Owner name=runtime proxy_cycles=9923
+  Cost version=3 scope=linked-image digest=ed181b5abc4dd5d5 total=11329 rank_cycles=11329 schedule_cycles=11329 footprint_cycles=0 executable_words=14903 executable_code_bytes=59612 fetched_text_bytes=59712 rodata_bytes=988 image_bytes=266808 sync_frame_max_bytes=1328 async_frame_total_bytes=1440 ghz=2.4
+    Workload name=flat proxy_cycles=11329
+    Owner name=app proxy_cycles=1386
+    Owner name=runtime proxy_cycles=9893
     Owner name=driver proxy_cycles=50
     Core n=0 proxy_cycles=631 max_entry_method_proxy_cycles=122
-    Budget n=0 fetched_text_bytes=59648 executable_code_bytes=59588 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 over_l3_lines=0 text_pages=15 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=8 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0
-    Shared proxy_cycles=10350
-    Scope name=linked-image executable_words=14897 executable_code_bytes=59588 fetched_text_bytes=59648 image_bytes=266808 rodata_bytes=988 sync_frame_max_bytes=1328 async_frame_total_bytes=1440
+    Budget n=0 fetched_text_bytes=59712 executable_code_bytes=59612 l1i_bytes=65536 over_l1i_lines=0 over_l2_lines=0 over_l3_lines=0 text_pages=15 itlb_entries=48 over_itlb_pages=0 tlb_l2_entries=1280 over_tlb_l2_pages=0 data_pages=8 over_dtlb_pages=0 over_data_tlb_l2_pages=0 charge=0
+    Shared proxy_cycles=10314
+    Scope name=linked-image executable_words=14903 executable_code_bytes=59612 fetched_text_bytes=59712 image_bytes=266808 rodata_bytes=988 sync_frame_max_bytes=1328 async_frame_total_bytes=1440
   Convention fns=328 frameless=239 tail_calls=5
     Fn key=BlkDriver.capacity frame=96 residents=1 regs=x0 clobbers=x0,x9-x10,x30-x31 pool=24
     Fn key=BlkDriver.drain frame=96 residents=9 regs=x0-x3 clobbers=x0-x3,x9-x11,x30-x31 pool=23

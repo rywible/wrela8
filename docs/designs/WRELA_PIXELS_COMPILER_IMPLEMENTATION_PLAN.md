@@ -1,8 +1,8 @@
 # Wrela Pixels compiler and runtime implementation plan
 
-**Status:** IMPLEMENTATION — no experimental lanes, no fieldprobe dependency, no unresolved research tasks.
+**Status:** EXECUTION PROGRAM — implementation begins only after milestone P-1 reconciles this document with the current repository and closes the named proof/API gaps. There are no experimental runtime lanes and no fieldprobe dependency.
 
-**Repository basis:** `rywible/wrela8`, branch `master`, commit `a784076ccc97586132f47152b9a010f5b9574a4e` (2026-08-01).
+**Repository basis:** `rywible/wrela8`, branch `master`, commit `883481b324baec83f898b99c9a1c9642e40134e9` (2026-08-02). P-1.1 must refresh this value if implementation starts from another commit.
 
 **Primary owner:** `crates/wrela-compiler`.
 
@@ -20,18 +20,28 @@ This document is intentionally written for an implementation agent that should n
 
 Execution rules:
 
-1. Work milestones and tasks strictly in numerical order. A later task may rely on every earlier task's stable dump and invariant.
-2. Treat each `Task Px.y` as one commit unless that task explicitly permits otherwise.
-3. Start each task by reading its **Purpose**, **Files**, **Work**, and **Acceptance criteria** in full. Do not implement from the task title alone.
-4. Run the task's stated gate before committing. Run `cargo xtask verify-milestone` at every milestone close.
-5. Never skip a stable-dump task. The dumps are the compatibility boundary between compiler stages and the forensic record when a later invariant fails.
-6. Do not begin runtime optimization before the from-scratch validated sweep is correct. Kinetic reuse, SIMD, and hardware admission are deliberately downstream.
-7. Section 13 is the invariant ladder. Section 14 is the exact commit order. Section 15 is a hard prohibition list.
+1. Work milestones and tasks strictly in numerical order. Unless a task says otherwise, its prerequisites are every earlier task in the same milestone plus the preceding milestone's close gate.
+2. Treat each `Task Px.y` as one review unit and one commit unless the task explicitly names multiple independently gated commits.
+3. Every task must contain **Requires**, **Produces**, **Files**, **Contract/dump delta**, **Work**, **Tests**, **Focused checks**, **Repository gate**, and **Stop conditions**. The older four-part task entries below are not executable until P-1.1 mechanically upgrades them to this schema.
+4. `Files` distinguishes `new` from `modified`; paths must exist at the recorded repository basis unless marked `new`.
+5. Run focused checks while diagnosing, then run exactly `cargo xtask verify` before every task commit and at every milestone close. Fuzzing is a separate discovery lane and never substitutes for the required gate.
+6. Never skip a stable-dump task. The dumps are the compatibility boundary between compiler stages and the forensic record when a later invariant fails.
+7. Do not begin runtime optimization before the from-scratch validated sweep is correct. Kinetic reuse, packet SIMD, and cycle-proxy admission are deliberately downstream.
+8. At every milestone close beginning with P8, record an informational cost trend. Beginning with P9, also record refinement counts and certificate/root/event exhaustion histograms. These reports do not become admission gates until P12.
+9. Section 13 is the invariant ladder. Section 14 is the exact commit order. Section 15 is a hard prohibition list.
+
+Dependency policy:
+
+- “No new dependencies” means no new external Cargo dependencies.
+- Lean 4.30.0 and its pinned Mathlib revision are an explicitly approved proof-tool dependency outside the Cargo and shipped-image graphs.
+- Ordinary builds and tests must not require network access after the formal toolchain cache is installed and verified by P-1.1.
+- Section 12.1 is the authoritative final ownership map. Section 3.2 is only the P0/P1 seed layout.
 
 Milestone map:
 
-| milestone | primary deliverable | tasks |
+| milestone | primary deliverable | review units |
 |---|---|---:|
+| P-1 | repository reconciliation, source ABI proof, smooth-object soundness, vertical walking skeleton | 6 |
 | P0 | normative contract, compiler/formal scaffolding, permanent fixtures | 4 |
 | P1 | typed `@field`/`@material` source surface and sealed `Image.renderer` declaration | 8 |
 | P2 | deterministic dedicated symbolic field/material compiler | 7 |
@@ -40,14 +50,14 @@ Milestone map:
 | P5 | binary `FrameProgram v1`, image placement, generated renderer actors | 11 |
 | P6 | verified dyadic/numeric kernels and Lean–Rust–Wrela correspondence | 12 |
 | P7 | correct from-scratch validated scanline sweep | 15 |
-| P8 | fixed-q raster, analytic coverage, display-byte output, replay | 11 |
+| P8 | fixed-q raster, analytic coverage, display-byte output, replay | 15 |
 | P9 | deterministic AAA material, texture, lighting, shadow, AO, filtering | 13 |
 | P10 | ordered transparency and deterministic probe GI | 10 |
 | P11 | optional kinetic proof maintenance with full-sweep byte equivalence | 13 |
-| P12 | generated kernel palette, NEON lowering, A76 cost admission | 10 |
-| P13 | Pi 5 release conformance, normative activation, ownership closure | 10 |
+| P12 | generated kernel palette, one-ISA lowering, A76 cost admission | 15 |
+| P13 | exact A76 cycle-proxy conformance, normative activation, ownership closure | 10 |
 
-The first production-capable correctness boundary is the end of P8: a field scene can be compiled, swept from scratch, rasterized, and presented without temporal state. P9–P10 establish the full-quality image contract. P11 reduces recurring work without changing bytes. P12–P13 establish that the generated implementation fits and sustains the target machine profile.
+P-1 supplies a plane-only 64×32 headless vertical walking skeleton so the source ABI, image declaration, display path, and end-to-end dump boundaries are exercised before the deep proof machinery is built. The first production-capable correctness boundary remains the end of P8: a field scene can be compiled, swept from scratch, rasterized, and presented without temporal state. P9–P10 establish the full-quality image contract. P11 reduces recurring work without changing bytes. P12–P13 establish that the generated implementation fits and sustains the target machine profile.
 
 ## 0. What this plan delivers
 
@@ -71,10 +81,16 @@ from core.field import (
     smooth_union,
 )
 from core.render import (
+    AoConfig,
     Camera,
+    CameraBounds,
+    LightConfig,
     MaterialSample,
+    ProbeConfig,
+    RgbRange,
     RenderFrame,
     RenderProfile,
+    ScalarRange,
     ToneCurve,
 )
 
@@ -106,7 +122,7 @@ fn world(p: Vec3, read s: SceneParams) -> Field:
     return ground.union(body)
 
 @material
-fn shade(surface: SurfaceContext, read s: SceneParams) -> MaterialSample:
+fn shade(surface: SurfaceContext[MaterialId], read s: SceneParams) -> MaterialSample:
     match surface.material:
         MaterialId.Clay:
             return MaterialSample.clay(
@@ -149,6 +165,13 @@ fn image() -> Image:
         far=200.0,
         world_min=Vec3(x=-64.0, y=-16.0, z=-64.0),
         world_max=Vec3(x=64.0, y=64.0, z=64.0),
+        camera_bounds=CameraBounds.gameplay_default(),
+        light_config=LightConfig.gameplay_default(),
+        exposure_range=ScalarRange(min=-8.0, max=8.0),
+        environment_range=RgbRange.black_to_hdr_white(),
+        ao=AoConfig.deterministic_v1(),
+        probes=ProbeConfig.disabled(),
+        initialization_deadline_ms=250,
     )
 
     game = img.actor(
@@ -167,6 +190,20 @@ pub async fn render(
     take frame: RenderFrame[P],
 ) -> Result[RenderedFrame[P], RenderError]
 ```
+
+The public frame value is:
+
+```wrela
+struct RenderFrame[P]:
+    params: P
+    camera: Camera
+    lights: LightFrame
+    exposure: f32
+    environment: Rgb
+    frame_index: u64
+```
+
+`LightFrame` is a fixed-capacity sealed value whose identities and topology are declared by `light_config`; a frame may change only the bounded numeric values of those declared lights. `camera`, `lights`, `exposure`, and `environment` are validated against the renderer declaration before any worker writes output.
 
 `RenderFrame[P]` owns `P` for the duration of the render, so the renderer can snapshot only the coefficient paths actually referenced by `@field` and `@material` without copying the whole value. `RenderedFrame[P]` returns ownership of `P` after presentation. The method has no hidden allocation and no implicit shared mutation.
 
@@ -200,12 +237,12 @@ The renderer is complete only when all of these are true:
 6. Kinetic reuse is only an optimization; disabling it produces the same displayed bytes.
 7. Every accepted visibility run proves root existence, root uniqueness, identity stability, and front order for its complete domain.
 8. Every approximation in coverage, shading, transparency, post, and temporal transport is either proven unable to change the stored output code or is refined/falls back.
-9. A proof or capacity failure prevents presentation and returns `RenderError`; it never becomes background, a stale hit, or a guessed color.
+9. A proof or capacity failure prevents presentation and returns `RenderError`; it never becomes background, a stale hit, or a guessed color. Acceptance is fail-closed but not universally total over every declared numeric range: release conformance separately proves zero errors for the locked workload.
 10. The compiler report publishes frame-program bytes, renderer-state bytes, per-core placement, exact capacity derivations, fallback classes, and generated hot functions.
 11. The Lean project builds with no admissions and prints no unexpected axioms for the trust-boundary theorems.
-12. The Rust compiler reference, generated Wrela scalar kernels, generated Wrela SIMD kernels, and host oracle agree on all permanent differential fixtures.
+12. The Rust compiler reference, generated Wrela scalar kernels, generated Wrela SIMD kernels, and host oracle agree on all permanent differential fixtures; every hot workload satisfies its one-ISA instruction obligation with no missed or illegal idiom.
 13. The machine-v1 display conformance lane presents the exact expected frame digests.
-14. The flagship Pi 5 acceptance image presents 1080p60 with no missed vsync, no unresolved frame, no thermal throttling, and no output divergence during the locked acceptance workload.
+14. The flagship A76/Pi 5 target profile is admitted at 1080p60 by the exact sealed renderer cycle proxy, with every acceptance frame below budget, no unresolved frame, and no output divergence during the locked workload. Physical hardware execution is not a conformance input.
 
 Items 13–14 are release conformance, not research lanes. They do not choose algorithms or tune tolerances. The algorithms and tolerances in this document are fixed before those gates run.
 
@@ -383,10 +420,10 @@ Required signature:
 
 ```wrela
 @material
-fn name(surface: SurfaceContext, read params: P) -> MaterialSample
+fn name(surface: SurfaceContext[M], read params: P) -> MaterialSample
 ```
 
-The `params` argument may be omitted. Material code may branch on the compile-time-dense `surface.material` identifier. Other runtime control flow is accepted only if the material compiler can represent both branches and prove their boundary; otherwise `AaaByteExact` rejects it.
+`M` is the one nominal material-identity enum used by every `mark(..., material=...)` reachable from this renderer. The compiler infers it from the field graph and requires the material function to name the same enum. The `params` argument may be omitted. Material code may branch on the compile-time-dense `surface.material` identifier. Other runtime control flow is accepted only if the material compiler can represent both branches and prove their boundary; otherwise `AaaByteExact` rejects it.
 
 #### `@range(min=..., max=...)`
 
@@ -394,8 +431,7 @@ Allowed on numeric fields reachable from a renderer parameter type.
 
 - On `f32`, both endpoints are finite `f32` literals and `min <= max`.
 - On `Vec2`/`Vec3`/`Rgb`, the same range applies component-wise.
-- On arrays and structs, a field-level range applies recursively only to direct scalar/vector leaves that lack their own range.
-- A more specific nested field range wins.
+- Arrays and structs do not accept a recursive shorthand. Annotate each influencing scalar/vector field so the source path and diagnostic remain unambiguous.
 - Integer and enum values do not need a numeric range.
 - Every geometry coefficient must resolve to exactly one range.
 
@@ -404,7 +440,7 @@ Allowed on numeric fields reachable from a renderer parameter type.
 Optional. It enables kinetic transport for that path.
 
 - Values are finite, nonnegative `f32` literals in units per rendered frame.
-- Missing `@rate` does not reject the renderer; it marks the coefficient `rebuild_on_change`.
+- Missing `@rate` does not reject the renderer and does not create a hidden runtime state. It simply disables kinetic reuse whenever that path changes.
 - The runtime checks actual deltas before using a kinetic certificate.
 
 ### 2.2 Closed field operation set
@@ -451,7 +487,6 @@ Metadata and bounded deformation:
 
 ```text
 mark
-bounded_displace
 sinusoidal_displace
 ```
 
@@ -465,7 +500,9 @@ Every operation has:
 6. a Rust reference implementation;
 7. a Lean theorem or a theorem that reduces it to already proved primitives.
 
-`bounded_displace` requires explicit conservative amplitude and gradient bounds. `sinusoidal_displace` derives them from compile-time frequency/amplitude data. Arbitrary `Field + f32` is impossible because `Field` is opaque.
+Authors cannot assert arbitrary displacement bounds in v1. `sinusoidal_displace` is the only public deformation constructor; the compiler lowers it to the internal `BoundedDisplace` node and derives amplitude, gradient, Hessian, and third-derivative bounds from its closed compile-time form. Accepting user-supplied deformation contracts is deferred until a proof-carrying source mechanism exists. Arbitrary `Field + f32` is impossible because `Field` is opaque.
+
+Every listed intrinsic has a real scalar Wrela body. It must not be a `panic` placeholder: that body is the normative fallback/source semantics and is differentially tested against symbolic lowering.
 
 ### 2.3 Exact smooth CSG semantics
 
@@ -524,6 +561,13 @@ img.renderer[P](
     far=FAR,
     world_min=Vec3(...),
     world_max=Vec3(...),
+    camera_bounds=CameraBounds(...),
+    light_config=LightConfig(...),
+    exposure_range=ScalarRange(...),
+    environment_range=RgbRange(...),
+    ao=AoConfig(...),
+    probes=ProbeConfig(...),
+    initialization_deadline_ms=...,
 )
 ```
 
@@ -536,12 +580,14 @@ All labels are required in v1. Validation:
 - width/height/refresh/shade rates are positive comptime integers;
 - `shade_hz` divides `refresh_hz`;
 - near/far/world bounds are finite, ordered, and compile-time;
+- camera, light, exposure, environment, AO, and probe declarations are finite, compile-time, and provide every runtime input bound needed by the compiler;
+- `initialization_deadline_ms` is positive and includes worst-case deterministic probe initialization when probes are enabled;
 - output extent matches the display declaration;
 - only one renderer may own a given display declaration;
 - a renderer declaration participates in the image-construction DAG;
 - the renderer actor and its internal worker actors receive deterministic core placement.
 
-The call returns `ImageDecl[Renderer[P]]`. `handle()` returns `Actor[Renderer[P]]` and follows the existing image-declaration handle rules.
+The call returns `ImageDecl[Renderer[P]]`. `handle()` returns `Actor[Renderer[P]]` and follows the existing image-declaration handle rules. P-1.2 implements the deliberately narrow generic actor-handle support needed for this exact sealed declaration; arbitrary generic actors remain unsupported.
 
 ### 2.6 Runtime result and failure semantics
 
@@ -551,10 +597,12 @@ Add to `stdlib/core/render.wr`:
 enum RenderError:
     ParameterOutOfRange(RenderPath)
     NonFiniteInput(RenderPath)
+    FrameContractMismatch(RenderPath)
     RootIsolationExhausted(TileId)
     EventIsolationExhausted(TileId)
     CertificateExhausted(TileId)
-    CapacityMismatch(RenderCapacity)
+    CapacityExceeded(RenderCapacity)
+    FixedPointRangeExceeded(TileId)
     Display(DisplayError)
     InternalInvariant(RenderInvariant)
 
@@ -568,7 +616,9 @@ struct RenderedFrame[P]:
 
 No `RenderError` path flushes the partially built back buffer. The previous complete framebuffer remains on screen. The error returns to the caller; the image’s ordinary failure policy decides what the application does next.
 
-Capacity exhaustion should be impossible after a successful build. If observed, it is reported as an internal invariant failure rather than interpreted as a scene miss.
+Static table/workspace capacity mismatch should be impossible after a successful build and maps to `InternalInvariant`; bounded certificate/root/event refinement exhaustion is an expected fail-closed runtime outcome with its §2.6 variant. Neither is interpreted as a scene miss.
+
+This enum is the sole runtime error contract. Later runtime sections and tasks may add internal causes mapped into these variants, but may not define a second public `RenderError`. “Supported frame” means a frame that satisfies the declaration contract and completes its bounded certificates; the API deliberately permits a valid in-range frame to return an exhaustion error. The P13 acceptance workload has the stronger zero-error requirement.
 
 ---
 
@@ -600,7 +650,7 @@ parse all modules
 
 Do not hide it in thread-local state.
 
-### 3.2 New compiler module layout
+### 3.2 P0/P1 seed compiler module layout
 
 Add:
 
@@ -724,6 +774,8 @@ pub struct EventTemplateId(pub u32);
 pub struct ProgramRendererId(pub u16);
 ```
 
+Compiler `MaterialId` is a dense internal ID assigned from the renderer’s one nominal source enum `M`; wire/runtime records never store the source enum’s Rust layout or assume its numeric discriminant.
+
 No runtime record stores a Rust enum discriminant implicitly. The encoder maps every kind to an explicit versioned `u8`/`u16` opcode.
 
 Canonical order:
@@ -822,19 +874,27 @@ enum FieldKind {
     SmoothUnion { a: FieldId, b: FieldId, k: ScalarId },
     SmoothIntersection { a: FieldId, b: FieldId, k: ScalarId },
     SmoothSubtract { a: FieldId, b: FieldId, k: ScalarId },
+    Neg { child: FieldId },
     Transform { child: FieldId, transform: TransformProgram },
     FiniteRepeat { child: FieldId, axis: Axis, first: i32, count: u32, period: ScalarId },
     BoundedDisplace {
         base: FieldId,
         displacement: ScalarId,
-        amplitude_bound: ScalarId,
-        gradient_bound: ScalarId,
+        contract: DerivedDeformContract,
     },
     Mark {
         child: FieldId,
         object_source: CanonicalIdentity,
         material_source: CanonicalIdentity,
     },
+}
+
+struct DerivedDeformContract {
+    amplitude_bound: ScalarId,
+    gradient_bound: ScalarId,
+    hessian_bound: ScalarId,
+    third_derivative_bound: ScalarId,
+    derivation: ClosedDeformDerivation,
 }
 
 struct FieldNode {
@@ -986,6 +1046,20 @@ struct ProofMeta {
 }
 ```
 
+For each maximal smooth object the compiler also emits:
+
+```rust
+struct SmoothObjectRootProgram {
+    object: ObjectId,
+    scalar_root: ScalarId,
+    candidate_leaf_slabs: IdRange,
+    support_certificate: SupportCertificateId,
+    root_isolation_capacity: u32,
+}
+```
+
+Support shells prove where an object root may occur; they do not prove that a leaf itself is zero. Candidate leaf `q` slabs therefore seed the domain, but runtime isolation evaluates `scalar_root`, the complete composed smooth-object scalar. The permanent regression `a=b=k/4` must find the smooth-min zero even though neither child is zero.
+
 Host analysis uses `f64` plus outward endpoint construction. Encoded runtime certificates use `Iv32` fixed domains. Host `f64` facts are not themselves proof objects unless converted outward into an encoded domain.
 
 ### 4.10 Smooth support theorem used by the compiler
@@ -1110,62 +1184,45 @@ An omitted participant is legal only when one `ExclusionRecord` encloses the com
 
 ### 4.14 Frame program wire format
 
-`FrameProgram v1` is little-endian, offset-based, and pointer-free.
+`FrameProgram v1` is little-endian, offset-based, pointer-free, and directory-based. P5 freezes this outer envelope and its table-kind namespace. P9–P11 may fill predeclared table kinds, but may not change the header or directory representation. Version 1 remains internal until P11 closes and becomes an activated compatibility promise only at P13.
 
-Header, exactly 160 bytes:
+Header, exactly 80 bytes:
 
 ```rust
 #[repr(C)]
 struct FrameProgramHeaderV1 {
-    magic: [u8; 4],          // b"WPIX"
+    magic: [u8; 8],          // b"WRELAPX\0"
     version: u16,            // 1
-    header_bytes: u16,       // 160
-    total_bytes: u32,
+    header_bytes: u16,       // 80
     flags: u32,
-    renderer_id: u16,
+    total_bytes: u32,
+    renderer_index: u16,
     reserved0: u16,
+    numeric_revision: u32,
+    formal_revision: u32,
+    table_count: u16,
+    reserved1: [u8; 14],
+    digest: [u8; 32],
+}
 
-    scalar_count: u32,
-    field_count: u32,
-    object_count: u32,
-    feature_count: u32,
-    material_count: u32,
-    param_count: u32,
-    event_template_count: u32,
-    csg_op_count: u32,
-    fixed_domain_count: u32,
-
-    scalar_off: u32,
-    field_off: u32,
-    object_off: u32,
-    feature_off: u32,
-    material_off: u32,
-    param_off: u32,
-    event_template_off: u32,
-    csg_off: u32,
-    fixed_domain_off: u32,
-    immediate_off: u32,
-    string_off: u32,
-
-    width: u32,
-    height: u32,
-    refresh_hz: u16,
-    shade_hz: u16,
-    tile_width: u16,
-    tile_height: u16,
-    near_bits: u32,
-    far_bits: u32,
-
-    program_digest: [u8; 32],
-    reserved: [u8; 20],
+#[repr(C)]
+struct FrameProgramTableV1 {
+    kind: u16,
+    record_bytes: u16,
+    count: u32,
+    offset: u32,
+    byte_len: u32,
 }
 ```
 
-The encoder must assert the Rust struct is not used for serialization. Fields are written explicitly in order so host padding cannot affect bytes.
+The table directory starts at byte 80 and contains exactly `table_count` 16-byte entries sorted by the explicit versioned table-kind number. The v1 namespace predeclares scalar, field, object, feature, material, parameter, event, CSG, fixed-domain, immediate, camera/light/post, texture, shading-summary, transparency, probe, kinetic, and optional debug-name tables. A table not yet populated has `count=0`, `offset=0`, and `byte_len=0`.
+
+The digest field is zero while hashing and then filled with SHA-256 of the complete encoded bytes with that field zeroed. The encoder must assert the Rust structs are not used for serialization. Fields are written explicitly in order so host padding cannot affect bytes.
 
 All table offsets are 16-byte aligned. Records have explicit encoded sizes and reserved bytes set to zero. The decoder rejects:
 
 - wrong magic/version/header size;
+- an unsorted, duplicate, unknown-required, or inconsistent table-directory entry;
 - nonzero reserved bytes;
 - integer overflow in offset+length;
 - overlap between tables;
@@ -1643,6 +1700,7 @@ pub struct FieldFnMeta {
 pub struct MaterialFnMeta {
     pub surface_param: usize,
     pub params_param: Option<usize>,
+    pub material_identity_ty: types::Type,
     pub return_ty: types::Type,
 }
 
@@ -1773,8 +1831,12 @@ pub struct RendererConfig {
     pub far: f64,
     pub world: Aabb64,
     pub camera_bounds: CameraBounds,
-    pub lights: Vec<LightConfig>,
-    pub probe: ProbeConfig,
+    pub light_config: LightConfig,
+    pub exposure_range: ScalarRange,
+    pub environment_range: RgbRange,
+    pub ao: AoConfig,
+    pub probes: ProbeConfig,
+    pub initialization_deadline_ms: u32,
 }
 
 pub fn parse_renderer_decl(
@@ -1801,7 +1863,7 @@ The checker proves:
 - near/far/world bounds are finite and ordered;
 - renderer count and generated actor count fit existing actor and core-placement limits;
 - all fields reachable from `P` that influence geometry, materials, lights, exposure, or post have compile-time range metadata;
-- every temporally changing influencing path has `@rate` metadata;
+- every path eligible for kinetic reuse has valid `@rate` metadata; a changing path without it invalidates reuse and remains legal for a from-scratch frame;
 - no renderer declaration participates in a construction cycle.
 
 ### 6.6 Frame-program compiler context
@@ -1837,19 +1899,28 @@ pub fn compile(input: CompileInput<'_>) -> Result<CompiledRenderer, PixelsError>
     symbolic::compile_field_root(&mut cx)?;
     symbolic::compile_material_root(&mut cx)?;
     canonicalize::run(&mut cx)?;
+    verify::check_symbolic(&cx)?;
     params::collect_and_validate(&mut cx)?;
-    bounds::propagate(&mut cx)?;
+    bounds::propagate_values(&mut cx)?;
+    bounds::propagate_derivatives(&mut cx)?;
     support::propagate(&mut cx)?;
+    repeat::compile_finite_instances(&mut cx)?;
+    deform::compile_derived_contracts(&mut cx)?;
     objects::partition(&mut cx)?;
-    features::decompose(&mut cx)?;
     csg::compile_boolean_program(&mut cx)?;
+    features::decompose(&mut cx)?;
+    verify::check_structural(&cx)?;
     projective::compile_features(&mut cx)?;
     derivatives::compile(&mut cx)?;
+    projection_bounds::compile(&mut cx)?;
     events::compile_generators(&mut cx)?;
-    capacities::derive(&mut cx)?;
-    material::compile_summaries(&mut cx)?;
+    competition::compile_q_pairs(&mut cx)?;
+    exclusions::compile(&mut cx)?;
+    event_index::compile(&mut cx)?;
+    verify::check_projective_events(&cx)?;
+    capacities::derive_structural(&mut cx)?;
     let program = program::finish(&mut cx)?;
-    verify::check_program(&program)?;
+    let program = verify::check_program(program)?;
     let encoded = encode::encode(&program)?;
     let decoded = decode::decode(&encoded)?;
     if decoded != program {
@@ -1863,7 +1934,7 @@ pub fn compile(input: CompileInput<'_>) -> Result<CompiledRenderer, PixelsError>
 }
 ```
 
-No task may reorder this pipeline without updating the stable dump and the documented invariant consumed by every later pass.
+P9–P11 extend `program::finish` with the predeclared material, transparency, probe, and kinetic tables after their respective verified compilers exist. P12 replaces interpreted coefficient records with generated evaluators; no earlier milestone may pretend that evaluator already exists. No task may reorder this pipeline without updating the stable dump and the documented invariant consumed by every later pass.
 
 ### 6.8 Frame-program verifier
 
@@ -1989,22 +2060,7 @@ There is no shared q-buffer, event list, run list, or probe update buffer betwee
 
 ### 6.13 Runtime failure protocol
 
-A renderer never flushes a partially built back buffer.
-
-```wrela
-enum RenderError:
-    UnsupportedFrameState
-    NonFiniteInput
-    CertificateExhausted
-    EventCapacityExceeded
-    SheetCapacityExceeded
-    RunCapacityExceeded
-    TransparentLayerCapacityExceeded
-    ProbeCapacityExceeded
-    FixedPointRangeExceeded
-    InternalProgramViolation
-    DisplayFailure
-```
+A renderer never flushes a partially built back buffer. The sole public error type is the enum in §2.6. Internal root/event/sheet/run/layer/probe capacity causes map to `CapacityExceeded(RenderCapacity)`; corrupt compiler-generated indices map to `InternalInvariant(RenderInvariant)`; frame contract failures map to `ParameterOutOfRange`, `NonFiniteInput`, or `FrameContractMismatch`; device failures map to `Display(DisplayError)`.
 
 Worker errors return to the coordinator. The coordinator:
 
@@ -2054,7 +2110,29 @@ fn compose_transfer4_scalar(...)
 fn compose_transfer4(...)
 ```
 
-The scalar function is the differential oracle for the packet function. The packet function uses only closed SIMD operations from `05-library.md §8.1`; no inline assembly and no target feature checks.
+The scalar function is the differential oracle for the packet function. The packet function uses only closed SIMD operations from `05-library.md §8.1`; there is no inline assembly, guest feature check, or runtime dispatch. The VMM’s ordinary boot validation rejects a host that lacks the one sealed baseline.
+
+### 6.16 One-ISA workload and instruction-selection contract
+
+Machine-v1 has one sealed ISA and no runtime feature dispatch. For Pixels, the baseline is amended explicitly to `AArch64 ARMv8.2-A + FP/NEON/ASIMD + FEAT_DotProd`; both the emitted-word verifier and VMM boot feature check enforce that exact baseline. The compiler must use the strongest semantics-preserving instruction family for every recognized hot workload shape:
+
+| workload shape | canonical machine-v1 family |
+|---|---|
+| packed signed/unsigned 8-bit dot accumulation into four i32 lanes | `SDOT` / `UDOT` |
+| f32 vector dot, SH evaluation, matrix/color rows | `FMUL` plus dependency-aware `FMLA` |
+| widening signed/unsigned integer multiply-accumulate | `SMLAL` / `UMLAL` |
+| horizontal integer reductions | `ADDV`, `SADDLV`, or `UADDLV` as signedness/range requires |
+| mask select and conditional lane merge | `BSL`, `BIT`, or `BIF` according to operand reuse |
+| fixed transposes/deinterleave/interleave | `TRN*`, `UZP*`, `ZIP*`, or structure load/store when alignment and alias proofs permit |
+| checked narrowing/packing | `SQXTN`, `UQXTN`, or `XTN` only when the scalar contract proves the corresponding behavior |
+| reciprocal and reciprocal-square-root refinement | `FRECPE/FRECPS` and `FRSQRTE/FRSQRTS` with the source-fixed iteration sequence |
+| contiguous paired scalar/vector memory operations | paired or structure load/store only when placement, alignment, ownership, and fault behavior are identical |
+
+This table names families, not a license to change arithmetic. `SDOT`/`UDOT` apply only to exact 8-bit dot workloads; the compiler must not quantize f32 SH, lighting, normals, or material math merely to select dot-product instructions. NaN, signed-zero, overflow, first-fault, reduction order, and FMA contraction must match the Wrela source contract. A nearly matching pattern that changes any of those semantics stays on the correct longer sequence.
+
+For a workload with more than one legal sequence, enumerate the finite candidates and select the lowest exact cycle-proxy total for that kernel’s sealed alignment/dependency/workload facts, subject to hot-text budgets; tie by versioned sequence ID. “Use the ISA” means selecting the best proved sequence, not blindly replacing an operation with a fashionable opcode.
+
+Add a versioned `PixelsIsaObligation` census from generated workload/kernel kind to expected instruction family and sequence ID. After final codegen, an emitted-word decoder proves each required idiom is present in the named loop and that disallowed scalarized/redundant forms are absent. A missed legal idiom, a better legal sequence left unselected, an unpriced emitted opcode, or a workload with no obligation is an internal build failure. Differential tests cover both positive selections and “must not select” boundary cases.
 
 ---
 
@@ -2087,7 +2165,7 @@ The following codes and leading messages are stable:
 | `P003` | `` `@field` function `<name>` uses runtime control flow that changes field topology `` |
 | `P004` | `` field operation `<op>` is not available in `AaaByteExact` `` |
 | `P005` | `` parameter path `<path>` influences rendering but has no `@range` `` |
-| `P006` | `` parameter path `<path>` changes between frames but has no `@rate` `` |
+| `P006` | `` rate for `<path>` is negative, non-finite, or not representable `` |
 | `P007` | `` range for `<path>` is empty, non-finite, or not representable `` |
 | `P008` | `` renderer declaration has unknown or duplicate argument `<label>` `` |
 | `P009` | `` renderer field/material parameter types disagree `` |
@@ -2106,7 +2184,7 @@ The following codes and leading messages are stable:
 | `P022` | `` render profile `<profile>` is not implemented by machine v1 `` |
 | `P023` | `` field recursion is forbidden `` |
 | `P024` | `` field loop bound is not comptime-known `` |
-| `P025` | `` renderer-generated image memory exceeds the 1 GiB flagship profile `` |
+| `P025` | `` renderer-generated image memory exceeds the sealed machine-v1 guest profile `` |
 
 ### 7.3 Why-chain diagnostics
 
@@ -2351,7 +2429,7 @@ axiom
 unsafe
 ```
 
-An `axiom` imported from Mathlib may appear in `#print axioms` output only if documented in `formal/pixels/EXPECTED_AXIOMS.md`. The expected initial list is ordinary classical/propositional extensionality machinery used by Mathlib, not project-defined assumptions.
+An `axiom` imported from Mathlib may appear in `#print axioms` output only if documented in `formal/pixels/EXPECTED_AXIOMS.txt`. The expected initial list is ordinary classical/propositional extensionality machinery used by Mathlib, not project-defined assumptions.
 
 Add `crates/xtask/src/pixels_formal.rs` to scan project source tokens before invoking Lean. Strip comments and strings before scanning so examples in documentation do not trip it.
 
@@ -2371,8 +2449,9 @@ Its denotation is `mantissa * 2^exponent`. Runtime `Iv32` intervals use a shared
 structure Iv32 where
   lo : Int
   hi : Int
-  exponent : Int
   ordered : lo ≤ hi
+
+def Iv32.denote (exponent : Int) (x : Iv32) : Set Rat := ...
 ```
 
 Prove:
@@ -2471,8 +2550,9 @@ The runtime CSG program is stack-based. Prove its evaluation equivalent to the c
 
 Formalize only the bounded degree/variable forms used by `FrameProgram v1`:
 
-- univariate degree ≤ 4;
-- bivariate degree ≤ 3 in each variable;
+- univariate degree ≤ 8;
+- bivariate degree ≤ 6 in each variable;
+- trivariate Taylor models with a separately certified remainder bound;
 - trivariate sparse Taylor model with explicit interval remainder.
 
 Prove:
@@ -2662,7 +2742,7 @@ The compiler instantiates these lemmas in Rust and rejects overflow/ceiling viol
 
 ### 9.19 Theorem-to-kernel manifest
 
-Create `formal/pixels/KERNELS.toml`, parsed by a tiny local parser in xtask or represented as a simple line format to avoid a new dependency. Each row names:
+Create `formal/pixels/KERNELS.txt` using the fixed line format parsed by xtask without a new dependency. Each row names:
 
 ```text
 theorem = Pixels.FixedQ.packet_eq_scalar
@@ -2690,7 +2770,7 @@ Required mappings include:
 
 ### 9.20 Formal gate
 
-Add to `verify-milestone`:
+Add to `verify-deep`:
 
 ```text
 cargo xtask pixels-formal
@@ -2725,7 +2805,7 @@ For every task, the executor must:
 5. run `cargo fmt --all`;
 6. run `cargo xtask verify`;
 7. commit only after the gate is green;
-8. run `cargo xtask verify-milestone` at milestone close;
+8. run `cargo xtask verify` at milestone close;
 9. never update a golden before reading and explaining the diff;
 10. never loosen a numeric tolerance, capacity, or error budget to make a test pass;
 11. never use fieldprobe output, dense truth, or previous-frame data to make a renderer decision;
@@ -2735,9 +2815,139 @@ The task descriptions below already choose the algorithm. When implementation re
 
 ---
 
+# Milestone P-1 — repository reconciliation and vertical walking skeleton
+
+Milestone result: the plan is rebased onto real repository paths and language capabilities; the public renderer declaration type-checks; one canonical contract exists for every shared type/format; the two soundness gaps have positive proof artifacts; and a plane-only 64×32 image travels from `Image.renderer` through a guest display driver to a deterministic headless digest. This milestone is not the renderer implementation and its plane-only restriction is explicit.
+
+## Task P-1.1 — reconcile the plan with repository reality
+
+**Requires:** the repository basis named at the top of this document.
+
+**Produces:** a path/toolchain inventory, an updated basis commit, a minimal buildable formal project, and every P0–P13 task rewritten to the executor schema in §10.0.
+
+**Files:** this plan, `AGENTS.md` (modified only to clarify the already-approved non-Cargo Lean tool dependency), `docs/designs/wrela-pixels-reconciliation.md` (new), and the minimal `formal/pixels/{lakefile.toml,lean-toolchain,Pixels.lean}` project files (new).
+
+**Contract/dump delta:** none; this is an execution-control change.
+
+**Work:** verify every listed path with `rg --files`; mark future files `new`; replace stale paths; record the current generic-actor, image-layout, AArch64 codegen, ISA-feature ledger, emitted-word audit, cycle-proxy, dump, and xtask extension points; verify that every conforming machine-v1 host class can satisfy the planned `FEAT_DotProd` baseline before P12 activates it; create and locally cache the minimal Lean 4.30.0/Mathlib project required by P-1.5; mechanically add Requires/Produces/Contract/dump delta/Tests/Focused checks/Repository gate/Stop conditions to every later task. Section 12.1 remains the final ownership authority.
+
+**Tests:** an xtask plan-lint rejects missing task fields, nonexistent unmarked paths, duplicate task IDs, dump-stage drift, and a mismatch between §14 and task headings.
+
+**Focused checks:** `cargo xtask pixels-plan-lint`.
+
+**Repository gate:** `cargo xtask verify`.
+
+**Stop conditions:** any required change would add a Cargo dependency, the pinned formal toolchain cannot be reproduced, or a path cannot be assigned a single owner.
+
+## Task P-1.2 — prove and implement the public source ABI
+
+**Requires:** P-1.1.
+
+**Produces:** a type-checking minimal declaration using `Renderer[P]`, `RenderFrame[P]`, `SurfaceContext[M]`, and `Actor[Renderer[P]]`.
+
+**Files:** `stdlib/core/field.wr` (new), `stdlib/core/render.wr` (new), the existing sema type/check modules identified by P-1.1, and `tests/golden/check-pixels-source-abi/` (new).
+
+**Contract/dump delta:** adds only the narrow sealed generic actor-handle rule required by `ImageDecl[Renderer[P]].handle()`; arbitrary generic actors remain rejected.
+
+**Work:** define the exact source types in §§0 and 2; prove one nominal material enum flows from every `mark` into `SurfaceContext[M]`; make `RenderFrame[P]` and `RenderedFrame[P]` ownership type-check; reject mismatched `P` or `M`; give every field intrinsic a real scalar body.
+
+**Tests:** positive source-ABI golden plus mismatched parameter enum, mismatched material enum, arbitrary generic actor, and ownership misuse diagnostics.
+
+**Focused checks:** the focused sema tests and the named goldens.
+
+**Repository gate:** `cargo xtask verify`.
+
+**Stop conditions:** the API requires general-purpose higher-kinded types, runtime allocation, or a second actor ABI.
+
+## Task P-1.3 — establish the display ABI and headless sink
+
+**Requires:** P-1.2.
+
+**Produces:** shared machine-v1 display records, a guest driver queue skeleton, a VMM headless consumer, and deterministic presented-frame digests.
+
+**Files:** `crates/wrela-machine/src/pixels.rs` (new), `stdlib/drivers/display.wr` (new), `crates/wrela-vmm/src/display.rs` (new), `crates/wrela-vmm/src/replay.rs` (new), and focused machine/VMM tests.
+
+**Contract/dump delta:** fixes tile ownership, queue capacity, sequence numbering, BGRA8 byte order, digest scope, and failure ownership before renderer code depends on them.
+
+**Work:** implement only the device model, queue/ownership state machine, guest-facing driver surface, and headless digest sink. macOS/HVF and Linux/KVM presentation backends remain P8 work.
+
+**Tests:** hostile queue transitions, duplicate/missing tiles, digest ordering, and driver error ownership.
+
+**Focused checks:** focused machine/VMM/display tests.
+
+**Repository gate:** `cargo xtask verify`.
+
+**Stop conditions:** the contract requires VMM-side rendering, host pixel modification, guest allocation, or platform-specific state in the shared ABI.
+
+## Task P-1.4 — seal canonical contracts and consistency checks
+
+**Requires:** P-1.3.
+
+**Produces:** one canonical definition each for `RenderError`, `FieldKind`, `Iv32`, `FrameProgramHeaderV1`, the three Pixels dump names, theorem-manifest filenames, and the renderer declaration labels.
+
+**Files:** this plan, `docs/language/07-pixels.md` (new draft), and the plan-lint implementation from P-1.1.
+
+**Contract/dump delta:** `field-graph`, `frame-program`, and `render-layout` are the only Pixels dumps; `FrameProgramHeaderV1` is the 80-byte directory header in §4.14; `KERNELS.txt` and `EXPECTED_AXIOMS.txt` are canonical.
+
+**Work:** make plan-lint extract and compare repeated fenced definitions and stable names. Any later section refers to the canonical section rather than copying a divergent public definition.
+
+**Tests:** mutation fixtures demonstrate that a duplicate error enum, changed header size/magic, fourth dump, or `.md`/`.txt` drift fails lint.
+
+**Focused checks:** `cargo xtask pixels-plan-lint`.
+
+**Repository gate:** `cargo xtask verify`.
+
+**Stop conditions:** two consumers genuinely require incompatible formats; resolve that as a versioned format decision before continuing.
+
+## Task P-1.5 — close smooth-object and deformation soundness
+
+**Requires:** P-1.4.
+
+**Produces:** a positive reference/formal proof that the candidate generator is complete for smooth objects, plus compiler-derived deformation contracts.
+
+**Files:** `formal/pixels/Pixels/SmoothObject.lean` (new), `formal/pixels/Pixels/Deformation.lean` (new), Rust reference tests under the P-1.1 ownership path, and `tests/golden/check-pixels-smooth-interior-root/` (new).
+
+**Contract/dump delta:** a `SmoothObjectRootProgram` links support-shell inclusion to primitive `q` slabs and isolates the full composed object scalar, not merely roots of leaves. Public arbitrary `bounded_displace` is removed; `sinusoidal_displace` lowers to a compiler-derived contract.
+
+**Work:** cover the regression `a=b=k/4`, where both leaves are nonzero while smooth-min is zero; prove saturation outside the shell and complete root coverage inside it; derive amplitude/gradient/Hessian/third-derivative bounds from every accepted deformation form.
+
+**Tests:** smooth-interior zero, saturated branch, nested smooth CSG, and intentionally false deformation-bound fixtures.
+
+**Focused checks:** focused Rust reference tests and `cargo xtask pixels-formal`.
+
+**Repository gate:** `cargo xtask verify`.
+
+**Stop conditions:** any accepted scene can have an object root without a root-program candidate, or any deformation bound depends on an author assertion.
+
+## Task P-1.6 — ship a plane-only vertical walking skeleton
+
+**Requires:** P-1.5.
+
+**Produces:** a bootable 64×32 plane-only renderer image whose source declaration, frame-program envelope, generated actor, scalar raster, guest display driver, VMM sink, and stable dumps produce one locked digest.
+
+**Files:** the compiler/runtime paths established above, `tests/golden/boot-pixels-walking-skeleton/` (new), and its expected three dump files.
+
+**Contract/dump delta:** installs the end-to-end boundaries only. The program rejects every field kind except one marked plane with a specific diagnostic; it is deleted/replaced by P7/P8, not generalized opportunistically.
+
+**Work:** use scalar code only, no event system, kinetic state, SIMD, lighting, or proof claim beyond the analytic plane. Record an informational code-size, memory, and frame-cost baseline.
+
+**Tests:** exact source/dump/image/digest reproducibility and explicit rejection of a sphere or second plane.
+
+**Focused checks:** the skeleton golden and headless replay test.
+
+**Repository gate:** `cargo xtask verify`.
+
+**Stop conditions:** any pixel is created by the host, any boundary bypasses ordinary image construction, or the digest is nondeterministic.
+
+### Milestone P-1 close
+
+Run `cargo xtask verify`. P0 may start only when the plan lint, source ABI, soundness regressions, and vertical walking skeleton are all green.
+
+---
+
 # Milestone P0 — contract, scaffolding, and permanent fixtures
 
-Milestone result: the repository knows that Pixels is a production compiler subsystem, has stable empty-stage dumps, a pinned formal project, and a fixed permanent fixture corpus. No renderer semantics exist yet.
+Milestone result: the repository knows that Pixels is a production compiler subsystem, has stable stage scaffolding, a pinned formal project, and a fixed permanent fixture corpus. The deliberately isolated P-1 plane skeleton remains as an end-to-end boundary test; no additional production renderer semantics exist yet.
 
 ## Task P0.1 — add the normative implementation chapter
 
@@ -2758,8 +2968,9 @@ docs/designs/pixels.md
 **Work**
 
 - Add `07-pixels.md` containing sections 0–5 of this plan in normative form.
+- After this task, `docs/language/07-pixels.md` is authoritative for language/runtime behavior and this design document is authoritative only for implementation ordering, ownership, and gates. A semantic change must update the language chapter first and then reconcile this plan in the same commit.
 - Amend compiler chapter §5 to name `FieldGraph` and `FrameProgram` as compiler-owned data, not executable IR.
-- Add `@field`, `@material`, `@range`, `@rate`, `Image.renderer`, renderer public types, and SIMD kernel obligation to library chapter.
+- Add `@field`, `@material`, `@range`, `@rate`, `Image.renderer`, renderer public types, and the one-ISA workload/instruction-selection obligation to the library chapter; record `FEAT_DotProd` as a planned P12 machine-v1 baseline addition rather than silently using it.
 - Add `frameprog`/`pixelsdata` image regions and generated renderer actors to machine chapter while preserving machine-v1 display semantics.
 - Mark the existing `docs/designs/pixels.md` historical measurements as evidence only and link to the normative chapter.
 - Preserve the unfavorable online fieldprobe result. Do not rewrite history to imply it validated this renderer.
@@ -2784,11 +2995,11 @@ cargo xtask verify
 pixels P0.1: write the production Pixels contract
 ```
 
-## Task P0.2 — add compiler module scaffolding and empty dumps
+## Task P0.2 — formalize compiler module scaffolding and zero-renderer dumps
 
 **Purpose**
 
-Establish module ownership and stable stage names before features.
+Promote the P-1 boundary-test scaffolding into its permanent module ownership and establish canonical zero-renderer behavior.
 
 **Files**
 
@@ -2806,10 +3017,10 @@ tests/golden/check-pixels-empty/expected/render-layout.txt
 
 **Work**
 
-- Add `pub mod pixels;`.
+- Retain/add `pub mod pixels;` from the P-1 skeleton and remove any temporary P-1-only module names.
 - Define `PixelsError` and `PixelsDiagnostic` without renderer behavior.
 - Add CLI stage parsing for `field-graph`, `frame-program`, `render-layout`, and `--renderer=<index>`.
-- Until a renderer exists, dumps print version headers plus `Renderers count=0`.
+- For an image with no renderer, dumps print version headers plus `Renderers count=0`; the plane-skeleton fixture prints its explicitly restricted minimal records.
 - A renderer index on an image with no renderer is a clear build error.
 - Add the three stages to CLI help and stage-validation tests.
 
@@ -2822,12 +3033,12 @@ pub enum PixelsDumpStage {
     RenderLayout,
 }
 
-pub fn dump_empty(stage: PixelsDumpStage) -> String;
+pub fn dump_zero_renderers(stage: PixelsDumpStage) -> String;
 ```
 
 **Acceptance criteria**
 
-- All three dump stages produce byte-stable empty outputs.
+- All three dump stages produce byte-stable zero-renderer outputs and retain the reviewed P-1 skeleton outputs.
 - Existing stage behavior and usage text remain unchanged except for additions.
 - Unknown `--renderer` use is rejected, not ignored.
 - No renderer code is imported by sema, eval, lower, or layout yet.
@@ -2870,7 +3081,7 @@ crates/xtask/src/main.rs
 - Implement comment/string-aware forbidden-token scanning.
 - Add `cargo xtask pixels-formal` and `pixels-formal-scan`.
 - `verify` runs the scan only.
-- `verify-milestone` runs the complete formal command.
+- `verify-deep` runs the complete formal command.
 - Missing Lean in the milestone environment fails closed with installation instructions; it is not silently skipped.
 
 **Acceptance criteria**
@@ -2884,7 +3095,6 @@ crates/xtask/src/main.rs
 
 ```text
 cargo xtask verify
-cargo xtask verify-milestone
 ```
 
 **Commit**
@@ -2916,15 +3126,17 @@ tests/golden/check-pixels-area-light/
 tests/golden/check-pixels-kinetic/
 tests/golden/err-pixels-unsupported-op/
 tests/golden/err-pixels-missing-range/
+tests/golden/err-pixels-rate/
 tests/golden/err-pixels-topology-branch/
 stdlib/tests/pixels_contract.wr
 tests/census.toml
+tests/pixels-cases.txt
 ```
 
 **Work**
 
 - Add source fixtures with expected placeholder errors saying the production Pixels stage is not implemented.
-- Record all fixture names in the existing test census.
+- Create every fixture named in §11, not only the representative paths printed above, and record all names in both the existing census and `tests/pixels-cases.txt`.
 - Geometry is deterministic and documented in a `README.md` inside each complex fixture.
 - Thin/enclosed/close-depth cases use exact integer or dyadic source constants, not random placement.
 - Add expected final-frame digest placeholders only where the golden harness already supports boot output; do not invent a second fixture system.
@@ -2935,6 +3147,7 @@ tests/census.toml
 - Each adversarial scene states the failure class it protects.
 - No fixture uses a dense edge mask or precomputed renderer hints as source input.
 - The test census refuses accidental deletion.
+- Plan lint proves the §11 fixture-name set, `tests/pixels-cases.txt`, and discovered golden directories are identical; later milestones replace placeholders without silently adding or dropping correctness classes.
 
 **Gate**
 
@@ -2953,7 +3166,7 @@ pixels P0.4: pin the permanent renderer corpus
 Run:
 
 ```text
-cargo xtask verify-milestone
+cargo xtask verify
 ```
 
 The milestone is closed when documentation, empty dumps, formal skeleton, and fixture census are all pinned. No placeholder may say “choose later”; it may only say “implemented in task Px.y.”
@@ -2962,7 +3175,7 @@ The milestone is closed when documentation, empty dumps, formal skeleton, and fi
 
 # Milestone P1 — source surface, semantic checks, and image declaration
 
-Milestone result: Wrela can type-check `@field`, `@material`, ranges/rates, and `Image.renderer`; the sealed image graph contains renderer declarations. No symbolic graph or frame program is emitted yet.
+Milestone result: Wrela can type-check the complete `@field`, `@material`, ranges/rates, and `Image.renderer` surface; the sealed image graph contains renderer declarations. This completes the minimal ABI proved in P-1.2. No general symbolic graph or production frame program is emitted yet.
 
 ## Task P1.1 — add standard-library field and renderer types
 
@@ -2975,7 +3188,6 @@ Make the source API parse and type-check using ordinary Wrela declarations while
 ```text
 stdlib/core/field.wr
 stdlib/core/render.wr
-stdlib/core/prelude.wr
 stdlib/tests/pixels_contract.wr
 ```
 
@@ -2983,24 +3195,25 @@ stdlib/tests/pixels_contract.wr
 
 Define:
 
-- `Vec2`, `Vec3`, `Vec4`, `Rgb`, `Aabb`, `Camera`;
+- `Vec2`, `Vec3`, `Vec4`, `Rgb`, `Aabb`, `Camera`, `CameraBounds`;
 - opaque `Field`;
 - `ObjectId`, `MaterialId` as user enums accepted by `mark`;
 - primitive/composition function signatures from §2.2;
-- `SurfaceContext`;
-- `MaterialSample` closed constructors;
+- `SurfaceContext[M]`;
+- `MaterialSample` closed constructors and `LightFrame`/`LightConfig` sealed fixed-capacity declarations;
+- `ScalarRange`, `RgbRange`, `AoConfig`, and `ProbeConfig`;
 - `RenderProfile`, `ToneCurve`, `RenderFrame[P]`, `RenderedFrame[P]`, `RenderError`;
 - opaque `Renderer[P]` actor handle surface;
 - `Image.renderer[P]` declaration signature in the image-builder surface.
 
-The Wrela bodies of compiler-recognized field constructors may be `panic("compiler intrinsic")` if they can never execute. Ordinary scalar/material helper bodies must be real Wrela.
+Every compiler-recognized field constructor has real scalar Wrela semantics. No field operation may use `panic("compiler intrinsic")` as its normative body.
 
 **Acceptance criteria**
 
 - Source examples in §0 parse.
 - User code cannot construct arbitrary `Field` storage or access its representation.
 - `MaterialSample` constructors validate finite/clamped source arguments at runtime where appropriate.
-- Existing prelude users see no ambiguous names.
+- Existing imports see no ambiguous names.
 - No compiler intrinsic exists solely because a normal Wrela body would suffice.
 
 **Gate**
@@ -3048,8 +3261,8 @@ tests/golden/err-pixels-material-signature/
 ```text
 @field fn f(p: Vec3) -> Field
 @field fn f(p: Vec3, read params: P) -> Field
-@material fn m(surface: SurfaceContext) -> MaterialSample
-@material fn m(surface: SurfaceContext, read params: P) -> MaterialSample
+@material fn m(surface: SurfaceContext[M]) -> MaterialSample
+@material fn m(surface: SurfaceContext[M], read params: P) -> MaterialSample
 ```
 
 Parameter names are not semantic. Order and types are.
@@ -3101,7 +3314,7 @@ Rules:
 - values are comptime finite scalar constants convertible to the field scalar type;
 - `min <= max`;
 - integer ranges are exact;
-- vector fields place attributes on each scalar component in v1; struct-level/vector shorthand is not supported;
+- a vector field may use one component-wise shorthand; arrays and structs require annotations on each influencing scalar/vector field and do not inherit recursively;
 - `@rate` requires `max_delta >= 0` and `max_second_delta >= 0`;
 - rate units are per presented frame at declared `refresh_hz`;
 - a zero rate means statically unchanged after initialization;
@@ -3148,9 +3361,9 @@ tests/golden/err-pixels-field-private/
 - Add every field constructor/combinator to the written-down intrinsic census.
 - Type labels and generic arguments exactly.
 - `mark` accepts only comptime enum variants for object/material identity in v1.
-- `repeat` requires a positive finite period and explicit finite axis mask.
-- transforms accept only rigid/uniform-scale operations in v1; nonuniform scale is a separate `ellipsoid` primitive or a build error.
-- `bounded_displace` requires declared amplitude, gradient, and Hessian bounds.
+- `finite_repeat_x/y/z` each encode exactly one axis and require positive finite period plus compile-time `first` and `count`; multidimensional repetition is explicit nesting in source order.
+- transforms accept only rigid/uniform-scale operations in v1; nonuniform scale is a build error.
+- public `sinusoidal_displace` lowers to internal `BoundedDisplace` with compiler-derived amplitude, gradient, Hessian, and third-derivative bounds; authors cannot supply these bounds.
 - ordinary arithmetic on `Field` is unavailable.
 - field values cannot be stored in user structs, arrays, statics, actors, messages, or returned from non-`@field` public APIs.
 
@@ -3201,11 +3414,9 @@ For field roots reject:
 - `for` without a comptime exact extent;
 - `await`, `send`, actor calls, groups;
 - placed/static mutation, MMIO, entropy, time, panic on a reachable path;
-- runtime branch selecting different field topology;
+- any runtime branch in a field root or helper whose condition depends on coordinate or parameter data;
 - function values or indirect calls;
 - dynamic indexing whose finite alternatives cannot be unrolled.
-
-Permit a runtime branch only when both arms compile to identical field topology and differ solely in scalar coefficients. Establish identity by canonical field-shape hash after symbolic compilation; before that stage, mark the branch as `NeedsTopologyEqualityCheck` rather than accepting it.
 
 Material roots may branch on material identity, explicit event-classified scalar predicates, and ordinary bounded values. A material discontinuity affecting output must be surfaced later as an event predicate.
 
@@ -3254,7 +3465,7 @@ tests/golden/err-pixels-renderer-decl/
 - Preserve function references as `Value::Fn` in declaration args.
 - Add `ImageDeclRef::Renderer` rendering and recursive declaration-reference scanning.
 - Add renderer blocks to the `--stage=image` dump and ordinary report.
-- `renderer.handle()` produces `Actor[Renderer[P]]` only after generated actor synthesis exists; until P5 it returns a typed opaque declaration ref accepted only by image construction. Do not fake a numeric actor ID.
+- `renderer.handle()` produces the typed deferred `Actor[Renderer[P]]` reference established in P-1.2. P5 resolves that declaration reference to a generated actor identity; P1 must not fake a numeric actor ID.
 
 **Acceptance criteria**
 
@@ -3302,6 +3513,7 @@ No renderer compilation occurs yet. `check_sealed` only returns a validated `Ren
 **Acceptance criteria**
 
 - Every required argument has one diagnostic.
+- The complete required label set is exactly §2.5, including camera/light/exposure/environment/AO/probe bounds and initialization deadline.
 - Every function reference resolves to a matching annotated root.
 - Cross-module roots work through the ordinary checked closure.
 - Parameter type equality is structural/canonical, not string comparison.
@@ -3366,7 +3578,7 @@ pixels P1.8: pin renderer source and image dumps
 
 ### Milestone P1 close
 
-Run `cargo xtask verify-milestone`. The milestone is closed only when the complete source API type-checks and every bad declaration fails before symbolic compilation.
+Run `cargo xtask verify`. The milestone is closed only when the complete source API type-checks and every bad declaration fails before symbolic compilation.
 
 ---
 
@@ -3444,7 +3656,7 @@ Implement `SymValue` from §4.2 and scalar node kinds for:
 - min/max/abs/clamp;
 - sqrt/rsqrt/sin/cos with fixed semantic op IDs;
 - dot, cross, length, normalize as fused scalar/vector nodes;
-- comparisons used only in topology-equality/material event branches;
+- comparisons used only in material event branches;
 - tuple/struct temporary values needed by helper functions.
 
 Parameter paths are resolved through typed field indices. Store human spelling only in diagnostics/dumps.
@@ -3493,7 +3705,6 @@ Implement:
 - canonical generic instance lookup;
 - `let`, expression statement, return;
 - `if` with compile-time condition;
-- coefficient-only runtime branch represented as `SymSelect` pending topology equality;
 - exact bounded `for` unrolling;
 - `match` over compile-time enum or explicit material/object identity;
 - call-depth, node-count, loop-expansion, and symbolic-memory quotas;
@@ -3506,7 +3717,7 @@ No `while`, `await`, send, closure invocation, mutation through aliases, or exce
 - The evaluator is total over the accepted legality subset.
 - Quota exhaustion is a `pixels` build error, not panic or partial graph.
 - Identical helper calls can later CSE but preserve all source origins.
-- Runtime branch arms are both compiled; neither is selected by a sample value.
+- A field runtime branch is rejected before evaluation; material branch arms are both compiled and neither is selected by a sample value.
 - Fixed loop expansion order is ascending source iteration order.
 
 **Gate**
@@ -3537,30 +3748,7 @@ crates/wrela-compiler/src/pixels/field_intrinsics.rs
 
 **Work**
 
-For every field intrinsic, parse labels once and emit a typed `FieldNode`:
-
-```rust
-enum FieldKind {
-    Plane { point: Vec3Expr, normal: Vec3Expr, offset: ScalarId },
-    Sphere { point: Vec3Expr, center: Vec3Expr, radius: ScalarId },
-    Box { point: Vec3Expr, center: Vec3Expr, half: Vec3Expr },
-    RoundBox { point: Vec3Expr, center: Vec3Expr, half: Vec3Expr, radius: ScalarId },
-    Capsule { point: Vec3Expr, a: Vec3Expr, b: Vec3Expr, radius: ScalarId },
-    Cylinder { ... },
-    Cone { ... },
-    Torus { ... },
-    HardMin { a: FieldId, b: FieldId },
-    HardMax { a: FieldId, b: FieldId },
-    Neg { child: FieldId },
-    SmoothMin { a: FieldId, b: FieldId, k: ScalarId },
-    SmoothMax { a: FieldId, b: FieldId, k: ScalarId },
-    Transform { child: FieldId, transform: TransformExpr },
-    Repeat { child: FieldId, spec: RepeatSpecExpr },
-    BoundedDisplace { child: FieldId, displacement: ScalarId, contract: DeformContract },
-    Mark { child: FieldId, object: ObjectKey, material: MaterialKey },
-    SelectSameTopology { cond: ScalarId, then_field: FieldId, else_field: FieldId },
-}
-```
+For every field intrinsic, parse labels once and emit the canonical `FieldKind` from §4.4. Primitive details use §4.5; do not copy a second shape into this task. `sinusoidal_displace` emits `BoundedDisplace` with `DerivedDeformContract`.
 
 Do not immediately flatten transforms or marks. Preserve source structure.
 
@@ -3665,7 +3853,6 @@ Canonicalization performs only semantics-preserving rewrites fixed here:
 - preserve saturated smooth branch identity;
 - hash-cons exact equal scalar/field/material nodes;
 - merge origins into stable sorted span lists;
-- resolve `SelectSameTopology` only after shape equality; otherwise emit `P003`.
 
 Use a deterministic structural key enum, not serialized debug text.
 
@@ -3675,7 +3862,7 @@ Use a deterministic structural key enum, not serialized debug text.
 - Running it twice produces byte-identical dumps and IDs.
 - Differential unit tests compare pre/post scalar evaluation over deterministic input grids.
 - Smooth-min one-ulp/saturation fixtures remain exact.
-- A coefficient-only branch with equal topology succeeds; unequal topology fails.
+- All coordinate/parameter-dependent field branches fail with `P003`, including equal-topology arms.
 
 **Gate**
 
@@ -3740,7 +3927,7 @@ pixels P2.7: pin symbolic field and material dumps
 
 ### Milestone P2 close
 
-Run `cargo xtask verify-milestone`. The graph dump becomes a compatibility artifact; later changes must be deliberate and reviewed.
+Run `cargo xtask verify`. The graph dump becomes a compatibility artifact; later changes must be deliberate and reviewed.
 
 ---
 
@@ -3804,7 +3991,7 @@ Create a complete dependency digest schema over:
 
 - A parameter used in both geometry and material has one slot and two uses.
 - Unused fields contribute zero renderer-state bytes.
-- Every referenced path has `@range`; every nonzero/changeable use has `@rate`.
+- Every referenced numeric path has `@range`; missing `@rate` merely disables kinetic reuse for changes to that path.
 - Static zero-rate parameters are marked immutable and may be folded later.
 - Dependency dump is independent of source field spelling.
 
@@ -4021,13 +4208,13 @@ Rules:
 - smooth min/max add `k/4` to the maximum descendant budget;
 - when a child-gap lower bound is known inside a region, emit the exact active-band bulge program `(k-gap)^2/(4k)`;
 - displacement amplitude is a separate shell expansion and is not double-counted as smooth support;
-- coefficient-only selects union both arms and require equal leaf topology.
 
 Balance only compiler-generated associative smooth trees if source bit semantics explicitly define reassociation. For v1, preserve authored tree and report its maximum support depth; do not silently reassociate.
 
 **Acceptance criteria**
 
 - Every smooth composite zero has at least one leaf shell in the formal model.
+- Every smooth composite zero lies in a `SmoothObjectRootProgram` domain whose full composed scalar is isolated; completeness never assumes a primitive leaf is zero.
 - Per-leaf shell expansion is finite.
 - Gap-sensitive programs never exceed the coarse max budget.
 - Unit tests cover nested, saturated, equal-child, and varying-k trees.
@@ -4065,7 +4252,7 @@ formal/pixels/Pixels/Csg.lean
 
 Partition at hard operations:
 
-- a maximal subtree containing primitives, transforms, repeat-fixed instances, bounded displacement, and smooth min/max is one `SmoothObject`;
+- a maximal subtree containing primitives, transforms, structurally enumerated finite-repeat instances, compiler-derived bounded displacement, and smooth min/max is one `SmoothObject`;
 - hard union/intersection/subtraction/negation compile to an occupancy expression over object IDs;
 - marks establish object/material identity within a smooth object; conflicting marks inside one smooth blend produce a finite blend identity set;
 - repeated instances become distinct object instances sharing one feature template and coefficient program;
@@ -4091,6 +4278,7 @@ Subtraction is `a AND NOT b` in occupancy semantics. Record per-object Boolean i
 - Hard union of marked objects preserves independent identity until the visible crossing is selected.
 - Smooth blends remain within one object and are not represented as Boolean toggles.
 - Object ordering is stable by canonical root structural key then source origin.
+- P3.6 performs the finite structural instance enumeration required for partitioning; P3.8 later compiles the reusable projective/event templates and derived numeric bounds for those already-enumerated instances.
 
 **Gate**
 
@@ -4198,19 +4386,19 @@ For repetition:
 
 For bounded displacement:
 
-- store amplitude, gradient, Hessian, and optional third-derivative bounds;
+- store compiler-derived amplitude, gradient, Hessian, and third-derivative bounds;
 - retain base feature projective equation as predictor;
 - compile displacement value/derivative programs;
 - expand bounds exactly once by amplitude;
-- classify supported sinusoidal/octave forms for tighter range programs;
-- treat arbitrary bounded scalar helper as a Taylor/interval deformation, not an analytic primitive.
+- lower every public `sinusoidal_displace` form to the closed derivation named by `DerivedDeformContract`;
+- reject any arbitrary scalar helper or author-supplied bound.
 
 **Acceptance criteria**
 
 - Repeat fixture contains no runtime modulo/floor inside a fixed instance certificate.
 - Instance ordering and IDs are deterministic for negative indices.
-- Displacement contracts are checked against source-declared frequencies/amplitudes where structurally known.
-- An understated user contract is caught by deterministic differential compile tests and documented as a source contract violation; production trust relies on compiler derivation for built-in forms and explicit checked wrapper types for custom forms.
+- Displacement contracts are derived from source frequency/amplitude constants and checked against the independent reference implementation.
+- There is no user contract to understate in v1; an unsupported custom deformation is a build error.
 - Cross-wrap domains always create event/split obligations.
 
 **Gate**
@@ -4435,7 +4623,7 @@ pixels P3.12: pin structural proof dumps
 
 ### Milestone P3 close
 
-Run `cargo xtask verify-milestone`. Do not start projective lowering until all accepted fixtures have a verified structural program and all runtime storage classes have finite capacities.
+Run `cargo xtask verify`. Do not start projective lowering until all accepted fixtures have a verified structural program and all runtime storage classes have finite capacities.
 
 ---
 
@@ -4691,7 +4879,7 @@ Sinusoidal/octave built-ins compile exact phase recurrence coefficient programs 
 - Torus retains multiple ordered roots where present; it never returns only the nearest candidate before CSG/occupancy processing.
 - Deformed-plane fixture constructs a root tube around the exact plane predictor.
 - Approximation remainder is included in every residual/derivative interval.
-- Unsupported custom deformation without sufficient derivative contract fails at build time.
+- Every custom deformation is rejected in v1; only compiler-derived closed deformation contracts reach this pass.
 - Formal torus equivalence and Taylor-with-remainder generic theorems build.
 
 **Gate**
@@ -5023,12 +5211,15 @@ Use offset/count arrays into sorted ID tables. Do not use pointer-rich trees or 
 
 Index construction may duplicate small IDs between adjacent tiles; report bytes. Every table is sorted ascending by ID inside each cell. Duplicate IDs within one cell are forbidden.
 
+Refine the P3 structural ceilings into final P4 runtime capacities for candidate features, root/event isolation stacks, competition pairs, row events, sheets, runs, corridors, and index slices. These formulas consume the completed event/exclusion/index tables and are the capacities serialized by P5; P3.10 alone is not labeled final for P4 data.
+
 **Acceptance criteria**
 
 - Runtime lookup is two bounds-checked loads plus a contiguous slice.
 - Every feature/event appears in every tile its conservative span touches.
 - No record appears outside its span unless required halo is documented.
 - Index size fits capacity and image ceiling.
+- Every P4-derived capacity equals or conservatively encloses an exact completed-table/worklist derivation and is verified before P5.
 - Unit tests compare indexed retrieval to a slow full-table overlap filter.
 
 **Gate**
@@ -5139,19 +5330,19 @@ pixels P4.12: pin projective and event compiler dumps
 
 ### Milestone P4 close
 
-Run `cargo xtask verify-milestone`. The milestone closes only when every accepted scene has a verified finite local event program and every omitted interaction has an explicit exclusion proof.
+Run `cargo xtask verify`. The milestone closes only when every accepted scene has a verified finite local event program and every omitted interaction has an explicit exclusion proof.
 
 ---
 
 # Milestone P5 — `FrameProgram v1`, image placement, generated renderer actors, and reports
 
-Milestone result: the compiler emits a verified binary frame program, reserves all mutable renderer memory, synthesizes typed renderer actors/glue, places everything in the sealed image, and reports the complete renderer contract. The runtime still returns `UnsupportedFrameState` before rendering.
+Milestone result: the compiler emits a verified binary frame program, reserves all mutable renderer memory, synthesizes typed renderer actors/glue, places everything in the sealed image, and reports the complete renderer contract. The production path still returns `FrameContractMismatch` before rendering because the sweep is not installed; only the explicitly tagged P-1 plane-skeleton conformance image may use the temporary analytic plane path.
 
 ## Task P5.1 — define `FrameProgram v1` Rust structs
 
 **Purpose**
 
-Freeze the in-memory semantic format before byte encoding.
+Freeze the v1 outer wire envelope, directory namespace, and all P0–P8 record layouts before byte encoding. P9–P11 populate predeclared table kinds without changing the 80-byte header or 16-byte directory entry.
 
 **Files**
 
@@ -5167,25 +5358,9 @@ Define fixed-width records using only integer IDs, offsets, counts, enum tags, a
 
 ```rust
 pub struct FrameProgram { /* rich verified model */ }
-
-#[repr(C)]
-pub struct FrameProgramHeaderV1 {
-    pub magic: [u8; 8],          // b"WRELAPX\0"
-    pub version: u16,            // 1
-    pub header_bytes: u16,
-    pub flags: u32,
-    pub total_bytes: u32,
-    pub renderer_index: u16,
-    pub reserved0: u16,
-    pub numeric_revision: u32,
-    pub formal_revision: u32,
-    pub table_count: u16,
-    pub reserved1: [u8; 14],
-    pub digest: [u8; 32],
-}
 ```
 
-The digest field is zero while hashing and then filled with SHA-256 of the complete encoded bytes with that field zeroed. Document this exactly.
+Implement `FrameProgramHeaderV1` and `FrameProgramTableV1` exactly once from the canonical definitions in §4.14; do not copy a second field list into task-local documentation or code-generation metadata. Assert header size 80 and directory-entry size 16. The digest field is zero while hashing and then filled with SHA-256 of the complete encoded bytes with that field zeroed.
 
 Wire record rules:
 
@@ -5207,6 +5382,7 @@ Wire record rules:
 - Every rich record has a wire counterpart or is intentionally compiler-only and documented.
 - Version/revision constants appear in one location.
 - Header magic/version corruption tests exist.
+- Predeclared P9–P11 table kinds round-trip as canonical empty directory entries.
 
 **Gate**
 
@@ -5389,7 +5565,7 @@ Place immutable and mutable renderer data without disturbing existing rtdata inv
 **Files**
 
 ```text
-crates/wrela-machine/src/layout.rs
+crates/wrela-machine/src/lib.rs
 crates/wrela-compiler/src/layout.rs
 crates/wrela-compiler/src/layout/place.rs
 crates/wrela-compiler/src/layout/report_lines.rs
@@ -5430,7 +5606,6 @@ If multiple renderer programs are noncontiguous because of alignment, section co
 
 ```text
 cargo xtask verify
-cargo xtask verify-milestone
 ```
 
 **Commit**
@@ -5528,7 +5703,7 @@ Generated source must parse/type-check through the ordinary compiler, like `core
 
 **Acceptance criteria**
 
-- `--stage=rtconfig` either gains a clearly separated `PixelsConfig` block or add `--stage=pixelsconfig`; choose `pixelsconfig` to avoid changing existing rtconfig goldens unnecessarily.
+- renderer configuration appears inside the canonical `frame-program` dump; do not create a fourth Pixels dump stage.
 - Generated module has a stable dump.
 - Every runtime capacity/address comes from compiler placement, not duplicated arithmetic in Wrela.
 - Stubs support zero-renderer images.
@@ -5589,7 +5764,7 @@ Placement:
 - workers own disjoint workspace/framebuffer tile ranges;
 - generated actor bytes/work participate in existing placement report.
 
-Until sweep exists, `render` returns `Err(UnsupportedFrameState)` after validating frame input and without touching display.
+Until sweep exists, `render` returns `Err(FrameContractMismatch(RenderPath.RendererUnavailable))` after validating frame input and without touching display.
 
 **Acceptance criteria**
 
@@ -5603,7 +5778,6 @@ Until sweep exists, `render` returns `Err(UnsupportedFrameState)` after validati
 
 ```text
 cargo xtask verify
-cargo xtask verify-milestone
 ```
 
 **Commit**
@@ -5612,11 +5786,11 @@ cargo xtask verify-milestone
 pixels P5.8: synthesize bounded renderer actors
 ```
 
-## Task P5.9 — root generated renderer functions and constants
+## Task P5.9 — root renderer orchestration and bootstrap dispatch
 
 **Purpose**
 
-Ensure dead-code elimination retains exactly the runtime paths required by declared renderers.
+Ensure dead-code elimination retains the orchestration and placeholder dispatch paths required at P5. Exact used-kernel palette generation belongs to P12.2 after all P9–P11 features exist.
 
 **Files**
 
@@ -5632,16 +5806,16 @@ Add generated function keys to the existing image force-root calculation only wh
 
 - coordinator public render method;
 - worker job method;
-- generated numeric dispatch helpers referenced indirectly through table tags;
+- bootstrap numeric dispatch helpers referenced by the P0–P8 table kinds;
 - display present path;
 - runtime abort/failure path already required.
 
-Do not force-root every possible primitive/material kernel. `FrameProgram` record kind census determines the exact palette and generated dispatch table. Unsupported/missing palette entry is an internal build error.
+Do not force-root every possible future primitive/material kernel. The P5 record-kind census roots the bounded bootstrap dispatcher; P12.2 replaces it with the exact final palette. Unsupported/missing P5 entry is an internal build error.
 
 **Acceptance criteria**
 
-- Declared scene emits only kernels for used record kinds plus fixed core orchestration.
-- Removing a primitive from source can remove its unused kernel deterministically.
+- Declared scene emits fixed core orchestration plus only the P5 bootstrap families it references.
+- The dump explicitly marks the palette `bootstrap`; it may not claim final exactness.
 - No indirect function pointer is required; dispatch is bounded switch/match over record tags.
 - Cost report never assigns zero to a used renderer method because a key was omitted.
 
@@ -5654,7 +5828,7 @@ cargo xtask verify
 **Commit**
 
 ```text
-pixels P5.9: root the exact renderer kernel palette
+pixels P5.9: root renderer bootstrap dispatch
 ```
 
 ## Task P5.10 — implement full frame-program/report dumps
@@ -5677,7 +5851,7 @@ tests/golden/check-pixels-*/expected/report.txt
 
 **Work**
 
-Implement §8.3–8.5 completely. Add `pixelsconfig` dump if selected in P5.7. Report compiler/rich counts, wire bytes, mutable reservation, generated actors, worker tile ranges, and fallback policy.
+Implement §8.3–8.5 completely. Report compiler/rich counts, wire bytes, mutable reservation, generated actors, worker tile ranges, and fallback policy in the existing three Pixels dumps.
 
 Do not report expected/estimated frame rate. Existing cost section later reports emitted code proxy cycles; renderer report is structural and exact.
 
@@ -5742,7 +5916,6 @@ Classify expensive whole-corpus reproduction into milestone lane; keep one plane
 
 ```text
 cargo xtask verify
-cargo xtask verify-milestone
 ```
 
 **Commit**
@@ -5753,7 +5926,7 @@ pixels P5.11: gate frame-program fuzz and reproducibility
 
 ### Milestone P5 close
 
-Run `cargo xtask verify-milestone`. The milestone closes when renderer images boot, contain verified frame-program bytes and exact state reservations, expose real renderer actors, and deterministically return `UnsupportedFrameState` without presentation.
+Run `cargo xtask verify`. The milestone closes when renderer images boot, contain verified frame-program bytes and exact state reservations, expose real renderer actors, and deterministically return `FrameContractMismatch(RenderPath.RendererUnavailable)` without presentation.
 
 ---
 
@@ -5826,16 +5999,7 @@ formal/pixels/KERNELS.txt
 
 **Work**
 
-Runtime type:
-
-```wrela
-struct Iv32:
-    lo: i32
-    hi: i32
-    exponent: i8
-```
-
-Operations return `Result[Iv32, NumericError]` where machine overflow or unsupported exponent alignment is possible. Provide:
+Implement the canonical `Iv32`/`FixedDomain` contract from §5.1. Every operation also receives the compiler-selected `FixedDomain` for that value family. Hot intervals never carry or dynamically align exponents. Conversion between domains is a cold, explicit checked operation performed only at declared program boundaries. Operations return `Result[Iv32, NumericError]` where machine overflow is possible. Provide:
 
 - `contains_zero`, `strict_positive`, `strict_negative`;
 - `add`, `subtract`, `negate`;
@@ -5849,12 +6013,12 @@ Operations return `Result[Iv32, NumericError]` where machine overflow or unsuppo
 - conversion from f32 bits plus supplied ULP/radius;
 - comparison predicates used by q-order/byte checks.
 
-Exponent normalization policy is fixed:
+Domain-conversion policy is fixed:
 
-- align to the coarser exponent that avoids left-shift overflow;
-- shift finer mantissas outward using floor for low and ceil for high;
-- never silently saturate;
-- exponent range `[-96, 63]` in v1.
+- source and destination domains are explicit operands;
+- shift mantissas outward using floor for low and ceil for high;
+- never silently saturate or choose a domain at runtime;
+- compiler-selected exponent range is `[-96, 63]` in v1.
 
 **Acceptance criteria**
 
@@ -5980,8 +6144,8 @@ Tangency without sign change is handled by derivative/discriminant/root-count pr
 
 - Plane, sphere, torus multi-root, tangent double-root, close roots, and no-root fixtures pass.
 - All roots inside domain are returned or outcome is `Unresolved`; no partial list labeled complete.
-- Root count never exceeds compiler capacity; overflow is `EventCapacityExceeded`/`SheetCapacityExceeded`.
-- Rust/Wrela vector outputs agree exactly on interval endpoints/counts/reasons.
+- Root count never exceeds compiler capacity; overflow is `CapacityExceeded(RenderCapacity.Roots)` or `CapacityExceeded(RenderCapacity.Sheets)`.
+- Rust/Wrela scalar outputs agree exactly on interval endpoints/counts/reasons.
 - Lean bracket/subdivision completeness theorems build for the used predicates.
 
 **Gate**
@@ -6139,11 +6303,11 @@ formal/pixels/KERNELS.txt
 Define:
 
 ```wrela
-struct QRun4:
-    q: i32x4
-    dq: i32x4
-    ddq: i32x4
-    exponent: i8
+struct QRunScalar:
+    q: i32
+    dq: i32
+    ddq: i32
+    domain: FixedDomain
     error_radius: i32
 ```
 
@@ -6155,11 +6319,11 @@ Setup chooses a shared exponent from certified q/dq/ddq maxima for one microtile
 - derivative/Taylor remainder;
 - microtile reset radius.
 
-Packet step advances four lane states. Scalar mirror advances each independently. Reset at generated microtile width; v1 default is 32 pixels but compiler may choose a smaller power of two to satisfy range/error, never larger than 64.
+P6 implements and proves only the scalar step. Reset at generated microtile width; v1 default is 32 pixels but the compiler may choose a smaller power of two to satisfy range/error, never larger than 64. P8.4 introduces the first `i32x4` implementation and P12 closes its backend/code-shape obligations.
 
 **Acceptance criteria**
 
-- Packet integer outputs equal scalar outputs bit-for-bit.
+- Scalar integer outputs agree with the Rust reference bit-for-bit.
 - Real q truth samples remain within q code ± error radius.
 - Quantized q-order is accepted only when original slack exceeds both radii.
 - Near-overflow fixture chooses smaller microtile or fails setup explicitly.
@@ -6354,11 +6518,11 @@ tests/golden/boot-pixels-numeric/
 
 Complete theorem-to-kernel mapping. Generate a Wrela numeric test image that runs scalar kernels against embedded vectors and prints/digests results. Host xtask computes expected results through Rust reference.
 
-The boot lane covers a focused deterministic subset in `verify`; `verify-milestone` runs the complete vector set.
+The boot lane runs the complete deterministic vector set in `verify`; `verify-deep` repeats it as part of the exhaustive release diagnostics.
 
 **Acceptance criteria**
 
-- Every required kernel has Lean, Rust, scalar Wrela, and vector references.
+- Every P6 required kernel has Lean, Rust, and scalar Wrela references. Packet mappings are added when their implementation lands in P8/P12.
 - Guest output equals host expected bytes.
 - Missing/renamed symbol breaks manifest gate.
 - No expected result is authored twice by hand.
@@ -6368,7 +6532,6 @@ The boot lane covers a focused deterministic subset in `verify`; `verify-milesto
 
 ```text
 cargo xtask verify
-cargo xtask verify-milestone
 ```
 
 **Commit**
@@ -6423,7 +6586,7 @@ Normalize and pin `#print axioms` output.
 
 ```text
 cargo xtask pixels-formal
-cargo xtask verify-milestone
+cargo xtask verify
 ```
 
 **Commit**
@@ -6434,7 +6597,7 @@ pixels P6.12: close the renderer formal trust boundary
 
 ### Milestone P6 close
 
-Run `cargo xtask verify-milestone`. Do not implement the sweep until all certificate predicates it will trust have scalar Rust/Wrela correspondence and the formal trust-boundary theorem set is green.
+Run `cargo xtask verify`. Do not implement the sweep until all certificate predicates it will trust have scalar Rust/Wrela correspondence and the formal trust-boundary theorem set is green.
 
 ---
 
@@ -6472,7 +6635,7 @@ fn event(read self, id: EventId) -> EventRecord
 fn coeff(read self, id: CoeffId, read snapshot: CoeffSnapshot) -> f32
 ```
 
-Do not expose arbitrary byte offsets to renderer code. Generated constants map table IDs to placed static fields. Any index beyond compiler-generated capacity is `InternalProgramViolation`.
+Do not expose arbitrary byte offsets to renderer code. Generated constants map table IDs to placed static fields. Any index beyond compiler-generated capacity is `InternalInvariant(RenderInvariant.ProgramIndex)`.
 
 At renderer initialization, check header magic/version/digest against generated constants once. The guest does not recompute SHA-256 per frame; boot/image integrity already covers bytes. It verifies cheap header/table counts and reserved flags.
 
@@ -6488,7 +6651,6 @@ At renderer initialization, check header magic/version/digest against generated 
 
 ```text
 cargo xtask verify
-cargo xtask verify-milestone
 ```
 
 **Commit**
@@ -6527,7 +6689,7 @@ Validation:
 - immutable texture/table IDs match image data;
 - no input aliases renderer mutable state.
 
-A frame outside declared `@range` returns `UnsupportedFrameState`; the compiler’s proofs do not apply. Do not clamp.
+A frame outside declared `@range` returns `ParameterOutOfRange(path)`; the compiler’s proofs do not apply. Do not clamp.
 
 Snapshot is copied into each worker’s fixed job record. It contains no source struct padding or unused fields.
 
@@ -6543,7 +6705,6 @@ Snapshot is copied into each worker’s fixed job record. It contains no source 
 
 ```text
 cargo xtask verify
-cargo xtask verify-milestone
 ```
 
 **Commit**
@@ -6636,7 +6797,7 @@ For tile `(tx,ty)` and local row `y`:
 
 No screen sample or q solve is used to decide whether a feature is a candidate. Support shells and projected spans are the completeness mechanism.
 
-For a feature whose coefficient/runtime bound cannot be evaluated due to numeric failure, return `CertificateExhausted`/`InternalProgramViolation` according to cause; do not omit it.
+For a feature whose coefficient/runtime bound cannot be evaluated due to numeric failure, return `CertificateExhausted` or `InternalInvariant` according to cause; do not omit it.
 
 **Acceptance criteria**
 
@@ -6658,7 +6819,7 @@ cargo xtask verify
 pixels P7.4: enumerate complete row feature sets
 ```
 
-## Task P7.5 — isolate every feature root at row start
+## Task P7.5 — isolate every smooth-object root at row start
 
 **Purpose**
 
@@ -6676,10 +6837,11 @@ crates/wrela-compiler/src/pixels/reference/sweep.rs
 
 At initial x = tile’s left pixel-center coordinate:
 
-- for each candidate feature, evaluate its positive q domain intersected with near/far;
-- use analytic affine/quadratic candidate where available, then verifier;
-- use complete bounded root isolation for torus/deformation/ambiguous cases;
-- validate feature predicates and identity at each root interval;
+- union candidate feature `q` slabs by smooth object and intersect with positive near/far q;
+- for each resulting domain, evaluate and isolate the object’s `SmoothObjectRootProgram.scalar_root`;
+- use an analytic affine/quadratic proposal where available, then verify against the full object scalar;
+- use complete bounded root isolation for smooth blends, torus/deformation, and ambiguous cases;
+- after finding an object root, validate feature predicates and determine the finite feature/identity set active at that root;
 - compute orientation interval; reject/treat event corridor if orientation contains zero;
 - insert all valid roots into fixed root array;
 - retain multiple roots of the same feature/object;
@@ -6702,6 +6864,7 @@ struct RootRecord:
 **Acceptance criteria**
 
 - Plane/sphere/torus/capsule fixtures produce all expected roots.
+- `check-pixels-smooth-interior-root` finds `a=b=k/4` without a leaf-root seed.
 - No sign-changing-only assumption misses tangencies.
 - Root records are front-to-back (larger q first) when strict order is certified.
 - Duplicate shared-feature boundary roots are deduplicated only with proof of same geometric crossing and deterministic owner rule.
@@ -6711,13 +6874,12 @@ struct RootRecord:
 
 ```text
 cargo xtask verify
-cargo xtask verify-milestone
 ```
 
 **Commit**
 
 ```text
-pixels P7.5: construct complete row-start roots
+pixels P7.5: construct complete smooth-object row roots
 ```
 
 ## Task P7.6 — evaluate the hard-CSG occupancy sweep
@@ -6807,13 +6969,12 @@ A generator that returns unresolved causes deterministic x subdivision until its
 - No regular domain contains a sampled sign change in host exhaustive fixture checks.
 - Event endpoints use half-open ownership so adjacent tiles/rows agree.
 - Multiple simultaneous event IDs remain attached to one corridor.
-- Capacity overflow returns `EventCapacityExceeded` before writing past storage.
+- Capacity overflow returns `CapacityExceeded(RenderCapacity.Events)` before writing past storage.
 
 **Gate**
 
 ```text
 cargo xtask verify
-cargo xtask verify-milestone
 ```
 
 **Commit**
@@ -6934,7 +7095,7 @@ Do not store arbitrary proof trees at runtime; store all values needed to rechec
 ```text
 cargo xtask verify
 cargo xtask pixels-formal
-cargo xtask verify-milestone
+cargo xtask verify
 ```
 
 **Commit**
@@ -6986,7 +7147,6 @@ Each rebuild cell has fixed depth/record caps from `FrameProgram`. The runtime r
 
 ```text
 cargo xtask verify
-cargo xtask verify-milestone
 ```
 
 **Commit**
@@ -7085,7 +7245,6 @@ Add a debug validation function in Rust reference that checks run/corridor cover
 
 ```text
 cargo xtask verify
-cargo xtask verify-milestone
 ```
 
 **Commit**
@@ -7137,7 +7296,6 @@ Jobs are bounded and one frame render occupies one coordinator turn/child group 
 
 ```text
 cargo xtask verify
-cargo xtask verify-milestone
 ```
 
 **Commit**
@@ -7195,7 +7353,7 @@ Add `cargo xtask pixels-conformance` comparing:
 ```text
 cargo xtask verify
 cargo xtask pixels-conformance
-cargo xtask verify-milestone
+cargo xtask verify
 ```
 
 **Commit**
@@ -7232,7 +7390,7 @@ This debug mode is compiler-internal and not a source profile. It is removed in 
 **Acceptance criteria**
 
 - All opaque permanent visibility fixtures render successfully from scratch.
-- No `UnsupportedFrameState` remains for supported valid inputs.
+- The plane-only P-1 skeleton is replaced by the complete sweep; any remaining valid-frame failure uses the §2.6 error contract.
 - Every frame pixel is written exactly once.
 - Conformance has zero visibility/identity/root failures.
 - Kinetic state is not read.
@@ -7242,7 +7400,7 @@ This debug mode is compiler-internal and not a source profile. It is removed in 
 ```text
 cargo xtask verify
 cargo xtask pixels-conformance
-cargo xtask verify-milestone
+cargo xtask verify
 ```
 
 **Commit**
@@ -7253,7 +7411,7 @@ pixels P7.15: complete from-scratch certified visibility
 
 ### Milestone P7 close
 
-Run the full milestone gate. This is the architectural correctness gate: a valid frame is constructed from scratch with no dense truth, no legacy sample lattice, no previous frame, and no guessed pixels. Later milestones may lower cost and add quality, but cannot weaken this path.
+Run `cargo xtask verify`. This is the architectural correctness gate: a valid frame is constructed from scratch with no dense truth, no legacy sample lattice, no previous frame, and no guessed pixels. Later milestones may lower cost and add quality, but cannot weaken this path.
 
 ---
 
@@ -7463,7 +7621,7 @@ Turn the hot visibility raster into vector integer additions/stores.
 stdlib/core/render_raster.wr
 crates/wrela-compiler/src/mwir.rs
 crates/wrela-compiler/src/codegen.rs
-crates/wrela-compiler/src/a64.rs
+crates/wrela-compiler/src/encode.rs
 stdlib/tests/pixels_raster.wr
 ```
 
@@ -7637,7 +7795,6 @@ On image boot, zero all tile bytes once. On subsequent frames, every visible pix
 
 ```text
 cargo xtask verify
-cargo xtask verify-milestone
 ```
 
 **Commit**
@@ -7646,68 +7803,63 @@ cargo xtask verify-milestone
 pixels P8.7: own double-buffered scanout tiles
 ```
 
-## Task P8.8 — implement machine-v1 display driver queue
+## Task P8.8 — complete machine-v1 display device and presentation backends
 
 **Purpose**
 
-Submit guest tile lists to the sealed display device with one frame doorbell.
+Extend the P-1.3 shared ABI/headless sink into production host backends without moving renderer behavior host-side. This outlier task explicitly permits five commits, P8.8a–P8.8e; each is a separate review unit and passes `cargo xtask verify`.
 
 **Files**
 
 ```text
 stdlib/drivers/display.wr
-crates/wrela-machine/src/display.rs
-crates/wrela-vmm/src/display/mod.rs
-crates/wrela-vmm/src/display/hvf.rs
-crates/wrela-vmm/src/display/kvm.rs
-crates/wrela-vmm/src/replay.rs
+crates/wrela-machine/src/lib.rs
+crates/wrela-machine/src/pixels.rs
+crates/wrela-vmm/src/devices.rs
+crates/wrela-vmm/src/display/mod.rs        # new
+crates/wrela-vmm/src/display/headless.rs   # new
+crates/wrela-vmm/src/display/hvf.rs        # new
+crates/wrela-vmm/src/display/kvm.rs        # new
+crates/wrela-vmm/src/replay.rs             # new
 ```
 
 **Work**
 
-Define display queue/shared-memory contract consistent with machine chapter:
+**P8.8a — shared device model.** Complete portable validation and state transitions for the contract fixed in P-1.3: one descriptor chain names frame sequence, mode, format, and tile-list address/count; descriptors name guest-owned pages; publish uses release ordering; one doorbell represents one frame; completion releases the prior front generation; malformed input is a device error and never an out-of-bounds host read.
 
-- one descriptor chain names frame sequence, mode, format, tile-list address/count;
-- each tile descriptor names guest-owned blob pages;
-- `transfer` absent/no-op;
-- publish uses existing queue release ordering;
-- one doorbell per frame;
-- completion means host presentation accepted and prior front generation can be reclaimed according to vsync contract;
-- vsync arrives through frame vector;
-- malformed descriptors are device errors and never host out-of-bounds reads.
+**P8.8b — guest driver.** Complete publish/release ordering, frame-vector handling, cancellation, and ownership recovery in `stdlib/drivers/display.wr`.
 
-macOS backend:
+**P8.8c — headless/replay backend.** Make the digest sink production-complete, including malformed-input recording and byte-identical replay.
 
-- create `BGRA8Unorm_sRGB` Metal texture/layer path or equivalent platform surface;
-- gather tile rows without changing bytes/color;
-- present on requested vsync.
+**P8.8d — macOS/HVF backend.** Create a `BGRA8Unorm_sRGB` Metal texture/layer path or equivalent platform surface, gather tile rows without changing bytes/color, and present on requested vsync. Backend execution belongs to the signed macOS lane. A local `HV_DENIED`/missing-entitlement result is an environment skip with recorded reason only during focused development; it is a hard failure in `verify-deep` on the configured signed runner.
 
-Linux backend:
+**P8.8e — Linux/KVM backend.** Gather into a DRM dumb buffer/Mesa present path preserving byte format. There is no GPU shading or geometry.
 
-- gather into DRM dumb buffer/Mesa present path preserving byte format;
-- no GPU shading/geometry.
-
-The exact backend implementation may use host APIs already allowed by the VMM crate; no renderer logic moves host-side.
+Host APIs already allowed by the VMM crate may be used; no renderer logic moves host-side.
 
 **Acceptance criteria**
 
 - Portable device-model tests validate all descriptors/ranges/format/mode.
-- HVF and KVM backends produce identical visible frame digest before presentation.
+- HVF, KVM, and headless backends produce the same visible-frame digest before presentation.
 - One frame submission causes one recorded output event/doorbell.
 - Host never reads outside declared tile visible/full bounds.
-- Display error reaches coordinator as `DisplayFailure` with tile ownership recovered.
+- Display error reaches coordinator as `Display(DisplayError)` with tile ownership recovered.
 
-**Gate**
+**Gates**
 
 ```text
+# after each P8.8a–P8.8e review unit
 cargo xtask verify
-cargo xtask verify-milestone
 ```
 
-**Commit**
+**Commits**
 
 ```text
-pixels P8.8: present BGRA tile lists through machine v1
+pixels P8.8a: complete the portable display device model
+pixels P8.8b: complete the guest display driver
+pixels P8.8c: complete headless display replay
+pixels P8.8d: present BGRA tiles through macOS HVF
+pixels P8.8e: present BGRA tiles through Linux KVM
 ```
 
 ## Task P8.9 — integrate presentation in renderer coordinator
@@ -7749,7 +7901,6 @@ Do not let a late present failure mark back buffer as front. Deadline behavior f
 
 ```text
 cargo xtask verify
-cargo xtask verify-milestone
 ```
 
 **Commit**
@@ -7801,7 +7952,6 @@ Replay suppresses host presentation if existing replay policy requires and verif
 
 ```text
 cargo xtask verify
-cargo xtask verify-milestone
 ```
 
 **Commit**
@@ -7850,7 +8000,7 @@ Preserve separate controls for plane, hard CSG, smooth CSG, repeat, displacement
 
 ```text
 cargo xtask pixels-conformance
-cargo xtask verify-milestone
+cargo xtask verify
 ```
 
 **Commit**
@@ -7861,7 +8011,7 @@ pixels P8.11: lock full visibility and scanout conformance
 
 ### Milestone P8 close
 
-Run `cargo xtask verify-milestone`. The renderer now constructs and presents every supported frame from scratch with certified geometry and analytic coverage. Do not add temporal reuse before full AAA shading/output correctness is complete.
+Run `cargo xtask verify`. The renderer now attempts every contract-valid frame from scratch with certified geometry and analytic coverage, presents only on complete success, and returns the §2.6 error on bounded exhaustion. The locked P8 conformance workload must present with zero errors. Do not add temporal reuse before full AAA shading/output correctness is complete.
 
 ---
 
@@ -7903,7 +8053,7 @@ h(x)=((x*(A*x+C*B)+D*E)/(x*(A*x+B)+D*F))-E/F
 f(x)=clamp(h(x)/h(W),0,1)
 ```
 
-The runtime does not evaluate the rational curve. The repository stores a canonical 4097-entry u16 LUT over log2 input domain `[-16,+16]`, with piecewise-linear interpolation. `srgb_v1_u16.bin` is a canonical 4097-entry u16 LUT over `[0,1]` for the standard sRGB OETF. The checked-in bytes, dimensions, domains, and SHA-256 are the numeric contract; regeneration is maintainer-only.
+The runtime does not evaluate the rational curve. The repository stores a canonical 4097-entry u16 LUT over log2 input domain `[-16,+16]`, with piecewise-linear interpolation. Radiance exactly zero maps directly to LUT output zero without taking `log2`; positive values below/above the domain clamp to the first/last LUT input. `srgb_v1_u16.bin` is a canonical 4097-entry u16 LUT over `[0,1]` for the standard sRGB OETF. The checked-in bytes, dimensions, domains, and SHA-256 are the numeric contract; regeneration is maintainer-only.
 
 Add `tools/gen_pixels_tables.rs` as a standalone Rust source compiled/run only deliberately. It may use f64 formula evaluation to propose tables, but regeneration writes a candidate file and refuses to overwrite canonical bytes without `--accept`. Verification checks digest and monotonicity, not host regeneration equivalence.
 
@@ -8579,7 +8729,7 @@ Update frame digests/goldens from debug to final output while retaining separate
 ```text
 cargo xtask verify
 cargo xtask pixels-conformance
-cargo xtask verify-milestone
+cargo xtask verify
 ```
 
 **Commit**
@@ -8638,7 +8788,7 @@ Do not use a single perceptual aggregate to hide visibility/shadow errors.
 
 ```text
 cargo xtask pixels-conformance
-cargo xtask verify-milestone
+cargo xtask verify
 ```
 
 **Commit**
@@ -8649,7 +8799,7 @@ pixels P9.13: lock opaque AAA quality sequences
 
 ### Milestone P9 close
 
-Run `cargo xtask verify-milestone`. Opaque rendering is now feature-complete and byte-certified. Any later transparency/GI/temporal work composes into the same output verifier and cannot bypass it.
+Run `cargo xtask verify`. Opaque rendering is now feature-complete and byte-certified. Any later transparency/GI/temporal work composes into the same output verifier and cannot bypass it.
 
 ---
 
@@ -8902,7 +9052,7 @@ V1 probe model is normative renderer semantics:
 - three nested camera-centered clipmap levels;
 - each level dimensions `16 × 8 × 16` probes;
 - base spacing from sealed `ProbeConfig.base_spacing`; each next level spacing ×4;
-- each probe stores 9 real spherical-harmonic coefficients per RGB channel for diffuse incident radiance, plus validity/version;
+- each probe stores 9 real spherical-harmonic coefficients per RGB channel for diffuse incident radiance, six axis distance moments derived from the same 32 rays, plus validity/version;
 - coefficients stored f32 candidate plus verifier radius;
 - 32 fixed unit directions per probe from a checked-in direction table with solid-angle weights summing to `4π` within stored interval;
 - each direction traces one complete secondary segment to scene far/environment;
@@ -8914,6 +9064,8 @@ V1 probe model is normative renderer semantics:
 This is deterministic finite one-bounce probe GI. The renderer guarantees numeric/output correctness relative to this model, not equality to the full rendering equation.
 
 Compiler emits direction/SH basis tables and capacities. Probe config may reduce levels/dims but cannot exceed v1 maxima; defaults above are flagship.
+
+Admission includes the all-invalid frame: every configured probe times all 32 complete secondary rays, plus accumulation and presentation, must fit the declared initialization deadline and the applicable frame deadline. If it cannot, the declaration must reduce/disable probes or choose a static preinitialized probe mode. `AaaByteExact` never accepts a dynamic configuration on the assumption that only a typical subset invalidates.
 
 **Acceptance criteria**
 
@@ -8974,7 +9126,6 @@ Initialization is finite and bounded by compiled capacities. It may span multipl
 
 ```text
 cargo xtask verify
-cargo xtask verify-milestone
 ```
 
 **Commit**
@@ -9061,7 +9212,7 @@ At shaded surface:
 
 Avoid light leaks with deterministic visibility weight:
 
-- each probe also stores six axis distance moments from the 32 rays;
+- consume the six axis distance moments defined and populated by P10.5/P10.6;
 - compare surface-to-probe vector/distance against directional mean/min-distance interval;
 - downweight probes whose recorded occluder lies in front using a fixed smooth function;
 - clamp weights and renormalize; if all zero, GI is zero for that sample.
@@ -9131,7 +9282,7 @@ Debug visibility path continues to bypass shading/GI/transparency for conformanc
 ```text
 cargo xtask verify
 cargo xtask pixels-conformance
-cargo xtask verify-milestone
+cargo xtask verify
 ```
 
 **Commit**
@@ -9183,7 +9334,7 @@ Compare exact normative host model, intervals, and final bytes. Physical/path-tr
 
 ```text
 cargo xtask pixels-conformance
-cargo xtask verify-milestone
+cargo xtask verify
 ```
 
 **Commit**
@@ -9194,7 +9345,7 @@ pixels P10.10: lock transparent and GI conformance
 
 ### Milestone P10 close
 
-Run `cargo xtask verify-milestone`. The renderer is now visually and semantically complete from scratch. Temporal work begins only after this point and must prove equivalence to rebuilding the same normative frame state.
+Run `cargo xtask verify`. The renderer is now visually and semantically complete from scratch. Temporal work begins only after this point and must prove equivalence to rebuilding the same normative frame state.
 
 ---
 
@@ -9837,7 +9988,7 @@ Conformance renders every temporal sequence both modes and compares per-frame su
 
 ```text
 cargo xtask pixels-conformance --kinetic-diff
-cargo xtask verify-milestone
+cargo xtask verify
 ```
 
 **Commit**
@@ -9894,7 +10045,7 @@ For each compare enabled/disabled, one/four core, record/replay, and expected fi
 
 ```text
 cargo xtask pixels-conformance --all-temporal
-cargo xtask verify-milestone
+cargo xtask verify
 ```
 
 **Commit**
@@ -9905,7 +10056,7 @@ pixels P11.13: lock kinetic and cut conformance
 
 ### Milestone P11 close
 
-Run `cargo xtask verify-milestone`. The maintained-frame architecture is complete only when it is byte-equivalent to rebuilding every frame and all complex events safely route to local/full validated sweep.
+Run `cargo xtask verify`. The maintained-frame architecture is complete only when it is byte-equivalent to rebuilding every frame and all complex events safely route to local/full validated sweep.
 
 ---
 
@@ -10028,7 +10179,7 @@ cargo xtask diff-eval
 pixels P12.2: generate the used renderer kernel palette
 ```
 
-## Task P12.3 — complete SIMD operation lowering required by Pixels
+## Task P12.3 — complete SIMD and one-ISA idiom lowering required by Pixels
 
 **Purpose**
 
@@ -10043,8 +10194,13 @@ crates/wrela-compiler/src/flowwir.rs
 crates/wrela-compiler/src/mwir.rs
 crates/wrela-compiler/src/lower.rs
 crates/wrela-compiler/src/codegen.rs
-crates/wrela-compiler/src/a64.rs
+crates/wrela-compiler/src/encode.rs
+crates/wrela-machine/src/lib.rs
+crates/wrela-vmm/src/hv.rs
+crates/wrela-vmm/src/lib.rs
 stdlib/core/simd.wr
+docs/language/05-library.md
+docs/language/06-machine.md
 ```
 
 **Work**
@@ -10063,8 +10219,10 @@ Implement only operations used by renderer plus complete contract-required peers
 - conversions i32↔f32 with fixed rounding semantics;
 - shuffle patterns used by transpose/SoA;
 - reciprocal/rsqrt explicit Newton sequences through stdlib, not backend-only transformation.
+- `i8x16`/`u8x16` dot-accumulate into `i32x4`, lowering exactly to `SDOT`/`UDOT`;
+- widening multiply-accumulate, horizontal reductions, mask-select, fixed transpose/zip/unzip, and checked narrowing families required by §6.16.
 
-Every operation has sema, FlowWir, MachineWir, A64 encoding, cost rule, diff-eval, and emitted-word tests. Do not add general arbitrary shuffle if fixed named shuffles suffice.
+Amend the normative machine baseline to name `FEAT_DotProd`; there is still one emitted image and no runtime feature test or fallback. Every operation has sema, FlowWir, MachineWir, A64 encoding, a specific cost rule, diff-eval, and emitted-word tests. Do not add general arbitrary shuffle if fixed named shuffles suffice. This task permits one independently gated commit per operation family (construction/load-store, arithmetic, compare/select, lane/shuffle, widen/convert, dot/reduction/idiom closure); each commit must leave the intrinsic and emitted-instruction censuses exact and pass `cargo xtask verify`.
 
 **Acceptance criteria**
 
@@ -10073,19 +10231,25 @@ Every operation has sema, FlowWir, MachineWir, A64 encoding, cost rule, diff-eva
 - No dev/release arithmetic divergence.
 - Generated code uses NEON instructions, no scalar fallback loop.
 - Intrinsic/cost/emitted instruction censuses updated and exact.
+- `SDOT`/`UDOT` emitted-word tests prove the positive patterns and near-match tests prove they are not selected when signedness, accumulation width, overflow, or source order disagrees.
+- VMM/machine feature validation requires the same `FEAT_DotProd` baseline named by the language chapter.
 
 **Gate**
 
 ```text
-cargo xtask verify
 cargo xtask diff-eval
-cargo xtask verify-milestone
+cargo xtask verify
 ```
 
-**Commit**
+**Commits**
 
 ```text
-pixels P12.3: complete the renderer NEON operation set
+pixels P12.3a: lower SIMD construction and memory operations
+pixels P12.3b: lower SIMD arithmetic operations
+pixels P12.3c: lower SIMD comparison and selection
+pixels P12.3d: lower SIMD lanes and fixed shuffles
+pixels P12.3e: lower SIMD widening and conversion
+pixels P12.3f: close machine-v1 dot and reduction idioms
 ```
 
 ## Task P12.4 — packetize proof predicates and shading/raster kernels
@@ -10117,6 +10281,8 @@ Required packet kernels:
 - four interval endpoint affine/polynomial evaluations when exponents align;
 - four texture taps/BRDF evaluations.
 
+For each kernel, record its §6.16 ISA obligations. Byte-weight/filter and other exact packed 8-bit accumulations use `SDOT`/`UDOT`; f32 SH/BRDF/color work uses `FMLA` and retains the specified accumulation order; fixed-point accumulations use the appropriate widening MLA family. Layout conversion uses fixed zip/unzip/transpose or structure loads only when its proof obligations hold.
+
 Do not force packetization across divergent root-isolation stacks. Batch independent same-kind candidate cells only when they already exist; scalar fixed-stack algorithm remains semantic implementation.
 
 Use SoA for vectors/points/colors. Convert AoS records to SoA once at run setup, not inside pixel loop.
@@ -10124,6 +10290,7 @@ Use SoA for vectors/points/colors. Convert AoS records to SoA once at run setup,
 **Acceptance criteria**
 
 - Every packet kernel has scalar differential test and manifest mapping.
+- Every packet kernel has a complete `PixelsIsaObligation` row, including an explicit “not applicable” reason for instruction families whose operand semantics do not match.
 - Packet use does not change subdivision/root/event decisions.
 - No lane masking hides unresolved lane; collect any failure and process lane scalarly/rebuild.
 - SoA conversion work counted/reported.
@@ -10151,8 +10318,10 @@ Keep recurrence/packet state in registers and make spills/frames visible as buil
 **Files**
 
 ```text
-crates/wrela-compiler/src/convention.rs
 crates/wrela-compiler/src/regalloc.rs
+crates/wrela-compiler/src/frame_plan.rs
+crates/wrela-compiler/src/frame_color.rs
+crates/wrela-compiler/src/codegen.rs
 crates/wrela-compiler/src/report.rs
 crates/wrela-compiler/src/pixels/glue.rs
 ```
@@ -10173,6 +10342,7 @@ Do not hardcode physical registers in source or bypass allocator. Add a post-cod
 - no call inside main pixel loop;
 - no stack memory op inside fixed-q recurrence loop after setup;
 - loop body below a fixed instruction ceiling documented in cost table.
+- each `PixelsIsaObligation` is satisfied by decoded emitted words; generic `CostRule::Neon` is insufficient evidence.
 
 If allocator cannot meet an assertion, fix live range/code shape; do not delete assertion or claim register residence.
 
@@ -10183,12 +10353,12 @@ If allocator cannot meet an assertion, fix live range/code shape; do not delete 
 - Shading loop spill count is explicit; no false claim.
 - Assertions inspect decoded MachineWir/emitted instructions robustly, not text substring alone where possible.
 - Existing convention tests remain green.
+- The missed-idiom audit fails on intentionally scalarized dot, horizontal-reduction, FMLA, narrowing, transpose, and paired-load fixtures.
 
 **Gate**
 
 ```text
 cargo xtask verify
-cargo xtask verify-milestone
 ```
 
 **Commit**
@@ -10219,6 +10389,7 @@ Add/split cost dimensions needed by actual emitted instructions:
 
 - ASIMD f32 add/mul/FMA/min/max;
 - ASIMD i32 add/compare/select;
+- `SDOT`/`UDOT`, widening MLA, horizontal reductions, fixed permutes, narrowing/packing, and reciprocal-estimate/refinement families as separate cost rows;
 - widening multiply;
 - scalar/vector reciprocal/rsqrt Newton sequences as their actual words;
 - square root if still emitted;
@@ -10229,14 +10400,15 @@ Add/split cost dimensions needed by actual emitted instructions:
 - cache-line/framebuffer write traffic;
 - display descriptor/doorbell.
 
-Source weights from existing A76/SOG inventory discipline. Where exact throughput row is unavailable, use an explicit conservative range/sweep dimension and state what future hardware counter narrows it; do not choose optimistic endpoint for admission.
+Source provisional weights from the existing A76/SOG inventory discipline. Where the current proxy lacks an exact renderer-relevant rule, add an explicit conservative range dimension and list the missing abstract-machine fact for P13.2; never defer closure to a hardware counter and never choose the optimistic endpoint for admission.
 
-Update dense row inventory and rule census. Every emitted renderer word must map to at least one cost dimension.
+Split the generic `CostRule::Neon` catch-all until every renderer-emitted instruction family has a specific proxy row and port/resource identity. Update the dense row inventory and rule census. Every emitted renderer word must map to exactly the intended dimension set.
 
 **Acceptance criteria**
 
 - Cost dimension inventory remains dense and fully claimed.
 - No renderer instruction has unknown/zero accidental cost.
+- No renderer instruction is admitted under a generic NEON bucket.
 - Vector and scalar paths score actual emitted words, not FLOP estimates.
 - Memory refs classify stack/static/frameprog/pixelsdata/framebuffer/probe distinctly where model supports.
 - Conservative endpoint used for build admission.
@@ -10245,7 +10417,6 @@ Update dense row inventory and rule census. Every emitted renderer word must map
 
 ```text
 cargo xtask verify
-cargo xtask verify-milestone
 ```
 
 **Commit**
@@ -10340,11 +10511,12 @@ For `RenderProfile.AaaByteExact`:
 - include scheduler/orchestration/display submission and memory traffic;
 - compare against frame-period budget at configured/pinned flagship clock using conservative cost endpoint and existing core load/placement;
 - reserve explicit headroom factor in `bench/thresholds.toml`; set v1 admission to at most 80% of modeled per-core frame budget, leaving 20% for model error/interrupt/display variance;
-- check steady-state memory < 1 GiB profile after all image/runtime/framebuffer/probe state;
+- check the sealed guest layout, including image/runtime/framebuffer/probe state and explicit stack/failure reserve, fits the machine-v1 1 GiB guest address-space profile;
 - check first-frame initialization against separate renderer initialization deadline (default 2 seconds, source-configurable only downward in flagship profile);
+- include the all-invalid dynamic-probe workload (`probe_count × 32` complete secondary rays plus accumulation) in initialization and frame admission; reject or require static/disabled probes when it cannot fit;
 - refuse image with a detailed cost why-chain if any fails.
 
-Until real Pi calibration in P13 locks model dimensions, `AaaByteExact` remains buildable only under an explicit repository-internal `pixels_unlocked` feature for implementation fixtures. P13 removes that escape hatch before activation. The escape hatch is not source syntax and cannot ship release images.
+Until P13 closes every renderer-relevant range into the exact sealed cycle proxy, `AaaByteExact` remains buildable only under an explicit repository-internal `pixels_unlocked` feature for implementation fixtures. P13 removes that escape hatch before activation. The escape hatch is not source syntax and cannot ship release images.
 
 **Acceptance criteria**
 
@@ -10366,11 +10538,11 @@ cargo xtask verify
 pixels P12.8: admit renderer images against full-sweep budgets
 ```
 
-## Task P12.9 — archive Cortex-A76 assembly evidence
+## Task P12.9 — archive Cortex-A76 assembly and ISA-selection evidence
 
 **Purpose**
 
-Make target code shape reviewable and pinned before hardware conformance.
+Make target code shape reviewable and pinned before exact cycle-proxy conformance.
 
 **Files**
 
@@ -10382,7 +10554,7 @@ bench/pixels-a76.md
 
 **Work**
 
-Add `cargo xtask pixels-asm` that builds the locked acceptance renderer for AArch64 target and emits normalized assembly/MachineWir summaries for:
+Add `cargo xtask pixels-asm` and `cargo xtask pixels-isa-audit`. They build the locked acceptance renderer for the one machine-v1 target and emit normalized assembly/MachineWir summaries for:
 
 - coefficient evaluator;
 - interval/q-order predicates;
@@ -10394,6 +10566,8 @@ Add `cargo xtask pixels-asm` that builds the locked acceptance renderer for AArc
 - probe SH evaluation;
 - display descriptor path.
 
+The ISA audit joins generated `PixelsIsaObligation` rows to decoded word ranges. It reports selected family, expected family, source semantic preconditions, and any forbidden scalarized sequence. It is not a text grep.
+
 Normalize addresses, local labels, and build paths while preserving instruction sequence, registers, stack offsets, and branch structure. Check in compact summaries plus full assembly artifact under a generated ignored/artifact path if repository policy permits; golden only load-bearing loops.
 
 **Acceptance criteria**
@@ -10401,14 +10575,17 @@ Normalize addresses, local labels, and build paths while preserving instruction 
 - AArch64 target code actually builds.
 - Golden asserts no calls/stack ops in fixed-q hot loop.
 - Instruction/cost report counts agree with assembly decoder.
-- No claim of Pi cycles from assembly alone.
+- Every renderer workload obligation is satisfied, including `SDOT`/`UDOT` for qualifying byte-dot kernels and FMLA/widen/reduction/load-store idioms elsewhere.
+- Negative selection fixtures retain the longer correct sequence.
+- Assembly evidence is input to the cycle proxy but is not itself a physical timing claim.
 - Changing a load/store/spill produces reviewed golden diff.
 
 **Gate**
 
 ```text
 cargo xtask pixels-asm --check
-cargo xtask verify-milestone
+cargo xtask pixels-isa-audit
+cargo xtask verify
 ```
 
 **Commit**
@@ -10451,7 +10628,9 @@ RendererCost
   path=probe-init
   path=bounded-failure
   core=...
-  proxy_cycles_low/high
+  proxy_cycles_low/high  # provisional until P13 seals exact proxy_cycles
+  isa_obligations=satisfied/total
+  selected_sequence_ids
   bytes_read/written by memory class
   dispatches
   spills
@@ -10462,7 +10641,7 @@ RendererCost
 
 - All build variants byte/error equivalent.
 - Every renderer cost row has provenance and nonzero workload where used.
-- Report has no modeled hardware measurement language.
+- Report labels cycle-proxy values as deterministic model output, never empirical measurement.
 - Admission result computed from report data, not handwritten verdict.
 - All permanent reports pinned.
 
@@ -10470,7 +10649,7 @@ RendererCost
 
 ```text
 cargo xtask pixels-conformance --all-build-modes
-cargo xtask verify-milestone
+cargo xtask verify
 ```
 
 **Commit**
@@ -10481,13 +10660,13 @@ pixels P12.10: lock renderer backend and cost equivalence
 
 ### Milestone P12 close
 
-Run `cargo xtask verify-milestone`. The renderer must now execute as real emitted AArch64/NEON code, remain byte-equivalent across all optimized/scalar modes, and pass conservative compiler cost/memory admission under the temporary implementation unlock.
+Run `cargo xtask verify`. The renderer must now execute as real emitted AArch64/NEON code, remain byte-equivalent across all optimized/scalar modes, and pass conservative compiler cost/memory admission under the temporary implementation unlock.
 
 ---
 
-# Milestone P13 — hardware conformance, model lock, language activation, and release closure
+# Milestone P13 — exact cycle-proxy conformance, language activation, and release closure
 
-Milestone result: the temporary Pixels implementation unlock is removed. The compiler’s conservative A76 model is calibrated against the exact emitted acceptance image, the Pi 5 acceptance workloads meet the hard deadline/thermal/determinism gates, all formal and conformance gates are green, and `07-pixels.md` is active normative language/machine behavior.
+Milestone result: the temporary Pixels implementation unlock is removed. Every renderer-relevant emitted word, dependency, pipeline/resource use, memory-class transition, branch path, and device charge is accounted by one exact versioned A76 cycle proxy. Every acceptance frame meets its deadline in that proxy with sealed headroom; ISA obligations prove the strongest correct machine-v1 instructions were selected; all formal and conformance gates are green; and `07-pixels.md` is active normative behavior. Physical hardware runs, counters, wall time, temperature, and board-specific observations are excluded from conformance.
 
 ## Task P13.1 — create the Wrela acceptance images
 
@@ -10537,7 +10716,7 @@ All scripts use exact frame-indexed coefficients, no wall clock or input device.
 - Scenes use ordinary public `@field`/`@material`/`Image.renderer` source.
 - No fieldprobe crate/source imported.
 - Frame scripts deterministic under replay.
-- Acceptance report contains complete capacities/costs.
+- Acceptance report contains complete capacities, ISA obligations, and cycle-proxy inputs.
 
 **Gate**
 
@@ -10552,199 +10731,209 @@ cargo xtask pixels-conformance --acceptance
 pixels P13.1: add production renderer acceptance images
 ```
 
-## Task P13.2 — add Pi 5 conformance runner and provenance
+## Task P13.2 — extend and seal the exact A76 renderer cycle proxy
 
 **Purpose**
 
-Collect reproducible deadline/cycle/thermal evidence from the actual target without relabeling model output.
+Turn the current differential proxy into the exact normative cycle machine used for Pixels admission. This is model execution over emitted code and sealed workloads, never a physical-hardware measurement.
 
 **Files**
 
 ```text
-crates/xtask/src/pixels_pi.rs
-bench/pixels-acceptance.toml
-bench/pixels-pi5-lock.toml
-docs/hardware/pixels-pi5.md
+crates/wrela-compiler/src/cost/mod.rs
+crates/wrela-compiler/src/cost/oracles.rs
+crates/wrela-compiler/src/cost/mem.rs
+crates/wrela-compiler/src/cost/footprint.rs
+crates/wrela-compiler/src/pixels/workload.rs
+crates/xtask/src/pixels_cycle_proxy.rs                 # new
+bench/a76-pi5.toml
+bench/pixels-cycle-proxy-lock.toml                    # new
+docs/designs/pixels-a76-cycle-proxy.md                # new
+docs/language/04-compiler.md
+docs/language/06-machine.md
 ```
 
 **Work**
 
-Add `cargo xtask pixels-pi-conformance` runnable only on the configured Pi host. It records:
+Define a versioned deterministic proxy state machine over final emitted words and exact workload paths:
 
-- board model/revision and RAM size;
-- CPU model/core count;
-- kernel/VMM/image commit/digests;
-- governor/min/max/current frequency;
-- thermal/throttling flags before/after;
-- display mode/refresh/format;
-- per-frame present sequence/vsync misses;
-- cycles, instructions, branches, branch misses, L1D/LLC refs/misses, context switches where supported;
-- guest/VMM memory bytes/RSS;
-- temperature/frequency time series at fixed one-second cadence;
-- frame/sequence digests.
+- decoder/dispatch width, dependency scoreboard, instruction latency, reciprocal throughput, execution-port occupancy, and store-data/vector-pipe contention;
+- exact instruction families, including `SDOT`/`UDOT`, FMLA, widening MLA, horizontal reductions, permutes, narrowing, reciprocal steps, branches, barriers, and paired/structure memory operations;
+- finite reorder window and structural branch path selected by the acceptance script/certificate outcome;
+- per-core L1I/I-TLB and hot-text placement;
+- data cache/TLB state with sealed line/page geometry, associativity, replacement rule, initial state, and exact addresses from image placement;
+- explicit memory classes for stack, frame program, renderer state, framebuffer, textures, probes, queue/device pages, and immutable tables;
+- actor handoff, cross-core wake, queue publication, doorbell, and display-submission charges as versioned machine-profile transitions;
+- exact loop/traversal counts from `RendererWorkload`, never unrelated averages.
 
-Required fixture hardware for flagship lock:
+The acceptance runner interprets the final decoded AArch64 renderer/device path in lockstep with this proxy. Branches, addresses, dependencies, and cache/TLB transitions therefore come from the words being scored, not an instrumented substitute, source guess, or host execution. Compiler admission separately feeds the same proxy the sealed worst-success-path counts from `RendererWorkload`; those counts are conservative exact integers and name every block they multiply.
+
+Every transition advances one integer `proxy_cycle`; the same emitted image, frame input, initial proxy state, and proxy revision must yield the same cycle total and trace digest on every host. Published-record provenance may define a transition constant; physical runs, counters, PGO, wall clocks, and fitted residuals may not. Amend the compiler and machine chapters so this exact renderer proxy is the normative admission ruler for `AaaByteExact`; retain clear wording that it models the sealed A76 target profile and is not observed elapsed time.
+
+If the existing proxy cannot represent a renderer interaction precisely, extend its state/transition model before assigning a number. No generic NEON bucket, unresolved range, “typical cache” assumption, or manual per-scene correction survives this task.
+
+If an exact transition constant or state rule cannot be justified from the repository’s allowed published-record provenance, stop profile activation at this task. Do not infer it from a physical run and do not choose a convenient point from a range.
+
+Add:
 
 ```text
-Raspberry Pi 5 1 GiB
-stock 2.4 GHz maximum, no overclock
-64-bit Linux/KVM host supported by Wrela VMM
-official/adequate 27 W power supply
-active cooler
-1920×1080 60 Hz display path
-performance governor during conformance
+cargo xtask pixels-cycle-proxy --acceptance
 ```
 
-If counters are unavailable, the run is incomplete and cannot lock the model. The tool writes an untrusted raw report and a normalized candidate lock; it never updates the checked-in lock automatically.
+It emits per-frame/per-core exact totals, critical dependency/resource path, memory transitions, ISA-obligation results, trace digest, proxy revision, image digest, and workload digest.
 
 **Acceptance criteria**
 
-- Tool refuses nonmatching board/mode/governor/throttle preconditions.
-- Model and hardware measurements are labeled separately.
-- Raw and normalized reports include digests/provenance.
-- Rerun with same image/script produces same frame digests.
-- No network dependency during run.
+- Every renderer-emitted opcode and machine/device transition has exactly one applicable proxy rule.
+- Replaying a stored trace recomputes the same integer cycles and digest.
+- Final-word interpretation and workload-bound mode agree on hand-constructed paths where the bound is exact; neither scores an instrumented binary.
+- Tiny hand-scheduled dependency/port/cache examples have exact checked totals.
+- Altering one emitted word, address class, loop count, ISA idiom, or proxy rule changes the appropriate trace digest/report.
+- No code path reads host CPU identity, performance counters, temperature, frequency, or wall time.
 
 **Gate**
 
 ```text
+cargo xtask pixels-cycle-proxy --self-test
 cargo xtask verify
-# target-only:
-cargo xtask pixels-pi-conformance --all
 ```
 
 **Commit**
 
 ```text
-pixels P13.2: add target hardware conformance runner
+pixels P13.2: seal the exact renderer cycle proxy
 ```
 
-## Task P13.3 — calibrate and lock A76 cost dimensions
+## Task P13.3 — close ISA selection and cycle-proxy coverage
 
 **Purpose**
 
-Narrow conservative model ranges using actual emitted loops and Pi counters, then preserve headroom.
+Prove that every acceptance workload uses the correct instruction family for the one machine-v1 ISA and that every dynamic unit of work is charged exactly once.
 
 **Files**
 
 ```text
-bench/a76-pi5.toml
-bench/pixels-pi5-lock.toml
-bench/thresholds.toml
+crates/wrela-compiler/src/pixels/isa.rs              # new
+crates/wrela-compiler/src/pixels/workload.rs
 crates/wrela-compiler/src/cost/oracles.rs
+crates/wrela-compiler/src/lower.rs
+crates/wrela-compiler/src/codegen.rs
+crates/wrela-compiler/src/encode.rs
+crates/xtask/src/pixels_asm.rs
+crates/xtask/src/pixels_cycle_proxy.rs
+bench/pixels-cycle-proxy-lock.toml
+tests/golden/pixels-asm/
 tests/census.toml
 ```
 
 **Work**
 
-For each generated hot loop/path, use hardware counters and emitted instruction counts to resolve:
+Join four censuses by stable function/block/loop ID:
 
-- dispatch/branch cost;
-- load/store/cache traffic;
-- store-data/V-pipe contention;
-- reciprocal/rsqrt/sqrt throughput;
-- texture/framebuffer/probe memory cost;
-- actor/VMM/display overhead.
+```text
+semantic workload
+  -> PixelsIsaObligation
+  -> decoded emitted word range
+  -> exact proxy transitions × exact workload frequency
+```
 
-Update cost dimensions only where the measurement isolates the term or gives a conservative bound. Preserve broad range where attribution is mixed. Document exact acceptance image/function/counter equation for each locked row.
+Require equal complete coverage at every edge. Audit all §6.16 idioms, including `SDOT`/`UDOT` for qualifying packed byte dots, FMLA for f32 dot/matrix/SH rows, widening MLA for fixed accumulations, reductions, permutes, narrowing, reciprocal sequences, and proved paired/structure memory operations. Reject both missed idioms and illegal over-eager idioms.
 
-Admission continues to use the conservative endpoint and 20% headroom. Do not set model equal to one measured run. The lock must encompass all repeated conformance runs and include measurement variance.
+Remove all remaining proxy ranges/residual boxes from renderer-reachable rows. Rows still uncertain in the generic compiler may remain for non-Pixels ranking, but `AaaByteExact` may reference only exact sealed rows.
 
 **Acceptance criteria**
 
-- Every changed cost row cites target report/function.
-- Modeled per-path range contains observed proxy-equivalent cycles.
-- Conservative endpoint remains above observed worst repeated run.
-- Admission headroom still passes acceptance images.
-- Inventory/census/goldens updated deliberately.
+- ISA, emitted-word, proxy-rule, and workload-frequency coverage are each 100% and use the same denominators.
+- No qualifying dot workload expands to scalar multiply/add or generic lane extraction.
+- No nonqualifying f32/overflow-sensitive workload is forced through `SDOT`/`UDOT`.
+- Renderer reports contain one exact `proxy_cycles` value per path/core, not low/high endpoints.
+- Any missing workload/opcode/rule/idiom fails closed with its stable ID and source kernel.
 
 **Gate**
 
 ```text
+cargo xtask pixels-isa-audit
+cargo xtask pixels-cycle-proxy --coverage
 cargo xtask verify
-cargo xtask verify-milestone
 ```
 
 **Commit**
 
 ```text
-pixels P13.3: lock renderer A76 cost calibration
+pixels P13.3: close renderer ISA and proxy coverage
 ```
 
-## Task P13.4 — pass the hard full-sweep 1080p60 gate
+## Task P13.4 — pass the exact full-sweep 1080p60 proxy gate
 
 **Purpose**
 
-Prove temporal maintenance is not hiding a renderer that misses the flagship deadline after cuts/whips.
+Prove temporal maintenance is not hiding a full-sweep path that exceeds the flagship cycle budget after cuts or whips.
 
 **Files**
 
 ```text
-bench/pixels-pi5-lock.toml
-docs/hardware/pixels-pi5.md
+bench/pixels-cycle-proxy-lock.toml
+docs/designs/pixels-a76-cycle-proxy.md
 tests/golden/check-pixels-acceptance/expected/report.txt
 ```
 
 **Work**
 
-Run with kinetic disabled and probes initialized before timed sequence:
+Run the exact proxy with kinetic disabled and probes initialized:
 
 ```text
-scene colonnade-flat: 3,600 frames (60 s)
-scene colonnade:      3,600 frames
-scene melee:          3,600 frames
+scene colonnade-flat: 3,600 frame inputs
+scene colonnade:      3,600 frame inputs
+scene melee:          3,600 frame inputs
 ```
 
-Each script forces valid camera/animation changes every frame and includes cuts/whip segments that require full sweep. Hard criteria:
+Each script forces valid camera/animation changes every frame and includes cuts/whip segments that require full sweep. For every frame and core:
 
-- exactly 60 presents per second under display/vsync sequence;
-- zero missed vsync/deadline failure;
+- `proxy_cycles <= 80%` of the cycle budget derived from the sealed target clock and 60 Hz frame period;
 - zero `RenderError`;
-- exact expected rolling frame digest;
-- no thermal/throttling flag;
-- CPU frequency never below configured minimum due to thermal/power throttling;
-- memory within 1 GiB profile and no host OOM/swap activity affecting run;
-- measured maximum successful frame work inside compiler’s admitted conservative range/headroom.
+- exact expected frame and rolling image digest;
+- exact proxy trace digest;
+- guest memory within the sealed 1 GiB guest profile;
+- complete ISA/workload/proxy coverage.
 
-Do not average away a missed frame. Any miss fails.
-
-If this task fails, fix implementation/codegen/costly semantics while preserving all prior correctness/quality contracts. Do not enable kinetic mode, lower resolution, lower refresh, loosen output proof, or change acceptance script.
+Do not average frames, use p95, or subtract “idle” work. One over-budget frame fails. If this task fails, fix implementation, instruction selection, code shape, or exact workload bounds while preserving prior correctness and quality contracts. Do not enable kinetic mode, lower resolution/refresh, loosen output proof, or edit the script to hide work.
 
 **Acceptance criteria**
 
-- All three scene runs meet every hard criterion.
-- Raw reports and normalized lock reviewed/checksummed.
-- Compiler report’s full-sweep admission passes without unlock.
-- Host/VMM frame digest matches prior conformance.
+- All frames in all three sequences meet every hard criterion.
+- The lock records the maximum frame/core total and its full critical-path/transition breakdown.
+- Compiler admission reproduces the xtask total and passes without unlock.
+- Re-running on another host produces identical totals and trace digests.
 
 **Gate**
 
 ```text
-cargo xtask pixels-pi-conformance --full-sweep
+cargo xtask pixels-cycle-proxy --full-sweep
+cargo xtask verify
 ```
 
 **Commit**
 
 ```text
-pixels P13.4: lock full-sweep 1080p60 conformance
+pixels P13.4: lock exact full-sweep 1080p60 proxy conformance
 ```
 
-## Task P13.5 — pass the sustained AAA/thermal gate
+## Task P13.5 — pass complete AAA sequence and bounded-state proxy conformance
 
 **Purpose**
 
-Validate complete quality, transparency, GI, kinetic maintenance, and long-run stability.
+Validate quality, transparency, GI, kinetic maintenance, initialization, and long-sequence state bounds without physical timing or thermal claims.
 
 **Files**
 
 ```text
-bench/pixels-pi5-lock.toml
-docs/hardware/pixels-pi5.md
+bench/pixels-cycle-proxy-lock.toml
+docs/designs/pixels-a76-cycle-proxy.md
 ```
 
 **Work**
 
-Run 30 minutes / 108,000 presented frames with the combined deterministic acceptance script cycling:
+Execute the deterministic 108,000-frame input sequence through the renderer conformance lane and exact cycle proxy, cycling:
 
 - static reuse;
 - kinetic melee motion;
@@ -10752,46 +10941,46 @@ Run 30 minutes / 108,000 presented frames with the combined deterministic accept
 - textured glossy quality scene;
 - area-light penumbrae;
 - transparency;
-- moving object/light probe invalidation;
-- shade_hz transport.
+- moving object/light probe invalidation, including the all-invalid probe frame;
+- `shade_hz` transport;
+- first-frame initialization as a separate deadline class.
 
 Hard criteria:
 
-- zero missed vsync;
+- every presented frame and initialization path stays below its exact proxy budget with sealed headroom;
 - zero render/display/probe/capacity errors;
-- exact rolling digest and selected frame digests;
-- zero replay divergence;
-- no throttling/power flags;
-- temperature stays below the board’s throttle threshold with active cooling;
-- no unbounded memory growth; RSS/guest memory returns within fixed envelope after cycles;
-- all hardware counters/clock samples present.
+- exact rolling/selected-frame image digests and per-class proxy trace digests;
+- zero replay or scalar/SIMD divergence;
+- no unbounded guest-state growth; every queue, generation counter, cache, and persistent kinetic/probe structure remains inside its sealed capacity;
+- complete ISA/workload/proxy coverage on every distinct executed block.
 
-Repeat the complete run three times after cold reboot. All frame digests identical; counter/temperature variation remains inside documented lock envelope.
+Run the sequence three times from the same canonical initial state. Totals and digests must be identical; there is no cold-reboot, temperature, frequency, counter, RSS, or wall-clock input.
 
 **Acceptance criteria**
 
-- Three green sustained runs.
+- Three identical green model runs.
 - No performance/quality fallback mode activated.
-- Kinetic-disabled selected short comparison sequence remains byte-identical.
-- Locked report includes worst frame, not only average/p95.
+- Kinetic-disabled selected comparison sequence remains byte-identical.
+- Lock includes the worst exact frame and initialization path, not average/p95.
 
 **Gate**
 
 ```text
-cargo xtask pixels-pi-conformance --sustained --repeat 3
+cargo xtask pixels-cycle-proxy --complete-sequence --repeat 3
+cargo xtask verify
 ```
 
 **Commit**
 
 ```text
-pixels P13.5: lock sustained AAA renderer conformance
+pixels P13.5: lock complete AAA cycle-proxy conformance
 ```
 
 ## Task P13.6 — remove the implementation unlock and activate profile admission
 
 **Purpose**
 
-Prevent uncalibrated/over-budget flagship renderer images from shipping.
+Prevent unaccounted, incorrectly selected, or over-budget flagship renderer images from shipping.
 
 **Files**
 
@@ -10807,9 +10996,10 @@ tests/golden/err-pixels-cost/
 
 - Delete `pixels_unlocked` feature/env/internal bypass.
 - `RenderProfile.AaaByteExact` always runs full cost/memory/formal-revision admission.
+- Admission requires an exact cycle-proxy revision and 100% ISA/workload/proxy coverage; a range-valued or generic-NEON renderer row is rejection.
 - Test fixtures that intentionally exceed budgets use rejected goldens, not bypass.
 - Development can use smaller output/configurations that pass admission; there is no “ignore cost” source flag.
-- Add explicit compiler error if cost table/lock revision is missing or mismatched.
+- Add explicit compiler error if ISA-obligation, cycle-proxy, workload, or lock revision is missing or mismatched.
 
 **Acceptance criteria**
 
@@ -10823,7 +11013,6 @@ tests/golden/err-pixels-cost/
 
 ```text
 cargo xtask verify
-cargo xtask verify-milestone
 ```
 
 **Commit**
@@ -10832,11 +11021,11 @@ cargo xtask verify-milestone
 pixels P13.6: activate sealed renderer admission
 ```
 
-## Task P13.7 — run complete formal, fuzz, differential, and replay closure
+## Task P13.7 — run complete formal, differential, and replay closure
 
 **Purpose**
 
-Produce one final green trust-chain result after hardware-driven code/model edits.
+Produce one final green trust-chain result after ISA and exact cycle-proxy closure.
 
 **Files**
 
@@ -10852,17 +11041,17 @@ Run and pin:
 
 ```text
 cargo xtask verify
-cargo xtask verify-milestone
 cargo xtask pixels-formal
 cargo xtask pixels-repro
 cargo xtask pixels-conformance --all
 cargo xtask pixels-conformance --all-build-modes
 cargo xtask pixels-conformance --kinetic-diff
-cargo xtask fuzz pixels --locked-corpus
 cargo xtask pixels-asm --check
+cargo xtask pixels-isa-audit
+cargo xtask pixels-cycle-proxy --complete-sequence
 ```
 
-Promote every new fuzz/differential finding to a permanent focused test before fixing. Update no golden blindly.
+Fuzzing remains the repository’s separate discovery lane, invoked only as `cargo xtask fuzz all`; it is not a substitute for or constituent of this task gate. Promote every prior fuzz/differential finding to a permanent focused test before fixing. Update no golden blindly.
 
 **Acceptance criteria**
 
@@ -10896,9 +11085,8 @@ docs/language/04-compiler.md
 docs/language/05-library.md
 docs/language/06-machine.md
 docs/designs/pixels.md
-docs/designs/pixels-spikes-plan.md
-docs/hardware/pixels-pi5.md
-README.md
+docs/designs/pixels-a76-cycle-proxy.md
+README.md                                      # new
 ```
 
 **Work**
@@ -10908,7 +11096,8 @@ README.md
 - Document `FrameProgram v1`, memory sections, actors, display format, replay, numeric/formal revisions.
 - Document from-scratch sweep, kinetic equivalence, AAA model, and failure semantics.
 - Preserve fieldprobe documents as historical evidence that rejected the old online baseline; add a clear supersession note pointing to production plan/results.
-- Replace modeled/unmeasured statements only with actual locked hardware facts from P13.4–5.
+- Document the exact proxy as a normative deterministic admission machine and state plainly that it is not physical timing or empirical calibration.
+- Document the one machine-v1 ISA and the workload-to-instruction obligations, including the exact scope of `SDOT`/`UDOT`.
 - Do not claim universal rendering or full physical GI.
 - Add source tutorial using public API and explain common diagnostics/cost report.
 
@@ -10916,7 +11105,7 @@ README.md
 
 - No active doc tells implementers to run a spike before FieldWir/Pixels work.
 - No contradiction between source API/spec/compiler implementation.
-- Hardware facts cite locked report/provenance.
+- Cycle-proxy facts cite the locked revision, ISA census, emitted-image digest, workload digest, and trace digest.
 - Unsupported features listed plainly.
 - All doc links/goldens pass.
 
@@ -10943,7 +11132,7 @@ Give maintainers one command that states whether Pixels may ship.
 ```text
 crates/xtask/src/main.rs
 crates/xtask/src/pixels_release.rs
-bench/pixels-pi5-lock.toml
+bench/pixels-cycle-proxy-lock.toml
 ```
 
 **Work**
@@ -10956,15 +11145,17 @@ cargo xtask pixels-release-check
 
 Host portion runs:
 
-- verify-milestone;
+- verify-deep;
 - formal;
 - reproduction;
 - complete conformance/differential;
 - assembly check;
+- ISA-obligation and missed-idiom audit;
+- exact cycle-proxy self-test, coverage, full-sweep, and complete-sequence locks;
 - report/admission check;
-- validates checked-in Pi lock report signatures/digests and commit compatibility.
+- validates checked-in cycle-proxy lock revisions/digests and commit compatibility.
 
-On configured Pi with `--hardware`, it reruns short full-sweep and sustained-smoke subsets and validates no drift from lock. Full 30-minute repeated lock remains explicit release-candidate procedure, not every local command.
+The release verdict is host-independent and has no `--hardware` mode. Ordinary VMM boot may validate that the host implements machine-v1, but no host feature value, counter, frequency, temperature, or wall time enters the cycle-proxy lock or release verdict.
 
 Output ends with one computed verdict:
 
@@ -10976,7 +11167,7 @@ No handwritten PASS line. Every constituent fact is printed before verdict.
 
 **Acceptance criteria**
 
-- Missing/stale formal/cost/hardware lock produces PASS=false.
+- Missing/stale formal/ISA/cycle-proxy lock produces PASS=false.
 - Command never updates locks/goldens.
 - Verdict computed from result structs.
 - Repository release checklist invokes it.
@@ -10985,6 +11176,7 @@ No handwritten PASS line. Every constituent fact is printed before verdict.
 
 ```text
 cargo xtask pixels-release-check
+cargo xtask verify
 ```
 
 **Commit**
@@ -11004,7 +11196,7 @@ Remove transitional code and ensure every renderer surface is accounted for.
 ```text
 crates/wrela-compiler/src/sema/intrinsics.rs
 tests/census.toml
-crates/xtask/src/census.rs
+crates/xtask/src/census.rs                    # new
 Cargo.toml
 AGENTS.md
 ```
@@ -11029,7 +11221,7 @@ AGENTS.md
 
 ```text
 cargo xtask pixels-release-check
-cargo xtask verify-milestone
+cargo xtask verify
 ```
 
 **Commit**
@@ -11040,7 +11232,7 @@ pixels P13.10: close renderer ownership and cleanup
 
 ### Milestone P13 close
 
-The milestone closes only after the full release command is green, the Pi lock is valid for the current renderer/numeric/cost revisions, and the temporary implementation unlock is gone.
+Run `cargo xtask verify`. The milestone closes only after that gate and the full release command are green, the exact cycle-proxy lock is valid for the current renderer/numeric/ISA/cost revisions, and the temporary implementation unlock is gone.
 
 ---
 
@@ -11074,7 +11266,7 @@ The following matrix is normative. A fixture may gain assertions, but no row may
 | `check-pixels-probe-shift` | clipmap remap/invalidation | P10 | world-coordinate retention; exact updates |
 | `err-pixels-unsupported-op` | closed profile subset | P1 | `P004`, exact source/call-chain diagnostic |
 | `err-pixels-missing-range` | finite proof domain | P1 | `P005` at influencing path |
-| `err-pixels-missing-rate` | temporal proof domain | P1 | `P006` at changing influencing path |
+| `err-pixels-rate` | temporal proof domain | P1 | `P006` for invalid rate metadata |
 | `err-pixels-topology-branch` | fixed topology | P2 | `P003`, both arm shapes shown |
 | `err-pixels-repeat-unbounded` | finite instance count | P3 | `P012`, world/period contributors |
 | `err-pixels-capacity` | no runtime allocation/overflow | P3 | `P015`, exact why-chain |
@@ -11088,8 +11280,8 @@ The following matrix is normative. A fixture may gain assertions, but no row may
 | `boot-pixels-transparent` | transfer tree/tail | P10 | normative host model and guest digest |
 | `boot-pixels-gi` | probe init/update/interpolation | P10 | normative host model and guest digest |
 | `boot-pixels-kinetic` | temporal maintenance | P11 | all mode/core/replay comparisons |
-| `pixels-asm` | A76 hot-loop shape | P12 | instructions/registers/stack/calls/cost counts |
-| `pixels-pi5-lock` | real target deadline/thermal | P13 | hard zero-miss/digest/thermal/counter gates |
+| `pixels-asm` | one-ISA A76 hot-loop shape | P12 | instructions/registers/stack/calls/cost counts plus complete ISA obligations (`SDOT`/`UDOT`, FMLA, widening/reduction/permute/narrow/load-store) |
+| `pixels-cycle-proxy-lock` | exact target-profile cycle admission | P13 | per-frame/core cycles, ISA coverage, trace/image/workload digests, headroom |
 
 ### 11.1 Oracle separation
 
@@ -11167,6 +11359,7 @@ crates/wrela-compiler/src/pixels/
   state.rs               mutable renderer layout
   glue.rs                generated Wrela config/actors/functions
   workload.rs            exact loop/workload attachment
+  isa.rs                 semantic workload to machine-v1 instruction obligations
   cost_bounds.rs         path structural work bounds
   admission.rs           mode/deadline/memory gate
   dump.rs                three stable stages
@@ -11227,8 +11420,7 @@ stdlib/data/pixels/*
 
 ```text
 crates/wrela-machine/src/pixels.rs
-crates/wrela-machine/src/display.rs
-crates/wrela-machine/src/layout.rs
+crates/wrela-machine/src/lib.rs
 crates/wrela-vmm/src/display/*
 crates/wrela-vmm/src/replay.rs
 ```
@@ -11241,7 +11433,7 @@ formal/pixels/
 
 Only generic mathematics and theorem-to-kernel manifests live here. Do not copy compiler source or large generated scene facts into Lean.
 
-### 12.5 Tests, examples, and hardware locks
+### 12.5 Tests, examples, and cycle-proxy locks
 
 ```text
 tests/golden/check-pixels-*
@@ -11251,8 +11443,10 @@ tests/golden/pixels-asm/
 tests/pixels_truth/
 examples/pixels_*/
 bench/pixels-acceptance.toml
-bench/pixels-pi5-lock.toml
-docs/hardware/pixels-pi5.md
+bench/pixels-cycle-proxy-lock.toml
+docs/designs/pixels-a76-cycle-proxy.md
+crates/xtask/src/pixels_cycle_proxy.rs
+crates/xtask/src/pixels_asm.rs
 ```
 
 ---
@@ -11263,6 +11457,7 @@ A later milestone may rely only on the invariant published by every earlier clos
 
 | milestone | invariant after close |
 |---|---|
+| P-1 | repository paths/contracts are reconciled, the public ABI type-checks, smooth-object/deformation soundness is positive, and the plane-only vertical skeleton presents a locked digest |
 | P0 | source/runtime/formal contract, empty stages, and permanent corpus are pinned |
 | P1 | renderer declarations are typed/sealed and have finite source metadata |
 | P2 | roots compile to deterministic exact symbolic graphs |
@@ -11276,9 +11471,9 @@ A later milestone may rely only on the invariant published by every earlier clos
 | P10 | transparency and probe GI compose into the same byte proof |
 | P11 | kinetic maintenance is byte/error-equivalent to full rebuild |
 | P12 | real SIMD AArch64 code is fully costed and compiler-admitted |
-| P13 | actual Pi 5 and full trust-chain conformance activate the profile |
+| P13 | exact A76 cycle-proxy, one-ISA, and full trust-chain conformance activate the profile |
 
-Do not parallelize tasks across an invariant boundary. Worktrees may parallelize independent tests/documentation inside one task only when one owner integrates and runs the exact task gate.
+Do not parallelize tasks across an invariant boundary. Worktrees may parallelize independent tests/documentation inside one task only when one owner integrates and runs the exact task gate. If P6 kernel work is split internally, designate one `KERNELS.txt` integrator; no parallel branch edits that manifest independently.
 
 ---
 
@@ -11287,6 +11482,13 @@ Do not parallelize tasks across an invariant boundary. Worktrees may parallelize
 The expected linear history is the task order in this document. The compact list below is the execution queue. A commit must not combine adjacent tasks just because one is small; stable dump/test boundaries are deliberate.
 
 ```text
+P-1.1 repository/task-schema reconciliation
+P-1.2 public source ABI
+P-1.3 display ABI/headless sink
+P-1.4 canonical contract lint
+P-1.5 smooth-object/deformation soundness
+P-1.6 plane-only vertical walking skeleton
+
 P0.1  production Pixels contract
 P0.2  stage/module scaffolding
 P0.3  Lean project skeleton
@@ -11343,7 +11545,7 @@ P5.5  frameprog/pixelsdata placement
 P5.6  append immutable bytes
 P5.7  generated Pixels config
 P5.8  generated renderer actors
-P5.9  exact kernel reachability
+P5.9  orchestration/bootstrap reachability
 P5.10 program/layout/report dumps
 P5.11 binary/repro gates
 
@@ -11364,7 +11566,7 @@ P7.1  FrameProgram guest views
 P7.2  frame snapshot validation
 P7.3  fixed worker workspaces
 P7.4  complete row candidates
-P7.5  all row-start roots
+P7.5  all smooth-object row-start roots
 P7.6  hard-CSG root sweep
 P7.7  row event partition
 P7.8  implicit-jet candidates
@@ -11383,7 +11585,11 @@ P8.4  packet fixed-q raster
 P8.5  packet geometry reconstruction
 P8.6  event coverage raster
 P8.7  double-buffer tile ownership
-P8.8  display device/VMM
+P8.8a portable display device model
+P8.8b guest display driver
+P8.8c headless display replay
+P8.8d macOS/HVF presentation
+P8.8e Linux/KVM presentation
 P8.9  atomic presentation
 P8.10 frame replay digests
 P8.11 visibility/scanout conformance
@@ -11429,20 +11635,25 @@ P11.13 temporal/cut sequences
 
 P12.1 per-frame coefficient evaluator
 P12.2 used kernel palette
-P12.3 NEON operation closure
+P12.3a SIMD construction/memory
+P12.3b SIMD arithmetic
+P12.3c SIMD comparison/selection
+P12.3d SIMD lanes/fixed shuffles
+P12.3e SIMD widening/conversion
+P12.3f machine-v1 dot/reduction idioms
 P12.4 packet proof/shading kernels
 P12.5 hot-loop code-shape assertions
 P12.6 A76 cost dimensions
 P12.7 renderer workloads
 P12.8 deadline/memory admission
-P12.9 A76 assembly artifacts
+P12.9 A76 assembly/ISA artifacts
 P12.10 backend/cost equivalence
 
 P13.1 Wrela acceptance images
-P13.2 Pi conformance runner
-P13.3 A76 calibration lock
-P13.4 full-sweep 1080p60 gate
-P13.5 sustained AAA/thermal gate
+P13.2 exact A76 renderer cycle proxy
+P13.3 ISA/proxy coverage closure
+P13.4 full-sweep 1080p60 proxy gate
+P13.5 complete AAA/state proxy gate
 P13.6 remove implementation unlock
 P13.7 final trust-chain closure
 P13.8 activate normative specs
@@ -11478,11 +11689,11 @@ The implementation agent must not:
 20. leave invalid probes in a presented frame;
 21. transport old color into a disoccluded pixel;
 22. claim kinetic correctness without disabled/full-sweep byte equivalence;
-23. claim register residency, SIMD speed, A76 cycles, or Pi frame rate without the required emitted-assembly/hardware evidence;
+23. claim register residency, ISA optimality, SIMD speed, A76 proxy cycles, or target-profile frame admission without decoded emitted-word evidence, complete ISA obligations, and the exact cycle-proxy trace;
 24. loosen tolerances, error budgets, subdivision depths, costs, or capacities merely to turn a failing fixture green;
 25. add an external Cargo dependency;
 26. skip a formal gate because Lean is unavailable in the milestone/release environment;
-27. update a golden or hardware lock automatically;
+27. update a golden or cycle-proxy lock automatically;
 28. combine tasks across stable dump boundaries;
 29. delete unfavorable historical evidence;
 30. present a partial back buffer.
@@ -11512,8 +11723,8 @@ When P13.10 is complete, Wrela contains:
 - BGRA tile-list display and replay frame digests;
 - Lean proofs of the generic trust-boundary mathematics;
 - Rust/Wrela scalar/packet differential correspondence;
-- emitted A76 assembly and compiler cost admission;
-- locked Pi 5 1080p60/full-quality conformance;
+- emitted one-ISA A76 assembly with audited DOTPROD/FMLA/widen/reduction/permute/narrow/load-store idioms and exact compiler cycle-proxy admission;
+- locked exact A76/Pi 5 target-profile 1080p60/full-quality cycle-proxy conformance, with no physical-hardware gate;
 - one release command computing the final verdict.
 
 The single operational rule remains:

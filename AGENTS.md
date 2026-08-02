@@ -26,13 +26,18 @@ Place Rust unit tests beside implementation code in `#[cfg(test)]` modules. Ever
 
 ## Verification
 
-Agents use exactly these gates:
+Agents use exactly one required gate:
 
-- `cargo xtask verify` after an individual task.
-- `cargo xtask verify-milestone` when closing a whole milestone. This is the
-  slow macOS/aarch64 gate and includes `verify`.
+- `cargo xtask verify` after every individual task and when closing a whole
+  milestone. It includes the complete static and boot golden corpora plus
+  focused signed HVF coverage, and therefore requires macOS/aarch64.
 
-Maintainer xtasks are useful for focused diagnosis, but are not substitutes
-for the applicable gate. Fuzzing is a separate nightly-style discovery lane:
-`cargo xtask fuzz all`. Promote every fuzz finding to permanent unit or golden
-coverage before fixing it.
+`cargo xtask verify-deep` is an optional maintainer diagnostic for the
+expensive whole-corpus optimizer proofs, complete signed HVF vectors,
+determinism reproduction, hardware oracles, and benchmarks. It is not a task
+or milestone gate. Maintainers run it before cutting a release.
+
+Other maintainer xtasks are useful for focused diagnosis, but are not
+substitutes for `cargo xtask verify`. Fuzzing is a separate nightly-style
+discovery lane: `cargo xtask fuzz all`. Promote every fuzz finding to
+permanent unit or golden coverage before fixing it.

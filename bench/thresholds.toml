@@ -148,7 +148,7 @@ boot_actors_median_us = 700000
 # a test whose *subject* belongs in the default `cargo test` lane grows a
 # *cost* that does not.
 #
-# Broad optimization/cost proofs belong to `verify-milestone`; the default
+# Broad optimization/cost proofs belong to optional `verify-deep`; the default
 # lane keeps focused units and smoke cases. After that classification, the
 # warm execution-only suite measured 3.3s on the Apple M4 (892 passed,
 # 26 milestone tests ignored). The 15s lock is deliberately loose enough for

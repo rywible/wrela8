@@ -61,7 +61,7 @@ pub(crate) fn golden_case_dirs(golden_dir: &Path) -> Result<Vec<PathBuf>, String
     Ok(dirs)
 }
 
-const USAGE: &str = "agent verification:\n  cargo xtask verify\n  cargo xtask verify-milestone\n\nmaintainer commands:\n  cargo xtask golden [--update] [--filter <substr>] [--only-boot|--no-boot] [--jobs N] [--boot-jobs N]\n  cargo xtask corpus [--sema]\n  cargo xtask fuzz <smoke|all|lexer|parser|sema|eval|lower|async|imports|report> [--iters N] [--seed S]\n  cargo xtask roundtrip|report-determinism|agnostic-sweep|cost-inventory|stdlib-test|repro\n  cargo xtask diff-eval [--with-opt <OptId>]\n  cargo xtask diff-block-count|diff-blk|profile\n  cargo xtask gen-lane2-freq <case>\n  cargo xtask bench <compiler|build|guest>";
+const USAGE: &str = "agent verification:\n  cargo xtask verify\n\nmaintainer commands:\n  cargo xtask verify-deep\n  cargo xtask golden [--update] [--filter <substr>] [--only-boot|--no-boot] [--jobs N] [--boot-jobs N]\n  cargo xtask corpus [--sema]\n  cargo xtask fuzz <smoke|all|lexer|parser|sema|eval|lower|async|imports|report> [--iters N] [--seed S]\n  cargo xtask roundtrip|report-determinism|agnostic-sweep|cost-inventory|stdlib-test|repro\n  cargo xtask diff-eval [--with-opt <OptId>]\n  cargo xtask diff-block-count|diff-blk|profile\n  cargo xtask gen-lane2-freq <case>\n  cargo xtask bench <compiler|build|guest>";
 
 fn no_args(command: &str, args: &[String]) -> Result<(), String> {
     if args.len() == 1 {
@@ -86,13 +86,15 @@ fn main() -> ExitCode {
     }
     let result = match args.first().map(String::as_str) {
         Some("verify") => no_args("verify", &args).and_then(|()| verify()),
-        Some("verify-milestone") => {
-            no_args("verify-milestone", &args).and_then(|()| verify_milestone())
-        }
-        Some("check") => Err(
-            "`check` was replaced by `verify` and `verify-milestone`; choose the scope explicitly"
+        Some("verify-deep") => no_args("verify-deep", &args).and_then(|()| verify_deep()),
+        Some("verify-milestone") => Err(
+            "`verify-milestone` was removed; `cargo xtask verify` is the sole required gate, and \
+             `cargo xtask verify-deep` is an optional maintainer diagnostic"
                 .to_string(),
         ),
+        Some("check") => {
+            Err("`check` was replaced by the sole required gate, `cargo xtask verify`".to_string())
+        }
         Some("golden") => parse_golden_opts(&args[1..]).and_then(|opts| golden(&opts)),
         Some("corpus") => corpus(&args[1..]),
         Some("roundtrip") => no_args("roundtrip", &args).and_then(|()| roundtrip()),
@@ -152,7 +154,7 @@ fn assert_unit_suite_within_budget(elapsed: std::time::Duration) -> Result<(), S
              (bench/thresholds.toml `[tests] workspace_suite_max_us`).\n\
              \n\
              This is a *placement* failure, not a speed one. Broad whole-corpus and whole-sweep \
-             proofs belong behind `#[ignore]` in `verify-milestone`; keep focused smoke coverage \
+             proofs belong behind `#[ignore]` in `verify-deep`; keep focused smoke coverage \
              in `verify`. Find the long pole with:\n\
              \n    cargo test -p wrela-compiler --lib -- --test-threads=1\n\n\
              — libtest prints each test as it finishes, making long gaps visible.\n\
@@ -360,19 +362,18 @@ fn unit_lane() -> Result<(), String> {
     assert_unit_suite_within_budget(unit_start.elapsed())
 }
 
-fn milestone_preflight() -> Result<(), String> {
+fn verify_preflight() -> Result<(), String> {
     if !(cfg!(target_os = "macos") && cfg!(target_arch = "aarch64")) {
         return fail_closed(
-            "verify-milestone",
-            "requires macOS/aarch64 for the Hypervisor.framework lanes",
+            "verify",
+            "requires macOS/aarch64 for its focused Hypervisor.framework coverage",
         );
     }
-    qemu_path()?;
     let entitlements = root().join("crates/wrela-vmm/entitlements.plist");
     for path in [Path::new("/usr/bin/codesign"), entitlements.as_path()] {
         if !path.is_file() {
             return fail_closed(
-                "verify-milestone",
+                "verify",
                 &format!("required tool/input `{}` is missing", path.display()),
             );
         }
@@ -380,8 +381,20 @@ fn milestone_preflight() -> Result<(), String> {
     Ok(())
 }
 
+fn deep_preflight() -> Result<(), String> {
+    verify_preflight()?;
+    qemu_path()?;
+    Ok(())
+}
+
 fn verify() -> Result<(), String> {
     const LANE: &str = "verify";
+    verify_stage(
+        LANE,
+        "host preflight",
+        "cargo xtask verify",
+        verify_preflight,
+    )?;
     verify_stage(LANE, "format", "cargo fmt --all --check", || {
         run(
             Command::new("cargo").args(["fmt", "--all", "--check"]),
@@ -414,6 +427,23 @@ fn verify() -> Result<(), String> {
     )?;
     verify_stage(
         LANE,
+        "signed HVF smoke",
+        "cargo xtask verify",
+        test_wrela_vmm_hvf_signed_smoke,
+    )?;
+    verify_stage(
+        LANE,
+        "boot goldens",
+        "cargo xtask golden --only-boot",
+        || {
+            golden(&GoldenOpts {
+                boot: BootSel::Only,
+                ..GoldenOpts::default()
+            })
+        },
+    )?;
+    verify_stage(
+        LANE,
         "static goldens",
         "cargo xtask golden --no-boot",
         || {
@@ -432,15 +462,14 @@ fn verify() -> Result<(), String> {
     Ok(())
 }
 
-fn verify_milestone() -> Result<(), String> {
-    const LANE: &str = "verify-milestone";
+fn verify_deep() -> Result<(), String> {
+    const LANE: &str = "verify-deep";
     verify_stage(
         LANE,
         "host preflight",
-        "cargo xtask verify-milestone",
-        milestone_preflight,
+        "cargo xtask verify-deep",
+        deep_preflight,
     )?;
-    verify_stage(LANE, "fast verification", "cargo xtask verify", verify)?;
     verify_stage(
         LANE,
         "report determinism",
@@ -456,7 +485,7 @@ fn verify_milestone() -> Result<(), String> {
     verify_stage(
         LANE,
         "signed HVF VMM tests",
-        "cargo xtask verify-milestone",
+        "cargo xtask verify-deep",
         test_wrela_vmm_hvf_signed,
     )?;
     verify_stage(
@@ -501,7 +530,7 @@ fn verify_milestone() -> Result<(), String> {
         "cargo xtask bench guest",
         bench_guest_lane,
     )?;
-    println!("verify-milestone: ok");
+    println!("verify-deep: ok");
     Ok(())
 }
 

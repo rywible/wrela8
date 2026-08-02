@@ -2523,7 +2523,7 @@ mod tests {
         );
     }
 
-    #[ignore = "deep lane: run via `cargo xtask verify-milestone` (or --ignored)"]
+    #[ignore = "deep lane: run via `cargo xtask verify-deep` (or --ignored)"]
     #[test]
     fn narrow_imm_alone_wins_at_every_box_point() {
         let cmp = compare_opt_lists_over_box(&[], &[OptId::NarrowImm]).expect("sweep");
@@ -2594,7 +2594,7 @@ mod tests {
         );
     }
 
-    #[ignore = "deep lane: run via `cargo xtask verify-milestone` (or --ignored)"]
+    #[ignore = "deep lane: run via `cargo xtask verify-deep` (or --ignored)"]
     #[test]
     fn residual_release_list_wins_at_every_point_of_the_box() {
         const RESIDUAL_BASE: &[OptId] = &[OptId::NarrowImm];
@@ -2610,7 +2610,7 @@ mod tests {
         );
     }
 
-    #[ignore = "deep lane: run via `cargo xtask verify-milestone` (or --ignored)"]
+    #[ignore = "deep lane: run via `cargo xtask verify-deep` (or --ignored)"]
     #[test]
     fn each_release_opt_is_re_asked_alone_on_the_product_tier() {
         assert!(
@@ -2823,7 +2823,7 @@ mod tests {
         }
     }
 
-    #[ignore = "deep lane: run via `cargo xtask verify-milestone` (or --ignored)"]
+    #[ignore = "deep lane: run via `cargo xtask verify-deep` (or --ignored)"]
     #[test]
     fn each_item_j_link_wins_over_the_whole_box() {
         const MICRO_MARGINAL_ZERO: &[&str] = &["ConstProp"];
@@ -4058,7 +4058,7 @@ mod tests {
         assert_eq!(case.box_cardinality, 131_072);
     }
 
-    #[ignore = "deep lane: run via `cargo xtask verify-milestone` (or --ignored)"]
+    #[ignore = "deep lane: run via `cargo xtask verify-deep` (or --ignored)"]
     #[test]
     fn release_wins_at_every_point_of_the_residual_box() {
         let cmp = compare_opt_lists_over_box(&[], RELEASE_OPTS).expect("sweep");
@@ -4095,7 +4095,7 @@ mod tests {
         ),
     ];
 
-    #[ignore = "deep lane: run via `cargo xtask verify-milestone` (or --ignored)"]
+    #[ignore = "deep lane: run via `cargo xtask verify-deep` (or --ignored)"]
     #[test]
     fn item_c5_earns_its_place_by_leave_one_out_on_the_product_tier() {
         let without: Vec<OptId> = RELEASE_OPTS
@@ -4301,7 +4301,7 @@ mod tests {
         }
     }
 
-    #[ignore = "deep lane: run via `cargo xtask verify-milestone` (or --ignored)"]
+    #[ignore = "deep lane: run via `cargo xtask verify-deep` (or --ignored)"]
     #[test]
     fn each_item_c_opt_wins_over_the_micro_box_alone() {
         for &(base, id, _) in ITEM_C_SMOKE {
@@ -4395,7 +4395,7 @@ mod tests {
         }
     }
 
-    #[ignore = "deep lane: run via `cargo xtask verify-milestone` (or --ignored)"]
+    #[ignore = "deep lane: run via `cargo xtask verify-deep` (or --ignored)"]
     #[test]
     fn each_item_f_opt_wins_over_the_micro_box_alone() {
         let mut base = item_f_baseline();
@@ -4449,7 +4449,7 @@ mod tests {
         );
     }
 
-    #[ignore = "deep lane: run via `cargo xtask verify-milestone` (or --ignored)"]
+    #[ignore = "deep lane: run via `cargo xtask verify-deep` (or --ignored)"]
     #[test]
     fn branch_cleanup_wins_at_every_point_of_the_residual_box() {
         let base = without_branch_cleanup();
@@ -4489,7 +4489,7 @@ mod tests {
         apply_mode(CompileMode::Release);
     }
 
-    #[ignore = "deep lane: run via `cargo xtask verify-milestone` (or --ignored)"]
+    #[ignore = "deep lane: run via `cargo xtask verify-deep` (or --ignored)"]
     #[test]
     fn the_corpus_still_fires_tail_calls() {
         let mut fired = Vec::new();

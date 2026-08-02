@@ -964,150 +964,155 @@ Program
     0015: f100013f  cmp x9, #0
     0016: 54000140  b.eq #40
     0017: f100053f  cmp x9, #1
-    0018: 540001a0  b.eq #52
+    0018: 540001e0  b.eq #60
     0019: f100093f  cmp x9, #2
-    0020: 54000240  b.eq #72
+    0020: 54000280  b.eq #80
     0021: f1000d3f  cmp x9, #3
-    0022: 54000820  b.eq #260
+    0022: 54000860  b.eq #268
     0023: f100113f  cmp x9, #4
-    0024: 540005c0  b.eq #184
+    0024: 54000600  b.eq #192
     0025: d4359a80  brk #0xacd4
     0026: d2800013  movz x19, #0x0
-    0027: d2800014  movz x20, #0x0
-    0028: f9003793  str x19, [x28, #104]
-    0029: f9003f94  str x20, [x28, #120]
-    0030: 14000001  b #4
-    0031: f9402f93  ldr x19, [x28, #88]
-    0032: f9403f94  ldr x20, [x28, #120]
-    0033: eb13029f  cmp x20, x19
-    0034: 9a9fa7f5  cset x21, lt
-    0035: aa1503e9  mov x9, x21
-    0036: b4000669  cbz x9, #204
-    0037: 14000001  b #4
-    0038: d2800089  movz x9, #0x4
-    0039: f900a389  str x9, [x28, #320]
-    0040: aa1f03e1  mov x1, xzr
-    0041: aa1f03e2  mov x2, xzr
-    0042: d2800003  turn-id[0] x3 <poll_until>
-    0043: f2a00003  turn-id[1] x3 <poll_until>
-    0044: f2c00003  turn-id[2] x3 <poll_until>
-    0045: f2e00003  turn-id[3] x3 <poll_until>
-    0046: d2800004  movz x4, #0x0
-    0047: d2800000  movz x0, #0x0
-    0048: 94000000  bl <rt_enqueue Store>
-    0049: b4000200  cbz x0, #64
-    0050: f900479f  str sp, [x28, #136]
-    0051: f9004b9f  str sp, [x28, #144]
-    0052: f9004f9f  str sp, [x28, #152]
-    0053: d2800029  movz x9, #0x1
-    0054: f9004789  str x9, [x28, #136]
-    0055: d280006a  movz x10, #0x3
-    0056: f9004b8a  str x10, [x28, #144]
-    0057: d2800009  movz x9, #0x0
-    0058: f9004f89  str x9, [x28, #152]
-    0059: d28e0009  movz x9, #0x7000
-    0060: f2a80009  movk x9, #0x4000, lsl #16
-    0061: f940012a  ldr x10, [x9]
-    0062: b400004a  cbz x10, #8
-    0063: 94000000  bl <__wrela_checkpoint_service>
-    0064: 1400001b  b #108
-    0065: d2800029  movz x9, #0x1
-    0066: f9000789  str x9, [x28, #8]
-    0067: d2800020  movz x0, #0x1
-    0068: f940a79e  ldr lr, [x28, #328]
-    0069: d65f03c0  ret
-    0070: f9400f89  ldr x9, [x28, #24]
-    0071: f9401f8a  ldr x10, [x28, #56]
-    0072: b50000aa  cbnz x10, #20
-    0073: f9004b89  str x9, [x28, #144]
-    0074: f9004f9f  str sp, [x28, #152]
-    0075: f900479f  str sp, [x28, #136]
-    0076: 540000ae  b.al #20
-    0077: f9004b8a  str x10, [x28, #144]
-    0078: f9004f89  str x9, [x28, #152]
-    0079: d2800029  movz x9, #0x1
-    0080: f9004789  str x9, [x28, #136]
-    0081: d28e0009  movz x9, #0x7000
-    0082: f2a80009  movk x9, #0x4000, lsl #16
-    0083: f940012a  ldr x10, [x9]
-    0084: b400004a  cbz x10, #8
-    0085: 94000000  bl <__wrela_checkpoint_service>
-    0086: 14000005  b #20
-    0087: f9403793  ldr x19, [x28, #104]
-    0088: aa1303e0  mov x0, x19
-    0089: 14000044  b #272
-    0090: 14000043  b #268
-    0091: f9403793  ldr x19, [x28, #104]
-    0092: f9403f94  ldr x20, [x28, #120]
-    0093: f9404789  ldr x9, [x28, #136]
-    0094: f9005389  str x9, [x28, #160]
-    0095: f9404b89  ldr x9, [x28, #144]
-    0096: f9005789  str x9, [x28, #168]
-    0097: f9404f89  ldr x9, [x28, #152]
-    0098: f9005b89  str x9, [x28, #176]
-    0099: f9405389  ldr x9, [x28, #160]
-    0100: aa0903f5  mov x21, x9
-    0101: d2800016  movz x22, #0x0
-    0102: eb1602bf  cmp x21, x22
-    0103: 9a9f17f6  cset x22, eq
-    0104: f9405789  ldr x9, [x28, #168]
-    0105: aa0903f5  mov x21, x9
-    0106: d2800037  movz x23, #0x1
-    0107: 8a1702d6  and x22, x22, x23
-    0108: b4000176  cbz x22, #44
-    0109: ab150273  adds x19, x19, x21
-    0110: 54000103  b.cc #32
-    0111: d10043ff  sub sp, sp, #16  ; abort Bytes slot
-    0112: 10000009  adr x9, rodata+0x107
-    0113: f90003e9  str x9, [sp]  ; Bytes.base
-    0114: d2800349  movz x9, #0x1a
-    0115: f90007e9  str x9, [sp, #8]  ; Bytes.len
-    0116: 910003e0  add x0, sp, #0  ; *Bytes
-    0117: 94000000  bl <__wrela_abort>
-    0118: 14000015  b #84
-    0119: f9405389  ldr x9, [x28, #160]
-    0120: aa0903f5  mov x21, x9
-    0121: d2800036  movz x22, #0x1
-    0122: eb1602bf  cmp x21, x22
-    0123: 9a9f17f5  cset x21, eq
-    0124: f9405789  ldr x9, [x28, #168]
-    0125: f9008b89  str x9, [x28, #272]
-    0126: f9405b89  ldr x9, [x28, #176]
-    0127: f9008f89  str x9, [x28, #280]
-    0128: d2800036  movz x22, #0x1
-    0129: 8a1602b5  and x21, x21, x22
-    0130: b4000055  cbz x21, #8
-    0131: 14000008  b #32
-    0132: d10043ff  sub sp, sp, #16  ; abort Bytes slot
-    0133: 10000009  adr x9, rodata+0x121
-    0134: f90003e9  str x9, [sp]  ; Bytes.base
-    0135: d2800b49  movz x9, #0x5a
-    0136: f90007e9  str x9, [sp, #8]  ; Bytes.len
-    0137: 910003e0  add x0, sp, #0  ; *Bytes
-    0138: 94000000  bl <__wrela_abort>
-    0139: d2800035  movz x21, #0x1
-    0140: ab150294  adds x20, x20, x21
-    0141: 54000103  b.cc #32
-    0142: d10043ff  sub sp, sp, #16  ; abort Bytes slot
-    0143: 10000009  adr x9, rodata+0x107
-    0144: f90003e9  str x9, [sp]  ; Bytes.base
-    0145: d2800349  movz x9, #0x1a
-    0146: f90007e9  str x9, [sp, #8]  ; Bytes.len
-    0147: 910003e0  add x0, sp, #0  ; *Bytes
-    0148: 94000000  bl <__wrela_abort>
-    0149: f9003793  str x19, [x28, #104]
-    0150: f9003f94  str x20, [x28, #120]
-    0151: d28e0009  movz x9, #0x7000
-    0152: f2a80009  movk x9, #0x4000, lsl #16
-    0153: f940012a  ldr x10, [x9]
-    0154: b400004a  cbz x10, #8
-    0155: 94000000  bl <__wrela_checkpoint_service>
-    0156: 17ffff83  b #-500
-    0157: aa0003e1  mov x1, x0
-    0158: f9000f81  str x1, [x28, #24]  ; complete → turn.reply
-    0159: d2800000  movz x0, #0x0
-    0160: f940a79e  ldr lr, [x28, #328]
-    0161: d65f03c0  ret
+    0027: aa1303f4  mov x20, x19
+    0028: d2800013  movz x19, #0x0
+    0029: aa1303f5  mov x21, x19
+    0030: f9003794  str x20, [x28, #104]
+    0031: f9003f95  str x21, [x28, #120]
+    0032: 14000001  b #4
+    0033: f9402f93  ldr x19, [x28, #88]
+    0034: f9403f94  ldr x20, [x28, #120]
+    0035: eb13029f  cmp x20, x19
+    0036: 9a9fa7f5  cset x21, lt
+    0037: aa1503e9  mov x9, x21
+    0038: b4000669  cbz x9, #204
+    0039: 14000001  b #4
+    0040: d2800089  movz x9, #0x4
+    0041: f900a389  str x9, [x28, #320]
+    0042: aa1f03e1  mov x1, xzr
+    0043: aa1f03e2  mov x2, xzr
+    0044: d2800003  turn-id[0] x3 <poll_until>
+    0045: f2a00003  turn-id[1] x3 <poll_until>
+    0046: f2c00003  turn-id[2] x3 <poll_until>
+    0047: f2e00003  turn-id[3] x3 <poll_until>
+    0048: d2800004  movz x4, #0x0
+    0049: d2800000  movz x0, #0x0
+    0050: 94000000  bl <rt_enqueue Store>
+    0051: b4000200  cbz x0, #64
+    0052: f900479f  str sp, [x28, #136]
+    0053: f9004b9f  str sp, [x28, #144]
+    0054: f9004f9f  str sp, [x28, #152]
+    0055: d2800029  movz x9, #0x1
+    0056: f9004789  str x9, [x28, #136]
+    0057: d280006a  movz x10, #0x3
+    0058: f9004b8a  str x10, [x28, #144]
+    0059: d2800009  movz x9, #0x0
+    0060: f9004f89  str x9, [x28, #152]
+    0061: d28e0009  movz x9, #0x7000
+    0062: f2a80009  movk x9, #0x4000, lsl #16
+    0063: f940012a  ldr x10, [x9]
+    0064: b400004a  cbz x10, #8
+    0065: 94000000  bl <__wrela_checkpoint_service>
+    0066: 1400001b  b #108
+    0067: d2800029  movz x9, #0x1
+    0068: f9000789  str x9, [x28, #8]
+    0069: d2800020  movz x0, #0x1
+    0070: f940a79e  ldr lr, [x28, #328]
+    0071: d65f03c0  ret
+    0072: f9400f89  ldr x9, [x28, #24]
+    0073: f9401f8a  ldr x10, [x28, #56]
+    0074: b50000aa  cbnz x10, #20
+    0075: f9004b89  str x9, [x28, #144]
+    0076: f9004f9f  str sp, [x28, #152]
+    0077: f900479f  str sp, [x28, #136]
+    0078: 540000ae  b.al #20
+    0079: f9004b8a  str x10, [x28, #144]
+    0080: f9004f89  str x9, [x28, #152]
+    0081: d2800029  movz x9, #0x1
+    0082: f9004789  str x9, [x28, #136]
+    0083: d28e0009  movz x9, #0x7000
+    0084: f2a80009  movk x9, #0x4000, lsl #16
+    0085: f940012a  ldr x10, [x9]
+    0086: b400004a  cbz x10, #8
+    0087: 94000000  bl <__wrela_checkpoint_service>
+    0088: 14000005  b #20
+    0089: f9403793  ldr x19, [x28, #104]
+    0090: aa1303e0  mov x0, x19
+    0091: 14000047  b #284
+    0092: 14000046  b #280
+    0093: f9403793  ldr x19, [x28, #104]
+    0094: f9403f94  ldr x20, [x28, #120]
+    0095: f9404789  ldr x9, [x28, #136]
+    0096: f9005389  str x9, [x28, #160]
+    0097: f9404b89  ldr x9, [x28, #144]
+    0098: f9005789  str x9, [x28, #168]
+    0099: f9404f89  ldr x9, [x28, #152]
+    0100: f9005b89  str x9, [x28, #176]
+    0101: f9405389  ldr x9, [x28, #160]
+    0102: aa0903f5  mov x21, x9
+    0103: d2800016  movz x22, #0x0
+    0104: eb1602bf  cmp x21, x22
+    0105: 9a9f17f7  cset x23, eq
+    0106: f9405789  ldr x9, [x28, #168]
+    0107: aa0903f6  mov x22, x9
+    0108: aa1603f5  mov x21, x22
+    0109: d2800036  movz x22, #0x1
+    0110: 8a1602f8  and x24, x23, x22
+    0111: b4000198  cbz x24, #48
+    0112: ab150276  adds x22, x19, x21
+    0113: 54000103  b.cc #32
+    0114: d10043ff  sub sp, sp, #16  ; abort Bytes slot
+    0115: 10000009  adr x9, rodata+0x107
+    0116: f90003e9  str x9, [sp]  ; Bytes.base
+    0117: d2800349  movz x9, #0x1a
+    0118: f90007e9  str x9, [sp, #8]  ; Bytes.len
+    0119: 910003e0  add x0, sp, #0  ; *Bytes
+    0120: 94000000  bl <__wrela_abort>
+    0121: aa1603f3  mov x19, x22
+    0122: 14000015  b #84
+    0123: f9405389  ldr x9, [x28, #160]
+    0124: aa0903f5  mov x21, x9
+    0125: d2800036  movz x22, #0x1
+    0126: eb1602bf  cmp x21, x22
+    0127: 9a9f17f7  cset x23, eq
+    0128: f9405789  ldr x9, [x28, #168]
+    0129: f9008b89  str x9, [x28, #272]
+    0130: f9405b89  ldr x9, [x28, #176]
+    0131: f9008f89  str x9, [x28, #280]
+    0132: d2800035  movz x21, #0x1
+    0133: 8a1502f6  and x22, x23, x21
+    0134: b4000056  cbz x22, #8
+    0135: 14000008  b #32
+    0136: d10043ff  sub sp, sp, #16  ; abort Bytes slot
+    0137: 10000009  adr x9, rodata+0x121
+    0138: f90003e9  str x9, [sp]  ; Bytes.base
+    0139: d2800b49  movz x9, #0x5a
+    0140: f90007e9  str x9, [sp, #8]  ; Bytes.len
+    0141: 910003e0  add x0, sp, #0  ; *Bytes
+    0142: 94000000  bl <__wrela_abort>
+    0143: d2800035  movz x21, #0x1
+    0144: ab150296  adds x22, x20, x21
+    0145: 54000103  b.cc #32
+    0146: d10043ff  sub sp, sp, #16  ; abort Bytes slot
+    0147: 10000009  adr x9, rodata+0x107
+    0148: f90003e9  str x9, [sp]  ; Bytes.base
+    0149: d2800349  movz x9, #0x1a
+    0150: f90007e9  str x9, [sp, #8]  ; Bytes.len
+    0151: 910003e0  add x0, sp, #0  ; *Bytes
+    0152: 94000000  bl <__wrela_abort>
+    0153: aa1603f4  mov x20, x22
+    0154: f9003793  str x19, [x28, #104]
+    0155: f9003f94  str x20, [x28, #120]
+    0156: d28e0009  movz x9, #0x7000
+    0157: f2a80009  movk x9, #0x4000, lsl #16
+    0158: f940012a  ldr x10, [x9]
+    0159: b400004a  cbz x10, #8
+    0160: 94000000  bl <__wrela_checkpoint_service>
+    0161: 17ffff80  b #-512
+    0162: aa0003e1  mov x1, x0
+    0163: f9000f81  str x1, [x28, #24]  ; complete → turn.reply
+    0164: d2800000  movz x0, #0x0
+    0165: f940a79e  ldr lr, [x28, #328]
+    0166: d65f03c0  ret
   Rodata
     0: offset=0x0 shift count\x20
     1: offset=0xc  is out of range for a 64-bit type
