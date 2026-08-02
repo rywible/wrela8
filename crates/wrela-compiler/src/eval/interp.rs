@@ -1772,7 +1772,8 @@ fn eval_intrinsic<'a, 'p>(
             ctx.image = Some(g);
             Ok(Value::Unit)
         }
-        "Image.device" | "Image.driver" | "Image.actor" | "Image.pool" | "Image.dma_pool" => {
+        "Image.device" | "Image.driver" | "Image.actor" | "Image.pool" | "Image.dma_pool"
+        | "Image.renderer" => {
             let ty_arg = type_arg
                 .clone()
                 .ok_or_else(|| ctx.abandon("internal error: missing builder type argument"))?;
@@ -1788,6 +1789,7 @@ fn eval_intrinsic<'a, 'p>(
                     "Image.device" => Ok(g.declare_device(ty_arg, decl_args)),
                     "Image.driver" => Ok(g.declare_driver(ty_arg, decl_args)),
                     "Image.actor" => Ok(g.declare_actor(ty_arg, decl_args)),
+                    "Image.renderer" => Ok(g.declare_renderer(ty_arg, decl_args)),
                     "Image.pool" => match pool_name {
                         Some(name) => g.declare_pool(name, ty_arg, decl_args),
                         None => Err(

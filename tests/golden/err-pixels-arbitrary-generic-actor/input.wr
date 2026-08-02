@@ -1,0 +1,9 @@
+module examples.err_pixels_arbitrary_generic_actor
+
+@actor
+struct Renderer[T]:
+    value: T
+
+@actor
+struct Holder:
+    forbidden: Actor[Renderer[u64]]

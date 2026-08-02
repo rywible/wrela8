@@ -16,7 +16,7 @@ use wrela_compiler::sema::typed::{TestKind, TypedProgram};
 use wrela_compiler::syntax::ast::Module;
 use wrela_compiler::syntax::{lexer, parser, printer};
 
-const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed|layout-types|cfg|frame|mwir-opt|relax|flowwir|mwir|asm|cost|image|report|rtconfig> [--timings] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>] <file.wr>\n       wrela test <file.wr> [--vmm <path>] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>]\n       wrela build <file.wr> [--out-dir <dir>] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>]\n       wrela version";
+const USAGE: &str = "usage: wrela dump --stage=<tokens|ast|pretty|check|typed|layout-types|cfg|frame|mwir-opt|relax|flowwir|mwir|asm|cost|image|field-graph|frame-program|render-layout|report|rtconfig> [--timings] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>] <file.wr>\n       wrela test <file.wr> [--vmm <path>] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>]\n       wrela build <file.wr> [--out-dir <dir>] [--omit-dmb] [--block-count] [--mode=dev|release] [--ghz=<n>]\n       wrela version";
 
 thread_local! {
     static DUMP_HAD_DIAGNOSTIC: Cell<bool> = const { Cell::new(false) };
@@ -312,6 +312,45 @@ fn run_image_stage(programs: &BTreeMap<String, TypedProgram>) {
                 names.join(", ")
             ));
         }
+    }
+}
+
+fn run_pixels_stage(programs: &BTreeMap<String, TypedProgram>, stage: &str) {
+    let candidates: Vec<(&String, &String)> = programs
+        .iter()
+        .filter_map(|(module, program)| program.image_fn.as_ref().map(|f| (module, f)))
+        .collect();
+    let [(module, fn_name)] = candidates.as_slice() else {
+        print_line_diagnostic(&format!(
+            "error[pixels]: Pixels dump requires exactly one `@image` fn, found {}",
+            candidates.len()
+        ));
+        return;
+    };
+    let program = &programs[*module];
+    let graph = match eval::interp::eval_image(program, fn_name) {
+        Ok(graph) => graph,
+        Err(error) => {
+            print_sema_error(&eval::to_sema_error(error));
+            return;
+        }
+    };
+    if let Err(error) = eval::image_checks::check_sealed(&graph, program, programs) {
+        print_sema_error(&error);
+        return;
+    }
+    match wrela_compiler::pixels::compile_plane_skeleton(program, programs, &graph) {
+        Ok(skeleton) => match stage {
+            "field-graph" => print!("{}", wrela_compiler::pixels::dump_field_graph(&skeleton)),
+            "frame-program" => {
+                print!("{}", wrela_compiler::pixels::dump_frame_program(&skeleton))
+            }
+            "render-layout" => {
+                print!("{}", wrela_compiler::pixels::dump_render_layout(&skeleton))
+            }
+            _ => unreachable!("Pixels dispatcher names are fixed"),
+        },
+        Err(message) => print_line_diagnostic(&format!("error[pixels]: {message}")),
     }
 }
 
@@ -1360,6 +1399,27 @@ fn dump(args: &[String]) -> ExitCode {
                 }
             }
         }
+        "field-graph" | "frame-program" | "render-layout" => match lex_result {
+            Ok(tokens) => {
+                let parse_start = Instant::now();
+                let parsed = parser::parse(tokens);
+                parse_time = parse_start.elapsed();
+                let dump_start = Instant::now();
+                match parsed {
+                    Ok(module) => match load_build_closure(&path, module) {
+                        Ok((programs, _, _)) => run_pixels_stage(&programs, &stage),
+                        Err(()) => {}
+                    },
+                    Err(e) => print_parse_error(&e),
+                }
+                dump_time = dump_start.elapsed();
+            }
+            Err(e) => {
+                let dump_start = Instant::now();
+                print_lex_error(&e);
+                dump_time = dump_start.elapsed();
+            }
+        },
         "image" => match lex_result {
             Ok(tokens) => {
                 let parse_start = Instant::now();
@@ -1795,9 +1855,9 @@ fn test_cmd(args: &[String]) -> ExitCode {
     let transcript = String::from_utf8_lossy(&out.stdout).into_owned();
     let t_lines: Vec<&str> = transcript.lines().collect();
     let trailing_ok = |lines: &[&str]| {
-        lines
-            .iter()
-            .all(|l| l.starts_with("lane1 ") || l.starts_with("lane2 "))
+        lines.iter().all(|l| {
+            l.starts_with("lane1 ") || l.starts_with("lane2 ") || l.starts_with("display ")
+        })
     };
     let boot_failed = t_lines.len() >= 2
         && t_lines[0].starts_with("FAILED ")

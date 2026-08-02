@@ -158,7 +158,7 @@ pub(crate) fn image_decl_handle_word(
         ImageDeclRef::Actor(i) => Some(*i as u64),
         ImageDeclRef::Driver(i) => Some((space.n_actors + *i) as u64),
         ImageDeclRef::Device(i) => Some((space.n_actors + space.n_drivers + *i) as u64),
-        ImageDeclRef::Pool(_) | ImageDeclRef::DmaPool(_) => None,
+        ImageDeclRef::Renderer(_) | ImageDeclRef::Pool(_) | ImageDeclRef::DmaPool(_) => None,
     }
 }
 
@@ -221,6 +221,7 @@ fn value_shape_name(value: &crate::eval::value::Value) -> &'static str {
         Value::ImageDecl(ImageDeclRef::Device(_)) => "a device handle",
         Value::ImageDecl(ImageDeclRef::Driver(_)) => "a driver handle",
         Value::ImageDecl(ImageDeclRef::Actor(_)) => "an actor handle",
+        Value::ImageDecl(ImageDeclRef::Renderer(_)) => "a renderer handle",
         Value::ImageDecl(ImageDeclRef::Pool(_)) => "a pool handle",
         Value::ImageDecl(ImageDeclRef::DmaPool(_)) => "a DMA-pool handle",
     }

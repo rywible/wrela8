@@ -1,0 +1,4 @@
+Module path=examples.check_pixels_smooth_interior_root
+  Fn smooth_min(a: read f64, b: read f64, k: read f64) -> f64
+  Fn interior_root() -> unit
+  Fn saturated_branch() -> unit

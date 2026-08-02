@@ -3,10 +3,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::sema::generics;
 use crate::sema::typed::{
-    CalleeKey, TestDecl, TestKind, TypedCallArg, TypedClosureBody, TypedClosureParam, TypedConst,
-    TypedDeferBody, TypedElif, TypedEnum, TypedExpr, TypedExprKind, TypedFn, TypedForIter,
-    TypedMatchArm, TypedParam, TypedPattern, TypedPatternKind, TypedProgram, TypedStmt,
-    TypedStmtKind, TypedStruct,
+    CalleeKey, PixelsFnKind, PixelsFnMeta, TestDecl, TestKind, TypedCallArg, TypedClosureBody,
+    TypedClosureParam, TypedConst, TypedDeferBody, TypedElif, TypedEnum, TypedExpr, TypedExprKind,
+    TypedFn, TypedForIter, TypedMatchArm, TypedParam, TypedPattern, TypedPatternKind, TypedProgram,
+    TypedStmt, TypedStmtKind, TypedStruct,
 };
 use crate::sema::types::{
     self, Classification, DeclMember, DeclParam, DeclVariantPayload, Type, TypeArg,
@@ -180,6 +180,7 @@ pub(crate) struct ModuleCtx {
     pub(crate) reserve_permit_demands: RefCell<Vec<Span>>,
     pub(crate) unbounded_sync_loops: RefCell<Vec<crate::sema::typed::UnboundedSyncLoop>>,
     pub(crate) inferred_rets: RefCell<BTreeMap<String, Type>>,
+    pub(crate) pixels_fn_meta: RefCell<BTreeMap<String, PixelsFnMeta>>,
     pub(crate) module_path: String,
     pub(crate) loader_key: Vec<String>,
     pub(crate) struct_decl_module: BTreeMap<String, String>,
@@ -371,6 +372,7 @@ pub(crate) fn build_module_ctx(
         reserve_permit_demands: RefCell::new(Vec::new()),
         unbounded_sync_loops: RefCell::new(Vec::new()),
         inferred_rets: RefCell::new(BTreeMap::new()),
+        pixels_fn_meta: RefCell::new(BTreeMap::new()),
         module_path,
         loader_key: module.path.clone(),
         struct_decl_module,
@@ -644,6 +646,7 @@ pub(crate) fn check(
             }
             (Item::Fn(f), types::DeclItem::Fn(d)) => {
                 check_marker_attr_shape(f, true)?;
+                let mut pixels_meta = check_pixels_fn_shape(f, d)?;
                 let test_kind = test_attr_kind(f)?;
                 if test_kind == Some(TestKind::Exhaustive) {
                     check_exhaustive_test_params(f, d, mctx)?;
@@ -653,6 +656,17 @@ pub(crate) fn check(
                 }
                 check_layout_assert_fn(f, d, mctx)?;
                 if let Some(tf) = check_top_fn(f, d, mctx)? {
+                    if let Some(meta) = pixels_meta.as_mut() {
+                        if meta.kind == PixelsFnKind::Field {
+                            meta.material_type = pixels_field_material_type(&tf)?;
+                        }
+                    }
+                    if let Some(meta) = pixels_meta {
+                        mctx.pixels_fn_meta
+                            .borrow_mut()
+                            .insert(f.name.clone(), meta.clone());
+                        program.pixels_fns.insert(f.name.clone(), meta);
+                    }
                     if is_image_fn(f) {
                         if let Some(existing) = &program.image_fn {
                             return Err(SemaError::at(
@@ -707,7 +721,13 @@ pub(crate) fn check_marker_attr_shape(f: &ast::FnItem, top_level: bool) -> Resul
     let markers: Vec<&ast::Attr> = f
         .attrs
         .iter()
-        .filter(|a| a.name == "test" || a.name == "image" || a.name == "layout_assert")
+        .filter(|a| {
+            a.name == "test"
+                || a.name == "image"
+                || a.name == "layout_assert"
+                || a.name == "field"
+                || a.name == "material"
+        })
         .collect();
     if let Some(first) = markers.first() {
         if !top_level {
@@ -720,9 +740,17 @@ pub(crate) fn check_marker_attr_shape(f: &ast::FnItem, top_level: bool) -> Resul
             ));
         }
         if markers.len() > 1 {
+            let legacy_markers = ["test", "image", "layout_assert"];
+            let marker_set = if legacy_markers.contains(&markers[0].name.as_str())
+                && legacy_markers.contains(&markers[1].name.as_str())
+            {
+                "`@test`/`@image`/`@layout_assert` marker"
+            } else {
+                "top-level marker"
+            };
             return Err(type_error(
                 format!(
-                    "fn `{}` carries more than one `@test`/`@image`/`@layout_assert` marker \
+                    "fn `{}` carries more than one {marker_set} \
                      attribute (`@{}` and `@{}`) — at most one is valid",
                     f.name, markers[0].name, markers[1].name
                 ),
@@ -731,6 +759,274 @@ pub(crate) fn check_marker_attr_shape(f: &ast::FnItem, top_level: bool) -> Resul
         }
     }
     Ok(())
+}
+
+fn check_pixels_fn_shape(
+    f: &ast::FnItem,
+    d: &types::DeclFn,
+) -> Result<Option<PixelsFnMeta>, SemaError> {
+    let field = f.attrs.iter().find(|attr| attr.name == "field");
+    let material = f.attrs.iter().find(|attr| attr.name == "material");
+    let Some((kind, attr)) = field
+        .map(|attr| (PixelsFnKind::Field, attr))
+        .or_else(|| material.map(|attr| (PixelsFnKind::Material, attr)))
+    else {
+        return Ok(None);
+    };
+    if !attr.args.is_empty() {
+        return Err(type_error(
+            format!("`@{}` takes no arguments", attr.name),
+            attr.span,
+        ));
+    }
+    if d.is_async || d.is_task || !d.generics.is_empty() || d.receiver.is_some() {
+        return Err(type_error(
+            format!(
+                "`@{}` fn `{}` must be a top-level synchronous nongeneric function",
+                attr.name, f.name
+            ),
+            f.span,
+        ));
+    }
+    match kind {
+        PixelsFnKind::Field => {
+            if d.ret != Type::Named("Field".to_string(), vec![]) {
+                return Err(type_error(
+                    format!(
+                        "`@field` fn `{}` must return `Field`, found `{}`",
+                        f.name,
+                        types::render_type(&d.ret)
+                    ),
+                    f.span,
+                ));
+            }
+            if !(d.params.len() == 1 || d.params.len() == 2)
+                || d.params[0].mode != AccessMode::Read
+                || d.params[0].ty != Type::Named("Vec3".to_string(), vec![])
+                || d.params.get(1).is_some_and(|p| p.mode != AccessMode::Read)
+            {
+                return Err(type_error(
+                    format!(
+                        "`@field` fn `{}` must be `(p: Vec3)` or \
+                         `(p: Vec3, read params: P) -> Field`",
+                        f.name
+                    ),
+                    f.span,
+                ));
+            }
+            Ok(Some(PixelsFnMeta {
+                kind,
+                params_type: d.params.get(1).map(|p| p.ty.clone()),
+                material_type: None,
+            }))
+        }
+        PixelsFnKind::Material => {
+            let surface_material = match d.params.first().map(|p| (&p.mode, &p.ty)) {
+                Some((AccessMode::Read, Type::Named(name, args))) if name == "SurfaceContext" => {
+                    match args.as_slice() {
+                        [TypeArg::Type(material)] => Some(material.clone()),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+            if d.ret != Type::Named("MaterialSample".to_string(), vec![])
+                || !(d.params.len() == 1 || d.params.len() == 2)
+                || surface_material.is_none()
+                || d.params.get(1).is_some_and(|p| p.mode != AccessMode::Read)
+            {
+                return Err(type_error(
+                    format!(
+                        "`@material` fn `{}` must be `(surface: SurfaceContext[M])` or \
+                         `(surface: SurfaceContext[M], read params: P) -> MaterialSample`",
+                        f.name
+                    ),
+                    f.span,
+                ));
+            }
+            Ok(Some(PixelsFnMeta {
+                kind,
+                params_type: d.params.get(1).map(|p| p.ty.clone()),
+                material_type: surface_material,
+            }))
+        }
+    }
+}
+
+fn pixels_field_material_type(f: &TypedFn) -> Result<Option<Type>, SemaError> {
+    fn visit_expr(expr: &TypedExpr, found: &mut Option<Type>) -> Result<(), SemaError> {
+        let visit_args = |args: &[TypedCallArg], found: &mut Option<Type>| {
+            for arg in args {
+                if let Some(value) = &arg.value {
+                    visit_expr(value, found)?;
+                }
+            }
+            Ok::<(), SemaError>(())
+        };
+        match &expr.kind {
+            TypedExprKind::Call {
+                callee,
+                receiver,
+                args,
+            } => {
+                let spelling = callee.spelling();
+                if (spelling == "mark"
+                    || spelling.starts_with("fn:mark[")
+                    || spelling.ends_with("::mark"))
+                    && args.len() >= 3
+                {
+                    let material = args[2]
+                        .value
+                        .as_ref()
+                        .map(|value| value.ty.clone())
+                        .expect("ordinary call arguments carry values");
+                    if found.as_ref().is_some_and(|prior| prior != &material) {
+                        return Err(type_error(
+                            format!(
+                                "`@field` uses more than one nominal material type (`{}` and `{}`)",
+                                types::render_type(found.as_ref().unwrap()),
+                                types::render_type(&material)
+                            ),
+                            expr.span,
+                        ));
+                    }
+                    *found = Some(material);
+                }
+                if let Some(receiver) = receiver {
+                    visit_expr(receiver, found)?;
+                }
+                visit_args(args, found)?;
+            }
+            TypedExprKind::CallValue(callee, args) => {
+                visit_expr(callee, found)?;
+                visit_args(args, found)?;
+            }
+            TypedExprKind::Field(base, _)
+            | TypedExprKind::ToScalar(base)
+            | TypedExprKind::Neg(base)
+            | TypedExprKind::BitNot(base)
+            | TypedExprKind::Take(base)
+            | TypedExprKind::Try(base, _)
+            | TypedExprKind::Not(base)
+            | TypedExprKind::Panic(base)
+            | TypedExprKind::Await(base)
+            | TypedExprKind::Send(base) => visit_expr(base, found)?,
+            TypedExprKind::Index(a, b)
+            | TypedExprKind::Binary(_, a, b)
+            | TypedExprKind::OpCall(_, a, b)
+            | TypedExprKind::And(a, b)
+            | TypedExprKind::Or(a, b) => {
+                visit_expr(a, found)?;
+                visit_expr(b, found)?;
+            }
+            TypedExprKind::Is(value, _) => visit_expr(value, found)?,
+            TypedExprKind::EnumConstruct { args, .. } => visit_args(args, found)?,
+            TypedExprKind::Tuple(items) | TypedExprKind::List(items) => {
+                for item in items {
+                    visit_expr(item, found)?;
+                }
+            }
+            TypedExprKind::StructLiteral { fields, .. } => {
+                for (_, value) in fields {
+                    visit_expr(value, found)?;
+                }
+            }
+            TypedExprKind::Intrinsic { receiver, args, .. } => {
+                if let Some(receiver) = receiver {
+                    visit_expr(receiver, found)?;
+                }
+                for (_, value) in args {
+                    visit_expr(value, found)?;
+                }
+            }
+            TypedExprKind::Closure { .. }
+            | TypedExprKind::Int(_)
+            | TypedExprKind::Float(_)
+            | TypedExprKind::Str(_)
+            | TypedExprKind::BStr(_)
+            | TypedExprKind::Char(_)
+            | TypedExprKind::Bool(_)
+            | TypedExprKind::Unit
+            | TypedExprKind::Local(_)
+            | TypedExprKind::Const(_)
+            | TypedExprKind::Static(_)
+            | TypedExprKind::FnRef(_)
+            | TypedExprKind::PoolName(_)
+            | TypedExprKind::GroupChild(_) => {}
+        }
+        Ok(())
+    }
+    fn visit_stmts(stmts: &[TypedStmt], found: &mut Option<Type>) -> Result<(), SemaError> {
+        for stmt in stmts {
+            match &stmt.kind {
+                TypedStmtKind::Let { value, .. } => visit_expr(value, found)?,
+                TypedStmtKind::Assign { target, value } => {
+                    visit_expr(target, found)?;
+                    visit_expr(value, found)?;
+                }
+                TypedStmtKind::If {
+                    cond,
+                    then_branch,
+                    elifs,
+                    else_branch,
+                } => {
+                    visit_expr(cond, found)?;
+                    visit_stmts(then_branch, found)?;
+                    for elif in elifs {
+                        visit_expr(&elif.cond, found)?;
+                        visit_stmts(&elif.body, found)?;
+                    }
+                    if let Some(branch) = else_branch {
+                        visit_stmts(branch, found)?;
+                    }
+                }
+                TypedStmtKind::Match { scrutinee, arms } => {
+                    visit_expr(scrutinee, found)?;
+                    for arm in arms {
+                        if let Some(guard) = &arm.guard {
+                            visit_expr(guard, found)?;
+                        }
+                        visit_stmts(&arm.body, found)?;
+                    }
+                }
+                TypedStmtKind::For { iter, body, .. } => {
+                    match iter {
+                        TypedForIter::Range(a, b, _) => {
+                            visit_expr(a, found)?;
+                            visit_expr(b, found)?;
+                        }
+                        TypedForIter::Expr(value) => visit_expr(value, found)?,
+                    }
+                    visit_stmts(body, found)?;
+                }
+                TypedStmtKind::While { cond, body, .. } => {
+                    visit_expr(cond, found)?;
+                    visit_stmts(body, found)?;
+                }
+                TypedStmtKind::Return(Some(value))
+                | TypedStmtKind::ExprStmt(value)
+                | TypedStmtKind::BareSend { expr: value, .. } => visit_expr(value, found)?,
+                TypedStmtKind::Assert { cond, message }
+                | TypedStmtKind::ComptimeAssert { cond, message, .. } => {
+                    visit_expr(cond, found)?;
+                    if let Some(message) = message {
+                        visit_expr(message, found)?;
+                    }
+                }
+                TypedStmtKind::Defer(TypedDeferBody::Expr(value)) => visit_expr(value, found)?,
+                TypedStmtKind::Defer(TypedDeferBody::Suite(body))
+                | TypedStmtKind::WithGroup { body, .. } => visit_stmts(body, found)?,
+                TypedStmtKind::Break
+                | TypedStmtKind::Continue
+                | TypedStmtKind::Pass
+                | TypedStmtKind::Return(None) => {}
+            }
+        }
+        Ok(())
+    }
+    let mut found = None;
+    visit_stmts(&f.body, &mut found)?;
+    Ok(found)
 }
 
 pub(crate) fn is_image_fn(f: &ast::FnItem) -> bool {
@@ -4577,7 +4873,7 @@ fn check_call_index(
         }
     }
     if let Expr::Field(base, fspan, mname) = inner {
-        if mname == "device" || mname == "pool" || mname == "dma_pool" {
+        if mname == "device" || mname == "pool" || mname == "dma_pool" || mname == "renderer" {
             let base_t = check_expr(base, None, fctx, mctx)?;
             if base_t.ty == image_type() {
                 return check_image_bracket_intrinsic(mname, targs, args, *fspan, fctx, mctx);
@@ -4831,6 +5127,20 @@ pub(crate) fn image_decl_type() -> Type {
     Type::Named("ImageDecl".to_string(), vec![])
 }
 
+pub(crate) fn image_renderer_decl_type(params: Type) -> Type {
+    Type::Named(
+        "ImageDecl".to_string(),
+        vec![TypeArg::Type(Type::Named(
+            "Renderer".to_string(),
+            vec![TypeArg::Type(params)],
+        ))],
+    )
+}
+
+fn is_image_decl_type(ty: &Type) -> bool {
+    matches!(ty, Type::Named(name, _) if name == "ImageDecl")
+}
+
 type IntrinsicArgs = Vec<(String, TypedExpr)>;
 
 pub(crate) fn check_intrinsic_args(
@@ -4937,6 +5247,9 @@ fn check_image_bracket_intrinsic(
     }
     let type_arg = resolve_intrinsic_type_arg(&targs[0], fctx, mctx)?;
     let iargs = check_intrinsic_args(args, fctx, mctx)?;
+    if mname == "renderer" {
+        return check_image_renderer_intrinsic(type_arg, iargs, ispan, mctx);
+    }
     Ok(TypedExpr {
         span: ispan,
         ty: image_decl_type(),
@@ -4946,6 +5259,136 @@ fn check_image_bracket_intrinsic(
             type_arg: Some(type_arg),
             const_arg: None,
             args: iargs,
+        },
+    })
+}
+
+fn check_image_renderer_intrinsic(
+    params: Type,
+    args: IntrinsicArgs,
+    span: Span,
+    mctx: &ModuleCtx,
+) -> Result<TypedExpr, SemaError> {
+    let labels: BTreeSet<&str> = args.iter().map(|(label, _)| label.as_str()).collect();
+    for required in crate::pixels::RENDERER_LABELS {
+        if !labels.contains(required) {
+            return Err(type_error(
+                format!("`img.renderer[P]` requires `{required}=`"),
+                span,
+            ));
+        }
+    }
+    if labels.len() != crate::pixels::RENDERER_LABELS.len() {
+        let extra = labels
+            .iter()
+            .find(|label| !crate::pixels::RENDERER_LABELS.contains(label))
+            .copied()
+            .unwrap_or("<duplicate>");
+        return Err(type_error(
+            format!("`img.renderer[P]` has no `{extra}=` argument"),
+            span,
+        ));
+    }
+    let root_meta = |label: &str, expected_kind: PixelsFnKind| -> Result<PixelsFnMeta, SemaError> {
+        let expr = args
+            .iter()
+            .find(|(found, _)| found == label)
+            .map(|(_, expr)| expr)
+            .expect("required renderer label checked");
+        let TypedExprKind::FnRef(key) = &expr.kind else {
+            return Err(type_error(
+                format!("`img.renderer[P]` `{label}=` must be a bare function name"),
+                expr.span,
+            ));
+        };
+        let name = key.spelling();
+        let Some(info) = mctx.fns.get(&name) else {
+            return Err(type_error(
+                format!("renderer `{label}=` function `{name}` is not available"),
+                expr.span,
+            ));
+        };
+        let Some(mut meta) = mctx
+            .pixels_fn_meta
+            .borrow()
+            .get(&name)
+            .cloned()
+            .or(check_pixels_fn_shape(&info.ast, &info.decl)?)
+        else {
+            return Err(type_error(
+                format!(
+                    "renderer `{label}=` function `{name}` lacks `@{}`",
+                    match expected_kind {
+                        PixelsFnKind::Field => "field",
+                        PixelsFnKind::Material => "material",
+                    }
+                ),
+                expr.span,
+            ));
+        };
+        if meta.kind == PixelsFnKind::Field && meta.material_type.is_none() {
+            let typed = check_top_fn(&info.ast, &info.decl, mctx)?.ok_or_else(|| {
+                type_error(
+                    format!("renderer `field=` function `{name}` may not be generic"),
+                    expr.span,
+                )
+            })?;
+            meta.material_type = pixels_field_material_type(&typed)?;
+        }
+        if meta.kind != expected_kind {
+            return Err(type_error(
+                format!("renderer `{label}=` function `{name}` has the wrong Pixels marker"),
+                expr.span,
+            ));
+        }
+        Ok(meta)
+    };
+    let field = root_meta("field", PixelsFnKind::Field)?;
+    let material = root_meta("material", PixelsFnKind::Material)?;
+    for (label, found) in [
+        ("@field", field.params_type.as_ref()),
+        ("@material", material.params_type.as_ref()),
+    ] {
+        if found != Some(&params) {
+            return Err(type_error(
+                format!(
+                    "renderer parameter mismatch: `{label}` uses `{}`, declaration uses `{}`",
+                    found
+                        .map(types::render_type)
+                        .unwrap_or_else(|| "no parameter type".to_string()),
+                    types::render_type(&params)
+                ),
+                span,
+            ));
+        }
+    }
+    if field.material_type.is_some() && field.material_type != material.material_type {
+        return Err(type_error(
+            format!(
+                "renderer material mismatch: field marks use `{}`, `SurfaceContext` uses `{}`",
+                field
+                    .material_type
+                    .as_ref()
+                    .map(types::render_type)
+                    .unwrap_or_else(|| "none".to_string()),
+                material
+                    .material_type
+                    .as_ref()
+                    .map(types::render_type)
+                    .unwrap_or_else(|| "none".to_string())
+            ),
+            span,
+        ));
+    }
+    Ok(TypedExpr {
+        span,
+        ty: image_renderer_decl_type(params.clone()),
+        kind: TypedExprKind::Intrinsic {
+            key: "Image.renderer".to_string(),
+            receiver: None,
+            type_arg: Some(params),
+            const_arg: None,
+            args,
         },
     })
 }
@@ -5466,7 +5909,7 @@ fn check_call_by_field(
     if base_ty == image_type() {
         return check_image_method_intrinsic(name, args, call_span, fctx, mctx);
     }
-    if base_ty == image_decl_type() {
+    if is_image_decl_type(&base_ty) {
         return check_image_decl_method_intrinsic(base_t, name, args, fspan, call_span, fctx, mctx);
     }
     if let Type::Array(elem, len) = &base_ty {
@@ -6748,9 +7191,18 @@ pub(crate) fn check_image_decl_method_intrinsic(
         ));
     }
     let _ = (fctx, mctx);
+    let handle_ty = match &receiver.ty {
+        Type::Named(marker, targs) if marker == "ImageDecl" && targs.len() == 1 => {
+            let TypeArg::Type(inner) = &targs[0] else {
+                unreachable!("ImageDecl's argument is a type")
+            };
+            Type::Named("Actor".to_string(), vec![TypeArg::Type(inner.clone())])
+        }
+        _ => image_decl_type(),
+    };
     Ok(TypedExpr {
         span: call_span,
-        ty: image_decl_type(),
+        ty: handle_ty,
         kind: TypedExprKind::Intrinsic {
             key: "ImageDecl.handle".to_string(),
             receiver: Some(Box::new(receiver)),

@@ -107,6 +107,7 @@ pub struct BootOutcome {
     pub exits: u64,
     pub core_marks: Vec<u64>,
     pub lane2_hits: Vec<(u32, u64)>,
+    pub frames: Vec<wrela_machine::pixels::PresentedFrame>,
 }
 
 pub use wrela_machine::report::{
@@ -174,8 +175,10 @@ pub(crate) fn guest_dram_offset(guest: u64, nbytes: u64, what: &str) -> Result<u
 }
 
 mod boot;
+pub mod display;
 mod exit_loop;
 pub mod lane3;
+pub mod replay;
 
 pub use boot::boot_image;
 pub(crate) use boot::boot_image_core;

@@ -8,6 +8,7 @@ pub enum ImageDeclRef {
     Device(usize),
     Driver(usize),
     Actor(usize),
+    Renderer(usize),
     Pool(String),
     DmaPool(String),
 }
@@ -18,6 +19,7 @@ impl ImageDeclRef {
             ImageDeclRef::Device(i) => format!("device#{i}"),
             ImageDeclRef::Driver(i) => format!("driver#{i}"),
             ImageDeclRef::Actor(i) => format!("actor#{i}"),
+            ImageDeclRef::Renderer(i) => format!("renderer#{i}"),
             ImageDeclRef::Pool(name) => format!("pool:{name}"),
             ImageDeclRef::DmaPool(name) => format!("dma_pool:{name}"),
         }
@@ -56,6 +58,13 @@ pub struct ActorDecl {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct RendererDecl {
+    pub params_type: Type,
+    pub actor_type: Type,
+    pub args: Vec<DeclArg>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct PoolDecl {
     pub payload_type: Type,
     pub args: Vec<DeclArg>,
@@ -79,6 +88,7 @@ pub struct ImageGraph {
     pub devices: Vec<DeviceDecl>,
     pub drivers: Vec<DriverDecl>,
     pub actors: Vec<ActorDecl>,
+    pub renderers: Vec<RendererDecl>,
     pub pools: BTreeMap<String, PoolDecl>,
     pub dma_pools: BTreeMap<String, PoolDecl>,
     pub on_failures: Vec<OnFailureDecl>,
@@ -95,6 +105,7 @@ impl Default for ImageGraph {
             devices: Vec::new(),
             drivers: Vec::new(),
             actors: Vec::new(),
+            renderers: Vec::new(),
             pools: BTreeMap::new(),
             dma_pools: BTreeMap::new(),
             on_failures: Vec::new(),
@@ -129,6 +140,20 @@ impl ImageGraph {
         let idx = self.actors.len();
         self.actors.push(ActorDecl { actor_type, args });
         Value::ImageDecl(ImageDeclRef::Actor(idx))
+    }
+
+    pub fn declare_renderer(&mut self, params_type: Type, args: Vec<DeclArg>) -> Value {
+        let idx = self.renderers.len();
+        let actor_type = Type::Named(
+            "Renderer".to_string(),
+            vec![types::TypeArg::Type(params_type.clone())],
+        );
+        self.renderers.push(RendererDecl {
+            params_type,
+            actor_type,
+            args,
+        });
+        Value::ImageDecl(ImageDeclRef::Renderer(idx))
     }
 
     fn bind_pool_name(&self, pool_name: &str) -> Result<(), String> {
@@ -344,6 +369,18 @@ pub fn dump(enums: &BTreeMap<String, Vec<String>>, graph: &ImageGraph) -> String
             &mut out,
             1,
             &format!("Actor index={i} type={}", types::render_type(&d.actor_type)),
+        );
+        dump_args(&program, &d.args, 2, &mut out);
+    }
+    for (i, d) in graph.renderers.iter().enumerate() {
+        push_line(
+            &mut out,
+            1,
+            &format!(
+                "Renderer index={i} params={} actor={}",
+                types::render_type(&d.params_type),
+                types::render_type(&d.actor_type)
+            ),
         );
         dump_args(&program, &d.args, 2, &mut out);
     }

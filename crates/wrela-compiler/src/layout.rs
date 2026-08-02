@@ -2759,6 +2759,17 @@ pub fn lower_and_codegen_image(
     emit_comptime_tests: bool,
 ) -> Result<ImageCodegen, String> {
     let capacity = crate::eval::image_checks::blk_capacity_sectors(graph);
+    let pixels_skeleton = if graph.renderers.is_empty() {
+        None
+    } else {
+        let owner = programs
+            .values()
+            .find(|program| program.image_fn.is_some())
+            .ok_or_else(|| "pixels: image owner program is missing".to_string())?;
+        Some(crate::pixels::compile_plane_skeleton(
+            owner, programs, graph,
+        )?)
+    };
     let mut layout_ctx = layout_ctx.clone();
     enrich_layout_ctx_with_instantiations(&mut layout_ctx, programs);
 
@@ -2791,7 +2802,7 @@ pub fn lower_and_codegen_image(
         async_tests,
         wiring.as_ref().map(|w| &w.tables),
     );
-    let need_live = wiring.is_some() || !tests.is_empty();
+    let need_live = wiring.is_some() || !tests.is_empty() || pixels_skeleton.is_some();
 
     let (live_modules, live_programs, rtconfig_text, force_opts) = if need_live {
         let (text, force_opts) = generate_live_rtconfig(wiring.as_ref(), &tests)?;
@@ -2819,7 +2830,7 @@ pub fn lower_and_codegen_image(
     let group_arena_capacity = count_with_group_sites(&live_modules);
     let enqueue_specs = mailbox_enqueue_specs(graph, &live_modules, &layout_ctx)?;
     let _late_address_relax = crate::codegen::late_address_relax_guard();
-    let program = crate::codegen::codegen_program_with_async(
+    let mut program = crate::codegen::codegen_program_with_async(
         &mwir,
         &flow,
         &layout_ctx,
@@ -2828,6 +2839,10 @@ pub fn lower_and_codegen_image(
         &enqueue_specs,
     )
     .map_err(|e| e.message)?;
+    if let Some(skeleton) = &pixels_skeleton {
+        crate::codegen::install_pixels_plane_renderer(&mut program, &skeleton.frame_program)?;
+        crate::cost::audit::audit_program(&program)?;
+    }
     let async_frames =
         crate::codegen::async_frame_sizes(&flow, &layout_ctx).map_err(|e| e.message)?;
     let (group_child_index, _) =

@@ -1,0 +1,12 @@
+Pixels.SmoothObject.composedRootHasSupportedLeaf = propext,Classical.choice,Quot.sound
+Pixels.SmoothObject.scalarBounds = propext,Classical.choice,Quot.sound
+Pixels.SmoothObjectRootProgram.composedRootHasCandidate = propext,Classical.choice,Quot.sound
+Pixels.rootCoveredBySupportBound = propext,Classical.choice,Quot.sound
+Pixels.sinusoidalAmplitudeBound = propext,Classical.choice,Quot.sound
+Pixels.sinusoidalGradientBound = propext,Classical.choice,Quot.sound
+Pixels.sinusoidalHessianBound = propext,Classical.choice,Quot.sound
+Pixels.sinusoidalThirdDerivativeBound = propext,Classical.choice,Quot.sound
+Pixels.smoothInteriorCandidateCoverage = propext,Classical.choice,Quot.sound
+Pixels.smoothInteriorRoot = propext,Classical.choice,Quot.sound
+Pixels.smoothMinBounds = propext,Classical.choice,Quot.sound
+Pixels.smoothMinLeftSaturated = propext,Classical.choice,Quot.sound

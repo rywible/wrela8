@@ -470,6 +470,301 @@ pub struct CodegenProgram {
     pub origin_spans: Vec<BlockSpan>,
 }
 
+pub const PIXELS_RENDERER_SYMBOL: &str = "__wrela_pixels_render";
+
+/// Emit the P-1 scalar renderer as ordinary guest AArch64.
+///
+/// The renderer installs its frame program, shades the fixed 64x32 BGRA8
+/// target from the semantic digest embedded in that program, publishes the
+/// one-tile display queue, and finally rings the display doorbell.  Keeping
+/// this as an explicit, auditable emitter makes the walking skeleton travel
+/// through the same image/link/VMM path as every later renderer.
+pub fn emit_pixels_plane_renderer(frame_program: &[u8; 80]) -> CodegenFn {
+    use wrela_machine::pixels;
+
+    fn renderer_load_u64(code: &mut Vec<EmittedWord>, reg: u8, value: u64, label: &str) {
+        let halves = [
+            (value & 0xffff) as u16,
+            ((value >> 16) & 0xffff) as u16,
+            ((value >> 32) & 0xffff) as u16,
+            ((value >> 48) & 0xffff) as u16,
+        ];
+        code.push(EmittedWord::new(
+            encode::enc_movz(reg, halves[0], 0, true),
+            format!("movz {}, #{:#x}  ; {label}", reg_name(reg), halves[0]),
+            CostRule::MovWide,
+            Some(reg),
+            &[],
+        ));
+        for (shift, half) in [(16, halves[1]), (32, halves[2]), (48, halves[3])] {
+            code.push(EmittedWord::new(
+                encode::enc_movk(reg, half, shift, true),
+                format!("movk {}, #{half:#x}, lsl #{shift}", reg_name(reg)),
+                CostRule::MovWide,
+                Some(reg),
+                &[reg],
+            ));
+        }
+    }
+
+    fn renderer_store_w(
+        code: &mut Vec<EmittedWord>,
+        data: u8,
+        base: u8,
+        offset: u16,
+        symbol: u64,
+        label: &str,
+    ) {
+        code.push(
+            EmittedWord::new(
+                encode::enc_str_w_imm(data, base, offset),
+                format!("str w{data}, [{}, #{offset}]  ; {label}", reg_name(base)),
+                CostRule::Store,
+                None,
+                &[data, base],
+            )
+            .with_mem(MemRef::static_ref(symbol, u64::from(offset), base)),
+        );
+    }
+
+    fn renderer_store_x(
+        code: &mut Vec<EmittedWord>,
+        data: u8,
+        base: u8,
+        offset: u16,
+        symbol: u64,
+        label: &str,
+    ) {
+        code.push(
+            EmittedWord::new(
+                encode::enc_str_x_imm(data, base, offset),
+                format!(
+                    "str {}, [{}, #{offset}]  ; {label}",
+                    reg_name(data),
+                    reg_name(base)
+                ),
+                CostRule::Store,
+                None,
+                &[data, base],
+            )
+            .with_mem(MemRef::static_ref(symbol, u64::from(offset), base)),
+        );
+    }
+
+    let mut code = Vec::new();
+
+    renderer_load_u64(
+        &mut code,
+        9,
+        pixels::FRAME_PROGRAM_BASE,
+        "pixels frame program",
+    );
+    for (i, bytes) in frame_program.chunks_exact(4).enumerate() {
+        let value = u32::from_le_bytes(bytes.try_into().expect("four-byte frame chunk"));
+        renderer_load_u64(&mut code, 10, u64::from(value), "frame program word");
+        renderer_store_w(
+            &mut code,
+            10,
+            9,
+            (i * 4) as u16,
+            pixels::FRAME_PROGRAM_BASE,
+            "frame program",
+        );
+    }
+
+    let seed = &frame_program[48..80];
+    renderer_load_u64(&mut code, 9, pixels::FRAMEBUFFER_BASE, "pixels framebuffer");
+    for y in 0..pixels::HEIGHT {
+        for x in 0..pixels::WIDTH {
+            let b = (x as u8).wrapping_mul(4) ^ seed[0];
+            let g = (y as u8).wrapping_mul(8) ^ seed[1];
+            let r = seed[2];
+            let pixel = u32::from_le_bytes([b, g, r, 0xff]);
+            let offset = ((y * pixels::WIDTH + x) * pixels::BYTES_PER_PIXEL) as u16;
+            renderer_load_u64(&mut code, 10, u64::from(pixel), "semantic pixel");
+            renderer_store_w(
+                &mut code,
+                10,
+                9,
+                offset,
+                pixels::FRAMEBUFFER_BASE,
+                "framebuffer pixel",
+            );
+        }
+    }
+
+    renderer_load_u64(&mut code, 9, pixels::CONTROL_BASE, "pixels control");
+    for (offset, value, label) in [
+        (0, pixels::ABI_VERSION, "abi version"),
+        (4, pixels::FORMAT_BGRA8, "format"),
+        (8, pixels::WIDTH, "width"),
+        (12, pixels::HEIGHT, "height"),
+        (16, pixels::STRIDE_BYTES, "stride"),
+        (20, 1, "tile count"),
+    ] {
+        renderer_load_u64(&mut code, 10, u64::from(value), label);
+        renderer_store_w(&mut code, 10, 9, offset, pixels::CONTROL_BASE, label);
+    }
+    renderer_load_u64(&mut code, 10, 0, "sequence");
+    renderer_store_x(&mut code, 10, 9, 24, pixels::CONTROL_BASE, "sequence");
+    renderer_load_u64(&mut code, 10, pixels::TILES_BASE, "tiles address");
+    renderer_store_x(&mut code, 10, 9, 32, pixels::CONTROL_BASE, "tiles address");
+    renderer_load_u64(&mut code, 10, 0, "reserved control bytes");
+    for offset in [40, 48, 56] {
+        renderer_store_x(
+            &mut code,
+            10,
+            9,
+            offset,
+            pixels::CONTROL_BASE,
+            "reserved zero",
+        );
+    }
+
+    renderer_load_u64(&mut code, 9, pixels::TILES_BASE, "pixels tile");
+    for (offset, value, label) in [
+        (0, 0, "tile id"),
+        (4, 0, "tile x"),
+        (8, 0, "tile y"),
+        (12, pixels::WIDTH, "tile width"),
+        (16, pixels::HEIGHT, "tile height"),
+        (20, pixels::STRIDE_BYTES, "tile stride"),
+    ] {
+        renderer_load_u64(&mut code, 10, u64::from(value), label);
+        renderer_store_w(&mut code, 10, 9, offset, pixels::TILES_BASE, label);
+    }
+    renderer_load_u64(
+        &mut code,
+        10,
+        pixels::FRAMEBUFFER_BASE,
+        "tile pixels address",
+    );
+    renderer_store_x(
+        &mut code,
+        10,
+        9,
+        24,
+        pixels::TILES_BASE,
+        "tile pixels address",
+    );
+
+    renderer_load_u64(&mut code, 9, pixels::DOORBELL_ADDR, "display doorbell");
+    renderer_load_u64(
+        &mut code,
+        10,
+        pixels::CONTROL_BASE,
+        "present control address",
+    );
+    code.push(
+        EmittedWord::new(
+            encode::enc_str_x_imm(10, 9, 0),
+            "str x10, [x9]  ; transfer display frame".to_string(),
+            CostRule::Store,
+            None,
+            &[10, 9],
+        )
+        .with_mem(MemRef::mmio(pixels::DOORBELL_ADDR, 0, 9)),
+    );
+    code.push(EmittedWord::new(
+        encode::enc_ret(30),
+        "ret".to_string(),
+        CostRule::Branch,
+        None,
+        &[30],
+    ));
+
+    CodegenFn {
+        frame_size: 0,
+        code,
+        relocs: Vec::new(),
+    }
+}
+
+/// Install the P-1 renderer and invoke it from the image's real boot path.
+///
+/// The hook is spliced into `__wrela_rt_boot_init` immediately before its
+/// shared return. Ordinary images are untouched: they neither carry a Pixels
+/// symbol nor pay for a dormant runtime branch.
+pub fn install_pixels_plane_renderer(
+    program: &mut CodegenProgram,
+    frame_program: &[u8; 80],
+) -> Result<(), String> {
+    let boot = program.fns.get_mut("__wrela_rt_boot_init").ok_or_else(|| {
+        "pixels: live image did not codegen the runtime boot initializer".to_string()
+    })?;
+    let final_ret = boot
+        .code
+        .pop()
+        .ok_or_else(|| "pixels: runtime boot initializer emitted no code".to_string())?;
+    if final_ret.word != encode::enc_ret(X_LR) {
+        return Err(
+            "pixels: runtime boot initializer has no canonical shared return epilogue".to_string(),
+        );
+    }
+
+    boot.code.push(EmittedWord::new(
+        encode::enc_sub_imm(X_SP, X_SP, 16, true),
+        "sub sp, sp, #16  ; pixels hook frame".to_string(),
+        CostRule::Alu,
+        Some(X_SP),
+        &[X_SP],
+    ));
+    boot.code.push(
+        EmittedWord::new(
+            encode::enc_str_x_imm(X_LR, X_SP, 0),
+            "str lr, [sp]  ; save pixels hook return".to_string(),
+            CostRule::Store,
+            None,
+            &[X_LR, X_SP],
+        )
+        .with_mem(MemRef::stack(0)),
+    );
+    let call_word = boot.code.len();
+    boot.code.push(EmittedWord::new(
+        encode::enc_bl(0),
+        format!("bl <{PIXELS_RENDERER_SYMBOL}>"),
+        CostRule::Call,
+        Some(0),
+        &[],
+    ));
+    boot.relocs.push(Reloc::Call {
+        word: call_word,
+        key: PIXELS_RENDERER_SYMBOL.to_string(),
+    });
+    boot.code.push(
+        EmittedWord::new(
+            encode::enc_ldr_x_imm(X_LR, X_SP, 0),
+            "ldr lr, [sp]  ; restore pixels hook return".to_string(),
+            CostRule::Load,
+            Some(X_LR),
+            &[X_SP],
+        )
+        .with_mem(MemRef::stack(0)),
+    );
+    boot.code.push(EmittedWord::new(
+        encode::enc_add_imm(X_SP, X_SP, 16, true),
+        "add sp, sp, #16  ; free pixels hook frame".to_string(),
+        CostRule::Alu,
+        Some(X_SP),
+        &[X_SP],
+    ));
+    boot.code.push(final_ret);
+
+    if program
+        .fns
+        .insert(
+            PIXELS_RENDERER_SYMBOL.to_string(),
+            emit_pixels_plane_renderer(frame_program),
+        )
+        .is_some()
+    {
+        return Err(format!(
+            "pixels: compiler-owned symbol `{PIXELS_RENDERER_SYMBOL}` was already present"
+        ));
+    }
+    Ok(())
+}
+
 struct RodataPool {
     entries: Vec<Vec<u8>>,
     index: BTreeMap<Vec<u8>, usize>,

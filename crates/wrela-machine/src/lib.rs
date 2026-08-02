@@ -1,3 +1,4 @@
+pub mod pixels;
 pub mod report;
 pub mod sha256;
 pub mod vmm_process;
@@ -186,10 +187,7 @@ impl Device {
 }
 
 pub mod display {
-    pub const WIDTH: u32 = 1920;
-    pub const HEIGHT: u32 = 1080;
-    pub const REFRESH_HZ: u32 = 60;
-    pub const BYTES_PER_PIXEL: u32 = 4;
+    pub use crate::pixels::{BYTES_PER_PIXEL, HEIGHT, REFRESH_HZ, WIDTH};
 }
 
 pub mod virtio {

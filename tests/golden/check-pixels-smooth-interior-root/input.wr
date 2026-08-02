@@ -1,0 +1,23 @@
+module examples.check_pixels_smooth_interior_root
+
+fn smooth_min(a: f64, b: f64, k: f64) -> f64:
+    if a <= b - k:
+        return a
+    if b <= a - k:
+        return b
+    h = 0.5 + 0.5 * (b - a) / k
+    return b + (a - b) * h - k * h * (1.0 - h)
+
+@test
+fn interior_root():
+    k: f64 = 4.0
+    a = k / 4.0
+    b = k / 4.0
+    assert a != 0.0, "left leaf is not a root"
+    assert b != 0.0, "right leaf is not a root"
+    assert smooth_min(a, b, k) == 0.0, "the composed smooth object has an interior root"
+
+@test
+fn saturated_branch():
+    a: f64 = -3.25
+    assert smooth_min(a, 2.0, 0.5) == a, "saturated branch returns the selected leaf"

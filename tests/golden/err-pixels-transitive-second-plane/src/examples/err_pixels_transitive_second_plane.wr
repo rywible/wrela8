@@ -1,0 +1,89 @@
+module examples.err_pixels_transitive_second_plane
+
+from core.field import Field, Rgb, Vec3, mark, plane, union
+from core.render import (
+    AoConfig,
+    CameraBounds,
+    LightConfig,
+    MaterialSample,
+    ProbeConfig,
+    RenderProfile,
+    RgbRange,
+    ScalarRange,
+    SurfaceContext,
+    ToneCurve,
+)
+from drivers.display import Display, DisplayDevice
+
+struct SceneParams:
+    height: f32
+
+enum MaterialId:
+    Ground
+
+fn hidden_plane(p: Vec3, read params: SceneParams) -> Field:
+    return plane(
+        p,
+        Vec3(x=1.0, y=0.0, z=0.0),
+        offset=params.height,
+    )
+
+@field
+fn world(p: Vec3, read params: SceneParams) -> Field:
+    visible = plane(
+        p,
+        Vec3(x=0.0, y=1.0, z=0.0),
+        offset=params.height,
+    )
+    return mark(
+        union(visible, hidden_plane(p, params)),
+        object=0,
+        material=MaterialId.Ground,
+    )
+
+@material
+fn shade(
+    surface: SurfaceContext[MaterialId],
+    read params: SceneParams,
+) -> MaterialSample:
+    return MaterialSample(
+        color=Rgb(r=0.25, g=0.5, b=0.75),
+        roughness=0.5,
+    )
+
+@test(runtime)
+fn never_boots():
+    assert true, "unsupported renderer must fail before boot"
+
+@image
+pub fn build() -> Image:
+    img = Image(name="err-pixels-transitive-second-plane", target=Target.wrela_machine_v1)
+    display_device = img.device[DisplayDevice](transport=0x6000)
+    display = img.driver(Display, device=display_device)
+    renderer = img.renderer[SceneParams](
+        field=world,
+        material=shade,
+        display=display,
+        width=64,
+        height=32,
+        refresh_hz=60,
+        shade_hz=60,
+        profile=RenderProfile.AaaByteExact,
+        tone_curve=ToneCurve.Linear,
+        near=0.1,
+        far=10.0,
+        world_min=Vec3(x=-2.0, y=-2.0, z=-2.0),
+        world_max=Vec3(x=2.0, y=2.0, z=2.0),
+        camera_bounds=CameraBounds(max_motion=0.25),
+        light_config=LightConfig(capacity=0),
+        exposure_range=ScalarRange(min=-1.0, max=1.0),
+        environment_range=RgbRange(
+            min=Rgb(r=0.0, g=0.0, b=0.0),
+            max=Rgb(r=1.0, g=1.0, b=1.0),
+        ),
+        ao=AoConfig(enabled=false),
+        probes=ProbeConfig(enabled=false),
+        initialization_deadline_ms=10,
+    )
+    img.on_failure(policy=Failure.Halt)
+    return img.seal()

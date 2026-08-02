@@ -33,6 +33,7 @@ pub fn is_restricted_intrinsic(key: &str) -> bool {
             | "Image.actor"
             | "Image.pool"
             | "Image.dma_pool"
+            | "Image.renderer"
             | "Image.on_failure"
             | "Image.check_layout"
             | "Image.seal"
@@ -334,6 +335,19 @@ pub struct UnboundedSyncLoop {
     pub ordinal: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PixelsFnKind {
+    Field,
+    Material,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PixelsFnMeta {
+    pub kind: PixelsFnKind,
+    pub params_type: Option<Type>,
+    pub material_type: Option<Type>,
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TypedProgram {
     pub consts: BTreeMap<String, TypedConst>,
@@ -352,6 +366,7 @@ pub struct TypedProgram {
     pub unbounded_sync_loops: Vec<UnboundedSyncLoop>,
     pub effects: EffectMap,
     pub imported: ImportedDecls,
+    pub pixels_fns: BTreeMap<String, PixelsFnMeta>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -377,6 +392,27 @@ fn ty(t: &Type) -> String {
 pub fn dump(program: &TypedProgram) -> String {
     let mut out = String::new();
     out.push_str("Program\n");
+    for (name, meta) in &program.pixels_fns {
+        let kind = match meta.kind {
+            PixelsFnKind::Field => "field",
+            PixelsFnKind::Material => "material",
+        };
+        let params = meta
+            .params_type
+            .as_ref()
+            .map(ty)
+            .unwrap_or_else(|| "none".to_string());
+        let material = meta
+            .material_type
+            .as_ref()
+            .map(ty)
+            .unwrap_or_else(|| "none".to_string());
+        push_line(
+            &mut out,
+            1,
+            &format!("PixelsFn name={name} kind={kind} params={params} material={material}"),
+        );
+    }
     for (name, c) in &program.consts {
         push_line(&mut out, 1, &format!("Const name={name} ty={}", ty(&c.ty)));
         dump_expr(&c.value, 2, &mut out);

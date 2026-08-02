@@ -24,6 +24,7 @@ pub mod mwir;
 pub(crate) mod mwir_facts;
 pub mod mwir_opt;
 pub mod opts;
+pub mod pixels;
 pub mod placed_static_census;
 pub mod placement;
 pub mod range;

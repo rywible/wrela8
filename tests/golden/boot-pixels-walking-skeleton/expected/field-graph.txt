@@ -1,0 +1,6 @@
+FieldGraph v1
+  Renderer index=0 field=world material=shade
+  Compilation status=plane-skeleton
+  Field id=f0 kind=Plane
+  Object id=o0 root=f0 material_type=MaterialId
+  Csg root=o0

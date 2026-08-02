@@ -1,0 +1,45 @@
+module display
+
+pub struct DisplayDevice:
+    id: u32
+
+pub enum Feature:
+    Bgra8
+
+@driver
+pub struct Display:
+    device: DriverClaimedDevice[DisplayDevice]
+
+    init(mut self, take cap: DeviceCap[DisplayDevice]) -> Result[unit, BootError]:
+        claimed = DisplayDevice.claim(cap=take cap)
+        self.device = take claimed
+        return Ok(unit)
+
+@layout(runtime, endian=little)
+struct DisplayDoorbell:
+    @offset(0) present: u64
+
+@layout(runtime, endian=little)
+struct DisplayMemory:
+    @offset(0x0000) abi_version: u32
+    @offset(0x0004) format: u32
+    @offset(0x0008) width: u32
+    @offset(0x000c) height: u32
+    @offset(0x0010) stride_bytes: u32
+    @offset(0x0014) tile_count: u32
+    @offset(0x0018) sequence: u64
+    @offset(0x0020) tiles_addr: u64
+    @offset(0x0100) tile_id: u32
+    @offset(0x0104) tile_x: u32
+    @offset(0x0108) tile_y: u32
+    @offset(0x010c) tile_width: u32
+    @offset(0x0110) tile_height: u32
+    @offset(0x0114) tile_stride_bytes: u32
+    @offset(0x0118) tile_pixels_addr: u64
+    @offset(0x1000) pixels: [u8; 8192]
+
+@placed(0x40100000)
+static DISPLAY_MEMORY: DisplayMemory
+
+@placed(0x08006000)
+static DISPLAY_DOORBELL: DisplayDoorbell

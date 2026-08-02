@@ -19,6 +19,9 @@ Place Rust unit tests beside implementation code in `#[cfg(test)]` modules. Ever
 
 - No CI
 - No new dependencies
+- The pinned Lean/Mathlib project under `formal/pixels/` is an approved
+  non-Cargo proof-tool dependency. It is outside the shipped image and the
+  Cargo dependency graph.
 - Prefer "dumb", maintainable code. Simple and direct.
 - Every pipeline stage gets a stable text dump and golden coverage before
   it gets features.

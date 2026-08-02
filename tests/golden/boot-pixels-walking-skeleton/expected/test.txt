@@ -1,0 +1,5 @@
+test plane_frame: ok
+1 passed, 0 failed
+lane1 turns=0 run_one=0 messages=0
+lane1 hits=
+display frame=0 digest=c4656d3bd0991982f43ae723ec32157796f3e4cb9ee98a2c92da7d7f55bd0e74

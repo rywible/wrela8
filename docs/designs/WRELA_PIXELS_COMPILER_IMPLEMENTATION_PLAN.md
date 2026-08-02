@@ -2,7 +2,7 @@
 
 **Status:** EXECUTION PROGRAM — implementation begins only after milestone P-1 reconciles this document with the current repository and closes the named proof/API gaps. There are no experimental runtime lanes and no fieldprobe dependency.
 
-**Repository basis:** `rywible/wrela8`, branch `master`, commit `883481b324baec83f898b99c9a1c9642e40134e9` (2026-08-02). P-1.1 must refresh this value if implementation starts from another commit.
+**Repository basis:** `rywible/wrela8`, branch `pixels-mp-1`, commit `e9f6bcb106fca3af8b8bb2fb57dd11fcdc4c4031` (2026-08-02). Paths marked `new at P-1 basis` did not exist at that commit. The reconciliation inventory is `docs/designs/wrela-pixels-reconciliation.md`.
 
 **Primary owner:** `crates/wrela-compiler`.
 
@@ -2951,21 +2951,23 @@ Milestone result: the repository knows that Pixels is a production compiler subs
 
 ## Task P0.1 — add the normative implementation chapter
 
-**Purpose**
+**Requires:** the preceding milestone close gate.
 
-Place the closed source/compiler/runtime contract in the repository before code depends on it.
+**Produces:** Place the closed source/compiler/runtime contract in the repository before code depends on it.
 
-**Files**
+**Files:**
 
 ```text
-docs/language/07-pixels.md
+docs/language/07-pixels.md # new at P-1 basis
 docs/language/04-compiler.md
 docs/language/05-library.md
 docs/language/06-machine.md
 docs/designs/pixels.md
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 - Add `07-pixels.md` containing sections 0–5 of this plan in normative form.
 - After this task, `docs/language/07-pixels.md` is authoritative for language/runtime behavior and this design document is authoritative only for implementation ordering, ownership, and gates. A semantic change must update the language chapter first and then reconcile this plan in the same commit.
@@ -2975,7 +2977,7 @@ docs/designs/pixels.md
 - Mark the existing `docs/designs/pixels.md` historical measurements as evidence only and link to the normative chapter.
 - Preserve the unfavorable online fieldprobe result. Do not rewrite history to imply it validated this renderer.
 
-**Acceptance criteria**
+**Tests:**
 
 - Every new source spelling appears in exactly one normative chapter.
 - The chapters state that the validated sweep is correct without kinetic state.
@@ -2983,11 +2985,15 @@ docs/designs/pixels.md
 - No normative statement cites modeled/Pi-unmeasured performance as fact.
 - Documentation links resolve relative to their files.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -2997,25 +3003,27 @@ pixels P0.1: write the production Pixels contract
 
 ## Task P0.2 — formalize compiler module scaffolding and zero-renderer dumps
 
-**Purpose**
+**Requires:** P0.1.
 
-Promote the P-1 boundary-test scaffolding into its permanent module ownership and establish canonical zero-renderer behavior.
+**Produces:** Promote the P-1 boundary-test scaffolding into its permanent module ownership and establish canonical zero-renderer behavior.
 
-**Files**
+**Files:**
 
 ```text
 crates/wrela-compiler/src/lib.rs
-crates/wrela-compiler/src/pixels/mod.rs
-crates/wrela-compiler/src/pixels/diagnostics.rs
-crates/wrela-compiler/src/pixels/dump.rs
+crates/wrela-compiler/src/pixels/mod.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/diagnostics.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/dump.rs # new at P-1 basis
 crates/wrela-compiler/src/bin/wrela.rs
-tests/golden/check-pixels-empty/input.wr
-tests/golden/check-pixels-empty/expected/field-graph.txt
-tests/golden/check-pixels-empty/expected/frame-program.txt
-tests/golden/check-pixels-empty/expected/render-layout.txt
+tests/golden/check-pixels-empty/input.wr # new at P-1 basis
+tests/golden/check-pixels-empty/expected/field-graph.txt # new at P-1 basis
+tests/golden/check-pixels-empty/expected/frame-program.txt # new at P-1 basis
+tests/golden/check-pixels-empty/expected/render-layout.txt # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 - Retain/add `pub mod pixels;` from the P-1 skeleton and remove any temporary P-1-only module names.
 - Define `PixelsError` and `PixelsDiagnostic` without renderer behavior.
@@ -3036,18 +3044,22 @@ pub enum PixelsDumpStage {
 pub fn dump_zero_renderers(stage: PixelsDumpStage) -> String;
 ```
 
-**Acceptance criteria**
+**Tests:**
 
 - All three dump stages produce byte-stable zero-renderer outputs and retain the reviewed P-1 skeleton outputs.
 - Existing stage behavior and usage text remain unchanged except for additions.
 - Unknown `--renderer` use is rejected, not ignored.
 - No renderer code is imported by sema, eval, lower, or layout yet.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -3057,24 +3069,26 @@ pixels P0.2: add stage and module scaffolding
 
 ## Task P0.3 — create the formal project skeleton
 
-**Purpose**
+**Requires:** P0.2.
 
-Pin the formal environment and make admission checks permanent before theorem work.
+**Produces:** Pin the formal environment and make admission checks permanent before theorem work.
 
-**Files**
+**Files:**
 
 ```text
-formal/pixels/lean-toolchain
-formal/pixels/lakefile.toml
-formal/pixels/Pixels.lean
-formal/pixels/Pixels/TrustBoundary.lean
-formal/pixels/README.md
-formal/pixels/EXPECTED_AXIOMS.txt
-crates/xtask/src/pixels_formal.rs
+formal/pixels/lean-toolchain # new at P-1 basis
+formal/pixels/lakefile.toml # new at P-1 basis
+formal/pixels/Pixels.lean # new at P-1 basis
+formal/pixels/Pixels/TrustBoundary.lean # new at P-1 basis
+formal/pixels/README.md # new at P-1 basis
+formal/pixels/EXPECTED_AXIOMS.txt # new at P-1 basis
+crates/xtask/src/pixels_formal.rs # new at P-1 basis
 crates/xtask/src/main.rs
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 - Pin Lean/Mathlib `v4.30.0`.
 - Add a trivial theorem with `#print axioms`.
@@ -3084,18 +3098,22 @@ crates/xtask/src/main.rs
 - `verify-deep` runs the complete formal command.
 - Missing Lean in the milestone environment fails closed with installation instructions; it is not silently skipped.
 
-**Acceptance criteria**
+**Tests:**
 
 - No project source contains an admission.
 - `pixels-formal-scan` is platform portable.
 - Formal build output is normalized before comparison.
 - The ordinary Cargo dependency graph is unchanged.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -3105,35 +3123,37 @@ pixels P0.3: pin the Lean verification project
 
 ## Task P0.4 — install the permanent renderer fixture corpus
 
-**Purpose**
+**Requires:** P0.3.
 
-Name every correctness class before implementation so later code cannot select only favorable examples.
+**Produces:** Name every correctness class before implementation so later code cannot select only favorable examples.
 
-**Files**
+**Files:**
 
 ```text
-tests/golden/check-pixels-plane/
-tests/golden/check-pixels-hard-csg/
-tests/golden/check-pixels-smooth-csg/
-tests/golden/check-pixels-repeat/
-tests/golden/check-pixels-displace/
-tests/golden/check-pixels-close-depth/
-tests/golden/check-pixels-thin-feature/
-tests/golden/check-pixels-enclosed-feature/
-tests/golden/check-pixels-material-edge/
-tests/golden/check-pixels-transparent-tail/
-tests/golden/check-pixels-area-light/
-tests/golden/check-pixels-kinetic/
-tests/golden/err-pixels-unsupported-op/
-tests/golden/err-pixels-missing-range/
-tests/golden/err-pixels-rate/
-tests/golden/err-pixels-topology-branch/
-stdlib/tests/pixels_contract.wr
+tests/golden/check-pixels-plane/ # new at P-1 basis
+tests/golden/check-pixels-hard-csg/ # new at P-1 basis
+tests/golden/check-pixels-smooth-csg/ # new at P-1 basis
+tests/golden/check-pixels-repeat/ # new at P-1 basis
+tests/golden/check-pixels-displace/ # new at P-1 basis
+tests/golden/check-pixels-close-depth/ # new at P-1 basis
+tests/golden/check-pixels-thin-feature/ # new at P-1 basis
+tests/golden/check-pixels-enclosed-feature/ # new at P-1 basis
+tests/golden/check-pixels-material-edge/ # new at P-1 basis
+tests/golden/check-pixels-transparent-tail/ # new at P-1 basis
+tests/golden/check-pixels-area-light/ # new at P-1 basis
+tests/golden/check-pixels-kinetic/ # new at P-1 basis
+tests/golden/err-pixels-unsupported-op/ # new at P-1 basis
+tests/golden/err-pixels-missing-range/ # new at P-1 basis
+tests/golden/err-pixels-rate/ # new at P-1 basis
+tests/golden/err-pixels-topology-branch/ # new at P-1 basis
+stdlib/tests/pixels_contract.wr # new at P-1 basis
 tests/census.toml
-tests/pixels-cases.txt
+tests/pixels-cases.txt # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 - Add source fixtures with expected placeholder errors saying the production Pixels stage is not implemented.
 - Create every fixture named in §11, not only the representative paths printed above, and record all names in both the existing census and `tests/pixels-cases.txt`.
@@ -3141,7 +3161,7 @@ tests/pixels-cases.txt
 - Thin/enclosed/close-depth cases use exact integer or dyadic source constants, not random placement.
 - Add expected final-frame digest placeholders only where the golden harness already supports boot output; do not invent a second fixture system.
 
-**Acceptance criteria**
+**Tests:**
 
 - Every fixture is discovered by ordinary golden enumeration.
 - Each adversarial scene states the failure class it protects.
@@ -3149,11 +3169,15 @@ tests/pixels-cases.txt
 - The test census refuses accidental deletion.
 - Plan lint proves the §11 fixture-name set, `tests/pixels-cases.txt`, and discovered golden directories are identical; later milestones replace placeholders without silently adding or dropping correctness classes.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -3179,19 +3203,21 @@ Milestone result: Wrela can type-check the complete `@field`, `@material`, range
 
 ## Task P1.1 — add standard-library field and renderer types
 
-**Purpose**
+**Requires:** the preceding milestone close gate.
 
-Make the source API parse and type-check using ordinary Wrela declarations while keeping constructors sealed.
+**Produces:** Make the source API parse and type-check using ordinary Wrela declarations while keeping constructors sealed.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/field.wr
-stdlib/core/render.wr
-stdlib/tests/pixels_contract.wr
+stdlib/core/field.wr # new at P-1 basis
+stdlib/core/render.wr # new at P-1 basis
+stdlib/tests/pixels_contract.wr # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Define:
 
@@ -3208,7 +3234,7 @@ Define:
 
 Every compiler-recognized field constructor has real scalar Wrela semantics. No field operation may use `panic("compiler intrinsic")` as its normative body.
 
-**Acceptance criteria**
+**Tests:**
 
 - Source examples in §0 parse.
 - User code cannot construct arbitrary `Field` storage or access its representation.
@@ -3216,11 +3242,15 @@ Every compiler-recognized field constructor has real scalar Wrela semantics. No 
 - Existing imports see no ambiguous names.
 - No compiler intrinsic exists solely because a normal Wrela body would suffice.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -3230,23 +3260,25 @@ pixels P1.1: add field and render library surfaces
 
 ## Task P1.2 — classify `@field` and `@material` attributes
 
-**Purpose**
+**Requires:** P1.1.
 
-Carry annotations through declaration and typed-body checking.
+**Produces:** Carry annotations through declaration and typed-body checking.
 
-**Files**
+**Files:**
 
 ```text
 crates/wrela-compiler/src/sema/types.rs
 crates/wrela-compiler/src/sema/bodies.rs
 crates/wrela-compiler/src/sema/typed.rs
 crates/wrela-compiler/src/sema/mod.rs
-tests/golden/check-pixels-plane/
-tests/golden/err-pixels-field-signature/
-tests/golden/err-pixels-material-signature/
+tests/golden/check-pixels-plane/ # new at P-1 basis
+tests/golden/err-pixels-field-signature/ # new at P-1 basis
+tests/golden/err-pixels-material-signature/ # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 - Add `is_field` and `is_material` to declaration/typed function metadata, or canonical keyed metadata in `TypedProgram` as specified in §6.1.
 - Reject attribute arguments.
@@ -3267,18 +3299,22 @@ tests/golden/err-pixels-material-signature/
 
 Parameter names are not semantic. Order and types are.
 
-**Acceptance criteria**
+**Tests:**
 
 - Every invalid shape has a focused golden with `P001` or `P002`.
 - Typed dumps contain canonical root keys and parameter indexes.
 - Generic helper instantiations retain root call resolution.
 - Attribute handling is deterministic across module import order.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -3288,23 +3324,25 @@ pixels P1.2: type field and material roots
 
 ## Task P1.3 — implement `@range` and `@rate` attributes
 
-**Purpose**
+**Requires:** P1.2.
 
-Capture the finite parameter domain needed by all later proofs.
+**Produces:** Capture the finite parameter domain needed by all later proofs.
 
-**Files**
+**Files:**
 
 ```text
 crates/wrela-compiler/src/sema/types.rs
 crates/wrela-compiler/src/sema/bodies.rs
 crates/wrela-compiler/src/sema/typed.rs
-crates/wrela-compiler/src/sema/attrs.rs
-tests/golden/check-pixels-ranges/
-tests/golden/err-pixels-range/
-tests/golden/err-pixels-rate/
+crates/wrela-compiler/src/sema/attrs.rs # new at P-1 basis
+tests/golden/check-pixels-ranges/ # new at P-1 basis
+tests/golden/err-pixels-range/ # new at P-1 basis
+tests/golden/err-pixels-rate/ # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Create one reusable attribute parser for numeric named arguments. Accept attributes on scalar fields of data structs reachable from renderer parameter type `P`.
 
@@ -3320,18 +3358,22 @@ Rules:
 - a zero rate means statically unchanged after initialization;
 - attributes on non-render-parameter fields are legal but ignored by Pixels and still print in typed metadata only if semantically retained.
 
-**Acceptance criteria**
+**Tests:**
 
 - Range/rate metadata is keyed by stable field-index paths, not source field names alone.
 - Rename with identical layout changes the source digest but not field-path ordering.
 - NaN, infinity, reversed range, unknown label, duplicate label, and nonconstant values are rejected.
 - Exact diagnostic spans point at the bad attribute argument.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -3341,22 +3383,24 @@ pixels P1.3: record parameter range and rate contracts
 
 ## Task P1.4 — add closed field intrinsic typing
 
-**Purpose**
+**Requires:** P1.3.
 
-Recognize the field operation surface without allowing arbitrary `Field` manipulation.
+**Produces:** Recognize the field operation surface without allowing arbitrary `Field` manipulation.
 
-**Files**
+**Files:**
 
 ```text
 crates/wrela-compiler/src/sema/intrinsics.rs
 crates/wrela-compiler/src/sema/bodies.rs
 crates/wrela-compiler/src/sema/types.rs
-stdlib/core/field.wr
-tests/golden/check-pixels-field-ops/
-tests/golden/err-pixels-field-private/
+stdlib/core/field.wr # new at P-1 basis
+tests/golden/check-pixels-field-ops/ # new at P-1 basis
+tests/golden/err-pixels-field-private/ # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 - Add every field constructor/combinator to the written-down intrinsic census.
 - Type labels and generic arguments exactly.
@@ -3367,18 +3411,22 @@ tests/golden/err-pixels-field-private/
 - ordinary arithmetic on `Field` is unavailable.
 - field values cannot be stored in user structs, arrays, statics, actors, messages, or returned from non-`@field` public APIs.
 
-**Acceptance criteria**
+**Tests:**
 
 - Intrinsic census equals all producer sites.
 - Every field op is typed in one central match.
 - `Field` cannot escape its root expression graph.
 - Existing intrinsic diagnostics/census remain green.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -3388,22 +3436,24 @@ pixels P1.4: seal and type the field operation set
 
 ## Task P1.5 — enforce field/material body legality
 
-**Purpose**
+**Requires:** P1.4.
 
-Reject source forms that prevent finite structural compilation.
+**Produces:** Reject source forms that prevent finite structural compilation.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/legality.rs
+crates/wrela-compiler/src/pixels/legality.rs # new at P-1 basis
 crates/wrela-compiler/src/sema/mod.rs
-tests/golden/err-pixels-topology-branch/
-tests/golden/err-pixels-field-recursion/
-tests/golden/err-pixels-field-loop/
-tests/golden/err-pixels-field-effects/
+tests/golden/err-pixels-topology-branch/ # new at P-1 basis
+tests/golden/err-pixels-field-recursion/ # new at P-1 basis
+tests/golden/err-pixels-field-loop/ # new at P-1 basis
+tests/golden/err-pixels-field-effects/ # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Walk transitive callees from each root and classify operations.
 
@@ -3420,18 +3470,22 @@ For field roots reject:
 
 Material roots may branch on material identity, explicit event-classified scalar predicates, and ordinary bounded values. A material discontinuity affecting output must be surfaced later as an event predicate.
 
-**Acceptance criteria**
+**Tests:**
 
 - Every rejected effect names the transitive call chain.
 - Recursive SCC diagnostics list all cycle members.
 - Fixed loops are unrolled deterministically in source order.
 - No body is accepted because its unsupported branch happened to be unreachable under one sample.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -3441,11 +3495,11 @@ pixels P1.5: enforce finite renderer body legality
 
 ## Task P1.6 — implement `Image.renderer` intrinsic construction
 
-**Purpose**
+**Requires:** P1.5.
 
-Record renderer declarations through ordinary comptime image evaluation.
+**Produces:** Record renderer declarations through ordinary comptime image evaluation.
 
-**Files**
+**Files:**
 
 ```text
 crates/wrela-compiler/src/sema/intrinsics.rs
@@ -3454,11 +3508,13 @@ crates/wrela-compiler/src/eval/interp.rs
 crates/wrela-compiler/src/eval/image.rs
 crates/wrela-compiler/src/eval/value.rs
 crates/wrela-compiler/src/report.rs
-tests/golden/check-pixels-plane/
-tests/golden/err-pixels-renderer-decl/
+tests/golden/check-pixels-plane/ # new at P-1 basis
+tests/golden/err-pixels-renderer-decl/ # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 - Add `Image.renderer` to the image-builder intrinsic surface and intrinsic census.
 - Resolve `P` as the type argument.
@@ -3467,7 +3523,7 @@ tests/golden/err-pixels-renderer-decl/
 - Add renderer blocks to the `--stage=image` dump and ordinary report.
 - `renderer.handle()` produces the typed deferred `Actor[Renderer[P]]` reference established in P-1.2. P5 resolves that declaration reference to a generated actor identity; P1 must not fake a numeric actor ID.
 
-**Acceptance criteria**
+**Tests:**
 
 - Multiple renderers preserve source construction order.
 - Renderer declaration references participate in DAG cycle checks.
@@ -3475,11 +3531,15 @@ tests/golden/err-pixels-renderer-decl/
 - Unknown/duplicate labels are rejected during sema/eval, not ignored.
 - Image dump round-trips deterministic enum/function renderings.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -3489,28 +3549,30 @@ pixels P1.6: record renderer image declarations
 
 ## Task P1.7 — validate sealed renderer declarations
 
-**Purpose**
+**Requires:** P1.6.
 
-Make an image with a renderer a closed, self-consistent build fact.
+**Produces:** Make an image with a renderer a closed, self-consistent build fact.
 
-**Files**
+**Files:**
 
 ```text
 crates/wrela-compiler/src/eval/image_checks.rs
-crates/wrela-compiler/src/pixels/config.rs
-crates/wrela-compiler/src/pixels/diagnostics.rs
-tests/golden/err-pixels-renderer-display/
-tests/golden/err-pixels-renderer-params/
-tests/golden/err-pixels-renderer-mode/
+crates/wrela-compiler/src/pixels/config.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/diagnostics.rs # new at P-1 basis
+tests/golden/err-pixels-renderer-display/ # new at P-1 basis
+tests/golden/err-pixels-renderer-params/ # new at P-1 basis
+tests/golden/err-pixels-renderer-mode/ # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Implement §6.4–6.5. Centralize enum variant decoding, integer/floating extraction, function-ref extraction, display reference validation, mode checks, and profile validation.
 
 No renderer compilation occurs yet. `check_sealed` only returns a validated `RendererConfig` side table keyed by declaration index. Store it in a new build-closure structure rather than recomputing it from `ImageGraph` in every stage.
 
-**Acceptance criteria**
+**Tests:**
 
 - Every required argument has one diagnostic.
 - The complete required label set is exactly §2.5, including camera/light/exposure/environment/AO/probe bounds and initialization deadline.
@@ -3520,11 +3582,15 @@ No renderer compilation occurs yet. `check_sealed` only returns a validated `Ren
 - `refresh_hz % shade_hz != 0` is rejected.
 - Non-finite camera/world/light values are rejected.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -3534,41 +3600,47 @@ pixels P1.7: seal renderer configuration contracts
 
 ## Task P1.8 — complete P1 dumps and fixtures
 
-**Purpose**
+**Requires:** P1.7.
 
-Pin source/typed/image behavior before symbolic compilation.
+**Produces:** Pin source/typed/image behavior before symbolic compilation.
 
-**Files**
+**Files:**
 
 ```text
 crates/wrela-compiler/src/sema/typed.rs
 crates/wrela-compiler/src/eval/image.rs
 crates/wrela-compiler/src/report.rs
-tests/golden/check-pixels-*/expected/check.txt
-tests/golden/check-pixels-*/expected/typed.txt
-tests/golden/check-pixels-*/expected/image.txt
+tests/golden/check-pixels-*/expected/check.txt # new at P-1 basis
+tests/golden/check-pixels-*/expected/typed.txt # new at P-1 basis
+tests/golden/check-pixels-*/expected/image.txt # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 - Update only P1-relevant fixtures.
 - Add unit tests for renderer ordering, function references, path metadata, and construction DAG behavior.
 - Add a report-determinism case with two modules and two renderer declarations.
 - Ensure no field/frame-program dump contains implementation data yet; it prints `Compilation status=not-run` with renderer config, not placeholder failure.
 
-**Acceptance criteria**
+**Tests:**
 
 - P1 accepted fixtures reach sealed image configuration.
 - All P1 rejected fixtures fail before lower/codegen.
 - Report determinism passes under reversed filesystem/module discovery order.
 - Existing non-Pixels image goldens change only where enum rendering gained `Renderer` support, with reviewed diffs.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask report-determinism
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -3588,28 +3660,30 @@ Milestone result: accepted roots compile into deterministic scalar, field, and m
 
 ## Task P2.1 — implement stable arenas and IDs
 
-**Purpose**
+**Requires:** the preceding milestone close gate.
 
-Create deterministic storage for all symbolic nodes.
+**Produces:** Create deterministic storage for all symbolic nodes.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/ids.rs
-crates/wrela-compiler/src/pixels/arena.rs
-crates/wrela-compiler/src/pixels/scalar.rs
-crates/wrela-compiler/src/pixels/graph.rs
-crates/wrela-compiler/src/pixels/material_graph.rs
-crates/wrela-compiler/src/pixels/mod.rs
+crates/wrela-compiler/src/pixels/ids.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/arena.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/scalar.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/graph.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/material_graph.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/mod.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Implement newtype IDs and append-only arenas. IDs are assigned only after child nodes exist. Provide checked getters returning internal errors, not panics on user-triggerable paths.
 
 Node equality for canonicalization is structural and excludes source span. Keep `NodeOrigin { primary, expansion_chain }` in a side table keyed by ID.
 
-**Acceptance criteria**
+**Tests:**
 
 - IDs format exactly as §4.1.
 - Arena iteration is insertion order.
@@ -3617,11 +3691,15 @@ Node equality for canonicalization is structural and excludes source span. Keep 
 - No node owns a `HashMap`, `Rc`, `Arc`, trait object, or closure.
 - Unit tests cover stale/wrong-arena ID detection in debug helpers.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -3631,20 +3709,22 @@ pixels P2.1: add deterministic symbolic arenas
 
 ## Task P2.2 — implement scalar symbolic values
 
-**Purpose**
+**Requires:** P2.1.
 
-Compile ordinary scalar/vector expressions referenced by field/material operations.
+**Produces:** Compile ordinary scalar/vector expressions referenced by field/material operations.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/symbolic.rs
-crates/wrela-compiler/src/pixels/scalar.rs
-crates/wrela-compiler/src/pixels/params.rs
-crates/wrela-compiler/src/pixels/diagnostics.rs
+crates/wrela-compiler/src/pixels/symbolic.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/scalar.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/params.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/diagnostics.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Implement `SymValue` from §4.2 and scalar node kinds for:
 
@@ -3661,7 +3741,7 @@ Implement `SymValue` from §4.2 and scalar node kinds for:
 
 Parameter paths are resolved through typed field indices. Store human spelling only in diagnostics/dumps.
 
-**Acceptance criteria**
+**Tests:**
 
 - Constant bit patterns, including negative zero, survive the graph dump.
 - Parameter path collection is exact and deterministic.
@@ -3669,11 +3749,15 @@ Parameter paths are resolved through typed field indices. Store human spelling o
 - Division/reciprocal records a denominator proof obligation; it is not assumed nonzero.
 - Fused operations retain source-level semantics through explicit op definitions.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -3683,19 +3767,21 @@ pixels P2.2: compile scalar renderer expressions
 
 ## Task P2.3 — implement symbolic call/control evaluation
 
-**Purpose**
+**Requires:** P2.2.
 
-Evaluate renderer roots and helpers without reusing generic comptime values.
+**Produces:** Evaluate renderer roots and helpers without reusing generic comptime values.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/symbolic.rs
-crates/wrela-compiler/src/pixels/legality.rs
-crates/wrela-compiler/src/pixels/quota.rs
+crates/wrela-compiler/src/pixels/symbolic.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/legality.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/quota.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Implement:
 
@@ -3712,7 +3798,7 @@ Implement:
 
 No `while`, `await`, send, closure invocation, mutation through aliases, or exception-like recovery.
 
-**Acceptance criteria**
+**Tests:**
 
 - The evaluator is total over the accepted legality subset.
 - Quota exhaustion is a `pixels` build error, not panic or partial graph.
@@ -3720,11 +3806,15 @@ No `while`, `await`, send, closure invocation, mutation through aliases, or exce
 - A field runtime branch is rejected before evaluation; material branch arms are both compiled and neither is selected by a sample value.
 - Fixed loop expansion order is ascending source iteration order.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -3734,25 +3824,27 @@ pixels P2.3: evaluate finite renderer bodies symbolically
 
 ## Task P2.4 — lower field operations into `FieldGraph`
 
-**Purpose**
+**Requires:** P2.3.
 
-Build the exact structural field expression from the closed intrinsic surface.
+**Produces:** Build the exact structural field expression from the closed intrinsic surface.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/symbolic.rs
-crates/wrela-compiler/src/pixels/graph.rs
-crates/wrela-compiler/src/pixels/field_intrinsics.rs
+crates/wrela-compiler/src/pixels/symbolic.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/graph.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/field_intrinsics.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 For every field intrinsic, parse labels once and emit the canonical `FieldKind` from §4.4. Primitive details use §4.5; do not copy a second shape into this task. `sinusoidal_displace` emits `BoundedDisplace` with `DerivedDeformContract`.
 
 Do not immediately flatten transforms or marks. Preserve source structure.
 
-**Acceptance criteria**
+**Tests:**
 
 - Every closed field op has one lowering path and one unit test.
 - Missing/duplicate labels cannot reach this pass.
@@ -3760,11 +3852,15 @@ Do not immediately flatten transforms or marks. Preserve source structure.
 - Transform composition preserves source order.
 - Field graph can represent the complete permanent fixture source set.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -3774,19 +3870,21 @@ pixels P2.4: lower the closed field graph
 
 ## Task P2.5 — lower material operations into `MaterialGraph`
 
-**Purpose**
+**Requires:** P2.4.
 
-Capture material semantics and output dependencies structurally.
+**Produces:** Capture material semantics and output dependencies structurally.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/material_graph.rs
-crates/wrela-compiler/src/pixels/material_intrinsics.rs
-crates/wrela-compiler/src/pixels/symbolic.rs
+crates/wrela-compiler/src/pixels/material_graph.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/material_intrinsics.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/symbolic.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Material graph values include:
 
@@ -3805,7 +3903,7 @@ Represent output-affecting runtime branches as explicit `MaterialSelect { predic
 
 Do not compile lights, shadows, AO, or probes into the material graph. Those belong to renderer configuration and runtime shading.
 
-**Acceptance criteria**
+**Tests:**
 
 - Every `MaterialSample` field has a graph source or constructor default.
 - Alpha is clamped only according to source constructor semantics, not compiler convenience.
@@ -3813,11 +3911,15 @@ Do not compile lights, shadows, AO, or probes into the material graph. Those bel
 - Unsupported procedural texture or indirect call is `P004`/`P014`.
 - Graph dump identifies all parameter and surface-context dependencies.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -3827,20 +3929,22 @@ pixels P2.5: compile material semantics
 
 ## Task P2.6 — canonicalize and CSE symbolic graphs
 
-**Purpose**
+**Requires:** P2.5.
 
-Produce one deterministic graph independent of helper inlining accidents while preserving exact semantics.
+**Produces:** Produce one deterministic graph independent of helper inlining accidents while preserving exact semantics.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/canonicalize.rs
-crates/wrela-compiler/src/pixels/scalar.rs
-crates/wrela-compiler/src/pixels/graph.rs
-crates/wrela-compiler/src/pixels/material_graph.rs
+crates/wrela-compiler/src/pixels/canonicalize.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/scalar.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/graph.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/material_graph.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Canonicalization performs only semantics-preserving rewrites fixed here:
 
@@ -3856,7 +3960,7 @@ Canonicalization performs only semantics-preserving rewrites fixed here:
 
 Use a deterministic structural key enum, not serialized debug text.
 
-**Acceptance criteria**
+**Tests:**
 
 - Canonicalization is idempotent.
 - Running it twice produces byte-identical dumps and IDs.
@@ -3864,11 +3968,15 @@ Use a deterministic structural key enum, not serialized debug text.
 - Smooth-min one-ulp/saturation fixtures remain exact.
 - All coordinate/parameter-dependent field branches fail with `P003`, including equal-topology arms.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -3878,19 +3986,21 @@ pixels P2.6: canonicalize renderer graphs exactly
 
 ## Task P2.7 — emit complete `field-graph` dumps
 
-**Purpose**
+**Requires:** P2.6.
 
-Pin the symbolic representation before geometric proof work.
+**Produces:** Pin the symbolic representation before geometric proof work.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/dump.rs
+crates/wrela-compiler/src/pixels/dump.rs # new at P-1 basis
 crates/wrela-compiler/src/bin/wrela.rs
-tests/golden/check-pixels-*/expected/field-graph.txt
+tests/golden/check-pixels-*/expected/field-graph.txt # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Implement §8.2. Include:
 
@@ -3905,19 +4015,23 @@ Implement §8.2. Include:
 
 Do not include future bounds/features as zero-valued fake facts. Print `Analysis status=pending` once.
 
-**Acceptance criteria**
+**Tests:**
 
 - All accepted permanent fixtures produce stable graph dumps.
 - Unsupported fixtures fail before a partial dump is emitted.
 - Reordering independent source helper declarations does not change canonical node order when call graph/semantics are unchanged.
 - Round-trip float formatting reproduces bits in a parser unit test.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask report-determinism
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -3937,19 +4051,21 @@ Milestone result: every field/material graph is converted into a finite structur
 
 ## Task P3.1 — collect exact renderer parameter dependencies
 
-**Purpose**
+**Requires:** the preceding milestone close gate.
 
-Determine the smallest coefficient snapshot and the complete frame dependency tuple.
+**Produces:** Determine the smallest coefficient snapshot and the complete frame dependency tuple.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/params.rs
-crates/wrela-compiler/src/pixels/report.rs
-crates/wrela-compiler/src/pixels/dump.rs
+crates/wrela-compiler/src/pixels/params.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/report.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/dump.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Traverse scalar, field, material, camera, light, exposure, tone, and probe configuration graphs. For each referenced path record:
 
@@ -3987,7 +4103,7 @@ Create a complete dependency digest schema over:
 - output mode;
 - deterministic frame phase.
 
-**Acceptance criteria**
+**Tests:**
 
 - A parameter used in both geometry and material has one slot and two uses.
 - Unused fields contribute zero renderer-state bytes.
@@ -3995,11 +4111,15 @@ Create a complete dependency digest schema over:
 - Static zero-rate parameters are marked immutable and may be folded later.
 - Dependency dump is independent of source field spelling.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -4009,20 +4129,22 @@ pixels P3.1: derive renderer coefficient dependencies
 
 ## Task P3.2 — propagate scalar value intervals
 
-**Purpose**
+**Requires:** P3.1.
 
-Give every scalar/vector node a conservative finite range over the complete declared parameter/world domain.
+**Produces:** Give every scalar/vector node a conservative finite range over the complete declared parameter/world domain.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/bounds.rs
-crates/wrela-compiler/src/pixels/scalar.rs
-crates/wrela-compiler/src/pixels/reference/interval.rs
-formal/pixels/Pixels/Interval.lean
+crates/wrela-compiler/src/pixels/bounds.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/scalar.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/reference/interval.rs # new at P-1 basis
+formal/pixels/Pixels/Interval.lean # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Implement host compile-time `F64Interval` with checked finite endpoints. This is not the runtime dyadic interval; it is a compiler analysis domain.
 
@@ -4043,7 +4165,7 @@ Rules:
 
 Every non-finite result is a build diagnostic naming the node and input ranges.
 
-**Acceptance criteria**
+**Tests:**
 
 - 100,000 deterministic random point checks per operation are permanent bug-finders.
 - Analytic edge cases cover signed zero, subnormal, extrema, critical trigonometric points, reciprocal near zero, and normalization near zero.
@@ -4051,12 +4173,16 @@ Every non-finite result is a build diagnostic naming the node and input ranges.
 - No interval intersection feeds back into predecessor values.
 - Lean interval module proves the abstract operations used by runtime; compiler f64 implementation has differential containment tests.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-formal
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -4066,19 +4192,21 @@ pixels P3.2: propagate conservative scalar ranges
 
 ## Task P3.3 — propagate derivative and Lipschitz bounds
 
-**Purpose**
+**Requires:** P3.2.
 
-Compute local/global bounds required by root isolation, continuation, displacement, filtering, and kinetic transport.
+**Produces:** Compute local/global bounds required by root isolation, continuation, displacement, filtering, and kinetic transport.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/derivative_bounds.rs
-crates/wrela-compiler/src/pixels/bounds.rs
-formal/pixels/Pixels/SmoothMin.lean
+crates/wrela-compiler/src/pixels/derivative_bounds.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/bounds.rs # new at P-1 basis
+formal/pixels/Pixels/SmoothMin.lean # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 For each scalar node compute conservative bounds with respect to:
 
@@ -4100,7 +4228,7 @@ At P3, world/parameter derivatives are primary. Use explicit chain rules. Fused 
 
 Store componentwise and Euclidean-norm bounds where each later consumer needs them; do not repeatedly derive one from the other.
 
-**Acceptance criteria**
+**Tests:**
 
 - Melee-like nested one-Lipschitz primitives derive `L <= 1` absent displacement/scale.
 - The displacement fixture derives its explicit bound from declared frequencies/amplitudes, not global `4`.
@@ -4108,12 +4236,16 @@ Store componentwise and Euclidean-norm bounds where each later consumer needs th
 - Randomized gradient/Hessian samples never exceed the bound.
 - Kink-containing domains are marked nonsmooth rather than assigned arbitrary derivatives.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-formal
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -4123,19 +4255,21 @@ pixels P3.3: derive renderer derivative contracts
 
 ## Task P3.4 — compute structural world bounds
 
-**Purpose**
+**Requires:** P3.3.
 
-Bound every field subtree and primitive independently of a screen sample.
+**Produces:** Bound every field subtree and primitive independently of a screen sample.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/world_bounds.rs
-crates/wrela-compiler/src/pixels/graph.rs
-crates/wrela-compiler/src/pixels/diagnostics.rs
+crates/wrela-compiler/src/pixels/world_bounds.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/graph.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/diagnostics.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Compute `AabbExpr`/conservative AABB over the full parameter range for each geometric subtree.
 
@@ -4155,7 +4289,7 @@ Primitive rules:
 
 Every bound stores the rule and exact expansion contributors.
 
-**Acceptance criteria**
+**Tests:**
 
 - `control-enclosed-feature` is discoverable solely from its primitive bound.
 - Thin features retain nonempty conservative bounds even below one output pixel.
@@ -4163,11 +4297,15 @@ Every bound stores the rule and exact expansion contributors.
 - Empty intersections are pruned with a stable reason.
 - Unbounded geometry outside explicit world clipping is rejected with `P012`/`P016` as appropriate.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -4177,19 +4315,21 @@ pixels P3.4: derive complete structural world bounds
 
 ## Task P3.5 — propagate smooth-CSG support budgets
 
-**Purpose**
+**Requires:** P3.4.
 
-Prove that expanded leaf shells form a complete candidate source for smooth composites.
+**Produces:** Prove that expanded leaf shells form a complete candidate source for smooth composites.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/support.rs
-crates/wrela-compiler/src/pixels/graph.rs
-formal/pixels/Pixels/SupportTree.lean
+crates/wrela-compiler/src/pixels/support.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/graph.rs # new at P-1 basis
+formal/pixels/Pixels/SupportTree.lean # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 For each field subtree compute:
 
@@ -4211,7 +4351,7 @@ Rules:
 
 Balance only compiler-generated associative smooth trees if source bit semantics explicitly define reassociation. For v1, preserve authored tree and report its maximum support depth; do not silently reassociate.
 
-**Acceptance criteria**
+**Tests:**
 
 - Every smooth composite zero has at least one leaf shell in the formal model.
 - Every smooth composite zero lies in a `SmoothObjectRootProgram` domain whose full composed scalar is isolated; completeness never assumes a primitive leaf is zero.
@@ -4220,12 +4360,16 @@ Balance only compiler-generated associative smooth trees if source bit semantics
 - Unit tests cover nested, saturated, equal-child, and varying-k trees.
 - Dump prints the support path producing each maximum.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-formal
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -4235,20 +4379,22 @@ pixels P3.5: prove smooth surface support shells
 
 ## Task P3.6 — partition maximal smooth objects and compile hard CSG
 
-**Purpose**
+**Requires:** P3.5.
 
-Separate local smooth root problems from global Boolean occupancy.
+**Produces:** Separate local smooth root problems from global Boolean occupancy.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/objects.rs
-crates/wrela-compiler/src/pixels/csg.rs
-crates/wrela-compiler/src/pixels/graph.rs
-formal/pixels/Pixels/Csg.lean
+crates/wrela-compiler/src/pixels/objects.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/csg.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/graph.rs # new at P-1 basis
+formal/pixels/Pixels/Csg.lean # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Partition at hard operations:
 
@@ -4271,7 +4417,7 @@ enum CsgInst {
 
 Subtraction is `a AND NOT b` in occupancy semantics. Record per-object Boolean influence/cofactor programs for event pruning.
 
-**Acceptance criteria**
+**Tests:**
 
 - CSG stack depth is computed exactly and finite.
 - Compiler tree evaluation and stack program agree exhaustively for up to 12 objects and deterministically sampled assignments beyond that.
@@ -4280,12 +4426,16 @@ Subtraction is `a AND NOT b` in occupancy semantics. Record per-object Boolean i
 - Object ordering is stable by canonical root structural key then source origin.
 - P3.6 performs the finite structural instance enumeration required for partitioning; P3.8 later compiles the reusable projective/event templates and derived numeric bounds for those already-enumerated instances.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-formal
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -4295,19 +4445,21 @@ pixels P3.6: partition smooth objects and compile CSG occupancy
 
 ## Task P3.7 — decompose fused primitive features
 
-**Purpose**
+**Requires:** P3.6.
 
-Replace expanded SDF kinks with exact geometric features and validity predicates.
+**Produces:** Replace expanded SDF kinks with exact geometric features and validity predicates.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/features.rs
-crates/wrela-compiler/src/pixels/primitive.rs
-crates/wrela-compiler/src/pixels/graph.rs
+crates/wrela-compiler/src/pixels/features.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/primitive.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/graph.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Emit features:
 
@@ -4340,7 +4492,7 @@ pub struct FeatureRecord {
 
 Feature-validity predicates are explicit polynomial/analytic inequalities. Shared boundaries belong to both adjacent features; half-open runtime ownership resolves duplicate emission, not compiler exclusion.
 
-**Acceptance criteria**
+**Tests:**
 
 - Union of feature-validity domains covers each primitive boundary.
 - No feature domain includes a geometrically different primitive branch.
@@ -4348,11 +4500,15 @@ Feature-validity predicates are explicit polynomial/analytic inequalities. Share
 - Feature count and bound expansion are exact in dumps.
 - Primitive scalar reference remains available for semantic validation.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -4362,19 +4518,21 @@ pixels P3.7: compile fused surface features
 
 ## Task P3.8 — compile repetition and bounded deformation templates
 
-**Purpose**
+**Requires:** P3.7.
 
-Make discontinuous coordinate wrapping and analytic deformation explicit rather than opaque range operations.
+**Produces:** Make discontinuous coordinate wrapping and analytic deformation explicit rather than opaque range operations.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/repeat.rs
-crates/wrela-compiler/src/pixels/deform.rs
-crates/wrela-compiler/src/pixels/features.rs
+crates/wrela-compiler/src/pixels/repeat.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/deform.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/features.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 For repetition:
 
@@ -4393,7 +4551,7 @@ For bounded displacement:
 - lower every public `sinusoidal_displace` form to the closed derivation named by `DerivedDeformContract`;
 - reject any arbitrary scalar helper or author-supplied bound.
 
-**Acceptance criteria**
+**Tests:**
 
 - Repeat fixture contains no runtime modulo/floor inside a fixed instance certificate.
 - Instance ordering and IDs are deterministic for negative indices.
@@ -4401,11 +4559,15 @@ For bounded displacement:
 - There is no user contract to understate in v1; an unsupported custom deformation is a build error.
 - Cross-wrap domains always create event/split obligations.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -4415,19 +4577,21 @@ pixels P3.8: compile finite repeats and bounded deformations
 
 ## Task P3.9 — compile material discontinuity obligations
 
-**Purpose**
+**Requires:** P3.8.
 
-Ensure depth-smooth surfaces cannot hide output-discontinuous material changes.
+**Produces:** Ensure depth-smooth surfaces cannot hide output-discontinuous material changes.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/material.rs
-crates/wrela-compiler/src/pixels/material_graph.rs
-crates/wrela-compiler/src/pixels/objects.rs
+crates/wrela-compiler/src/pixels/material.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/material_graph.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/objects.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Classify material graph predicates:
 
@@ -4439,18 +4603,22 @@ Classify material graph predicates:
 
 Attach event obligations to the owning smooth object/feature set. Material events split shading runs but do not insert geometry roots.
 
-**Acceptance criteria**
+**Tests:**
 
 - `control-material-edge` is visible in the structural event set before rendering.
 - A material threshold with unknown finite crossing count is `P014`.
 - Smooth material expressions do not create unnecessary hard event records.
 - Material event identity is stable and source-spanned.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -4460,20 +4628,22 @@ pixels P3.9: expose material discontinuities structurally
 
 ## Task P3.10 — derive exact structural capacities
 
-**Purpose**
+**Requires:** P3.9.
 
-Reserve all later frame-program and runtime storage without runtime allocation.
+**Produces:** Reserve all later frame-program and runtime storage without runtime allocation.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/capacities.rs
-crates/wrela-compiler/src/pixels/report.rs
-formal/pixels/Pixels/Capacity.lean
+crates/wrela-compiler/src/pixels/capacities.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/report.rs # new at P-1 basis
+formal/pixels/Pixels/Capacity.lean # new at P-1 basis
 bench/thresholds.toml
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Derive and checked-add/multiply:
 
@@ -4499,7 +4669,7 @@ Where an exact geometric overlap count is expensive, use a proven conservative e
 
 Define machine-v1 ceilings in one `PixelsCeilings` struct and mirror them in the spec. A build above a ceiling fails with `P015` and why-chain.
 
-**Acceptance criteria**
+**Tests:**
 
 - Every runtime vector/array bound in later Wrela modules traces to one capacity field.
 - Arithmetic overflow is a build error before comparison to ceilings.
@@ -4507,12 +4677,16 @@ Define machine-v1 ceilings in one `PixelsCeilings` struct and mirror them in the
 - A deliberately oversized fixture fails at compile time with exact contributors.
 - Formal capacity lemmas build.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-formal
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -4522,18 +4696,20 @@ pixels P3.10: seal structural renderer capacities
 
 ## Task P3.11 — add the structural program verifier
 
-**Purpose**
+**Requires:** P3.10.
 
-Refuse incomplete or internally inconsistent scene structures before projective/runtime lowering.
+**Produces:** Refuse incomplete or internally inconsistent scene structures before projective/runtime lowering.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/verify.rs
-crates/wrela-compiler/src/pixels/mod.rs
+crates/wrela-compiler/src/pixels/verify.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/mod.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Validate:
 
@@ -4551,18 +4727,22 @@ Validate:
 
 Return `VerifiedStructuralProgram` required by P4.
 
-**Acceptance criteria**
+**Tests:**
 
 - Corruption unit tests remove each required record and receive a specific internal invariant error.
 - Verification order is deterministic and reports the lowest stable offending ID.
 - No downstream P4 function accepts an unverified mutable compiler context.
 - Valid permanent fixtures pass.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -4572,18 +4752,20 @@ pixels P3.11: verify complete structural renderer programs
 
 ## Task P3.12 — extend graph dumps with structural proofs
 
-**Purpose**
+**Requires:** P3.11.
 
-Pin all P3 facts before projective lowering.
+**Produces:** Pin all P3 facts before projective lowering.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/dump.rs
-tests/golden/check-pixels-*/expected/field-graph.txt
+crates/wrela-compiler/src/pixels/dump.rs # new at P-1 basis
+tests/golden/check-pixels-*/expected/field-graph.txt # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Add:
 
@@ -4601,19 +4783,23 @@ Add:
 
 Use compact stable expressions. Large coefficient arrays print count, degree, and a deterministic digest plus a separately numbered coefficient block, not elided `...` text.
 
-**Acceptance criteria**
+**Tests:**
 
 - Every structural proof object has a dump representation.
 - Dump has no `pending` line after P3.
 - Permanent fixtures pin the intended object/feature/event-obligation counts.
 - Report determinism remains green.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask report-determinism
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -4633,20 +4819,22 @@ Milestone result: the verified structural scene compiles into inverse-view-depth
 
 ## Task P4.1 — define the camera/projective coefficient model
 
-**Purpose**
+**Requires:** the preceding milestone close gate.
 
-Use one camera algebra throughout compiler, runtime, reference, and Lean.
+**Produces:** Use one camera algebra throughout compiler, runtime, reference, and Lean.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/projective.rs
-crates/wrela-compiler/src/pixels/camera.rs
-stdlib/core/render.wr
-formal/pixels/Pixels/Projective.lean
+crates/wrela-compiler/src/pixels/projective.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/camera.rs # new at P-1 basis
+stdlib/core/render.wr # new at P-1 basis
+formal/pixels/Pixels/Projective.lean # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Define screen coordinates at pixel centers:
 
@@ -4668,7 +4856,7 @@ Camera basis requirements:
 
 Do not normalize rays in per-feature or per-pixel projective evaluation.
 
-**Acceptance criteria**
+**Tests:**
 
 - Plane inverse depth is affine in `(u,v)` in compiler and formal model.
 - Projective cancellation theorem builds.
@@ -4676,12 +4864,16 @@ Do not normalize rays in per-feature or per-pixel projective evaluation.
 - Camera handedness and y direction match framebuffer goldens.
 - Zero/degenerate up vectors are rejected at source/build boundary.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-formal
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -4691,20 +4883,22 @@ pixels P4.1: fix the inverse-view-depth camera model
 
 ## Task P4.2 — implement bounded polynomial and rational programs
 
-**Purpose**
+**Requires:** P4.1.
 
-Represent only the low-degree projective equations and predicates the runtime needs.
+**Produces:** Represent only the low-degree projective equations and predicates the runtime needs.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/polynomial.rs
-crates/wrela-compiler/src/pixels/program.rs
-crates/wrela-compiler/src/pixels/reference/polynomial.rs
-formal/pixels/Pixels/Bernstein.lean
+crates/wrela-compiler/src/pixels/polynomial.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/program.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/reference/polynomial.rs # new at P-1 basis
+formal/pixels/Pixels/Bernstein.lean # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Define sparse monomials with fixed variable IDs:
 
@@ -4750,7 +4944,7 @@ Hard limits for v1:
 - terms per program ≤ a sealed ceiling derived and reported;
 - parameter coefficient programs may be arbitrary finite scalar DAGs already accepted by P3, but local Taylor expansion order is bounded.
 
-**Acceptance criteria**
+**Tests:**
 
 - Polynomial arithmetic is deterministic and checked for degree/term overflow.
 - Different construction orders canonicalize identically.
@@ -4758,12 +4952,16 @@ Hard limits for v1:
 - Bernstein conversion supports the fixed degree set and passes formal coefficient enclosure tests.
 - Exceeding a degree/term ceiling is `P004`/`P015`, not truncation.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-formal
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -4773,19 +4971,21 @@ pixels P4.2: add bounded projective polynomial programs
 
 ## Task P4.3 — compile projective equations for planar and quadric features
 
-**Purpose**
+**Requires:** P4.2.
 
-Eliminate routine field marching for the most common feature classes.
+**Produces:** Eliminate routine field marching for the most common feature classes.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/projective.rs
-crates/wrela-compiler/src/pixels/primitive.rs
-formal/pixels/Pixels/Primitive.lean
+crates/wrela-compiler/src/pixels/projective.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/primitive.rs # new at P-1 basis
+formal/pixels/Pixels/Primitive.lean # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Compile exact homogeneous q equations for:
 
@@ -4820,7 +5020,7 @@ q1 = c / (a*q0)
 
 with explicit linear fallback when `a` interval contains zero. Candidate f32/f64 evaluation must never decide validity from an unchecked negative discriminant caused by rounding; the verifier owns the sign.
 
-**Acceptance criteria**
+**Tests:**
 
 - Plane, sphere, box-face, round-box corner, capsule-side, cylinder, cone fixtures compile.
 - Original primitive scalar zero and projective zero agree in deterministic f64 differential tests.
@@ -4828,12 +5028,16 @@ with explicit linear fallback when `a` interval contains zero. Candidate f32/f64
 - Orientation matches field outside→inside sign convention.
 - Formal equivalence theorems build for each feature class.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-formal
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -4843,19 +5047,21 @@ pixels P4.3: compile planar and quadric q equations
 
 ## Task P4.4 — compile torus and bounded-deformation equations
 
-**Purpose**
+**Requires:** P4.3.
 
-Cover the nonquadric flagship features without opaque scene-wide ranges.
+**Produces:** Cover the nonquadric flagship features without opaque scene-wide ranges.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/projective.rs
-crates/wrela-compiler/src/pixels/deform.rs
-formal/pixels/Pixels/Primitive.lean
+crates/wrela-compiler/src/pixels/projective.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/deform.rs # new at P-1 basis
+formal/pixels/Pixels/Primitive.lean # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Torus:
 
@@ -4874,7 +5080,7 @@ Bounded deformation:
 
 Sinusoidal/octave built-ins compile exact phase recurrence coefficient programs plus explicit minimax polynomial/remainder for local sine/cosine verifier evaluation. The approximation table and remainder constants are versioned numeric-contract data.
 
-**Acceptance criteria**
+**Tests:**
 
 - Torus retains multiple ordered roots where present; it never returns only the nearest candidate before CSG/occupancy processing.
 - Deformed-plane fixture constructs a root tube around the exact plane predictor.
@@ -4882,12 +5088,16 @@ Sinusoidal/octave built-ins compile exact phase recurrence coefficient programs 
 - Every custom deformation is rejected in v1; only compiler-derived closed deformation contracts reach this pass.
 - Formal torus equivalence and Taylor-with-remainder generic theorems build.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-formal
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -4897,19 +5107,21 @@ pixels P4.4: compile quartic and deformed surface programs
 
 ## Task P4.5 — compile derivative and Taylor coefficient programs
 
-**Purpose**
+**Requires:** P4.4.
 
-Generate all runtime continuation data once from structural/projective expressions.
+**Produces:** Generate all runtime continuation data once from structural/projective expressions.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/derivatives.rs
-crates/wrela-compiler/src/pixels/polynomial.rs
-crates/wrela-compiler/src/pixels/program.rs
+crates/wrela-compiler/src/pixels/derivatives.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/polynomial.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/program.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 For each projective feature/root equation `G(u,v,q,params)` compile programs for:
 
@@ -4926,7 +5138,7 @@ Use symbolic differentiation of bounded polynomial/scalar programs. Apply CSE ac
 
 For smooth object equations, derivative evaluation follows the structurally active primitive/blend cluster. Compile cluster programs keyed by a sorted leaf-signature template; do not emit every possible subset. Capacity derives the maximum allowed template count. Unsupported dynamic cluster explosion is a build error.
 
-**Acceptance criteria**
+**Tests:**
 
 - Analytic derivatives agree with finite differences only as a bug-finder; exact symbolic differentiation is the implementation.
 - Mixed partials canonicalize consistently.
@@ -4934,11 +5146,15 @@ For smooth object equations, derivative evaluation follows the structurally acti
 - Derivative bundles share coefficient subprograms.
 - Dumps name derivative degree/term counts and influencing parameter set.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -4948,19 +5164,21 @@ pixels P4.5: emit projective derivative bundles
 
 ## Task P4.6 — derive conservative projected feature spans
 
-**Purpose**
+**Requires:** P4.5.
 
-Drive row/tile candidate discovery from structural bounds with no sampling.
+**Produces:** Drive row/tile candidate discovery from structural bounds with no sampling.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/projection_bounds.rs
-crates/wrela-compiler/src/pixels/camera.rs
-crates/wrela-compiler/src/pixels/capacities.rs
+crates/wrela-compiler/src/pixels/projection_bounds.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/camera.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/capacities.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Project each expanded world AABB through the complete camera parameter bounds. Emit conservative normalized-screen and integer pixel/tile bounds.
 
@@ -4976,7 +5194,7 @@ Rules:
 
 For large unbounded plane features, derive screen span from intersection with renderer world AABB and frustum; full-screen is valid when tighter clipping is unavailable.
 
-**Acceptance criteria**
+**Tests:**
 
 - Every oracle-visible permanent-fixture feature lies inside its projected bound at all deterministic sampled parameter corners.
 - Enclosed/thin features produce nonempty spans.
@@ -4984,11 +5202,15 @@ For large unbounded plane features, derive screen span from intersection with re
 - No finite feature is dropped because its projected area rounds below one pixel.
 - Overlap capacity recomputes from these spans and remains within P3 ceiling or fails build.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -4998,19 +5220,21 @@ pixels P4.6: derive complete projected feature spans
 
 ## Task P4.7 — compile primitive and feature event generators
 
-**Purpose**
+**Requires:** P4.6.
 
-Represent every local change in root existence or feature validity.
+**Produces:** Represent every local change in root existence or feature validity.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/events.rs
-crates/wrela-compiler/src/pixels/event_kinds.rs
-formal/pixels/Pixels/EventCover.lean
+crates/wrela-compiler/src/pixels/events.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/event_kinds.rs # new at P-1 basis
+formal/pixels/Pixels/EventCover.lean # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Emit event families per projected feature:
 
@@ -5040,7 +5264,7 @@ Representation choice is fixed by feature class:
 
 Every generator includes projected domain, coefficient dependencies, maximum root count or subdivision depth, and event-side meaning.
 
-**Acceptance criteria**
+**Tests:**
 
 - Each feature kind has a complete event-family constructor.
 - Generators outside projected spans are not emitted.
@@ -5048,12 +5272,16 @@ Every generator includes projected domain, coefficient dependencies, maximum roo
 - Numeric generators carry derivative/remainder programs; no black-box boolean sample.
 - Formal conditional event-cover theorem builds.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-formal
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -5063,19 +5291,21 @@ pixels P4.7: compile local feature event generators
 
 ## Task P4.8 — compile q-order competition pairs and swap events
 
-**Purpose**
+**Requires:** P4.7.
 
-Monitor only feature sheets that can actually compete for visibility.
+**Produces:** Monitor only feature sheets that can actually compete for visibility.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/competition.rs
-crates/wrela-compiler/src/pixels/events.rs
-crates/wrela-compiler/src/pixels/csg.rs
+crates/wrela-compiler/src/pixels/competition.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/events.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/csg.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Build candidate competition pairs after pruning by:
 
@@ -5093,7 +5323,7 @@ For each surviving pair emit a local `DepthSwap` generator for `q_a - q_b = 0` r
 
 Do not compute a whole-scene resultant eliminating q from arbitrary feature equations. At runtime, both sheets are already isolated; the event predicate compares their certified q functions.
 
-**Acceptance criteria**
+**Tests:**
 
 - Every omitted pair has one stable exclusion record and positive margin/domain proof.
 - `control-close-depth` pair survives and receives a swap/ambiguity event.
@@ -5101,12 +5331,16 @@ Do not compute a whole-scene resultant eliminating q from arbitrary feature equa
 - CSG-noninfluential interior boundaries are excluded with Boolean cofactor proof.
 - Pair count and each pruning reason are dumped/reported.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-formal
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -5116,19 +5350,21 @@ pixels P4.8: compile sparse q-order competitions
 
 ## Task P4.9 — compile omission/exclusion proof records
 
-**Purpose**
+**Requires:** P4.8.
 
-Make local event and candidate completeness auditable rather than implicit in compiler control flow.
+**Produces:** Make local event and candidate completeness auditable rather than implicit in compiler control flow.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/exclusions.rs
-crates/wrela-compiler/src/pixels/events.rs
-crates/wrela-compiler/src/pixels/verify.rs
+crates/wrela-compiler/src/pixels/exclusions.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/events.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/verify.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Every potential candidate/event/pair considered by the structural enumerator ends in exactly one of:
 
@@ -5160,7 +5396,7 @@ pub struct ExclusionRecord {
 
 A zero or sign-indefinite margin cannot justify exclusion. Static strict-order exclusions become runtime invariants only if all coefficient dependencies are zero-rate; otherwise emit a kinetic/event predicate.
 
-**Acceptance criteria**
+**Tests:**
 
 - Verifier accounts for every enumerated subject exactly once.
 - Removing an exclusion/emitted record triggers internal verification failure.
@@ -5168,11 +5404,15 @@ A zero or sign-indefinite margin cannot justify exclusion. Static strict-order e
 - Report can explain any omitted competition from source feature names to final margin.
 - No “default pruned” reason exists.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -5182,19 +5422,21 @@ pixels P4.9: record complete event exclusions
 
 ## Task P4.10 — compile row/tile event indexes
 
-**Purpose**
+**Requires:** P4.9.
 
-Let runtime retrieve relevant features/events in O(records for tile/row), not O(scene).
+**Produces:** Let runtime retrieve relevant features/events in O(records for tile/row), not O(scene).
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/index.rs
-crates/wrela-compiler/src/pixels/program.rs
-crates/wrela-compiler/src/pixels/capacities.rs
+crates/wrela-compiler/src/pixels/index.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/program.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/capacities.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Build immutable compressed indexes:
 
@@ -5213,7 +5455,7 @@ Index construction may duplicate small IDs between adjacent tiles; report bytes.
 
 Refine the P3 structural ceilings into final P4 runtime capacities for candidate features, root/event isolation stacks, competition pairs, row events, sheets, runs, corridors, and index slices. These formulas consume the completed event/exclusion/index tables and are the capacities serialized by P5; P3.10 alone is not labeled final for P4 data.
 
-**Acceptance criteria**
+**Tests:**
 
 - Runtime lookup is two bounds-checked loads plus a contiguous slice.
 - Every feature/event appears in every tile its conservative span touches.
@@ -5222,11 +5464,15 @@ Refine the P3 structural ceilings into final P4 runtime capacities for candidate
 - Every P4-derived capacity equals or conservatively encloses an exact completed-table/worklist derivation and is verified before P5.
 - Unit tests compare indexed retrieval to a slow full-table overlap filter.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -5236,19 +5482,21 @@ pixels P4.10: build immutable local renderer indexes
 
 ## Task P4.11 — verify projective/event completeness
 
-**Purpose**
+**Requires:** P4.10.
 
-Close the compiler proof boundary before binary emission.
+**Produces:** Close the compiler proof boundary before binary emission.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/verify.rs
-crates/wrela-compiler/src/pixels/projective.rs
-crates/wrela-compiler/src/pixels/events.rs
+crates/wrela-compiler/src/pixels/verify.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/projective.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/events.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Extend verifier to prove/check:
 
@@ -5267,7 +5515,7 @@ Extend verifier to prove/check:
 
 Return `VerifiedProjectiveProgram` required by P5.
 
-**Acceptance criteria**
+**Tests:**
 
 - Corruption tests for every missing event family fail.
 - `control-enclosed-feature` completeness is independent of event samples.
@@ -5275,12 +5523,16 @@ Return `VerifiedProjectiveProgram` required by P5.
 - Static plane-only scene has no unnecessary silhouette generator.
 - All permanent fixtures verify.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-formal
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -5290,24 +5542,26 @@ pixels P4.11: verify complete projective event programs
 
 ## Task P4.12 — pin projective/event dumps
 
-**Purpose**
+**Requires:** P4.11.
 
-Make the final compiler math before serialization visible and stable.
+**Produces:** Make the final compiler math before serialization visible and stable.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/dump.rs
-tests/golden/check-pixels-*/expected/field-graph.txt
+crates/wrela-compiler/src/pixels/dump.rs # new at P-1 basis
+tests/golden/check-pixels-*/expected/field-graph.txt # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Add projective feature equations, derivative bundle summaries, projected spans, event generators, competition pairs, exclusions, and local indexes to the graph dump.
 
 Print polynomial terms in canonical order with exact coefficient source IDs. Print interval margins as explicit endpoints. Print every exclusion subject once.
 
-**Acceptance criteria**
+**Tests:**
 
 - There is enough dump information to reconstruct why a feature/event is present or absent.
 - Counts in dump equal capacity/report counts.
@@ -5315,12 +5569,16 @@ Print polynomial terms in canonical order with exact coefficient source IDs. Pri
 - Permanent fixture event counts are pinned.
 - Report determinism passes.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask report-determinism
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -5340,19 +5598,21 @@ Milestone result: the compiler emits a verified binary frame program, reserves a
 
 ## Task P5.1 — define `FrameProgram v1` Rust structs
 
-**Purpose**
+**Requires:** the preceding milestone close gate.
 
-Freeze the v1 outer wire envelope, directory namespace, and all P0–P8 record layouts before byte encoding. P9–P11 populate predeclared table kinds without changing the 80-byte header or 16-byte directory entry.
+**Produces:** Freeze the v1 outer wire envelope, directory namespace, and all P0–P8 record layouts before byte encoding. P9–P11 populate predeclared table kinds without changing the 80-byte header or 16-byte directory entry.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/program.rs
-crates/wrela-compiler/src/pixels/version.rs
-crates/wrela-machine/src/pixels.rs
+crates/wrela-compiler/src/pixels/program.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/version.rs # new at P-1 basis
+crates/wrela-machine/src/pixels.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Define fixed-width records using only integer IDs, offsets, counts, enum tags, and bit-preserved scalar constants. Separate compiler-rich structs from wire structs:
 
@@ -5375,7 +5635,7 @@ Wire record rules:
 - reserved bytes zero;
 - strings absent except a compact optional debug-name table excluded from runtime-required flags.
 
-**Acceptance criteria**
+**Tests:**
 
 - `wrela-machine` contains only shared format/constants, no compiler analysis.
 - Wire structs have explicit size assertions.
@@ -5384,11 +5644,15 @@ Wire record rules:
 - Header magic/version corruption tests exist.
 - Predeclared P9–P11 table kinds round-trip as canonical empty directory entries.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -5398,19 +5662,21 @@ pixels P5.1: define FrameProgram v1 records
 
 ## Task P5.2 — implement deterministic encoder
 
-**Purpose**
+**Requires:** P5.1.
 
-Serialize a verified projective program without depending on Rust layout.
+**Produces:** Serialize a verified projective program without depending on Rust layout.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/encode.rs
-crates/wrela-compiler/src/pixels/program.rs
-crates/wrela-machine/src/pixels.rs
+crates/wrela-compiler/src/pixels/encode.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/program.rs # new at P-1 basis
+crates/wrela-machine/src/pixels.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Implement a local `Writer`:
 
@@ -5440,7 +5706,7 @@ Encoding is two-pass:
 
 Table order is fixed by §4.14. Never derive order from enum declaration iteration.
 
-**Acceptance criteria**
+**Tests:**
 
 - Encoding same program twice yields identical bytes.
 - All checked conversions fail with internal/size error, never truncate.
@@ -5448,11 +5714,15 @@ Table order is fixed by §4.14. Never derive order from enum declaration iterati
 - Digest algorithm has unit vectors.
 - Golden frame-program binary is checked as SHA-256 plus a hex header/table summary; do not check large raw binaries into textual expected files unless harness already supports fixture bytes.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -5462,19 +5732,21 @@ pixels P5.2: encode verified frame programs
 
 ## Task P5.3 — implement hostile binary decoder and verifier
 
-**Purpose**
+**Requires:** P5.2.
 
-Prove the binary format is independently checkable and fuzzable.
+**Produces:** Prove the binary format is independently checkable and fuzzable.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/decode.rs
-crates/wrela-compiler/src/pixels/binary_verify.rs
+crates/wrela-compiler/src/pixels/decode.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/binary_verify.rs # new at P-1 basis
 crates/xtask/src/fuzz.rs
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Implement a bounds-checked cursor with no unsafe code. Validate header/digest/table directory before allocating table vectors. Limit total bytes to machine ceiling.
 
@@ -5486,7 +5758,7 @@ Fuzz outcomes are only:
 - structured `DecodeError`;
 - never panic, OOM, hang, or out-of-bounds.
 
-**Acceptance criteria**
+**Tests:**
 
 - `decode(encode(p)) == p` for all permanent fixtures.
 - Single-bit mutation corpus covers every header/table/enum/reserved field.
@@ -5494,12 +5766,16 @@ Fuzz outcomes are only:
 - Overlapping table/overflow attacks return error before allocation.
 - Fuzz smoke is in `verify`; broad run remains the repository fuzz lane.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask fuzz pixels --iters 10000 --seed 1
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -5509,20 +5785,22 @@ pixels P5.3: verify and fuzz FrameProgram bytes
 
 ## Task P5.4 — compile renderer programs during image build
 
-**Purpose**
+**Requires:** P5.3.
 
-Insert Pixels compilation at the single correct point in the existing build pipeline.
+**Produces:** Insert Pixels compilation at the single correct point in the existing build pipeline.
 
-**Files**
+**Files:**
 
 ```text
 crates/wrela-compiler/src/bin/wrela.rs
 crates/wrela-compiler/src/lib.rs
-crates/wrela-compiler/src/pixels/mod.rs
+crates/wrela-compiler/src/pixels/mod.rs # new at P-1 basis
 crates/wrela-compiler/src/eval/image_checks.rs
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 After all modules are semantically checked and the image graph is evaluated/sealed, but before runtime placement/codegen finalization:
 
@@ -5535,7 +5813,7 @@ After all modules are semantically checked and the image graph is evaluated/seal
 
 Do not call Pixels for images with zero renderers. A failure aborts the build before ordinary guest codegen so no partial image artifact is written.
 
-**Acceptance criteria**
+**Tests:**
 
 - `--stage=field-graph` now runs the complete P4 compiler.
 - `--stage=frame-program` decodes its own encoded bytes before dumping.
@@ -5543,12 +5821,16 @@ Do not call Pixels for images with zero renderers. A failure aborts the build be
 - Ordinary nonrenderer builds are byte-identical to pre-task baseline.
 - Compiler timing report, if any, names Pixels separately but is not part of checked goldens.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask repro
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -5558,11 +5840,11 @@ pixels P5.4: compile frame programs in sealed image builds
 
 ## Task P5.5 — reserve `frameprog` and `pixelsdata` image sections
 
-**Purpose**
+**Requires:** P5.4.
 
-Place immutable and mutable renderer data without disturbing existing rtdata invariants.
+**Produces:** Place immutable and mutable renderer data without disturbing existing rtdata invariants.
 
-**Files**
+**Files:**
 
 ```text
 crates/wrela-machine/src/lib.rs
@@ -5571,7 +5853,9 @@ crates/wrela-compiler/src/layout/place.rs
 crates/wrela-compiler/src/layout/report_lines.rs
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Implement §6.10 packing. Keep `RTDATA_BASE` and `RTDATA_SIZE_MAX` unchanged. Compute:
 
@@ -5594,7 +5878,7 @@ If multiple renderer programs are noncontiguous because of alignment, section co
 
 `pixelsdata` is zero-initialized reservation, not stored zero bytes in the image blob. Record reservation separately from blob length where layout already supports BSS-like regions; otherwise implement the minimal explicit reservation mechanism rather than materializing hundreds of MiB in the image file.
 
-**Acceptance criteria**
+**Tests:**
 
 - Existing code/rodata/rtdata addresses are unchanged for nonrenderer images.
 - Renderer section addresses are deterministic.
@@ -5602,11 +5886,15 @@ If multiple renderer programs are noncontiguous because of alignment, section co
 - Image report lists section/reservation bytes separately.
 - Boundary tests cover exact max, one byte over, checked-add overflow, and alignment padding.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -5616,19 +5904,21 @@ pixels P5.5: place frame programs and renderer state
 
 ## Task P5.6 — append frame-program bytes to the image
 
-**Purpose**
+**Requires:** P5.5.
 
-Make immutable renderer data available at guest addresses.
+**Produces:** Make immutable renderer data available at guest addresses.
 
-**Files**
+**Files:**
 
 ```text
 crates/wrela-compiler/src/layout.rs
 crates/wrela-compiler/src/layout/harness.rs
-crates/wrela-compiler/src/pixels/encode.rs
+crates/wrela-compiler/src/pixels/encode.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 At layout:
 
@@ -5641,7 +5931,7 @@ At layout:
 
 Add a layout test that reads bytes back from `ImageLayout.blob`, decodes, verifies digest, and compares to compiler rich program.
 
-**Acceptance criteria**
+**Tests:**
 
 - Blob contains exact frame-program bytes at reported address.
 - No host path or pointer is encoded.
@@ -5649,12 +5939,16 @@ Add a layout test that reads bytes back from `ImageLayout.blob`, decodes, verifi
 - Multiple renderer programs have correct independent bases/digests.
 - Nonrenderer image bytes remain unchanged.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask repro
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -5664,20 +5958,22 @@ pixels P5.6: seal frame-program bytes into images
 
 ## Task P5.7 — generate renderer configuration module
 
-**Purpose**
+**Requires:** P5.6.
 
-Expose table addresses/capacities to Wrela runtime code without runtime decoding/allocation.
+**Produces:** Expose table addresses/capacities to Wrela runtime code without runtime decoding/allocation.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/glue.rs
+crates/wrela-compiler/src/pixels/glue.rs # new at P-1 basis
 crates/wrela-compiler/src/loader.rs
 crates/wrela-compiler/src/rtconfig.rs
-stdlib/core/render_program.wr
+stdlib/core/render_program.wr # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Generate module address `core.__image_pixels` with constants and placed static views:
 
@@ -5701,7 +5997,7 @@ Also generate `@layout(runtime)` view structs for header/table records and `@pla
 
 Generated source must parse/type-check through the ordinary compiler, like `core.__image_runtime`. It contains no field equations as executable source; it exposes table layouts only.
 
-**Acceptance criteria**
+**Tests:**
 
 - renderer configuration appears inside the canonical `frame-program` dump; do not create a fourth Pixels dump stage.
 - Generated module has a stable dump.
@@ -5709,12 +6005,16 @@ Generated source must parse/type-check through the ordinary compiler, like `core
 - Stubs support zero-renderer images.
 - Pool ceilings fail before generating invalid array extents.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask report-determinism
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -5724,23 +6024,25 @@ pixels P5.7: generate renderer table and state views
 
 ## Task P5.8 — synthesize renderer coordinator/worker actors
 
-**Purpose**
+**Requires:** P5.7.
 
-Make renderer execution ordinary Wrela actors with closed capacity and placement.
+**Produces:** Make renderer execution ordinary Wrela actors with closed capacity and placement.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/glue.rs
+crates/wrela-compiler/src/pixels/glue.rs # new at P-1 basis
 crates/wrela-compiler/src/eval/image.rs
 crates/wrela-compiler/src/eval/image_checks.rs
 crates/wrela-compiler/src/placement.rs
 crates/wrela-compiler/src/layout/rtdata.rs
 crates/wrela-compiler/src/lower.rs
-stdlib/core/render_actor.wr
+stdlib/core/render_actor.wr # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Synthesize one coordinator and one worker instance per assigned render core. Prefer instantiating standard generic structs from `render_actor.wr` through generated image declarations rather than manufacturing typed AST by hand.
 
@@ -5766,7 +6068,7 @@ Placement:
 
 Until sweep exists, `render` returns `Err(FrameContractMismatch(RenderPath.RendererUnavailable))` after validating frame input and without touching display.
 
-**Acceptance criteria**
+**Tests:**
 
 - Renderer handle has real actor identity and ordinary admission semantics.
 - Generated actors appear in typed/FlowWir/MachineWir/placement/report dumps.
@@ -5774,11 +6076,15 @@ Until sweep exists, `render` returns `Err(FrameContractMismatch(RenderPath.Rende
 - No custom scheduler/work stealing is added.
 - Boot fixture can create coordinator/workers and call render, receiving the expected error deterministically.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -5788,19 +6094,21 @@ pixels P5.8: synthesize bounded renderer actors
 
 ## Task P5.9 — root renderer orchestration and bootstrap dispatch
 
-**Purpose**
+**Requires:** P5.8.
 
-Ensure dead-code elimination retains the orchestration and placeholder dispatch paths required at P5. Exact used-kernel palette generation belongs to P12.2 after all P9–P11 features exist.
+**Produces:** Ensure dead-code elimination retains the orchestration and placeholder dispatch paths required at P5. Exact used-kernel palette generation belongs to P12.2 after all P9–P11 features exist.
 
-**Files**
+**Files:**
 
 ```text
 crates/wrela-compiler/src/lower.rs
 crates/wrela-compiler/src/flowwir_lower.rs
-crates/wrela-compiler/src/pixels/glue.rs
+crates/wrela-compiler/src/pixels/glue.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Add generated function keys to the existing image force-root calculation only when a renderer exists. Root:
 
@@ -5812,18 +6120,22 @@ Add generated function keys to the existing image force-root calculation only wh
 
 Do not force-root every possible future primitive/material kernel. The P5 record-kind census roots the bounded bootstrap dispatcher; P12.2 replaces it with the exact final palette. Unsupported/missing P5 entry is an internal build error.
 
-**Acceptance criteria**
+**Tests:**
 
 - Declared scene emits fixed core orchestration plus only the P5 bootstrap families it references.
 - The dump explicitly marks the palette `bootstrap`; it may not claim final exactness.
 - No indirect function pointer is required; dispatch is bounded switch/match over record tags.
 - Cost report never assigns zero to a used renderer method because a key was omitted.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -5833,29 +6145,31 @@ pixels P5.9: root renderer bootstrap dispatch
 
 ## Task P5.10 — implement full frame-program/report dumps
 
-**Purpose**
+**Requires:** P5.9.
 
-Pin serialized program, layout, and image facts before runtime rendering.
+**Produces:** Pin serialized program, layout, and image facts before runtime rendering.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/dump.rs
-crates/wrela-compiler/src/pixels/report.rs
+crates/wrela-compiler/src/pixels/dump.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/report.rs # new at P-1 basis
 crates/wrela-compiler/src/report.rs
 crates/wrela-compiler/src/bin/wrela.rs
-tests/golden/check-pixels-*/expected/frame-program.txt
-tests/golden/check-pixels-*/expected/render-layout.txt
-tests/golden/check-pixels-*/expected/report.txt
+tests/golden/check-pixels-*/expected/frame-program.txt # new at P-1 basis
+tests/golden/check-pixels-*/expected/render-layout.txt # new at P-1 basis
+tests/golden/check-pixels-*/expected/report.txt # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Implement §8.3–8.5 completely. Report compiler/rich counts, wire bytes, mutable reservation, generated actors, worker tile ranges, and fallback policy in the existing three Pixels dumps.
 
 Do not report expected/estimated frame rate. Existing cost section later reports emitted code proxy cycles; renderer report is structural and exact.
 
-**Acceptance criteria**
+**Tests:**
 
 - Dumps are generated from decoded bytes and actual `ImageLayout`, not parallel estimates.
 - Table counts/offsets/digests match encoder.
@@ -5863,13 +6177,17 @@ Do not report expected/estimated frame rate. Existing cost section later reports
 - Renderer memory contributes to image peak memory and profile refusal.
 - All permanent fixtures have reviewed pinned outputs.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask report-determinism
 cargo xtask repro
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -5879,20 +6197,22 @@ pixels P5.10: pin frame-program and renderer-layout reports
 
 ## Task P5.11 — add renderer binary/layout fuzz and reproduction lanes
 
-**Purpose**
+**Requires:** P5.10.
 
-Make the new sealed artifact as rigorously checked as existing compiler stages.
+**Produces:** Make the new sealed artifact as rigorously checked as existing compiler stages.
 
-**Files**
+**Files:**
 
 ```text
 crates/xtask/src/main.rs
 crates/xtask/src/fuzz.rs
-crates/xtask/src/pixels_repro.rs
+crates/xtask/src/pixels_repro.rs # new at P-1 basis
 crates/xtask/src/golden.rs
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Add:
 
@@ -5905,18 +6225,22 @@ cargo xtask pixels-repro
 
 Classify expensive whole-corpus reproduction into milestone lane; keep one plane and one smooth-CSG smoke case in ordinary verify.
 
-**Acceptance criteria**
+**Tests:**
 
 - No new default lane exceeds locked test budget.
 - Fresh-directory reproduction compares exact image bytes.
 - Fuzz findings are promoted to permanent tests before fixes.
 - Decoder/compiler never panics on fuzz inputs.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -5936,21 +6260,23 @@ Milestone result: every runtime proof predicate and arithmetic kernel exists in 
 
 ## Task P6.1 — implement shared numeric test-vector format
 
-**Purpose**
+**Requires:** the preceding milestone close gate.
 
-Drive identical cases through Rust and Wrela without a new serialization dependency.
+**Produces:** Drive identical cases through Rust and Wrela without a new serialization dependency.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/reference/mod.rs
-crates/wrela-compiler/src/pixels/test_vectors.rs
-stdlib/core/render_test_vectors.wr
-crates/xtask/src/pixels_vectors.rs
-formal/pixels/KERNELS.txt
+crates/wrela-compiler/src/pixels/reference/mod.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/test_vectors.rs # new at P-1 basis
+stdlib/core/render_test_vectors.wr # new at P-1 basis
+crates/xtask/src/pixels_vectors.rs # new at P-1 basis
+formal/pixels/KERNELS.txt # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Define a simple generated line format with fixed integer/hex fields, for example:
 
@@ -5962,18 +6288,22 @@ Compiler unit tests generate vectors deterministically from fixed seeds plus han
 
 Do not parse JSON/TOML in guest. Host parser is hand-written and strict.
 
-**Acceptance criteria**
+**Tests:**
 
 - Unknown key, duplicate key, malformed integer, and overflow fail.
 - Vector file order is stable by kernel then case ID.
 - Every kernel manifest row names at least one edge vector and one generated vector family.
 - Vector generation never depends on host float textual formatting; use bits or integers.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -5983,21 +6313,23 @@ pixels P6.1: add cross-language numeric vectors
 
 ## Task P6.2 — implement `Iv32` and checked dyadic arithmetic
 
-**Purpose**
+**Requires:** P6.1.
 
-Provide exact branch-free verifier arithmetic with explicit overflow failure.
+**Produces:** Provide exact branch-free verifier arithmetic with explicit overflow failure.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/reference/iv32.rs
-stdlib/core/render_interval.wr
-formal/pixels/Pixels/Dyadic.lean
-formal/pixels/Pixels/Interval.lean
-formal/pixels/KERNELS.txt
+crates/wrela-compiler/src/pixels/reference/iv32.rs # new at P-1 basis
+stdlib/core/render_interval.wr # new at P-1 basis
+formal/pixels/Pixels/Dyadic.lean # new at P-1 basis
+formal/pixels/Pixels/Interval.lean # new at P-1 basis
+formal/pixels/KERNELS.txt # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Implement the canonical `Iv32`/`FixedDomain` contract from §5.1. Every operation also receives the compiler-selected `FixedDomain` for that value family. Hot intervals never carry or dynamically align exponents. Conversion between domains is a cold, explicit checked operation performed only at declared program boundaries. Operations return `Result[Iv32, NumericError]` where machine overflow is possible. Provide:
 
@@ -6020,7 +6352,7 @@ Domain-conversion policy is fixed:
 - never silently saturate or choose a domain at runtime;
 - compiler-selected exponent range is `[-96, 63]` in v1.
 
-**Acceptance criteria**
+**Tests:**
 
 - Rust and Wrela scalar outputs agree on all vectors.
 - Exhaustive tests cover all i8 endpoint values for reduced-width model and selected i32 boundaries.
@@ -6028,12 +6360,16 @@ Domain-conversion policy is fixed:
 - Every failure is explicit `NumericError`, never wraparound.
 - Generated AArch64 uses widened multiply for interval multiply as expected; assembly shape is inspected later, not asserted here.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-formal
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -6043,21 +6379,23 @@ pixels P6.2: implement checked dyadic intervals
 
 ## Task P6.3 — implement polynomial evaluation and exact quadratic range
 
-**Purpose**
+**Requires:** P6.2.
 
-Evaluate low-degree equations tightly and correctly at runtime.
+**Produces:** Evaluate low-degree equations tightly and correctly at runtime.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/reference/poly.rs
-stdlib/core/render_program.wr
-stdlib/core/render_interval.wr
-formal/pixels/Pixels/Bernstein.lean
-formal/pixels/KERNELS.txt
+crates/wrela-compiler/src/pixels/reference/poly.rs # new at P-1 basis
+stdlib/core/render_program.wr # new at P-1 basis
+stdlib/core/render_interval.wr # new at P-1 basis
+formal/pixels/Pixels/Bernstein.lean # new at P-1 basis
+formal/pixels/KERNELS.txt # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Implement scalar candidate f32/f64 and verifier `Iv32` paths for:
 
@@ -6079,7 +6417,7 @@ The exact quadratic range routine:
 
 Degenerate linear/constant edge/interior cases are explicit branches.
 
-**Acceptance criteria**
+**Tests:**
 
 - Rust/Wrela agree on vectors.
 - Quadratic range contains dense deterministic samples and analytic extrema fixtures.
@@ -6087,12 +6425,16 @@ Degenerate linear/constant edge/interior cases are explicit branches.
 - Bernstein subdivision preserves coefficient/domain mapping.
 - No runtime allocation; coefficient arrays have generated fixed maxima.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-formal
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -6102,20 +6444,22 @@ pixels P6.3: verify low-degree polynomial ranges
 
 ## Task P6.4 — implement bounded root isolation
 
-**Purpose**
+**Requires:** P6.3.
 
-Find all feature/event roots in a finite interval with explicit completeness/failure.
+**Produces:** Find all feature/event roots in a finite interval with explicit completeness/failure.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/reference/root.rs
-stdlib/core/render_events.wr
-formal/pixels/Pixels/RootIsolation.lean
-formal/pixels/KERNELS.txt
+crates/wrela-compiler/src/pixels/reference/root.rs # new at P-1 basis
+stdlib/core/render_events.wr # new at P-1 basis
+formal/pixels/Pixels/RootIsolation.lean # new at P-1 basis
+formal/pixels/KERNELS.txt # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Implement fixed-capacity front-to-back interval subdivision:
 
@@ -6140,7 +6484,7 @@ The caller supplies output storage and stack arrays sized by compiler capacity. 
 
 Tangency without sign change is handled by derivative/discriminant/root-count predicates, not converted to miss.
 
-**Acceptance criteria**
+**Tests:**
 
 - Plane, sphere, torus multi-root, tangent double-root, close roots, and no-root fixtures pass.
 - All roots inside domain are returned or outcome is `Unresolved`; no partial list labeled complete.
@@ -6148,12 +6492,16 @@ Tangency without sign change is handled by derivative/discriminant/root-count pr
 - Rust/Wrela scalar outputs agree exactly on interval endpoints/counts/reasons.
 - Lean bracket/subdivision completeness theorems build for the used predicates.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-formal
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -6163,21 +6511,23 @@ pixels P6.4: isolate complete bounded root sets
 
 ## Task P6.5 — implement monotone tube and Krawczyk predicates
 
-**Purpose**
+**Requires:** P6.4.
 
-Certify one root sheet continuously across a run domain.
+**Produces:** Certify one root sheet continuously across a run domain.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/reference/certificate.rs
-stdlib/core/render_sweep.wr
-formal/pixels/Pixels/Krawczyk.lean
-formal/pixels/Pixels/RunCertificate.lean
-formal/pixels/KERNELS.txt
+crates/wrela-compiler/src/pixels/reference/certificate.rs # new at P-1 basis
+stdlib/core/render_sweep.wr # new at P-1 basis
+formal/pixels/Pixels/Krawczyk.lean # new at P-1 basis
+formal/pixels/Pixels/RunCertificate.lean # new at P-1 basis
+formal/pixels/KERNELS.txt # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Implement two fixed tiers:
 
@@ -6209,7 +6559,7 @@ struct RootCertificate:
     method: RootCertMethod
 ```
 
-**Acceptance criteria**
+**Tests:**
 
 - Plane accepts Tier 1 over full row absent events.
 - Curved regular sheets accept one tier on permanent fixtures.
@@ -6217,12 +6567,16 @@ struct RootCertificate:
 - Failed contraction is ordinary false, not error; numeric overflow/nonfinite is error.
 - Rust/Wrela predicates agree; Lean uniqueness theorems build.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-formal
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -6232,22 +6586,24 @@ pixels P6.5: certify regular root tubes
 
 ## Task P6.6 — implement q-order and CSG event kernels
 
-**Purpose**
+**Requires:** P6.5.
 
-Prove front order and update composite occupancy cheaply.
+**Produces:** Prove front order and update composite occupancy cheaply.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/reference/order.rs
-crates/wrela-compiler/src/pixels/reference/csg.rs
-stdlib/core/render_sweep.wr
-formal/pixels/Pixels/QOrder.lean
-formal/pixels/Pixels/Csg.lean
-formal/pixels/KERNELS.txt
+crates/wrela-compiler/src/pixels/reference/order.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/reference/csg.rs # new at P-1 basis
+stdlib/core/render_sweep.wr # new at P-1 basis
+formal/pixels/Pixels/QOrder.lean # new at P-1 basis
+formal/pixels/Pixels/Csg.lean # new at P-1 basis
+formal/pixels/KERNELS.txt # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Implement:
 
@@ -6262,7 +6618,7 @@ Implement:
 
 Root/event ordering key for equal disjoint intervals is `(q interval, feature ID, root orientation)` only after equality has been classified as a corridor. Do not use ID to decide visibility in an unresolved tie.
 
-**Acceptance criteria**
+**Tests:**
 
 - Close-plane fixture reports ambiguity/corridor until refined.
 - All-pairs exact order and adjacent order agree for sorted lists.
@@ -6270,12 +6626,16 @@ Root/event ordering key for equal disjoint intervals is `(q interval, feature ID
 - Noninfluential boundary skip leaves composite occupancy unchanged.
 - Rust/Wrela and Lean contracts agree.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-formal
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -6285,20 +6645,22 @@ pixels P6.6: verify q order and CSG crossings
 
 ## Task P6.7 — implement fixed-q setup and recurrence
 
-**Purpose**
+**Requires:** P6.6.
 
-Make the pixel-depth hot loop exact integer work with bounded real error.
+**Produces:** Make the pixel-depth hot loop exact integer work with bounded real error.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/reference/fixed_q.rs
-stdlib/core/render_raster.wr
-formal/pixels/Pixels/FixedQ.lean
-formal/pixels/KERNELS.txt
+crates/wrela-compiler/src/pixels/reference/fixed_q.rs # new at P-1 basis
+stdlib/core/render_raster.wr # new at P-1 basis
+formal/pixels/Pixels/FixedQ.lean # new at P-1 basis
+formal/pixels/KERNELS.txt # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Define:
 
@@ -6321,7 +6683,7 @@ Setup chooses a shared exponent from certified q/dq/ddq maxima for one microtile
 
 P6 implements and proves only the scalar step. Reset at generated microtile width; v1 default is 32 pixels but the compiler may choose a smaller power of two to satisfy range/error, never larger than 64. P8.4 introduces the first `i32x4` implementation and P12 closes its backend/code-shape obligations.
 
-**Acceptance criteria**
+**Tests:**
 
 - Scalar integer outputs agree with the Rust reference bit-for-bit.
 - Real q truth samples remain within q code ± error radius.
@@ -6329,12 +6691,16 @@ P6 implements and proves only the scalar step. Reset at generated microtile widt
 - Near-overflow fixture chooses smaller microtile or fails setup explicitly.
 - Lean recurrence/error/no-overflow conditional theorems build.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-formal
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -6344,20 +6710,22 @@ pixels P6.7: implement certified fixed-q recurrence
 
 ## Task P6.8 — implement analytic coverage kernels
 
-**Purpose**
+**Requires:** P6.7.
 
-Compute stable subpixel event coverage without MSAA or stochastic sampling.
+**Produces:** Compute stable subpixel event coverage without MSAA or stochastic sampling.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/reference/coverage.rs
-stdlib/core/render_coverage.wr
-formal/pixels/Pixels/Coverage.lean
-formal/pixels/KERNELS.txt
+crates/wrela-compiler/src/pixels/reference/coverage.rs # new at P-1 basis
+stdlib/core/render_coverage.wr # new at P-1 basis
+formal/pixels/Pixels/Coverage.lean # new at P-1 basis
+formal/pixels/KERNELS.txt # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 V1 supports a unit box pixel filter. Implement:
 
@@ -6370,7 +6738,7 @@ V1 supports a unit box pixel filter. Implement:
 
 No supersample mask is used for acceptance. Deterministic dense quadrature may exist only in host oracle tests.
 
-**Acceptance criteria**
+**Tests:**
 
 - Axis-aligned, diagonal, corner-touching, subpixel-thin, and high-curvature fixtures pass.
 - Coverage interval contains high-precision host integration.
@@ -6378,12 +6746,16 @@ No supersample mask is used for acceptance. Deterministic dense quadrature may e
 - Rust/Wrela intervals agree.
 - Lean half-plane and strip/color bounds build.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-formal
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -6393,21 +6765,23 @@ pixels P6.8: integrate certified event coverage
 
 ## Task P6.9 — implement normal and material bound kernels
 
-**Purpose**
+**Requires:** P6.8.
 
-Carry geometric uncertainty into deterministic shading decisions.
+**Produces:** Carry geometric uncertainty into deterministic shading decisions.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/reference/normal.rs
-crates/wrela-compiler/src/pixels/reference/material.rs
-stdlib/core/render_material.wr
-formal/pixels/Pixels/Normal.lean
-formal/pixels/Pixels/MaterialBound.lean
+crates/wrela-compiler/src/pixels/reference/normal.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/reference/material.rs # new at P-1 basis
+stdlib/core/render_material.wr # new at P-1 basis
+formal/pixels/Pixels/Normal.lean # new at P-1 basis
+formal/pixels/Pixels/MaterialBound.lean # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Implement:
 
@@ -6422,7 +6796,7 @@ Implement:
 
 A zero-containing normal norm is certificate failure, not arbitrary fallback normal. The sweep may refine or exact-evaluate the field gradient in a bounded local rebuild.
 
-**Acceptance criteria**
+**Tests:**
 
 - Plane normal exact and constant.
 - Sphere/curved normals match independent gradient within cone.
@@ -6430,12 +6804,16 @@ A zero-containing normal norm is certificate failure, not arbitrary fallback nor
 - Rust/Wrela bound kernels agree.
 - Formal normal/moment/error theorems build.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-formal
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -6445,23 +6823,25 @@ pixels P6.9: bound reconstructed normals and materials
 
 ## Task P6.10 — implement transfer, transparency-tail, and byte kernels
 
-**Purpose**
+**Requires:** P6.9.
 
-Complete output-referred proof arithmetic.
+**Produces:** Complete output-referred proof arithmetic.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/reference/transfer.rs
-crates/wrela-compiler/src/pixels/reference/display.rs
-stdlib/core/render_transfer.wr
-formal/pixels/Pixels/Compositing.lean
-formal/pixels/Pixels/TransparencyTail.lean
-formal/pixels/Pixels/DisplayByte.lean
-formal/pixels/KERNELS.txt
+crates/wrela-compiler/src/pixels/reference/transfer.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/reference/display.rs # new at P-1 basis
+stdlib/core/render_transfer.wr # new at P-1 basis
+formal/pixels/Pixels/Compositing.lean # new at P-1 basis
+formal/pixels/Pixels/TransparencyTail.lean # new at P-1 basis
+formal/pixels/Pixels/DisplayByte.lean # new at P-1 basis
+formal/pixels/KERNELS.txt # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Implement premultiplied transfer `(rgb,t)` composition, balanced tree summary, local replacement, and tail cutoff.
 
@@ -6477,7 +6857,7 @@ Implement post path:
 
 LUT interpolation uses integer fixed-point with compiler-proved table/domain range. Tone/transfer LUTs are checked monotone at compile time and encoded in frame program.
 
-**Acceptance criteria**
+**Tests:**
 
 - Composition associativity holds in formal reals; machine implementation includes rounding radius in interval path.
 - Bright low-alpha tail fixture is not cut early.
@@ -6485,12 +6865,16 @@ LUT interpolation uses integer fixed-point with compiler-proved table/domain ran
 - Rust/Wrela outputs agree for all vectors.
 - Formal theorems build.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-formal
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -6500,27 +6884,29 @@ pixels P6.10: verify transfer and displayed bytes
 
 ## Task P6.11 — implement kernel manifest and differential boot lane
 
-**Purpose**
+**Requires:** P6.10.
 
-Make cross-language correspondence a permanent repository gate.
+**Produces:** Make cross-language correspondence a permanent repository gate.
 
-**Files**
+**Files:**
 
 ```text
-formal/pixels/KERNELS.txt
-crates/xtask/src/pixels_formal.rs
-crates/xtask/src/pixels_vectors.rs
-stdlib/tests/pixels_numeric.wr
-tests/golden/boot-pixels-numeric/
+formal/pixels/KERNELS.txt # new at P-1 basis
+crates/xtask/src/pixels_formal.rs # new at P-1 basis
+crates/xtask/src/pixels_vectors.rs # new at P-1 basis
+stdlib/tests/pixels_numeric.wr # new at P-1 basis
+tests/golden/boot-pixels-numeric/ # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Complete theorem-to-kernel mapping. Generate a Wrela numeric test image that runs scalar kernels against embedded vectors and prints/digests results. Host xtask computes expected results through Rust reference.
 
 The boot lane runs the complete deterministic vector set in `verify`; `verify-deep` repeats it as part of the exhaustive release diagnostics.
 
-**Acceptance criteria**
+**Tests:**
 
 - Every P6 required kernel has Lean, Rust, and scalar Wrela references. Packet mappings are added when their implementation lands in P8/P12.
 - Guest output equals host expected bytes.
@@ -6528,11 +6914,15 @@ The boot lane runs the complete deterministic vector set in `verify`; `verify-de
 - No expected result is authored twice by hand.
 - Numeric boot test contains no renderer scene logic.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -6542,21 +6932,23 @@ pixels P6.11: gate theorem-to-kernel correspondence
 
 ## Task P6.12 — close formal trust-boundary theorems
 
-**Purpose**
+**Requires:** P6.11.
 
-Finish the generic mathematical foundation before runtime consumes certificates.
+**Produces:** Finish the generic mathematical foundation before runtime consumes certificates.
 
-**Files**
+**Files:**
 
 ```text
-formal/pixels/Pixels/RunCertificate.lean
-formal/pixels/Pixels/EventCover.lean
-formal/pixels/Pixels/TrustBoundary.lean
-formal/pixels/Pixels.lean
-formal/pixels/EXPECTED_AXIOMS.txt
+formal/pixels/Pixels/RunCertificate.lean # new at P-1 basis
+formal/pixels/Pixels/EventCover.lean # new at P-1 basis
+formal/pixels/Pixels/TrustBoundary.lean # new at P-1 basis
+formal/pixels/Pixels.lean # new at P-1 basis
+formal/pixels/EXPECTED_AXIOMS.txt # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Prove and expose final named theorems:
 
@@ -6574,7 +6966,7 @@ kinetic_slack_preserves_run
 
 Normalize and pin `#print axioms` output.
 
-**Acceptance criteria**
+**Tests:**
 
 - No admissions/project axioms.
 - Every theorem hypothesis maps to a concrete record field or compiler verifier fact documented inline.
@@ -6582,12 +6974,16 @@ Normalize and pin `#print axioms` output.
 - Kernel manifest references final theorem names.
 - `cargo xtask pixels-formal` is green from a clean formal build.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask pixels-formal
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -6607,20 +7003,22 @@ Milestone result: the generated renderer constructs complete, exact visibility f
 
 ## Task P7.1 — implement zero-allocation `FrameProgramView`
 
-**Purpose**
+**Requires:** the preceding milestone close gate.
 
-Read sealed program tables safely from placed image memory.
+**Produces:** Read sealed program tables safely from placed image memory.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_program.wr
-stdlib/core/render_interval.wr
-stdlib/tests/pixels_program_view.wr
-tests/golden/boot-pixels-program-view/
+stdlib/core/render_program.wr # new at P-1 basis
+stdlib/core/render_interval.wr # new at P-1 basis
+stdlib/tests/pixels_program_view.wr # new at P-1 basis
+tests/golden/boot-pixels-program-view/ # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Implement generated-layout readers over `Static[FrameProgramHeaderV1]` and placed arrays. All accessors use compiler-known counts and checked indexes:
 
@@ -6639,7 +7037,7 @@ Do not expose arbitrary byte offsets to renderer code. Generated constants map t
 
 At renderer initialization, check header magic/version/digest against generated constants once. The guest does not recompute SHA-256 per frame; boot/image integrity already covers bytes. It verifies cheap header/table counts and reserved flags.
 
-**Acceptance criteria**
+**Tests:**
 
 - Program-view boot fixture reads representative records and prints expected stable values.
 - No dynamic allocation or pointer arithmetic surface exists in Wrela source.
@@ -6647,11 +7045,15 @@ At renderer initialization, check header magic/version/digest against generated 
 - All table loads have exact `@layout(runtime)` offsets checked by compiler layout tests.
 - Accessors are pure and nonsuspending.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -6661,20 +7063,22 @@ pixels P7.1: read sealed frame programs in Wrela
 
 ## Task P7.2 — implement frame input snapshot and validation
 
-**Purpose**
+**Requires:** P7.1.
 
-Convert owned `RenderFrame[P]` into the exact finite coefficient state used by workers.
+**Produces:** Convert owned `RenderFrame[P]` into the exact finite coefficient state used by workers.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render.wr
-stdlib/core/render_actor.wr
-crates/wrela-compiler/src/pixels/glue.rs
-tests/golden/boot-pixels-frame-input/
+stdlib/core/render.wr # new at P-1 basis
+stdlib/core/render_actor.wr # new at P-1 basis
+crates/wrela-compiler/src/pixels/glue.rs # new at P-1 basis
+tests/golden/boot-pixels-frame-input/ # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Generated snapshot function reads parameter fields by compiled field-index paths and packs only used scalar slots. It also canonicalizes camera/light/exposure/post inputs.
 
@@ -6693,7 +7097,7 @@ A frame outside declared `@range` returns `ParameterOutOfRange(path)`; the compi
 
 Snapshot is copied into each worker’s fixed job record. It contains no source struct padding or unused fields.
 
-**Acceptance criteria**
+**Tests:**
 
 - Packed offsets agree with compiler ParamTable dump.
 - Field ownership P is returned on every error path.
@@ -6701,11 +7105,15 @@ Snapshot is copied into each worker’s fixed job record. It contains no source 
 - From-scratch rendering does not require a previous snapshot.
 - Snapshot bytes/digest are deterministic.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -6715,19 +7123,21 @@ pixels P7.2: validate and pack frame coefficients
 
 ## Task P7.3 — define worker workspace and reset protocol
 
-**Purpose**
+**Requires:** P7.2.
 
-Materialize every compile-time capacity as fixed per-worker storage.
+**Produces:** Materialize every compile-time capacity as fixed per-worker storage.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_sweep.wr
-stdlib/core/render_actor.wr
-crates/wrela-compiler/src/pixels/glue.rs
+stdlib/core/render_sweep.wr # new at P-1 basis
+stdlib/core/render_actor.wr # new at P-1 basis
+crates/wrela-compiler/src/pixels/glue.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Generate one `RendererWorkspaceR<N...>` layout per renderer containing fixed arrays:
 
@@ -6750,7 +7160,7 @@ Workspace lives in the worker’s assigned mutable state region. Reset sets coun
 
 Use generation tags only if wrap is impossible over image lifetime or checked; otherwise reset explicit counts and overwrite live slots.
 
-**Acceptance criteria**
+**Tests:**
 
 - Generated layout bytes equal capacity report.
 - No `List`/heap collection appears in sweep modules.
@@ -6758,11 +7168,15 @@ Use generation tags only if wrap is impossible over image lifetime or checked; o
 - Reset leaves no previous-frame record reachable through current counts.
 - Two worker workspaces never overlap in layout.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -6772,19 +7186,21 @@ pixels P7.3: allocate fixed renderer workspaces
 
 ## Task P7.4 — enumerate complete row-start feature candidates
 
-**Purpose**
+**Requires:** P7.3.
 
-Start each tile row from structural completeness rather than samples or prior hits.
+**Produces:** Start each tile row from structural completeness rather than samples or prior hits.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_sweep.wr
-stdlib/core/render_program.wr
-crates/wrela-compiler/src/pixels/reference/sweep.rs
+stdlib/core/render_sweep.wr # new at P-1 basis
+stdlib/core/render_program.wr # new at P-1 basis
+crates/wrela-compiler/src/pixels/reference/sweep.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 For tile `(tx,ty)` and local row `y`:
 
@@ -6799,7 +7215,7 @@ No screen sample or q solve is used to decide whether a feature is a candidate. 
 
 For a feature whose coefficient/runtime bound cannot be evaluated due to numeric failure, return `CertificateExhausted` or `InternalInvariant` according to cause; do not omit it.
 
-**Acceptance criteria**
+**Tests:**
 
 - Enclosed/thin feature controls retain their feature at the affected row.
 - Candidate enumeration agrees with a slow host overlap/reference filter.
@@ -6807,11 +7223,15 @@ For a feature whose coefficient/runtime bound cannot be evaluated due to numeric
 - Every omitted tile feature has a passed exclusion predicate with positive margin.
 - Counters distinguish static compiler exclusion from runtime row exclusion.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -6821,19 +7241,21 @@ pixels P7.4: enumerate complete row feature sets
 
 ## Task P7.5 — isolate every smooth-object root at row start
 
-**Purpose**
+**Requires:** P7.4.
 
-Build the complete ordered boundary-event list for one x position.
+**Produces:** Build the complete ordered boundary-event list for one x position.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_sweep.wr
-stdlib/core/render_events.wr
-crates/wrela-compiler/src/pixels/reference/sweep.rs
+stdlib/core/render_sweep.wr # new at P-1 basis
+stdlib/core/render_events.wr # new at P-1 basis
+crates/wrela-compiler/src/pixels/reference/sweep.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 At initial x = tile’s left pixel-center coordinate:
 
@@ -6861,7 +7283,7 @@ struct RootRecord:
     root_certificate: RootCertificate
 ```
 
-**Acceptance criteria**
+**Tests:**
 
 - Plane/sphere/torus/capsule fixtures produce all expected roots.
 - `check-pixels-smooth-interior-root` finds `a=b=k/4` without a leaf-root seed.
@@ -6870,11 +7292,15 @@ struct RootRecord:
 - Duplicate shared-feature boundary roots are deduplicated only with proof of same geometric crossing and deterministic owner rule.
 - Failure to separate close roots is an event corridor/rebuild, not ID tie-break.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -6884,19 +7310,21 @@ pixels P7.5: construct complete smooth-object row roots
 
 ## Task P7.6 — evaluate the hard-CSG occupancy sweep
 
-**Purpose**
+**Requires:** P7.5.
 
-Choose exact composite boundaries from ordered object crossings.
+**Produces:** Choose exact composite boundaries from ordered object crossings.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_sweep.wr
-stdlib/core/render_program.wr
-crates/wrela-compiler/src/pixels/reference/csg.rs
+stdlib/core/render_sweep.wr # new at P-1 basis
+stdlib/core/render_program.wr # new at P-1 basis
+crates/wrela-compiler/src/pixels/reference/csg.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Initialize object occupancy at near plane using compiler-emitted outside/inside seed programs. The usual closed-object camera-outside case is all false, but do not assume it; camera may begin inside an object within declared bounds.
 
@@ -6912,7 +7340,7 @@ Sweep roots front-to-back:
 
 At coincident/corridor roots, do not apply arbitrary sequential toggles. Isolate/refine the corridor or evaluate the full local arrangement through bounded rebuild.
 
-**Acceptance criteria**
+**Tests:**
 
 - Union, intersection, subtraction fixtures select exact expected boundary/identity.
 - Camera-inside fixture returns first exit boundary correctly.
@@ -6920,11 +7348,15 @@ At coincident/corridor roots, do not apply arbitrary sequential toggles. Isolate
 - Coincident boundaries take corridor path.
 - Wrela output agrees with Rust CSG reference for deterministic root lists.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -6934,19 +7366,21 @@ pixels P7.6: sweep exact hard-CSG occupancy
 
 ## Task P7.7 — isolate all x-domain event endpoints for a row
 
-**Purpose**
+**Requires:** P7.6.
 
-Partition a row into maximal domains where roots, features, identities, and order can be certified unchanged.
+**Produces:** Partition a row into maximal domains where roots, features, identities, and order can be certified unchanged.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_events.wr
-stdlib/core/render_sweep.wr
-crates/wrela-compiler/src/pixels/reference/events.rs
+stdlib/core/render_events.wr # new at P-1 basis
+stdlib/core/render_sweep.wr # new at P-1 basis
+crates/wrela-compiler/src/pixels/reference/events.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 For the tile row x-domain:
 
@@ -6963,7 +7397,7 @@ Event roots include silhouette, feature validity, repeat, smooth band/tie, mater
 
 A generator that returns unresolved causes deterministic x subdivision until its compiler-bounded depth. If still unresolved, the corridor covers that final cell; it is not discarded.
 
-**Acceptance criteria**
+**Tests:**
 
 - Every permanent edge control creates a corridor touching the true event pixel set.
 - No regular domain contains a sampled sign change in host exhaustive fixture checks.
@@ -6971,11 +7405,15 @@ A generator that returns unresolved causes deterministic x subdivision until its
 - Multiple simultaneous event IDs remain attached to one corridor.
 - Capacity overflow returns `CapacityExceeded(RenderCapacity.Events)` before writing past storage.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -6985,19 +7423,21 @@ pixels P7.7: partition rows by complete events
 
 ## Task P7.8 — construct implicit-jet run candidates
 
-**Purpose**
+**Requires:** P7.7.
 
-Predict all active root sheets across one regular x-domain with one evaluation per sheet rather than repeated solving.
+**Produces:** Predict all active root sheets across one regular x-domain with one evaluation per sheet rather than repeated solving.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_sweep.wr
-stdlib/core/render_program.wr
-crates/wrela-compiler/src/pixels/reference/sweep.rs
+stdlib/core/render_sweep.wr # new at P-1 basis
+stdlib/core/render_program.wr # new at P-1 basis
+crates/wrela-compiler/src/pixels/reference/sweep.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 At regular-domain left anchor or center:
 
@@ -7011,7 +7451,7 @@ At regular-domain left anchor or center:
 
 Candidate values may be f64 in Rust reference and f32 in guest; verifier intervals enclose them. The candidate itself proves nothing.
 
-**Acceptance criteria**
+**Tests:**
 
 - Plane model is exactly affine and has zero quadratic residual aside from representation radius.
 - Sphere regular rows produce expected derivatives.
@@ -7019,11 +7459,15 @@ Candidate values may be f64 in Rust reference and f32 in guest; verifier interva
 - Candidate generation failure does not remove the root.
 - Candidate counters and active-leaf count are available for report/runtime diagnostics.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -7033,19 +7477,21 @@ pixels P7.8: predict regular root sheets with jets
 
 ## Task P7.9 — certify complete regular runs
 
-**Purpose**
+**Requires:** P7.8.
 
-Turn candidates into proof-carrying scanline runs.
+**Produces:** Turn candidates into proof-carrying scanline runs.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_sweep.wr
-crates/wrela-compiler/src/pixels/reference/sweep.rs
-formal/pixels/Pixels/RunCertificate.lean
+stdlib/core/render_sweep.wr # new at P-1 basis
+crates/wrela-compiler/src/pixels/reference/sweep.rs # new at P-1 basis
+formal/pixels/Pixels/RunCertificate.lean # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 For each regular domain and every active root:
 
@@ -7082,7 +7528,7 @@ struct CertifiedRun:
 
 Do not store arbitrary proof trees at runtime; store all values needed to recheck/transport plus minimum margins and owner.
 
-**Acceptance criteria**
+**Tests:**
 
 - Every accepted run passes host dense/oracle scoring, but oracle is never passed to renderer.
 - Plane fixture can emit one run per row apart from tile/microtile boundaries.
@@ -7090,13 +7536,17 @@ Do not store arbitrary proof trees at runtime; store all values needed to rechec
 - Root/feature/order/CSG completeness is explicit in debug proof dump.
 - Lean run theorem applies directly to record invariants.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-formal
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -7106,19 +7556,21 @@ pixels P7.9: emit complete certified visibility runs
 
 ## Task P7.10 — implement the bounded local rebuild ladder
 
-**Purpose**
+**Requires:** P7.9.
 
-Resolve difficult regular/event domains without an unbounded or hidden dense fallback.
+**Produces:** Resolve difficult regular/event domains without an unbounded or hidden dense fallback.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_sweep.wr
-stdlib/core/render_events.wr
-crates/wrela-compiler/src/pixels/reference/rebuild.rs
+stdlib/core/render_sweep.wr # new at P-1 basis
+stdlib/core/render_events.wr # new at P-1 basis
+crates/wrela-compiler/src/pixels/reference/rebuild.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 The fixed ladder is:
 
@@ -7135,7 +7587,7 @@ There is no generic sphere-tracing fallback in `AaaByteExact`. There is no “tr
 
 Each rebuild cell has fixed depth/record caps from `FrameProgram`. The runtime records the terminal reason.
 
-**Acceptance criteria**
+**Tests:**
 
 - Close-depth, tangency, silhouette, repeat-boundary, smooth-tie, and material-edge controls resolve or fail explicitly.
 - No path exceeds generated arrays/depth.
@@ -7143,11 +7595,15 @@ Each rebuild cell has fixed depth/record caps from `FrameProgram`. The runtime r
 - A deliberately pathological accepted scene returns `CertificateExhausted` and leaves prior frame displayed.
 - Rebuild choices are fixed, not heuristic thresholds tuned at runtime.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -7157,18 +7613,20 @@ pixels P7.10: resolve bounded visibility corridors
 
 ## Task P7.11 — carry runs across adjacent rows as proposals only
 
-**Purpose**
+**Requires:** P7.10.
 
-Reduce candidate work without making row coherence a correctness dependency.
+**Produces:** Reduce candidate work without making row coherence a correctness dependency.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_sweep.wr
-crates/wrela-compiler/src/pixels/reference/sweep.rs
+stdlib/core/render_sweep.wr # new at P-1 basis
+crates/wrela-compiler/src/pixels/reference/sweep.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 After completing row y, use its sheet/event/run states as candidate seeds for row y+1 within the same tile. Before use:
 
@@ -7180,7 +7638,7 @@ After completing row y, use its sheet/event/run states as candidate seeds for ro
 
 A configuration switch used only in tests forces `RowProposal.Disabled`. Displayed output and success/failure must remain identical.
 
-**Acceptance criteria**
+**Tests:**
 
 - Disabled/enabled produce identical frame bytes and error outcomes.
 - Enclosed feature absent from prior row is still discovered from structural index.
@@ -7188,11 +7646,15 @@ A configuration switch used only in tests forces `RowProposal.Disabled`. Display
 - Counters distinguish proposed/revalidated/new records.
 - No previous tile/frame data is required.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -7202,19 +7664,21 @@ pixels P7.11: reuse row structure as validated proposals
 
 ## Task P7.12 — implement tile sweep orchestration
 
-**Purpose**
+**Requires:** P7.11.
 
-Construct all rows/runs in one owned tile with deterministic ordering.
+**Produces:** Construct all rows/runs in one owned tile with deterministic ordering.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_sweep.wr
-stdlib/core/render_actor.wr
-crates/wrela-compiler/src/pixels/reference/frame.rs
+stdlib/core/render_sweep.wr # new at P-1 basis
+stdlib/core/render_actor.wr # new at P-1 basis
+crates/wrela-compiler/src/pixels/reference/frame.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 `render_tile`:
 
@@ -7233,7 +7697,7 @@ crates/wrela-compiler/src/pixels/reference/frame.rs
 
 Add a debug validation function in Rust reference that checks run/corridor coverage has no gaps/overlaps and every row endpoint equals tile bounds.
 
-**Acceptance criteria**
+**Tests:**
 
 - Every tile row has exact domain partition.
 - Tile order and row order deterministic.
@@ -7241,11 +7705,15 @@ Add a debug validation function in Rust reference that checks run/corridor cover
 - Plane/hard-CSG/smooth/repeat/deform permanent fixtures construct complete visibility tiles.
 - Debug identity/q output matches host oracle fixture expectations.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -7255,20 +7723,22 @@ pixels P7.12: construct complete visibility tiles
 
 ## Task P7.13 — implement coordinator/worker frame execution
 
-**Purpose**
+**Requires:** P7.12.
 
-Run the from-scratch sweep across all sealed render cores with deterministic ownership.
+**Produces:** Run the from-scratch sweep across all sealed render cores with deterministic ownership.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_actor.wr
-stdlib/core/render.wr
-crates/wrela-compiler/src/pixels/glue.rs
-tests/golden/boot-pixels-plane/
+stdlib/core/render_actor.wr # new at P-1 basis
+stdlib/core/render.wr # new at P-1 basis
+crates/wrela-compiler/src/pixels/glue.rs # new at P-1 basis
+tests/golden/boot-pixels-plane/ # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Coordinator render turn:
 
@@ -7284,7 +7754,7 @@ Coordinator render turn:
 
 Jobs are bounded and one frame render occupies one coordinator turn/child group according to existing progress rules. Long loops include compiler-proven bounds/checkpoints consistent with frame deadline semantics.
 
-**Acceptance criteria**
+**Tests:**
 
 - Single-core and four-core builds produce identical debug frame digest.
 - Worker completion order perturbation does not alter output.
@@ -7292,11 +7762,15 @@ Jobs are bounded and one frame render occupies one coordinator turn/child group 
 - No worker writes another worker’s tiles/workspace.
 - Actor/ring/mailbox capacities remain proven by existing compiler.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -7306,20 +7780,22 @@ pixels P7.13: execute complete sweeps across render workers
 
 ## Task P7.14 — add independent host visibility oracle and score-only gate
 
-**Purpose**
+**Requires:** P7.13.
 
-Validate implementation correctness without letting oracle data influence runtime decisions.
+**Produces:** Validate implementation correctness without letting oracle data influence runtime decisions.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/reference/oracle.rs
-crates/xtask/src/pixels_conformance.rs
+crates/wrela-compiler/src/pixels/reference/oracle.rs # new at P-1 basis
+crates/xtask/src/pixels_conformance.rs # new at P-1 basis
 crates/xtask/src/main.rs
-tests/pixels_truth/
+tests/pixels_truth/ # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Implement host f64 independent all-root oracle over field semantic graph:
 
@@ -7340,7 +7816,7 @@ Add `cargo xtask pixels-conformance` comparing:
 - unresolved counts;
 - complete output bytes once P9 exists.
 
-**Acceptance criteria**
+**Tests:**
 
 - Information-firewall test gives two scenes identical at any legacy lattice but different enclosed feature; sweep output differs correctly from structural data.
 - Oracle unresolved is a conformance failure for flagship fixtures.
@@ -7348,13 +7824,17 @@ Add `cargo xtask pixels-conformance` comparing:
 - Conformance command is deterministic and score-only.
 - Runtime source has no import/dependency on oracle module.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-conformance
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -7364,19 +7844,21 @@ pixels P7.14: gate sweep visibility against an independent oracle
 
 ## Task P7.15 — replace placeholder render failure with debug-frame success
 
-**Purpose**
+**Requires:** P7.14.
 
-Complete the production from-scratch visibility path before final shading/display.
+**Produces:** Complete the production from-scratch visibility path before final shading/display.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_actor.wr
-stdlib/core/render_sweep.wr
-tests/golden/boot-pixels-*/
+stdlib/core/render_actor.wr # new at P-1 basis
+stdlib/core/render_sweep.wr # new at P-1 basis
+tests/golden/boot-pixels-*/ # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Return `RenderedFrame[P]` with a deterministic debug visibility image:
 
@@ -7387,7 +7869,7 @@ Return `RenderedFrame[P]` with a deterministic debug visibility image:
 
 This debug mode is compiler-internal and not a source profile. It is removed in P9 after full shading, but its goldens remain host conformance fixtures.
 
-**Acceptance criteria**
+**Tests:**
 
 - All opaque permanent visibility fixtures render successfully from scratch.
 - The plane-only P-1 skeleton is replaced by the complete sweep; any remaining valid-frame failure uses the §2.6 error contract.
@@ -7395,13 +7877,17 @@ This debug mode is compiler-internal and not a source profile. It is removed in 
 - Conformance has zero visibility/identity/root failures.
 - Kinetic state is not read.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-conformance
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -7421,20 +7907,22 @@ Milestone result: certified visibility runs become complete scanout-resolution t
 
 ## Task P8.1 — fix the scanout pixel and tile contract
 
-**Purpose**
+**Requires:** the preceding milestone close gate.
 
-Remove every ambiguity between HDR proof values, stored bytes, guest memory, and host presentation.
+**Produces:** Remove every ambiguity between HDR proof values, stored bytes, guest memory, and host presentation.
 
-**Files**
+**Files:**
 
 ```text
 docs/language/06-machine.md
-docs/language/07-pixels.md
-crates/wrela-machine/src/display.rs
-stdlib/drivers/display.wr
+docs/language/07-pixels.md # new at P-1 basis
+crates/wrela-machine/src/pixels.rs # new at P-1 basis
+stdlib/drivers/display.wr # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Define machine-v1 format:
 
@@ -7475,7 +7963,7 @@ pub struct DisplayTileDescV1 {
 }
 ```
 
-**Acceptance criteria**
+**Tests:**
 
 - Machine, compiler, driver, VMM, and goldens use one format constant.
 - Alpha byte is always 255, including background.
@@ -7483,11 +7971,15 @@ pub struct DisplayTileDescV1 {
 - Tile count/bytes derive exactly for arbitrary positive mode dimensions within ceiling.
 - Endianness fixture proves in-memory bytes.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -7497,19 +7989,21 @@ pixels P8.1: seal the BGRA scanout tile contract
 
 ## Task P8.2 — define final run raster records
 
-**Purpose**
+**Requires:** P8.1.
 
-Separate proof-rich sweep state from compact hot-loop setup.
+**Produces:** Separate proof-rich sweep state from compact hot-loop setup.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_raster.wr
-stdlib/core/render_sweep.wr
-crates/wrela-compiler/src/pixels/reference/raster.rs
+stdlib/core/render_raster.wr # new at P-1 basis
+stdlib/core/render_sweep.wr # new at P-1 basis
+crates/wrela-compiler/src/pixels/reference/raster.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 At the end of sweep/shading setup, convert each regular run to:
 
@@ -7539,7 +8033,7 @@ struct EventPixel:
 
 `RasterRun` contains no feature arrays or root-isolation stack. It is emitted only after all proof decisions are complete. Any output interval already proven to one code may store the code directly and skip material/light evaluation for that channel.
 
-**Acceptance criteria**
+**Tests:**
 
 - Conversion preserves half-open run domain exactly.
 - Every run fits fixed-q setup or is split before conversion.
@@ -7547,11 +8041,15 @@ struct EventPixel:
 - Run/event arrays fit generated capacities.
 - Rust reference validates no row gap/overlap after conversion.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -7561,19 +8059,21 @@ pixels P8.2: lower certified runs to raster records
 
 ## Task P8.3 — implement scalar fixed-q raster
 
-**Purpose**
+**Requires:** P8.2.
 
-Produce exact debug depth/identity pixels before packetization.
+**Produces:** Produce exact debug depth/identity pixels before packetization.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_raster.wr
-crates/wrela-compiler/src/pixels/reference/raster.rs
-stdlib/tests/pixels_raster.wr
+stdlib/core/render_raster.wr # new at P-1 basis
+crates/wrela-compiler/src/pixels/reference/raster.rs # new at P-1 basis
+stdlib/tests/pixels_raster.wr # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Implement `raster_run_scalar`:
 
@@ -7589,7 +8089,7 @@ Implement `raster_run_scalar`:
 
 No per-pixel field evaluation, root solve, q-buffer search, dynamic material dispatch, or reciprocal for the debug image. If world position is not needed, q remains fixed-point.
 
-**Acceptance criteria**
+**Tests:**
 
 - Output matches Rust scalar reference byte-for-byte.
 - Every pixel write address stays within visible/full tile extent.
@@ -7597,11 +8097,15 @@ No per-pixel field evaluation, root solve, q-buffer search, dynamic material dis
 - Recurrence error remains within certificate at every checked sample.
 - Scalar path is retained permanently as packet differential oracle.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -7611,21 +8115,23 @@ pixels P8.3: rasterize certified runs scalarly
 
 ## Task P8.4 — implement `i32x4` fixed-q packet raster
 
-**Purpose**
+**Requires:** P8.3.
 
-Turn the hot visibility raster into vector integer additions/stores.
+**Produces:** Turn the hot visibility raster into vector integer additions/stores.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_raster.wr
+stdlib/core/render_raster.wr # new at P-1 basis
 crates/wrela-compiler/src/mwir.rs
 crates/wrela-compiler/src/codegen.rs
 crates/wrela-compiler/src/encode.rs
-stdlib/tests/pixels_raster.wr
+stdlib/tests/pixels_raster.wr # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Implement `raster_run4` processing four consecutive pixels. Use existing/implemented `i32x4` operations:
 
@@ -7638,7 +8144,7 @@ Handle run prefix/suffix of 1–3 pixels with scalar oracle. Main body uses pack
 
 Add missing backend vector operations one at a time with `CostRule` tags and emitted-word tests. Do not add explicit vector syntax beyond existing types.
 
-**Acceptance criteria**
+**Tests:**
 
 - Packet output equals scalar output for all vector fixtures and complete debug frames.
 - Generated MachineWir has one vector loop and bounded scalar edges.
@@ -7646,12 +8152,16 @@ Add missing backend vector operations one at a time with `CostRule` tags and emi
 - All vector operations have exact lane semantics and first-fault behavior where checked arithmetic applies; fixed-q uses ranges proving ordinary add cannot fault.
 - AArch64 code uses 128-bit ASIMD operations for main loop.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask diff-eval
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -7661,19 +8171,21 @@ pixels P8.4: vectorize fixed-q run rasterization
 
 ## Task P8.5 — reconstruct normals and optional world position per packet
 
-**Purpose**
+**Requires:** P8.4.
 
-Supply stable geometric inputs to shading without field gradients on regular runs.
+**Produces:** Supply stable geometric inputs to shading without field gradients on regular runs.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_raster.wr
-stdlib/core/render_material.wr
-crates/wrela-compiler/src/pixels/reference/normal.rs
+stdlib/core/render_raster.wr # new at P-1 basis
+stdlib/core/render_material.wr # new at P-1 basis
+crates/wrela-compiler/src/pixels/reference/normal.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 For each packet:
 
@@ -7686,7 +8198,7 @@ For each packet:
 
 Generated material dependency flags decide whether world position, view direction, tangent frame, or only normal/material identity is needed.
 
-**Acceptance criteria**
+**Tests:**
 
 - Plane normals are exact/constant after normalization contract.
 - Curved normals lie inside certified cone and match host reference.
@@ -7694,12 +8206,16 @@ Generated material dependency flags decide whether world position, view directio
 - `rsqrt` sequence is bit-identical dev/release and has differential tests.
 - No field-gradient call occurs in regular runs.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask diff-eval
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -7709,19 +8225,21 @@ pixels P8.5: reconstruct run geometry in packets
 
 ## Task P8.6 — rasterize analytic event coverage
 
-**Purpose**
+**Requires:** P8.5.
 
-Write silhouettes, CSG ties, material edges, and depth swaps without missed or double-written pixels.
+**Produces:** Write silhouettes, CSG ties, material edges, and depth swaps without missed or double-written pixels.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_coverage.wr
-stdlib/core/render_raster.wr
-crates/wrela-compiler/src/pixels/reference/coverage.rs
+stdlib/core/render_coverage.wr # new at P-1 basis
+stdlib/core/render_raster.wr # new at P-1 basis
+crates/wrela-compiler/src/pixels/reference/coverage.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 For each `EventPixel`:
 
@@ -7734,7 +8252,7 @@ For each `EventPixel`:
 
 For a true geometry coverage edge, both side runs may have different depth/identity. For a material-only edge, geometry/normal can be shared. For a depth swap, divide pixel coverage by swap curve and use each side’s winner.
 
-**Acceptance criteria**
+**Tests:**
 
 - Thin/enclosed features survive subpixel coverage.
 - High-contrast diagonal silhouette has stable exact bytes against host interval oracle.
@@ -7742,12 +8260,16 @@ For a true geometry coverage edge, both side runs may have different depth/ident
 - No MSAA/TAA sample pattern is used.
 - Event pixels are written exactly once after regular runs skip their corridor-owned pixels.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-conformance
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -7757,20 +8279,22 @@ pixels P8.6: rasterize certified event coverage
 
 ## Task P8.7 — implement tile buffer ownership and deterministic clearing
 
-**Purpose**
+**Requires:** P8.6.
 
-Move completed scanout tiles safely between workers, coordinator, and display driver.
+**Produces:** Move completed scanout tiles safely between workers, coordinator, and display driver.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_actor.wr
-stdlib/core/render_raster.wr
-stdlib/drivers/display.wr
-crates/wrela-compiler/src/pixels/glue.rs
+stdlib/core/render_actor.wr # new at P-1 basis
+stdlib/core/render_raster.wr # new at P-1 basis
+stdlib/drivers/display.wr # new at P-1 basis
+crates/wrela-compiler/src/pixels/glue.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Generate a nominal pool binding for renderer tile buffers. Each worker receives/owns a fixed subset or one reusable tile slot plus output ownership protocol as determined by exact frame scheduling.
 
@@ -7783,7 +8307,7 @@ Double buffering uses two complete tile-list generations:
 
 On image boot, zero all tile bytes once. On subsequent frames, every visible pixel is overwritten; padding remains zero. A debug assertion/test tracks per-visible-pixel write generation in host/reference only, not production guest memory.
 
-**Acceptance criteria**
+**Tests:**
 
 - Ownership checker proves no concurrent writes/display reads.
 - Exact tile-buffer pool bytes match layout report.
@@ -7791,11 +8315,15 @@ On image boot, zero all tile bytes once. On subsequent frames, every visible pix
 - Front buffer persists across failed frame.
 - No full-frame clear occurs per frame.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -7805,25 +8333,27 @@ pixels P8.7: own double-buffered scanout tiles
 
 ## Task P8.8 — complete machine-v1 display device and presentation backends
 
-**Purpose**
+**Requires:** P8.7.
 
-Extend the P-1.3 shared ABI/headless sink into production host backends without moving renderer behavior host-side. This outlier task explicitly permits five commits, P8.8a–P8.8e; each is a separate review unit and passes `cargo xtask verify`.
+**Produces:** Extend the P-1.3 shared ABI/headless sink into production host backends without moving renderer behavior host-side. This outlier task explicitly permits five commits, P8.8a–P8.8e; each is a separate review unit and passes `cargo xtask verify`.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/drivers/display.wr
+stdlib/drivers/display.wr # new at P-1 basis
 crates/wrela-machine/src/lib.rs
-crates/wrela-machine/src/pixels.rs
+crates/wrela-machine/src/pixels.rs # new at P-1 basis
 crates/wrela-vmm/src/devices.rs
-crates/wrela-vmm/src/display/mod.rs        # new
-crates/wrela-vmm/src/display/headless.rs   # new
-crates/wrela-vmm/src/display/hvf.rs        # new
-crates/wrela-vmm/src/display/kvm.rs        # new
-crates/wrela-vmm/src/replay.rs             # new
+crates/wrela-vmm/src/display/mod.rs        # new at P-1 basis
+crates/wrela-vmm/src/display/headless.rs   # new at P-1 basis
+crates/wrela-vmm/src/display/hvf.rs        # new at P-1 basis
+crates/wrela-vmm/src/display/kvm.rs        # new at P-1 basis
+crates/wrela-vmm/src/replay.rs             # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 **P8.8a — shared device model.** Complete portable validation and state transitions for the contract fixed in P-1.3: one descriptor chain names frame sequence, mode, format, and tile-list address/count; descriptors name guest-owned pages; publish uses release ordering; one doorbell represents one frame; completion releases the prior front generation; malformed input is a device error and never an out-of-bounds host read.
 
@@ -7837,7 +8367,7 @@ crates/wrela-vmm/src/replay.rs             # new
 
 Host APIs already allowed by the VMM crate may be used; no renderer logic moves host-side.
 
-**Acceptance criteria**
+**Tests:**
 
 - Portable device-model tests validate all descriptors/ranges/format/mode.
 - HVF, KVM, and headless backends produce the same visible-frame digest before presentation.
@@ -7845,12 +8375,16 @@ Host APIs already allowed by the VMM crate may be used; no renderer logic moves 
 - Host never reads outside declared tile visible/full bounds.
 - Display error reaches coordinator as `Display(DisplayError)` with tile ownership recovered.
 
-**Gates**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 # after each P8.8a–P8.8e review unit
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commits**
 
@@ -7864,19 +8398,21 @@ pixels P8.8e: present BGRA tiles through Linux KVM
 
 ## Task P8.9 — integrate presentation in renderer coordinator
 
-**Purpose**
+**Requires:** P8.8.
 
-Make a successful render atomically become the next displayed frame.
+**Produces:** Make a successful render atomically become the next displayed frame.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_actor.wr
-stdlib/drivers/display.wr
-tests/golden/boot-pixels-plane/
+stdlib/core/render_actor.wr # new at P-1 basis
+stdlib/drivers/display.wr # new at P-1 basis
+tests/golden/boot-pixels-plane/ # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 After all worker tiles succeed:
 
@@ -7889,7 +8425,7 @@ After all worker tiles succeed:
 
 Do not let a late present failure mark back buffer as front. Deadline behavior follows existing actor call/deadline rules.
 
-**Acceptance criteria**
+**Tests:**
 
 - First successful debug frame appears in VMM boot golden.
 - Failed frame leaves prior digest/front buffer.
@@ -7897,11 +8433,15 @@ Do not let a late present failure mark back buffer as front. Deadline behavior f
 - Tile descriptor order is deterministic independent of worker completion.
 - Single-core/four-core visible digest identical.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -7911,20 +8451,22 @@ pixels P8.9: atomically present completed renderer frames
 
 ## Task P8.10 — add frame digest and replay conformance
 
-**Purpose**
+**Requires:** P8.9.
 
-Make replay reproduce exactly what was displayed.
+**Produces:** Make replay reproduce exactly what was displayed.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-vmm/src/replay.rs
+crates/wrela-vmm/src/replay.rs # new at P-1 basis
 crates/wrela-machine/src/report.rs
-crates/xtask/src/pixels_conformance.rs
-tests/golden/boot-pixels-*/
+crates/xtask/src/pixels_conformance.rs # new at P-1 basis
+tests/golden/boot-pixels-*/ # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Record per successful frame:
 
@@ -7940,7 +8482,7 @@ vsync/checkpoint association
 
 Replay suppresses host presentation if existing replay policy requires and verifies guest submission/digests against log. Any divergence reports first frame and digest class.
 
-**Acceptance criteria**
+**Tests:**
 
 - Record then replay permanent debug fixtures with zero divergence.
 - Changing one pixel or padding byte identifies visible/raw class correctly.
@@ -7948,11 +8490,15 @@ Replay suppresses host presentation if existing replay policy requires and verif
 - Replay ordering composes with existing cross-core admission/checkpoint log.
 - Report names format/replay contract revision.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -7962,19 +8508,21 @@ pixels P8.10: record exact displayed frame digests
 
 ## Task P8.11 — complete debug visibility conformance
 
-**Purpose**
+**Requires:** P8.10.
 
-Lock visibility/raster/display correctness before AAA shading can obscure it.
+**Produces:** Lock visibility/raster/display correctness before AAA shading can obscure it.
 
-**Files**
+**Files:**
 
 ```text
-crates/xtask/src/pixels_conformance.rs
-tests/golden/boot-pixels-*/
-tests/pixels_truth/
+crates/xtask/src/pixels_conformance.rs # new at P-1 basis
+tests/golden/boot-pixels-*/ # new at P-1 basis
+tests/pixels_truth/ # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Run all opaque visibility fixtures through full guest/VMM presentation. Compare visible debug output to host oracle and assert:
 
@@ -7988,7 +8536,7 @@ Run all opaque visibility fixtures through full guest/VMM presentation. Compare 
 
 Preserve separate controls for plane, hard CSG, smooth CSG, repeat, displacement, close depth, thin feature, enclosed feature, material edge.
 
-**Acceptance criteria**
+**Tests:**
 
 - All assertions zero.
 - Conformance does not alter render inputs/decisions.
@@ -7996,12 +8544,16 @@ Preserve separate controls for plane, hard CSG, smooth CSG, repeat, displacement
 - Debug visibility path remains runnable after P9 for regression diagnosis.
 - Kinetic mode is forced disabled.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask pixels-conformance
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -8021,23 +8573,25 @@ Milestone result: debug identity color is replaced by deterministic physically b
 
 ## Task P9.1 — fix the working color and filmic-output contract
 
-**Purpose**
+**Requires:** the preceding milestone close gate.
 
-Give every material/light/post operation one exact color interpretation.
+**Produces:** Give every material/light/post operation one exact color interpretation.
 
-**Files**
+**Files:**
 
 ```text
-docs/language/07-pixels.md
-stdlib/core/render.wr
-stdlib/core/render_transfer.wr
-stdlib/data/pixels/filmic_v1_u16.bin
-stdlib/data/pixels/srgb_v1_u16.bin
-crates/wrela-compiler/src/pixels/tables.rs
-crates/wrela-compiler/src/pixels/program.rs
+docs/language/07-pixels.md # new at P-1 basis
+stdlib/core/render.wr # new at P-1 basis
+stdlib/core/render_transfer.wr # new at P-1 basis
+stdlib/data/pixels/filmic_v1_u16.bin # new at P-1 basis
+stdlib/data/pixels/srgb_v1_u16.bin # new at P-1 basis
+crates/wrela-compiler/src/pixels/tables.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/program.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Working space:
 
@@ -8059,7 +8613,7 @@ Add `tools/gen_pixels_tables.rs` as a standalone Rust source compiled/run only d
 
 Embed LUTs into `FrameProgram` or shared immutable rodata by digest/reference; do not duplicate per renderer.
 
-**Acceptance criteria**
+**Tests:**
 
 - Compiler verifies exact byte length, endpoints, monotonicity, and digest.
 - Runtime interpolation is integer/fixed-point and deterministic.
@@ -8067,12 +8621,16 @@ Embed LUTs into `FrameProgram` or shared immutable rodata by digest/reference; d
 - Color/channel order is tested end-to-end through VMM.
 - Numeric-contract revision changes if table bytes/domain/interpolation changes.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-formal
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -8082,20 +8640,22 @@ pixels P9.1: seal the working color and filmic tables
 
 ## Task P9.2 — define the v1 physically based material model
 
-**Purpose**
+**Requires:** P9.1.
 
-Provide a closed, high-quality BRDF that can be bounded and packetized.
+**Produces:** Provide a closed, high-quality BRDF that can be bounded and packetized.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render.wr
-stdlib/core/render_material.wr
-crates/wrela-compiler/src/pixels/material.rs
-crates/wrela-compiler/src/pixels/material_graph.rs
+stdlib/core/render.wr # new at P-1 basis
+stdlib/core/render_material.wr # new at P-1 basis
+crates/wrela-compiler/src/pixels/material.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/material_graph.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 `MaterialSample.standard` fields:
 
@@ -8124,7 +8684,7 @@ BRDF is fixed:
 
 Write formulas and denominator clamps explicitly in `07-pixels.md`. Clamps must have physical/domain reasons and interval rules, not artifact hiding.
 
-**Acceptance criteria**
+**Tests:**
 
 - Material constructors enforce ranges.
 - Compiler emits a closed material feature flag set.
@@ -8132,11 +8692,15 @@ Write formulas and denominator clamps explicitly in `07-pixels.md`. Clamps must 
 - White furnace host test verifies bounded energy for the supported parameter grid within a documented numeric radius.
 - No unsupported lobe silently maps to standard.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -8146,21 +8710,23 @@ pixels P9.2: fix the standard diffuse GGX material
 
 ## Task P9.3 — implement deterministic texture assets and sampling
 
-**Purpose**
+**Requires:** P9.2.
 
-Support production surface detail without unbounded procedural evaluation or aliasing.
+**Produces:** Support production surface detail without unbounded procedural evaluation or aliasing.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render.wr
-stdlib/core/render_material.wr
-crates/wrela-compiler/src/pixels/texture.rs
-crates/wrela-compiler/src/pixels/program.rs
-crates/wrela-compiler/src/pixels/encode.rs
+stdlib/core/render.wr # new at P-1 basis
+stdlib/core/render_material.wr # new at P-1 basis
+crates/wrela-compiler/src/pixels/texture.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/program.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/encode.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Add compiler-known immutable `Texture2D[Format,W,H]` assets. V1 formats:
 
@@ -8193,7 +8759,7 @@ UV sources:
 - object/world triplanar projection;
 - no arbitrary runtime UV topology function in v1.
 
-**Acceptance criteria**
+**Tests:**
 
 - Mip generation is byte-deterministic and independently decodable.
 - Min/max pyramid encloses all footprint samples.
@@ -8201,12 +8767,16 @@ UV sources:
 - Seam/wrap events are represented or filtered continuously.
 - Host high-resolution texture oracle lies inside runtime sample interval.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask repro
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -8216,20 +8786,22 @@ pixels P9.3: compile deterministic filtered textures
 
 ## Task P9.4 — compile material dependency and summary programs
 
-**Purpose**
+**Requires:** P9.3.
 
-Evaluate smooth interior shading once per run/subrun when a verified summary suffices.
+**Produces:** Evaluate smooth interior shading once per run/subrun when a verified summary suffices.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/material.rs
-crates/wrela-compiler/src/pixels/program.rs
-stdlib/core/render_material.wr
-formal/pixels/Pixels/MaterialBound.lean
+crates/wrela-compiler/src/pixels/material.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/program.rs # new at P-1 basis
+stdlib/core/render_material.wr # new at P-1 basis
+formal/pixels/Pixels/MaterialBound.lean # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 For each material identity compile:
 
@@ -8258,7 +8830,7 @@ Deterministic rank pivot:
 - tie by y then x;
 - stop at rank 4 or output budget.
 
-**Acceptance criteria**
+**Tests:**
 
 - Constant clay/porcelain use constant summaries where geometry/light permit.
 - Procedural/texture summaries either verify or fall to exact per-pixel material evaluation.
@@ -8266,12 +8838,16 @@ Deterministic rank pivot:
 - Summary plus residual contains host per-pixel material results.
 - Compiler/runtime counts and capacities include anchors/basis storage.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-formal
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -8281,20 +8857,22 @@ pixels P9.4: compile verified material summaries
 
 ## Task P9.5 — implement normal-detail moment filtering
 
-**Purpose**
+**Requires:** P9.4.
 
-Remove specular shimmer from subpixel normal/slope detail deterministically.
+**Produces:** Remove specular shimmer from subpixel normal/slope detail deterministically.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_material.wr
-crates/wrela-compiler/src/pixels/texture.rs
-crates/wrela-compiler/src/pixels/reference/moments.rs
-formal/pixels/Pixels/MaterialBound.lean
+stdlib/core/render_material.wr # new at P-1 basis
+crates/wrela-compiler/src/pixels/texture.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/reference/moments.rs # new at P-1 basis
+formal/pixels/Pixels/MaterialBound.lean # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 For each filtered footprint obtain slope moments:
 
@@ -8314,7 +8892,7 @@ If moment model’s output interval exceeds budget, refine mip/footprint subdivi
 
 V1 does not support arbitrary tangent-space normal map orientation on topology without a compiled tangent frame. Triplanar/object-space slopes are the default field-native path.
 
-**Acceptance criteria**
+**Tests:**
 
 - Distant high-frequency normal fixture has stable frame bytes under subpixel camera motion.
 - Flat/constant detail reduces exactly to original material.
@@ -8322,12 +8900,16 @@ V1 does not support arbitrary tangent-space normal map orientation on topology w
 - No stochastic sample phase exists.
 - Formal moment/error lemmas build.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-formal
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -8337,20 +8919,22 @@ pixels P9.5: filter subpixel normal detail by moments
 
 ## Task P9.6 — implement direct-light evaluation and bounds
 
-**Purpose**
+**Requires:** P9.5.
 
-Shade certified geometry under the complete supported light set.
+**Produces:** Shade certified geometry under the complete supported light set.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_light.wr
-stdlib/core/render_material.wr
-crates/wrela-compiler/src/pixels/light.rs
-crates/wrela-compiler/src/pixels/reference/light.rs
+stdlib/core/render_light.wr # new at P-1 basis
+stdlib/core/render_material.wr # new at P-1 basis
+crates/wrela-compiler/src/pixels/light.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/reference/light.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Supported lights:
 
@@ -8369,7 +8953,7 @@ Direct BRDF evaluation:
 - distance attenuation for point is `1/max(r², radius²)` with explicit interval;
 - contribution is culled only if complete encoded impact fits assigned budget.
 
-**Acceptance criteria**
+**Tests:**
 
 - Light movement outside declared range rejected at frame input.
 - Normal-cone unlit classification never false-lights host samples.
@@ -8377,11 +8961,15 @@ Direct BRDF evaluation:
 - Scalar/packet light math agrees.
 - Contribution bounds flow to display scheduler.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -8391,20 +8979,22 @@ pixels P9.6: evaluate bounded direct lighting
 
 ## Task P9.7 — implement certified secondary visibility
 
-**Purpose**
+**Requires:** P9.6.
 
-Answer shadow/AO/probe visibility using the same complete structural scene without screen projection assumptions.
+**Produces:** Answer shadow/AO/probe visibility using the same complete structural scene without screen projection assumptions.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_light.wr
-stdlib/core/render_program.wr
-crates/wrela-compiler/src/pixels/reference/secondary.rs
-formal/pixels/Pixels/RootIsolation.lean
+stdlib/core/render_light.wr # new at P-1 basis
+stdlib/core/render_program.wr # new at P-1 basis
+crates/wrela-compiler/src/pixels/reference/secondary.rs # new at P-1 basis
+formal/pixels/Pixels/RootIsolation.lean # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Define a secondary ray/segment:
 
@@ -8435,7 +9025,7 @@ enum SegmentVisibility:
 
 Offset origin along certified normal by profile epsilon derived from q/position/normal error and world scale; interval proof ensures start is outside excluded surface. Exclude only the exact originating feature within the offset corridor, not the whole object.
 
-**Acceptance criteria**
+**Tests:**
 
 - BVH traversal and brute-force feature enumeration agree in host tests.
 - Thin blocker controls are not skipped.
@@ -8443,12 +9033,16 @@ Offset origin along certified normal by profile epsilon derived from q/position/
 - CSG subtraction/intersection shadows use exact occupancy.
 - No primary tile’s pruned/indexed feature list is reused for unrelated secondary rays.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-formal
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -8458,19 +9052,21 @@ pixels P9.7: answer complete secondary visibility
 
 ## Task P9.8 — implement area-light source integration
 
-**Purpose**
+**Requires:** P9.7.
 
-Produce deterministic, band-free soft shadows for rectangle and disk lights.
+**Produces:** Produce deterministic, band-free soft shadows for rectangle and disk lights.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_light.wr
-crates/wrela-compiler/src/pixels/reference/area_light.rs
-formal/pixels/Pixels/MaterialBound.lean
+stdlib/core/render_light.wr # new at P-1 basis
+crates/wrela-compiler/src/pixels/reference/area_light.rs # new at P-1 basis
+formal/pixels/Pixels/MaterialBound.lean # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Integrate over normalized emitter domain:
 
@@ -8493,7 +9089,7 @@ Candidate point visibility queries at cell centers may propose blockers, but ful
 
 For a stable single blocker edge, compiler/runtime may build a one-dimensional transition summary, but it must be validated against the same source integral and is only an acceleration.
 
-**Acceptance criteria**
+**Tests:**
 
 - One-edge penumbra fixture is smooth and stable under motion.
 - Multiple blockers and near-field light fixtures remain bounded/correct.
@@ -8501,12 +9097,16 @@ For a stable single blocker edge, compiler/runtime may build a one-dimensional t
 - Integrated interval contains a high-resolution host source integral.
 - Capacity/depth exhaustion is explicit.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-conformance
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -8516,18 +9116,20 @@ pixels P9.8: integrate certified area-light visibility
 
 ## Task P9.9 — implement deterministic AO taps
 
-**Purpose**
+**Requires:** P9.8.
 
-Add local contact shading without a volumetric bake or stochastic rays.
+**Produces:** Add local contact shading without a volumetric bake or stochastic rays.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_light.wr
-crates/wrela-compiler/src/pixels/reference/ao.rs
+stdlib/core/render_light.wr # new at P-1 basis
+crates/wrela-compiler/src/pixels/reference/ao.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Renderer config adds sealed `ao_radius`, `ao_strength`. V1 uses five normalized distances:
 
@@ -8545,7 +9147,7 @@ AO = clamp(1 - ao_strength * sum(weight_i * occ_i), 0, 1)
 
 Use intervals for lower/upper AO. If normal/position uncertainty broadens taps beyond output budget, refine geometry/shading or perform exact local interval evaluations. Taps do not determine primary visibility.
 
-**Acceptance criteria**
+**Tests:**
 
 - Open plane AO is 1 within exact radius.
 - Contact/crevice fixtures darken deterministically.
@@ -8553,11 +9155,15 @@ Use intervals for lower/upper AO. If normal/position uncertainty broadens taps b
 - No full-sphere directions or random kernel.
 - AO contribution can be skipped only through display budget proof.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -8567,20 +9173,22 @@ pixels P9.9: add deterministic normal-distance AO
 
 ## Task P9.10 — implement shading run summaries and packet evaluation
 
-**Purpose**
+**Requires:** P9.9.
 
-Amortize material/light work across certified structure while retaining exact output bounds.
+**Produces:** Amortize material/light work across certified structure while retaining exact output bounds.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_material.wr
-stdlib/core/render_light.wr
-stdlib/core/render_raster.wr
-crates/wrela-compiler/src/pixels/reference/shade.rs
+stdlib/core/render_material.wr # new at P-1 basis
+stdlib/core/render_light.wr # new at P-1 basis
+stdlib/core/render_raster.wr # new at P-1 basis
+crates/wrela-compiler/src/pixels/reference/shade.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 For each run/tile material-light pair construct the fixed summary ladder from P9.4. Summary records contain candidate coefficients plus HDR interval residual per channel.
 
@@ -8595,7 +9203,7 @@ Packet pixel evaluation:
 
 Per-pixel exact shading fallback is permitted and bounded by pixel/run capacity; it still uses certified geometry and deterministic BRDF/visibility. It is not a primary visibility fallback.
 
-**Acceptance criteria**
+**Tests:**
 
 - Constant material/light plane shares one summary across maximal runs.
 - Summary output interval contains scalar per-pixel reference.
@@ -8603,12 +9211,16 @@ Per-pixel exact shading fallback is permitted and bounded by pixel/run capacity;
 - Unsupported high-frequency material reaches exact per-pixel path or build/runtime explicit failure, never unchecked rank approximation.
 - Runtime counters identify summary ranks and exact-shaded pixels for diagnostics, not acceptance tuning.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask diff-eval
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -8618,20 +9230,22 @@ pixels P9.10: shade certified runs with verified summaries
 
 ## Task P9.11 — implement the display-error budget and refinement queue
 
-**Purpose**
+**Requires:** P9.10.
 
-Stop every approximation at one common output criterion and choose deterministic refinements.
+**Produces:** Stop every approximation at one common output criterion and choose deterministic refinements.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_transfer.wr
-stdlib/core/render_actor.wr
-crates/wrela-compiler/src/pixels/reference/scheduler.rs
-formal/pixels/Pixels/DisplayByte.lean
+stdlib/core/render_transfer.wr # new at P-1 basis
+stdlib/core/render_actor.wr # new at P-1 basis
+crates/wrela-compiler/src/pixels/reference/scheduler.rs # new at P-1 basis
+formal/pixels/Pixels/DisplayByte.lean # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Each unresolved output unit (run channel/event pixel/area-light cell/transparent tail) maintains contributors:
 
@@ -8667,7 +9281,7 @@ If no option remains and codes differ, return `CertificateExhausted`. Do not cho
 
 There is no claim of a global submodular approximation ratio.
 
-**Acceptance criteria**
+**Tests:**
 
 - Queue ordering deterministic across cores/hosts.
 - No floating division in priority comparison.
@@ -8675,12 +9289,16 @@ There is no claim of a global submodular approximation ratio.
 - Exact small fixtures compare scheduler result to exhaustive refinement and produce same final bytes.
 - Formal byte singleton theorem gates success.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-formal
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -8690,20 +9308,22 @@ pixels P9.11: schedule refinements in display units
 
 ## Task P9.12 — replace debug output with final filmic BGRA output
 
-**Purpose**
+**Requires:** P9.11.
 
-Complete final opaque AAA framebuffer generation.
+**Produces:** Complete final opaque AAA framebuffer generation.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_raster.wr
-stdlib/core/render_actor.wr
-stdlib/core/render_transfer.wr
-tests/golden/boot-pixels-*/
+stdlib/core/render_raster.wr # new at P-1 basis
+stdlib/core/render_actor.wr # new at P-1 basis
+stdlib/core/render_transfer.wr # new at P-1 basis
+tests/golden/boot-pixels-*/ # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 For every regular/event pixel:
 
@@ -8716,7 +9336,7 @@ Background is an explicit environment material/light color with its own fixed in
 
 Update frame digests/goldens from debug to final output while retaining separate debug conformance expected files.
 
-**Acceptance criteria**
+**Tests:**
 
 - All opaque permanent fixtures produce final filmic bytes.
 - Every stored channel had a singleton proof or exact zero-width arithmetic path.
@@ -8724,13 +9344,17 @@ Update frame digests/goldens from debug to final output while retaining separate
 - Host framebuffer oracle lies within HDR intervals and final bytes agree.
 - No unresolved frame.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-conformance
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -8740,19 +9364,21 @@ pixels P9.12: emit final byte-certified opaque frames
 
 ## Task P9.13 — add motion/lighting/material quality conformance
 
-**Purpose**
+**Requires:** P9.12.
 
-Lock visible AAA properties, not only static geometry correctness.
+**Produces:** Lock visible AAA properties, not only static geometry correctness.
 
-**Files**
+**Files:**
 
 ```text
-crates/xtask/src/pixels_conformance.rs
-tests/golden/boot-pixels-quality/
-tests/pixels_truth/quality/
+crates/xtask/src/pixels_conformance.rs # new at P-1 basis
+tests/golden/boot-pixels-quality/ # new at P-1 basis
+tests/pixels_truth/quality/ # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Permanent deterministic sequences:
 
@@ -8776,7 +9402,7 @@ Compare:
 
 Do not use a single perceptual aggregate to hide visibility/shadow errors.
 
-**Acceptance criteria**
+**Tests:**
 
 - All sequence digests stable.
 - No visibility/identity/shadow classification failures.
@@ -8784,12 +9410,16 @@ Do not use a single perceptual aggregate to hide visibility/shadow errors.
 - Re-running identical sequence produces byte-identical frames.
 - Single/four-core outputs identical.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask pixels-conformance
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -8809,20 +9439,22 @@ Milestone result: the renderer handles bounded semitransparent surface stacks an
 
 ## Task P10.1 — classify opaque and transparent material identities
 
-**Purpose**
+**Requires:** the preceding milestone close gate.
 
-Make layer semantics and maximum stack capacity compile-time facts.
+**Produces:** Make layer semantics and maximum stack capacity compile-time facts.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/material.rs
-crates/wrela-compiler/src/pixels/capacities.rs
-crates/wrela-compiler/src/pixels/program.rs
-stdlib/core/render.wr
+crates/wrela-compiler/src/pixels/material.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/capacities.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/program.rs # new at P-1 basis
+stdlib/core/render.wr # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Classify each material identity over its complete parameter range:
 
@@ -8847,7 +9479,7 @@ V1 explicitly rejects:
 - order-independent transparency approximation;
 - unbounded particle/hair layer count.
 
-**Acceptance criteria**
+**Tests:**
 
 - Opaque fixture uses no transfer tree beyond one absorbing layer.
 - Transparent-tail fixture has exact layer capacity.
@@ -8855,11 +9487,15 @@ V1 explicitly rejects:
 - Parameterized class changes are event-tracked or conservatively transparent.
 - Capacity overflow is compile-time `P015`.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -8869,19 +9505,21 @@ pixels P10.1: classify bounded transparent layers
 
 ## Task P10.2 — build ordered transfer layers from the CSG sweep
 
-**Purpose**
+**Requires:** P10.1.
 
-Convert the complete front-to-back composite boundary sequence into shading/compositing work.
+**Produces:** Convert the complete front-to-back composite boundary sequence into shading/compositing work.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_sweep.wr
-stdlib/core/render_transfer.wr
-crates/wrela-compiler/src/pixels/reference/transfer.rs
+stdlib/core/render_sweep.wr # new at P-1 basis
+stdlib/core/render_transfer.wr # new at P-1 basis
+crates/wrela-compiler/src/pixels/reference/transfer.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 For each run, retain every composite boundary transition until:
 
@@ -8906,7 +9544,7 @@ Shading is sided according to material contract and orientation. The same geomet
 
 At event/depth-swap corridors, layer order/coverage is represented separately per side and integrated analytically.
 
-**Acceptance criteria**
+**Tests:**
 
 - Ordered layer list agrees with host all-root/CSG oracle.
 - Opaque first layer terminates deeper visibility work.
@@ -8914,12 +9552,16 @@ At event/depth-swap corridors, layer order/coverage is represented separately pe
 - Coincident transparent surfaces use event corridor/rebuild, not arbitrary ID order.
 - Layer capacity is enforced before writes.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-conformance
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -8929,19 +9571,21 @@ pixels P10.2: emit exact ordered surface layers
 
 ## Task P10.3 — implement balanced transfer trees
 
-**Purpose**
+**Requires:** P10.2.
 
-Compose transparent stacks associatively and prepare for local kinetic repairs.
+**Produces:** Compose transparent stacks associatively and prepare for local kinetic repairs.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_transfer.wr
-crates/wrela-compiler/src/pixels/reference/transfer.rs
-formal/pixels/Pixels/Compositing.lean
+stdlib/core/render_transfer.wr # new at P-1 basis
+crates/wrela-compiler/src/pixels/reference/transfer.rs # new at P-1 basis
+formal/pixels/Pixels/Compositing.lean # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Each shaded layer yields premultiplied transfer:
 
@@ -8956,7 +9600,7 @@ Store leaves in front-to-back order and build a balanced array tree sized to nex
 
 For runs where all layer transfer summaries are low-degree/separable, tree nodes also store summary coefficients/residual. Otherwise compose per pixel. The verifier interval always follows the same order.
 
-**Acceptance criteria**
+**Tests:**
 
 - Balanced and linear front-to-back composition agree within arithmetic interval and exact candidate bits where operation order is intentionally matched.
 - Tree storage has fixed maximum and deterministic leaf placement.
@@ -8964,12 +9608,16 @@ For runs where all layer transfer summaries are low-degree/separable, tree nodes
 - Opaque prefix yields residual T exactly/interval containing zero and can absorb tail.
 - Formal monoid/local-repair theorems build.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-formal
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -8979,19 +9627,21 @@ pixels P10.3: compose transparent stacks as transfer trees
 
 ## Task P10.4 — implement certified transparency-tail termination
 
-**Purpose**
+**Requires:** P10.3.
 
-Avoid shading deep transparent layers that cannot affect stored output.
+**Produces:** Avoid shading deep transparent layers that cannot affect stored output.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_transfer.wr
-crates/wrela-compiler/src/pixels/material.rs
-formal/pixels/Pixels/TransparencyTail.lean
+stdlib/core/render_transfer.wr # new at P-1 basis
+crates/wrela-compiler/src/pixels/material.rs # new at P-1 basis
+formal/pixels/Pixels/TransparencyTail.lean # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Compiler emits a finite maximum radiance/deviation bound per material/light/background class. Runtime maintains prefix transmittance interval `T` and suffix proxy/deviation bound `ΔL`.
 
@@ -9009,7 +9659,7 @@ Suffix proxies fixed for v1:
 - precomputed static transfer summary for immutable identical foliage stack where compiler proves it;
 - zero only when suffix radiance bound is zero.
 
-**Acceptance criteria**
+**Tests:**
 
 - Bright-tail control continues traversal despite low opacity.
 - Once tail condition holds, adding more nonnegative-opacity layers cannot invalidate the bound without changed suffix radiance contract.
@@ -9017,12 +9667,16 @@ Suffix proxies fixed for v1:
 - Formal tail theorems build.
 - Host exact full-stack bytes equal early-out bytes.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-formal
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -9032,20 +9686,22 @@ pixels P10.4: terminate invisible transparent tails
 
 ## Task P10.5 — define deterministic probe-GI semantics
 
-**Purpose**
+**Requires:** P10.4.
 
-Make diffuse GI a closed renderer model rather than an unbounded approximation claim.
+**Produces:** Make diffuse GI a closed renderer model rather than an unbounded approximation claim.
 
-**Files**
+**Files:**
 
 ```text
-docs/language/07-pixels.md
-stdlib/core/render.wr
-stdlib/core/render_probe.wr
-crates/wrela-compiler/src/pixels/probe.rs
+docs/language/07-pixels.md # new at P-1 basis
+stdlib/core/render.wr # new at P-1 basis
+stdlib/core/render_probe.wr # new at P-1 basis
+crates/wrela-compiler/src/pixels/probe.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 V1 probe model is normative renderer semantics:
 
@@ -9067,7 +9723,7 @@ Compiler emits direction/SH basis tables and capacities. Probe config may reduce
 
 Admission includes the all-invalid frame: every configured probe times all 32 complete secondary rays, plus accumulation and presentation, must fit the declared initialization deadline and the applicable frame deadline. If it cannot, the declaration must reduce/disable probes or choose a static preinitialized probe mode. `AaaByteExact` never accepts a dynamic configuration on the assumption that only a typical subset invalidates.
 
-**Acceptance criteria**
+**Tests:**
 
 - Direction/weight/SH tables have fixed digests and are immutable numeric-contract data.
 - Probe memory exact and reported.
@@ -9075,11 +9731,15 @@ Admission includes the all-invalid frame: every configured probe times all 32 co
 - GI semantics are fully stated in docs.
 - Zero-GI configuration is explicit source config, not hidden fallback.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -9089,19 +9749,21 @@ pixels P10.5: fix deterministic diffuse probe GI
 
 ## Task P10.6 — implement probe initialization
 
-**Purpose**
+**Requires:** P10.5.
 
-Ensure the first presented frame has fully defined GI state.
+**Produces:** Ensure the first presented frame has fully defined GI state.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_probe.wr
-stdlib/core/render_actor.wr
-crates/wrela-compiler/src/pixels/glue.rs
+stdlib/core/render_probe.wr # new at P-1 basis
+stdlib/core/render_actor.wr # new at P-1 basis
+crates/wrela-compiler/src/pixels/glue.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Before the first frame using GI is presented:
 
@@ -9114,7 +9776,7 @@ Before the first frame using GI is presented:
 
 Initialization is finite and bounded by compiled capacities. It may span multiple actor turns/checkpoints internally but the public first render call does not return success until complete. Cancellation returns frame input and leaves probes invalid.
 
-**Acceptance criteria**
+**Tests:**
 
 - First GI frame is independent of uninitialized memory/previous runs.
 - Single/four-core probe coefficients and frame bytes identical.
@@ -9122,11 +9784,15 @@ Initialization is finite and bounded by compiled capacities. It may span multipl
 - Initialization interruption cannot mark partial state valid.
 - Zero-level/no-GI config skips initialization exactly.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -9136,19 +9802,21 @@ pixels P10.6: initialize deterministic probe state
 
 ## Task P10.7 — implement probe update and invalidation
 
-**Purpose**
+**Requires:** P10.6.
 
-Keep GI state coherent with changing scene coefficients and clipmap movement.
+**Produces:** Keep GI state coherent with changing scene coefficients and clipmap movement.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_probe.wr
-stdlib/core/render_actor.wr
-crates/wrela-compiler/src/pixels/probe.rs
+stdlib/core/render_probe.wr # new at P-1 basis
+stdlib/core/render_actor.wr # new at P-1 basis
+crates/wrela-compiler/src/pixels/probe.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Compiler emits dependency/swept-bound records per object/light/material. At frame start:
 
@@ -9162,7 +9830,7 @@ Compiler emits dependency/swept-bound records per object/light/material. At fram
 
 No fixed per-frame update budget may leave stale probes in `AaaByteExact`. If invalid count exceeds capacity (which should equal all probes), internal error. Work can be large but remains correct.
 
-**Acceptance criteria**
+**Tests:**
 
 - Static frame updates zero probes.
 - Rigid moving object invalidates exactly a conservative neighborhood.
@@ -9170,11 +9838,15 @@ No fixed per-frame update budget may leave stale probes in `AaaByteExact`. If in
 - Changed direct-only post setting does not invalidate probes.
 - Presented frame never reads invalid probe.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -9184,20 +9856,22 @@ pixels P10.7: update all invalidated GI probes
 
 ## Task P10.8 — shade from probe SH with numeric bounds
 
-**Purpose**
+**Requires:** P10.7.
 
-Add smooth diffuse GI to the certified structure and output verifier.
+**Produces:** Add smooth diffuse GI to the certified structure and output verifier.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_probe.wr
-stdlib/core/render_light.wr
-stdlib/core/render_material.wr
-crates/wrela-compiler/src/pixels/reference/probe.rs
+stdlib/core/render_probe.wr # new at P-1 basis
+stdlib/core/render_light.wr # new at P-1 basis
+stdlib/core/render_material.wr # new at P-1 basis
+crates/wrela-compiler/src/pixels/reference/probe.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 At shaded surface:
 
@@ -9219,7 +9893,7 @@ Avoid light leaks with deterministic visibility weight:
 
 This leak-reduction function is part of renderer semantics and documented.
 
-**Acceptance criteria**
+**Tests:**
 
 - Open diffuse environment produces expected smooth irradiance.
 - Wall-separated control reduces leaks relative to unweighted interpolation and matches normative host model exactly.
@@ -9227,12 +9901,16 @@ This leak-reduction function is part of renderer semantics and documented.
 - No invalid probe read.
 - Summary/packet shading includes GI without changing byte proof rules.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-conformance
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -9242,22 +9920,24 @@ pixels P10.8: shade deterministic bounded probe GI
 
 ## Task P10.9 — integrate transparency and GI into final frame path
 
-**Purpose**
+**Requires:** P10.8.
 
-Complete the full v1 lighting/compositing stack.
+**Produces:** Complete the full v1 lighting/compositing stack.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_actor.wr
-stdlib/core/render_raster.wr
-stdlib/core/render_transfer.wr
-stdlib/core/render_probe.wr
-tests/golden/boot-pixels-transparent/
-tests/golden/boot-pixels-gi/
+stdlib/core/render_actor.wr # new at P-1 basis
+stdlib/core/render_raster.wr # new at P-1 basis
+stdlib/core/render_transfer.wr # new at P-1 basis
+stdlib/core/render_probe.wr # new at P-1 basis
+tests/golden/boot-pixels-transparent/ # new at P-1 basis
+tests/golden/boot-pixels-gi/ # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 - initialize/update probes before worker shading jobs;
 - shade every visible/transparent layer with direct+AO+GI+emissive;
@@ -9269,7 +9949,7 @@ tests/golden/boot-pixels-gi/
 
 Debug visibility path continues to bypass shading/GI/transparency for conformance.
 
-**Acceptance criteria**
+**Tests:**
 
 - Transparent stack and GI fixtures produce final exact digests.
 - Full-stack host reference and guest bytes agree.
@@ -9277,13 +9957,17 @@ Debug visibility path continues to bypass shading/GI/transparency for conformanc
 - Opaque fixtures remain byte-stable unless the intentionally added GI config changes expected output.
 - Failure preserves prior front buffer.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-conformance
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -9293,20 +9977,22 @@ pixels P10.9: complete transparent GI frame composition
 
 ## Task P10.10 — add full lighting/transparency conformance sequences
 
-**Purpose**
+**Requires:** P10.9.
 
-Lock the remaining AAA output classes before temporal maintenance.
+**Produces:** Lock the remaining AAA output classes before temporal maintenance.
 
-**Files**
+**Files:**
 
 ```text
-crates/xtask/src/pixels_conformance.rs
-tests/pixels_truth/transparent/
-tests/pixels_truth/gi/
-tests/golden/boot-pixels-quality/
+crates/xtask/src/pixels_conformance.rs # new at P-1 basis
+tests/pixels_truth/transparent/ # new at P-1 basis
+tests/pixels_truth/gi/ # new at P-1 basis
+tests/golden/boot-pixels-quality/ # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Add sequences:
 
@@ -9322,7 +10008,7 @@ Add sequences:
 
 Compare exact normative host model, intervals, and final bytes. Physical/path-traced comparison may be a visual developer aid but is not a gate or source of expected bytes.
 
-**Acceptance criteria**
+**Tests:**
 
 - Zero normative model divergence.
 - Tail early-out exact final bytes.
@@ -9330,12 +10016,16 @@ Compare exact normative host model, intervals, and final bytes. Physical/path-tr
 - Repeated identical runs deterministic.
 - Single/four-core outputs identical.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask pixels-conformance
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -9355,21 +10045,23 @@ Milestone result: the renderer reuses certified structure and shading between fr
 
 ## Task P11.1 — implement complete frame dependency digests
 
-**Purpose**
+**Requires:** the preceding milestone close gate.
 
-Make exact static-frame reuse and invalidation depend on every output-affecting input.
+**Produces:** Make exact static-frame reuse and invalidation depend on every output-affecting input.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_actor.wr
-stdlib/core/render_probe.wr
-crates/wrela-compiler/src/pixels/params.rs
-crates/wrela-compiler/src/pixels/glue.rs
-formal/pixels/Pixels/Kinetic.lean
+stdlib/core/render_actor.wr # new at P-1 basis
+stdlib/core/render_probe.wr # new at P-1 basis
+crates/wrela-compiler/src/pixels/params.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/glue.rs # new at P-1 basis
+formal/pixels/Pixels/Kinetic.lean # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Generate fixed-order digests/subdigests:
 
@@ -9401,7 +10093,7 @@ Do not include unused source struct bytes or uninitialized padding.
 
 Static reuse is allowed only when `all` equals previous successfully presented frame’s digest. Reuse submits/presents the existing front generation according to display semantics or returns success without rewriting it if machine contract permits repeated scanout.
 
-**Acceptance criteria**
+**Tests:**
 
 - Changing each dependency class changes `all` and expected subdigest only.
 - Changing unused P field changes none.
@@ -9409,12 +10101,16 @@ Static reuse is allowed only when `all` equals previous successfully presented f
 - Static repeated frames perform zero sweep/shading/probe writes and preserve exact visible digest.
 - Formal dependency equality theorem is instantiated/documented.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-formal
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -9424,21 +10120,23 @@ pixels P11.1: reuse exactly unchanged frames
 
 ## Task P11.2 — compile and evaluate temporal derivative programs
 
-**Purpose**
+**Requires:** P11.1.
 
-Transport roots/events/shading with conservative first/second-order bounds.
+**Produces:** Transport roots/events/shading with conservative first/second-order bounds.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/derivatives.rs
-crates/wrela-compiler/src/pixels/program.rs
-stdlib/core/render_sweep.wr
-stdlib/core/render_events.wr
-formal/pixels/Pixels/Kinetic.lean
+crates/wrela-compiler/src/pixels/derivatives.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/program.rs # new at P-1 basis
+stdlib/core/render_sweep.wr # new at P-1 basis
+stdlib/core/render_events.wr # new at P-1 basis
+formal/pixels/Pixels/Kinetic.lean # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Compiler emits per feature/event/material/light summary:
 
@@ -9459,7 +10157,7 @@ for regular sheets. Event curve x/y transport uses implicit derivative of its ev
 
 Actual frame delta is normalized to one presentation interval. Skipped/late frames scale bounds with checked integer/rational dt; beyond compiler supported temporal box, invalidate and rebuild.
 
-**Acceptance criteria**
+**Tests:**
 
 - Zero deltas produce exact zero transport/remainder where expressions static.
 - Derivative programs use only influencing slots.
@@ -9467,12 +10165,16 @@ Actual frame delta is normalized to one presentation interval. Skipped/late fram
 - `G_q` containing zero invalidates transport.
 - Formal implicit-flow/remainder theorems build.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-formal
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -9482,20 +10184,22 @@ pixels P11.2: emit bounded temporal transport programs
 
 ## Task P11.3 — define persistent kinetic state
 
-**Purpose**
+**Requires:** P11.2.
 
-Store only the proof state needed to validate/repair the next frame.
+**Produces:** Store only the proof state needed to validate/repair the next frame.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_sweep.wr
-stdlib/core/render_events.wr
-stdlib/core/render_actor.wr
-crates/wrela-compiler/src/pixels/capacities.rs
+stdlib/core/render_sweep.wr # new at P-1 basis
+stdlib/core/render_events.wr # new at P-1 basis
+stdlib/core/render_actor.wr # new at P-1 basis
+crates/wrela-compiler/src/pixels/capacities.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Per tile store:
 
@@ -9518,7 +10222,7 @@ Do not persist root-isolation stacks, transient rebuild queues, or candidate sam
 
 Use two kinetic generations: last presented and next candidate. Only swap after successful presentation, parallel to framebuffers/probes. A failed frame leaves prior kinetic state valid.
 
-**Acceptance criteria**
+**Tests:**
 
 - State bytes derive/report exactly.
 - Reset/invalidate cannot expose stale next-generation counts.
@@ -9526,11 +10230,15 @@ Use two kinetic generations: last presented and next candidate. Only swap after 
 - Failed frame commits none.
 - Static-frame path can use prior state without mutation.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -9540,20 +10248,22 @@ pixels P11.3: persist certified frame structure safely
 
 ## Task P11.4 — implement compressed slack validation
 
-**Purpose**
+**Requires:** P11.3.
 
-Reject or retain previous proofs with a small integer common-path predicate.
+**Produces:** Reject or retain previous proofs with a small integer common-path predicate.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_events.wr
-stdlib/core/render_sweep.wr
-crates/wrela-compiler/src/pixels/reference/kinetic.rs
-formal/pixels/Pixels/Kinetic.lean
+stdlib/core/render_events.wr # new at P-1 basis
+stdlib/core/render_sweep.wr # new at P-1 basis
+crates/wrela-compiler/src/pixels/reference/kinetic.rs # new at P-1 basis
+formal/pixels/Pixels/Kinetic.lean # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 For each persistent run/event/braid, retain component margins in debug/diagnostic builds and the minimum margin plus owner in production record. Compiler-generated transport program supplies conservative perturbation contributions:
 
@@ -9567,7 +10277,7 @@ For a record whose minimum owner changes after transport, recompute all componen
 
 Set v1 maximum kinetic carry length to 8 presented frames. On the 9th, revalidate/rebuild even if slack remains. This fixed bound limits accumulated arithmetic/remainder and avoids indefinite proof aging.
 
-**Acceptance criteria**
+**Tests:**
 
 - Compressed predicate matches full component check on all vectors.
 - Equality/overflow invalidates.
@@ -9575,12 +10285,16 @@ Set v1 maximum kinetic carry length to 8 presented frames. On the 9th, revalidat
 - Static digest-equal frame reuse is separate and may persist indefinitely because inputs are equal.
 - Formal margin theorem builds.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-formal
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -9590,18 +10304,20 @@ pixels P11.4: validate compressed kinetic proof slack
 
 ## Task P11.5 — schedule possible event failures conservatively
 
-**Purpose**
+**Requires:** P11.4.
 
-Know which local predicates need re-evaluation without polling every event every frame.
+**Produces:** Know which local predicates need re-evaluation without polling every event every frame.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_events.wr
-crates/wrela-compiler/src/pixels/reference/kinetic.rs
+stdlib/core/render_events.wr # new at P-1 basis
+crates/wrela-compiler/src/pixels/reference/kinetic.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 For each event predicate with current signed interval value `V`, first derivative interval `D`, and second-order remainder rate `R`, compute a conservative earliest possible zero time over `dt >= 0`. Use this fixed hierarchy:
 
@@ -9616,7 +10332,7 @@ Store events in a fixed binary min-heap keyed by due frame, tile ID, event ID. H
 
 At each frame, only due events plus records invalidated by dependency digests are fully re-evaluated. Nondue certificate remains valid by bound.
 
-**Acceptance criteria**
+**Tests:**
 
 - Predicted due time never exceeds actual first sign-zero in deterministic from-scratch comparisons.
 - Zero-rate events schedule infinity/static.
@@ -9624,11 +10340,15 @@ At each frame, only due events plus records invalidated by dependency digests ar
 - No missed event when frame skips multiple ticks.
 - Numeric failure schedules due now, never infinity.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -9638,19 +10358,21 @@ pixels P11.5: schedule conservative event expiry
 
 ## Task P11.6 — transport and revalidate run/event geometry
 
-**Purpose**
+**Requires:** P11.5.
 
-Update a tile without reconstructing it when all local structure remains certified.
+**Produces:** Update a tile without reconstructing it when all local structure remains certified.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_sweep.wr
-stdlib/core/render_events.wr
-stdlib/core/render_actor.wr
+stdlib/core/render_sweep.wr # new at P-1 basis
+stdlib/core/render_events.wr # new at P-1 basis
+stdlib/core/render_actor.wr # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 For each tile whose dependencies changed but state may survive:
 
@@ -9664,7 +10386,7 @@ For each tile whose dependencies changed but state may survive:
 
 A transported run may shrink/expand only within neighboring event corridor bounds and tile domain. If event order changes, endpoints overlap, or any proof fails, mark affected tile/domain for repair. Transport cannot invent/delete runs.
 
-**Acceptance criteria**
+**Tests:**
 
 - Transported static/slow sequences produce same visibility runs/bytes as from-scratch mode.
 - Run domains remain exact partition after transport.
@@ -9672,12 +10394,16 @@ A transported run may shrink/expand only within neighboring event corridor bound
 - Transported records receive fresh current-frame margins before commit.
 - Failure marks repair, not stale reuse.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-conformance
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -9687,20 +10413,22 @@ pixels P11.6: transport certified frame structure
 
 ## Task P11.7 — maintain adjacent q-order braids
 
-**Purpose**
+**Requires:** P11.6.
 
-Preserve complete layer/root order with O(adjacent relations) certificates.
+**Produces:** Preserve complete layer/root order with O(adjacent relations) certificates.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_events.wr
-stdlib/core/render_transfer.wr
-crates/wrela-compiler/src/pixels/reference/kinetic.rs
-formal/pixels/Pixels/QOrder.lean
+stdlib/core/render_events.wr # new at P-1 basis
+stdlib/core/render_transfer.wr # new at P-1 basis
+crates/wrela-compiler/src/pixels/reference/kinetic.rs # new at P-1 basis
+formal/pixels/Pixels/QOrder.lean # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 For each regular run store front-to-back sheet/layer IDs and adjacent q-order slack. On transport:
 
@@ -9712,7 +10440,7 @@ For each regular run store front-to-back sheet/layer IDs and adjacent q-order sl
 
 Do not monitor all pairwise relations. Do not assume a failed relation means an actual swap; it means local proof expired.
 
-**Acceptance criteria**
+**Tests:**
 
 - Adjacent checks imply same total order as from-scratch root sorting.
 - Close-depth/depth-swap sequence repairs or rebuilds without wrong frame.
@@ -9720,12 +10448,16 @@ Do not monitor all pairwise relations. Do not assume a failed relation means an 
 - Packet/scalar failure counts agree.
 - Formal braid theorems build.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-formal
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -9735,19 +10467,21 @@ pixels P11.7: maintain kinetic occlusion braids
 
 ## Task P11.8 — implement the limited local surgery set
 
-**Purpose**
+**Requires:** P11.7.
 
-Handle simple certified combinatorial events directly and rebuild everything else.
+**Produces:** Handle simple certified combinatorial events directly and rebuild everything else.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_events.wr
-stdlib/core/render_sweep.wr
-crates/wrela-compiler/src/pixels/program.rs
+stdlib/core/render_events.wr # new at P-1 basis
+stdlib/core/render_sweep.wr # new at P-1 basis
+crates/wrela-compiler/src/pixels/program.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 V1 surgery handlers are deliberately limited:
 
@@ -9767,7 +10501,7 @@ Everything else—including silhouettes/root birth/death, tangencies, smooth-ban
 
 No swallowtail/cusp/Puiseux runtime handler is required in v1. The compiler may emit local Taylor models to aid rebuild, but correctness comes from the sweep.
 
-**Acceptance criteria**
+**Tests:**
 
 - Each handler checks every precondition at runtime.
 - Failing one precondition rebuilds; no partial surgery.
@@ -9775,12 +10509,16 @@ No swallowtail/cusp/Puiseux runtime handler is required in v1. The compiler may 
 - Simultaneous-event fixture always rebuilds.
 - Surgery counters are diagnostic only.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-conformance
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -9790,19 +10528,21 @@ pixels P11.8: repair only certified simple events
 
 ## Task P11.9 — choose local repair versus full sweep by sealed cost bounds
 
-**Purpose**
+**Requires:** P11.8.
 
-Avoid heuristic storm thresholds and guarantee an upper-bounded recovery path.
+**Produces:** Avoid heuristic storm thresholds and guarantee an upper-bounded recovery path.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_actor.wr
-crates/wrela-compiler/src/pixels/cost_bounds.rs
-crates/wrela-compiler/src/pixels/program.rs
+stdlib/core/render_actor.wr # new at P-1 basis
+crates/wrela-compiler/src/pixels/cost_bounds.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/program.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Compiler emits conservative static work weights for:
 
@@ -9822,7 +10562,7 @@ Equality chooses full sweep. A camera cut, output-mode change, out-of-range temp
 
 Weights are versioned structural operation counts, not claimed hardware cycles. They exist only to choose between two semantically equivalent paths deterministically.
 
-**Acceptance criteria**
+**Tests:**
 
 - Choice deterministic and input-derived.
 - Full sweep path always available for valid input.
@@ -9830,11 +10570,15 @@ Weights are versioned structural operation counts, not claimed hardware cycles. 
 - Changing weights changes build/numeric revision and report.
 - Both paths produce identical output/error.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -9844,20 +10588,22 @@ pixels P11.9: choose rebuilds from sealed work bounds
 
 ## Task P11.10 — transport shading between `shade_hz` frames
 
-**Purpose**
+**Requires:** P11.9.
 
-Allow 30 Hz expensive shading with 60 Hz presentation only when the exact displayed bytes remain certified.
+**Produces:** Allow 30 Hz expensive shading with 60 Hz presentation only when the exact displayed bytes remain certified.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_material.wr
-stdlib/core/render_light.wr
-stdlib/core/render_actor.wr
-formal/pixels/Pixels/Kinetic.lean
+stdlib/core/render_material.wr # new at P-1 basis
+stdlib/core/render_light.wr # new at P-1 basis
+stdlib/core/render_actor.wr # new at P-1 basis
+formal/pixels/Pixels/Kinetic.lean # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 A frame with `frame_index % (refresh_hz/shade_hz) == 0` is a base shade frame and computes current shading normally.
 
@@ -9874,7 +10620,7 @@ There is no optical-flow image warp and no reuse of a previous color at newly vi
 
 GI probes still update according to P10 before shading/transport; a changed probe contribution invalidates/expands shading transport.
 
-**Acceptance criteria**
+**Tests:**
 
 - `shade_hz=refresh_hz` equals ordinary path.
 - Intermediate transported frames equal from-scratch fully shaded bytes on conformance sequences.
@@ -9882,13 +10628,17 @@ GI probes still update according to P10 before shading/transport; a changed prob
 - Failed byte proof triggers current shading, not approximate output.
 - Formal transport/slack theorem applies.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-conformance
 cargo xtask pixels-formal
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -9898,19 +10648,21 @@ pixels P11.10: transport shading only under byte proof
 
 ## Task P11.11 — implement deterministic crisp temporal policy
 
-**Purpose**
+**Requires:** P11.10.
 
-Finish temporal presentation without TAA ghosting or stochastic jitter.
+**Produces:** Finish temporal presentation without TAA ghosting or stochastic jitter.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render.wr
-stdlib/core/render_actor.wr
-docs/language/07-pixels.md
+stdlib/core/render.wr # new at P-1 basis
+stdlib/core/render_actor.wr # new at P-1 basis
+docs/language/07-pixels.md # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 V1 flagship policy is `TemporalPolicy.Crisp`:
 
@@ -9926,7 +10678,7 @@ Do not implement motion blur in v1. The analytic coverage and filtered material/
 
 `RenderProfile.AaaByteExact` fixes this policy. A future motion-blur profile requires a new numeric/profile revision and separate temporal integration theorem.
 
-**Acceptance criteria**
+**Tests:**
 
 - Source cannot enable hidden TAA/jitter in profile v1.
 - Repeated static frames exact.
@@ -9934,11 +10686,15 @@ Do not implement motion blur in v1. The analytic coverage and filtered material/
 - Documentation states the chosen temporal aesthetic.
 - Replay captures exact current-time inputs/frame index.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -9948,19 +10704,21 @@ pixels P11.11: seal the crisp temporal profile
 
 ## Task P11.12 — add kinetic-disable equivalence mode
 
-**Purpose**
+**Requires:** P11.11.
 
-Permanently prove temporal maintenance is an optimization only.
+**Produces:** Permanently prove temporal maintenance is an optimization only.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_actor.wr
-crates/wrela-compiler/src/pixels/glue.rs
-crates/xtask/src/pixels_conformance.rs
+stdlib/core/render_actor.wr # new at P-1 basis
+crates/wrela-compiler/src/pixels/glue.rs # new at P-1 basis
+crates/xtask/src/pixels_conformance.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Add a compiler-internal generated constant, exposed only to test builds:
 
@@ -9977,19 +10735,23 @@ Disabled forces:
 
 Conformance renders every temporal sequence both modes and compares per-frame success/error and visible bytes.
 
-**Acceptance criteria**
+**Tests:**
 
 - All sequences byte-identical enabled/disabled.
 - Any mismatch prints first frame/tile/pixel/channel and both path diagnostics.
 - Kinetic-disabled setting is not author-facing and does not ship as a runtime branch in release image; build specialization removes it.
 - Error outcomes match exactly.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask pixels-conformance --kinetic-diff
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -9999,19 +10761,21 @@ pixels P11.12: prove kinetic maintenance byte-equivalent
 
 ## Task P11.13 — lock temporal event and camera-cut sequences
 
-**Purpose**
+**Requires:** P11.12.
 
-Cover every maintenance/rebuild class permanently.
+**Produces:** Cover every maintenance/rebuild class permanently.
 
-**Files**
+**Files:**
 
 ```text
-crates/xtask/src/pixels_conformance.rs
-tests/pixels_truth/kinetic/
-tests/golden/boot-pixels-kinetic/
+crates/xtask/src/pixels_conformance.rs # new at P-1 basis
+tests/pixels_truth/kinetic/ # new at P-1 basis
+tests/golden/boot-pixels-kinetic/ # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Sequences:
 
@@ -10033,7 +10797,7 @@ Sequences:
 
 For each compare enabled/disabled, one/four core, record/replay, and expected final digests.
 
-**Acceptance criteria**
+**Tests:**
 
 - Zero byte/error divergence.
 - No stale-state use after cut/failure.
@@ -10041,12 +10805,16 @@ For each compare enabled/disabled, one/four core, record/replay, and expected fi
 - Full sweep selected when sealed work bound says so.
 - All successful frames have zero unresolved output.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask pixels-conformance --all-temporal
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -10066,20 +10834,22 @@ Milestone result: renderer hot paths execute through real Wrela/AArch64 code wit
 
 ## Task P12.1 — generate one per-frame coefficient evaluator
 
-**Purpose**
+**Requires:** the preceding milestone close gate.
 
-Move arbitrary parameter expression work out of root/event/pixel loops.
+**Produces:** Move arbitrary parameter expression work out of root/event/pixel loops.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/glue.rs
-crates/wrela-compiler/src/pixels/scalar.rs
-stdlib/core/render_actor.wr
-stdlib/core/render_program.wr
+crates/wrela-compiler/src/pixels/glue.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/scalar.rs # new at P-1 basis
+stdlib/core/render_actor.wr # new at P-1 basis
+stdlib/core/render_program.wr # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Generate per renderer:
 
@@ -10103,7 +10873,7 @@ Generated source uses named locals for short-lived chains and writes only coeffi
 
 Coordinator computes coefficients once and sends/copies the fixed snapshot to workers. Workers do not interpret scalar DAGs independently.
 
-**Acceptance criteria**
+**Tests:**
 
 - Coefficient snapshot bytes/count match report.
 - Candidate/interval values agree with Rust symbolic reference on parameter-corner/random vectors.
@@ -10111,12 +10881,16 @@ Coordinator computes coefficients once and sends/copies the fixed snapshot to wo
 - Common subexpressions evaluated once.
 - Nonfinite/domain failure aborts before worker jobs/framebuffer writes.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask diff-eval
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -10126,21 +10900,23 @@ pixels P12.1: evaluate renderer coefficients once per frame
 
 ## Task P12.2 — generate the exact used kernel palette
 
-**Purpose**
+**Requires:** P12.1.
 
-Avoid a whole-scene scalar tape interpreter while retaining compact structural data.
+**Produces:** Avoid a whole-scene scalar tape interpreter while retaining compact structural data.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/glue.rs
-crates/wrela-compiler/src/pixels/program.rs
-stdlib/core/render_program.wr
-stdlib/core/render_material.wr
-stdlib/core/render_light.wr
+crates/wrela-compiler/src/pixels/glue.rs # new at P-1 basis
+crates/wrela-compiler/src/pixels/program.rs # new at P-1 basis
+stdlib/core/render_program.wr # new at P-1 basis
+stdlib/core/render_material.wr # new at P-1 basis
+stdlib/core/render_light.wr # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 From frame-program kind census, generate bounded dispatch functions containing only used cases:
 
@@ -10158,7 +10934,7 @@ For material identities, generate direct evaluator functions from canonical Mate
 
 Semantic field tape remains in frame program only for bounded local interval fallback and host differential validation. It is never the common regular-run path.
 
-**Acceptance criteria**
+**Tests:**
 
 - Unused primitive/material/light cases absent from generated typed/MachineWir dumps.
 - Used tag always has one case; missing case internal build error.
@@ -10166,12 +10942,16 @@ Semantic field tape remains in frame program only for bounded local interval fal
 - Dispatch count/bytes reported.
 - No scene-wide field tape evaluation in regular run/raster/shading call graph.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask diff-eval
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -10181,11 +10961,11 @@ pixels P12.2: generate the used renderer kernel palette
 
 ## Task P12.3 — complete SIMD and one-ISA idiom lowering required by Pixels
 
-**Purpose**
+**Requires:** P12.2.
 
-Implement the closed 128-bit vector semantics already promised by the language/library contract.
+**Produces:** Implement the closed 128-bit vector semantics already promised by the language/library contract.
 
-**Files**
+**Files:**
 
 ```text
 crates/wrela-compiler/src/sema/types.rs
@@ -10198,12 +10978,14 @@ crates/wrela-compiler/src/encode.rs
 crates/wrela-machine/src/lib.rs
 crates/wrela-vmm/src/hv.rs
 crates/wrela-vmm/src/lib.rs
-stdlib/core/simd.wr
+stdlib/core/simd.wr # new at P-1 basis
 docs/language/05-library.md
 docs/language/06-machine.md
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Implement only operations used by renderer plus complete contract-required peers:
 
@@ -10224,7 +11006,7 @@ Implement only operations used by renderer plus complete contract-required peers
 
 Amend the normative machine baseline to name `FEAT_DotProd`; there is still one emitted image and no runtime feature test or fallback. Every operation has sema, FlowWir, MachineWir, A64 encoding, a specific cost rule, diff-eval, and emitted-word tests. Do not add general arbitrary shuffle if fixed named shuffles suffice. This task permits one independently gated commit per operation family (construction/load-store, arithmetic, compare/select, lane/shuffle, widen/convert, dot/reduction/idiom closure); each commit must leave the intrinsic and emitted-instruction censuses exact and pass `cargo xtask verify`.
 
-**Acceptance criteria**
+**Tests:**
 
 - SIMD scalar-lane semantics match scalar operations.
 - Compiler refuses vector operations in ISR as existing float rule requires.
@@ -10234,12 +11016,16 @@ Amend the normative machine baseline to name `FEAT_DotProd`; there is still one 
 - `SDOT`/`UDOT` emitted-word tests prove the positive patterns and near-match tests prove they are not selected when signedness, accumulation width, overflow, or source order disagrees.
 - VMM/machine feature validation requires the same `FEAT_DotProd` baseline named by the language chapter.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask diff-eval
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commits**
 
@@ -10254,22 +11040,24 @@ pixels P12.3f: close machine-v1 dot and reduction idioms
 
 ## Task P12.4 — packetize proof predicates and shading/raster kernels
 
-**Purpose**
+**Requires:** P12.3.
 
-Use SIMD where lanes share one operation and keep divergent algorithms scalar/batched explicitly.
+**Produces:** Use SIMD where lanes share one operation and keep divergent algorithms scalar/batched explicitly.
 
-**Files**
+**Files:**
 
 ```text
-stdlib/core/render_interval.wr
-stdlib/core/render_events.wr
-stdlib/core/render_raster.wr
-stdlib/core/render_material.wr
-stdlib/core/render_light.wr
-stdlib/core/render_transfer.wr
+stdlib/core/render_interval.wr # new at P-1 basis
+stdlib/core/render_events.wr # new at P-1 basis
+stdlib/core/render_raster.wr # new at P-1 basis
+stdlib/core/render_material.wr # new at P-1 basis
+stdlib/core/render_light.wr # new at P-1 basis
+stdlib/core/render_transfer.wr # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Required packet kernels:
 
@@ -10287,7 +11075,7 @@ Do not force packetization across divergent root-isolation stacks. Batch indepen
 
 Use SoA for vectors/points/colors. Convert AoS records to SoA once at run setup, not inside pixel loop.
 
-**Acceptance criteria**
+**Tests:**
 
 - Every packet kernel has scalar differential test and manifest mapping.
 - Every packet kernel has a complete `PixelsIsaObligation` row, including an explicit “not applicable” reason for instruction families whose operand semantics do not match.
@@ -10296,12 +11084,16 @@ Use SoA for vectors/points/colors. Convert AoS records to SoA once at run setup,
 - SoA conversion work counted/reported.
 - Hot loops contain no dynamic allocation or generic trait dispatch.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask diff-eval
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -10311,11 +11103,11 @@ pixels P12.4: packetize uniform renderer kernels
 
 ## Task P12.5 — add renderer-specific codegen conventions and hot-function assertions
 
-**Purpose**
+**Requires:** P12.4.
 
-Keep recurrence/packet state in registers and make spills/frames visible as build facts.
+**Produces:** Keep recurrence/packet state in registers and make spills/frames visible as build facts.
 
-**Files**
+**Files:**
 
 ```text
 crates/wrela-compiler/src/regalloc.rs
@@ -10323,10 +11115,12 @@ crates/wrela-compiler/src/frame_plan.rs
 crates/wrela-compiler/src/frame_color.rs
 crates/wrela-compiler/src/codegen.rs
 crates/wrela-compiler/src/report.rs
-crates/wrela-compiler/src/pixels/glue.rs
+crates/wrela-compiler/src/pixels/glue.rs # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Mark generated hot functions through existing metadata/canonical key list, not a user-facing attribute. For each:
 
@@ -10346,7 +11140,7 @@ Do not hardcode physical registers in source or bypass allocator. Add a post-cod
 
 If allocator cannot meet an assertion, fix live range/code shape; do not delete assertion or claim register residence.
 
-**Acceptance criteria**
+**Tests:**
 
 - Report names all generated hot functions and assembly facts.
 - Fixed-q loop is frameless/call-free and q state register resident.
@@ -10355,11 +11149,15 @@ If allocator cannot meet an assertion, fix live range/code shape; do not delete 
 - Existing convention tests remain green.
 - The missed-idiom audit fails on intentionally scalarized dot, horizontal-reduction, FMLA, narrowing, transpose, and paired-load fixtures.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -10369,11 +11167,11 @@ pixels P12.5: lock renderer hot-loop code shape
 
 ## Task P12.6 — add Pixels cost dimensions and instruction weights
 
-**Purpose**
+**Requires:** P12.5.
 
-Score real emitted renderer code and memory traffic through the existing A76 model.
+**Produces:** Score real emitted renderer code and memory traffic through the existing A76 model.
 
-**Files**
+**Files:**
 
 ```text
 crates/wrela-compiler/src/cost/rule.rs
@@ -10383,7 +11181,9 @@ bench/thresholds.toml
 tests/census.toml
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Add/split cost dimensions needed by actual emitted instructions:
 
@@ -10404,7 +11204,7 @@ Source provisional weights from the existing A76/SOG inventory discipline. Where
 
 Split the generic `CostRule::Neon` catch-all until every renderer-emitted instruction family has a specific proxy row and port/resource identity. Update the dense row inventory and rule census. Every emitted renderer word must map to exactly the intended dimension set.
 
-**Acceptance criteria**
+**Tests:**
 
 - Cost dimension inventory remains dense and fully claimed.
 - No renderer instruction has unknown/zero accidental cost.
@@ -10413,11 +11213,15 @@ Split the generic `CostRule::Neon` catch-all until every renderer-emitted instru
 - Memory refs classify stack/static/frameprog/pixelsdata/framebuffer/probe distinctly where model supports.
 - Conservative endpoint used for build admission.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -10427,19 +11231,21 @@ pixels P12.6: cost the emitted A76 renderer instructions
 
 ## Task P12.7 — attach sealed renderer workloads to generated functions
 
-**Purpose**
+**Requires:** P12.6.
 
-Turn frame-program capacities/structure into exact bounded loop counts for cost and deadlines.
+**Produces:** Turn frame-program capacities/structure into exact bounded loop counts for cost and deadlines.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/workload.rs
+crates/wrela-compiler/src/pixels/workload.rs # new at P-1 basis
 crates/wrela-compiler/src/cost/workload.rs
 crates/wrela-compiler/src/report.rs
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Generate workload facts per renderer/config:
 
@@ -10468,7 +11274,7 @@ For release admission, use the worst valid presented-frame path excluding first-
 
 Attach counts to exact generated function keys/loops. Do not multiply unrelated averages. Per-core work uses actual tile/probe partition maxima.
 
-**Acceptance criteria**
+**Tests:**
 
 - Workload report traces every count to frame-program table/capacity.
 - Full sweep includes no kinetic discount.
@@ -10476,11 +11282,15 @@ Attach counts to exact generated function keys/loops. Do not multiply unrelated 
 - Generated hot function missing workload is build error.
 - Report separates initialization, successful full sweep, kinetic valid, and failure/rebuild upper bounds.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -10490,20 +11300,22 @@ pixels P12.7: attach sealed frame workloads to cost
 
 ## Task P12.8 — enforce renderer deadline and memory admission
 
-**Purpose**
+**Requires:** P12.7.
 
-Make the declared 1080p60 profile a compiler proof obligation, not a runtime wish.
+**Produces:** Make the declared 1080p60 profile a compiler proof obligation, not a runtime wish.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/admission.rs
+crates/wrela-compiler/src/pixels/admission.rs # new at P-1 basis
 crates/wrela-compiler/src/cost/mod.rs
 crates/wrela-compiler/src/report.rs
 bench/thresholds.toml
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 For `RenderProfile.AaaByteExact`:
 
@@ -10518,7 +11330,7 @@ For `RenderProfile.AaaByteExact`:
 
 Until P13 closes every renderer-relevant range into the exact sealed cycle proxy, `AaaByteExact` remains buildable only under an explicit repository-internal `pixels_unlocked` feature for implementation fixtures. P13 removes that escape hatch before activation. The escape hatch is not source syntax and cannot ship release images.
 
-**Acceptance criteria**
+**Tests:**
 
 - Admission uses full from-scratch path, not typical kinetic frame.
 - Over-budget fixture fails with per-core term breakdown.
@@ -10526,11 +11338,15 @@ Until P13 closes every renderer-relevant range into the exact sealed cycle proxy
 - Report prints budget, modeled range, conservative endpoint, headroom, and provenance.
 - No threshold auto-adjust/update command in ordinary build.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -10540,19 +11356,21 @@ pixels P12.8: admit renderer images against full-sweep budgets
 
 ## Task P12.9 — archive Cortex-A76 assembly and ISA-selection evidence
 
-**Purpose**
+**Requires:** P12.8.
 
-Make target code shape reviewable and pinned before exact cycle-proxy conformance.
+**Produces:** Make target code shape reviewable and pinned before exact cycle-proxy conformance.
 
-**Files**
+**Files:**
 
 ```text
-crates/xtask/src/pixels_asm.rs
-tests/golden/pixels-asm/
-bench/pixels-a76.md
+crates/xtask/src/pixels_asm.rs # new at P-1 basis
+tests/golden/pixels-asm/ # new at P-1 basis
+bench/pixels-a76.md # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Add `cargo xtask pixels-asm` and `cargo xtask pixels-isa-audit`. They build the locked acceptance renderer for the one machine-v1 target and emit normalized assembly/MachineWir summaries for:
 
@@ -10570,7 +11388,7 @@ The ISA audit joins generated `PixelsIsaObligation` rows to decoded word ranges.
 
 Normalize addresses, local labels, and build paths while preserving instruction sequence, registers, stack offsets, and branch structure. Check in compact summaries plus full assembly artifact under a generated ignored/artifact path if repository policy permits; golden only load-bearing loops.
 
-**Acceptance criteria**
+**Tests:**
 
 - AArch64 target code actually builds.
 - Golden asserts no calls/stack ops in fixed-q hot loop.
@@ -10580,13 +11398,17 @@ Normalize addresses, local labels, and build paths while preserving instruction 
 - Assembly evidence is input to the cycle proxy but is not itself a physical timing claim.
 - Changing a load/store/spill produces reviewed golden diff.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask pixels-asm --check
 cargo xtask pixels-isa-audit
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -10596,19 +11418,21 @@ pixels P12.9: pin Cortex-A76 renderer assembly shape
 
 ## Task P12.10 — close backend differential and cost reports
 
-**Purpose**
+**Requires:** P12.9.
 
-Prove optimized release code preserves all scalar/formal decisions and is fully accounted.
+**Produces:** Prove optimized release code preserves all scalar/formal decisions and is fully accounted.
 
-**Files**
+**Files:**
 
 ```text
-crates/xtask/src/pixels_conformance.rs
+crates/xtask/src/pixels_conformance.rs # new at P-1 basis
 crates/wrela-compiler/src/report.rs
-tests/golden/check-pixels-*/expected/report.txt
+tests/golden/check-pixels-*/expected/report.txt # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Run complete permanent corpus under:
 
@@ -10637,7 +11461,7 @@ RendererCost
   headroom
 ```
 
-**Acceptance criteria**
+**Tests:**
 
 - All build variants byte/error equivalent.
 - Every renderer cost row has provenance and nonzero workload where used.
@@ -10645,12 +11469,16 @@ RendererCost
 - Admission result computed from report data, not handwritten verdict.
 - All permanent reports pinned.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask pixels-conformance --all-build-modes
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -10670,22 +11498,24 @@ Milestone result: the temporary Pixels implementation unlock is removed. Every r
 
 ## Task P13.1 — create the Wrela acceptance images
 
-**Purpose**
+**Requires:** the preceding milestone close gate.
 
-Exercise the complete production renderer with fixed authored scenes rather than fieldprobe.
+**Produces:** Exercise the complete production renderer with fixed authored scenes rather than fieldprobe.
 
-**Files**
+**Files:**
 
 ```text
-examples/pixels_colonnade/
-examples/pixels_melee/
-examples/pixels_quality/
-examples/pixels_acceptance/
-tests/golden/check-pixels-acceptance/
-bench/pixels-acceptance.toml
+examples/pixels_colonnade/ # new at P-1 basis
+examples/pixels_melee/ # new at P-1 basis
+examples/pixels_quality/ # new at P-1 basis
+examples/pixels_acceptance/ # new at P-1 basis
+tests/golden/check-pixels-acceptance/ # new at P-1 basis
+bench/pixels-acceptance.toml # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Port/build in Wrela:
 
@@ -10710,7 +11540,7 @@ All scripts use exact frame-indexed coefficients, no wall clock or input device.
 
 `bench/pixels-acceptance.toml` is not a tunable benchmark file; it pins mode, frame count, scene path, expected digest, and hard conformance thresholds.
 
-**Acceptance criteria**
+**Tests:**
 
 - Images compile with implementation unlock and pass host/VMM conformance.
 - Scenes use ordinary public `@field`/`@material`/`Image.renderer` source.
@@ -10718,12 +11548,16 @@ All scripts use exact frame-indexed coefficients, no wall clock or input device.
 - Frame scripts deterministic under replay.
 - Acceptance report contains complete capacities, ISA obligations, and cycle-proxy inputs.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 cargo xtask pixels-conformance --acceptance
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -10733,27 +11567,29 @@ pixels P13.1: add production renderer acceptance images
 
 ## Task P13.2 — extend and seal the exact A76 renderer cycle proxy
 
-**Purpose**
+**Requires:** P13.1.
 
-Turn the current differential proxy into the exact normative cycle machine used for Pixels admission. This is model execution over emitted code and sealed workloads, never a physical-hardware measurement.
+**Produces:** Turn the current differential proxy into the exact normative cycle machine used for Pixels admission. This is model execution over emitted code and sealed workloads, never a physical-hardware measurement.
 
-**Files**
+**Files:**
 
 ```text
 crates/wrela-compiler/src/cost/mod.rs
 crates/wrela-compiler/src/cost/oracles.rs
 crates/wrela-compiler/src/cost/mem.rs
 crates/wrela-compiler/src/cost/footprint.rs
-crates/wrela-compiler/src/pixels/workload.rs
-crates/xtask/src/pixels_cycle_proxy.rs                 # new
+crates/wrela-compiler/src/pixels/workload.rs # new at P-1 basis
+crates/xtask/src/pixels_cycle_proxy.rs                 # new at P-1 basis
 bench/a76-pi5.toml
-bench/pixels-cycle-proxy-lock.toml                    # new
-docs/designs/pixels-a76-cycle-proxy.md                # new
+bench/pixels-cycle-proxy-lock.toml                    # new at P-1 basis
+docs/designs/pixels-a76-cycle-proxy.md                # new at P-1 basis
 docs/language/04-compiler.md
 docs/language/06-machine.md
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Define a versioned deterministic proxy state machine over final emitted words and exact workload paths:
 
@@ -10782,7 +11618,7 @@ cargo xtask pixels-cycle-proxy --acceptance
 
 It emits per-frame/per-core exact totals, critical dependency/resource path, memory transitions, ISA-obligation results, trace digest, proxy revision, image digest, and workload digest.
 
-**Acceptance criteria**
+**Tests:**
 
 - Every renderer-emitted opcode and machine/device transition has exactly one applicable proxy rule.
 - Replaying a stored trace recomputes the same integer cycles and digest.
@@ -10791,12 +11627,16 @@ It emits per-frame/per-core exact totals, critical dependency/resource path, mem
 - Altering one emitted word, address class, loop count, ISA idiom, or proxy rule changes the appropriate trace digest/report.
 - No code path reads host CPU identity, performance counters, temperature, frequency, or wall time.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask pixels-cycle-proxy --self-test
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -10806,27 +11646,29 @@ pixels P13.2: seal the exact renderer cycle proxy
 
 ## Task P13.3 — close ISA selection and cycle-proxy coverage
 
-**Purpose**
+**Requires:** P13.2.
 
-Prove that every acceptance workload uses the correct instruction family for the one machine-v1 ISA and that every dynamic unit of work is charged exactly once.
+**Produces:** Prove that every acceptance workload uses the correct instruction family for the one machine-v1 ISA and that every dynamic unit of work is charged exactly once.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/isa.rs              # new
-crates/wrela-compiler/src/pixels/workload.rs
+crates/wrela-compiler/src/pixels/isa.rs              # new at P-1 basis
+crates/wrela-compiler/src/pixels/workload.rs # new at P-1 basis
 crates/wrela-compiler/src/cost/oracles.rs
 crates/wrela-compiler/src/lower.rs
 crates/wrela-compiler/src/codegen.rs
 crates/wrela-compiler/src/encode.rs
-crates/xtask/src/pixels_asm.rs
-crates/xtask/src/pixels_cycle_proxy.rs
-bench/pixels-cycle-proxy-lock.toml
-tests/golden/pixels-asm/
+crates/xtask/src/pixels_asm.rs # new at P-1 basis
+crates/xtask/src/pixels_cycle_proxy.rs # new at P-1 basis
+bench/pixels-cycle-proxy-lock.toml # new at P-1 basis
+tests/golden/pixels-asm/ # new at P-1 basis
 tests/census.toml
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Join four censuses by stable function/block/loop ID:
 
@@ -10841,7 +11683,7 @@ Require equal complete coverage at every edge. Audit all §6.16 idioms, includin
 
 Remove all remaining proxy ranges/residual boxes from renderer-reachable rows. Rows still uncertain in the generic compiler may remain for non-Pixels ranking, but `AaaByteExact` may reference only exact sealed rows.
 
-**Acceptance criteria**
+**Tests:**
 
 - ISA, emitted-word, proxy-rule, and workload-frequency coverage are each 100% and use the same denominators.
 - No qualifying dot workload expands to scalar multiply/add or generic lane extraction.
@@ -10849,13 +11691,17 @@ Remove all remaining proxy ranges/residual boxes from renderer-reachable rows. R
 - Renderer reports contain one exact `proxy_cycles` value per path/core, not low/high endpoints.
 - Any missing workload/opcode/rule/idiom fails closed with its stable ID and source kernel.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask pixels-isa-audit
 cargo xtask pixels-cycle-proxy --coverage
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -10865,19 +11711,21 @@ pixels P13.3: close renderer ISA and proxy coverage
 
 ## Task P13.4 — pass the exact full-sweep 1080p60 proxy gate
 
-**Purpose**
+**Requires:** P13.3.
 
-Prove temporal maintenance is not hiding a full-sweep path that exceeds the flagship cycle budget after cuts or whips.
+**Produces:** Prove temporal maintenance is not hiding a full-sweep path that exceeds the flagship cycle budget after cuts or whips.
 
-**Files**
+**Files:**
 
 ```text
-bench/pixels-cycle-proxy-lock.toml
-docs/designs/pixels-a76-cycle-proxy.md
-tests/golden/check-pixels-acceptance/expected/report.txt
+bench/pixels-cycle-proxy-lock.toml # new at P-1 basis
+docs/designs/pixels-a76-cycle-proxy.md # new at P-1 basis
+tests/golden/check-pixels-acceptance/expected/report.txt # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Run the exact proxy with kinetic disabled and probes initialized:
 
@@ -10898,19 +11746,23 @@ Each script forces valid camera/animation changes every frame and includes cuts/
 
 Do not average frames, use p95, or subtract “idle” work. One over-budget frame fails. If this task fails, fix implementation, instruction selection, code shape, or exact workload bounds while preserving prior correctness and quality contracts. Do not enable kinetic mode, lower resolution/refresh, loosen output proof, or edit the script to hide work.
 
-**Acceptance criteria**
+**Tests:**
 
 - All frames in all three sequences meet every hard criterion.
 - The lock records the maximum frame/core total and its full critical-path/transition breakdown.
 - Compiler admission reproduces the xtask total and passes without unlock.
 - Re-running on another host produces identical totals and trace digests.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask pixels-cycle-proxy --full-sweep
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -10920,18 +11772,20 @@ pixels P13.4: lock exact full-sweep 1080p60 proxy conformance
 
 ## Task P13.5 — pass complete AAA sequence and bounded-state proxy conformance
 
-**Purpose**
+**Requires:** P13.4.
 
-Validate quality, transparency, GI, kinetic maintenance, initialization, and long-sequence state bounds without physical timing or thermal claims.
+**Produces:** Validate quality, transparency, GI, kinetic maintenance, initialization, and long-sequence state bounds without physical timing or thermal claims.
 
-**Files**
+**Files:**
 
 ```text
-bench/pixels-cycle-proxy-lock.toml
-docs/designs/pixels-a76-cycle-proxy.md
+bench/pixels-cycle-proxy-lock.toml # new at P-1 basis
+docs/designs/pixels-a76-cycle-proxy.md # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Execute the deterministic 108,000-frame input sequence through the renderer conformance lane and exact cycle proxy, cycling:
 
@@ -10956,19 +11810,23 @@ Hard criteria:
 
 Run the sequence three times from the same canonical initial state. Totals and digests must be identical; there is no cold-reboot, temperature, frequency, counter, RSS, or wall-clock input.
 
-**Acceptance criteria**
+**Tests:**
 
 - Three identical green model runs.
 - No performance/quality fallback mode activated.
 - Kinetic-disabled selected comparison sequence remains byte-identical.
 - Lock includes the worst exact frame and initialization path, not average/p95.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask pixels-cycle-proxy --complete-sequence --repeat 3
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -10978,21 +11836,23 @@ pixels P13.5: lock complete AAA cycle-proxy conformance
 
 ## Task P13.6 — remove the implementation unlock and activate profile admission
 
-**Purpose**
+**Requires:** P13.5.
 
-Prevent unaccounted, incorrectly selected, or over-budget flagship renderer images from shipping.
+**Produces:** Prevent unaccounted, incorrectly selected, or over-budget flagship renderer images from shipping.
 
-**Files**
+**Files:**
 
 ```text
-crates/wrela-compiler/src/pixels/admission.rs
+crates/wrela-compiler/src/pixels/admission.rs # new at P-1 basis
 crates/wrela-compiler/src/bin/wrela.rs
 crates/wrela-compiler/Cargo.toml
 bench/thresholds.toml
-tests/golden/err-pixels-cost/
+tests/golden/err-pixels-cost/ # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 - Delete `pixels_unlocked` feature/env/internal bypass.
 - `RenderProfile.AaaByteExact` always runs full cost/memory/formal-revision admission.
@@ -11001,7 +11861,7 @@ tests/golden/err-pixels-cost/
 - Development can use smaller output/configurations that pass admission; there is no “ignore cost” source flag.
 - Add explicit compiler error if ISA-obligation, cycle-proxy, workload, or lock revision is missing or mismatched.
 
-**Acceptance criteria**
+**Tests:**
 
 - Acceptance images build normally.
 - Over-budget images fail.
@@ -11009,11 +11869,15 @@ tests/golden/err-pixels-cost/
 - Report verdict and raw facts agree.
 - Nonrenderer builds unaffected.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -11023,19 +11887,21 @@ pixels P13.6: activate sealed renderer admission
 
 ## Task P13.7 — run complete formal, differential, and replay closure
 
-**Purpose**
+**Requires:** P13.6.
 
-Produce one final green trust-chain result after ISA and exact cycle-proxy closure.
+**Produces:** Produce one final green trust-chain result after ISA and exact cycle-proxy closure.
 
-**Files**
+**Files:**
 
 ```text
-formal/pixels/EXPECTED_AXIOMS.txt
-formal/pixels/KERNELS.txt
-tests/golden/pixels-asm/
+formal/pixels/EXPECTED_AXIOMS.txt # new at P-1 basis
+formal/pixels/KERNELS.txt # new at P-1 basis
+tests/golden/pixels-asm/ # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Run and pin:
 
@@ -11053,7 +11919,7 @@ cargo xtask pixels-cycle-proxy --complete-sequence
 
 Fuzzing remains the repository’s separate discovery lane, invoked only as `cargo xtask fuzz all`; it is not a substitute for or constituent of this task gate. Promote every prior fuzz/differential finding to a permanent focused test before fixing. Update no golden blindly.
 
-**Acceptance criteria**
+**Tests:**
 
 - All commands green from clean checkout/toolchains.
 - No admissions/unexpected axioms.
@@ -11061,9 +11927,13 @@ Fuzzing remains the repository’s separate discovery lane, invoked only as `car
 - No frame-program decoder crash.
 - Assembly/cost/report/reproduction goldens stable.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 The command set above.
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -11073,23 +11943,25 @@ pixels P13.7: close the renderer trust chain
 
 ## Task P13.8 — finalize normative specs and decision records
 
-**Purpose**
+**Requires:** P13.7.
 
-Make repository documentation describe the shipped renderer rather than the abandoned sample-first design.
+**Produces:** Make repository documentation describe the shipped renderer rather than the abandoned sample-first design.
 
-**Files**
+**Files:**
 
 ```text
-docs/language/07-pixels.md
+docs/language/07-pixels.md # new at P-1 basis
 docs/language/04-compiler.md
 docs/language/05-library.md
 docs/language/06-machine.md
 docs/designs/pixels.md
-docs/designs/pixels-a76-cycle-proxy.md
-README.md                                      # new
+docs/designs/pixels-a76-cycle-proxy.md # new at P-1 basis
+README.md                                      # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 - Remove implementation-status wording from `07-pixels.md`; mark normative revision.
 - State exact supported field/material/profile subset and build errors.
@@ -11101,7 +11973,7 @@ README.md                                      # new
 - Do not claim universal rendering or full physical GI.
 - Add source tutorial using public API and explain common diagnostics/cost report.
 
-**Acceptance criteria**
+**Tests:**
 
 - No active doc tells implementers to run a spike before FieldWir/Pixels work.
 - No contradiction between source API/spec/compiler implementation.
@@ -11109,11 +11981,15 @@ README.md                                      # new
 - Unsupported features listed plainly.
 - All doc links/goldens pass.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -11123,19 +11999,21 @@ pixels P13.8: activate the production Pixels specification
 
 ## Task P13.9 — add the release conformance command
 
-**Purpose**
+**Requires:** P13.8.
 
-Give maintainers one command that states whether Pixels may ship.
+**Produces:** Give maintainers one command that states whether Pixels may ship.
 
-**Files**
+**Files:**
 
 ```text
 crates/xtask/src/main.rs
-crates/xtask/src/pixels_release.rs
-bench/pixels-cycle-proxy-lock.toml
+crates/xtask/src/pixels_release.rs # new at P-1 basis
+bench/pixels-cycle-proxy-lock.toml # new at P-1 basis
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 Add:
 
@@ -11165,19 +12043,23 @@ PixelsRelease revision=<...> PASS=true
 
 No handwritten PASS line. Every constituent fact is printed before verdict.
 
-**Acceptance criteria**
+**Tests:**
 
 - Missing/stale formal/ISA/cycle-proxy lock produces PASS=false.
 - Command never updates locks/goldens.
 - Verdict computed from result structs.
 - Repository release checklist invokes it.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask pixels-release-check
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 
@@ -11187,21 +12069,23 @@ pixels P13.9: add the renderer release gate
 
 ## Task P13.10 — final repository cleanup and ownership census
 
-**Purpose**
+**Requires:** P13.9.
 
-Remove transitional code and ensure every renderer surface is accounted for.
+**Produces:** Remove transitional code and ensure every renderer surface is accounted for.
 
-**Files**
+**Files:**
 
 ```text
 crates/wrela-compiler/src/sema/intrinsics.rs
 tests/census.toml
-crates/xtask/src/census.rs                    # new
+crates/xtask/src/census.rs                    # new at P-1 basis
 Cargo.toml
 AGENTS.md
 ```
 
-**Work**
+**Contract/dump delta:** Only the contract and stable-dump changes explicitly named by this task are permitted.
+
+**Work:**
 
 - Remove placeholder debug-only branches no longer needed, retaining explicit conformance modes behind generated test builds.
 - Census all Pixels intrinsics, dump stages, frame-program tags, event kinds, feature kinds, material/light kinds, cost rules, generated symbol families, formal kernel mappings, and report sections.
@@ -11209,7 +12093,7 @@ AGENTS.md
 - Confirm no new external Cargo dependencies were added; if a prior task accidentally added one, replace it with local direct code as required by repository policy.
 - Add Pixels module ownership/map to `AGENTS.md` without changing repository behavioral rules.
 
-**Acceptance criteria**
+**Tests:**
 
 - Censuses equal producer/consumer sites.
 - No TODO/placeholder/unimplemented path reachable in supported profile.
@@ -11217,12 +12101,16 @@ AGENTS.md
 - No dependency growth.
 - Full release check green.
 
-**Gate**
+**Focused checks:** Run the focused tests, fixtures, dumps, and commands named by this task before the repository gate.
+
+**Repository gate:**
 
 ```text
 cargo xtask pixels-release-check
 cargo xtask verify
 ```
+
+**Stop conditions:** Stop if an acceptance condition cannot be met without changing a closed architectural decision, weakening a proof/failure boundary, or adding an external Cargo dependency.
 
 **Commit**
 

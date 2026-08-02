@@ -36,6 +36,10 @@ pub enum ChoiceEntry {
     EntropyRead {
         bytes: Vec<u8>,
     },
+    FramePresent {
+        sequence: u64,
+        digest: String,
+    },
 }
 
 impl ChoiceEntry {
@@ -48,6 +52,7 @@ impl ChoiceEntry {
             ChoiceEntry::DeviceCompletion { .. } => "DeviceCompletion",
             ChoiceEntry::Progress { .. } => "Progress",
             ChoiceEntry::EntropyRead { .. } => "EntropyRead",
+            ChoiceEntry::FramePresent { .. } => "FramePresent",
         }
     }
 
@@ -78,6 +83,9 @@ impl ChoiceEntry {
                     bytes.len(),
                     bytes_to_lowercase_hex(bytes)
                 )
+            }
+            ChoiceEntry::FramePresent { sequence, digest } => {
+                format!("FramePresent sequence={sequence} digest={digest}")
             }
         }
     }
@@ -161,6 +169,19 @@ impl ChoiceEntry {
                     lowercase_hex_to_bytes(hex).map_err(|e| format!("bad EntropyRead hex: {e}"))?;
                 Ok(ChoiceEntry::EntropyRead { bytes })
             }
+            "FramePresent" => {
+                let sequence = field("sequence")?
+                    .parse()
+                    .map_err(|e| format!("bad FramePresent sequence: {e}"))?;
+                let digest = field("digest")?;
+                if !wrela_machine::sha256::is_sha256_hex(digest) {
+                    return Err(format!("bad FramePresent digest: {digest:?}"));
+                }
+                Ok(ChoiceEntry::FramePresent {
+                    sequence,
+                    digest: digest.to_string(),
+                })
+            }
             other => Err(format!("unknown choice tag `{other}`")),
         }
     }
@@ -226,6 +247,10 @@ pub enum ChoiceRequest {
     EntropyRead {
         len: u64,
     },
+    FramePresent {
+        sequence: u64,
+        digest: String,
+    },
 }
 
 impl ChoiceRequest {
@@ -238,6 +263,7 @@ impl ChoiceRequest {
             ChoiceRequest::Admission { .. } => "Admission",
             ChoiceRequest::Progress { .. } => "Progress",
             ChoiceRequest::EntropyRead { .. } => "EntropyRead",
+            ChoiceRequest::FramePresent { .. } => "FramePresent",
         }
     }
 
@@ -277,6 +303,10 @@ impl ChoiceRequest {
                     bytes: vec![0; *len as usize],
                 }
             }
+            ChoiceRequest::FramePresent { sequence, digest } => ChoiceEntry::FramePresent {
+                sequence: *sequence,
+                digest: digest.clone(),
+            },
         }
     }
 }
@@ -322,6 +352,11 @@ pub enum Divergence {
         index: usize,
         recorded: u32,
         actual: u32,
+    },
+    FramePresentMismatch {
+        index: usize,
+        recorded: String,
+        actual: String,
     },
 }
 
@@ -382,7 +417,16 @@ impl std::fmt::Display for Divergence {
             } => write!(
                 f,
                 "choice #{index} progress mismatch: recorded next core {recorded}, this boot's \
-                 Yield hand-off would have run core {actual}"
+                Yield hand-off would have run core {actual}"
+            ),
+            Divergence::FramePresentMismatch {
+                index,
+                recorded,
+                actual,
+            } => write!(
+                f,
+                "choice #{index} frame present mismatch: recorded `{recorded}`, this boot \
+                 presented `{actual}`"
             ),
         }
     }
@@ -589,6 +633,25 @@ impl Chooser {
         let entry = self.choose_next(request, live);
         self.abort_if_strict_diverged()?;
         Ok(entry)
+    }
+
+    pub fn check_frame_present(
+        &mut self,
+        sequence: u64,
+        digest: String,
+    ) -> Result<(), crate::VmmError> {
+        let request = ChoiceRequest::FramePresent { sequence, digest };
+        let actual = request.fallback();
+        let index = self.resolved_count();
+        let chosen = self.choose_checked(request, || actual.clone())?;
+        if chosen != actual {
+            self.note_divergence_checked(Divergence::FramePresentMismatch {
+                index,
+                recorded: chosen.to_text_fields(),
+                actual: actual.to_text_fields(),
+            })?;
+        }
+        Ok(())
     }
 
     pub fn note_divergence_checked(
@@ -798,6 +861,35 @@ pub fn replay(
             actual: outcome.exit_code,
         });
     }
+    let recorded_frames: Vec<wrela_machine::pixels::PresentedFrame> = recorded
+        .choices
+        .iter()
+        .filter_map(|choice| match choice {
+            ChoiceEntry::FramePresent { sequence, digest } => {
+                Some(wrela_machine::pixels::PresentedFrame {
+                    sequence: *sequence,
+                    digest: digest.clone(),
+                    bgra: Vec::new(),
+                })
+            }
+            _ => None,
+        })
+        .collect();
+    if crate::replay::verify_frame_replay(&recorded_frames, &outcome.frames).is_err()
+        && !divergences
+            .iter()
+            .any(|d| matches!(d, Divergence::FramePresentMismatch { .. }))
+    {
+        divergences.push(Divergence::FramePresentMismatch {
+            index: 0,
+            recorded: String::from_utf8_lossy(&crate::replay::frame_log_bytes(&recorded_frames))
+                .trim()
+                .to_string(),
+            actual: String::from_utf8_lossy(&crate::replay::frame_log_bytes(&outcome.frames))
+                .trim()
+                .to_string(),
+        });
+    }
     Ok(divergences)
 }
 
@@ -883,13 +975,18 @@ mod tests {
                 ChoiceEntry::EntropyRead {
                     bytes: vec![0xde, 0xad, 0xbe, 0xef],
                 },
+                ChoiceEntry::FramePresent {
+                    sequence: 0,
+                    digest: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                        .to_string(),
+                },
             ],
             transcript_digest: "0123456789abcdef".to_string(),
             exit_code: 0,
             exits: 3,
         };
         let expected = "ChoiceLog v1\n\
-             choice_count=7\n\
+             choice_count=8\n\
              choice[0]=ClockRead value=12345\n\
              choice[1]=DeadlineWake deadline_ns=500000\n\
              choice[2]=VectorRaise vector=0\n\
@@ -897,6 +994,7 @@ mod tests {
              choice[4]=Progress core=1\n\
              choice[5]=DeviceCompletion device=blk queue=0 head=3 status=0 len=513 digest=fedcba9876543210\n\
              choice[6]=EntropyRead len=4 hex=deadbeef\n\
+             choice[7]=FramePresent sequence=0 digest=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n\
              transcript_digest=0123456789abcdef\n\
              exit_code=0\n\
              exits=3\n";
@@ -956,6 +1054,19 @@ mod tests {
 
         let fb = ChoiceRequest::EntropyRead { len: 8 }.fallback();
         assert_eq!(fb, ChoiceEntry::EntropyRead { bytes: vec![0; 8] });
+    }
+
+    #[test]
+    fn frame_present_choice_parses_and_round_trips() {
+        let entry = ChoiceEntry::FramePresent {
+            sequence: 7,
+            digest: wrela_machine::sha256::sha256_hex(b"frame"),
+        };
+        assert_eq!(entry.tag(), "FramePresent");
+        assert_eq!(
+            ChoiceEntry::parse_fields(&entry.to_text_fields()).expect("parses"),
+            entry
+        );
     }
 
     #[test]
@@ -1068,6 +1179,36 @@ mod tests {
                 expected: "DeadlineWake".to_string(),
                 actual: "ClockRead".to_string(),
             }]
+        );
+    }
+
+    #[test]
+    fn frame_present_replay_compares_sequence_and_digest_payload() {
+        let recorded = ChoiceEntry::FramePresent {
+            sequence: 0,
+            digest: "recorded".to_string(),
+        };
+        let mut chooser = Chooser::replayer(vec![recorded]);
+        chooser
+            .check_frame_present(0, "actual".to_string())
+            .expect("non-strict replay records the mismatch");
+        let (_, divergences) = finish_chooser(chooser).expect("finish replay");
+        assert!(matches!(
+            divergences.as_slice(),
+            [Divergence::FramePresentMismatch { index: 0, .. }]
+        ));
+
+        let recorded = ChoiceEntry::FramePresent {
+            sequence: 3,
+            digest: "same".to_string(),
+        };
+        let error = Chooser::replayer(vec![recorded])
+            .strict()
+            .check_frame_present(4, "same".to_string())
+            .expect_err("strict replay rejects the first payload mismatch");
+        assert!(
+            error.to_string().contains("frame present mismatch"),
+            "{error}"
         );
     }
 

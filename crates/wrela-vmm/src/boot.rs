@@ -329,6 +329,7 @@ fn boot_image_core_inner(
         released: bool,
         admission: AdmissionWitness,
         admission_buf: [Vec<(String, String)>; CORE_SLOTS],
+        display: crate::display::HeadlessDisplay,
     }
     unsafe impl Send for Shared {}
 
@@ -396,6 +397,7 @@ fn boot_image_core_inner(
         vcpus: [0; CORE_SLOTS],
         admission: AdmissionWitness::new(parsed.request_rings.clone()),
         admission_buf: std::array::from_fn(|_| Vec::new()),
+        display: crate::display::HeadlessDisplay::default(),
     });
     let wake = std::sync::Condvar::new();
 
@@ -557,6 +559,25 @@ fn boot_image_core_inner(
                         let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
                         apply_entropy_read(&mut g.chooser, host_ram, dest, len)?;
                     }
+                    advance_pc(vcpu)?;
+                    Ok(Step::Keep)
+                } else if ipa == wrela_machine::pixels::DOORBELL_ADDR {
+                    let da = mmio_access(esr, core, "DISPLAY_DOORBELL_ADDR", "display", true)?;
+                    let control_addr = mmio_src_value(vcpu, &da)?;
+                    let mut g = lock.lock().unwrap_or_else(|e| e.into_inner());
+                    // SAFETY: `host_ram` is the live DRAM mapping for this
+                    // boot. The display doorbell synchronously transfers the
+                    // referenced records to the host display model.
+                    let frame = unsafe {
+                        g.display.consume_volatile(
+                            host_ram,
+                            machine_layout::DRAM_SIZE as usize,
+                            control_addr,
+                        )?
+                    };
+                    g.chooser
+                        .check_frame_present(frame.sequence, frame.digest.clone())?;
+                    drop(g);
                     advance_pc(vcpu)?;
                     Ok(Step::Keep)
                 } else if ipa == mmio::RELEASE_MMIO_ADDR {
@@ -1168,7 +1189,8 @@ fn boot_image_core_inner(
         check_core_marks(host_ram, cores_declared)?;
     }
 
-    let transcript = drain_console(host_ram);
+    let mut transcript = drain_console(host_ram);
+    transcript.extend_from_slice(&crate::replay::frame_log_bytes(shared.display.frames()));
     let core_marks = (0..cores_declared)
         .map(|c| read_core_mark(host_ram, c))
         .collect::<Vec<u64>>();
@@ -1182,6 +1204,7 @@ fn boot_image_core_inner(
             exits: shared.exits,
             core_marks,
             lane2_hits,
+            frames: shared.display.frames().to_vec(),
         },
         divergences,
     ))

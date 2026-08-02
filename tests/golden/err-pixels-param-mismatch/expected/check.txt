@@ -1,0 +1,1 @@
+error[type]: renderer parameter mismatch: `@field` uses `OtherParams`, declaration uses `SceneParams` at 46:20

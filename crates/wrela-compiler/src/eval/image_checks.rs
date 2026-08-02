@@ -73,6 +73,22 @@ pub fn check_sealed(
     check_driver_mode(graph)?;
     check_vector_bindings(graph, programs)?;
     crate::placement::check_annotations(graph).map_err(build_error)?;
+    if !graph.renderers.is_empty() {
+        crate::pixels::compile_plane_skeleton(owner, programs, graph).map_err(|message| {
+            SemaError {
+                category: "pixels",
+                message: message
+                    .strip_prefix("pixels: ")
+                    .unwrap_or(&message)
+                    .to_string(),
+                line: 0,
+                col: 0,
+                extra_lines: Vec::new(),
+                omit_location: true,
+                missing_method: None,
+            }
+        })?;
+    }
     Ok(())
 }
 
@@ -358,6 +374,9 @@ fn identified_decls(graph: &ImageGraph) -> Vec<(ImageDeclRef, &[DeclArg])> {
     }
     for (i, d) in graph.actors.iter().enumerate() {
         out.push((ImageDeclRef::Actor(i), d.args.as_slice()));
+    }
+    for (i, d) in graph.renderers.iter().enumerate() {
+        out.push((ImageDeclRef::Renderer(i), d.args.as_slice()));
     }
     for (name, d) in &graph.pools {
         out.push((ImageDeclRef::Pool(name.clone()), d.args.as_slice()));

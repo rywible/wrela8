@@ -5,6 +5,7 @@ pub const IMAGE_BUILDER_SURFACE: &[&str] = &[
     "Image.actor",
     "Image.pool",
     "Image.dma_pool",
+    "Image.renderer",
     "Image.on_failure",
     "Image.check_layout",
     "Image.seal",
@@ -192,7 +193,7 @@ pub const FORMAT_KEY_SITES: &[(&str, &[&str], &str)] = &[
     (
         "Image.{mname}",
         &["Image.device", "Image.pool", "Image.dma_pool"],
-        r#"if mname == "device" || mname == "pool" || mname == "dma_pool" {"#,
+        r#"if mname == "device" || mname == "pool" || mname == "dma_pool" || mname == "renderer" {"#,
     ),
     (
         "Mmio.{op}",

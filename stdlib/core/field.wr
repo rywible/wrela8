@@ -1,0 +1,184 @@
+module field
+
+pub struct Vec2:
+    pub x: f32
+    pub y: f32
+
+pub struct Vec3:
+    pub x: f32
+    pub y: f32
+    pub z: f32
+
+pub struct Rgb:
+    pub r: f32
+    pub g: f32
+    pub b: f32
+
+pub struct Field:
+    value: f32
+
+fn abs_scalar(x: f32) -> f32:
+    if x < 0.0:
+        return -x
+    return x
+
+fn min_scalar(a: f32, b: f32) -> f32:
+    if a < b:
+        return a
+    return b
+
+fn max_scalar(a: f32, b: f32) -> f32:
+    if a > b:
+        return a
+    return b
+
+fn clamp_scalar(x: f32, lo: f32, hi: f32) -> f32:
+    return min_scalar(max_scalar(x, lo), hi)
+
+fn sqrt_scalar(x: f32) -> f32:
+    if x <= 0.0:
+        return 0.0
+    guess = x
+    if guess < 1.0:
+        guess = 1.0
+    i: u32 = 0
+    @budget(bound=8)
+    while i < 8:
+        guess = 0.5 * (guess + x / guess)
+        i = i + 1
+    return guess
+
+fn length2(v: Vec2) -> f32:
+    return sqrt_scalar(v.x * v.x + v.y * v.y)
+
+fn length3(v: Vec3) -> f32:
+    return sqrt_scalar(v.x * v.x + v.y * v.y + v.z * v.z)
+
+fn dot3(a: Vec3, b: Vec3) -> f32:
+    return a.x * b.x + a.y * b.y + a.z * b.z
+
+pub fn plane(p: Vec3, normal: Vec3, offset: f32) -> Field:
+    return Field(value=dot3(p, normal) + offset)
+
+pub fn sphere(p: Vec3, center: Vec3, radius: f32) -> Field:
+    q = Vec3(x=p.x - center.x, y=p.y - center.y, z=p.z - center.z)
+    return Field(value=length3(q) - radius)
+
+pub fn box(p: Vec3, half: Vec3) -> Field:
+    qx = abs_scalar(p.x) - half.x
+    qy = abs_scalar(p.y) - half.y
+    qz = abs_scalar(p.z) - half.z
+    outside = Vec3(
+        x=max_scalar(qx, 0.0),
+        y=max_scalar(qy, 0.0),
+        z=max_scalar(qz, 0.0),
+    )
+    inside = min_scalar(max_scalar(qx, max_scalar(qy, qz)), 0.0)
+    return Field(value=length3(outside) + inside)
+
+pub fn round_box(p: Vec3, half: Vec3, radius: f32) -> Field:
+    base = box(p, half)
+    return Field(value=base.value - radius)
+
+pub fn capsule(p: Vec3, a: Vec3, b: Vec3, radius: f32) -> Field:
+    pax = p.x - a.x
+    pay = p.y - a.y
+    paz = p.z - a.z
+    bax = b.x - a.x
+    bay = b.y - a.y
+    baz = b.z - a.z
+    denom = bax * bax + bay * bay + baz * baz
+    h: f32 = 0.0
+    if denom > 0.0:
+        h = clamp_scalar((pax * bax + pay * bay + paz * baz) / denom, 0.0, 1.0)
+    q = Vec3(x=pax - bax * h, y=pay - bay * h, z=paz - baz * h)
+    return Field(value=length3(q) - radius)
+
+pub fn finite_cylinder(p: Vec3, radius: f32, half_height: f32) -> Field:
+    radial = length2(Vec2(x=p.x, y=p.z)) - radius
+    axial = abs_scalar(p.y) - half_height
+    outside = length2(Vec2(x=max_scalar(radial, 0.0), y=max_scalar(axial, 0.0)))
+    return Field(value=outside + min_scalar(max_scalar(radial, axial), 0.0))
+
+pub fn finite_cone(p: Vec3, radius: f32, half_height: f32) -> Field:
+    y = clamp_scalar(p.y + half_height, 0.0, half_height + half_height)
+    allowed = radius * (1.0 - y / (half_height + half_height))
+    radial = length2(Vec2(x=p.x, y=p.z)) - allowed
+    axial = abs_scalar(p.y) - half_height
+    return Field(value=max_scalar(radial, axial))
+
+pub fn torus(p: Vec3, major_radius: f32, minor_radius: f32) -> Field:
+    radial = length2(Vec2(x=p.x, y=p.z)) - major_radius
+    return Field(value=length2(Vec2(x=radial, y=p.y)) - minor_radius)
+
+pub fn translate(p: Vec3, by: Vec3) -> Vec3:
+    return Vec3(x=p.x - by.x, y=p.y - by.y, z=p.z - by.z)
+
+pub fn rotate(p: Vec3, row_x: Vec3, row_y: Vec3, row_z: Vec3) -> Vec3:
+    return Vec3(x=dot3(row_x, p), y=dot3(row_y, p), z=dot3(row_z, p))
+
+pub fn rigid_transform(p: Vec3, translation: Vec3, row_x: Vec3, row_y: Vec3, row_z: Vec3) -> Vec3:
+    return rotate(translate(p, translation), row_x, row_y, row_z)
+
+pub fn uniform_scale(field: Field, scale: f32) -> Field:
+    return Field(value=field.value * scale)
+
+fn finite_repeat_axis(value: f32, first: i32, count: u32, period: f32) -> f32:
+    best = value - first.to[f32]() * period
+    i: u32 = 1
+    @budget(bound=1000000)
+    while i < count:
+        candidate = value - (first.to[f32]() + i.to[f32]()) * period
+        if abs_scalar(candidate) < abs_scalar(best):
+            best = candidate
+        i = i + 1
+    return best
+
+pub fn finite_repeat_x(p: Vec3, first: i32, count: u32, period: f32) -> Vec3:
+    return Vec3(x=finite_repeat_axis(p.x, first, count, period), y=p.y, z=p.z)
+
+pub fn finite_repeat_y(p: Vec3, first: i32, count: u32, period: f32) -> Vec3:
+    return Vec3(x=p.x, y=finite_repeat_axis(p.y, first, count, period), z=p.z)
+
+pub fn finite_repeat_z(p: Vec3, first: i32, count: u32, period: f32) -> Vec3:
+    return Vec3(x=p.x, y=p.y, z=finite_repeat_axis(p.z, first, count, period))
+
+pub fn union(a: Field, b: Field) -> Field:
+    return Field(value=min_scalar(a.value, b.value))
+
+pub fn intersection(a: Field, b: Field) -> Field:
+    return Field(value=max_scalar(a.value, b.value))
+
+pub fn subtract(a: Field, b: Field) -> Field:
+    return Field(value=max_scalar(a.value, -b.value))
+
+pub fn smooth_union(a: Field, b: Field, k: f32) -> Field:
+    if a.value <= b.value - k:
+        return a
+    if b.value <= a.value - k:
+        return b
+    h = 0.5 + 0.5 * (b.value - a.value) / k
+    return Field(value=b.value + (a.value - b.value) * h - k * h * (1.0 - h))
+
+pub fn smooth_intersection(a: Field, b: Field, k: f32) -> Field:
+    na = Field(value=-a.value)
+    nb = Field(value=-b.value)
+    n = smooth_union(na, nb, k)
+    return Field(value=-n.value)
+
+pub fn smooth_subtract(a: Field, b: Field, k: f32) -> Field:
+    return smooth_intersection(a, Field(value=-b.value), k)
+
+pub fn mark[M](field: Field, object: u32, material: M) -> Field:
+    return field
+
+# Structural intrinsic: the compiler lowers the closed
+# amplitude*sin(frequency*p.x+phase) form and derives every bound.
+pub fn sinusoidal_displace(
+    field: Field,
+    p: Vec3,
+    amplitude: f32,
+    frequency: f32,
+    phase: f32,
+) -> Field:
+    return field

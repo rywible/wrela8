@@ -1,0 +1,14 @@
+module examples.err_pixels_ownership_misuse
+
+from core.render import RenderFrame
+
+struct SceneParams:
+    value: f32
+
+fn consume(take frame: RenderFrame[SceneParams]) -> unit:
+    return unit
+
+fn reuse(take frame: RenderFrame[SceneParams]) -> unit:
+    consume(take frame)
+    consume(take frame)
+    return unit

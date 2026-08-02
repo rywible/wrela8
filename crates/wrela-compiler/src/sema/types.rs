@@ -256,6 +256,7 @@ fn validate_actor_type(
     ty: &Type,
     span: Span,
     structs: &BTreeMap<String, &DeclStruct>,
+    canonical_renderers: &BTreeSet<String>,
 ) -> Result<(), SemaError> {
     match ty {
         Type::Named(name, targs) if name == "Actor" => {
@@ -279,7 +280,10 @@ fn validate_actor_type(
                     span,
                 ));
             };
-            if !actor_targs.is_empty() {
+            let sealed_renderer = canonical_renderers.contains(actor_name)
+                && actor_targs.len() == 1
+                && matches!(actor_targs[0], TypeArg::Type(_));
+            if !actor_targs.is_empty() && !sealed_renderer {
                 return Err(SemaError::at(
                     "actor",
                     format!(
@@ -292,6 +296,7 @@ fn validate_actor_type(
             }
             match structs.get(actor_name.as_str()) {
                 Some(s) if s.is_actor => Ok(()),
+                None if sealed_renderer => Ok(()),
                 _ => Err(SemaError::at(
                     "type",
                     format!(
@@ -302,30 +307,30 @@ fn validate_actor_type(
                 )),
             }
         }
-        Type::Array(elem, _) => validate_actor_type(elem, span, structs),
+        Type::Array(elem, _) => validate_actor_type(elem, span, structs, canonical_renderers),
         Type::Tuple(elems) => {
             for e in elems {
-                validate_actor_type(e, span, structs)?;
+                validate_actor_type(e, span, structs, canonical_renderers)?;
             }
             Ok(())
         }
         Type::Own(_, inner) | Type::Static(inner) | Type::Option(inner) => {
-            validate_actor_type(inner, span, structs)
+            validate_actor_type(inner, span, structs, canonical_renderers)
         }
         Type::Result(ok, err) => {
-            validate_actor_type(ok, span, structs)?;
-            validate_actor_type(err, span, structs)
+            validate_actor_type(ok, span, structs, canonical_renderers)?;
+            validate_actor_type(err, span, structs, canonical_renderers)
         }
         Type::Fn(params, ret) => {
             for (_, t) in params {
-                validate_actor_type(t, span, structs)?;
+                validate_actor_type(t, span, structs, canonical_renderers)?;
             }
-            validate_actor_type(ret, span, structs)
+            validate_actor_type(ret, span, structs, canonical_renderers)
         }
         Type::Named(_, targs) => {
             for a in targs {
                 if let TypeArg::Type(t) = a {
-                    validate_actor_type(t, span, structs)?;
+                    validate_actor_type(t, span, structs, canonical_renderers)?;
                 }
             }
             Ok(())
@@ -339,11 +344,12 @@ fn validate_fn_actor_types(
     params: &[DeclParam],
     ret: &Type,
     structs: &BTreeMap<String, &DeclStruct>,
+    canonical_renderers: &BTreeSet<String>,
 ) -> Result<(), SemaError> {
     for p in params {
-        validate_actor_type(&p.ty, span, structs)?;
+        validate_actor_type(&p.ty, span, structs, canonical_renderers)?;
     }
-    validate_actor_type(ret, span, structs)
+    validate_actor_type(ret, span, structs, canonical_renderers)
 }
 
 pub(crate) fn components_by_name(items: &[DeclItem]) -> BTreeMap<String, &[(Type, Span)]> {
@@ -484,6 +490,14 @@ fn validate_actor_handles(module: &Module, items: &[DeclItem]) -> Result<(), Sem
             structs.insert(s.name.clone(), s);
         }
     }
+    let canonical_renderers: BTreeSet<String> = module
+        .imports
+        .iter()
+        .filter(|import| import.path == ["core", "render"])
+        .flat_map(|import| &import.names)
+        .filter(|name| name.name == "Renderer")
+        .map(|name| name.alias.as_ref().unwrap_or(&name.name).clone())
+        .collect();
     let components = components_by_name(items);
     let ast_items: Vec<&Item> = module
         .items
@@ -493,11 +507,11 @@ fn validate_actor_handles(module: &Module, items: &[DeclItem]) -> Result<(), Sem
     for (ai, di) in ast_items.iter().zip(items.iter()) {
         match (ai, di) {
             (Item::Fn(f), DeclItem::Fn(d)) => {
-                validate_fn_actor_types(f.span, &d.params, &d.ret, &structs)?;
+                validate_fn_actor_types(f.span, &d.params, &d.ret, &structs, &canonical_renderers)?;
             }
             (Item::Struct(s), DeclItem::Struct(d)) => {
                 for (ty, span) in &d.component_types {
-                    validate_actor_type(ty, *span, &structs)?;
+                    validate_actor_type(ty, *span, &structs, &canonical_renderers)?;
                 }
                 for m in &s.members {
                     match m {
@@ -509,7 +523,13 @@ fn validate_actor_handles(module: &Module, items: &[DeclItem]) -> Result<(), Sem
                             else {
                                 continue;
                             };
-                            validate_fn_actor_types(f.span, &fd.params, &fd.ret, &structs)?;
+                            validate_fn_actor_types(
+                                f.span,
+                                &fd.params,
+                                &fd.ret,
+                                &structs,
+                                &canonical_renderers,
+                            )?;
                             if d.is_actor && f.is_pub && f.receiver.is_some() {
                                 validate_message_shape(
                                     &d.name,
@@ -530,7 +550,13 @@ fn validate_actor_handles(module: &Module, items: &[DeclItem]) -> Result<(), Sem
                             else {
                                 continue;
                             };
-                            validate_fn_actor_types(i.span, &id.params, &id.ret, &structs)?;
+                            validate_fn_actor_types(
+                                i.span,
+                                &id.params,
+                                &id.ret,
+                                &structs,
+                                &canonical_renderers,
+                            )?;
                         }
                         _ => {}
                     }
@@ -4150,6 +4176,19 @@ mod tests {
                 e.category, e.message
             );
         }
+    }
+
+    #[test]
+    fn image_decl_is_compiler_owned_and_cannot_be_spelled_in_source() {
+        let error = check_err(
+            "module t\n\nstruct Value:\n    id: u32\n\nfn forge(x: ImageDecl[Value]) -> u32:\n    return 0\n",
+        );
+        assert_eq!(error.category, "name");
+        assert!(
+            error.message.contains("`ImageDecl`"),
+            "unexpected diagnostic: {}",
+            error.message
+        );
     }
 
     const CAP_PRELUDE: &str = "module t\n\n\

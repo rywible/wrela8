@@ -26,6 +26,8 @@ mod diff_blk;
 mod fuzz;
 mod golden;
 mod lane2_freq;
+mod pixels_formal;
+mod pixels_plan_lint;
 mod stdlib_test;
 
 use agnostic_sweep::*;
@@ -35,6 +37,8 @@ use diff_blk::{blk_shape, diff_blk, fill_blk_ring, qemu_path};
 use fuzz::*;
 use golden::*;
 use lane2_freq::*;
+use pixels_formal::*;
+use pixels_plan_lint::*;
 use stdlib_test::*;
 
 pub(crate) fn root() -> PathBuf {
@@ -61,7 +65,7 @@ pub(crate) fn golden_case_dirs(golden_dir: &Path) -> Result<Vec<PathBuf>, String
     Ok(dirs)
 }
 
-const USAGE: &str = "agent verification:\n  cargo xtask verify\n\nmaintainer commands:\n  cargo xtask verify-deep\n  cargo xtask golden [--update] [--filter <substr>] [--only-boot|--no-boot] [--jobs N] [--boot-jobs N]\n  cargo xtask corpus [--sema]\n  cargo xtask fuzz <smoke|all|lexer|parser|sema|eval|lower|async|imports|report> [--iters N] [--seed S]\n  cargo xtask roundtrip|report-determinism|agnostic-sweep|cost-inventory|stdlib-test|repro\n  cargo xtask diff-eval [--with-opt <OptId>]\n  cargo xtask diff-block-count|diff-blk|profile\n  cargo xtask gen-lane2-freq <case>\n  cargo xtask bench <compiler|build|guest>";
+const USAGE: &str = "agent verification:\n  cargo xtask verify\n\nPixels commands:\n  cargo xtask pixels-plan-lint|pixels-formal-scan|pixels-formal\n\nmaintainer commands:\n  cargo xtask verify-deep\n  cargo xtask golden [--update] [--filter <substr>] [--only-boot|--no-boot] [--jobs N] [--boot-jobs N]\n  cargo xtask corpus [--sema]\n  cargo xtask fuzz <smoke|all|lexer|parser|sema|eval|lower|async|imports|report> [--iters N] [--seed S]\n  cargo xtask roundtrip|report-determinism|agnostic-sweep|cost-inventory|stdlib-test|repro\n  cargo xtask diff-eval [--with-opt <OptId>]\n  cargo xtask diff-block-count|diff-blk|profile\n  cargo xtask gen-lane2-freq <case>\n  cargo xtask bench <compiler|build|guest>";
 
 fn no_args(command: &str, args: &[String]) -> Result<(), String> {
     if args.len() == 1 {
@@ -87,6 +91,13 @@ fn main() -> ExitCode {
     let result = match args.first().map(String::as_str) {
         Some("verify") => no_args("verify", &args).and_then(|()| verify()),
         Some("verify-deep") => no_args("verify-deep", &args).and_then(|()| verify_deep()),
+        Some("pixels-plan-lint") => {
+            no_args("pixels-plan-lint", &args).and_then(|()| pixels_plan_lint())
+        }
+        Some("pixels-formal-scan") => {
+            no_args("pixels-formal-scan", &args).and_then(|()| pixels_formal_scan())
+        }
+        Some("pixels-formal") => no_args("pixels-formal", &args).and_then(|()| pixels_formal()),
         Some("verify-milestone") => Err(
             "`verify-milestone` was removed; `cargo xtask verify` is the sole required gate, and \
              `cargo xtask verify-deep` is an optional maintainer diagnostic"
@@ -318,7 +329,7 @@ fn test_wrela_vmm_portable() -> Result<(), String> {
             .count())
     }
 
-    const ALL: usize = 122;
+    const ALL: usize = 129;
     let all = listed(&["test", "-q", "-p", "wrela-vmm", "--lib", "--", "--list"])?;
     let hvf = listed(&[
         "test",
@@ -401,6 +412,18 @@ fn verify() -> Result<(), String> {
             "cargo fmt --check",
         )
     })?;
+    verify_stage(
+        LANE,
+        "Pixels plan",
+        "cargo xtask pixels-plan-lint",
+        pixels_plan_lint,
+    )?;
+    verify_stage(
+        LANE,
+        "Pixels formal",
+        "cargo xtask pixels-formal",
+        pixels_formal,
+    )?;
     verify_stage(
         LANE,
         "cost inventory",
